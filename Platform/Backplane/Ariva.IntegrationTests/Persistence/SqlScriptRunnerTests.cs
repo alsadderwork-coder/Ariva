@@ -132,7 +132,8 @@ public sealed class SqlScriptRunnerTests(PostgresFixture fixture)
     [Fact]
     public async Task EnsureRuntimeLogin_Should_RefuseWeakOrPrivilegedLogins_When_Called()
     {
-        var migration = fixture.ConnectionString("ariva_it");
+        // Its own database: the shipped scripts create "user", which the sample schema in ariva_it also has.
+        var migration = fixture.ConnectionString(await fixture.CreateDatabaseAsync(TestDatabase.RuntimeLogin));
         await new SqlScriptRunner(migration, NullLogger<SqlScriptRunner>.Instance).ApplyAsync(SqlScriptCatalog.Embedded());
 
         var shortPassword = () => ExecuteAsync(migration, "SELECT ariva_ensure_runtime_login('ariva_app_short', @password)", "too-short");

@@ -18,6 +18,12 @@ clusterName: k8s-dev
 # kubectl create secret tls), mounted read-only into every API pod at /app/secrets/dataprotection.
 dataProtectionSecretName: ariva-dataprotection
 
+# Access token keys (ARV-010a, ADR-0026), created out of band; see wiki/04-Deployment-Guide.md for generation and the
+# 90-day rotation. ariva-token-public (public.pem, plus previous.pem during a rotation) is mounted into every API pod;
+# ariva-token-signing (signing.key, P-256 PKCS#8) only into api-main.
+tokenPublicSecretName: ariva-token-public
+tokenSigningSecretName: ariva-token-signing
+
 # Schema migration Job (ARV-006): api-main --migrate as a Helm hook before each upgrade. The migration login comes
 # from Database:Migration in base-appsettings-secret; hosts use the DML-only runtime login.
 migration:

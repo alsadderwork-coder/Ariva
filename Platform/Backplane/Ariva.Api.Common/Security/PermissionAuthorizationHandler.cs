@@ -4,17 +4,7 @@ using Microsoft.AspNetCore.Authorization;
 
 namespace Ariva.Api.Common.Security;
 
-/// <summary>
-/// Resolves what a signed-in user may do. Until server-side sessions land (ARV-010b) the roles come from the
-/// principal's role claims and the grants from <see cref="RolePermissions"/>; ARV-010b replaces this with the session's
-/// roles and ARV-011 with the stored grants, behind the same interface.
-/// </summary>
-public interface IPermissionResolver
-{
-    Task<IReadOnlySet<Permission>> GetPermissionsAsync(ClaimsPrincipal user, CancellationToken ct = default);
-}
-
-/// <inheritdoc />
+/// <summary>Grants from role claims only (test hosts and tools); the hosts use the stored grants.</summary>
 public sealed class RoleClaimPermissionResolver : IPermissionResolver
 {
     public Task<IReadOnlySet<Permission>> GetPermissionsAsync(ClaimsPrincipal user, CancellationToken ct = default)

@@ -20,11 +20,15 @@
         <PackageReference Include="Npgsql" />
         <!-- Redis connection shared by the FusionCache levels (ARV-008) -->
         <PackageReference Include="StackExchange.Redis" />
+        <!-- Accounts and tokens (ARV-010a): ES256 JWTs (Microsoft.IdentityModel through the JwtBearer package) and cached grants -->
+        <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" />
+        <PackageReference Include="ZiggyCreatures.FusionCache" />
     </ItemGroup>
 
     <ItemGroup>
         <!-- Versioned scripts ship inside the assembly, so the migration job and the startup check read exactly what was built (ARV-006) -->
         <EmbeddedResource Include="Timescale\Scripts\*.sql" LogicalName="Ariva.Infra.Timescale.Scripts.%(Filename)%(Extension)" />
+        <EmbeddedResource Include="Security\Resources\password-blocklist.txt.gz" LogicalName="Ariva.Infra.Security.password-blocklist.txt.gz" />
     </ItemGroup>
 
     <ItemGroup>

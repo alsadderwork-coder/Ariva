@@ -27,3 +27,19 @@ metadata: { name: bad-host }
 spec:
   tls: [{ hosts: [other.example], secretName: ariva-tls }]
   rules: [{ host: ariva.example }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: api-ingest-deployment }
+spec:
+  template:
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+        - { name: token-signing, secret: { secretName: ariva-token-signing } }
+      containers:
+        - name: app
+          image: registry.example/api-ingest:1.2.3
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]

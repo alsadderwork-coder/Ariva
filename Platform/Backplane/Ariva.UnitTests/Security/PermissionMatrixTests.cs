@@ -1,12 +1,18 @@
+using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Ariva.Core;
+using Ariva.Core.Domain.InputModels;
+using Ariva.Core.Domain.ViewModels;
 using Ariva.Core.Security;
+using Ariva.Core.Services.Security;
 using Ariva.UnitTests.Setup;
 using FluentAssertions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace Ariva.UnitTests.Security;
 
@@ -16,7 +22,7 @@ namespace Ariva.UnitTests.Security;
 /// answers a row differently. The E2E suite reads the same file.
 /// </summary>
 [Collection(HostCollection.Name)]
-public sealed class PermissionMatrixTests
+public sealed partial class PermissionMatrixTests
 {
     private const string Anonymous = "anonymous";
 
@@ -96,7 +102,12 @@ public sealed class PermissionMatrixTests
     [MemberData(nameof(HostsInMatrix))]
     public async Task Send_Should_ReturnMatrixStatus_When_EachCallerCallsEachEndpoint(string host)
     {
-        await using var app = ArivaHosts.Create(host, configure: builder => builder.ConfigureTestServices(TestAuthenticationHandler.Register));
+        await using var app = ArivaHosts.Create(host, configure: builder => builder.ConfigureTestServices(services =>
+        {
+            TestAuthenticationHandler.Register(services);
+            // No database in-process: the sign-in service fails every call, as the real one does for the matrix bodies.
+            services.Replace(ServiceDescriptor.Scoped<ISvcAuthenticator, FailingAuthenticator>());
+        }));
         using var client = app.CreateClient();
         var mismatches = new List<string>();
 
@@ -104,7 +115,9 @@ public sealed class PermissionMatrixTests
         {
             foreach (var (caller, expected) in row.Expected)
             {
-                using var request = new HttpRequestMessage(new HttpMethod(row.Method), row.Route);
+                using var request = new HttpRequestMessage(new HttpMethod(row.Method), PathOf(row));
+                if (row.Body is { } body)
+                    request.Content = new StringContent(body.GetRawText(), Encoding.UTF8, "application/json");
                 if (caller != Anonymous)
                 {
                     request.Headers.Add(TestAuthenticationHandler.UserHeader, "matrix-" + caller);
@@ -120,6 +133,13 @@ public sealed class PermissionMatrixTests
         mismatches.Should().BeEmpty();
     }
 
+    /// <summary>The route template with its parameters filled from routeValues ({id:guid} becomes routeValues.guid).</summary>
+    private static string PathOf(MatrixRow row) =>
+        RouteParameter().Replace(row.Route, match => Loaded.Value.RouteValues[match.Groups["type"].Value]);
+
+    [GeneratedRegex(@"\{[a-zA-Z]+:(?<type>[a-z]+)\}")]
+    private static partial Regex RouteParameter();
+
     private static IEnumerable<MatrixRow> RowsFor(string host) =>
         Loaded.Value.Endpoints.Where(row => string.Equals(row.Host, host, StringComparison.OrdinalIgnoreCase));
 
@@ -129,10 +149,23 @@ public sealed class PermissionMatrixTests
             problems.Add($"{row}: {caller} must get {status}, the matrix says {actual}");
     }
 
-    private sealed record Matrix(List<string> Roles, List<MatrixRow> Endpoints);
+    private sealed record Matrix(List<string> Roles, Dictionary<string, string> RouteValues, List<MatrixRow> Endpoints);
 
-    private sealed record MatrixRow(string Host, string Method, string Route, string Access, List<string> Permissions, Dictionary<string, int> Expected)
+    private sealed record MatrixRow(string Host, string Method, string Route, string Access, List<string> Permissions, JsonElement? Body, Dictionary<string, int> Expected)
     {
         public override string ToString() => $"{Host} {Method} {Route}";
+    }
+
+    /// <summary>The answers the real service gives for the matrix bodies: unknown user, wrong current password, unknown id.</summary>
+    private sealed class FailingAuthenticator : ISvcAuthenticator
+    {
+        public Task<Fluentx.Result<TokenViewModel>> LoginAsync(LoginRequest request, CancellationToken ct = default) =>
+            Task.FromResult(Fluentx.Result.Error<TokenViewModel>(ISvcAuthenticator.InvalidCredentials));
+
+        public Task<Fluentx.Result<TokenViewModel>> ChangePasswordAsync(ChangePasswordRequest request, CancellationToken ct = default) =>
+            Task.FromResult(Fluentx.Result.Error<TokenViewModel>(ISvcAuthenticator.InvalidCredentials));
+
+        public Task<Fluentx.Result<bool>> UnlockAsync(Guid userId, CancellationToken ct = default) =>
+            Task.FromResult(Fluentx.Result.Error<bool>("The user does not exist."));
     }
 }

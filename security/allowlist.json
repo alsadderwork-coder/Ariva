@@ -26,5 +26,17 @@
     "proposedBy": "Claude (security baseline, 2026-10-01)",
     "approvedBy": "Ahmad Al-Sadder (approved in chat, 2026-10-01)",
     "date": "2026-10-01"
+  },
+  {
+    "rule": "SEC-052",
+    "path": "Platform/Backplane/Ariva.Api.Main/Controllers/Auth/Controller.cs",
+    "contains": "AllowAnonymous",
+    "routes": [
+      "/api/auth/login"
+    ],
+    "reason": "Sign-in is how a caller obtains a token, so it cannot require one (ADR-0026). It is limited to 10 attempts a minute per client address (auth rate limit policy), locks an account after 10 consecutive failures for 15 minutes, answers every failure with the same 401 body after a full PBKDF2 check, never caches its response and returns nothing but the token on success.",
+    "proposedBy": "Claude (ARV-010a, 2026-10-01)",
+    "approvedBy": "PENDING: Ahmad Al-Sadder",
+    "date": "2026-10-01"
   }
 ]

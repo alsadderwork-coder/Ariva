@@ -22,7 +22,8 @@ function selfTest() {
 	const bad = checkManifests(parse(fs.readFileSync(path.join(here, 'fixtures', 'bad.yaml'), 'utf8')), { environment: 'k8s-prd' });
 	const expected = [
 		'runAsNonRoot', 'runAsUser', 'seccompProfile', 'hostNetwork', 'allowPrivilegeEscalation', 'privileged',
-		'capabilities.drop', 'readOnlyRootFilesystem', '/tmp', 'latest', 'needs a tls section', 'not covered by tls', 'production must pin'
+		'capabilities.drop', 'readOnlyRootFilesystem', '/tmp', 'latest', 'needs a tls section', 'not covered by tls', 'production must pin',
+		'token signing key', 'token public keys'
 	];
 	const missing = expected.filter((rule) => !bad.some((finding) => finding.includes(rule)));
 	if (good.length || missing.length) {

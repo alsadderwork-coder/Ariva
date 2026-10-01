@@ -14,11 +14,13 @@ export interface MatrixRow {
 	route: string;
 	access: 'anonymous' | 'authenticated' | 'permission';
 	permissions?: string[];
+	body?: unknown;
 	expected: Record<Caller, number>;
 }
 
 interface Matrix {
 	roles: Exclude<Caller, 'anonymous'>[];
+	routeValues: Record<string, string>;
 	endpoints: MatrixRow[];
 }
 
@@ -27,9 +29,18 @@ const file = path.resolve(here, '..', '..', '..', '..', '..', 'security', 'permi
 
 export const matrix: Matrix = JSON.parse(fs.readFileSync(file, 'utf8'));
 
+/** The route template with its parameters filled from routeValues: {id:guid} becomes routeValues.guid. */
+export function pathOf(route: string): string {
+	return route.replace(/\{[a-zA-Z]+:([a-z]+)\}/g, (_, type: string) => {
+		const value = matrix.routeValues[type];
+		if (!value) throw new Error(`permission-matrix.json has no routeValues.${type} for ${route}`);
+		return value;
+	});
+}
+
 /** Rows for the hosts this E2E run starts, with the URL to call. */
 export function rowsForRunningHosts(): (MatrixRow & { url: string })[] {
 	return matrix.endpoints
 		.filter((row) => row.host in hosts)
-		.map((row) => ({ ...row, url: `${hosts[row.host as HostName]}${row.route}` }));
+		.map((row) => ({ ...row, url: `${hosts[row.host as HostName]}${pathOf(row.route)}` }));
 }

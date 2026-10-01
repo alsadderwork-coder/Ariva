@@ -146,6 +146,8 @@ internal sealed class ArivaWebApplicationFactory<TEntryPoint>(string environment
     : WebApplicationFactory<TEntryPoint>
     where TEntryPoint : class
 {
+    private string DevelopmentKeyDirectory { get; } = Path.Combine(Path.GetTempPath(), "ariva-unit-tests", Guid.NewGuid().ToString("N"));
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment(environment);
@@ -160,6 +162,14 @@ internal sealed class ArivaWebApplicationFactory<TEntryPoint>(string environment
         builder.UseSetting("DataProtection:CertificatePath", string.Empty);
         builder.UseSetting("DataProtection:UseDevelopmentCertificate", "true");
         builder.UseSetting("Redis:Enabled", "false");
+
+        // No mounted token keys in-process: a development key of this host's own, whatever the environment under test
+        // (cluster files name /app/secrets paths). Tests sign tokens with the host's TokenKeys.
+        builder.UseSetting("Auth:Tokens:UseDevelopmentKeys", "true");
+        builder.UseSetting("Auth:Tokens:DevelopmentKeyDirectory", DevelopmentKeyDirectory);
+        builder.UseSetting("Auth:Tokens:SigningKeyPath", string.Empty);
+        builder.UseSetting("Auth:Tokens:PublicKeyPaths:0", string.Empty);
+        builder.UseSetting("Auth:Tokens:PublicKeyPaths:1", string.Empty);
 
         configure?.Invoke(builder);
     }

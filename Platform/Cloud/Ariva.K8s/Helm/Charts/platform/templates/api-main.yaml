@@ -42,6 +42,16 @@ spec:
           secret:
             secretName: {{ .Values.dataProtectionSecretName | default "ariva-dataprotection" }}
             defaultMode: 0400
+        # Access token public keys (ARV-010a): public.pem, and previous.pem during a key rotation; read-only
+        - name: token-public
+          secret:
+            secretName: {{ .Values.tokenPublicSecretName | default "ariva-token-public" }}
+            defaultMode: 0444
+        # Access token signing key (ARV-010a): only Ariva.Api.Main signs tokens; no other pod mounts it
+        - name: token-signing
+          secret:
+            secretName: {{ .Values.tokenSigningSecretName | default "ariva-token-signing" }}
+            defaultMode: 0400
         - name: api-main-appsettings-base-volume
           secret:
             secretName: base-appsettings-secret
@@ -70,6 +80,12 @@ spec:
               mountPath: /tmp
             - name: dataprotection-certificate
               mountPath: /app/secrets/dataprotection
+              readOnly: true
+            - name: token-public
+              mountPath: /app/secrets/token-public
+              readOnly: true
+            - name: token-signing
+              mountPath: /app/secrets/token-signing
               readOnly: true
             - name: api-main-appsettings-base-volume
               mountPath: /app/appsettings.base.{{ .Values.environment }}.json

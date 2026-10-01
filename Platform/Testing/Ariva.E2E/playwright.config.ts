@@ -1,6 +1,8 @@
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, devices } from '@playwright/test';
+import { databaseAvailable, developmentUserEnvironment, keyDirectory, lockoutSeconds } from './tests/support/accounts';
 import { hosts, webUrl } from './tests/support/hosts';
 
 // Ariva API end-to-end and functional tests. See README.md.
@@ -27,7 +29,18 @@ const chromiumExecutable = process.env.ARIVA_E2E_CHROMIUM || undefined;
 
 const project = (relative: string) => path.join(repositoryRoot, 'Platform', relative);
 
-function dotnetHost(projectPath: string, healthUrl: string, buildFirst = false) {
+// Sign-in (ARV-010a) needs the database; CI always provides one (ci.yml starts PostgreSQL), so a CI run without it is
+// a configuration error rather than a reason to skip the account tests.
+if (isCi && !databaseAvailable) {
+	throw new Error('CI runs need ARIVA_E2E_SCHEMA_UPDATE=true and the Database__* variables (see README.md)');
+}
+
+// One random seed per run for the E2E account passwords (tests/support/accounts.ts). Set in the runner process before
+// the workers start, so every worker derives the same passwords; never written to disk.
+process.env.ARIVA_E2E_ACCOUNT_SEED ||= crypto.randomBytes(24).toString('base64url');
+process.env.ARIVA_E2E_KEY_DIR ||= keyDirectory;
+
+function dotnetHost(projectPath: string, healthUrl: string, buildFirst = false, extraEnvironment: Record<string, string> = {}) {
 	const run = `dotnet run --no-build --configuration ${configuration} --project "${projectPath}"`;
 	const logFile = path.join(logDirectory, `${path.basename(projectPath)}.log`);
 	return {
@@ -41,8 +54,16 @@ function dotnetHost(projectPath: string, healthUrl: string, buildFirst = false) 
 		// The E2E run has no database unless ARIVA_E2E_SCHEMA_UPDATE=true says one is up (npm run dev:up); vm-local
 		// otherwise runs the development schema update at startup and the hosts would stop on the refused connection.
 		env: {
-			Database__AllowSchemaUpdate: process.env.ARIVA_E2E_SCHEMA_UPDATE === 'true' ? 'true' : 'false',
-			LogFile__Path: logFile
+			Database__AllowSchemaUpdate: databaseAvailable ? 'true' : 'false',
+			LogFile__Path: logFile,
+			// Every host validates tokens with the run's development key; tests read it to sign tampered tokens.
+			Auth__Tokens__DevelopmentKeyDirectory: process.env.ARIVA_E2E_KEY_DIR!,
+			Auth__Lockout__DurationSeconds: String(lockoutSeconds),
+			// The suite talks to the hosts over loopback and sets X-Forwarded-For per test, so the per-address sign-in
+			// limit applies only where a test means it to (production trusts only the ingress network).
+			Security__ForwardedHeaders__KnownProxies__0: '127.0.0.1',
+			Security__ForwardedHeaders__KnownProxies__1: '::1',
+			...extraEnvironment
 		}
 	};
 }
@@ -78,7 +99,7 @@ export default defineConfig({
 		}
 	],
 	webServer: [
-		dotnetHost(project('Backplane/Ariva.Api.Main'), `${hosts.main}/health/readiness`, true),
+		dotnetHost(project('Backplane/Ariva.Api.Main'), `${hosts.main}/health/readiness`, true, databaseAvailable ? developmentUserEnvironment() : {}),
 		dotnetHost(project('Backplane/Ariva.Api.Integration'), `${hosts.integration}/health/readiness`),
 		dotnetHost(project('Backplane/Ariva.Api.Ingest'), `${hosts.ingest}/health/readiness`),
 		dotnetHost(project('Simulation/Ariva.Simulation.Api'), `${hosts.simulation}/health/readiness`),

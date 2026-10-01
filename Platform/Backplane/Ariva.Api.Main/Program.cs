@@ -1,4 +1,7 @@
 using Ariva.Api.Common.Extensions;
+using Ariva.Api.Common.Filters;
+using Ariva.Api.Common.Security;
+using Ariva.Di.Extensions;
 using Ariva.Api.Common.HealthChecks;
 using Ariva.Api.Common.Hosting;
 using Ariva.Di;
@@ -64,11 +67,14 @@ builder.Services.AddAppTelemetry(builder.Configuration);
 
 builder.Services.RegisterArivaServices(builder.Configuration);
 
-// Security baseline (docs/security/cwe-controls.md): default deny with the Ariva.Deny placeholder scheme, input
-// limits, rate limiting, ProblemDetails errors, trusted forwarded headers and the CORS allow-list. The
-// authentication story replaces the placeholder scheme with the JWT bearer schemes.
+// Security baseline (docs/security/cwe-controls.md): default deny (fallback policy, Ariva.Deny answers challenges),
+// ES256 access tokens from Ariva.Api.Main with permissions from stored grants (ARV-010a), input limits, rate limiting,
+// ProblemDetails errors, trusted forwarded headers and the CORS allow-list.
 builder.Services.AddAppSecurityBaseline(builder.Configuration);
-builder.Services.AddControllers();
+builder.Services.AddAppControllers();
+
+// Ariva.Api.Main signs users in and issues tokens (ADR-0026); the other hosts only validate them.
+builder.Services.AddArivaTokenIssuing(builder.Configuration);
 
 // AMAN: AddAppCaching, AddAppHealthChecks, AddAppRouting, AddAppOpenApi, AddAppSignalR.
 // SignalR: the live queue hub (Hubs/) uses the Redis backplane and the MessagePack protocol.
@@ -89,6 +95,7 @@ app.UseRouting();
 app.UseAppCors();
 app.UseAppRateLimiting();
 app.UseAuthentication();
+app.UsePendingScope();
 // AMAN: UseSessionContext
 app.UseAuthorization();
 

@@ -34,6 +34,13 @@ internal abstract class SvcDb(IUnitOfWork unitOfWork)
     protected Task<List<T>> ExecuteSqlAsync<T>([ConstantExpected] string sql, IReadOnlyDictionary<string, object> parameters = null, CancellationToken ct = default) where T : class, new() =>
         Storage.ExecuteSqlAsync<T>(sql, parameters, ct);
 
+    /// <summary>
+    /// A parameterised SQL command (UPDATE ... RETURNING) inside the unit of work's transaction, committed with it.
+    /// For changes that must be atomic in the database rather than read, changed and written through the session.
+    /// </summary>
+    protected Task<List<T>> ExecuteCommandAsync<T>([ConstantExpected] string sql, IReadOnlyDictionary<string, object> parameters = null, CancellationToken ct = default) where T : class, new() =>
+        InTransactionAsync(storage => storage.ExecuteSqlAsync<T>(sql, parameters, ct));
+
     #endregion
 
     #region Commands

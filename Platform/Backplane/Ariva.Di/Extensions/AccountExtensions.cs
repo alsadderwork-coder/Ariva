@@ -1,0 +1,58 @@
+using Ariva.Core.Security;
+using Ariva.Core.Services.Security;
+using Ariva.Infra.Security;
+using Ariva.Infra.Services.Security;
+using Ariva.Infra.Settings;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+
+namespace Ariva.Di.Extensions;
+
+/// <summary>
+/// Accounts and access tokens (ADR-0026, ARV-010a). Every host validates tokens and resolves permissions; only
+/// Ariva.Api.Main signs tokens and signs users in (<see cref="AddArivaTokenIssuing"/>).
+/// </summary>
+public static class AccountExtensions
+{
+    /// <summary>Settings, validation keys, password policy and the stored permission resolver; every API host.</summary>
+    public static IServiceCollection AddArivaAccounts(this IServiceCollection services, IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        var settings = AuthSettings.From(configuration);
+        services.TryAddSingleton(settings);
+        services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton(_ => TokenKeys.Load(settings.Tokens, requireSigningKey: false));
+        services.TryAddSingleton(_ => new PasswordPolicy(settings.ContextWords.Append(configuration["Application:SiteCode"])));
+        services.TryAddScoped<IPermissionResolver, StoredPermissionResolver>();
+        return services;
+    }
+
+    /// <summary>
+    /// Ariva.Api.Main only: the signing key, the token issuer and the sign-in service; on vm-local also the development
+    /// accounts from Auth:DevelopmentUsers.
+    /// </summary>
+    public static IServiceCollection AddArivaTokenIssuing(this IServiceCollection services, IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        services.AddArivaAccounts(configuration);
+        var settings = AuthSettings.From(configuration);
+        services.Replace(ServiceDescriptor.Singleton(_ => TokenKeys.Load(settings.Tokens, requireSigningKey: true)));
+        services.TryAddSingleton<AccessTokenIssuer>();
+        services.TryAddScoped<ISvcAuthenticator, SvcAuthenticator>();
+
+        var environment = configuration["Application:Environment"];
+        if (settings.DevelopmentUsers.Count > 0)
+        {
+            if (!string.Equals(environment, "vm-local", StringComparison.Ordinal))
+                throw new InvalidOperationException("Auth:DevelopmentUsers is only allowed in vm-local.");
+            services.AddHostedService<DevelopmentUserSeed>();
+        }
+
+        return services;
+    }
+}

@@ -48,6 +48,8 @@ public sealed class PostgresFixture : IAsyncLifetime
             TestDatabase.RunnerConcurrent => "CREATE DATABASE it_runner_concurrent",
             TestDatabase.Roles => "CREATE DATABASE it_roles",
             TestDatabase.DataProtection => "CREATE DATABASE it_dataprotection",
+            TestDatabase.RuntimeLogin => "CREATE DATABASE it_runtime_login",
+            TestDatabase.Accounts => "CREATE DATABASE it_accounts",
             _ => throw new ArgumentOutOfRangeException(nameof(database))
         };
         var name = sql["CREATE DATABASE ".Length..];
@@ -104,7 +106,9 @@ public enum TestDatabase
     RunnerVerify,
     RunnerConcurrent,
     Roles,
-    DataProtection
+    DataProtection,
+    RuntimeLogin,
+    Accounts
 }
 
 [CollectionDefinition(Name)]

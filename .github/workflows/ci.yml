@@ -189,8 +189,34 @@ jobs:
     needs: [security-gate, backend, web]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write # failure summary as a PR comment
+    # Sign-in (ARV-010a) needs PostgreSQL: the hosts migrate it at startup (vm-local) and Ariva.Api.Main seeds the E2E
+    # accounts. Same image as the integration tests and the dev environment. The password only lives for this job.
+    services:
+      postgres:
+        image: timescale/timescaledb-ha:pg17-ts2.30
+        env:
+          POSTGRES_PASSWORD: e2e-${{ github.run_id }}-${{ github.run_attempt }}
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     env:
       CI: true
+      ARIVA_E2E_SCHEMA_UPDATE: 'true'
+      Database__Host: localhost
+      Database__Port: '5433'
+      Database__Name: postgres
+      # As in production: the migration login applies the scripts and creates the DML-only runtime login the hosts use.
+      Database__Migration__Username: postgres
+      Database__Migration__Password: e2e-${{ github.run_id }}-${{ github.run_attempt }}
+      Database__Username: ariva_app
+      Database__Password: e2e-runtime-login-${{ github.run_id }}-${{ github.run_attempt }}
     defaults:
       run:
         working-directory: Platform/Testing/Ariva.E2E
@@ -210,7 +236,35 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium
       - name: Run the suite (Playwright starts the hosts and the web preview)
-        run: npx playwright test
+        run: npx playwright test 2>&1 | tee e2e.log
+      - name: Report failures on the pull request
+        if: failure() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set +o pipefail # head closes pipes early on purpose here
+          {
+            echo "### E2E job failed (${GITHUB_SHA::7})"
+            if [ -f e2e.log ]; then
+              echo '#### Failing tests'; echo '```'
+              grep -E '^\s+[0-9]+\) \[' e2e.log | sed -E 's/ ─+$//' | sort -u | head -60 | cut -c1-300
+              echo '```'; echo '#### First failure details'; echo '```'
+              sed -n '/^  1) \[/,$p' e2e.log | grep -v '^\s*$' | head -120 | cut -c1-300
+              echo '```'; echo '#### Host output (WebServer, last lines)'; echo '```'
+              grep '\[WebServer\]' e2e.log | tail -n 40 | cut -c1-300
+              echo '```'; echo '#### Last lines'; echo '```'
+              grep -v '^\s*$' e2e.log | tail -n 15 | cut -c1-300; echo '```'
+            fi
+            for log in logs/*/*.log; do
+              [ -f "$log" ] || continue
+              if grep -qE '"@l":"(Error|Fatal)"|"Level":"(Error|Fatal)"' "$log"; then
+                echo "#### ${log##*/}: errors"; echo '```'
+                grep -E '"@l":"(Error|Fatal)"|"Level":"(Error|Fatal)"' "$log" | head -8 | cut -c1-600; echo '```'
+              fi
+            done
+          } > failure.md
+          gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file failure.md
       - name: Playwright report
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

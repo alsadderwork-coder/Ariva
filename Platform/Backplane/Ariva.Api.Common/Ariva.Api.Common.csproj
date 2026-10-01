@@ -10,6 +10,7 @@
 
     <ItemGroup>
         <!-- Logging and telemetry (ARV-007), AMAN versions -->
+        <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" />
         <PackageReference Include="Serilog" />
         <PackageReference Include="Serilog.Extensions.Hosting" />
         <PackageReference Include="Serilog.Settings.Configuration" />

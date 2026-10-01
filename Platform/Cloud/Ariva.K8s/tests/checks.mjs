@@ -35,6 +35,15 @@ export function checkManifests(docs, { environment }) {
 			for (const flag of ['hostNetwork', 'hostPID', 'hostIPC']) {
 				if (pod[flag] === true) findings.push(`${id}: ${flag} is not allowed`);
 			}
+			// ARV-010a: only Ariva.Api.Main signs access tokens, so only its pod may mount the signing key; every API
+			// pod validates tokens and needs the public keys.
+			const secretVolumes = (pod.volumes ?? []).map((volume) => volume.secret?.secretName ?? '');
+			if (secretVolumes.some((name) => name.includes('token-signing')) && doc.metadata?.name !== 'api-main-deployment') {
+				findings.push(`${id}: only api-main-deployment may mount the token signing key`);
+			}
+			if (/^api-[a-z]+-deployment$/.test(doc.metadata?.name ?? '') && !secretVolumes.some((name) => name.includes('token-public'))) {
+				findings.push(`${id}: API pods must mount the token public keys`);
+			}
 			const containers = [...(pod.initContainers ?? []), ...(pod.containers ?? [])];
 			if (containers.length === 0) findings.push(`${id}: no containers`);
 			for (const container of containers) {

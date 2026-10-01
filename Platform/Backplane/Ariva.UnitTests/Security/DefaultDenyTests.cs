@@ -8,8 +8,8 @@ using Microsoft.AspNetCore.TestHost;
 namespace Ariva.UnitTests.Security;
 
 /// <summary>
-/// CWE-862 and CWE-306: default deny. Until the authentication story replaces the Ariva.Deny placeholder scheme,
-/// no credential authenticates, so everything except the allowlisted probes answers 401 with a ProblemDetails body.
+/// CWE-862 and CWE-306: default deny. Without a valid access token (ARV-010a) everything except the allowlisted
+/// anonymous endpoints answers 401 with a ProblemDetails body; valid tokens are covered in SignInHostTests.
 /// </summary>
 [Collection(HostCollection.Name)]
 public sealed class DefaultDenyTests

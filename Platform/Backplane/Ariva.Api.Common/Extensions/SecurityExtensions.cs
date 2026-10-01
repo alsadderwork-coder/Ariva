@@ -1,7 +1,11 @@
 using Ariva.Api.Common.Security;
+using Ariva.Core.Services;
+using Ariva.Di.Extensions;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace Ariva.Api.Common.Extensions;
 
@@ -17,13 +21,14 @@ public static class SecurityExtensions
     /// authorization fallback policy that requires an authenticated user. Every endpoint without explicit
     /// authorization metadata, and every request that matches no endpoint, is therefore challenged with 401.
     /// Health probes opt out with <c>AllowAnonymous()</c> and are listed in <c>security/allowlist.json</c>.
-    /// The authentication story replaces the placeholder with the JWT bearer schemes; the fallback policy stays.
+    /// ARV-010a adds the JWT bearer scheme as the authenticate scheme; Deny still answers every challenge and forbid.
     /// </summary>
     /// <param name="services">The host's service collection.</param>
     /// <returns>The same service collection, for chaining.</returns>
-    public static IServiceCollection AddAppSecurity(this IServiceCollection services)
+    public static IServiceCollection AddAppSecurity(this IServiceCollection services, IConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configuration);
 
         services
             .AddAuthentication(options =>
@@ -32,7 +37,14 @@ public static class SecurityExtensions
                 options.DefaultChallengeScheme = ArivaAuthenticationSchemes.Deny;
                 options.DefaultForbidScheme = ArivaAuthenticationSchemes.Deny;
             })
-            .AddScheme<AuthenticationSchemeOptions, DenyAuthenticationHandler>(ArivaAuthenticationSchemes.Deny, displayName: null, configureOptions: null);
+            .AddScheme<AuthenticationSchemeOptions, DenyAuthenticationHandler>(ArivaAuthenticationSchemes.Deny, displayName: null, configureOptions: null)
+            // ES256 access tokens from Ariva.Api.Main (ADR-0026, ARV-010a). Deny stays the challenge and forbid scheme,
+            // so a missing or invalid token gets the same problem response as before and says nothing about why.
+            .AddArivaJwtBearer();
+
+        services.AddArivaAccounts(configuration);
+        services.AddHttpContextAccessor();
+        services.Replace(ServiceDescriptor.Scoped<ICurrentUser, HttpCurrentUser>());
 
         var authenticatedUser = new AuthorizationPolicyBuilder()
             .RequireAuthenticatedUser()
@@ -45,8 +57,7 @@ public static class SecurityExtensions
 
         // [Permission] policies (ARV-009): built on demand, satisfied by the user's granted permissions.
         services.AddSingleton<IAuthorizationPolicyProvider, PermissionPolicyProvider>();
-        services.AddSingleton<IAuthorizationHandler, PermissionAuthorizationHandler>();
-        services.AddSingleton<IPermissionResolver, RoleClaimPermissionResolver>();
+        services.AddScoped<IAuthorizationHandler, PermissionAuthorizationHandler>();
 
         return services;
     }

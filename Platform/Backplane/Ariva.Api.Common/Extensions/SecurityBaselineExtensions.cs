@@ -17,6 +17,7 @@ namespace Ariva.Api.Common.Extensions;
 /// app.UseAppCors();
 /// app.UseAppRateLimiting();
 /// app.UseAuthentication();
+/// app.UsePendingScope();
 /// app.UseAuthorization();
 /// </code>
 /// </summary>
@@ -37,7 +38,7 @@ public static class SecurityBaselineExtensions
         ArgumentNullException.ThrowIfNull(configuration);
 
         return services
-            .AddAppSecurity()
+            .AddAppSecurity(configuration)
             .AddAppRequestLimits(configuration)
             .AddAppRateLimiting(configuration)
             .AddAppErrorHandling()

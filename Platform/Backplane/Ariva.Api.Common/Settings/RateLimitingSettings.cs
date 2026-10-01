@@ -12,8 +12,8 @@ public sealed class RateLimitingSettings
     /// <summary>Global limiter applied to every request. Default 1000 requests per minute per IP address.</summary>
     public FixedWindowSettings Global { get; set; } = new() { PermitLimit = 1_000, WindowSeconds = 60 };
 
-    /// <summary>Stricter <c>auth</c> policy for login, token and TOTP endpoints. Default 30 requests per minute per IP address.</summary>
-    public FixedWindowSettings Auth { get; set; } = new() { PermitLimit = 30, WindowSeconds = 60 };
+    /// <summary>Stricter <c>auth</c> policy for login, token and TOTP endpoints. Default 10 requests per minute per IP address (ADR-0026).</summary>
+    public FixedWindowSettings Auth { get; set; } = new() { PermitLimit = 10, WindowSeconds = 60 };
 }
 
 /// <summary>

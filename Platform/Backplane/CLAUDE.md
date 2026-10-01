@@ -43,6 +43,8 @@ Load the `aman-conventions` skill for the full pattern set; this file is the sho
 
 Default deny fallback policy, security headers, request and JSON limits, rate limiting (429 with Retry-After), ProblemDetails without stack traces, trusted forwarded headers only, CORS allowlist. Do not bypass these in a host. Never set `ASPNETCORE_FORWARDEDHEADERS_ENABLED`.
 
+Accounts and tokens (ARV-010a, `security/README.md`): every host validates ES256 access tokens and resolves permissions from stored grants; only Ariva.Api.Main signs (`AddArivaTokenIssuing`). Never put roles or permissions into a token, never read a token from the query string on an API route, and never log a password, token or `Authorization` header. Endpoints a pending account may call carry `[AllowPendingScope]`. A change that must be atomic under concurrency (counters, state flags) uses `ExecuteCommandAsync` with one SQL statement instead of read, change and write through the session.
+
 ## Tests
 
 - `Ariva.UnitTests`: `MethodName_Should_ExpectedResult_When_Condition`, xUnit v3, FluentAssertions, Bogus, Moq. Domain logic and formulas get table-driven tests using the cases in `docs/domain/formulas.md`.

@@ -3,9 +3,9 @@ import { expectApiSecurityHeaders, expectNoLeak, expectProblemDetails } from '..
 import { apiHosts, foreignOrigin, hosts, probes, systemInfoPath, webOrigin } from '../support/hosts';
 import { markupFragments, sqlInjectionPayloads, xssPayloads } from '../support/payloads';
 
-// Security baseline of every API host (docs/security/cwe-controls.md). Until the authentication story lands the
-// only authentication scheme is the Ariva.Deny placeholder, so every request that is not a health probe is
-// anonymous and must be refused. Default deny runs before routing can answer 404 or 405: an anonymous caller gets
+// Security baseline of every API host (docs/security/cwe-controls.md). These cases send no valid token (signed-in
+// callers are in auth.spec.ts and permission-matrix.spec.ts), so every request that is not a health probe or the
+// sign-in endpoint is anonymous and must be refused. Default deny runs before routing can answer 404 or 405: an anonymous caller gets
 // 401 for unknown routes and wrong methods too, which also stops route enumeration. The genuine 404 and 405
 // ProblemDetails bodies are covered by DefaultDenyTests in Ariva.UnitTests with an authenticated test scheme.
 

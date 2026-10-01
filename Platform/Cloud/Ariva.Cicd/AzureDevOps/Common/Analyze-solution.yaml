@@ -97,12 +97,28 @@ jobs:
         displayName: 'E2E: install Chromium'
         workingDirectory: Platform/Testing/Ariva.E2E
 
+      # Sign-in (ARV-010a) needs PostgreSQL: the hosts migrate it at startup and Ariva.Api.Main seeds the E2E accounts.
+      # Same image as ci.yml; the password is per run and dies with the container.
+      - script: |
+          docker run -d --name ariva-e2e-db -p 5433:5432 -e POSTGRES_PASSWORD="e2e-$(Build.BuildId)" timescale/timescaledb-ha:pg17-ts2.30
+          for attempt in $(seq 1 60); do docker exec ariva-e2e-db pg_isready -U postgres && exit 0; sleep 2; done
+          echo "PostgreSQL did not start"; exit 1
+        displayName: 'E2E: start PostgreSQL'
+
       - script: npx playwright test
         displayName: 'E2E: API and functional tests'
         workingDirectory: Platform/Testing/Ariva.E2E
         env:
           CI: 'true'
           ARIVA_E2E_CONFIGURATION: $(BuildConfiguration)
+          ARIVA_E2E_SCHEMA_UPDATE: 'true'
+          Database__Host: localhost
+          Database__Port: '5433'
+          Database__Name: postgres
+          Database__Migration__Username: postgres
+          Database__Migration__Password: e2e-$(Build.BuildId)
+          Database__Username: ariva_app
+          Database__Password: e2e-runtime-login-$(Build.BuildId)
 
       # 6. Reports, published whatever the outcome.
       - task: PublishPipelineArtifact@1
