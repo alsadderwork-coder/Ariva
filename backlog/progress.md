@@ -84,3 +84,9 @@ One entry per story, newest last. Format:
 - Security review: CWE-294 (replay guard in SQL), CWE-308 (TOTP for every human account), CWE-312 (secret encrypted, recovery codes hashed), CWE-307 (codes in the lockout), CWE-269 (break-glass outside the API).
 - Learnings: the security scanner refuses stackalloc with a computed size, so TOTP uses fixed buffers; RFC 6238 vectors were checked against an independent Python implementation before the C# tests were written.
 
+## 2026-10-02 ARV-010d Step-up MFA for critical actions
+- Summary: [RequiresRecentMfa(15)] with on-demand RecentMfa policies reading amr and auth_time; the RFC 9470 401 (insufficient_user_authentication, max_age) with a mfa_required problem only when the second factor is the sole gap, 403 otherwise; POST /api/auth/step-up with a TOTP or recovery code that records the new auth_time on the session; security/critical-actions.json with an architecture test over every host; recovery code regeneration as the first critical action.
+- Gates: local harness PASS (step-up flow through a real Kestrel host against PostgreSQL: stale token refused with the header, non-critical endpoint unaffected, step-up by recovery code in the same session, single use); GitHub CI not observed from this session.
+- Security review: CWE-306 (critical functions need a recent second factor), CWE-287 (step-up shares the replay guard and lockout), CWE-204 (403 before step-up for callers without the permission, so the 401 never reveals an action).
+- Learnings: AuthorizationHandlerContext.Fail empties FailedRequirements, so a handler that wants the result handler to see which requirement failed must leave it pending rather than fail it.
+
