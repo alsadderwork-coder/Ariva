@@ -16,6 +16,13 @@ public interface ISvcAuthenticator : ISvcScoped
     /// <summary>The single error every failed refresh returns (unknown, expired, revoked or reused token).</summary>
     const string SessionExpired = "session_expired";
 
+    /// <summary>The password was right, but the account needs its second factor (a TOTP or recovery code) too.</summary>
+    const string MfaRequired = "mfa_required";
+
+    const string InvalidCode = "The code is not valid.";
+
+    const string AlreadyEnrolled = "An authenticator is already enrolled; an administrator can reset it.";
+
     const string UserNotFound = "The user does not exist.";
 
     const string CannotChangeOwnAccount = "Administrators cannot disable their own account.";
@@ -38,5 +45,15 @@ public interface ISvcAuthenticator : ISvcScoped
     /// <summary>Disables an account and revokes every session it has; access ends within the session cache time.</summary>
     Task<Result<bool>> DisableAsync(Guid userId, CancellationToken ct = default);
 
+    /// <summary>Re-enables an account. The break-glass account is re-enabled only by the installer command.</summary>
     Task<Result<bool>> EnableAsync(Guid userId, CancellationToken ct = default);
+
+    /// <summary>Starts TOTP enrolment for the caller: a new 160-bit secret, returned this once (ARV-010c).</summary>
+    Task<Result<TotpEnrolmentViewModel>> EnrolTotpAsync(CancellationToken ct = default);
+
+    /// <summary>Confirms the enrolment with a first code; returns a token without the pending TOTP restriction and the recovery codes.</summary>
+    Task<Result<TotpConfirmedViewModel>> ConfirmTotpAsync(TotpCodeRequest request, CancellationToken ct = default);
+
+    /// <summary>New recovery codes after a valid TOTP code; the old ones stop working.</summary>
+    Task<Result<RecoveryCodesViewModel>> RegenerateRecoveryCodesAsync(TotpCodeRequest request, CancellationToken ct = default);
 }

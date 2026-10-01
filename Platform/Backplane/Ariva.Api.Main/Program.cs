@@ -22,6 +22,10 @@ using Ariva.Di;
 // --migrate (ARV-006) is handled below and never reaches the configuration command line provider.
 var migrate = DatabaseMigration.IsRequested(args);
 args = DatabaseMigration.WithoutFlag(args);
+// --create-break-glass / --rotate-break-glass (ARV-010c) are installer commands, never configuration.
+var breakGlassArgs = args;
+var breakGlass = BreakGlassCommand.IsRequested(args);
+args = BreakGlassCommand.WithoutFlags(args);
 
 var environment = ArivaEnvironment.Resolve(args, AppContext.BaseDirectory);
 
@@ -50,6 +54,12 @@ builder.Configuration
 if (migrate)
 {
     return await DatabaseMigration.RunAsync(builder.Configuration);
+}
+
+// Installer command: the deployment's break-glass account, printed once (ARV-010c).
+if (breakGlass)
+{
+    return await BreakGlassCommand.RunAsync(builder.Configuration, breakGlassArgs, Console.Out);
 }
 
 #endregion

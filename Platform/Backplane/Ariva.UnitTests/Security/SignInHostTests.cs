@@ -228,6 +228,22 @@ public sealed class SignInHostTests
         _authenticator.Contexts.Should().ContainSingle().Which.PresentedRefreshToken.Should().Be(old, "the service revokes it (CWE-384)");
     }
 
+    [Fact]
+    public async Task Login_Should_Return401MfaRequired_When_PasswordIsRightButTheCodeIsMissing()
+    {
+        await using var app = Host(ArivaHosts.Main);
+        using var client = app.CreateClient();
+        _authenticator.LoginError = ISvcAuthenticator.MfaRequired;
+
+        using var response = await client.PostAsync("/api/auth/login", Json(new { userName = "officer.one", password = "violet tram ladder 9031" }), TestContext.Current.CancellationToken);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        body.RootElement.GetProperty("error").GetString().Should().Be("mfa_required");
+        body.RootElement.GetProperty("type").GetString().Should().Be("https://ariva/problems/mfa-required");
+        SetCookie(response).Should().BeEmpty("no session starts before the second factor");
+    }
+
     [Theory]
     [InlineData(null, WebOrigin)]
     [InlineData("0", WebOrigin)]

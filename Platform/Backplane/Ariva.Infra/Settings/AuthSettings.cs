@@ -10,12 +10,13 @@ public sealed class AuthSettings
     public TokenSettings Tokens { get; init; } = new();
     public LockoutSettings Lockout { get; init; } = new();
     public SessionSettings Sessions { get; init; } = new();
+    public TotpSettings Totp { get; init; } = new();
 
     /// <summary>
-    /// Whether an account without TOTP is limited to the pending scope. Off until TOTP enrolment exists (ARV-010c
-    /// turns it on for every environment); a unit test keeps it from being switched off again after that.
+    /// Whether an account without TOTP is limited to the pending scope (ARV-010c). On in every committed file; a unit
+    /// test keeps it on. An enrolled account always needs its code, whatever this says.
     /// </summary>
-    public bool TotpRequired { get; init; }
+    public bool TotpRequired { get; init; } = true;
 
     /// <summary>Extra words a password may not contain, besides the username and "ariva" (for example the site code).</summary>
     public List<string> ContextWords { get; init; } = [];
@@ -47,6 +48,19 @@ public sealed class TokenSettings
     public bool UseDevelopmentKeys { get; init; }
 
     public string DevelopmentKeyDirectory { get; init; } = string.Empty;
+}
+
+/// <summary>TOTP (ARV-010c). The algorithm parameters are fixed in <see cref="Security.Totp"/>.</summary>
+public sealed class TotpSettings
+{
+    /// <summary>The issuer shown in authenticator apps; add the site, for example "Ariva AUH", so accounts are told apart.</summary>
+    public string Issuer { get; init; } = "Ariva";
+
+    /// <summary>Steps accepted either side of the current one (clock drift between the phone and the server).</summary>
+    public int SkewSteps { get; init; } = 1;
+
+    /// <summary>The break-glass account's username; created only by the installer command.</summary>
+    public string BreakGlassUserName { get; init; } = "break-glass";
 }
 
 /// <summary>Server-side session lifetimes (ARV-010b). Seconds, so tests and the E2E run can shorten them.</summary>
@@ -86,4 +100,7 @@ public sealed class DevelopmentUserSettings
 
     /// <summary>Creates the account with a temporary password (pending scope).</summary>
     public bool Temporary { get; init; }
+
+    /// <summary>Base32 TOTP secret: the account is created with TOTP enrolled, so the E2E suite can compute codes.</summary>
+    public string TotpSecret { get; init; }
 }

@@ -20,8 +20,9 @@ const isCi = !!process.env.CI;
 // Every .NET host writes its JSON log to this run's folder; global-teardown.ts fails the run if any line carries a
 // bearer token, a JWT or an unredacted access_token (ARV-007, CWE-532). The folder is per run, so a previous run's
 // files never mask or cause a finding.
-const logDirectory = path.join(here, 'logs', new Date().toISOString().replace(/[:.]/g, '-'));
-process.env.ARIVA_E2E_LOG_DIR = logDirectory;
+// Set once in the runner; workers re-read this file and must see the same folder.
+process.env.ARIVA_E2E_LOG_DIR ||= path.join(here, 'logs', new Date().toISOString().replace(/[:.]/g, '-'));
+const logDirectory = process.env.ARIVA_E2E_LOG_DIR;
 
 // CI installs the Chromium build that matches this Playwright version (npx playwright install chromium).
 // Elsewhere an already installed Chromium can be used instead: ARIVA_E2E_CHROMIUM=/path/to/chrome.
@@ -60,6 +61,9 @@ function dotnetHost(projectPath: string, healthUrl: string, buildFirst = false, 
 			Auth__Tokens__DevelopmentKeyDirectory: process.env.ARIVA_E2E_KEY_DIR!,
 			Auth__Lockout__DurationSeconds: String(lockoutSeconds),
 			Auth__Sessions__RefreshGraceSeconds: String(refreshGraceSeconds),
+			// Most E2E accounts sign in many times a minute in parallel, which the TOTP replay guard would refuse;
+			// TOTP has its own accounts in totp.spec.ts. Every committed environment keeps it on (AuthSettingsTests).
+			Auth__TotpRequired: 'false',
 			// The suite talks to the hosts over loopback and sets X-Forwarded-For per test, so the per-address sign-in
 			// limit applies only where a test means it to (production trusts only the ingress network).
 			Security__ForwardedHeaders__KnownProxies__0: '127.0.0.1',
@@ -71,6 +75,7 @@ function dotnetHost(projectPath: string, healthUrl: string, buildFirst = false, 
 
 export default defineConfig({
 	testDir: './tests',
+	globalSetup: './tests/support/global-setup.ts',
 	globalTeardown: './tests/support/global-teardown.ts',
 	outputDir: './test-results',
 	fullyParallel: true,

@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { accounts, changedPassword } from './accounts';
+import { accounts, breakGlassFile, changedPassword } from './accounts';
 import { canary } from './log-canary';
 
 // ARV-007 (CWE-532): after the run, no host log line may contain a credential. The API suite sends the canary values
@@ -23,7 +23,16 @@ export default async function globalTeardown() {
 	if (files.length === 0) throw new Error(`log scan: ${directory} has no .log files`);
 
 	const secrets: string[] = [...Object.values(canary)];
-	if (process.env.ARIVA_E2E_ACCOUNT_SEED) secrets.push(...Object.values(accounts()).map((entry) => entry.password), changedPassword());
+	if (process.env.ARIVA_E2E_ACCOUNT_SEED) {
+		secrets.push(...Object.values(accounts()).map((entry) => entry.password), changedPassword());
+		secrets.push(...Object.values(accounts()).flatMap((entry) => (entry.totpSecret ? [entry.totpSecret] : [])));
+	}
+	// The break-glass credential printed by the installer command (ARV-010c) must never reach a host log either.
+	if (fs.existsSync(breakGlassFile)) {
+		const lines = fs.readFileSync(breakGlassFile, 'utf8').split(/\r?\n/);
+		secrets.push(...lines.filter((line) => line.startsWith('password: ')).map((line) => line.slice('password: '.length).trim()));
+		secrets.push(...lines.filter((line) => line.startsWith('  ')).map((line) => line.trim()));
+	}
 
 	const findings: string[] = [];
 	let lines = 0;

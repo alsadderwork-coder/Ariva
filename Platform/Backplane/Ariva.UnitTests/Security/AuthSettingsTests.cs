@@ -47,7 +47,8 @@ public sealed class AuthSettingsTests
         auth.Tokens.ClockSkewSeconds.Should().Be(30);
         auth.Lockout.Threshold.Should().Be(10);
         auth.Lockout.DurationSeconds.Should().Be(900);
-        auth.TotpRequired.Should().BeFalse("TOTP enrolment arrives with ARV-010c, which turns this on");
+        auth.TotpRequired.Should().BeTrue("every human account needs TOTP (ARV-010c)");
+        auth.Totp.SkewSteps.Should().Be(1, "one step either side, RFC 6238 guidance");
         auth.Sessions.AbsoluteSeconds.Should().Be(12 * 3600, "12 hours for every role");
         auth.Sessions.IdleSecondsAdministrator.Should().Be(30 * 60);
         auth.Sessions.IdleSecondsOperational.Should().Be(4 * 3600);
@@ -66,6 +67,7 @@ public sealed class AuthSettingsTests
         var tokens = AuthSettings.From(Base(environment)).Tokens;
 
         tokens.UseDevelopmentKeys.Should().BeFalse($"{environment} must use the mounted keys");
+        AuthSettings.From(Base(environment)).TotpRequired.Should().BeTrue($"{environment}: every human account needs TOTP (ARV-010c)");
         tokens.PublicKeyPaths.Should().Equal("/app/secrets/token-public/public.pem", "/app/secrets/token-public/previous.pem");
         tokens.SigningKeyPath.Should().BeNullOrEmpty("only Ariva.Api.Main's service file names the signing key");
     }
@@ -74,6 +76,7 @@ public sealed class AuthSettingsTests
     public void VmLocal_Should_UseDevelopmentKeys_When_FileIsRead()
     {
         AuthSettings.From(Base("vm-local")).Tokens.UseDevelopmentKeys.Should().BeTrue();
+        AuthSettings.From(Base("vm-local")).TotpRequired.Should().BeTrue("developers sign in like operators; the E2E run alone turns it off");
     }
 
     [Theory]
@@ -135,7 +138,10 @@ public sealed class AuthSettingsTests
         var user = new User("officer.one", "Officer One", null);
         user.SetPassword(new PasswordHashValue("pbkdf2-sha256", 600_000, "c2FsdA==", "aGFzaA=="), temporary);
         if (totpEnrolled)
-            user.MarkTotpEnrolled();
+        {
+            user.BeginTotpEnrolment("protected-secret");
+            user.ConfirmTotp(1);
+        }
 
         user.IsPending(totpRequired).Should().Be(expected);
     }
