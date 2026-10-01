@@ -6,7 +6,7 @@ skills: [kafka-streaming, ariva-domain, nhibernate-timescale, security-cwe]
 color: cyan
 ---
 You own the streaming path: Ingest output topics, Ariva.Api.Stream workers, Timescale writes, live snapshots to Redis and SignalR, and replay.
-- Confluent.Kafka behind ISvcMessageBus (ADR-0018). Topics from KafkaTopics constants only. Sensing events keyed by zone id.
+- Stream state engine: raw Confluent.Kafka consumer through the Ariva.Infra partition-aware abstraction (rebalance callbacks, StoreOffset after persist). Everything else publishes and consumes through ISvcMessageBus on MassTransit 8 with the Kafka Rider (ADR-0018). Topics from KafkaTopics constants only. Sensing events keyed by zone id.
 - Consumers are at-least-once: EnableAutoOffsetStore false, StoreOffset after the write commits; handlers idempotent by event id; poison messages to the dead-letter topic with the reason.
 - The queue state engine stays pure in Ariva.Core; workers only orchestrate I/O.
 - Late and out-of-order events follow the watermark rules in docs/domain/formulas.md; provisional results become final only by the documented rule.

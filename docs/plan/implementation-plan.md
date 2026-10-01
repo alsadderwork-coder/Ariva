@@ -15,7 +15,7 @@ What already exists and passes in the build environment: the full solution skele
 | Product and code name | Ariva (folder, solution and namespaces) | Taken by Ahmad. Trademark check still needed: "Arriva" is a European transport operator and "ariva.de" a German finance portal |
 | Repository structure | Mirror AMAN: Platform/Backplane, Business, Frontplane, Simulation, Cloud; Core, Infra, Di, Api.* | Taken |
 | ORM | NHibernate through AMAN's IStorageProvider pattern; SchemaUpdate only in vm-local; production schema and TimescaleDB objects from versioned SQL scripts | Taken by Ahmad (Claude recommended EF Core; NHibernate keeps parity) |
-| Kafka client | Confluent.Kafka behind AMAN's ISvcMessageBus | Proposed (ADR-0018): MassTransit v9 is commercial and v8 patches wind down through 2026; AMAN carries the same risk |
+| Messaging | MassTransit 8.5.11 Kafka Rider behind AMAN's ISvcMessageBus, with Ariva-owned NHibernate outbox, inbox and dead-letter filters; raw Confluent consumer for the stateful Stream engine | Accepted 2026-10-01 (ADR-0018). Risk: v8 maintenance ends after 2026; decide v9 licence or Confluent swap before go-live |
 | AMAN contracts | Four aggregate-only V1 records, reconciled with D5 (cycle time, documents, lane category, boarded total, coarse reject categories with small-cell suppression) | Taken |
 | Integration with AODBs and immigration | AMAN-compatible client id, secret and TOTP, hardened; generic Integration API v1 plus AIDX, ACRIS, SSIM and the AMAN feed | Taken |
 | Sensor support | Transports plus dialect mappers and capability tiers T1 to T4; Xovis PC2, PC3 and PF series through one adapter family; LiDAR through perception platforms | Taken |

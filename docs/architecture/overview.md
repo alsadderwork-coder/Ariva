@@ -111,7 +111,7 @@ Invariants across contexts (D5):
 
 ## 5. Messaging and Kafka topics
 
-Kafka carries facts. The client library is Confluent.Kafka behind AMAN's `ISvcMessageBus` abstraction, with the transactional outbox and consumer idempotency ported from AMAN (Proposed, [ADR-0018](adr/ADR-0018-confluent-kafka-behind-isvcmessagebus.md); AMAN itself uses MassTransit 8.4 with the Kafka Rider).
+Kafka carries facts. Integration and domain events use MassTransit 8.5 with the Kafka Rider behind AMAN's `ISvcMessageBus` abstraction (AMAN parity), with an NHibernate transactional outbox, an inbox filter for idempotency and a dead-letter filter, all Ariva code. The stateful stream engine in Ariva.Api.Stream consumes with the Confluent client directly because it needs partition rebalance callbacks, which the v8 rider does not offer (Accepted, [ADR-0018](adr/ADR-0018-masstransit-kafka-rider-behind-isvcmessagebus.md)).
 
 Topic naming is `ariva.<context>.<event>.v1` (Decided). Sensor events are keyed by zone id. AMAN feed topics are `aman.feed.<contract>.v1`, produced by AMAN. D5's topic names are given for traceability.
 

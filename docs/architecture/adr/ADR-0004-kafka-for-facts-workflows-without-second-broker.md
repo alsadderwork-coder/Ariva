@@ -25,4 +25,4 @@ D5 chose Kafka for facts (what sensors, flights and desks did) and Rebus for int
 
 - Rebus sagas over RabbitMQ or Rebus's PostgreSQL transport (D5's original choice). Dropped 2026-10-01.
 - RabbitMQ only. Rejected in D5: no replay for recomputation.
-- MassTransit sagas. Depends on the client library choice ([ADR-0018](ADR-0018-confluent-kafka-behind-isvcmessagebus.md)); not chosen while that ADR is Proposed.
+- MassTransit sagas. Available now that the bus is MassTransit 8 ([ADR-0018](ADR-0018-masstransit-kafka-rider-behind-isvcmessagebus.md)), but not chosen: v8 saga persistence for NHibernate is minimal, v8 maintenance ends after 2026, and Ariva's workflows are short state machines that read better as plain domain code with TickerQ timers.

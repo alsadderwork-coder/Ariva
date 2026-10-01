@@ -23,7 +23,7 @@ Format per ADR: title, Status, Date, Source, Context, Decision, Consequences, Al
 | [ADR-0015](ADR-0015-product-name-ariva.md) | Product and code name Ariva | Accepted | 2026-10-01 | Product owner decision, 2026-10-01 |
 | [ADR-0016](ADR-0016-repository-mirrors-aman.md) | Repository layout mirrors AMAN and inherits AMAN's code conventions | Accepted | 2026-10-01 | Product owner decision, 2026-10-01 |
 | [ADR-0017](ADR-0017-nhibernate-and-timescale-sql-scripts.md) | NHibernate via IStorageProvider; dev-only SchemaUpdate; versioned SQL for TimescaleDB; binary COPY on the hot path | Accepted | 2026-10-01 | Product owner decision, 2026-10-01 (overrides D5's EF Core statement) |
-| [ADR-0018](ADR-0018-confluent-kafka-behind-isvcmessagebus.md) | Confluent.Kafka behind ISvcMessageBus, with outbox and idempotency ported from AMAN | Proposed | 2026-10-01 | Product owner decision, 2026-10-01 (status Proposed) |
+| [ADR-0018](ADR-0018-masstransit-kafka-rider-behind-isvcmessagebus.md) | MassTransit 8 Kafka Rider behind ISvcMessageBus; raw Confluent consumer for stateful streams | Accepted | 2026-10-01 | Product owner decision, 2026-10-01 (status Proposed) |
 | [ADR-0019](ADR-0019-kafka-topic-naming.md) | Kafka topic naming and keys | Accepted | 2026-10-01 | Product owner decision, 2026-10-01 (replaces D5's topic names) |
 | [ADR-0020](ADR-0020-tickerq-background-jobs.md) | Background jobs with TickerQ in Ariva.Api.Cronz | Accepted | 2026-10-01 | Product owner decision, 2026-10-01 (AMAN parity) |
 | [ADR-0021](ADR-0021-signalr-live-push.md) | Live push with SignalR, Redis backplane and MessagePack | Accepted | 2026-10-01 | Product owner decision, 2026-10-01 (AMAN parity); D5 read API and SignalR hub |

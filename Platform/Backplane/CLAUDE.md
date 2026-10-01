@@ -31,7 +31,7 @@ Load the `aman-conventions` skill for the full pattern set; this file is the sho
 
 ## Messaging and streaming
 
-- Publish through `ISvcMessageBus` (Confluent.Kafka implementation, outbox for domain events). Topic names come from `KafkaTopics` constants (`ariva.<context>.<event>.v1`); never build topic names from input.
+- Publish through `ISvcMessageBus` (MassTransit 8 Kafka Rider implementation in Ariva.Infra; domain events go through the NHibernate outbox, consumers through the inbox and dead-letter filters; ADR-0018). Topic names come from `KafkaTopics` constants (`ariva.<context>.<event>.v1`); never build topic names from input.
 - Consumers: `EnableAutoOffsetStore = false`, `StoreOffset` only after the effect is persisted (at-least-once), idempotent handlers keyed by `SourceEventId` or event id. Partition sensing events by zone id.
 - The queue state engine in `Ariva.Core` is pure (no I/O): stream workers feed it events and persist its outputs. Load the `kafka-streaming` skill.
 

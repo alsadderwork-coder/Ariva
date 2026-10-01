@@ -61,7 +61,7 @@ Product and architecture decisions in date order. Architecture decisions with co
 - Repository `D:\DevOps\Ariva`, mirroring AMAN's layout: Backplane hosts Ariva.Api.Main (51001), Ariva.Api.Ingest (51002), Ariva.Api.Stream (51003), Ariva.Api.Cronz (51004), Ariva.Api.Integration (51005); Ariva.Business.Contracts; Ariva.Web (51010); Ariva.Simulation.Api (51020); Ariva.K8s (Helm and Helmfile); Ariva.Cicd (Azure DevOps YAML). ADR-0016.
 - AMAN code conventions are inherited (Onion, `IStorageProvider`, `IUnitOfWork`, `SvcBase`, `Result<T>` and `Fx.Specification` from FluentX, AdminArea controllers, `Permission` attribute, FusionCache with Redis, Serilog, xUnit v3, Moq, FluentAssertions, Bogus). ADR-0016.
 - ORM: NHibernate via `IStorageProvider`. `SchemaUpdate` in development only; production schema from reviewed SQL. TimescaleDB objects only from versioned scripts in `Ariva.Infra/Timescale/Scripts/NNNN_*.sql` with a `schema_version` table. Hot-path time-series writes use Npgsql binary COPY. ADR-0017.
-- Kafka stays. Client: Confluent.Kafka behind `ISvcMessageBus`, with outbox and idempotency ported from AMAN. Status Proposed; MassTransit 8.4 with the Kafka Rider recorded as the AMAN-parity option (MassTransit v9 is commercial and v8 patches wind down through 2026). ADR-0018.
+- Kafka stays. Bus: MassTransit 8.5 with the Kafka Rider behind `ISvcMessageBus` (AMAN parity), decided 2026-10-01. Ariva adds the NHibernate outbox, inbox and dead-letter filters that AMAN's code lacks; the stateful Stream engine uses the raw Confluent consumer. ADR-0018.
 - Rebus is not used. Long-running workflows are persisted state machines in Ariva.Core driven by Kafka events, with TickerQ jobs for time-based steps. ADR-0004 (amended).
 - Topic naming `ariva.<context>.<event>.v1`, sensor events keyed by zone id; AMAN feed topics `aman.feed.<contract>.v1` produced by AMAN. ADR-0019.
 - Background jobs: TickerQ in Ariva.Api.Cronz. ADR-0020.
@@ -77,7 +77,7 @@ Product and architecture decisions in date order. Architecture decisions with co
 | Topic | Question | Where |
 |---|---|---|
 | Funding | Fund the developer full-time before the pilot contract (the biggest lever on the pilot date) | D6; roadmap |
-| Kafka client | Confirm Confluent.Kafka behind `ISvcMessageBus` or stay on MassTransit 8.4 | ADR-0018 |
+| MassTransit v8 end of maintenance | Before go-live: buy a v9 licence (rider outbox, error topics) or swap the `ISvcMessageBus` implementation to raw Confluent.Kafka. v8 official maintenance ends after 2026 | ADR-0018 |
 | AMAN contracts | Reconcile skeleton records with D5 content (cycle time, documents, lane category on sessions, boarded total, interval length, reject categories) | data-boundary.md |
 | SLA module | Which module licenses the SLA and penalty engine | overview.md |
 | Forecasting worker | Repository location of the Python worker | ADR-0013 |

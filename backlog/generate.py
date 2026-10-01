@@ -160,10 +160,13 @@ story('ARV-019', 'E1', 'Seed the DMO demo topology',
 
 # E2
 story('ARV-020', 'E2', 'Messaging over Kafka with outbox and dead letters',
-      'ISvcMessageBus implemented on Confluent.Kafka (ADR-0018).',
-      ['KafkaTopics constants and startup provisioning; producer with acks all, idempotence, 1 MB limit',
-       'Outbox table and relay worker for domain events; consumer base with EnableAutoOffsetStore false and StoreOffset after persist, idempotency store, dead-letter topic',
-       'Testcontainers.Kafka integration tests: at-least-once with crash between write and offset store, duplicate suppression, DLQ routing'],
+      'ISvcMessageBus implemented on MassTransit 8.5.11 with the Kafka Rider (ADR-0018), with Ariva-owned outbox, inbox and dead-letter filters that AMAN lacks.',
+      ['KafkaTopics constants and startup provisioning (partitions, replication, retention); keyed producers AddProducer<string,T> with acks all, idempotence, 1 MB limit; one consumer group per service and endpoint',
+       'NHibernate outbox_message table and single-leader relay (advisory lock, FOR UPDATE SKIP LOCKED, in-order per key); InboxFilter on processed_event in the consumer transaction; DeadLetterFilter outermost producing to <topic>.dlq.v1 with topic, partition, offset and error',
+       'Endpoint defaults: AutoOffsetReset earliest, ConcurrentDeliveryLimit 1, CheckpointInterval 5 s, CheckpointMessageCount 500; AddSource and AddMeter MassTransit; bus health check in readiness',
+       'Partition-aware raw Confluent consumer abstraction for Ariva.Api.Stream (assigned and revoked callbacks, StoreOffset after persist)',
+       'Architecture test: no MassTransit or Confluent types referenced from Ariva.Core',
+       'Testcontainers.Kafka integration tests: at-least-once with a crash between write and checkpoint, duplicate suppression, poison message reaches the DLQ, filter order (dead letter outside retry) proven'],
       'BIS', ['CWE-77', 'CWE-120', 'CWE-501'], ['ARV-003', 'ARV-005'])
 story('ARV-021', 'E2', 'Devices, calibrations and the canonical sensing model',
       'Canonical events (LineCrossing, ZoneOccupancy, TrackPosition, IntervalCount, DeviceStatus), Device and Calibration entities, registry API.',

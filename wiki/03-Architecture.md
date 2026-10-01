@@ -71,7 +71,7 @@ Invariants:
 | Concern | Choice | ADR |
 |---|---|---|
 | Persistence | NHibernate through `IStorageProvider` and `IUnitOfWork`; `SchemaUpdate` in development only; Npgsql binary COPY on the hot path | ADR-0017 |
-| Messaging client | Confluent.Kafka behind `ISvcMessageBus`, outbox and idempotency ported from AMAN (Proposed) | ADR-0018 |
+| Messaging client | MassTransit 8.5 Kafka Rider behind `ISvcMessageBus` (AMAN parity) with Ariva outbox, inbox and dead-letter filters; raw Confluent consumer for the stateful Stream engine (Accepted) | ADR-0018 |
 | Background jobs | TickerQ in Ariva.Api.Cronz | ADR-0020 |
 | Live push | SignalR with Redis backplane and MessagePack | ADR-0021 |
 | Observability | Serilog plus OpenTelemetry to SigNoz or Loki | ADR-0022 |
@@ -101,7 +101,7 @@ Invariants:
 | 0015 | Product and code name Ariva | Accepted |
 | 0016 | Repository layout mirrors AMAN and inherits its conventions | Accepted |
 | 0017 | NHibernate, dev-only SchemaUpdate, versioned SQL for TimescaleDB, binary COPY | Accepted |
-| 0018 | Confluent.Kafka behind ISvcMessageBus | Proposed |
+| 0018 | MassTransit 8 Kafka Rider behind ISvcMessageBus | Accepted |
 | 0019 | Kafka topic naming and keys | Accepted |
 | 0020 | Background jobs with TickerQ | Accepted |
 | 0021 | Live push with SignalR, Redis backplane and MessagePack | Accepted |
@@ -110,4 +110,4 @@ Invariants:
 | 0024 | Web front end stack | Accepted |
 | 0025 | Simulation host and reference scenario | Accepted |
 
-Open architecture questions (from `../docs/product/decisions.md`): Kafka client confirmation (ADR-0018), Kafka deployment (Strimzi or AMAN's chart), partition counts and retention values, border-to-airport feed transport and fields, queue engine parameters, the forecasting worker's repository location.
+Open architecture questions (from `../docs/product/decisions.md`): MassTransit v8 end of maintenance: v9 licence or Confluent swap before go-live (ADR-0018), Kafka deployment (Strimzi or AMAN's chart), partition counts and retention values, border-to-airport feed transport and fields, queue engine parameters, the forecasting worker's repository location.

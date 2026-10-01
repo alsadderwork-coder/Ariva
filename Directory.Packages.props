@@ -6,8 +6,11 @@
   <ItemGroup>
     <!-- Microsoft Feature Management -->
     <PackageVersion Include="Microsoft.FeatureManagement.AspNetCore" Version="4.4.0" />
-    <!-- Kafka (direct Confluent client; Ariva does not use MassTransit) -->
-    <PackageVersion Include="Confluent.Kafka" Version="2.8.0" />
+    <!-- Messaging (ADR-0018): MassTransit 8 with the Kafka Rider, AMAN parity. 8.5.11 is the latest Apache 2.0 release
+         (2026-09-30) and needs Confluent.Kafka 2.15.1 or later. Never move to 9.x without a licence decision. -->
+    <PackageVersion Include="MassTransit" Version="8.5.11" />
+    <PackageVersion Include="MassTransit.Kafka" Version="8.5.11" />
+    <PackageVersion Include="Confluent.Kafka" Version="2.15.1" />
     <!-- ASP.NET Core and Microsoft Extensions, .NET 10 -->
     <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.1" />
     <PackageVersion Include="Microsoft.AspNetCore.OpenApi" Version="10.0.1" />

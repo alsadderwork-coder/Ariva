@@ -13,7 +13,7 @@
 | Server | Transport | Purpose | Notes |
 |---|---|---|---|
 | microsoft-learn | HTTP, no auth | Official .NET, ASP.NET Core and Azure DevOps docs | https://learn.microsoft.com/api/mcp |
-| context7 | HTTP | Library docs (NHibernate, Confluent.Kafka, TickerQ, FusionCache, Otp.NET, Npgsql, Testcontainers, Playwright, ECharts) | Works without a key at lower limits |
+| context7 | HTTP | Library docs (NHibernate, MassTransit, Confluent.Kafka, TickerQ, FusionCache, Otp.NET, Npgsql, Testcontainers, Playwright, ECharts) | Works without a key at lower limits |
 | svelte | HTTP | Svelte 5 and SvelteKit docs, svelte-autofixer | Official, https://mcp.svelte.dev/mcp |
 | shadcn-svelte | HTTP | shadcn-svelte components, Bits UI API, Lucide icons | Community server (Michael-Obele/shadcn-svelte-mcp); the official `shadcn-svelte mcp` command was still a pull request when this was set up |
 | playwright | stdio, npx | Drive the running app while writing functional tests | Microsoft |
