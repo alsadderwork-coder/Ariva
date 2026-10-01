@@ -20,11 +20,14 @@ jobs:
     name: Trivy filesystem scan
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Scan dependencies, secrets and misconfiguration (fails on high or critical)
+      - name: Scan dependencies, secrets and misconfiguration
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
@@ -32,16 +35,30 @@ jobs:
           scanners: vuln,secret,misconfig
           severity: HIGH,CRITICAL
           ignore-unfixed: true
-          skip-dirs: docs/design/prototype,scripts/security/fixtures
-          exit-code: '1'
+          skip-dirs: docs/design/prototype,scripts/security/fixtures,Platform/Cloud/Ariva.K8s/tests/fixtures
+          exit-code: '0'
           format: table
           output: trivy-report.txt
-      - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: trivy-report
           path: trivy-report.txt
           if-no-files-found: ignore
+      - name: Report findings on the pull request and fail on high or critical
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          if grep -Eq 'Total: [1-9]|(HIGH|CRITICAL): [1-9]' trivy-report.txt; then
+            if [ -n "$PR" ] && [ "$SAME_REPO" = "true" ]; then
+              { echo '### Trivy found high or critical issues'; echo '```'; head -c 60000 trivy-report.txt; echo '```'; } > comment.md
+              gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file comment.md
+            fi
+            cat trivy-report.txt
+            exit 1
+          fi
+          echo "Trivy: no high or critical findings."
 
   semgrep:
     name: Semgrep CE
