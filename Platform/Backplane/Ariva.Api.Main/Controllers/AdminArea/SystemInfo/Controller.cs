@@ -1,17 +1,18 @@
 using System.Reflection;
 using Ariva.Core.Domain.ViewModels;
-using Microsoft.AspNetCore.Authorization;
+using Ariva.Api.Common.Security;
+using Ariva.Core;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Ariva.Api.Main.Controllers.AdminArea.SystemInfo;
 
 /// <summary>
-/// Product information for signed in users. It is the first protected endpoint, so tests can prove that default
-/// deny answers 401 until the authentication story lands. That story replaces <c>[Authorize]</c> with the
-/// <c>Permission</c> attribute.
+/// Product name and version, for system administrators only (ViewSystemInfo): operators have no need for the build
+/// version, and it helps an attacker pick exploits (CWE-200). The first [Permission] endpoint, so the permission matrix
+/// tests prove 401, 403 and 200 end to end.
 /// </summary>
 [ApiController]
-[Authorize]
+[Permission(nameof(Global.Defaults.Permissions.ViewSystemInfo))]
 [Route("api/v1/system")]
 public sealed class SystemInfoController : ControllerBase
 {
@@ -30,6 +31,7 @@ public sealed class SystemInfoController : ControllerBase
     [HttpGet("info")]
     [ProducesResponseType<SystemInfoViewModel>(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public ActionResult<SystemInfoViewModel> GetInfo() => Ok(new SystemInfoViewModel(ProductName, ProductVersion));
 
     #endregion

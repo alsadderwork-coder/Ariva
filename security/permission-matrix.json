@@ -1,0 +1,261 @@
+{
+  "_comment": "Every endpoint of every host with the expected status per caller (ARV-009). access is anonymous (allowlisted in allowlist.json), authenticated (any signed-in user) or permission (any one of permissions, names from Global.Defaults.Permissions). Ariva.UnitTests fails when an endpoint is missing here, when a permission row disagrees with the role seed (RolePermissions), or when a host answers differently; the E2E suite reads the same rows. Add rows in the story that adds the endpoint.",
+  "roles": [
+    "BorderShiftSupervisor",
+    "TerminalDutyManager",
+    "HandlerStationManager",
+    "SystemAdministrator"
+  ],
+  "endpoints": [
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/health/startup",
+      "access": "anonymous",
+      "expected": {
+        "anonymous": 200,
+        "BorderShiftSupervisor": 200,
+        "TerminalDutyManager": 200,
+        "HandlerStationManager": 200,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/health/readiness",
+      "access": "anonymous",
+      "expected": {
+        "anonymous": 200,
+        "BorderShiftSupervisor": 200,
+        "TerminalDutyManager": 200,
+        "HandlerStationManager": 200,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/health/liveness",
+      "access": "anonymous",
+      "expected": {
+        "anonymous": 200,
+        "BorderShiftSupervisor": 200,
+        "TerminalDutyManager": 200,
+        "HandlerStationManager": 200,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "ingest",
+      "method": "GET",
+      "route": "/health/startup",
+      "access": "anonymous",
+      "expected": {
+        "anonymous": 200,
+        "BorderShiftSupervisor": 200,
+        "TerminalDutyManager": 200,
+        "HandlerStationManager": 200,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "ingest",
+      "method": "GET",
+      "route": "/health/readiness",
+      "access": "anonymous",
+      "expected": {
+        "anonymous": 200,
+        "BorderShiftSupervisor": 200,
+        "TerminalDutyManager": 200,
+        "HandlerStationManager": 200,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "ingest",
+      "method": "GET",
+      "route": "/health/liveness",
+      "access": "anonymous",
+      "expected": {
+        "anonymous": 200,
+        "BorderShiftSupervisor": 200,
+        "TerminalDutyManager": 200,
+        "HandlerStationManager": 200,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "stream",
+      "method": "GET",
+      "route": "/health/startup",
+      "access": "anonymous",
+      "expected": {
+        "anonymous": 200,
+        "BorderShiftSupervisor": 200,
+        "TerminalDutyManager": 200,
+        "HandlerStationManager": 200,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "stream",
+      "method": "GET",
+      "route": "/health/readiness",
+      "access": "anonymous",
+      "expected": {
+        "anonymous": 200,
+        "BorderShiftSupervisor": 200,
+        "TerminalDutyManager": 200,
+        "HandlerStationManager": 200,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "stream",
+      "method": "GET",
+      "route": "/health/liveness",
+      "access": "anonymous",
+      "expected": {
+        "anonymous": 200,
+        "BorderShiftSupervisor": 200,
+        "TerminalDutyManager": 200,
+        "HandlerStationManager": 200,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "cronz",
+      "method": "GET",
+      "route": "/health/startup",
+      "access": "anonymous",
+      "expected": {
+        "anonymous": 200,
+        "BorderShiftSupervisor": 200,
+        "TerminalDutyManager": 200,
+        "HandlerStationManager": 200,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "cronz",
+      "method": "GET",
+      "route": "/health/readiness",
+      "access": "anonymous",
+      "expected": {
+        "anonymous": 200,
+        "BorderShiftSupervisor": 200,
+        "TerminalDutyManager": 200,
+        "HandlerStationManager": 200,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "cronz",
+      "method": "GET",
+      "route": "/health/liveness",
+      "access": "anonymous",
+      "expected": {
+        "anonymous": 200,
+        "BorderShiftSupervisor": 200,
+        "TerminalDutyManager": 200,
+        "HandlerStationManager": 200,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "integration",
+      "method": "GET",
+      "route": "/health/startup",
+      "access": "anonymous",
+      "expected": {
+        "anonymous": 200,
+        "BorderShiftSupervisor": 200,
+        "TerminalDutyManager": 200,
+        "HandlerStationManager": 200,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "integration",
+      "method": "GET",
+      "route": "/health/readiness",
+      "access": "anonymous",
+      "expected": {
+        "anonymous": 200,
+        "BorderShiftSupervisor": 200,
+        "TerminalDutyManager": 200,
+        "HandlerStationManager": 200,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "integration",
+      "method": "GET",
+      "route": "/health/liveness",
+      "access": "anonymous",
+      "expected": {
+        "anonymous": 200,
+        "BorderShiftSupervisor": 200,
+        "TerminalDutyManager": 200,
+        "HandlerStationManager": 200,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "simulation",
+      "method": "GET",
+      "route": "/health/startup",
+      "access": "anonymous",
+      "expected": {
+        "anonymous": 200,
+        "BorderShiftSupervisor": 200,
+        "TerminalDutyManager": 200,
+        "HandlerStationManager": 200,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "simulation",
+      "method": "GET",
+      "route": "/health/readiness",
+      "access": "anonymous",
+      "expected": {
+        "anonymous": 200,
+        "BorderShiftSupervisor": 200,
+        "TerminalDutyManager": 200,
+        "HandlerStationManager": 200,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "simulation",
+      "method": "GET",
+      "route": "/health/liveness",
+      "access": "anonymous",
+      "expected": {
+        "anonymous": 200,
+        "BorderShiftSupervisor": 200,
+        "TerminalDutyManager": 200,
+        "HandlerStationManager": 200,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/system/info",
+      "access": "permission",
+      "permissions": [
+        "ViewSystemInfo"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 200
+      }
+    }
+  ]
+}

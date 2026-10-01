@@ -28,6 +28,9 @@ public sealed class TestAuthenticationHandler(
     /// <summary>Request header that names the authenticated test user.</summary>
     public const string UserHeader = "X-Test-User";
 
+    /// <summary>Optional request header with comma separated role codes for the test user (permission tests).</summary>
+    public const string RolesHeader = "X-Test-Roles";
+
     #endregion
 
     #region Registration
@@ -57,7 +60,15 @@ public sealed class TestAuthenticationHandler(
             return Task.FromResult(AuthenticateResult.NoResult());
         }
 
-        var identity = new ClaimsIdentity([new Claim(ClaimTypes.Name, user.ToString())], SchemeName);
+        var claims = new List<Claim> { new(ClaimTypes.Name, user.ToString()) };
+        if (Request.Headers.TryGetValue(RolesHeader, out var roles))
+        {
+            claims.AddRange(roles.ToString()
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(role => new Claim(ClaimTypes.Role, role)));
+        }
+
+        var identity = new ClaimsIdentity(claims, SchemeName);
         var ticket = new AuthenticationTicket(new ClaimsPrincipal(identity), SchemeName);
         return Task.FromResult(AuthenticateResult.Success(ticket));
     }

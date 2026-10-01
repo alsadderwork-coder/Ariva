@@ -23,3 +23,12 @@ Every Backplane host calls `AddAppSecurityBaseline` and the matching middlewares
 | CORS allow-list of exact origins; a wildcard fails startup | `Extensions/CorsExtensions.cs` | `Security:Cors` |
 
 Ariva.Simulation.Api keeps its own small copy (default deny, no `Server` header, body limit, ProblemDetails, headers) because it references Ariva.Business.Contracts only, and it refuses to start in k8s-prd. Ariva.Web sends its CSP and headers from nginx and from `vite preview`, both generated from `Platform/Frontplane/Ariva.Web/csp.config.js`.
+
+## Permissions (ARV-009)
+
+- Controllers authorize with `[Permission(nameof(Global.Defaults.Permissions.ViewDesk))]` (several names mean any one of them). The attribute is an `AuthorizeAttribute` whose policy `PermissionPolicyProvider` builds on demand; an unknown name fails closed. Controllers never name roles.
+- `Global.Defaults.Permissions` (Ariva.Core) catalogues every permission as `Entity.Action` with View, Create, Edit, Search and Delete per entity, plus special actions such as `ZoneProfile.Publish`. Codes never change once shipped.
+- `RolePermissions` (Ariva.Core/Security) is the role seed for BorderShiftSupervisor, TerminalDutyManager, HandlerStationManager and SystemAdministrator. Audit entries are read-only for every role; only SystemAdministrator manages users, roles and integration clients; product version (`/api/v1/system/info`) is for SystemAdministrator only.
+- `permission-matrix.json` lists every endpoint of every host with the status each caller gets (anonymous and each role). `PermissionMatrixTests` fails when a host maps an endpoint that is not listed, when a permission row disagrees with the seed, or when a host answers a row differently; the E2E suite reads the same file. Add the rows in the story that adds the endpoint.
+- Until server-side sessions (ARV-010b) the user's roles come from role claims; ARV-011 moves the grants to the database with this seed as the default.
+

@@ -43,6 +43,11 @@ public static class SecurityExtensions
             .SetDefaultPolicy(authenticatedUser)
             .SetFallbackPolicy(authenticatedUser);
 
+        // [Permission] policies (ARV-009): built on demand, satisfied by the user's granted permissions.
+        services.AddSingleton<IAuthorizationPolicyProvider, PermissionPolicyProvider>();
+        services.AddSingleton<IAuthorizationHandler, PermissionAuthorizationHandler>();
+        services.AddSingleton<IPermissionResolver, RoleClaimPermissionResolver>();
+
         return services;
     }
 
