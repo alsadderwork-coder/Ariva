@@ -29,11 +29,11 @@ const file = path.resolve(here, '..', '..', '..', '..', '..', 'security', 'permi
 
 export const matrix: Matrix = JSON.parse(fs.readFileSync(file, 'utf8'));
 
-/** The route template with its parameters filled from routeValues: {id:guid} becomes routeValues.guid. */
+/** The route template with its parameters filled from routeValues: {id:guid} becomes routeValues.guid, {siteCode} routeValues.siteCode. */
 export function pathOf(route: string): string {
-	return route.replace(/\{[a-zA-Z]+:([a-z]+)\}/g, (_, type: string) => {
-		const value = matrix.routeValues[type];
-		if (!value) throw new Error(`permission-matrix.json has no routeValues.${type} for ${route}`);
+	return route.replace(/\{([a-zA-Z]+)(?::([a-z]+))?\}/g, (_, name: string, type?: string) => {
+		const value = matrix.routeValues[type ?? name];
+		if (!value) throw new Error(`permission-matrix.json has no routeValues.${type ?? name} for ${route}`);
 		return value;
 	});
 }

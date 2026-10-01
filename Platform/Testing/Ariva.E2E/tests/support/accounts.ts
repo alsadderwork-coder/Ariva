@@ -40,6 +40,8 @@ export interface Account {
 	temporary: boolean;
 	/** Base32 TOTP secret when the account is seeded with TOTP enrolled. */
 	totpSecret?: string;
+	/** Site codes the account may access ('*' for every site); the seed creates missing sites (ARV-012). */
+	sites: string[];
 }
 
 function seed(): string {
@@ -48,11 +50,11 @@ function seed(): string {
 	return value;
 }
 
-function account(userName: string, roles: RoleCode[], temporary = false, withTotp = false): Account {
+function account(userName: string, roles: RoleCode[], temporary = false, withTotp = false, sites: string[] = []): Account {
 	// Long, random and free of the username and the product name, so the password policy would accept it too.
 	const password = crypto.createHash('sha256').update(`${seed()}|${userName}`).digest('base64url').slice(0, 24);
 	const totpSecret = withTotp ? base32(crypto.createHash('sha256').update(`${seed()}|${userName}|totp`).digest().subarray(0, 20)) : undefined;
-	return { userName, password, roles, temporary, totpSecret };
+	return { userName, password, roles, temporary, totpSecret, sites };
 }
 
 /** RFC 4648 base32 without padding. */
@@ -102,10 +104,10 @@ export function totpCode(secretBase32: string, offsetSteps = 0, at = Date.now())
 /** Every account, keyed by purpose. */
 export function accounts() {
 	return {
-		BorderShiftSupervisor: account('e2e.border', ['BorderShiftSupervisor']),
-		TerminalDutyManager: account('e2e.terminal', ['TerminalDutyManager']),
-		HandlerStationManager: account('e2e.handler', ['HandlerStationManager']),
-		SystemAdministrator: account('e2e.admin', ['SystemAdministrator']),
+		BorderShiftSupervisor: account('e2e.border', ['BorderShiftSupervisor'], false, false, ['E2E1']),
+		TerminalDutyManager: account('e2e.terminal', ['TerminalDutyManager'], false, false, ['E2E2']),
+		HandlerStationManager: account('e2e.handler', ['HandlerStationManager'], false, false, ['E2E1', 'E2E2']),
+		SystemAdministrator: account('e2e.admin', ['SystemAdministrator'], false, false, ['*']),
 		pending: account('e2e.pending', [], true),
 		changer: account('e2e.changer', [], true),
 		lockout: account('e2e.lockout', []),
@@ -115,7 +117,9 @@ export function accounts() {
 		totp: account('e2e.totp', ['TerminalDutyManager'], false, true),
 		enrol: account('e2e.enrol', ['HandlerStationManager']),
 		stepUp: account('e2e.stepup', ['BorderShiftSupervisor'], false, true),
-		securityAdmin: account('e2e.secadmin', ['SystemAdministrator'], false, true)
+		securityAdmin: account('e2e.secadmin', ['SystemAdministrator'], false, true, ['*']),
+		siteAdmin: account('e2e.siteadmin', ['SystemAdministrator'], false, true, ['*']),
+		siteUser: account('e2e.siteuser', ['BorderShiftSupervisor'], false, false, ['E2E1'])
 	} as const;
 }
 
@@ -134,6 +138,7 @@ export function developmentUserEnvironment(): Record<string, string> {
 		environment[`${prefix}Temporary`] = String(entry.temporary);
 		entry.roles.forEach((role, roleIndex) => (environment[`${prefix}Roles__${roleIndex}`] = role));
 		if (entry.totpSecret) environment[`${prefix}TotpSecret`] = entry.totpSecret;
+		entry.sites.forEach((site, siteIndex) => (environment[`${prefix}Sites__${siteIndex}`] = site));
 	});
 	return environment;
 }

@@ -31,5 +31,6 @@ internal sealed class AuditTrail(IUnitOfWork unitOfWork, ICurrentUser currentUse
         user is null
             ? null
             : $"userName={user.UserName}; displayName={user.DisplayName}; email={user.Email}; roles={string.Join(",", user.Roles.Select(r => r.RoleCode).Order(StringComparer.Ordinal))}; " +
+              $"sites={(user.AllSites ? "*" : string.Join(",", user.Sites.Select(s => s.SiteCode).Order(StringComparer.Ordinal)))}; " +
               $"disabled={user.IsDisabled}; totp={user.TotpEnrolled}; mustChangePassword={user.MustChangePassword}";
 }

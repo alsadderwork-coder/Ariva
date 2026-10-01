@@ -147,11 +147,11 @@ public sealed partial class PermissionMatrixTests
         mismatches.Should().BeEmpty();
     }
 
-    /// <summary>The route template with its parameters filled from routeValues ({id:guid} becomes routeValues.guid).</summary>
+    /// <summary>The route template with its parameters filled from routeValues ({id:guid} becomes routeValues.guid, {siteCode} routeValues.siteCode).</summary>
     private static string PathOf(MatrixRow row) =>
-        RouteParameter().Replace(row.Route, match => Loaded.Value.RouteValues[match.Groups["type"].Value]);
+        RouteParameter().Replace(row.Route, match => Loaded.Value.RouteValues[match.Groups["type"].Success ? match.Groups["type"].Value : match.Groups["name"].Value]);
 
-    [GeneratedRegex(@"\{[a-zA-Z]+:(?<type>[a-z]+)\}")]
+    [GeneratedRegex(@"\{(?<name>[a-zA-Z]+)(:(?<type>[a-z]+))?\}")]
     private static partial Regex RouteParameter();
 
     private static IEnumerable<MatrixRow> RowsFor(string host) =>

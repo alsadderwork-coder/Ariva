@@ -58,6 +58,12 @@ public class User : BaseAuditableEntity<User>
 
     public virtual IList<UserRole> Roles { get; protected set; } = [];
 
+    /// <summary>Sites the user may access (ARV-012); ignored when <see cref="AllSites"/> is set.</summary>
+    public virtual IList<UserSite> Sites { get; protected set; } = [];
+
+    /// <summary>Access to every site of the deployment (deployment-wide administrators and national views).</summary>
+    public virtual bool AllSites { get; protected set; }
+
     #endregion
 
     #region Behaviour
@@ -154,6 +160,24 @@ public class User : BaseAuditableEntity<User>
     }
 
     public virtual bool Holds(string roleCode) => Roles.Any(r => r.RoleCode == roleCode);
+
+    /// <summary>
+    /// Replaces the user's site access; returns the bindings to delete and to save. Codes are validated by the caller
+    /// against the existing sites.
+    /// </summary>
+    public virtual (IReadOnlyList<UserSite> Removed, IReadOnlyList<UserSite> Added) SetSites(bool allSites, IEnumerable<string> siteCodes, Guid? grantedById, DateTime grantedOn)
+    {
+        AllSites = allSites;
+        var wanted = (siteCodes ?? []).Distinct(StringComparer.Ordinal).ToHashSet(StringComparer.Ordinal);
+        var removed = Sites.Where(s => !wanted.Contains(s.SiteCode)).ToList();
+        foreach (var site in removed)
+            Sites.Remove(site);
+        var added = wanted.Where(code => Sites.All(s => s.SiteCode != code)).Order(StringComparer.Ordinal)
+            .Select(code => new UserSite(this, code, grantedById, grantedOn)).ToList();
+        foreach (var site in added)
+            Sites.Add(site);
+        return (removed, added);
+    }
 
     /// <summary>Display name and email; blank values are stored as null.</summary>
     public virtual void UpdateProfile(string displayName, string email)

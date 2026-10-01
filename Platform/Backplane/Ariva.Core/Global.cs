@@ -51,6 +51,12 @@ public static class Global
 
             #region Topology (E1)
 
+            public static Permission ViewSite { get; } = new("Site", PermissionAction.View);
+            public static Permission CreateSite { get; } = new("Site", PermissionAction.Create);
+            public static Permission EditSite { get; } = new("Site", PermissionAction.Edit);
+            public static Permission SearchSite { get; } = new("Site", PermissionAction.Search);
+            public static Permission DeleteSite { get; } = new("Site", PermissionAction.Delete);
+
             public static Permission ViewAirport { get; } = new("Airport", PermissionAction.View);
             public static Permission CreateAirport { get; } = new("Airport", PermissionAction.Create);
             public static Permission EditAirport { get; } = new("Airport", PermissionAction.Edit);

@@ -1,5 +1,5 @@
 {
-  "_comment": "Every endpoint of every host with the expected status per caller (ARV-009). access is anonymous (allowlisted in allowlist.json), authenticated (any signed-in user) or permission (any one of permissions, names from Global.Defaults.Permissions). Routes are the route templates; a {name:guid} parameter is called with routeValues.guid, an id that never exists. body, when present, is sent as JSON and is chosen so the call fails the same way with or without a database (unknown user, wrong current password, unknown id; refresh without the CSRF header is 403 before any lookup), which keeps the in-process and E2E answers equal. Ariva.UnitTests fails when an endpoint is missing here, when a permission row disagrees with the role seed (RolePermissions), or when a host answers differently; the E2E suite reads the same rows with real tokens. A critical action ([RequiresRecentMfa], security/critical-actions.json) answers 401 mfa_required to every caller here, because the matrix callers have no recent second factor (ARV-010d). Add rows in the story that adds the endpoint.",
+  "_comment": "Every endpoint of every host with the expected status per caller (ARV-009). access is anonymous (allowlisted in allowlist.json), authenticated (any signed-in user) or permission (any one of permissions, names from Global.Defaults.Permissions). Routes are the route templates; a {name:guid} parameter is called with routeValues.guid, an id that never exists, and an unconstrained {name} with routeValues.name (siteCode ZZ9, a site that never exists). body, when present, is sent as JSON and is chosen so the call fails the same way with or without a database (unknown user, wrong current password, unknown id; refresh without the CSRF header is 403 before any lookup), which keeps the in-process and E2E answers equal. Ariva.UnitTests fails when an endpoint is missing here, when a permission row disagrees with the role seed (RolePermissions), or when a host answers differently; the E2E suite reads the same rows with real tokens. A critical action ([RequiresRecentMfa], security/critical-actions.json) answers 401 mfa_required to every caller here, because the matrix callers have no recent second factor (ARV-010d). Add rows in the story that adds the endpoint.",
   "roles": [
     "BorderShiftSupervisor",
     "TerminalDutyManager",
@@ -8,7 +8,8 @@
   ],
   "routeValues": {
     "guid": "0199a000-0000-7000-8000-00000000a1a1",
-    "alpha": "TerminalDutyManager"
+    "alpha": "TerminalDutyManager",
+    "siteCode": "ZZ9"
   },
   "endpoints": [
     {
@@ -522,6 +523,38 @@
     {
       "host": "main",
       "method": "GET",
+      "route": "/api/v1/sites",
+      "access": "permission",
+      "permissions": [
+        "SearchSite"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 200,
+        "TerminalDutyManager": 200,
+        "HandlerStationManager": 200,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/sites/{siteCode}",
+      "access": "permission",
+      "permissions": [
+        "ViewSite"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 404,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
       "route": "/api/v1/admin/roles",
       "access": "permission",
       "permissions": [
@@ -565,6 +598,67 @@
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
         "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/sites",
+      "access": "permission",
+      "permissions": [
+        "CreateSite"
+      ],
+      "body": {
+        "code": "!",
+        "name": "Matrix"
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 400
+      }
+    },
+    {
+      "host": "main",
+      "method": "PUT",
+      "route": "/api/v1/admin/sites/{siteCode}",
+      "access": "permission",
+      "permissions": [
+        "EditSite"
+      ],
+      "body": {
+        "name": "Matrix"
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "PUT",
+      "route": "/api/v1/admin/users/{id:guid}/sites",
+      "access": "permission",
+      "permissions": [
+        "EditUser"
+      ],
+      "body": {
+        "allSites": false,
+        "siteCodes": [
+          "ZZ9"
+        ]
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 401
       }
     },
     {

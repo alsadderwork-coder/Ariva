@@ -19,7 +19,7 @@ Load the `aman-conventions` skill for the full pattern set; this file is the sho
 - Services return `Result<T>`; validate with `Fx.Specification` before touching entities; no try/catch except at true boundaries (a global handler exists).
 - Controllers: `Controllers/AdminArea/<Entity>/Controller.cs`, class `Controller`, route `AdminArea/<Entity>`, one service call per action, `[Permission(nameof(Permissions.X))]` on every action or the class. Operations screens use `Controllers/OpsArea/...`. Integration endpoints use `[IntegrationScope("...")]`.
 - Bind `Create*Request` and `Update*Request` models, never entities. Every string in a request model has a maximum length.
-- Every site-bound query or command goes through `ISiteScope` (CWE-863).
+- Every site-bound query or command goes through `ISiteScope` (CWE-863, ARV-012): site-bound entities implement `ISiteBound`, queries use `WithinSites(access)`, a lookup by id outside the caller's sites returns NotFound (never 403, so existence is not revealed), and a controller or action that takes a `siteCode`, `airportId` or `terminalId` (parameter or route) carries `[SiteScoped]` (`SiteScopeTests` enforces it).
 - Search endpoints: `Search<Criteria*>` with paging; sort and filter fields mapped through allowlists (CWE-89).
 
 ## Persistence

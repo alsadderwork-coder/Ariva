@@ -51,7 +51,7 @@ Items marked (Proposed) are naming proposals made in this repository where the s
 
 | Term | Definition | Canonical C# name |
 |---|---|---|
-| Site | A terminal (or group of terminals) within an airport deployment, with its own configuration. | `Site`, `SiteId` |
+| Site | A terminal (or group of terminals) within an airport deployment, with its own configuration, and the unit of data access: users are bound to sites (ARV-012). | `Site { Code, Name }`, `SiteCode` (upper case, for example `AMM`, `AUH-T1`), `UserSite`, `ISiteBound` |
 | Floor plan | The plan image or CAD export, scaled and aligned to the sensors' coordinate system with two reference points. | `FloorPlan` |
 | Device | A sensor or other measuring device, registered like an AMAN e-gate. | `Device`, `DeviceKind { StereoSensor, LidarSensor, Simulator }` (Proposed) |
 | Adapter | The code that connects one sensor family or perception platform (not one LiDAR brand) behind the common interface: connect, subscribe, health, normalise. | `ISensorAdapter` (Proposed), `AdapterConfig` |

@@ -88,13 +88,14 @@ public sealed class FakeAuthenticator : ISvcAuthenticator
 /// User, role and audit administration for in-process hosts, which have no database: unknown ids are not found, searches
 /// are empty and the role list is the real one, as the real services answer the permission matrix calls.
 /// </summary>
-public sealed class FakeAdministration : ISvcUsers, ISvcRoleAssignment, ISvcAuditEntries
+public sealed class FakeAdministration : ISvcUsers, ISvcRoleAssignment, ISvcAuditEntries, ISvcSites
 {
     public static void Register(IServiceCollection services)
     {
         services.Replace(ServiceDescriptor.Scoped<ISvcUsers, FakeAdministration>());
         services.Replace(ServiceDescriptor.Scoped<ISvcRoleAssignment, FakeAdministration>());
         services.Replace(ServiceDescriptor.Scoped<ISvcAuditEntries, FakeAdministration>());
+        services.Replace(ServiceDescriptor.Scoped<ISvcSites, FakeAdministration>());
     }
 
     public Task<Fluentx.Result<UserCreatedViewModel>> CreateAsync(CreateUserRequest request, CancellationToken ct = default) =>
@@ -110,6 +111,18 @@ public sealed class FakeAdministration : ISvcUsers, ISvcRoleAssignment, ISvcAudi
     public Task<Fluentx.Result<TemporaryPasswordViewModel>> ResetPasswordAsync(Guid id, CancellationToken ct = default) => NotFound<TemporaryPasswordViewModel>();
 
     public Task<Fluentx.Result<bool>> ResetTotpAsync(Guid id, CancellationToken ct = default) => NotFound<bool>();
+
+    public Task<Fluentx.Result<UserViewModel>> SetSitesAsync(Guid id, SiteAccessRequest request, CancellationToken ct = default) => NotFound<UserViewModel>();
+
+    public Task<Fluentx.Result<IReadOnlyList<SiteViewModel>>> ListAsync(CancellationToken ct = default) =>
+        Task.FromResult(new Fluentx.Result<IReadOnlyList<SiteViewModel>>(Array.Empty<SiteViewModel>()));
+
+    Task<Fluentx.Result<SiteViewModel>> ISvcSites.GetAsync(string code, CancellationToken ct) => NotFound<SiteViewModel>();
+
+    public Task<Fluentx.Result<SiteViewModel>> CreateAsync(CreateSiteRequest request, CancellationToken ct = default) =>
+        Task.FromResult(Fluentx.Result.Error<SiteViewModel>(AdministrationErrors.SiteTaken));
+
+    public Task<Fluentx.Result<SiteViewModel>> UpdateAsync(string code, UpdateSiteRequest request, CancellationToken ct = default) => NotFound<SiteViewModel>();
 
     public IReadOnlyList<RoleViewModel> Roles() =>
         RoleCodes.All.Select(code => new RoleViewModel(code, RoleHierarchy.Rank(code), [.. RolePermissions.ByRole[code].Select(p => p.ToString())])).ToList();

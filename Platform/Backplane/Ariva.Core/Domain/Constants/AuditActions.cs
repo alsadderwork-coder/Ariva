@@ -12,9 +12,13 @@ public static class AuditActions
     public const string UserUnlocked = "User.Unlocked";
     public const string UserDisabled = "User.Disabled";
     public const string UserEnabled = "User.Enabled";
+    public const string SitesChanged = "User.SitesChanged";
+    public const string SiteCreated = "Site.Created";
+    public const string SiteUpdated = "Site.Updated";
 
     public const string UserTarget = "User";
+    public const string SiteTarget = "Site";
 
     public static readonly IReadOnlyList<string> All =
-        [UserCreated, UserUpdated, RoleGranted, RoleRevoked, PasswordReset, TotpReset, UserUnlocked, UserDisabled, UserEnabled];
+        [UserCreated, UserUpdated, RoleGranted, RoleRevoked, PasswordReset, TotpReset, UserUnlocked, UserDisabled, UserEnabled, SitesChanged, SiteCreated, SiteUpdated];
 }

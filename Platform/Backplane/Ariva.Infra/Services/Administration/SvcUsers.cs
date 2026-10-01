@@ -22,6 +22,7 @@ internal sealed class SvcUsers(
     ICurrentUser currentUser,
     TimeProvider timeProvider,
     CallerRoles callerRoles,
+    ISiteScope siteScope,
     AccountSessions sessions,
     AuditTrail audit,
     ILogger<SvcUsers> logger) : SvcBase(unitOfWork, currentUser, timeProvider), ISvcUsers
@@ -29,6 +30,7 @@ internal sealed class SvcUsers(
     public static readonly EventId UserCreated = new(9120, "SecurityEvent.UserCreated");
     public static readonly EventId PasswordReset = new(9121, "SecurityEvent.PasswordReset");
     public static readonly EventId TotpReset = new(9122, "SecurityEvent.TotpReset");
+    public static readonly EventId SitesChanged = new(9125, "SecurityEvent.SitesChanged");
 
     public async Task<Result<UserCreatedViewModel>> CreateAsync(CreateUserRequest request, CancellationToken ct = default)
     {
@@ -106,8 +108,10 @@ internal sealed class SvcUsers(
         var ids = users.Select(u => u.Id).ToList();
         var grants = (await QueryAsNoTracking<UserRole>().Where(r => ids.Contains(r.User.Id)).Select(r => new { UserId = r.User.Id, r.RoleCode }).ToListAsync(ct))
             .ToLookup(g => g.UserId, g => g.RoleCode);
+        var bindings = (await QueryAsNoTracking<UserSite>().Where(b => ids.Contains(b.User.Id)).Select(b => new { UserId = b.User.Id, b.SiteCode }).ToListAsync(ct))
+            .ToLookup(b => b.UserId, b => b.SiteCode);
         var now = UtcNow;
-        var data = users.Select(u => View(u, now, grants[u.Id])).ToList();
+        var data = users.Select(u => View(u, now, grants[u.Id], bindings[u.Id])).ToList();
         return new Result<PageViewModel<UserViewModel>>(new PageViewModel<UserViewModel>(data, total, pageIndex, pageSize));
     }
 
@@ -143,6 +147,41 @@ internal sealed class SvcUsers(
         return new Result<TemporaryPasswordViewModel>(new TemporaryPasswordViewModel(password));
     }
 
+    public async Task<Result<UserViewModel>> SetSitesAsync(Guid id, SiteAccessRequest request, CancellationToken ct = default)
+    {
+        var user = await VisibleAsync(id, ct);
+        if (user is null)
+            return Result.Error<UserViewModel>(AdministrationErrors.NotFound);
+        if (user.Id == CurrentUser.Id)
+            return Result.Error<UserViewModel>(AdministrationErrors.OwnAccount);
+
+        var codes = (request?.SiteCodes ?? []).Distinct(StringComparer.Ordinal).ToList();
+        var allSites = request?.AllSites == true;
+        if (codes.Any(code => !Site.IsValidCode(code)))
+            return Result.Error<UserViewModel>(AdministrationErrors.UnknownSite);
+        if (codes.Count > 0 && await Query<Site>().CountAsync(s => codes.Contains(s.Code), ct) != codes.Count)
+            return Result.Error<UserViewModel>(AdministrationErrors.UnknownSite);
+
+        var wanted = new SiteAccess(allSites, codes.ToHashSet(StringComparer.Ordinal));
+        if (!(await siteScope.GetAsync(ct)).Covers(wanted))
+            return Result.Error<UserViewModel>(AdministrationErrors.BeyondOwnSites);
+
+        var before = AuditTrail.Summary(user);
+        var narrowed = (user.AllSites && !allSites) || user.Sites.Any(s => !codes.Contains(s.SiteCode));
+        var (removed, added) = user.SetSites(allSites, codes, CurrentUser.Id, UtcNow);
+        foreach (var site in removed)
+            await DeleteAsync(site, ct);
+        foreach (var site in added)
+            await SaveAsync(site, ct);
+        await UpdateAsync(user, ct);
+        sessions.EvictPermissionsAfterCommit(user.Id.Value);
+        var ended = narrowed ? await sessions.RevokeAllAsync(user.Id.Value, UtcNow, "sites-narrowed", Guid.Empty, ct) : 0;
+        await audit.RecordAsync(AuditActions.SitesChanged, AuditActions.UserTarget, user.Id, user.UserName, before, AuditTrail.Summary(user), ct);
+        logger.LogWarning(SitesChanged, "Site access of account {UserId} set by {AdministratorId}: all {AllSites}, {Sites}; {Count} session(s) ended",
+            user.Id, CurrentUser.Id, allSites, string.Join(",", codes), ended);
+        return new Result<UserViewModel>(View(user, UtcNow));
+    }
+
     public async Task<Result<bool>> ResetTotpAsync(Guid id, CancellationToken ct = default)
     {
         var user = await VisibleAsync(id, ct);
@@ -176,7 +215,7 @@ internal sealed class SvcUsers(
         return user is null || user.IsBreakGlass ? null : user;
     }
 
-    internal static UserViewModel View(User user, DateTime now, IEnumerable<string> roles = null) => new(
+    internal static UserViewModel View(User user, DateTime now, IEnumerable<string> roles = null, IEnumerable<string> sites = null) => new(
         user.Id.Value,
         user.UserName,
         user.DisplayName,
@@ -187,7 +226,9 @@ internal sealed class SvcUsers(
         user.MustChangePassword,
         user.TotpEnrolled,
         user.LastLoginOn,
-        user.CreatedOn);
+        user.CreatedOn,
+        user.AllSites,
+        (sites ?? user.Sites.Select(s => s.SiteCode)).Order(StringComparer.Ordinal).ToList());
 
     private sealed class IdRow
     {

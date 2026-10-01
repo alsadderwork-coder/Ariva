@@ -17,7 +17,7 @@ namespace Ariva.Di.Extensions;
 /// </summary>
 public static class AccountExtensions
 {
-    /// <summary>Settings, validation keys, password policy, the session check and the stored permission resolver; every API host.</summary>
+    /// <summary>Settings, validation keys, password policy, the session check, the stored permission resolver and the site scope; every API host.</summary>
     public static IServiceCollection AddArivaAccounts(this IServiceCollection services, IConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -30,6 +30,7 @@ public static class AccountExtensions
         services.TryAddSingleton(_ => new PasswordPolicy(settings.ContextWords.Append(configuration["Application:SiteCode"])));
         services.TryAddScoped<IPermissionResolver, StoredPermissionResolver>();
         services.TryAddScoped<ISessionValidator, SessionValidator>();
+        services.TryAddScoped<ISiteScope, SiteScope>();
         return services;
     }
 
@@ -55,6 +56,7 @@ public static class AccountExtensions
         services.TryAddScoped<ISvcUsers, SvcUsers>();
         services.TryAddScoped<ISvcRoleAssignment, SvcRoleAssignment>();
         services.TryAddScoped<ISvcAuditEntries, SvcAuditEntries>();
+        services.TryAddScoped<ISvcSites, SvcSites>();
 
         var environment = configuration["Application:Environment"];
         if (settings.DevelopmentUsers.Count > 0)

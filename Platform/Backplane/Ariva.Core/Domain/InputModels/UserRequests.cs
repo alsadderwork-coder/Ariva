@@ -13,3 +13,16 @@ public sealed record CreateUserRequest(
 public sealed record UpdateUserRequest(
     [MaxLength(200)] string DisplayName = null,
     [MaxLength(320), EmailAddress] string Email = null);
+
+/// <summary>The sites a user may access (ARV-012): every site, or the listed codes. Replaces the current access.</summary>
+public sealed record SiteAccessRequest(
+    bool AllSites = false,
+    [MaxLength(64)] IReadOnlyList<string> SiteCodes = null);
+
+/// <summary>A new site (ARV-012).</summary>
+public sealed record CreateSiteRequest(
+    [Required, RegularExpression("^[A-Z0-9]{2,8}(-[A-Z0-9]{1,8})?$"), MaxLength(17)] string Code,
+    [Required, MaxLength(200)] string Name);
+
+/// <summary>A site's display name; the code never changes.</summary>
+public sealed record UpdateSiteRequest([Required, MaxLength(200)] string Name);

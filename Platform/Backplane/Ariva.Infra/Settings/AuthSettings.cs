@@ -103,4 +103,7 @@ public sealed class DevelopmentUserSettings
 
     /// <summary>Base32 TOTP secret: the account is created with TOTP enrolled, so the E2E suite can compute codes.</summary>
     public string TotpSecret { get; init; }
+
+    /// <summary>Site codes the account may access ("*" for every site); missing sites are created (ARV-012).</summary>
+    public List<string> Sites { get; init; } = [];
 }

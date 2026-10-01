@@ -11,6 +11,7 @@ public static class RolePermissions
 {
     private static readonly Permission[] TopologyRead =
     [
+        Permissions.ViewSite, Permissions.SearchSite,
         Permissions.ViewAirport, Permissions.SearchAirport,
         Permissions.ViewTerminal, Permissions.SearchTerminal,
         Permissions.ViewLevel, Permissions.SearchLevel,

@@ -12,7 +12,9 @@ public sealed record UserViewModel(
     bool MustChangePassword,
     bool TotpEnrolled,
     DateTime? LastLoginOn,
-    DateTime? CreatedOn);
+    DateTime? CreatedOn,
+    bool AllSites,
+    IReadOnlyList<string> Sites);
 
 /// <summary>A created account and its temporary password, shown once.</summary>
 public sealed record UserCreatedViewModel(UserViewModel User, string TemporaryPassword);
@@ -40,3 +42,6 @@ public sealed record AuditEntryViewModel(
 
 /// <summary>A page of results.</summary>
 public sealed record PageViewModel<T>(IReadOnlyList<T> Data, int TotalCount, int PageIndex, int PageSize);
+
+/// <summary>A site (ARV-012).</summary>
+public sealed record SiteViewModel(string Code, string Name, DateTime? CreatedOn);

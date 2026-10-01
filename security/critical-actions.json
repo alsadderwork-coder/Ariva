@@ -3,6 +3,7 @@
   "maxAgeMinutes": 15,
   "categories": [
     "Grant or revoke roles",
+    "Grant or revoke site access",
     "Create or reset users and TOTP",
     "Create or regenerate integration clients and device credentials",
     "Publish or retire a zone profile",
@@ -59,6 +60,12 @@
       "method": "DELETE",
       "route": "/api/v1/admin/users/{id:guid}/roles/{roleCode:alpha}",
       "category": "Grant or revoke roles"
+    },
+    {
+      "host": "main",
+      "method": "PUT",
+      "route": "/api/v1/admin/users/{id:guid}/sites",
+      "category": "Grant or revoke site access"
     }
   ]
 }

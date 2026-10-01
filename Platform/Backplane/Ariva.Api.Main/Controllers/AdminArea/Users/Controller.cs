@@ -95,6 +95,16 @@ public sealed class UsersController(ISvcAuthenticator authenticator, ISvcUsers u
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> Revoke(Guid id, string roleCode, CancellationToken ct) => Answer(await roles.RevokeAsync(id, roleCode, ct));
 
+    /// <summary>Replaces the user's site access (every site, or a list); only within the caller's own sites.</summary>
+    [HttpPut("{id:guid}/sites")]
+    [Permission(nameof(Global.Defaults.Permissions.EditUser))]
+    [RequiresRecentMfa]
+    [ProducesResponseType<UserViewModel>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> SetSites(Guid id, [FromBody] SiteAccessRequest request, CancellationToken ct) => Answer(await users.SetSitesAsync(id, request, ct));
+
     [HttpPost("{id:guid}/unlock")]
     [Permission(nameof(Global.Defaults.Permissions.EditUser))]
     [ProducesResponseType(StatusCodes.Status204NoContent)]

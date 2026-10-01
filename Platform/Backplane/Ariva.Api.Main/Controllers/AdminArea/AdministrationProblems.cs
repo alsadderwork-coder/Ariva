@@ -12,7 +12,7 @@ internal static class AdministrationProblems
         var (status, title) = first switch
         {
             AdministrationErrors.NotFound => (StatusCodes.Status404NotFound, "Not found"),
-            AdministrationErrors.UserNameTaken => (StatusCodes.Status409Conflict, "Already exists"),
+            AdministrationErrors.UserNameTaken or AdministrationErrors.SiteTaken => (StatusCodes.Status409Conflict, "Already exists"),
             _ when AdministrationErrors.Forbidden.Contains(first) => (StatusCodes.Status403Forbidden, "Not allowed"),
             _ => (StatusCodes.Status400BadRequest, "Not valid")
         };

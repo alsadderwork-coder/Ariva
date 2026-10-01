@@ -13,7 +13,7 @@ namespace Ariva.Infra.Security;
 /// same. Registered only when the environment is vm-local; production accounts come from the installer (ARV-010c) and
 /// user administration (ARV-011).
 /// </summary>
-internal sealed class DevelopmentUserSeed(IServiceScopeFactory scopes, AuthSettings settings, IDataProtectionProvider dataProtection, ILogger<DevelopmentUserSeed> logger) : IHostedService
+internal sealed class DevelopmentUserSeed(IServiceScopeFactory scopes, AuthSettings settings, IDataProtectionProvider dataProtection, TimeProvider timeProvider, ILogger<DevelopmentUserSeed> logger) : IHostedService
 {
     public async Task StartAsync(CancellationToken cancellationToken)
     {
@@ -47,6 +47,20 @@ internal sealed class DevelopmentUserSeed(IServiceScopeFactory scopes, AuthSetti
                 user.Grant(role);
                 await storage.SaveAsync(user.Roles.Last(), cancellationToken);
             }
+
+            var siteCodes = entry.Sites.Where(code => code != "*").Distinct(StringComparer.Ordinal).ToList();
+            foreach (var code in siteCodes)
+            {
+                if (!await storage.Query<Site>().AnyAsync(s => s.Code == code, cancellationToken))
+                    await storage.SaveAsync(new Site(code, code), cancellationToken);
+            }
+
+            var (removed, added) = user.SetSites(entry.Sites.Contains("*"), siteCodes, null, timeProvider.GetUtcNow().UtcDateTime);
+            foreach (var binding in removed)
+                await storage.DeleteAsync(binding, cancellationToken);
+            foreach (var binding in added)
+                await storage.SaveAsync(binding, cancellationToken);
+            await storage.UpdateAsync(user, cancellationToken);
 
             logger.LogInformation("Development account {UserName} {Action} with roles {Roles}", userName, created ? "created" : "reset", entry.Roles);
         }
