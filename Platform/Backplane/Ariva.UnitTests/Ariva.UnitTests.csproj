@@ -54,6 +54,10 @@
             <Link>appsettings.base.k8s-demo.json</Link>
             <CopyToOutputDirectory>Always</CopyToOutputDirectory>
         </Content>
+        <Content Include="..\Ariva.Infra\Timescale\Scripts\checksums.lock">
+            <Link>checksums.lock</Link>
+            <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+        </Content>
         <Content Include="..\Ariva.Api.Common\appsettings.base.k8s-prd.json">
             <Link>appsettings.base.k8s-prd.json</Link>
             <CopyToOutputDirectory>Always</CopyToOutputDirectory>

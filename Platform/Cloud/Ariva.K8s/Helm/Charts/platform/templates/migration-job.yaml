@@ -1,0 +1,75 @@
+{{- if .Values.migration.enabled }}
+---
+#Job: versioned schema migration (ARV-006). Runs the api-main image with --migrate, once per release, before the
+#upgraded pods start (pre-upgrade). On the very first install it runs after the release objects exist
+#(post-install), because the registry pull secret is part of the release; the hosts wait for it at startup
+#(Database:VerifySchemaOnStartup) and restart until the schema is in place.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: database-migration
+  labels:
+    app: database-migration
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migration.backoffLimit | default 1 }}
+  activeDeadlineSeconds: {{ .Values.migration.activeDeadlineSeconds | default 900 }}
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: database-migration
+    spec:
+      restartPolicy: Never
+      imagePullSecrets:
+        - name: dalilacr-secret
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: appsettings-base-volume
+          secret:
+            secretName: base-appsettings-secret
+        - name: appsettings-volume
+          secret:
+            secretName: api-main-appsettings-secret
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: database-migration
+          image: "{{ .Values.imageRepository }}/api-main:{{ .Values.buildNumber }}"
+          imagePullPolicy: {{ .Values.imagePullPolicy | default "Always" }}
+          args: ["--migrate"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          env:
+            - name: DOTNET_ENVIRONMENT
+              value: {{ .Values.environment | quote }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: appsettings-base-volume
+              mountPath: /app/appsettings.base.{{ .Values.environment }}.json
+              subPath: appsettings.base.{{ .Values.environment }}.json
+            - name: appsettings-volume
+              mountPath: /app/appsettings.service.{{ .Values.environment }}.json
+              subPath: appsettings.service.{{ .Values.environment }}.json
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+{{- end }}

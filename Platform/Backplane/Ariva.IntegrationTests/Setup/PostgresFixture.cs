@@ -22,6 +22,53 @@ public sealed class PostgresFixture : IAsyncLifetime
 
     public PersistenceHost Host { get; private set; }
 
+    public string Hostname => _container.Hostname;
+
+    public int Port => _container.GetMappedPublicPort(PostgreSqlBuilder.PostgreSqlPort);
+
+    /// <summary>The container's superuser, which plays the migration login in the script runner tests.</summary>
+    public string AdminUsername => Username;
+
+    public string AdminPassword => _password;
+
+    /// <summary>
+    /// A fresh, empty database for a test that owns its whole schema (the script runner keeps its state per
+    /// database). CREATE DATABASE takes no bind parameters, so every name is a constant here.
+    /// </summary>
+    public async Task<string> CreateDatabaseAsync(TestDatabase database)
+    {
+        // A switch over string literals keeps the command text constant for CA2100.
+        var sql = database switch
+        {
+            TestDatabase.RunnerOrder => "CREATE DATABASE it_runner_order",
+            TestDatabase.RunnerRerun => "CREATE DATABASE it_runner_rerun",
+            TestDatabase.RunnerTamper => "CREATE DATABASE it_runner_tamper",
+            TestDatabase.RunnerFailure => "CREATE DATABASE it_runner_failure",
+            TestDatabase.RunnerVerify => "CREATE DATABASE it_runner_verify",
+            TestDatabase.RunnerConcurrent => "CREATE DATABASE it_runner_concurrent",
+            TestDatabase.Roles => "CREATE DATABASE it_roles",
+            _ => throw new ArgumentOutOfRangeException(nameof(database))
+        };
+        var name = sql["CREATE DATABASE ".Length..];
+
+        await using var connection = new Npgsql.NpgsqlConnection(_container.GetConnectionString());
+        await connection.OpenAsync();
+        await using var command = new Npgsql.NpgsqlCommand(sql, connection);
+        await command.ExecuteNonQueryAsync();
+        return name;
+    }
+
+    public string ConnectionString(string database, string username = null, string password = null) =>
+        new Npgsql.NpgsqlConnectionStringBuilder
+        {
+            Host = Hostname,
+            Port = Port,
+            Database = database,
+            Username = username ?? Username,
+            Password = password ?? _password,
+            Pooling = false
+        }.ConnectionString;
+
     public async ValueTask InitializeAsync()
     {
         _container = new PostgreSqlBuilder()
@@ -44,6 +91,18 @@ public sealed class PostgresFixture : IAsyncLifetime
         if (_container is not null)
             await _container.DisposeAsync();
     }
+}
+
+/// <summary>One database per script runner test; each name is created once per container.</summary>
+public enum TestDatabase
+{
+    RunnerOrder,
+    RunnerRerun,
+    RunnerTamper,
+    RunnerFailure,
+    RunnerVerify,
+    RunnerConcurrent,
+    Roles
 }
 
 [CollectionDefinition(Name)]

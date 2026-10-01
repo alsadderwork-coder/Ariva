@@ -16,6 +16,10 @@ using Ariva.Di;
 // appsettings.base.json, appsettings.base.<env>.json, appsettings.service.json, appsettings.service.<env>.json,
 // then environment variables and command line arguments, which keep the highest precedence.
 // The environment is also the host environment name, so error handling sees the same value as the files.
+// --migrate (ARV-006) is handled below and never reaches the configuration command line provider.
+var migrate = DatabaseMigration.IsRequested(args);
+args = DatabaseMigration.WithoutFlag(args);
+
 var environment = ArivaEnvironment.Resolve(args, AppContext.BaseDirectory);
 
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions
@@ -34,6 +38,16 @@ builder.Configuration
     .AddJsonFile("appsettings.local.json", optional: true, reloadOnChange: false)
     .AddEnvironmentVariables()
     .AddCommandLine(args);
+
+#endregion
+
+#region Migration job
+
+// One-shot schema migration: the Helm migration Job starts this image with --migrate before each release.
+if (migrate)
+{
+    return await DatabaseMigration.RunAsync(builder.Configuration);
+}
 
 #endregion
 
@@ -95,3 +109,4 @@ app.MapControllers();
 #endregion
 
 await app.RunAsync();
+return 0;

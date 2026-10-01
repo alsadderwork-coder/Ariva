@@ -40,14 +40,21 @@ internal sealed class NHibernateSessionFactoryProvider
         return writer.ToString();
     }
 
-    /// <summary>Runs SchemaUpdate when Database:AllowSchemaUpdate is true; refuses otherwise.</summary>
-    public string UpdateSchema()
+    /// <summary>
+    /// Runs SchemaUpdate when Database:AllowSchemaUpdate is true; refuses otherwise. Pass the migration connection:
+    /// the runtime login has no DDL rights once the roles script has run.
+    /// </summary>
+    public string UpdateSchema(string connectionString = null)
     {
         if (!Settings.AllowSchemaUpdate)
             throw new InvalidOperationException("Schema update is disabled (Database:AllowSchemaUpdate is false). Apply the versioned scripts instead.");
 
         var script = new System.Text.StringBuilder();
-        var update = new SchemaUpdate(Configuration);
+        var overrides = new Dictionary<string, string>(Configuration.Properties);
+        if (!string.IsNullOrEmpty(connectionString))
+            overrides[Environment.ConnectionString] = connectionString;
+
+        var update = new SchemaUpdate(Configuration, overrides);
         update.Execute(sql => script.Append(sql).Append(";\n"), true);
 
         // SchemaUpdate does not throw: errors are collected. Surface them (AMAN's fix, kept).

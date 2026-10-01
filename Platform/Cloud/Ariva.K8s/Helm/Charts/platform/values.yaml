@@ -14,6 +14,13 @@ domain: dalilhub.tech
 tlsSecretName: ariva-tls
 clusterName: k8s-dev
 
+# Schema migration Job (ARV-006): api-main --migrate as a Helm hook before each upgrade. The migration login comes
+# from Database:Migration in base-appsettings-secret; hosts use the DML-only runtime login.
+migration:
+  enabled: true
+  backoffLimit: 1
+  activeDeadlineSeconds: 900
+
 # The simulation host (sensor, AODB and AMAN emulators) is deployed unless an environment turns it off.
 simulationEnabled: true
 

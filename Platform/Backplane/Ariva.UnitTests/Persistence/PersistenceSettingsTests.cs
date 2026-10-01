@@ -35,6 +35,48 @@ public sealed class PersistenceSettingsTests
         ReadAllowSchemaUpdate("appsettings.base.vm-local.json").Should().BeTrue();
     }
 
+    public static TheoryData<string> ClusterFiles =>
+    [
+        "appsettings.base.k8s-dev.json",
+        "appsettings.base.k8s-demo.json",
+        "appsettings.base.k8s-prd.json"
+    ];
+
+    [Theory]
+    [MemberData(nameof(ClusterFiles))]
+    public void DatabaseSettings_Should_SeparateRuntimeAndMigrationLogins_When_EnvironmentIsCluster(string file)
+    {
+        var settings = Load(file);
+
+        settings.UsesSeparateRuntimeLogin.Should().BeTrue($"{file}: hosts must not connect with the migration login (CWE-269)");
+        settings.VerifySchemaOnStartup.Should().BeTrue($"{file}: hosts must stop on a schema they were not built for");
+        settings.AllowSchemaUpdate.Should().BeFalse();
+    }
+
+    [Fact]
+    public void DatabaseSettings_Should_MigrateAtStartup_When_EnvironmentIsVmLocal()
+    {
+        var settings = Load("appsettings.base.vm-local.json");
+
+        settings.AllowSchemaUpdate.Should().BeTrue();
+        settings.VerifySchemaOnStartup.Should().BeFalse("a vm-local host migrates the development database itself");
+        settings.UsesSeparateRuntimeLogin.Should().BeTrue();
+    }
+
+    [Fact]
+    public void BuildMigrationConnectionString_Should_UseMigrationLogin_When_Configured()
+    {
+        var settings = new DatabaseSettings
+        {
+            Username = "ariva_app",
+            Password = "runtime-secret-value",
+            Migration = new MigrationLoginSettings { Username = "ariva", Password = "owner-secret-value" }
+        };
+
+        new NpgsqlConnectionStringBuilder(settings.BuildMigrationConnectionString()).Username.Should().Be("ariva");
+        new NpgsqlConnectionStringBuilder(settings.BuildConnectionString()).Username.Should().Be("ariva_app");
+    }
+
     [Fact]
     public void BuildConnectionString_Should_KeepPasswordAsOneValue_When_PasswordContainsSeparators()
     {
@@ -86,6 +128,13 @@ public sealed class PersistenceSettingsTests
         sql.ParameterType.Should().Be<string>();
         sql.GetCustomAttribute<ConstantExpectedAttribute>().Should().NotBeNull("CA1857 then rejects interpolated SQL at compile time");
     }
+
+    /// <summary>The base file, then the environment file on top, as the hosts layer them.</summary>
+    private static DatabaseSettings Load(string file) =>
+        DatabaseSettings.FromConfiguration(new Microsoft.Extensions.Configuration.ConfigurationBuilder()
+            .AddJsonFile(Path.Combine(AppContext.BaseDirectory, "appsettings.base.json"))
+            .AddJsonFile(Path.Combine(AppContext.BaseDirectory, file))
+            .Build());
 
     private static bool? ReadAllowSchemaUpdate(string file)
     {

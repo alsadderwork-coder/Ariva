@@ -28,7 +28,21 @@ public sealed class DatabaseSettings
     /// </summary>
     public bool AllowSchemaUpdate { get; init; }
 
+    /// <summary>
+    /// Hosts check at startup that every shipped script is applied unchanged and stop otherwise (ARV-006). Off in
+    /// vm-local, where hosts migrate the development database themselves.
+    /// </summary>
+    public bool VerifySchemaOnStartup { get; init; }
+
+    /// <summary>The login the migration job uses (DDL). Hosts never use it.</summary>
+    public MigrationLoginSettings Migration { get; init; } = new();
+
     public NHibernateSettings NHibernate { get; init; } = new();
+
+    /// <summary>False when no separate migration login is configured or it is the same login as the hosts'.</summary>
+    public bool UsesSeparateRuntimeLogin =>
+        !string.IsNullOrWhiteSpace(Migration.Username) &&
+        !string.Equals(Migration.Username, Username, StringComparison.Ordinal);
 
     public static DatabaseSettings FromConfiguration(IConfiguration configuration)
     {
@@ -36,20 +50,36 @@ public sealed class DatabaseSettings
         return configuration.GetSection(SectionName).Get<DatabaseSettings>() ?? new DatabaseSettings();
     }
 
-    public string BuildConnectionString()
+    /// <summary>The hosts' connection: the runtime login, DML only once the migration job has run.</summary>
+    public string BuildConnectionString() => Build(Username, Password, "ariva");
+
+    /// <summary>The migration job's connection; falls back to the runtime login when no migration login is set.</summary>
+    public string BuildMigrationConnectionString() =>
+        string.IsNullOrWhiteSpace(Migration.Username)
+            ? Build(Username, Password, "ariva-migration")
+            : Build(Migration.Username, Migration.Password, "ariva-migration");
+
+    private string Build(string username, string password, string applicationName)
     {
         var builder = new NpgsqlConnectionStringBuilder
         {
             Host = Host,
             Port = Port,
             Database = Name,
-            Username = Username,
-            Password = Password,
+            Username = username,
+            Password = password,
             SslMode = UseEncryption ? SslMode.VerifyFull : SslMode.Disable,
-            ApplicationName = "ariva"
+            ApplicationName = applicationName
         };
         return builder.ConnectionString;
     }
+}
+
+/// <summary>Database:Migration. The password comes from a secret (Database__Migration__Password).</summary>
+public sealed class MigrationLoginSettings
+{
+    public string Username { get; init; } = string.Empty;
+    public string Password { get; init; } = string.Empty;
 }
 
 /// <summary>NHibernate options under Database:NHibernate, with AMAN's production defaults.</summary>

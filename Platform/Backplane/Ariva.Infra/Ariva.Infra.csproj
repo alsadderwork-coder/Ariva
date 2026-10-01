@@ -21,6 +21,11 @@
     </ItemGroup>
 
     <ItemGroup>
+        <!-- Versioned scripts ship inside the assembly, so the migration job and the startup check read exactly what was built (ARV-006) -->
+        <EmbeddedResource Include="Timescale\Scripts\*.sql" LogicalName="Ariva.Infra.Timescale.Scripts.%(Filename)%(Extension)" />
+    </ItemGroup>
+
+    <ItemGroup>
         <ProjectReference Include="..\Ariva.Core\Ariva.Core.csproj" />
     </ItemGroup>
 

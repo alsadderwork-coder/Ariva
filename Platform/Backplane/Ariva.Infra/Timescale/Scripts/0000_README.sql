@@ -1,9 +1,12 @@
 /*
-  Versioned TimescaleDB scripts live in this folder, named NNNN_description.sql
-  (for example 0001_create_queue_observations.sql). The script runner applies them
-  in ascending numeric order, once each, and records which scripts it has applied.
+  Versioned scripts: the only way the production schema changes (tables, indexes, roles, hypertables, continuous
+  aggregates, compression and retention policies). ARV-006.
 
-  These scripts are the only way the production schema for time-series tables
-  (hypertables, continuous aggregates, compression and retention policies) changes.
-  Never edit a script that has shipped; add a new script with the next number instead.
+  - Name them NNNN_lower_snake_case.sql with the next free number. 0000 (this file) is never applied.
+  - The migration job (Ariva.Api.Main --migrate) applies pending scripts in ascending order, each in its own
+    transaction with its schema_version row (name, SHA-256, time, login). Start a script with the line
+    "-- ariva:no-transaction" when PostgreSQL refuses a statement inside a transaction (CREATE INDEX CONCURRENTLY).
+  - Never edit a script that has shipped. The runner and every host stop when a recorded checksum differs, and
+    checksums.lock (checked by Ariva.UnitTests) makes an edit fail the build before it gets that far.
+  - Use the snake_case names the NHibernate conventions produce (Platform/Backplane/CLAUDE.md, Persistence).
 */

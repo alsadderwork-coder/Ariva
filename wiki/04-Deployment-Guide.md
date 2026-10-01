@@ -127,7 +127,7 @@ In Kubernetes the two environment files are not taken from the image. The releas
 
 Real credentials never live in the repository: the committed `k8s-*` files carry empty passwords.
 
-Placeholders: values such as `"ConnectionString": "Host=${Database:Host};Port=${Database:Port};..."` reference other keys. AMAN resolves them with ConfigurationSubstitutor (the package is already in `Directory.Packages.props`). Ariva's hosts currently layer the files with framework APIs only; the substitution step arrives with the port of AMAN's configuration extension (Target procedure, implemented in Phase 0 epic Skeleton and platform). Until then, do not rely on placeholders resolving.
+The database connection string is not configured as text: the hosts build it from `Database:Host`, `Port`, `Name`, `Username` and `Password` with Npgsql's builder, so a password containing `;` cannot add options. Placeholders: values such as `"${Database:Host}"` reference other keys. AMAN resolves them with ConfigurationSubstitutor (the package is already in `Directory.Packages.props`). Ariva's hosts currently layer the files with framework APIs only; the substitution step arrives with the port of AMAN's configuration extension (Target procedure, implemented in Phase 0 epic Skeleton and platform). Until then, do not rely on placeholders resolving.
 
 Main settings:
 
@@ -135,9 +135,12 @@ Main settings:
 |---|---|---|
 | `Application:Environment`, `Domain`, `BindingHost`, `BindingPort` | `k8s-prd`, `dalilhub.tech`, `0.0.0.0`, 8080 | Set `Domain` to the customer's domain |
 | `Application:IsHighAvailable` | `true` in `k8s-prd` | Keep |
-| `Database:Host`, `Port`, `Name`, `Username` | `timescaledb`, 5432, `ariva`, `ariva` | Point at the site's PostgreSQL |
-| `Database:Password` | empty | Secret only |
-| `Database:UseEncryption` | `false` | Enable encrypted connections in production (exact effect of the flag: To confirm when persistence lands) |
+| `Database:Host`, `Port`, `Name` | `timescaledb`, 5432, `ariva` | Point at the site's PostgreSQL |
+| `Database:Username`, `Password` | `ariva_app`, empty | The runtime login every host uses (DML only). The migration job creates it and sets this password; secret only |
+| `Database:Migration:Username`, `Password` | `ariva`, empty | The migration login (owner, DDL), used only by the migration job; secret only |
+| `Database:UseEncryption` | `false` | `true` in production: TLS with full certificate and host name verification (`SslMode=VerifyFull`); the server certificate must chain to a CA the image trusts |
+| `Database:VerifySchemaOnStartup` | `true` (`false` in vm-local) | Keep: a host stops at startup when a shipped script is missing or an applied one changed |
+| `Database:AllowSchemaUpdate` | `false` (`true` in vm-local) | Never `true` outside a developer machine; a unit test enforces it |
 | `Kafka:BootstrapServers`, `TopicPrefix` | `kafka:9092`, `ariva` | Keep the prefix `ariva` |
 | `Kafka:GroupId` | `ariva-stream` (Stream), `ariva-integration` (Integration) | Keep; operators use these names for lag checks |
 | `Redis:ConnectionString`, `InstanceName` | `redis:6379`, `ariva:` | Point at the site's Redis |
@@ -247,14 +250,15 @@ Startup probes allow up to about two minutes per .NET pod (10 seconds initial de
 
 ### 7.1 Database
 
-Target procedure, implemented in Phase 0 epic Skeleton and platform.
+1. Create the database `ariva`, owned by the migration login (`ariva` by default), and enable the extension: `CREATE EXTENSION IF NOT EXISTS timescaledb;`
+2. Put both logins in `appsettings.base.<env>.json` in `base-appsettings-secret`: `Database:Migration:Username`/`Password` (owner) and `Database:Username`/`Password` (runtime, at least 16 characters; the login does not need to exist yet).
+3. Deploy. The Helm hook Job `database-migration` runs the api-main image with `--migrate` (after the first install, before every upgrade). It applies `Ariva.Infra/Timescale/Scripts/NNNN_*.sql` in numeric order, each in a transaction with its `schema_version` row (name, SHA-256, time, login), under a PostgreSQL advisory lock. `0001_roles.sql` creates `ariva_migration` (DDL) and `ariva_runtime` (DML only); the job then creates or updates the runtime login as a member of `ariva_runtime`.
+4. The hosts connect as the runtime login and check `schema_version` at startup: a missing script or a changed checksum stops the pod (`SchemaBehindException` or `SchemaDriftException` in the log). Scripts are never edited once shipped; `checksums.lock` makes such an edit fail the build.
+5. Check: `SELECT script_name, applied_on, applied_by FROM schema_version ORDER BY 1;` lists every script; `\dx` shows `timescaledb`; `\du ariva_app` shows membership of `ariva_runtime` only.
 
-1. Create the database `ariva` and enable the extension: `CREATE EXTENSION IF NOT EXISTS timescaledb;`
-2. Create separate roles: a migration role that may run DDL, and a runtime role with no DDL rights that cannot update or delete raw hypertables (only the retention job may). Role names: To confirm.
-3. Start the hosts. The script runner applies, in numeric order, the relational scripts (folder Proposed: `Ariva.Infra/Database/Scripts`, To confirm) and the TimescaleDB scripts in `Ariva.Infra/Timescale/Scripts/NNNN_*.sql`, and records version, file name, checksum and applied time in `schema_version`. An applied script is never edited; a checksum mismatch stops startup. Scripts that cannot run in a transaction carry a no-transaction marker (Proposed). Which host runs the runner: To confirm.
-4. Check: `SELECT * FROM schema_version ORDER BY 1;` lists every script, and `\dx` shows `timescaledb`.
+Run the migration by hand (for example before a maintenance window) with the same image: `dotnet Ariva.Api.Main.dll --migrate` or `./Ariva.Api.Main --migrate`; exit code 0 means every script is applied.
 
-NHibernate `SchemaUpdate` is never used outside development.
+Hypertable scripts revoke UPDATE and DELETE on raw sample tables from `ariva_runtime` (only the retention job removes data). NHibernate `SchemaUpdate` is never used outside development.
 
 ### 7.2 Kafka topics
 

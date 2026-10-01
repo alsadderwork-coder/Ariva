@@ -23,17 +23,35 @@ function readEnv(file) {
 	return values;
 }
 
+// URL-safe random passwords: 24 bytes, base64url, no characters that need quoting in YAML, shells or URIs.
+const newPassword = () => randomBytes(24).toString('base64url');
+const template = fs.readFileSync(path.join(ROOT, '.env.example'), 'utf8');
 if (!fs.existsSync(ENV)) {
-	const template = fs.readFileSync(path.join(ROOT, '.env.example'), 'utf8');
-	// URL-safe random passwords: 24 bytes, base64url, no characters that need quoting in YAML, shells or URIs.
-	const filled = template.replace(/^([A-Z0-9_]+)=generate$/gm, (_, key) => `${key}=${randomBytes(24).toString('base64url')}`);
+	const filled = template.replace(/^([A-Z0-9_]+)=generate$/gm, (_, key) => `${key}=${newPassword()}`);
 	fs.writeFileSync(ENV, filled, { mode: 0o600 });
 	console.log('dev-up: created .env with new random passwords (git-ignored).');
+} else {
+	// Keys added to .env.example after .env was created (for example ARIVA_DB_APP_PASSWORD in ARV-006).
+	const existing = readEnv(ENV);
+	const missing = [...template.matchAll(/^([A-Z0-9_]+)=(.*)$/gm)].filter((m) => !(m[1] in existing));
+	if (missing.length > 0) {
+		const lines = missing.map((m) => `${m[1]}=${m[2] === 'generate' ? newPassword() : m[2]}`);
+		fs.appendFileSync(ENV, `\n${lines.join('\n')}\n`);
+		console.log(`dev-up: added ${missing.map((m) => m[1]).join(', ')} to .env.`);
+	}
 }
 
 const env = readEnv(ENV);
 const settings = {
-	Database: { Host: 'localhost', Port: Number(env.ARIVA_DB_PORT || 5433), Username: 'ariva', Password: env.ARIVA_DB_PASSWORD },
+	// Hosts connect as the DML-only runtime login; the owner login is used for migrations only (ARV-006). In vm-local
+	// the hosts migrate at startup and create the runtime login with this password.
+	Database: {
+		Host: 'localhost',
+		Port: Number(env.ARIVA_DB_PORT || 5433),
+		Username: 'ariva_app',
+		Password: env.ARIVA_DB_APP_PASSWORD,
+		Migration: { Username: 'ariva', Password: env.ARIVA_DB_PASSWORD }
+	},
 	Kafka: { BootstrapServers: `localhost:${env.ARIVA_KAFKA_PORT || 19092}` },
 	Redis: { ConnectionString: `localhost:${env.ARIVA_REDIS_PORT || 16379},password=${env.ARIVA_REDIS_PASSWORD}` },
 	Smtp: { Host: 'localhost', Port: Number(env.ARIVA_SMTP_PORT || 2525), UseTls: false }
