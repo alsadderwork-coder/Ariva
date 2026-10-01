@@ -9,6 +9,10 @@ import { cspDirectives, securityHeaders, serializeCsp } from './csp.config.js';
  * every response; for HTML pages SvelteKit then replaces Content-Security-Policy with the same policy plus the
  * hash of its inline bootstrap script (kit.csp in svelte.config.js). It also switches off the permissive CORS
  * (Access-Control-Allow-Origin: *) that SvelteKit enables for the preview server, because nginx sends none.
+ *
+ * Page requests are never answered with 304 Not Modified: SvelteKit's preview renders its own fallback page, and a
+ * 304 would carry the base policy without the hash of that page's bootstrap script, so the browser would block it
+ * on reload. nginx sends the hash on every status (add_header ... always), so production needs no such rule.
  */
 function previewSecurityHeaders(): Plugin {
 	return {
@@ -19,7 +23,12 @@ function previewSecurityHeaders(): Plugin {
 		},
 		configurePreviewServer(server) {
 			const headers = server.config.preview.headers ?? {};
-			server.middlewares.use((_request, response, next) => {
+			server.middlewares.use((request, response, next) => {
+				const pathname = (request.url ?? '/').split('?')[0];
+				if (!/\.[a-z0-9]+$/i.test(pathname)) {
+					delete request.headers['if-none-match'];
+					delete request.headers['if-modified-since'];
+				}
 				for (const [name, value] of Object.entries(headers)) {
 					if (value !== undefined) {
 						response.setHeader(name, value);

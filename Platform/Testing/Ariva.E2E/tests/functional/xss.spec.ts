@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { guardPage } from '../support/browser-guards';
+import { homeHeading } from '../support/shell';
 import { domMarkers, xssPayloads } from '../support/payloads';
 
 // Script payloads in the URL must never run (no dialog), never be injected as markup and never trip the CSP
@@ -28,7 +29,7 @@ test.describe('XSS payloads in the URL', () => {
 
 			await page.goto(`/?q=${value}&next=${value}&lang=${value}#${value}`);
 
-			await expect(page.getByRole('heading', { level: 1 })).toHaveText('Ariva');
+			await expect(page.getByRole('heading', { level: 1 })).toHaveText(homeHeading.en);
 			await page.waitForLoadState('networkidle');
 			await expectNothingInjected(page);
 			await guards.expectClean();
@@ -43,7 +44,7 @@ test.describe('XSS payloads in the URL', () => {
 			window.location.hash = '<svg/onload=alert(1)>';
 		});
 
-		await expect(page.getByRole('heading', { level: 1 })).toHaveText('Ariva');
+		await expect(page.getByRole('heading', { level: 1 })).toHaveText(homeHeading.en);
 		await expectNothingInjected(page);
 		await guards.expectClean();
 	});

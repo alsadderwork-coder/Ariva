@@ -526,12 +526,12 @@ Depends on: ARV-045, ARV-048. CWEs: CWE-287, CWE-918. Gates: B, E, S.
 
 ### ARV-051: Web shell, login and design tokens
 
-SvelteKit shell per the prototype with shadcn-svelte.
+Login on the shell that already follows Aman.Web's design system (tokens, sidebar, header, light and dark modes, RTL; done 2026-10-01). Remaining: authentication and the (modules) and (public) route groups.
 
 Depends on: ARV-010. CWEs: CWE-384, CWE-79, CWE-287. Gates: W, E.
 
 - Login with TOTP; access token in memory; refresh through the cookie; logout
-- Sidebar and top bar per prototype; English and Arabic with RTL; dark default with light theme
+- Authenticated routes under (modules), login under (public); sidebar items filtered by permission (server stays the authority); user card and logout in the sidebar footer
 - Playwright: login, RTL, no console errors, no CSP violations, XSS probes on the login form
 
 ### ARV-052: Topology admin screens

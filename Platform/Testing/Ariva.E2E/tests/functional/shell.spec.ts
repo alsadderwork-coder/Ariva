@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { guardPage } from '../support/browser-guards';
+import { homeHeading } from '../support/shell';
 import { webUrl } from '../support/hosts';
 
 // The web shell served by `vite preview` with the production headers (the same values nginx sends).
@@ -33,7 +34,7 @@ test.describe('web shell', () => {
 
 		expect(response?.status()).toBe(200);
 		await expect(page).toHaveTitle('Ariva');
-		await expect(page.getByRole('heading', { level: 1 })).toHaveText('Ariva');
+		await expect(page.getByRole('heading', { level: 1 })).toHaveText(homeHeading.en);
 		await expect(page.locator('html')).toHaveAttribute('lang', 'en');
 		await expect(page.locator('html')).toHaveAttribute('dir', 'ltr');
 		await page.waitForLoadState('networkidle');
@@ -76,6 +77,7 @@ test.describe('web shell', () => {
 		await expect(page.locator('html')).toHaveAttribute('lang', 'ar');
 		await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
 		await expect(page).toHaveTitle('أريفا');
+		await expect(page.getByRole('heading', { level: 1 })).toHaveText(homeHeading.ar);
 		await expect(toggle).toContainText('English');
 
 		await toggle.click();

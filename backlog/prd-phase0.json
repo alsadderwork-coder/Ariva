@@ -1076,10 +1076,10 @@
     {
       "id": "ARV-051",
       "title": "[E8] Web shell, login and design tokens",
-      "description": "SvelteKit shell per the prototype with shadcn-svelte. Epic: Web application. CWEs to review: CWE-384, CWE-79, CWE-287.",
+      "description": "Login on the shell that already follows Aman.Web's design system (tokens, sidebar, header, light and dark modes, RTL; done 2026-10-01). Remaining: authentication and the (modules) and (public) route groups. Epic: Web application. CWEs to review: CWE-384, CWE-79, CWE-287.",
       "acceptanceCriteria": [
         "Login with TOTP; access token in memory; refresh through the cookie; logout",
-        "Sidebar and top bar per prototype; English and Arabic with RTL; dark default with light theme",
+        "Authenticated routes under (modules), login under (public); sidebar items filtered by permission (server stays the authority); user card and logout in the sidebar footer",
         "Playwright: login, RTL, no console errors, no CSP violations, XSS probes on the login form",
         "node scripts/verify.mjs web passes (svelte-check, lint, build)",
         "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",

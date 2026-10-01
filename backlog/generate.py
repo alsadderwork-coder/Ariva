@@ -315,8 +315,8 @@ story('ARV-050', 'E7', 'Outbound AMAN connector',
 
 # E8
 story('ARV-051', 'E8', 'Web shell, login and design tokens',
-      'SvelteKit shell per the prototype with shadcn-svelte.',
-      ['Login with TOTP; access token in memory; refresh through the cookie; logout', 'Sidebar and top bar per prototype; English and Arabic with RTL; dark default with light theme',
+      'Login on the shell that already follows Aman.Web\'s design system (tokens, sidebar, header, light and dark modes, RTL; done 2026-10-01). Remaining: authentication and the (modules) and (public) route groups.',
+      ['Login with TOTP; access token in memory; refresh through the cookie; logout', 'Authenticated routes under (modules), login under (public); sidebar items filtered by permission (server stays the authority); user card and logout in the sidebar footer',
        'Playwright: login, RTL, no console errors, no CSP violations, XSS probes on the login form'],
       'WE', ['CWE-384', 'CWE-79', 'CWE-287'], ['ARV-010'])
 story('ARV-052', 'E8', 'Topology admin screens', 'Airport to desk administration.', ['Per-role visibility', 'Playwright per screen and role, XSS probes on names'], 'WE', ['CWE-79', 'CWE-863'], ['ARV-051', 'ARV-014'])

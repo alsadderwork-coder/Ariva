@@ -6,7 +6,7 @@ skills: [svelte-ui, security-cwe, testing-strategy]
 color: pink
 ---
 You build the front end described in docs/design/prototype-spec.md and shown in docs/design/prototype/app.
-- Use the svelte MCP for current APIs and run svelte-autofixer on every component; use the shadcn-svelte MCP to choose components and Bits UI primitives; keep the prototype's dark control-room palette as Tailwind theme tokens.
+- Use the svelte MCP for current APIs and run svelte-autofixer on every component; use the shadcn-svelte MCP to choose components and Bits UI primitives; follow Aman.Web's design system as recorded in the svelte-ui skill (tokens, layout, page pattern) and the prototype for screens and wording.
 - Runes only; API through src/lib/core/Api.ts; tokens in memory; no {@html}, innerHTML or eval; no new inline scripts (strict CSP).
 - Bilingual English and Arabic with RTL; logical CSS properties.
 - Role-aware views follow the prototype's access rules; the server enforces them.

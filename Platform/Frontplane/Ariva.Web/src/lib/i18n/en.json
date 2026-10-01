@@ -6,5 +6,88 @@
 			"toggle": "العربية",
 			"label": "Switch the language to Arabic"
 		}
+	},
+	"navigation": {
+		"label": "Main navigation",
+		"soon": "Soon",
+		"planned": "Planned in {story}",
+		"groups": {
+			"operations": "Operations",
+			"oversight": "Oversight",
+			"administration": "Administration"
+		},
+		"items": {
+			"liveOperations": "Live operations",
+			"immigration": "Immigration",
+			"alerts": "Alerts",
+			"displays": "Passenger displays",
+			"reports": "Reports",
+			"topology": "Topology",
+			"zones": "Zones",
+			"devices": "Devices",
+			"users": "Users and access"
+		}
+	},
+	"shell": {
+		"skipToContent": "Skip to content",
+		"toggleSidebar": "Toggle the sidebar",
+		"closeMenu": "Close the menu",
+		"breadcrumb": "Breadcrumb",
+		"environment": {
+			"demo": "Demo data"
+		},
+		"theme": {
+			"toDark": "Switch to dark mode",
+			"toLight": "Switch to light mode"
+		},
+		"site": {
+			"name": "Demo International Airport",
+			"detail": "DMO, reference scenario"
+		}
+	},
+	"liveOperations": {
+		"title": "Live operations",
+		"description": "Queue length, wait against target and staffing for every queue zone",
+		"demoNotice": "Example data from the Demo International Airport reference scenario. Live figures arrive with the stream engine and the live hub (ARV-030 to ARV-035).",
+		"metrics": {
+			"label": "Summary",
+			"waiting": "Passengers waiting",
+			"longestWait": "Longest wait",
+			"minutes": "minutes",
+			"overTarget": "Zones over target",
+			"sensorsOnline": "Sensors online"
+		},
+		"zones": {
+			"title": "Queue zones",
+			"description": "Wait is the nowcast for a passenger joining now, in minutes, against the zone's target.",
+			"noEstimate": "No estimate (sensor data degraded)",
+			"waitOfTarget": "{wait} / {target}",
+			"columns": {
+				"zone": "Zone",
+				"area": "Area",
+				"inQueue": "In queue",
+				"wait": "Wait / target (min)",
+				"serversOpen": "Desks open",
+				"status": "Status"
+			}
+		},
+		"areas": {
+			"departures": "Departures",
+			"arrivals": "Arrivals",
+			"transfer": "Transfer"
+		},
+		"status": {
+			"withinTarget": "Within target",
+			"nearTarget": "Near target",
+			"overTarget": "Over target",
+			"degraded": "Data degraded"
+		}
+	},
+	"errors": {
+		"notFound": {
+			"title": "Page not found",
+			"description": "The address does not match a screen in Ariva.",
+			"back": "Back to live operations"
+		}
 	}
 }

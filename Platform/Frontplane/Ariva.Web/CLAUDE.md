@@ -2,7 +2,7 @@
 
 SvelteKit 2 with Svelte 5 runes, TypeScript, Tailwind 4, bits-ui with shadcn-svelte components (same toolchain as AMAN.Web), ECharts for charts, svelte-i18n for English and Arabic. Load the `svelte-ui` skill for patterns.
 
-- **Reference UI:** `docs/design/prototype/app/` is the approved look and behaviour (dark control-room palette, dense calm layout, status always paired with text). Match its screens, roles and wording; do not copy its plain JavaScript.
+- **Look:** Aman.Web's design system (tokens, DM Sans, sidebar and header measurements, page pattern), so Ariva and AMAN read as one product family; the `svelte-ui` skill lists the exact tokens and classes. **Behaviour and content:** `docs/design/prototype/app/` stays the reference for screens, roles, wording and the demo day; do not copy its plain JavaScript or its dark control-room palette.
 - **MCP first:** use the `svelte` MCP for Svelte 5 and SvelteKit APIs and run `svelte-autofixer` on every component you write; use the `shadcn-svelte` MCP to pick and install components (`npx shadcn-svelte@latest add <component>`), and Bits UI docs for primitives.
 - **Runes only:** `$state`, `$derived`, `$effect`, `$props`. No legacy stores for component state.
 - **API access** only through `src/lib/core/Api.ts` with relative paths from `Endpoints.ts`; the AMAN `Result<T>` shape (`hasErrors`, `errorMessages`, `data`). Never fetch a URL taken from the page or user input (CWE-918).
