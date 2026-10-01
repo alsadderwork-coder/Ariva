@@ -64,6 +64,18 @@ internal abstract class SvcDb(IUnitOfWork unitOfWork)
             return true;
         });
 
+    /// <summary>
+    /// Sends pending changes to the database now, inside the transaction. The session flushes only at commit and orders
+    /// inserts before updates, so call this when a later insert depends on an earlier update (a partial unique index
+    /// freed by a soft delete).
+    /// </summary>
+    protected Task FlushAsync(CancellationToken ct = default) =>
+        InTransactionAsync(async storage =>
+        {
+            await storage.FlushAsync(ct);
+            return true;
+        });
+
     protected Task AttachAsync<T>(T entity, CancellationToken ct = default) where T : class, IDomain => Storage.AttachAsync(entity, ct);
 
     protected void RegisterPostCommitAction(Func<Task> action) => UnitOfWork.RegisterPostCommitAction(action);

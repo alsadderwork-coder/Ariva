@@ -1,7 +1,12 @@
 using System.Net.Http.Headers;
 using Ariva.UnitTests.Setup;
 using FluentAssertions;
+using Ariva.Api.Common.Middlewares;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.Hosting;
 
 namespace Ariva.UnitTests.Security;
 
@@ -85,6 +90,33 @@ public sealed class SecurityHeadersTests
         ((int)response.StatusCode).Should().Be(200);
         response.Header("Cache-Control").Should().Be("no-store");
         ShouldCarrySecurityHeaders(response);
+    }
+
+    [Theory]
+    [InlineData("default-src 'none'; style-src 'unsafe-inline'; sandbox; frame-ancestors 'none'", true)]
+    [InlineData("default-src 'none'; sandbox", false)]
+    [InlineData("default-src *; frame-ancestors 'none'", false)]
+    [InlineData("script-src 'unsafe-inline'", false)]
+    public async Task Get_Should_KeepOnlyALockedDownEndpointPolicy_When_EndpointSetsItsOwn(string policy, bool kept)
+    {
+        // ARV-018: the floor plan image sets a sandboxing policy; anything looser than the baseline is replaced.
+        using var host = await new HostBuilder()
+            .ConfigureWebHost(web => web.UseTestServer().Configure(app =>
+            {
+                app.UseMiddleware<SecurityHeadersMiddleware>();
+                app.Run(context =>
+                {
+                    context.Response.Headers.ContentSecurityPolicy = policy;
+                    return context.Response.WriteAsync("image", context.RequestAborted);
+                });
+            }))
+            .StartAsync(TestContext.Current.CancellationToken);
+        using var client = host.GetTestClient();
+
+        using var response = await client.GetAsync("/image", TestContext.Current.CancellationToken);
+
+        response.Header("Content-Security-Policy").Should().Be(kept ? policy : "default-src 'none'; frame-ancestors 'none'");
+        response.Header("X-Content-Type-Options").Should().Be("nosniff");
     }
 
     #endregion

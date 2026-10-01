@@ -213,7 +213,8 @@ internal sealed class SvcTopology(
             var level = await ScopedLiveAsync<Level>(id, ct);
             if (level is null)
                 return Result.Error<bool>(TopologyErrors.NotFound);
-            if (await Query<Checkpoint>().AnyAsync(c => c.Level.Id == id, ct))
+            // A live floor plan counts as a child: deleting the level would orphan the plan and its file (ARV-018).
+            if (await Query<Checkpoint>().AnyAsync(c => c.Level.Id == id, ct) || await Query<FloorPlan>().AnyAsync(p => p.Level.Id == id, ct))
                 return Result.Error<bool>(TopologyErrors.HasChildren);
             return await SoftDeleteAsync(level, "Level", Path(level), Summary(level), ct);
         });

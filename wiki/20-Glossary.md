@@ -47,7 +47,7 @@ A short version of Ariva's ubiquitous language. The authoritative glossary, with
 | Term | Meaning |
 |---|---|
 | Site | A terminal or group of terminals within a deployment, with its own configuration |
-| Floor plan | The plan image or CAD export, scaled and aligned with two reference points |
+| Floor plan | The plan image of a level (PNG, JPEG or cleaned SVG), placed on the floor by a scale and the position of its top left corner |
 | Device | A sensor or other measuring device, registered like an AMAN e-gate |
 | Adapter | The code that connects one sensor family or perception platform behind the common interface |
 | Device gateway | Ariva.Api.Ingest deployed per terminal on the sensor VLAN |

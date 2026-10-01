@@ -83,3 +83,38 @@ Authorization: Bearer {{accessToken}}
 Content-Type: application/json
 
 { "system": "Aman", "externalCode": "A-07", "deskId": "{{deskId}}" }
+
+### Upload a floor plan, replacing any previous one (CreateFloorPlan; PNG, JPEG or SVG, at most 20 MB)
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/admin/levels/{{levelId}}/floor-plan
+Authorization: Bearer {{accessToken}}
+Content-Type: multipart/form-data; boundary=plan
+
+--plan
+Content-Disposition: form-data; name="file"; filename="arrivals.svg"
+Content-Type: image/svg+xml
+
+<svg xmlns="http://www.w3.org/2000/svg" width="3000" height="1200"><rect width="3000" height="1200" fill="#eef"/></svg>
+--plan
+Content-Disposition: form-data; name="metresPerPixel"
+
+0.1
+--plan
+Content-Disposition: form-data; name="originX"
+
+0
+--plan
+Content-Disposition: form-data; name="originY"
+
+0
+--plan--
+
+### Floor plan metadata and image (ViewFloorPlan)
+GET {{Ariva.Api.Main_HostAddress}}/api/v1/admin/levels/{{levelId}}/floor-plan/content
+Authorization: Bearer {{accessToken}}
+
+### Calibrate: scale and origin (EditFloorPlan)
+PUT {{Ariva.Api.Main_HostAddress}}/api/v1/admin/levels/{{levelId}}/floor-plan/calibration
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "metresPerPixel": 0.1, "originX": 0, "originY": 0 }

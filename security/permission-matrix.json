@@ -1154,6 +1154,91 @@
     },
     {
       "host": "main",
+      "method": "GET",
+      "route": "/api/v1/admin/levels/{levelId:guid}/floor-plan",
+      "access": "permission",
+      "permissions": [
+        "ViewFloorPlan"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 404,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/admin/levels/{levelId:guid}/floor-plan/content",
+      "access": "permission",
+      "permissions": [
+        "ViewFloorPlan"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 404,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/levels/{levelId:guid}/floor-plan",
+      "access": "permission",
+      "permissions": [
+        "CreateFloorPlan"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 400
+      }
+    },
+    {
+      "host": "main",
+      "method": "PUT",
+      "route": "/api/v1/admin/levels/{levelId:guid}/floor-plan/calibration",
+      "access": "permission",
+      "permissions": [
+        "EditFloorPlan"
+      ],
+      "body": {
+        "metresPerPixel": 0.05,
+        "originX": 0,
+        "originY": 0
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "DELETE",
+      "route": "/api/v1/admin/levels/{levelId:guid}/floor-plan",
+      "access": "permission",
+      "permissions": [
+        "DeleteFloorPlan"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
       "method": "POST",
       "route": "/api/v1/admin/sites",
       "access": "permission",

@@ -31,6 +31,8 @@ Load the `aman-conventions` skill for the full pattern set; this file is the sho
 - Audit fields and soft delete are set by the NHibernate interceptor and delete listener from `ICurrentUser` and `TimeProvider`; do not set them by hand.
 - Time series: Timescale hypertables written with Npgsql binary COPY (`Ariva.Infra/Timescale`). DDL only in `Timescale/Scripts/NNNN_*.sql` (embedded in Ariva.Infra), applied by the migration job (`Ariva.Api.Main --migrate`, Helm hook); add the script's SHA-256 to `checksums.lock` in the same change (the unit test prints it). Scripts are immutable once merged.
 - Logins: hosts use the DML-only runtime login (`Database:Username`, member of `ariva_runtime`); only the migration job uses `Database:Migration`. Hosts verify `schema_version` at startup outside vm-local.
+- Files (uploads) go through `IFileStorage` under generated keys only; never build a path from a request value (CWE-22). Uploads are typed by their bytes, sanitised or refused, size-capped on the endpoint and in the read, and use the `upload` rate limiting policy (ARV-018).
+- NHibernate flushes inserts before updates: when a soft delete frees a partial unique index for the row that replaces it, call `FlushAsync` between the two.
 - `SchemaUpdate` runs only when `Database:AllowSchemaUpdate` is true, which only `vm-local` sets.
 
 ## Messaging and streaming

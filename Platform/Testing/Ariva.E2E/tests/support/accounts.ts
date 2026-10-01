@@ -174,6 +174,8 @@ export interface CallResponse extends ResponseLike {
 
 export interface CallOptions {
 	data?: unknown;
+	/** A multipart body (file uploads); fetch sets the boundary. */
+	form?: FormData;
 	token?: string;
 	cookie?: string;
 	csrf?: boolean;
@@ -191,7 +193,7 @@ export async function call(method: string, url: string, options: CallOptions = {
 	if (options.csrf) headers['X-Ariva-Csrf'] = '1';
 	if (options.origin) headers.Origin = options.origin;
 
-	const response = await fetch(url, { method, headers, body: options.data === undefined ? undefined : JSON.stringify(options.data) });
+	const response = await fetch(url, { method, headers, body: options.form ?? (options.data === undefined ? undefined : JSON.stringify(options.data)) });
 	const text = await response.text();
 	const setCookie = response.headers.getSetCookie().find((value) => value.startsWith(`${refreshCookieName}=`));
 	const lowered: Record<string, string> = {};

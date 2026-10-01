@@ -76,3 +76,12 @@ public sealed record CreateDeskCodeMappingRequest(
 
 /// <summary>Points an existing code at another desk of the same site.</summary>
 public sealed record UpdateDeskCodeMappingRequest([Required] Guid? DeskId);
+
+/// <summary>A floor plan upload (ARV-018): the file comes separately; the client's file name and content type are not trusted.</summary>
+public sealed record FloorPlanUpload(Stream Content, long Length, string FileName, double MetresPerPixel, double OriginX, double OriginY);
+
+/// <summary>New scale and origin for a level's plan.</summary>
+public sealed record CalibrateFloorPlanRequest(
+    [Range(0.000001, 10)] double MetresPerPixel,
+    [Range(-1_000_000, 1_000_000)] double OriginX,
+    [Range(-1_000_000, 1_000_000)] double OriginY);

@@ -9,6 +9,8 @@ metadata:
 data:
   DOTNET_ENVIRONMENT: {{ .Values.environment | quote }}
   RELEASE_VERSION: {{ .Values.releaseVersion | quote }}
+  # Floor plans and other uploaded files (ARV-018), on the files volume below
+  Storage__LocalRoot: /app/data/files
 ---
 #Deployment
 apiVersion: apps/v1
@@ -20,6 +22,12 @@ metadata:
     {{- include "ariva-platform.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.apiMainReplicas | default .Values.replicas }}
+  {{- if eq (.Values.fileStorage.accessMode | default "ReadWriteOnce") "ReadWriteOnce" }}
+  # A ReadWriteOnce volume attaches to one node: stop the old pod before starting the new one, or a rollout to
+  # another node waits on the attach forever (ARV-018)
+  strategy:
+    type: Recreate
+  {{- end }}
   selector:
     matchLabels:
       app: api-main
@@ -33,10 +41,11 @@ spec:
       imagePullSecrets:
         - name: dalilacr-secret
       volumes:
-        # Writable scratch space; the root filesystem is read-only (CWE-269)
+        # Writable scratch space; the root filesystem is read-only (CWE-269). 128Mi: multipart uploads over 64 KB are
+        # buffered here (one 20 MB floor plan at a time, ARV-018)
         - name: tmp
           emptyDir:
-            sizeLimit: 64Mi
+            sizeLimit: 128Mi
         # Data Protection key-protection certificate (ARV-008): kubernetes.io/tls secret, read-only
         - name: dataprotection-certificate
           secret:
@@ -52,6 +61,10 @@ spec:
           secret:
             secretName: {{ .Values.tokenSigningSecretName | default "ariva-token-signing" }}
             defaultMode: 0400
+        # Uploaded files (ARV-018): floor plans, under generated names only
+        - name: files
+          persistentVolumeClaim:
+            claimName: {{ .Values.fileStorage.existingClaim | default "ariva-files" }}
         - name: api-main-appsettings-base-volume
           secret:
             secretName: base-appsettings-secret
@@ -62,6 +75,8 @@ spec:
         runAsNonRoot: true
         runAsUser: 10001
         runAsGroup: 10001
+        # Makes the files volume writable by the app user (block volumes; Azure Files takes uid and gid mount options)
+        fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -78,6 +93,8 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            - name: files
+              mountPath: /app/data/files
             - name: dataprotection-certificate
               mountPath: /app/secrets/dataprotection
               readOnly: true

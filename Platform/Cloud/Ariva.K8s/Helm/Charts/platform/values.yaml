@@ -9,6 +9,14 @@ imageRepository: dalil.azurecr.io/ariva
 imagePullPolicy: Always
 replicas: 1
 releaseVersion: v-0.0.0
+
+# Uploaded files (ARV-018): floor plans. PVCs can only grow; never lower size below the live capacity.
+# ReadWriteMany (for example storageClassName azurefile-csi on AKS) is required before api-main scales out.
+fileStorage:
+  existingClaim: ""
+  storageClassName: ""   # empty uses the cluster default storage class
+  size: 2Gi
+  accessMode: ReadWriteOnce
 domain: dalilhub.tech
 # TLS certificate secret for every ingress host (created out of band, for example by cert-manager)
 tlsSecretName: ariva-tls

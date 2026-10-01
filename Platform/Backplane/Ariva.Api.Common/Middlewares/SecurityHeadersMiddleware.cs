@@ -7,7 +7,9 @@ namespace Ariva.Api.Common.Middlewares;
 /// Adds the API security headers to every response, including error and challenge responses, just before the
 /// response starts: <c>X-Content-Type-Options: nosniff</c>, <c>X-Frame-Options: DENY</c>,
 /// <c>Referrer-Policy: no-referrer</c> and <c>Content-Security-Policy: default-src 'none'; frame-ancestors 'none'</c>
-/// (CWE-79: JSON can never be sniffed or rendered as a page). Responses to requests that carry credentials get
+/// (CWE-79: JSON can never be sniffed or rendered as a page). An endpoint that serves content other than JSON (a
+/// floor plan image, ARV-018) may set a policy of its own; it is kept only when it still starts from
+/// <c>default-src 'none'</c>, so no endpoint can loosen the baseline by accident. Responses to requests that carry credentials get
 /// <c>Cache-Control: no-store</c>. The <c>Server</c> header is removed here and switched off in Kestrel.
 /// </summary>
 /// <param name="next">The next middleware.</param>
@@ -49,7 +51,10 @@ public sealed class SecurityHeadersMiddleware(RequestDelegate next)
         headers.XContentTypeOptions = "nosniff";
         headers.XFrameOptions = "DENY";
         headers[ReferrerPolicyHeader] = "no-referrer";
-        headers.ContentSecurityPolicy = ContentSecurityPolicy;
+        if (!IsLockedDown(headers.ContentSecurityPolicy))
+        {
+            headers.ContentSecurityPolicy = ContentSecurityPolicy;
+        }
         headers.Remove(HeaderNames.Server);
 
         if (CarriesCredentials(context))
@@ -59,6 +64,9 @@ public sealed class SecurityHeadersMiddleware(RequestDelegate next)
 
         return Task.CompletedTask;
     }
+
+    private static bool IsLockedDown(string policy) =>
+        !string.IsNullOrEmpty(policy) && policy.StartsWith("default-src 'none'", StringComparison.Ordinal) && policy.Contains("frame-ancestors 'none'", StringComparison.Ordinal);
 
     private static bool CarriesCredentials(HttpContext context) =>
         context.User?.Identity?.IsAuthenticated == true

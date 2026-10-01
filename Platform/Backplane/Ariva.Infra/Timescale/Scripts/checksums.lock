@@ -9,6 +9,7 @@
     "0006_audit_entry.sql": "2d7a2e5600d80f74804e1f439a7ca095f9f0825f4cf467e868504d169442a114",
     "0007_site.sql": "7f4af8b4fc972ecf0fe155b19fb8791830cdf53cc17481b37b1371327b399fd9",
     "0008_topology.sql": "ad89737f4b46dd2e55e418f998e95cf4d1d27afdbb33cbd299e597063b2ea3a8",
-    "0009_desk_code_mapping.sql": "a3d74dbd46a9c0f29cc75dbfb67f49aa23bbe752e1a80a3c119120f784250f7f"
+    "0009_desk_code_mapping.sql": "a3d74dbd46a9c0f29cc75dbfb67f49aa23bbe752e1a80a3c119120f784250f7f",
+    "0010_floor_plan.sql": "33d0d5f3ac23cc8e1c9b9be3cb1dfb531d1f6f212e518fe9bece6ee9cc11d08b"
   }
 }

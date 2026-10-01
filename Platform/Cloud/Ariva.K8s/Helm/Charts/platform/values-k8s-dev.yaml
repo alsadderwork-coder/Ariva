@@ -19,6 +19,14 @@ tlsSecretName: ariva-tls
 clusterName: k8s-dev
 releaseVersion: v-0.0.0
 
+# Uploaded files (ARV-018): floor plans. PVCs can only grow; never lower size below the live capacity.
+# ReadWriteMany (for example storageClassName azurefile-csi on AKS) is required before api-main scales out.
+fileStorage:
+  existingClaim: ""
+  storageClassName: ""   # empty uses the cluster default storage class
+  size: 2Gi
+  accessMode: ReadWriteOnce
+
 # Ingress definitions
 ingresses:
   - name: api-main
@@ -28,7 +36,7 @@ ingresses:
     annotations:
       nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
       nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
-      nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+      nginx.ingress.kubernetes.io/proxy-body-size: "21m"  # ARV-018: a 20 MB floor plan plus multipart framing
       nginx.ingress.kubernetes.io/rewrite-target: /
 
   - name: api-ingest
@@ -92,4 +100,4 @@ ingresses:
     annotations:
       nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
       nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
-      nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+      nginx.ingress.kubernetes.io/proxy-body-size: "21m"  # ARV-018: a 20 MB floor plan plus multipart framing

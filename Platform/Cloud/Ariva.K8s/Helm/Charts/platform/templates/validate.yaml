@@ -9,3 +9,6 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- if eq (toString .Values.buildNumber) "latest" }}
 {{- fail "buildNumber latest is not allowed; use a build number or the local tag" }}
 {{- end }}
+{{- if and (eq (.Values.fileStorage.accessMode | default "ReadWriteOnce") "ReadWriteOnce") (or (gt (int (.Values.apiMainReplicas | default .Values.replicas)) 1) (gt (int (.Values.apiMainHpaMin | default 1)) 1) (gt (int (.Values.apiMainHpaMax | default 1)) 1)) }}
+{{- fail "api-main with more than one replica needs fileStorage.accessMode ReadWriteMany (the floor plan volume, ARV-018)" }}
+{{- end }}

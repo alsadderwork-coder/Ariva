@@ -11,3 +11,9 @@ public sealed record CheckpointViewModel(Guid Id, Guid LevelId, string Code, str
 public sealed record DeskViewModel(Guid Id, Guid CheckpointId, string Code, string Name, string Kind, IReadOnlyList<string> LaneCategories, bool InService, string SiteCode, DateTime? CreatedOn);
 
 public sealed record DeskCodeMappingViewModel(Guid Id, string System, string ExternalCode, Guid DeskId, string DeskCode, string SiteCode, DateTime? CreatedOn);
+
+public sealed record FloorPlanViewModel(Guid Id, Guid LevelId, string ContentType, long SizeBytes, string Sha256, string OriginalFileName,
+    int? WidthPixels, int? HeightPixels, double MetresPerPixel, double OriginX, double OriginY, string SiteCode, DateTime? CreatedOn);
+
+/// <summary>The stored plan bytes and how to serve them.</summary>
+public sealed record FloorPlanContent(Stream Content, string ContentType, string Sha256);

@@ -460,8 +460,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 21,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Offline gates: unit, integration (PostgreSQL 16) and a real Kestrel host; E2E spec type-checked, not run here; helm template not run. Production fileStorage.storageClassName must be set per customer cluster to a ReadWriteMany class.",
       "dependsOn": [
         "ARV-014"
       ]

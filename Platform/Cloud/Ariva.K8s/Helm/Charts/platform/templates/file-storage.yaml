@@ -1,0 +1,24 @@
+{{- /*
+Uploaded files (ARV-018): one claim mounted by Ariva.Api.Main at /app/data/files (Storage:LocalRoot). Kept on
+uninstall so a release delete never drops the floor plans. Set fileStorage.existingClaim to use a claim made out of
+band; ReadWriteMany (Azure Files, NFS) is needed before api-main runs more than one replica.
+*/ -}}
+{{- if not .Values.fileStorage.existingClaim }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ariva-files
+  labels:
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    - {{ .Values.fileStorage.accessMode | default "ReadWriteOnce" }}
+  {{- with .Values.fileStorage.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.fileStorage.size | default "2Gi" }}
+{{- end }}

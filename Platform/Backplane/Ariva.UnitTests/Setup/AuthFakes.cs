@@ -140,13 +140,20 @@ public sealed class FakeAdministration : ISvcUsers, ISvcRoleAssignment, ISvcAudi
 }
 
 /// <summary>Topology for in-process hosts (no database): searches are empty and every id is unknown, as for the matrix calls.</summary>
-public sealed class FakeTopology : Ariva.Core.Services.Topology.ISvcTopology, Ariva.Core.Services.Topology.ISvcDeskCodeMappings
+public sealed class FakeTopology : Ariva.Core.Services.Topology.ISvcTopology, Ariva.Core.Services.Topology.ISvcDeskCodeMappings, Ariva.Core.Services.Topology.ISvcFloorPlans
 {
     public static void Register(IServiceCollection services)
     {
         services.Replace(ServiceDescriptor.Scoped<Ariva.Core.Services.Topology.ISvcTopology, FakeTopology>());
         services.Replace(ServiceDescriptor.Scoped<Ariva.Core.Services.Topology.ISvcDeskCodeMappings, FakeTopology>());
+        services.Replace(ServiceDescriptor.Scoped<Ariva.Core.Services.Topology.ISvcFloorPlans, FakeTopology>());
     }
+
+    Task<Fluentx.Result<FloorPlanViewModel>> Ariva.Core.Services.Topology.ISvcFloorPlans.GetAsync(Guid levelId, CancellationToken ct) => Missing<FloorPlanViewModel>();
+    public Task<Fluentx.Result<FloorPlanContent>> OpenAsync(Guid levelId, CancellationToken ct = default) => Missing<FloorPlanContent>();
+    public Task<Fluentx.Result<FloorPlanViewModel>> UploadAsync(Guid levelId, FloorPlanUpload upload, CancellationToken ct = default) => Missing<FloorPlanViewModel>();
+    public Task<Fluentx.Result<FloorPlanViewModel>> CalibrateAsync(Guid levelId, CalibrateFloorPlanRequest request, CancellationToken ct = default) => Missing<FloorPlanViewModel>();
+    Task<Fluentx.Result<bool>> Ariva.Core.Services.Topology.ISvcFloorPlans.DeleteAsync(Guid levelId, CancellationToken ct) => Missing<bool>();
 
     public Task<Fluentx.Result<PageViewModel<DeskCodeMappingViewModel>>> SearchAsync(DeskCodeMappingCriteria criteria, CancellationToken ct = default) => Empty<DeskCodeMappingViewModel>();
     public Task<Fluentx.Result<DeskCodeMappingViewModel>> GetAsync(Guid id, CancellationToken ct = default) => Missing<DeskCodeMappingViewModel>();

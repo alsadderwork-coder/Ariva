@@ -20,6 +20,18 @@ apiIntegrationSubDomain: api-integration-ariva
 tlsSecretName: ariva-tls
 clusterName: k8s-prd
 releaseVersion: v-0.0.0
+
+# Uploaded files (ARV-018): floor plans. PVCs can only grow; never lower size below the live capacity.
+# ReadWriteMany (for example storageClassName azurefile-csi on AKS) is required before api-main scales out.
+fileStorage:
+  existingClaim: ""
+  # Production runs api-main with 2 to 4 replicas, so the class must support ReadWriteMany: azurefile-csi on AKS
+  # (mount options uid=10001,gid=10001,dir_mode=0750,file_mode=0640), NFS, CephFS or Longhorn RWX on premises.
+  # Set it per customer cluster; with a class that cannot do ReadWriteMany the claim stays Pending and the install
+  # waits, which is the intended loud failure.
+  storageClassName: ""
+  size: 2Gi
+  accessMode: ReadWriteMany
 imagePullPolicy: IfNotPresent
 simulationEnabled: false
 apiMainHpaMin: 2
@@ -40,7 +52,7 @@ ingresses:
     annotations:
       nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
       nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
-      nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+      nginx.ingress.kubernetes.io/proxy-body-size: "21m"  # ARV-018: a 20 MB floor plan plus multipart framing
       nginx.ingress.kubernetes.io/rewrite-target: /
 
   - name: api-ingest
@@ -94,4 +106,4 @@ ingresses:
     annotations:
       nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
       nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
-      nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+      nginx.ingress.kubernetes.io/proxy-body-size: "21m"  # ARV-018: a 20 MB floor plan plus multipart framing

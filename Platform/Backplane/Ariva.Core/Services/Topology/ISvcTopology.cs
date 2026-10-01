@@ -13,6 +13,9 @@ public static class TopologyErrors
     public const string UnknownSite = "Unknown site.";
     public const string InvalidCriteria = "The search criteria are not valid.";
     public const string DeploymentWide = "Only an administrator with access to every site can change airports.";
+    public const string TooLarge = "The file is larger than 20 MB.";
+    public const string UnsupportedFile = "Upload a PNG, JPEG or SVG image.";
+    public const string UnsafeFileName = "The file name must not contain a path.";
 
     /// <summary>Errors that mean "already exists or in use" (409).</summary>
     public static readonly IReadOnlySet<string> Conflicts = new HashSet<string>(StringComparer.Ordinal) { Duplicate, HasChildren };
@@ -76,4 +79,21 @@ public interface ISvcDeskCodeMappings : ISvcScoped
     /// records). Cached with the topology tag; not scoped to a caller, for background consumers.
     /// </summary>
     Task<Guid?> ResolveAsync(Ariva.Core.Domain.Enums.ExternalSystem system, string siteCode, string externalCode, CancellationToken ct = default);
+}
+
+/// <summary>
+/// Floor plans (ARV-018): one per level, site-scoped like the level. Uploads are sniffed (PNG, JPEG or SVG), limited to
+/// 20 MB, SVG is sanitised, and the file is stored under a generated key.
+/// </summary>
+public interface ISvcFloorPlans : ISvcScoped
+{
+    Task<Result<FloorPlanViewModel>> GetAsync(Guid levelId, CancellationToken ct = default);
+
+    Task<Result<FloorPlanContent>> OpenAsync(Guid levelId, CancellationToken ct = default);
+
+    Task<Result<FloorPlanViewModel>> UploadAsync(Guid levelId, FloorPlanUpload upload, CancellationToken ct = default);
+
+    Task<Result<FloorPlanViewModel>> CalibrateAsync(Guid levelId, CalibrateFloorPlanRequest request, CancellationToken ct = default);
+
+    Task<Result<bool>> DeleteAsync(Guid levelId, CancellationToken ct = default);
 }

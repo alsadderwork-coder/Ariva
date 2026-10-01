@@ -24,6 +24,12 @@ public static class RateLimitingExtensions
     /// </summary>
     public const string AuthPolicy = "auth";
 
+    /// <summary>
+    /// Named policy for large uploads (floor plans, ARV-018): one at a time per host process and two waiting, so
+    /// concurrent 20 MB bodies cannot exhaust memory or the temporary volume (CWE-400). The rest get 429.
+    /// </summary>
+    public const string UploadPolicy = "upload";
+
     private const string UnknownClient = "unknown";
 
     #endregion
@@ -62,6 +68,13 @@ public static class RateLimitingExtensions
                     RateLimitPartition.GetFixedWindowLimiter(ClientKey(context), _ => ToLimiterOptions(limits.Global)));
                 options.AddPolicy(AuthPolicy, context =>
                     RateLimitPartition.GetFixedWindowLimiter(ClientKey(context), _ => ToLimiterOptions(limits.Auth)));
+                options.AddPolicy(UploadPolicy, _ =>
+                    RateLimitPartition.GetConcurrencyLimiter(UploadPolicy, _ => new ConcurrencyLimiterOptions
+                    {
+                        PermitLimit = 1,
+                        QueueLimit = 2,
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst
+                    }));
                 options.OnRejected = (context, _) =>
                 {
                     if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))
