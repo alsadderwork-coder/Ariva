@@ -149,6 +149,12 @@ internal sealed class ArivaWebApplicationFactory<TEntryPoint>(string environment
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment(environment);
+
+        // In-process hosts have no database: no development migration at startup (vm-local) and no schema check
+        // (cluster environments). Persistence is covered by Ariva.IntegrationTests against a real PostgreSQL.
+        builder.UseSetting("Database:AllowSchemaUpdate", "false");
+        builder.UseSetting("Database:VerifySchemaOnStartup", "false");
+
         configure?.Invoke(builder);
     }
 }

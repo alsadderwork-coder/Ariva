@@ -107,7 +107,12 @@ jobs:
             fi
             for log in unit.log integration.log; do
               if [ -f "$log" ] && grep -Eq '^\s+Failed |error TESTERROR|\[FAIL\]' "$log"; then
-                echo "#### ${log%.log} tests"; echo '```'; grep -E -A14 '^\s+Failed |error TESTERROR|\[FAIL\]' "$log" | head -200 | cut -c1-400; echo '```'
+                echo "#### ${log%.log} tests: failing tests"; echo '```'
+                grep -E '^\s+Failed [A-Za-z]' "$log" | sed -E 's/^\s+Failed //; s/ \[[0-9.]+ m?s\]$//' | sort -u | head -100 | cut -c1-300
+                echo '```'; echo "#### ${log%.log} tests: distinct errors"; echo '```'
+                grep -A1 'Error Message:' "$log" | grep -v -E 'Error Message:|^--$' | sed -E 's/^\s+//' | sort | uniq -c | sort -rn | head -25 | cut -c1-300
+                echo '```'; echo "#### ${log%.log} tests: first details"; echo '```'
+                grep -E -A14 '^\s+Failed [A-Za-z]' "$log" | head -80 | cut -c1-300; echo '```'
               fi
             done
             if [ -f vulnerable.txt ] && grep -Eq '\b(High|Critical)\b' vulnerable.txt; then
