@@ -240,8 +240,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 11,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "2026-10-01: PR #24. Sessions and refresh families in PostgreSQL, 4 second session cache, rotation with a grace successor, family revocation on reuse, CSRF and Origin check on refresh, disable and enable, hub session filter and sweeper, web-api ingress. 410 unit and 43 integration tests (1 skipped) and E2E green. Idle and absolute expiry covered with a manual clock in SessionTests (E2E cannot move the host clock). SEC-052 entry for /api/auth/refresh awaits approval.",
       "dependsOn": [
         "ARV-010a"
       ]
