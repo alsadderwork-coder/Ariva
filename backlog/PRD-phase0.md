@@ -427,6 +427,7 @@ Depends on: ARV-034, ARV-028. CWEs: baseline. Gates: B, I, S.
 
 - Replay command over archived events for a range and profile version produces a stable output hash
 - CI test: seed 9303 reproduces 18:05, 18:20 to 18:30 and 19:10 exactly
+- Replay inputs and outputs are hash-chained so an exported replay is tamper-evident (competitive refresh 2026-10)
 
 ## E5: Alerting
 
@@ -448,6 +449,7 @@ Depends on: ARV-037, ARV-034. CWEs: baseline. Gates: B, I, S.
 
 - Sustain windows, dedupe, auto-resolve
 - Backtest returns first fire time and count; a test proves backtest equals live firing for seed 9303 (R-001 at 18:05)
+- A predicted-breach rule type warns 15 to 60 minutes ahead from the arrival-wave projection (ARV-047) (competitive refresh 2026-10)
 
 ### ARV-039: Alert lifecycle
 
@@ -638,6 +640,7 @@ Depends on: ARV-051, ARV-035. CWEs: CWE-79, CWE-306. Gates: W, E.
 
 - Bilingual bands with hysteresis and stale fallback; display players authenticate with device credentials
 - Playwright at 1920x1080 including stale data
+- Resource files for Arabic (right to left), English, Portuguese and Swahili (competitive refresh 2026-10)
 
 ### ARV-059: Users and access screen
 
