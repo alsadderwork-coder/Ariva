@@ -90,3 +90,10 @@ One entry per story, newest last. Format:
 - Security review: CWE-306 (critical functions need a recent second factor), CWE-287 (step-up shares the replay guard and lockout), CWE-204 (403 before step-up for callers without the permission, so the 401 never reveals an action).
 - Learnings: AuthorizationHandlerContext.Fail empties FailedRequirements, so a handler that wants the result handler to see which requirement failed must leave it pending rather than fail it.
 
+## 2026-10-02 ARV-011 User, role and audit administration
+- Summary: api/v1/admin/users (search, view, create with a one-time temporary password, update, password and TOTP reset, grant and revoke), api/v1/admin/roles and the read-only api/v1/admin/audit-entries; ranked fixed roles with no self-change, nothing above the granter's rank and the last active administrator kept; create, resets, grants and revokes as critical actions; audit_entry written in the same transaction and append-only for the runtime login (script 0006); session revocation through one AccountSessions path.
+- Gates: local harness PASS (34 checks through a real Kestrel host against PostgreSQL 16 with the runtime login, including UPDATE and DELETE on audit_entry refused with 42501, and the session and TOTP flows rerun after the refactor); GitHub CI not observed from this session.
+- Security review: CWE-269 (rank check, no self-change, last administrator, step-up on every grant), CWE-863 (permission per action, break-glass invisible), CWE-306 (critical actions), CWE-89 (sort allowlist, parameterised filters), CWE-532 and CWE-312 (no credentials in audit summaries or logs), CWE-640 (temporary passwords random, shown once, forcing a change).
+- Decisions: roles stay the four fixed codes (custom roles and a second approving administrator are Phase 1 candidates); accounts are disabled, never deleted; the last-administrator rule excludes the break-glass account.
+- Learnings: fetching a collection together with Skip and Take pages the joined rows, so roles for a page of users come from a second query.
+
