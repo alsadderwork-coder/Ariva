@@ -9,6 +9,11 @@
     </ItemGroup>
 
     <ItemGroup>
+        <!-- Result<T>, Fx.Specification, PagedData and Search<TCriteria> come from Fluentx, as in AMAN (ARV-004) -->
+        <PackageReference Include="Fluentx" />
+    </ItemGroup>
+
+    <ItemGroup>
         <ProjectReference Include="..\Ariva.Utilities\Ariva.Utilities.csproj" />
     </ItemGroup>
 
