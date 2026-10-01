@@ -46,6 +46,20 @@ Phase 0 API (ARV-011), under `api/v1/admin`: `users` (search with text, role and
 
 Sessions: access tokens last 15 minutes; a new session id is minted at every sign-in; refresh tokens rotate on every use, are stored hashed, and reuse of an old refresh token revokes the whole family. The refresh cookie is HttpOnly, Secure, SameSite Strict.
 
+## 2a. Site topology (Phase 0 API)
+
+ARV-014 adds `api/v1/admin/airports`, `terminals`, `levels`, `checkpoints` and `desks`, each with search (text, parent, site, an allowlisted sort, pages of at most 500), view, create, update and delete.
+
+| Entity | Rules |
+|---|---|
+| Airport | IATA code (three letters, never changed), optional ICAO code, name, IANA time zone. Deployment-wide: only an administrator with every site creates, changes or deletes airports; every topology reader can read them |
+| Terminal | Code unique in the airport; belongs to one site, fixed at creation, which every level, checkpoint and desk under it inherits |
+| Level | Code and floor number unique in the terminal; width and depth in metres (up to 2,000) define the floor coordinate system for zones |
+| Checkpoint | Kind `CheckIn`, `Security`, `Emigration` or `Immigration`, fixed at creation |
+| Desk | Kind by checkpoint: `Counter` at check-in, `SecurityLane` at security, `Desk` and `EGate` at emigration and immigration; border desks serve at least one lane category and e-gates include `EG`; can be taken out of service |
+
+Codes are 1 to 16 upper case letters or digits with single inner hyphens. Deletes are soft (history and zone profiles keep their references), refused while live records exist underneath, and free the code for reuse. Everyone sees only the records of their sites; another site's record answers like one that does not exist. Every change is audited.
+
 ## 3. TOTP enrolment and reset
 
 Enrolment:

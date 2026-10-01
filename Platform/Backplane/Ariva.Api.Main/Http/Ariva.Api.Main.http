@@ -30,3 +30,42 @@ Authorization: Bearer {{accessToken}}
 ### Audit trail for one user (SearchAuditEntry)
 GET {{Ariva.Api.Main_HostAddress}}/api/v1/admin/audit-entries?targetId={{userId}}
 Authorization: Bearer {{accessToken}}
+
+### Create an airport (CreateAirport, all-sites administrators)
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/admin/airports
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "iataCode": "DMO", "icaoCode": "ODMO", "name": "Demo International", "timeZoneId": "Asia/Amman" }
+
+### Create a terminal in a site (CreateTerminal)
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/admin/terminals
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "airportId": "{{airportId}}", "code": "T1", "name": "Terminal 1", "siteCode": "AMM" }
+
+### Create a level (CreateLevel)
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/admin/levels
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "terminalId": "{{terminalId}}", "code": "L0", "name": "Arrivals", "floorNumber": 0, "widthMetres": 300, "depthMetres": 120 }
+
+### Create a checkpoint (CreateCheckpoint)
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/admin/checkpoints
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "levelId": "{{levelId}}", "code": "IMM", "name": "Immigration", "kind": "Immigration" }
+
+### Create a desk (CreateDesk)
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/admin/desks
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "checkpointId": "{{checkpointId}}", "code": "D01", "kind": "Desk", "laneCategories": ["CIT", "RES"] }
+
+### Search desks of a checkpoint (SearchDesk)
+GET {{Ariva.Api.Main_HostAddress}}/api/v1/admin/desks?parentId={{checkpointId}}&sortBy=code
+Authorization: Bearer {{accessToken}}

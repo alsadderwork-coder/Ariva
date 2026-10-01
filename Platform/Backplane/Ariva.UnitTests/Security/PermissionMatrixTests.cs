@@ -121,6 +121,7 @@ public sealed partial class PermissionMatrixTests
             // No database in-process: the sign-in service fails every call, as the real one does for the matrix bodies.
             services.Replace(ServiceDescriptor.Scoped<ISvcAuthenticator, FakeAuthenticator>());
             FakeAdministration.Register(services);
+            FakeTopology.Register(services);
         }));
         using var client = app.CreateClient();
         var mismatches = new List<string>();

@@ -109,3 +109,9 @@ One entry per story, newest last. Format:
 - Gates: 246 unit tests executed offline (the TopologyTests suite plus the existing domain, persistence and security tests that need no host) with a functional xunit and FluentAssertions shim, because NuGet is unreachable from this session; GitHub CI not observed.
 - Security review: CWE-501 (codes and kinds validated in the entity, site code never bound from a request, set from the terminal).
 
+## 2026-10-02 ARV-014 Topology persistence and AdminArea APIs
+- Summary: script 0008 (airport, terminal, level, checkpoint, desk with soft delete, partial unique indexes on live codes, site_code foreign keys, no DELETE for the runtime login); SvcTopology with site-scoped searches and lookups, entity invariants as validation, soft deletes refused while children live, audit entries per change and cached single-record reads under the topology tag; five AdminArea controllers with [Permission] per action and [SiteScoped]; 25 matrix rows; .http requests.
+- Gates: local harness PASS (39 topology checks through a real Kestrel host against PostgreSQL, including cross-site 404s, SQL and markup payloads, cache eviction and the audit trail; every main-host permission matrix row, 265 cells, against the real host with real tokens); 246 unit tests executed offline; GitHub CI not observed.
+- Security review: CWE-862 (permission per action, writes for administrators only), CWE-863 (site filter on every query and lookup, parents outside the caller's sites answer 404, airports deployment-wide), CWE-89 (parameterised LINQ, sort allowlist, page cap), CWE-501 (site code and parent fixed at creation, kinds parsed by name only).
+- Learnings: NHibernate LINQ resolves a member accessed through an interface constraint (ISiteBound.SiteCode) to the mapped property, so one WithinSites helper serves every site-bound entity; session.Get ignores the soft delete filter, so lookups check IsDeleted themselves.
+

@@ -138,3 +138,42 @@ public sealed class FakeAdministration : ISvcUsers, ISvcRoleAssignment, ISvcAudi
 
     private static Task<Fluentx.Result<T>> NotFound<T>() => Task.FromResult(Fluentx.Result.Error<T>(AdministrationErrors.NotFound));
 }
+
+/// <summary>Topology for in-process hosts (no database): searches are empty and every id is unknown, as for the matrix calls.</summary>
+public sealed class FakeTopology : Ariva.Core.Services.Topology.ISvcTopology
+{
+    public static void Register(IServiceCollection services) =>
+        services.Replace(ServiceDescriptor.Scoped<Ariva.Core.Services.Topology.ISvcTopology, FakeTopology>());
+
+    private static Task<Fluentx.Result<PageViewModel<T>>> Empty<T>() =>
+        Task.FromResult(new Fluentx.Result<PageViewModel<T>>(new PageViewModel<T>([], 0, 1, 50)));
+
+    private static Task<Fluentx.Result<T>> Missing<T>() =>
+        Task.FromResult(Fluentx.Result.Error<T>(Ariva.Core.Services.Topology.TopologyErrors.NotFound));
+
+    public Task<Fluentx.Result<PageViewModel<AirportViewModel>>> SearchAirportsAsync(TopologyCriteria criteria, CancellationToken ct = default) => Empty<AirportViewModel>();
+    public Task<Fluentx.Result<AirportViewModel>> GetAirportAsync(Guid id, CancellationToken ct = default) => Missing<AirportViewModel>();
+    public Task<Fluentx.Result<AirportViewModel>> CreateAirportAsync(CreateAirportRequest request, CancellationToken ct = default) => Missing<AirportViewModel>();
+    public Task<Fluentx.Result<AirportViewModel>> UpdateAirportAsync(Guid id, UpdateAirportRequest request, CancellationToken ct = default) => Missing<AirportViewModel>();
+    public Task<Fluentx.Result<bool>> DeleteAirportAsync(Guid id, CancellationToken ct = default) => Missing<bool>();
+    public Task<Fluentx.Result<PageViewModel<TerminalViewModel>>> SearchTerminalsAsync(TopologyCriteria criteria, CancellationToken ct = default) => Empty<TerminalViewModel>();
+    public Task<Fluentx.Result<TerminalViewModel>> GetTerminalAsync(Guid id, CancellationToken ct = default) => Missing<TerminalViewModel>();
+    public Task<Fluentx.Result<TerminalViewModel>> CreateTerminalAsync(CreateTerminalRequest request, CancellationToken ct = default) => Missing<TerminalViewModel>();
+    public Task<Fluentx.Result<TerminalViewModel>> UpdateTerminalAsync(Guid id, UpdateTerminalRequest request, CancellationToken ct = default) => Missing<TerminalViewModel>();
+    public Task<Fluentx.Result<bool>> DeleteTerminalAsync(Guid id, CancellationToken ct = default) => Missing<bool>();
+    public Task<Fluentx.Result<PageViewModel<LevelViewModel>>> SearchLevelsAsync(TopologyCriteria criteria, CancellationToken ct = default) => Empty<LevelViewModel>();
+    public Task<Fluentx.Result<LevelViewModel>> GetLevelAsync(Guid id, CancellationToken ct = default) => Missing<LevelViewModel>();
+    public Task<Fluentx.Result<LevelViewModel>> CreateLevelAsync(CreateLevelRequest request, CancellationToken ct = default) => Missing<LevelViewModel>();
+    public Task<Fluentx.Result<LevelViewModel>> UpdateLevelAsync(Guid id, UpdateLevelRequest request, CancellationToken ct = default) => Missing<LevelViewModel>();
+    public Task<Fluentx.Result<bool>> DeleteLevelAsync(Guid id, CancellationToken ct = default) => Missing<bool>();
+    public Task<Fluentx.Result<PageViewModel<CheckpointViewModel>>> SearchCheckpointsAsync(TopologyCriteria criteria, CancellationToken ct = default) => Empty<CheckpointViewModel>();
+    public Task<Fluentx.Result<CheckpointViewModel>> GetCheckpointAsync(Guid id, CancellationToken ct = default) => Missing<CheckpointViewModel>();
+    public Task<Fluentx.Result<CheckpointViewModel>> CreateCheckpointAsync(CreateCheckpointRequest request, CancellationToken ct = default) => Missing<CheckpointViewModel>();
+    public Task<Fluentx.Result<CheckpointViewModel>> UpdateCheckpointAsync(Guid id, UpdateCheckpointRequest request, CancellationToken ct = default) => Missing<CheckpointViewModel>();
+    public Task<Fluentx.Result<bool>> DeleteCheckpointAsync(Guid id, CancellationToken ct = default) => Missing<bool>();
+    public Task<Fluentx.Result<PageViewModel<DeskViewModel>>> SearchDesksAsync(TopologyCriteria criteria, CancellationToken ct = default) => Empty<DeskViewModel>();
+    public Task<Fluentx.Result<DeskViewModel>> GetDeskAsync(Guid id, CancellationToken ct = default) => Missing<DeskViewModel>();
+    public Task<Fluentx.Result<DeskViewModel>> CreateDeskAsync(CreateDeskRequest request, CancellationToken ct = default) => Missing<DeskViewModel>();
+    public Task<Fluentx.Result<DeskViewModel>> UpdateDeskAsync(Guid id, UpdateDeskRequest request, CancellationToken ct = default) => Missing<DeskViewModel>();
+    public Task<Fluentx.Result<bool>> DeleteDeskAsync(Guid id, CancellationToken ct = default) => Missing<bool>();
+}
