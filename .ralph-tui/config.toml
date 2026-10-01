@@ -5,7 +5,8 @@ configVersion = "2.1"
 tracker = "json"
 agent = "claude"
 maxIterations = 20
-# Commits land on the PRD branch (ralph/phase0), never on trunk; a human reviews and pushes.
+# Commits land on the PRD branch (ralph/phase0), never on main. Agents may push that branch and open a pull request;
+# the ci workflow gates it and a human merges.
 autoCommit = true
 
 [trackerOptions]

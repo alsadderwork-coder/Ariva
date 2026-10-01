@@ -1,0 +1,81 @@
+# Deeper scans that do not need GitHub Advanced Security, so they work on a private repository on any plan:
+#   Trivy filesystem scan   vulnerable dependencies, committed secrets, Dockerfile and Helm misconfiguration
+#   Semgrep CE              C#, TypeScript and secrets rules, in addition to scripts/security/scan.mjs
+#   SBOM                    CycloneDX bill of materials for the release evidence pack
+# Results are uploaded as artifacts (code scanning alerts need Advanced Security on private repositories; see
+# codeql.yml for the switch).
+name: security-scan
+
+on:
+  pull_request:
+  schedule:
+    - cron: '17 2 * * 1' # Mondays 02:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trivy:
+    name: Trivy filesystem scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Scan dependencies, secrets and misconfiguration (fails on high or critical)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          skip-dirs: docs/design/prototype,scripts/security/fixtures
+          exit-code: '1'
+          format: table
+          output: trivy-report.txt
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: trivy-report
+          path: trivy-report.txt
+          if-no-files-found: ignore
+
+  semgrep:
+    name: Semgrep CE
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container:
+      image: semgrep/semgrep:1.178.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Scan (fails on findings)
+        run: >-
+          semgrep scan --error --metrics=off
+          --config p/csharp --config p/typescript --config p/secrets --config p/dockerfile
+          --exclude docs/design/prototype --exclude scripts/security/fixtures
+          --sarif --output semgrep.sarif
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: semgrep-sarif
+          path: semgrep.sarif
+          if-no-files-found: ignore
+
+  sbom:
+    name: Software bill of materials
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          path: .
+          format: cyclonedx-json
+          artifact-name: ariva-sbom.cdx.json

@@ -56,7 +56,7 @@ The repository mirrors AMAN's layout (see [ADR-0016](adr/ADR-0016-repository-mir
 | Ariva.Web | Platform/Frontplane | 51010 | SvelteKit 2, Svelte 5, Tailwind 4, bits-ui, ECharts, svelte-i18n: dashboards, live floor plan, zone editor, display pages |
 | Ariva.Simulation.Api | Platform/Simulation | 51020 | Sensor, AODB and AMAN emulators; reference scenario = the prototype's seeded day (seed 9303, scripted events at 18:05, 18:20 to 18:30 and 19:10) |
 | Ariva.K8s | Platform/Cloud | | Helm charts and Helmfile |
-| Ariva.Cicd | Platform/Cloud | | Azure DevOps YAML pipelines |
+| Ariva.Cicd | Platform/Cloud | | Azure DevOps YAML pipelines for Dalil Container Registry deployments; CI is GitHub Actions in `.github/workflows` |
 | Forecasting worker (Python) | To confirm | | v1: show-up and load-factor models, Monte Carlo waits, backtesting ([ADR-0013](adr/ADR-0013-python-forecasting-worker.md)). Repository location to confirm |
 
 Host placement of each context is Proposed where the sources do not fix it; D5 fixes only that the queue engine and desk state are the only stream-stateful services.

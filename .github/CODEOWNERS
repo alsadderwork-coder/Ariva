@@ -1,0 +1,8 @@
+# Every change needs the product owner's review; security-sensitive paths are listed so the rule survives if the
+# default owner changes.
+*                                   @alsadderwork-coder
+/security/                          @alsadderwork-coder
+/scripts/security/                  @alsadderwork-coder
+/.claude/                           @alsadderwork-coder
+/.github/                           @alsadderwork-coder
+/Platform/Business/                 @alsadderwork-coder

@@ -1,4 +1,4 @@
-# Cloud (Helm, Helmfile, Azure DevOps) rules
+# Cloud (Helm, Helmfile, pipelines) rules
 
 Mirrors AMAN's `Platform/Cloud` layout. Agents edit charts and pipelines; humans run releases.
 
@@ -9,4 +9,4 @@ Mirrors AMAN's `Platform/Cloud` layout. Agents edit charts and pipelines; humans
 - **Ingress:** TLS on every host (`tls:` section with the site certificate secret); no wildcard CORS at the ingress.
 - **Forwarded headers:** never set `ASPNETCORE_FORWARDEDHEADERS_ENABLED`; configure `Security:ForwardedHeaders` with the ingress controller's pod network only.
 - **Environments:** `values-k8s-dev.yaml`, `values-k8s-demo.yaml`, `values-k8s-prd.yaml`, `values-localk8s.yaml`; Helmfile selects them through `environments:`. The simulator is disabled in production.
-- **Pipelines:** `Ariva.Cicd/AzureDevOps/Common/Analyze-solution.yaml` is the PR gate (security scan, build, unit, web, e2e). Build pipelines per service with path filters; release pipelines use a variable group for secrets.
+- **Pipelines:** GitHub Actions in `.github/workflows` are the gate: `ci.yml` (security scan, build, unit, web, e2e) on every pull request, `security-scan.yml` (Trivy, Semgrep CE, SBOM), `codeql.yml` (only with Advanced Security), `images.yml` (build, Trivy image scan, push to GHCR on `v*` tags). Pin every action to a full commit SHA with the version in a comment. `Ariva.Cicd/AzureDevOps` keeps AMAN-style build and release pipelines for deployments that must publish to Dalil Container Registry; keep both in step when images or paths change.

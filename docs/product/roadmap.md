@@ -214,6 +214,6 @@ Listed in D6 on 2026-09-28 as shortening the critical path without needing a con
 - Shortlist two or three AMAN arrivals halls against the pilot criteria; walk them informally; photograph ceilings and snake layouts.
 - Ask the likely pilot client for its change-control calendar and security review process.
 - Name the field engineer who will own Phase 1 on site.
-- Set up the repository and Azure DevOps backlog with an epic per work package; put the ADRs and domain definitions into a project guide for Claude Code.
+- Set up the repository (GitHub, private) and the backlog mirrored to GitHub issues with an epic label per work package; put the ADRs and domain definitions into a project guide for Claude Code.
 - Draft a one-page annex of KPI definitions and acceptance criteria for the pilot proposal.
 - Ask local counsel in Angola whether stereo counters fall under the video-surveillance law; prepare the DPIA template.

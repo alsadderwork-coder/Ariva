@@ -89,7 +89,7 @@ Phases and gates (dates are a scenario that moves with the pilot contract):
 
 ## Epic names used in this wiki
 
-The Azure DevOps backlog will hold one epic per roadmap work package. Until it exists, this wiki names epics as below; rename the references when the backlog is created.
+The backlog lives in `backlog/` (ralph-tui PRDs, stories ARV-001 to ARV-065) and is mirrored to GitHub issues with the `/sync-issues` command, one label per epic. The roadmap work packages map to epics as below.
 
 | Phase | Epic | Roadmap work package |
 |---|---|---|
@@ -121,6 +121,6 @@ The Azure DevOps backlog will hold one epic per roadmap work package. Until it e
 - **Units**: waits in minutes on screens and in formulas (`TimeSpan` in code); service and cycle times in seconds in AMAN contracts; rates in passengers per minute; geometry in metres in the floor plan's local metric system; the default bin is 15 minutes.
 - **Two wait numbers**: realised wait (exact, late, used for reports and penalties) and nowcast (immediate, modelled, used for screens and alerts). Never write "wait time" without saying which. See [KPI and SLA definitions](15-KPI-and-SLA-Definitions.md).
 - **Terminology**: one concept, one name, as in [Glossary](20-Glossary.md) and `docs/domain/glossary.md`. British spelling follows the design documents (realised, finalised, organisation, licence).
-- **Links into `docs/`**: links to design documents are repository-relative (for example `../docs/architecture/overview.md`). They open in the repository view; in the published wiki, open the same path under Repos, Files.
-- **Diagrams**: Mermaid diagrams use the Azure DevOps wiki block syntax (`::: mermaid`). They render in the published wiki, not in the plain file view.
+- **Links into `docs/`**: links to design documents are repository-relative (for example `../docs/architecture/overview.md`) and open in the GitHub repository view.
+- **Diagrams**: Mermaid diagrams use fenced blocks (```` ```mermaid ````), which GitHub renders in the file view.
 - **Source of truth**: formulas in `docs/domain/formulas.md` (cited here as F1 to F21), the AMAN boundary in `docs/domain/data-boundary.md`, decisions in `docs/architecture/adr/README.md` and `docs/product/decisions.md`.

@@ -18,7 +18,7 @@ The repository mirrors AMAN's layout:
 | `Platform/Business` | Ariva.Business.Contracts (AMAN feed contracts V1) |
 | `Platform/Frontplane` | Ariva.Web (51010) |
 | `Platform/Simulation` | Ariva.Simulation.Api (51020) |
-| `Platform/Cloud` | Ariva.K8s (Helm and Helmfile), Ariva.Cicd (Azure DevOps YAML) |
+| `Platform/Cloud` | Ariva.K8s (Helm and Helmfile), Ariva.Cicd (Azure DevOps YAML, kept for Dalil Container Registry deployments) |
 
 AMAN conventions are inherited: Onion architecture (Ariva.Core holds domain and service interfaces, Ariva.Infra holds implementations); `IStorageProvider`, `IUnitOfWork` and `SvcBase`; `Result<T>` and `Fx.Specification` from FluentX; controllers at `Controllers/AdminArea/<Entity>/Controller.cs`; the `Permission` attribute; FusionCache with Redis; Serilog; xUnit v3, Moq, FluentAssertions and Bogus; layered appsettings in Ariva.Api.Common. Bounded contexts are modules (namespaces and folders) inside the shared projects, each with its own database schema, rather than separate services.
 
@@ -33,3 +33,7 @@ AMAN conventions are inherited: Onion architecture (Ariva.Core holds domain and 
 
 - One service per bounded context. Rejected: too many deployables for a team of two.
 - A fresh template unrelated to AMAN. Rejected: loses the team's existing patterns and tooling.
+
+## Amendment 2026-10-01: hosting
+
+The repository is hosted on GitHub (`github.com/alsadderwork-coder/Ariva`, private), not in Azure DevOps like AMAN. Continuous integration runs on GitHub Actions (`.github/workflows`), dependency updates come from Dependabot, and the backlog is mirrored to GitHub issues. The folder structure, project names and conventions still mirror AMAN; the Azure DevOps pipelines remain for deployments that publish to Dalil Container Registry.

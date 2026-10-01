@@ -8,7 +8,6 @@ if (!cmd) process.exit(0);
 const c = cmd.replace(/\s+/g, ' ');
 
 const rules = [
-  [/\bgit\s+push\b/i, 'Pushing is done by a human after review. Commit on the story branch and stop.'],
   [/\bgit\s+(reset\s+--hard|clean\s+-[a-z]*f|checkout\s+--\s+\.|restore\s+\.)/i, 'Destructive git command. Use git stash or ask the human.'],
   [/\bgit\s+(rebase|filter-branch|filter-repo)\b/i, 'History rewriting needs the human.'],
   [/\b(helm|helmfile)\s+(install|upgrade|uninstall|delete|rollback|apply|sync|destroy)\b/i, 'Cluster changes run through the release pipeline, not from an agent session.'],
@@ -21,6 +20,20 @@ const rules = [
   [/\bgit\s+-C\s+\S*Aman\S*\s+(commit|checkout|switch|reset|clean|stash|merge|pull|push)\b/i, 'The AMAN repository is read-only reference material for Ariva agents.']
 ];
 for (const [re, why] of rules) if (re.test(c)) deny(why);
+
+// git push: only story branches, only to origin, never forced, never main or trunk. Humans merge pull requests.
+for (const push of c.matchAll(/\bgit\s+push\b([^;&|]*)/gi)) {
+  const parts = push[1].trim().split(' ').filter(Boolean);
+  const flags = parts.filter(p => p.startsWith('-'));
+  const refs = parts.filter(p => !p.startsWith('-'));
+  if (flags.some(f => /^(-f|--force.*|--mirror|--all|--tags|--delete|-d|--prune)$/.test(f))) deny('Forced, mirror, delete and bulk pushes are not allowed for agents.');
+  if (refs.length < 2 || refs[0] !== 'origin') deny('Push with an explicit branch: git push -u origin <story branch>.');
+  for (const ref of refs.slice(1)) {
+    const target = ref.includes(':') ? ref.split(':').pop() : ref;
+    if (ref.startsWith('+') || ref.startsWith(':')) deny('Forced and delete refspecs are not allowed for agents.');
+    if (!/^(refs\/heads\/)?(ralph|story|feature|fix|claude)\/[A-Za-z0-9._\/-]+$/.test(target)) deny(`Agents push story branches only (ralph/, story/, feature/, fix/, claude/), never ${target}. Open a pull request; a human merges.`);
+  }
+}
 
 // rm -rf is allowed only on build output folders.
 const rm = c.match(/\b(rm\s+-[a-z]*r[a-z]*f?|rm\s+-[a-z]*f[a-z]*r|Remove-Item\b[^;|&]*-Recurse)\s+([^;|&]+)/i);

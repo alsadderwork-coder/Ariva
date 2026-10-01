@@ -13,7 +13,7 @@ Status: the chart, Helmfile, pipelines and appsettings exist; the hosts serve he
 | Combined site | Two deployments | Both | One-way aggregate feed, border to airport |
 | Small site | Single node, single Kafka broker, single database | Core plus one module | Same rules; reduced availability, accepted in writing |
 
-::: mermaid
+```mermaid
 graph LR
   subgraph BD["Border deployment"]
     BS["Sensors in immigration halls"] --> BI["Ingest gateway"]
@@ -31,8 +31,7 @@ graph LR
     AC --> ADB["PostgreSQL with TimescaleDB"]
   end
   BC -->|"Lane-level KPIs only, one way"| AN
-:::
-
+```
 Rules: every deployment is in-country; the airport side never gets a route into the border network; real-time measurement never depends on a WAN. A border deployment may reuse AMAN's Kafka cluster only with the dedicated `ariva.` topic prefix and ACLs.
 
 ## 2. Prerequisites

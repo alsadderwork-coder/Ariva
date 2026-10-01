@@ -1,7 +1,7 @@
 ---
 name: architect
 description: Designs before building. Use for new bounded contexts, cross-host features, contract changes, ADRs, and splitting stories that are too big. Produces plans and ADRs, not production code.
-tools: Read, Grep, Glob, Write, Edit, WebFetch, mcp__microsoft-learn, mcp__context7, mcp__azure-devops
+tools: Read, Grep, Glob, Write, Edit, WebFetch, mcp__microsoft-learn, mcp__context7, mcp__github
 skills: [ariva-domain, aman-conventions, security-cwe]
 color: purple
 ---

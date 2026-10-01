@@ -36,17 +36,29 @@
       "mcp__shadcn-svelte",
       "mcp__playwright",
       "mcp__semgrep",
-      "mcp__postgres-dev"
+      "mcp__postgres-dev",
+      "Bash(git push origin ralph/:*)",
+      "Bash(git push -u origin ralph/:*)",
+      "Bash(git push origin story/:*)",
+      "Bash(git push -u origin story/:*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr diff:*)",
+      "Bash(gh pr checks:*)",
+      "Bash(gh run view:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh issue view:*)",
+      "Bash(gh issue list:*)"
     ],
     "ask": [
       "Bash(dotnet add:*)",
       "Bash(npm install:*)",
       "Bash(git merge:*)",
       "mcp__nuget",
-      "mcp__azure-devops"
+      "mcp__github",
+      "Bash(gh pr merge:*)"
     ],
     "deny": [
-      "Bash(git push:*)",
       "Bash(git reset --hard:*)",
       "Bash(git clean:*)",
       "Bash(helm install:*)",
@@ -62,9 +74,16 @@
       "Write(../Aman/**)",
       "Read(**/.env*)",
       "Read(**/*.pfx)",
-      "Read(**/*.key)"
+      "Read(**/*.key)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(gh repo delete:*)",
+      "Bash(gh repo edit:*)",
+      "Bash(gh secret:*)"
     ],
-    "additionalDirectories": ["../Aman"]
+    "additionalDirectories": [
+      "../Aman"
+    ]
   },
   "enabledMcpjsonServers": [
     "microsoft-learn",
@@ -73,7 +92,7 @@
     "shadcn-svelte",
     "playwright",
     "nuget",
-    "azure-devops",
+    "github",
     "semgrep",
     "postgres-dev"
   ],
@@ -83,17 +102,75 @@
   },
   "hooks": {
     "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "node", "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/session-start.mjs"], "timeout": 15 } ] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/session-start.mjs"
+            ],
+            "timeout": 15
+          }
+        ]
+      }
     ],
     "PreToolUse": [
-      { "matcher": "Bash|PowerShell", "hooks": [ { "type": "command", "command": "node", "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/guard-bash.mjs"], "timeout": 15 } ] },
-      { "matcher": "Edit|Write|MultiEdit|NotebookEdit", "hooks": [ { "type": "command", "command": "node", "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/guard-paths.mjs"], "timeout": 15 } ] }
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/guard-bash.mjs"
+            ],
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/guard-paths.mjs"
+            ],
+            "timeout": 15
+          }
+        ]
+      }
     ],
     "PostToolUse": [
-      { "matcher": "Edit|Write|MultiEdit", "hooks": [ { "type": "command", "command": "node", "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/post-edit-scan.mjs"], "timeout": 30 } ] }
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/post-edit-scan.mjs"
+            ],
+            "timeout": 30
+          }
+        ]
+      }
     ],
     "Stop": [
-      { "hooks": [ { "type": "command", "command": "node", "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/stop-gate.mjs"], "timeout": 150 } ] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/stop-gate.mjs"
+            ],
+            "timeout": 150
+          }
+        ]
+      }
     ]
   }
 }

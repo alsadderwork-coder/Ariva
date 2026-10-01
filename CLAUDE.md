@@ -25,9 +25,10 @@ Platform/Business/Ariva.Business.Contracts   AMAN feed contracts V1 (aggregate-o
 Platform/Frontplane/Ariva.Web                SvelteKit 2, Svelte 5, Tailwind 4, bits-ui (shadcn-svelte), ECharts  51010
 Platform/Simulation/Ariva.Simulation.Api     sensor, AODB and AMAN emulators; reference scenario seed 9303   51020
 Platform/Testing/Ariva.E2E                   Playwright: API end-to-end and browser functional tests
-Platform/Cloud/Ariva.K8s, Ariva.Cicd         Helm and Helmfile, Azure DevOps YAML
+Platform/Cloud/Ariva.K8s, Ariva.Cicd         Helm and Helmfile, Azure DevOps YAML (optional CD to Dalil Container Registry)
+.github/                                     GitHub Actions (ci, security-scan, codeql, claude, images), Dependabot, templates
 docs/        architecture, ADRs, domain formulas, data boundary, security controls, product roadmap
-wiki/        Azure DevOps wiki (deployment, business flow, integration, operations, user and admin guides)
+wiki/        project wiki in Markdown, rendered on GitHub (deployment, business flow, integration, operations, user and admin guides)
 backlog/     ralph-tui PRDs (prd-phase0.json), progress log
 security/    allowlist.json (exceptions, human-approved only)
 scripts/     verify.mjs (all gates), security/scan.mjs (CWE gate)
@@ -58,20 +59,20 @@ cd Platform/Frontplane/Ariva.Web && npm run dev
 5. **Schema.** NHibernate maps configuration aggregates; `SchemaUpdate` is allowed only in `vm-local`. Production schema and every TimescaleDB object come from versioned scripts in `Ariva.Infra/Timescale/Scripts/NNNN_*.sql`. Hot time-series writes use Npgsql binary COPY.
 6. **Reference AMAN, never change it.** Read `../Aman` to port patterns (integration auth, storage provider, messaging, controllers). Hooks block writes there.
 7. **Writing rule.** No em dashes, en dashes used as dashes, or double hyphens in docs, comments or strings. Use commas, colons, semicolons, parentheses or periods.
-8. **No pushing, no cluster changes, no destructive git.** Commit on the story branch; humans push and release.
+8. **Story branches only, no cluster changes, no destructive git.** The repository is `github.com/alsadderwork-coder/Ariva` (private). Commit on a story branch (`story/ARV-nnn-<slug>`, or `ralph/<prd>` under ralph-tui), push it with `git push -u origin <branch>` and open a pull request with `gh pr create`; never push `main`, never force push. The `ci` workflow and the `security-reviewer` must pass; a human merges and releases.
 
 ## MCP servers (use them before guessing)
 
 | Server | Use it for |
 |---|---|
-| `microsoft-learn` | ASP.NET Core, .NET, Kestrel, SignalR, Data Protection, authentication and authorization, rate limiting, Azure DevOps docs. Check the current API before writing framework code. |
+| `microsoft-learn` | ASP.NET Core, .NET, Kestrel, SignalR, Data Protection, authentication and authorization, rate limiting. Check the current API before writing framework code. |
 | `context7` | Library docs: NHibernate, MassTransit, Confluent.Kafka, FusionCache, TickerQ, Mapster, Otp.NET, Npgsql, Testcontainers, Playwright, ECharts. |
 | `svelte` | Svelte 5 and SvelteKit docs; run `svelte-autofixer` on every `.svelte` file you write. |
 | `shadcn-svelte` | shadcn-svelte components, Bits UI API, Lucide icons (community server). |
 | `nuget` | Real package versions and vulnerability fixes. Never invent a version. |
 | `playwright` | Drive the running app while writing functional tests. |
 | `semgrep` | `security_check` on changed files, in addition to `scripts/security/scan.mjs`. |
-| `azure-devops` | Read PBIs, wiki and pipeline runs (org DalilCloud). Create or update work items only when the human asks. |
+| `github` | Issues, pull requests, Actions runs and Dependabot alerts for `alsadderwork-coder/Ariva` (needs `GITHUB_PERSONAL_ACCESS_TOKEN`). Create or change issues only when the human asks (`/sync-issues`). |
 | `postgres-dev` | Read-only inspection of the local dev database (restricted mode). |
 
 Setup and prerequisites: `docs/harness/README.md`.
@@ -84,7 +85,7 @@ Setup and prerequisites: `docs/harness/README.md`.
 4. Run the gates in the story's acceptance criteria (`node scripts/verify.mjs backend` at minimum; `web` and `e2e` for UI or API stories).
 5. Ask the `security-reviewer` subagent to review the diff against `docs/security/cwe-controls.md`; fix what it finds.
 6. Update docs or wiki pages the change affects. Append what you learned to `backlog/progress.md` (one dated entry: story, what changed, gotchas).
-7. Set `"passes": true` for the story in `backlog/prd-phase0.json` only when every criterion is met. Commit with message `ARV-nnn: <title>`. Under ralph-tui, end with `<promise>COMPLETE</promise>`.
+7. Set `"passes": true` for the story in `backlog/prd-phase0.json` only when every criterion is met. Commit with message `ARV-nnn: <title>`, push the story branch and open a pull request that follows `.github/pull_request_template.md`. Under ralph-tui, end with `<promise>COMPLETE</promise>`.
 
 If a story is too big for one session, stop, split it in the PRD (new ids with a suffix, for example ARV-031a), and record why in `backlog/progress.md`.
 

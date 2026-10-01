@@ -42,7 +42,7 @@ Ariva/
       Ariva.E2E                  API end-to-end and Playwright functional tests (Node, TypeScript)
     Cloud/
       Ariva.K8s                  Helm chart (platform, timescaledb) and helmfile
-      Ariva.Cicd                 Azure DevOps pipelines (PR validation, image builds, release)
+      Ariva.Cicd                 Azure DevOps pipelines (optional CD to Dalil Container Registry; CI runs on GitHub Actions)
 ```
 
 ## Ports

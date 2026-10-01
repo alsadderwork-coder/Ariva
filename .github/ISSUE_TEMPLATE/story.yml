@@ -1,0 +1,28 @@
+name: Story
+description: A backlog story (mirrors an entry in backlog/prd-phase0.json)
+title: 'ARV-nnn: '
+labels: [story]
+body:
+  - type: input
+    id: epic
+    attributes:
+      label: Epic
+      placeholder: E0 to E10
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: One per line; the security gate and tests are always included.
+    validations:
+      required: true
+  - type: input
+    id: cwes
+    attributes:
+      label: CWEs to review
+      placeholder: CWE-862, CWE-863, CWE-501

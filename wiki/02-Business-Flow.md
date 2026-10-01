@@ -4,7 +4,7 @@ This page follows Ariva end to end: how a site goes from survey to live service,
 
 ## A. Site lifecycle: from survey to go-live
 
-::: mermaid
+```mermaid
 graph LR
   S1["1 Site survey"] --> S2["2 Sensor design and BOQ"]
   S2 --> S3["3 Procure and install"]
@@ -14,8 +14,7 @@ graph LR
   S6 --> S7["7 Go-live"]
   S7 --> S8["8 Monitor"]
   S8 -->|"Moved sensor, layout or firmware change"| S5
-:::
-
+```
 | # | Step | Who | What happens | Output | Duration (assumption from the roadmap) |
 |---|---|---|---|---|---|
 | 1 | Site survey | Local integration partner with the Dalil field engineer | Measure ceilings and halls, photograph snake layouts, record obstructions, network rooms, power, time sources and access constraints | Survey report, photographs, floor plan | 1 to 3 weeks |
@@ -35,7 +34,7 @@ Notes:
 
 ## B. Live operations loop
 
-::: mermaid
+```mermaid
 sequenceDiagram
   participant S as Sensor
   participant I as Ingest gateway
@@ -58,8 +57,7 @@ sequenceDiagram
   K->>M: Alert shown in the alert list
   K->>N: Alert to notification channels
   N->>N: Email in the MVP, SMS and webhook in v1
-:::
-
+```
 | # | Step | Component | Detail |
 |---|---|---|---|
 | 1 | Sense | Sensor | Each sensor tracks people in its footprint and timestamps samples with its own synchronised clock (NTP or PTP). Health (frame rate, temperature, clock offset) every 10 to 30 seconds |
@@ -77,7 +75,7 @@ Who acts: nobody in the loop; it runs continuously. Supervisors act on what it s
 
 Border module. In the MVP only if an AODB feed is already available; standard from v1.
 
-::: mermaid
+```mermaid
 sequenceDiagram
   participant A as AODB
   participant AM as AMAN
@@ -98,8 +96,7 @@ sequenceDiagram
   T->>K: ariva.alert.state-changed.v1
   K->>M: Alert and arrival-wave strip
   M->>U: Push alert, open desks before the wave
-:::
-
+```
 | # | Step | Who or what | Detail |
 |---|---|---|---|
 | 1 | Flight times | AODB through Ariva.Api.Integration | Estimated in-block before landing, actual in-block after. Messages are applied by their own timestamps; identity changes (diversions, renumbering, codeshares) go through the canonical flight id map |
@@ -116,7 +113,7 @@ The reference scenario shows this at 18:05: a visitor-heavy arrival wave pushes 
 
 Airport Operations module; which module licenses the engine is To confirm. Exact rules are in [KPI and SLA definitions](15-KPI-and-SLA-Definitions.md) and F17.
 
-::: mermaid
+```mermaid
 graph TD
   B0["Bin result for a zone in scope"] --> B1{"Final?"}
   B1 -->|No| P1["Shown as provisional, never counted"]
@@ -134,8 +131,7 @@ graph TD
   B6 -->|Rejected| P6
   P6 --> P7["Penalty: counted minus allowance, times rate, capped"]
   P7 --> P8["Evaluation finalised, evidence pack sealed with SHA-256"]
-:::
-
+```
 | # | Step | Who | Detail |
 |---|---|---|---|
 | 1 | Contract | Terminal duty manager drafts and signs (step-up MFA) | Party (the handler), scope (its islands), KPI (P90 wait per bin, share under threshold, or overflow minutes), threshold, bin size, evaluation window, minimum passengers per bin, allowed exclusion types, monthly allowance, rate per breached bin, monthly cap, dispute window, signed zone profile version, effective date. Signed terms are immutable; a change is a new contract version |
@@ -154,7 +150,7 @@ Commercial safeguard from the risk register: offer the penalty tier only after t
 
 How an AODB, an immigration system or a sensor gateway authenticates to the Integration API. The normative specification is `../docs/architecture/integration.md`; the developer view with examples is in [Integration guide](08-Integration-Guide.md).
 
-::: mermaid
+```mermaid
 sequenceDiagram
   participant C as Integration client
   participant N as Ariva Integration API
@@ -171,8 +167,7 @@ sequenceDiagram
   N->>N: Scope, site binding and idempotency checks
   N-->>C: Result with per-item results
   Note over C,N: Any failed auth check returns 401 invalid_client
-:::
-
+```
 | # | Step | Who | Detail |
 |---|---|---|---|
 | 1 | Register | Ariva system administrator (step-up MFA) | Creates an `IntegrationClient`: name, kind (`Aodb`, `Immigration`, `SensorGateway`, `Other`), scopes, bound site codes, allowed source CIDRs, per-request TOTP policy. Ariva shows the client secret and the TOTP provisioning URI once |

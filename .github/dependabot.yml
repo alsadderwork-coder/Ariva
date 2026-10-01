@@ -1,0 +1,59 @@
+# Dependency updates. MassTransit stays on 8.x: 9.x is commercial (ADR-0018), so majors are ignored until a licence
+# decision. Minor and patch updates are grouped to keep the pull request count low.
+version: 2
+updates:
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    groups:
+      dotnet-minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: MassTransit*
+        update-types: ['version-update:semver-major']
+    labels: [dependencies, backend]
+
+  - package-ecosystem: npm
+    directory: /Platform/Frontplane/Ariva.Web
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      web-minor-and-patch:
+        update-types: [minor, patch]
+    labels: [dependencies, web]
+
+  - package-ecosystem: npm
+    directory: /Platform/Testing/Ariva.E2E
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      e2e-minor-and-patch:
+        update-types: [minor, patch]
+    labels: [dependencies, tests]
+
+  - package-ecosystem: docker
+    directories:
+      - /Platform/Backplane/Ariva.Api.Main
+      - /Platform/Backplane/Ariva.Api.Ingest
+      - /Platform/Backplane/Ariva.Api.Stream
+      - /Platform/Backplane/Ariva.Api.Cronz
+      - /Platform/Backplane/Ariva.Api.Integration
+      - /Platform/Simulation/Ariva.Simulation.Api
+      - /Platform/Frontplane/Ariva.Web
+    schedule:
+      interval: weekly
+    labels: [dependencies, containers]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']
+    labels: [dependencies, ci]

@@ -4,7 +4,7 @@ The network design keeps sensors, displays, users and external systems in separa
 
 ## Network zones
 
-::: mermaid
+```mermaid
 graph LR
   SEN["Sensor VLAN"] -->|"443 HTTPS or 8883 MQTTS"| GW["Ingest gateway"]
   GW -->|"Kafka"| CL["Ariva cluster"]
@@ -16,8 +16,7 @@ graph LR
   CL -->|"OTLP"| MON["SigNoz or Loki"]
   NTP["Site NTP or PTP"] -.-> SEN
   NTP -.-> CL
-:::
-
+```
 | Zone | Contains | Rule |
 |---|---|---|
 | Sensor VLAN | Overhead sensors, PoE switches, the Ingest gateway's sensor-facing interface, the MQTT broker | The gateway is the only bridge to the rest of Ariva. No other route in or out. 802.1X on switch ports. Vendor cloud connectivity disabled at government sites |

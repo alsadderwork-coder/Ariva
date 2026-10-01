@@ -1,0 +1,75 @@
+# Container images for every host and the web app, scanned with Trivy, pushed to GitHub Container Registry on
+# version tags (v*) or by hand. Pull requests that touch a Dockerfile build without pushing.
+# Customer deployments that must use Dalil Container Registry keep the Azure DevOps pipelines in
+# Platform/Cloud/Ariva.Cicd/AzureDevOps (Azure Pipelines can build from this GitHub repository).
+name: images
+
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths: ['**/Dockerfile', '.dockerignore', 'Directory.*.props']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.image }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: ariva-api-main
+            dockerfile: Platform/Backplane/Ariva.Api.Main/Dockerfile
+            context: .
+          - image: ariva-api-ingest
+            dockerfile: Platform/Backplane/Ariva.Api.Ingest/Dockerfile
+            context: .
+          - image: ariva-api-stream
+            dockerfile: Platform/Backplane/Ariva.Api.Stream/Dockerfile
+            context: .
+          - image: ariva-api-cronz
+            dockerfile: Platform/Backplane/Ariva.Api.Cronz/Dockerfile
+            context: .
+          - image: ariva-api-integration
+            dockerfile: Platform/Backplane/Ariva.Api.Integration/Dockerfile
+            context: .
+          - image: ariva-simulation
+            dockerfile: Platform/Simulation/Ariva.Simulation.Api/Dockerfile
+            context: .
+          - image: ariva-web
+            dockerfile: Platform/Frontplane/Ariva.Web/Dockerfile
+            context: .
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+      PUSH: ${{ github.event_name != 'pull_request' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build
+        run: |
+          TAG="${GITHUB_REF_NAME//\//-}-${GITHUB_RUN_NUMBER}"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          docker build -f "${{ matrix.dockerfile }}" -t "$IMAGE:$TAG" "${{ matrix.context }}"
+      - name: Scan the image (fails on high or critical)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}:${{ env.TAG }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+      - name: Push to GitHub Container Registry
+        if: env.PUSH == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker push "$IMAGE:$TAG"
