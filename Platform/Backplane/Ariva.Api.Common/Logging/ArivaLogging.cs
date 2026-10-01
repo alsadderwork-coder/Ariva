@@ -22,7 +22,7 @@ public static class ArivaLogging
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(configuration);
 
-        var application = configuration["Application:Name"] ?? "ariva";
+        var application = ApplicationName(configuration);
 
         logger
             .ReadFrom.Configuration(configuration)
@@ -69,6 +69,20 @@ public static class ArivaLogging
         }
 
         return logger;
+    }
+
+    /// <summary>
+    /// The service name, for example "api-main". Application:Name is "api-${Application:ShortName}" in the base file;
+    /// that one placeholder is resolved here until AMAN's configuration substitution is ported.
+    /// </summary>
+    public static string ApplicationName(IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        var name = configuration["Application:Name"];
+        if (string.IsNullOrWhiteSpace(name))
+            return "ariva";
+        return name.Replace("${Application:ShortName}", configuration["Application:ShortName"] ?? "base", StringComparison.Ordinal);
     }
 }
 

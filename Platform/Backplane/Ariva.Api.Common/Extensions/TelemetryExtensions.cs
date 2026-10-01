@@ -36,7 +36,7 @@ public static class TelemetryExtensions
             .AddOpenTelemetry()
             .ConfigureResource(resource => resource
                 .AddService(
-                    configuration["Application:Name"] ?? "ariva",
+                    ArivaLogging.ApplicationName(configuration),
                     serviceNamespace: "ariva",
                     serviceVersion: Assembly.GetEntryAssembly()?.GetName().Version?.ToString())
                 .AddAttributes([new KeyValuePair<string, object>("deployment.environment", configuration["Application:Environment"] ?? "unknown")]))

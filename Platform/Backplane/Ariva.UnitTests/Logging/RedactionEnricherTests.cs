@@ -169,4 +169,17 @@ public sealed class RedactionEnricherTests
         settings.Endpoint.Should().Be(new Uri("http://otel-collector:4318"));
         settings.UseHttp.Should().BeTrue();
     }
+
+    [Theory]
+    [InlineData("api-${Application:ShortName}", "main", "api-main")]
+    [InlineData("custom-name", "main", "custom-name")]
+    [InlineData(null, null, "ariva")]
+    public void ApplicationName_Should_ResolveShortName_When_BaseNameIsTemplated(string name, string shortName, string expected)
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string> { ["Application:Name"] = name, ["Application:ShortName"] = shortName })
+            .Build();
+
+        ArivaLogging.ApplicationName(configuration).Should().Be(expected);
+    }
 }
