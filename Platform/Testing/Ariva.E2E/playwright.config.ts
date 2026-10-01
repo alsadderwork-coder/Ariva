@@ -15,6 +15,12 @@ const repositoryRoot = path.resolve(here, '..', '..', '..');
 const configuration = process.env.ARIVA_E2E_CONFIGURATION || 'Debug';
 const isCi = !!process.env.CI;
 
+// Every .NET host writes its JSON log to this run's folder; global-teardown.ts fails the run if any line carries a
+// bearer token, a JWT or an unredacted access_token (ARV-007, CWE-532). The folder is per run, so a previous run's
+// files never mask or cause a finding.
+const logDirectory = path.join(here, 'logs', new Date().toISOString().replace(/[:.]/g, '-'));
+process.env.ARIVA_E2E_LOG_DIR = logDirectory;
+
 // CI installs the Chromium build that matches this Playwright version (npx playwright install chromium).
 // Elsewhere an already installed Chromium can be used instead: ARIVA_E2E_CHROMIUM=/path/to/chrome.
 const chromiumExecutable = process.env.ARIVA_E2E_CHROMIUM || undefined;
@@ -23,6 +29,7 @@ const project = (relative: string) => path.join(repositoryRoot, 'Platform', rela
 
 function dotnetHost(projectPath: string, healthUrl: string, buildFirst = false) {
 	const run = `dotnet run --no-build --configuration ${configuration} --project "${projectPath}"`;
+	const logFile = path.join(logDirectory, `${path.basename(projectPath)}.log`);
 	return {
 		command: buildFirst ? `node scripts/build-backend.mjs && ${run}` : run,
 		cwd: here,
@@ -33,12 +40,16 @@ function dotnetHost(projectPath: string, healthUrl: string, buildFirst = false) 
 		stderr: 'pipe' as const,
 		// The E2E run has no database unless ARIVA_E2E_SCHEMA_UPDATE=true says one is up (npm run dev:up); vm-local
 		// otherwise runs the development schema update at startup and the hosts would stop on the refused connection.
-		env: { Database__AllowSchemaUpdate: process.env.ARIVA_E2E_SCHEMA_UPDATE === 'true' ? 'true' : 'false' }
+		env: {
+			Database__AllowSchemaUpdate: process.env.ARIVA_E2E_SCHEMA_UPDATE === 'true' ? 'true' : 'false',
+			LogFile__Path: logFile
+		}
 	};
 }
 
 export default defineConfig({
 	testDir: './tests',
+	globalTeardown: './tests/support/global-teardown.ts',
 	outputDir: './test-results',
 	fullyParallel: true,
 	forbidOnly: isCi,

@@ -1,0 +1,100 @@
+using Microsoft.Extensions.Configuration;
+using Serilog;
+using Serilog.Events;
+using Serilog.Formatting.Json;
+using Serilog.Sinks.Grafana.Loki;
+
+namespace Ariva.Api.Common.Logging;
+
+/// <summary>
+/// The Serilog pipeline every host uses (ARV-007, AMAN parity): levels from the "Serilog" section, structured JSON on
+/// the console, Loki and OTLP sinks when enabled in configuration, and the redaction enricher on every event.
+/// Settings fixed in code because they protect secrets: the redaction enricher, and Microsoft.AspNetCore.Hosting at
+/// Warning (its request-start log line carries the query string, where SignalR puts access_token; Microsoft's SignalR
+/// security guidance).
+/// </summary>
+public static class ArivaLogging
+{
+    public const string HostingCategory = "Microsoft.AspNetCore.Hosting";
+
+    public static LoggerConfiguration Configure(LoggerConfiguration logger, IConfiguration configuration, string environment)
+    {
+        ArgumentNullException.ThrowIfNull(logger);
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        var application = configuration["Application:Name"] ?? "ariva";
+
+        logger
+            .ReadFrom.Configuration(configuration)
+            .MinimumLevel.Override(HostingCategory, LogEventLevel.Warning)
+            .Enrich.FromLogContext()
+            .Enrich.WithProperty("Application", application)
+            .Enrich.WithProperty("Environment", environment ?? "unknown")
+            .Enrich.With<RedactionEnricher>()
+            .WriteTo.Async(sink => sink.Console(new JsonFormatter(renderMessage: true)));
+
+        var file = configuration["LogFile:Path"];
+        if (!string.IsNullOrWhiteSpace(file))
+            logger.WriteTo.File(new JsonFormatter(renderMessage: true), file, shared: true);
+
+        if (bool.TryParse(configuration["Loki:Enabled"], out var loki) && loki && Uri.TryCreate(configuration["Loki:Uri"], UriKind.Absolute, out var lokiUri))
+        {
+            logger.WriteTo.GrafanaLoki(
+                lokiUri.ToString(),
+                labels:
+                [
+                    new LokiLabel { Key = "app", Value = application },
+                    new LokiLabel { Key = "environment", Value = environment ?? "unknown" },
+                    new LokiLabel { Key = "log_type", Value = "application" }
+                ],
+                propertiesAsLabels: ["level"]);
+        }
+
+        var otlp = OtlpSettings.From(configuration);
+        if (otlp.Enabled)
+        {
+            logger.WriteTo.OpenTelemetry(options =>
+            {
+                options.Endpoint = otlp.Endpoint.ToString();
+                options.Protocol = otlp.UseHttp
+                    ? Serilog.Sinks.OpenTelemetry.OtlpProtocol.HttpProtobuf
+                    : Serilog.Sinks.OpenTelemetry.OtlpProtocol.Grpc;
+                options.ResourceAttributes = new Dictionary<string, object>
+                {
+                    ["service.name"] = application,
+                    ["service.namespace"] = "ariva",
+                    ["deployment.environment"] = environment ?? "unknown"
+                };
+            });
+        }
+
+        return logger;
+    }
+}
+
+/// <summary>
+/// The OTLP target, shared by the Serilog sink and the trace and metric exporters. Enabled by Otlp:Enabled or by the
+/// standard OTEL_EXPORTER_OTLP_ENDPOINT variable the Helm chart sets; off when neither is set, so an unreachable
+/// collector never affects startup.
+/// </summary>
+public sealed record OtlpSettings(bool Enabled, Uri Endpoint, bool UseHttp)
+{
+    private const string DefaultEndpoint = "http://localhost:4317";
+
+    public static OtlpSettings From(IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        var fromEnvironment = configuration["OTEL_EXPORTER_OTLP_ENDPOINT"];
+        var enabled = (bool.TryParse(configuration["Otlp:Enabled"], out var flag) && flag) || !string.IsNullOrWhiteSpace(fromEnvironment);
+        var endpointText = configuration["Otlp:Endpoint"];
+        if (string.IsNullOrWhiteSpace(endpointText))
+            endpointText = string.IsNullOrWhiteSpace(fromEnvironment) ? DefaultEndpoint : fromEnvironment;
+        var protocol = configuration["Otlp:Protocol"] ?? configuration["OTEL_EXPORTER_OTLP_PROTOCOL"] ?? "grpc";
+
+        return new OtlpSettings(
+            enabled && Uri.TryCreate(endpointText, UriKind.Absolute, out _),
+            Uri.TryCreate(endpointText, UriKind.Absolute, out var endpoint) ? endpoint : new Uri(DefaultEndpoint),
+            protocol.StartsWith("http", StringComparison.OrdinalIgnoreCase));
+    }
+}

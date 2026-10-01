@@ -8,8 +8,8 @@ Status: metric names, dashboards and system alarms are built in Phase 0 epic Ske
 
 | Piece | What it does |
 |---|---|
-| Serilog | Structured logs from every .NET host |
-| OpenTelemetry | Traces and metrics from every host, exported over OTLP to the endpoint in `otel.endpoint` (SigNoz, or Loki and its stack, as the site provides). Trace context is propagated through Kafka headers |
+| Serilog | Structured JSON logs on the console of every API host; also to Loki (`Loki:Enabled`, `Loki:Uri`) and to the OTLP endpoint when telemetry is on. Credentials are removed before any sink sees an event: Authorization, Cookie, Set-Cookie, X-TOTP-Code, access_token and password-like values, bearer and basic credentials and JWTs inside text. `Microsoft.AspNetCore.Hosting` stays at Warning in code (its request line carries the SignalR access_token); raise other categories under `Serilog:MinimumLevel:Override` |
+| OpenTelemetry | Traces and metrics from every API host, exported over OTLP to the endpoint in `otel.endpoint` (the chart sets `OTEL_EXPORTER_OTLP_ENDPOINT`; `Otlp:Enabled` and `Otlp:Endpoint` do the same outside Kubernetes). Off when no endpoint is set. Query string values are redacted in spans (OpenTelemetry .NET default; never set `OTEL_DOTNET_EXPERIMENTAL_ASPNETCORE_DISABLE_URL_QUERY_REDACTION`). Trace context is propagated through Kafka headers |
 | Resource attributes | `service.namespace=ariva`, `deployment.environment`, `k8s.cluster.name`, `service.version`, plus node, pod and namespace names |
 | Kubernetes probes | `/health/startup`, `/health/readiness`, `/health/liveness` on every .NET host; `/healthz` on the web pods. Readiness will include PostgreSQL, Kafka and Redis checks (target) |
 | TickerQ dashboard | Job runs and failures in Ariva.Api.Cronz (management network only) |
