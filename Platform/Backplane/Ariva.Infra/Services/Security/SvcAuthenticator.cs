@@ -48,13 +48,22 @@ internal sealed class SvcAuthenticator(
     public static readonly EventId SessionsRevoked = new(9105, "SecurityEvent.SessionsRevoked");
     public static readonly EventId AccountDisabled = new(9106, "SecurityEvent.AccountDisabled");
     public static readonly EventId AccountEnabled = new(9107, "SecurityEvent.AccountEnabled");
+    public static readonly EventId RecoveryCodeUsed = new(9108, "SecurityEvent.RecoveryCodeUsed");
+    public static readonly EventId TotpEnrolled = new(9109, "SecurityEvent.TotpEnrolled");
+    public static readonly EventId BreakGlassSignIn = new(9110, "SecurityEvent.BreakGlassSignIn");
+    public static readonly EventId RecoveryCodesRegenerated = new(9111, "SecurityEvent.RecoveryCodesRegenerated");
 
     // Verified when the username is unknown, so the response takes as long as a real check.
     private static readonly Lazy<PasswordHashValue> DummyHash = new(() => PasswordHasher.Hash(Guid.NewGuid().ToString("N")));
 
     private static readonly string[] PasswordMethod = ["pwd"];
+    private static readonly string[] PasswordAndOtp = ["pwd", "otp"];
+
+    // RFC 8176 has no value for a recovery code; "rc" marks it so step-up (ARV-010d) can tell it from a TOTP code.
+    private static readonly string[] PasswordAndRecoveryCode = ["pwd", "rc"];
 
     private readonly IDataProtector _successors = dataProtection.CreateProtector(RefreshTokens.SuccessorPurpose);
+    private readonly IDataProtector _totpSecrets = dataProtection.CreateProtector(Totp.DataProtectionPurpose);
 
     #region Sign-in
 
@@ -82,8 +91,40 @@ internal sealed class SvcAuthenticator(
 
         if (!passwordMatches)
         {
-            await RecordFailureAsync(user.Id.Value, now, ct);
+            await RecordFailureAsync(user, now, ct);
             return Failed();
+        }
+
+        // Second factor (ARV-010c): TOTP for an enrolled account, a recovery code instead of it, and always a
+        // recovery code for the break-glass account. A wrong code counts towards the same lockout as a wrong password.
+        var methods = PasswordMethod;
+        int? recoveryCodesLeft = null;
+        if (user.IsBreakGlass || user.TotpEnrolled)
+        {
+            if (string.IsNullOrWhiteSpace(request.Code) && string.IsNullOrWhiteSpace(request.RecoveryCode))
+                return Result.Error<SignInResult>(ISvcAuthenticator.MfaRequired);
+
+            if (!user.IsBreakGlass && !string.IsNullOrWhiteSpace(request.Code))
+            {
+                if (!await AcceptTotpAsync(user, request.Code, now, ct))
+                {
+                    await RecordFailureAsync(user, now, ct);
+                    return Failed();
+                }
+
+                methods = PasswordAndOtp;
+            }
+            else
+            {
+                recoveryCodesLeft = await UseRecoveryCodeAsync(user, request.RecoveryCode, now, ct);
+                if (recoveryCodesLeft is null)
+                {
+                    await RecordFailureAsync(user, now, ct);
+                    return Failed();
+                }
+
+                methods = PasswordAndRecoveryCode;
+            }
         }
 
         if (needsRehash)
@@ -91,15 +132,22 @@ internal sealed class SvcAuthenticator(
         user.RecordSuccessfulLogin(now);
         await UpdateAsync(user, ct);
 
+        if (user.IsBreakGlass)
+        {
+            logger.LogCritical(BreakGlassSignIn, "Break-glass account {UserId} signed in from {IpAddress}; {Remaining} recovery code(s) left",
+                user.Id, context?.IpAddress, recoveryCodesLeft);
+        }
+
         // CWE-384: a session the browser still holds is ended, never continued.
         await RevokePresentedAsync(context?.PresentedRefreshToken, now, "replaced-by-login", ct);
 
-        var session = new UserSession(user, now, PasswordMethod, IdleTimeout(user),
+        var session = new UserSession(user, now, methods, IdleTimeout(user),
             TimeSpan.FromSeconds(settings.Sessions.AbsoluteSeconds), context?.IpAddress, context?.UserAgent);
         await SaveAsync(session, ct);
         var (refreshToken, _) = await IssueRefreshTokenAsync(session, now, ct);
 
-        return new Result<SignInResult>(new SignInResult(Token(user, session), refreshToken, session.AbsoluteExpiresOn - now));
+        var token = Token(user, session) with { RecoveryCodesRemaining = recoveryCodesLeft };
+        return new Result<SignInResult>(new SignInResult(token, refreshToken, session.AbsoluteExpiresOn - now));
     }
 
     public async Task<Result<SignInResult>> RefreshAsync(SignInContext context, CancellationToken ct = default)
@@ -162,7 +210,7 @@ internal sealed class SvcAuthenticator(
 
         if (!PasswordHasher.Verify(request.CurrentPassword ?? string.Empty, user.StoredPassword(), out _))
         {
-            await RecordFailureAsync(user.Id.Value, now, ct);
+            await RecordFailureAsync(user, now, ct);
             return Result.Error<TokenViewModel>(ISvcAuthenticator.InvalidCredentials);
         }
 
@@ -214,11 +262,172 @@ internal sealed class SvcAuthenticator(
         if (user is null)
             return Result.Error<bool>(ISvcAuthenticator.UserNotFound);
 
+        if (user.IsBreakGlass)
+            return Result.Error<bool>(ISvcAuthenticator.UserNotFound); // re-enabled only by the installer command
+
         user.Enable();
         await UpdateAsync(user, ct);
         RegisterPostCommitAction(() => cache.RemoveByTagAsync(StoredPermissionResolver.Tag(userId)).AsTask());
         logger.LogInformation(AccountEnabled, "Account {UserId} enabled by {AdministratorId}", userId, CurrentUser.Id);
         return new Result<bool>(true);
+    }
+
+    #endregion
+
+    #region TOTP and recovery codes
+
+    public async Task<Result<TotpEnrolmentViewModel>> EnrolTotpAsync(CancellationToken ct = default)
+    {
+        var (user, _) = await CallerAsync(ct);
+        if (user is null)
+            return Result.Error<TotpEnrolmentViewModel>(ISvcAuthenticator.InvalidCredentials);
+        if (user.TotpEnrolled || user.IsBreakGlass)
+            return Result.Error<TotpEnrolmentViewModel>(ISvcAuthenticator.AlreadyEnrolled);
+
+        var secret = Totp.NewSecret();
+        user.BeginTotpEnrolment(_totpSecrets.Protect(Base32.Encode(secret)));
+        await UpdateAsync(user, ct);
+        return new Result<TotpEnrolmentViewModel>(new TotpEnrolmentViewModel(
+            Base32.Encode(secret), Totp.OtpAuthUri(settings.Totp.Issuer, user.UserName, secret)));
+    }
+
+    public async Task<Result<TotpConfirmedViewModel>> ConfirmTotpAsync(TotpCodeRequest request, CancellationToken ct = default)
+    {
+        var (user, session) = await CallerAsync(ct);
+        if (user is null)
+            return Result.Error<TotpConfirmedViewModel>(ISvcAuthenticator.InvalidCredentials);
+        if (user.TotpEnrolled || user.IsBreakGlass)
+            return Result.Error<TotpConfirmedViewModel>(ISvcAuthenticator.AlreadyEnrolled);
+
+        var now = UtcNow;
+        var step = user.TotpSecretProtected is null ? null : Totp.Match(Secret(user), request?.Code, now, null, settings.Totp.SkewSteps);
+        if (step is null)
+        {
+            await RecordFailureAsync(user, now, ct);
+            return Result.Error<TotpConfirmedViewModel>(ISvcAuthenticator.InvalidCode);
+        }
+
+        user.ConfirmTotp(step.Value);
+        await UpdateAsync(user, ct);
+        var codes = await IssueRecoveryCodesAsync(user, now, ct);
+        session.RecordAuthentication(now, PasswordAndOtp);
+        await UpdateAsync(session, ct);
+        var sessionId = session.Id.Value;
+        RegisterPostCommitAction(() => EvictAsync(sessionId));
+        logger.LogInformation(TotpEnrolled, "Account {UserId} enrolled an authenticator", user.Id);
+
+        return new Result<TotpConfirmedViewModel>(new TotpConfirmedViewModel(Token(user, session), codes));
+    }
+
+    public async Task<Result<RecoveryCodesViewModel>> RegenerateRecoveryCodesAsync(TotpCodeRequest request, CancellationToken ct = default)
+    {
+        var (user, _) = await CallerAsync(ct);
+        if (user is null)
+            return Result.Error<RecoveryCodesViewModel>(ISvcAuthenticator.InvalidCredentials);
+        if (!user.TotpEnrolled)
+            return Result.Error<RecoveryCodesViewModel>(ISvcAuthenticator.InvalidCode);
+
+        var now = UtcNow;
+        if (!await AcceptTotpAsync(user, request?.Code, now, ct))
+        {
+            await RecordFailureAsync(user, now, ct);
+            return Result.Error<RecoveryCodesViewModel>(ISvcAuthenticator.InvalidCode);
+        }
+
+        var codes = await IssueRecoveryCodesAsync(user, now, ct);
+        logger.LogInformation(RecoveryCodesRegenerated, "Account {UserId} generated new recovery codes", user.Id);
+        return new Result<RecoveryCodesViewModel>(new RecoveryCodesViewModel(codes));
+    }
+
+    /// <summary>The caller's account and active session, or nulls.</summary>
+    private async Task<(User User, UserSession Session)> CallerAsync(CancellationToken ct)
+    {
+        if (CurrentUser.Id is not { } userId || CurrentUser.SessionId is not { } sessionId)
+            return (null, null);
+
+        var user = await GetAsync<User>(userId, ct);
+        var session = await GetAsync<UserSession>(sessionId, ct);
+        var now = UtcNow;
+        return user is null || user.IsDisabled || user.IsLocked(now) || session is null || session.User.Id != user.Id || !session.IsActive(now)
+            ? (null, null)
+            : (user, session);
+    }
+
+    private byte[] Secret(User user) => Base32.Decode(_totpSecrets.Unprotect(user.TotpSecretProtected));
+
+    /// <summary>
+    /// Verifies a TOTP code and records its step in one UPDATE that only succeeds for a later step, so two requests
+    /// with the same code cannot both pass (CWE-294).
+    /// </summary>
+    private async Task<bool> AcceptTotpAsync(User user, string code, DateTime now, CancellationToken ct)
+    {
+        if (!user.TotpEnrolled || user.TotpSecretProtected is null)
+            return false;
+
+        var step = Totp.Match(Secret(user), code, now, user.TotpLastStep, settings.Totp.SkewSteps);
+        if (step is null)
+            return false;
+
+        var rows = await ExecuteCommandAsync<IdRow>(
+            """
+            UPDATE "user" SET totp_last_step = :step
+             WHERE id = :id AND (totp_last_step IS NULL OR totp_last_step < :step)
+            RETURNING id AS "Id"
+            """,
+            new Dictionary<string, object> { ["step"] = step.Value, ["id"] = user.Id.Value },
+            ct);
+        return rows.Count == 1;
+    }
+
+    /// <summary>Marks a recovery code used in one UPDATE; returns how many are left, or null when the code is not valid.</summary>
+    private async Task<int?> UseRecoveryCodeAsync(User user, string code, DateTime now, CancellationToken ct)
+    {
+        var normalized = RecoveryCodes.Normalize(code);
+        if (normalized is null)
+            return null;
+
+        var used = await ExecuteCommandAsync<IdRow>(
+            """
+            UPDATE recovery_code SET used_on = :now
+             WHERE user_id = :userId AND code_hash = :hash AND used_on IS NULL
+            RETURNING id AS "Id"
+            """,
+            new Dictionary<string, object> { ["now"] = now, ["userId"] = user.Id.Value, ["hash"] = RecoveryCodes.Hash(normalized) },
+            ct);
+        if (used.Count == 0)
+            return null;
+
+        var left = (await ExecuteSqlAsync<CountRow>(
+            """SELECT count(*) AS "Count" FROM recovery_code WHERE user_id = :userId AND used_on IS NULL""",
+            new Dictionary<string, object> { ["userId"] = user.Id.Value },
+            ct)).Single().Count;
+        logger.LogWarning(RecoveryCodeUsed, "Account {UserId} signed in with a recovery code; {Remaining} left", user.Id, left);
+        return (int)left;
+    }
+
+    /// <summary>Ten new codes for the user; the remaining old ones are marked used. Returns them for showing once.</summary>
+    private async Task<IReadOnlyList<string>> IssueRecoveryCodesAsync(User user, DateTime now, CancellationToken ct)
+    {
+        await ExecuteCommandAsync<IdRow>(
+            """
+            UPDATE recovery_code SET used_on = :now
+             WHERE user_id = :userId AND used_on IS NULL
+            RETURNING id AS "Id"
+            """,
+            new Dictionary<string, object> { ["now"] = now, ["userId"] = user.Id.Value },
+            ct);
+
+        var codes = new List<string>(RecoveryCodes.Count);
+        while (codes.Count < RecoveryCodes.Count)
+        {
+            var code = RecoveryCodes.New();
+            if (codes.Any(existing => existing == code))
+                continue;
+            codes.Add(code);
+            await SaveAsync(new RecoveryCode(user, RecoveryCodes.Hash(RecoveryCodes.Normalize(code)), now), ct);
+        }
+
+        return codes;
     }
 
     #endregion
@@ -367,8 +576,13 @@ internal sealed class SvcAuthenticator(
     /// increment and write through the session would). The row lock the UPDATE takes serialises concurrent failures
     /// for one account; a locked account is not counted. At the threshold the count resets and the lock is set.
     /// </summary>
-    private async Task RecordFailureAsync(Guid userId, DateTime now, CancellationToken ct)
+    private async Task RecordFailureAsync(User user, DateTime now, CancellationToken ct)
     {
+        // The break-glass account is never locked out: it is the way in when everything else is locked.
+        if (user.IsBreakGlass)
+            return;
+
+        var userId = user.Id.Value;
         var lockedUntil = now.AddSeconds(settings.Lockout.DurationSeconds);
         var rows = await ExecuteCommandAsync<LockoutRow>(
             """
@@ -428,6 +642,11 @@ internal sealed class SvcAuthenticator(
     private sealed class SuccessorRow
     {
         public string Protected { get; set; }
+    }
+
+    private sealed class CountRow
+    {
+        public long Count { get; set; }
     }
 
     #endregion

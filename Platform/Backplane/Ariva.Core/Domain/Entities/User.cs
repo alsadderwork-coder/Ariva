@@ -36,8 +36,20 @@ public class User : BaseAuditableEntity<User>
     /// <summary>Set for an administrator-issued temporary password; the account is limited to the pending scope.</summary>
     public virtual bool MustChangePassword { get; protected set; }
 
-    /// <summary>Set by TOTP enrolment (ARV-010c).</summary>
+    /// <summary>Set when the first TOTP code of an enrolment is confirmed (ARV-010c).</summary>
     public virtual bool TotpEnrolled { get; protected set; }
+
+    /// <summary>The TOTP secret, Data Protection encrypted (purpose Ariva.Totp.v1); never returned after enrolment.</summary>
+    public virtual string TotpSecretProtected { get; protected set; }
+
+    /// <summary>The last accepted TOTP time step; a code for it or an earlier one is a replay (CWE-294).</summary>
+    public virtual long? TotpLastStep { get; protected set; }
+
+    /// <summary>
+    /// The deployment's emergency account (ARV-010c): created only by the installer command, signs in with its password
+    /// and a recovery code, is never locked out, and every sign-in is a critical security event.
+    /// </summary>
+    public virtual bool IsBreakGlass { get; protected set; }
 
     public virtual bool IsDisabled { get; protected set; }
     public virtual int FailedLoginCount { get; protected set; }
@@ -52,8 +64,40 @@ public class User : BaseAuditableEntity<User>
 
     public virtual bool IsLocked(DateTime utcNow) => LockedUntil is { } until && until > utcNow;
 
-    /// <summary>A temporary password, an unfinished TOTP enrolment (when required) or both: only the pending scope.</summary>
-    public virtual bool IsPending(bool totpRequired) => MustChangePassword || (totpRequired && !TotpEnrolled);
+    /// <summary>
+    /// A temporary password, an unfinished TOTP enrolment (when required) or both: only the pending scope. The
+    /// break-glass account's second factor is its recovery codes, so it is never pending for TOTP.
+    /// </summary>
+    public virtual bool IsPending(bool totpRequired) => MustChangePassword || (totpRequired && !TotpEnrolled && !IsBreakGlass);
+
+    /// <summary>Starts (or restarts) an enrolment; the account keeps its pending scope until the first code is confirmed.</summary>
+    public virtual void BeginTotpEnrolment(string secretProtected)
+    {
+        if (TotpEnrolled)
+            throw new InvalidOperationException("TOTP is already enrolled; an administrator resets it (ARV-011).");
+        ArgumentException.ThrowIfNullOrWhiteSpace(secretProtected);
+        TotpSecretProtected = secretProtected;
+        TotpLastStep = null;
+    }
+
+    /// <summary>The first valid code confirms the enrolment.</summary>
+    public virtual void ConfirmTotp(long step)
+    {
+        if (TotpSecretProtected is null)
+            throw new InvalidOperationException("No enrolment has been started.");
+        TotpEnrolled = true;
+        TotpLastStep = step;
+    }
+
+    /// <summary>Clears TOTP so the user enrols again (administrator reset, ARV-011).</summary>
+    public virtual void ResetTotp()
+    {
+        TotpEnrolled = false;
+        TotpSecretProtected = null;
+        TotpLastStep = null;
+    }
+
+    public virtual void MarkBreakGlass() => IsBreakGlass = true;
 
     public virtual void SetPassword(PasswordHashValue hash, bool temporary)
     {
@@ -85,8 +129,6 @@ public class User : BaseAuditableEntity<User>
 
     public virtual void Enable() => IsDisabled = false;
 
-    public virtual void MarkTotpEnrolled() => TotpEnrolled = true;
-
     public virtual void Grant(string roleCode)
     {
         if (!RoleCodes.All.Any(code => string.Equals(code, roleCode, StringComparison.Ordinal)))
@@ -114,4 +156,27 @@ public class UserRole : EntityBase<UserRole>
 
     public virtual User User { get; protected set; }
     public virtual string RoleCode { get; protected set; }
+}
+
+/// <summary>
+/// A single-use recovery code (ARV-010c), stored as the hex SHA-256 of its normalised form. Ten are issued at TOTP
+/// enrolment and shown once; the break-glass account signs in with one each time.
+/// </summary>
+public class RecoveryCode : EntityBase<RecoveryCode>
+{
+    protected RecoveryCode()
+    {
+    }
+
+    public RecoveryCode(User user, string codeHash, DateTime utcNow)
+    {
+        User = user;
+        CodeHash = codeHash;
+        IssuedOn = utcNow;
+    }
+
+    public virtual User User { get; protected set; }
+    public virtual string CodeHash { get; protected set; }
+    public virtual DateTime IssuedOn { get; protected set; }
+    public virtual DateTime? UsedOn { get; protected set; }
 }

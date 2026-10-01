@@ -1,5 +1,6 @@
 using Ariva.Core.Security;
 using Ariva.Infra.Settings;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using NHibernate.Linq;
@@ -12,7 +13,7 @@ namespace Ariva.Infra.Security;
 /// same. Registered only when the environment is vm-local; production accounts come from the installer (ARV-010c) and
 /// user administration (ARV-011).
 /// </summary>
-internal sealed class DevelopmentUserSeed(IServiceScopeFactory scopes, AuthSettings settings, ILogger<DevelopmentUserSeed> logger) : IHostedService
+internal sealed class DevelopmentUserSeed(IServiceScopeFactory scopes, AuthSettings settings, IDataProtectionProvider dataProtection, ILogger<DevelopmentUserSeed> logger) : IHostedService
 {
     public async Task StartAsync(CancellationToken cancellationToken)
     {
@@ -32,6 +33,13 @@ internal sealed class DevelopmentUserSeed(IServiceScopeFactory scopes, AuthSetti
             user.SetPassword(PasswordHasher.Hash(entry.Password), entry.Temporary);
             user.Unlock();
             user.Enable();
+            user.ResetTotp();
+            if (!string.IsNullOrWhiteSpace(entry.TotpSecret))
+            {
+                // Enrolled with a known secret, so the E2E suite can compute codes; any step from now on is new.
+                user.BeginTotpEnrolment(dataProtection.CreateProtector(Totp.DataProtectionPurpose).Protect(entry.TotpSecret.Trim().ToUpperInvariant()));
+                user.ConfirmTotp(0);
+            }
             await storage.SaveOrUpdateAsync(user, cancellationToken);
 
             foreach (var role in entry.Roles.Where(r => !user.Roles.Any(existing => existing.RoleCode == r)))

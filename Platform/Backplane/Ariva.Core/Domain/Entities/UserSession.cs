@@ -73,6 +73,14 @@ public class UserSession : EntityBase<UserSession>
         IdleExpiresOn = Earlier(utcNow.AddSeconds(IdleTimeoutSeconds), AbsoluteExpiresOn);
     }
 
+    /// <summary>The user proved a second factor in this session (TOTP confirmation, step-up): auth_time and amr move on.</summary>
+    public virtual void RecordAuthentication(DateTime utcNow, IReadOnlyList<string> methods)
+    {
+        ArgumentNullException.ThrowIfNull(methods);
+        AuthenticatedOn = utcNow;
+        AuthenticationMethods = string.Join(' ', methods);
+    }
+
     /// <summary>Ends the session; the first reason is kept.</summary>
     public virtual void Revoke(DateTime utcNow, string reason)
     {

@@ -19,6 +19,9 @@ export const databaseAvailable = process.env.ARIVA_E2E_SCHEMA_UPDATE === 'true';
 /** Folder of the development token key the hosts share in this run, so tests can sign their own tokens. */
 export const keyDirectory = process.env.ARIVA_E2E_KEY_DIR || path.resolve(here, '..', '..', '.e2e-keys');
 
+/** Where the global setup writes the break-glass credential the installer command prints (ARV-010c). */
+export const breakGlassFile = path.resolve(here, '..', '..', '.e2e-keys', 'break-glass.txt');
+
 /** Seconds a used refresh token still returns its successor in the E2E run (Auth:Sessions:RefreshGraceSeconds). */
 export const refreshGraceSeconds = 3;
 
@@ -35,6 +38,8 @@ export interface Account {
 	password: string;
 	roles: RoleCode[];
 	temporary: boolean;
+	/** Base32 TOTP secret when the account is seeded with TOTP enrolled. */
+	totpSecret?: string;
 }
 
 function seed(): string {
@@ -43,10 +48,55 @@ function seed(): string {
 	return value;
 }
 
-function account(userName: string, roles: RoleCode[], temporary = false): Account {
+function account(userName: string, roles: RoleCode[], temporary = false, withTotp = false): Account {
 	// Long, random and free of the username and the product name, so the password policy would accept it too.
 	const password = crypto.createHash('sha256').update(`${seed()}|${userName}`).digest('base64url').slice(0, 24);
-	return { userName, password, roles, temporary };
+	const totpSecret = withTotp ? base32(crypto.createHash('sha256').update(`${seed()}|${userName}|totp`).digest().subarray(0, 20)) : undefined;
+	return { userName, password, roles, temporary, totpSecret };
+}
+
+/** RFC 4648 base32 without padding. */
+export function base32(bytes: Uint8Array): string {
+	const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+	let bits = 0;
+	let value = 0;
+	let output = '';
+	for (const byte of bytes) {
+		value = (value << 8) | byte;
+		bits += 8;
+		while (bits >= 5) {
+			output += alphabet[(value >>> (bits - 5)) & 31];
+			bits -= 5;
+		}
+	}
+	if (bits > 0) output += alphabet[(value << (5 - bits)) & 31];
+	return output;
+}
+
+function fromBase32(text: string): Buffer {
+	const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+	let bits = 0;
+	let value = 0;
+	const output: number[] = [];
+	for (const char of text.replace(/=+$/, '').toUpperCase()) {
+		value = (value << 5) | alphabet.indexOf(char);
+		bits += 5;
+		if (bits >= 8) {
+			output.push((value >>> (bits - 8)) & 0xff);
+			bits -= 8;
+		}
+	}
+	return Buffer.from(output);
+}
+
+/** The RFC 6238 code (HMAC-SHA1, 6 digits, 30 seconds) for a base32 secret, offset in steps from now. */
+export function totpCode(secretBase32: string, offsetSteps = 0, at = Date.now()): string {
+	const counter = Buffer.alloc(8);
+	counter.writeBigInt64BE(BigInt(Math.floor(at / 1000 / 30) + offsetSteps));
+	const hash = crypto.createHmac('sha1', fromBase32(secretBase32)).update(counter).digest();
+	const offset = hash[hash.length - 1] & 0x0f;
+	const binary = ((hash[offset] & 0x7f) << 24) | (hash[offset + 1] << 16) | (hash[offset + 2] << 8) | hash[offset + 3];
+	return String(binary % 1_000_000).padStart(6, '0');
 }
 
 /** Every account, keyed by purpose. */
@@ -61,7 +111,9 @@ export function accounts() {
 		lockout: account('e2e.lockout', []),
 		unlock: account('e2e.unlock', []),
 		session: account('e2e.session', ['TerminalDutyManager']),
-		disabled: account('e2e.disabled', ['BorderShiftSupervisor'])
+		disabled: account('e2e.disabled', ['BorderShiftSupervisor']),
+		totp: account('e2e.totp', ['TerminalDutyManager'], false, true),
+		enrol: account('e2e.enrol', ['HandlerStationManager'])
 	} as const;
 }
 
@@ -79,6 +131,7 @@ export function developmentUserEnvironment(): Record<string, string> {
 		environment[`${prefix}Password`] = entry.password;
 		environment[`${prefix}Temporary`] = String(entry.temporary);
 		entry.roles.forEach((role, roleIndex) => (environment[`${prefix}Roles__${roleIndex}`] = role));
+		if (entry.totpSecret) environment[`${prefix}TotpSecret`] = entry.totpSecret;
 	});
 	return environment;
 }
@@ -148,8 +201,8 @@ export async function call(method: string, url: string, options: CallOptions = {
 }
 
 /** POST /api/auth/login from the given client address, optionally with a refresh cookie the browser still holds. */
-export function login(userName: string, password: string, address = clientAddress(), cookie?: string): Promise<CallResponse> {
-	return call('POST', loginUrl, { data: { userName, password }, address, cookie });
+export function login(userName: string, password: string, address = clientAddress(), cookie?: string, second?: { code?: string; recoveryCode?: string }): Promise<CallResponse> {
+	return call('POST', loginUrl, { data: { userName, password, ...second }, address, cookie });
 }
 
 /** POST /api/auth/refresh as the web app sends it: the cookie, X-Ariva-Csrf and the web origin. */
