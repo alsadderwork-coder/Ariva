@@ -49,7 +49,7 @@ Hosted SaaS by Dalil is out of scope.
 
 ## Roles
 
-Role codes are fixed in `Ariva.Core/RoleCodes.cs` and never renamed once shipped. Visibility below follows the prototype's access model and the data boundary; the authorisation matrix in `security/permission-matrix.json` will be the reference once written (Phase 1 epic Authentication, roles and audit).
+Role codes are fixed in `Ariva.Core/RoleCodes.cs` and never renamed once shipped. Visibility below follows the prototype's access model and the data boundary; the authorisation matrix in `security/permission-matrix.json` is the reference (ARV-009), the critical actions that need step-up MFA are listed in `security/critical-actions.json` (ARV-010d), and administrators manage users, role grants and the read-only audit trail through the administration API (ARV-011). A role can be granted only by someone whose own role ranks at least as high, never to oneself.
 
 | Role (code) | Module and deployment | Sees | Does not see | Creates or decides |
 |---|---|---|---|---|

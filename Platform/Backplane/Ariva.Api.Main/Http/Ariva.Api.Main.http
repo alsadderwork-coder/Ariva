@@ -11,3 +11,22 @@ Accept: application/json
 ### Liveness probe
 GET {{Ariva.Api.Main_HostAddress}}/health/liveness
 Accept: application/json
+
+### Search users (SearchUser)
+GET {{Ariva.Api.Main_HostAddress}}/api/v1/admin/users?text=e2e&sortBy=userName&pageSize=20
+Authorization: Bearer {{accessToken}}
+
+### Create a user (CreateUser, critical: sign in with TOTP or step up first)
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/admin/users
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "userName": "officer.one", "displayName": "Officer One", "roles": ["BorderShiftSupervisor"] }
+
+### Grant a role (EditUser, critical)
+PUT {{Ariva.Api.Main_HostAddress}}/api/v1/admin/users/{{userId}}/roles/TerminalDutyManager
+Authorization: Bearer {{accessToken}}
+
+### Audit trail for one user (SearchAuditEntry)
+GET {{Ariva.Api.Main_HostAddress}}/api/v1/admin/audit-entries?targetId={{userId}}
+Authorization: Bearer {{accessToken}}

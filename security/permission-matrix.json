@@ -7,7 +7,8 @@
     "SystemAdministrator"
   ],
   "routeValues": {
-    "guid": "0199a000-0000-7000-8000-00000000a1a1"
+    "guid": "0199a000-0000-7000-8000-00000000a1a1",
+    "alpha": "TerminalDutyManager"
   },
   "endpoints": [
     {
@@ -379,6 +380,191 @@
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
         "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/admin/users",
+      "access": "permission",
+      "permissions": [
+        "SearchUser"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/users",
+      "access": "permission",
+      "permissions": [
+        "CreateUser"
+      ],
+      "body": {
+        "userName": "matrix.created",
+        "roles": [
+          "BorderShiftSupervisor"
+        ]
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/admin/users/{id:guid}",
+      "access": "permission",
+      "permissions": [
+        "ViewUser"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "PUT",
+      "route": "/api/v1/admin/users/{id:guid}",
+      "access": "permission",
+      "permissions": [
+        "EditUser"
+      ],
+      "body": {
+        "displayName": "Matrix"
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/users/{id:guid}/reset-password",
+      "access": "permission",
+      "permissions": [
+        "EditUser"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/users/{id:guid}/reset-totp",
+      "access": "permission",
+      "permissions": [
+        "EditUser"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "main",
+      "method": "PUT",
+      "route": "/api/v1/admin/users/{id:guid}/roles/{roleCode:alpha}",
+      "access": "permission",
+      "permissions": [
+        "EditUser"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "main",
+      "method": "DELETE",
+      "route": "/api/v1/admin/users/{id:guid}/roles/{roleCode:alpha}",
+      "access": "permission",
+      "permissions": [
+        "EditUser"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/admin/roles",
+      "access": "permission",
+      "permissions": [
+        "SearchRole"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/admin/audit-entries",
+      "access": "permission",
+      "permissions": [
+        "SearchAuditEntry"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/admin/audit-entries/{id:guid}",
+      "access": "permission",
+      "permissions": [
+        "ViewAuditEntry"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
       }
     },
     {

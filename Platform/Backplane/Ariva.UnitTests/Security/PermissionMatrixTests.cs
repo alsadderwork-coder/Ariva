@@ -28,6 +28,12 @@ public sealed partial class PermissionMatrixTests
         JsonSerializer.Deserialize<Matrix>(File.ReadAllText(RepositoryPaths.Resolve("security/permission-matrix.json")),
             new JsonSerializerOptions { PropertyNameCaseInsensitive = true }));
 
+    private static readonly Lazy<HashSet<string>> CriticalRoutes = new(() =>
+        JsonDocument.Parse(File.ReadAllText(RepositoryPaths.Resolve("security/critical-actions.json"))).RootElement.GetProperty("routes")
+            .EnumerateArray()
+            .Select(r => $"{r.GetProperty("host").GetString()} {r.GetProperty("method").GetString()} {r.GetProperty("route").GetString()}")
+            .ToHashSet(StringComparer.OrdinalIgnoreCase));
+
     public static TheoryData<string> HostsInMatrix => [.. ArivaHosts.All];
 
     [Fact]
@@ -60,10 +66,15 @@ public sealed partial class PermissionMatrixTests
                         continue;
                     }
 
+                    var critical = CriticalRoutes.Value.Contains($"{row.Host} {row.Method} {row.Route}");
                     foreach (var role in RoleCodes.All)
                     {
                         var granted = permissions.Any(RolePermissions.ByRole[role].Contains);
-                        if (granted && row.Expected[role] is 401 or 403)
+                        // A critical action answers 401 mfa_required to a holder without a recent second factor
+                        // (ARV-010d); the matrix callers never have one.
+                        if (granted && critical && row.Expected[role] != 401)
+                            problems.Add($"{row}: critical, so {role} without a recent second factor must get 401, the matrix says {row.Expected[role]}");
+                        if (granted && !critical && row.Expected[role] is 401 or 403)
                             problems.Add($"{row}: {role} holds {string.Join("/", row.Permissions)} but the matrix expects {row.Expected[role]}");
                         if (!granted)
                             Expect(row, role, 403, problems);
@@ -109,6 +120,7 @@ public sealed partial class PermissionMatrixTests
             TestAuthenticationHandler.Register(services);
             // No database in-process: the sign-in service fails every call, as the real one does for the matrix bodies.
             services.Replace(ServiceDescriptor.Scoped<ISvcAuthenticator, FakeAuthenticator>());
+            FakeAdministration.Register(services);
         }));
         using var client = app.CreateClient();
         var mismatches = new List<string>();

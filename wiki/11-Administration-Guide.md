@@ -2,7 +2,7 @@
 
 For each deployment's System administrator and for the duty managers who own operational configuration. It covers users and roles, permissions, TOTP, integration clients and outbound endpoints, devices, zone profiles, alert rules, displays, the audit log and data retention.
 
-Status: administration screens arrive with Phase 1 (epics Authentication, roles and audit; Zone editor; Alerting) and v1 (contracts). Everything below is the target behaviour, taken from the design, the security controls and the prototype. In Phase 0, zones come from a configuration file and there is no user administration.
+Status: administration screens arrive with Phase 1 (epics Authentication, roles and audit; Zone editor; Alerting) and v1 (contracts). Everything below is the target behaviour, taken from the design, the security controls and the prototype. In Phase 0, zones come from a configuration file; user, role and audit administration exist as an API (ARV-011, section 2) without screens yet.
 
 ## 1. Principles
 
@@ -21,7 +21,7 @@ Critical functions (step-up MFA required):
 | Sign a handler contract (v1) | Terminal duty manager |
 | Create, change or rotate an integration client | System administrator |
 | Create or change an outbound endpoint | System administrator |
-| Grant or change roles | System administrator; System administrator grants also need a second administrator |
+| Grant or revoke roles, create users, reset a password or TOTP | System administrator (a second approving administrator for System administrator grants is a Phase 1 candidate) |
 
 ## 2. Users and roles
 
@@ -36,11 +36,13 @@ Critical functions (step-up MFA required):
 
 Role grant rules:
 
-- Grants only through the role assignment service, which requires the granter to outrank the role and blocks self-grants.
-- Granting System administrator needs step-up MFA and a second administrator.
+- Grants only through the role assignment service: the granter's own role must rank at least as high as the role (System administrator above the three operational roles), nobody changes their own roles, and the last active System administrator keeps the role.
+- Every grant and revoke needs step-up MFA and is audited; a revoke ends the user's sessions.
 - Role codes (`BorderShiftSupervisor`, `TerminalDutyManager`, `HandlerStationManager`, `SystemAdministrator`) never change once shipped.
 
-What each role sees and creates is in [Product overview](01-Product-Overview.md) (Roles). The authorisation matrix (`security/permission-matrix.json`, role by endpoint by expected status) is the reference once written; it drives the authorisation tests.
+What each role sees and creates is in [Product overview](01-Product-Overview.md) (Roles). The authorisation matrix (`security/permission-matrix.json`, role by endpoint by expected status) is the reference; it drives the authorisation tests.
+
+Phase 0 API (ARV-011), under `api/v1/admin`: `users` (search with text, role and disabled filters and an allowlisted sort; view; create; update display name and email; `reset-password`; `reset-totp`; `roles/{role}` PUT to grant and DELETE to revoke; `unlock`; `disable`; `enable`), `roles` (the four roles, their rank and permissions) and `audit-entries` (search and view). A new account and a password reset get a temporary password of four groups of five characters, shown once; the user must change it at the next sign-in. Accounts are disabled, never deleted. The break-glass account does not appear here.
 
 Sessions: access tokens last 15 minutes; a new session id is minted at every sign-in; refresh tokens rotate on every use, are stored hashed, and reuse of an old refresh token revokes the whole family. The refresh cookie is HttpOnly, Secure, SameSite Strict.
 
@@ -173,7 +175,7 @@ Each display is a kiosk URL on the display VLAN. Boards never show a realised wa
 
 ## 10. Audit log
 
-Recorded for every configuration change, sign, publish, calibration, acknowledgement, SLA decision, export, role change, integration call and administrator action: time, user or client, role, action, object id, summary and, for integration calls, the payload SHA-256. The audit log is kept indefinitely and is served from PostgreSQL (no OpenSearch in the MVP). Exports of the log are themselves audited.
+Phase 0 (ARV-011) records every user administration action (create, update, grant, revoke, password and TOTP reset, unlock, disable, enable) with time, actor, address, trace id, action code and before and after summaries without credentials, in the same transaction as the change; the API can only read it and the database refuses updates and deletes from the application login. The target scope: recorded for every configuration change, sign, publish, calibration, acknowledgement, SLA decision, export, role change, integration call and administrator action: time, user or client, role, action, object id, summary and, for integration calls, the payload SHA-256. The audit log is kept indefinitely and is served from PostgreSQL (no OpenSearch in the MVP). Exports of the log are themselves audited.
 
 ## 11. Data retention settings
 

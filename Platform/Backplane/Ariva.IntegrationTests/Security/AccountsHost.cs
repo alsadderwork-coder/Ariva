@@ -28,16 +28,19 @@ public sealed class AccountsHost : IAsyncDisposable
     public const string WrongPassword = "not the password 0000";
 
     private static readonly SemaphoreSlim DatabaseGate = new(1, 1);
-    private static string _database;
+    private static readonly Dictionary<TestDatabase, string> Databases = [];
 
     private readonly PostgresFixture _fixture;
     private readonly string _keyDirectory = Path.Combine(Path.GetTempPath(), "ariva-it-keys", Guid.NewGuid().ToString("N"));
     private ServiceProvider _provider;
 
-    public AccountsHost(PostgresFixture fixture, Dictionary<string, string> settings = null)
+    private readonly TestDatabase _databaseKind;
+
+    public AccountsHost(PostgresFixture fixture, Dictionary<string, string> settings = null, TestDatabase database = TestDatabase.Accounts)
     {
         _fixture = fixture;
         Settings = settings ?? [];
+        _databaseKind = database;
     }
 
     public ManualClock Clock { get; } = new(new DateTimeOffset(2026, 10, 1, 8, 0, 0, TimeSpan.Zero));
@@ -53,14 +56,14 @@ public sealed class AccountsHost : IAsyncDisposable
         await DatabaseGate.WaitAsync();
         try
         {
-            if (_database is null)
+            if (!Databases.TryGetValue(_databaseKind, out var database))
             {
-                var name = await _fixture.CreateDatabaseAsync(TestDatabase.Accounts);
-                await new SqlScriptRunner(_fixture.ConnectionString(name), NullLogger<SqlScriptRunner>.Instance).ApplyAsync(SqlScriptCatalog.Embedded());
-                _database = name;
+                database = await _fixture.CreateDatabaseAsync(_databaseKind);
+                await new SqlScriptRunner(_fixture.ConnectionString(database), NullLogger<SqlScriptRunner>.Instance).ApplyAsync(SqlScriptCatalog.Embedded());
+                Databases[_databaseKind] = database;
             }
 
-            return _database;
+            return database;
         }
         finally
         {
@@ -155,6 +158,18 @@ public sealed class AccountsHost : IAsyncDisposable
         return result;
     }
 
+    /// <summary>Runs <paramref name="work"/> in a fresh scope as the given caller (any service) and ends the unit of work.</summary>
+    public async Task<T> AsCallerAsync<T>(Guid? userId, Func<IServiceProvider, Task<T>> work)
+    {
+        await using var scope = Provider.CreateAsyncScope();
+        var caller = (TestCurrentUser)scope.ServiceProvider.GetRequiredService<ICurrentUser>();
+        caller.Id = userId;
+        caller.UserName = "it-admin";
+        var result = await work(scope.ServiceProvider);
+        await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().EndAsync(TestContext.Current.CancellationToken);
+        return result;
+    }
+
     public Task<Fluentx.Result<SignInResult>> LoginAsync(string userName, string password, string presentedRefreshToken = null, string code = null, string recoveryCode = null) =>
         AsAsync(null, null, service => service.LoginAsync(new LoginRequest(userName, password, code, recoveryCode), Context(presentedRefreshToken), TestContext.Current.CancellationToken));
 
@@ -239,7 +254,7 @@ public sealed class ManualClock(DateTimeOffset start) : TimeProvider
 public sealed class TestCurrentUser : ICurrentUser
 {
     public Guid? Id { get; set; }
-    public string UserName { get; private set; } = "it-caller";
+    public string UserName { get; set; } = "it-caller";
     public Guid? SessionId { get; set; }
     public IReadOnlyCollection<string> Roles => [];
     public DateTime? AuthenticatedAt => null;

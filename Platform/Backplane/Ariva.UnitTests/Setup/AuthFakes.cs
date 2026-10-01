@@ -1,7 +1,12 @@
+using Ariva.Core;
+using Ariva.Core.Domain.Criteria;
 using Ariva.Core.Domain.InputModels;
 using Ariva.Core.Domain.ViewModels;
 using Ariva.Core.Security;
+using Ariva.Core.Services.Administration;
 using Ariva.Core.Services.Security;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace Ariva.UnitTests.Setup;
 
@@ -77,4 +82,46 @@ public sealed class FakeAuthenticator : ISvcAuthenticator
     }
 
     private static Task<Fluentx.Result<bool>> NotFound() => Task.FromResult(Fluentx.Result.Error<bool>(ISvcAuthenticator.UserNotFound));
+}
+
+/// <summary>
+/// User, role and audit administration for in-process hosts, which have no database: unknown ids are not found, searches
+/// are empty and the role list is the real one, as the real services answer the permission matrix calls.
+/// </summary>
+public sealed class FakeAdministration : ISvcUsers, ISvcRoleAssignment, ISvcAuditEntries
+{
+    public static void Register(IServiceCollection services)
+    {
+        services.Replace(ServiceDescriptor.Scoped<ISvcUsers, FakeAdministration>());
+        services.Replace(ServiceDescriptor.Scoped<ISvcRoleAssignment, FakeAdministration>());
+        services.Replace(ServiceDescriptor.Scoped<ISvcAuditEntries, FakeAdministration>());
+    }
+
+    public Task<Fluentx.Result<UserCreatedViewModel>> CreateAsync(CreateUserRequest request, CancellationToken ct = default) =>
+        Task.FromResult(Fluentx.Result.Error<UserCreatedViewModel>(AdministrationErrors.UserNameTaken));
+
+    public Task<Fluentx.Result<UserViewModel>> GetAsync(Guid id, CancellationToken ct = default) => NotFound<UserViewModel>();
+
+    public Task<Fluentx.Result<PageViewModel<UserViewModel>>> SearchAsync(UserCriteria criteria, CancellationToken ct = default) =>
+        Task.FromResult(new Fluentx.Result<PageViewModel<UserViewModel>>(new PageViewModel<UserViewModel>([], 0, 1, 50)));
+
+    public Task<Fluentx.Result<UserViewModel>> UpdateAsync(Guid id, UpdateUserRequest request, CancellationToken ct = default) => NotFound<UserViewModel>();
+
+    public Task<Fluentx.Result<TemporaryPasswordViewModel>> ResetPasswordAsync(Guid id, CancellationToken ct = default) => NotFound<TemporaryPasswordViewModel>();
+
+    public Task<Fluentx.Result<bool>> ResetTotpAsync(Guid id, CancellationToken ct = default) => NotFound<bool>();
+
+    public IReadOnlyList<RoleViewModel> Roles() =>
+        RoleCodes.All.Select(code => new RoleViewModel(code, RoleHierarchy.Rank(code), [.. RolePermissions.ByRole[code].Select(p => p.ToString())])).ToList();
+
+    public Task<Fluentx.Result<UserViewModel>> GrantAsync(Guid userId, string roleCode, CancellationToken ct = default) => NotFound<UserViewModel>();
+
+    public Task<Fluentx.Result<UserViewModel>> RevokeAsync(Guid userId, string roleCode, CancellationToken ct = default) => NotFound<UserViewModel>();
+
+    Task<Fluentx.Result<AuditEntryViewModel>> ISvcAuditEntries.GetAsync(Guid id, CancellationToken ct) => NotFound<AuditEntryViewModel>();
+
+    public Task<Fluentx.Result<PageViewModel<AuditEntryViewModel>>> SearchAsync(AuditEntryCriteria criteria, CancellationToken ct = default) =>
+        Task.FromResult(new Fluentx.Result<PageViewModel<AuditEntryViewModel>>(new PageViewModel<AuditEntryViewModel>([], 0, 1, 50)));
+
+    private static Task<Fluentx.Result<T>> NotFound<T>() => Task.FromResult(Fluentx.Result.Error<T>(AdministrationErrors.NotFound));
 }

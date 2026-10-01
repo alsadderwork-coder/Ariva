@@ -4,7 +4,9 @@ using Ariva.Core.Domain.ViewModels;
 using Ariva.Core.Security;
 using Ariva.Core.Services.Security;
 using Ariva.Infra.Security;
+using Ariva.Infra.Services.Administration;
 using Ariva.Infra.Services.Foundation;
+using Ariva.Core.Domain.Constants;
 using Ariva.Infra.Settings;
 using Microsoft.AspNetCore.DataProtection;
 using NHibernate.Linq;
@@ -39,13 +41,14 @@ internal sealed class SvcAuthenticator(
     AccessTokenIssuer issuer,
     IDataProtectionProvider dataProtection,
     IFusionCache cache,
+    AccountSessions sessions,
+    AuditTrail audit,
     ILogger<SvcAuthenticator> logger) : SvcBase(unitOfWork, currentUser, timeProvider), ISvcAuthenticator
 {
     public static readonly EventId AccountLocked = new(9101, "SecurityEvent.AccountLocked");
     public static readonly EventId AccountUnlocked = new(9102, "SecurityEvent.AccountUnlocked");
     public static readonly EventId PasswordChanged = new(9103, "SecurityEvent.PasswordChanged");
     public static readonly EventId RefreshTokenReused = new(9104, "SecurityEvent.RefreshTokenReused");
-    public static readonly EventId SessionsRevoked = new(9105, "SecurityEvent.SessionsRevoked");
     public static readonly EventId AccountDisabled = new(9106, "SecurityEvent.AccountDisabled");
     public static readonly EventId AccountEnabled = new(9107, "SecurityEvent.AccountEnabled");
     public static readonly EventId RecoveryCodeUsed = new(9108, "SecurityEvent.RecoveryCodeUsed");
@@ -235,8 +238,10 @@ internal sealed class SvcAuthenticator(
         if (user is null)
             return Result.Error<bool>(ISvcAuthenticator.UserNotFound);
 
+        var before = AuditTrail.Summary(user);
         user.Unlock();
         await UpdateAsync(user, ct);
+        await audit.RecordAsync(AuditActions.UserUnlocked, AuditActions.UserTarget, user.Id, user.UserName, before, AuditTrail.Summary(user), ct);
         logger.LogInformation(AccountUnlocked, "Account {UserId} unlocked by {AdministratorId}", user.Id, CurrentUser.Id);
         return new Result<bool>(true);
     }
@@ -249,10 +254,12 @@ internal sealed class SvcAuthenticator(
         if (CurrentUser.Id == userId)
             return Result.Error<bool>(ISvcAuthenticator.CannotChangeOwnAccount);
 
+        var before = AuditTrail.Summary(user);
         user.Disable();
         await UpdateAsync(user, ct);
         var ended = await RevokeAllAsync(userId, UtcNow, "disabled", keep: Guid.Empty, ct);
-        RegisterPostCommitAction(() => cache.RemoveByTagAsync(StoredPermissionResolver.Tag(userId)).AsTask());
+        sessions.EvictPermissionsAfterCommit(userId);
+        await audit.RecordAsync(AuditActions.UserDisabled, AuditActions.UserTarget, user.Id, user.UserName, before, AuditTrail.Summary(user), ct);
         logger.LogWarning(AccountDisabled, "Account {UserId} disabled by {AdministratorId}; {Count} session(s) ended", userId, CurrentUser.Id, ended);
         return new Result<bool>(true);
     }
@@ -266,9 +273,11 @@ internal sealed class SvcAuthenticator(
         if (user.IsBreakGlass)
             return Result.Error<bool>(ISvcAuthenticator.UserNotFound); // re-enabled only by the installer command
 
+        var before = AuditTrail.Summary(user);
         user.Enable();
         await UpdateAsync(user, ct);
-        RegisterPostCommitAction(() => cache.RemoveByTagAsync(StoredPermissionResolver.Tag(userId)).AsTask());
+        sessions.EvictPermissionsAfterCommit(userId);
+        await audit.RecordAsync(AuditActions.UserEnabled, AuditActions.UserTarget, user.Id, user.UserName, before, AuditTrail.Summary(user), ct);
         logger.LogInformation(AccountEnabled, "Account {UserId} enabled by {AdministratorId}", userId, CurrentUser.Id);
         return new Result<bool>(true);
     }
@@ -577,27 +586,8 @@ internal sealed class SvcAuthenticator(
     }
 
     /// <summary>Revokes every active session of the user except <paramref name="keep"/> (Guid.Empty keeps none); returns how many.</summary>
-    private async Task<int> RevokeAllAsync(Guid userId, DateTime now, string reason, Guid keep, CancellationToken ct)
-    {
-        var rows = await ExecuteCommandAsync<IdRow>(
-            """
-            UPDATE user_session SET revoked_on = :now, revoked_reason = :reason
-             WHERE user_id = :userId AND revoked_on IS NULL AND id <> :keep
-            RETURNING id AS "Id"
-            """,
-            new Dictionary<string, object> { ["now"] = now, ["reason"] = reason, ["userId"] = userId, ["keep"] = keep },
-            ct);
-
-        foreach (var row in rows)
-        {
-            var sessionId = row.Id;
-            RegisterPostCommitAction(() => EvictAsync(sessionId));
-        }
-
-        if (rows.Count > 0)
-            logger.LogInformation(SessionsRevoked, "{Count} session(s) of account {UserId} revoked ({Reason})", rows.Count, userId, reason);
-        return rows.Count;
-    }
+    private Task<int> RevokeAllAsync(Guid userId, DateTime now, string reason, Guid keep, CancellationToken ct) =>
+        sessions.RevokeAllAsync(userId, now, reason, keep, ct);
 
     private Task EvictAsync(Guid sessionId) => cache.RemoveAsync(SessionValidator.Key(sessionId)).AsTask();
 

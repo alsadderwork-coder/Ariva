@@ -1,6 +1,8 @@
 using Ariva.Core.Security;
+using Ariva.Core.Services.Administration;
 using Ariva.Core.Services.Security;
 using Ariva.Infra.Security;
+using Ariva.Infra.Services.Administration;
 using Ariva.Infra.Services.Security;
 using Ariva.Infra.Settings;
 using Microsoft.Extensions.Configuration;
@@ -32,7 +34,7 @@ public static class AccountExtensions
     }
 
     /// <summary>
-    /// Ariva.Api.Main only: the signing key, the token issuer and the sign-in service; on vm-local also the development
+    /// Ariva.Api.Main only: the signing key, the token issuer, the sign-in service and user administration; on vm-local also the development
     /// accounts from Auth:DevelopmentUsers.
     /// </summary>
     public static IServiceCollection AddArivaTokenIssuing(this IServiceCollection services, IConfiguration configuration)
@@ -44,7 +46,15 @@ public static class AccountExtensions
         var settings = AuthSettings.From(configuration);
         services.Replace(ServiceDescriptor.Singleton(_ => TokenKeys.Load(settings.Tokens, requireSigningKey: true)));
         services.TryAddSingleton<AccessTokenIssuer>();
+        services.TryAddScoped<AccountSessions>();
+        services.TryAddScoped<AuditTrail>();
+        services.TryAddScoped<CallerRoles>();
         services.TryAddScoped<ISvcAuthenticator, SvcAuthenticator>();
+
+        // User, role and audit administration (ARV-011): Ariva.Api.Main only, like sign-in.
+        services.TryAddScoped<ISvcUsers, SvcUsers>();
+        services.TryAddScoped<ISvcRoleAssignment, SvcRoleAssignment>();
+        services.TryAddScoped<ISvcAuditEntries, SvcAuditEntries>();
 
         var environment = configuration["Application:Environment"];
         if (settings.DevelopmentUsers.Count > 0)

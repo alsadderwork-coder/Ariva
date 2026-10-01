@@ -129,33 +129,61 @@ public class User : BaseAuditableEntity<User>
 
     public virtual void Enable() => IsDisabled = false;
 
-    public virtual void Grant(string roleCode)
+    /// <summary>Adds the role (seed and installer paths); administrators grant through SvcRoleAssignment, which records who and when.</summary>
+    public virtual UserRole Grant(string roleCode) => Grant(roleCode, null, null);
+
+    /// <summary>Adds the role with who granted it and when; returns the new grant, or null when the user already holds it.</summary>
+    public virtual UserRole Grant(string roleCode, Guid? grantedById, DateTime? grantedOn)
     {
         if (!RoleCodes.All.Any(code => string.Equals(code, roleCode, StringComparison.Ordinal)))
             throw new ArgumentOutOfRangeException(nameof(roleCode), roleCode, "Unknown role code.");
         if (Roles.Any(r => r.RoleCode == roleCode))
-            return;
-        Roles.Add(new UserRole(this, roleCode));
+            return null;
+        var grant = new UserRole(this, roleCode, grantedById, grantedOn);
+        Roles.Add(grant);
+        return grant;
+    }
+
+    /// <summary>Removes the role; returns the removed grant (to delete), or null when the user did not hold it.</summary>
+    public virtual UserRole Revoke(string roleCode)
+    {
+        var grant = Roles.FirstOrDefault(r => r.RoleCode == roleCode);
+        if (grant is not null)
+            Roles.Remove(grant);
+        return grant;
+    }
+
+    public virtual bool Holds(string roleCode) => Roles.Any(r => r.RoleCode == roleCode);
+
+    /// <summary>Display name and email; blank values are stored as null.</summary>
+    public virtual void UpdateProfile(string displayName, string email)
+    {
+        DisplayName = string.IsNullOrWhiteSpace(displayName) ? null : displayName.Trim();
+        Email = string.IsNullOrWhiteSpace(email) ? null : email.Trim();
     }
 
     #endregion
 }
 
-/// <summary>A role held by a user. ARV-011 adds who granted it and when, through the audited grant service.</summary>
+/// <summary>A role held by a user, with who granted it and when (ARV-011; null for seeded and installer grants).</summary>
 public class UserRole : EntityBase<UserRole>
 {
     protected UserRole()
     {
     }
 
-    public UserRole(User user, string roleCode)
+    public UserRole(User user, string roleCode, Guid? grantedById = null, DateTime? grantedOn = null)
     {
         User = user;
         RoleCode = roleCode;
+        GrantedById = grantedById;
+        GrantedOn = grantedOn;
     }
 
     public virtual User User { get; protected set; }
     public virtual string RoleCode { get; protected set; }
+    public virtual Guid? GrantedById { get; protected set; }
+    public virtual DateTime? GrantedOn { get; protected set; }
 }
 
 /// <summary>

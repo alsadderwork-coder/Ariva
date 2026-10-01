@@ -114,7 +114,8 @@ export function accounts() {
 		disabled: account('e2e.disabled', ['BorderShiftSupervisor']),
 		totp: account('e2e.totp', ['TerminalDutyManager'], false, true),
 		enrol: account('e2e.enrol', ['HandlerStationManager']),
-		stepUp: account('e2e.stepup', ['BorderShiftSupervisor'], false, true)
+		stepUp: account('e2e.stepup', ['BorderShiftSupervisor'], false, true),
+		securityAdmin: account('e2e.secadmin', ['SystemAdministrator'], false, true)
 	} as const;
 }
 

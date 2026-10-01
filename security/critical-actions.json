@@ -29,6 +29,36 @@
       "method": "POST",
       "route": "/api/auth/totp/recovery-codes",
       "category": "Regenerate recovery codes"
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/users",
+      "category": "Create or reset users and TOTP"
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/users/{id:guid}/reset-password",
+      "category": "Create or reset users and TOTP"
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/users/{id:guid}/reset-totp",
+      "category": "Create or reset users and TOTP"
+    },
+    {
+      "host": "main",
+      "method": "PUT",
+      "route": "/api/v1/admin/users/{id:guid}/roles/{roleCode:alpha}",
+      "category": "Grant or revoke roles"
+    },
+    {
+      "host": "main",
+      "method": "DELETE",
+      "route": "/api/v1/admin/users/{id:guid}/roles/{roleCode:alpha}",
+      "category": "Grant or revoke roles"
     }
   ]
 }
