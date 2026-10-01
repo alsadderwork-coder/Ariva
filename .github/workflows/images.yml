@@ -22,6 +22,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      pull-requests: write
     strategy:
       fail-fast: false
       matrix:
@@ -59,13 +60,31 @@ jobs:
           TAG="${GITHUB_REF_NAME//\//-}-${GITHUB_RUN_NUMBER}"
           echo "TAG=$TAG" >> "$GITHUB_ENV"
           docker build -f "${{ matrix.dockerfile }}" -t "$IMAGE:$TAG" "${{ matrix.context }}"
-      - name: Scan the image (fails on high or critical)
+      - name: Scan the image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.IMAGE }}:${{ env.TAG }}
           severity: HIGH,CRITICAL
           ignore-unfixed: true
-          exit-code: '1'
+          exit-code: '0'
+          format: table
+          output: trivy-image.txt
+      - name: Report findings on the pull request and fail on high or critical
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+          IMAGE_NAME: ${{ matrix.image }}
+        run: |
+          if grep -Eq 'Total: [1-9]' trivy-image.txt; then
+            if [ -n "$PR" ] && [ "$SAME_REPO" = "true" ]; then
+              { echo "### Trivy image scan: $IMAGE_NAME has high or critical findings"; echo '```'; grep -A400 'Total: [1-9]' trivy-image.txt | head -c 50000; echo '```'; } > comment.md
+              gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file comment.md
+            fi
+            cat trivy-image.txt
+            exit 1
+          fi
+          echo "Trivy: $IMAGE_NAME has no high or critical findings."
       - name: Push to GitHub Container Registry
         if: env.PUSH == 'true'
         env:
