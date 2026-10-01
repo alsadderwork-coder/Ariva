@@ -64,6 +64,9 @@ public sealed class FakeAuthenticator : ISvcAuthenticator
     public Task<Fluentx.Result<TotpConfirmedViewModel>> ConfirmTotpAsync(TotpCodeRequest request, CancellationToken ct = default) =>
         Task.FromResult(Fluentx.Result.Error<TotpConfirmedViewModel>(ISvcAuthenticator.InvalidCode));
 
+    public Task<Fluentx.Result<TokenViewModel>> StepUpAsync(StepUpRequest request, CancellationToken ct = default) =>
+        Task.FromResult(Fluentx.Result.Error<TokenViewModel>(ISvcAuthenticator.InvalidCode));
+
     public Task<Fluentx.Result<RecoveryCodesViewModel>> RegenerateRecoveryCodesAsync(TotpCodeRequest request, CancellationToken ct = default) =>
         Task.FromResult(Fluentx.Result.Error<RecoveryCodesViewModel>(ISvcAuthenticator.InvalidCode));
 

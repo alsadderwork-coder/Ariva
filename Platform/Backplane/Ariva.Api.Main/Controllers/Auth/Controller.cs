@@ -139,9 +139,28 @@ public sealed class AuthController(ISvcAuthenticator authenticator, IOptions<Cor
             : Ok(result.Data);
     }
 
-    /// <summary>New recovery codes after a valid TOTP code; the old ones stop working. ARV-010d adds step-up.</summary>
+    /// <summary>
+    /// Step-up (ARV-010d): a TOTP or recovery code for this session gives a token with a fresh auth_time, which the
+    /// critical actions ([RequiresRecentMfa]) accept for 15 minutes.
+    /// </summary>
+    [HttpPost("step-up")]
+    [Authorize]
+    [EnableRateLimiting(RateLimitingExtensions.AuthPolicy)]
+    [ProducesResponseType<TokenViewModel>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> StepUp([FromBody] StepUpRequest request, CancellationToken ct)
+    {
+        Response.Headers.CacheControl = "no-store";
+        var result = await authenticator.StepUpAsync(request, ct);
+        return result.HasErrors
+            ? Problem(statusCode: StatusCodes.Status400BadRequest, title: "The code was not accepted", detail: result.ErrorMessages.FirstOrDefault())
+            : Ok(result.Data);
+    }
+
+    /// <summary>New recovery codes after a valid TOTP code; the old ones stop working. A critical action: needs step-up.</summary>
     [HttpPost("totp/recovery-codes")]
     [Authorize]
+    [RequiresRecentMfa]
     [EnableRateLimiting(RateLimitingExtensions.AuthPolicy)]
     [ProducesResponseType<RecoveryCodesViewModel>(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]

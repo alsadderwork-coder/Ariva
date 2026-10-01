@@ -31,6 +31,12 @@ public sealed class TestAuthenticationHandler(
     /// <summary>Optional request header with comma separated role codes for the test user (permission tests).</summary>
     public const string RolesHeader = "X-Test-Roles";
 
+    /// <summary>Optional request header with comma separated amr values (step-up tests, ARV-010d).</summary>
+    public const string MethodsHeader = "X-Test-Amr";
+
+    /// <summary>Optional request header with the auth_time in Unix seconds (step-up tests, ARV-010d).</summary>
+    public const string AuthTimeHeader = "X-Test-Auth-Time";
+
     #endregion
 
     #region Registration
@@ -66,6 +72,18 @@ public sealed class TestAuthenticationHandler(
             claims.AddRange(roles.ToString()
                 .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .Select(role => new Claim(ClaimTypes.Role, role)));
+        }
+
+        if (Request.Headers.TryGetValue(MethodsHeader, out var methods))
+        {
+            claims.AddRange(methods.ToString()
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(method => new Claim("amr", method)));
+        }
+
+        if (Request.Headers.TryGetValue(AuthTimeHeader, out var authTime))
+        {
+            claims.Add(new Claim("auth_time", authTime.ToString()));
         }
 
         var identity = new ClaimsIdentity(claims, SchemeName);

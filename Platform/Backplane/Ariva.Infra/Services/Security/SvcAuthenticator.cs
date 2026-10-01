@@ -52,6 +52,7 @@ internal sealed class SvcAuthenticator(
     public static readonly EventId TotpEnrolled = new(9109, "SecurityEvent.TotpEnrolled");
     public static readonly EventId BreakGlassSignIn = new(9110, "SecurityEvent.BreakGlassSignIn");
     public static readonly EventId RecoveryCodesRegenerated = new(9111, "SecurityEvent.RecoveryCodesRegenerated");
+    public static readonly EventId SteppedUp = new(9113, "SecurityEvent.SteppedUp");
 
     // Verified when the username is unknown, so the response takes as long as a real check.
     private static readonly Lazy<PasswordHashValue> DummyHash = new(() => PasswordHasher.Hash(Guid.NewGuid().ToString("N")));
@@ -317,6 +318,39 @@ internal sealed class SvcAuthenticator(
         logger.LogInformation(TotpEnrolled, "Account {UserId} enrolled an authenticator", user.Id);
 
         return new Result<TotpConfirmedViewModel>(new TotpConfirmedViewModel(Token(user, session), codes));
+    }
+
+    public async Task<Result<TokenViewModel>> StepUpAsync(StepUpRequest request, CancellationToken ct = default)
+    {
+        var (user, session) = await CallerAsync(ct);
+        if (user is null)
+            return Result.Error<TokenViewModel>(ISvcAuthenticator.InvalidCredentials);
+        if (!user.TotpEnrolled && !user.IsBreakGlass)
+            return Result.Error<TokenViewModel>(ISvcAuthenticator.NotEnrolled);
+
+        var now = UtcNow;
+        string[] methods;
+        if (!user.IsBreakGlass && !string.IsNullOrWhiteSpace(request?.Code))
+        {
+            methods = await AcceptTotpAsync(user, request.Code, now, ct) ? PasswordAndOtp : null;
+        }
+        else
+        {
+            methods = await UseRecoveryCodeAsync(user, request?.RecoveryCode, now, ct) is null ? null : PasswordAndRecoveryCode;
+        }
+
+        if (methods is null)
+        {
+            await RecordFailureAsync(user, now, ct);
+            return Result.Error<TokenViewModel>(ISvcAuthenticator.InvalidCode);
+        }
+
+        session.RecordAuthentication(now, methods);
+        await UpdateAsync(session, ct);
+        var sessionId = session.Id.Value;
+        RegisterPostCommitAction(() => EvictAsync(sessionId));
+        logger.LogInformation(SteppedUp, "Account {UserId} confirmed a second factor in session {SessionId}", user.Id, session.Id);
+        return new Result<TokenViewModel>(Token(user, session));
     }
 
     public async Task<Result<RecoveryCodesViewModel>> RegenerateRecoveryCodesAsync(TotpCodeRequest request, CancellationToken ct = default)

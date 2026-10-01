@@ -59,6 +59,10 @@ public static class SecurityExtensions
         services.AddSingleton<IAuthorizationPolicyProvider, PermissionPolicyProvider>();
         services.AddScoped<IAuthorizationHandler, PermissionAuthorizationHandler>();
 
+        // Step-up for critical actions (ARV-010d): [RequiresRecentMfa] and its RFC 9470 401 answer.
+        services.AddSingleton<IAuthorizationHandler, RecentMfaHandler>();
+        services.AddSingleton<Microsoft.AspNetCore.Authorization.IAuthorizationMiddlewareResultHandler, StepUpResultHandler>();
+
         return services;
     }
 

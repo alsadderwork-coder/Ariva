@@ -19,5 +19,8 @@ public sealed record ChangePasswordRequest(
     [Required, MaxLength(512)] string CurrentPassword,
     [Required, MaxLength(512)] string NewPassword);
 
+/// <summary>Step-up (ARV-010d): a TOTP code, or a recovery code when the authenticator is lost.</summary>
+public sealed record StepUpRequest([MaxLength(16)] string Code = null, [MaxLength(32)] string RecoveryCode = null);
+
 /// <summary>A TOTP code: confirming an enrolment, or proving the factor before regenerating recovery codes.</summary>
 public sealed record TotpCodeRequest([Required, MaxLength(16)] string Code);

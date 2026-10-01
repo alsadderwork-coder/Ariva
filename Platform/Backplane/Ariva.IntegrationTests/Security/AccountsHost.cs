@@ -167,6 +167,9 @@ public sealed class AccountsHost : IAsyncDisposable
     public Task<Fluentx.Result<RecoveryCodesViewModel>> RegenerateAsync(Guid userId, Guid sessionId, string code) =>
         AsAsync(userId, sessionId, service => service.RegenerateRecoveryCodesAsync(new TotpCodeRequest(code), TestContext.Current.CancellationToken));
 
+    public Task<Fluentx.Result<TokenViewModel>> StepUpAsync(Guid userId, Guid sessionId, string code = null, string recoveryCode = null) =>
+        AsAsync(userId, sessionId, service => service.StepUpAsync(new StepUpRequest(code, recoveryCode), TestContext.Current.CancellationToken));
+
     public async Task<BreakGlassCredential> IssueBreakGlassAsync(bool rotate)
     {
         await EnsureProviderAsync();

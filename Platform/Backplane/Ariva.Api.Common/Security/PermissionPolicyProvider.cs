@@ -14,7 +14,8 @@ public sealed class PermissionRequirement(IReadOnlyList<Permission> permissions)
 
 /// <summary>
 /// Builds "Permission:ViewDesk,EditDesk" policies on demand: an authenticated user holding any of the permissions.
-/// Other policy names go to the default provider. An unknown permission name fails closed: the policy can never be
+/// "RecentMfa:&lt;seconds&gt;" policies come from <see cref="RequiresRecentMfaAttribute"/> (ARV-010d). Other policy
+/// names go to the default provider. An unknown permission name fails closed: the policy can never be
 /// satisfied and the error is logged (a unit test also checks every [Permission] name at build time).
 /// </summary>
 public sealed class PermissionPolicyProvider(IOptions<AuthorizationOptions> options, ILogger<PermissionPolicyProvider> logger) : IAuthorizationPolicyProvider
@@ -27,6 +28,8 @@ public sealed class PermissionPolicyProvider(IOptions<AuthorizationOptions> opti
 
     public Task<AuthorizationPolicy> GetPolicyAsync(string policyName)
     {
+        if (RecentMfaRequirement.PolicyFor(policyName) is { } recentMfa)
+            return Task.FromResult(recentMfa);
         if (policyName is null || !policyName.StartsWith(Prefix, StringComparison.Ordinal))
             return _fallback.GetPolicyAsync(policyName);
 

@@ -21,6 +21,8 @@ public interface ISvcAuthenticator : ISvcScoped
 
     const string InvalidCode = "The code is not valid.";
 
+    const string NotEnrolled = "Enrol an authenticator first.";
+
     const string AlreadyEnrolled = "An authenticator is already enrolled; an administrator can reset it.";
 
     const string UserNotFound = "The user does not exist.";
@@ -53,6 +55,12 @@ public interface ISvcAuthenticator : ISvcScoped
 
     /// <summary>Confirms the enrolment with a first code; returns a token without the pending TOTP restriction and the recovery codes.</summary>
     Task<Result<TotpConfirmedViewModel>> ConfirmTotpAsync(TotpCodeRequest request, CancellationToken ct = default);
+
+    /// <summary>
+    /// Step-up (ARV-010d): a TOTP or recovery code for the current session; returns a token with a fresh auth_time and
+    /// amr pwd plus otp (or rc). Shares the replay guard and the lockout with sign-in.
+    /// </summary>
+    Task<Result<TokenViewModel>> StepUpAsync(StepUpRequest request, CancellationToken ct = default);
 
     /// <summary>New recovery codes after a valid TOTP code; the old ones stop working.</summary>
     Task<Result<RecoveryCodesViewModel>> RegenerateRecoveryCodesAsync(TotpCodeRequest request, CancellationToken ct = default);
