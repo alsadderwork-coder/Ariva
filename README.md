@@ -59,7 +59,13 @@ In containers every .NET host listens on 8080 and the web image (nginx) on 3000.
 
 ## Build and run
 
-Prerequisites: .NET 10 SDK, Node 22. PostgreSQL 17 with TimescaleDB, Kafka and Redis are needed once the persistence and messaging stories land.
+Prerequisites: .NET 10 SDK, Node 22, Docker Desktop or Rancher Desktop for the local dependencies:
+
+```
+node scripts/dev-up.mjs     # TimescaleDB, Kafka (KRaft), Redis, smtp4dev; creates .env and appsettings.local.json
+node scripts/dev-down.mjs   # stop (add --volumes to delete the data)
+```
+
 
 ```
 dotnet restore Ariva.slnx
@@ -92,7 +98,7 @@ node scripts/verify.mjs e2e
 
 ## Configuration
 
-Each host loads, in order: `appsettings.base.json`, `appsettings.base.<env>.json` (both linked from Ariva.Api.Common), `appsettings.service.json`, `appsettings.service.<env>.json`, then environment variables. The environment comes from `DOTNET_ENVIRONMENT`, or from `environment.json` when that is not set. Environments: `vm-local`, `k8s-dev`, `k8s-demo`, `k8s-prd`. In Kubernetes the `k8s-*` files are replaced by secrets written by the release pipeline, so real credentials never live in the repository.
+Each host loads, in order: `appsettings.base.json`, `appsettings.base.<env>.json` (both linked from Ariva.Api.Common), `appsettings.service.json`, `appsettings.service.<env>.json`, `appsettings.local.json` (local development only, written by `scripts/dev-up.mjs`, git-ignored), then environment variables. The environment comes from `DOTNET_ENVIRONMENT`, or from `environment.json` when that is not set. Environments: `vm-local`, `k8s-dev`, `k8s-demo`, `k8s-prd`. In Kubernetes the `k8s-*` files are replaced by secrets written by the release pipeline, so real credentials never live in the repository.
 
 ## Working with agents
 

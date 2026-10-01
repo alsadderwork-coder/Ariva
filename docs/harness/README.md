@@ -5,7 +5,7 @@
 1. Clone Ariva next to AMAN: `git clone https://github.com/alsadderwork-coder/Ariva.git D:\DevOps\Ariva`, with AMAN at `D:\DevOps\Aman` (agents read AMAN as reference through `additionalDirectories`; hooks block writes to it).
 2. Install: .NET 10 SDK, Node 22 or later, Docker Desktop (or Rancher Desktop) for Testcontainers and Compose, Git, the GitHub CLI (`winget install GitHub.cli`, then `gh auth login`), Claude Code, ralph-tui (`npm i -g ralph-tui` or as you installed it for AMAN), and `uv` for the Python-based MCP servers (`winget install astral-sh.uv`).
 3. `npx playwright install chromium` once.
-4. Environment variables: `GITHUB_PERSONAL_ACCESS_TOKEN` for the github MCP server (fine-grained token for `alsadderwork-coder/Ariva` only: Contents, Issues, Pull requests and Actions read and write, Metadata read; no Administration). Optional: `ARIVA_DEV_DATABASE_URI` for the read-only dev database MCP (defaults to the local Compose database), `CONTEXT7_API_KEY` if you have a Context7 key (add a header in `.mcp.json`).
+4. Environment variables: `GITHUB_PERSONAL_ACCESS_TOKEN` for the github MCP server (fine-grained token for `alsadderwork-coder/Ariva` only: Contents, Issues, Pull requests and Actions read and write, Metadata read; no Administration). Optional: `ARIVA_DEV_DATABASE_URI` for the read-only dev database MCP (`node scripts/dev-up.mjs` prints it with the generated password), `CONTEXT7_API_KEY` if you have a Context7 key (add a header in `.mcp.json`).
 5. Open the folder in Claude Code; approve the project MCP servers when asked (they are listed in `.claude/settings.json` under `enabledMcpjsonServers`).
 
 ## MCP servers (`.mcp.json`)

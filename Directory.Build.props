@@ -25,4 +25,11 @@
         <!-- CWE-120: no unsafe code anywhere; scripts/security/scan.mjs also fails the build gate on the unsafe keyword -->
         <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
     </PropertyGroup>
+    <ItemGroup Label="Local development settings" Condition="('$(MSBuildProjectName.StartsWith(`Ariva.Api.`))' == 'true' And '$(MSBuildProjectName)' != 'Ariva.Api.Common') Or '$(MSBuildProjectName)' == 'Ariva.Simulation.Api'">
+        <!-- Written by scripts/dev-up.mjs (ARV-003); copied only when it exists, so builds elsewhere never see it -->
+        <Content Include="$(MSBuildThisFileDirectory)Platform/Backplane/Ariva.Api.Common/appsettings.local.json" Condition="Exists('$(MSBuildThisFileDirectory)Platform/Backplane/Ariva.Api.Common/appsettings.local.json')">
+            <Link>appsettings.local.json</Link>
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </Content>
+    </ItemGroup>
 </Project>

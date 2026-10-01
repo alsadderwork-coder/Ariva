@@ -52,7 +52,7 @@
         "--access-mode=restricted"
       ],
       "env": {
-        "DATABASE_URI": "${ARIVA_DEV_DATABASE_URI:-postgresql://ariva_readonly@localhost:5432/ariva}"
+        "DATABASE_URI": "${ARIVA_DEV_DATABASE_URI:-postgresql://ariva_readonly@localhost:5433/ariva}"
       }
     }
   }

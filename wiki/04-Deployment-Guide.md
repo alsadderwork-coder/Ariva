@@ -420,27 +420,16 @@ npm install
 npm run dev                     # http://localhost:51010
 ```
 
-Prerequisites: .NET 10 SDK, Node 22. The hosts read `environment.json` (`vm-local`) and `appsettings.base.vm-local.json`, which expect PostgreSQL on `localhost:5432` (user and password `postgres`), Kafka on `localhost:9092` and Redis on `localhost:6379` once the persistence and messaging stories land.
+Prerequisites: .NET 10 SDK, Node 22, Docker Desktop or Rancher Desktop.
 
-Docker Compose for the dependencies: Target procedure, implemented in Phase 0 epic Skeleton and platform. The committed file will be the reference; this sketch shows the intent and matches the `vm-local` settings:
+Local dependencies (TimescaleDB, Kafka in KRaft mode, Redis and smtp4dev) come from `docker-compose.dev.yml`:
 
-```yaml
-services:
-  timescaledb:
-    image: timescale/timescaledb-ha:pg17      # pin an exact tag
-    environment:
-      POSTGRES_PASSWORD: postgres
-      PGDATA: /pgdata
-    ports: ["5432:5432"]
-    volumes: ["timescaledb:/pgdata"]
-  kafka:
-    image: apache/kafka:<version>             # single-node KRaft broker
-    ports: ["9092:9092"]
-  redis:
-    image: redis:<version>
-    ports: ["6379:6379"]
-volumes:
-  timescaledb: {}
+```bash
+node scripts/dev-up.mjs          # first run creates .env with random passwords; waits for every health check
+node scripts/dev-check.mjs       # optional: proves TimescaleDB, the read-only role, Kafka, Redis auth and smtp4dev
+node scripts/dev-down.mjs        # stop; add --volumes to delete the data
 ```
+
+`dev-up` also writes `Platform/Backplane/Ariva.Api.Common/appsettings.local.json` (git-ignored, never in images), which every host loads in `vm-local` after the committed settings, so the hosts reach the containers with the generated credentials. Ports bind to 127.0.0.1 and default away from AMAN's local stack: PostgreSQL 5433, Kafka 19092, Redis 16379, SMTP 2525 and its web UI 5080 (change them in `.env`). The read-only role `ariva_readonly` serves the postgres-dev MCP server: set `ARIVA_DEV_DATABASE_URI` to the URI `dev-up` prints. The `dev-environment` workflow runs the same scripts in CI.
 
 Integration tests start their own containers with Testcontainers (story ARV-007) and need Docker. See [Testing strategy](16-Testing-Strategy.md).

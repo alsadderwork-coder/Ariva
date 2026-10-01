@@ -1,0 +1,35 @@
+# Starts the local development stack exactly as a developer would and proves it works (ARV-003):
+# health checks, TimescaleDB, the read-only role, Kafka, Redis authentication and smtp4dev.
+name: dev-environment
+
+on:
+  pull_request:
+    paths: ['docker-compose.dev.yml', '.env.example', 'deploy/local/**', 'scripts/dev-*.mjs']
+  schedule:
+    - cron: '23 4 * * 3' # Wednesdays; catches image tags that disappear upstream
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  up:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - name: dev-up (creates .env, waits for health checks)
+        run: node scripts/dev-up.mjs
+      - name: dev-check
+        run: node scripts/dev-check.mjs
+      - name: Container logs
+        if: failure()
+        run: docker compose -f docker-compose.dev.yml --env-file .env logs --tail 80
+      - name: dev-down
+        if: always()
+        run: node scripts/dev-down.mjs --volumes

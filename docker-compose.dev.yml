@@ -1,0 +1,87 @@
+# Local dependencies for Ariva development and integration tests (ARV-003).
+#   node scripts/dev-up.mjs     creates .env with random passwords on first run, writes appsettings.local.json,
+#                               starts these services and waits for their health checks
+#   node scripts/dev-down.mjs   stops them (add --volumes to delete the data)
+# Ports bind to 127.0.0.1 only and default away from AMAN's local ports (5432, 9092, 6379) so both stacks can run.
+name: ariva-dev
+
+services:
+  timescaledb:
+    image: timescale/timescaledb-ha:pg17-ts2.30
+    environment:
+      POSTGRES_DB: ariva
+      POSTGRES_USER: ariva
+      POSTGRES_PASSWORD: ${ARIVA_DB_PASSWORD:?run node scripts/dev-up.mjs to create .env}
+      ARIVA_READONLY_PASSWORD: ${ARIVA_DB_READONLY_PASSWORD:?run node scripts/dev-up.mjs to create .env}
+      TIMESCALEDB_TELEMETRY: "off"
+    ports:
+      - "127.0.0.1:${ARIVA_DB_PORT:-5433}:5432"
+    volumes:
+      - timescaledb-data:/home/postgres/pgdata
+      - ./deploy/local/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ariva -d ariva -h 127.0.0.1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  kafka:
+    image: apache/kafka:4.1.0
+    hostname: kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: HOST://0.0.0.0:9092,INTERNAL://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: HOST://localhost:${ARIVA_KAFKA_PORT:-19092},INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: HOST:PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+      # Topics are provisioned by the application from KafkaTopics (ADR-0018), not created on first use.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_MESSAGE_MAX_BYTES: 1048576
+    ports:
+      - "127.0.0.1:${ARIVA_KAFKA_PORT:-19092}:9092"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka:29092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+
+  redis:
+    image: redis:8.2-alpine
+    command: ["redis-server", "--requirepass", "${ARIVA_REDIS_PASSWORD:?run node scripts/dev-up.mjs to create .env}", "--appendonly", "yes"]
+    environment:
+      REDISCLI_AUTH: ${ARIVA_REDIS_PASSWORD}
+    ports:
+      - "127.0.0.1:${ARIVA_REDIS_PORT:-16379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  smtp4dev:
+    image: rnwood/smtp4dev:v3
+    ports:
+      - "127.0.0.1:${ARIVA_SMTP_PORT:-2525}:25"
+      - "127.0.0.1:${ARIVA_SMTP_UI_PORT:-5080}:80"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/80'"] # bash built-in; the image has no curl
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  timescaledb-data:
+  kafka-data:
+  redis-data:

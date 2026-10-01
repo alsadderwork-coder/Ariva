@@ -30,6 +30,8 @@ builder.Configuration
     .AddJsonFile($"appsettings.base.{environment}.json", optional: true, reloadOnChange: false)
     .AddJsonFile("appsettings.service.json", optional: false, reloadOnChange: false)
     .AddJsonFile($"appsettings.service.{environment}.json", optional: true, reloadOnChange: false)
+    // Local development only: written by scripts/dev-up.mjs from .env; git-ignored and never in images.
+    .AddJsonFile("appsettings.local.json", optional: true, reloadOnChange: false)
     .AddEnvironmentVariables()
     .AddCommandLine(args);
 
