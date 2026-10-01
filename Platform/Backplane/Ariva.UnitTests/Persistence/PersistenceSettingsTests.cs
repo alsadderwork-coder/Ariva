@@ -4,6 +4,7 @@ using System.Text.Json;
 using Ariva.Core.Services;
 using Ariva.Infra.NHibernate.Mapping;
 using Ariva.Infra.Settings;
+using Microsoft.Extensions.Configuration;
 using FluentAssertions;
 using Npgsql;
 
@@ -131,7 +132,7 @@ public sealed class PersistenceSettingsTests
 
     /// <summary>The base file, then the environment file on top, as the hosts layer them.</summary>
     private static DatabaseSettings Load(string file) =>
-        DatabaseSettings.FromConfiguration(new Microsoft.Extensions.Configuration.ConfigurationBuilder()
+        DatabaseSettings.FromConfiguration(new ConfigurationBuilder()
             .AddJsonFile(Path.Combine(AppContext.BaseDirectory, "appsettings.base.json"))
             .AddJsonFile(Path.Combine(AppContext.BaseDirectory, file))
             .Build());
