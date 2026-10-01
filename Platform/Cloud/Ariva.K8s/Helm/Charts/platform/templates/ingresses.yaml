@@ -33,11 +33,14 @@ spec:
     - host: "{{ .subdomain }}.{{ $.Values.domain }}"
       http:
         paths:
-          - path: /
+          {{- $service := .serviceName }}
+          {{- range (.paths | default (list "/")) }}
+          - path: {{ . }}
             pathType: Prefix
             backend:
               service:
-                name: {{ .serviceName }}
+                name: {{ $service }}
                 port:
                   number: 80
+          {{- end }}
 {{- end }}

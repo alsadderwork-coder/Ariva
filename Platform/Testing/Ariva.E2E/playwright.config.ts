@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, devices } from '@playwright/test';
-import { databaseAvailable, developmentUserEnvironment, keyDirectory, lockoutSeconds } from './tests/support/accounts';
+import { databaseAvailable, developmentUserEnvironment, keyDirectory, lockoutSeconds, refreshGraceSeconds } from './tests/support/accounts';
 import { hosts, webUrl } from './tests/support/hosts';
 
 // Ariva API end-to-end and functional tests. See README.md.
@@ -59,6 +59,7 @@ function dotnetHost(projectPath: string, healthUrl: string, buildFirst = false, 
 			// Every host validates tokens with the run's development key; tests read it to sign tampered tokens.
 			Auth__Tokens__DevelopmentKeyDirectory: process.env.ARIVA_E2E_KEY_DIR!,
 			Auth__Lockout__DurationSeconds: String(lockoutSeconds),
+			Auth__Sessions__RefreshGraceSeconds: String(refreshGraceSeconds),
 			// The suite talks to the hosts over loopback and sets X-Forwarded-For per test, so the per-address sign-in
 			// limit applies only where a test means it to (production trusts only the ingress network).
 			Security__ForwardedHeaders__KnownProxies__0: '127.0.0.1',

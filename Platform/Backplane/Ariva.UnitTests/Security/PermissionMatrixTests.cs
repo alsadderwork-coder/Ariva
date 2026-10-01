@@ -2,8 +2,6 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Ariva.Core;
-using Ariva.Core.Domain.InputModels;
-using Ariva.Core.Domain.ViewModels;
 using Ariva.Core.Security;
 using Ariva.Core.Services.Security;
 using Ariva.UnitTests.Setup;
@@ -106,7 +104,7 @@ public sealed partial class PermissionMatrixTests
         {
             TestAuthenticationHandler.Register(services);
             // No database in-process: the sign-in service fails every call, as the real one does for the matrix bodies.
-            services.Replace(ServiceDescriptor.Scoped<ISvcAuthenticator, FailingAuthenticator>());
+            services.Replace(ServiceDescriptor.Scoped<ISvcAuthenticator, FakeAuthenticator>());
         }));
         using var client = app.CreateClient();
         var mismatches = new List<string>();
@@ -154,18 +152,5 @@ public sealed partial class PermissionMatrixTests
     private sealed record MatrixRow(string Host, string Method, string Route, string Access, List<string> Permissions, JsonElement? Body, Dictionary<string, int> Expected)
     {
         public override string ToString() => $"{Host} {Method} {Route}";
-    }
-
-    /// <summary>The answers the real service gives for the matrix bodies: unknown user, wrong current password, unknown id.</summary>
-    private sealed class FailingAuthenticator : ISvcAuthenticator
-    {
-        public Task<Fluentx.Result<TokenViewModel>> LoginAsync(LoginRequest request, CancellationToken ct = default) =>
-            Task.FromResult(Fluentx.Result.Error<TokenViewModel>(ISvcAuthenticator.InvalidCredentials));
-
-        public Task<Fluentx.Result<TokenViewModel>> ChangePasswordAsync(ChangePasswordRequest request, CancellationToken ct = default) =>
-            Task.FromResult(Fluentx.Result.Error<TokenViewModel>(ISvcAuthenticator.InvalidCredentials));
-
-        public Task<Fluentx.Result<bool>> UnlockAsync(Guid userId, CancellationToken ct = default) =>
-            Task.FromResult(Fluentx.Result.Error<bool>("The user does not exist."));
     }
 }

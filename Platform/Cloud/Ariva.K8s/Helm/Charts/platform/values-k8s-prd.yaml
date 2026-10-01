@@ -81,3 +81,17 @@ ingresses:
       nginx.ingress.kubernetes.io/from-to-www-redirect: "true"
       nginx.ingress.kubernetes.io/proxy-body-size: "5m"
       nginx.ingress.kubernetes.io/rewrite-target: /
+
+  # ADR-0026: the web app and the API share one host, so the refresh cookie (Path=/api/auth, SameSite=Strict) and
+  # SignalR need no cross-origin calls. A separate Ingress object because the web ingress rewrites every path to /.
+  - name: web-api
+    comment: Ariva API on the web host (/api and /hubs to Ariva.Api.Main)
+    subdomain: ariva
+    serviceName: api-main-service
+    paths:
+      - /api
+      - /hubs
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-body-size: "10m"

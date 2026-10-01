@@ -1,5 +1,5 @@
 {
-  "_comment": "Every endpoint of every host with the expected status per caller (ARV-009). access is anonymous (allowlisted in allowlist.json), authenticated (any signed-in user) or permission (any one of permissions, names from Global.Defaults.Permissions). Routes are the route templates; a {name:guid} parameter is called with routeValues.guid, an id that never exists. body, when present, is sent as JSON and is chosen so the call fails the same way with or without a database (unknown user, wrong current password, unknown id), which keeps the in-process and E2E answers equal. Ariva.UnitTests fails when an endpoint is missing here, when a permission row disagrees with the role seed (RolePermissions), or when a host answers differently; the E2E suite reads the same rows with real tokens. Add rows in the story that adds the endpoint.",
+  "_comment": "Every endpoint of every host with the expected status per caller (ARV-009). access is anonymous (allowlisted in allowlist.json), authenticated (any signed-in user) or permission (any one of permissions, names from Global.Defaults.Permissions). Routes are the route templates; a {name:guid} parameter is called with routeValues.guid, an id that never exists. body, when present, is sent as JSON and is chosen so the call fails the same way with or without a database (unknown user, wrong current password, unknown id; refresh without the CSRF header is 403 before any lookup), which keeps the in-process and E2E answers equal. Ariva.UnitTests fails when an endpoint is missing here, when a permission row disagrees with the role seed (RolePermissions), or when a host answers differently; the E2E suite reads the same rows with real tokens. Add rows in the story that adds the endpoint.",
   "roles": [
     "BorderShiftSupervisor",
     "TerminalDutyManager",
@@ -280,6 +280,19 @@
     {
       "host": "main",
       "method": "POST",
+      "route": "/api/auth/refresh",
+      "access": "anonymous",
+      "expected": {
+        "anonymous": 403,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
       "route": "/api/auth/change-password",
       "access": "authenticated",
       "body": {
@@ -311,6 +324,38 @@
       "host": "main",
       "method": "POST",
       "route": "/api/v1/admin/users/{id:guid}/unlock",
+      "access": "permission",
+      "permissions": [
+        "EditUser"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/users/{id:guid}/disable",
+      "access": "permission",
+      "permissions": [
+        "EditUser"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/users/{id:guid}/enable",
       "access": "permission",
       "permissions": [
         "EditUser"

@@ -95,6 +95,7 @@ app.UseRouting();
 app.UseAppCors();
 app.UseAppRateLimiting();
 app.UseAuthentication();
+app.UseSessionValidation();
 app.UsePendingScope();
 // AMAN: UseSessionContext
 app.UseAuthorization();

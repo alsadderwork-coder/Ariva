@@ -1,5 +1,8 @@
 import { expect, type APIResponse } from '@playwright/test';
 
+/** What the assertions read from a response; Playwright's APIResponse and the cookie-free calls in accounts.ts both fit. */
+export type ResponseLike = Pick<APIResponse, 'status' | 'headers' | 'text' | 'url'>;
+
 /** Text that must never reach a client: stack frames, source paths and framework or runtime names. */
 export const leakPatterns: readonly RegExp[] = [
 	/\bat [\w.<>`]+\(/, // .NET stack frame "at Namespace.Type.Method("
@@ -21,7 +24,7 @@ export const apiSecurityHeaders: Readonly<Record<string, string>> = {
 };
 
 /** Asserts the API security headers are present and the Server header is absent. */
-export function expectApiSecurityHeaders(response: APIResponse): void {
+export function expectApiSecurityHeaders(response: ResponseLike): void {
 	const headers = response.headers();
 	for (const [name, value] of Object.entries(apiSecurityHeaders)) {
 		expect(headers[name], `${name} on ${response.url()}`).toBe(value);
@@ -41,7 +44,7 @@ export function expectNoLeak(body: string, context: string): void {
  * internals, and returns the parsed body.
  */
 export async function expectProblemDetails(
-	response: APIResponse,
+	response: ResponseLike,
 	status: number
 ): Promise<Record<string, unknown>> {
 	expect(response.status(), `status of ${response.url()}`).toBe(status);

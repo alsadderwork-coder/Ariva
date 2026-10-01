@@ -1,7 +1,8 @@
 import crypto from 'node:crypto';
-import { expect, test, type APIResponse } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 import {
 	accounts,
+	type CallResponse,
 	changedPassword,
 	changePasswordUrl,
 	claimsOf,
@@ -29,14 +30,14 @@ const systemInfo = `${hosts.main}${systemInfoPath}`;
 test.skip(!databaseAvailable, 'sign-in needs the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true)');
 
 /** The parts of a sign-in failure a client sees, without the per-request trace id. */
-async function failureOf(response: APIResponse) {
+async function failureOf(response: CallResponse) {
 	const body = await response.json();
 	return { status: response.status(), type: body.type, title: body.title, detail: body.detail };
 }
 
 test.describe('sign-in', () => {
 	test('a valid username and password return an ES256 access token that is never cached', async ({ request }) => {
-		const response = await login(request, ` ${accounts().SystemAdministrator.userName.toUpperCase()} `, accounts().SystemAdministrator.password);
+		const response = await login(` ${accounts().SystemAdministrator.userName.toUpperCase()} `, accounts().SystemAdministrator.password);
 
 		expect(response.status()).toBe(200);
 		expect(response.headers()['cache-control']).toBe('no-store');
@@ -59,24 +60,26 @@ test.describe('sign-in', () => {
 	});
 
 	test('the token opens a protected endpoint on Main and is accepted by the other hosts', async ({ request }) => {
-		const token = await signIn(request, accounts().SystemAdministrator);
+		const token = await signIn(accounts().SystemAdministrator);
 		const authorization = { Authorization: `Bearer ${token.accessToken}` };
 
 		expect((await request.get(systemInfo, { headers: authorization })).status()).toBe(200);
-		expect((await request.post(logoutUrl, { headers: authorization })).status()).toBe(204);
 
 		// Ingest and Integration map no system info route: a valid token gets past default deny to the 404, an
-		// anonymous call stops at 401. That proves both hosts validate Main's tokens with the shared public key.
+		// anonymous call stops at 401. That proves both hosts validate Main's tokens with the shared public key and
+		// find its session in the shared database.
 		for (const host of [hosts.ingest, hosts.integration]) {
 			expect((await request.get(`${host}${systemInfoPath}`, { headers: authorization })).status(), host).toBe(404);
 			expect((await request.get(`${host}${systemInfoPath}`)).status(), host).toBe(401);
 		}
+
+		expect((await request.post(logoutUrl, { headers: authorization })).status()).toBe(204);
 	});
 
 	test('a wrong password and an unknown user get the same answer', async ({ request }) => {
-		const wrongPassword = await login(request, accounts().BorderShiftSupervisor.userName, 'not-the-password-0000');
-		const unknownUser = await login(request, `nobody.${crypto.randomUUID()}`, 'not-the-password-0000');
-		const malformedUser = await login(request, 'x', 'not-the-password-0000');
+		const wrongPassword = await login(accounts().BorderShiftSupervisor.userName, 'not-the-password-0000');
+		const unknownUser = await login(`nobody.${crypto.randomUUID()}`, 'not-the-password-0000');
+		const malformedUser = await login('x', 'not-the-password-0000');
 
 		await expectProblemDetails(wrongPassword, 401);
 		expect(await failureOf(unknownUser)).toEqual(await failureOf(wrongPassword));
@@ -84,7 +87,7 @@ test.describe('sign-in', () => {
 	});
 
 	test('a token in the access_token query string is ignored', async ({ request }) => {
-		const token = await signIn(request, accounts().SystemAdministrator);
+		const token = await signIn(accounts().SystemAdministrator);
 
 		const response = await request.get(`${systemInfo}?access_token=${token.accessToken}`);
 
@@ -94,51 +97,51 @@ test.describe('sign-in', () => {
 	test('the eleventh sign-in from one address within a minute gets 429 with Retry-After', async ({ request }) => {
 		const address = clientAddress();
 		for (let attempt = 0; attempt < 10; attempt++) {
-			expect((await login(request, `nobody.${attempt}`, 'not-the-password-0000', address)).status()).toBe(401);
+			expect((await login(`nobody.${attempt}`, 'not-the-password-0000', address)).status()).toBe(401);
 		}
 
-		const limited = await login(request, accounts().SystemAdministrator.userName, accounts().SystemAdministrator.password, address);
+		const limited = await login(accounts().SystemAdministrator.userName, accounts().SystemAdministrator.password, address);
 
 		expect(limited.status()).toBe(429);
 		expect(Number(limited.headers()['retry-after'])).toBeGreaterThan(0);
-		expect((await login(request, accounts().SystemAdministrator.userName, accounts().SystemAdministrator.password)).status()).toBe(200);
+		expect((await login(accounts().SystemAdministrator.userName, accounts().SystemAdministrator.password)).status()).toBe(200);
 	});
 });
 
 test.describe('lockout', () => {
 	test('ten failures lock the account, the correct password then fails, and the lock expires on its own', async ({ request }) => {
 		const { userName, password } = accounts().lockout;
-		const first = await failureOf(await login(request, userName, 'not-the-password-0000'));
+		const first = await failureOf(await login(userName, 'not-the-password-0000'));
 		for (let attempt = 1; attempt < lockoutThreshold; attempt++) {
-			expect((await login(request, userName, 'not-the-password-0000')).status()).toBe(401);
+			expect((await login(userName, 'not-the-password-0000')).status()).toBe(401);
 		}
 
-		const whileLocked = await login(request, userName, password);
+		const whileLocked = await login(userName, password);
 		expect(await failureOf(whileLocked)).toEqual(first);
 
 		await new Promise((resolve) => setTimeout(resolve, (lockoutSeconds + 1) * 1000));
-		expect((await login(request, userName, password)).status()).toBe(200);
+		expect((await login(userName, password)).status()).toBe(200);
 	});
 
 	test('an administrator unlocks a locked account at once', async ({ request }) => {
 		const target = accounts().unlock;
-		const userId = String(claimsOf((await signIn(request, target)).accessToken).sub);
+		const userId = String(claimsOf((await signIn(target)).accessToken).sub);
 		for (let attempt = 0; attempt < lockoutThreshold; attempt++) {
-			await login(request, target.userName, 'not-the-password-0000');
+			await login(target.userName, 'not-the-password-0000');
 		}
-		expect((await login(request, target.userName, target.password)).status()).toBe(401);
+		expect((await login(target.userName, target.password)).status()).toBe(401);
 
-		const admin = await signIn(request, accounts().SystemAdministrator);
+		const admin = await signIn(accounts().SystemAdministrator);
 		const unlock = await request.post(`${hosts.main}/api/v1/admin/users/${userId}/unlock`, {
 			headers: { Authorization: `Bearer ${admin.accessToken}` }
 		});
 
 		expect(unlock.status()).toBe(204);
-		expect((await login(request, target.userName, target.password)).status()).toBe(200);
+		expect((await login(target.userName, target.password)).status()).toBe(200);
 	});
 
 	test('a user without EditUser cannot unlock', async ({ request }) => {
-		const supervisor = await signIn(request, accounts().BorderShiftSupervisor);
+		const supervisor = await signIn(accounts().BorderShiftSupervisor);
 		const target = String(claimsOf(supervisor.accessToken).sub);
 
 		const response = await request.post(`${hosts.main}/api/v1/admin/users/${target}/unlock`, {
@@ -151,7 +154,7 @@ test.describe('lockout', () => {
 
 test.describe('pending scope', () => {
 	test('a temporary password signs in with the pending scope, which only reaches the pending endpoints', async ({ request }) => {
-		const token = await signIn(request, accounts().pending);
+		const token = await signIn(accounts().pending);
 		const authorization = { Authorization: `Bearer ${token.accessToken}` };
 
 		expect(token.scope).toBe('pending');
@@ -163,7 +166,7 @@ test.describe('pending scope', () => {
 
 	test('changing the temporary password gives a full token; a weak or reused password is refused', async ({ request }) => {
 		const account = accounts().changer;
-		const pending = await signIn(request, account);
+		const pending = await signIn(account);
 		const authorization = { Authorization: `Bearer ${pending.accessToken}`, 'X-Forwarded-For': clientAddress() };
 
 		const weak = await request.post(changePasswordUrl, { headers: authorization, data: { currentPassword: account.password, newPassword: 'password1234' } });
@@ -178,7 +181,7 @@ test.describe('pending scope', () => {
 		expect(changed.headers()['cache-control']).toBe('no-store');
 		const full = await changed.json();
 		expect(full.scope ?? null).toBeNull();
-		expect((await login(request, account.userName, account.password)).status()).toBe(401);
+		expect((await login(account.userName, account.password)).status()).toBe(401);
 
 		// Back to the seeded password, so a retry of this test starts from the same state (no longer temporary).
 		const restore = await request.post(changePasswordUrl, {
@@ -193,7 +196,7 @@ test.describe('token validation', () => {
 	const key = developmentSigningKey();
 
 	test('tokens without an ES256 signature are refused', async ({ request }) => {
-		const real = claimsOf((await signIn(request, accounts().SystemAdministrator)).accessToken);
+		const real = claimsOf((await signIn(accounts().SystemAdministrator)).accessToken);
 		const none = signToken({ alg: 'none', typ: 'at+jwt' }, real);
 		// Key confusion: HS256 with the public key as the HMAC secret.
 		const publicPem = key ? Buffer.from(crypto.createPublicKey(key).export({ type: 'spki', format: 'pem' }) as string) : Buffer.from('ariva');
@@ -206,7 +209,7 @@ test.describe('token validation', () => {
 
 	test('tokens signed with the run key but with a wrong audience, issuer, type or lifetime are refused', async ({ request }) => {
 		test.skip(!key, 'needs the development key of this run (hosts started by this Playwright run)');
-		const real = claimsOf((await signIn(request, accounts().SystemAdministrator)).accessToken);
+		const real = claimsOf((await signIn(accounts().SystemAdministrator)).accessToken);
 		const header = { alg: 'ES256', typ: 'at+jwt', kid: keyIdOf(key!) };
 		const now = Math.floor(Date.now() / 1000);
 

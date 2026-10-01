@@ -5,7 +5,7 @@ import { matrix, rowsForRunningHosts, type Caller } from '../support/permission-
 // ARV-009 and ARV-010a: security/permission-matrix.json against the running hosts. Anonymous callers send no token;
 // each role column signs in as the E2E account with that role (tokens issued by Ariva.Api.Main) and sends its bearer
 // token. Rows with a body send it as JSON. Every request has its own client address, so the per-address sign-in
-// limit never decides a row.
+// limit never decides a row. A role's session ends at the logout row, so the test signs in again after it.
 
 test.describe('permission matrix: anonymous callers', () => {
 	for (const row of rowsForRunningHosts()) {
@@ -28,7 +28,7 @@ test.describe('permission matrix: signed-in roles', () => {
 
 	for (const role of matrix.roles) {
 		test(`${role} gets the matrix status on every endpoint`, async ({ request }) => {
-			const token = await signIn(request, accounts()[role]);
+			let token = await signIn(accounts()[role]);
 			const mismatches: string[] = [];
 
 			for (const row of rowsForRunningHosts()) {
@@ -39,6 +39,8 @@ test.describe('permission matrix: signed-in roles', () => {
 				});
 				const expected = row.expected[role as Caller];
 				if (response.status() !== expected) mismatches.push(`${row.method} ${row.host}${row.route}: expected ${expected}, got ${response.status()}`);
+				// Logout ends the session (ARV-010b): later rows need a new one.
+				if (row.route === '/api/auth/logout') token = await signIn(accounts()[role]);
 			}
 
 			expect(mismatches).toEqual([]);

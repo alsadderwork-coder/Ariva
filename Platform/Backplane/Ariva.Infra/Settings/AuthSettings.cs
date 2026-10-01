@@ -2,13 +2,14 @@ using Microsoft.Extensions.Configuration;
 
 namespace Ariva.Infra.Settings;
 
-/// <summary>The "Auth" section (ADR-0026, ARV-010a).</summary>
+/// <summary>The "Auth" section (ADR-0026, ARV-010a and ARV-010b).</summary>
 public sealed class AuthSettings
 {
     public const string SectionName = "Auth";
 
     public TokenSettings Tokens { get; init; } = new();
     public LockoutSettings Lockout { get; init; } = new();
+    public SessionSettings Sessions { get; init; } = new();
 
     /// <summary>
     /// Whether an account without TOTP is limited to the pending scope. Off until TOTP enrolment exists (ARV-010c
@@ -46,6 +47,29 @@ public sealed class TokenSettings
     public bool UseDevelopmentKeys { get; init; }
 
     public string DevelopmentKeyDirectory { get; init; } = string.Empty;
+}
+
+/// <summary>Server-side session lifetimes (ARV-010b). Seconds, so tests and the E2E run can shorten them.</summary>
+public sealed class SessionSettings
+{
+    /// <summary>12 hours from sign-in for every role, whatever the activity.</summary>
+    public int AbsoluteSeconds { get; init; } = 12 * 3600;
+
+    /// <summary>30 minutes without a refresh for SystemAdministrator, and for accounts without an operational role.</summary>
+    public int IdleSecondsAdministrator { get; init; } = 30 * 60;
+
+    /// <summary>4 hours without a refresh for the operational roles (desk and duty staff on long shifts).</summary>
+    public int IdleSecondsOperational { get; init; } = 4 * 3600;
+
+    /// <summary>How long a used refresh token still returns its successor once (two tabs refreshing together).</summary>
+    public int RefreshGraceSeconds { get; init; } = 30;
+
+    /// <summary>
+    /// How long a node trusts its memory copy of a session. Revocation removes the copy everywhere through the Redis
+    /// backplane at once; without one it reaches every node within this time. 4 seconds keeps the 5 second promise
+    /// including the request that notices it.
+    /// </summary>
+    public int CacheSeconds { get; init; } = 4;
 }
 
 public sealed class LockoutSettings

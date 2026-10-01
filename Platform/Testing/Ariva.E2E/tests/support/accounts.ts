@@ -2,8 +2,9 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { expect, type APIRequestContext, type APIResponse } from '@playwright/test';
-import { hosts } from './hosts';
+import { expect } from '@playwright/test';
+import type { ResponseLike } from './api-assertions';
+import { hosts, webOrigin } from './hosts';
 
 // ARV-010a: the accounts the E2E run signs in with. Ariva.Api.Main creates them at startup from Auth:DevelopmentUsers
 // (vm-local only; playwright.config.ts passes them as environment variables). The passwords are random per run:
@@ -17,6 +18,9 @@ export const databaseAvailable = process.env.ARIVA_E2E_SCHEMA_UPDATE === 'true';
 
 /** Folder of the development token key the hosts share in this run, so tests can sign their own tokens. */
 export const keyDirectory = process.env.ARIVA_E2E_KEY_DIR || path.resolve(here, '..', '..', '.e2e-keys');
+
+/** Seconds a used refresh token still returns its successor in the E2E run (Auth:Sessions:RefreshGraceSeconds). */
+export const refreshGraceSeconds = 3;
 
 /** Seconds an account stays locked in the E2E run (Auth:Lockout:DurationSeconds). */
 export const lockoutSeconds = 5;
@@ -55,7 +59,9 @@ export function accounts() {
 		pending: account('e2e.pending', [], true),
 		changer: account('e2e.changer', [], true),
 		lockout: account('e2e.lockout', []),
-		unlock: account('e2e.unlock', [])
+		unlock: account('e2e.unlock', []),
+		session: account('e2e.session', ['TerminalDutyManager']),
+		disabled: account('e2e.disabled', ['BorderShiftSupervisor'])
 	} as const;
 }
 
@@ -87,12 +93,68 @@ export function clientAddress(): string {
 }
 
 export const loginUrl = `${hosts.main}/api/auth/login`;
+export const refreshUrl = `${hosts.main}/api/auth/refresh`;
 export const changePasswordUrl = `${hosts.main}/api/auth/change-password`;
 export const logoutUrl = `${hosts.main}/api/auth/logout`;
 
-/** POST /api/auth/login from the given client address. */
-export function login(request: APIRequestContext, userName: string, password: string, address = clientAddress()): Promise<APIResponse> {
-	return request.post(loginUrl, { data: { userName, password }, headers: { 'X-Forwarded-For': address } });
+export const refreshCookieName = '__Secure-ariva_rt';
+
+/**
+ * A response from {@link call}. Auth calls go through Node's fetch, which has no cookie jar: Playwright's request
+ * context keeps the refresh cookie (it sends Secure cookies to localhost) and would then send it with every later
+ * sign-in and logout, which revokes the session it belongs to. Tests pass the cookie explicitly instead.
+ */
+export interface CallResponse extends ResponseLike {
+	json(): Promise<any>;
+	/** The value of the refresh cookie this response sets, '' when it clears it, undefined when it does not touch it. */
+	refreshCookie(): string | undefined;
+	/** The Set-Cookie header for the refresh cookie, as sent. */
+	refreshSetCookie(): string | undefined;
+}
+
+export interface CallOptions {
+	data?: unknown;
+	token?: string;
+	cookie?: string;
+	csrf?: boolean;
+	origin?: string;
+	address?: string;
+	headers?: Record<string, string>;
+}
+
+/** One HTTP call without a cookie jar; every call has its own client address unless one is given. */
+export async function call(method: string, url: string, options: CallOptions = {}): Promise<CallResponse> {
+	const headers: Record<string, string> = { 'X-Forwarded-For': options.address ?? clientAddress(), ...options.headers };
+	if (options.data !== undefined) headers['Content-Type'] = 'application/json';
+	if (options.token) headers.Authorization = `Bearer ${options.token}`;
+	if (options.cookie) headers.Cookie = `${refreshCookieName}=${options.cookie}`;
+	if (options.csrf) headers['X-Ariva-Csrf'] = '1';
+	if (options.origin) headers.Origin = options.origin;
+
+	const response = await fetch(url, { method, headers, body: options.data === undefined ? undefined : JSON.stringify(options.data) });
+	const text = await response.text();
+	const setCookie = response.headers.getSetCookie().find((value) => value.startsWith(`${refreshCookieName}=`));
+	const lowered: Record<string, string> = {};
+	response.headers.forEach((value, name) => (lowered[name.toLowerCase()] = value));
+	return {
+		status: () => response.status,
+		headers: () => lowered,
+		text: async () => text,
+		json: async () => JSON.parse(text),
+		url: () => url,
+		refreshSetCookie: () => setCookie,
+		refreshCookie: () => (setCookie === undefined ? undefined : setCookie.slice(refreshCookieName.length + 1).split(';')[0])
+	};
+}
+
+/** POST /api/auth/login from the given client address, optionally with a refresh cookie the browser still holds. */
+export function login(userName: string, password: string, address = clientAddress(), cookie?: string): Promise<CallResponse> {
+	return call('POST', loginUrl, { data: { userName, password }, address, cookie });
+}
+
+/** POST /api/auth/refresh as the web app sends it: the cookie, X-Ariva-Csrf and the web origin. */
+export function refresh(cookie: string): Promise<CallResponse> {
+	return call('POST', refreshUrl, { cookie, csrf: true, origin: webOrigin });
 }
 
 export interface TokenResponse {
@@ -100,13 +162,26 @@ export interface TokenResponse {
 	tokenType: string;
 	expiresIn: number;
 	scope: string | null;
+	/** The refresh cookie value from Set-Cookie (never in the body). */
+	refreshToken: string;
 }
 
-/** Signs in and returns the token response; fails the test when sign-in fails. */
-export async function signIn(request: APIRequestContext, entry: Account): Promise<TokenResponse> {
-	const response = await login(request, entry.userName, entry.password);
+/** Signs in and returns the token response and the refresh cookie; fails the test when sign-in fails. */
+export async function signIn(entry: Account): Promise<TokenResponse> {
+	const response = await login(entry.userName, entry.password);
 	expect(response.status(), `sign-in of ${entry.userName}`).toBe(200);
-	return (await response.json()) as TokenResponse;
+	return { ...(await response.json()), refreshToken: response.refreshCookie() } as TokenResponse;
+}
+
+/** Polls until the access token is refused (session revocation reaches every node within 5 seconds). */
+export async function refusedWithin(token: string, url: string, milliseconds = 6000): Promise<number> {
+	const started = Date.now();
+	for (;;) {
+		const status = (await call('GET', url, { token })).status();
+		if (status === 401) return Date.now() - started;
+		if (Date.now() - started > milliseconds) return -1;
+		await new Promise((resolve) => setTimeout(resolve, 250));
+	}
 }
 
 /** The JSON payload of a compact JWS, without verifying it. */

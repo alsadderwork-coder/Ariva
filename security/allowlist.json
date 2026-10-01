@@ -38,5 +38,17 @@
     "proposedBy": "Claude (ARV-010a, 2026-10-01)",
     "approvedBy": "PENDING: Ahmad Al-Sadder",
     "date": "2026-10-01"
+  },
+  {
+    "rule": "SEC-052",
+    "path": "Platform/Backplane/Ariva.Api.Main/Controllers/Auth/Controller.cs",
+    "contains": "AllowAnonymous",
+    "routes": [
+      "/api/auth/refresh"
+    ],
+    "reason": "Refresh is authenticated by the HttpOnly __Secure-ariva_rt cookie (ADR-0026), not by a bearer token, because the access token it replaces may already have expired. It refuses a request without X-Ariva-Csrf: 1 or without an allow-listed Origin (CWE-352), shares the 10 a minute auth rate limit, rotates the token on every use and revokes the whole family on reuse.",
+    "proposedBy": "Claude (ARV-010b, 2026-10-01)",
+    "approvedBy": "PENDING: Ahmad Al-Sadder",
+    "date": "2026-10-01"
   }
 ]

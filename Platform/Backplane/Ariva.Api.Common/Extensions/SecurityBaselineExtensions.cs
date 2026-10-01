@@ -17,6 +17,7 @@ namespace Ariva.Api.Common.Extensions;
 /// app.UseAppCors();
 /// app.UseAppRateLimiting();
 /// app.UseAuthentication();
+/// app.UseSessionValidation();
 /// app.UsePendingScope();
 /// app.UseAuthorization();
 /// </code>

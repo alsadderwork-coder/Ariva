@@ -48,6 +48,11 @@ public sealed class AuthSettingsTests
         auth.Lockout.Threshold.Should().Be(10);
         auth.Lockout.DurationSeconds.Should().Be(900);
         auth.TotpRequired.Should().BeFalse("TOTP enrolment arrives with ARV-010c, which turns this on");
+        auth.Sessions.AbsoluteSeconds.Should().Be(12 * 3600, "12 hours for every role");
+        auth.Sessions.IdleSecondsAdministrator.Should().Be(30 * 60);
+        auth.Sessions.IdleSecondsOperational.Should().Be(4 * 3600);
+        auth.Sessions.RefreshGraceSeconds.Should().Be(30);
+        auth.Sessions.CacheSeconds.Should().BeLessThan(5, "revocation must reach every node within 5 seconds, also without the Redis backplane");
         auth.DevelopmentUsers.Should().BeEmpty();
         limits.Auth.PermitLimit.Should().Be(10);
         limits.Auth.WindowSeconds.Should().Be(60);

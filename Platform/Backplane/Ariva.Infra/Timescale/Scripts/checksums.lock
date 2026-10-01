@@ -3,6 +3,7 @@
   "scripts": {
     "0001_roles.sql": "988d016e15feda84385f95e64188b0ddda64a99f317644a41a441d9a97478f78",
     "0002_data_protection_key.sql": "d624f1f40eb3310b588e9ef400ac9a5791a629a251e15cfee543b7fcd0e3398c",
-    "0003_user_account.sql": "f6ab518e2aa9cc6b228dad84f2582bc7695d0284afafe90ce22658989a746277"
+    "0003_user_account.sql": "f6ab518e2aa9cc6b228dad84f2582bc7695d0284afafe90ce22658989a746277",
+    "0004_user_session.sql": "0eb01af08a90cad74eec5974bcb1eea06430235259deac953d7357a33608fa2d"
   }
 }
