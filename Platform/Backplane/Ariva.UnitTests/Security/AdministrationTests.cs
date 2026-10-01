@@ -99,7 +99,8 @@ public sealed class AdministrationTests
     public void TemporaryPasswords_Should_PassThePolicyAndNeverRepeat_When_Generated()
     {
         var policy = new PasswordPolicy(["ariva", "AMM"]);
-        var passwords = Enumerable.Range(0, 200).Select(_ => TemporaryPasswords.New()).ToList();
+        // 2,000 draws: a three-letter context word turns up in about one in a thousand raw draws, so the redraw is exercised.
+        var passwords = Enumerable.Range(0, 2000).Select(_ => TemporaryPasswords.New(policy, "ops.three")).ToList();
 
         passwords.Should().OnlyHaveUniqueItems();
         passwords.Should().OnlyContain(p => p.Length == 23 && p.Count(c => c == '-') == 3);

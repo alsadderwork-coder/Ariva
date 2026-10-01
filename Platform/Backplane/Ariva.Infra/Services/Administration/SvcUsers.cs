@@ -26,6 +26,7 @@ internal sealed class SvcUsers(
     AdministrationGuards guards,
     AccountSessions sessions,
     AuditTrail audit,
+    PasswordPolicy passwordPolicy,
     ILogger<SvcUsers> logger) : SvcBase(unitOfWork, currentUser, timeProvider), ISvcUsers
 {
     public static readonly EventId UserCreated = new(9120, "SecurityEvent.UserCreated");
@@ -50,7 +51,7 @@ internal sealed class SvcUsers(
             return Result.Error<UserCreatedViewModel>(AdministrationErrors.UserNameTaken);
 
         var now = UtcNow;
-        var password = TemporaryPasswords.New();
+        var password = TemporaryPasswords.New(passwordPolicy, userName);
         var user = new User(userName, request.DisplayName?.Trim(), request.Email);
         user.SetPassword(PasswordHasher.Hash(password), temporary: true);
         await SaveAsync(user, ct);
@@ -138,7 +139,7 @@ internal sealed class SvcUsers(
             return Result.Error<TemporaryPasswordViewModel>(AdministrationErrors.NotFound);
 
         var before = AuditTrail.Summary(user);
-        var password = TemporaryPasswords.New();
+        var password = TemporaryPasswords.New(passwordPolicy, user.UserName);
         user.SetPassword(PasswordHasher.Hash(password), temporary: true);
         user.Unlock();
         await UpdateAsync(user, ct);
