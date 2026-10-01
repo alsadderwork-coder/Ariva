@@ -19,8 +19,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 1,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "2026-10-01: CI on GitHub (ci workflow) builds the solution with the security analyzers as errors and runs unit, architecture, security and Playwright suites green on main and every story PR.",
       "dependsOn": []
     },
     {
@@ -39,7 +39,7 @@
       ],
       "priority": 2,
       "passes": false,
-      "notes": "",
+      "notes": "2026-10-01: PR #15. All automated criteria pass in CI (chart render tests for four environments, refused renders, Trivy image scans clean after nginx 1.30 Alpine and OS upgrades, package CVEs fixed). Open: criterion 1 needs a release on the dev cluster by a human.",
       "dependsOn": [
         "ARV-001"
       ]
@@ -58,8 +58,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 3,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "2026-10-01: PR #16. dev-environment workflow brings the compose stack up and dev-check passes in CI.",
       "dependsOn": [
         "ARV-001"
       ]
@@ -78,8 +78,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 4,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "2026-10-01: PR #17. Domain foundations ported; unit tests green in CI.",
       "dependsOn": [
         "ARV-001"
       ]
@@ -100,8 +100,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 5,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "2026-10-01: PR #18. NHibernate storage provider and unit of work; unit and Testcontainers integration tests green in CI; verified locally against PostgreSQL 16.",
       "dependsOn": [
         "ARV-003",
         "ARV-004"
@@ -123,8 +123,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 6,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "2026-10-01: PR #19. Script runner, roles and migration Job; unit and integration tests green in CI; verified locally against PostgreSQL 16. Helm Job not yet run on a cluster.",
       "dependsOn": [
         "ARV-005"
       ]
