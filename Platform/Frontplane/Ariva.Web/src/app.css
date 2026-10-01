@@ -86,7 +86,8 @@
 	--secondary: #dfe1ea;
 	--secondary-foreground: #585c7c;
 	--muted: #f6f6f9;
-	--muted-foreground: #6d767f;
+	/* Darker than Aman.Web's #6d767f, which fails WCAG AA (4.5:1) on the grey surfaces; axe test in Ariva.E2E */
+	--muted-foreground: #5f6871;
 	--accent: #f2f5f8;
 	--accent-foreground: #030519;
 	--destructive: #c8102e;
@@ -109,7 +110,8 @@
 	--sidebar-muted: #6d767f;
 	--surface: #ffffff;
 	--surface-2: #f6f6f9;
-	--tertiary: #8c8fa5;
+	/* Darker than Aman.Web's #8c8fa5 (3:1 on surface-2) so table headers pass WCAG AA */
+	--tertiary: #666a80;
 	--strong-border: #cdd2d8;
 	--subtle-border: #f0f2f4;
 	--brand-navy: #0d2b5e;
@@ -154,7 +156,7 @@
 	--sidebar-muted: oklch(0.704 0.04 256.788);
 	--surface: oklch(20.066% 0.01993 284.456);
 	--surface-2: oklch(23.215% 0.02306 284.456);
-	--tertiary: oklch(55.437% 0.03584 279.306);
+	--tertiary: oklch(72% 0.035 279.3);
 	--strong-border: oklch(40.869% 0.02687 265.48);
 	--subtle-border: oklch(25.841% 0.01914 258.389);
 	--brand-navy: oklch(30.046% 0.09802 260.4);

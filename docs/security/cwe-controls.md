@@ -53,7 +53,7 @@ Approved exceptions today: the Kubernetes health probes of every host and of the
 
 ## Observations from AMAN's integration authentication (do not copy these)
 
-Read from `Aman.Infra/Services/Authentication/SvcIntegrationAuth.cs` on 2026-10-01. Ariva implements the same client credentials plus TOTP flow without these weaknesses; consider fixing them in AMAN too.
+Read from `Aman.Infra/Services/Authentication/SvcIntegrationAuth.cs` on 2026-10-01. Ariva implements the same client credentials plus TOTP flow without these weaknesses. AMAN status: fixed on the local branch `feature/integration-auth-hardening` (commits e01b0e0b and 2037bce0, not yet compiled or merged) except where the last column says otherwise.
 
 | Observation | CWE | Ariva's version |
 |---|---|---|
@@ -63,3 +63,7 @@ Read from `Aman.Infra/Services/Authentication/SvcIntegrationAuth.cs` on 2026-10-
 | No visible rate limit or lockout on the login endpoint | CWE-307 | Per client and per IP rate limits, lockout after 10 failures for 15 minutes, alert to administrators |
 | Token expiry computed from `Fx.NowKindUnspecified` | CWE-613 risk if the server clock is not UTC | `TimeProvider.GetUtcNow()` everywhere |
 | One signing key (`Security:SecretKey`) appears to serve users and integration clients; token type is a claim | CWE-863 risk if any endpoint forgets to check the type | Separate keys and audiences per principal type |
+| `[Log]` on the login method writes every string argument to the log at Debug level, including the client secret and the TOTP code | CWE-532 | Login methods carry no argument logging; Serilog destructuring policies redact secrets (ARV-007). Fixed in AMAN on the branch |
+| The per-session TOTP secret was cached with no expiry | CWE-613 | Cache entries expire with the session. Fixed in AMAN on the branch |
+| `GET AdminArea/IntegrationClient` (GetAll) has no `[Permission]`, so any signed-in user can list integration clients | CWE-862 | Every action needs a permission; `EndpointInventoryTests` fail otherwise. Not changed in AMAN (needs a permission decision) |
+| Integration client details, including the TOTP secret, are cached in Redis through FusionCache | CWE-312 | Secrets are never cached; the TOTP secret is encrypted at rest with Data Protection (ARV-042). Not changed in AMAN |

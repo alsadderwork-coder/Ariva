@@ -31,6 +31,7 @@ epic('E7', 'AMAN and immigration integration')
 epic('E8', 'Web application')
 epic('E9', 'Reports')
 epic('E10', 'Deployment and demo')
+epic('E11', 'Engineering quality')
 
 S = []
 def story(id, ep, title, desc, ac, gates, cwe, deps=()):
@@ -346,6 +347,69 @@ story('ARV-065', 'E10', 'Phase 0 exit review',
       'Gate before the pilot.', ['All gates green; full-repository security review PASS; coverage report attached', 'List of open "to confirm" items for the pilot contract'], 'BIWES', ['all'], ['ARV-064', 'ARV-063'])
 
 # ---------------------------------------------------------------------------------------------
+# E11: engineering quality (suggested 2026-10-01; each story is independent and can be reordered)
+story('ARV-066', 'E11', '.NET Aspire AppHost for local runs, with the Aspire MCP for agents',
+      'One F5 starts every host, TimescaleDB, Kafka, Redis and the simulator with the dashboard, traces and logs; agents read resources, logs and traces through the Aspire MCP instead of guessing.',
+      ['Ariva.AppHost (Platform/Cloud or Platform/Backplane, mirroring the AMAN layout) wires the five APIs, the simulator, the web dev server and the containers from ARV-003 with health checks and references',
+       'Ariva.ServiceDefaults adds OpenTelemetry, health checks and resilience defaults without changing the security baseline (default deny, headers, limits)',
+       'The aspire MCP server is added to .mcp.json and documented in docs/harness/README.md; Playwright and integration tests can target the AppHost',
+       'Docker Compose stays for CI and for machines without the Aspire workload'],
+      'BS', ['CWE-269'], ['ARV-003', 'ARV-007'])
+story('ARV-067', 'E11', 'AsyncAPI 3 document for every Kafka topic, checked in CI',
+      'docs/architecture/asyncapi.yaml describes every topic in KafkaTopics (key, schema, producer, consumers, retention class) and the AMAN feed; CI fails when a topic constant has no entry or a contract record and its schema drift apart.',
+      ['AsyncAPI 3.0 document generated or validated from KafkaTopics and the event records (unit test compares them)',
+       'The AMAN feed topics and the four V1 contracts are described with the aggregate-only rule and small-cell suppression',
+       'The CLI validator runs in ci.yml; the document renders in the wiki integration guide'],
+      'BS', ['CWE-501'], ['ARV-020'])
+story('ARV-068', 'E11', 'Consumer-driven contract tests for the AMAN feed (Pact)',
+      'Ariva is the consumer of aman.feed.*; a Pact contract per V1 message lets AMAN verify it never breaks Ariva and never adds identifiers.',
+      ['PactNet message pacts for DeskSessionChanged, DeskIntervalStats, EGateIntervalStats and InboundFlightLaneDemand, published as CI artifacts',
+       'A provider verification harness that AMAN can run in its pipeline is documented in wiki/08-Integration-Guide.md',
+       'The pacts assert absence of officer, traveller and document identifiers (data boundary)'],
+      'BIS', ['CWE-501'], ['ARV-048'])
+story('ARV-069', 'E11', 'Mutation testing on the pure engines (Stryker.NET)',
+      'Agents write many tests; mutation testing proves they catch real faults. Applies to the formulas, the queue state engine, realised wait attribution and the nowcast.',
+      ['Stryker.NET configured for Ariva.Core formula and engine namespaces with a mutation score threshold of 80 percent (break below 70)',
+       'Runs weekly and on demand (workflow_dispatch), report uploaded as an artifact; surviving mutants triaged in backlog/progress.md'],
+      'B', [], ['ARV-030', 'ARV-031', 'ARV-032'])
+story('ARV-070', 'E11', 'Property-based tests for formulas and vendor parsers',
+      'Generated inputs for the queue formulas (F1 to F21) and every vendor dialect parser: invariants such as non-negative waits, conservation of passengers across zones, and parsers that never throw or over-read on arbitrary bytes (CWE-120).',
+      ['CsCheck (or FsCheck) properties for each formula in docs/domain/formulas.md with shrunk counterexamples recorded as regression tests',
+       'Every parser in Ariva.Infra adapters gets a property test with random and truncated payloads; no exception escapes the adapter boundary'],
+      'BS', ['CWE-120', 'CWE-501'], ['ARV-023', 'ARV-030'])
+story('ARV-071', 'E11', 'Load tests for ingest and live fan-out (NBomber)',
+      'Sizing evidence for the BOQ: sensor events per second through Ingest and Stream, and SignalR fan-out to dashboards and displays.',
+      ['NBomber scenarios: 40 sensors at vendor push rates, 3x peak burst, 200 concurrent dashboard and display connections',
+       'Results (p50, p95, p99 latency, throughput, CPU and memory per pod) recorded in wiki/05-Network-and-Ports.md sizing notes, labelled as lab measurements',
+       'Rate limits and body limits hold under load (429 and 413 rather than failures)'],
+      'BES', ['CWE-120', 'CWE-400'], ['ARV-034', 'ARV-035'])
+story('ARV-072', 'E11', 'Failure-injection tests with Toxiproxy',
+      'Prove degraded modes: Kafka, Redis and PostgreSQL latency, resets and outages while the simulator runs.',
+      ['Testcontainers.Toxiproxy scenarios: broker outage (outbox holds, relay resumes in order), Redis loss (live view marked stale, no crash), database stall (ingest backpressure, no data loss)',
+       'Each scenario asserts the data-quality flag and the stale indicators the UI shows'],
+      'BIS', ['CWE-400'], ['ARV-020', 'ARV-034', 'ARV-035'])
+story('ARV-073', 'E11', 'Signed images with SBOM and provenance',
+      'Customers in border security ask for supply-chain evidence; sign every image and attach its SBOM.',
+      ['images.yml signs each image with cosign keyless (GitHub OIDC) and attaches the CycloneDX SBOM as an attestation',
+       'The Helm deployment guide shows how to verify signatures (cosign verify) and, optionally, enforce them with an admission policy',
+       'Release notes record image digests'],
+      'S', ['CWE-494'], ['ARV-062'])
+story('ARV-074', 'E11', 'OWASP ASVS 5.0 Level 2 mapping',
+      'The 14 CWEs are the floor; tenders increasingly cite ASVS. Map every ASVS 5.0 Level 2 requirement to a control, a test or a gap.',
+      ['docs/security/asvs-l2.md lists each requirement with status (met, partly, gap, not applicable) and evidence links',
+       'Gaps become stories; the security-reviewer agent checks the mapping for the areas a story touches'],
+      'S', ['all'], ['ARV-010', 'ARV-011'])
+story('ARV-075', 'E11', 'Visual regression baselines for the key screens',
+      'Catch unintended layout and token changes (Aman design system parity) on live operations, immigration, displays and the shell in both languages and modes.',
+      ['Playwright toHaveScreenshot baselines generated in the CI Linux image only (fonts pinned), with a masked area for live values',
+       'An update flow (workflow_dispatch) regenerates baselines on request; diffs uploaded as artifacts'],
+      'WE', ['CWE-79'], ['ARV-055', 'ARV-057', 'ARV-058'])
+story('ARV-076', 'E11', 'Dev container for cloud agent sessions and Codespaces',
+      'A .devcontainer with the .NET 10 SDK, Node 22, Playwright Chromium, uv and the Compose services, so Claude Code cloud sessions and Codespaces start with every gate runnable.',
+      ['devcontainer.json and a Dockerfile pinned by digest; postCreate runs npm ci and dotnet restore',
+       'node scripts/verify.mjs all passes inside the container; documented in docs/harness/README.md'],
+      'BWES', ['CWE-269'], ['ARV-001', 'ARV-003'])
+
 prd_path = os.path.join(HERE, 'prd-phase0.json')
 prev = {}
 if os.path.exists(prd_path):

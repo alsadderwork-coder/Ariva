@@ -661,3 +661,110 @@ Depends on: ARV-064, ARV-063. CWEs: all. Gates: B, I, W, E, S.
 
 - All gates green; full-repository security review PASS; coverage report attached
 - List of open "to confirm" items for the pilot contract
+
+## E11: Engineering quality
+
+### ARV-066: .NET Aspire AppHost for local runs, with the Aspire MCP for agents
+
+One F5 starts every host, TimescaleDB, Kafka, Redis and the simulator with the dashboard, traces and logs; agents read resources, logs and traces through the Aspire MCP instead of guessing.
+
+Depends on: ARV-003, ARV-007. CWEs: CWE-269. Gates: B, S.
+
+- Ariva.AppHost (Platform/Cloud or Platform/Backplane, mirroring the AMAN layout) wires the five APIs, the simulator, the web dev server and the containers from ARV-003 with health checks and references
+- Ariva.ServiceDefaults adds OpenTelemetry, health checks and resilience defaults without changing the security baseline (default deny, headers, limits)
+- The aspire MCP server is added to .mcp.json and documented in docs/harness/README.md; Playwright and integration tests can target the AppHost
+- Docker Compose stays for CI and for machines without the Aspire workload
+
+### ARV-067: AsyncAPI 3 document for every Kafka topic, checked in CI
+
+docs/architecture/asyncapi.yaml describes every topic in KafkaTopics (key, schema, producer, consumers, retention class) and the AMAN feed; CI fails when a topic constant has no entry or a contract record and its schema drift apart.
+
+Depends on: ARV-020. CWEs: CWE-501. Gates: B, S.
+
+- AsyncAPI 3.0 document generated or validated from KafkaTopics and the event records (unit test compares them)
+- The AMAN feed topics and the four V1 contracts are described with the aggregate-only rule and small-cell suppression
+- The CLI validator runs in ci.yml; the document renders in the wiki integration guide
+
+### ARV-068: Consumer-driven contract tests for the AMAN feed (Pact)
+
+Ariva is the consumer of aman.feed.*; a Pact contract per V1 message lets AMAN verify it never breaks Ariva and never adds identifiers.
+
+Depends on: ARV-048. CWEs: CWE-501. Gates: B, I, S.
+
+- PactNet message pacts for DeskSessionChanged, DeskIntervalStats, EGateIntervalStats and InboundFlightLaneDemand, published as CI artifacts
+- A provider verification harness that AMAN can run in its pipeline is documented in wiki/08-Integration-Guide.md
+- The pacts assert absence of officer, traveller and document identifiers (data boundary)
+
+### ARV-069: Mutation testing on the pure engines (Stryker.NET)
+
+Agents write many tests; mutation testing proves they catch real faults. Applies to the formulas, the queue state engine, realised wait attribution and the nowcast.
+
+Depends on: ARV-030, ARV-031, ARV-032. CWEs: baseline. Gates: B.
+
+- Stryker.NET configured for Ariva.Core formula and engine namespaces with a mutation score threshold of 80 percent (break below 70)
+- Runs weekly and on demand (workflow_dispatch), report uploaded as an artifact; surviving mutants triaged in backlog/progress.md
+
+### ARV-070: Property-based tests for formulas and vendor parsers
+
+Generated inputs for the queue formulas (F1 to F21) and every vendor dialect parser: invariants such as non-negative waits, conservation of passengers across zones, and parsers that never throw or over-read on arbitrary bytes (CWE-120).
+
+Depends on: ARV-023, ARV-030. CWEs: CWE-120, CWE-501. Gates: B, S.
+
+- CsCheck (or FsCheck) properties for each formula in docs/domain/formulas.md with shrunk counterexamples recorded as regression tests
+- Every parser in Ariva.Infra adapters gets a property test with random and truncated payloads; no exception escapes the adapter boundary
+
+### ARV-071: Load tests for ingest and live fan-out (NBomber)
+
+Sizing evidence for the BOQ: sensor events per second through Ingest and Stream, and SignalR fan-out to dashboards and displays.
+
+Depends on: ARV-034, ARV-035. CWEs: CWE-120, CWE-400. Gates: B, E, S.
+
+- NBomber scenarios: 40 sensors at vendor push rates, 3x peak burst, 200 concurrent dashboard and display connections
+- Results (p50, p95, p99 latency, throughput, CPU and memory per pod) recorded in wiki/05-Network-and-Ports.md sizing notes, labelled as lab measurements
+- Rate limits and body limits hold under load (429 and 413 rather than failures)
+
+### ARV-072: Failure-injection tests with Toxiproxy
+
+Prove degraded modes: Kafka, Redis and PostgreSQL latency, resets and outages while the simulator runs.
+
+Depends on: ARV-020, ARV-034, ARV-035. CWEs: CWE-400. Gates: B, I, S.
+
+- Testcontainers.Toxiproxy scenarios: broker outage (outbox holds, relay resumes in order), Redis loss (live view marked stale, no crash), database stall (ingest backpressure, no data loss)
+- Each scenario asserts the data-quality flag and the stale indicators the UI shows
+
+### ARV-073: Signed images with SBOM and provenance
+
+Customers in border security ask for supply-chain evidence; sign every image and attach its SBOM.
+
+Depends on: ARV-062. CWEs: CWE-494. Gates: S.
+
+- images.yml signs each image with cosign keyless (GitHub OIDC) and attaches the CycloneDX SBOM as an attestation
+- The Helm deployment guide shows how to verify signatures (cosign verify) and, optionally, enforce them with an admission policy
+- Release notes record image digests
+
+### ARV-074: OWASP ASVS 5.0 Level 2 mapping
+
+The 14 CWEs are the floor; tenders increasingly cite ASVS. Map every ASVS 5.0 Level 2 requirement to a control, a test or a gap.
+
+Depends on: ARV-010, ARV-011. CWEs: all. Gates: S.
+
+- docs/security/asvs-l2.md lists each requirement with status (met, partly, gap, not applicable) and evidence links
+- Gaps become stories; the security-reviewer agent checks the mapping for the areas a story touches
+
+### ARV-075: Visual regression baselines for the key screens
+
+Catch unintended layout and token changes (Aman design system parity) on live operations, immigration, displays and the shell in both languages and modes.
+
+Depends on: ARV-055, ARV-057, ARV-058. CWEs: CWE-79. Gates: W, E.
+
+- Playwright toHaveScreenshot baselines generated in the CI Linux image only (fonts pinned), with a masked area for live values
+- An update flow (workflow_dispatch) regenerates baselines on request; diffs uploaded as artifacts
+
+### ARV-076: Dev container for cloud agent sessions and Codespaces
+
+A .devcontainer with the .NET 10 SDK, Node 22, Playwright Chromium, uv and the Compose services, so Claude Code cloud sessions and Codespaces start with every gate runnable.
+
+Depends on: ARV-001, ARV-003. CWEs: CWE-269. Gates: B, W, E, S.
+
+- devcontainer.json and a Dockerfile pinned by digest; postCreate runs npm ci and dotnet restore
+- node scripts/verify.mjs all passes inside the container; documented in docs/harness/README.md

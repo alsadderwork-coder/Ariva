@@ -1379,6 +1379,234 @@
         "ARV-064",
         "ARV-063"
       ]
+    },
+    {
+      "id": "ARV-066",
+      "title": "[E11] .NET Aspire AppHost for local runs, with the Aspire MCP for agents",
+      "description": "One F5 starts every host, TimescaleDB, Kafka, Redis and the simulator with the dashboard, traces and logs; agents read resources, logs and traces through the Aspire MCP instead of guessing. Epic: Engineering quality. CWEs to review: CWE-269.",
+      "acceptanceCriteria": [
+        "Ariva.AppHost (Platform/Cloud or Platform/Backplane, mirroring the AMAN layout) wires the five APIs, the simulator, the web dev server and the containers from ARV-003 with health checks and references",
+        "Ariva.ServiceDefaults adds OpenTelemetry, health checks and resilience defaults without changing the security baseline (default deny, headers, limits)",
+        "The aspire MCP server is added to .mcp.json and documented in docs/harness/README.md; Playwright and integration tests can target the AppHost",
+        "Docker Compose stays for CI and for machines without the Aspire workload",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 66,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-003",
+        "ARV-007"
+      ]
+    },
+    {
+      "id": "ARV-067",
+      "title": "[E11] AsyncAPI 3 document for every Kafka topic, checked in CI",
+      "description": "docs/architecture/asyncapi.yaml describes every topic in KafkaTopics (key, schema, producer, consumers, retention class) and the AMAN feed; CI fails when a topic constant has no entry or a contract record and its schema drift apart. Epic: Engineering quality. CWEs to review: CWE-501.",
+      "acceptanceCriteria": [
+        "AsyncAPI 3.0 document generated or validated from KafkaTopics and the event records (unit test compares them)",
+        "The AMAN feed topics and the four V1 contracts are described with the aggregate-only rule and small-cell suppression",
+        "The CLI validator runs in ci.yml; the document renders in the wiki integration guide",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 67,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-020"
+      ]
+    },
+    {
+      "id": "ARV-068",
+      "title": "[E11] Consumer-driven contract tests for the AMAN feed (Pact)",
+      "description": "Ariva is the consumer of aman.feed.*; a Pact contract per V1 message lets AMAN verify it never breaks Ariva and never adds identifiers. Epic: Engineering quality. CWEs to review: CWE-501.",
+      "acceptanceCriteria": [
+        "PactNet message pacts for DeskSessionChanged, DeskIntervalStats, EGateIntervalStats and InboundFlightLaneDemand, published as CI artifacts",
+        "A provider verification harness that AMAN can run in its pipeline is documented in wiki/08-Integration-Guide.md",
+        "The pacts assert absence of officer, traveller and document identifiers (data boundary)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 68,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-048"
+      ]
+    },
+    {
+      "id": "ARV-069",
+      "title": "[E11] Mutation testing on the pure engines (Stryker.NET)",
+      "description": "Agents write many tests; mutation testing proves they catch real faults. Applies to the formulas, the queue state engine, realised wait attribution and the nowcast. Epic: Engineering quality. CWEs to review: none specific beyond the baseline.",
+      "acceptanceCriteria": [
+        "Stryker.NET configured for Ariva.Core formula and engine namespaces with a mutation score threshold of 80 percent (break below 70)",
+        "Runs weekly and on demand (workflow_dispatch), report uploaded as an artifact; surviving mutants triaged in backlog/progress.md",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 69,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-030",
+        "ARV-031",
+        "ARV-032"
+      ]
+    },
+    {
+      "id": "ARV-070",
+      "title": "[E11] Property-based tests for formulas and vendor parsers",
+      "description": "Generated inputs for the queue formulas (F1 to F21) and every vendor dialect parser: invariants such as non-negative waits, conservation of passengers across zones, and parsers that never throw or over-read on arbitrary bytes (CWE-120). Epic: Engineering quality. CWEs to review: CWE-120, CWE-501.",
+      "acceptanceCriteria": [
+        "CsCheck (or FsCheck) properties for each formula in docs/domain/formulas.md with shrunk counterexamples recorded as regression tests",
+        "Every parser in Ariva.Infra adapters gets a property test with random and truncated payloads; no exception escapes the adapter boundary",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 70,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-023",
+        "ARV-030"
+      ]
+    },
+    {
+      "id": "ARV-071",
+      "title": "[E11] Load tests for ingest and live fan-out (NBomber)",
+      "description": "Sizing evidence for the BOQ: sensor events per second through Ingest and Stream, and SignalR fan-out to dashboards and displays. Epic: Engineering quality. CWEs to review: CWE-120, CWE-400.",
+      "acceptanceCriteria": [
+        "NBomber scenarios: 40 sensors at vendor push rates, 3x peak burst, 200 concurrent dashboard and display connections",
+        "Results (p50, p95, p99 latency, throughput, CPU and memory per pod) recorded in wiki/05-Network-and-Ports.md sizing notes, labelled as lab measurements",
+        "Rate limits and body limits hold under load (429 and 413 rather than failures)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 71,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-034",
+        "ARV-035"
+      ]
+    },
+    {
+      "id": "ARV-072",
+      "title": "[E11] Failure-injection tests with Toxiproxy",
+      "description": "Prove degraded modes: Kafka, Redis and PostgreSQL latency, resets and outages while the simulator runs. Epic: Engineering quality. CWEs to review: CWE-400.",
+      "acceptanceCriteria": [
+        "Testcontainers.Toxiproxy scenarios: broker outage (outbox holds, relay resumes in order), Redis loss (live view marked stale, no crash), database stall (ingest backpressure, no data loss)",
+        "Each scenario asserts the data-quality flag and the stale indicators the UI shows",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 72,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-020",
+        "ARV-034",
+        "ARV-035"
+      ]
+    },
+    {
+      "id": "ARV-073",
+      "title": "[E11] Signed images with SBOM and provenance",
+      "description": "Customers in border security ask for supply-chain evidence; sign every image and attach its SBOM. Epic: Engineering quality. CWEs to review: CWE-494.",
+      "acceptanceCriteria": [
+        "images.yml signs each image with cosign keyless (GitHub OIDC) and attaches the CycloneDX SBOM as an attestation",
+        "The Helm deployment guide shows how to verify signatures (cosign verify) and, optionally, enforce them with an admission policy",
+        "Release notes record image digests",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 73,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-062"
+      ]
+    },
+    {
+      "id": "ARV-074",
+      "title": "[E11] OWASP ASVS 5.0 Level 2 mapping",
+      "description": "The 14 CWEs are the floor; tenders increasingly cite ASVS. Map every ASVS 5.0 Level 2 requirement to a control, a test or a gap. Epic: Engineering quality. CWEs to review: all.",
+      "acceptanceCriteria": [
+        "docs/security/asvs-l2.md lists each requirement with status (met, partly, gap, not applicable) and evidence links",
+        "Gaps become stories; the security-reviewer agent checks the mapping for the areas a story touches",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 74,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-010",
+        "ARV-011"
+      ]
+    },
+    {
+      "id": "ARV-075",
+      "title": "[E11] Visual regression baselines for the key screens",
+      "description": "Catch unintended layout and token changes (Aman design system parity) on live operations, immigration, displays and the shell in both languages and modes. Epic: Engineering quality. CWEs to review: CWE-79.",
+      "acceptanceCriteria": [
+        "Playwright toHaveScreenshot baselines generated in the CI Linux image only (fonts pinned), with a masked area for live values",
+        "An update flow (workflow_dispatch) regenerates baselines on request; diffs uploaded as artifacts",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 75,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-055",
+        "ARV-057",
+        "ARV-058"
+      ]
+    },
+    {
+      "id": "ARV-076",
+      "title": "[E11] Dev container for cloud agent sessions and Codespaces",
+      "description": "A .devcontainer with the .NET 10 SDK, Node 22, Playwright Chromium, uv and the Compose services, so Claude Code cloud sessions and Codespaces start with every gate runnable. Epic: Engineering quality. CWEs to review: CWE-269.",
+      "acceptanceCriteria": [
+        "devcontainer.json and a Dockerfile pinned by digest; postCreate runs npm ci and dotnet restore",
+        "node scripts/verify.mjs all passes inside the container; documented in docs/harness/README.md",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 76,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-001",
+        "ARV-003"
+      ]
     }
   ]
 }

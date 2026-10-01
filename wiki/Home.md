@@ -89,7 +89,7 @@ Phases and gates (dates are a scenario that moves with the pilot contract):
 
 ## Epic names used in this wiki
 
-The backlog lives in `backlog/` (ralph-tui PRDs, stories ARV-001 to ARV-065) and is mirrored to GitHub issues with the `/sync-issues` command, one label per epic. The roadmap work packages map to epics as below.
+The backlog lives in `backlog/` (ralph-tui PRDs, stories ARV-001 to ARV-076) and is mirrored to GitHub issues with the `/sync-issues` command, one label per epic. The roadmap work packages map to epics as below.
 
 | Phase | Epic | Roadmap work package |
 |---|---|---|
