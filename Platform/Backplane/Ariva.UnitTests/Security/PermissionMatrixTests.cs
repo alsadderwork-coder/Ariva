@@ -100,7 +100,11 @@ public sealed partial class PermissionMatrixTests
     [MemberData(nameof(HostsInMatrix))]
     public async Task Send_Should_ReturnMatrixStatus_When_EachCallerCallsEachEndpoint(string host)
     {
-        await using var app = ArivaHosts.Create(host, configure: builder => builder.ConfigureTestServices(services =>
+        // Every caller shares one client address in-process; the sign-in limit (10 a minute for login, refresh and
+        // password change together) is tested in RateLimitingAndCorsTests, not here.
+        await using var app = ArivaHosts.Create(host, configure: builder => builder
+            .UseSetting("Security:RateLimiting:Auth:PermitLimit", "1000")
+            .ConfigureTestServices(services =>
         {
             TestAuthenticationHandler.Register(services);
             // No database in-process: the sign-in service fails every call, as the real one does for the matrix bodies.
