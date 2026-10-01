@@ -77,7 +77,7 @@ public sealed class DataProtectionCertificateTests
 
         configuration["DataProtection:CertificatePath"].Should().Be("/app/secrets/dataprotection/tls.crt");
         configuration["DataProtection:KeyPath"].Should().Be("/app/secrets/dataprotection/tls.key");
-        configuration["DataProtection:UseDevelopmentCertificate"].Should().NotBe("true", "a cluster never generates its own certificate");
+        configuration.GetValue<bool>("DataProtection:UseDevelopmentCertificate").Should().BeFalse("a cluster never generates its own certificate");
         RedisSettings.From(configuration).Enabled.Should().BeTrue("pods share cache evictions through the Redis backplane");
     }
 
@@ -86,7 +86,7 @@ public sealed class DataProtectionCertificateTests
     {
         var configuration = Layered("appsettings.base.vm-local.json");
 
-        configuration["DataProtection:UseDevelopmentCertificate"].Should().Be("true");
+        configuration.GetValue<bool>("DataProtection:UseDevelopmentCertificate").Should().BeTrue();
         RedisSettings.From(configuration).Enabled.Should().BeFalse("dev-up turns Redis on in appsettings.local.json; E2E runs without it");
     }
 
