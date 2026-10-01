@@ -91,11 +91,12 @@
     <PackageVersion Include="Bogus" Version="35.6.5" />
     <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.0" />
     <PackageVersion Include="BenchmarkDotNet" Version="0.13.12" />
+    <!-- Integration tests (ARV-005); latest on nuget.org on 2026-10-01 -->
+    <PackageVersion Include="Testcontainers.PostgreSql" Version="4.15.0" />
   </ItemGroup>
   <!--
     Packages that backlog stories will add later. They are not in AMAN's file, so no version is pinned yet.
     Add a PackageVersion entry for each one in the story that first uses it:
-      Testcontainers.PostgreSql   (version to pin when added)
       Testcontainers.Kafka        (version to pin when added)
       Testcontainers.Redis        (version to pin when added)
   -->

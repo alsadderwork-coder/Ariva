@@ -30,7 +30,10 @@ function dotnetHost(projectPath: string, healthUrl: string, buildFirst = false) 
 		reuseExistingServer: !isCi,
 		timeout: buildFirst ? 300_000 : 120_000,
 		stdout: 'ignore' as const,
-		stderr: 'pipe' as const
+		stderr: 'pipe' as const,
+		// The E2E run has no database unless ARIVA_E2E_SCHEMA_UPDATE=true says one is up (npm run dev:up); vm-local
+		// otherwise runs the development schema update at startup and the hosts would stop on the refused connection.
+		env: { Database__AllowSchemaUpdate: process.env.ARIVA_E2E_SCHEMA_UPDATE === 'true' ? 'true' : 'false' }
 	};
 }
 

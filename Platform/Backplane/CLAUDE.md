@@ -24,8 +24,11 @@ Load the `aman-conventions` skill for the full pattern set; this file is the sho
 
 ## Persistence
 
-- NHibernate through `IStorageProvider` and `IUnitOfWork` (ported from AMAN). `Query<T>()`, `QueryAsNoTracking<T>()`, `ToFuture()` for count plus page.
-- Raw SQL only through `ExecuteSqlAsync(sql, parameters)`. Never interpolate.
+- NHibernate through `IStorageProvider` and `IUnitOfWork` (ported from AMAN, async only). Services inherit `SvcBase` (or `SvcDb`): `Query<T>()`, `QueryAsNoTracking<T>()`, `ExecutePagedQueryAsync` (futures, page size capped at 500). Writes promise the unit of work to commit; services never commit themselves.
+- Raw SQL only through `ExecuteSqlAsync(sql, parameters)`. The `sql` parameter is `[ConstantExpected]` and CA1857 is an error, so an interpolated or concatenated string does not compile. Bind values as `:name`.
+- Naming (differs from AMAN): snake_case singular tables and columns (`zone_profile`, `created_on`, `site_id`); reserved words are quoted (`"user"`). Ids are version 7 GUIDs in `id`; DateTime is UTC in `timestamptz`; enums are stored by name.
+- Domain events are dequeued at commit and handed to `IDomainEventOutbox` inside the transaction (ADR-0018). Until ARV-020 registers the Kafka outbox, a commit with events fails rather than dropping them.
+- Audit fields and soft delete are set by the NHibernate interceptor and delete listener from `ICurrentUser` and `TimeProvider`; do not set them by hand.
 - Time series: Timescale hypertables written with Npgsql binary COPY (`Ariva.Infra/Timescale`). DDL only in `Timescale/Scripts/NNNN_*.sql`, applied by the script runner; scripts are immutable once merged.
 - `SchemaUpdate` runs only when `Database:AllowSchemaUpdate` is true, which only `vm-local` sets.
 

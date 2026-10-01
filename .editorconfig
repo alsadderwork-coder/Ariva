@@ -114,6 +114,8 @@ dotnet_style_predefined_type_for_member_access = true:silent
 # CWE-89 SQL injection
 dotnet_diagnostic.CA2100.severity = error
 dotnet_diagnostic.CA3001.severity = error
+# ExecuteSqlAsync takes [ConstantExpected] SQL: an interpolated or concatenated string fails the build (ARV-005)
+dotnet_diagnostic.CA1857.severity = error
 # CWE-79 cross-site scripting
 dotnet_diagnostic.CA3002.severity = error
 # CWE-22 path injection and CWE-200 information disclosure (defence in depth)

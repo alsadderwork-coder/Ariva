@@ -1,5 +1,5 @@
 # Pull request gate and main branch build (the GitHub equivalent of Ariva.Cicd/AzureDevOps/Common/Analyze-solution.yaml).
-# Every job must pass before a pull request can merge: CWE security gate, backend build and unit tests, web check
+# Every job must pass before a pull request can merge: CWE security gate, backend build, unit and integration tests, web check
 # and build, then the Playwright API end-to-end and functional suites against the real hosts.
 # Actions are pinned to full commit SHAs (supply chain); Dependabot proposes updates (.github/dependabot.yml).
 name: ci
@@ -62,6 +62,9 @@ jobs:
     name: Backend build and unit tests
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write # failure summary as a PR comment (job logs are not readable with the repo token scope we use)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -70,15 +73,41 @@ jobs:
         with:
           dotnet-version: '10.0.x'
       - name: Restore
-        run: dotnet restore Ariva.slnx
+        run: dotnet restore Ariva.slnx 2>&1 | tee restore.log
       - name: Build (security analyzers as errors)
-        run: dotnet build Ariva.slnx -c Release --no-restore
+        run: dotnet build Ariva.slnx -c Release --no-restore 2>&1 | tee build.log
       - name: Unit, architecture and security tests
-        run: dotnet test Platform/Backplane/Ariva.UnitTests/Ariva.UnitTests.csproj -c Release --no-build --logger trx --results-directory TestResults
+        run: dotnet test Platform/Backplane/Ariva.UnitTests/Ariva.UnitTests.csproj -c Release --no-build --logger trx --results-directory TestResults 2>&1 | tee unit.log
+      - name: Integration tests (Testcontainers, Docker on the runner)
+        run: dotnet test Platform/Backplane/Ariva.IntegrationTests/Ariva.IntegrationTests.csproj -c Release --no-build --logger trx --results-directory TestResults 2>&1 | tee integration.log
       - name: Vulnerable packages (fails on high or critical)
         run: |
           dotnet list Ariva.slnx package --vulnerable --include-transitive | tee vulnerable.txt
           if grep -Eq '\b(High|Critical)\b' vulnerable.txt; then echo "::error::High or critical vulnerable package"; exit 1; fi
+      - name: Report failures on the pull request
+        if: failure() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          {
+            echo "### Backend job failed (${GITHUB_SHA::7})"
+            if [ -f restore.log ] && grep -q ' error ' restore.log; then
+              echo '#### Restore'; echo '```'; grep ' error ' restore.log | sort -u | head -40 | cut -c1-400; echo '```'
+            fi
+            if [ -f build.log ] && grep -Eq ': error [A-Z]+[0-9]+' build.log; then
+              echo '#### Build'; echo '```'; grep -E ': error [A-Z]+[0-9]+' build.log | sed 's#/home/runner/work/[^/]*/[^/]*/##' | sort -u | head -60 | cut -c1-400; echo '```'
+            fi
+            for log in unit.log integration.log; do
+              if [ -f "$log" ] && grep -Eq '^\s+Failed |error TESTERROR|\[FAIL\]' "$log"; then
+                echo "#### ${log%.log} tests"; echo '```'; grep -E -A14 '^\s+Failed |error TESTERROR|\[FAIL\]' "$log" | head -200 | cut -c1-400; echo '```'
+              fi
+            done
+            if [ -f vulnerable.txt ] && grep -Eq '\b(High|Critical)\b' vulnerable.txt; then
+              echo '#### Vulnerable packages'; echo '```'; grep -E '>|High|Critical' vulnerable.txt | head -40; echo '```'
+            fi
+          } > failure.md
+          gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file failure.md
       - name: Test results
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
