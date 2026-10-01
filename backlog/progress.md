@@ -104,3 +104,8 @@ One entry per story, newest last. Format:
 - Deferred: binding integration clients to sites lands with the integration client entity (ARV-042); the reviewer's remaining low notes are closed (siteCodes in the architecture rule, administrators without sites reserved to all-sites callers, the break-glass incident path in wiki 04).
 - Learnings: a seed that inserts the same natural key for two accounts in one session needs its own set, because the LINQ existence query does not see unflushed inserts; script 0007 was edited before it ever ran outside a throwaway database, which is the only time an edit is acceptable.
 
+## 2026-10-02 ARV-013 Site topology entities
+- Summary: Airport (IATA, ICAO, IANA time zone), Terminal (bound to a site), Level (floor number and extent in metres), Checkpoint (CheckIn, Security, Emigration, Immigration) and Desk (Counter, SecurityLane, Desk, EGate) as soft-deletable entities built through their parents, which enforce unique codes among live children, unique floor numbers, desk kinds by checkpoint kind and lane category rules by desk kind; the site code flows down from the terminal (ISiteBound).
+- Gates: 246 unit tests executed offline (the TopologyTests suite plus the existing domain, persistence and security tests that need no host) with a functional xunit and FluentAssertions shim, because NuGet is unreachable from this session; GitHub CI not observed.
+- Security review: CWE-501 (codes and kinds validated in the entity, site code never bound from a request, set from the terminal).
+
