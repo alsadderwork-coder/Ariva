@@ -78,8 +78,16 @@ async function tagsFor(image) {
 	const line = LINES[image];
 	if (line.list === 'mcr') {
 		const repo = image.replace('mcr.microsoft.com/', '');
-		const res = await fetch(`https://mcr.microsoft.com/v2/${repo}/tags/list`);
-		return (await res.json()).tags ?? [];
+		// The registry pages tag lists; follow the Link header so the newest patch is never missed.
+		const tags = [];
+		let url = `https://mcr.microsoft.com/v2/${repo}/tags/list?n=1000`;
+		for (let page = 0; url && page < 50; page++) {
+			const res = await fetch(url);
+			tags.push(...((await res.json()).tags ?? []));
+			const next = res.headers.get('link')?.match(/<([^>]+)>;\s*rel="next"/)?.[1];
+			url = next ? new URL(next, 'https://mcr.microsoft.com').toString() : null;
+		}
+		return tags;
 	}
 	const names = [];
 	let url = `https://hub.docker.com/v2/repositories/${line.hubName}/tags?page_size=100&name=${encodeURIComponent(line.hubFilter)}`;
