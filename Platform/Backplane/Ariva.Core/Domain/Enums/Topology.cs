@@ -34,3 +34,36 @@ public enum ExternalSystem
     /// <summary>The airport operational database: check-in counter codes in allocations.</summary>
     Aodb
 }
+
+/// <summary>The lifecycle of a zone profile version (ARV-016); stored by name.</summary>
+public enum ZoneProfileStatus
+{
+    Draft,
+    Published,
+    Retired
+}
+
+/// <summary>The role of a zone in a process (glossary Zone); stored by name.</summary>
+public enum ZoneKind
+{
+    /// <summary>Where people wait (a snake queue); owns the process.</summary>
+    Queue,
+
+    /// <summary>In front of a desk, where a passenger is served.</summary>
+    Service,
+
+    /// <summary>Behind a desk, where the officer or agent sits.</summary>
+    Staff,
+
+    /// <summary>Where the queue spills over outside the snake (overflow band).</summary>
+    Overflow
+}
+
+/// <summary>The role of a line (glossary Entry line, Exit line, Count line, Overflow band); stored by name.</summary>
+public enum LineRole
+{
+    Entry,
+    Exit,
+    Count,
+    OverflowEntry
+}

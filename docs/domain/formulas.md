@@ -621,3 +621,29 @@ stored rows per day = rows per second * 86,400                  1,000 * 86,400 =
 ```
 
 About 9 GB a day uncompressed, 1 to 2 GB a day compressed, 80 to 160 GB for a 90-day dispute window; provision 200 GB.
+
+## F22. Zone profile validity and geometry hash
+
+ARV-016. A zone profile version is publishable when:
+
+- every zone is a simple polygon of 3 to 200 vertices with non-zero area, every vertex inside its level (0 to width, 0 to depth metres), and no two vertices closer than 1 cm;
+- zone names are unique in the profile, ignoring case; line names likewise;
+- every queue zone has at least one entry line and exactly one exit line, each lying on one edge of that zone (both ends within 1 cm of the same edge);
+- every overflow zone has an overflow entry line on one of its edges; service, staff and overflow zones hang off a queue zone on the same level; only service and staff zones name a desk;
+- count lines have length (at least 1 cm) and both ends inside their level.
+
+Coordinates are rounded to the millimetre (half away from zero, negative zero written as zero) when stored.
+
+Geometry hash: SHA-256, lower-case hex, of the UTF-8 text below, fixed when the version is published and quoted by evidence packs and signed contracts. It contains no ids of the profile itself, so equal geometry gives an equal hash whatever the order of editing.
+
+```
+ariva-zone-profile-v1
+zone|<name>|<kind>|<level id, 32 hex>|<queue zone name or empty>|<desk id, 32 hex, or empty>|<x y,x y,...>
+...                                   (one line per zone, ordered by name, ordinal)
+line|<name>|<role>|<zone name or empty>|<level id>|<x y>|<x y>
+...                                   (one line per line, ordered by name, ordinal)
+```
+
+Numbers are written with three decimals in invariant culture. Changing this form needs a new prefix (`ariva-zone-profile-v2`) while v1 stays verifiable.
+
+Tests: the reference profile in `ZoneProfileTests` (snake 24 x 12 m at (10, 10) with an entry and an exit line, an overflow band with its entry line, one count line) hashes to `fd3d7d1585070bd347de877d87aa3bb4e28d2b571081986650ec934471d9a1da`, recomputed independently in Python; moving a vertex by 1 mm changes the hash, by 0.4 mm does not.

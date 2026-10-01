@@ -120,3 +120,9 @@ One entry per story, newest last. Format:
 - Gates: 267 unit tests executed offline; local harness PASS (ranges, overlap refusal leaving nothing behind, mapping uniqueness and kind rules, cross-site 404, resolver per site and cache eviction; the permission matrix, 295 cells, against the real host); GitHub CI not observed.
 - Security review: CWE-120 (range size, prefix and code lengths bounded before anything is built), CWE-863 (mappings site-scoped, a code cannot move to another site).
 
+## 2026-10-02 ARV-016 Zone profile aggregate
+- Summary: ZoneProfile (Draft, Published, Retired) with Zone (Queue, Service, Staff, Overflow) and Line (Entry, Exit, Count, OverflowEntry); a pure geometry kernel (simple polygon, shoelace area, segment intersection, line on edge, millimetre rounding); invariants for polygons, names, links, lines on edges, one exit per queue and level bounds; Validate for publishing; immutable published versions; drafts copied from a version; a geometry hash with a documented canonical form (formulas F22). The prototype's snake queue, service area, overflow band and count line map to the glossary's Queue, Service and Overflow zones and Count lines.
+- Gates: 331 unit tests executed offline, including 75 table-driven geometry and profile tests; the reference hash was recomputed independently in Python; GitHub CI not observed.
+- Security review: CWE-501 (geometry validated in the aggregate, coordinates bounded by the level, vertex and zone counts capped; immutability enforced in the entity).
+- Learnings: rounding can produce negative zero, which prints as -0.000 and would change the hash for the same geometry; adding 0.0 after rounding normalises it.
+
