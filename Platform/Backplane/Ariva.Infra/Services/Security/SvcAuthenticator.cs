@@ -43,6 +43,7 @@ internal sealed class SvcAuthenticator(
     IFusionCache cache,
     AccountSessions sessions,
     AuditTrail audit,
+    AdministrationGuards guards,
     ILogger<SvcAuthenticator> logger) : SvcBase(unitOfWork, currentUser, timeProvider), ISvcAuthenticator
 {
     public static readonly EventId AccountLocked = new(9101, "SecurityEvent.AccountLocked");
@@ -234,7 +235,7 @@ internal sealed class SvcAuthenticator(
 
     public async Task<Result<bool>> UnlockAsync(Guid userId, CancellationToken ct = default)
     {
-        var user = await GetAsync<User>(userId, ct);
+        var user = await AdministrableAsync(userId, ct);
         if (user is null)
             return Result.Error<bool>(ISvcAuthenticator.UserNotFound);
 
@@ -248,11 +249,13 @@ internal sealed class SvcAuthenticator(
 
     public async Task<Result<bool>> DisableAsync(Guid userId, CancellationToken ct = default)
     {
-        var user = await GetAsync<User>(userId, ct);
-        if (user is null)
-            return Result.Error<bool>(ISvcAuthenticator.UserNotFound);
         if (CurrentUser.Id == userId)
             return Result.Error<bool>(ISvcAuthenticator.CannotChangeOwnAccount);
+        var user = await AdministrableAsync(userId, ct);
+        if (user is null)
+            return Result.Error<bool>(ISvcAuthenticator.UserNotFound);
+        if (user.Holds(RoleCodes.SystemAdministrator) && !user.IsDisabled && await guards.IsLastAdministratorAsync(userId, ct))
+            return Result.Error<bool>(ISvcAuthenticator.LastAdministrator);
 
         var before = AuditTrail.Summary(user);
         user.Disable();
@@ -266,12 +269,10 @@ internal sealed class SvcAuthenticator(
 
     public async Task<Result<bool>> EnableAsync(Guid userId, CancellationToken ct = default)
     {
-        var user = await GetAsync<User>(userId, ct);
+        // The break-glass account is re-enabled only by the installer command.
+        var user = await AdministrableAsync(userId, ct);
         if (user is null)
             return Result.Error<bool>(ISvcAuthenticator.UserNotFound);
-
-        if (user.IsBreakGlass)
-            return Result.Error<bool>(ISvcAuthenticator.UserNotFound); // re-enabled only by the installer command
 
         var before = AuditTrail.Summary(user);
         user.Enable();
@@ -583,6 +584,16 @@ internal sealed class SvcAuthenticator(
         await UpdateAsync(session, ct);
         var sessionId = session.Id.Value;
         RegisterPostCommitAction(() => EvictAsync(sessionId));
+    }
+
+    /// <summary>
+    /// The account an administrator may act on: not the break-glass account (managed only by the installer command)
+    /// and nothing beyond the caller's own sites (ARV-012); null otherwise, answered as not found.
+    /// </summary>
+    private async Task<User> AdministrableAsync(Guid userId, CancellationToken ct)
+    {
+        var user = await GetAsync<User>(userId, ct);
+        return user is null || user.IsBreakGlass || !await guards.CoversAsync(user, ct) ? null : user;
     }
 
     /// <summary>Revokes every active session of the user except <paramref name="keep"/> (Guid.Empty keeps none); returns how many.</summary>

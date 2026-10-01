@@ -23,6 +23,7 @@ internal sealed class SvcUsers(
     TimeProvider timeProvider,
     CallerRoles callerRoles,
     ISiteScope siteScope,
+    AdministrationGuards guards,
     AccountSessions sessions,
     AuditTrail audit,
     ILogger<SvcUsers> logger) : SvcBase(unitOfWork, currentUser, timeProvider), ISvcUsers
@@ -75,7 +76,7 @@ internal sealed class SvcUsers(
         if (criteria.Role is not null && RoleHierarchy.Rank(criteria.Role) == 0)
             return Result.Error<PageViewModel<UserViewModel>>(AdministrationErrors.UnknownRole);
 
-        var query = QueryAsNoTracking<User>().Where(u => !u.IsBreakGlass);
+        var query = AdministrationGuards.Administrable(QueryAsNoTracking<User>().Where(u => !u.IsBreakGlass), await siteScope.GetAsync(ct));
         if (!string.IsNullOrWhiteSpace(criteria.Text))
         {
             var text = criteria.Text.Trim().ToLowerInvariant();
@@ -130,11 +131,11 @@ internal sealed class SvcUsers(
 
     public async Task<Result<TemporaryPasswordViewModel>> ResetPasswordAsync(Guid id, CancellationToken ct = default)
     {
+        if (id == CurrentUser.Id)
+            return Result.Error<TemporaryPasswordViewModel>(AdministrationErrors.OwnAccount);
         var user = await VisibleAsync(id, ct);
         if (user is null)
             return Result.Error<TemporaryPasswordViewModel>(AdministrationErrors.NotFound);
-        if (user.Id == CurrentUser.Id)
-            return Result.Error<TemporaryPasswordViewModel>(AdministrationErrors.OwnAccount);
 
         var before = AuditTrail.Summary(user);
         var password = TemporaryPasswords.New();
@@ -149,22 +150,23 @@ internal sealed class SvcUsers(
 
     public async Task<Result<UserViewModel>> SetSitesAsync(Guid id, SiteAccessRequest request, CancellationToken ct = default)
     {
+        if (id == CurrentUser.Id)
+            return Result.Error<UserViewModel>(AdministrationErrors.OwnAccount);
         var user = await VisibleAsync(id, ct);
         if (user is null)
             return Result.Error<UserViewModel>(AdministrationErrors.NotFound);
-        if (user.Id == CurrentUser.Id)
-            return Result.Error<UserViewModel>(AdministrationErrors.OwnAccount);
 
         var codes = (request?.SiteCodes ?? []).Distinct(StringComparer.Ordinal).ToList();
         var allSites = request?.AllSites == true;
+
+        // Scope first: a site outside the caller's own answers the same whether it exists or not (CWE-204).
+        var wanted = new SiteAccess(allSites, codes.ToHashSet(StringComparer.Ordinal));
+        if (!(await siteScope.GetAsync(ct)).Covers(wanted))
+            return Result.Error<UserViewModel>(AdministrationErrors.BeyondOwnSites);
         if (codes.Any(code => !Site.IsValidCode(code)))
             return Result.Error<UserViewModel>(AdministrationErrors.UnknownSite);
         if (codes.Count > 0 && await Query<Site>().CountAsync(s => codes.Contains(s.Code), ct) != codes.Count)
             return Result.Error<UserViewModel>(AdministrationErrors.UnknownSite);
-
-        var wanted = new SiteAccess(allSites, codes.ToHashSet(StringComparer.Ordinal));
-        if (!(await siteScope.GetAsync(ct)).Covers(wanted))
-            return Result.Error<UserViewModel>(AdministrationErrors.BeyondOwnSites);
 
         var before = AuditTrail.Summary(user);
         var narrowed = (user.AllSites && !allSites) || user.Sites.Any(s => !codes.Contains(s.SiteCode));
@@ -184,11 +186,11 @@ internal sealed class SvcUsers(
 
     public async Task<Result<bool>> ResetTotpAsync(Guid id, CancellationToken ct = default)
     {
+        if (id == CurrentUser.Id)
+            return Result.Error<bool>(AdministrationErrors.OwnAccount);
         var user = await VisibleAsync(id, ct);
         if (user is null)
             return Result.Error<bool>(AdministrationErrors.NotFound);
-        if (user.Id == CurrentUser.Id)
-            return Result.Error<bool>(AdministrationErrors.OwnAccount);
 
         var now = UtcNow;
         var before = AuditTrail.Summary(user);
@@ -208,11 +210,11 @@ internal sealed class SvcUsers(
         return new Result<bool>(true);
     }
 
-    /// <summary>The user, or null when it does not exist or is the break-glass account.</summary>
+    /// <summary>The user, or null when it does not exist, is the break-glass account or reaches beyond the caller's sites.</summary>
     private async Task<User> VisibleAsync(Guid id, CancellationToken ct)
     {
         var user = await GetAsync<User>(id, ct);
-        return user is null || user.IsBreakGlass ? null : user;
+        return user is null || user.IsBreakGlass || !await guards.CoversAsync(user, ct) ? null : user;
     }
 
     internal static UserViewModel View(User user, DateTime now, IEnumerable<string> roles = null, IEnumerable<string> sites = null) => new(

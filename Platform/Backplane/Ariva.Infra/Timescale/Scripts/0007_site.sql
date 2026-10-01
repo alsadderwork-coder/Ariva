@@ -29,3 +29,9 @@ CREATE TABLE user_site (
 );
 
 CREATE UNIQUE INDEX ux_user_site_user_site ON user_site (user_id, site_code);
+
+-- Administrators that exist before site scoping keep deployment-wide access, so the first site grants can be made.
+-- New administrators get their sites from an all-sites administrator or the break-glass account (always all sites).
+UPDATE "user" SET all_sites = true
+ WHERE is_break_glass
+    OR id IN (SELECT user_id FROM user_role WHERE role_code = 'SystemAdministrator');

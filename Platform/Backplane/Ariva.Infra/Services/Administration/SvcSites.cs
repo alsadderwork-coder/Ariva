@@ -37,6 +37,9 @@ internal sealed class SvcSites(IUnitOfWork unitOfWork, ICurrentUser currentUser,
 
     public async Task<Result<SiteViewModel>> CreateAsync(CreateSiteRequest request, CancellationToken ct = default)
     {
+        // Creating a site is deployment-wide: a site-limited administrator cannot, and so never learns which codes exist.
+        if (!(await scope.GetAsync(ct)).AllSites)
+            return Result.Error<SiteViewModel>(AdministrationErrors.BeyondOwnSites);
         if (request is null || !Site.IsValidCode(request.Code) || string.IsNullOrWhiteSpace(request.Name))
             return Result.Error<SiteViewModel>(AdministrationErrors.UnknownSite);
         if (await Query<Site>().AnyAsync(s => s.Code == request.Code, ct))

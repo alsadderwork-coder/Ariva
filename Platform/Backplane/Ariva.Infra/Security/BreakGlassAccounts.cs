@@ -12,7 +12,7 @@ public sealed record BreakGlassCredential(string UserName, string Password, IRea
 
 /// <summary>
 /// The deployment's emergency account (ADR-0026, ARV-010c). One per deployment (a unique index enforces it), a
-/// SystemAdministrator that signs in with its password and one recovery code each time, is never locked out, and
+/// SystemAdministrator with access to every site (ARV-012) that signs in with its password and one recovery code each time, is never locked out, and
 /// raises a critical security event at every sign-in. Only the installer command creates it or rotates its
 /// credential; no API can create, enable or reset it.
 /// </summary>
@@ -42,12 +42,15 @@ internal sealed class BreakGlassAccounts(IUnitOfWork unitOfWork, AuthSettings se
             await storage.SaveAsync(user, ct);
             user.Grant(RoleCodes.SystemAdministrator);
             await storage.SaveAsync(user.Roles.Last(), ct);
+            user.SetSites(true, [], null, now);
+            await storage.UpdateAsync(user, ct);
         }
         else
         {
             user.SetPassword(PasswordHasher.Hash(password), temporary: false);
             user.Enable();
             user.Unlock();
+            user.SetSites(true, user.Sites.Select(s => s.SiteCode).ToList(), null, now);
             await storage.UpdateAsync(user, ct);
             await storage.ExecuteSqlAsync<Row>(
                 """UPDATE user_session SET revoked_on = :now, revoked_reason = 'break-glass-rotated' WHERE user_id = :id AND revoked_on IS NULL RETURNING id AS "Id" """,

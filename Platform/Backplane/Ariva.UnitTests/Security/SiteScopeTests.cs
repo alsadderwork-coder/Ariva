@@ -37,7 +37,8 @@ public sealed class SiteScopeTests
         violations.Should().BeEquivalentTo(
             "FixtureUnscopedController.ByCode(siteCode)",
             "FixtureUnscopedController.ByAirport(airportId)",
-            "FixtureUnscopedController.ByRoute(terminalId)");
+            "FixtureUnscopedController.ByRoute(terminalId)",
+            "FixtureUnscopedController.Create(SiteCode)");
     }
 
     /// <summary>Actions with a site reference in a parameter or route template and no [SiteScoped] on the action or controller.</summary>
@@ -53,6 +54,7 @@ public sealed class SiteScopeTests
                     continue;
 
                 var references = action.GetParameters().Select(p => p.Name)
+                    .Concat(action.GetParameters().Where(p => IsRequestModel(p.ParameterType)).SelectMany(p => p.ParameterType.GetProperties().Select(property => property.Name)))
                     .Concat(action.GetCustomAttributes<Microsoft.AspNetCore.Mvc.Routing.HttpMethodAttribute>().SelectMany(RouteParameters))
                     .Concat(controller.GetCustomAttributes<RouteAttribute>().SelectMany(r => RouteParameters(r.Template)))
                     .Where(name => SiteScopedAttribute.SiteReferences.Contains(name))
@@ -65,6 +67,10 @@ public sealed class SiteScopeTests
 
         return violations;
     }
+
+    /// <summary>Request models (Ariva or fixture types bound from the body or query) whose properties may name a site.</summary>
+    private static bool IsRequestModel(Type type) =>
+        type.IsClass && type != typeof(string) && type.Namespace?.StartsWith("Ariva", StringComparison.Ordinal) == true;
 
     private static IEnumerable<string> RouteParameters(Microsoft.AspNetCore.Mvc.Routing.HttpMethodAttribute attribute) => RouteParameters(attribute.Template);
 

@@ -71,7 +71,7 @@ public sealed class SiteScopeTests(PostgresFixture fixture) : IAsyncDisposable
         access.Allows("ITC").Should().BeFalse();
         (await _host.AsCallerAsync(officer, s => Sites(s).ListAsync(Ct))).Data.Select(v => v.Code).Should().Equal("ITB");
         (await _host.AsCallerAsync(officer, s => Sites(s).GetAsync("ITC", Ct))).ErrorMessages.Should().Equal(AdministrationErrors.NotFound);
-        (await _host.AsCallerAsync(officer, s => Sites(s).GetAsync("NOPE", Ct))).ErrorMessages.Should().Equal(AdministrationErrors.NotFound, "an unknown site answers the same");
+        (await _host.AsCallerAsync(officer, s => Sites(s).GetAsync("NOPE", Ct))).ErrorMessages.Should().Equal(new[] { AdministrationErrors.NotFound }, "an unknown site answers the same");
         (await _host.ReadAsync<long>("SELECT count(*) FROM audit_entry WHERE target_id = @id AND action = 'User.SitesChanged' AND after_summary LIKE '%sites=ITB;%'", officer)).Should().Be(1);
     }
 
@@ -109,4 +109,77 @@ public sealed class SiteScopeTests(PostgresFixture fixture) : IAsyncDisposable
         await _host.AsCallerAsync(admin, s => Users(s).SetSitesAsync(officer, new SiteAccessRequest(false, ["ITG"]), Ct));
         (await _host.SessionStateAsync(session)).Should().Be(SessionState.Revoked, "narrowing ends it");
     }
+
+    [Fact]
+    public async Task SiteLimitedAdministrator_Should_NotSeeOrTakeOverWiderAccounts_When_ActingOnUsers()
+    {
+        var wide = await AllSitesAdminAsync("it.site.wide");
+        await _host.AsCallerAsync(wide, s => Sites(s).CreateAsync(new CreateSiteRequest("ITH", "ITH"), Ct));
+        await _host.AsCallerAsync(wide, s => Sites(s).CreateAsync(new CreateSiteRequest("ITI", "ITI"), Ct));
+        var limited = await _host.CreateUserAsync("it.site.lim.admin", roles: [RoleCodes.SystemAdministrator]);
+        await _host.AsCallerAsync(wide, s => Users(s).SetSitesAsync(limited, new SiteAccessRequest(false, ["ITH"]), Ct));
+        var inside = await _host.CreateUserAsync("it.site.inside");
+        await _host.AsCallerAsync(wide, s => Users(s).SetSitesAsync(inside, new SiteAccessRequest(false, ["ITH"]), Ct));
+        var outside = await _host.CreateUserAsync("it.site.outside");
+        await _host.AsCallerAsync(wide, s => Users(s).SetSitesAsync(outside, new SiteAccessRequest(false, ["ITH", "ITI"]), Ct));
+        var roles = (IServiceProvider s) => s.GetRequiredService<ISvcRoleAssignment>();
+        var auth = (IServiceProvider s) => s.GetRequiredService<Ariva.Core.Services.Security.ISvcAuthenticator>();
+
+        (await _host.AsCallerAsync(limited, s => Users(s).GetAsync(inside, Ct))).HasErrors.Should().BeFalse("inside its sites");
+        foreach (var target in new[] { wide, outside })
+        {
+            (await _host.AsCallerAsync(limited, s => Users(s).GetAsync(target, Ct))).ErrorMessages.Should().Equal(AdministrationErrors.NotFound);
+            (await _host.AsCallerAsync(limited, s => Users(s).ResetTotpAsync(target, Ct))).ErrorMessages.Should().Equal(AdministrationErrors.NotFound);
+            (await _host.AsCallerAsync(limited, s => Users(s).ResetPasswordAsync(target, Ct))).ErrorMessages.Should().Equal(AdministrationErrors.NotFound);
+            (await _host.AsCallerAsync(limited, s => roles(s).GrantAsync(target, RoleCodes.BorderShiftSupervisor, Ct))).ErrorMessages.Should().Equal(AdministrationErrors.NotFound);
+            (await _host.AsCallerAsync(limited, s => auth(s).DisableAsync(target, Ct))).ErrorMessages.Should().Equal(Ariva.Core.Services.Security.ISvcAuthenticator.UserNotFound);
+        }
+
+        var listed = await _host.AsCallerAsync(limited, s => Users(s).SearchAsync(new Ariva.Core.Domain.Criteria.UserCriteria { Text = "it.site.", PageSize = 500 }, Ct));
+        listed.Data.Data.Select(u => u.UserName).Should().Contain("it.site.inside").And.NotContain(["it.site.wide", "it.site.outside"]);
+        var audit = await _host.AsCallerAsync(limited, s => s.GetRequiredService<ISvcAuditEntries>().SearchAsync(new Ariva.Core.Domain.Criteria.AuditEntryCriteria { PageSize = 500 }, Ct));
+        audit.Data.Data.Should().NotContain(e => e.TargetId == outside || e.TargetId == wide || e.TargetName == "ITI");
+        audit.Data.Data.Should().Contain(e => e.TargetId == inside);
+
+        (await _host.AsCallerAsync(limited, s => Users(s).SetSitesAsync(inside, new SiteAccessRequest(false, ["ITI"]), Ct))).ErrorMessages.Should().Equal(AdministrationErrors.BeyondOwnSites);
+        (await _host.AsCallerAsync(limited, s => Users(s).SetSitesAsync(inside, new SiteAccessRequest(false, ["NOPE"]), Ct)))
+            .ErrorMessages.Should().Equal(new[] { AdministrationErrors.BeyondOwnSites }, "an unknown site answers like another site's");
+        (await _host.AsCallerAsync(limited, s => Sites(s).CreateAsync(new CreateSiteRequest("ITH", "x"), Ct)))
+            .ErrorMessages.Should().Equal(new[] { AdministrationErrors.BeyondOwnSites }, "creating sites is deployment-wide, so no 409 oracle");
+    }
+
+    [Fact]
+    public async Task LastAdministrator_Should_SurviveTwoAdministratorsRemovingEachOther_When_TheyRace()
+    {
+        await _host.ReadAsync<int>("UPDATE \"user\" SET is_disabled = true WHERE NOT is_break_glass AND id IN (SELECT user_id FROM user_role WHERE role_code = 'SystemAdministrator') RETURNING 1");
+        var a = await AllSitesAdminAsync("it.site.race.a");
+        var b = await AllSitesAdminAsync("it.site.race.b");
+        var roles = (IServiceProvider s) => s.GetRequiredService<ISvcRoleAssignment>();
+
+        var results = await Task.WhenAll(
+            _host.AsCallerAsync(a, s => roles(s).RevokeAsync(b, RoleCodes.SystemAdministrator, Ct)),
+            _host.AsCallerAsync(b, s => roles(s).RevokeAsync(a, RoleCodes.SystemAdministrator, Ct)));
+
+        results.Count(r => !r.HasErrors).Should().Be(1, "the advisory lock lets only one of the two revokes through");
+        // The loser either waited on the lock and found itself the last administrator, or started after the winner had
+        // committed and no longer holds the role at all; both keep one administrator.
+        results.Single(r => r.HasErrors).ErrorMessages.Should().ContainSingle()
+            .Which.Should().BeOneOf(AdministrationErrors.LastAdministrator, AdministrationErrors.AboveOwnRole);
+        (await _host.ReadAsync<long>("SELECT count(*) FROM user_role r JOIN \"user\" u ON u.id = r.user_id WHERE r.role_code = 'SystemAdministrator' AND NOT u.is_disabled AND NOT u.is_break_glass"))
+            .Should().Be(1);
+
+        var survivor = results[0].HasErrors ? b : a;
+        var other = await _host.CreateUserAsync("it.site.race.c", roles: [RoleCodes.BorderShiftSupervisor]);
+        (await _host.AsCallerAsync(other, s => s.GetRequiredService<Ariva.Core.Services.Security.ISvcAuthenticator>().DisableAsync(survivor, Ct)))
+            .HasErrors.Should().BeTrue("a non-administrator never gets here through the API, and the guard refuses anyway");
+        var breakGlassExists = await _host.ReadAsync<long>("SELECT count(*) FROM \"user\" WHERE is_break_glass") > 0;
+        await _host.IssueBreakGlassAsync(rotate: breakGlassExists);
+        var breakGlass = await _host.ReadAsync<Guid>("SELECT id FROM \"user\" WHERE is_break_glass");
+        (await _host.AsCallerAsync(breakGlass, s => s.GetRequiredService<Ariva.Core.Services.Security.ISvcAuthenticator>().DisableAsync(survivor, Ct)))
+            .ErrorMessages.Should().Equal(Ariva.Core.Services.Security.ISvcAuthenticator.LastAdministrator);
+        (await _host.AsCallerAsync(survivor, s => s.GetRequiredService<Ariva.Core.Services.Security.ISvcAuthenticator>().DisableAsync(breakGlass, Ct)))
+            .ErrorMessages.Should().Equal(new[] { Ariva.Core.Services.Security.ISvcAuthenticator.UserNotFound }, "the break-glass account is not administered through the API");
+        (await AccessOf(breakGlass)).AllSites.Should().BeTrue("the break-glass account reaches every site, so it can bootstrap site access");
+    }
 }
+

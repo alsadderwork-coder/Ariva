@@ -50,6 +50,7 @@ public static class AccountExtensions
         services.TryAddScoped<AccountSessions>();
         services.TryAddScoped<AuditTrail>();
         services.TryAddScoped<CallerRoles>();
+        services.TryAddScoped<AdministrationGuards>();
         services.TryAddScoped<ISvcAuthenticator, SvcAuthenticator>();
 
         // User, role and audit administration (ARV-011): Ariva.Api.Main only, like sign-in.

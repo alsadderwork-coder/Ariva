@@ -5,13 +5,13 @@ using Ariva.Core.Security;
 using Ariva.Core.Services.Administration;
 using Ariva.Infra.Services.Foundation;
 using Ariva.Infra.Services.Security;
-using NHibernate.Linq;
 
 namespace Ariva.Infra.Services.Administration;
 
 /// <summary>
 /// Role grants (ARV-011, CWE-269). An administrator cannot change its own roles, cannot grant or revoke a role ranked
-/// above its own, and cannot take SystemAdministrator from the last active holder. Every grant and revoke is audited in
+/// above its own, cannot touch an account outside its own sites, and cannot take SystemAdministrator from the last
+/// active holder. Every grant and revoke is audited in
 /// the same transaction and evicts the user's cached permissions after commit; a revoke also ends the user's sessions.
 /// The endpoints are critical actions, so the caller has proved a second factor within 15 minutes.
 /// </summary>
@@ -20,6 +20,7 @@ internal sealed class SvcRoleAssignment(
     ICurrentUser currentUser,
     TimeProvider timeProvider,
     CallerRoles callerRoles,
+    AdministrationGuards guards,
     AccountSessions sessions,
     AuditTrail audit,
     ILogger<SvcRoleAssignment> logger) : SvcBase(unitOfWork, currentUser, timeProvider), ISvcRoleAssignment
@@ -59,13 +60,8 @@ internal sealed class SvcRoleAssignment(
         if (!user.Holds(roleCode))
             return new Result<UserViewModel>(SvcUsers.View(user, UtcNow));
 
-        if (roleCode == RoleCodes.SystemAdministrator)
-        {
-            var others = await Query<UserRole>().CountAsync(
-                r => r.RoleCode == RoleCodes.SystemAdministrator && r.User.Id != userId && !r.User.IsDisabled && !r.User.IsBreakGlass, ct);
-            if (others == 0)
-                return Result.Error<UserViewModel>(AdministrationErrors.LastAdministrator);
-        }
+        if (roleCode == RoleCodes.SystemAdministrator && await guards.IsLastAdministratorAsync(userId, ct))
+            return Result.Error<UserViewModel>(AdministrationErrors.LastAdministrator);
 
         var before = AuditTrail.Summary(user);
         var grant = user.Revoke(roleCode);
@@ -83,11 +79,11 @@ internal sealed class SvcRoleAssignment(
         if (RoleHierarchy.Rank(roleCode) == 0)
             return (null, AdministrationErrors.UnknownRole);
 
-        var user = await GetAsync<User>(userId, ct);
-        if (user is null || user.IsBreakGlass)
-            return (null, AdministrationErrors.NotFound);
-        if (user.Id == CurrentUser.Id)
+        if (userId == CurrentUser.Id)
             return (null, AdministrationErrors.OwnAccount);
+        var user = await GetAsync<User>(userId, ct);
+        if (user is null || user.IsBreakGlass || !await guards.CoversAsync(user, ct))
+            return (null, AdministrationErrors.NotFound);
         if (!RoleHierarchy.CanAssign(await callerRoles.GetAsync(ct), roleCode))
             return (null, AdministrationErrors.AboveOwnRole);
         return (user, null);

@@ -129,8 +129,9 @@ public sealed class UsersController(ISvcAuthenticator authenticator, ISvcUsers u
     {
         if (!result.HasErrors)
             return NoContent();
-        return result.ErrorMessages.Contains(ISvcAuthenticator.CannotChangeOwnAccount)
-            ? Problem(statusCode: StatusCodes.Status400BadRequest, title: "Not allowed", detail: ISvcAuthenticator.CannotChangeOwnAccount)
+        var error = result.ErrorMessages.FirstOrDefault();
+        return error is ISvcAuthenticator.CannotChangeOwnAccount or ISvcAuthenticator.LastAdministrator
+            ? Problem(statusCode: StatusCodes.Status400BadRequest, title: "Not allowed", detail: error)
             : Problem(statusCode: StatusCodes.Status404NotFound, title: "Not found");
     }
 

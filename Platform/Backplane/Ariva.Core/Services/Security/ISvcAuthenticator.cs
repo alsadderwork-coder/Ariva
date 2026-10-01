@@ -27,6 +27,8 @@ public interface ISvcAuthenticator : ISvcScoped
 
     const string UserNotFound = "The user does not exist.";
 
+    const string LastAdministrator = "The last active system administrator stays enabled.";
+
     const string CannotChangeOwnAccount = "Administrators cannot disable their own account.";
 
     /// <summary>Signs in: a new session, refresh family and cookie every time; a refresh cookie sent along is revoked (CWE-384).</summary>

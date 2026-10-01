@@ -23,6 +23,8 @@ internal sealed class DevelopmentUserSeed(IServiceScopeFactory scopes, AuthSetti
         var storage = unitOfWork.StorageProvider;
         storage.BeginTransaction(System.Data.IsolationLevel.ReadCommitted);
 
+        // Sites created in this run: the queries below do not see inserts the session has not flushed yet.
+        var createdSites = new HashSet<string>(StringComparer.Ordinal);
         foreach (var entry in settings.DevelopmentUsers.Where(u => !string.IsNullOrWhiteSpace(u.UserName) && !string.IsNullOrEmpty(u.Password)))
         {
             var userName = UserNames.Normalize(entry.UserName);
@@ -51,8 +53,11 @@ internal sealed class DevelopmentUserSeed(IServiceScopeFactory scopes, AuthSetti
             var siteCodes = entry.Sites.Where(code => code != "*").Distinct(StringComparer.Ordinal).ToList();
             foreach (var code in siteCodes)
             {
-                if (!await storage.Query<Site>().AnyAsync(s => s.Code == code, cancellationToken))
+                if (!createdSites.Contains(code) && !await storage.Query<Site>().AnyAsync(s => s.Code == code, cancellationToken))
+                {
                     await storage.SaveAsync(new Site(code, code), cancellationToken);
+                    createdSites.Add(code);
+                }
             }
 
             var (removed, added) = user.SetSites(entry.Sites.Contains("*"), siteCodes, null, timeProvider.GetUtcNow().UtcDateTime);

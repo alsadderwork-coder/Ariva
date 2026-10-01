@@ -17,4 +17,10 @@ public sealed class FixtureUnscopedController : ControllerBase
 
     [HttpGet("route")]
     public IActionResult ByRoute() => Ok();
+
+    [HttpPost]
+    public IActionResult Create([FromBody] FixtureSiteRequest request) => Ok(request);
 }
+
+/// <summary>Fixture: a request model that names a site in its body.</summary>
+public sealed record FixtureSiteRequest(string SiteCode, string Name);
