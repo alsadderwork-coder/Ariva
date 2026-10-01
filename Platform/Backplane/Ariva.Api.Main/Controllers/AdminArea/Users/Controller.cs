@@ -99,6 +99,7 @@ public sealed class UsersController(ISvcAuthenticator authenticator, ISvcUsers u
     [HttpPut("{id:guid}/sites")]
     [Permission(nameof(Global.Defaults.Permissions.EditUser))]
     [RequiresRecentMfa]
+    [SiteScoped]
     [ProducesResponseType<UserViewModel>(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]

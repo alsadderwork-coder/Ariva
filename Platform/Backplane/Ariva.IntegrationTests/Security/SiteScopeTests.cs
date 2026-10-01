@@ -135,6 +135,10 @@ public sealed class SiteScopeTests(PostgresFixture fixture) : IAsyncDisposable
             (await _host.AsCallerAsync(limited, s => auth(s).DisableAsync(target, Ct))).ErrorMessages.Should().Equal(Ariva.Core.Services.Security.ISvcAuthenticator.UserNotFound);
         }
 
+        var fresh = await _host.CreateUserAsync("it.site.fresh.admin", roles: [RoleCodes.SystemAdministrator]);
+        (await _host.AsCallerAsync(limited, s => Users(s).ResetPasswordAsync(fresh, Ct)))
+            .ErrorMessages.Should().Equal(new[] { AdministrationErrors.NotFound }, "an administrator without sites yet belongs to the all-sites administrators");
+
         var listed = await _host.AsCallerAsync(limited, s => Users(s).SearchAsync(new Ariva.Core.Domain.Criteria.UserCriteria { Text = "it.site.", PageSize = 500 }, Ct));
         listed.Data.Data.Select(u => u.UserName).Should().Contain("it.site.inside").And.NotContain(["it.site.wide", "it.site.outside"]);
         var audit = await _host.AsCallerAsync(limited, s => s.GetRequiredService<ISvcAuditEntries>().SearchAsync(new Ariva.Core.Domain.Criteria.AuditEntryCriteria { PageSize = 500 }, Ct));

@@ -19,7 +19,7 @@ public sealed class SiteScopedAttribute : Attribute, IAsyncActionFilter
     /// <summary>Parameter and route value names that refer to a site or a site-bound parent (compared ignoring case).</summary>
     public static readonly IReadOnlySet<string> SiteReferences = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
-        "siteCode", "siteId", "airportId", "airportCode", "terminalId", "terminalCode"
+        "siteCode", "siteCodes", "siteId", "airportId", "airportCode", "terminalId", "terminalCode"
     };
 
     public const string SiteCodeArgument = "siteCode";

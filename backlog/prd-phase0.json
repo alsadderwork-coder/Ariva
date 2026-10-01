@@ -330,7 +330,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 15,
-      "passes": false,
+      "passes": true,
       "notes": "",
       "dependsOn": [
         "ARV-009",

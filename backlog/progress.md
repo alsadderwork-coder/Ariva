@@ -97,3 +97,10 @@ One entry per story, newest last. Format:
 - Decisions: roles stay the four fixed codes (custom roles and a second approving administrator are Phase 1 candidates); accounts are disabled, never deleted; the last-administrator rule excludes the break-glass account.
 - Learnings: fetching a collection together with Skip and Take pages the joined rows, so roles for a page of users come from a second query.
 
+## 2026-10-02 ARV-012 Site scoping
+- Summary: site, user_site and user.all_sites (script 0007); ISiteScope per request with the role cache and eviction; WithinSites for ISiteBound queries; [SiteScoped] answering 404 outside the caller's sites; an architecture test over action parameters, route templates and request model properties; api/v1/sites, api/v1/admin/sites and the critical PUT api/v1/admin/users/{id}/sites; E2E accounts bound to sites.
+- Gates: local harness PASS (site listing and IDOR 404s, grant rules, narrowing ending sessions, site-limited administrators, break-glass bootstrap and a concurrent mutual revoke through a real Kestrel host against PostgreSQL); GitHub CI not observed from this session.
+- Security review: an independent reviewer (separate agent) found one high (site access could not be granted outside vm-local), two medium (site-limited administrators acting on wider accounts; a last-administrator race) and three low issues; all fixed in fa7876b and re-verified. Final verdicts: ARV-010d PASS, ARV-011 PASS, ARV-012 PASS. CWE-863, CWE-269, CWE-362, CWE-204 reviewed.
+- Deferred: binding integration clients to sites lands with the integration client entity (ARV-042); the reviewer's remaining low notes are closed (siteCodes in the architecture rule, administrators without sites reserved to all-sites callers, the break-glass incident path in wiki 04).
+- Learnings: a seed that inserts the same natural key for two accounts in one session needs its own set, because the LINQ existence query does not see unflushed inserts; script 0007 was edited before it ever ran outside a throwaway database, which is the only time an edit is acceptable.
+

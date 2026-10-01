@@ -23,9 +23,18 @@ internal sealed class AdministrationGuards(IUnitOfWork unitOfWork, ISiteScope si
     public static SiteAccess AccessOf(User user) =>
         new(user.AllSites, user.Sites.Select(s => s.SiteCode).ToHashSet(StringComparer.Ordinal));
 
-    /// <summary>True when the caller's sites cover everything the target account can reach.</summary>
-    public async Task<bool> CoversAsync(User target, CancellationToken ct = default) =>
-        (await siteScope.GetAsync(ct)).Covers(AccessOf(target));
+    /// <summary>
+    /// True when the caller's sites cover everything the target account can reach. An administrator without sites yet
+    /// (just created) is covered only by an all-sites caller, so a site-limited administrator cannot take it over
+    /// before its sites are set.
+    /// </summary>
+    public async Task<bool> CoversAsync(User target, CancellationToken ct = default)
+    {
+        var caller = await siteScope.GetAsync(ct);
+        if (!caller.AllSites && !target.AllSites && target.Sites.Count == 0 && target.Holds(RoleCodes.SystemAdministrator))
+            return false;
+        return caller.Covers(AccessOf(target));
+    }
 
     /// <summary>The accounts the caller may administer: all for an all-sites caller, otherwise those inside its sites.</summary>
     public static IQueryable<User> Administrable(IQueryable<User> users, SiteAccess caller)
@@ -33,7 +42,8 @@ internal sealed class AdministrationGuards(IUnitOfWork unitOfWork, ISiteScope si
         if (caller.AllSites)
             return users;
         var codes = caller.SiteCodes.ToList();
-        return users.Where(u => !u.AllSites && !u.Sites.Any(s => !codes.Contains(s.SiteCode)));
+        return users.Where(u => !u.AllSites && !u.Sites.Any(s => !codes.Contains(s.SiteCode)) &&
+                                (u.Sites.Any() || !u.Roles.Any(r => r.RoleCode == RoleCodes.SystemAdministrator)));
     }
 
     /// <summary>
