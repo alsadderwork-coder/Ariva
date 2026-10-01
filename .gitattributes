@@ -1,0 +1,11 @@
+# Normalize line endings so a Windows checkout cannot break macOS/Linux users.
+# Without this it is left to each contributor's core.autocrlf setting.
+
+* text=auto
+
+# Shell scripts must be LF everywhere. A CRLF shebang fails on macOS and Linux with
+# "bad interpreter: /usr/bin/env bash^M"; Git Bash on Windows reads LF fine.
+*.sh text eol=lf
+
+# PowerShell is Windows-native. Keep CRLF.
+*.ps1 text eol=crlf

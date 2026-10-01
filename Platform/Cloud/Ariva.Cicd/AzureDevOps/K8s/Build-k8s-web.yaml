@@ -1,0 +1,51 @@
+name: $(Build.SourceBranchName)-$(date:yyyyMMdd)$(rev:rr)
+
+trigger:
+  branches:
+    include:
+      - refs/heads/trunk
+  paths:
+    include:
+    - Platform/Frontplane/Ariva.Web
+
+
+  batch: True
+
+variables:
+ - name: artifact-name
+   value: web
+
+resources:
+  repositories:
+  - repository: self
+    type: git
+    ref: $(Build.SourceBranch)
+  pipelines:
+  - pipeline: Build-k8s-all
+    source: Build-k8s-all
+    trigger: true
+
+
+jobs:
+- job: Phase_1
+  displayName: Deploy
+  pool:
+    name: Default
+    demands:
+    - Agent.OS -equals Linux
+  steps:
+  - checkout: self
+    clean: true
+
+  - task: Docker@2
+    displayName: Build Docker Image
+    inputs:
+      containerRegistry: 'Dalil Container Registry'
+      repository: 'ariva/$(artifact-name)'
+      command: 'buildAndPush'
+      Dockerfile: 'Platform/Frontplane/Ariva.Web/Dockerfile'
+      buildContext: '.'
+      tags: |
+        $(Build.SourceBranchName)
+        $(Build.BuildNumber)
+      addBaseImageData: false

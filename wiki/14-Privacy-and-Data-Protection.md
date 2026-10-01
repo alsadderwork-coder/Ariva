@@ -1,0 +1,89 @@
+# Privacy and data protection
+
+For authority technical committees, data protection officers, counsel and Dalil staff preparing a DPIA. Ariva is designed so that it never needs to know who anyone is: it measures anonymous movement and aggregates it. This page explains how, what is kept and for how long, and what remains to confirm per jurisdiction. The reference is `../docs/domain/data-boundary.md`.
+
+This page is not legal advice. Items marked To confirm need counsel's answer for each market.
+
+## 1. Anonymity by design
+
+| Measure | Detail |
+|---|---|
+| No images | No image leaves a stereo sensor: images are processed on the sensor and only coordinates leave. LiDAR captures no images. Camera analytics integrations deliver events only; Ariva never receives video |
+| No biometrics | Nothing biometric enters Ariva. No face, fingerprint, template or match score |
+| No re-identification | Continuity only by overlapping coverage inside one process. No appearance re-identification (height, shape, gait) and no device re-identification (Wi-Fi or BLE). Between processes, flows are linked only statistically or not at all |
+| Ephemeral track ids | A track id is short-lived, rotated at zone exit, never persists past the operating day, and has no link to identity |
+| No probing | Wi-Fi or BLE probing and CCTV analytics are not used for queue KPIs (CCTV only as a coarse overflow fallback). Wi-Fi and BLE identifiers are pseudonymous and still personal data, which is why they are excluded |
+| Aggregate-only AMAN feed | AMAN sends four aggregate contracts: desk sessions, desk interval statistics, e-gate interval statistics, inbound lane demand per flight. No person, document or officer identifiers, with timestamps coarsened to the interval to block re-identification by timestamp alignment |
+| Small-cell suppression | E-gate reject categories with fewer than 3 rejects in an interval are folded into `Other`, so no individual outcome can be inferred |
+| Officer data stays in AMAN | Officer identity, rosters and officer-to-desk assignments never enter Ariva; the Border dashboard links to AMAN's own reports |
+| Desk-level data stays on the border side | A desk code plus a minute could be joined with AMAN's records to identify an officer, so desk-level data never leaves the border deployment. Only lane-level aggregates cross to an airport deployment |
+| In country | Each deployment runs in-country; national views receive aggregates only |
+| Build-time guard | A test fails the build if an AMAN contract property name looks like a person or officer identifier |
+
+## 2. What never crosses into Ariva
+
+| Category | Examples | Where it stays |
+|---|---|---|
+| Officer identity | Names, staff numbers, usernames, badge ids, officer-to-desk assignments, shift rosters | AMAN |
+| Person identity | Traveller names, passenger ids, PNR locators, API and PNR records, per-person nationality | AMAN |
+| Document data | Document numbers, MRZ, dates of birth, issuing state per person, visa data | AMAN |
+| Biometrics | Face and fingerprint images, templates, match scores | AMAN, ABIS |
+| Images | Any camera frame, including stereo sensor images | Sensor |
+| Exact AMAN event timestamps | Per-transaction times | AMAN (Ariva receives interval-coarsened times) |
+
+From a border deployment to an airport deployment, additionally never: track ids, track samples, zone events, desk-level states or statistics, AMAN feed messages. Only lane-level wait times and KPIs cross (Proposed field list: lane, bin start, realised wait P50 and P90, nowcast, queue length, bin status, data quality; To confirm).
+
+## 3. Retention
+
+| Data | Retention | Source |
+|---|---|---|
+| Track ids | Rotated at zone exit; never persist past the operating day | D4 |
+| Raw track samples, zone events | Contract dispute window, default 90 days; compressed after one day | D5 |
+| Device health | Dispute window (evidence for sensor-outage exclusions) | Proposed |
+| `aman.feed` Kafka topics | Medium class; AMAN owns the configuration | D5; values To confirm |
+| Ariva Kafka topics | Short, medium, long or compacted classes (3, 14, 30 days) | D5; values Proposed |
+| Queue intervals, desk intervals, forecasts, border lane KPIs | Indefinite (aggregates) | D5 |
+| Hourly and daily report aggregates | Indefinite | D5 |
+| Configuration, contracts, SLA decisions, alerts | Indefinite, audited | D5 |
+| Evidence packs | At least the contract's dispute and audit periods | To confirm |
+| Flight data | | To confirm |
+| Logs and traces | No track ids or desk codes in log messages beyond the operating day | Proposed, To confirm |
+| Backups | No longer than the dispute window plus the backup cycle, so backups do not extend sample retention | Proposed |
+| Phase 0 lab recordings (office entrance or corridor) | Including notice to the people recorded | To confirm |
+
+Only the retention job can delete raw hypertable data; the application role cannot update or delete it.
+
+## 4. Laws in scope
+
+The design documents D4 to D6 do not analyse the laws themselves; the legal analysis sits in an earlier document (D1) that was not a source for the data boundary. The table records only what is known and what must be confirmed.
+
+| Jurisdiction | What the sources say | To confirm |
+|---|---|---|
+| UAE (PDPL) | Not covered in D4 to D6 | Applicability to the border authority and to airport operators; DPIA requirements; lawful basis for anonymous tracking; any sector or emirate rules. Confirm with counsel and D1 |
+| Angola | Confirm whether stereo counters fall under the video-surveillance law before choosing the sensor; LiDAR may avoid the authorisation route. Ask local counsel; prepare the DPIA template | The data protection law and authority; whether anonymous coordinates are personal data; the authorisation route for stereo sensors |
+| Tanzania | In-country deployment also avoids Tanzania's cross-border permit (D5, citing D1) | The act and any registration or permit duties for in-country processing |
+| GDPR (where EU-linked) | Not covered in D4 to D6 | When it applies (for example an EU-based client, processor or support access); transfer rules |
+| Lebanon (reference airport in the business plan) | Law 81/2018, Ministry of Economy and Trade oversight (business plan source) | Applicability if a Lebanese deployment is pursued |
+| All markets | A DPIA template per market; appearance re-identification drifts toward biometric data | Whether ephemeral, anonymous track coordinates count as personal data under each law; notice requirements for passengers |
+
+## 5. DPIA outline
+
+A DPIA template is prepared per market (D4, D6). Proposed outline:
+
+1. **Description of processing**: purpose (queue measurement, staffing, service levels), processes covered, sensor families, data flows (sensor to gateway to Ariva; AMAN aggregates; AODB flight data; border-to-airport aggregates), deployment and hosting (on premises, in country).
+2. **Data inventory**: track samples (anonymous coordinates and ephemeral ids), counts, desk states, flight data, user accounts and audit logs of Ariva's own users; explicit list of what is never processed (section 2).
+3. **Necessity and proportionality**: why counts and tracks are needed (realised wait per person requires a track from entry to exit line); why images, biometrics and re-identification are not; retention justified by the dispute window.
+4. **Lawful basis and notice**: per jurisdiction (To confirm); signage text and placement.
+5. **Data subject considerations**: passengers (anonymous tracks), staff crossing measured areas (excluded by zone rules; residual bias measured in validation), officers (no officer data), Ariva users (accounts, audit).
+6. **Risks and mitigations**: re-identification by joining datasets (coarsened timestamps, desk data kept on the border side, small-cell suppression); function creep toward surveillance (no images, aggregate-only contracts, build-time identifier test); unauthorised access (security controls in [Security guide](13-Security-Guide.md)); retention beyond need (retention job, backup retention rule).
+7. **Processors and transfers**: Dalil support access (health telemetry only, where allowed), the local integration partner, sensor vendors (cloud connectivity disabled at government sites); no transfer out of country.
+8. **Authorisations**: camera-related authorisations (for example Angola), registrations (for example Tanzania), to confirm per market.
+9. **Sign-off and review**: owner, review after any change of sensor family, purpose or data flow.
+
+## 6. Signage
+
+Passengers are told that overhead sensors count people anonymously to measure queue times, that no images are stored or transmitted, that no one is identified, who operates the system and whom to contact. Signs are in the site's languages and placed at every queue entrance in the measured area. Exact wording and legal notice requirements are To confirm per jurisdiction. See [Sensor installation guide](06-Sensor-Installation-Guide.md) for placement.
+
+## 7. Requests from authorities and individuals
+
+Because Ariva holds no identity, it cannot answer a request about a specific person's movements, and it is designed so that it never could. Requests about officer activity are for AMAN, where officer data is held. Requests about Ariva's own users (accounts, audit entries) are handled by the deployment's administrator under the customer's procedures.

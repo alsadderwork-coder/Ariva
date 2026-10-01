@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
+		<DockerfileContext>..\..\..</DockerfileContext>
+		<DockerfileTag>ariva-web</DockerfileTag>
+		<DefaultItemExcludes>$(DefaultItemExcludes);node_modules\**;build\**;.svelte-kit\**</DefaultItemExcludes>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<Compile Remove="node_modules\**" />
+		<EmbeddedResource Remove="node_modules\**" />
+		<None Remove="node_modules\**" />
+		<Compile Remove="build\**" />
+		<EmbeddedResource Remove="build\**" />
+		<None Remove="build\**" />
+		<Compile Remove=".svelte-kit\**" />
+		<EmbeddedResource Remove=".svelte-kit\**" />
+		<None Remove=".svelte-kit\**" />
+	</ItemGroup>
+
+</Project>

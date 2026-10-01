@@ -1,0 +1,165 @@
+﻿[*.cs]
+
+# CS8632: The annotation for nullable reference types should only be used in code within a '#nullable' annotations context.
+dotnet_diagnostic.CS8632.severity = suggestion
+
+# CS1591: Missing XML comment for publicly visible type or member
+dotnet_diagnostic.CS1591.severity = none
+csharp_indent_labels = one_less_than_current
+csharp_space_around_binary_operators = before_and_after
+csharp_using_directive_placement = outside_namespace:silent
+csharp_prefer_simple_using_statement = true:silent
+csharp_prefer_braces = true:silent
+csharp_style_namespace_declarations = block_scoped:silent
+csharp_style_expression_bodied_methods = false:silent
+csharp_style_expression_bodied_constructors = false:silent
+csharp_style_expression_bodied_operators = false:silent
+csharp_style_expression_bodied_properties = true:silent
+csharp_style_expression_bodied_indexers = true:silent
+csharp_style_expression_bodied_accessors = true:silent
+csharp_style_expression_bodied_lambdas = true:silent
+csharp_style_expression_bodied_local_functions = false:silent
+csharp_style_throw_expression = true:suggestion
+csharp_style_prefer_null_check_over_type_check = true:suggestion
+csharp_prefer_simple_default_expression = true:suggestion
+csharp_style_prefer_local_over_anonymous_function = true:suggestion
+csharp_style_prefer_index_operator = true:suggestion
+csharp_style_prefer_range_operator = true:suggestion
+csharp_style_implicit_object_creation_when_type_is_apparent = true:suggestion
+csharp_style_prefer_tuple_swap = true:suggestion
+csharp_style_inlined_variable_declaration = true:suggestion
+csharp_style_deconstructed_variable_declaration = true:suggestion
+csharp_style_unused_value_assignment_preference = discard_variable:suggestion
+csharp_style_unused_value_expression_statement_preference = discard_variable:silent
+
+# S125: Sections of code should not be commented out
+dotnet_diagnostic.S125.severity = none
+
+# S1135: Track uses of "TODO" tags
+dotnet_diagnostic.S1135.severity = none
+
+[*.{cs,vb}]
+#### Naming styles ####
+
+# Naming rules
+
+dotnet_naming_rule.interface_should_be_begins_with_i.severity = suggestion
+dotnet_naming_rule.interface_should_be_begins_with_i.symbols = interface
+dotnet_naming_rule.interface_should_be_begins_with_i.style = begins_with_i
+
+dotnet_naming_rule.types_should_be_pascal_case.severity = suggestion
+dotnet_naming_rule.types_should_be_pascal_case.symbols = types
+dotnet_naming_rule.types_should_be_pascal_case.style = pascal_case
+
+dotnet_naming_rule.non_field_members_should_be_pascal_case.severity = suggestion
+dotnet_naming_rule.non_field_members_should_be_pascal_case.symbols = non_field_members
+dotnet_naming_rule.non_field_members_should_be_pascal_case.style = pascal_case
+
+# Symbol specifications
+
+dotnet_naming_symbols.interface.applicable_kinds = interface
+dotnet_naming_symbols.interface.applicable_accessibilities = public, internal, private, protected, protected_internal, private_protected
+dotnet_naming_symbols.interface.required_modifiers = 
+
+dotnet_naming_symbols.types.applicable_kinds = class, struct, interface, enum
+dotnet_naming_symbols.types.applicable_accessibilities = public, internal, private, protected, protected_internal, private_protected
+dotnet_naming_symbols.types.required_modifiers = 
+
+dotnet_naming_symbols.non_field_members.applicable_kinds = property, event, method
+dotnet_naming_symbols.non_field_members.applicable_accessibilities = public, internal, private, protected, protected_internal, private_protected
+dotnet_naming_symbols.non_field_members.required_modifiers = 
+
+# Naming styles
+
+dotnet_naming_style.begins_with_i.required_prefix = I
+dotnet_naming_style.begins_with_i.required_suffix = 
+dotnet_naming_style.begins_with_i.word_separator = 
+dotnet_naming_style.begins_with_i.capitalization = pascal_case
+
+dotnet_naming_style.pascal_case.required_prefix = 
+dotnet_naming_style.pascal_case.required_suffix = 
+dotnet_naming_style.pascal_case.word_separator = 
+dotnet_naming_style.pascal_case.capitalization = pascal_case
+
+dotnet_naming_style.pascal_case.required_prefix = 
+dotnet_naming_style.pascal_case.required_suffix = 
+dotnet_naming_style.pascal_case.word_separator = 
+dotnet_naming_style.pascal_case.capitalization = pascal_case
+dotnet_style_operator_placement_when_wrapping = beginning_of_line
+tab_width = 4
+indent_size = 4
+end_of_line = crlf
+dotnet_style_coalesce_expression = true:suggestion
+dotnet_style_null_propagation = true:suggestion
+dotnet_style_prefer_is_null_check_over_reference_equality_method = true:suggestion
+dotnet_style_prefer_auto_properties = true:silent
+dotnet_style_object_initializer = true:suggestion
+dotnet_style_collection_initializer = true:suggestion
+dotnet_style_prefer_simplified_boolean_expressions = true:suggestion
+dotnet_style_prefer_conditional_expression_over_assignment = true:silent
+dotnet_style_prefer_conditional_expression_over_return = true:silent
+dotnet_style_explicit_tuple_names = true:suggestion
+dotnet_style_prefer_inferred_tuple_names = true:suggestion
+dotnet_style_prefer_inferred_anonymous_type_member_names = true:suggestion
+dotnet_style_prefer_compound_assignment = true:suggestion
+dotnet_style_prefer_simplified_interpolation = true:suggestion
+dotnet_style_namespace_match_folder = true:suggestion
+dotnet_style_readonly_field = true:suggestion
+dotnet_style_predefined_type_for_locals_parameters_members = true:silent
+dotnet_style_predefined_type_for_member_access = true:silent
+
+
+# Security analyzers mapped to the CWE checklist in docs/security/cwe-controls.md
+[*.cs]
+# CWE-89 SQL injection
+dotnet_diagnostic.CA2100.severity = error
+dotnet_diagnostic.CA3001.severity = error
+# CWE-79 cross-site scripting
+dotnet_diagnostic.CA3002.severity = error
+# CWE-22 path injection and CWE-200 information disclosure (defence in depth)
+dotnet_diagnostic.CA3003.severity = error
+dotnet_diagnostic.CA3004.severity = error
+# CWE-78 and CWE-77 OS command injection
+dotnet_diagnostic.CA3006.severity = error
+# CWE-601 open redirect, XPath, XML, XAML, DLL and regex injection
+dotnet_diagnostic.CA3007.severity = error
+dotnet_diagnostic.CA3008.severity = error
+dotnet_diagnostic.CA3009.severity = error
+dotnet_diagnostic.CA3010.severity = error
+dotnet_diagnostic.CA3011.severity = error
+dotnet_diagnostic.CA3012.severity = error
+# CWE-502 insecure deserialization (supports CWE-94 code injection)
+dotnet_diagnostic.CA2300.severity = error
+dotnet_diagnostic.CA2301.severity = error
+dotnet_diagnostic.CA2302.severity = error
+dotnet_diagnostic.CA2305.severity = error
+dotnet_diagnostic.CA2310.severity = error
+dotnet_diagnostic.CA2311.severity = error
+dotnet_diagnostic.CA2312.severity = error
+dotnet_diagnostic.CA2315.severity = error
+dotnet_diagnostic.CA2321.severity = error
+dotnet_diagnostic.CA2322.severity = error
+dotnet_diagnostic.CA2326.severity = error
+dotnet_diagnostic.CA2327.severity = error
+dotnet_diagnostic.CA2328.severity = error
+dotnet_diagnostic.CA2329.severity = error
+dotnet_diagnostic.CA2330.severity = error
+# CWE-287 and CWE-295 authentication and transport: weak crypto, disabled certificate validation, weak TLS
+dotnet_diagnostic.CA5350.severity = error
+dotnet_diagnostic.CA5351.severity = error
+dotnet_diagnostic.CA5359.severity = error
+dotnet_diagnostic.CA5364.severity = error
+dotnet_diagnostic.CA5378.severity = error
+dotnet_diagnostic.CA5379.severity = error
+dotnet_diagnostic.CA5384.severity = error
+dotnet_diagnostic.CA5385.severity = error
+dotnet_diagnostic.CA5386.severity = error
+dotnet_diagnostic.CA5387.severity = error
+dotnet_diagnostic.CA5388.severity = error
+dotnet_diagnostic.CA5390.severity = error
+dotnet_diagnostic.CA5394.severity = error
+dotnet_diagnostic.CA5397.severity = error
+dotnet_diagnostic.CA5398.severity = error
+dotnet_diagnostic.CA5403.severity = error
+# CWE-352 antiforgery: Ariva APIs use bearer tokens, not cookies; keep visible as a suggestion
+dotnet_diagnostic.CA5391.severity = suggestion

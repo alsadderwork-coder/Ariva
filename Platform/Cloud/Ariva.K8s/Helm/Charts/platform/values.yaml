@@ -1,0 +1,40 @@
+# Default values for ariva-platform.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+# Environment files (values-k8s-dev.yaml and friends) override these defaults.
+
+environment: k8s-dev
+buildNumber: trunk
+imageRepository: dalil.azurecr.io/ariva
+imagePullPolicy: Always
+replicas: 1
+releaseVersion: v-0.0.0
+domain: dalilhub.tech
+clusterName: k8s-dev
+
+# The simulation host (sensor, AODB and AMAN emulators) is deployed unless an environment turns it off.
+simulationEnabled: true
+
+# Per service overrides follow the AMAN key style, for example:
+# apiMainReplicas: 2
+# apiMainHpaMin: 1
+# apiMainHpaMax: 3
+# apiMainCpuRequest: 250m
+# apiMainMemRequest: 750Mi
+# apiMainCpuLimit: 1000m
+# apiMainMemLimit: 1000Mi
+
+# OpenTelemetry export (rendered by the ariva-platform.otelEnv helper).
+otel:
+  endpoint: ""
+  protocol: grpc
+
+# Registry credentials for dalilacr-secret. Leave the password empty to skip rendering the secret
+# (for example when it is created out of band). The release pipeline passes these with set flags.
+imageCredentials:
+  registry: dalil.azurecr.io
+  username: ""
+  password: ""
+
+# Ingress definitions (see templates/ingresses.yaml); environment files provide the list.
+ingresses: []

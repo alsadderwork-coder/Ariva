@@ -1,0 +1,139 @@
+---
+#ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-stream-configmap
+  labels:
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+data:
+  DOTNET_ENVIRONMENT: {{ .Values.environment | quote }}
+  RELEASE_VERSION: {{ .Values.releaseVersion | quote }}
+---
+#Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-stream-deployment
+  labels:
+    app: api-stream
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.apiStreamReplicas | default .Values.replicas }}
+  selector:
+    matchLabels:
+      app: api-stream
+  template:
+    metadata:
+      annotations:
+        rollme: {{ randAlphaNum 5 | quote }}
+      labels:
+        app: api-stream
+    spec:
+      imagePullSecrets:
+        - name: dalilacr-secret
+      volumes:
+        - name: api-stream-appsettings-base-volume
+          secret:
+            secretName: base-appsettings-secret
+        - name: api-stream-appsettings-volume
+          secret:
+            secretName: api-stream-appsettings-secret
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api-stream-container
+          image: "{{ .Values.imageRepository }}/api-stream:{{ .Values.buildNumber }}"
+          imagePullPolicy: {{ .Values.imagePullPolicy | default "Always" }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: api-stream-appsettings-base-volume
+              mountPath: /app/appsettings.base.{{ .Values.environment }}.json
+              subPath: appsettings.base.{{ .Values.environment }}.json
+            - name: api-stream-appsettings-volume
+              mountPath: /app/appsettings.service.{{ .Values.environment }}.json
+              subPath: appsettings.service.{{ .Values.environment }}.json
+          env:
+            {{- include "ariva-platform.otelEnv" . | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: api-stream-configmap
+          startupProbe:
+            httpGet: { path: /health/startup, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 8
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet: { path: /health/readiness, port: 8080 }
+            initialDelaySeconds: 2
+            periodSeconds: 15
+            failureThreshold: 4
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: {{ .Values.apiStreamCpuRequest | default "500m" }}
+              memory: {{ .Values.apiStreamMemRequest | default "750Mi" }}
+            limits:
+              cpu: {{ .Values.apiStreamCpuLimit | default "2000m" }}
+              memory: {{ .Values.apiStreamMemLimit | default "1500Mi" }}
+          livenessProbe:
+            httpGet: { path: /health/liveness, port: 8080 }
+            initialDelaySeconds: 2
+            periodSeconds: 15
+            failureThreshold: 8
+            timeoutSeconds: 5
+---
+#HorizontalPodAutoscaler
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api-stream-hpa
+  labels:
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api-stream-deployment
+  minReplicas: {{ .Values.apiStreamHpaMin | default 1 }}
+  maxReplicas: {{ .Values.apiStreamHpaMax | default 1 }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+#Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-stream-service
+  labels:
+    app: api-stream
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: api-stream
+  type: ClusterIP
+  ports:
+    - name: api-stream-service-port
+      port: 80
+      targetPort: 8080

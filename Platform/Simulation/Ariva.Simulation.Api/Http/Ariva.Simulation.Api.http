@@ -1,0 +1,13 @@
+@Ariva.Simulation.Api_HostAddress = http://localhost:51020
+
+### Startup probe
+GET {{Ariva.Simulation.Api_HostAddress}}/health/startup
+Accept: application/json
+
+### Readiness probe
+GET {{Ariva.Simulation.Api_HostAddress}}/health/readiness
+Accept: application/json
+
+### Liveness probe
+GET {{Ariva.Simulation.Api_HostAddress}}/health/liveness
+Accept: application/json

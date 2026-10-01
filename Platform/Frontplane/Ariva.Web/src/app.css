@@ -1,0 +1,48 @@
+@import 'tailwindcss';
+@plugin '@tailwindcss/forms';
+
+/* Dark first control room palette. Components use these tokens through the Tailwind theme below
+   (bg-bg, bg-panel, border-line, text-ink, text-muted, text-accent, text-good, text-warn, text-crit). */
+:root {
+	--bg: #0a1015;
+	--panel: #111a21;
+	--line: #22323e;
+	--ink: #dce6ec;
+	--muted: #8c9ca8;
+	--accent: #3fb8c9;
+	--good: #3dbe7a;
+	--warn: #e8a93a;
+	--crit: #ef5b52;
+
+	color-scheme: dark;
+}
+
+@theme inline {
+	--color-bg: var(--bg);
+	--color-panel: var(--panel);
+	--color-line: var(--line);
+	--color-ink: var(--ink);
+	--color-muted: var(--muted);
+	--color-accent: var(--accent);
+	--color-good: var(--good);
+	--color-warn: var(--warn);
+	--color-crit: var(--crit);
+}
+
+html,
+body {
+	background-color: var(--bg);
+	color: var(--ink);
+}
+
+body {
+	min-height: 100dvh;
+	font-family:
+		system-ui,
+		-apple-system,
+		'Segoe UI',
+		Tahoma,
+		'Noto Sans Arabic',
+		sans-serif;
+	-webkit-font-smoothing: antialiased;
+}

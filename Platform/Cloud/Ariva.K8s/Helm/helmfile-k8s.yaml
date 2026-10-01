@@ -1,0 +1,29 @@
+# Ariva releases for the shared Kubernetes cluster.
+# The release pipeline passes the namespace and kube context on the command line
+# (see Platform/Cloud/Ariva.Cicd/AzureDevOps/K8s/Release-ariva-k8s-dev.yaml).
+
+helmDefaults:
+  kubeContext: default
+
+releases:
+
+  # Ariva platform: api hosts, simulation and web
+  - name: ariva-platform
+    chart: ./Charts/platform
+    values:
+      - ./Charts/platform/values-k8s-dev.yaml
+
+  # TimescaleDB (single node). Flip installed to true once the chart templates are added.
+  - name: timescaledb
+    chart: ./Charts/timescaledb
+    installed: false
+    values:
+      - ./Charts/timescaledb/values.yaml
+
+# Kafka and Redis
+# Ariva does not ship its own Kafka or Redis releases. Either:
+#   1. reuse AMAN's cluster releases in the same cluster: Ariva topics are prefixed "ariva." and Redis
+#      keys use the "ariva:" instance name, so they never collide with AMAN's; point Kafka:BootstrapServers
+#      and Redis:ConnectionString in appsettings.base.k8s-*.json at AMAN's services; or
+#   2. deploy dedicated releases from AMAN's chart values (Aman.K8s Helm/Charts/kafka, which uses the
+#      kubelauncher chart 0.1.19, and Helm/Charts/redis) copied into ./Charts and added as releases here.

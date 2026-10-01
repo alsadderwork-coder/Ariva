@@ -1,0 +1,81 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <IsPackable>false</IsPackable>
+        <IsTestProject>true</IsTestProject>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="AutoFixture" />
+        <PackageReference Include="Bogus" />
+        <PackageReference Include="coverlet.collector">
+            <PrivateAssets>all</PrivateAssets>
+            <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+        </PackageReference>
+        <PackageReference Include="FluentAssertions" />
+        <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
+        <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+        <PackageReference Include="Microsoft.NET.Test.Sdk" />
+        <PackageReference Include="Moq" />
+        <PackageReference Include="xunit.runner.visualstudio">
+            <PrivateAssets>all</PrivateAssets>
+            <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+        </PackageReference>
+        <PackageReference Include="xunit.v3" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Using Include="Xunit" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Compile Include="..\..\..\GlobalSuppressions.cs" Link="GlobalSuppressions.cs" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Content Include="..\Ariva.Api.Common\appsettings.base.json">
+            <Link>appsettings.base.json</Link>
+            <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+        </Content>
+        <Content Include="..\Ariva.Api.Common\appsettings.base.vm-local.json">
+            <Link>appsettings.base.vm-local.json</Link>
+            <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+        </Content>
+        <Content Include="..\Ariva.Api.Common\appsettings.base.k8s-dev.json">
+            <Link>appsettings.base.k8s-dev.json</Link>
+            <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+        </Content>
+        <Content Include="..\Ariva.Api.Common\appsettings.base.k8s-demo.json">
+            <Link>appsettings.base.k8s-demo.json</Link>
+            <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+        </Content>
+        <Content Include="..\Ariva.Api.Common\appsettings.base.k8s-prd.json">
+            <Link>appsettings.base.k8s-prd.json</Link>
+            <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+        </Content>
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Ariva.Core\Ariva.Core.csproj" />
+        <ProjectReference Include="..\Ariva.Infra\Ariva.Infra.csproj" />
+        <ProjectReference Include="..\Ariva.Resources\Ariva.Resources.csproj" />
+        <ProjectReference Include="..\Ariva.Di\Ariva.Di.csproj" />
+        <ProjectReference Include="..\Ariva.Api.Common\Ariva.Api.Common.csproj" />
+        <ProjectReference Include="..\..\Business\Ariva.Business.Contracts\Ariva.Business.Contracts.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Ariva.Api.Main\Ariva.Api.Main.csproj" />
+        <ProjectReference Include="..\Ariva.Api.Ingest\Ariva.Api.Ingest.csproj" />
+        <ProjectReference Include="..\Ariva.Api.Stream\Ariva.Api.Stream.csproj" />
+        <ProjectReference Include="..\Ariva.Api.Cronz\Ariva.Api.Cronz.csproj" />
+        <ProjectReference Include="..\Ariva.Api.Integration\Ariva.Api.Integration.csproj" />
+        <ProjectReference Include="..\..\Simulation\Ariva.Simulation.Api\Ariva.Simulation.Api.csproj" />
+    </ItemGroup>
+
+</Project>

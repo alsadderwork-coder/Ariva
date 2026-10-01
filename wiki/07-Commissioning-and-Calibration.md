@@ -1,0 +1,179 @@
+# Commissioning and calibration
+
+How installed sensors become trusted measurements: registering devices, issuing credentials, calibrating the floor plan, drawing zones and lines, publishing profile versions, validating against manual counts, going `Online`, and re-calibrating when something changes.
+
+Status: in Phase 0 zones come from a configuration file (Phase 0 epic Zones from configuration); the zone editor, device registration screens and validation tooling arrive in Phase 1 (epics Zone editor, Authentication, roles and audit, Validation tooling). Screen steps below are Target procedures for those epics.
+
+## Who does what
+
+| Role | Responsibility |
+|---|---|
+| Dalil field engineer | Owns commissioning and the validation campaign on site |
+| Local integration partner | Device-side configuration, fixes to mounting and cabling |
+| Site administrator (System administrator role) | Registers devices and credentials, publishes zone profiles (step-up MFA) |
+| Client staff | Manual counts, timed tracers, observer logs during validation |
+| Product owner | Agrees acceptance thresholds and KPI definitions with the client |
+
+## Steps
+
+| # | Step | Output |
+|---|---|---|
+| 1 | Calibrate the floor plan | Plan scaled and aligned to sensor coordinates |
+| 2 | Register devices | Device records in `Commissioning` |
+| 3 | Issue credentials and configure output | Data flowing into the gateway |
+| 4 | Verify health and time | Frame rate, clock offset, heartbeat visible |
+| 5 | Draw zones, lines, desks and lanes | Draft zone profile |
+| 6 | Calibrate each device | Calibration record per device |
+| 7 | Run the validation campaign | Validation report |
+| 8 | Publish and activate the profile | Active profile version |
+| 9 | Go `Online` | Live measurement, displays and alerts enabled |
+
+## 1. Calibrate the floor plan
+
+Upload the plan image or CAD export for each level. Scale and align it to the sensors' coordinate system with two reference points that are visible on site and on the plan. All zone geometry is then stored in metres in the floor plan's local metric system (GeoJSON).
+
+## 2. Register devices
+
+Import the device list from the as-built pack or register each device:
+
+| Field | Notes |
+|---|---|
+| Id | Matches the physical label (for example `S-17`) |
+| Family and model | From the [sensor catalogue](09-Sensor-Catalogue-and-Adapters.md); determines the adapter and tier |
+| Transport | HTTPS push, MQTT, REST pull, WebSocket, or another supported transport |
+| Credential reference | The credential the device uses; the secret itself is never shown again |
+| Mounting height | Measured, from the as-built pack |
+| Position on the level | From the as-built plan |
+| Coverage footprint | Length by width at the tracking plane, from the vendor table (or a radius for LiDAR) |
+| Owning queue zone | Each device is registered to exactly one owning queue zone; its events are keyed by that zone |
+| Clock source | NTP or PTP |
+| Status | Starts as `Commissioning` |
+
+Device statuses: `Commissioning`, `Online`, `Degraded`, `Offline`, `Retired`. A device becomes `Online` only after a passed calibration.
+
+## 3. Credentials and device output
+
+| Transport | Credential | Controls |
+|---|---|---|
+| HTTPS push to Ingest | Per-device bearer key or Basic credential | TLS, source IP allowlist, 256 KB body limit |
+| MQTT over TLS | Per-device client certificate, or username and key | Topic ACL per device |
+| REST pull by Ingest | Device or controller credential stored with the device | Only registered device addresses are called (SSRF control) |
+| Sensor gateway pushing canonical events | Integration client of kind `SensorGateway` with scope `sensing:write` | See [Integration guide](08-Integration-Guide.md) |
+
+Then configure the device or the vendor tool to send its output to the gateway. For Xovis, the multi-sensor setup does the stitching; configure track output (T3) for queue zones. Vendor-computed line crossings may also be sent: Ariva keeps them as a cross-check and fallback (`ariva.device.vendor-line-crossing.v1`), but its own crossings from tracks are the primary source.
+
+## 4. Verify health and time
+
+On the Devices screen (or in logs and metrics until it exists), check per device:
+
+- Heartbeat arriving every 10 to 30 seconds.
+- Frame rate stable.
+- Clock offset within 500 ms of the site reference (F19). A stable larger offset is corrected and flagged `Degraded`; an unstable one is not acceptable for commissioning.
+- Tracks appearing on the live floor plan where people walk.
+
+## 5. Draw zones, lines, desks and lanes
+
+Zones are polygons in floor coordinates, each with one role:
+
+| Zone kind | Purpose |
+|---|---|
+| Queue | Where people wait, bounded by entry and exit lines. Owns the process: its overflow, service and staff zones hang off it |
+| Overflow | Area outside the snake where the queue spills over; has its own entry line; overflow time counts as wait; occupancy above zero raises `OverflowDetected` |
+| Service | In front of a desk; occupancy is a weak serving signal |
+| Staff | Behind a desk; occupancy proves someone is present |
+
+| Line role | Meaning |
+|---|---|
+| Entry | Inward crossing starts a passenger's wait. Several are allowed; the first one crossed counts |
+| Exit | Outward crossing ends the wait, at the head of the queue before the desks. At least 1 m inside coverage |
+| Count | Counts flow only; used between processes and for validation |
+| Overflow entry | Entry line of the overflow band |
+
+Validation rules for geometry (from the prototype): a polygon has at least three points and does not intersect itself; it lies inside the level; entry and exit lines lie on the polygon edge; names are unique. Each line records which side is inside, so a crossing from outside to inside is `In`.
+
+Also define in the profile:
+
+- Desks (immigration desk, e-gate, check-in counter, security lane) and lanes (a set of desks serving lane categories from one queue).
+- Lane categories per site (reference codes: `CRW`, `CIT`, `RES`, `VIS`, `EG`).
+- For e-gates, which manual lane receives rejects (site rule; reference: the visitors lane).
+- At AMAN sites, desk code mappings from AMAN desk and gate codes to Ariva desks. An unknown AMAN code is never guessed: the message is parked, the administrator is alerted, and the desk counts as `Unknown` until mapped.
+- Staff exclusions: tracks originating behind the desk line or from staff doors are excluded from waits.
+- Parameters tuned per site: lateness allowance, T1 and T2 for desk pauses and closures (examples 3 and 10 minutes), censoring timeout (Proposed 120 minutes), crossing debounce (Proposed 2 seconds). Values To confirm in the pilot.
+
+## 6. Profile versions and publish rules
+
+| Rule | Detail |
+|---|---|
+| Immutable versions | A published profile is a signed, immutable version with a monotonically increasing number. A change is a new version, never an edit |
+| Drafts | A new draft copies the active profile; work happens on the draft |
+| Publishing | A critical function: requires step-up MFA (TOTP within the last 15 minutes) and is audited |
+| Activation | By time or by a supervisor (for example when stanchions move); events `ZoneProfilePublished` and `ZoneProfileActivated` |
+| Traceability | Every result records the profile version it was computed with |
+| Unmeasured zones | A published zone without a calibrated sensor shows "Not measured: no calibrated sensor" |
+| Corrections | A wrong configuration is fixed by a new version; the affected period can be recomputed under the corrected profile, creating a new revision while keeping the original |
+| Contracts (v1) | A handler contract names the signed profile version it is evaluated against |
+
+## 7. Calibrate each device
+
+Calibration fixes the device's position and orientation in floor coordinates and proves its counting accuracy.
+
+1. Count people crossing the device's lines manually over a sample period while the system counts the same lines.
+2. Compute count accuracy: `1 - |N_system - N_manual| / N_manual` (F18). Example: 96 counted by the system against 100 manually is 96 percent.
+3. Pass threshold: at least 95 percent by default.
+4. Record the calibration.
+
+Calibration record fields: device, date, method (manual count comparison), sample size, counting accuracy, wait-time error where measured, pass threshold, residual position error, firmware version, zone profile version, notes, who performed it. The record is stored as `CalibrationRecord` (event `DeviceCalibrated`) and goes into every evidence pack that uses the device.
+
+A pass sets the device to `Online` and its zone becomes measured. A fail keeps it in `Commissioning`; fix the mounting, coverage or configuration and repeat.
+
+## 8. Validation campaign
+
+The campaign proves the site's numbers before anyone relies on them, and is the basis of pilot acceptance and of penalty-grade status.
+
+Protocol (D4, D6):
+
+- Manual counts per line per 15-minute bin.
+- Timed tracers: staff join the queue and record their own entry and exit times.
+- Observer logs of desk state (closed, idle, serving, paused) per minute.
+- At least five operating days, including two peak days (assumption).
+- Sample size per line and number of tracers: not fixed by the design documents; agree them in the pilot's KPI annex (To confirm). Cover every entry and exit line for whole peak bins, and spread tracers from short to long waits so the tolerance rule is tested at both ends.
+
+Acceptance thresholds (proposals to agree contractually, not industry standards):
+
+| Criterion | Target | Computation |
+|---|---|---|
+| Count accuracy per 15-minute bin, each line | At least 95 percent | `1 - abs(N_system - N_manual) / N_manual`; if N_manual is 0, report the absolute error |
+| Realised-wait absolute error | Within the larger of 1 minute or 10 percent of the true wait | Per tracer: `w_system - w_tracer` |
+| Realised-wait bias | Within plus or minus 5 percent | `sum(w_system - w_tracer) / sum(w_tracer)` |
+| Track completion | At least 90 percent | Tracks that exited / tracks that entered |
+| Desk-state agreement with observer log | At least 95 percent of observed minutes | |
+| Nowcast error against later realised wait | Median within 2 minutes for waits under 20 minutes | |
+| Availability during the pilot | 99 percent of operating hours | |
+| Ground-truth proof | No target: nowcast error with and without AMAN inputs, side by side | |
+
+Worked examples: a tracer who waited 8 minutes against a system value of 8.9 minutes passes (tolerance 1 minute); a tracer who waited 20 minutes against 22.5 minutes fails (tolerance 2 minutes).
+
+Continuous health checks run alongside: conservation residual `(entries - exits) - change in occupancy` should be 0; occupancy must stay between 0 and the zone's physical capacity.
+
+The validation report records the profile version, the device calibration records, the raw comparison data and the results per criterion. Manual count capture uses the observer tablet form (Phase 1 epic Validation tooling).
+
+## 9. Go Online
+
+1. Publish the validated profile version and activate it.
+2. Confirm every device in the profile is `Online`.
+3. Enable alert rules and switch on the displays.
+4. Burn in (two weeks in the pilot scenario) with Dalil watching data quality.
+5. For zones that will carry handler contracts (v1), mark them penalty-grade only after validation (T3 data, or T1 validated against manual counts for that profile version).
+
+## 10. Re-calibration triggers
+
+| Trigger | Action |
+|---|---|
+| Sensor moved, re-aimed or replaced | Re-calibrate the device; re-validate penalty-grade zones it covers |
+| Layout change (stanchions, desks, entrances moved) | New profile version; re-validate the affected zones |
+| Firmware update | Only within the certified firmware range; outside it, re-run the family's conformance kit and field validation for the new firmware first, then re-calibrate on site |
+| Health-check alarm (conservation residual, track completion drop, occupancy out of range) | Investigate; re-calibrate if the cause is the device |
+| Unstable clock offset | Fix time sync; re-check before trusting the zone |
+| Penalty-grade zones | Re-validate at least quarterly |
+
+A re-calibration of a penalty-grade zone triggers re-validation for that zone before its bins count again.

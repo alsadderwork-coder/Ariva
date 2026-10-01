@@ -1,0 +1,63 @@
+# CWE controls and security gates
+
+Every story, every pull request and every release is checked against this list. A story is not done until `node scripts/verify.mjs security` passes and the `security-reviewer` subagent has signed off the story's checklist (see `.claude/agents/security-reviewer.md`).
+
+Two ids in the original request were mislabelled; this table uses the correct ones:
+
+| As requested | Correct id | Name |
+|---|---|---|
+| Code Injection (CWE-78) | CWE-94 | Improper control of generation of code |
+| Command Injection (CWE-918) | CWE-77 | Improper neutralization of special elements used in a command |
+
+## Layers of defence
+
+| Layer | Tool | When it runs | Fails the build |
+|---|---|---|---|
+| 1. Edit-time scan | `.claude/hooks/post-edit-scan.mjs` runs `scripts/security/scan.mjs` on the file Claude just edited | Every Edit or Write by an agent | Feeds findings back to the agent immediately |
+| 2. Compiler analyzers | .NET security analyzers (CA2100, CA3001 to CA3012, CA2300 to CA2330, CA5350 to CA5403) set to `error` in `.editorconfig` | Every `dotnet build` | Yes |
+| 3. Repository scan | `node scripts/security/scan.mjs` (40 rules, mapped to the 14 CWEs; self-tested against good and bad fixtures) | `verify.mjs security`, Stop hook, PR pipeline | Yes, on any error |
+| 4. Architecture tests | `Ariva.UnitTests/Security/*` (reflection: forbidden assembly references, endpoint inventory, entity binding, unsafe code) | `dotnet test` | Yes |
+| 5. Behaviour tests | Unit tests per control, API end-to-end tests and Playwright functional tests with attack payloads (`Platform/Testing/Ariva.E2E/tests/api/security-baseline.spec.ts` and `tests/functional/xss.spec.ts`) | `verify.mjs e2e`, PR pipeline | Yes |
+| 6. Dependency audit | `dotnet list package --vulnerable --include-transitive`, `npm audit --audit-level=high` | `verify.mjs security` (needs registry access), nightly pipeline | Yes for high and critical |
+| 7. Dynamic scan | OWASP ZAP baseline and OpenAPI scan against the dev deployment | Weekly and before each release (pipeline `Security-zap.yaml`, Phase 1) | Yes for high |
+| 8. Penetration test | External, before the pilot goes live (budgeted in Phase 1) | Once per major release | Release gate |
+
+## Control matrix
+
+| CWE | Threat in Ariva | Design control | Static gate | Automated tests |
+|---|---|---|---|---|
+| CWE-78 OS command injection | A crafted device name, file name or AODB field reaches a shell | Ariva never starts processes. Node tooling uses `execFile`/`spawn` with argument arrays and `shell: false`. | SEC-001, SEC-002, SEC-003, SEC-004, CA3006 | `ForbiddenDependencyTests`: no Ariva assembly references `System.Diagnostics.Process` |
+| CWE-77 Command injection | Same, plus Kafka admin or Helm commands assembled from input | No runtime command assembly; Kafka topics are provisioned from a fixed list; Helm only runs in pipelines | SEC-001 to SEC-004 | As above, plus `TopicProvisioningTests` (topic names come only from `KafkaTopics` constants) |
+| CWE-94 Code injection | Alert rule expressions, report templates, dynamic LINQ or polymorphic JSON executing attacker input | Alert rules are typed data (metric, comparator, threshold), never expression strings. No scripting, no dynamic LINQ, no `TypeNameHandling`. Report templates are embedded resources. CSP `script-src 'self'` in the web app. | SEC-010 to SEC-014, CA2300 to CA2330 | `ForbiddenDependencyTests` (no `System.Linq.Dynamic.Core`, no Roslyn scripting) today; rule engine tests with hostile strings in ARV-037 |
+| CWE-918 SSRF | AODB, ACRIS, AMAN or sensor pull URLs pointed at internal services or cloud metadata | All outbound calls go through `IOutboundEndpointRegistry`: endpoints are created by administrators with step-up MFA, must be HTTPS (HTTP only for allowlisted lab hosts), resolve to allowed CIDRs at call time (blocks DNS rebinding), never follow redirects, and request paths are relative. No API accepts a URL from a caller at request time. | SEC-020, SEC-021, SEC-022 | `OutboundEndpointValidatorTests` (ARV-045) (link-local 169.254.169.254, loopback, file and gopher schemes, redirects, rebinding); e2e: creating an endpoint to a metadata address returns 400 |
+| CWE-862 Missing authorization | A new controller, hub or minimal API ships without a permission check | Default-deny `FallbackPolicy`; every controller action carries `[Permission]` (users), `[IntegrationScope]` (integration clients) or `[DeviceAuthenticated]` (sensors); hubs carry `[Authorize]` and check permission per group join | SEC-050, SEC-051, SEC-053 | `EndpointInventoryTests` (exists): boots each host with `WebApplicationFactory`, enumerates every endpoint and fails if one lacks authorization metadata and is not in `security/allowlist.json` |
+| CWE-863 Incorrect authorization | A user of one site reads another site; a Terminal duty manager sees per-desk border data; a handler sees the other handler | Permission policies, not role strings; `ISiteScope` on every site-bound query and command; field-level projection per role for the data boundary; integration clients bound to scopes and site codes | SEC-060, SEC-061 | `AuthorizationMatrixTests` (ARV-009) driven by `security/permission-matrix.json` (role x endpoint x expected status); IDOR tests that request another site's ids |
+| CWE-306 Missing authentication for critical function | Publishing a zone profile, signing a contract, creating integration clients, changing roles without authentication or with a stale session | Authentication everywhere except allowlisted probes; critical functions require step-up MFA (TOTP within the last 15 minutes) via `[RequiresRecentMfa]` | SEC-052 (allowlist), SEC-120 | `CriticalFunctionTests` (ARV-010 onward): each critical endpoint returns 401 without a token and 403 without recent MFA |
+| CWE-287 Improper authentication | Weak password storage, TOTP replay, token confusion between users, devices and integrations | PBKDF2-SHA256 with 600,000 iterations for passwords and client secrets; constant-time comparison; TOTP (RFC 6238) with a per-principal time-step replay guard; lockout and rate limits; strict JWT validation (issuer, audience, lifetime, key, algorithm allowlist, 30 s skew) with separate signing keys and audiences for users, integration clients and devices; one generic error for every login failure | SEC-040 to SEC-043, CA5350, CA5351, CA5379, CA5394 | `PasswordHasherTests`, `TotpReplayGuardTests`, `TokenAudienceConfusionTests` (ARV-010, ARV-042), e2e login brute force and replay tests |
+| CWE-501 Trust boundary violation | Unvalidated vendor payloads, AODB messages or request bodies flowing into domain objects or trusted stores | Request models (`Create*Request`, `Update*Request`) validated with `Fx.Specification` before mapping; entities are never bound from requests; vendor and AMAN payloads are validated, size-limited and mapped to canonical events at the adapter edge; nothing from a request is written to session, claims or `HttpContext.Items` | SEC-080, SEC-081 | `EntityBindingTests` (reflection over action parameters), adapter validation tests with malformed payloads |
+| CWE-269 Improper privilege management | Self-elevation, granting a role above one's own, services running with more rights than needed | Role grants only through `SvcRoleAssignment`, which requires the granter to outrank the role and blocks self-grants; SystemAdministrator grants need step-up MFA and a second administrator; containers run as non-root; separate database roles for runtime (no DDL) and migrations; per-service Kafka ACLs | SEC-070 | `PrivilegeEscalationTests` (ARV-011); chart test that every pod sets `runAsNonRoot` (ARV-002; the security context itself is already in every Deployment) |
+| CWE-384 Session fixation | A session id or refresh token set before login survives authentication | Stateless access tokens (15 minutes); new session id (`sid`) minted at every login; refresh tokens rotate on every use, are stored hashed, and reuse revokes the whole family; refresh cookie is HttpOnly, Secure, SameSite=Strict, path `/auth`; no session ids in URLs except the SignalR WebSocket `access_token`, limited to `/hubs` and short-lived tokens | SEC-090, SEC-091, SEC-092 | `RefreshRotationTests` (ARV-010), e2e: `sid` differs before and after login, replayed refresh token revokes the family |
+| CWE-89 SQL injection | Search filters, sort fields and Timescale queries built from strings | NHibernate LINQ and parameterised HQL; `ExecuteSqlAsync(sql, parameters)` only; Npgsql binary COPY with typed writers; Timescale DDL only from versioned script files; sort and filter fields mapped through allowlists | SEC-030, SEC-031, CA2100, CA3001 | `SortFieldAllowlistTests` (ARV-014); e2e injection payloads on every search endpoint return 400 or empty results, never 500 |
+| CWE-120 Buffer overflow | Oversized or deeply nested payloads from sensors, AODB or users; native interop | Managed code only, `AllowUnsafeBlocks` false; body size limits per endpoint class (APIs 1 MB, sensor pushes 256 KB, file imports 20 MB streamed); JSON `MaxDepth` 32; string length limits in every request model; vendor binary formats parsed with bounds-checked `BinaryPrimitives` and `SequenceReader`; Kafka `max.message.bytes` 1 MB | SEC-100 to SEC-103 | `UnsafeCodeTests`, `RequestLimitsTests` today; e2e oversized body returns 413 and deep JSON returns 400; randomised parser tests for every vendor dialect |
+| CWE-79 Cross-site scripting | Zone names, rule names, notes, flight data or display messages rendered as HTML | Svelte text interpolation only (`{@html}` banned); strict CSP (`default-src 'self'`, `script-src 'self'` plus SvelteKit hashes, `object-src 'none'`, `frame-ancestors 'none'`, `base-uri 'self'`); APIs return JSON with `X-Content-Type-Options: nosniff`; CSV exports neutralise formula prefixes (`=`, `+`, `-`, `@`) | SEC-110 to SEC-113, CA3002 | Playwright: create entities with script payloads, assert no dialog, no script execution and no CSP violation; CSV formula injection test |
+
+## How agents apply this on every stage
+
+1. Before coding a story, the agent lists which CWEs the story touches in its plan (most stories touch CWE-862, CWE-863 and CWE-501).
+2. The post-edit hook scans each file as it is written and returns findings to the agent.
+3. The story's acceptance criteria always include `node scripts/verify.mjs security` and the tests for the controls above that the story touches.
+4. The `security-reviewer` subagent reviews the diff against this matrix and writes its verdict into the story notes.
+5. Exceptions go to `security/allowlist.json` with `approvedBy: "PENDING: Ahmad"`; they stay visible as warnings until a human approves them.
+
+## Observations from AMAN's integration authentication (do not copy these)
+
+Read from `Aman.Infra/Services/Authentication/SvcIntegrationAuth.cs` on 2026-10-01. Ariva implements the same client credentials plus TOTP flow without these weaknesses; consider fixing them in AMAN too.
+
+| Observation | CWE | Ariva's version |
+|---|---|---|
+| Client secret stored and compared in plain text with `!=` | CWE-256, CWE-208 (part of CWE-287) | PBKDF2 hash, `CryptographicOperations.FixedTimeEquals` |
+| `VerifyTotp` with a window of one step each side and no record of used steps, so a captured code works again for up to 90 seconds | CWE-294 (part of CWE-287) | Replay guard stores the last accepted time step per client and rejects reuse |
+| Different messages for a bad secret and a bad TOTP code, which tells an attacker the secret was right | CWE-204 | One generic `invalid_client` response |
+| No visible rate limit or lockout on the login endpoint | CWE-307 | Per client and per IP rate limits, lockout after 10 failures for 15 minutes, alert to administrators |
+| Token expiry computed from `Fx.NowKindUnspecified` | CWE-613 risk if the server clock is not UTC | `TimeProvider.GetUtcNow()` everywhere |
+| One signing key (`Security:SecretKey`) appears to serve users and integration clients; token type is a claim | CWE-863 risk if any endpoint forgets to check the type | Separate keys and audiences per principal type |

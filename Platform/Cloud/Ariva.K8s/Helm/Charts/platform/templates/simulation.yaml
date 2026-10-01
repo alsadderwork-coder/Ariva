@@ -1,0 +1,141 @@
+{{- if .Values.simulationEnabled }}
+---
+#ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: simulation-configmap
+  labels:
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+data:
+  DOTNET_ENVIRONMENT: {{ .Values.environment | quote }}
+  RELEASE_VERSION: {{ .Values.releaseVersion | quote }}
+---
+#Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: simulation-deployment
+  labels:
+    app: simulation
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.simulationReplicas | default .Values.replicas }}
+  selector:
+    matchLabels:
+      app: simulation
+  template:
+    metadata:
+      annotations:
+        rollme: {{ randAlphaNum 5 | quote }}
+      labels:
+        app: simulation
+    spec:
+      imagePullSecrets:
+        - name: dalilacr-secret
+      volumes:
+        - name: simulation-appsettings-base-volume
+          secret:
+            secretName: base-appsettings-secret
+        - name: simulation-appsettings-volume
+          secret:
+            secretName: simulation-appsettings-secret
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: simulation-container
+          image: "{{ .Values.imageRepository }}/simulation:{{ .Values.buildNumber }}"
+          imagePullPolicy: {{ .Values.imagePullPolicy | default "Always" }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: simulation-appsettings-base-volume
+              mountPath: /app/appsettings.base.{{ .Values.environment }}.json
+              subPath: appsettings.base.{{ .Values.environment }}.json
+            - name: simulation-appsettings-volume
+              mountPath: /app/appsettings.service.{{ .Values.environment }}.json
+              subPath: appsettings.service.{{ .Values.environment }}.json
+          env:
+            {{- include "ariva-platform.otelEnv" . | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: simulation-configmap
+          startupProbe:
+            httpGet: { path: /health/startup, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 8
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet: { path: /health/readiness, port: 8080 }
+            initialDelaySeconds: 2
+            periodSeconds: 15
+            failureThreshold: 4
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: {{ .Values.simulationCpuRequest | default "100m" }}
+              memory: {{ .Values.simulationMemRequest | default "256Mi" }}
+            limits:
+              cpu: {{ .Values.simulationCpuLimit | default "500m" }}
+              memory: {{ .Values.simulationMemLimit | default "512Mi" }}
+          livenessProbe:
+            httpGet: { path: /health/liveness, port: 8080 }
+            initialDelaySeconds: 2
+            periodSeconds: 15
+            failureThreshold: 8
+            timeoutSeconds: 5
+---
+#HorizontalPodAutoscaler
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: simulation-hpa
+  labels:
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: simulation-deployment
+  minReplicas: {{ .Values.simulationHpaMin | default 1 }}
+  maxReplicas: {{ .Values.simulationHpaMax | default 1 }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+#Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: simulation-service
+  labels:
+    app: simulation
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: simulation
+  type: ClusterIP
+  ports:
+    - name: simulation-service-port
+      port: 80
+      targetPort: 8080
+{{- end }}

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Immigration, DMO QMS prototype</title>
+<meta name="description" content="Immigration screen of the DMO queue management prototype, synthetic data.">
+<link rel="stylesheet" href="assets/app.css">
+<script src="assets/boot.js"></script>
+</head>
+<body data-screen="immigration">
+<a class="skip" href="#main">Skip to content</a>
+<div class="shell">
+<nav class="sidebar" id="sidebar" aria-label="Prototype screens"></nav>
+<div class="frame">
+<header class="topbar" id="topbar"></header>
+<main id="main" class="main" tabindex="-1">
+<div class="page-head">
+<div>
+<h1>Immigration</h1>
+<p class="lede">Border module: waits by lane category, the desk grid with per-desk interval aggregates, and e-gates. No officer names or IDs appear anywhere.</p>
+</div>
+<div class="page-meta">
+<a class="why" href="../positioning.html#advantages">Why this matters</a>
+<span class="tag" data-profile-tag>Zone profile <strong>v12</strong></span>
+</div>
+</div>
+<div class="tabs" role="tablist" aria-label="Immigration side" id="immTabs"></div>
+<section aria-label="Key figures"><div class="kpis" id="kpis"></div></section>
+<section class="panel" aria-labelledby="lanesTitle">
+<div class="panel-head"><div><h2 id="lanesTitle">Lane categories</h2><p>Nowcast now, queue length and the last 15-minute bin at P90.</p></div></div>
+<div id="lanes"></div>
+</section>
+<section class="panel" aria-labelledby="desksTitle">
+<div class="panel-head"><div><h2 id="desksTitle">Desk grid</h2><p id="desksSub">State now and service time as 15-minute interval aggregates per desk position.</p></div><div id="officerBtn"></div></div>
+<div id="desks"></div>
+</section>
+<section class="panel" id="egates" aria-labelledby="egTitle">
+<div class="panel-head"><div><h2 id="egTitle">E-gates</h2><p>Utilisation, rejects by reason and category, and the extra load rejects put on manual desks.</p></div></div>
+<div id="egBody"></div>
+</section>
+</main>
+</div>
+</div>
+<script src="../assets/charts.js"></script>
+<script src="assets/sim.js"></script>
+<script src="assets/floorplan.js"></script>
+<script src="assets/ui.js"></script>
+<script src="assets/create.js"></script>
+<script src="assets/screen-immigration.js"></script>
+</body>
+</html>

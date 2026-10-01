@@ -1,0 +1,13 @@
+@Ariva.Api.Cronz_HostAddress = http://localhost:51004
+
+### Startup probe
+GET {{Ariva.Api.Cronz_HostAddress}}/health/startup
+Accept: application/json
+
+### Readiness probe
+GET {{Ariva.Api.Cronz_HostAddress}}/health/readiness
+Accept: application/json
+
+### Liveness probe
+GET {{Ariva.Api.Cronz_HostAddress}}/health/liveness
+Accept: application/json

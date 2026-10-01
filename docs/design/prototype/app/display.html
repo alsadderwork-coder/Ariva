@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Passenger display, DMO QMS prototype</title>
+<meta name="description" content="Passenger wait-time display of the DMO queue management prototype, synthetic data.">
+<link rel="stylesheet" href="assets/app.css">
+<script src="assets/boot.js"></script>
+</head>
+<body data-screen="display">
+<a class="skip" href="#main">Skip to content</a>
+<div class="shell">
+<nav class="sidebar" id="sidebar" aria-label="Prototype screens"></nav>
+<div class="frame">
+<header class="topbar" id="topbar"></header>
+<main id="main" class="main" tabindex="-1">
+<div class="page-head">
+<div>
+<h1>Passenger display</h1>
+<p class="lede">The public wait-time boards, in Arabic and English. Bands change only when the underlying wait has moved a full band, and stale data shows a neutral message. Choose a display to render its board.</p>
+</div>
+<div class="page-meta">
+<a class="why" href="../positioning.html#differentiators">Why this matters</a>
+<span class="tag" data-profile-tag>Zone profile <strong>v12</strong></span>
+</div>
+</div>
+<div class="board-wrap"><div class="board" id="board" role="region" aria-label="Passenger wait-time board"></div></div>
+<section class="panel" aria-labelledby="dispCtl">
+<div class="panel-head"><div><h2 id="dispCtl">Board controls</h2><p>Operator controls; passengers see only the board.</p></div></div>
+<div class="row" id="dispControls"></div>
+</section>
+<section class="panel" id="displays" aria-labelledby="dspTitle">
+<div class="panel-head"><div><h2 id="dspTitle">Displays</h2><p>Every configured board: where it hangs, what it shows and how it behaves. Show one to render it above.</p></div><div class="panel-actions" id="dspNew"></div></div>
+<div id="dspList"></div>
+</section>
+<section class="panel" aria-labelledby="hystTitle">
+<div class="panel-head"><div><h2 id="hystTitle">What the board is doing</h2><p>Underlying values and the hysteresis rule.</p></div></div>
+<div id="hyst"></div>
+</section>
+</main>
+</div>
+</div>
+<script src="../assets/charts.js"></script>
+<script src="assets/sim.js"></script>
+<script src="assets/floorplan.js"></script>
+<script src="assets/ui.js"></script>
+<script src="assets/create.js"></script>
+<script src="assets/screen-display.js"></script>
+</body>
+</html>

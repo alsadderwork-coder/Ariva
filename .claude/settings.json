@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(dotnet build:*)",
+      "Bash(dotnet test:*)",
+      "Bash(dotnet restore:*)",
+      "Bash(dotnet format:*)",
+      "Bash(dotnet list:*)",
+      "Bash(dotnet sln:*)",
+      "Bash(dotnet run:*)",
+      "Bash(node scripts/verify.mjs:*)",
+      "Bash(node scripts/security/scan.mjs:*)",
+      "Bash(npm run:*)",
+      "Bash(npm ci:*)",
+      "Bash(npm audit:*)",
+      "Bash(npx playwright test:*)",
+      "Bash(npx svelte-check:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git switch:*)",
+      "Bash(git checkout -b:*)",
+      "Bash(git stash:*)",
+      "Bash(docker compose:*)",
+      "Bash(kubectl get:*)",
+      "Bash(kubectl describe:*)",
+      "Bash(kubectl logs:*)",
+      "Read(../Aman/**)",
+      "mcp__microsoft-learn",
+      "mcp__context7",
+      "mcp__svelte",
+      "mcp__shadcn-svelte",
+      "mcp__playwright",
+      "mcp__semgrep",
+      "mcp__postgres-dev"
+    ],
+    "ask": [
+      "Bash(dotnet add:*)",
+      "Bash(npm install:*)",
+      "Bash(git merge:*)",
+      "mcp__nuget",
+      "mcp__azure-devops"
+    ],
+    "deny": [
+      "Bash(git push:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(git clean:*)",
+      "Bash(helm install:*)",
+      "Bash(helm upgrade:*)",
+      "Bash(helm uninstall:*)",
+      "Bash(helmfile apply:*)",
+      "Bash(helmfile sync:*)",
+      "Bash(helmfile destroy:*)",
+      "Bash(kubectl apply:*)",
+      "Bash(kubectl delete:*)",
+      "Bash(kubectl exec:*)",
+      "Edit(../Aman/**)",
+      "Write(../Aman/**)",
+      "Read(**/.env*)",
+      "Read(**/*.pfx)",
+      "Read(**/*.key)"
+    ],
+    "additionalDirectories": ["../Aman"]
+  },
+  "enabledMcpjsonServers": [
+    "microsoft-learn",
+    "context7",
+    "svelte",
+    "shadcn-svelte",
+    "playwright",
+    "nuget",
+    "azure-devops",
+    "semgrep",
+    "postgres-dev"
+  ],
+  "env": {
+    "DOTNET_CLI_TELEMETRY_OPTOUT": "1",
+    "DOTNET_NOLOGO": "1"
+  },
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "node", "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/session-start.mjs"], "timeout": 15 } ] }
+    ],
+    "PreToolUse": [
+      { "matcher": "Bash|PowerShell", "hooks": [ { "type": "command", "command": "node", "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/guard-bash.mjs"], "timeout": 15 } ] },
+      { "matcher": "Edit|Write|MultiEdit|NotebookEdit", "hooks": [ { "type": "command", "command": "node", "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/guard-paths.mjs"], "timeout": 15 } ] }
+    ],
+    "PostToolUse": [
+      { "matcher": "Edit|Write|MultiEdit", "hooks": [ { "type": "command", "command": "node", "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/post-edit-scan.mjs"], "timeout": 30 } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "node", "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/stop-gate.mjs"], "timeout": 150 } ] }
+    ]
+  }
+}

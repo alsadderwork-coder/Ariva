@@ -1,0 +1,41 @@
+<Solution>
+  <Folder Name="/Platform/" />
+  <Folder Name="/Platform/Backplane/">
+    <Project Path="Platform/Backplane/Ariva.Api.Common/Ariva.Api.Common.csproj" />
+    <Project Path="Platform/Backplane/Ariva.Api.Cronz/Ariva.Api.Cronz.csproj" />
+    <Project Path="Platform/Backplane/Ariva.Api.Ingest/Ariva.Api.Ingest.csproj" />
+    <Project Path="Platform/Backplane/Ariva.Api.Integration/Ariva.Api.Integration.csproj" />
+    <Project Path="Platform/Backplane/Ariva.Api.Main/Ariva.Api.Main.csproj" />
+    <Project Path="Platform/Backplane/Ariva.Api.Stream/Ariva.Api.Stream.csproj" />
+    <Project Path="Platform/Backplane/Ariva.Core/Ariva.Core.csproj" />
+    <Project Path="Platform/Backplane/Ariva.Di/Ariva.Di.csproj" />
+    <Project Path="Platform/Backplane/Ariva.Infra/Ariva.Infra.csproj" />
+    <Project Path="Platform/Backplane/Ariva.IntegrationTests/Ariva.IntegrationTests.csproj" />
+    <Project Path="Platform/Backplane/Ariva.Resources/Ariva.Resources.csproj" />
+    <Project Path="Platform/Backplane/Ariva.UnitTests/Ariva.UnitTests.csproj" />
+    <Project Path="Platform/Backplane/Ariva.Utilities/Ariva.Utilities.csproj" />
+  </Folder>
+  <Folder Name="/Platform/Business/">
+    <Project Path="Platform/Business/Ariva.Business.Contracts/Ariva.Business.Contracts.csproj" />
+  </Folder>
+  <Folder Name="/Platform/Cloud/">
+    <Project Path="Platform/Cloud/Ariva.Cicd/Ariva.Cicd.csproj" />
+    <Project Path="Platform/Cloud/Ariva.K8s/Ariva.K8s.csproj" />
+  </Folder>
+  <Folder Name="/Platform/Frontplane/">
+    <Project Path="Platform/Frontplane/Ariva.Web/Ariva.Web.csproj" />
+  </Folder>
+  <Folder Name="/Platform/Simulation/">
+    <Project Path="Platform/Simulation/Ariva.Simulation.Api/Ariva.Simulation.Api.csproj" />
+  </Folder>
+  <Folder Name="/Solution Items/">
+    <File Path=".dockerignore" />
+    <File Path=".editorconfig" />
+    <File Path=".gitattributes" />
+    <File Path=".gitignore" />
+    <File Path="Directory.Build.props" />
+    <File Path="Directory.Packages.props" />
+    <File Path="GlobalSuppressions.cs" />
+    <File Path="README.md" />
+  </Folder>
+</Solution>

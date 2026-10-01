@@ -1,0 +1,122 @@
+# Pull request validation for Ariva. Attach it to trunk as a build validation branch policy
+# (Azure Repos runs PR validation through branch policies, not a YAML pr trigger).
+# Order: security gate, .NET build, unit and integration tests, web checks, API end-to-end and Playwright
+# functional tests; the security report and the Playwright HTML report are published even when a step fails.
+name: $(date:yyyyMMdd)$(rev:rr)
+
+trigger: none
+resources:
+  repositories:
+    - repository: self
+      type: git
+      ref: $(Build.SourceBranch)
+
+variables:
+  BuildConfiguration: 'Release'
+
+jobs:
+  - job: Phase_1
+    displayName: Analyze
+    timeoutInMinutes: 60
+    pool:
+      name: Default
+      demands:
+        - Agent.OS -equals Linux
+    steps:
+      - checkout: self
+        clean: true
+
+      - task: NodeTool@0
+        displayName: 'Use Node 22'
+        inputs:
+          versionSpec: '22.x'
+
+      # 1. Security gate (docs/security/cwe-controls.md). The self-test proves every rule fires on the bad
+      #    fixtures and stays quiet on the good ones before the real scan is trusted.
+      - script: node scripts/security/scan.mjs --self-test
+        displayName: 'Security: scanner self-test'
+
+      - script: node scripts/security/scan.mjs
+        displayName: 'Security: scan (writes .verify/security-report.md)'
+
+      # 2. .NET build; the CWE analyzers in .editorconfig run as errors.
+      - task: UseDotNet@2
+        inputs:
+          packageType: 'sdk'
+          version: '10.x'
+          includePreviewVersions: false
+
+      - task: DotNetCoreCLI@2
+        displayName: 'Dotnet Restore'
+        inputs:
+          command: 'restore'
+          projects: 'Ariva.slnx'
+
+      - task: DotNetCoreCLI@2
+        displayName: 'Dotnet Build'
+        inputs:
+          command: 'build'
+          projects: 'Ariva.slnx'
+          arguments: '--configuration $(BuildConfiguration) --no-restore'
+
+      # 3. Unit tests (architecture, security and domain; the hosts boot in memory with WebApplicationFactory).
+      - task: DotNetCoreCLI@2
+        displayName: 'Dotnet Test'
+        inputs:
+          command: 'test'
+          projects: |
+            Platform/Backplane/Ariva.UnitTests/Ariva.UnitTests.csproj
+            Platform/Backplane/Ariva.IntegrationTests/Ariva.IntegrationTests.csproj
+          arguments: '--configuration $(BuildConfiguration) --no-build'
+          publishTestResults: true
+
+      # 4. Web: type check, formatting and the production build (which writes the CSP into build/nginx/default.conf).
+      - script: npm ci
+        displayName: 'Web: npm ci'
+        workingDirectory: Platform/Frontplane/Ariva.Web
+
+      - script: npm run check
+        displayName: 'Web: npm run check'
+        workingDirectory: Platform/Frontplane/Ariva.Web
+
+      - script: npm run lint
+        displayName: 'Web: npm run lint'
+        workingDirectory: Platform/Frontplane/Ariva.Web
+
+      - script: npm run build
+        displayName: 'Web: npm run build'
+        workingDirectory: Platform/Frontplane/Ariva.Web
+
+      # 5. API end-to-end and Playwright functional tests. playwright.config.ts starts Ariva.Api.Main,
+      #    Ariva.Api.Integration, Ariva.Api.Ingest, Ariva.Simulation.Api and the web preview server itself.
+      - script: npm ci
+        displayName: 'E2E: npm ci'
+        workingDirectory: Platform/Testing/Ariva.E2E
+
+      - script: npx playwright install --with-deps chromium
+        displayName: 'E2E: install Chromium'
+        workingDirectory: Platform/Testing/Ariva.E2E
+
+      - script: npx playwright test
+        displayName: 'E2E: API and functional tests'
+        workingDirectory: Platform/Testing/Ariva.E2E
+        env:
+          CI: 'true'
+          ARIVA_E2E_CONFIGURATION: $(BuildConfiguration)
+
+      # 6. Reports, published whatever the outcome.
+      - task: PublishPipelineArtifact@1
+        displayName: 'Publish security report'
+        condition: always()
+        inputs:
+          targetPath: '.verify/security-report.md'
+          artifact: 'security-report'
+          publishLocation: 'pipeline'
+
+      - task: PublishPipelineArtifact@1
+        displayName: 'Publish Playwright report'
+        condition: always()
+        inputs:
+          targetPath: 'Platform/Testing/Ariva.E2E/playwright-report'
+          artifact: 'playwright-report'
+          publishLocation: 'pipeline'

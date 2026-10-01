@@ -1,0 +1,1381 @@
+{
+  "name": "Ariva Phase 0: demo core",
+  "branchName": "ralph/phase0",
+  "description": "Phase 0 (Oct 2026 to Apr 2027): an end-to-end demo on simulated sensors, AODB and AMAN feeds, secure by default, deployable to the dev cluster. Gate: pilot contract signed.",
+  "userStories": [
+    {
+      "id": "ARV-001",
+      "title": "[E0] Restore, build and test the scaffold on a developer machine",
+      "description": "The scaffold was verified offline (no NuGet access). Restore it where NuGet is reachable and make every existing gate green. Epic: Foundation and security baseline. CWEs to review: all (baseline).",
+      "acceptanceCriteria": [
+        "dotnet restore and dotnet build Ariva.slnx succeed with 0 errors",
+        "All existing Ariva.UnitTests pass, including the Security tests (endpoint inventory, default deny, headers, limits, forbidden dependencies, entity binding, unsafe code, allowlist)",
+        "npx playwright install chromium has been run and node scripts/verify.mjs e2e passes",
+        "Any package version that fails to restore is replaced with a version confirmed through the nuget MCP and recorded in backlog/progress.md",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": "",
+      "dependsOn": []
+    },
+    {
+      "id": "ARV-002",
+      "title": "[E0] Finish container and chart hardening",
+      "description": "The scaffold already runs images as numeric non-root user 10001 and sets runAsNonRoot, runAsUser, seccomp RuntimeDefault, allowPrivilegeEscalation false and drop ALL on every Deployment. Finish Platform/Cloud/CLAUDE.md. Epic: Foundation and security baseline. CWEs to review: CWE-269, CWE-79.",
+      "acceptanceCriteria": [
+        "Docker builds of every image succeed and each container starts under the chart security context on the dev cluster (verified by the human release, recorded in progress)",
+        ".NET pods use readOnlyRootFilesystem true with an emptyDir at /tmp; the web pod gets emptyDirs for nginx cache and run directories",
+        "Base images pinned by version and digest (aspnet and runtime-deps 10.0.x, nginx 1.28.x); every Ingress has a tls section bound to a configurable certificate secret",
+        "helmfile-k8s.yaml defines environments dev, demo, prd, localk8s selecting the matching values file; prd values require an explicit buildNumber (no trunk)",
+        "A chart test (node script under Platform/Cloud/Ariva.K8s/tests, run by verify security) renders the templates and fails if any Deployment lacks the security context or any Ingress lacks tls",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-001"
+      ]
+    },
+    {
+      "id": "ARV-003",
+      "title": "[E0] Local development environment with Docker Compose",
+      "description": "One command brings up the dependencies agents and tests need locally. Epic: Foundation and security baseline. CWEs to review: CWE-269, CWE-287.",
+      "acceptanceCriteria": [
+        "docker-compose.dev.yml starts TimescaleDB (pinned timescale/timescaledb-ha image), Kafka in KRaft mode, Redis and smtp4dev with healthchecks",
+        "Credentials come from .env.example copied to an ignored .env; no secret is committed",
+        "scripts/dev-up.mjs and scripts/dev-down.mjs wrap compose cross-platform; README and wiki/04-Deployment-Guide.md local section updated",
+        "The read-only database role used by the postgres-dev MCP is created by the dev bootstrap",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-001"
+      ]
+    },
+    {
+      "id": "ARV-004",
+      "title": "[E0] Port the domain foundations from AMAN",
+      "description": "Port EntityBase, BaseAuditableEntity, BaseSoftDeletableEntity, IDomain, IHasDomainEvents, EventBase, PagedData, Search<TCriteria> and the Result and Fx.Specification usage (Fluentx) from ../Aman, renamed and trimmed. Epic: Foundation and security baseline. CWEs to review: CWE-501.",
+      "acceptanceCriteria": [
+        "Types live in Ariva.Core/Domain/Common and Ariva.Core/Services with no reference to Aman assemblies",
+        "Fluentx and Mapster added through Directory.Packages.props at AMAN versions",
+        "Unit tests cover id generation, audit fields, domain event collection and specification validation",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-001"
+      ]
+    },
+    {
+      "id": "ARV-005",
+      "title": "[E0] Port the NHibernate storage provider and unit of work",
+      "description": "Port IStorageProvider, IUnitOfWork, SvcDb, SvcBase, the NHibernate provider, convention mapper and mapping rules. NHibernate only. Epic: Foundation and security baseline. CWEs to review: CWE-89, CWE-269.",
+      "acceptanceCriteria": [
+        "SchemaUpdate runs only when Database:AllowSchemaUpdate is true; only appsettings vm-local sets it",
+        "ExecuteSqlAsync accepts parameters only (no overload taking an interpolated string)",
+        "Testcontainers.PostgreSql added with a version confirmed by the nuget MCP; an integration test round-trips a sample entity with audit fields and a domain event",
+        "The ported SvcBase keeps AMAN signatures where practical (ValidateRequestAsync, ExecutePagedQueryAsync)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-003",
+        "ARV-004"
+      ]
+    },
+    {
+      "id": "ARV-006",
+      "title": "[E0] Versioned SQL script runner and database roles",
+      "description": "Production schema and every TimescaleDB object come from Ariva.Infra/Timescale/Scripts/NNNN_*.sql. Epic: Foundation and security baseline. CWEs to review: CWE-89, CWE-269.",
+      "acceptanceCriteria": [
+        "The runner applies scripts in order, records name and SHA-256 checksum in schema_version, and fails startup when an applied script changed",
+        "0001_roles.sql creates a migration role (DDL) and a runtime role (DML only); runtime connection strings use the runtime role",
+        "The runner runs as a one-shot job (command-line flag), not in every pod",
+        "Integration tests prove ordering, idempotent re-run and tamper detection against a TimescaleDB container",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-005"
+      ]
+    },
+    {
+      "id": "ARV-007",
+      "title": "[E0] Logging and telemetry with secret redaction",
+      "description": "Serilog and OpenTelemetry wiring with AMAN parity, plus redaction. Epic: Foundation and security baseline. CWEs to review: CWE-287, CWE-384.",
+      "acceptanceCriteria": [
+        "Structured JSON console logging; Loki and OTLP exporters enabled by configuration",
+        "Authorization, Cookie, Set-Cookie, X-TOTP-Code headers and the access_token query parameter are redacted; Microsoft.AspNetCore.Hosting logs at Warning (Microsoft SignalR security guidance)",
+        "Unit tests prove redaction of each item; no log line in the E2E run contains a bearer token",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-001"
+      ]
+    },
+    {
+      "id": "ARV-008",
+      "title": "[E0] Caching and Data Protection key ring",
+      "description": "FusionCache with Redis backplane; Data Protection keys persisted in PostgreSQL and protected at rest. Epic: Foundation and security baseline. CWEs to review: CWE-287.",
+      "acceptanceCriteria": [
+        "FusionCache registered with tags and the Redis backplane (AMAN versions)",
+        "Data Protection uses a custom IXmlRepository on PostgreSQL (parameterised SQL) and ProtectKeysWithCertificate with a certificate from a Kubernetes secret; dev generates a local certificate",
+        "Integration tests prove two hosts share the key ring and that keys are not readable without the certificate",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-005"
+      ]
+    },
+    {
+      "id": "ARV-009",
+      "title": "[E0] Permission model and permission matrix",
+      "description": "Port AMAN permissions and make authorization data-driven and testable. Epic: Foundation and security baseline. CWEs to review: CWE-862, CWE-863.",
+      "acceptanceCriteria": [
+        "Global.Defaults.Permissions with View, Create, Edit, Search, Delete per entity; Permission attribute and policy provider (no role strings)",
+        "Role to permission seed for BorderShiftSupervisor, TerminalDutyManager, HandlerStationManager, SystemAdministrator",
+        "security/permission-matrix.json lists every endpoint with the expected status per role; a unit test checks the seed against it and the E2E helper reads it",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-004"
+      ]
+    },
+    {
+      "id": "ARV-010",
+      "title": "[E0] User authentication with TOTP, rotation and step-up MFA",
+      "description": "Replace the placeholder deny scheme with real authentication while keeping default deny. Epic: Foundation and security baseline. CWEs to review: CWE-287, CWE-306, CWE-384, CWE-269.",
+      "acceptanceCriteria": [
+        "Local users with PBKDF2-SHA256 (600,000 iterations) password hashes, constant-time comparison, lockout after 10 failures for 15 minutes, rate limit on login",
+        "TOTP enrolment mandatory for SystemAdministrator, BorderShiftSupervisor and TerminalDutyManager; TOTP verified with a per-user time-step replay guard",
+        "JWT access tokens (15 minutes, audience ariva-users, strict validation, 30 s skew); refresh tokens rotate on every use, are stored hashed, reuse revokes the family; refresh cookie HttpOnly, Secure, SameSite=Strict, path /auth",
+        "A new session id is minted at every login; logout revokes the family",
+        "[RequiresRecentMfa] attribute enforces a TOTP check within the last 15 minutes for critical functions",
+        "E2E: login, wrong password, replayed TOTP, lockout, refresh rotation, refresh reuse revokes family, sid changes on login, token in query rejected on API routes",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-007",
+        "ARV-008",
+        "ARV-009"
+      ]
+    },
+    {
+      "id": "ARV-011",
+      "title": "[E0] User, role and audit administration",
+      "description": "Administrators manage users and roles safely; every security-relevant action is audited. Epic: Foundation and security baseline. CWEs to review: CWE-269, CWE-863, CWE-306.",
+      "acceptanceCriteria": [
+        "User CRUD with role assignment through SvcRoleAssignment: no self-grant, cannot grant above own role, SystemAdministrator grants need step-up MFA and are audited",
+        "TOTP reset flow requires step-up MFA and forces re-enrolment",
+        "AuditEntry entity and search API (who, what, when, before and after summaries); audit rows cannot be edited or deleted through any API",
+        "E2E: privilege escalation attempts return 403; audit rows appear for every create, grant, reset",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 11,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-010"
+      ]
+    },
+    {
+      "id": "ARV-012",
+      "title": "[E0] Site scoping",
+      "description": "Every site-bound read and write is limited to the caller's sites. Epic: Foundation and security baseline. CWEs to review: CWE-863.",
+      "acceptanceCriteria": [
+        "ISiteScope service and [SiteScoped] filter; users and integration clients are bound to site codes",
+        "An architecture test fails when a controller action takes a site, airport or terminal id without the scope",
+        "E2E IDOR tests: requesting another site's ids returns 403 or 404 without data",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 12,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-009",
+        "ARV-011"
+      ]
+    },
+    {
+      "id": "ARV-013",
+      "title": "[E1] Site topology entities",
+      "description": "Airport, Terminal, Level, Checkpoint (CheckIn, Security, Emigration, Immigration), Desk (Counter, Desk, EGate, lane category) per docs/domain/glossary.md. Epic: Site topology and zone profiles. CWEs to review: CWE-501.",
+      "acceptanceCriteria": [
+        "Rich entities with invariants (unique codes per parent, valid lane categories, desk kind rules)",
+        "Unit tests for every invariant",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 13,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-004"
+      ]
+    },
+    {
+      "id": "ARV-014",
+      "title": "[E1] Topology persistence and AdminArea APIs",
+      "description": "CRUD for airport, terminal, level, checkpoint and desk following the AMAN controller pattern. Epic: Site topology and zone profiles. CWEs to review: CWE-862, CWE-863, CWE-89, CWE-501.",
+      "acceptanceCriteria": [
+        "Mappings, services (Result<T>, Fx.Specification, FusionCache tags), controllers with [Permission] and site scope, .http files",
+        "Search endpoints use sort and filter allowlists",
+        "E2E: CRUD per entity, permission matrix rows, cross-site 403, SQL injection and XSS payloads return 400 or are stored as inert text",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 14,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-005",
+        "ARV-012",
+        "ARV-013"
+      ]
+    },
+    {
+      "id": "ARV-015",
+      "title": "[E1] Desk ranges and external desk code mapping",
+      "description": "Bulk create desks (for example D01 to D22) and map external codes (AMAN desk codes, AODB counter codes) to Ariva desks. Epic: Site topology and zone profiles. CWEs to review: CWE-120, CWE-863.",
+      "acceptanceCriteria": [
+        "Range creation validated (max 200 per request, pattern checked)",
+        "DeskCodeMapping entity unique per source system and site; used later by the AMAN feed consumer",
+        "Unit and E2E tests",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 15,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-014"
+      ]
+    },
+    {
+      "id": "ARV-016",
+      "title": "[E1] Zone profile aggregate",
+      "description": "Versioned zone geometry: Draft, Published, Retired; zones of type SnakeQueue, ServiceArea, OverflowBand, CountLine; entry and exit lines. Epic: Site topology and zone profiles. CWEs to review: CWE-501.",
+      "acceptanceCriteria": [
+        "Invariants: at least 3 points, simple polygon (no self-intersection), entry and exit lines on the polygon edge, unique names, coordinates inside the level bounds",
+        "Published versions are immutable; publishing produces a geometry hash stable across runs",
+        "Table-driven unit tests for every invariant and the hash",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 16,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-013"
+      ]
+    },
+    {
+      "id": "ARV-017",
+      "title": "[E1] Zone profile API with publish workflow",
+      "description": "Create a draft from the active version, edit zones, validate, publish. Epic: Site topology and zone profiles. CWEs to review: CWE-306, CWE-862, CWE-863.",
+      "acceptanceCriteria": [
+        "Publish requires step-up MFA and raises ZoneProfilePublished through the outbox",
+        "History endpoint lists versions with who and when",
+        "E2E: full workflow, editing a published version fails, publish without recent MFA returns 403",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 17,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-014",
+        "ARV-016",
+        "ARV-010",
+        "ARV-020"
+      ]
+    },
+    {
+      "id": "ARV-018",
+      "title": "[E1] Floor plan assets",
+      "description": "Upload a floor plan per level with scale and origin. Epic: Site topology and zone profiles. CWEs to review: CWE-79, CWE-120, CWE-501.",
+      "acceptanceCriteria": [
+        "SVG uploads are sanitised (scripts, event attributes, foreignObject and external references removed) or rasterised; PNG and JPEG accepted; 20 MB limit; content type sniffed",
+        "Stored through a storage abstraction (local disk in dev, S3-compatible later) with generated file names only (no user-supplied paths)",
+        "E2E: SVG with script is neutralised, oversized upload 413, path traversal names rejected",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 18,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-014"
+      ]
+    },
+    {
+      "id": "ARV-019",
+      "title": "[E1] Seed the DMO demo topology",
+      "description": "The fictional Demo International Airport from the prototype (48 counters in islands A to D, security North and South, 22 plus 22 desks, 4 plus 6 e-gates) and its zone profile v12. Epic: Site topology and zone profiles. CWEs to review: CWE-269.",
+      "acceptanceCriteria": [
+        "Idempotent seed job usable in dev and demo, disabled in production",
+        "Integration test proves re-running the seed changes nothing",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 19,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-017"
+      ]
+    },
+    {
+      "id": "ARV-020",
+      "title": "[E2] Messaging over Kafka with outbox and dead letters",
+      "description": "ISvcMessageBus implemented on Confluent.Kafka (ADR-0018). Epic: Messaging, sensing and ingest. CWEs to review: CWE-77, CWE-120, CWE-501.",
+      "acceptanceCriteria": [
+        "KafkaTopics constants and startup provisioning; producer with acks all, idempotence, 1 MB limit",
+        "Outbox table and relay worker for domain events; consumer base with EnableAutoOffsetStore false and StoreOffset after persist, idempotency store, dead-letter topic",
+        "Testcontainers.Kafka integration tests: at-least-once with crash between write and offset store, duplicate suppression, DLQ routing",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 20,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-003",
+        "ARV-005"
+      ]
+    },
+    {
+      "id": "ARV-021",
+      "title": "[E2] Devices, calibrations and the canonical sensing model",
+      "description": "Canonical events (LineCrossing, ZoneOccupancy, TrackPosition, IntervalCount, DeviceStatus), Device and Calibration entities, registry API. Epic: Messaging, sensing and ingest. CWEs to review: CWE-287, CWE-501, CWE-863.",
+      "acceptanceCriteria": [
+        "Device credentials generated once and stored hashed; coverage footprint from mounting height (BOQ assumed table, labelled)",
+        "Lifecycle Commissioning to Online only after a passed calibration (default 95 percent counting accuracy)",
+        "Unit and E2E tests including permission matrix rows",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 21,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-014",
+        "ARV-020"
+      ]
+    },
+    {
+      "id": "ARV-022",
+      "title": "[E2] Device authentication scheme",
+      "description": "[DeviceAuthenticated] for sensor pushes and gateways. Epic: Messaging, sensing and ingest. CWEs to review: CWE-287, CWE-306, CWE-863.",
+      "acceptanceCriteria": [
+        "Device key header (hash compared in constant time) with optional client certificate; IP allowlist per device; rate limit per device",
+        "Audience and scheme separate from users and integration clients",
+        "E2E: missing key 401, wrong key 401, other device's zone 403, user token on device endpoint 401",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 22,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-010",
+        "ARV-021"
+      ]
+    },
+    {
+      "id": "ARV-023",
+      "title": "[E2] HTTPS push ingest with the Xovis dialect",
+      "description": "First transport and first coded dialect. Epic: Messaging, sensing and ingest. CWEs to review: CWE-501, CWE-120.",
+      "acceptanceCriteria": [
+        "Ingest endpoints for Xovis push and canonical push; 256 KB limit; schema validation; max events per message",
+        "Clock offset estimated per device (EWMA); events outside tolerance flagged",
+        "Events produced to ariva.sensing.events.v1 keyed by zone id",
+        "Conformance tests from recorded or vendor sample payloads plus malformed, oversized and skewed cases; vendor details verified and sources recorded",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 23,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-020",
+        "ARV-022"
+      ]
+    },
+    {
+      "id": "ARV-024",
+      "title": "[E2] Declarative mapper and MQTT transport",
+      "description": "Long-tail device support without code. Epic: Messaging, sensing and ingest. CWEs to review: CWE-94, CWE-501.",
+      "acceptanceCriteria": [
+        "Restricted JSONPath subset (no expressions, no scripts) with tests proving hostile paths are rejected",
+        "MQTT transport (TLS, per-device credentials, topic ACL) with MQTTnet at a version confirmed by the nuget MCP",
+        "A generic LiDAR perception dialect defined declaratively from a documented sample, with conformance tests",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 24,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-023"
+      ]
+    },
+    {
+      "id": "ARV-025",
+      "title": "[E2] Device heartbeat and degraded zones",
+      "description": "Offline detection and zone degradation. Epic: Messaging, sensing and ingest. CWEs to review: CWE-862.",
+      "acceptanceCriteria": [
+        "Heartbeat timeout marks a device Offline and its zones Degraded; recovery restores them; events published",
+        "Device health API and metrics",
+        "Unit and E2E tests",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 25,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-023"
+      ]
+    },
+    {
+      "id": "ARV-026",
+      "title": "[E2] Raw sensing event archive",
+      "description": "Archive canonical events for replay. Epic: Messaging, sensing and ingest. CWEs to review: CWE-89.",
+      "acceptanceCriteria": [
+        "0002 script creates the sensing_events hypertable with retention and compression policies (values marked to confirm)",
+        "Binary COPY writer with batching; replay reader by time range and zone",
+        "Integration tests for write, read and retention",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 26,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-006",
+        "ARV-023"
+      ]
+    },
+    {
+      "id": "ARV-027",
+      "title": "[E3] Port the reference scenario engine",
+      "description": "Port docs/design/prototype/app/assets/sim.js (seeded day model) to C# in Ariva.Simulation.Api. Epic: Simulation. CWEs to review: CWE-306.",
+      "acceptanceCriteria": [
+        "Same seed gives identical outputs; default seed 9303",
+        "Unit test reproduces the scripted events: arrivals Visitors nowcast passes 15 minutes at 18:05; S-17 offline 18:20 to 18:30; Handler B breach from 19:10 for three bins",
+        "The simulator refuses to start in k8s-prd (already enforced) and its control endpoints require authorization",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 27,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-004"
+      ]
+    },
+    {
+      "id": "ARV-028",
+      "title": "[E3] Sensor emulator",
+      "description": "Emit the scenario as device traffic. Epic: Simulation. CWEs to review: CWE-287.",
+      "acceptanceCriteria": [
+        "Per-passenger crossings and zone occupancy in the Xovis and generic dialects over HTTPS to Ingest, authenticated as registered devices",
+        "Controls: start, pause, speed, jump, seed; all authorised",
+        "E2E: a 10-minute accelerated run produces the expected event counts in Kafka",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 28,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-027",
+        "ARV-023"
+      ]
+    },
+    {
+      "id": "ARV-029",
+      "title": "[E3] AODB, AMAN and immigration emulators",
+      "description": "Integration partners for tests and demos. Epic: Simulation. CWEs to review: CWE-287.",
+      "acceptanceCriteria": [
+        "AIDX push and ACRIS pull endpoints for the scenario schedule",
+        "AMAN feed on Kafka and REST, with its own TOTP client exercising Ariva's Integration API, and a mock AMAN auth endpoint for Ariva's outbound TotpClientCredentials handler",
+        "A mock immigration system that uses the generic REST endpoints",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 29,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-027",
+        "ARV-020"
+      ]
+    },
+    {
+      "id": "ARV-030",
+      "title": "[E4] Pure queue state engine",
+      "description": "Ariva.Core engine: entries and exits from crossings, occupancy, FIFO wait per track (T3) and cumulative-curve wait (T1), censoring, watermark for late and out-of-order events. Epic: Queue state engine and stream. CWEs to review: CWE-120.",
+      "acceptanceCriteria": [
+        "No I/O, time passed in; bounded state per zone",
+        "Table-driven tests from docs/domain/formulas.md including missing exits, late events and clock skew",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 30,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-016",
+        "ARV-021"
+      ]
+    },
+    {
+      "id": "ARV-031",
+      "title": "[E4] Realised wait attribution and bins",
+      "description": "Attribution to the entry interval, provisional to final, minute aggregates and arrival-weighted P90 per 15-minute bin. Epic: Queue state engine and stream. CWEs to review: none specific beyond the baseline.",
+      "acceptanceCriteria": [
+        "Rules exactly as formulas.md; finals change only through a recorded recomputation",
+        "Tests reproduce the documented numeric cases",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 31,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-030"
+      ]
+    },
+    {
+      "id": "ARV-032",
+      "title": "[E4] Nowcast and throughput",
+      "description": "Nowcast (Q + 1) / throughput with the documented estimator. Epic: Queue state engine and stream. CWEs to review: none specific beyond the baseline.",
+      "acceptanceCriteria": [
+        "Zero throughput returns no service with a reason; degraded zones return bands",
+        "Tests from formulas.md",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 32,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-030"
+      ]
+    },
+    {
+      "id": "ARV-033",
+      "title": "[E4] Desk state engine",
+      "description": "Desk state from integration, sensor and approach signals with precedence and staleness. Epic: Queue state engine and stream. CWEs to review: none specific beyond the baseline.",
+      "acceptanceCriteria": [
+        "States Closed, Idle, Serving, Paused, Unknown; per-desk minute aggregates only (no identities)",
+        "Tests for precedence and staleness",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 33,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-030"
+      ]
+    },
+    {
+      "id": "ARV-034",
+      "title": "[E4] Stream host",
+      "description": "Ariva.Api.Stream workers run the engines on Kafka input and persist outputs. Epic: Queue state engine and stream. CWEs to review: CWE-120, CWE-501.",
+      "acceptanceCriteria": [
+        "Consumer group, per-zone state snapshot and restore on rebalance, StoreOffset after COPY commit",
+        "0003 script creates queue_minute, desk_minute, egate_minute and the 15-minute continuous aggregate",
+        "Integration tests: restart mid-stream yields identical minute rows (idempotent upserts)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 34,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-031",
+        "ARV-032",
+        "ARV-033",
+        "ARV-026",
+        "ARV-020"
+      ]
+    },
+    {
+      "id": "ARV-035",
+      "title": "[E4] Live snapshots and the SignalR hub",
+      "description": "Push live state to the web. Epic: Queue state engine and stream. CWEs to review: CWE-862, CWE-863, CWE-384.",
+      "acceptanceCriteria": [
+        "Snapshots per zone in Redis; LiveHub in Ariva.Api.Main with [Authorize], group joins authorised per permission and site, MessagePack, Redis backplane",
+        "access_token query accepted only on /hubs and redacted from logs",
+        "E2E: unauthorised join rejected, cross-site join rejected, authorised client receives updates",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 35,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-034",
+        "ARV-010",
+        "ARV-012"
+      ]
+    },
+    {
+      "id": "ARV-036",
+      "title": "[E4] Golden replay",
+      "description": "Deterministic replay for evidence and regression. Epic: Queue state engine and stream. CWEs to review: none specific beyond the baseline.",
+      "acceptanceCriteria": [
+        "Replay command over archived events for a range and profile version produces a stable output hash",
+        "CI test: seed 9303 reproduces 18:05, 18:20 to 18:30 and 19:10 exactly",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 36,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-034",
+        "ARV-028"
+      ]
+    },
+    {
+      "id": "ARV-037",
+      "title": "[E5] Alert rules",
+      "description": "Typed rules (metric, comparator, threshold, sustain, severity, owner role, escalation, channels); no expression strings. Epic: Alerting. CWEs to review: CWE-94, CWE-862, CWE-863.",
+      "acceptanceCriteria": [
+        "Seeded rules R-001 to R-005 reproduce the prototype behaviour",
+        "CRUD with permissions and site scope",
+        "Unit and E2E tests including hostile strings in names",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 37,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-014",
+        "ARV-009"
+      ]
+    },
+    {
+      "id": "ARV-038",
+      "title": "[E5] Rule evaluation and backtest",
+      "description": "Evaluate rules every minute; backtest against stored minutes. Epic: Alerting. CWEs to review: none specific beyond the baseline.",
+      "acceptanceCriteria": [
+        "Sustain windows, dedupe, auto-resolve",
+        "Backtest returns first fire time and count; a test proves backtest equals live firing for seed 9303 (R-001 at 18:05)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 38,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-037",
+        "ARV-034"
+      ]
+    },
+    {
+      "id": "ARV-039",
+      "title": "[E5] Alert lifecycle",
+      "description": "Acknowledge, escalate, resolve; live push; audit. Epic: Alerting. CWEs to review: CWE-862, CWE-863.",
+      "acceptanceCriteria": [
+        "Escalation after N minutes to the configured role",
+        "E2E for each transition and its authorization",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 39,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-038",
+        "ARV-035"
+      ]
+    },
+    {
+      "id": "ARV-040",
+      "title": "[E5] Email notifications",
+      "description": "MailKit channel with templates. Epic: Alerting. CWEs to review: CWE-501.",
+      "acceptanceCriteria": [
+        "Templates from Ariva.Resources; recipients validated; header injection impossible (CRLF stripped); rate limited",
+        "smtp4dev used in dev and E2E",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-039"
+      ]
+    },
+    {
+      "id": "ARV-041",
+      "title": "[E6] Flights and allocations model",
+      "description": "FlightLeg, FlightEvent, CounterAllocation and feed freshness. Epic: Flights and AODB integration. CWEs to review: CWE-501.",
+      "acceptanceCriteria": [
+        "Stale feed detection raises an alert condition",
+        "Unit tests",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 41,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-014"
+      ]
+    },
+    {
+      "id": "ARV-042",
+      "title": "[E6] Integration clients and TOTP authentication",
+      "description": "docs/architecture/integration.md inbound authentication, AMAN-compatible and hardened. Epic: Flights and AODB integration. CWEs to review: CWE-287, CWE-306, CWE-863, CWE-269.",
+      "acceptanceCriteria": [
+        "IntegrationClient with hashed secret, encrypted TOTP seed, scopes, site codes, CIDRs; created with step-up MFA; secret and provisioning URI shown once",
+        "POST /api/v1/auth with replay guard, generic invalid_client, rate limits and lockout; integration signing key and audience separate",
+        "[IntegrationScope] with site binding; per-request X-TOTP-Code policy; audit of every call",
+        "E2E: success, wrong secret, wrong code, replayed code, lockout, wrong scope, other site, integration token on a user endpoint",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 42,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-010",
+        "ARV-008",
+        "ARV-012"
+      ]
+    },
+    {
+      "id": "ARV-043",
+      "title": "[E6] Integration API: flights and allocations",
+      "description": "Generic endpoints for any AODB. Epic: Flights and AODB integration. CWEs to review: CWE-501, CWE-120, CWE-89.",
+      "acceptanceCriteria": [
+        "Batch endpoints with Idempotency-Key, unknown-field rejection, 500 items and 1 MB limits, per-item results",
+        "E2E including duplicates, oversized, malformed, injection payloads",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 43,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-042",
+        "ARV-041"
+      ]
+    },
+    {
+      "id": "ARV-044",
+      "title": "[E6] AIDX 22.1 inbound",
+      "description": "Hardened XML adapter. Epic: Flights and AODB integration. CWEs to review: CWE-501, CWE-120.",
+      "acceptanceCriteria": [
+        "DtdProcessing.Prohibit, XmlResolver null, schema validation, 5 MB limit",
+        "Maps to FlightLeg and FlightEvent; E2E with the emulator and an XXE payload that must be rejected",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 44,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-043",
+        "ARV-029"
+      ]
+    },
+    {
+      "id": "ARV-045",
+      "title": "[E6] Outbound endpoints and the ACRIS connector",
+      "description": "Registry and auth handlers with SSRF controls. Epic: Flights and AODB integration. CWEs to review: CWE-918, CWE-306.",
+      "acceptanceCriteria": [
+        "OutboundEndpoint registry (step-up MFA), handlers TotpClientCredentials, OAuth2ClientCredentials, ApiKeyHeader, HmacSignature, MutualTls",
+        "Named clients, resolved-IP CIDR check, no redirects, resilience policies",
+        "ACRIS pull against the emulator; tests for metadata IP, loopback, DNS rebinding and redirect refusal",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 45,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-042",
+        "ARV-029"
+      ]
+    },
+    {
+      "id": "ARV-046",
+      "title": "[E6] SSIM import",
+      "description": "Schedule fallback. Epic: Flights and AODB integration. CWEs to review: CWE-120, CWE-501.",
+      "acceptanceCriteria": [
+        "Streaming parse with line and size limits; preview before commit; E2E with malformed and oversized files",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 46,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-041"
+      ]
+    },
+    {
+      "id": "ARV-047",
+      "title": "[E6] Arrival-wave projection",
+      "description": "Flights landing in the next 30 minutes with lane split and predicted hall arrival curve (8 to 15 minutes after on-block over about 12 minutes). Epic: Flights and AODB integration. CWEs to review: CWE-863.",
+      "acceptanceCriteria": [
+        "Uses AMAN lane demand when present, the default mix otherwise; API with permissions",
+        "Tests from formulas.md",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 47,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-041",
+        "ARV-048"
+      ]
+    },
+    {
+      "id": "ARV-048",
+      "title": "[E7] AMAN feed and immigration endpoints",
+      "description": "Consume the four V1 contracts from Kafka and REST. Epic: AMAN and immigration integration. CWEs to review: CWE-501, CWE-863.",
+      "acceptanceCriteria": [
+        "Validation: 60-second intervals, consistent sums, small-cell suppression respected, unknown fields rejected",
+        "Desk code mapping applied; idempotent by SourceEventId",
+        "E2E with the emulator over both transports",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 48,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-042",
+        "ARV-020",
+        "ARV-015",
+        "ARV-029"
+      ]
+    },
+    {
+      "id": "ARV-049",
+      "title": "[E7] Desk sessions and e-gate coupling",
+      "description": "Feed AMAN signals into the engines. Epic: AMAN and immigration integration. CWEs to review: none specific beyond the baseline.",
+      "acceptanceCriteria": [
+        "Desk sessions at their precedence rank; e-gate rejects added to manual lane demand",
+        "Unit and integration tests",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 49,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-048",
+        "ARV-033"
+      ]
+    },
+    {
+      "id": "ARV-050",
+      "title": "[E7] Outbound AMAN connector",
+      "description": "Pull from AMAN's Integration API when Kafka is not shared, using TotpClientCredentials. Epic: AMAN and immigration integration. CWEs to review: CWE-287, CWE-918.",
+      "acceptanceCriteria": [
+        "Tested against the mock AMAN; token cached and refreshed; X-TOTP-Code per request",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 50,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-045",
+        "ARV-048"
+      ]
+    },
+    {
+      "id": "ARV-051",
+      "title": "[E8] Web shell, login and design tokens",
+      "description": "SvelteKit shell per the prototype with shadcn-svelte. Epic: Web application. CWEs to review: CWE-384, CWE-79, CWE-287.",
+      "acceptanceCriteria": [
+        "Login with TOTP; access token in memory; refresh through the cookie; logout",
+        "Sidebar and top bar per prototype; English and Arabic with RTL; dark default with light theme",
+        "Playwright: login, RTL, no console errors, no CSP violations, XSS probes on the login form",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 51,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-010"
+      ]
+    },
+    {
+      "id": "ARV-052",
+      "title": "[E8] Topology admin screens",
+      "description": "Airport to desk administration. Epic: Web application. CWEs to review: CWE-79, CWE-863.",
+      "acceptanceCriteria": [
+        "Per-role visibility",
+        "Playwright per screen and role, XSS probes on names",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 52,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-051",
+        "ARV-014"
+      ]
+    },
+    {
+      "id": "ARV-053",
+      "title": "[E8] Zones screen and editor",
+      "description": "Floor plan, profiles, draft editor, publish. Epic: Web application. CWEs to review: CWE-79, CWE-306.",
+      "acceptanceCriteria": [
+        "Drag vertices and lines with a keyboard vertex table alternative; validation messages; publish with step-up MFA",
+        "Playwright for editing, publishing and role hiding",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 53,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-051",
+        "ARV-017",
+        "ARV-018"
+      ]
+    },
+    {
+      "id": "ARV-054",
+      "title": "[E8] Devices screen",
+      "description": "Registry, coverage on plan, register sensor, record calibration, health. Epic: Web application. CWEs to review: CWE-79, CWE-287.",
+      "acceptanceCriteria": [
+        "Device secret shown once with copy; never re-displayed",
+        "Playwright per role",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 54,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-051",
+        "ARV-021",
+        "ARV-025"
+      ]
+    },
+    {
+      "id": "ARV-055",
+      "title": "[E8] Live operations screen",
+      "description": "KPI tiles, floor plan by nowcast, desk states, wait chart, alerts, arrival-wave strip. Epic: Web application. CWEs to review: CWE-79, CWE-863.",
+      "acceptanceCriteria": [
+        "Live updates through SignalR; stale indicator",
+        "Playwright with the simulator: the 18:05 alert appears and can be acknowledged",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 55,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-051",
+        "ARV-035",
+        "ARV-039",
+        "ARV-047"
+      ]
+    },
+    {
+      "id": "ARV-056",
+      "title": "[E8] Alert rules screen",
+      "description": "Rules list, create with backtest preview. Epic: Web application. CWEs to review: CWE-79, CWE-94.",
+      "acceptanceCriteria": [
+        "Playwright: create a rule, preview first fire time, rule fires live at the same time",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 56,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-051",
+        "ARV-038"
+      ]
+    },
+    {
+      "id": "ARV-057",
+      "title": "[E8] Immigration screen",
+      "description": "Border module view. Epic: Web application. CWEs to review: CWE-863, CWE-79.",
+      "acceptanceCriteria": [
+        "Lane waits, desk grid aggregates for border roles only, e-gate utilisation and rejects",
+        "Playwright: Terminal duty manager sees aggregates only; no identifiers anywhere",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 57,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-051",
+        "ARV-049"
+      ]
+    },
+    {
+      "id": "ARV-058",
+      "title": "[E8] Passenger display",
+      "description": "Display configuration and the kiosk route. Epic: Web application. CWEs to review: CWE-79, CWE-306.",
+      "acceptanceCriteria": [
+        "Bilingual bands with hysteresis and stale fallback; display players authenticate with device credentials",
+        "Playwright at 1920x1080 including stale data",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 58,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-051",
+        "ARV-035"
+      ]
+    },
+    {
+      "id": "ARV-059",
+      "title": "[E8] Users and access screen",
+      "description": "Users, roles, TOTP reset, audit log. Epic: Web application. CWEs to review: CWE-269, CWE-79.",
+      "acceptanceCriteria": [
+        "Playwright: escalation attempts blocked in the UI and by the API",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 59,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-051",
+        "ARV-011"
+      ]
+    },
+    {
+      "id": "ARV-060",
+      "title": "[E9] Daily report and scheduled delivery",
+      "description": "Peaks per lane, P50 and P90 per hour, alerts, device uptime; CSV export; scheduled email. Epic: Reports. CWEs to review: CWE-79, CWE-306.",
+      "acceptanceCriteria": [
+        "CSV neutralises formula prefixes (=, +, -, @)",
+        "TickerQ in Ariva.Api.Cronz with its dashboard behind authorization",
+        "Integration and E2E tests",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 60,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-034",
+        "ARV-040"
+      ]
+    },
+    {
+      "id": "ARV-061",
+      "title": "[E9] Reports screen",
+      "description": "Report preview and export. Epic: Reports. CWEs to review: CWE-79.",
+      "acceptanceCriteria": [
+        "Playwright per role",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 61,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-060",
+        "ARV-051"
+      ]
+    },
+    {
+      "id": "ARV-062",
+      "title": "[E10] Complete Helm deployment",
+      "description": "All hosts, TimescaleDB, topic and migration jobs, environments. Epic: Deployment and demo. CWEs to review: CWE-269.",
+      "acceptanceCriteria": [
+        "Chart tests pass; helmfile environments; pipelines updated; wiki deployment guide matches",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 62,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-002",
+        "ARV-006",
+        "ARV-020"
+      ]
+    },
+    {
+      "id": "ARV-063",
+      "title": "[E10] Dynamic security scanning pipeline",
+      "description": "OWASP ZAP baseline and OpenAPI scans against the dev deployment. Epic: Deployment and demo. CWEs to review: all.",
+      "acceptanceCriteria": [
+        "Security-zap.yaml fails on high findings and publishes the report",
+        "Findings triaged in backlog/progress.md",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 63,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-062"
+      ]
+    },
+    {
+      "id": "ARV-064",
+      "title": "[E10] Scripted demo and runbook",
+      "description": "A repeatable demo on the dev cluster. Epic: Deployment and demo. CWEs to review: none specific beyond the baseline.",
+      "acceptanceCriteria": [
+        "Simulator starts at 17:40 seed 9303; the three events show on the live screens",
+        "A Playwright demo test walks the three events",
+        "wiki runbook page updated",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 64,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-055",
+        "ARV-057",
+        "ARV-058",
+        "ARV-036",
+        "ARV-062"
+      ]
+    },
+    {
+      "id": "ARV-065",
+      "title": "[E10] Phase 0 exit review",
+      "description": "Gate before the pilot. Epic: Deployment and demo. CWEs to review: all.",
+      "acceptanceCriteria": [
+        "All gates green; full-repository security review PASS; coverage report attached",
+        "List of open \"to confirm\" items for the pilot contract",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 65,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-064",
+        "ARV-063"
+      ]
+    }
+  ]
+}

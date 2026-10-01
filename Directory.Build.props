@@ -1,0 +1,28 @@
+<Project>
+    <PropertyGroup>
+        <!-- Fix file locking issues -->
+        <UseAppHost>true</UseAppHost>
+
+        <!-- Common settings for all projects -->
+        <TargetFramework>net10.0</TargetFramework>
+		 <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
+		  <BuildInParallel>false</BuildInParallel>
+		   <UseSharedCompilation>false</UseSharedCompilation>
+		    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>disable</Nullable>
+        <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+        <LangVersion>14</LangVersion>
+          <UseRazorBuildServer>false</UseRazorBuildServer>
+        <!-- Improve build performance -->
+        <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    </PropertyGroup>
+    <PropertyGroup Label="Security analysis">
+        <!-- Roslyn security analyzers ship with the SDK; severities for the CWE rules are set in .editorconfig -->
+        <EnableNETAnalyzers>true</EnableNETAnalyzers>
+        <AnalysisLevel>latest</AnalysisLevel>
+        <AnalysisModeSecurity>All</AnalysisModeSecurity>
+        <!-- CWE-120: no unsafe code anywhere; scripts/security/scan.mjs also fails the build gate on the unsafe keyword -->
+        <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    </PropertyGroup>
+</Project>

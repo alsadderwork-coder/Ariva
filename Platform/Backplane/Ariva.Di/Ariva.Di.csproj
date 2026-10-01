@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <ItemGroup>
+        <Compile Include="..\..\..\GlobalSuppressions.cs" Link="GlobalSuppressions.cs" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Ariva.Core\Ariva.Core.csproj" />
+        <ProjectReference Include="..\Ariva.Infra\Ariva.Infra.csproj" />
+    </ItemGroup>
+
+</Project>

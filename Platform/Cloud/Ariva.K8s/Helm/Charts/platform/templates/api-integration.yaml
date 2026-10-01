@@ -1,0 +1,139 @@
+---
+#ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-integration-configmap
+  labels:
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+data:
+  DOTNET_ENVIRONMENT: {{ .Values.environment | quote }}
+  RELEASE_VERSION: {{ .Values.releaseVersion | quote }}
+---
+#Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-integration-deployment
+  labels:
+    app: api-integration
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.apiIntegrationReplicas | default .Values.replicas }}
+  selector:
+    matchLabels:
+      app: api-integration
+  template:
+    metadata:
+      annotations:
+        rollme: {{ randAlphaNum 5 | quote }}
+      labels:
+        app: api-integration
+    spec:
+      imagePullSecrets:
+        - name: dalilacr-secret
+      volumes:
+        - name: api-integration-appsettings-base-volume
+          secret:
+            secretName: base-appsettings-secret
+        - name: api-integration-appsettings-volume
+          secret:
+            secretName: api-integration-appsettings-secret
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api-integration-container
+          image: "{{ .Values.imageRepository }}/api-integration:{{ .Values.buildNumber }}"
+          imagePullPolicy: {{ .Values.imagePullPolicy | default "Always" }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: api-integration-appsettings-base-volume
+              mountPath: /app/appsettings.base.{{ .Values.environment }}.json
+              subPath: appsettings.base.{{ .Values.environment }}.json
+            - name: api-integration-appsettings-volume
+              mountPath: /app/appsettings.service.{{ .Values.environment }}.json
+              subPath: appsettings.service.{{ .Values.environment }}.json
+          env:
+            {{- include "ariva-platform.otelEnv" . | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: api-integration-configmap
+          startupProbe:
+            httpGet: { path: /health/startup, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 8
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet: { path: /health/readiness, port: 8080 }
+            initialDelaySeconds: 2
+            periodSeconds: 15
+            failureThreshold: 4
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: {{ .Values.apiIntegrationCpuRequest | default "100m" }}
+              memory: {{ .Values.apiIntegrationMemRequest | default "512Mi" }}
+            limits:
+              cpu: {{ .Values.apiIntegrationCpuLimit | default "500m" }}
+              memory: {{ .Values.apiIntegrationMemLimit | default "750Mi" }}
+          livenessProbe:
+            httpGet: { path: /health/liveness, port: 8080 }
+            initialDelaySeconds: 2
+            periodSeconds: 15
+            failureThreshold: 8
+            timeoutSeconds: 5
+---
+#HorizontalPodAutoscaler
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api-integration-hpa
+  labels:
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api-integration-deployment
+  minReplicas: {{ .Values.apiIntegrationHpaMin | default 1 }}
+  maxReplicas: {{ .Values.apiIntegrationHpaMax | default 1 }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+#Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-integration-service
+  labels:
+    app: api-integration
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: api-integration
+  type: ClusterIP
+  ports:
+    - name: api-integration-service-port
+      port: 80
+      targetPort: 8080

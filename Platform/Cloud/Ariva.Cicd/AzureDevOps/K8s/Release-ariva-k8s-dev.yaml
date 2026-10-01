@@ -1,0 +1,122 @@
+# Release Ariva to the k8s-dev namespace with helmfile.
+# Variable group "ariva" must hold (as secrets):
+#   JUPITER-KUBECONFIG-B64                 base64 kubeconfig for the cluster
+#   ACR-USERNAME, ACR-PASSWORD             registry credentials rendered into dalilacr-secret
+#   ARIVA-K8S-DEV-BASE-APPSETTINGS         appsettings.base.k8s-dev.json content
+#   ARIVA-K8S-DEV-<SERVICE>-APPSETTINGS    appsettings.service.k8s-dev.json content per service
+name: $(Build.SourceBranchName)-$(NAMESPACE)-$(Date:yyyyMMdd)$(Rev:rr)
+
+trigger: none
+
+variables:
+  - group: ariva
+  - name: ENVIRONMENT
+    value: "k8s-dev"
+  - name: NAMESPACE
+    value: "ariva-k8s-dev"
+  - name: K8SCLUSTERCONTEXT
+    value: "jupiter"
+
+pool:
+  name: Default
+  demands:
+    - Agent.OS -equals Linux
+
+steps:
+  - checkout: self
+    clean: true
+    persistCredentials: true
+
+  - script: |
+      if command -v kubectl >/dev/null 2>&1; then
+        echo "kubectl is already installed. Skipping."
+        kubectl version --client
+      else
+        echo "Installing kubectl..."
+        curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+        chmod +x kubectl
+        sudo mv kubectl /usr/local/bin/kubectl
+        kubectl version --client
+      fi
+    displayName: "Install kubectl (if needed)"
+
+  - script: |
+      HELM_VERSION="3.19.0"
+      if command -v helm >/dev/null 2>&1 && helm version --short | grep -q "v${HELM_VERSION}"; then
+        echo "Helm v${HELM_VERSION} is already installed. Skipping."
+      else
+        echo "Installing Helm v${HELM_VERSION}..."
+        curl -LO "https://get.helm.sh/helm-v${HELM_VERSION}-linux-amd64.tar.gz"
+        tar -xzf helm-v${HELM_VERSION}-linux-amd64.tar.gz
+        chmod +x linux-amd64/helm
+        sudo mv linux-amd64/helm /usr/local/bin/helm
+        rm -rf linux-amd64 helm-v${HELM_VERSION}-linux-amd64.tar.gz
+      fi
+      helm version --short
+    displayName: "Install Helm 3.19.0 (if needed)"
+
+  - script: |
+      HELMFILE_VERSION="1.1.7"
+      if command -v helmfile >/dev/null 2>&1 && helmfile --version | grep -q "v${HELMFILE_VERSION}"; then
+        echo "Helmfile v${HELMFILE_VERSION} is already installed. Skipping."
+      else
+        echo "Installing Helmfile v${HELMFILE_VERSION}..."
+        curl -L "https://github.com/helmfile/helmfile/releases/download/v${HELMFILE_VERSION}/helmfile_${HELMFILE_VERSION}_linux_amd64.tar.gz" -o helmfile.tar.gz
+        tar -xzf helmfile.tar.gz
+        chmod +x helmfile
+        sudo mv helmfile /usr/local/bin/helmfile
+        rm -f helmfile.tar.gz
+      fi
+      helmfile --version
+      helm plugin list | grep -q '^diff' || helm plugin install https://github.com/databus23/helm-diff --version v3.13.0
+    displayName: "Install Helmfile v1.1.7 and Helm Diff (if needed)"
+
+  - script: |
+      mkdir -p $(Build.SourcesDirectory)/_cicd
+      mkdir -p $(Build.SourcesDirectory)/_cicd/api-main
+      mkdir -p $(Build.SourcesDirectory)/_cicd/api-ingest
+      mkdir -p $(Build.SourcesDirectory)/_cicd/api-stream
+      mkdir -p $(Build.SourcesDirectory)/_cicd/api-cronz
+      mkdir -p $(Build.SourcesDirectory)/_cicd/api-integration
+      mkdir -p $(Build.SourcesDirectory)/_cicd/simulation
+      echo "$(JUPITER-KUBECONFIG-B64)" | base64 --decode > $(Build.SourcesDirectory)/_cicd/jupiter-kube-config.yaml
+    displayName: "Isolated KubeConfig Setup"
+
+  - script: |
+      echo '$(ARIVA-K8S-DEV-BASE-APPSETTINGS)' > $(Build.SourcesDirectory)/_cicd/appsettings.base.$(ENVIRONMENT).json
+      echo '$(ARIVA-K8S-DEV-API-MAIN-APPSETTINGS)' > $(Build.SourcesDirectory)/_cicd/api-main/appsettings.service.$(ENVIRONMENT).json
+      echo '$(ARIVA-K8S-DEV-API-INGEST-APPSETTINGS)' > $(Build.SourcesDirectory)/_cicd/api-ingest/appsettings.service.$(ENVIRONMENT).json
+      echo '$(ARIVA-K8S-DEV-API-STREAM-APPSETTINGS)' > $(Build.SourcesDirectory)/_cicd/api-stream/appsettings.service.$(ENVIRONMENT).json
+      echo '$(ARIVA-K8S-DEV-API-CRONZ-APPSETTINGS)' > $(Build.SourcesDirectory)/_cicd/api-cronz/appsettings.service.$(ENVIRONMENT).json
+      echo '$(ARIVA-K8S-DEV-API-INTEGRATION-APPSETTINGS)' > $(Build.SourcesDirectory)/_cicd/api-integration/appsettings.service.$(ENVIRONMENT).json
+      echo '$(ARIVA-K8S-DEV-SIMULATION-APPSETTINGS)' > $(Build.SourcesDirectory)/_cicd/simulation/appsettings.service.$(ENVIRONMENT).json
+    displayName: "Write appsettings to files"
+
+  - script: |
+      set -e
+      export KUBECONFIG="$(Build.SourcesDirectory)/_cicd/jupiter-kube-config.yaml"
+
+      kubectl create namespace $(NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+
+      kubectl create secret generic base-appsettings-secret \
+        --from-file=appsettings.base.$(ENVIRONMENT).json=$(Build.SourcesDirectory)/_cicd/appsettings.base.$(ENVIRONMENT).json \
+        --namespace=$(NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+
+      for svc in api-main api-ingest api-stream api-cronz api-integration simulation; do
+        kubectl create secret generic ${svc}-appsettings-secret \
+          --from-file=appsettings.service.$(ENVIRONMENT).json=$(Build.SourcesDirectory)/_cicd/${svc}/appsettings.service.$(ENVIRONMENT).json \
+          --namespace=$(NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+      done
+    displayName: "Create Kubernetes secrets"
+
+  - script: |
+      set -e
+      export KUBECONFIG="$(Build.SourcesDirectory)/_cicd/jupiter-kube-config.yaml"
+      helmfile apply \
+        -f Platform/Cloud/Ariva.K8s/Helm/helmfile-k8s.yaml \
+        --namespace $(NAMESPACE) \
+        --kube-context $(K8SCLUSTERCONTEXT) \
+        --set releaseVersion=$(Build.BuildNumber) \
+        --set imageCredentials.username=$(ACR-USERNAME) \
+        --set imageCredentials.password=$(ACR-PASSWORD)
+    displayName: "Version and Release"

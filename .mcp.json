@@ -1,0 +1,43 @@
+{
+  "mcpServers": {
+    "microsoft-learn": {
+      "type": "http",
+      "url": "https://learn.microsoft.com/api/mcp"
+    },
+    "context7": {
+      "type": "http",
+      "url": "https://mcp.context7.com/mcp"
+    },
+    "svelte": {
+      "type": "http",
+      "url": "https://mcp.svelte.dev/mcp"
+    },
+    "shadcn-svelte": {
+      "type": "http",
+      "url": "https://shadcn-svelte-mcp.svelte-apps.workers.dev/api/mcp/shadcn/mcp"
+    },
+    "playwright": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest"]
+    },
+    "nuget": {
+      "command": "dnx",
+      "args": ["NuGet.Mcp.Server", "--source", "https://api.nuget.org/v3/index.json", "--yes"]
+    },
+    "azure-devops": {
+      "command": "npx",
+      "args": ["-y", "@azure-devops/mcp", "DalilCloud", "-d", "core", "work", "work-items", "repositories", "wiki", "pipelines"]
+    },
+    "semgrep": {
+      "command": "uvx",
+      "args": ["semgrep-mcp"]
+    },
+    "postgres-dev": {
+      "command": "uvx",
+      "args": ["postgres-mcp", "--access-mode=restricted"],
+      "env": {
+        "DATABASE_URI": "${ARIVA_DEV_DATABASE_URI:-postgresql://ariva_readonly@localhost:5432/ariva}"
+      }
+    }
+  }
+}

@@ -1,0 +1,139 @@
+---
+#ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-cronz-configmap
+  labels:
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+data:
+  DOTNET_ENVIRONMENT: {{ .Values.environment | quote }}
+  RELEASE_VERSION: {{ .Values.releaseVersion | quote }}
+---
+#Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-cronz-deployment
+  labels:
+    app: api-cronz
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.apiCronzReplicas | default .Values.replicas }}
+  selector:
+    matchLabels:
+      app: api-cronz
+  template:
+    metadata:
+      annotations:
+        rollme: {{ randAlphaNum 5 | quote }}
+      labels:
+        app: api-cronz
+    spec:
+      imagePullSecrets:
+        - name: dalilacr-secret
+      volumes:
+        - name: api-cronz-appsettings-base-volume
+          secret:
+            secretName: base-appsettings-secret
+        - name: api-cronz-appsettings-volume
+          secret:
+            secretName: api-cronz-appsettings-secret
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api-cronz-container
+          image: "{{ .Values.imageRepository }}/api-cronz:{{ .Values.buildNumber }}"
+          imagePullPolicy: {{ .Values.imagePullPolicy | default "Always" }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: api-cronz-appsettings-base-volume
+              mountPath: /app/appsettings.base.{{ .Values.environment }}.json
+              subPath: appsettings.base.{{ .Values.environment }}.json
+            - name: api-cronz-appsettings-volume
+              mountPath: /app/appsettings.service.{{ .Values.environment }}.json
+              subPath: appsettings.service.{{ .Values.environment }}.json
+          env:
+            {{- include "ariva-platform.otelEnv" . | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: api-cronz-configmap
+          startupProbe:
+            httpGet: { path: /health/startup, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 8
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet: { path: /health/readiness, port: 8080 }
+            initialDelaySeconds: 2
+            periodSeconds: 15
+            failureThreshold: 4
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: {{ .Values.apiCronzCpuRequest | default "100m" }}
+              memory: {{ .Values.apiCronzMemRequest | default "512Mi" }}
+            limits:
+              cpu: {{ .Values.apiCronzCpuLimit | default "1000m" }}
+              memory: {{ .Values.apiCronzMemLimit | default "1000Mi" }}
+          livenessProbe:
+            httpGet: { path: /health/liveness, port: 8080 }
+            initialDelaySeconds: 2
+            periodSeconds: 15
+            failureThreshold: 8
+            timeoutSeconds: 5
+---
+#HorizontalPodAutoscaler
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api-cronz-hpa
+  labels:
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api-cronz-deployment
+  minReplicas: {{ .Values.apiCronzHpaMin | default 1 }}
+  maxReplicas: {{ .Values.apiCronzHpaMax | default 1 }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+#Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-cronz-service
+  labels:
+    app: api-cronz
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: api-cronz
+  type: ClusterIP
+  ports:
+    - name: api-cronz-service-port
+      port: 80
+      targetPort: 8080

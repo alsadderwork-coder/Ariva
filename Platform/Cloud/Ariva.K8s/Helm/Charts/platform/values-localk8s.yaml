@@ -1,0 +1,50 @@
+# Default values for ariva-platform.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+# Local Kubernetes (Docker Desktop, kind, k3d) with images built locally and hosts on localhost.
+environment: k8s-dev
+buildNumber: latest
+imageRepository: dalil.azurecr.io/ariva
+imagePullPolicy: IfNotPresent
+replicas: 1
+domain: localhost
+webSubDomain: ariva
+simulationSubDomain: simulation-ariva
+apiMainSubDomain: api-main-ariva
+apiIngestSubDomain: api-ingest-ariva
+apiStreamSubDomain: api-stream-ariva
+apiCronzSubDomain: api-cronz-ariva
+apiIntegrationSubDomain: api-integration-ariva
+clusterName: localk8s
+releaseVersion: v-0.0.0
+
+# Ingress definitions
+ingresses:
+  - name: api-main
+    comment: Ariva API Main Ingress
+    subdomain: api-main-ariva
+    serviceName: api-main-service
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+      nginx.ingress.kubernetes.io/rewrite-target: /
+
+  - name: simulation
+    comment: Ariva Simulation Ingress
+    subdomain: simulation-ariva
+    serviceName: simulation-service
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+      nginx.ingress.kubernetes.io/rewrite-target: /
+
+  - name: web
+    comment: Ariva Web Ingress
+    subdomain: ariva
+    serviceName: web-service
+    annotations:
+      nginx.ingress.kubernetes.io/from-to-www-redirect: "true"
+      nginx.ingress.kubernetes.io/proxy-body-size: "5m"
+      nginx.ingress.kubernetes.io/rewrite-target: /

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zones, DMO QMS prototype</title>
+<meta name="description" content="Zone profile editor of the DMO queue management prototype, synthetic data.">
+<link rel="stylesheet" href="assets/app.css">
+<script src="assets/boot.js"></script>
+</head>
+<body data-screen="zones">
+<a class="skip" href="#main">Skip to content</a>
+<div class="shell">
+<nav class="sidebar" id="sidebar" aria-label="Prototype screens"></nav>
+<div class="frame">
+<header class="topbar" id="topbar"></header>
+<main id="main" class="main" tabindex="-1">
+<div class="page-head">
+<div>
+<h1>Zones</h1>
+<p class="lede">Zone profiles define where queues are counted. Drag polygon vertices and entry and exit lines, add new zones to a draft, then publish a new version; every result shows the profile that produced it.</p>
+</div>
+<div class="page-meta">
+<a class="why" href="../boq.html#coverage">Why this matters</a>
+<span class="tag" data-profile-tag>Zone profile <strong>v12</strong></span>
+</div>
+</div>
+<section aria-label="Key figures"><div class="kpis" id="kpis"></div></section>
+<div id="zBody"></div>
+</main>
+</div>
+</div>
+<script src="../assets/charts.js"></script>
+<script src="assets/sim.js"></script>
+<script src="assets/floorplan.js"></script>
+<script src="assets/ui.js"></script>
+<script src="assets/create.js"></script>
+<script src="assets/screen-zones.js"></script>
+</body>
+</html>

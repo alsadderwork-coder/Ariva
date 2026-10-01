@@ -1,0 +1,6 @@
+apiVersion: v2
+name: ariva-timescaledb
+description: Single node TimescaleDB for Ariva (placeholder until the backlog adds the StatefulSet, Service and PVC templates)
+type: application
+version: 0.1.0
+appVersion: "pg17"

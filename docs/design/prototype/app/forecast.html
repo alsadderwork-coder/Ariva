@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Forecast and staffing, DMO QMS prototype</title>
+<meta name="description" content="Forecast and staffing screen of the DMO queue management prototype, synthetic data.">
+<link rel="stylesheet" href="assets/app.css">
+<script src="assets/boot.js"></script>
+</head>
+<body data-screen="forecast">
+<a class="skip" href="#main">Skip to content</a>
+<div class="shell">
+<nav class="sidebar" id="sidebar" aria-label="Prototype screens"></nav>
+<div class="frame">
+<header class="topbar" id="topbar"></header>
+<main id="main" class="main" tabindex="-1">
+<div class="page-head">
+<div>
+<h1>Forecast and staffing</h1>
+<p class="lede">Demand for the next 24 hours, the recommended desks or counters per 15 minutes against the planned roster, and the predicted P90 wait under each.</p>
+</div>
+<div class="page-meta">
+<a class="why" href="../positioning.html#differentiators">Why this matters</a>
+<span class="tag" data-profile-tag>Zone profile <strong>v12</strong></span>
+</div>
+</div>
+<div class="tabs" role="tablist" aria-label="Area" id="areaTabs"></div>
+<section aria-label="Key figures"><div class="kpis" id="kpis"></div></section>
+<div id="fcBody"></div>
+<section class="panel" id="staffing" aria-labelledby="stTitle">
+<div class="panel-head"><div><h2 id="stTitle">Recommendation against the roster</h2><p id="stSub">Next six hours in 15-minute blocks.</p></div></div>
+<div id="stBody"></div>
+</section>
+<section class="panel" id="overrides" aria-labelledby="ovTitle">
+<div class="panel-head"><div><h2 id="ovTitle">Roster overrides</h2><p>Manual changes to the planned roster. The plan, the simulation and the forecast update as soon as an override is added.</p></div><div class="panel-actions" id="ovNew"></div></div>
+<div id="ovList"></div>
+</section>
+<section class="panel" id="flights" aria-labelledby="flTitle">
+<div class="panel-head"><div><h2 id="flTitle">Flight schedule (AODB, synthetic)</h2><p id="flSub">Flights from the airport operational database feed, plus ad-hoc flights added here for diversions, extra sections or when the feed is stale.</p></div><div class="panel-actions" id="flNew"></div></div>
+<div id="flBody"></div>
+</section>
+<section class="notbuilt" id="whatif" aria-labelledby="wiTitle">
+<div class="panel-head"><div><h2 id="wiTitle">What-if simulation <span class="pill">Planned for v2, not built</span></h2><p>This panel shows what the feature will do. Nothing here runs.</p></div></div>
+<div id="wiBody"></div>
+</section>
+</main>
+</div>
+</div>
+<script src="../assets/charts.js"></script>
+<script src="assets/sim.js"></script>
+<script src="assets/floorplan.js"></script>
+<script src="assets/ui.js"></script>
+<script src="assets/create.js"></script>
+<script src="assets/screen-forecast.js"></script>
+</body>
+</html>

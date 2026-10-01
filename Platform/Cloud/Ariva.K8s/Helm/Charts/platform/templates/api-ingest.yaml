@@ -1,0 +1,139 @@
+---
+#ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-ingest-configmap
+  labels:
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+data:
+  DOTNET_ENVIRONMENT: {{ .Values.environment | quote }}
+  RELEASE_VERSION: {{ .Values.releaseVersion | quote }}
+---
+#Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-ingest-deployment
+  labels:
+    app: api-ingest
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.apiIngestReplicas | default .Values.replicas }}
+  selector:
+    matchLabels:
+      app: api-ingest
+  template:
+    metadata:
+      annotations:
+        rollme: {{ randAlphaNum 5 | quote }}
+      labels:
+        app: api-ingest
+    spec:
+      imagePullSecrets:
+        - name: dalilacr-secret
+      volumes:
+        - name: api-ingest-appsettings-base-volume
+          secret:
+            secretName: base-appsettings-secret
+        - name: api-ingest-appsettings-volume
+          secret:
+            secretName: api-ingest-appsettings-secret
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api-ingest-container
+          image: "{{ .Values.imageRepository }}/api-ingest:{{ .Values.buildNumber }}"
+          imagePullPolicy: {{ .Values.imagePullPolicy | default "Always" }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: api-ingest-appsettings-base-volume
+              mountPath: /app/appsettings.base.{{ .Values.environment }}.json
+              subPath: appsettings.base.{{ .Values.environment }}.json
+            - name: api-ingest-appsettings-volume
+              mountPath: /app/appsettings.service.{{ .Values.environment }}.json
+              subPath: appsettings.service.{{ .Values.environment }}.json
+          env:
+            {{- include "ariva-platform.otelEnv" . | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: api-ingest-configmap
+          startupProbe:
+            httpGet: { path: /health/startup, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 8
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet: { path: /health/readiness, port: 8080 }
+            initialDelaySeconds: 2
+            periodSeconds: 15
+            failureThreshold: 4
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: {{ .Values.apiIngestCpuRequest | default "250m" }}
+              memory: {{ .Values.apiIngestMemRequest | default "512Mi" }}
+            limits:
+              cpu: {{ .Values.apiIngestCpuLimit | default "1000m" }}
+              memory: {{ .Values.apiIngestMemLimit | default "1000Mi" }}
+          livenessProbe:
+            httpGet: { path: /health/liveness, port: 8080 }
+            initialDelaySeconds: 2
+            periodSeconds: 15
+            failureThreshold: 8
+            timeoutSeconds: 5
+---
+#HorizontalPodAutoscaler
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api-ingest-hpa
+  labels:
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api-ingest-deployment
+  minReplicas: {{ .Values.apiIngestHpaMin | default 1 }}
+  maxReplicas: {{ .Values.apiIngestHpaMax | default 1 }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+#Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-ingest-service
+  labels:
+    app: api-ingest
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: api-ingest
+  type: ClusterIP
+  ports:
+    - name: api-ingest-service-port
+      port: 80
+      targetPort: 8080

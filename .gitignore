@@ -1,0 +1,43 @@
+**/.config/*
+**/.vs/*
+**/.vscode/*
+**/obj/*
+**/bin/*
+**/.vshistory/*
+**/.angular/*
+**/.sonarqube/*
+**/Logs
+# ...but keep source code that lives under a "Logs" folder (for example
+# Controllers/Logs API controllers); only runtime log folders should
+# be ignored, not C# source files.
+!**/Controllers/Logs
+!**/Controllers/Logs/**
+**/K8sKubeConfigs/*
+**/.idea/
+**/.DS_Store
+**/coveragereport
+**/TestResults
+
+/Ariva.sln.DotSettings.user
+/iis-stop-all.ps1
+/setup-iis-all.ps1
+/iis-start.ps1
+/Platform/Backplane/run-tests.ps1
+/Platform/Backplane/Ariva.Infra/Migrations/
+/Platform/Frontplane/package-lock.json
+/.claude/settings.local.json
+/nul
+
+/Platform/Backplane/.claude/settings.local.json
+/package-lock.json
+/Platform/.claude/settings.local.json
+/Ariva.slnLaunch.user
+/Platform/Frontplane/Ariva.Web/nul
+/.ralph-tui/config.toml
+/.claude/worktrees/
+
+
+Platform/Frontplane/Ariva.Web/static/configs/config.vm-local.json
+Platform/Frontplane/Ariva.Web/static/configs/config.json
+deploy/.kubeconfig-path
+.verify/

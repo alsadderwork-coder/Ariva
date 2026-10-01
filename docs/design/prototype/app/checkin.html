@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Check-in and handlers, DMO QMS prototype</title>
+<meta name="description" content="Check-in and handlers screen of the DMO queue management prototype, synthetic data.">
+<link rel="stylesheet" href="assets/app.css">
+<script src="assets/boot.js"></script>
+</head>
+<body data-screen="checkin">
+<a class="skip" href="#main">Skip to content</a>
+<div class="shell">
+<nav class="sidebar" id="sidebar" aria-label="Prototype screens"></nav>
+<div class="frame">
+<header class="topbar" id="topbar"></header>
+<main id="main" class="main" tabindex="-1">
+<div class="page-head">
+<div>
+<h1>Check-in and handlers</h1>
+<p class="lede">Airport Operations module: islands by handler, every counter's state, waits per island, and SLA compliance per 15-minute bin with provisional and final markers.</p>
+</div>
+<div class="page-meta">
+<a class="why" href="../segments.html#personas">Why this matters</a>
+<span class="tag" data-profile-tag>Zone profile <strong>v12</strong></span>
+</div>
+</div>
+<section aria-label="Key figures"><div class="kpis" id="kpis"></div></section>
+<section class="panel" aria-labelledby="islTitle">
+<div class="panel-head"><div><h2 id="islTitle">Islands by handler</h2><p>Counters coloured by state with a text label; flights currently checking in.</p></div></div>
+<div id="islands"></div>
+</section>
+<section class="panel" id="allocations" aria-labelledby="alTitle">
+<div class="panel-head"><div><h2 id="alTitle">Counter allocations</h2><p>Which departing flight uses which counters, and when. Allocated counters are staffed during their window.</p></div><div class="panel-actions" id="alNew"></div></div>
+<div id="alList"></div>
+</section>
+<section class="panel" aria-labelledby="ciChartTitle">
+<div class="panel-head"><div><h2 id="ciChartTitle">Wait per island, last three hours</h2><p>Nowcast per minute.</p></div></div>
+<div id="ciChart" class="chart"></div>
+</section>
+<section class="panel" aria-labelledby="binsTitle">
+<div class="panel-head"><div><h2 id="binsTitle">SLA compliance per 15-minute bin</h2><p>P90 wait per bin against 15 minutes. Provisional until everyone who entered in the bin has left the queue.</p></div></div>
+<div id="bins"></div>
+</section>
+</main>
+</div>
+</div>
+<script src="../assets/charts.js"></script>
+<script src="assets/sim.js"></script>
+<script src="assets/floorplan.js"></script>
+<script src="assets/ui.js"></script>
+<script src="assets/create.js"></script>
+<script src="assets/screen-checkin.js"></script>
+</body>
+</html>

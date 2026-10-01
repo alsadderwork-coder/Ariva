@@ -1,0 +1,13 @@
+@Ariva.Api.Stream_HostAddress = http://localhost:51003
+
+### Startup probe
+GET {{Ariva.Api.Stream_HostAddress}}/health/startup
+Accept: application/json
+
+### Readiness probe
+GET {{Ariva.Api.Stream_HostAddress}}/health/readiness
+Accept: application/json
+
+### Liveness probe
+GET {{Ariva.Api.Stream_HostAddress}}/health/liveness
+Accept: application/json

@@ -1,0 +1,79 @@
+# Default values for ariva-platform.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+environment: k8s-dev
+buildNumber: trunk
+imageRepository: dalil.azurecr.io/ariva
+replicas: 1
+domain: dalilhub.tech
+webSubDomain: dev-ariva
+simulationSubDomain: simulation-dev-ariva
+apiMainSubDomain: api-main-dev-ariva
+apiIngestSubDomain: api-ingest-dev-ariva
+apiStreamSubDomain: api-stream-dev-ariva
+apiCronzSubDomain: api-cronz-dev-ariva
+apiIntegrationSubDomain: api-integration-dev-ariva
+# Identifies this cluster in telemetry (K8s Cluster Name). Set to the real cluster identity.
+clusterName: k8s-dev
+releaseVersion: v-0.0.0
+
+# Ingress definitions
+ingresses:
+  - name: api-main
+    comment: Ariva API Main Ingress
+    subdomain: api-main-dev-ariva
+    serviceName: api-main-service
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+      nginx.ingress.kubernetes.io/rewrite-target: /
+
+  - name: api-ingest
+    comment: Ariva API Ingest Ingress (vendor webhooks)
+    subdomain: api-ingest-dev-ariva
+    serviceName: api-ingest-service
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+      nginx.ingress.kubernetes.io/rewrite-target: /
+
+  - name: api-cronz
+    comment: Ariva API Cronz Ingress (TickerQ dashboard)
+    subdomain: api-cronz-dev-ariva
+    serviceName: api-cronz-service
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+      nginx.ingress.kubernetes.io/rewrite-target: /
+
+  - name: api-integration
+    comment: Ariva API Integration Ingress (AODB push)
+    subdomain: api-integration-dev-ariva
+    serviceName: api-integration-service
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+      nginx.ingress.kubernetes.io/rewrite-target: /
+
+  - name: simulation
+    comment: Ariva Simulation Ingress
+    subdomain: simulation-dev-ariva
+    serviceName: simulation-service
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+      nginx.ingress.kubernetes.io/rewrite-target: /
+
+  - name: web
+    comment: Ariva Web Ingress
+    subdomain: dev-ariva
+    serviceName: web-service
+    annotations:
+      nginx.ingress.kubernetes.io/from-to-www-redirect: "true"
+      nginx.ingress.kubernetes.io/proxy-body-size: "5m"
+      nginx.ingress.kubernetes.io/rewrite-target: /

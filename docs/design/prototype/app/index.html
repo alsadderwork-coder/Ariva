@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live operations, DMO QMS prototype</title>
+<meta name="description" content="Live operations screen of the DMO queue management prototype, synthetic data.">
+<link rel="stylesheet" href="assets/app.css">
+<script src="assets/boot.js"></script>
+</head>
+<body data-screen="ops">
+<a class="skip" href="#main">Skip to content</a>
+<div class="shell">
+<nav class="sidebar" id="sidebar" aria-label="Prototype screens"></nav>
+<div class="frame">
+<header class="topbar" id="topbar"></header>
+<main id="main" class="main" tabindex="-1">
+<div class="page-head">
+<div>
+<h1>Live operations</h1>
+<p class="lede">Every queue at DMO right now: the longest wait, desks and counters, alerts, and the next arrival wave. All figures are synthetic.</p>
+</div>
+<div class="page-meta">
+<a class="why" href="../positioning.html#differentiators">Why this matters</a>
+<span class="tag" data-profile-tag>Zone profile <strong>v12</strong></span>
+</div>
+</div>
+<section aria-label="Key figures"><div class="kpis" id="kpis"></div></section>
+<section class="panel" aria-labelledby="fpTitle">
+<div class="panel-head"><div><h2 id="fpTitle">Floor plan</h2><p>Zones coloured by nowcast, desks and counters by state. Hover or focus a zone or desk for details. The layout is invented.</p></div></div>
+<div id="fp"></div>
+</section>
+<div class="grid cols-3-1">
+<section class="panel" aria-labelledby="chartTitle">
+<div class="panel-head"><div><h2 id="chartTitle">Wait: last two hours and next two hours</h2><p id="chartSub">Realised wait, current nowcast and a Monte Carlo forecast.</p></div><div id="chartPick"></div></div>
+<div class="legend-inline" aria-hidden="true"><span><i class="sw"></i>Realised (final)</span><span><i class="sw dot"></i>Realised (provisional)</span><span><i class="sw dash"></i>Forecast P50</span><span><i class="sw band"></i>Up to P90</span><span><i class="sw target"></i>Target 15 min</span></div>
+<div id="waitChart" class="chart"></div>
+<p class="chart-note" id="chartNote"></p>
+</section>
+<section class="panel" aria-labelledby="alertsTitle">
+<div class="panel-head"><div><h2 id="alertsTitle">Alerts</h2><p>Visible to the current role. Escalation counts down in simulated time.</p></div></div>
+<div id="alerts" aria-live="polite"></div>
+</section>
+</div>
+<section class="panel" id="wave" aria-labelledby="waveTitle">
+<div class="panel-head"><div><h2 id="waveTitle">Arrival wave: flights landing in the next 30 minutes</h2><p id="waveSub">Passengers by lane from API data, and the predicted arrival curve at the immigration hall.</p></div></div>
+<div id="waveBody"></div>
+</section>
+</main>
+</div>
+</div>
+<script src="../assets/charts.js"></script>
+<script src="assets/sim.js"></script>
+<script src="assets/floorplan.js"></script>
+<script src="assets/ui.js"></script>
+<script src="assets/create.js"></script>
+<script src="assets/screen-ops.js"></script>
+</body>
+</html>

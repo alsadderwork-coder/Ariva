@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alert rules, DMO QMS prototype</title>
+<meta name="description" content="Alert rules of the DMO queue management prototype, synthetic data.">
+<link rel="stylesheet" href="assets/app.css">
+<script src="assets/boot.js"></script>
+</head>
+<body data-screen="rules">
+<a class="skip" href="#main">Skip to content</a>
+<div class="shell">
+<nav class="sidebar" id="sidebar" aria-label="Prototype screens"></nav>
+<div class="frame">
+<header class="topbar" id="topbar"></header>
+<main id="main" class="main" tabindex="-1">
+<div class="page-head">
+<div>
+<h1>Alert rules</h1>
+<p class="lede">The rules that drive every alert: scope, metric, threshold, how long it must hold, severity, owner and escalation. New rules are backtested on today's synthetic data before they are created.</p>
+</div>
+<div class="page-meta">
+<a class="why" href="../positioning.html#differentiators">Why this matters</a>
+<span class="tag" data-profile-tag>Zone profile <strong>v12</strong></span>
+</div>
+</div>
+<section aria-label="Key figures"><div class="kpis" id="kpis"></div></section>
+<section class="panel" aria-labelledby="rlTitle">
+<div class="panel-head"><div><h2 id="rlTitle">Rules</h2><p>Every alert on the operations screen comes from one of these rules. Rules covering zones outside this role are not listed.</p></div><div class="panel-actions" id="ruleNew"></div></div>
+<div id="ruleList"></div>
+</section>
+<section class="panel" aria-labelledby="hwTitle">
+<div class="panel-head"><div><h2 id="hwTitle">How a rule fires</h2></div></div>
+<ul class="small">
+<li>The rule is checked every simulated minute for each queue or sensor in its scope.</li>
+<li>It fires when the condition has held for the "sustained for" minutes, and clears when the condition has been false for 5 minutes (the seeded nowcast rules clear below 12 minutes).</li>
+<li>An open alert escalates to the named role if nobody acknowledges it in time. Acknowledgements are written to the audit log.</li>
+<li>Email channels are recorded but not sent in the demo.</li>
+</ul>
+</section>
+</main>
+</div>
+</div>
+<script src="../assets/charts.js"></script>
+<script src="assets/sim.js"></script>
+<script src="assets/floorplan.js"></script>
+<script src="assets/ui.js"></script>
+<script src="assets/create.js"></script>
+<script src="assets/screen-rules.js"></script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <ItemGroup>
+        <Compile Include="..\..\..\GlobalSuppressions.cs" Link="GlobalSuppressions.cs" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <EmbeddedResource Include="Languages\*.json" />
+    </ItemGroup>
+
+</Project>

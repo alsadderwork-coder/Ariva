@@ -1,0 +1,37 @@
+{{- range .Values.ingresses }}
+---
+#Ingress: {{ .comment }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .name }}-ingress
+  labels:
+    {{- include "ariva-platform.labels" $ | nindent 4 }}
+  annotations:
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    nginx.ingress.kubernetes.io/session-cookie-name: "ariva-{{ .name }}"
+    nginx.ingress.kubernetes.io/server-snippet: |
+      if ($host != "{{ .subdomain }}.{{ $.Values.domain }}") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/enable-modsecurity: "true"
+    nginx.ingress.kubernetes.io/modsecurity-snippet: |
+      SecRuleEngine On
+      SecRule FILES "@rx \.(exe|dll|bat|cmd|com|msi|sh|ps1|php|jsp|asp|aspx)$" "id:100001,phase:2,deny,status:403,log,msg:'Dangerous file upload blocked'"
+    {{- range $key, $value := .annotations }}
+    {{ $key }}: {{ $value | quote }}
+    {{- end }}
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: "{{ .subdomain }}.{{ $.Values.domain }}"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .serviceName }}
+                port:
+                  number: 80
+{{- end }}

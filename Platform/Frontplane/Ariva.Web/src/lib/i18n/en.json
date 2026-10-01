@@ -1,0 +1,10 @@
+{
+	"app": {
+		"title": "Ariva",
+		"tagline": "Airport queue management",
+		"language": {
+			"toggle": "العربية",
+			"label": "Switch the language to Arabic"
+		}
+	}
+}

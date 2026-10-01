@@ -1,0 +1,18 @@
+# Fan out trigger. Running this pipeline triggers every Build-k8s-<service> pipeline through their
+# pipeline resource named Build-k8s-all. Register it in Azure DevOps under exactly that name.
+name: $(Build.SourceBranchName)-$(date:yyyyMMdd)$(rev:rr)
+
+trigger: none
+
+jobs:
+- job: Phase_1
+  displayName: Trigger all image builds
+  pool:
+    name: Default
+    demands:
+    - Agent.OS -equals Linux
+  steps:
+  - checkout: none
+
+  - script: echo "Triggering every Ariva k8s image build"
+    displayName: Trigger

@@ -1,0 +1,74 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+    <PropertyGroup>
+        <AspNetCoreHostingModel>InProcess</AspNetCoreHostingModel>
+        <UserSecretsId>c40273dc-4b25-4802-9b74-a824fb2c6214</UserSecretsId>
+        <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
+        <DockerfileContext>..\..\..</DockerfileContext>
+        <DockerfileTag>ariva-api-cronz</DockerfileTag>
+        <InvariantGlobalization>true</InvariantGlobalization>
+    </PropertyGroup>
+
+    <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
+        <DocumentationFile>bin\Debug\net10.0\Ariva.Api.Cronz.xml</DocumentationFile>
+        <NoWarn>1701;1702;1591</NoWarn>
+    </PropertyGroup>
+
+    <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
+        <DocumentationFile>bin\Release\net10.0\Ariva.Api.Cronz.xml</DocumentationFile>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <Content Include="..\Ariva.Api.Common\appsettings.base.json">
+            <Link>appsettings.base.json</Link>
+            <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+        </Content>
+        <Content Include="..\Ariva.Api.Common\appsettings.base.vm-local.json">
+            <Link>appsettings.base.vm-local.json</Link>
+            <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+        </Content>
+        <Content Include="..\Ariva.Api.Common\appsettings.base.k8s-dev.json">
+            <Link>appsettings.base.k8s-dev.json</Link>
+            <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+        </Content>
+        <Content Include="..\Ariva.Api.Common\appsettings.base.k8s-demo.json">
+            <Link>appsettings.base.k8s-demo.json</Link>
+            <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+        </Content>
+        <Content Include="..\Ariva.Api.Common\appsettings.base.k8s-prd.json">
+            <Link>appsettings.base.k8s-prd.json</Link>
+            <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+        </Content>
+        <Content Update="appsettings.service.json">
+            <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+        </Content>
+        <Content Update="appsettings.service.vm-local.json">
+            <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+        </Content>
+        <Content Update="appsettings.service.k8s-dev.json">
+            <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+        </Content>
+        <Content Update="appsettings.service.k8s-demo.json">
+            <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+        </Content>
+        <Content Update="appsettings.service.k8s-prd.json">
+            <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+        </Content>
+        <Content Update="environment.json">
+            <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+        </Content>
+        <Compile Remove="Logs\**" />
+        <EmbeddedResource Remove="Logs\**" />
+        <Content Remove="Logs\**" />
+        <None Remove="Logs\**" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Compile Include="..\..\..\GlobalSuppressions.cs" Link="GlobalSuppressions.cs" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Ariva.Api.Common\Ariva.Api.Common.csproj" />
+    </ItemGroup>
+
+</Project>

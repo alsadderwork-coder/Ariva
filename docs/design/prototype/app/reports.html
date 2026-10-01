@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reports, DMO QMS prototype</title>
+<meta name="description" content="Daily report of the DMO queue management prototype, synthetic data.">
+<link rel="stylesheet" href="assets/app.css">
+<script src="assets/boot.js"></script>
+</head>
+<body data-screen="reports">
+<a class="skip" href="#main">Skip to content</a>
+<div class="shell">
+<nav class="sidebar" id="sidebar" aria-label="Prototype screens"></nav>
+<div class="frame">
+<header class="topbar" id="topbar"></header>
+<main id="main" class="main" tabindex="-1">
+<div class="page-head">
+<div>
+<h1>Reports</h1>
+<p class="lede">Reports built around the peaks: the daily report with waits by lane at the peak hour, forecast against actual and staffing against the recommendation, plus the weekly service standard, monthly SLA and device health, on demand or on a schedule.</p>
+</div>
+<div class="page-meta">
+<a class="why" href="../segments.html#personas">Why this matters</a>
+<span class="tag" data-profile-tag>Zone profile <strong>v12</strong></span>
+</div>
+</div>
+<section aria-label="Key figures"><div class="kpis" id="kpis"></div></section>
+<section class="panel no-print" id="schedules" aria-labelledby="rpTitle">
+<div class="panel-head"><div><h2 id="rpTitle">Scheduled reports</h2><p>Reports sent on a schedule, within this role's view. Next runs are in simulated time; "Run now" opens the preview below.</p></div><div class="panel-actions" id="rpNew"></div></div>
+<div id="rpList"></div>
+</section>
+<section class="panel no-print" aria-labelledby="expTitle">
+<div class="panel-head"><div><h2 id="expTitle">Export</h2><p>CSV of 15-minute intervals for the zones this role can see, up to the simulated time.</p></div></div>
+<div class="row" id="expBtns"></div>
+<div id="csvPanel"></div>
+</section>
+<div class="row no-print" style="justify-content:space-between"><div class="tabs" role="tablist" aria-label="Report template" id="tplTabs"></div><div id="scopeWrap"></div></div>
+<article class="report" id="report" role="tabpanel" aria-label="Daily report preview"></article>
+</main>
+</div>
+</div>
+<script src="../assets/charts.js"></script>
+<script src="assets/sim.js"></script>
+<script src="assets/floorplan.js"></script>
+<script src="assets/ui.js"></script>
+<script src="assets/create.js"></script>
+<script src="assets/screen-reports.js"></script>
+</body>
+</html>

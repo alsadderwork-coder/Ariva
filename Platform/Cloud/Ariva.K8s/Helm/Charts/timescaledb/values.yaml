@@ -1,0 +1,38 @@
+# Values for the Ariva TimescaleDB release (single node, self managed).
+#
+# Licence note: the timescale/timescaledb-ha image ships TimescaleDB Community Edition under the
+# Tiger Data licence (formerly the Timescale License, TSL). It may be installed and run free of charge
+# on self managed infrastructure, on premises or in the cloud, including production use inside a product
+# Dalil Tech deploys for a customer. It may not be offered to third parties as a database service.
+# See ADR-0006 in docs/architecture/adr.
+#
+# The chart templates are added by the backlog. Until then the release is marked installed: false in
+# helmfile-k8s.yaml and the commented values below document the intended shape.
+
+# image:
+#   repository: timescale/timescaledb-ha
+#   tag: pg17                # pin an exact pg17 and TimescaleDB tag when the templates land
+#   pullPolicy: IfNotPresent
+
+# persistence:
+#   enabled: true
+#   storageClassName: ""     # empty uses the cluster default storage class
+#   size: 50Gi               # PVCs can only grow; never lower this below the live capacity
+#   accessMode: ReadWriteOnce
+
+# resources:
+#   requests:
+#     cpu: 500m
+#     memory: 2Gi
+#   limits:
+#     cpu: "2"
+#     memory: 4Gi
+
+# postgres:
+#   port: 5432
+#   database: ariva
+#   username: ariva
+#   existingSecret: timescaledb-credentials   # holds the password; never commit it to values
+
+# timescaledb:
+#   telemetryLevel: "off"    # sets timescaledb.telemetry_level

@@ -1,0 +1,30 @@
+[
+  {
+    "rule": "SEC-052",
+    "path": "Platform/Backplane/Ariva.Api.Common/HealthChecks/HealthEndpoints.cs",
+    "contains": "AllowAnonymous",
+    "routes": [
+      "/health/startup",
+      "/health/readiness",
+      "/health/liveness"
+    ],
+    "reason": "Kubernetes startup, readiness and liveness probes cannot authenticate. The endpoints return only a status word, no data, and are excluded from OpenAPI.",
+    "proposedBy": "Claude (scaffold, 2026-10-01)",
+    "approvedBy": "PENDING: Ahmad",
+    "date": "2026-10-01"
+  },
+  {
+    "rule": "SEC-052",
+    "path": "Platform/Simulation/Ariva.Simulation.Api/Program.cs",
+    "contains": "AllowAnonymous",
+    "routes": [
+      "/health/startup",
+      "/health/readiness",
+      "/health/liveness"
+    ],
+    "reason": "Kubernetes startup, readiness and liveness probes of the simulator cannot authenticate. The endpoints return only a status word, no data, and are excluded from OpenAPI; every other simulator endpoint requires authorization and the simulator refuses to start in k8s-prd.",
+    "proposedBy": "Claude (security baseline, 2026-10-01)",
+    "approvedBy": "PENDING: Ahmad",
+    "date": "2026-10-01"
+  }
+]

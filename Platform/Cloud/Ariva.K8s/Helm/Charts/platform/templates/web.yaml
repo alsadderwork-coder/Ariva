@@ -1,0 +1,109 @@
+---
+#Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-deployment
+  labels:
+    app: web
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.webReplicas | default .Values.replicas }}
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      annotations:
+        rollme: {{ randAlphaNum 5 | quote }}
+      labels:
+        app: web
+    spec:
+      imagePullSecrets:
+        - name: dalilacr-secret
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: web-container
+          image: "{{ .Values.imageRepository }}/web:{{ .Values.buildNumber }}"
+          imagePullPolicy: {{ .Values.imagePullPolicy | default "Always" }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 3000
+          startupProbe:
+            httpGet: { path: /healthz, port: 3000 }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            failureThreshold: 12
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet: { path: /healthz, port: 3000 }
+            initialDelaySeconds: 2
+            periodSeconds: 15
+            failureThreshold: 4
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: {{ .Values.webCpuRequest | default "50m" }}
+              memory: {{ .Values.webMemRequest | default "64Mi" }}
+            limits:
+              cpu: {{ .Values.webCpuLimit | default "250m" }}
+              memory: {{ .Values.webMemLimit | default "128Mi" }}
+          livenessProbe:
+            httpGet: { path: /healthz, port: 3000 }
+            initialDelaySeconds: 2
+            periodSeconds: 15
+            failureThreshold: 8
+            timeoutSeconds: 3
+---
+#HorizontalPodAutoscaler
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: web-hpa
+  labels:
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: web-deployment
+  minReplicas: {{ .Values.webHpaMin | default 1 }}
+  maxReplicas: {{ .Values.webHpaMax | default 1 }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+#Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-service
+  labels:
+    app: web
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: web
+  type: ClusterIP
+  ports:
+    - name: web-service-port
+      port: 80
+      targetPort: 3000
