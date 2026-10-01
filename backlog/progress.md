@@ -39,7 +39,7 @@ One entry per story, newest last. Format:
 
 ## 2026-10-01 ARV-005 NHibernate storage provider and unit of work (PR #18)
 - Summary: async IStorageProvider and IUnitOfWork; convention mapper with snake_case singular names, quoted reserved words, version 7 ids, UTC timestamptz, enums by name; audit interceptor and soft delete listener; domain events handed to IDomainEventOutbox inside the transaction (fails closed until ARV-020); ExecuteSqlAsync takes [ConstantExpected] SQL with CA1857 as an error.
-- Gates: backend PASS, integration PASS (Testcontainers.PostgreSql 4.15.0, TimescaleDB image), security PASS.
+- Gates: backend PASS, integration PASS (Testcontainers.PostgreSql 4.15.0, TimescaleDB image), security PASS. Correction: the first CI runs of this PR reported green while the build and unit tests failed, because "dotnet ... | tee" ran under bash -e without pipefail; the workflows now run with pipefail and the unit tests pass for real.
 - Security review: CWE-89 (constant SQL enforced at compile time, parameters bound), CWE-532 (no SQL parameter logging).
 - Learnings: passing an IType instance to the by-code mapper breaks enum mapping (use the generic EnumStringType); NHibernate needs System.Configuration.ConfigurationManager at runtime; a plain NpgsqlDriver with Npgsql 10 handles UTC timestamptz without the legacy switch.
 
@@ -48,3 +48,20 @@ One entry per story, newest last. Format:
 - Gates: backend PASS, integration PASS, security PASS. Not yet run: the Helm Job on a cluster.
 - Security review: CWE-269 (runtime login DML only, cannot change schema or schema_version), CWE-89 (login function quotes with format %I and %L).
 - Learnings: CA2100 accepts a switch over string literals but not a tuple switch; checksums must normalise CRLF for Windows checkouts.
+
+## 2026-10-01 ARV-007 Logging and telemetry with secret redaction (PR #20)
+- Summary: Serilog in every API host (JSON console, Loki and OTLP by configuration); a redaction enricher added in code removes sensitive properties, header dictionaries, bearer and basic credentials, JWTs and token query values; Microsoft.AspNetCore.Hosting fixed at Warning; traces and metrics over OTLP when an endpoint is set.
+- Gates: backend PASS (268 unit, 15 integration), e2e PASS including the log scan (canary credentials sent by the suite never reach a host log).
+- Security review: CWE-532.
+- Learnings: CI now posts test counts and fails when a suite runs no tests; Application:Name placeholders are not resolved yet, so ArivaLogging resolves the one used for service names.
+
+## 2026-10-01 ARV-008 Caching and Data Protection key ring (PR #21)
+- Summary: FusionCache (AMAN entry options) with tags, Redis distributed level and backplane on one connection, memory-only without Redis; Data Protection keys in PostgreSQL (script 0002, append-only for the runtime role) encrypted with a certificate from the ariva-dataprotection secret, previous certificates for rotation, development certificate on vm-local only.
+- Gates: backend PASS (275 unit, 18 integration including two-host key ring and Redis backplane), e2e PASS.
+- Security review: CWE-287 (shared key ring protected at rest), CWE-611 (XML read without DTDs).
+- Learnings: JSON booleans read back as "True" through IConfiguration; compare with GetValue<bool>.
+
+## 2026-10-01 ARV-009 Permission model and permission matrix (PR #22)
+- Summary: Global.Defaults.Permissions (Entity.Action, five actions per entity), [Permission] as an AuthorizeAttribute with on-demand policies that fail closed, role seed from the wiki 01 role descriptions, security/permission-matrix.json checked in-process for every host and by E2E for anonymous callers.
+- Gates: backend PASS (306 unit), e2e PASS.
+- Security review: CWE-862, CWE-863 (no role strings in controllers; audit read-only for every role); CWE-200 (product version for administrators only).

@@ -101,7 +101,7 @@
       ],
       "priority": 5,
       "passes": true,
-      "notes": "2026-10-01: PR #18. NHibernate storage provider and unit of work; unit and Testcontainers integration tests green in CI; verified locally against PostgreSQL 16.",
+      "notes": "2026-10-01: PR #18. Unit tests (with in-process hosts) and Testcontainers integration tests green in CI after the pipefail fix; verified locally against PostgreSQL 16.",
       "dependsOn": [
         "ARV-003",
         "ARV-004"
@@ -144,8 +144,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 7,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "2026-10-01: PR #20. Redaction enricher, JSON console, Loki and OTLP by configuration; 268 unit and 15 integration tests green; E2E log scan finds no credentials.",
       "dependsOn": [
         "ARV-001"
       ]
@@ -165,8 +165,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 8,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "2026-10-01: PR #21. FusionCache with Redis backplane; Data Protection keys in PostgreSQL protected with a certificate; 275 unit and 18 integration tests green. Clusters need the ariva-dataprotection secret.",
       "dependsOn": [
         "ARV-005"
       ]
@@ -186,8 +186,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 9,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "2026-10-01: PR #22. Permission catalogue, role seed, [Permission] policies and security/permission-matrix.json; 306 unit tests green including the in-process matrix run for every host.",
       "dependsOn": [
         "ARV-004"
       ]
