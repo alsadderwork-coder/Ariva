@@ -212,8 +212,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 10,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "2026-10-01: PR #23. Local accounts, lockout counted atomically, ES256 at+jwt tokens validated by every host, pending scope, unlock; 393 unit and 29 integration tests (1 skipped) and E2E against PostgreSQL green. SEC-052 entry for /api/auth/login awaits approval.",
       "dependsOn": [
         "ARV-007",
         "ARV-008",

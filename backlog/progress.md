@@ -65,3 +65,10 @@ One entry per story, newest last. Format:
 - Summary: Global.Defaults.Permissions (Entity.Action, five actions per entity), [Permission] as an AuthorizeAttribute with on-demand policies that fail closed, role seed from the wiki 01 role descriptions, security/permission-matrix.json checked in-process for every host and by E2E for anonymous callers.
 - Gates: backend PASS (306 unit), e2e PASS.
 - Security review: CWE-862, CWE-863 (no role strings in controllers; audit read-only for every role); CWE-200 (product version for administrators only).
+
+## 2026-10-01 ARV-010a Password login, lockout and token issuance (PR #23)
+- Summary: User and UserRole (script 0003), PBKDF2-SHA256 600k with rehash, password policy with a bundled breached list and context words, NFKC usernames; one 401 for every sign-in failure; lockout 10 for 15 minutes counted in one SQL statement; ES256 at+jwt tokens with kid signed only by Ariva.Api.Main and validated by every host; permissions from stored grants; pending scope for temporary passwords; administrator unlock; token key secrets in the chart with a rule that keeps the signing key in api-main.
+- Gates: backend PASS (393 unit, 29 integration with 1 skipped), e2e PASS against PostgreSQL with per-run random accounts and a DML-only runtime login, security PASS with one warning (SEC-052 for /api/auth/login, PENDING approval).
+- Security review: CWE-287, CWE-307 (lockout and rate limit), CWE-204 and CWE-208 (uniform failure after a full hash check), CWE-916 (hash cost), CWE-347 (ES256 only, typ, kid), CWE-598 (no query string tokens), CWE-532 (passwords and tokens covered by the E2E log scan).
+- Learnings: positional records need validation attributes on the constructor parameters, not with property:, or MVC throws on every request; a harness that compiles several projects as one assembly hides missing usings, so build per project; a real Kestrel host against PostgreSQL with the runtime login found what in-process tests without a database cannot.
+
