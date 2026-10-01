@@ -17,6 +17,12 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# bash -eo pipefail: a step piped into tee must still fail when the command before the pipe fails. Without an explicit
+# shell, Actions runs "bash -e" without pipefail, which hid build and test failures behind tee.
+defaults:
+  run:
+    shell: bash
+
 env:
   DOTNET_NOLOGO: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
@@ -90,6 +96,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
         run: |
+          set +o pipefail # head closes pipes early on purpose here
           {
             echo "### Backend job failed (${GITHUB_SHA::7})"
             if [ -f restore.log ] && grep -q ' error ' restore.log; then

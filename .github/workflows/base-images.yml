@@ -11,6 +11,12 @@ on:
 permissions:
   contents: read
 
+# bash -eo pipefail: a step piped into tee must still fail when the command before the pipe fails. Without an explicit
+# shell, Actions runs "bash -e" without pipefail, which hid build and test failures behind tee.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   resolve:
     runs-on: ubuntu-24.04
