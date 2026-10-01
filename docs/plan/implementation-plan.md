@@ -4,7 +4,7 @@ As of 1 October 2026. Owner: Ahmad (architect and product owner). Delivery model
 
 ## The answer
 
-Ariva is a private GitHub repository (`github.com/alsadderwork-coder/Ariva`, local clone `D:\DevOps\Ariva`) that mirrors AMAN's layout, conventions and look, with a Claude Code harness that lets agents build it story by story under hard gates. Phase 0 (demo core, October 2026 to April 2027) is 65 stories in 11 epics, plus 11 engineering-quality stories (E11) that can be interleaved; each is sized for one agent session, ordered by dependency, and run through ralph-tui exactly as AMAN's `.ralph-tui` is configured. Every story must pass the build with security analyzers, unit tests, a 14-CWE security gate, API end-to-end, Playwright functional and accessibility tests, plus a security-reviewer verdict, before it can be marked done. Agents push story branches and open pull requests; GitHub Actions runs the same gates; a human merges and releases.
+Ariva is a private GitHub repository (`github.com/alsadderwork-coder/Ariva`, local clone `D:\DevOps\Ariva`) that mirrors AMAN's layout, conventions and look, with a Claude Code harness that lets agents build it story by story under hard gates. Phase 0 (demo core, October 2026 to April 2027) is 68 stories in 11 epics (ARV-010 split in four), plus 11 engineering-quality stories (E11) that can be interleaved; each is sized for one agent session, ordered by dependency, and run through ralph-tui exactly as AMAN's `.ralph-tui` is configured. Every story must pass the build with security analyzers, unit tests, a 14-CWE security gate, API end-to-end, Playwright functional and accessibility tests, plus a security-reviewer verdict, before it can be marked done. Agents push story branches and open pull requests; GitHub Actions runs the same gates; a human merges and releases.
 
 What already exists and passes in the build environment: the full solution skeleton (16 projects build with 0 warnings), a security baseline (default deny, headers, limits, rate limiting, safe errors, trusted proxies, CORS allowlist, CSP, non-root containers), the web shell in Aman.Web's design system, 70 end-to-end, functional and accessibility tests passing, GitHub Actions (CI gate, Trivy, Semgrep, SBOM, CodeQL switch, Claude review, images) with Dependabot, unit tests compiled against stand-ins (they run for real in story ARV-001), the security gate at 0 errors, architecture and domain docs with 25 ADRs, and a 21-page wiki.
 
@@ -82,7 +82,7 @@ AMAN fixes, done on the local branch `feature/integration-auth-hardening` in `D:
 | E10 Deployment and demo | ARV-062 to ARV-065 | Complete Helm deployment, ZAP pipeline, scripted demo, exit review |
 | E11 Engineering quality | ARV-066 to ARV-076 | .NET Aspire AppHost and Aspire MCP, AsyncAPI for topics, Pact for the AMAN feed, Stryker.NET mutation testing, property-based tests, NBomber load tests, Toxiproxy failure tests, signed images with SBOM, OWASP ASVS L2 mapping, visual regression, dev container |
 
-Critical path (longest dependency chain, 18 stories): ARV-001, ARV-003, ARV-005, ARV-008, ARV-010, ARV-011, ARV-012, ARV-014, ARV-021, ARV-022, ARV-023, ARV-026, ARV-034, ARV-038, ARV-039, ARV-040, ARV-060, ARV-061. Authentication and site scope (ARV-010 to ARV-012) sit on it early, so they get the most review; the live demo path (ARV-034, ARV-035, ARV-055, ARV-064) runs one or two stories behind it.
+Critical path (longest dependency chain, 21 stories): ARV-001, ARV-003, ARV-005, ARV-008, ARV-010a to ARV-010d, ARV-011, ARV-012, ARV-014, ARV-021, ARV-022, ARV-023, ARV-026, ARV-034, ARV-038, ARV-039, ARV-040, ARV-060, ARV-061. Authentication and site scope (ARV-010a to ARV-012) sit on it early, so they get the most review; the live demo path (ARV-034, ARV-035, ARV-055, ARV-064) runs one or two stories behind it.
 
 Estimate (assumption, to recalibrate after the first 10 stories): a half-time developer reviewing agent output completes 3 to 5 stories a week once E0 is done, and 2 a week during E0 because porting AMAN foundations needs judgement. That gives about 16 to 24 weeks for Phase 0, inside the October to April window with 6 to 14 weeks of slack for vendor sample payloads, review cycles and the pilot negotiation. The estimate in D6 (developer half-time for 7 months) stands.
 
@@ -92,7 +92,7 @@ Estimate (assumption, to recalibrate after the first 10 stories): a half-time de
 |---|---|---|
 | 1 | ARV-001 on your machine (restore, all gates green); fix whatever the first CI runs report; review and merge the AMAN hardening branch; run the manual trademark searches and decide on the name; add the Claude secret for the review workflow | Ahmad with Claude Code interactive |
 | 2 | ARV-002 to ARV-006 through ralph-tui; first daily branch reviews | Developer, loop |
-| 3 | ARV-007 to ARV-012 (authentication and permissions are the riskiest E0 stories; run `/grill-pbi` on ARV-010 first) | Developer, loop with interactive reviews |
+| 3 | ARV-007 to ARV-012 (authentication and permissions are the riskiest E0 stories; ARV-010 was grilled on 1 October and split into ARV-010a to ARV-010d under ADR-0026) | Developer, loop with interactive reviews |
 | 4 | E1 topology and zone profiles; request Xovis sample payloads and data push documentation through the reseller | Developer, Ahmad on vendor contact |
 
 ## What Claude Code will not do

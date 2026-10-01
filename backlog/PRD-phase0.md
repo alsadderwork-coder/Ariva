@@ -108,24 +108,65 @@ Depends on: ARV-004. CWEs: CWE-862, CWE-863. Gates: B, E, S.
 - Role to permission seed for BorderShiftSupervisor, TerminalDutyManager, HandlerStationManager, SystemAdministrator
 - security/permission-matrix.json lists every endpoint with the expected status per role; a unit test checks the seed against it and the E2E helper reads it
 
-### ARV-010: User authentication with TOTP, rotation and step-up MFA
+### ARV-010a: Password login, lockout and token issuance
 
-Replace the placeholder deny scheme with real authentication while keeping default deny.
+Local accounts with username and password (ADR-0026). Replace the placeholder deny scheme with real authentication while keeping default deny. Split from ARV-010 after grilling on 2026-10-01.
 
-Depends on: ARV-007, ARV-008, ARV-009. CWEs: CWE-287, CWE-306, CWE-384, CWE-269. Gates: B, E, S.
+Depends on: ARV-007, ARV-008, ARV-009. CWEs: CWE-287, CWE-306, CWE-307, CWE-208, CWE-521, CWE-532. Gates: B, E, S.
 
-- Local users with PBKDF2-SHA256 (600,000 iterations) password hashes, constant-time comparison, lockout after 10 failures for 15 minutes, rate limit on login
-- TOTP enrolment mandatory for SystemAdministrator, BorderShiftSupervisor and TerminalDutyManager; TOTP verified with a per-user time-step replay guard
-- JWT access tokens (15 minutes, audience ariva-users, strict validation, 30 s skew); refresh tokens rotate on every use, are stored hashed, reuse revokes the family; refresh cookie HttpOnly, Secure, SameSite=Strict, path /auth
-- A new session id is minted at every login; logout revokes the family
-- [RequiresRecentMfa] attribute enforces a TOTP check within the last 15 minutes for critical functions
-- E2E: login, wrong password, replayed TOTP, lockout, refresh rotation, refresh reuse revokes family, sid changes on login, token in query rejected on API routes
+- User has a unique username (case-insensitive, NFKC-normalised, 3 to 64 characters), optional email, PBKDF2-SHA256 hash with 600,000 iterations, 16-byte salt and the algorithm and iteration count stored for upgrades; passwords are never trimmed or altered
+- Password policy: 12 to 128 characters, any Unicode, no composition rules, no periodic expiry; rejected when it appears in the bundled blocklist (top breached and common passwords, shipped with the image because sites may have no internet) or contains the username, "ariva" or the site code
+- POST /api/auth/login returns one generic error for unknown user, wrong password, disabled or locked account; unknown usernames are verified against a dummy hash so timing is equal (CWE-208)
+- Brute force: per-IP limit of 10 login attempts per minute (429); per-account lock after 10 consecutive failures for 15 minutes, auto-unlocking, with an admin unlock endpoint stubbed for ARV-011 and a security event on every lock
+- Access tokens: JWT signed with ES256 by Ariva.Api.Main only, header kid, issuer ariva, audience ariva-users, 15-minute lifetime, claims sub, sid, family, auth_time, amr; every host validates issuer, audience, lifetime, algorithm allowlist (ES256 only) and a 30-second skew; keys come from a Kubernetes secret, rotated every 90 days with the previous public key kept for overlap
+- Admin-created users get a one-time temporary password; until they change it and enrol TOTP (ARV-010c), their token carries scope pending and every endpoint except change-password, TOTP enrolment and logout returns 403
+- Nothing secret is logged: no argument logging on auth methods; a test drives a login and asserts the password, codes and tokens appear in no log event (CWE-532)
+- E2E: login success, wrong password, unknown user (same status and body), lockout and auto-unlock, rate limit 429, pending scope blocked, token with alg none or HS256 rejected, token for another audience rejected, token in a query string rejected on API routes
+
+### ARV-010b: Server-side sessions, refresh rotation and revocation
+
+Sessions are server-side so disabling a user or logging out takes effect at once (ADR-0026).
+
+Depends on: ARV-010a. CWEs: CWE-384, CWE-613, CWE-352, CWE-287. Gates: B, I, E, S.
+
+- A UserSession row (sid, user, family id, created, last seen, idle and absolute expiry, ip, user agent, revoked) in PostgreSQL, cached through FusionCache (Redis plus a 5-second memory layer with backplane invalidation); every authenticated request checks that its sid is active, so revocation applies within 5 seconds
+- Lifetimes: absolute 12 hours for every role; idle 30 minutes for SystemAdministrator and 4 hours for operational roles, extended by refresh; expired sessions return 401 with error session_expired
+- Refresh tokens: 256-bit random, opaque, stored as SHA-256 hashes, rotated on every use within one family; presenting a rotated token within a 30-second grace window returns the already-issued successor once (two tabs refreshing together), after it revokes the whole family and raises a security event
+- Refresh cookie __Secure-ariva_rt: HttpOnly, Secure, SameSite=Strict, Path=/api/auth, Max-Age equal to the remaining absolute lifetime; never in a response body; /api/auth/refresh also requires the X-Ariva-Csrf: 1 header and an Origin in the allowlist (CWE-352)
+- Login always issues a new sid, family and cookie and revokes any refresh cookie presented with the login request (CWE-384); logout revokes the session and family and clears the cookie; disabling a user or changing their roles revokes all their sessions
+- Web and API share one host: /api and /hubs behind the ingress (ADR-0026); the SignalR hub validates the sid on connect and closes connections of revoked sessions within 5 seconds
+- E2E: refresh rotation, reuse within grace returns the same successor, reuse after grace revokes the family, refresh without the CSRF header 403, foreign Origin 403, logout then old access token 401 within 5 seconds, disabled user loses access within 5 seconds, sid differs before and after login, idle and absolute expiry with a fake clock
+
+### ARV-010c: TOTP enrolment, verification, recovery codes and break-glass access
+
+Second factor for every human user (all four roles enrol; ADR-0026).
+
+Depends on: ARV-010b. CWEs: CWE-287, CWE-294, CWE-308, CWE-312. Gates: B, E, S.
+
+- TOTP per RFC 6238: SHA1, 6 digits, 30-second step, window of one step either side; secret of 160 bits from a CSPRNG, encrypted at rest with Data Protection (purpose Ariva.Totp.v1), shown once as a QR code and text at enrolment
+- Enrolment activates only after the user submits a valid first code; until then the account stays in pending scope
+- Replay guard: the last accepted time step is stored on the user row (durable across a Redis loss) and a code for that step or an earlier one is rejected (CWE-294)
+- Ten recovery codes (10 characters, Crockford base32) generated at enrolment, shown once, stored as SHA-256 hashes, single use; using one raises a security event and prompts re-generation; regeneration needs step-up (ARV-010d)
+- Failed second-factor attempts count towards the same account lockout as passwords
+- Break-glass: one account per deployment, created only by the installer command-line job with a printed sealed credential and recovery codes, excluded from the lockout, every login raises a high-severity security event and alert, and it cannot be created or re-enabled through any API
+- E2E and unit tests: enrolment confirm, wrong code, replayed code, code from the next step accepted, recovery code single use, break-glass login emits the alert event, a TOTP secret is never returned after enrolment
+
+### ARV-010d: Step-up MFA for critical actions
+
+Critical actions need a TOTP check within the last 15 minutes (ADR-0026).
+
+Depends on: ARV-010c. CWEs: CWE-306, CWE-287, CWE-269. Gates: B, E, S.
+
+- [RequiresRecentMfa(minutes: 15)] attribute and policy read auth_time and amr from the token; failure returns 401 with WWW-Authenticate: Bearer error="insufficient_user_authentication", max_age=900 (RFC 9470) and a ProblemDetails code mfa_required
+- POST /api/auth/step-up verifies a TOTP or recovery code for the current session and returns a new access token with a fresh auth_time and amr pwd plus otp; it shares the replay guard and lockout
+- Critical actions, enforced by an architecture test that reads the list: grant or revoke roles, create or reset users and TOTP, create or regenerate integration clients and device credentials, publish or retire a zone profile, create, edit or delete SLA contracts, delete alert rules, change outbound endpoints, regenerate recovery codes
+- E2E: each critical endpoint returns 401 mfa_required with an old auth_time and succeeds after step-up; a non-critical endpoint never asks
 
 ### ARV-011: User, role and audit administration
 
 Administrators manage users and roles safely; every security-relevant action is audited.
 
-Depends on: ARV-010. CWEs: CWE-269, CWE-863, CWE-306. Gates: B, E, S.
+Depends on: ARV-010d. CWEs: CWE-269, CWE-863, CWE-306. Gates: B, E, S.
 
 - User CRUD with role assignment through SvcRoleAssignment: no self-grant, cannot grant above own role, SystemAdministrator grants need step-up MFA and are audited
 - TOTP reset flow requires step-up MFA and forces re-enrolment
@@ -187,7 +228,7 @@ Depends on: ARV-013. CWEs: CWE-501. Gates: B, S.
 
 Create a draft from the active version, edit zones, validate, publish.
 
-Depends on: ARV-014, ARV-016, ARV-010, ARV-020. CWEs: CWE-306, CWE-862, CWE-863. Gates: B, E, S.
+Depends on: ARV-014, ARV-016, ARV-010d, ARV-020. CWEs: CWE-306, CWE-862, CWE-863. Gates: B, E, S.
 
 - Publish requires step-up MFA and raises ZoneProfilePublished through the outbox
 - History endpoint lists versions with who and when
@@ -241,7 +282,7 @@ Depends on: ARV-014, ARV-020. CWEs: CWE-287, CWE-501, CWE-863. Gates: B, E, S.
 
 [DeviceAuthenticated] for sensor pushes and gateways.
 
-Depends on: ARV-010, ARV-021. CWEs: CWE-287, CWE-306, CWE-863. Gates: B, E, S.
+Depends on: ARV-010a, ARV-021. CWEs: CWE-287, CWE-306, CWE-863. Gates: B, E, S.
 
 - Device key header (hash compared in constant time) with optional client certificate; IP allowlist per device; rate limit per device
 - Audience and scheme separate from users and integration clients
@@ -372,7 +413,7 @@ Depends on: ARV-031, ARV-032, ARV-033, ARV-026, ARV-020. CWEs: CWE-120, CWE-501.
 
 Push live state to the web.
 
-Depends on: ARV-034, ARV-010, ARV-012. CWEs: CWE-862, CWE-863, CWE-384. Gates: B, E, S.
+Depends on: ARV-034, ARV-010b, ARV-012. CWEs: CWE-862, CWE-863, CWE-384. Gates: B, E, S.
 
 - Snapshots per zone in Redis; LiveHub in Ariva.Api.Main with [Authorize], group joins authorised per permission and site, MessagePack, Redis backplane
 - access_token query accepted only on /hubs and redacted from logs
@@ -441,7 +482,7 @@ Depends on: ARV-014. CWEs: CWE-501. Gates: B, S.
 
 docs/architecture/integration.md inbound authentication, AMAN-compatible and hardened.
 
-Depends on: ARV-010, ARV-008, ARV-012. CWEs: CWE-287, CWE-306, CWE-863, CWE-269. Gates: B, E, S.
+Depends on: ARV-010a, ARV-008, ARV-012. CWEs: CWE-287, CWE-306, CWE-863, CWE-269. Gates: B, E, S.
 
 - IntegrationClient with hashed secret, encrypted TOTP seed, scopes, site codes, CIDRs; created with step-up MFA; secret and provisioning URI shown once
 - POST /api/v1/auth with replay guard, generic invalid_client, rate limits and lockout; integration signing key and audience separate
@@ -528,9 +569,11 @@ Depends on: ARV-045, ARV-048. CWEs: CWE-287, CWE-918. Gates: B, E, S.
 
 Login on the shell that already follows Aman.Web's design system (tokens, sidebar, header, light and dark modes, RTL; done 2026-10-01). Remaining: authentication and the (modules) and (public) route groups.
 
-Depends on: ARV-010. CWEs: CWE-384, CWE-79, CWE-287. Gates: W, E.
+Depends on: ARV-010d. CWEs: CWE-384, CWE-79, CWE-287. Gates: W, E.
 
-- Login with TOTP; access token in memory; refresh through the cookie; logout
+- Login with username, password and TOTP; access token in memory only; one tab refreshes for all through the Web Locks API and shares the new token with BroadcastChannel; logout
+- First-login flow: change the temporary password, enrol TOTP with a QR code, confirm the first code, show the recovery codes once with a copy action
+- Step-up dialog opens on 401 mfa_required and retries the action once; session_expired returns to login with the page remembered
 - Authenticated routes under (modules), login under (public); sidebar items filtered by permission (server stays the authority); user card and logout in the sidebar footer
 - Playwright: login, RTL, no console errors, no CSP violations, XSS probes on the login form
 
@@ -746,7 +789,7 @@ Depends on: ARV-062. CWEs: CWE-494. Gates: S.
 
 The 14 CWEs are the floor; tenders increasingly cite ASVS. Map every ASVS 5.0 Level 2 requirement to a control, a test or a gap.
 
-Depends on: ARV-010, ARV-011. CWEs: all. Gates: S.
+Depends on: ARV-010d, ARV-011. CWEs: all. Gates: S.
 
 - docs/security/asvs-l2.md lists each requirement with status (met, partly, gap, not applicable) and evidence links
 - Gaps become stories; the security-reviewer agent checks the mapping for the areas a story touches

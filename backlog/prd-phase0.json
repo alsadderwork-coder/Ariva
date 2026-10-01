@@ -193,16 +193,18 @@
       ]
     },
     {
-      "id": "ARV-010",
-      "title": "[E0] User authentication with TOTP, rotation and step-up MFA",
-      "description": "Replace the placeholder deny scheme with real authentication while keeping default deny. Epic: Foundation and security baseline. CWEs to review: CWE-287, CWE-306, CWE-384, CWE-269.",
+      "id": "ARV-010a",
+      "title": "[E0] Password login, lockout and token issuance",
+      "description": "Local accounts with username and password (ADR-0026). Replace the placeholder deny scheme with real authentication while keeping default deny. Split from ARV-010 after grilling on 2026-10-01. Epic: Foundation and security baseline. CWEs to review: CWE-287, CWE-306, CWE-307, CWE-208, CWE-521, CWE-532.",
       "acceptanceCriteria": [
-        "Local users with PBKDF2-SHA256 (600,000 iterations) password hashes, constant-time comparison, lockout after 10 failures for 15 minutes, rate limit on login",
-        "TOTP enrolment mandatory for SystemAdministrator, BorderShiftSupervisor and TerminalDutyManager; TOTP verified with a per-user time-step replay guard",
-        "JWT access tokens (15 minutes, audience ariva-users, strict validation, 30 s skew); refresh tokens rotate on every use, are stored hashed, reuse revokes the family; refresh cookie HttpOnly, Secure, SameSite=Strict, path /auth",
-        "A new session id is minted at every login; logout revokes the family",
-        "[RequiresRecentMfa] attribute enforces a TOTP check within the last 15 minutes for critical functions",
-        "E2E: login, wrong password, replayed TOTP, lockout, refresh rotation, refresh reuse revokes family, sid changes on login, token in query rejected on API routes",
+        "User has a unique username (case-insensitive, NFKC-normalised, 3 to 64 characters), optional email, PBKDF2-SHA256 hash with 600,000 iterations, 16-byte salt and the algorithm and iteration count stored for upgrades; passwords are never trimmed or altered",
+        "Password policy: 12 to 128 characters, any Unicode, no composition rules, no periodic expiry; rejected when it appears in the bundled blocklist (top breached and common passwords, shipped with the image because sites may have no internet) or contains the username, \"ariva\" or the site code",
+        "POST /api/auth/login returns one generic error for unknown user, wrong password, disabled or locked account; unknown usernames are verified against a dummy hash so timing is equal (CWE-208)",
+        "Brute force: per-IP limit of 10 login attempts per minute (429); per-account lock after 10 consecutive failures for 15 minutes, auto-unlocking, with an admin unlock endpoint stubbed for ARV-011 and a security event on every lock",
+        "Access tokens: JWT signed with ES256 by Ariva.Api.Main only, header kid, issuer ariva, audience ariva-users, 15-minute lifetime, claims sub, sid, family, auth_time, amr; every host validates issuer, audience, lifetime, algorithm allowlist (ES256 only) and a 30-second skew; keys come from a Kubernetes secret, rotated every 90 days with the previous public key kept for overlap",
+        "Admin-created users get a one-time temporary password; until they change it and enrol TOTP (ARV-010c), their token carries scope pending and every endpoint except change-password, TOTP enrolment and logout returns 403",
+        "Nothing secret is logged: no argument logging on auth methods; a test drives a login and asserts the password, codes and tokens appear in no log event (CWE-532)",
+        "E2E: login success, wrong password, unknown user (same status and body), lockout and auto-unlock, rate limit 429, pending scope blocked, token with alg none or HS256 rejected, token for another audience rejected, token in a query string rejected on API routes",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
         "node scripts/security/scan.mjs passes with 0 errors",
@@ -216,6 +218,79 @@
         "ARV-007",
         "ARV-008",
         "ARV-009"
+      ]
+    },
+    {
+      "id": "ARV-010b",
+      "title": "[E0] Server-side sessions, refresh rotation and revocation",
+      "description": "Sessions are server-side so disabling a user or logging out takes effect at once (ADR-0026). Epic: Foundation and security baseline. CWEs to review: CWE-384, CWE-613, CWE-352, CWE-287.",
+      "acceptanceCriteria": [
+        "A UserSession row (sid, user, family id, created, last seen, idle and absolute expiry, ip, user agent, revoked) in PostgreSQL, cached through FusionCache (Redis plus a 5-second memory layer with backplane invalidation); every authenticated request checks that its sid is active, so revocation applies within 5 seconds",
+        "Lifetimes: absolute 12 hours for every role; idle 30 minutes for SystemAdministrator and 4 hours for operational roles, extended by refresh; expired sessions return 401 with error session_expired",
+        "Refresh tokens: 256-bit random, opaque, stored as SHA-256 hashes, rotated on every use within one family; presenting a rotated token within a 30-second grace window returns the already-issued successor once (two tabs refreshing together), after it revokes the whole family and raises a security event",
+        "Refresh cookie __Secure-ariva_rt: HttpOnly, Secure, SameSite=Strict, Path=/api/auth, Max-Age equal to the remaining absolute lifetime; never in a response body; /api/auth/refresh also requires the X-Ariva-Csrf: 1 header and an Origin in the allowlist (CWE-352)",
+        "Login always issues a new sid, family and cookie and revokes any refresh cookie presented with the login request (CWE-384); logout revokes the session and family and clears the cookie; disabling a user or changing their roles revokes all their sessions",
+        "Web and API share one host: /api and /hubs behind the ingress (ADR-0026); the SignalR hub validates the sid on connect and closes connections of revoked sessions within 5 seconds",
+        "E2E: refresh rotation, reuse within grace returns the same successor, reuse after grace revokes the family, refresh without the CSRF header 403, foreign Origin 403, logout then old access token 401 within 5 seconds, disabled user loses access within 5 seconds, sid differs before and after login, idle and absolute expiry with a fake clock",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 11,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-010a"
+      ]
+    },
+    {
+      "id": "ARV-010c",
+      "title": "[E0] TOTP enrolment, verification, recovery codes and break-glass access",
+      "description": "Second factor for every human user (all four roles enrol; ADR-0026). Epic: Foundation and security baseline. CWEs to review: CWE-287, CWE-294, CWE-308, CWE-312.",
+      "acceptanceCriteria": [
+        "TOTP per RFC 6238: SHA1, 6 digits, 30-second step, window of one step either side; secret of 160 bits from a CSPRNG, encrypted at rest with Data Protection (purpose Ariva.Totp.v1), shown once as a QR code and text at enrolment",
+        "Enrolment activates only after the user submits a valid first code; until then the account stays in pending scope",
+        "Replay guard: the last accepted time step is stored on the user row (durable across a Redis loss) and a code for that step or an earlier one is rejected (CWE-294)",
+        "Ten recovery codes (10 characters, Crockford base32) generated at enrolment, shown once, stored as SHA-256 hashes, single use; using one raises a security event and prompts re-generation; regeneration needs step-up (ARV-010d)",
+        "Failed second-factor attempts count towards the same account lockout as passwords",
+        "Break-glass: one account per deployment, created only by the installer command-line job with a printed sealed credential and recovery codes, excluded from the lockout, every login raises a high-severity security event and alert, and it cannot be created or re-enabled through any API",
+        "E2E and unit tests: enrolment confirm, wrong code, replayed code, code from the next step accepted, recovery code single use, break-glass login emits the alert event, a TOTP secret is never returned after enrolment",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 12,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-010b"
+      ]
+    },
+    {
+      "id": "ARV-010d",
+      "title": "[E0] Step-up MFA for critical actions",
+      "description": "Critical actions need a TOTP check within the last 15 minutes (ADR-0026). Epic: Foundation and security baseline. CWEs to review: CWE-306, CWE-287, CWE-269.",
+      "acceptanceCriteria": [
+        "[RequiresRecentMfa(minutes: 15)] attribute and policy read auth_time and amr from the token; failure returns 401 with WWW-Authenticate: Bearer error=\"insufficient_user_authentication\", max_age=900 (RFC 9470) and a ProblemDetails code mfa_required",
+        "POST /api/auth/step-up verifies a TOTP or recovery code for the current session and returns a new access token with a fresh auth_time and amr pwd plus otp; it shares the replay guard and lockout",
+        "Critical actions, enforced by an architecture test that reads the list: grant or revoke roles, create or reset users and TOTP, create or regenerate integration clients and device credentials, publish or retire a zone profile, create, edit or delete SLA contracts, delete alert rules, change outbound endpoints, regenerate recovery codes",
+        "E2E: each critical endpoint returns 401 mfa_required with an old auth_time and succeeds after step-up; a non-critical endpoint never asks",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 13,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-010c"
       ]
     },
     {
@@ -233,11 +308,11 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 11,
+      "priority": 14,
       "passes": false,
       "notes": "",
       "dependsOn": [
-        "ARV-010"
+        "ARV-010d"
       ]
     },
     {
@@ -254,7 +329,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 12,
+      "priority": 15,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -274,7 +349,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 13,
+      "priority": 16,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -296,7 +371,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 14,
+      "priority": 17,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -319,7 +394,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 15,
+      "priority": 18,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -339,7 +414,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 16,
+      "priority": 19,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -360,13 +435,13 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 17,
+      "priority": 20,
       "passes": false,
       "notes": "",
       "dependsOn": [
         "ARV-014",
         "ARV-016",
-        "ARV-010",
+        "ARV-010d",
         "ARV-020"
       ]
     },
@@ -384,7 +459,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 18,
+      "priority": 21,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -404,7 +479,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 19,
+      "priority": 22,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -428,7 +503,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 20,
+      "priority": 23,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -450,7 +525,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 21,
+      "priority": 24,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -472,11 +547,11 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 22,
+      "priority": 25,
       "passes": false,
       "notes": "",
       "dependsOn": [
-        "ARV-010",
+        "ARV-010a",
         "ARV-021"
       ]
     },
@@ -495,7 +570,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 23,
+      "priority": 26,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -517,7 +592,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 24,
+      "priority": 27,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -538,7 +613,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 25,
+      "priority": 28,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -559,7 +634,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 26,
+      "priority": 29,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -580,7 +655,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 27,
+      "priority": 30,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -601,7 +676,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 28,
+      "priority": 31,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -622,7 +697,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 29,
+      "priority": 32,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -642,7 +717,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 30,
+      "priority": 33,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -662,7 +737,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 31,
+      "priority": 34,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -681,7 +756,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 32,
+      "priority": 35,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -700,7 +775,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 33,
+      "priority": 36,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -721,7 +796,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 34,
+      "priority": 37,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -746,12 +821,12 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 35,
+      "priority": 38,
       "passes": false,
       "notes": "",
       "dependsOn": [
         "ARV-034",
-        "ARV-010",
+        "ARV-010b",
         "ARV-012"
       ]
     },
@@ -768,7 +843,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 36,
+      "priority": 39,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -790,7 +865,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 37,
+      "priority": 40,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -811,7 +886,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 38,
+      "priority": 41,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -832,7 +907,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 39,
+      "priority": 42,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -853,7 +928,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 40,
+      "priority": 43,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -872,7 +947,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 41,
+      "priority": 44,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -894,11 +969,11 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 42,
+      "priority": 45,
       "passes": false,
       "notes": "",
       "dependsOn": [
-        "ARV-010",
+        "ARV-010a",
         "ARV-008",
         "ARV-012"
       ]
@@ -916,7 +991,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 43,
+      "priority": 46,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -937,7 +1012,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 44,
+      "priority": 47,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -959,7 +1034,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 45,
+      "priority": 48,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -979,7 +1054,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 46,
+      "priority": 49,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -999,7 +1074,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 47,
+      "priority": 50,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -1022,7 +1097,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 48,
+      "priority": 51,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -1045,7 +1120,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 49,
+      "priority": 52,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -1065,7 +1140,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 50,
+      "priority": 53,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -1078,7 +1153,9 @@
       "title": "[E8] Web shell, login and design tokens",
       "description": "Login on the shell that already follows Aman.Web's design system (tokens, sidebar, header, light and dark modes, RTL; done 2026-10-01). Remaining: authentication and the (modules) and (public) route groups. Epic: Web application. CWEs to review: CWE-384, CWE-79, CWE-287.",
       "acceptanceCriteria": [
-        "Login with TOTP; access token in memory; refresh through the cookie; logout",
+        "Login with username, password and TOTP; access token in memory only; one tab refreshes for all through the Web Locks API and shares the new token with BroadcastChannel; logout",
+        "First-login flow: change the temporary password, enrol TOTP with a QR code, confirm the first code, show the recovery codes once with a copy action",
+        "Step-up dialog opens on 401 mfa_required and retries the action once; session_expired returns to login with the page remembered",
         "Authenticated routes under (modules), login under (public); sidebar items filtered by permission (server stays the authority); user card and logout in the sidebar footer",
         "Playwright: login, RTL, no console errors, no CSP violations, XSS probes on the login form",
         "node scripts/verify.mjs web passes (svelte-check, lint, build)",
@@ -1086,11 +1163,11 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 51,
+      "priority": 54,
       "passes": false,
       "notes": "",
       "dependsOn": [
-        "ARV-010"
+        "ARV-010d"
       ]
     },
     {
@@ -1105,7 +1182,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 52,
+      "priority": 55,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -1125,7 +1202,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 53,
+      "priority": 56,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -1146,7 +1223,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 54,
+      "priority": 57,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -1167,7 +1244,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 55,
+      "priority": 58,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -1188,7 +1265,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 56,
+      "priority": 59,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -1208,7 +1285,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 57,
+      "priority": 60,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -1228,7 +1305,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 58,
+      "priority": 61,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -1247,7 +1324,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 59,
+      "priority": 62,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -1270,7 +1347,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 60,
+      "priority": 63,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -1289,7 +1366,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 61,
+      "priority": 64,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -1307,7 +1384,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 62,
+      "priority": 65,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -1327,7 +1404,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 63,
+      "priority": 66,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -1346,7 +1423,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 64,
+      "priority": 67,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -1372,7 +1449,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 65,
+      "priority": 68,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -1394,7 +1471,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 66,
+      "priority": 69,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -1415,7 +1492,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 67,
+      "priority": 70,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -1436,7 +1513,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 68,
+      "priority": 71,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -1454,7 +1531,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 69,
+      "priority": 72,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -1475,7 +1552,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 70,
+      "priority": 73,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -1497,7 +1574,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 71,
+      "priority": 74,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -1518,7 +1595,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 72,
+      "priority": 75,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -1539,7 +1616,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 73,
+      "priority": 76,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -1557,11 +1634,11 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 74,
+      "priority": 77,
       "passes": false,
       "notes": "",
       "dependsOn": [
-        "ARV-010",
+        "ARV-010d",
         "ARV-011"
       ]
     },
@@ -1577,7 +1654,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 75,
+      "priority": 78,
       "passes": false,
       "notes": "",
       "dependsOn": [
@@ -1600,7 +1677,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 76,
+      "priority": 79,
       "passes": false,
       "notes": "",
       "dependsOn": [
