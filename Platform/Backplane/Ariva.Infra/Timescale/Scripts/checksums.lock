@@ -8,6 +8,7 @@
     "0005_totp.sql": "ae33357970b2d29ed19f68a950b596ec4389cf8979e5dfdef5cc48d97fa1373d",
     "0006_audit_entry.sql": "2d7a2e5600d80f74804e1f439a7ca095f9f0825f4cf467e868504d169442a114",
     "0007_site.sql": "7f4af8b4fc972ecf0fe155b19fb8791830cdf53cc17481b37b1371327b399fd9",
-    "0008_topology.sql": "ad89737f4b46dd2e55e418f998e95cf4d1d27afdbb33cbd299e597063b2ea3a8"
+    "0008_topology.sql": "ad89737f4b46dd2e55e418f998e95cf4d1d27afdbb33cbd299e597063b2ea3a8",
+    "0009_desk_code_mapping.sql": "a3d74dbd46a9c0f29cc75dbfb67f49aa23bbe752e1a80a3c119120f784250f7f"
   }
 }

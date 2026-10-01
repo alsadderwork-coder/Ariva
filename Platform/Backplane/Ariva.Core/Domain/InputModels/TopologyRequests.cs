@@ -57,3 +57,22 @@ public sealed record UpdateDeskRequest(
     [MaxLength(200)] string Name,
     [MaxLength(8)] IReadOnlyList<string> LaneCategories = null,
     bool InService = true);
+
+/// <summary>A numbered range of desks (ARV-015): prefix plus From..To padded to Width digits, at most 200.</summary>
+public sealed record CreateDeskRangeRequest(
+    [Required] Guid? CheckpointId,
+    [MaxLength(12)] string Prefix,
+    [Range(0, 9999)] int From,
+    [Range(0, 9999)] int To,
+    [Range(1, 4)] int Width,
+    [Required, MaxLength(32)] string Kind,
+    [MaxLength(8)] IReadOnlyList<string> LaneCategories = null);
+
+/// <summary>Another system's code for a desk (ARV-015).</summary>
+public sealed record CreateDeskCodeMappingRequest(
+    [Required, MaxLength(16)] string System,
+    [Required, MaxLength(32)] string ExternalCode,
+    [Required] Guid? DeskId);
+
+/// <summary>Points an existing code at another desk of the same site.</summary>
+public sealed record UpdateDeskCodeMappingRequest([Required] Guid? DeskId);

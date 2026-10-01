@@ -115,3 +115,8 @@ One entry per story, newest last. Format:
 - Security review: CWE-862 (permission per action, writes for administrators only), CWE-863 (site filter on every query and lookup, parents outside the caller's sites answer 404, airports deployment-wide), CWE-89 (parameterised LINQ, sort allowlist, page cap), CWE-501 (site code and parent fixed at creation, kinds parsed by name only).
 - Learnings: NHibernate LINQ resolves a member accessed through an interface constraint (ISiteBound.SiteCode) to the mapped property, so one WithinSites helper serves every site-bound entity; session.Get ignores the soft delete filter, so lookups check IsDeleted themselves.
 
+## 2026-10-02 ARV-015 Desk ranges and external desk code mapping
+- Summary: Checkpoint.AddDeskRange (prefix plus padded numbers, at most 200, every code valid and free or nothing added) behind POST api/v1/admin/desks/range; DeskCodeMapping (script 0009) for AMAN desk and gate codes and AODB counter codes, unique per system and site and one per desk and system, fitted to the desk kind, kept in its site, re-pointable and soft deleted; api/v1/admin/desk-code-mappings; ISvcDeskCodeMappings.ResolveAsync for the feed consumers, cached under the topology tag.
+- Gates: 267 unit tests executed offline; local harness PASS (ranges, overlap refusal leaving nothing behind, mapping uniqueness and kind rules, cross-site 404, resolver per site and cache eviction; the permission matrix, 295 cells, against the real host); GitHub CI not observed.
+- Security review: CWE-120 (range size, prefix and code lengths bounded before anything is built), CWE-863 (mappings site-scoped, a code cannot move to another site).
+

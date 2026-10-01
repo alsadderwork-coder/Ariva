@@ -9,3 +9,5 @@ public sealed record LevelViewModel(Guid Id, Guid TerminalId, string Code, strin
 public sealed record CheckpointViewModel(Guid Id, Guid LevelId, string Code, string Name, string Kind, string SiteCode, DateTime? CreatedOn);
 
 public sealed record DeskViewModel(Guid Id, Guid CheckpointId, string Code, string Name, string Kind, IReadOnlyList<string> LaneCategories, bool InService, string SiteCode, DateTime? CreatedOn);
+
+public sealed record DeskCodeMappingViewModel(Guid Id, string System, string ExternalCode, Guid DeskId, string DeskCode, string SiteCode, DateTime? CreatedOn);

@@ -58,6 +58,8 @@ ARV-014 adds `api/v1/admin/airports`, `terminals`, `levels`, `checkpoints` and `
 | Checkpoint | Kind `CheckIn`, `Security`, `Emigration` or `Immigration`, fixed at creation |
 | Desk | Kind by checkpoint: `Counter` at check-in, `SecurityLane` at security, `Desk` and `EGate` at emigration and immigration; border desks serve at least one lane category and e-gates include `EG`; can be taken out of service |
 
+`POST desks/range` creates a numbered range in one go (for example prefix `D`, 1 to 22, width 2 gives D01 to D22): at most 200, every code valid and free, otherwise nothing is created. `desk-code-mappings` maps another system's code to a desk: AMAN desk and e-gate codes to border desks and e-gates, AODB counter codes to check-in counters; a code is unique per system and site, a desk has one code per system, and the feeds resolve codes through these mappings and park what they cannot resolve. Whether AODB also sends security lane codes is To confirm per airport.
+
 Codes are 1 to 16 upper case letters or digits with single inner hyphens. Deletes are soft (history and zone profiles keep their references), refused while live records exist underneath, and free the code for reuse. Everyone sees only the records of their sites; another site's record answers like one that does not exist. Every change is audited.
 
 ## 3. TOTP enrolment and reset

@@ -140,10 +140,20 @@ public sealed class FakeAdministration : ISvcUsers, ISvcRoleAssignment, ISvcAudi
 }
 
 /// <summary>Topology for in-process hosts (no database): searches are empty and every id is unknown, as for the matrix calls.</summary>
-public sealed class FakeTopology : Ariva.Core.Services.Topology.ISvcTopology
+public sealed class FakeTopology : Ariva.Core.Services.Topology.ISvcTopology, Ariva.Core.Services.Topology.ISvcDeskCodeMappings
 {
-    public static void Register(IServiceCollection services) =>
+    public static void Register(IServiceCollection services)
+    {
         services.Replace(ServiceDescriptor.Scoped<Ariva.Core.Services.Topology.ISvcTopology, FakeTopology>());
+        services.Replace(ServiceDescriptor.Scoped<Ariva.Core.Services.Topology.ISvcDeskCodeMappings, FakeTopology>());
+    }
+
+    public Task<Fluentx.Result<PageViewModel<DeskCodeMappingViewModel>>> SearchAsync(DeskCodeMappingCriteria criteria, CancellationToken ct = default) => Empty<DeskCodeMappingViewModel>();
+    public Task<Fluentx.Result<DeskCodeMappingViewModel>> GetAsync(Guid id, CancellationToken ct = default) => Missing<DeskCodeMappingViewModel>();
+    public Task<Fluentx.Result<DeskCodeMappingViewModel>> CreateAsync(CreateDeskCodeMappingRequest request, CancellationToken ct = default) => Missing<DeskCodeMappingViewModel>();
+    public Task<Fluentx.Result<DeskCodeMappingViewModel>> UpdateAsync(Guid id, UpdateDeskCodeMappingRequest request, CancellationToken ct = default) => Missing<DeskCodeMappingViewModel>();
+    public Task<Fluentx.Result<bool>> DeleteAsync(Guid id, CancellationToken ct = default) => Missing<bool>();
+    public Task<Guid?> ResolveAsync(Ariva.Core.Domain.Enums.ExternalSystem system, string siteCode, string externalCode, CancellationToken ct = default) => Task.FromResult<Guid?>(null);
 
     private static Task<Fluentx.Result<PageViewModel<T>>> Empty<T>() =>
         Task.FromResult(new Fluentx.Result<PageViewModel<T>>(new PageViewModel<T>([], 0, 1, 50)));
@@ -175,5 +185,6 @@ public sealed class FakeTopology : Ariva.Core.Services.Topology.ISvcTopology
     public Task<Fluentx.Result<DeskViewModel>> GetDeskAsync(Guid id, CancellationToken ct = default) => Missing<DeskViewModel>();
     public Task<Fluentx.Result<DeskViewModel>> CreateDeskAsync(CreateDeskRequest request, CancellationToken ct = default) => Missing<DeskViewModel>();
     public Task<Fluentx.Result<DeskViewModel>> UpdateDeskAsync(Guid id, UpdateDeskRequest request, CancellationToken ct = default) => Missing<DeskViewModel>();
+    public Task<Fluentx.Result<IReadOnlyList<DeskViewModel>>> CreateDeskRangeAsync(CreateDeskRangeRequest request, CancellationToken ct = default) => Missing<IReadOnlyList<DeskViewModel>>();
     public Task<Fluentx.Result<bool>> DeleteDeskAsync(Guid id, CancellationToken ct = default) => Missing<bool>();
 }

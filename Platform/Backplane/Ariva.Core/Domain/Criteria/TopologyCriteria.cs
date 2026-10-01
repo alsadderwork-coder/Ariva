@@ -30,3 +30,24 @@ public sealed record TopologyCriteria : BaseCriteria
     [Range(1, 500)]
     public int PageSize { get; set; } = 50;
 }
+
+/// <summary>Desk code mapping search (ARV-015): by system, site, desk and code text.</summary>
+public sealed record DeskCodeMappingCriteria : BaseCriteria
+{
+    [MaxLength(16)]
+    public string System { get; set; }
+
+    [MaxLength(17)]
+    public string SiteCode { get; set; }
+
+    public Guid? DeskId { get; set; }
+
+    [MaxLength(32)]
+    public string Text { get; set; }
+
+    [Range(1, int.MaxValue)]
+    public int PageIndex { get; set; } = 1;
+
+    [Range(1, 500)]
+    public int PageSize { get; set; } = 50;
+}

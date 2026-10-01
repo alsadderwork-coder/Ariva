@@ -101,3 +101,39 @@ test('injection and markup payloads are refused or stored as inert text', async 
 	expect((await call('GET', `${api}/desks?sortBy=${encodeURIComponent('code; DROP TABLE desk')}`, { token: admin })).status()).toBe(400);
 	expect((await call('GET', `${api}/desks?pageSize=501`, { token: admin })).status()).toBe(400);
 });
+
+test('desk ranges are all or nothing and capped at 200 (ARV-015)', async () => {
+	const range = await call('POST', `${api}/desks/range`, { token: admin, data: { checkpointId: ids.checkpoint, prefix: 'R', from: 1, to: 22, width: 2, kind: 'Desk', laneCategories: ['VIS'] } });
+	expect(range.status()).toBe(201);
+	const desks = (await range.json()) as { id: string; code: string }[];
+	expect(desks.map((d) => d.code)).toEqual(Array.from({ length: 22 }, (_, i) => `R${String(i + 1).padStart(2, '0')}`));
+	ids.r01 = desks[0].id;
+	ids.r02 = desks[1].id;
+
+	expect((await call('POST', `${api}/desks/range`, { token: admin, data: { checkpointId: ids.checkpoint, prefix: 'R', from: 20, to: 25, width: 2, kind: 'Desk', laneCategories: ['VIS'] } })).status(), 'overlap').toBe(409);
+	const after = await call('GET', `${api}/desks?parentId=${ids.checkpoint}&text=R2`, { token: admin });
+	expect((await after.json()).totalCount, 'the refused range added nothing').toBe(3);
+	expect((await call('POST', `${api}/desks/range`, { token: admin, data: { checkpointId: ids.checkpoint, prefix: 'Q', from: 1, to: 201, width: 3, kind: 'Desk', laneCategories: ['VIS'] } })).status(), 'above 200').toBe(400);
+	expect((await call('POST', `${api}/desks/range`, { token: admin, data: { checkpointId: ids.checkpoint, prefix: "Q'--", from: 1, to: 2, width: 2, kind: 'Desk', laneCategories: ['VIS'] } })).status(), 'bad prefix').toBe(400);
+});
+
+test('external desk codes map to one desk per system and site (ARV-015)', async () => {
+	const url = `${api}/desk-code-mappings`;
+	const created = await call('POST', url, { token: admin, data: { system: 'Aman', externalCode: 'dsk-101', deskId: ids.r01 } });
+	expect(created.status()).toBe(201);
+	const mapping = await created.json();
+	expect(mapping.externalCode).toBe('DSK-101');
+	expect(mapping.siteCode).toBe('E2E1');
+
+	expect((await call('POST', url, { token: admin, data: { system: 'Aman', externalCode: 'DSK-101', deskId: ids.r02 } })).status(), 'same code').toBe(409);
+	expect((await call('POST', url, { token: admin, data: { system: 'Aman', externalCode: 'DSK-102', deskId: ids.r01 } })).status(), 'second code for the desk').toBe(409);
+	expect((await call('POST', url, { token: admin, data: { system: 'Aodb', externalCode: 'C12', deskId: ids.r02 } })).status(), 'AODB on a border desk').toBe(400);
+	expect((await call('POST', url, { token: admin, data: { system: 'Aman', externalCode: '<script>', deskId: ids.r02 } })).status(), 'markup').toBe(400);
+
+	const terminal = (await signIn(accounts().TerminalDutyManager)).accessToken;
+	expect((await call('GET', `${url}/${mapping.id}`, { token: terminal })).status(), "another site's mapping").toBe(404);
+	const moved = await call('PUT', `${url}/${mapping.id}`, { token: admin, data: { deskId: ids.r02 } });
+	expect((await moved.json()).deskCode).toBe('R02');
+	expect((await call('DELETE', `${url}/${mapping.id}`, { token: admin })).status()).toBe(204);
+	expect((await call('POST', url, { token: admin, data: { system: 'Aman', externalCode: 'DSK-101', deskId: ids.r01 } })).status(), 'free again').toBe(201);
+});

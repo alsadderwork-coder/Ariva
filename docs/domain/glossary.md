@@ -84,7 +84,7 @@ Items marked (Proposed) are naming proposals made in this repository where the s
 | Module | A separately licensed part of Ariva. | `ModuleCode { Border, AirportOperations }` |
 | Deployment kind | Where an Ariva instance runs and what may cross its boundary. | `DeploymentKind { Border, Airport, Small }`; a combined site is two deployments |
 | Organisation | A party within a deployment: airport operator, handler, security contractor, border authority. | `Organisation`, `OrganisationId`, `TenantId` |
-| Desk code mapping | The mapping from an AMAN desk or gate code to an Ariva desk at a site. | `DeskCodeMapping { SiteId, ExternalCode, DeskId }` (Proposed) |
+| Desk code mapping | The mapping from an AMAN desk or gate code, or an AODB counter code, to an Ariva desk at a site; unique per system and site. | `DeskCodeMapping { System, SiteCode, ExternalCode, Desk }`, `ExternalSystem { Aman, Aodb }` (ARV-015) |
 | AMAN feed | The four aggregate-only contracts V1 from AMAN. | `DeskSessionChanged`, `DeskIntervalStats`, `EGateIntervalStats`, `InboundFlightLaneDemand` in `Ariva.Business.Contracts` |
 | Border-to-airport feed | Lane-level wait times and KPIs pushed one way from a border deployment to an airport deployment. | `BorderLaneKpi` (Proposed) |
 | Display channel | One passenger screen or group of screens showing one or more queues. | `DisplayChannel` |

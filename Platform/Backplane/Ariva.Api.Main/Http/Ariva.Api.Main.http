@@ -69,3 +69,17 @@ Content-Type: application/json
 ### Search desks of a checkpoint (SearchDesk)
 GET {{Ariva.Api.Main_HostAddress}}/api/v1/admin/desks?parentId={{checkpointId}}&sortBy=code
 Authorization: Bearer {{accessToken}}
+
+### Create a desk range D01 to D22 (CreateDesk)
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/admin/desks/range
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "checkpointId": "{{checkpointId}}", "prefix": "D", "from": 1, "to": 22, "width": 2, "kind": "Desk", "laneCategories": ["CIT"] }
+
+### Map an AMAN desk code (CreateDeskCodeMapping)
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/admin/desk-code-mappings
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "system": "Aman", "externalCode": "A-07", "deskId": "{{deskId}}" }

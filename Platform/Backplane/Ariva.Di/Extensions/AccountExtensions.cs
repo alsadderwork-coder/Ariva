@@ -59,6 +59,7 @@ public static class AccountExtensions
         services.TryAddScoped<ISvcAuditEntries, SvcAuditEntries>();
         services.TryAddScoped<ISvcSites, SvcSites>();
         services.TryAddScoped<Ariva.Core.Services.Topology.ISvcTopology, Ariva.Infra.Services.Topology.SvcTopology>();
+        services.TryAddScoped<Ariva.Core.Services.Topology.ISvcDeskCodeMappings, Ariva.Infra.Services.Topology.SvcDeskCodeMappings>();
 
         var environment = configuration["Application:Environment"];
         if (settings.DevelopmentUsers.Count > 0)

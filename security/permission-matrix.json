@@ -1045,6 +1045,116 @@
     {
       "host": "main",
       "method": "POST",
+      "route": "/api/v1/admin/desks/range",
+      "access": "permission",
+      "permissions": [
+        "CreateDesk"
+      ],
+      "body": {
+        "prefix": "D",
+        "from": 1,
+        "to": 2,
+        "width": 2,
+        "kind": "Desk"
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 400
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/admin/desk-code-mappings",
+      "access": "permission",
+      "permissions": [
+        "SearchDeskCodeMapping"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 200,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/desk-code-mappings",
+      "access": "permission",
+      "permissions": [
+        "CreateDeskCodeMapping"
+      ],
+      "body": {
+        "system": "Aman",
+        "externalCode": "A-07"
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 400
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/admin/desk-code-mappings/{id:guid}",
+      "access": "permission",
+      "permissions": [
+        "ViewDeskCodeMapping"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "PUT",
+      "route": "/api/v1/admin/desk-code-mappings/{id:guid}",
+      "access": "permission",
+      "permissions": [
+        "EditDeskCodeMapping"
+      ],
+      "body": {
+        "deskId": "0199a000-0000-7000-8000-00000000a1a1"
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "DELETE",
+      "route": "/api/v1/admin/desk-code-mappings/{id:guid}",
+      "access": "permission",
+      "permissions": [
+        "DeleteDeskCodeMapping"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
       "route": "/api/v1/admin/sites",
       "access": "permission",
       "permissions": [

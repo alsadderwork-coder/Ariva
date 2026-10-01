@@ -315,6 +315,23 @@ internal sealed class SvcTopology(
             return new Result<DeskViewModel>(ToView(desk));
         });
 
+    public Task<Result<IReadOnlyList<DeskViewModel>>> CreateDeskRangeAsync(CreateDeskRangeRequest request, CancellationToken ct = default) =>
+        GuardedAsync(async () =>
+        {
+            if (!TryKind<DeskKind>(request.Kind, out var kind))
+                return Result.Error<IReadOnlyList<DeskViewModel>>(TopologyErrors.UnknownKind);
+            var checkpoint = await ScopedLiveAsync<Checkpoint>(request.CheckpointId.GetValueOrDefault(), ct);
+            if (checkpoint is null)
+                return Result.Error<IReadOnlyList<DeskViewModel>>(TopologyErrors.NotFound);
+
+            var desks = checkpoint.AddDeskRange(request.Prefix, request.From, request.To, request.Width, kind, request.LaneCategories);
+            foreach (var desk in desks)
+                await SaveAsync(desk, ct);
+            await AuditAsync("Desk", "RangeCreated", checkpoint.Id, Path(checkpoint), null,
+                $"kind={kind}; codes={desks[0].Code}..{desks[^1].Code}; count={desks.Count}; lanes={desks[0].LaneCategoryCodes}", ct);
+            return new Result<IReadOnlyList<DeskViewModel>>(desks.Select(ToView).ToList());
+        });
+
     public Task<Result<DeskViewModel>> UpdateDeskAsync(Guid id, UpdateDeskRequest request, CancellationToken ct = default) =>
         GuardedAsync(async () =>
         {

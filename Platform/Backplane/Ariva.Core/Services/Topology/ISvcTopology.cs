@@ -52,6 +52,28 @@ public interface ISvcTopology : ISvcScoped
     Task<Result<PageViewModel<DeskViewModel>>> SearchDesksAsync(TopologyCriteria criteria, CancellationToken ct = default);
     Task<Result<DeskViewModel>> GetDeskAsync(Guid id, CancellationToken ct = default);
     Task<Result<DeskViewModel>> CreateDeskAsync(CreateDeskRequest request, CancellationToken ct = default);
+
+    /// <summary>Creates a numbered range of desks in one transaction: all of them or none (ARV-015).</summary>
+    Task<Result<IReadOnlyList<DeskViewModel>>> CreateDeskRangeAsync(CreateDeskRangeRequest request, CancellationToken ct = default);
     Task<Result<DeskViewModel>> UpdateDeskAsync(Guid id, UpdateDeskRequest request, CancellationToken ct = default);
     Task<Result<bool>> DeleteDeskAsync(Guid id, CancellationToken ct = default);
+}
+
+/// <summary>
+/// Desk code mappings (ARV-015): another system's code for a desk, unique per system and site, one per desk and system.
+/// Site-scoped like the desks; changes are audited.
+/// </summary>
+public interface ISvcDeskCodeMappings : ISvcScoped
+{
+    Task<Result<PageViewModel<DeskCodeMappingViewModel>>> SearchAsync(DeskCodeMappingCriteria criteria, CancellationToken ct = default);
+    Task<Result<DeskCodeMappingViewModel>> GetAsync(Guid id, CancellationToken ct = default);
+    Task<Result<DeskCodeMappingViewModel>> CreateAsync(CreateDeskCodeMappingRequest request, CancellationToken ct = default);
+    Task<Result<DeskCodeMappingViewModel>> UpdateAsync(Guid id, UpdateDeskCodeMappingRequest request, CancellationToken ct = default);
+    Task<Result<bool>> DeleteAsync(Guid id, CancellationToken ct = default);
+
+    /// <summary>
+    /// The live desk a system's code names at a site, or null when it is not mapped (feed consumers park such
+    /// records). Cached with the topology tag; not scoped to a caller, for background consumers.
+    /// </summary>
+    Task<Guid?> ResolveAsync(Ariva.Core.Domain.Enums.ExternalSystem system, string siteCode, string externalCode, CancellationToken ct = default);
 }

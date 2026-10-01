@@ -24,3 +24,13 @@ public enum DeskKind
     /// <summary>An automated border gate; rejects go to a manual lane.</summary>
     EGate
 }
+
+/// <summary>A system whose own desk, gate or counter codes are mapped to Ariva desks (ARV-015); stored by name.</summary>
+public enum ExternalSystem
+{
+    /// <summary>AMAN border management: desk and e-gate codes on the aman.feed topics.</summary>
+    Aman,
+
+    /// <summary>The airport operational database: check-in counter codes in allocations.</summary>
+    Aodb
+}

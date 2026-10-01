@@ -264,6 +264,32 @@ public class Checkpoint : BaseSoftDeletableEntity<Checkpoint>, ISiteBound
         _ => new HashSet<DeskKind>()
     };
 
+    public const int MaxRange = 200;
+
+    /// <summary>
+    /// Adds a numbered range of desks, for example prefix "D", 1 to 22, width 2: D01 to D22 (ARV-015). At most
+    /// <see cref="MaxRange"/> per call; every code must be valid and free, otherwise nothing is added.
+    /// </summary>
+    public virtual IReadOnlyList<Desk> AddDeskRange(string prefix, int from, int to, int width, DeskKind kind, IEnumerable<string> laneCategories)
+    {
+        if (from < 0 || to < from)
+            throw new ArgumentOutOfRangeException(nameof(to), "A range runs from a number to a larger or equal one.");
+        if (to - from + 1 > MaxRange)
+            throw new ArgumentOutOfRangeException(nameof(to), $"A range creates at most {MaxRange} desks.");
+        if (width is < 1 or > 4 || to >= (int)Math.Pow(10, width))
+            throw new ArgumentOutOfRangeException(nameof(width), "The width is 1 to 4 digits and fits the largest number.");
+
+        var codes = Enumerable.Range(from, to - from + 1).Select(n => (prefix ?? string.Empty) + n.ToString(System.Globalization.CultureInfo.InvariantCulture).PadLeft(width, '0')).ToList();
+        foreach (var code in codes)
+            TopologyCodes.Require(code, nameof(prefix));
+        var categories = (laneCategories ?? []).ToList();
+        var taken = codes.Where(code => Desks.Any(d => !d.IsDeleted && d.Code == code)).ToList();
+        if (taken.Count > 0)
+            throw new InvalidOperationException($"Desk {taken[0]} already exists here.");
+
+        return codes.Select(code => AddDesk(code, null, kind, categories)).ToList();
+    }
+
     public virtual Desk AddDesk(string code, string name, DeskKind kind, IEnumerable<string> laneCategories)
     {
         if (IsDeleted)

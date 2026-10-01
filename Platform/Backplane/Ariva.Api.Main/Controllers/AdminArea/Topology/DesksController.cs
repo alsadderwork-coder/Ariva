@@ -10,7 +10,7 @@ namespace Ariva.Api.Main.Controllers.AdminArea.Topology;
 
 /// <summary>
 /// Desks (ARV-014): search, view, create, update and soft delete, limited to the caller's sites (another site's record
-/// answers 404). Ranges and external code mapping arrive with ARV-015. Every change is audited.
+/// answers 404), including numbered ranges. Every change is audited.
 /// </summary>
 [ApiController]
 [Route(Route)]
@@ -40,6 +40,19 @@ public sealed class DesksController(ISvcTopology topology) : ControllerBase
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<IActionResult> Create([FromBody] CreateDeskRequest request, CancellationToken ct) =>
         TopologyAnswers.Created(this, await topology.CreateDeskAsync(request, ct), view => view.Id, "/" + Route);
+
+    /// <summary>A numbered range of desks (for example D01 to D22), at most 200, all or nothing (ARV-015).</summary>
+    [HttpPost("range")]
+    [Permission(nameof(Global.Defaults.Permissions.CreateDesk))]
+    [ProducesResponseType<IReadOnlyList<DeskViewModel>>(StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> CreateRange([FromBody] CreateDeskRangeRequest request, CancellationToken ct)
+    {
+        var result = await topology.CreateDeskRangeAsync(request, ct);
+        return result.HasErrors ? TopologyAnswers.Ok(this, result) : StatusCode(StatusCodes.Status201Created, result.Data);
+    }
 
     [HttpPut("{id:guid}")]
     [Permission(nameof(Global.Defaults.Permissions.EditDesk))]

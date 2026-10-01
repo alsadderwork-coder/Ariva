@@ -272,4 +272,98 @@ public sealed class TopologyTests
     }
 
     #endregion
+
+    #region Ranges and code mappings (ARV-015)
+
+    [Fact]
+    public void AddDeskRange_Should_CreatePaddedCodes_When_RangeIsValid()
+    {
+        var desks = Immigration().AddDeskRange("D", 1, 22, 2, DeskKind.Desk, ["CIT"]);
+
+        desks.Should().HaveCount(22);
+        desks[0].Code.Should().Be("D01");
+        desks[^1].Code.Should().Be("D22");
+        desks.Should().OnlyContain(d => d.LaneCategories.Count == 1);
+    }
+
+    [Theory]
+    [InlineData("D", 5, 4, 2)]
+    [InlineData("D", -1, 4, 2)]
+    [InlineData("D", 1, 201, 3)]
+    [InlineData("D", 1, 100, 2)]
+    [InlineData("D", 1, 5, 5)]
+    public void AddDeskRange_Should_RefuseBadBounds_When_Checked(string prefix, int from, int to, int width)
+    {
+        var add = () => Immigration().AddDeskRange(prefix, from, to, width, DeskKind.Desk, ["CIT"]);
+
+        add.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public void AddDeskRange_Should_AddNothing_When_ACodeIsTakenOrInvalid()
+    {
+        var checkpoint = Immigration();
+        checkpoint.AddDesk("D03", null, DeskKind.Desk, ["CIT"]);
+
+        var taken = () => checkpoint.AddDeskRange("D", 1, 5, 2, DeskKind.Desk, ["CIT"]);
+        var invalid = () => checkpoint.AddDeskRange("d-", 1, 5, 2, DeskKind.Desk, ["CIT"]);
+        var tooLong = () => checkpoint.AddDeskRange("ABCDEFGHIJKLMN", 1, 5, 4, DeskKind.Desk, ["CIT"]);
+
+        taken.Should().Throw<InvalidOperationException>();
+        invalid.Should().Throw<ArgumentException>();
+        tooLong.Should().Throw<ArgumentException>();
+        checkpoint.Desks.Should().HaveCount(1, "a refused range adds nothing");
+    }
+
+    [Theory]
+    [InlineData(ExternalSystem.Aman, DeskKind.Desk, true)]
+    [InlineData(ExternalSystem.Aman, DeskKind.EGate, true)]
+    [InlineData(ExternalSystem.Aman, DeskKind.Counter, false)]
+    [InlineData(ExternalSystem.Aodb, DeskKind.Counter, true)]
+    [InlineData(ExternalSystem.Aodb, DeskKind.Desk, false)]
+    [InlineData(ExternalSystem.Aodb, DeskKind.SecurityLane, false)]
+    public void DeskCodeMapping_Should_FitTheDeskKind_When_Created(ExternalSystem system, DeskKind kind, bool allowed)
+    {
+        var level = Airport().AddTerminal("T1", "T", "DMO-T1").AddLevel("L0", "Level", 0, 30, 20);
+        var checkpointKind = kind switch { DeskKind.Counter => CheckpointKind.CheckIn, DeskKind.SecurityLane => CheckpointKind.Security, _ => CheckpointKind.Immigration };
+        string[] categories = kind switch { DeskKind.Desk => ["CIT"], DeskKind.EGate => ["EG"], _ => [] };
+        var desk = level.AddCheckpoint("CP", "Checkpoint", checkpointKind).AddDesk("X1", null, kind, categories);
+
+        var map = () => new DeskCodeMapping(system, "a-07", desk);
+
+        if (allowed)
+            map().Should().Match<DeskCodeMapping>(m => m.ExternalCode == "A-07" && m.SiteCode == "DMO-T1");
+        else
+            map.Should().Throw<InvalidOperationException>();
+    }
+
+    [Theory]
+    [InlineData(" a-07 ", "A-07")]
+    [InlineData("DSK/12.3_x", "DSK/12.3_X")]
+    [InlineData("-A", null)]
+    [InlineData("A B", null)]
+    [InlineData("A<1>", null)]
+    [InlineData("", null)]
+    [InlineData("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456", null)]
+    public void NormalizeCode_Should_UpperCaseAndValidate_When_Read(string code, string expected)
+    {
+        DeskCodeMapping.NormalizeCode(code).Should().Be(expected);
+    }
+
+    [Fact]
+    public void Assign_Should_StayInTheSite_When_TheDeskChanges()
+    {
+        var checkpoint = Immigration();
+        var mapping = new DeskCodeMapping(ExternalSystem.Aman, "A-01", checkpoint.AddDesk("D01", null, DeskKind.Desk, ["CIT"]));
+        var other = Airport().AddTerminal("T9", "Other", "DMO-T9").AddLevel("L0", "L", 0, 10, 10).AddCheckpoint("IMM", "I", CheckpointKind.Immigration)
+            .AddDesk("D01", null, DeskKind.Desk, ["CIT"]);
+
+        mapping.Assign(checkpoint.AddDesk("D02", null, DeskKind.Desk, ["CIT"]));
+        var move = () => mapping.Assign(other);
+
+        mapping.Desk.Code.Should().Be("D02");
+        move.Should().Throw<InvalidOperationException>();
+    }
+
+    #endregion
 }

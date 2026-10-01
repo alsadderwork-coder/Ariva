@@ -86,4 +86,31 @@ public sealed class TopologyTests(PostgresFixture fixture) : IAsyncDisposable
         (await _host.AsCallerAsync(admin, s => Topology(s).CreateLevelAsync(new CreateLevelRequest(terminal.Data.Id, "L0", "Twice", 1, 50, 50), Ct)))
             .ErrorMessages.Should().Equal(TopologyErrors.Duplicate);
     }
+
+    [Fact]
+    public async Task RangesAndMappings_Should_BeAtomicUniqueAndResolvable_When_Created()
+    {
+        var admin = await AdminAsync("it.topo.mapper");
+        await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcSites>().CreateAsync(new CreateSiteRequest("TPM", "TPM"), Ct));
+        var airport = await _host.AsCallerAsync(admin, s => Topology(s).CreateAirportAsync(new CreateAirportRequest("TPM", null, "Mapping Test", "Asia/Amman"), Ct));
+        var terminal = await _host.AsCallerAsync(admin, s => Topology(s).CreateTerminalAsync(new CreateTerminalRequest(airport.Data.Id, "T1", "T1", "TPM"), Ct));
+        var level = await _host.AsCallerAsync(admin, s => Topology(s).CreateLevelAsync(new CreateLevelRequest(terminal.Data.Id, "L0", "L0", 0, 50, 50), Ct));
+        var checkpoint = await _host.AsCallerAsync(admin, s => Topology(s).CreateCheckpointAsync(new CreateCheckpointRequest(level.Data.Id, "IMM", "Immigration", "Immigration"), Ct));
+
+        var range = await _host.AsCallerAsync(admin, s => Topology(s).CreateDeskRangeAsync(new CreateDeskRangeRequest(checkpoint.Data.Id, "D", 1, 22, 2, "Desk", ["CIT"]), Ct));
+        var overlap = await _host.AsCallerAsync(admin, s => Topology(s).CreateDeskRangeAsync(new CreateDeskRangeRequest(checkpoint.Data.Id, "D", 20, 30, 2, "Desk", ["CIT"]), Ct));
+
+        range.Data.Should().HaveCount(22);
+        overlap.ErrorMessages.Should().Equal(TopologyErrors.Duplicate);
+        (await _host.ReadAsync<long>("SELECT count(*) FROM desk WHERE checkpoint_id = @id", checkpoint.Data.Id)).Should().Be(22, "the refused range wrote nothing");
+
+        var mappings = (IServiceProvider s) => s.GetRequiredService<ISvcDeskCodeMappings>();
+        var mapped = await _host.AsCallerAsync(admin, s => mappings(s).CreateAsync(new CreateDeskCodeMappingRequest("Aman", "a-07", range.Data[6].Id), Ct));
+        mapped.HasErrors.Should().BeFalse(string.Join(", ", mapped.ErrorMessages ?? []));
+        (await _host.AsCallerAsync(admin, s => mappings(s).CreateAsync(new CreateDeskCodeMappingRequest("Aman", "A-07", range.Data[7].Id), Ct)))
+            .ErrorMessages.Should().Equal(TopologyErrors.Duplicate);
+        (await _host.AsCallerAsync(null, s => mappings(s).ResolveAsync(Ariva.Core.Domain.Enums.ExternalSystem.Aman, "TPM", "A-07", Ct))).Should().Be(range.Data[6].Id);
+        (await _host.AsCallerAsync(null, s => mappings(s).ResolveAsync(Ariva.Core.Domain.Enums.ExternalSystem.Aodb, "TPM", "A-07", Ct))).Should().BeNull();
+    }
 }
+
