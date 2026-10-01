@@ -2,6 +2,12 @@
 
 FROM mcr.microsoft.com/dotnet/runtime-deps:10.0.12@sha256:099f6f87ed745377dd27bd722f0d1a352bca71b4fddaabfd75e7c064bcaa82da AS base
 
+# OS security fixes published after Microsoft built the base image (Trivy gate in images.yml). The digest pins the
+# starting point; Dependabot moves it forward when Microsoft rebuilds.
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 EXPOSE 8080
 

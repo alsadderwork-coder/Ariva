@@ -49,7 +49,7 @@ story('ARV-002', 'E0', 'Finish container and chart hardening',
       'The scaffold already runs images as numeric non-root user 10001 and sets runAsNonRoot, runAsUser, seccomp RuntimeDefault, allowPrivilegeEscalation false and drop ALL on every Deployment. Finish Platform/Cloud/CLAUDE.md.',
       ['Docker builds of every image succeed and each container starts under the chart security context on the dev cluster (verified by the human release, recorded in progress)',
        '.NET pods use readOnlyRootFilesystem true with an emptyDir at /tmp; the web pod gets emptyDirs for nginx cache and run directories',
-       'Base images pinned by version and digest (aspnet and runtime-deps 10.0.x, nginx 1.28.x); every Ingress has a tls section bound to a configurable certificate secret',
+       'Base images pinned by version and digest (aspnet and runtime-deps 10.0.x, nginx 1.30.x stable on Alpine); every Ingress has a tls section bound to a configurable certificate secret',
        'helmfile-k8s.yaml defines environments dev, demo, prd, localk8s selecting the matching values file; prd values require an explicit buildNumber (no trunk)',
        'A chart test (node script under Platform/Cloud/Ariva.K8s/tests, run by verify security) renders the templates and fails if any Deployment lacks the security context or any Ingress lacks tls'],
       'S', ['CWE-269', 'CWE-79'], ['ARV-001'])

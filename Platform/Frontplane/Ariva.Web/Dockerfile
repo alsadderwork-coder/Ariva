@@ -12,13 +12,17 @@ RUN --mount=type=cache,id=npm,target=/root/.npm \
     npm run build --prod
 
 
-FROM nginx:1.28.3@sha256:146adea4768b83c607d0bdfa4188464e3da6e0a3ad4475db1d1d8f64f27c29cc
+# nginx stable line (1.30) on Alpine: 1.28 stopped receiving image rebuilds and its Debian base carried 120+ high or
+# critical OS findings. apk upgrade picks up Alpine security fixes released after the upstream image was built.
+FROM nginx:1.30.5-alpine3.24@sha256:0985e772fb9f729e6fa0980da05fca5d9c468e870eed43071545afa9d2e27d94
+
+RUN apk upgrade --no-cache
 
 COPY --from=builder /app/build/nginx/default.conf /etc/nginx/conf.d
 COPY --from=builder /app/build /usr/share/nginx/html/web
 
-RUN groupadd -r -g 10001 nonroot \
-    && useradd -r -u 10001 -g nonroot nonroot \
+RUN addgroup -S -g 10001 nonroot \
+    && adduser -S -D -H -u 10001 -G nonroot nonroot \
     && chown -R nonroot:nonroot /usr/share/nginx/html/web \
     && chown -R nonroot:nonroot /var/cache/nginx \
     && chown -R nonroot:nonroot /var/log/nginx \

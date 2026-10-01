@@ -17,7 +17,7 @@ const LINES = {
 	'mcr.microsoft.com/dotnet/runtime-deps': { pattern: /^10\.0\.\d+$/, list: 'mcr' },
 	'mcr.microsoft.com/dotnet/aspnet': { pattern: /^10\.0\.\d+$/, list: 'mcr' },
 	'mcr.microsoft.com/dotnet/sdk': { pattern: /^10\.0\.1\d\d$/, list: 'mcr' },
-	nginx: { pattern: /^1\.28\.\d+$/, list: 'hub', hubName: 'library/nginx', hubFilter: '1.28.' },
+	nginx: { pattern: /^1\.30\.\d+-alpine\d+\.\d+$/, list: 'hub', hubName: 'library/nginx', hubFilter: '1.30.' },
 	node: { pattern: /^22\.\d+\.\d+-alpine\d+\.\d+$/, list: 'hub', hubName: 'library/node', hubFilter: '22.' }
 };
 
