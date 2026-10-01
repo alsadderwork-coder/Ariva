@@ -504,8 +504,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 23,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Offline gates: unit and PostgreSQL integration tests, real host startup with Kafka on. Not run here: Testcontainers.Kafka tests (need Docker) and the build against the pinned MassTransit 8.5.11 / Confluent.Kafka 2.15.1; confirm in CI.",
       "dependsOn": [
         "ARV-003",
         "ARV-005"

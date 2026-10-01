@@ -158,8 +158,13 @@ Main settings:
 | `Auth:Totp:BreakGlassUserName` | `break-glass` | The username the installer command gives the emergency account |
 | `Auth:DevelopmentUsers` | empty | vm-local only; a host refuses to start if it is set in any other environment |
 | `Security:RateLimiting:Auth:PermitLimit` | 10 a minute per client address | Keep; it needs `Security:ForwardedHeaders` to name the ingress network, or every client shares the ingress controller's address |
-| `Kafka:BootstrapServers`, `TopicPrefix` | `kafka:9092`, `ariva` | Keep the prefix `ariva` |
-| `Kafka:GroupId` | `ariva-stream` (Stream), `ariva-integration` (Integration) | Keep; operators use these names for lag checks |
+| `Kafka:Enabled`, `BootstrapServers` | `true` in the cluster files, `kafka:9092` | Point at the site's brokers. With `false` a host keeps domain events in the outbox and cannot publish |
+| `Kafka:SecurityProtocol`, `SaslMechanism`, `SaslUsername`, `SaslPassword`, `SslCaLocation` | `Plaintext` in dev and demo; `SaslSsl`, `ScramSha512`, `ariva`, the secret, `/app/secrets/kafka-ca/ca.crt` in production | A k8s-prd host with Kafka on refuses to start unless the protocol is `SaslSsl`. Create the secrets before the release: `ariva-kafka` (key `password`, read as `Kafka__SaslPassword`) and `ariva-kafka-ca` (key `ca.crt`, the cluster CA in PEM; for Strimzi, `<cluster>-cluster-ca-cert`). Both are optional mounts, so dev and demo run without them. Use a principal limited to the `ariva.` prefix (read on `aman.feed.` where the border module consumes AMAN's feed) |
+| `Kafka:ServiceName` | the host (`main`, `stream`, `ingest`, `cronz`, `integration`) | Keep; consumer groups are `ariva-<service>.<purpose>`, the names operators use for lag checks |
+| `Kafka:ProvisionTopics` | `true` on Api.Main only | Creates missing topics and dead-letter topics at startup (never changes existing ones). Set `false` where topics are created by the platform team (Strimzi `KafkaTopic` resources) and the principal has no create rights |
+| `Kafka:Topics:Partitions`, `ReplicationFactor`, `MinInSyncReplicas`, `Overrides` | 6, 3 and 2 in production; 1 and 1 in dev and demo | Partitions at least the Stream replica count; per-topic overrides by name (partitions, retention days) |
+| `Kafka:Outbox:*` | relay on, batch 100, poll 500 ms, keep sent 7 days, inbox 35 days, stuck after 10 attempts | Keep. One relay leads at a time across all pods (PostgreSQL advisory lock). Keep the inbox longer than the longest topic retention (30 days) |
+| `Kafka:Consumers:*` | 3 retries from 200 ms to 5 s, checkpoint 5 s or 500 messages, 8 lanes | Keep retries short; a retrying message blocks its key |
 | `Redis:ConnectionString`, `InstanceName` | `redis:6379`, `ariva:` | Point at the site's Redis |
 | `Timescale:Enabled`, `Crons:Enabled` | `true` | Keep |
 | `Cache:DefaultDurationSeconds`, `UseDistributedCache` | 300, `true` | Keep |

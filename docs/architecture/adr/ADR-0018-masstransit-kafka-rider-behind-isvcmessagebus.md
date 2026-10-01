@@ -43,10 +43,23 @@ MassTransit facts that shape the design (v8 source and docs, checked 2026-10-01)
 - **Licence and maintenance risk:** v8 maintenance ends after 2026. Mitigations: MassTransit stays behind `ISvcMessageBus` and inside Ariva.Infra (no MassTransit types in Ariva.Core, enforced by an architecture test); the outbox, inbox and DLQ are Ariva code, not MassTransit features, so a swap to the raw Confluent client or to a v9 licence is a single-project change. Decide before go-live (tracked in `docs/product/decisions.md`). Community forks (OpenTransit, PublicTransit) are watched but not relied on.
 - Two Kafka consumption styles in one codebase; the kafka-streaming skill says which to use where.
 - Confluent.Kafka moves from AMAN's 2.8.0 to 2.15.1; Testcontainers.Kafka integration tests cover the at-least-once, duplicate and DLQ paths.
-- Not verified yet: filter order (dead-letter outside retry) on rider endpoints; ARV-020 proves it with a test harness.
+- Filter order, verified in ARV-020 with MassTransit's pipe probe on an endpoint built by the same `ConsumePipeline.Configure` the rider uses: MassTransit places `UseMessageRetry` first in the message pipe whatever the configuration order, so a dead-letter filter cannot wrap the retry. The dead-letter filter therefore sits inside the retry and acts only on the final attempt (`GetRetryAttempt()` equal to the retry limit); the observable behaviour is the one decided above (retries first, then one dead letter, offset committed). The inbox and unit of work run inside both, with a fresh scope per attempt.
 
 ## Alternatives considered
 
 - Confluent.Kafka for everything (the earlier proposal). No licence exposure, but diverges from AMAN and reimplements serialisation, consumer hosting and telemetry. Remains the fallback if v8 support becomes a problem.
 - MassTransit 9 with a commercial licence. Adds the rider outbox and error topics; cost and licence-key operations for every deployment. Revisit at go-live.
 - Rebus. Not used ([ADR-0004](ADR-0004-kafka-for-facts-workflows-without-second-broker.md)).
+
+## Implementation notes (ARV-020)
+
+- Dead-letter topics are `<topic>.dlq.v1`; for a topic outside the `ariva.` prefix (AMAN's feed) the prefix is added in front (`ariva.aman.feed.desk-session-changed.v1.dlq.v1`), so every dead letter stays under Ariva's ACLs.
+- A dead letter the broker refuses is retried until accepted (it holds the partition), because the v8 rider discards a message whose fault escapes the pipe.
+- One event type per topic: the rider keeps one producer per topic name, so `EventCatalog` refuses a second type on a topic; a new shape gets a new versioned topic (ADR-0019).
+- Values are plain JSON (camelCase, `System.Text.Json`), not MassTransit envelopes, so the raw Confluent consumer and the Python worker read them directly. Headers carry `ariva-event-type`, `ariva-event-version`, `ariva-correlation-id` and `ariva-causation-id`.
+- Topic provisioning runs in the background and retries every 10 seconds, so a broker that is not reachable yet does not stop a host; the relay waits for the bus to be healthy, ends a pass on a broker failure (a 30 second produce timeout), and only rows that cannot be read hold back their key.
+- Readiness runs the health checks tagged `ready`, which includes MassTransit's bus and rider check. A host without consumers stays ready while Kafka is down and keeps its events in the outbox.
+- Offline verification in this environment compiled against MassTransit 8.4.0 and Confluent.Kafka 2.8.0 (the versions available without NuGet); the pinned 8.5.11 and 2.15.1 build in CI. The Testcontainers.Kafka tests (poison to DLQ, redelivery skipped by the inbox, plain JSON on the wire) run in CI only.
+- Hardening from the ARV-020 security review: production requires SASL over TLS (`SaslSsl`, with the cluster CA from `Kafka:SslCaLocation`) or the host does not start; a dead letter's body is cut at 512 KB (flagged) so the letter always fits 1 MB; a consumer's own cancellation is retried and dead-lettered like any failure (no `Ignore<OperationCanceledException>`); an event over 1 MB fails its commit instead of blocking its key in the outbox; an unknown event type holds its key without counting attempts; the relay producer does not linger; inbox entries are kept 35 days, longer than any deleting topic's retention.
+- The raw stream consumer commits manually: offsets are stored after each record and committed only after the handler checkpoints its state (periodically and before a clean revoke); after a handler failure or a lost partition the state is dropped and nothing is committed, so the records since the last checkpoint are replayed.
+

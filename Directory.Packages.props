@@ -94,10 +94,7 @@
     <!-- Integration tests (ARV-005); latest on nuget.org on 2026-10-01 -->
     <PackageVersion Include="Testcontainers.PostgreSql" Version="4.15.0" />
     <PackageVersion Include="Testcontainers.Redis" Version="4.15.0" />
+    <!-- Kafka pipeline tests (ARV-020): same Testcontainers release as the modules above -->
+    <PackageVersion Include="Testcontainers.Kafka" Version="4.15.0" />
   </ItemGroup>
-  <!--
-    Packages that backlog stories will add later. They are not in AMAN's file, so no version is pinned yet.
-    Add a PackageVersion entry for each one in the story that first uses it:
-      Testcontainers.Kafka        (version to pin when added)
-  -->
 </Project>

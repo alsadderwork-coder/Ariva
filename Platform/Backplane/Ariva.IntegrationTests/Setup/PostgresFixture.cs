@@ -51,6 +51,8 @@ public sealed class PostgresFixture : IAsyncLifetime
             TestDatabase.RuntimeLogin => "CREATE DATABASE it_runtime_login",
             TestDatabase.Accounts => "CREATE DATABASE it_accounts",
             TestDatabase.Administration => "CREATE DATABASE it_administration",
+            TestDatabase.Messaging => "CREATE DATABASE it_messaging",
+            TestDatabase.Kafka => "CREATE DATABASE it_kafka",
             _ => throw new ArgumentOutOfRangeException(nameof(database))
         };
         var name = sql["CREATE DATABASE ".Length..];
@@ -110,7 +112,9 @@ public enum TestDatabase
     DataProtection,
     RuntimeLogin,
     Accounts,
-    Administration
+    Administration,
+    Messaging,
+    Kafka
 }
 
 [CollectionDefinition(Name)]

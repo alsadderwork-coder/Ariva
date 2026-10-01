@@ -113,7 +113,7 @@ Invariants across contexts (D5):
 
 Kafka carries facts. Integration and domain events use MassTransit 8.5 with the Kafka Rider behind AMAN's `ISvcMessageBus` abstraction (AMAN parity), with an NHibernate transactional outbox, an inbox filter for idempotency and a dead-letter filter, all Ariva code. The stateful stream engine in Ariva.Api.Stream consumes with the Confluent client directly because it needs partition rebalance callbacks, which the v8 rider does not offer (Accepted, [ADR-0018](adr/ADR-0018-masstransit-kafka-rider-behind-isvcmessagebus.md)).
 
-Topic naming is `ariva.<context>.<event>.v1` (Decided). Sensor events are keyed by zone id. AMAN feed topics are `aman.feed.<contract>.v1`, produced by AMAN. D5's topic names are given for traceability.
+Topic naming is `ariva.<context>.<event>.v1` (Decided); the names live in `KafkaTopics` and every consumed topic has a dead-letter topic `<topic>.dlq.v1` (AMAN's feed topics get the `ariva.` prefix in front, ARV-020). Sensor events are keyed by zone id. AMAN feed topics are `aman.feed.<contract>.v1`, produced by AMAN. D5's topic names are given for traceability.
 
 Key for zone-keyed topics: the id of the queue zone that owns the process. Overflow, service and staff zones attached to that queue share its key, so a track crossing from the overflow band into the snake stays on one partition (D5 keyed by "zone group"; the decision is zone id; this rule reconciles both). Each device is registered to exactly one owning queue zone.
 

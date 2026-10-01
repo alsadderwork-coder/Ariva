@@ -14,35 +14,28 @@ description: Kafka usage in Ariva (MassTransit 8 Kafka Rider behind ISvcMessageB
 AMAN's `IdempotencyFilter` is never registered, its outbox is a fallback table whose replay job is commented out, faulted messages are discarded (no retry, no DLQ), producers have no keys, topics have one partition and replication 1, and every service shares `aman-group`. Ariva fixes all of these.
 
 ## Topics
-`ariva.<context>.<event>.v1` from `KafkaTopics` constants only. Examples: `ariva.device.track-sample.v1` (key zone id), `ariva.flow.queue-interval.v1`, `ariva.alerting.alert-raised.v1`, `ariva.topology.zone-profile-activated.v1`. AMAN produces `aman.feed.<contract>.v1`. Provision topics at startup from the constant list with configured partitions, replication and retention; do not rely on `CreateIfMissing`. Dead letters: `<topic>.dlq.v1`.
+`ariva.<context>.<event>.v1` from `KafkaTopics` constants only. Examples: `KafkaTopics.DeviceTrackSample` (`ariva.device.track-sample.v1`, key zone id), `KafkaTopics.FlowQueueInterval`, `KafkaTopics.AlertStateChanged`, `KafkaTopics.TopologyZoneProfileActivated`. An event class names its topic with `[KafkaTopic(KafkaTopics.X)]`; one event type per topic. AMAN produces `aman.feed.<contract>.v1`. `TopicProvisioner` creates missing topics from `TopicCatalog` (partitions, replication, retention or compaction) in the background when `Kafka:ProvisionTopics` is set (Api.Main); do not rely on `CreateIfMissing`. Dead letters: `KafkaTopics.DeadLetter(topic)`, `<topic>.dlq.v1` (AMAN topics get the `ariva.` prefix in front).
 
 ## Producers
 Keyed always: `r.AddProducer<string, T>(topic, (ctx, p) => { p.EnableIdempotence = true; p.CompressionType = CompressionType.Lz4; })`, `Acks.All`, `MessageMaxBytes` 1 MB. Domain events never go to Kafka from inside a transaction: write `outbox_message` in the aggregate's NHibernate transaction; the relay (single leader by PostgreSQL advisory lock, `FOR UPDATE SKIP LOCKED`, id order, stop per key on failure) produces them.
 
 ## Rider consumers (at-least-once)
+Hosts declare consumers through the composition root; `AddArivaMessaging` builds the topic endpoint with the group, the endpoint defaults and the Ariva consume pipe (`ConsumePipeline.Configure`):
 ```csharp
-k.TopicEndpoint<string, QueueInterval>(KafkaTopics.QueueInterval, "ariva-cronz.queue-interval", e =>
-{
-    e.AutoOffsetReset = AutoOffsetReset.Earliest;
-    e.ConcurrentMessageLimit = 8;      // parallel across keys, ordered per key
-    e.ConcurrentDeliveryLimit = 1;     // never raise: breaks ordering
-    e.CheckpointInterval = TimeSpan.FromSeconds(5);
-    e.CheckpointMessageCount = 500;    // bounds replay after a crash
-    e.UseConsumeFilter(typeof(DeadLetterFilter<>), ctx);   // outermost
-    e.UseMessageRetry(r => r.Exponential(5, TimeSpan.FromMilliseconds(200), TimeSpan.FromSeconds(10), TimeSpan.FromMilliseconds(500)));
-    e.UseConsumeFilter(typeof(InboxFilter<>), ctx);        // idempotency in the consumer's transaction
-    e.ConfigureConsumer<QueueIntervalConsumer>(ctx);
-});
+builder.Services.RegisterArivaServices(builder.Configuration, messaging => messaging
+    .Consume<QueueInterval, QueueIntervalConsumer>(KafkaTopics.FlowQueueInterval, "queue-interval"));
+// group ariva-<Kafka:ServiceName>.queue-interval; AutoOffsetReset Earliest; ConcurrentDeliveryLimit 1 (never raise: breaks
+// ordering); ConcurrentMessageLimit 8 (parallel across keys); CheckpointInterval 5 s; CheckpointMessageCount 500.
 ```
-- One consumer group per service and endpoint: `ariva-<service>.<purpose>`.
-- `InboxFilter`: `INSERT INTO processed_event(consumer, event_id) ON CONFLICT DO NOTHING` in the same NHibernate transaction as the handler; zero rows means duplicate, skip.
-- `DeadLetterFilter`: after retries, produce key, body, headers, topic, partition, offset and error to `<topic>.dlq.v1`, then return so the checkpoint advances. If that produce fails, keep retrying; v8 discards rethrown faults.
-- Keep retries short: a retrying message blocks its key lane.
+- Pipe, from the outside in (proven by `ConsumePipelineTests` with MassTransit's probe): retry (MassTransit always puts it first), `DeadLetterFilter` (acts on the final attempt only), `InboxFilter` (claim + unit of work, fresh scope per attempt), consumer.
+- `InboxFilter`: `INSERT INTO processed_event(consumer, event_id) ON CONFLICT DO NOTHING` in the consumer's transaction, then the consumer, then commit; a duplicate is acknowledged without running the consumer; a failure rolls the claim back. The consumer does not commit itself.
+- `DeadLetterFilter`: produces key, body (base64), headers, topic, partition, offset, consumer and error to the dead-letter topic, then returns so the checkpoint advances. A refused dead letter is retried until accepted; v8 discards rethrown faults.
+- Keep retries short (`Kafka:Consumers`): a retrying message blocks its key lane.
 
 ## Raw consumer (Stream engine only)
-- `EnableAutoCommit = true`, `EnableAutoOffsetStore = false`; `StoreOffset(result)` only after the effect is durably written (stores offset + 1).
-- Revoked handler: flush state, store offsets. Assigned handler: rebuild per-zone state from the latest snapshot plus replay.
-- Poison messages to `<topic>.dlq.v1` after N attempts, then store the offset.
+- `EnableAutoCommit = false`, `EnableAutoOffsetStore = false`; `StoreOffset(result)` after the handler; `Commit()` only right after `CheckpointAsync` made the state durable (every `Kafka:Consumers:CheckpointSeconds` and before a clean revoke). Never commit past state that was not persisted.
+- Revoked: checkpoint, commit, release. Lost or after a handler failure: drop state, commit nothing (replay from the last checkpoint). Assigned: rebuild per-zone state from the latest snapshot plus replay. Register the topic with `messaging.StreamFrom(topic)` so its dead-letter producer exists.
+- `PartitionedConsumer<T>` (Ariva.Infra/Streaming) implements this with `IPartitionHandler<T>` (assigned, revoked, lost, handle); a record that is not valid JSON goes to the dead-letter topic and its offset is stored; a handler failure stops the loop so the record is replayed after restart.
 
 ## Always
 Bound memory per partition and per zone (CWE-120); validate every message against its contract before use (CWE-501); topics never built from input (CWE-77). Telemetry: `AddSource("MassTransit")` and `AddMeter("MassTransit")`.

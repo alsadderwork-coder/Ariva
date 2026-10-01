@@ -88,6 +88,9 @@ Items marked (Proposed) are naming proposals made in this repository where the s
 | AMAN feed | The four aggregate-only contracts V1 from AMAN. | `DeskSessionChanged`, `DeskIntervalStats`, `EGateIntervalStats`, `InboundFlightLaneDemand` in `Ariva.Business.Contracts` |
 | Border-to-airport feed | Lane-level wait times and KPIs pushed one way from a border deployment to an airport deployment. | `BorderLaneKpi` (Proposed) |
 | Display channel | One passenger screen or group of screens showing one or more queues. | `DisplayChannel` |
+| Outbox | The table where an event raised by an aggregate is written in the same transaction as the change; a relay produces it to Kafka afterwards, in order per key (ADR-0018). | `outbox_message`, `OutboxRelay` |
+| Inbox | The record that a consumer applied an event, written in the consumer's transaction; a redelivered event finds it and is skipped. | `processed_event`, `InboxFilter` |
+| Dead letter | A message a consumer could not apply after its retries, kept on `<topic>.dlq.v1` with where it came from and the error, so the partition moves on and nothing is lost. | `DeadLetter`, `KafkaTopics.DeadLetter` |
 
 ## Words to avoid
 

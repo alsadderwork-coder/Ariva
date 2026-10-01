@@ -19,7 +19,7 @@ namespace Ariva.Api.Common.Extensions;
 /// </summary>
 public static class TelemetryExtensions
 {
-    // MassTransit's Kafka produce and consume spans (ADR-0018).
+    // MassTransit's Kafka produce and consume spans and its meter share this name (ADR-0018).
     private const string MassTransitActivitySource = "MassTransit";
 
     public static IServiceCollection AddAppTelemetry(this IServiceCollection services, IConfiguration configuration)
@@ -50,6 +50,8 @@ public static class TelemetryExtensions
                 .AddAspNetCoreInstrumentation()
                 .AddHttpClientInstrumentation()
                 .AddRuntimeInstrumentation()
+                // MassTransit's consume, produce and fault counters and durations (ADR-0018).
+                .AddMeter(MassTransitActivitySource)
                 .AddOtlpExporter(options => Configure(options, otlp.Endpoint, protocol)));
 
         return services;

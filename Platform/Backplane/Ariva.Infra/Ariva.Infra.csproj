@@ -23,6 +23,10 @@
         <!-- Accounts and tokens (ARV-010a): ES256 JWTs (Microsoft.IdentityModel through the JwtBearer package) and cached grants -->
         <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" />
         <PackageReference Include="ZiggyCreatures.FusionCache" />
+        <!-- Messaging (ARV-020, ADR-0018): MassTransit 8 Kafka Rider, outbox, inbox, dead letters; raw Confluent consumer for Stream -->
+        <PackageReference Include="MassTransit" />
+        <PackageReference Include="MassTransit.Kafka" />
+        <PackageReference Include="Confluent.Kafka" />
     </ItemGroup>
 
     <ItemGroup>

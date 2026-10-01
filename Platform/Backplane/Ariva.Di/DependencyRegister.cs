@@ -17,7 +17,8 @@ public static class DependencyRegister
     /// <param name="services">The host's service collection.</param>
     /// <param name="configuration">The host's layered configuration (base, base per environment, service, service per environment).</param>
     /// <returns>The same service collection, for chaining.</returns>
-    public static IServiceCollection RegisterArivaServices(this IServiceCollection services, IConfiguration configuration)
+    /// <param name="messaging">What the host consumes from Kafka (ARV-020); null for none.</param>
+    public static IServiceCollection RegisterArivaServices(this IServiceCollection services, IConfiguration configuration, Action<ArivaMessagingBuilder> messaging = null)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
@@ -25,6 +26,7 @@ public static class DependencyRegister
         services.AddArivaPersistence(configuration);
         services.AddArivaCaching(configuration);
         services.AddArivaDataProtection(configuration);
+        services.AddArivaMessaging(configuration, messaging);
 
         return services;
     }

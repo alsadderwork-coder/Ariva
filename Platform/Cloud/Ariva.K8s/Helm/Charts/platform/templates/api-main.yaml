@@ -41,6 +41,12 @@ spec:
       imagePullSecrets:
         - name: dalilacr-secret
       volumes:
+        # Kafka cluster CA (ARV-020): PEM ca.crt for SASL over TLS; optional, absent where Kafka is plaintext
+        - name: kafka-ca
+          secret:
+            secretName: {{ .Values.kafkaCaSecretName | default "ariva-kafka-ca" }}
+            optional: true
+            defaultMode: 0444
         # Writable scratch space; the root filesystem is read-only (CWE-269). 128Mi: multipart uploads over 64 KB are
         # buffered here (one 20 MB floor plan at a time, ARV-018)
         - name: tmp
@@ -91,6 +97,9 @@ spec:
           ports:
             - containerPort: 8080
           volumeMounts:
+            - name: kafka-ca
+              mountPath: /app/secrets/kafka-ca
+              readOnly: true
             - name: tmp
               mountPath: /tmp
             - name: files
@@ -112,6 +121,13 @@ spec:
               subPath: appsettings.service.{{ .Values.environment }}.json
           env:
             {{- include "ariva-platform.otelEnv" . | nindent 12 }}
+            # Kafka SASL password (ARV-020); optional, absent where Kafka is plaintext
+            - name: Kafka__SaslPassword
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.kafkaSecretName | default "ariva-kafka" }}
+                  key: password
+                  optional: true
           envFrom:
             - configMapRef:
                 name: api-main-configmap

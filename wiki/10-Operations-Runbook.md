@@ -11,7 +11,7 @@ Status: metric names, dashboards and system alarms are built in Phase 0 epic Ske
 | Serilog | Structured JSON logs on the console of every API host; also to Loki (`Loki:Enabled`, `Loki:Uri`) and to the OTLP endpoint when telemetry is on. Credentials are removed before any sink sees an event: Authorization, Cookie, Set-Cookie, X-TOTP-Code, access_token and password-like values, bearer and basic credentials and JWTs inside text. `Microsoft.AspNetCore.Hosting` stays at Warning in code (its request line carries the SignalR access_token); raise other categories under `Serilog:MinimumLevel:Override` |
 | OpenTelemetry | Traces and metrics from every API host, exported over OTLP to the endpoint in `otel.endpoint` (the chart sets `OTEL_EXPORTER_OTLP_ENDPOINT`; `Otlp:Enabled` and `Otlp:Endpoint` do the same outside Kubernetes). Off when no endpoint is set. Query string values are redacted in spans (OpenTelemetry .NET default; never set `OTEL_DOTNET_EXPERIMENTAL_ASPNETCORE_DISABLE_URL_QUERY_REDACTION`). Trace context is propagated through Kafka headers |
 | Resource attributes | `service.namespace=ariva`, `deployment.environment`, `k8s.cluster.name`, `service.version`, plus node, pod and namespace names |
-| Kubernetes probes | `/health/startup`, `/health/readiness`, `/health/liveness` on every .NET host; `/healthz` on the web pods. Readiness will include PostgreSQL, Kafka and Redis checks (target) |
+| Kubernetes probes | `/health/startup`, `/health/readiness`, `/health/liveness` on every .NET host; `/healthz` on the web pods. Readiness runs the checks tagged `ready`: the MassTransit bus and its Kafka consumers (ARV-020), so a consuming host leaves the service while it cannot reach Kafka; a host that only publishes stays ready and keeps events in the outbox. PostgreSQL and Redis checks are target |
 | TickerQ dashboard | Job runs and failures in Ariva.Api.Cronz (management network only) |
 
 ## 2. Key metrics
@@ -105,6 +105,22 @@ The reference scenario rehearses this: sensor S-17 over the arrivals hall is off
 - **Checks**: is the offset on one device (device NTP or PTP settings) or many (site time source, network path)? Check the site NTP server's own synchronisation and the servers' `chronyc tracking` or equivalent.
 - **Actions**: fix the device or the time source; resynchronise. Avoid firmware or configuration changes during peaks.
 - **Recovery**: offset back within 500 ms and stable; the device returns to `Online`.
+
+### 4.5a Outbox backlog and dead letters (ARV-020)
+
+Outbox backlog, oldest unsent event and the last error (read only, safe on production):
+
+```sql
+SELECT count(*) AS unsent, min(created_on) AS oldest, max(attempts) AS most_attempts
+  FROM outbox_message WHERE sent_on IS NULL;
+SELECT topic, message_key, message_type, attempts, next_attempt_on, last_error
+  FROM outbox_message WHERE sent_on IS NULL AND attempts > 0 ORDER BY seq LIMIT 20;
+```
+
+- A growing backlog with `last_error` naming the broker (timeouts, transport failure): Kafka is unreachable; the relay backs off (2 seconds doubling to 5 minutes per row) and drains on recovery. Check the brokers, then the relay's logs (`Ariva.Infra.Messaging.Outbox.OutboxRelay`).
+- `Unknown event type` in `last_error` with `attempts` 0: a pod of another build leads the relay (during a rolling deploy) or a rollback crossed an event rename. The row and the rows behind it with the same key wait without backoff and go as soon as a pod that knows the type leads; roll forward if it persists. Rows are never dropped.
+- `Outbox row ... stuck after N attempts` in the error log (from attempt 10): one key has been held back for a long time. Read its `last_error`; an event refused for size cannot happen (the commit that wrote it would have failed), so it is the broker, the topic (missing, or ACLs) or the principal.
+- Dead letters: a consumer that fails after its retries writes the message to `<topic>.dlq.v1` (AMAN feed topics: `ariva.aman.feed.<contract>.v1.dlq.v1`) with the source partition, offset, key, consumer group and error, and moves on. Read them with any Kafka client from the beginning of the dead-letter topic; the body is base64 of the original value, cut at 512 KB (`bodyTruncated`, `bodyBytes`), in which case read the original from the source topic by partition and offset while its retention lasts. Replay to the source topic is an admin operation (target, audited; not yet built). Never delete a dead-letter topic: it is the record of what was not applied.
 
 ### 4.6 Kafka consumer lag growing
 

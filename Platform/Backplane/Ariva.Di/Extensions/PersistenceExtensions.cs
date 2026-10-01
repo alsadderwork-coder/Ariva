@@ -11,8 +11,8 @@ namespace Ariva.Di.Extensions;
 
 /// <summary>
 /// NHibernate persistence (ARV-005) and the versioned schema (ARV-006): settings and session factory as singletons, storage provider and unit of work
-/// per scope. Fallbacks for the current user (ARV-010a) and the outbox (ARV-020) are registered with TryAdd so the
-/// real implementations replace them when they are registered first.
+/// per scope. Fallbacks for the current user (ARV-010a) and the outbox are registered with TryAdd; AddArivaMessaging replaces
+/// the outbox with the NHibernate one (ARV-020).
 /// </summary>
 public static class PersistenceExtensions
 {
