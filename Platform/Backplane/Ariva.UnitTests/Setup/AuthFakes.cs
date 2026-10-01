@@ -31,10 +31,13 @@ public sealed class FakeAuthenticator : ISvcAuthenticator
 {
     public SignInResult NextSignIn { get; set; }
 
+    /// <summary>The error a failed sign-in returns (InvalidCredentials unless a test sets MfaRequired).</summary>
+    public string LoginError { get; set; } = ISvcAuthenticator.InvalidCredentials;
+
     public List<SignInContext> Contexts { get; } = [];
 
     public Task<Fluentx.Result<SignInResult>> LoginAsync(LoginRequest request, SignInContext context, CancellationToken ct = default) =>
-        Answer(context, ISvcAuthenticator.InvalidCredentials);
+        Answer(context, LoginError);
 
     public Task<Fluentx.Result<SignInResult>> RefreshAsync(SignInContext context, CancellationToken ct = default) =>
         Answer(context, ISvcAuthenticator.SessionExpired);
@@ -53,6 +56,16 @@ public sealed class FakeAuthenticator : ISvcAuthenticator
     public Task<Fluentx.Result<bool>> DisableAsync(Guid userId, CancellationToken ct = default) => NotFound();
 
     public Task<Fluentx.Result<bool>> EnableAsync(Guid userId, CancellationToken ct = default) => NotFound();
+
+    /// <summary>Enrolment succeeds for any caller, as it does for a real account without TOTP.</summary>
+    public Task<Fluentx.Result<TotpEnrolmentViewModel>> EnrolTotpAsync(CancellationToken ct = default) =>
+        Task.FromResult(new Fluentx.Result<TotpEnrolmentViewModel>(new TotpEnrolmentViewModel("MZXW6YTBOI", "otpauth://totp/Ariva:test?secret=MZXW6YTBOI")));
+
+    public Task<Fluentx.Result<TotpConfirmedViewModel>> ConfirmTotpAsync(TotpCodeRequest request, CancellationToken ct = default) =>
+        Task.FromResult(Fluentx.Result.Error<TotpConfirmedViewModel>(ISvcAuthenticator.InvalidCode));
+
+    public Task<Fluentx.Result<RecoveryCodesViewModel>> RegenerateRecoveryCodesAsync(TotpCodeRequest request, CancellationToken ct = default) =>
+        Task.FromResult(Fluentx.Result.Error<RecoveryCodesViewModel>(ISvcAuthenticator.InvalidCode));
 
     private Task<Fluentx.Result<SignInResult>> Answer(SignInContext context, string error)
     {

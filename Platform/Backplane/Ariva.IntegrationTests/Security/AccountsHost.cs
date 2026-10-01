@@ -85,7 +85,9 @@ public sealed class AccountsHost : IAsyncDisposable
             ["Database:Password"] = _fixture.AdminPassword,
             ["Redis:Enabled"] = "false",
             ["Auth:Tokens:UseDevelopmentKeys"] = "true",
-            ["Auth:Tokens:DevelopmentKeyDirectory"] = _keyDirectory
+            ["Auth:Tokens:DevelopmentKeyDirectory"] = _keyDirectory,
+            // Account and session tests use accounts without TOTP; TotpTests turns the requirement on.
+            ["Auth:TotpRequired"] = "false"
         };
         foreach (var (key, value) in Settings)
             values[key] = value;
@@ -100,6 +102,7 @@ public sealed class AccountsHost : IAsyncDisposable
         services.AddArivaPersistence(configuration);
         services.AddArivaCaching(configuration);
         services.AddArivaTokenIssuing(configuration);
+        services.AddScoped<BreakGlassAccounts>();
         _provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
     }
 
@@ -152,8 +155,24 @@ public sealed class AccountsHost : IAsyncDisposable
         return result;
     }
 
-    public Task<Fluentx.Result<SignInResult>> LoginAsync(string userName, string password, string presentedRefreshToken = null) =>
-        AsAsync(null, null, service => service.LoginAsync(new LoginRequest(userName, password), Context(presentedRefreshToken), TestContext.Current.CancellationToken));
+    public Task<Fluentx.Result<SignInResult>> LoginAsync(string userName, string password, string presentedRefreshToken = null, string code = null, string recoveryCode = null) =>
+        AsAsync(null, null, service => service.LoginAsync(new LoginRequest(userName, password, code, recoveryCode), Context(presentedRefreshToken), TestContext.Current.CancellationToken));
+
+    public Task<Fluentx.Result<TotpEnrolmentViewModel>> EnrolAsync(Guid userId, Guid sessionId) =>
+        AsAsync(userId, sessionId, service => service.EnrolTotpAsync(TestContext.Current.CancellationToken));
+
+    public Task<Fluentx.Result<TotpConfirmedViewModel>> ConfirmAsync(Guid userId, Guid sessionId, string code) =>
+        AsAsync(userId, sessionId, service => service.ConfirmTotpAsync(new TotpCodeRequest(code), TestContext.Current.CancellationToken));
+
+    public Task<Fluentx.Result<RecoveryCodesViewModel>> RegenerateAsync(Guid userId, Guid sessionId, string code) =>
+        AsAsync(userId, sessionId, service => service.RegenerateRecoveryCodesAsync(new TotpCodeRequest(code), TestContext.Current.CancellationToken));
+
+    public async Task<BreakGlassCredential> IssueBreakGlassAsync(bool rotate)
+    {
+        await EnsureProviderAsync();
+        await using var scope = Provider.CreateAsyncScope();
+        return await scope.ServiceProvider.GetRequiredService<BreakGlassAccounts>().IssueAsync(rotate, TestContext.Current.CancellationToken);
+    }
 
     public Task<Fluentx.Result<SignInResult>> RefreshAsync(string refreshToken) =>
         AsAsync(null, null, service => service.RefreshAsync(Context(refreshToken), TestContext.Current.CancellationToken));

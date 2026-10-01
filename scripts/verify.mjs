@@ -47,8 +47,11 @@ function docsCheck() {
       const p = path.join(d, e.name);
       if (e.isDirectory()) walk(p);
       else if (p.endsWith('.md')) {
+        let fenced = false; // shell commands in fenced blocks legitimately use " -- " to end options
         fs.readFileSync(p, 'utf8').split(/\r?\n/).forEach((l, i) => {
           if (l.includes('—') || l.includes('–')) bad.push(`${path.relative(ROOT, p)}:${i + 1} dash character`);
+          if (/^\s*```/.test(l)) { fenced = !fenced; return; }
+          if (fenced) return;
           const prose = l.replace(/`[^`]*`/g, '');
           if (/\s--\s/.test(prose)) bad.push(`${path.relative(ROOT, p)}:${i + 1} double hyphen in prose`);
         });

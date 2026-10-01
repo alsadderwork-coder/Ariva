@@ -837,6 +837,7 @@
       "acceptanceCriteria": [
         "Replay command over archived events for a range and profile version produces a stable output hash",
         "CI test: seed 9303 reproduces 18:05, 18:20 to 18:30 and 19:10 exactly",
+        "Replay inputs and outputs are hash-chained so an exported replay is tamper-evident (competitive refresh 2026-10)",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "node scripts/verify.mjs integration passes (Testcontainers)",
         "node scripts/security/scan.mjs passes with 0 errors",
@@ -880,6 +881,7 @@
       "acceptanceCriteria": [
         "Sustain windows, dedupe, auto-resolve",
         "Backtest returns first fire time and count; a test proves backtest equals live firing for seed 9303 (R-001 at 18:05)",
+        "A predicted-breach rule type warns 15 to 60 minutes ahead from the arrival-wave projection (ARV-047) (competitive refresh 2026-10)",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "node scripts/verify.mjs integration passes (Testcontainers)",
         "node scripts/security/scan.mjs passes with 0 errors",
@@ -1300,6 +1302,7 @@
       "acceptanceCriteria": [
         "Bilingual bands with hysteresis and stale fallback; display players authenticate with device credentials",
         "Playwright at 1920x1080 including stale data",
+        "Resource files for Arabic (right to left), English, Portuguese and Swahili (competitive refresh 2026-10)",
         "node scripts/verify.mjs web passes (svelte-check, lint, build)",
         "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",

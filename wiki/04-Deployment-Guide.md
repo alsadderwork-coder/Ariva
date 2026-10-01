@@ -153,7 +153,9 @@ Main settings:
 | `Auth:Sessions:AbsoluteSeconds`, `IdleSecondsAdministrator`, `IdleSecondsOperational` | 43200, 1800, 14400 | Keep (ADR-0026): 12 hours for everyone; 30 minutes idle for administrators, 4 hours for operational roles |
 | `Auth:Sessions:RefreshGraceSeconds`, `CacheSeconds` | 30, 4 | Keep. The session cache bounds how long another node can still accept a revoked session when the Redis backplane is down; with it, revocation is immediate |
 | `Auth:ContextWords` | empty | Words a password may not contain besides the username, `ariva` and `Application:SiteCode`, for example the airport name |
-| `Auth:TotpRequired` | `false` until ARV-010c | ARV-010c turns it on; accounts without TOTP then get only the pending scope |
+| `Auth:TotpRequired` | `true` | Keep: an account without TOTP gets only the pending scope until it enrols (ARV-010c); a unit test keeps every committed file on `true` |
+| `Auth:Totp:Issuer` | `Ariva` | Add the site, for example `Ariva AUH`, so staff with accounts at several sites can tell the entries apart in their authenticator app |
+| `Auth:Totp:BreakGlassUserName` | `break-glass` | The username the installer command gives the emergency account |
 | `Auth:DevelopmentUsers` | empty | vm-local only; a host refuses to start if it is set in any other environment |
 | `Security:RateLimiting:Auth:PermitLimit` | 10 a minute per client address | Keep; it needs `Security:ForwardedHeaders` to name the ingress network, or every client shares the ingress controller's address |
 | `Kafka:BootstrapServers`, `TopicPrefix` | `kafka:9092`, `ariva` | Keep the prefix `ariva` |
@@ -246,6 +248,15 @@ Rotation every 90 days, without signing anyone out:
 3. After the longest token lifetime (15 minutes; with ARV-010b, the refresh lifetime), remove `previous.pem` from `ariva-token-public` and restart the API deployments.
 
 If the signing key leaks, do the same without waiting in step 3: remove the leaked key from `ariva-token-public` at once. Every token it signed is refused and users sign in again.
+
+The break-glass account (ARV-010c) is the way in when every administrator is locked out or has lost their authenticator. Create it once per deployment, after the first migration, with the installer command, and keep the printed credential sealed offline (two-person custody is recommended):
+
+```bash
+kubectl run ariva-break-glass --rm -it --restart=Never --namespace="$NAMESPACE" \
+  --image="$REGISTRY/api-main:$BUILD_NUMBER" -- dotnet Ariva.Api.Main.dll --create-break-glass
+```
+
+The command prints the username, a random password and ten recovery codes once; every sign-in needs the password and one unused recovery code, is never locked out and logs `SecurityEvent.BreakGlassSignIn` (event 9110) at Critical. Alert on that event in Loki or the SIEM, for example `{app="api-main"} |= "BreakGlassSignIn"`. When the codes run low, after an incident, or when custody changes, run the same command with `--rotate-break-glass`: it issues a new password and codes and ends the account's sessions. No API can create, re-enable or reset the account. Add `--break-glass-output=<path>` to write the credential to a new owner-only file instead of the terminal.
 
 ### 6.3 Deploy the platform
 

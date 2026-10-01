@@ -323,6 +323,51 @@
     {
       "host": "main",
       "method": "POST",
+      "route": "/api/auth/totp/enroll",
+      "access": "authenticated",
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 200,
+        "TerminalDutyManager": 200,
+        "HandlerStationManager": 200,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/auth/totp/confirm",
+      "access": "authenticated",
+      "body": {
+        "code": "000000"
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 400,
+        "TerminalDutyManager": 400,
+        "HandlerStationManager": 400,
+        "SystemAdministrator": 400
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/auth/totp/recovery-codes",
+      "access": "authenticated",
+      "body": {
+        "code": "000000"
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 400,
+        "TerminalDutyManager": 400,
+        "HandlerStationManager": 400,
+        "SystemAdministrator": 400
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
       "route": "/api/v1/admin/users/{id:guid}/unlock",
       "access": "permission",
       "permissions": [

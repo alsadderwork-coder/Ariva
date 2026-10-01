@@ -12,7 +12,8 @@ using Microsoft.Extensions.Options;
 namespace Ariva.Api.Main.Controllers.Auth;
 
 /// <summary>
-/// Sign-in, refresh, logout and password change (ADR-0026, ARV-010a and ARV-010b). Every failed sign-in answers 401
+/// Sign-in, refresh, logout, password change and TOTP (ADR-0026, ARV-010a to ARV-010c). An account with TOTP sends
+/// its code with the password; without one the answer is 401 mfa_required. Every failed sign-in answers 401
 /// with the same problem body, whatever the reason; every failed refresh answers 401 session_expired and clears the
 /// cookie. The "auth" rate limit allows 10 attempts a minute per client address (429 after that). Responses are never
 /// cached (no-store). The refresh token travels only in the __Secure-ariva_rt cookie (<see cref="RefreshCookie"/>).
@@ -31,6 +32,8 @@ public sealed class AuthController(ISvcAuthenticator authenticator, IOptions<Cor
     {
         Response.Headers.CacheControl = "no-store";
         var result = await authenticator.LoginAsync(request, RefreshCookie.ContextOf(HttpContext), ct);
+        if (result.HasErrors && result.ErrorMessages.Contains(ISvcAuthenticator.MfaRequired))
+            return Unauthorized("Enter the code from your authenticator app", "https://ariva/problems/mfa-required", ISvcAuthenticator.MfaRequired);
         if (result.HasErrors)
             return Problem(statusCode: StatusCodes.Status401Unauthorized, title: "Sign-in failed", detail: ISvcAuthenticator.InvalidCredentials, type: "https://ariva/problems/invalid-credentials");
 
@@ -102,16 +105,62 @@ public sealed class AuthController(ISvcAuthenticator authenticator, IOptions<Cor
         return NoContent();
     }
 
-    private ObjectResult SessionExpired()
+    /// <summary>Starts TOTP enrolment: the secret and otpauth URI, shown this once (ARV-010c).</summary>
+    [HttpPost("totp/enroll")]
+    [Authorize]
+    [AllowPendingScope]
+    [EnableRateLimiting(RateLimitingExtensions.AuthPolicy)]
+    [ProducesResponseType<TotpEnrolmentViewModel>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> EnrolTotp(CancellationToken ct)
     {
-        var problem = new ProblemDetails
-        {
-            Status = StatusCodes.Status401Unauthorized,
-            Title = "Your session has ended",
-            Type = SessionValidationMiddleware.ProblemType,
-            Detail = "Sign in again."
-        };
-        problem.Extensions["error"] = ISvcAuthenticator.SessionExpired;
+        Response.Headers.CacheControl = "no-store";
+        var result = await authenticator.EnrolTotpAsync(ct);
+        if (!result.HasErrors)
+            return Ok(result.Data);
+        return result.ErrorMessages.Contains(ISvcAuthenticator.AlreadyEnrolled)
+            ? Problem(statusCode: StatusCodes.Status409Conflict, title: "Already enrolled", detail: ISvcAuthenticator.AlreadyEnrolled)
+            : Problem(statusCode: StatusCodes.Status400BadRequest, title: "Enrolment refused");
+    }
+
+    /// <summary>Confirms the enrolment with the first code; returns a new token and the recovery codes, shown once.</summary>
+    [HttpPost("totp/confirm")]
+    [Authorize]
+    [AllowPendingScope]
+    [EnableRateLimiting(RateLimitingExtensions.AuthPolicy)]
+    [ProducesResponseType<TotpConfirmedViewModel>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> ConfirmTotp([FromBody] TotpCodeRequest request, CancellationToken ct)
+    {
+        Response.Headers.CacheControl = "no-store";
+        var result = await authenticator.ConfirmTotpAsync(request, ct);
+        return result.HasErrors
+            ? Problem(statusCode: StatusCodes.Status400BadRequest, title: "The code was not accepted", detail: result.ErrorMessages.FirstOrDefault())
+            : Ok(result.Data);
+    }
+
+    /// <summary>New recovery codes after a valid TOTP code; the old ones stop working. ARV-010d adds step-up.</summary>
+    [HttpPost("totp/recovery-codes")]
+    [Authorize]
+    [EnableRateLimiting(RateLimitingExtensions.AuthPolicy)]
+    [ProducesResponseType<RecoveryCodesViewModel>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> RegenerateRecoveryCodes([FromBody] TotpCodeRequest request, CancellationToken ct)
+    {
+        Response.Headers.CacheControl = "no-store";
+        var result = await authenticator.RegenerateRecoveryCodesAsync(request, ct);
+        return result.HasErrors
+            ? Problem(statusCode: StatusCodes.Status400BadRequest, title: "The code was not accepted", detail: result.ErrorMessages.FirstOrDefault())
+            : Ok(result.Data);
+    }
+
+    private ObjectResult SessionExpired() =>
+        Unauthorized("Your session has ended", SessionValidationMiddleware.ProblemType, ISvcAuthenticator.SessionExpired, "Sign in again.");
+
+    private static ObjectResult Unauthorized(string title, string type, string error, string detail = null)
+    {
+        var problem = new ProblemDetails { Status = StatusCodes.Status401Unauthorized, Title = title, Type = type, Detail = detail };
+        problem.Extensions["error"] = error;
         return new ObjectResult(problem) { StatusCode = StatusCodes.Status401Unauthorized, ContentTypes = { "application/problem+json" } };
     }
 }
