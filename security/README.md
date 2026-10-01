@@ -6,7 +6,7 @@
 
 Each entry needs: `rule` (SEC-nnn), `path` (repository relative, forward slashes), optional `contains` (text that must appear on the flagged line), `reason`, `proposedBy`, `approvedBy` and `date`. Entries for SEC-052 (anonymous endpoints) also list the route patterns they cover in `routes`, for example `["/health/startup"]`; `EndpointInventoryTests` boots every host and fails when an anonymous endpoint's route is not listed by an entry for the file that maps it. `AllowlistTests` fails CI when any field is missing or malformed.
 
-An entry whose `approvedBy` starts with `PENDING` downgrades the finding to a warning instead of hiding it, so unapproved exceptions stay visible in every report. Only a human approver replaces `PENDING`; agents may propose entries but never approve them (enforced by the `guard-paths` hook, which blocks agents from writing a non-pending `approvedBy`).
+An entry whose `approvedBy` starts with `PENDING` downgrades the finding to a warning instead of hiding it, so unapproved exceptions stay visible in every report. Only a human approver replaces `PENDING`; agents may propose entries but never approve them (enforced by the `guard-paths` hook, which simulates each agent edit and refuses it if any approved entry in the result is new or differs from the current file).
 
 ## Baseline
 

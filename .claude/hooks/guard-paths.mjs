@@ -1,6 +1,7 @@
 // PreToolUse guard for Edit, Write and MultiEdit.
 // Keeps agents inside the repository, protects AMAN and the harness, blocks secrets,
 // stops agents from approving their own security exceptions, and enforces the no-dash writing rule.
+import fs from 'node:fs';
 import path from 'node:path';
 import { readInput, deny, ask, resolveInProject, isInside, isTempOrClaudeHome, PROJECT_DIR, AMAN_DIR } from './lib.mjs';
 
@@ -27,8 +28,27 @@ if (Array.isArray(ti.edits)) for (const e of ti.edits) if (typeof e?.new_string 
 const text = pieces.join('\n');
 
 if (rel === 'security/allowlist.json') {
-  const approvals = [...text.matchAll(/"approvedBy"\s*:\s*"([^"]*)"/g)].map(m => m[1]);
-  if (approvals.some(a => !/^PENDING/i.test(a))) deny('Agents may propose security exceptions but never approve them. Set "approvedBy": "PENDING: Ahmad".');
+  // Simulate the write, then compare approved entries before and after. Agents may add or edit
+  // PENDING entries, but every approved entry in the result must exist unchanged in the current file.
+  const current = fs.existsSync(target) ? fs.readFileSync(target, 'utf8') : '[]';
+  let next = current;
+  if (typeof ti.content === 'string') next = ti.content;
+  const edits = Array.isArray(ti.edits) ? ti.edits : (typeof ti.old_string === 'string' ? [ti] : []);
+  for (const e of edits) {
+    if (typeof e?.old_string !== 'string' || typeof e?.new_string !== 'string') continue;
+    next = e.replace_all ? next.split(e.old_string).join(e.new_string) : next.replace(e.old_string, e.new_string);
+  }
+  const approvedKeys = json => {
+    let list;
+    try { list = JSON.parse(json); } catch { deny('security/allowlist.json must stay valid JSON.'); }
+    return new Set((Array.isArray(list) ? list : [])
+      .filter(x => x && !/^PENDING/i.test(String(x.approvedBy ?? '')))
+      .map(x => JSON.stringify([x.rule, x.path, x.contains, x.routes, x.reason, x.approvedBy])));
+  };
+  const before = approvedKeys(current);
+  for (const key of approvedKeys(next)) {
+    if (!before.has(key)) deny('Agents may propose security exceptions but never approve or change approved ones. Set "approvedBy": "PENDING: Ahmad" on new or changed entries.');
+  }
 }
 
 if (rel.startsWith('.claude/settings') || rel.startsWith('.claude/hooks/') || rel === '.mcp.json' || rel.startsWith('scripts/security/')) {

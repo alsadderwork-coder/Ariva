@@ -47,7 +47,9 @@ Two ids in the original request were mislabelled; this table uses the correct on
 2. The post-edit hook scans each file as it is written and returns findings to the agent.
 3. The story's acceptance criteria always include `node scripts/verify.mjs security` and the tests for the controls above that the story touches.
 4. The `security-reviewer` subagent reviews the diff against this matrix and writes its verdict into the story notes.
-5. Exceptions go to `security/allowlist.json` with `approvedBy: "PENDING: Ahmad"`; they stay visible as warnings until a human approves them.
+5. Exceptions go to `security/allowlist.json` with `approvedBy: "PENDING: Ahmad"`; they stay visible as warnings until a human approves them. The `guard-paths` hook simulates every agent edit to the file and refuses any result in which an approved entry is new or changed.
+
+Approved exceptions today: the Kubernetes health probes of every host and of the simulator (SEC-052, approved by Ahmad Al-Sadder on 2026-10-01).
 
 ## Observations from AMAN's integration authentication (do not copy these)
 
