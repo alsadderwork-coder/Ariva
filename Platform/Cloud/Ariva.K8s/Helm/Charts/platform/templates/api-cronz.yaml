@@ -37,6 +37,11 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 64Mi
+        # Data Protection key-protection certificate (ARV-008): kubernetes.io/tls secret, read-only
+        - name: dataprotection-certificate
+          secret:
+            secretName: {{ .Values.dataProtectionSecretName | default "ariva-dataprotection" }}
+            defaultMode: 0400
         - name: api-cronz-appsettings-base-volume
           secret:
             secretName: base-appsettings-secret
@@ -63,6 +68,9 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            - name: dataprotection-certificate
+              mountPath: /app/secrets/dataprotection
+              readOnly: true
             - name: api-cronz-appsettings-base-volume
               mountPath: /app/appsettings.base.{{ .Values.environment }}.json
               subPath: appsettings.base.{{ .Values.environment }}.json

@@ -155,6 +155,12 @@ internal sealed class ArivaWebApplicationFactory<TEntryPoint>(string environment
         builder.UseSetting("Database:AllowSchemaUpdate", "false");
         builder.UseSetting("Database:VerifySchemaOnStartup", "false");
 
+        // No mounted certificate and no Redis in-process: a development Data Protection certificate and a memory-only
+        // cache, whatever the environment under test.
+        builder.UseSetting("DataProtection:CertificatePath", string.Empty);
+        builder.UseSetting("DataProtection:UseDevelopmentCertificate", "true");
+        builder.UseSetting("Redis:Enabled", "false");
+
         configure?.Invoke(builder);
     }
 }

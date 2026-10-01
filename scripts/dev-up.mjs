@@ -53,7 +53,7 @@ const settings = {
 		Migration: { Username: 'ariva', Password: env.ARIVA_DB_PASSWORD }
 	},
 	Kafka: { BootstrapServers: `localhost:${env.ARIVA_KAFKA_PORT || 19092}` },
-	Redis: { ConnectionString: `localhost:${env.ARIVA_REDIS_PORT || 16379},password=${env.ARIVA_REDIS_PASSWORD}` },
+	Redis: { Enabled: true, ConnectionString: `localhost:${env.ARIVA_REDIS_PORT || 16379},password=${env.ARIVA_REDIS_PASSWORD}` },
 	Smtp: { Host: 'localhost', Port: Number(env.ARIVA_SMTP_PORT || 2525), UseTls: false }
 };
 fs.writeFileSync(LOCAL_SETTINGS, JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 });

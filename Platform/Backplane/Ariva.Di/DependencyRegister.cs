@@ -23,6 +23,8 @@ public static class DependencyRegister
         ArgumentNullException.ThrowIfNull(configuration);
 
         services.AddArivaPersistence(configuration);
+        services.AddArivaCaching(configuration);
+        services.AddArivaDataProtection(configuration);
 
         return services;
     }

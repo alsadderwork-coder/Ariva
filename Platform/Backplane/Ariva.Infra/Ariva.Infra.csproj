@@ -18,6 +18,8 @@
         <!-- Persistence (ARV-005): NHibernate over Npgsql, AMAN versions -->
         <PackageReference Include="NHibernate" />
         <PackageReference Include="Npgsql" />
+        <!-- Redis connection shared by the FusionCache levels (ARV-008) -->
+        <PackageReference Include="StackExchange.Redis" />
     </ItemGroup>
 
     <ItemGroup>

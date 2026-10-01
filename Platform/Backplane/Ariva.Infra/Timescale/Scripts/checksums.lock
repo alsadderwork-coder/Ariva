@@ -1,6 +1,7 @@
 {
   "_comment": "SHA-256 of every shipped script (LF line endings, no BOM). A script is immutable once listed here; Ariva.UnitTests fails when a listed script changes or an unlisted one appears. Add the entry for a new script in the same pull request.",
   "scripts": {
-    "0001_roles.sql": "988d016e15feda84385f95e64188b0ddda64a99f317644a41a441d9a97478f78"
+    "0001_roles.sql": "988d016e15feda84385f95e64188b0ddda64a99f317644a41a441d9a97478f78",
+    "0002_data_protection_key.sql": "d624f1f40eb3310b588e9ef400ac9a5791a629a251e15cfee543b7fcd0e3398c"
   }
 }
