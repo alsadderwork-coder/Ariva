@@ -82,6 +82,7 @@ const steps = {
   security: () => {
     run('security scanner self-test', 'node', ['scripts/security/scan.mjs', '--self-test']);
     run('security scan', 'node', ['scripts/security/scan.mjs']);
+    run('base images pinned', 'node', ['scripts/base-images.mjs', '--check']);
     const CHART_TESTS = path.join(ROOT, 'Platform', 'Cloud', 'Ariva.K8s', 'tests');
     if (!fs.existsSync(path.join(CHART_TESTS, 'node_modules'))) run('chart tests npm ci', 'npm', ['ci'], CHART_TESTS);
     run('chart security (pod security context, read-only root, TLS, release guards)', 'node', ['chart-security.mjs'], CHART_TESTS);

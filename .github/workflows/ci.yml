@@ -40,6 +40,8 @@ jobs:
         run: node scripts/security/scan.mjs
       - name: Docs writing rules
         run: node scripts/verify.mjs docs
+      - name: Base images pinned by version and digest
+        run: node scripts/base-images.mjs --check
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: v3.19.0 # same Helm as the release pipeline
