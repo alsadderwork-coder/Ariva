@@ -33,7 +33,9 @@
 /Platform/.claude/settings.local.json
 /Ariva.slnLaunch.user
 /Platform/Frontplane/Ariva.Web/nul
-/.ralph-tui/config.toml
+# .ralph-tui/config.toml is committed in Ariva: it holds no machine-specific values.
+/.ralph-tui/session*
+/.ralph-tui/*.log
 /.claude/worktrees/
 
 

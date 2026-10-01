@@ -1,0 +1,12 @@
+# Ralph TUI configuration for Ariva (same tracker and agent as AMAN's .ralph-tui)
+# Run: ralph-tui run --prd backlog/prd-phase0.json
+# Each iteration gets a fresh Claude Code session; CLAUDE.md, the skills, subagents and hooks load automatically.
+configVersion = "2.1"
+tracker = "json"
+agent = "claude"
+maxIterations = 20
+# Commits land on the PRD branch (ralph/phase0), never on trunk; a human reviews and pushes.
+autoCommit = true
+
+[trackerOptions]
+[agentOptions]
