@@ -1,0 +1,11 @@
+{{- /*
+Release guards. Renders nothing; fails the render when a rule is broken.
+- Production never deploys a moving tag: buildNumber must be an explicit build (ARV-002).
+- No environment deploys the "latest" tag.
+*/ -}}
+{{- if and (eq .Values.environment "k8s-prd") (or (empty .Values.buildNumber) (eq (toString .Values.buildNumber) "trunk")) }}
+{{- fail "k8s-prd needs an explicit buildNumber (for example --set buildNumber=main-20261001.3); trunk and empty are not allowed" }}
+{{- end }}
+{{- if eq (toString .Values.buildNumber) "latest" }}
+{{- fail "buildNumber latest is not allowed; use a build number or the local tag" }}
+{{- end }}

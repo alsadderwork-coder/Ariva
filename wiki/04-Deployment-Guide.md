@@ -89,7 +89,7 @@ Totals at the HPA minimums: about 2.3 CPU cores and 5 GiB of memory requested. A
 - PostgreSQL 17 with TimescaleDB Community Edition (Tiger Data licence): free to run on self-managed infrastructure, including production inside a product Dalil deploys for a customer; it may not be offered to third parties as a database service, which Ariva never does.
 - The extension must exist on every restore target and in the HA image. The intended image is `timescale/timescaledb-ha` with a pinned pg17 tag.
 - Options per site:
-  1. The Ariva TimescaleDB chart (`Charts/timescaledb`). Today it is a placeholder marked `installed: false` in `helmfile-k8s.yaml`; its StatefulSet, Service and PVC templates are a Target procedure, implemented in Phase 0 epic Skeleton and platform. The base settings expect a Service named `timescaledb` on port 5432.
+  1. The Ariva TimescaleDB chart (`Charts/timescaledb`). Today it is a placeholder marked `installed: false` in `helmfile-k8s.yaml.gotmpl` (its StatefulSet, Service and PVC templates are a Target procedure, implemented in Phase 0 epic Skeleton and platform. The base settings expect a Service named `timescaledb` on port 5432.
   2. A PostgreSQL operator or Patroni with streaming replication for HA, using an image that includes TimescaleDB. The operator should match what AMAN runs (To confirm).
   3. A customer-managed PostgreSQL 16 or later with TimescaleDB, set through `Database:Host`.
 - Set `timescaledb.telemetry_level` to `off` (the intended chart value).
@@ -198,11 +198,13 @@ Add `simulation` to the loop only where `simulationEnabled` is true (dev and dem
 
 ### 6.3 Deploy the platform
 
-Development and demo use the Helmfile exactly as the pipeline does:
+Every environment uses the Helmfile, selecting its values file with `-e` (`dev`, `demo`, `prd`, `localk8s`):
 
 ```bash
 helmfile apply \
-  -f Platform/Cloud/Ariva.K8s/Helm/helmfile-k8s.yaml \
+  -f Platform/Cloud/Ariva.K8s/Helm/helmfile-k8s.yaml.gotmpl \
+  -e prd \
+  --state-values-set buildNumber=<build number> \
   --namespace "$NAMESPACE" \
   --kube-context <context> \
   --set releaseVersion=<build number> \
@@ -210,7 +212,7 @@ helmfile apply \
   --set imageCredentials.password=<registry password>
 ```
 
-`helmfile-k8s.yaml` currently pins `values-k8s-dev.yaml` for the `ariva-platform` release. Until the Helmfile gains per-environment values (Target procedure, implemented in Phase 0 epic Skeleton and platform), install demo, production and customer sites with Helm directly, using the same release name so a later switch to the Helmfile is seamless:
+The chart refuses to render production without an explicit `buildNumber` (never `trunk`, never empty) and refuses the `latest` tag everywhere. Every ingress needs a TLS certificate secret (`tlsSecretName`, default `ariva-tls`) in the namespace before the release. Customer sites can still layer a site file with Helm directly, using the same release name:
 
 ```bash
 helm upgrade --install ariva-platform Platform/Cloud/Ariva.K8s/Helm/Charts/platform \

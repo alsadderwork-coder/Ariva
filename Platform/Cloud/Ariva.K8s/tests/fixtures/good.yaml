@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: good }
+spec:
+  template:
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: app
+          image: registry.example/app:main-20261001.1
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata: { name: good }
+spec:
+  tls: [{ hosts: [ariva.example], secretName: ariva-tls }]
+  rules: [{ host: ariva.example }]

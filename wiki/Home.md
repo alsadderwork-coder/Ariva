@@ -60,7 +60,7 @@ Ariva is in Phase 0 (demo core), which runs from October 2026 to about April 202
 | Hosts | Ariva.Api.Main, Ingest, Stream, Cronz, Integration and Ariva.Simulation.Api start and serve `/health/startup`, `/health/readiness`, `/health/liveness` only | Controllers, workers, adapters and emulators |
 | Web | SvelteKit 2 skeleton with Arabic and English language files; nginx image serving `/healthz` | Dashboard, display page (Phase 0), all other screens (Phase 1 and v1) |
 | Contracts | AMAN feed contracts V1 (`DeskSessionChanged`, `DeskIntervalStats`, `EGateIntervalStats`, `InboundFlightLaneDemand`) | AMAN-side outbox changes (Phase 1) |
-| Kubernetes | Helm chart `ariva-platform` (seven deployments, services, HPAs, ingresses), `helmfile-k8s.yaml`, TimescaleDB chart placeholder (`installed: false`) | TimescaleDB templates, Kafka and Redis releases or reuse of AMAN's |
+| Kubernetes | Helm chart `ariva-platform` (seven deployments, services, HPAs, ingresses), `helmfile-k8s.yaml.gotmpl` (environments dev, demo, prd, localk8s), TimescaleDB chart placeholder (`installed: false`) | TimescaleDB templates, Kafka and Redis releases or reuse of AMAN's |
 | Pipelines | PR validation, one image build per service, a fan-out build, release to `k8s-dev` | Demo and production release pipelines, security pipelines |
 | Security gates | Repository scanner (39 rules over 14 CWEs), .NET security analyzers as errors, layering and data-boundary tests, `scripts/verify.mjs` | Behaviour tests, end-to-end suite `Platform/Testing/Ariva.E2E` (not yet in the repository), ZAP scan |
 | Prototype | A clickable prototype on synthetic data (fictional Demo International Airport, DMO, seed 9303) shows the target screens. It is not the product | |

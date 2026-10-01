@@ -10,6 +10,8 @@ imagePullPolicy: Always
 replicas: 1
 releaseVersion: v-0.0.0
 domain: dalilhub.tech
+# TLS certificate secret for every ingress host (created out of band, for example by cert-manager)
+tlsSecretName: ariva-tls
 clusterName: k8s-dev
 
 # The simulation host (sensor, AODB and AMAN emulators) is deployed unless an environment turns it off.

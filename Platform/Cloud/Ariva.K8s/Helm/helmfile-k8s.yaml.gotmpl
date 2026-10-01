@@ -1,9 +1,27 @@
-# Ariva releases for the shared Kubernetes cluster.
-# The release pipeline passes the namespace and kube context on the command line
+# Ariva releases for a Kubernetes cluster (Helmfile 1.x; .gotmpl because the file is templated).
+# Pick the environment with -e: dev, demo, prd or localk8s; each selects its values file.
+#   helmfile -f Platform/Cloud/Ariva.K8s/Helm/helmfile-k8s.yaml.gotmpl -e dev apply
+# The release pipeline passes the namespace, kube context and, for prd, --state-values-set buildNumber=...
 # (see Platform/Cloud/Ariva.Cicd/AzureDevOps/K8s/Release-ariva-k8s-dev.yaml).
+
+environments:
+  dev:
+    values:
+      - valuesFile: values-k8s-dev.yaml
+  demo:
+    values:
+      - valuesFile: values-k8s-demo.yaml
+  prd:
+    values:
+      - valuesFile: values-k8s-prd.yaml
+  localk8s:
+    values:
+      - valuesFile: values-localk8s.yaml
 
 helmDefaults:
   kubeContext: default
+
+---
 
 releases:
 
@@ -11,9 +29,14 @@ releases:
   - name: ariva-platform
     chart: ./Charts/platform
     values:
-      - ./Charts/platform/values-k8s-dev.yaml
+      - ./Charts/platform/{{ .Values.valuesFile }}
+    {{- if .Values | get "buildNumber" "" }}
+    set:
+      - name: buildNumber
+        value: {{ .Values.buildNumber | quote }}
+    {{- end }}
 
-  # TimescaleDB (single node). Flip installed to true once the chart templates are added.
+  # TimescaleDB (single node). Flip installed to true once the chart templates are added (ARV-062).
   - name: timescaledb
     chart: ./Charts/timescaledb
     installed: false

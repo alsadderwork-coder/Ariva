@@ -33,6 +33,10 @@ spec:
       imagePullSecrets:
         - name: dalilacr-secret
       volumes:
+        # Writable scratch space; the root filesystem is read-only (CWE-269)
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
         - name: api-main-appsettings-base-volume
           secret:
             secretName: base-appsettings-secret
@@ -53,9 +57,12 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+            readOnlyRootFilesystem: true
           ports:
             - containerPort: 8080
           volumeMounts:
+            - name: tmp
+              mountPath: /tmp
             - name: api-main-appsettings-base-volume
               mountPath: /app/appsettings.base.{{ .Values.environment }}.json
               subPath: appsettings.base.{{ .Values.environment }}.json

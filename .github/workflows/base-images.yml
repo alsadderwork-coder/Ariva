@@ -1,0 +1,40 @@
+# Resolves the newest patch tag and digest of every base image line and proposes pinned FROM lines (ARV-002).
+# Run it by hand (Actions, base-images, Run workflow) or let it run on pull requests that touch a Dockerfile; the
+# pinned lines appear in the job summary and as a patch artifact. ci.yml enforces the pins with --check.
+name: base-images
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ['**/Dockerfile', 'scripts/base-images.mjs']
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - name: Resolve newest patch and digest per base image line
+        run: |
+          node scripts/base-images.mjs --resolve --write | tee resolved.txt
+          {
+            echo '### Pinned base images'
+            echo '```'
+            cat resolved.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          git diff > base-images.patch
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: base-images-patch
+          path: |
+            resolved.txt
+            base-images.patch

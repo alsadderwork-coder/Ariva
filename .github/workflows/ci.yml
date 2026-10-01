@@ -40,6 +40,14 @@ jobs:
         run: node scripts/security/scan.mjs
       - name: Docs writing rules
         run: node scripts/verify.mjs docs
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.19.0 # same Helm as the release pipeline
+      - name: Chart security (pod security context, read-only root, TLS, release guards)
+        working-directory: Platform/Cloud/Ariva.K8s/tests
+        run: |
+          npm ci
+          node chart-security.mjs
       - name: Security report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

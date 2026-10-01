@@ -1,0 +1,13 @@
+{
+	"name": "ariva-chart-tests",
+	"private": true,
+	"type": "module",
+	"description": "Renders the ariva-platform chart for every environment and checks pod security and ingress TLS (ARV-002, CWE-269).",
+	"scripts": {
+		"test": "node chart-security.mjs",
+		"self-test": "node chart-security.mjs --self-test"
+	},
+	"dependencies": {
+		"yaml": "2.9.1"
+	}
+}

@@ -3,7 +3,8 @@
 # Declare variables to be passed into your templates.
 # Production defaults. Replace domain and subdomains with the customer's own names at deployment.
 environment: k8s-prd
-buildNumber: trunk
+# Required: passed by the release pipeline (--set buildNumber=...). The chart refuses trunk or empty here.
+buildNumber: ""
 imageRepository: dalil.azurecr.io/ariva
 replicas: 1
 domain: dalilhub.tech
@@ -15,6 +16,8 @@ apiStreamSubDomain: api-stream-ariva
 apiCronzSubDomain: api-cronz-ariva
 apiIntegrationSubDomain: api-integration-ariva
 # Identifies this cluster in telemetry (K8s Cluster Name). Set to the real cluster identity.
+# TLS certificate secret for every ingress host (created out of band, for example by cert-manager)
+tlsSecretName: ariva-tls
 clusterName: k8s-prd
 releaseVersion: v-0.0.0
 imagePullPolicy: IfNotPresent

@@ -113,7 +113,8 @@ steps:
       set -e
       export KUBECONFIG="$(Build.SourcesDirectory)/_cicd/jupiter-kube-config.yaml"
       helmfile apply \
-        -f Platform/Cloud/Ariva.K8s/Helm/helmfile-k8s.yaml \
+        -f Platform/Cloud/Ariva.K8s/Helm/helmfile-k8s.yaml.gotmpl \
+        -e dev \
         --namespace $(NAMESPACE) \
         --kube-context $(K8SCLUSTERCONTEXT) \
         --set releaseVersion=$(Build.BuildNumber) \

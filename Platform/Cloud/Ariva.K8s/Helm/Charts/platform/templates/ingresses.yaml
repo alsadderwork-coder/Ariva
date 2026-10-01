@@ -14,6 +14,7 @@ metadata:
       if ($host != "{{ .subdomain }}.{{ $.Values.domain }}") {
         return 421;
       }
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
     nginx.ingress.kubernetes.io/enable-modsecurity: "true"
     nginx.ingress.kubernetes.io/modsecurity-snippet: |
       SecRuleEngine On
@@ -23,6 +24,11 @@ metadata:
     {{- end }}
 spec:
   ingressClassName: nginx
+  # TLS on every host (Platform/Cloud/CLAUDE.md); the certificate secret is per environment or per ingress.
+  tls:
+    - hosts:
+        - "{{ .subdomain }}.{{ $.Values.domain }}"
+      secretName: {{ .tlsSecretName | default $.Values.tlsSecretName | required "tlsSecretName must be set in the environment values" }}
   rules:
     - host: "{{ .subdomain }}.{{ $.Values.domain }}"
       http:

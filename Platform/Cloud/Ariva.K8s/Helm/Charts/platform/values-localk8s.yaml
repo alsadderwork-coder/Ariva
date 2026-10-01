@@ -3,7 +3,7 @@
 # Declare variables to be passed into your templates.
 # Local Kubernetes (Docker Desktop, kind, k3d) with images built locally and hosts on localhost.
 environment: k8s-dev
-buildNumber: latest
+buildNumber: local
 imageRepository: dalil.azurecr.io/ariva
 imagePullPolicy: IfNotPresent
 replicas: 1
@@ -15,6 +15,8 @@ apiIngestSubDomain: api-ingest-ariva
 apiStreamSubDomain: api-stream-ariva
 apiCronzSubDomain: api-cronz-ariva
 apiIntegrationSubDomain: api-integration-ariva
+# TLS certificate secret for every ingress host (created out of band, for example by cert-manager)
+tlsSecretName: ariva-tls
 clusterName: localk8s
 releaseVersion: v-0.0.0
 

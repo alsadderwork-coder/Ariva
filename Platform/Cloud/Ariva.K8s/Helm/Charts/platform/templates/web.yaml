@@ -21,6 +21,17 @@ spec:
     spec:
       imagePullSecrets:
         - name: dalilacr-secret
+      # nginx writes its cache, pid file and temp files here; the root filesystem is read-only (CWE-269)
+      volumes:
+        - name: nginx-cache
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: nginx-run
+          emptyDir:
+            sizeLimit: 1Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 32Mi
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -35,6 +46,14 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-run
+              mountPath: /run
+            - name: tmp
+              mountPath: /tmp
           ports:
             - containerPort: 3000
           startupProbe:
