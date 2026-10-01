@@ -86,7 +86,9 @@ public sealed class DefaultDenyTests
     {
         await using var app = ArivaHosts.Create(ArivaHosts.Main, configure: builder => builder.ConfigureTestServices(TestAuthenticationHandler.Register));
         using var client = app.CreateClient();
-        client.DefaultRequestHeaders.Add(TestAuthenticationHandler.UserHeader, "duty-manager");
+        client.DefaultRequestHeaders.Add(TestAuthenticationHandler.UserHeader, "administrator");
+        // System info needs SystemInfo.View, which only system administrators hold (ARV-009).
+        client.DefaultRequestHeaders.Add(TestAuthenticationHandler.RolesHeader, Ariva.Core.RoleCodes.SystemAdministrator);
 
         using var response = await client.GetAsync(SystemInfo, TestContext.Current.CancellationToken);
         var body = await response.BodyAsync();
