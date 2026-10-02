@@ -358,4 +358,20 @@ public sealed class SensingIngestTests
         other.ErrorMessages.Should().ContainSingle().Which.Should().Contain("Declarative dialect");
         sink.Published.Should().BeEmpty();
     }
+
+    [Fact]
+    public async Task BatchIds_Should_DifferForTheSameReceiptTimedBodyAtAnotherTime()
+    {
+        var (ingest, sink, _) = Create();
+        var occupations = File.ReadAllText(RepositoryPaths.Resolve("Platform/Backplane/Ariva.UnitTests/Sensing/Samples/declarative/ouster-detect-v1/occupations.json"));
+
+        await ingest.IngestAsync(Ouster(), DeviceDialect.Declarative, Json(occupations), Received, CancellationToken.None);
+        await ingest.IngestAsync(Ouster(), DeviceDialect.Declarative, Json(occupations), Received.AddSeconds(5), CancellationToken.None);
+        await ingest.IngestAsync(Ouster(), DeviceDialect.Declarative, Json(occupations), Received.AddSeconds(5), CancellationToken.None);
+
+        var ids = sink.Published.OfType<ZoneOccupancyBatch>().Select(b => b.Id).ToList();
+        ids.Should().HaveCount(3);
+        ids[0].Should().NotBe(ids[1], "an identical count read 5 seconds later is a new reading, stamped at its receipt");
+        ids[1].Should().Be(ids[2], "the same body received at the same instant is the same batch");
+    }
 }

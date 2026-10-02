@@ -37,8 +37,8 @@ From a border deployment to an airport deployment, additionally never: track ids
 
 | Data | Retention | Source |
 |---|---|---|
-| Track ids | Rotated at zone exit; never persist past the operating day | D4 |
-| Raw track samples, zone events | Contract dispute window, default 90 days; compressed after one day | D5 |
+| Track ids | Rotated at zone exit; never persist past the operating day. The raw archive keeps only a pseudonym per UTC day (HMAC-SHA256 with a random daily key destroyed after three days), so archived tracks cannot be linked across days (ARV-026) | D4 |
+| Raw sensing events (track samples, vendor crossings, occupancy and interval counts, table `sensing_event`) | Contract dispute window, default 90 days, dropped by TimescaleDB's retention policy; compressed after one day (ARV-026; values To confirm per site) | D5 |
 | Device health | Dispute window (evidence for sensor-outage exclusions) | Proposed |
 | `aman.feed` Kafka topics | Medium class; AMAN owns the configuration | D5; values To confirm |
 | Ariva Kafka topics | Short, medium, long or compacted classes (3, 14, 30 days) | D5; values Proposed |

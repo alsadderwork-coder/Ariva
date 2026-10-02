@@ -190,7 +190,8 @@ Hypertables and continuous aggregates (versioned SQL):
 
 | Object | Type | Write path | Retention (D5) |
 |---|---|---|---|
-| track_samples (zone, track, time, x, y, height) | Hypertable, compressed after one day | Binary COPY | Contract dispute window, default 90 days |
+| sensing_event (ARV-026): every canonical event Ingest accepted (tracks, vendor crossings, occupancy, interval counts) with zone, device, batch, flags and receipt time, track ids as daily pseudonyms; sensing_batch records each archived batch once; sensing_day_key holds the pseudonym key of each of the last three days | Hypertables, 1-day chunks, sensing_event compressed after one day (segmented by site, zone and kind) | Binary COPY in batches by the Stream host (consumer groups `ariva-stream.sensing-archive-*`); replay reads by zone and time range | Contract dispute window, default 90 days (To confirm per site) |
+| track_samples (zone, track, time, x, y, height) | Hypertable, compressed after one day | Binary COPY | Contract dispute window, default 90 days. The raw samples are in sensing_event; this table, if still needed, will hold the Stream engine's cleaned tracks |
 | zone_events (zone, line, track, time, direction) | Hypertable | Binary COPY | Dispute window |
 | queue_intervals (zone, bin start, profile version, revision, status, counts, wait statistics, wait histogram, quality) | Hypertable | Upsert by (zone, bin start, revision) | Indefinite |
 | desk_intervals | Hypertable | Upsert | Indefinite |

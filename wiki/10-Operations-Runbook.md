@@ -148,7 +148,7 @@ SELECT job_id, hypertable_name, last_run_status, last_successful_finish, next_st
   FROM timescaledb_information.job_stats;
 ```
 
-- **Likely causes**: the retention or compression job failing (raw samples must be dropped after the dispute window and compressed after one day); a dispute window set longer than the volume was sized for; WAL retained by a broken replica or backup archive.
+- **Likely causes**: the retention or compression job failing (raw samples in `sensing_event` and `sensing_batch` must be dropped after the dispute window and compressed after one day; `SELECT * FROM timescaledb_information.job_stats` shows the last runs); a dispute window set longer than the volume was sized for; WAL retained by a broken replica or backup archive.
 - **Actions**: fix and re-run the failing job; expand the volume (volumes can grow, never shrink); check replication slots and WAL archiving. Never delete hypertable data by hand: only the retention job may, and evidence for open disputes must be kept.
 
 ### 4.8 Display board stale

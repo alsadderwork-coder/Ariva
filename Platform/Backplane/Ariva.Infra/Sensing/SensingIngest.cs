@@ -211,7 +211,7 @@ public sealed class SensingIngest(
         var events = new List<Ariva.Core.Domain.Contracts.IEvent>();
         T Batch<T>(T batch, string kind) where T : SensingBatch
         {
-            batch.Id = BatchId(device.DeviceId, kind, bodyHash);
+            batch.Id = BatchId(device.DeviceId, kind, bodyHash, (push.ReceiptTimed & KindFlag(kind)) != 0 ? receivedUtc : null);
             batch.DeviceId = device.DeviceId;
             batch.DeviceCode = device.Code;
             batch.SiteCode = device.SiteCode;
@@ -296,13 +296,25 @@ public sealed class SensingIngest(
     /// is a duplicate that consumers drop; any other body, including one whose vendor package counter restarted, gives
     /// a new id.
     /// </summary>
-    private static Guid BatchId(Guid device, string kind, byte[] bodyHash)
+    private static Guid BatchId(Guid device, string kind, byte[] bodyHash, DateTime? receivedUtc)
     {
-        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes($"{device:N}|{kind}|{Convert.ToHexString(bodyHash)}"));
+        // Events stamped at receipt (ARV-024) carry no time of their own: the same body later is a new reading, not a
+        // resend, so the receipt time is part of the id.
+        var receipt = receivedUtc is { } at ? "|" + at.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture) : string.Empty;
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes($"{device:N}|{kind}|{Convert.ToHexString(bodyHash)}{receipt}"));
         bytes[6] = (byte)((bytes[6] & 0x0F) | 0x80); // version 8 (custom, RFC 9562)
         bytes[8] = (byte)((bytes[8] & 0x3F) | 0x80);
         return new Guid(bytes.AsSpan(0, 16), bigEndian: true);
     }
+
+    private static PushKinds KindFlag(string kind) => kind switch
+    {
+        "tracks" => PushKinds.Tracks,
+        "crossings" => PushKinds.Crossings,
+        "occupancy" => PushKinds.Occupancy,
+        "intervals" => PushKinds.Intervals,
+        _ => PushKinds.None
+    };
 
     /// <summary>The line and zone names of the device's zone in the published profile (cached a minute), or null when it is not published.</summary>
     private async Task<(HashSet<string> Lines, HashSet<string> Zones)?> NamesAsync(DeviceCredentialRecord device, CancellationToken ct)

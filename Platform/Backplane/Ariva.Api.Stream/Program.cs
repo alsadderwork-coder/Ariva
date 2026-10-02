@@ -3,6 +3,7 @@ using Ariva.Api.Common.Extensions;
 using Ariva.Api.Common.HealthChecks;
 using Ariva.Api.Common.Hosting;
 using Ariva.Di;
+using Ariva.Di.Extensions;
 
 // Ariva.Api.Stream: Kafka stream workers (Workers/) that compute queue state from normalised
 // sensor, flight and AMAN feeds. HTTP is used for health probes only.
@@ -50,7 +51,9 @@ builder.Services.AddAppTelemetry(builder.Configuration);
 
 #region Services
 
-builder.Services.RegisterArivaServices(builder.Configuration);
+// Stream archives every accepted sensing event for replay and recomputation (ARV-026).
+builder.Services.RegisterArivaServices(builder.Configuration, messaging => messaging.ConsumeSensingArchive());
+builder.Services.AddArivaSensingArchive();
 
 // Security baseline (docs/security/cwe-controls.md): default deny (fallback policy, Ariva.Deny answers challenges),
 // ES256 access tokens from Ariva.Api.Main with permissions from stored grants (ARV-010a), input limits, rate limiting,

@@ -20,3 +20,25 @@ public static class DeviceHealthExtensions
         return messaging.Consume<Ariva.Core.Sensing.DeviceHealthReported, DeviceHealthConsumer>(Ariva.Core.Messaging.KafkaTopics.DeviceHealth, "device-health");
     }
 }
+
+/// <summary>The raw sensing event archive (ARV-026).</summary>
+public static class SensingArchiveExtensions
+{
+    public static IServiceCollection AddArivaSensingArchive(this IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        services.AddSingleton<Ariva.Core.Sensing.ISensingArchive, SensingArchive>();
+        return services;
+    }
+
+    /// <summary>Archives the four sensing topics, one consumer group each (<c>ariva-stream.sensing-archive-*</c>).</summary>
+    public static ArivaMessagingBuilder ConsumeSensingArchive(this ArivaMessagingBuilder messaging)
+    {
+        ArgumentNullException.ThrowIfNull(messaging);
+        return messaging
+            .Consume<Ariva.Core.Sensing.TrackSampleBatch, SensingArchiveConsumer<Ariva.Core.Sensing.TrackSampleBatch>>(Ariva.Core.Messaging.KafkaTopics.DeviceTrackSample, "sensing-archive-tracks")
+            .Consume<Ariva.Core.Sensing.VendorLineCrossingBatch, SensingArchiveConsumer<Ariva.Core.Sensing.VendorLineCrossingBatch>>(Ariva.Core.Messaging.KafkaTopics.DeviceVendorLineCrossing, "sensing-archive-crossings")
+            .Consume<Ariva.Core.Sensing.ZoneOccupancyBatch, SensingArchiveConsumer<Ariva.Core.Sensing.ZoneOccupancyBatch>>(Ariva.Core.Messaging.KafkaTopics.DeviceZoneOccupancy, "sensing-archive-occupancy")
+            .Consume<Ariva.Core.Sensing.IntervalCountBatch, SensingArchiveConsumer<Ariva.Core.Sensing.IntervalCountBatch>>(Ariva.Core.Messaging.KafkaTopics.DeviceIntervalCount, "sensing-archive-intervals");
+    }
+}

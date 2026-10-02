@@ -635,8 +635,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 29,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Script 0017 (numbering moved on from 0002): sensing_event and sensing_batch hypertables with compression and retention (90 days, To confirm), TimescaleDB required; binary COPY writer with duplicate window and daily track-id pseudonyms (D4); replay reader by zone and range. TimescaleDB branch verified in CI only (plain PostgreSQL locally). Security review PASS after fixes (backlog/progress.md).",
       "dependsOn": [
         "ARV-006",
         "ARV-023"
