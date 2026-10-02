@@ -26,7 +26,7 @@ internal sealed record ServerState(string Id, string State, int K, double Svc);
 internal sealed record ServerInterval(string Id, double Pax, int Minutes, double? Svc);
 
 /// <summary>One 15-minute bin as seen at a clock minute: P90 wait, people, provisional or final.</summary>
-internal sealed record BinResult(int Q, int Start, double? P90, double Pax, string Status, bool IsOpen, double FinalAt);
+internal sealed record ScenarioBin(int Q, int Start, double? P90, double Pax, string Status, bool IsOpen, double FinalAt);
 
 /// <summary>Wait statistics over a bin of any size.</summary>
 internal sealed class BinStats(double pax, string status, List<(double W, double Weight)> samples)
@@ -295,7 +295,7 @@ internal sealed partial class ScenarioDay
     }
 
     /// <summary>One 15-minute bin starting at <paramref name="bs"/> as seen at clock minute <paramref name="now"/>.</summary>
-    public BinResult Bin(int q, int bs, int now)
+    public ScenarioBin Bin(int q, int bs, int now)
     {
         var key = q * 100000 + bs + 5000;
         if (_binCache.TryGetValue(key, out var c) && now >= c.FinalAt)
@@ -322,7 +322,7 @@ internal sealed partial class ScenarioDay
 
         if (open)
             fin = false;
-        var res = new BinResult(q, bs, pax >= 0.5 ? WeightedQuantile(samples, 0.9) : null, pax, fin ? "final" : "provisional", open,
+        var res = new ScenarioBin(q, bs, pax >= 0.5 ? WeightedQuantile(samples, 0.9) : null, pax, fin ? "final" : "provisional", open,
             fin ? Math.Max(bs + 14, lastEx) : double.PositiveInfinity);
         if (fin)
             _binCache[key] = res;

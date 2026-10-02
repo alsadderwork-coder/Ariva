@@ -26,7 +26,10 @@ public enum EntrantOutcome
     Censored,
 
     /// <summary>Dropped when the queue was observed empty while the FIFO sequence still held them (a counting residual).</summary>
-    Reanchored
+    Reanchored,
+
+    /// <summary>Paired with an exit earlier than the entry (F5: a clock or geometry error); no wait is kept.</summary>
+    Rejected
 }
 
 /// <summary>A realised wait (F5), attributed later to the bin of <see cref="EntryUtc"/> (F6).</summary>
@@ -39,7 +42,7 @@ public sealed record RealisedWait(DateTime EntryUtc, DateTime ExitUtc, WaitMetho
 public sealed record EntrantResolution(DateTime EntryUtc, DateTime ResolvedUtc, EntrantOutcome Outcome, string TrackKey);
 
 /// <summary>Entries and exits counted in one minute (UTC, aligned), with how many of each came from a degraded input.</summary>
-public sealed record MovementCount(DateTime MinuteUtc, int Entries, int Exits, int DegradedEntries, int DegradedExits);
+public sealed record MovementCount(DateTime MinuteUtc, long Entries, long Exits, long DegradedEntries, long DegradedExits);
 
 /// <summary>
 /// The queue length at the watermark: the sum of the latest occupancy readings of the queue zone and its overflow
@@ -55,6 +58,12 @@ public sealed record QueueRejections
 
     /// <summary>The earliest time among the late events, or null.</summary>
     public DateTime? EarliestLateUtc { get; init; }
+
+    /// <summary>Late events older than the recomputation horizon: counted, too old for the archive to recompute.</summary>
+    public long BeyondHorizon { get; init; }
+
+    /// <summary>Late events per minute of their event time (within the horizon), so that only their bins are recomputed.</summary>
+    public IReadOnlyList<(DateTime MinuteUtc, long Count)> LateByMinute { get; init; } = [];
 
     /// <summary>Further ahead of the reference clock than the allowed skew.</summary>
     public long Future { get; init; }

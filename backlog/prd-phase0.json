@@ -738,8 +738,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 34,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "BinAccumulator and WaitStatistics in Ariva.Core/Queueing: entry-bin attribution, provisional to final, minute aggregates, arrival-weighted P50/P90/P95 and share, mergeable 30-second histograms, recomputation requests and revisions. Documented F6/F7 cases tested; reference day breaches in 19:00 to 19:30 as scripted. Baseline review PASS after one round of fixes.",
       "dependsOn": [
         "ARV-030"
       ]

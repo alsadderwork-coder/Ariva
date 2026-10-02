@@ -504,7 +504,7 @@ public sealed partial class QueueStateEngineTests
         resolved += last.Waits.Count + last.Resolutions.Count;
         negative += last.Rejections.NegativeWaits;
 
-        (resolved + negative + engine.OpenEntrants).Should().Be(entries);
+        (resolved + engine.OpenEntrants).Should().Be(entries, "a rejected pair is a resolution too");
         engine.OpenEntrants.Should().BeLessThanOrEqualTo(25);
         engine.BufferedEvents.Should().BeLessThanOrEqualTo(40);
     }

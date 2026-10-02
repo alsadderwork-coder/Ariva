@@ -47,7 +47,7 @@ internal sealed partial class ScenarioDay
     public double[][] MeanWait { get; }
 
     private readonly IReadOnlyList<NormalisedOverride> _overrides;
-    private readonly Dictionary<int, BinResult> _binCache = [];
+    private readonly Dictionary<int, ScenarioBin> _binCache = [];
 
     #endregion
 

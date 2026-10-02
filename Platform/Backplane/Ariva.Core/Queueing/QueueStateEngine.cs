@@ -37,6 +37,9 @@ public sealed record QueueEngineSettings
     /// <summary>Recently resolved tracks remembered to recognise duplicates.</summary>
     public int MaxRememberedTracks { get; init; } = 20_000;
 
+    /// <summary>Late events older than this behind the reference clock are beyond recomputation (the 3 days the sensing topics and the archive keep).</summary>
+    public TimeSpan LateHorizon { get; init; } = TimeSpan.FromDays(3);
+
     /// <summary>Waits, resolutions and minutes one step holds at most; beyond it the step ends early (<see cref="QueueStep.More"/>).</summary>
     public int MaxStepRecords { get; init; } = 100_000;
 
@@ -73,6 +76,8 @@ public sealed record QueueEngineSettings
             yield return $"MaxIntervalPeople is from 1 to {CanonicalEventRules.MaxIntervalCount}.";
         if (MaxDevicesPerZone is < 1 or > 1024)
             yield return "MaxDevicesPerZone is from 1 to 1024.";
+        if (LateHorizon < TimeSpan.FromMinutes(1) || LateHorizon > TimeSpan.FromDays(7))
+            yield return "LateHorizon is from 1 minute to 7 days.";
     }
 }
 
@@ -136,12 +141,15 @@ public sealed class QueueStateEngine
     private readonly PriorityQueue<(string Key, DateTime Seen), DateTime> _handovers = new();
     private bool _residualSuspect;
 
-    private readonly Dictionary<DateTime, (int In, int Out, int DegradedIn, int DegradedOut)> _movements = [];
+    private readonly Dictionary<DateTime, (long In, long Out, long DegradedIn, long DegradedOut)> _movements = [];
     private readonly List<RealisedWait> _waits = [];
     private readonly List<EntrantResolution> _resolutions = [];
     private long _late, _future, _invalid, _unknown, _duplicates, _reverse, _unmatched, _negative, _bufferFull, _forced, _tooManyDevices;
     private int _reanchors;
     private DateTime? _earliestLate;
+    private readonly Dictionary<DateTime, long> _lateByMinute = [];
+    private const int MaxLateMinutes = 7 * 24 * 60 + 60;
+    private long _beyondHorizon;
     private bool _more;
 
     public QueueStateEngine(QueueZoneGeometry geometry, QueueEngineSettings settings = null)
@@ -194,7 +202,7 @@ public sealed class QueueStateEngine
 
         if (time <= _watermark)
         {
-            Late(time);
+            Late(time, referenceUtc);
             return;
         }
 
@@ -224,7 +232,7 @@ public sealed class QueueStateEngine
 
             if (time <= _watermark)
             {
-                Late(time);
+                Late(time, referenceUtc);
                 return;
             }
         }
@@ -234,10 +242,22 @@ public sealed class QueueStateEngine
             _aheadBuffered++;
     }
 
-    private void Late(DateTime time)
+    private void Late(DateTime time, DateTime referenceUtc)
     {
         _late++;
         _earliestLate = _earliestLate is { } earliest && earliest <= time ? earliest : time;
+        // Only minutes within the horizon can be recomputed; that also bounds the distinct minutes held (a week at most).
+        if (time < Minus(referenceUtc, _settings.LateHorizon))
+        {
+            _beyondHorizon++;
+            return;
+        }
+
+        var minute = new DateTime(time.Ticks - time.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc);
+        if (_lateByMinute.ContainsKey(minute) || _lateByMinute.Count < MaxLateMinutes)
+            _lateByMinute[minute] = _lateByMinute.GetValueOrDefault(minute) + 1;
+        else
+            _beyondHorizon++; // only if the reference clock itself jumped about within one step
     }
 
     /// <summary>
@@ -258,7 +278,7 @@ public sealed class QueueStateEngine
             [.. _waits], [.. _resolutions], Length(),
             new QueueRejections
             {
-                Late = _late, EarliestLateUtc = _earliestLate, Future = _future, Invalid = _invalid, UnknownGeometry = _unknown,
+                Late = _late, EarliestLateUtc = _earliestLate, BeyondHorizon = _beyondHorizon, LateByMinute = [.. _lateByMinute.OrderBy(m => m.Key).Select(m => (m.Key, m.Value))], Future = _future, Invalid = _invalid, UnknownGeometry = _unknown,
                 Duplicates = _duplicates, Reverse = _reverse, UnmatchedExits = _unmatched, NegativeWaits = _negative,
                 BufferFull = _bufferFull, ForcedAdvances = _forced, TooManyDevices = _tooManyDevices
             },
@@ -269,6 +289,8 @@ public sealed class QueueStateEngine
         _late = _future = _invalid = _unknown = _duplicates = _reverse = _unmatched = _negative = _bufferFull = _forced = _tooManyDevices = 0;
         _reanchors = 0;
         _earliestLate = null;
+        _lateByMinute.Clear();
+        _beyondHorizon = 0;
         _more = false;
         return step;
     }
@@ -478,6 +500,7 @@ public sealed class QueueStateEngine
         if (time < entrant.EntryUtc)
         {
             _negative++;
+            _resolutions.Add(new EntrantResolution(entrant.EntryUtc, entrant.EntryUtc, EntrantOutcome.Rejected, entrant.TrackKey ?? trackKey));
             return;
         }
 
