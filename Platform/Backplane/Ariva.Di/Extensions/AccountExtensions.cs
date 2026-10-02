@@ -31,6 +31,7 @@ public static class AccountExtensions
         services.TryAddScoped<IPermissionResolver, StoredPermissionResolver>();
         services.TryAddScoped<ISessionValidator, SessionValidator>();
         services.TryAddScoped<SiteAccessResolver>();
+        services.TryAddScoped<UserRoles>();
         services.TryAddScoped<ISiteScope, SiteScope>();
         return services;
     }
@@ -82,6 +83,8 @@ public static class AccountExtensions
         services.TryAddSingleton<Ariva.Core.Alerting.IArrivalWaveSource, Ariva.Core.Alerting.NoArrivalWave>();
         services.TryAddScoped<Ariva.Infra.Alerting.AlertInputs>();
         services.TryAddScoped<Ariva.Infra.Alerting.AlertRuleTick>();
+        // Alerts (ARV-039); their notices come from AddArivaCaching (Redis, or nothing without it).
+        services.TryAddScoped<Ariva.Core.Services.Alerting.ISvcAlerts, Ariva.Infra.Services.Alerting.SvcAlerts>();
 
         var environment = configuration["Application:Environment"];
         if (settings.DevelopmentUsers.Count > 0)

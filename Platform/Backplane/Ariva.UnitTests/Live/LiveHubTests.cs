@@ -69,6 +69,11 @@ public sealed class LiveHubTests
         public override Task<SiteAccess> ForUserAsync(Guid userId, CancellationToken ct = default) => Task.FromResult(access);
     }
 
+    private sealed class Held(params string[] roles) : Ariva.Infra.Security.UserRoles(null!)
+    {
+        public override Task<IReadOnlyList<string>> ForUserAsync(Guid userId, CancellationToken ct = default) => Task.FromResult<IReadOnlyList<string>>(roles);
+    }
+
     private sealed class Clock(DateTimeOffset start) : TimeProvider
     {
         private DateTimeOffset _now = start;
@@ -98,12 +103,12 @@ public sealed class LiveHubTests
         false, new DateTime(2026, 9, 28, 18, 5, 2, DateTimeKind.Utc));
 
     private static (LiveHub Hub, Groups Groups) Hub(Permission[] granted, SiteAccess access, Store store = null, Directory zones = null,
-        TimeProvider clock = null, HubCallerContext caller = null)
+        TimeProvider clock = null, HubCallerContext caller = null, string[] roles = null)
     {
         var user = new ClaimsPrincipal(new ClaimsIdentity([new Claim(ArivaClaims.Subject, UserId.ToString())], "test"));
         var groups = new Groups();
-        var hub = new LiveHub(store ?? new Store(), new Grants(granted), new Sites(access), zones ?? new Directory(), clock ?? TimeProvider.System,
-            NullLogger<LiveHub>.Instance)
+        var hub = new LiveHub(store ?? new Store(), new Grants(granted), new Sites(access), zones ?? new Directory(), new Held(roles ?? [RoleCodes.BorderShiftSupervisor]),
+            clock ?? TimeProvider.System, NullLogger<LiveHub>.Instance)
         {
             Context = caller ?? new Caller(user),
             Groups = groups
@@ -113,6 +118,61 @@ public sealed class LiveHubTests
 
     private static readonly Permission[] Live = [Global.Defaults.Permissions.ViewLiveQueue];
     private static readonly SiteAccess Dmo = new(false, new HashSet<string> { "DMO" });
+
+    private static readonly Permission[] AlertsSeen = [Global.Defaults.Permissions.ViewLiveQueue, Global.Defaults.Permissions.ViewAlert];
+
+    [Fact]
+    public async Task JoinAlerts_Should_JoinTheGroupsOfTheCallersRoles_When_TheCallerSeesTheSitesAlerts()
+    {
+        var (hub, groups) = Hub(AlertsSeen, Dmo, roles: [RoleCodes.BorderShiftSupervisor, RoleCodes.TerminalDutyManager]);
+
+        (await hub.JoinAlerts("DMO")).Should().Be(2);
+
+        groups.Joined.Should().BeEquivalentTo("alerts:DMO:BorderShiftSupervisor", "alerts:DMO:TerminalDutyManager");
+        await hub.LeaveAlerts("DMO");
+        groups.Joined.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task JoinAlerts_Should_RefuseTheSameWay_When_TheGrantSiteOrRolesAreMissing()
+    {
+        foreach (var (hub, groups, site) in new[]
+                 {
+                     Add(Hub(Live, Dmo), "DMO"), Add(Hub(AlertsSeen, Dmo), "AUH"), Add(Hub(AlertsSeen, SiteAccess.None), "DMO"),
+                     Add(Hub(AlertsSeen, Dmo, roles: []), "DMO")
+                 })
+        {
+            var join = () => hub.JoinAlerts(site);
+            (await join.Should().ThrowAsync<HubException>()).WithMessage("forbidden");
+            groups.Joined.Should().BeEmpty();
+        }
+
+        var (any, _) = Hub(AlertsSeen, Dmo);
+        foreach (var bad in new[] { "dmo", "DMO/A-VIS", "", "DMO\n" })
+            (await ((Func<Task>)(() => any.JoinAlerts(bad))).Should().ThrowAsync<HubException>()).WithMessage("invalid_site");
+
+        static (LiveHub, Groups, string) Add((LiveHub Hub, Groups Groups) h, string site) => (h.Hub, h.Groups, site);
+    }
+
+    [Fact]
+    public void Notices_Should_ReachOnlyTheResponsibleRoles_When_Routed()
+    {
+        var notice = new AlertNotice(Guid.NewGuid(), "DMO", "R-001", "Nowcast above 15 min", "A-VIS", null, "Nowcast", "Critical", "Raised",
+            new DateTime(2026, 9, 28, 18, 5, 0, DateTimeKind.Utc), 16.3, RoleCodes.BorderShiftSupervisor, RoleCodes.TerminalDutyManager, false, null,
+            new DateTime(2026, 9, 28, 18, 5, 1, DateTimeKind.Utc));
+
+        notice.Audience().Should().BeEquivalentTo(RoleCodes.BorderShiftSupervisor, RoleCodes.SystemAdministrator);
+        (notice with { Escalated = true }).Audience().Should().BeEquivalentTo(RoleCodes.BorderShiftSupervisor, RoleCodes.TerminalDutyManager, RoleCodes.SystemAdministrator);
+        (notice with { OwnerRole = null }).Audience().Should().BeEquivalentTo(RoleCodes.All, "no owner: every role of the site");
+        AlertNotice.Plausible(notice).Should().BeTrue();
+        foreach (var bad in new[]
+                 {
+                     notice with { SiteCode = "dmo" }, notice with { RuleName = "x\u202E" }, notice with { OwnerRole = "Root" }, notice with { State = "Raised,Resolved" },
+                     notice with { RaisedValue = double.NaN }, notice with { RaisedValue = 2e9 }, notice with { DeviceCode = "s 17" }, notice with { AlertId = Guid.Empty },
+                     notice with { ZoneName = new string('z', 201) }, notice with { RuleCode = "X-1" }
+                 })
+            AlertNotice.Plausible(bad).Should().BeFalse(bad.ToString());
+    }
 
     [Fact]
     public async Task JoinZone_Should_JoinAndReturnTheLatestSnapshot_When_TheCallerHoldsTheSite()

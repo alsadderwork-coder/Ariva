@@ -36,11 +36,16 @@ public sealed class AccountsHost : IAsyncDisposable
 
     private readonly TestDatabase _databaseKind;
 
-    public AccountsHost(PostgresFixture fixture, Dictionary<string, string> settings = null, TestDatabase database = TestDatabase.Accounts)
+    private readonly Action<IServiceCollection> _configure;
+
+    /// <param name="configure">Replaces registrations after the host's own (test doubles such as a recording publisher).</param>
+    public AccountsHost(PostgresFixture fixture, Dictionary<string, string> settings = null, TestDatabase database = TestDatabase.Accounts,
+        Action<IServiceCollection> configure = null)
     {
         _fixture = fixture;
         Settings = settings ?? [];
         _databaseKind = database;
+        _configure = configure;
     }
 
     public ManualClock Clock { get; } = new(new DateTimeOffset(2026, 10, 1, 8, 0, 0, TimeSpan.Zero));
@@ -108,6 +113,7 @@ public sealed class AccountsHost : IAsyncDisposable
         // Domain events go to the outbox table, as in the hosts (ARV-020; Kafka is off).
         services.AddArivaMessaging(configuration);
         services.AddScoped<BreakGlassAccounts>();
+        _configure?.Invoke(services);
         _provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
     }
 

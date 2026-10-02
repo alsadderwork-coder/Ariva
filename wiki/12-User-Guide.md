@@ -57,6 +57,22 @@ Common tasks:
 2. When a zone shows a band or a neutral message, check the Devices screen and tell the site administrator.
 3. Use the arrival-wave strip to open desks before a wave reaches the hall.
 
+### Alerts (ARV-039)
+
+You see the alerts of your sites that your role is responsible for: the rule's owner role, the escalation role once an alert has been escalated, and every role for a rule without an owner (administrators see all). An alert moves forward only:
+
+| From | Action | To | Who |
+|---|---|---|---|
+| Raised | Acknowledge (optional note) | Acknowledged | The responsible role, once per alert |
+| Raised or Acknowledged | Escalate (optional note) | Escalated | The responsible role, once per alert; also automatic when an alert stays Raised for the rule's escalation minutes |
+| Escalated | Acknowledge | Acknowledged | The owner or the escalation role, if no one acknowledged it before the escalation |
+| Any open state | Resolve (note required) | Resolved | The responsible role |
+| Any open state | Clears by itself | Resolved | When the rule's clear condition has held for its clear minutes |
+
+An action on an alert that has already moved on answers that it is not in a state for that action. Notes are up to 500 characters and are shown as plain text. A screen that has joined the site's alerts on the live hub is told of each change, for the alerts its role is responsible for. Every acknowledgement, escalation and manual resolution is in the audit log.
+
+API (`api/v1/alerts`): `GET ?siteCode=&state=&open=&zoneName=&ruleCode=&fromUtc=&toUtc=` (newest first), `GET {id}` (with `escalationDueUtc` while it can still escalate by itself), `POST {id}/acknowledge`, `POST {id}/escalate` and `POST {id}/resolve` with `{note}`. Live hub: `JoinAlerts(siteCode)` and `LeaveAlerts(siteCode)`; notices arrive on `alert` (what changed and its state, no names of people).
+
 ## Alert rules
 
 MVP. Shows the rules that drive every alert, with their status.

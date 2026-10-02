@@ -58,12 +58,15 @@ public static class CachingExtensions
         {
             // Live snapshots (ARV-035) need Redis between Stream and Main; without it there is no live state.
             services.TryAddSingleton<Ariva.Infra.Live.ILiveSnapshotStore, Ariva.Infra.Live.NoLiveSnapshots>();
+            services.TryAddSingleton<Ariva.Infra.Live.IAlertNotices, Ariva.Infra.Live.NoAlertNotices>();
             return services;
         }
 
         services.AddSingleton(redis);
         services.AddSingleton<RedisConnection>();
         services.TryAddSingleton<Ariva.Infra.Live.ILiveSnapshotStore, Ariva.Infra.Live.RedisLiveSnapshots>();
+        // Alert notices (ARV-039) on the same Redis, from Stream's evaluation and Main's API to Main's live hub.
+        services.TryAddSingleton<Ariva.Infra.Live.IAlertNotices, Ariva.Infra.Live.RedisAlertNotices>();
         builder
             .WithDistributedCache(provider =>
             {

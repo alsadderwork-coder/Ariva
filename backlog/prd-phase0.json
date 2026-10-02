@@ -910,8 +910,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 42,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "api/v1/alerts: search, get, acknowledge, escalate, resolve (with a note); an alert is visible and actionable only in the caller's sites and by its responsible roles (owner, escalation role once escalated, every role without owner, administrators); forward-only transitions with 409, row locks against the evaluation tick, a trigger (script 0022) enforcing the same; auto-escalation after the rule's minutes in the Stream tick; JSON audit for every action and escalation; live push of alert notices through Redis to the hub's per-site, per-role groups (JoinAlerts). No alert screen yet (ARV-055), so the e2e tests are API and hub tests. Security review PASS after fixes.",
       "dependsOn": [
         "ARV-038",
         "ARV-035"

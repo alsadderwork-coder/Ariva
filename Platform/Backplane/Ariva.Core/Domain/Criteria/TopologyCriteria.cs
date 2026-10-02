@@ -96,3 +96,32 @@ public sealed record AlertRuleCriteria : BaseCriteria
     [Range(1, 500)]
     public int PageSize { get; set; } = 50;
 }
+
+/// <summary>Search over alerts (ARV-039): site, state (by name) or open only, zone, rule code and a raise-time range.</summary>
+public sealed record AlertCriteria : BaseCriteria
+{
+    [MaxLength(17)]
+    public string SiteCode { get; set; }
+
+    [MaxLength(16)]
+    public string State { get; set; }
+
+    /// <summary>True for open alerts only (not resolved), false for resolved ones only.</summary>
+    public bool? Open { get; set; }
+
+    [MaxLength(200)]
+    public string ZoneName { get; set; }
+
+    [MaxLength(8)]
+    public string RuleCode { get; set; }
+
+    public DateTime? FromUtc { get; set; }
+
+    public DateTime? ToUtc { get; set; }
+
+    [Range(1, int.MaxValue)]
+    public int PageIndex { get; set; } = 1;
+
+    [Range(1, 500)]
+    public int PageSize { get; set; } = 50;
+}

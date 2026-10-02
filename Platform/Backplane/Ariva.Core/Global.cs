@@ -129,6 +129,11 @@ public static class Global
             public static Permission SearchAlertRule { get; } = new("AlertRule", PermissionAction.Search);
             public static Permission DeleteAlertRule { get; } = new("AlertRule", PermissionAction.Delete);
 
+            /// <summary>Alerts (ARV-039): see them; act on them (acknowledge, escalate, resolve) where the caller's role owns them.</summary>
+            public static Permission ViewAlert { get; } = new("Alert", PermissionAction.View);
+            public static Permission SearchAlert { get; } = new("Alert", PermissionAction.Search);
+            public static Permission EditAlert { get; } = new("Alert", PermissionAction.Edit);
+
             #endregion
 
             private static readonly Lazy<IReadOnlyDictionary<string, Permission>> ByName = new(() =>

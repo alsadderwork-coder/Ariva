@@ -51,3 +51,36 @@ public sealed record AlertBacktestAlert(string ZoneName, string DeviceCode, Date
 /// earliest first), and how many of its targets had anything to judge.
 /// </summary>
 public sealed record AlertBacktestViewModel(int Count, DateTime? FirstRaisedUtc, IReadOnlyList<AlertBacktestAlert> Alerts, bool Truncated, int Targets, int TargetsWithData);
+
+/// <summary>An alert (ARV-038, ARV-039) as the API shows it; <see cref="EscalationDueUtc"/> is when it escalates if still unacknowledged.</summary>
+public sealed record AlertViewModel(
+    Guid Id,
+    string SiteCode,
+    Guid RuleId,
+    string RuleCode,
+    string RuleName,
+    string ZoneName,
+    string DeviceCode,
+    string Metric,
+    string Severity,
+    string State,
+    DateTime RaisedUtc,
+    double RaisedValue,
+    DateTime? BinStartUtc,
+    DateTime? PredictedForUtc,
+    string OwnerRole,
+    int? EscalateAfterMinutes,
+    string EscalateToRole,
+    string EscalationContact,
+    DateTime? EscalationDueUtc,
+    DateTime? AcknowledgedUtc,
+    string AcknowledgedBy,
+    string AcknowledgedNote,
+    DateTime? EscalatedUtc,
+    string EscalatedBy,
+    string EscalatedNote,
+    DateTime? ClearedUtc,
+    DateTime? ResolvedUtc,
+    string Resolution,
+    string ResolvedBy,
+    string ResolutionNote);

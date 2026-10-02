@@ -2,6 +2,8 @@ using System.Data;
 using Ariva.Core.Alerting;
 using Ariva.Core.Domain.Entities;
 using Ariva.Core.Domain.Enums;
+using Ariva.Infra.Live;
+using Ariva.Infra.Services.Administration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -32,17 +34,21 @@ public sealed record AlertEvaluationSettings
     }
 }
 
-/// <summary>What one tick did; <see cref="Failed"/> counts rules whose evaluation failed (each logged).</summary>
-public sealed record AlertTickResult(bool Ran, int Rules, int Targets, int Raised, int Cleared, int Withdrawn, int Failed = 0);
+/// <summary>What one tick did; <see cref="Failed"/> counts steps whose work failed (each logged).</summary>
+public sealed record AlertTickResult(bool Ran, int Rules, int Targets, int Raised, int Cleared, int Withdrawn, int Failed = 0, int Escalated = 0);
 
 /// <summary>What one rule's evaluation did in a tick.</summary>
 public sealed record AlertRuleTickResult(int Targets, int Raised, int Cleared, int Withdrawn);
 
+/// <summary>What a tick did besides the rules: alerts withdrawn with their rules, and alerts escalated.</summary>
+public sealed record AlertHousekeeping(int Withdrawn, int Escalated);
+
 /// <summary>
 /// The live evaluation of alert rules (ARV-038), one tick a minute. A tick holds an advisory lock in a transaction of
 /// its own for its whole run, so one replica evaluates and the others skip; it then withdraws the alerts of disabled
-/// and deleted rules and evaluates each enabled rule in its own scope and transaction (<see cref="AlertRuleTick"/>),
-/// so a rule that fails is logged and retried at the next tick without holding up the others.
+/// and deleted rules, escalates the alerts that stayed unacknowledged for their rule's escalation minutes (ARV-039),
+/// and evaluates each enabled rule in its own scope and transaction (<see cref="AlertRuleTick"/>), so a rule that fails
+/// is logged and retried at the next tick without holding up the others.
 /// </summary>
 public sealed class AlertEvaluation(IServiceScopeFactory scopes, AlertEvaluationSettings settings, ILogger<AlertEvaluation> logger)
 {
@@ -63,10 +69,11 @@ public sealed class AlertEvaluation(IServiceScopeFactory scopes, AlertEvaluation
                 return new AlertTickResult(false, 0, 0, 0, 0, 0);
             var ruleIds = await storage.Query<AlertRule>().Where(r => r.Enabled).OrderBy(r => r.SiteCode).ThenBy(r => r.Code).Select(r => r.Id!.Value).ToListAsync(ct);
 
-            int targets = 0, raised = 0, cleared = 0, failed = 0, withdrawn = 0;
+            int targets = 0, raised = 0, cleared = 0, failed = 0, withdrawn = 0, escalated = 0;
             try
             {
-                withdrawn = await InScopeAsync(tick => tick.WithdrawAsync(now, ct));
+                var housekeeping = await InScopeAsync(tick => tick.HousekeepAsync(now, ct));
+                (withdrawn, escalated) = (housekeeping.Withdrawn, housekeeping.Escalated);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -77,7 +84,7 @@ public sealed class AlertEvaluation(IServiceScopeFactory scopes, AlertEvaluation
 #pragma warning restore CA1031
             {
                 failed++;
-                logger.LogError(e, "Withdrawing the alerts of disabled and deleted rules failed; it is tried again at the next tick");
+                logger.LogError(e, "Withdrawing or escalating alerts failed; it is tried again at the next tick");
             }
 
             foreach (var id in ruleIds)
@@ -100,10 +107,11 @@ public sealed class AlertEvaluation(IServiceScopeFactory scopes, AlertEvaluation
                 }
             }
 
-            if (raised + cleared + withdrawn + failed > 0)
-                logger.LogInformation("Alert evaluation: {Raised} raised, {Cleared} cleared, {Withdrawn} withdrawn, {Failed} failed over {Targets} targets of {Rules} rules",
-                    raised, cleared, withdrawn, failed, targets, ruleIds.Count);
-            return new AlertTickResult(true, ruleIds.Count, targets, raised, cleared, withdrawn, failed);
+            if (raised + cleared + withdrawn + escalated + failed > 0)
+                logger.LogInformation(
+                    "Alert evaluation: {Raised} raised, {Cleared} cleared, {Withdrawn} withdrawn, {Escalated} escalated, {Failed} failed over {Targets} targets of {Rules} rules",
+                    raised, cleared, withdrawn, escalated, failed, targets, ruleIds.Count);
+            return new AlertTickResult(true, ruleIds.Count, targets, raised, cleared, withdrawn, failed, escalated);
         }
         finally
         {
@@ -144,9 +152,34 @@ public sealed class AlertEvaluation(IServiceScopeFactory scopes, AlertEvaluation
 /// the rule restarts its counts (an open alert stays and clears under the new values, unless the metric changed, which
 /// resolves it); a target that left the rule has its open alert resolved and its state dropped.
 /// </summary>
-public sealed class AlertRuleTick(IUnitOfWork unitOfWork, ICurrentUser currentUser, AlertInputs inputs)
+internal sealed class AlertRuleTick(IUnitOfWork unitOfWork, ICurrentUser currentUser, AlertInputs inputs, AuditTrail audit, IAlertNotices notices)
 {
+    /// <summary>The most alerts one tick escalates (the rest at the next).</summary>
+    public const int MaxEscalationsPerTick = 500;
+
+    private readonly List<Alert> _changed = [];
+
     private IStorageProvider Storage => unitOfWork.StorageProvider;
+
+    // An alert locked for this transaction before it is changed, so the evaluation never overwrites what someone did
+    // through the API in between (and they wait for it).
+    private async Task<Alert> LockedAsync(Guid id, CancellationToken ct)
+    {
+        await Storage.ExecuteSqlAsync<LockRow>("""SELECT 1 AS "Value" FROM alert WHERE id = :id FOR UPDATE""", new Dictionary<string, object> { ["id"] = id }, ct);
+        return await Storage.GetAsync<Alert>(id, ct);
+    }
+
+    private void Changed(Alert alert) => _changed.Add(alert);
+
+    // Announces the changed alerts once the transaction has committed.
+    private void Announce(DateTime now)
+    {
+        if (_changed.Count == 0)
+            return;
+        var batch = _changed.Distinct().ToList();
+        _changed.Clear();
+        unitOfWork.RegisterPostCommitAction(() => notices.PublishAsync([.. batch.Select(a => AlertNotice.From(a, now))], CancellationToken.None));
+    }
 
     private void Begin()
     {
@@ -157,9 +190,10 @@ public sealed class AlertRuleTick(IUnitOfWork unitOfWork, ICurrentUser currentUs
 
     /// <summary>
     /// Resolves the open alerts of disabled and deleted rules and drops those rules' states (the session hides deleted
-    /// rules, so both are found with SQL).
+    /// rules, so both are found with SQL), and escalates the alerts still Raised past their rule's escalation minutes to
+    /// its escalation role or contact (ARV-039), each audited.
     /// </summary>
-    public async Task<int> WithdrawAsync(DateTime now, CancellationToken ct)
+    public async Task<AlertHousekeeping> HousekeepAsync(DateTime now, CancellationToken ct)
     {
         Begin();
         var stale = await Storage.ExecuteSqlAsync<IdRow>("""
@@ -174,10 +208,38 @@ public sealed class AlertRuleTick(IUnitOfWork unitOfWork, ICurrentUser currentUs
             SELECT a.id AS "Id" FROM alert a JOIN alert_rule r ON r.id = a.rule_id WHERE a.state <> 'Resolved' AND (r.deleted_on IS NOT NULL OR NOT r.enabled)
             """, null, ct);
         foreach (var row in open)
-            if (await Storage.GetAsync<Alert>(row.Id, ct) is { } alert)
+            if (await LockedAsync(row.Id, ct) is { IsOpen: true } alert)
+            {
                 alert.Resolve(AlertResolution.RuleWithdrawn, now, AlertEvaluation.SystemUserName);
+                Changed(alert);
+            }
+
+        var due = await Storage.ExecuteSqlAsync<IdRow>("""
+            SELECT id AS "Id" FROM alert
+            WHERE state = 'Raised' AND escalated_utc IS NULL AND escalate_after_minutes IS NOT NULL AND raised_utc + escalate_after_minutes * interval '1 minute' <= :now
+            ORDER BY raised_utc LIMIT :limit
+            """, new Dictionary<string, object> { ["now"] = now, ["limit"] = MaxEscalationsPerTick }, ct);
+        var escalated = 0;
+        foreach (var row in due)
+        {
+            if (await LockedAsync(row.Id, ct) is not { } alert || !alert.IsDueForEscalation(now) ||
+                !alert.Escalate(AlertEvaluation.SystemUserName, now, null))
+                continue;
+            // JSON, so the free-text contact cannot pass for another field (CWE-117).
+            await audit.RecordAsync("Alert.Escalated", "Alert", alert.Id, $"{alert.SiteCode}:{alert.RuleCode}:{alert.ZoneName}",
+                System.Text.Json.JsonSerializer.Serialize(new { state = "Raised" }),
+                System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    state = "Escalated", to = alert.EscalateToRole, contact = alert.EscalationContact, afterMinutes = alert.EscalateAfterMinutes, by = "evaluation"
+                }), ct);
+            Changed(alert);
+            escalated++;
+        }
+
+        await Storage.FlushAsync(ct);
+        Announce(now);
         unitOfWork.PromiseToCommit();
-        return open.Count;
+        return new AlertHousekeeping(open.Count, escalated);
     }
 
     public async Task<AlertRuleTickResult> EvaluateAsync(Guid ruleId, DateTime now, int maxCatchUpMinutes, CancellationToken ct)
@@ -198,9 +260,10 @@ public sealed class AlertRuleTick(IUnitOfWork unitOfWork, ICurrentUser currentUs
         // Targets that left the rule: their open alerts are resolved and their states dropped.
         foreach (var gone in states.Where(s => !current.ContainsKey((s.ZoneName, s.DeviceCode))).ToList())
         {
-            if (gone.OpenAlertId is { } id && await Storage.GetAsync<Alert>(id, ct) is { } alert && alert.IsOpen)
+            if (gone.OpenAlertId is { } id && await LockedAsync(id, ct) is { IsOpen: true } alert)
             {
                 alert.Resolve(AlertResolution.TargetWithdrawn, now, AlertEvaluation.SystemUserName);
+                Changed(alert);
                 withdrawn++;
             }
 
@@ -226,10 +289,14 @@ public sealed class AlertRuleTick(IUnitOfWork unitOfWork, ICurrentUser currentUs
             {
                 // An edit restarts the counts. An open alert stays and clears under the new values, unless the rule now
                 // watches another metric: then it is resolved and the target re-armed.
-                if (state.OpenAlertId is { } id && await Storage.GetAsync<Alert>(id, ct) is { } alert && alert.Metric != rule.Metric)
+                if (state.OpenAlertId is { } id && await LockedAsync(id, ct) is { } alert && alert.Metric != rule.Metric)
                 {
-                    alert.Resolve(AlertResolution.RuleChanged, now, AlertEvaluation.SystemUserName);
-                    withdrawn++;
+                    if (alert.IsOpen)
+                    {
+                        alert.Resolve(AlertResolution.RuleChanged, now, AlertEvaluation.SystemUserName);
+                        Changed(alert);
+                        withdrawn++;
+                    }
                     state.Keep(AlertTargetState.Fresh with { LastMinuteUtc = state.LastMinuteUtc }, null, version, now);
                 }
                 else
@@ -266,13 +333,17 @@ public sealed class AlertRuleTick(IUnitOfWork unitOfWork, ICurrentUser currentUs
                     {
                         var alert = new Alert(rule, target.ZoneName, target.DeviceCode, transition);
                         await Storage.SaveAsync(alert, ct);
+                        Changed(alert);
                         open = alert.Id;
                         raised++;
                     }
                     else if (transition?.Kind == AlertTransitionKind.Cleared)
                     {
-                        if (open is { } id && await Storage.GetAsync<Alert>(id, ct) is { } alert)
+                        if (open is { } id && await LockedAsync(id, ct) is { } alert && alert.IsOpen)
+                        {
                             alert.Clear(transition);
+                            Changed(alert);
+                        }
                         // The session inserts before it updates: the resolve must reach the database before a later raise
                         // of the same target inserts its alert, or the one-open-alert index refuses it.
                         await Storage.FlushAsync(ct);
@@ -287,6 +358,7 @@ public sealed class AlertRuleTick(IUnitOfWork unitOfWork, ICurrentUser currentUs
 
         // Alerts first, then the states that refer to them.
         await Storage.FlushAsync(ct);
+        Announce(now);
         unitOfWork.PromiseToCommit();
         return new AlertRuleTickResult(plan.Count, raised, cleared, withdrawn);
     }
@@ -294,6 +366,11 @@ public sealed class AlertRuleTick(IUnitOfWork unitOfWork, ICurrentUser currentUs
     private sealed class IdRow
     {
         public Guid Id { get; set; }
+    }
+
+    private sealed class LockRow
+    {
+        public int Value { get; set; }
     }
 }
 

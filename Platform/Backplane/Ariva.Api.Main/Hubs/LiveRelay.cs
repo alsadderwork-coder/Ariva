@@ -10,7 +10,8 @@ namespace Ariva.Api.Main.Hubs;
 /// replica's connections, so only one replica forwards: the holder of a Redis lease (renewed every 5 seconds, lost after
 /// 15), and another takes over when it stops. Each snapshot was checked when read back (<see cref="LiveZones.Plausible"/>).
 /// </summary>
-public sealed class LiveRelay(ILiveSnapshotStore snapshots, IHubContext<LiveHub> hub, IServiceProvider services, TimeProvider timeProvider, ILogger<LiveRelay> logger)
+public sealed class LiveRelay(ILiveSnapshotStore snapshots, IAlertNotices alerts, IHubContext<LiveHub> hub, IServiceProvider services, TimeProvider timeProvider,
+    ILogger<LiveRelay> logger)
     : BackgroundService
 {
     private static readonly TimeSpan Lease = TimeSpan.FromSeconds(15);
@@ -23,12 +24,25 @@ public sealed class LiveRelay(ILiveSnapshotStore snapshots, IHubContext<LiveHub>
         if (snapshots is NoLiveSnapshots)
             return;
         var redis = services.GetService<RedisConnection>();
-        // Redis may be down when Main starts; the relay keeps trying rather than stopping the host.
+        // Redis may be down when Main starts; the relay keeps trying rather than stopping the host. Each channel is
+        // subscribed once: a retry after one succeeded does not subscribe it again (no doubled sends).
+        bool zones = false, alertsSubscribed = false;
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                await snapshots.SubscribeAsync(SendAsync, stoppingToken);
+                if (!zones)
+                {
+                    await snapshots.SubscribeAsync(SendAsync, stoppingToken);
+                    zones = true;
+                }
+
+                if (!alertsSubscribed)
+                {
+                    await alerts.SubscribeAsync(SendAlertAsync, stoppingToken);
+                    alertsSubscribed = true;
+                }
+
                 break;
             }
             catch (Exception e) when (e is RedisException or TimeoutException)
@@ -65,6 +79,21 @@ public sealed class LiveRelay(ILiveSnapshotStore snapshots, IHubContext<LiveHub>
         catch (Exception e) when (e is not OperationCanceledException)
         {
             logger.LogWarning(e, "Live snapshot of {Zone} not sent", snapshot.ZoneKey);
+        }
+    }
+
+    // An alert notice goes to the site's alert groups of the roles responsible for it (ARV-039).
+    private async Task SendAlertAsync(AlertNotice notice)
+    {
+        if (!_leader)
+            return;
+        try
+        {
+            await hub.Clients.Groups([.. notice.Audience().Select(role => LiveHub.AlertGroup(notice.SiteCode, role))]).SendAsync(LiveHub.AlertMethod, notice);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            logger.LogWarning(e, "Alert notice of {Alert} not sent", notice.AlertId);
         }
     }
 

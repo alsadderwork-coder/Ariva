@@ -70,7 +70,7 @@ A short version of Ariva's ubiquitous language. The authoritative glossary, with
 | Contract | The agreement evaluated for SLA and penalties: party, KPIs, thresholds, windows, exclusions, penalty schedule |
 | Allowance | Breached bins per evaluation window that carry no penalty |
 | Evaluation | The result of applying a contract to final bins in a window |
-| Alert | A raised condition with an owner role and an escalation path: `Raised`, `Acknowledged`, `Escalated`, `Resolved` |
+| Alert | A raised condition with an owner role and an escalation path: `Raised`, then `Acknowledged` and `Escalated` (each once, in either order), then `Resolved` by hand with a note or by itself when it clears |
 | Alert rule | Typed data that says when to raise an alert: metric, comparator, threshold, sustain and clear minutes, severity, owner role and escalation; coded R-001, R-002 and so on per site, never an expression |
 | Module | A separately licensed part of Ariva: Border or Airport Operations |
 | Deployment kind | Border, Airport or Small; a combined site is two deployments |

@@ -34,3 +34,6 @@ public sealed record AlertBacktestRequest(
     [Required] AlertRuleRequest Rule,
     DateTime FromUtc,
     DateTime ToUtc);
+
+/// <summary>An action on an alert (ARV-039): an optional note for an acknowledgement or escalation, a required one to resolve.</summary>
+public sealed record AlertActionRequest([MaxLength(500)] string Note);

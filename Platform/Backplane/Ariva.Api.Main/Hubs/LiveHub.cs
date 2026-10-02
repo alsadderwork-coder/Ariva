@@ -16,6 +16,10 @@ namespace Ariva.Api.Main.Hubs;
 /// the site's published profile: a zone of a site the caller does not hold answers the same "forbidden" as an unknown
 /// zone. A connection joins at most <see cref="MaxGroups"/> zones and calls JoinZone at most <see cref="MaxJoinsPerMinute"/>
 /// times a minute (each new group is a Redis subscription on the backplane).
+/// Alerts (ARV-039): <see cref="JoinAlerts"/> needs <c>Alert.View</c> and the site, and joins the site's alert groups
+/// of the roles the caller holds, so a notice reaches only screens whose role is responsible for the alert (the same
+/// rule as the API: the owner role, the escalation role once escalated, every role for an alert without owner, and
+/// administrators). Notices say what changed; the screen reads the alert itself through the API.
 /// </summary>
 [Permission(nameof(Global.Defaults.Permissions.ViewLiveQueue))]
 public sealed class LiveHub(
@@ -23,6 +27,7 @@ public sealed class LiveHub(
     IPermissionResolver permissions,
     SiteAccessResolver sites,
     LiveZoneDirectory zones,
+    UserRoles roles,
     TimeProvider timeProvider,
     ILogger<LiveHub> logger) : Hub
 {
@@ -30,6 +35,9 @@ public sealed class LiveHub(
 
     /// <summary>The client method a snapshot arrives on.</summary>
     public const string ZoneMethod = "zone";
+
+    /// <summary>The client method an alert notice arrives on.</summary>
+    public const string AlertMethod = "alert";
 
     public const int MaxGroups = 64;
 
@@ -39,6 +47,9 @@ public sealed class LiveHub(
     private const string JoinsKey = "ariva.live.joins";
 
     public static string Group(string zoneKey) => "zone:" + zoneKey;
+
+    /// <summary>The group of a site's alerts for one role.</summary>
+    public static string AlertGroup(string siteCode, string roleCode) => $"alerts:{siteCode}:{roleCode}";
 
     /// <summary>
     /// The endpoint's transport options: WebSockets only (no long-polling or server-sent events, whose URLs would carry
@@ -70,6 +81,61 @@ public sealed class LiveHub(
 
         await Groups.AddToGroupAsync(Context.ConnectionId, Group(zoneKey), Context.ConnectionAborted);
         return await snapshots.GetAsync(zoneKey, Context.ConnectionAborted);
+    }
+
+    /// <summary>Joins the site's alert groups of the caller's roles; returns how many groups were joined.</summary>
+    public async Task<int> JoinAlerts(string siteCode)
+    {
+        if (!Ariva.Core.Domain.Entities.Site.IsValidCode(siteCode))
+            throw new HubException("invalid_site");
+        CountJoin();
+        var held = await AlertRolesAsync(siteCode);
+        var joined = Joined();
+        var groups = held.Select(r => AlertGroup(siteCode, r)).ToList();
+        lock (joined)
+        {
+            if (joined.Count + groups.Count(g => !joined.Contains(g)) > MaxGroups)
+                throw new HubException("too_many_zones");
+            foreach (var group in groups)
+                joined.Add(group);
+        }
+
+        foreach (var group in groups)
+            await Groups.AddToGroupAsync(Context.ConnectionId, group, Context.ConnectionAborted);
+        return groups.Count;
+    }
+
+    public async Task LeaveAlerts(string siteCode)
+    {
+        if (!Ariva.Core.Domain.Entities.Site.IsValidCode(siteCode))
+            throw new HubException("invalid_site");
+        var joined = Joined();
+        foreach (var role in RoleCodes.All)
+        {
+            var group = AlertGroup(siteCode, role);
+            bool was;
+            lock (joined)
+                was = joined.Remove(group);
+            if (was)
+                await Groups.RemoveFromGroupAsync(Context.ConnectionId, group, Context.ConnectionAborted);
+        }
+    }
+
+    // The caller's roles, if the caller holds Alert.View and the site; read from storage on every join.
+    private async Task<IReadOnlyList<string>> AlertRolesAsync(string siteCode)
+    {
+        var user = Context.User;
+        var granted = user is not null && (await permissions.GetPermissionsAsync(user, Context.ConnectionAborted)).Contains(Global.Defaults.Permissions.ViewAlert);
+        if (granted && Guid.TryParse(user.FindFirst(ArivaClaims.Subject)?.Value, out var userId) &&
+            (await sites.ForUserAsync(userId, Context.ConnectionAborted)).Allows(siteCode))
+        {
+            var held = await roles.ForUserAsync(userId, Context.ConnectionAborted);
+            if (held.Count > 0)
+                return held;
+        }
+
+        logger.LogWarning("Live hub alert join refused for connection {Connection}: no grant for the site's alerts", Context.ConnectionId);
+        throw new HubException("forbidden");
     }
 
     public async Task LeaveZone(string zoneKey)

@@ -33,8 +33,9 @@ public sealed class PermissionModelTests
     {
         var byEntity = Global.Defaults.Permissions.All.Values
             // View-only entities: nothing is created, edited, searched or deleted through them (the system information
-            // endpoint; the live queue stream of ARV-035).
-            .Where(p => p.Entity is not ("SystemInfo" or "LiveQueue"))
+            // endpoint; the live queue stream of ARV-035). Alerts (ARV-039) are raised by the evaluation and never
+            // deleted: people view, search and act on them (Edit) only.
+            .Where(p => p.Entity is not ("SystemInfo" or "LiveQueue" or "Alert"))
             .GroupBy(p => p.Entity);
 
         byEntity.Should().AllSatisfy(entity =>

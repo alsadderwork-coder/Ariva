@@ -132,6 +132,10 @@ export function accounts() {
 		siteAdmin: account('e2e.siteadmin', ['SystemAdministrator'], false, true, ['*']),
 		// ARV-037: deleting an alert rule is a critical action, so the alert rule suite signs in with a second factor.
 		alertAdmin: account('e2e.alertadmin', ['SystemAdministrator'], false, true, ['*']),
+		// ARV-039: one person per operational role at the demo airport, where the seeded rules raise their alerts.
+		dmoBorder: account('e2e.dmoborder', ['BorderShiftSupervisor'], false, false, ['DMO']),
+		dmoTerminal: account('e2e.dmoterminal', ['TerminalDutyManager'], false, false, ['DMO']),
+		dmoHandler: account('e2e.dmohandler', ['HandlerStationManager'], false, false, ['DMO']),
 		siteUser: account('e2e.siteuser', ['BorderShiftSupervisor'], false, false, ['E2E1'])
 	} as const;
 }

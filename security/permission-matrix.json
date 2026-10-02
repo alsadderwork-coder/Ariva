@@ -2264,6 +2264,95 @@
         "HandlerStationManager": 403,
         "SystemAdministrator": 401
       }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/alerts",
+      "access": "permission",
+      "permissions": [
+        "SearchAlert"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 200,
+        "TerminalDutyManager": 200,
+        "HandlerStationManager": 200,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/alerts/{id:guid}",
+      "access": "permission",
+      "permissions": [
+        "ViewAlert"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 404,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/alerts/{id:guid}/acknowledge",
+      "access": "permission",
+      "permissions": [
+        "EditAlert"
+      ],
+      "body": {
+        "note": "Matrix"
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 404,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/alerts/{id:guid}/escalate",
+      "access": "permission",
+      "permissions": [
+        "EditAlert"
+      ],
+      "body": {
+        "note": "Matrix"
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 404,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/alerts/{id:guid}/resolve",
+      "access": "permission",
+      "permissions": [
+        "EditAlert"
+      ],
+      "body": {
+        "note": "Matrix"
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 404,
+        "SystemAdministrator": 404
+      }
     }
   ]
 }

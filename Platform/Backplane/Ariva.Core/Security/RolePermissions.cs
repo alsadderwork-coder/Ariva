@@ -33,15 +33,21 @@ public static class RolePermissions
         Permissions.ViewAlertRule, Permissions.SearchAlertRule, Permissions.CreateAlertRule, Permissions.EditAlertRule, Permissions.DeleteAlertRule
     ];
 
+    /// <summary>
+    /// Alerts (ARV-039): every operational role sees and acts on the alerts its role owns (the service narrows each alert
+    /// to its owner and escalation roles).
+    /// </summary>
+    private static readonly Permission[] Alerts = [Permissions.ViewAlert, Permissions.SearchAlert, Permissions.EditAlert];
+
     /// <summary>Border shift supervisor: immigration halls, their zones and sensors, and the alert rules of its sites.</summary>
-    public static IReadOnlySet<Permission> BorderShiftSupervisor { get; } = new HashSet<Permission>([.. TopologyRead, .. ZonesAndDevices, Permissions.ViewLiveQueue, .. AlertRulesWrite]);
+    public static IReadOnlySet<Permission> BorderShiftSupervisor { get; } = new HashSet<Permission>([.. TopologyRead, .. ZonesAndDevices, Permissions.ViewLiveQueue, .. AlertRulesWrite, .. Alerts]);
 
     /// <summary>Terminal duty manager: everything airport-side, including zones, sensors and desk code mappings.</summary>
     public static IReadOnlySet<Permission> TerminalDutyManager { get; } = new HashSet<Permission>(
     [
         .. TopologyRead, .. ZonesAndDevices,
         Permissions.ViewDeskCodeMapping, Permissions.SearchDeskCodeMapping,
-        Permissions.ViewLiveQueue, .. AlertRulesWrite
+        Permissions.ViewLiveQueue, .. AlertRulesWrite, .. Alerts
     ]);
 
     /// <summary>Handler station manager: its own counters; reads topology and zones, changes none of them.</summary>
@@ -49,12 +55,13 @@ public static class RolePermissions
     [
         .. TopologyRead,
         Permissions.ViewZoneProfile, Permissions.SearchZoneProfile,
-        Permissions.ViewLiveQueue, Permissions.ViewAlertRule, Permissions.SearchAlertRule
+        Permissions.ViewLiveQueue, Permissions.ViewAlertRule, Permissions.SearchAlertRule, .. Alerts
     ]);
 
     /// <summary>
-    /// System administrator: configuration, users, integrations and the audit log; no operational data (live queues,
-    /// alerts) beyond what configuration needs. Audit entries are read-only for everyone.
+    /// System administrator: configuration, users, integrations and the audit log, and every other permission (live
+    /// queues and alerts included: administrators see and act on every alert of their sites, ARV-039). Audit entries are
+    /// read-only for everyone.
     /// </summary>
     public static IReadOnlySet<Permission> SystemAdministrator { get; } = new HashSet<Permission>(
         Permissions.All.Values.Where(p => p.Entity != "AuditEntry" || p.Action is PermissionAction.View or PermissionAction.Search));

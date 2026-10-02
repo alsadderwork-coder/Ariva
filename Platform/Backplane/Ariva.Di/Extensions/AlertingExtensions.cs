@@ -26,6 +26,9 @@ public static class AlertingExtensions
         services.TryAddSingleton<Ariva.Core.Alerting.IArrivalWaveSource, Ariva.Core.Alerting.NoArrivalWave>();
         services.TryAddScoped<AlertInputs>();
         services.TryAddScoped<AlertRuleTick>();
+        // Escalations are audited (ARV-039) and changes announced to the live hub (Redis, or nothing without it).
+        services.TryAddScoped<Ariva.Infra.Services.Administration.AuditTrail>();
+        services.TryAddSingleton<Ariva.Infra.Live.IAlertNotices, Ariva.Infra.Live.NoAlertNotices>();
         services.TryAddSingleton<AlertEvaluation>();
         if (settings.Enabled)
             services.AddHostedService<AlertEvaluationWorker>();

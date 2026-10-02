@@ -8,7 +8,10 @@ namespace Ariva.Core.Domain.Entities;
 /// the rule's condition held for its sustain minutes, resolved when its clear condition held for its clear minutes or
 /// the rule was withdrawn (ARV-038). It keeps what the rule said when it was raised (code, name, severity, owner and
 /// escalation), so a later edit of the rule does not rewrite history. One open alert per rule and target.
-/// Acknowledging and escalating are ARV-039.
+/// Its life (ARV-039): Raised, then Acknowledged by someone responsible, Escalated (by hand, or by the evaluation when
+/// it stayed unacknowledged for the rule's escalation minutes), Resolved by hand with a note or by itself when it
+/// clears. An acknowledgement and an escalation happen once each and are never rewritten; a resolved alert stays
+/// resolved. Who is responsible is <see cref="ResponsibleRoles"/>.
 /// </summary>
 public class Alert : EntityBase<Alert>, ISiteBound
 {
@@ -16,6 +19,9 @@ public class Alert : EntityBase<Alert>, ISiteBound
 
     /// <summary>The largest value an alert records (the table's range); a larger one is recorded at this bound.</summary>
     public const double MaxRecordedValue = 1e9;
+
+    /// <summary>The longest note on an acknowledgement, an escalation or a resolution.</summary>
+    public const int MaxNoteLength = 500;
 
     protected Alert()
     {
@@ -84,7 +90,103 @@ public class Alert : EntityBase<Alert>, ISiteBound
     public virtual AlertResolution? Resolution { get; protected set; }
     public virtual string ResolvedBy { get; protected set; }
 
+    public virtual DateTime? AcknowledgedUtc { get; protected set; }
+    public virtual string AcknowledgedBy { get; protected set; }
+
+    [System.ComponentModel.DataAnnotations.MaxLength(MaxNoteLength)]
+    public virtual string AcknowledgedNote { get; protected set; }
+
+    public virtual DateTime? EscalatedUtc { get; protected set; }
+    public virtual string EscalatedBy { get; protected set; }
+
+    [System.ComponentModel.DataAnnotations.MaxLength(MaxNoteLength)]
+    public virtual string EscalatedNote { get; protected set; }
+
+    [System.ComponentModel.DataAnnotations.MaxLength(MaxNoteLength)]
+    public virtual string ResolutionNote { get; protected set; }
+
     public virtual bool IsOpen => State != AlertState.Resolved;
+
+    /// <summary>
+    /// The roles that see the alert and act on it, besides administrators: its owner role, and once escalated its
+    /// escalation role; null when it has no owner role (the zone's owner), in which case every role of the site with
+    /// the alert permissions does.
+    /// </summary>
+    public virtual IReadOnlySet<string> ResponsibleRoles =>
+        OwnerRole is null ? null : new HashSet<string>(new[] { OwnerRole, EscalatedUtc is not null ? EscalateToRole : null }.Where(r => r is not null), StringComparer.Ordinal);
+
+    /// <summary>Whether a caller holding these roles sees the alert and may act on it.</summary>
+    public virtual bool IsFor(IEnumerable<string> roles)
+    {
+        var held = (roles ?? []).ToHashSet(StringComparer.Ordinal);
+        return held.Contains(RoleCodes.SystemAdministrator) || ResponsibleRoles is not { } responsible || responsible.Overlaps(held);
+    }
+
+    /// <summary>
+    /// Someone responsible takes it on: from Raised or Escalated, once (an alert acknowledged and then escalated was handed
+    /// over; the escalation role resolves it). False when it is not in a state to acknowledge.
+    /// </summary>
+    public virtual bool Acknowledge(string by, DateTime utc, string note)
+    {
+        CheckAction(by, utc, note, required: false);
+        if (State is not (AlertState.Raised or AlertState.Escalated) || AcknowledgedUtc is not null)
+            return false;
+        State = AlertState.Acknowledged;
+        AcknowledgedUtc = Later(utc);
+        AcknowledgedBy = Clip(by);
+        AcknowledgedNote = Note(note);
+        return true;
+    }
+
+    /// <summary>
+    /// Escalates it to the rule's escalation role or contact: from Raised or Acknowledged, once. The evaluation does it
+    /// when the alert stayed Raised for the escalation minutes. False when it is not in a state to escalate.
+    /// </summary>
+    public virtual bool Escalate(string by, DateTime utc, string note)
+    {
+        CheckAction(by, utc, note, required: false);
+        if (State is not (AlertState.Raised or AlertState.Acknowledged) || EscalatedUtc is not null)
+            return false;
+        State = AlertState.Escalated;
+        EscalatedUtc = Later(utc);
+        EscalatedBy = Clip(by);
+        EscalatedNote = Note(note);
+        return true;
+    }
+
+    /// <summary>Whether it is due for escalation at <paramref name="utc"/>: still Raised past its escalation minutes.</summary>
+    public virtual bool IsDueForEscalation(DateTime utc) =>
+        State == AlertState.Raised && EscalatedUtc is null && EscalateAfterMinutes is { } minutes && utc >= RaisedUtc.AddMinutes(minutes);
+
+    /// <summary>Resolved by hand, with a note saying why. False when it is already resolved.</summary>
+    public virtual bool ResolveManually(string by, DateTime utc, string note)
+    {
+        CheckAction(by, utc, note, required: true);
+        if (!IsOpen)
+            return false;
+        Resolve(AlertResolution.Manual, utc, by);
+        ResolutionNote = Note(note);
+        return true;
+    }
+
+    /// <summary>Whether a note is acceptable: up to 500 characters without control or invisible characters (line breaks allowed).</summary>
+    public static bool IsValidNote(string note, bool required) =>
+        string.IsNullOrWhiteSpace(note) ? !required : note.Trim().Length <= MaxNoteLength && Components.DisplayText.IsClean(note.Trim(), allowLineBreaks: true);
+
+    private static void CheckAction(string by, DateTime utc, string note, bool required)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(by);
+        if (utc.Kind != DateTimeKind.Utc)
+            throw new ArgumentException("Times are UTC.", nameof(utc));
+        if (!IsValidNote(note, required))
+            throw new ArgumentException($"A note is {(required ? "1" : "0")} to {MaxNoteLength} characters without control or invisible characters.", nameof(note));
+    }
+
+    private DateTime Later(DateTime utc) => utc < RaisedUtc ? RaisedUtc : utc;
+
+    private static string Clip(string by) => by.Length > 200 ? by[..200] : by;
+
+    private static string Note(string note) => string.IsNullOrWhiteSpace(note) ? null : note.Trim();
 
     /// <summary>Resolves it because its clear condition held (auto-resolve).</summary>
     public virtual void Clear(AlertTransition cleared)
