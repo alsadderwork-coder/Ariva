@@ -59,7 +59,7 @@ cd Platform/Frontplane/Ariva.Web && npm run dev
 5. **Schema.** NHibernate maps configuration aggregates; `SchemaUpdate` is allowed only in `vm-local`. Production schema and every TimescaleDB object come from versioned scripts in `Ariva.Infra/Timescale/Scripts/NNNN_*.sql`. Hot time-series writes use Npgsql binary COPY.
 6. **Reference AMAN, never change it.** Read `../Aman` to port patterns (integration auth, storage provider, messaging, controllers). Hooks block writes there.
 7. **Writing rule.** No em dashes, en dashes used as dashes, or double hyphens in docs, comments or strings. Use commas, colons, semicolons, parentheses or periods.
-8. **Story branches only, no cluster changes, no destructive git.** The repository is `github.com/alsadderwork-coder/Ariva` (private). Commit on a story branch (`story/ARV-nnn-<slug>`, or `ralph/<prd>` under ralph-tui), push it with `git push -u origin <branch>` and open a pull request with `gh pr create`; never push `main`, never force push. The `ci` workflow and the `security-reviewer` must pass; a human merges and releases.
+8. **Story branches from main, fast-forward only, no cluster changes, no destructive git.** The repository is `github.com/alsadderwork-coder/Ariva` (private). Start every story on a new branch (`story/ARV-nnn-<slug>`, or `ralph/<prd>` under ralph-tui) taken from the current `main`, so that history stays linear and nothing needs merging later. When the gates and the `security-reviewer` pass, push the story branch (`git push -u origin <branch>`), then fast-forward `main` to it (`git push origin <branch>:main`, which the remote refuses unless it is a fast-forward; the owner's workflow since 2026-10-02). Never force push, never create merge commits, never rewrite `main`. A pull request (`gh pr create`) remains the route when CI must run first; a human releases.
 
 ## MCP servers (use them before guessing)
 
@@ -85,7 +85,7 @@ Setup and prerequisites: `docs/harness/README.md`.
 4. Run the gates in the story's acceptance criteria (`node scripts/verify.mjs backend` at minimum; `web` and `e2e` for UI or API stories).
 5. Ask the `security-reviewer` subagent to review the diff against `docs/security/cwe-controls.md`; fix what it finds.
 6. Update docs or wiki pages the change affects. Append what you learned to `backlog/progress.md` (one dated entry: story, what changed, gotchas).
-7. Set `"passes": true` for the story in `backlog/prd-phase0.json` only when every criterion is met. Commit with message `ARV-nnn: <title>`, push the story branch and open a pull request that follows `.github/pull_request_template.md`. Under ralph-tui, end with `<promise>COMPLETE</promise>`.
+7. Set `"passes": true` for the story in `backlog/prd-phase0.json` only when every criterion is met. Commit with message `ARV-nnn: <title>`, push the story branch and fast-forward `main` to it (rule 8), or open a pull request that follows `.github/pull_request_template.md` when CI must run first. Under ralph-tui, end with `<promise>COMPLETE</promise>`.
 
 If a story is too big for one session, stop, split it in the PRD (new ids with a suffix, for example ARV-031a), and record why in `backlog/progress.md`.
 
