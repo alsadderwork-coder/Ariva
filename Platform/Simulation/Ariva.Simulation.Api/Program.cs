@@ -2,7 +2,8 @@ using Ariva.Simulation.Api.Security;
 
 // Ariva.Simulation.Api: sensor, AODB and AMAN emulators (Emulators/) driven by deterministic scenarios
 // (Scenarios/). This host references Ariva.Business.Contracts only, so it emits AMAN feed messages exactly
-// as AMAN would. For now it exposes the health probes used by the Helm chart and nothing else.
+// as AMAN would. It exposes the health probes used by the Helm chart and the scenario endpoints (ARV-027), which
+// need an operator key (Simulation:Control).
 
 #region Configuration
 
@@ -56,11 +57,18 @@ if (string.Equals(environment, SimulationSecurity.ProductionEnvironment, StringC
 
 #region Services
 
-builder.Services.AddSimulationSecurity();
+builder.Services.AddSimulationSecurity(builder.Configuration);
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<Ariva.Simulation.Api.Scenarios.ScenarioEngine>();
+// Binding errors say what was wrong, not which internal type failed to bind (CWE-209).
+builder.Services.AddControllers().AddJsonOptions(options => options.AllowInputFormatterExceptionMessages = false);
 
 #endregion
 
 var app = builder.Build();
+
+// Run the reference day now, not on the first request: an invalid Simulation:Seed stops the host at start.
+app.Services.GetRequiredService<Ariva.Simulation.Api.Scenarios.ScenarioEngine>();
 
 #region Middlewares
 
@@ -75,6 +83,7 @@ app.UseSimulationSecurity();
 app.MapGet("/health/startup", () => Results.Ok(new { status = "Healthy", probe = "startup" })).AllowAnonymous().ExcludeFromDescription();
 app.MapGet("/health/readiness", () => Results.Ok(new { status = "Healthy", probe = "readiness" })).AllowAnonymous().ExcludeFromDescription();
 app.MapGet("/health/liveness", () => Results.Ok(new { status = "Healthy", probe = "liveness" })).AllowAnonymous().ExcludeFromDescription();
+app.MapControllers();
 
 #endregion
 

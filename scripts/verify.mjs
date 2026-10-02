@@ -67,7 +67,12 @@ function docsCheck() {
 const steps = {
   quick: () => { run('security scan (changed files)', 'node', ['scripts/security/scan.mjs', '--changed']); docsCheck(); },
   build: () => run('dotnet build', 'dotnet', ['build', 'Ariva.slnx', '-c', 'Debug', ...(args.includes('--no-restore') ? ['--no-restore'] : [])]),
-  unit: () => { steps.build(); run('unit tests', 'dotnet', ['test', 'Platform/Backplane/Ariva.UnitTests/Ariva.UnitTests.csproj', '--no-build']); },
+  unit: () => {
+    steps.build();
+    // The scenario engine's golden fingerprints must come from the current sim.js (ARV-027); the unit tests check the port against them.
+    run('reference scenario golden up to date', 'node', ['scripts/simulation/reference-golden.mjs', '--check']);
+    run('unit tests', 'dotnet', ['test', 'Platform/Backplane/Ariva.UnitTests/Ariva.UnitTests.csproj', '--no-build']);
+  },
   integration: () => run('integration tests', 'dotnet', ['test', 'Platform/Backplane/Ariva.IntegrationTests/Ariva.IntegrationTests.csproj']),
   web: () => {
     if (!fs.existsSync(path.join(WEB, 'node_modules'))) run('web npm ci', 'npm', ['ci'], WEB);

@@ -1,0 +1,314 @@
+{
+  "source": "docs/design/prototype/app/assets/sim.js",
+  "generator": "scripts/simulation/reference-golden.mjs",
+  "cases": [
+    {
+      "name": "reference",
+      "config": {
+        "seed": 9303,
+        "allocations": [
+          {
+            "id": "AL-001",
+            "flight": "XR 332",
+            "island": "C",
+            "fromCtr": 1,
+            "toCtr": 2,
+            "open": 1030,
+            "close": 1165,
+            "by": "Handler B station manager"
+          },
+          {
+            "id": "AL-002",
+            "flight": "XR 418",
+            "island": "C",
+            "fromCtr": 3,
+            "toCtr": 4,
+            "open": 1050,
+            "close": 1185,
+            "by": "Handler B station manager"
+          },
+          {
+            "id": "AL-003",
+            "flight": "XR 206",
+            "island": "C",
+            "fromCtr": 5,
+            "toCtr": 5,
+            "open": 1065,
+            "close": 1200,
+            "by": "Handler B station manager"
+          }
+        ]
+      },
+      "fingerprints": {
+        "schedule": "cd51165107fc48bc246681cd07cbe9954be55bab209f6488608f86b4a77a334c",
+        "roster": "4c1259f7f900c2ba3e1d9c9151c56420e414a77ed011b3b76326fa1ecec11e14",
+        "run": "4e1fb43ee777980d7a72b35c5f8c069cf805a52424fdc678319c735a65a5c13b",
+        "servers": "6c9572bffb16a32999faf3a35718467137ef3bbae6e101621c467c405b181465",
+        "expected": "a0656f9a9a4c19f6b96bd1c0b3b6386d6f2ed7ce73f18151d7a52675e3a09329",
+        "dayAhead": "3a601165a3951266675873842d5b55c8b817e4575b5342d7212c54e9dce9880d",
+        "alerts": "3f4c6702211cfeccc980fefa28829ef9cf6e11ab312386d353cca1bf022537e6",
+        "alertCount": 7,
+        "bins": "e8c2fddbe878ef381fb59d46f294c997788549a5e49cdee3fc9fb1f8c3b779ca",
+        "states": "1553a8d457d4daa42353272a728a4f3f9fd856cb95281566e20a261eb9ff7257",
+        "forecast": "d0b481b8556824775ad41eccffb77cbe87bba1ca9e3f5df0d33f68f096a2fc67",
+        "recommend": "ddc183a6679c9c2b5493d34a3870828d3bd699d9efcdcfa9d6f643c5885069e4",
+        "waits": "f2701018b922f2cf9339d5f0e889274c061c18693df3f69b1b46aad956e6eed5",
+        "serversAt": "1b0be6236bd4a9e3310c51e4f69520902bff8e53edb472fadb28673e65ee6b6b",
+        "flows": "ef166ddcac3d521af281468d17e717b3243d0ed2aa4e341a8d6d27711adfcdd2"
+      }
+    },
+    {
+      "name": "reference-without-allocations",
+      "config": {
+        "seed": 9303
+      },
+      "fingerprints": {
+        "schedule": "cd51165107fc48bc246681cd07cbe9954be55bab209f6488608f86b4a77a334c",
+        "roster": "4c1259f7f900c2ba3e1d9c9151c56420e414a77ed011b3b76326fa1ecec11e14",
+        "run": "4e1fb43ee777980d7a72b35c5f8c069cf805a52424fdc678319c735a65a5c13b",
+        "servers": "6c9572bffb16a32999faf3a35718467137ef3bbae6e101621c467c405b181465",
+        "expected": "a0656f9a9a4c19f6b96bd1c0b3b6386d6f2ed7ce73f18151d7a52675e3a09329",
+        "dayAhead": "3a601165a3951266675873842d5b55c8b817e4575b5342d7212c54e9dce9880d",
+        "alerts": "3f4c6702211cfeccc980fefa28829ef9cf6e11ab312386d353cca1bf022537e6",
+        "alertCount": 7,
+        "bins": "e8c2fddbe878ef381fb59d46f294c997788549a5e49cdee3fc9fb1f8c3b779ca",
+        "states": "1553a8d457d4daa42353272a728a4f3f9fd856cb95281566e20a261eb9ff7257",
+        "forecast": "d0b481b8556824775ad41eccffb77cbe87bba1ca9e3f5df0d33f68f096a2fc67",
+        "recommend": "4a1ee7a63b5a2a7737b707f00bc3453b621a22abd5ab649ab49a771af6b0e3b7",
+        "waits": "f2701018b922f2cf9339d5f0e889274c061c18693df3f69b1b46aad956e6eed5",
+        "serversAt": "1b0be6236bd4a9e3310c51e4f69520902bff8e53edb472fadb28673e65ee6b6b",
+        "flows": "ef166ddcac3d521af281468d17e717b3243d0ed2aa4e341a8d6d27711adfcdd2"
+      }
+    },
+    {
+      "name": "seed-1",
+      "config": {
+        "seed": 1,
+        "allocations": [
+          {
+            "id": "AL-001",
+            "flight": "XR 332",
+            "island": "C",
+            "fromCtr": 1,
+            "toCtr": 2,
+            "open": 1030,
+            "close": 1165,
+            "by": "Handler B station manager"
+          },
+          {
+            "id": "AL-002",
+            "flight": "XR 418",
+            "island": "C",
+            "fromCtr": 3,
+            "toCtr": 4,
+            "open": 1050,
+            "close": 1185,
+            "by": "Handler B station manager"
+          },
+          {
+            "id": "AL-003",
+            "flight": "XR 206",
+            "island": "C",
+            "fromCtr": 5,
+            "toCtr": 5,
+            "open": 1065,
+            "close": 1200,
+            "by": "Handler B station manager"
+          }
+        ]
+      },
+      "fingerprints": {
+        "schedule": "9cb2879c0062d4f4e9da48ac64487332d1d71685fc6df886a6b6153db180e045",
+        "roster": "d39f08317afb8aa3b4b522c4f40f4324e0fd3d74689d7550218ac34245580ec3",
+        "run": "a219a4a3a885e028be263424ccada14fd53c9cb7776fd1cf19f543ba7108734b",
+        "servers": "099de1c017f87ac71ef0152f0d9e5d5cda0b240ec0883b35c04113785799402d",
+        "expected": "a66c751ae5b2c177f9a6320da8f78c2052d36870c94d013d4f17e4fc57553cad",
+        "dayAhead": "6c6067495c7fcc2a109ec7d7518dd2cccd96395faba122ce65bd3967379d14be",
+        "alerts": "099727d59f16901035f6a9c3fa83491a4e2deb8ae0049b32c7ce9f9ffbfcd842",
+        "alertCount": 12,
+        "bins": "649d8e4c5d88806cd3568d3a247192b06bd3fd83f8a65f94284205f067684b7b",
+        "states": "d0bdf0eaeda4428704462b5565cc88fece02a6355c00a787b15dbbfd13585781",
+        "forecast": "8665a5b0a8a830930f66ab4a5a1febd7f98fba4e4132541b06bba7bdadf55291",
+        "recommend": "b7c39774080f3827add3e59fc813c1e732fbc80bd8a9098e77aa7520ce8f2d85",
+        "waits": "ae2f602dd46e1d03ae6f98d31a5853d7ccb5f471b9d4c307201704771324422e",
+        "serversAt": "6394e36e0741014925187ac416da9af7cf1d428b9c940b7c8d8d901bb56a413c",
+        "flows": "fa6a30f0f45b61e4aeefb89b87684856dff9fb33662bd91d70eb9954f58127ca"
+      }
+    },
+    {
+      "name": "seed-2026",
+      "config": {
+        "seed": 2026
+      },
+      "fingerprints": {
+        "schedule": "d67132e43f53cd24b903a30ba9ac4175cd104a90b4affc5ec5574db284382dea",
+        "roster": "09102b51967e8c75759caed9858e1f8741c0dce8689405b32016f9a555a08a73",
+        "run": "98981431c70a2ec86b06e1e214b7ff1dcfe518ab697d0f0522394e83c285217d",
+        "servers": "487844bad9d594409c493e9f0974df5e4e77e36737c23abb46fb9ff469ffb6ff",
+        "expected": "ed02f0090bb143300573ac68f91b483df32403ee4eb7f1d2e63289ef31246b13",
+        "dayAhead": "778128cba1441bb8669d5a266c0e3a56c62083effe4180b1524ca42134a954a9",
+        "alerts": "883a6872590c576adc02a04c6e4f6f670f262fd01af394ce0bed0b3fed815f42",
+        "alertCount": 10,
+        "bins": "845ca5f0419ccb6170db60c785bcf14b1f54ae090ddba5b58a3f9c62ea4add15",
+        "states": "a2f6da829ada09ba10f1f2ff576209ef4ac71cd75872fa07c90fe05ecd446ab8",
+        "forecast": "bb11c7aba7f305b2610ca234b343fb7a32a157df72d1308277fb92f6bb2704c8",
+        "recommend": "9aea4cd02c64cb8f53f638b51f98c305cd8ffae15479b7622378ab8a4901c70a",
+        "waits": "a86eaa506a7b9ed2a7bc053ad6f176f17c26185724aa6aa1d511abe86ef084db",
+        "serversAt": "de73f55ea9edd0b52f267725f4a0a710f1a1904d96527977f868be8794676967",
+        "flows": "4edcfc570937be7633578830e4fe54b189950f32d5b46f02f1c954ffa81cc458"
+      }
+    },
+    {
+      "name": "seed-max",
+      "config": {
+        "seed": 4294967295,
+        "allocations": [
+          {
+            "id": "AL-001",
+            "flight": "XR 332",
+            "island": "C",
+            "fromCtr": 1,
+            "toCtr": 2,
+            "open": 1030,
+            "close": 1165,
+            "by": "Handler B station manager"
+          },
+          {
+            "id": "AL-002",
+            "flight": "XR 418",
+            "island": "C",
+            "fromCtr": 3,
+            "toCtr": 4,
+            "open": 1050,
+            "close": 1185,
+            "by": "Handler B station manager"
+          },
+          {
+            "id": "AL-003",
+            "flight": "XR 206",
+            "island": "C",
+            "fromCtr": 5,
+            "toCtr": 5,
+            "open": 1065,
+            "close": 1200,
+            "by": "Handler B station manager"
+          }
+        ]
+      },
+      "fingerprints": {
+        "schedule": "73a5c4d44da9ae6a9ead5e60ac16bc62e9d85d847f44e626affa5ac9f2d42168",
+        "roster": "585a8bbf7e6b6550aac0cd1a935ca89aa5fd20b1d121389e8e3810a53626c341",
+        "run": "a3f837dc185c116f9abbb0bf5b8c8241c62f5f880ea0bd87112902cd4a468d4b",
+        "servers": "dbd90e3f5b0955c9fb19303073c3fcdb85be13907e44c04a7658cbdb9cc7d40f",
+        "expected": "9f2020f7653006869eb2cff1c1011eab967b0886241a8d4dc54385723600e70b",
+        "dayAhead": "e88de7b8228bd57be05f9a9e807bf9f3535e960e82e71f24bf4a6a0dff286adb",
+        "alerts": "2b59935e2ca0faa09106e4c938e355f13f779cd1cf07460e7ef569283eb7fb5b",
+        "alertCount": 10,
+        "bins": "f4b76952f628cf0ff800d366964df55542bc6b3401c8957b5c4e262701170b87",
+        "states": "51f3d4f6498a7474d1775f904f43efe727c25631ec49110aabad36712022ca42",
+        "forecast": "53e1c80d570399deed995a6ece53b0d6d5cb6b7f527de75b83faeeb9f2e22e9c",
+        "recommend": "a6d9366b044ada261f420950e0eea23148df9be1e3c4dc715c2a522d1e1172cc",
+        "waits": "030fb89312e4a4a3c00769a84dcf90d3bbf193a8239b2367f50c3fe58523522e",
+        "serversAt": "c77052ece6c6ec2554b1ccc71171a8630ca3470e9511d0601648392e2128a244",
+        "flows": "681ab43afe51f19d14a8a53fddbbf77bbae6aec2c460d5df446659b847a5d9ad"
+      }
+    },
+    {
+      "name": "reference-with-changes",
+      "config": {
+        "seed": 9303,
+        "allocations": [
+          {
+            "id": "AL-001",
+            "flight": "XR 332",
+            "island": "C",
+            "fromCtr": 1,
+            "toCtr": 2,
+            "open": 1030,
+            "close": 1165,
+            "by": "Handler B station manager"
+          },
+          {
+            "id": "AL-002",
+            "flight": "XR 418",
+            "island": "C",
+            "fromCtr": 3,
+            "toCtr": 4,
+            "open": 1050,
+            "close": 1185,
+            "by": "Handler B station manager"
+          },
+          {
+            "id": "AL-003",
+            "flight": "XR 206",
+            "island": "C",
+            "fromCtr": 5,
+            "toCtr": 5,
+            "open": 1065,
+            "close": 1200,
+            "by": "Handler B station manager"
+          }
+        ],
+        "flights": [
+          {
+            "id": "ADH-1",
+            "code": "ZZ 901",
+            "dir": "arr",
+            "time": 1100,
+            "seats": 200,
+            "load": 0.9
+          },
+          {
+            "id": "ADH-2",
+            "code": "ZZ 902",
+            "dir": "dep",
+            "time": 1250,
+            "seats": 180,
+            "load": 0.85,
+            "island": "D"
+          }
+        ],
+        "overrides": [
+          {
+            "q": "SEC-N",
+            "from": 1000,
+            "to": 1100,
+            "n": 2
+          }
+        ],
+        "accepted": [
+          {
+            "area": "arr",
+            "from": 1095,
+            "until": 1155,
+            "counts": {
+              "A-VIS": [
+                14,
+                15,
+                15,
+                14
+              ]
+            }
+          }
+        ]
+      },
+      "fingerprints": {
+        "schedule": "e55d0e91201150e0c3fb9026063f15c05253bc5c9261f234864458db0e268eae",
+        "roster": "4c1259f7f900c2ba3e1d9c9151c56420e414a77ed011b3b76326fa1ecec11e14",
+        "run": "f1ec6a7171e53575ec9f7e6012b94efcdf102c3edcec654ec2eb994ede7faf37",
+        "servers": "6c9572bffb16a32999faf3a35718467137ef3bbae6e101621c467c405b181465",
+        "expected": "78b3b3d2ce6a71d7fefb8b48c69f03fd217ba000d0d74eb5f5601d25699f1bdc",
+        "dayAhead": "0247fa5afca75c7dd9aa83f99e2139cff3fd75118031b2df78b0bfbef3d7ab05",
+        "alerts": "3f4c6702211cfeccc980fefa28829ef9cf6e11ab312386d353cca1bf022537e6",
+        "alertCount": 7,
+        "bins": "c65cb274d6f6aad9c9f483f254dad68e5f78bd38497ef72cd48a59919685614f",
+        "states": "315bc24e5ee6ef12021cc4a9140f8eeb66fdc98aff6bf81c0efb1c95c659fb78",
+        "forecast": "6b121a56b0908f5700c11579cabb7cb25d53c84c59c0db2627b9304f99d4098a",
+        "recommend": "0ef7b2b13ad12617240451c9a63177fd1b40dbc65abffe0a11ff4d0798b81868",
+        "waits": "489c9db0e47ee9b7ec1f546ba29c3e611d0a03a549896375d0752854a447efbb",
+        "serversAt": "e8352b6e05609fde9582526a00190d23a36447526be3f8b1d2257929d77a6487",
+        "flows": "186e324e1bfffda9b657fcf0f3a9b5f49887c2c85d66856526cc4aff23dc35c5"
+      }
+    }
+  ]
+}

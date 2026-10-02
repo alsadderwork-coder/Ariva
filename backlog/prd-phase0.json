@@ -656,8 +656,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 30,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "C# engine in Ariva.Simulation.Api/Scenarios/Engine matches sim.js bit for bit (90 SHA-256 fingerprints over six cases, scripts/simulation/reference-golden.mjs); scripted events tested; scenario endpoints behind operator keys (read and control scopes). Security review PASS (CWE-306).",
       "dependsOn": [
         "ARV-004"
       ]

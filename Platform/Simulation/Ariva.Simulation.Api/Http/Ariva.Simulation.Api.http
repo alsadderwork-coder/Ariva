@@ -11,3 +11,33 @@ Accept: application/json
 ### Liveness probe
 GET {{Ariva.Simulation.Api_HostAddress}}/health/liveness
 Accept: application/json
+
+### Scenario (ARV-027). Set @key to an operator key whose SHA-256 is in Simulation:Control:Keys; never commit a key.
+@key = {{$dotenv SIMULATION_KEY}}
+
+### The simulated day
+GET {{Ariva.Simulation.Api_HostAddress}}/api/v1/simulation/scenario
+Authorization: Bearer {{key}}
+
+### Every queue at 18:05 (minute 1085)
+GET {{Ariva.Simulation.Api_HostAddress}}/api/v1/simulation/scenario/queues?minute=1085
+Authorization: Bearer {{key}}
+
+### Arrivals Visitors at 18:25, degraded while S-17 is offline
+GET {{Ariva.Simulation.Api_HostAddress}}/api/v1/simulation/scenario/queues/A-VIS?minute=1105
+Authorization: Bearer {{key}}
+
+### Sensors at 18:25
+GET {{Ariva.Simulation.Api_HostAddress}}/api/v1/simulation/scenario/sensors?minute=1105
+Authorization: Bearer {{key}}
+
+### Alerts of the day
+GET {{Ariva.Simulation.Api_HostAddress}}/api/v1/simulation/scenario/alerts
+Authorization: Bearer {{key}}
+
+### Re-run with another seed (control scope)
+PUT {{Ariva.Simulation.Api_HostAddress}}/api/v1/simulation/scenario
+Authorization: Bearer {{key}}
+Content-Type: application/json
+
+{ "seed": 9303 }

@@ -22,7 +22,7 @@ Every Backplane host calls `AddAppSecurityBaseline` and the matching middlewares
 | Forwarded headers trusted only from the listed proxies and networks (none by default; the k8s files list the private ranges and should be narrowed to the cluster's pod network) | `Extensions/ForwardedHeadersExtensions.cs` | `Security:ForwardedHeaders` |
 | CORS allow-list of exact origins; a wildcard fails startup | `Extensions/CorsExtensions.cs` | `Security:Cors` |
 
-Ariva.Simulation.Api keeps its own small copy (default deny, no `Server` header, body limit, ProblemDetails, headers) because it references Ariva.Business.Contracts only, and it refuses to start in k8s-prd. Ariva.Web sends its CSP and headers from nginx and from `vite preview`, both generated from `Platform/Frontplane/Ariva.Web/csp.config.js`.
+Ariva.Simulation.Api keeps its own small copy (default deny, no `Server` header, body limit, ProblemDetails, headers) because it references Ariva.Business.Contracts only, and it refuses to start in k8s-prd. Its scenario endpoints (ARV-027) need an operator key (`Ariva.SimulationKey` scheme in `Security/SimulationKeyAuthentication.cs`): the bearer key is hashed with SHA-256 and compared in constant time with the configured digests, scopes `read` and `control` map to two policies, re-runs are rate limited per key, and with no key configured nothing authenticates. Ariva.Web sends its CSP and headers from nginx and from `vite preview`, both generated from `Platform/Frontplane/Ariva.Web/csp.config.js`.
 
 ## Permissions (ARV-009)
 

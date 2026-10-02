@@ -86,8 +86,15 @@ public sealed partial class PermissionMatrixTests
                     foreach (var caller in row.Expected.Keys)
                         Expect(row, caller, 401, problems);
                     break;
+                case "simulation":
+                    // Simulator operator keys only (ARV-027): an Ariva user, whatever their roles, is not an operator key.
+                    if (row.Host != "simulation")
+                        problems.Add($"{row}: simulation access belongs to the simulation host");
+                    foreach (var caller in row.Expected.Keys)
+                        Expect(row, caller, 401, problems);
+                    break;
                 default:
-                    problems.Add($"{row}: access must be anonymous, authenticated, permission or device");
+                    problems.Add($"{row}: access must be anonymous, authenticated, permission, device or simulation");
                     break;
             }
         }

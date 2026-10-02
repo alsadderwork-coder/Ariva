@@ -12,7 +12,7 @@ export interface MatrixRow {
 	host: string;
 	method: string;
 	route: string;
-	access: 'anonymous' | 'authenticated' | 'permission';
+	access: 'anonymous' | 'authenticated' | 'permission' | 'device' | 'simulation';
 	permissions?: string[];
 	body?: unknown;
 	expected: Record<Caller, number>;

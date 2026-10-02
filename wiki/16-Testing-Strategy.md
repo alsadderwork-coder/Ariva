@@ -11,7 +11,7 @@ How Ariva is tested, from pure formula tests to field validation, and how to run
 | Integration tests | `Platform/Backplane/Ariva.IntegrationTests` with Testcontainers | Persistence (NHibernate mappings, Timescale scripts, binary COPY, upserts), Kafka consumers (rebalance, replay from committed offsets, idempotency), Redis | Placeholder test skipped until story ARV-007 adds Testcontainers for PostgreSQL with TimescaleDB, Kafka and Redis |
 | API end-to-end tests | `Platform/Testing/Ariva.E2E` (Playwright test runner) | Integration API token exchange, TOTP replay rejection, scope and site enforcement, idempotency, every endpoint; security attack payloads | Planned; the project is not yet in the repository |
 | Functional UI tests | `Platform/Testing/Ariva.E2E` (Playwright) | Screens, role visibility, create flows, XSS payloads rendered as text with no CSP violation | Planned |
-| Replay and golden scenario tests | Ariva.Simulation.Api reference scenario | The seeded day (seed 9303) produces the same outputs every run: alert at 18:05, degraded zone 18:20 to 18:30, SLA breach at 19:10 | Planned with the simulator |
+| Replay and golden scenario tests | Ariva.Simulation.Api reference scenario | The seeded day (seed 9303) produces the same outputs every run: alert at 18:05, degraded zone 18:20 to 18:30, SLA breach at 19:10 | `ScenarioParityTests` (bit for bit against `sim.js`), `ReferenceScenarioTests` (ARV-027) |
 | Conformance tests per sensor family | `Emulators/Sensors/<Family>/samples/` | Each adapter maps recorded payloads to the expected canonical events, including malformed and oversized payloads | Planned per family |
 | AODB replay | Replay harness with recorded feeds | Adapters handle real feeds: out-of-order messages, identity changes, stale feeds | Planned; recorded feeds from each pilot airport join the suite |
 | Load test | Phase 1 epic Hardening | 15,000 messages per second sustained | Planned |
@@ -66,6 +66,8 @@ The reference scenario is the prototype's seeded day at the fictional DMO airpor
 | 19:10 | Handler B's check-in island C after a shift change leaves 5 of 12 counters open | SLA breach for consecutive 15-minute bins, provisional first, final once the queue clears |
 
 Same seed, same output: golden-file tests lock the behaviour so that changes to the engine show up as reviewed diffs. Created objects use their own sub-seeded random streams so they do not disturb the scripted events.
+
+The engine is ported to C# in `Ariva.Simulation.Api/Scenarios/Engine` (ARV-027) and must reproduce the prototype bit for bit. `node scripts/simulation/reference-golden.mjs` runs `sim.js` for six cases and writes SHA-256 fingerprints of every output family (schedule, roster, the run, servers, expected and day-ahead runs, alerts, bins, states, the Monte Carlo forecast, recommendations, waits, servers at a minute, demand and hall curves) to `Ariva.UnitTests/Simulation/reference-golden.json`. `ScenarioParityTests` checks the port against every fingerprint, `ReferenceScenarioTests` checks the three scripted events above, and `ScenarioEndpointTests` checks the simulator's operator keys and endpoints. `node scripts/verify.mjs unit` also fails when the golden file no longer matches `sim.js`.
 
 ## 6. Accuracy validation
 

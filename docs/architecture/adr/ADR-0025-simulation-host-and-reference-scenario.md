@@ -14,7 +14,8 @@ Ariva.Simulation.Api (port 51020) hosts sensor, AODB and AMAN emulators. The ref
 
 ## Consequences
 
-- Demos, tests and documentation share one reproducible day; golden-file tests can lock behaviour.
+- Demos, tests and documentation share one reproducible day; golden-file tests can lock behaviour. The C# engine (ARV-027) matches the prototype's sim.js bit for bit, checked against SHA-256 fingerprints generated from sim.js; the one transcendental input (the check-in show-up curve, built with `Math.pow`) is stored as the prototype's float64 bits so the day is identical on every platform.
+- The scenario endpoints are an operator tool, not a product API: they authenticate with operator keys (SHA-256 digests in the simulation secret, scopes read and control), not Ariva user tokens, because the simulator shares nothing with Ariva but Ariva.Business.Contracts.
 - Risk of tuning to synthetic data. Mitigated by recording two to four lab sensors in Phase 0 and real feeds at the pilot.
 
 ## Alternatives considered

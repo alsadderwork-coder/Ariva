@@ -1,6 +1,7 @@
-using System.Text.Encodings.Web;
+using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Options;
 using Microsoft.Net.Http.Headers;
@@ -10,16 +11,17 @@ namespace Ariva.Simulation.Api.Security;
 /// <summary>
 /// Security defaults for the simulator. The simulator references Ariva.Business.Contracts only (it plays AMAN,
 /// AODB and the sensors, so it must not share Ariva's internals), therefore it carries this small copy of the
-/// baseline in Ariva.Api.Common instead of referencing it: default deny with the <see cref="DenyScheme"/>
-/// placeholder scheme (CWE-862, CWE-306), no <c>Server</c> header, a 1 MB body limit, ProblemDetails errors
+/// baseline in Ariva.Api.Common instead of referencing it: default deny (CWE-862, CWE-306) with the operator key
+/// scheme <see cref="KeyScheme"/> (ARV-027; no key configured means nothing authenticates), the read and control
+/// policies, a per-key limit on scenario re-runs, no <c>Server</c> header, a 1 MB body limit, ProblemDetails errors
 /// without exception details and the API security headers.
 /// </summary>
 internal static class SimulationSecurity
 {
     #region Constants
 
-    /// <summary>Placeholder scheme that never authenticates, so everything except the probes answers 401.</summary>
-    public const string DenyScheme = "Ariva.Deny";
+    /// <summary>The operator key scheme (<see cref="SimulationKeyHandler"/>).</summary>
+    public const string KeyScheme = "Ariva.SimulationKey";
 
     /// <summary>Environment in which the simulator must never run.</summary>
     public const string ProductionEnvironment = "k8s-prd";
@@ -30,20 +32,50 @@ internal static class SimulationSecurity
 
     #region Services
 
-    /// <summary>Registers default deny, the body limit and ProblemDetails.</summary>
+    /// <summary>Registers default deny with operator keys, the policies, the re-run limit, the body limit and ProblemDetails.</summary>
     /// <param name="services">The simulator's service collection.</param>
+    /// <param name="configuration">The simulator's configuration (Simulation:Control).</param>
     /// <returns>The same service collection, for chaining.</returns>
-    public static IServiceCollection AddSimulationSecurity(this IServiceCollection services)
+    public static IServiceCollection AddSimulationSecurity(this IServiceCollection services, IConfiguration configuration)
     {
         services
-            .AddAuthentication(DenyScheme)
-            .AddScheme<AuthenticationSchemeOptions, DenyAuthenticationHandler>(DenyScheme, displayName: null, configureOptions: null);
+            .AddOptions<SimulationControlSettings>()
+            .Bind(configuration.GetSection(SimulationControlSettings.Section))
+            .ValidateDataAnnotations() // runs SimulationControlSettings.Validate (IValidatableObject)
+            .ValidateOnStart();
 
-        var authenticatedUser = new AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build();
+        services
+            .AddAuthentication(KeyScheme)
+            .AddScheme<AuthenticationSchemeOptions, SimulationKeyHandler>(KeyScheme, displayName: null, configureOptions: null);
+
+        var authenticatedUser = new AuthorizationPolicyBuilder(KeyScheme).RequireAuthenticatedUser().Build();
         services
             .AddAuthorizationBuilder()
             .SetDefaultPolicy(authenticatedUser)
-            .SetFallbackPolicy(authenticatedUser);
+            .SetFallbackPolicy(authenticatedUser)
+            .AddPolicy(SimulationScopes.ReadPolicy, policy => policy
+                .AddAuthenticationSchemes(KeyScheme)
+                .RequireAuthenticatedUser()
+                .RequireClaim(SimulationScopes.Claim, SimulationScopes.Read, SimulationScopes.Control))
+            .AddPolicy(SimulationScopes.ControlPolicy, policy => policy
+                .AddAuthenticationSchemes(KeyScheme)
+                .RequireAuthenticatedUser()
+                .RequireClaim(SimulationScopes.Claim, SimulationScopes.Control));
+
+        services.AddRateLimiter(limiter =>
+        {
+            limiter.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+            limiter.AddPolicy(SimulationScopes.RerunLimit, context =>
+            {
+                var perMinute = context.RequestServices.GetRequiredService<IOptionsMonitor<SimulationControlSettings>>().CurrentValue.RerunsPerMinute;
+                return RateLimitPartition.GetFixedWindowLimiter(context.User.Identity?.Name ?? "anonymous", _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = perMinute,
+                    Window = TimeSpan.FromMinutes(1),
+                    QueueLimit = 0
+                });
+            });
+        });
 
         services.Configure<KestrelServerOptions>(kestrel =>
         {
@@ -93,31 +125,9 @@ internal static class SimulationSecurity
         app.UseRouting();
         app.UseAuthentication();
         app.UseAuthorization();
+        app.UseRateLimiter();
 
         return app;
-    }
-
-    #endregion
-
-    #region Handler
-
-    /// <summary>Ignores every credential and returns no result, so the fallback policy challenges with 401.</summary>
-    /// <param name="options">The scheme options.</param>
-    /// <param name="logger">The logger factory.</param>
-    /// <param name="encoder">The URL encoder.</param>
-    private sealed class DenyAuthenticationHandler(
-        IOptionsMonitor<AuthenticationSchemeOptions> options,
-        ILoggerFactory logger,
-        UrlEncoder encoder) : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
-    {
-        protected override Task<AuthenticateResult> HandleAuthenticateAsync() => Task.FromResult(AuthenticateResult.NoResult());
-
-        protected override Task HandleChallengeAsync(AuthenticationProperties properties)
-        {
-            Response.StatusCode = StatusCodes.Status401Unauthorized;
-            Response.Headers.WWWAuthenticate = "Bearer";
-            return Task.CompletedTask;
-        }
     }
 
     #endregion
