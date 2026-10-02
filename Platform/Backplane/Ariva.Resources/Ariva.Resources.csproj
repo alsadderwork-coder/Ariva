@@ -6,6 +6,8 @@
 
     <ItemGroup>
         <EmbeddedResource Include="Languages\*.json" />
+        <!-- Email templates (ARV-040): a "Subject:" line, a blank line, then the plain-text body; {{Name}} placeholders. -->
+        <EmbeddedResource Include="Templates\Email\*.txt" LogicalName="Ariva.Resources.Templates.Email.%(Filename)%(Extension)" />
     </ItemGroup>
 
 </Project>

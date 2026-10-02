@@ -22,6 +22,7 @@
     "0019_replay.sql": "1ef597fc896497e143c31dcbe1f4f8cdc39bf6552da62e69e4ac7d4c14d3a514",
     "0020_alert_rule.sql": "7493ed1e8481d4cb2c7bfa094b6735fe26a2a3d2f7fd82cd8fa4a7caca88b79d",
     "0021_alert.sql": "515d44ef626d8fd0195a258591aa4e76fa2a68decbc6eeb0ef13546dee835f8c",
-    "0022_alert_lifecycle.sql": "b78d8a0d1ea302d636f3bcf55602fca501fbcb052676e3ef3df478db36faa988"
+    "0022_alert_lifecycle.sql": "b78d8a0d1ea302d636f3bcf55602fca501fbcb052676e3ef3df478db36faa988",
+    "0023_email_message.sql": "f240b42909523cee9ebd43cf6ad9a656f8aa7f5fb984c078a425327d8cd3f5e6"
   }
 }

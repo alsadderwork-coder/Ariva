@@ -20,6 +20,12 @@ export type HostName = keyof typeof hosts;
 /** Every API host the e2e web servers start, in a stable order for parameterised tests. */
 export const apiHosts = Object.entries(hosts).map(([name, url]) => ({ name: name as HostName, url }));
 
+/** The run's smtp4dev (ARV-040): its SMTP port on loopback and its web API. */
+export const smtp4dev = {
+	smtpPort: Number(process.env.ARIVA_E2E_SMTP_PORT || 25251),
+	url: process.env.ARIVA_E2E_SMTP4DEV_URL || 'http://127.0.0.1:5081'
+} as const;
+
 /** Ariva.Web served by `vite preview` (the production build). */
 export const webUrl = process.env.ARIVA_E2E_WEB_URL || 'http://localhost:51011';
 

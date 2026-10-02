@@ -44,7 +44,7 @@
     <PackageVersion Include="Fluentx" Version="6.1.9" />
     <PackageVersion Include="Handlebars.Net" Version="2.1.6" />
     <PackageVersion Include="Humanizer.Core" Version="3.0.1" />
-    <PackageVersion Include="MailKit" Version="4.14.1" />
+    <PackageVersion Include="MailKit" Version="4.18.1" />
     <PackageVersion Include="Mapster" Version="7.4.0" />
     <PackageVersion Include="MessagePack" Version="3.1.7" />
     <PackageVersion Include="Polly" Version="8.6.5" />

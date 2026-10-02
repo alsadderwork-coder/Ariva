@@ -45,6 +45,7 @@ From a border deployment to an airport deployment, additionally never: track ids
 | Queue intervals, desk intervals, forecasts, border lane KPIs | Indefinite (aggregates) | D5 |
 | Hourly and daily report aggregates | Indefinite | D5 |
 | Configuration, contracts, SLA decisions, alerts | Indefinite, audited | D5 |
+| Alert emails (`email_message`: recipient address, subject, body, status) | Kept with the alert as the record of who was told what; the body holds no traveller, officer or document data and no notes, only the staff address. A retention period for staff addresses here is To confirm | ARV-040 |
 | Evidence packs | At least the contract's dispute and audit periods | To confirm |
 | Flight data | | To confirm |
 | Logs and traces | No track ids or desk codes in log messages beyond the operating day | Proposed, To confirm |

@@ -26,7 +26,8 @@ internal sealed class SvcAlerts(
     ISiteScope siteScope,
     CallerRoles callerRoles,
     AuditTrail audit,
-    IAlertNotices notices) : SvcBase(unitOfWork, currentUser, timeProvider), ISvcAlerts
+    IAlertNotices notices,
+    Ariva.Infra.Notifications.AlertEmails emails) : SvcBase(unitOfWork, currentUser, timeProvider), ISvcAlerts
 {
     private const string Target = "Alert";
 
@@ -100,6 +101,8 @@ internal sealed class SvcAlerts(
         // JSON, so a note cannot pass for another field of the summary (CWE-117).
         await audit.RecordAsync($"{Target}.{action}", Target, alert.Id, Name(alert), JsonSerializer.Serialize(new { state = before.ToString() }),
             JsonSerializer.Serialize(new { state = alert.State.ToString(), note = string.IsNullOrWhiteSpace(note) ? null : note.Trim() }), ct);
+        if (alert.State == AlertState.Escalated && before != AlertState.Escalated)
+            await emails.EnqueueAsync(alert, EmailKind.AlertEscalated, UtcNow, ct);
         var notice = AlertNotice.From(alert, UtcNow);
         UnitOfWork.RegisterPostCommitAction(() => notices.PublishAsync([notice], CancellationToken.None));
         return new Result<AlertViewModel>(View(alert));

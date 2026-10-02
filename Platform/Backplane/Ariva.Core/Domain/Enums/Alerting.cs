@@ -74,3 +74,19 @@ public enum AlertSeverity
     Warning,
     Critical
 }
+
+/// <summary>What an email tells of (ARV-040).</summary>
+public enum EmailKind
+{
+    AlertRaised,
+    AlertEscalated
+}
+
+/// <summary>Where an email is: waiting, sent, held back by a rate limit, or given up after its attempts.</summary>
+public enum EmailStatus
+{
+    Pending,
+    Sent,
+    Suppressed,
+    Failed
+}

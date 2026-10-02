@@ -55,6 +55,8 @@ node scripts/verify.mjs e2e
 
 The scope reports a failure until the project exists. How to point it at a deployed environment is To confirm.
 
+Alert emails (ARV-040): the run starts smtp4dev from the pinned local tool (`.config/dotnet-tools.json`, `dotnet tool restore`) on 127.0.0.1 (SMTP 25251, web API 5081, `ARIVA_E2E_SMTP_PORT` and `ARIVA_E2E_SMTP4DEV_URL` to change them), so neither a developer machine nor CI pulls an image; `alert-emails.spec.ts` reads what arrived through its API. The integration tests use a small SMTP server in the test process (`Setup/SmtpSink.cs`) that can refuse a recipient or drop the connection.
+
 ## 5. Replay and golden scenario tests
 
 The reference scenario is the prototype's seeded day at the fictional DMO airport, whose topology and zone profile v12 the demo seed creates in dev and demo (ARV-019; layout in the [Administration guide](11-Administration-Guide.md)): seed 9303, simulated from 17:40 in the prototype, with scripted events:

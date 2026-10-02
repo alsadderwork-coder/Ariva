@@ -168,6 +168,10 @@ internal sealed class ArivaWebApplicationFactory<TEntryPoint>(string environment
         builder.UseSetting("Kafka:Enabled", "false");
         builder.UseSetting("Seed:DemoTopology", "false");
 
+        // The mail relay is Integration's own setting (appsettings.service.<env>.json), which the shared test output
+        // cannot hold for every host: give the in-process hosts vm-local's smtp4dev. Nothing connects to it here.
+        builder.UseSetting("Email:Smtp:Host", "localhost");
+
         // No mounted token keys in-process: a development key of this host's own, whatever the environment under test
         // (cluster files name /app/secrets paths). Tests sign tokens with the host's TokenKeys.
         builder.UseSetting("Auth:Tokens:UseDevelopmentKeys", "true");

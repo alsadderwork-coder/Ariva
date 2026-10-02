@@ -46,6 +46,9 @@ internal sealed class SvcUsers(
         if (roles.Any(role => !RoleHierarchy.CanAssign(granter, role)))
             return Result.Error<UserCreatedViewModel>(AdministrationErrors.AboveOwnRole);
 
+        if (!IsUsableEmail(request.Email))
+            return Result.Error<UserCreatedViewModel>(AdministrationErrors.InvalidEmail);
+
         var userName = UserNames.Normalize(request.UserName);
         if (await Query<User>().AnyAsync(u => u.UserName == userName, ct))
             return Result.Error<UserCreatedViewModel>(AdministrationErrors.UserNameTaken);
@@ -62,6 +65,9 @@ internal sealed class SvcUsers(
         logger.LogInformation(UserCreated, "Account {UserId} created by {AdministratorId} with roles {Roles}", user.Id, CurrentUser.Id, string.Join(",", roles));
         return new Result<UserCreatedViewModel>(new UserCreatedViewModel(View(user, now), password));
     }
+
+    // ARV-040: an address alert emails can go to, or none (CWE-93: nothing that could add a header or a recipient).
+    private static bool IsUsableEmail(string email) => string.IsNullOrWhiteSpace(email) || Ariva.Infra.Notifications.EmailAddresses.IsValid(email.Trim());
 
     public async Task<Result<UserViewModel>> GetAsync(Guid id, CancellationToken ct = default)
     {
@@ -122,6 +128,9 @@ internal sealed class SvcUsers(
         var user = await VisibleAsync(id, ct);
         if (user is null)
             return Result.Error<UserViewModel>(AdministrationErrors.NotFound);
+
+        if (!IsUsableEmail(request?.Email))
+            return Result.Error<UserViewModel>(AdministrationErrors.InvalidEmail);
 
         var before = AuditTrail.Summary(user);
         user.UpdateProfile(request?.DisplayName, request?.Email);

@@ -72,6 +72,8 @@ Product and architecture decisions in date order. Architecture decisions with co
 - Ariva.Simulation.Api with sensor, AODB and AMAN emulators; reference scenario is the prototype's seeded day (seed 9303; scripted events at 18:05, 18:20 to 18:30 and 19:10). AODB mocks cover AIDX 22.1, ACRIS and SSIM import. ADR-0025.
 - AMAN feed contracts V1 live in `Ariva.Business.Contracts`: DeskSessionChanged, DeskIntervalStats, EGateIntervalStats, InboundFlightLaneDemand.
 
+- Alert email (ARV-040), decided 2026-10-03: a transactional outbox (`email_message`) written by the host that changes the alert and sent by Ariva.Api.Integration, the host with egress to the site's mail relay (wiki 05, flow 15), through MailKit; at least once; plain text from templates in Ariva.Resources; one recipient per message; limits per address per hour and per minute over all replicas. smtp4dev in development (compose) and in E2E as a pinned local .NET tool, so CI pulls no image for it.
+
 ## Open decisions
 
 | Topic | Question | Where |
@@ -87,3 +89,5 @@ Product and architecture decisions in date order. Architecture decisions with co
 | Privacy | UAE PDPL, Angola, Tanzania and GDPR applicability; Angola authorisation for stereo sensors | data-boundary.md |
 | Name | Trademark and domain availability for "Ariva" | ADR-0015 |
 | Disabling alert rules | Deleting a rule needs step-up MFA (the PRD's critical action, ARV-037); disabling one with `PUT` (or raising its threshold until it never fires) has the same effect and needs none, only the audit trail. Confirm, or make disabling and edits that weaken a rule critical too | wiki 11 section 8 |
+| Profile email changes | Changing a user's email redirects that user's alert emails; it is audited but needs no second factor (it is not one of the PRD's critical actions). Decide whether it should be | ARV-040, critical-actions.json |
+| Staff addresses in sent emails | `email_message` keeps the recipient address with each alert email; set a retention period | wiki 14 |

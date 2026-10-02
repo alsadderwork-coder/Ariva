@@ -54,7 +54,12 @@ const settings = {
 	},
 	Kafka: { Enabled: true, BootstrapServers: `localhost:${env.ARIVA_KAFKA_PORT || 19092}`, Topics: { ReplicationFactor: 1, MinInSyncReplicas: 1 } },
 	Redis: { Enabled: true, ConnectionString: `localhost:${env.ARIVA_REDIS_PORT || 16379},password=${env.ARIVA_REDIS_PASSWORD}` },
-	Smtp: { Host: 'localhost', Port: Number(env.ARIVA_SMTP_PORT || 2525), UseTls: false }
+	// Alert emails (ARV-040) go to the compose smtp4dev; its web UI is on ARIVA_SMTP_UI_PORT (default 5080).
+	Email: {
+		Enabled: true,
+		FromAddress: 'no-reply@ariva.local',
+		Smtp: { Host: 'localhost', Port: Number(env.ARIVA_SMTP_PORT || 2525), Security: 'None', AllowInsecure: true }
+	}
 };
 fs.writeFileSync(LOCAL_SETTINGS, JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 });
 console.log(`dev-up: wrote ${path.relative(ROOT, LOCAL_SETTINGS)} (git-ignored).`);

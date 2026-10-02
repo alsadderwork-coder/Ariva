@@ -931,8 +931,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 43,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Alert emails as an outbox (email_message, script 0023) written with the alert change by Stream or Main and sent by Ariva.Api.Integration (the egress host) through MailKit; templates in Ariva.Resources; recipients are enabled people of the role and site with one plain address, checked when written and again when sent; CRLF and other control characters stripped from every value, one-line subject, one recipient per message; limits per address per hour and per minute over all replicas; retries with backoff; runtime role cannot rewrite or delete; relay settings and password on Integration only; smtp4dev in dev (compose) and E2E (pinned local tool). Security review PASS after fixes.",
       "dependsOn": [
         "ARV-039"
       ]

@@ -3,12 +3,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, devices } from '@playwright/test';
 import { databaseAvailable, developmentUserEnvironment, keyDirectory, lockoutSeconds, refreshGraceSeconds } from './tests/support/accounts';
-import { hosts, webUrl } from './tests/support/hosts';
+import { hosts, smtp4dev, webUrl } from './tests/support/hosts';
 
 // Ariva API end-to-end and functional tests. See README.md.
 //   api          Playwright's request fixture against the running .NET hosts, no browser
 //   functional   Chromium against the production build of Ariva.Web served by `vite preview`
-// The web servers below build the backend once (first entry), start Ariva.Api.Main, Ariva.Api.Integration,
+// The web servers below start smtp4dev, build the backend once (first .NET entry), start Ariva.Api.Main, Ariva.Api.Integration,
 // Ariva.Api.Ingest and Ariva.Simulation.Api with `dotnet run --no-build` on their launchSettings ports, then build
 // and preview the web app. Playwright starts them one after another and waits for each health URL.
 
@@ -76,6 +76,7 @@ function dotnetHost(projectPath: string, healthUrl: string, buildFirst = false, 
 			// limit applies only where a test means it to (production trusts only the ingress network).
 			Security__ForwardedHeaders__KnownProxies__0: '127.0.0.1',
 			Security__ForwardedHeaders__KnownProxies__1: '::1',
+			...emailEnvironment(),
 			...extraEnvironment
 		}
 	};
@@ -111,6 +112,28 @@ function kafkaEnvironment(): Record<string, string> {
 	};
 }
 
+// Alert emails (ARV-040): every host writes them; Ariva.Api.Integration, the only host given the relay, sends them every
+// second to the run's smtp4dev (the pinned local tool, .config/dotnet-tools.json, started below on loopback in clear
+// text, which only vm-local and k8s-dev accept). The hourly limit per address is raised: the suites send many alert
+// emails to the same people.
+function emailEnvironment(): Record<string, string> {
+	return {
+		Email__Enabled: 'true',
+		Email__FromAddress: 'no-reply@ariva.e2e',
+		Email__PollSeconds: '1',
+		Email__MaxPerRecipientPerHour: '1000'
+	};
+}
+
+function smtpEnvironment(): Record<string, string> {
+	return {
+		Email__Smtp__Host: '127.0.0.1',
+		Email__Smtp__Port: String(smtp4dev.smtpPort),
+		Email__Smtp__Security: 'None',
+		Email__Smtp__AllowInsecure: 'true'
+	};
+}
+
 export default defineConfig({
 	testDir: './tests',
 	globalSetup: './tests/support/global-setup.ts',
@@ -143,11 +166,22 @@ export default defineConfig({
 		}
 	],
 	webServer: [
+		{
+			command:
+				`dotnet tool restore && dotnet tool run smtp4dev --urls=${smtp4dev.url} --smtpport=${smtp4dev.smtpPort} ` +
+				'--imapport= --pop3port= --disableipv6 --bindaddress=127.0.0.1 --db= --messagestokeep=1000',
+			cwd: repositoryRoot,
+			url: `${smtp4dev.url}/api/messages`,
+			reuseExistingServer: !isCi,
+			timeout: 180_000,
+			stdout: 'ignore' as const,
+			stderr: 'pipe' as const
+		},
 		dotnetHost(project('Backplane/Ariva.Api.Main'), `${hosts.main}/health/readiness`, true, {
 			...(databaseAvailable ? developmentUserEnvironment() : {}),
 			...redisEnvironment()
 		}),
-		dotnetHost(project('Backplane/Ariva.Api.Integration'), `${hosts.integration}/health/readiness`),
+		dotnetHost(project('Backplane/Ariva.Api.Integration'), `${hosts.integration}/health/readiness`, false, smtpEnvironment()),
 		dotnetHost(project('Backplane/Ariva.Api.Ingest'), `${hosts.ingest}/health/readiness`, false, kafkaEnvironment()),
 		dotnetHost(project('Simulation/Ariva.Simulation.Api'), `${hosts.simulation}/health/readiness`, false, {
 			Simulation__Control__Keys__0__Name: 'e2e',

@@ -152,7 +152,8 @@ public sealed class AlertEvaluation(IServiceScopeFactory scopes, AlertEvaluation
 /// the rule restarts its counts (an open alert stays and clears under the new values, unless the metric changed, which
 /// resolves it); a target that left the rule has its open alert resolved and its state dropped.
 /// </summary>
-internal sealed class AlertRuleTick(IUnitOfWork unitOfWork, ICurrentUser currentUser, AlertInputs inputs, AuditTrail audit, IAlertNotices notices)
+internal sealed class AlertRuleTick(IUnitOfWork unitOfWork, ICurrentUser currentUser, AlertInputs inputs, AuditTrail audit, IAlertNotices notices,
+    Ariva.Infra.Notifications.AlertEmails emails)
 {
     /// <summary>The most alerts one tick escalates (the rest at the next).</summary>
     public const int MaxEscalationsPerTick = 500;
@@ -233,6 +234,7 @@ internal sealed class AlertRuleTick(IUnitOfWork unitOfWork, ICurrentUser current
                     state = "Escalated", to = alert.EscalateToRole, contact = alert.EscalationContact, afterMinutes = alert.EscalateAfterMinutes, by = "evaluation"
                 }), ct);
             Changed(alert);
+            await emails.EnqueueAsync(alert, EmailKind.AlertEscalated, now, ct);
             escalated++;
         }
 
@@ -334,6 +336,8 @@ internal sealed class AlertRuleTick(IUnitOfWork unitOfWork, ICurrentUser current
                         var alert = new Alert(rule, target.ZoneName, target.DeviceCode, transition);
                         await Storage.SaveAsync(alert, ct);
                         Changed(alert);
+                        // Written after the alert, so the flush inserts the alert first (the email refers to it).
+                        await emails.EnqueueAsync(alert, EmailKind.AlertRaised, now, ct);
                         open = alert.Id;
                         raised++;
                     }

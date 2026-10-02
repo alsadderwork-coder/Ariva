@@ -53,6 +53,22 @@ public sealed class HostServicesTests
     }
 
     [Fact]
+    public async Task Integration_Should_SendTheAlertEmails_When_EmailIsOn()
+    {
+        // ARV-040: every host writes alert emails with the alert change; only Integration, the host with outbound egress, sends them.
+        await using var integration = ArivaHosts.Create(ArivaHosts.Integration);
+        await using var main = ArivaHosts.Create(ArivaHosts.Main);
+        await using var scope = integration.Services.CreateAsyncScope();
+
+        integration.Services.GetServices<Microsoft.Extensions.Hosting.IHostedService>().Should().ContainSingle(s => s is Ariva.Infra.Notifications.EmailSenderWorker);
+        scope.ServiceProvider.GetService<Ariva.Infra.Notifications.EmailSender>().Should().NotBeNull();
+        main.Services.GetServices<Microsoft.Extensions.Hosting.IHostedService>().Should().NotContain(s => s is Ariva.Infra.Notifications.EmailSenderWorker);
+        await using var mainScope = main.Services.CreateAsyncScope();
+        mainScope.ServiceProvider.GetService<Ariva.Infra.Notifications.AlertEmails>().Should().NotBeNull();
+        mainScope.ServiceProvider.GetService<Ariva.Infra.Notifications.IEmailTransport>().Should().BeNull("Main never talks to the mail relay");
+    }
+
+    [Fact]
     public async Task Stream_Should_ResolveWhatTheAlertEvaluationRunsWith_When_ItTicks()
     {
         await using var app = ArivaHosts.Create(ArivaHosts.Stream);

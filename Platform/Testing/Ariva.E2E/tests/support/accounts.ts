@@ -136,7 +136,9 @@ export function accounts() {
 		dmoBorder: account('e2e.dmoborder', ['BorderShiftSupervisor'], false, false, ['DMO']),
 		dmoTerminal: account('e2e.dmoterminal', ['TerminalDutyManager'], false, false, ['DMO']),
 		dmoHandler: account('e2e.dmohandler', ['HandlerStationManager'], false, false, ['DMO']),
-		siteUser: account('e2e.siteuser', ['BorderShiftSupervisor'], false, false, ['E2E1'])
+		siteUser: account('e2e.siteuser', ['BorderShiftSupervisor'], false, false, ['E2E1']),
+		// ARV-040: creates the email rule and sets the DMO people's addresses (neither is a critical action).
+		emailAdmin: account('e2e.emailadmin', ['SystemAdministrator'], false, false, ['*'])
 	} as const;
 }
 

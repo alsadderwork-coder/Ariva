@@ -1,0 +1,14 @@
+Subject: [Ariva] Escalated: {{Severity}} {{RuleCode}} {{RuleName}} at {{ZoneName}} ({{SiteCode}})
+
+Alert {{RuleCode}} "{{RuleName}}" was escalated to you at {{EscalatedUtc}} UTC.
+It was raised at {{RaisedUtc}} UTC; its owner is {{OwnerRole}}.
+
+Site:      {{SiteCode}}
+Zone:      {{ZoneName}}
+Device:    {{DeviceCode}}
+Metric:    {{Metric}}
+Value:     {{Value}}
+Severity:  {{Severity}}
+
+Open Ariva to acknowledge it. This message was sent because the rule notifies by email; it holds no traveller,
+officer or document data.

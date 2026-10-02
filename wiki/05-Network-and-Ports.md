@@ -46,7 +46,7 @@ Ports marked "check the vendor datasheet" depend on the device family. Rows mark
 | 12 | Users | Ingress: Web and Main (including the SignalR WebSocket on `/hubs`) | TCP 443, HTTPS and WSS | Dashboards, configuration, live push | Decided |
 | 13 | Display players (display VLAN) | Ingress: display pages and read-only display endpoint | TCP 443, HTTPS | Kiosk display pages | Decided |
 | 14 | Airport apps, FIDS vendors, signage CMS | Ingress, Integration API | TCP 443, HTTPS | Wait-times API (`queues:read`), display content (`displays:read`) | v1 for the wait-times API |
-| 15 | Ariva Integration | Mail relay | SMTP; port per relay (the development default is 1025) | Alert email | Site value To confirm |
+| 15 | Ariva Integration | Mail relay | SMTP with STARTTLS (587) or implicit TLS (465), per relay; clear text only to smtp4dev in development (2525) | Alert email (ARV-040); only Integration connects to the relay | Site value To confirm |
 | 16 | Ariva Integration | SMS gateway, operations-centre webhooks | TCP 443 | Alert channels | v1 |
 | 17 | Ariva pods | PostgreSQL | TCP 5432 | Database | Decided |
 | 18 | Ariva pods | Redis | TCP 6379 | Cache, backplane, idempotency | Decided |

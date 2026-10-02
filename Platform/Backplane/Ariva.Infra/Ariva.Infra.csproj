@@ -27,6 +27,7 @@
         <PackageReference Include="MassTransit" />
         <PackageReference Include="MassTransit.Kafka" />
         <PackageReference Include="Confluent.Kafka" />
+        <PackageReference Include="MailKit" />
     </ItemGroup>
 
     <ItemGroup>
@@ -38,6 +39,7 @@
 
     <ItemGroup>
         <ProjectReference Include="..\Ariva.Core\Ariva.Core.csproj" />
+        <ProjectReference Include="..\Ariva.Resources\Ariva.Resources.csproj" />
     </ItemGroup>
 
 </Project>

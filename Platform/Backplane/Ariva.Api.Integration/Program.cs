@@ -3,6 +3,7 @@ using Ariva.Api.Common.Extensions;
 using Ariva.Api.Common.HealthChecks;
 using Ariva.Api.Common.Hosting;
 using Ariva.Di;
+using Ariva.Di.Extensions;
 
 // Ariva.Api.Integration: AODB adapters (Aodb/: AIDX, ACRIS, SSIM), the AMAN aggregate feed
 // consumer (Aman/) and email notifications (Notifications/).
@@ -51,6 +52,10 @@ builder.Services.AddAppTelemetry(builder.Configuration);
 #region Services
 
 builder.Services.RegisterArivaServices(builder.Configuration);
+
+// Email notifications (ARV-040): the alert emails the other hosts write with each alert change are sent from here, the
+// host with the outbound egress (the site's mail relay), through MailKit with the Email settings.
+builder.Services.AddArivaEmailSending(builder.Configuration);
 
 // Security baseline (docs/security/cwe-controls.md): default deny (fallback policy, Ariva.Deny answers challenges),
 // ES256 access tokens from Ariva.Api.Main with permissions from stored grants (ARV-010a), input limits, rate limiting,

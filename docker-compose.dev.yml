@@ -71,7 +71,7 @@ services:
       retries: 30
 
   smtp4dev:
-    image: rnwood/smtp4dev:v3
+    image: rnwood/smtp4dev:3.15.0 # the same version as the E2E local tool (.config/dotnet-tools.json)
     ports:
       - "127.0.0.1:${ARIVA_SMTP_PORT:-2525}:25"
       - "127.0.0.1:${ARIVA_SMTP_UI_PORT:-5080}:80"

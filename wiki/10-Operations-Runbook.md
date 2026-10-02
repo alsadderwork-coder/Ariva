@@ -194,6 +194,15 @@ SELECT job_id, hypertable_name, last_run_status, last_successful_finish, next_st
 - **Known limits**: `OverflowOccupied` and `DesksBelowPlan` rules have nothing to judge yet; predicted-nowcast rules need the arrival-wave projection (ARV-047). A new or re-enabled rule starts at the present (use the backtest for the past). After the Stream host was down for more than three hours (`Alerts:Evaluation:MaxCatchUpMinutes`), evaluation continues from the last three hours.
 - **Actions**: fix the data source; an edit of the rule restarts its counts. Do not delete `alert_rule_state` rows by hand.
 
+### 4.8c Alert emails not arriving (ARV-040)
+
+- **Symptoms**: an alert was raised or escalated but its people got no email.
+- **Checks**: is `Email:Enabled` on in the base settings, and does the rule notify by email (`notifyByEmail`)? Who is told: when raised, the people of the rule's owner role (every operational role for a rule without owner); when escalated, the people of the escalation role; each enabled, holding the role and the alert's site, with an email address that is one plain address. A rule that escalates to a named contact rather than a role sends no escalation email. In the database, `email_message` has one row per alert, kind and address: `Pending` (waiting or to be retried at `next_attempt_utc`), `Sent`, `Suppressed` (held back by the hourly limit per address, `Email:MaxPerRecipientPerHour`) or `Failed` (given up after `Email:MaxAttempts`). `reason` names the error type of the last failure, never the server's reply.
+- **Held back at sending**: an email is sent only while its recipient is still an enabled account with that address, holding the alert's site and the role it was written for; otherwise the round marks it Suppressed ("The recipient no longer holds ..."). One Integration replica sends at a time; the others skip the round.
+- **Log lines**: Integration logs "Email round: n sent, n to retry, n given up, n held back" when a round has any of those and "Email round failed" with the error when a whole round fails; the writing host logs "recipients skipped for an address that is not valid".
+- **Actions**: fix the relay or its credentials; pending emails go out on the next rounds. Fix an address in the user's profile (Administration guide); emails already written keep the old address. Do not edit or delete `email_message` rows: the runtime role can change only how sending went (never the recipient, subject or body), Sent, Suppressed and Failed are final, and the rows are the record of who was told what.
+- **Known limits**: delivery is at least once: if Integration stops between the relay accepting a message and the round's commit, that message is sent again. No digest or quiet hours yet; a burst over the per-minute limit waits for the next minutes.
+
 ### 4.9 Certificate expiry
 
 - **Checks**:
