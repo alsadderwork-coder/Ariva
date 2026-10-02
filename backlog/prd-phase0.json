@@ -677,8 +677,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 31,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Sensor emulator in Ariva.Simulation.Api/Emulators/Sensors: canonical (per-passenger crossings, occupancy, status) and Xovis (intervals, occupancy) pushes as registered devices; start, pause, speed, jump, devices and seed controls behind the control scope; 10-minute run at speed 60 verified against the real Ingest host (accepted equals expected). E2E spec type-checked, not run here. Security review PASS (CWE-287).",
       "dependsOn": [
         "ARV-027",
         "ARV-023"

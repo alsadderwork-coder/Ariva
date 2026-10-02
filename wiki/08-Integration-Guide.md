@@ -471,6 +471,7 @@ Status for a missing or wrong `X-TOTP-Code` on a data call: To confirm. Rate lim
 - A mock AODB: AIDX push and ACRIS pull.
 - A mock AMAN: Kafka and REST, with its own TOTP client so Ariva's outbound `TotpClientCredentials` handler is exercised.
 - A mock immigration system that uses the generic REST endpoints.
+- A sensor emulator (ARV-028) that plays the reference day to Ingest as registered devices, at up to 60 times real time, with start, pause, speed and jump controls.
 
 The reference scenario is the seeded day at the fictional Demo International Airport (site code `DMO`, seed 9303). Dalil issues test clients on the dev or demo environment (`https://api-integration-dev-ariva.dalilhub.tech`, simulator at `https://simulation-dev-ariva.dalilhub.tech`). Ariva's end-to-end tests (`Platform/Testing/Ariva.E2E`) cover the token exchange, TOTP replay rejection, scope and site enforcement, idempotency and every endpoint above; use them as the reference behaviour.
 

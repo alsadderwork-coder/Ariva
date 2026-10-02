@@ -1,3 +1,4 @@
+using Ariva.Simulation.Api.Emulators.Sensors;
 using Ariva.Simulation.Api.Security;
 
 // Ariva.Simulation.Api: sensor, AODB and AMAN emulators (Emulators/) driven by deterministic scenarios
@@ -60,8 +61,13 @@ if (string.Equals(environment, SimulationSecurity.ProductionEnvironment, StringC
 builder.Services.AddSimulationSecurity(builder.Configuration);
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<Ariva.Simulation.Api.Scenarios.ScenarioEngine>();
+builder.Services.AddSensorEmulator(builder.Configuration);
 // Binding errors say what was wrong, not which internal type failed to bind (CWE-209).
-builder.Services.AddControllers().AddJsonOptions(options => options.AllowInputFormatterExceptionMessages = false);
+builder.Services.AddControllers().AddJsonOptions(options =>
+{
+    options.AllowInputFormatterExceptionMessages = false;
+    options.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter(allowIntegerValues: false));
+});
 
 #endregion
 

@@ -60,6 +60,16 @@ public sealed class ScenarioEngine : IDisposable
         _runBy = "configuration";
     }
 
+    /// <summary>The current day, for the emulators: they read only what a run leaves fixed (flows and cumulative curves).</summary>
+    internal ScenarioDay CurrentDay
+    {
+        get
+        {
+            lock (_gate)
+                return _day;
+        }
+    }
+
     /// <summary>The day's summary.</summary>
     public ScenarioSummary Summary()
     {

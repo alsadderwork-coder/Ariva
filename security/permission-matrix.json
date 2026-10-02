@@ -330,6 +330,94 @@
       }
     },
     {
+      "host": "simulation",
+      "method": "GET",
+      "route": "/api/v1/simulation/sensors",
+      "access": "simulation",
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "simulation",
+      "method": "POST",
+      "route": "/api/v1/simulation/sensors/start",
+      "access": "simulation",
+      "body": {},
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "simulation",
+      "method": "POST",
+      "route": "/api/v1/simulation/sensors/pause",
+      "access": "simulation",
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "simulation",
+      "method": "PUT",
+      "route": "/api/v1/simulation/sensors/speed",
+      "access": "simulation",
+      "body": {
+        "speed": 1
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "simulation",
+      "method": "POST",
+      "route": "/api/v1/simulation/sensors/jump",
+      "access": "simulation",
+      "body": {
+        "minute": 1
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "simulation",
+      "method": "PUT",
+      "route": "/api/v1/simulation/sensors/devices",
+      "access": "simulation",
+      "body": {
+        "devices": []
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401
+      }
+    },
+    {
       "host": "main",
       "method": "GET",
       "route": "/api/v1/system/info",

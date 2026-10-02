@@ -168,6 +168,17 @@ Samples and expected events are in `Platform/Backplane/Ariva.UnitTests/Sensing/S
 
 In Kubernetes, `mqtt.enabled` adds the port, mounts `mqtt.tlsSecretName` and adds `api-ingest-mqtt-service` (`mqtt.serviceType`, with `externalTrafficPolicy: Local` outside ClusterIP so the device address is kept for allowed networks); the chart refuses MQTT without its TLS secret. Declaring the MQTT listener in code replaces the URLs Kestrel would otherwise bind, so the HTTP endpoints are declared again from `urls`, `http_ports` or `Application:BindingPort` (8080 by default); Kestrel logs that it overrides the configured addresses.
 
+## Sensor emulator (ARV-028)
+
+`Ariva.Simulation.Api` plays the reference day (ARV-027) to Ingest as device traffic, over HTTPS push, authenticated with the credentials of devices registered in Ariva (an operator loads them with `PUT api/v1/simulation/sensors/devices` or the simulation appsettings secret; they are never returned or logged). Each scenario sensor (S-01 to S-59) speaks the canonical or the Xovis dialect:
+
+- The first sensor of a queue zone counts it: per-passenger crossings of `<zone> entry` (In) and `<zone> exit` (Out), with one track id per passenger from entry to exit, and the zone's occupancy at the end of each minute (canonical); or one-minute interval counts on the two line logics and a balance logic for the zone (Xovis).
+- The first sensor of an overflow band (A-OV, D-OV, SEC-OV) reports the band's occupancy beyond the snake capacity, as part of the queue zone it feeds.
+- Every other sensor sends a sign of life each minute (a canonical status, or a Xovis envelope without logics).
+- A sensor offline in the scenario (S-17 from 18:20 to 18:30) sends nothing.
+
+Passengers are the whole people of the fluid model (passenger n enters when cumulative arrivals reach n and leaves when cumulative departures reach n), so occupancy is always entries minus exits. A demo clock runs at 0.5 to 60 demo minutes per wall minute (`Simulation:Sensors:MaxSpeed`); demo times map onto wall times so Ingest's clock checks see live traffic. Controls (control scope): start (at a minute, at a speed, until a minute), pause, speed, jump, and the seed through `PUT api/v1/simulation/scenario`. The status shows, per device, pushes, the events the emulator expected and the events Ingest accepted. At high speed a sensor's silence is shorter than the heartbeat timeout, so a degraded zone shows only at speeds near 1.
+
 ## Conformance kit (how a family gets certified)
 
 1. Record real payloads from the device (or vendor samples) into `Platform/Simulation/Ariva.Simulation.Api/Emulators/Sensors/<Family>/samples/`.

@@ -40,6 +40,9 @@ if (isCi && !databaseAvailable) {
 // the workers start, so every worker derives the same passwords; never written to disk.
 process.env.ARIVA_E2E_ACCOUNT_SEED ||= crypto.randomBytes(24).toString('base64url');
 process.env.ARIVA_E2E_KEY_DIR ||= keyDirectory;
+// One simulator operator key per run (ARV-027, ARV-028): the simulator gets only its SHA-256, the tests the key.
+process.env.ARIVA_E2E_SIMULATION_KEY ||= 'sim-e2e-' + crypto.randomBytes(24).toString('base64url');
+const simulationKeyDigest = crypto.createHash('sha256').update(process.env.ARIVA_E2E_SIMULATION_KEY).digest('hex');
 
 function dotnetHost(projectPath: string, healthUrl: string, buildFirst = false, extraEnvironment: Record<string, string> = {}) {
 	const run = `dotnet run --no-build --configuration ${configuration} --project "${projectPath}"`;
@@ -108,7 +111,15 @@ export default defineConfig({
 		dotnetHost(project('Backplane/Ariva.Api.Main'), `${hosts.main}/health/readiness`, true, databaseAvailable ? developmentUserEnvironment() : {}),
 		dotnetHost(project('Backplane/Ariva.Api.Integration'), `${hosts.integration}/health/readiness`),
 		dotnetHost(project('Backplane/Ariva.Api.Ingest'), `${hosts.ingest}/health/readiness`),
-		dotnetHost(project('Simulation/Ariva.Simulation.Api'), `${hosts.simulation}/health/readiness`),
+		dotnetHost(project('Simulation/Ariva.Simulation.Api'), `${hosts.simulation}/health/readiness`, false, {
+			Simulation__Control__Keys__0__Name: 'e2e',
+			Simulation__Control__Keys__0__Sha256: simulationKeyDigest,
+			Simulation__Control__Keys__0__Scopes__0: 'read',
+			Simulation__Control__Keys__0__Scopes__1: 'control',
+			// The sensor emulator pushes to the Ingest under test; plain HTTP only over loopback.
+			Simulation__Sensors__IngestUrl: hosts.ingest,
+			Simulation__Sensors__AllowInsecureTransport: /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/.test(hosts.ingest) ? 'true' : 'false'
+		}),
 		{
 			command: 'npm run build && npm run preview',
 			cwd: project('Frontplane/Ariva.Web'),

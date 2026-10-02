@@ -40,7 +40,7 @@ Status: **Phase 0** means built and tested against recorded or emulated payloads
 | Wi-Fi or BLE flow time | Probe-based travel-time systems | Declarative mapper | Segment travel times only, no queue length | Planned, supplementary only |
 | Desk occupancy | AMAN desk session signal; desk presence sensors | AMAN feed; declarative mapper | Desk state input | AMAN signal in Phase 0 |
 | Manual counts | Observer tablet app | Capture form in the validation tooling | Validation ground truth | Phase 1 (validation campaign) |
-| Simulator | Ariva.Simulation.Api replaying recorded tracks and generating synthetic crowds | Simulator adapter (transport To confirm) | T1 to T3 | Phase 0 |
+| Simulator | Ariva.Simulation.Api playing the reference day as registered devices (ARV-028): per-passenger crossings and occupancy (canonical) or interval counts and occupancy (Xovis) | HTTPS push, canonical and Xovis dialects | T1 | Phase 0 |
 
 The roadmap plans one sensor family for the MVP, matched to the pilot hall's ceiling, and a second family (LiDAR perception) in v1; D4 asks for one family of each to be certified before the pilot. The pilot plan will settle which applies.
 
