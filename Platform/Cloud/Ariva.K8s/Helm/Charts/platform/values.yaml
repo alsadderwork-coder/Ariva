@@ -42,6 +42,10 @@ migration:
 # The simulation host (sensor, AODB and AMAN emulators) is deployed unless an environment turns it off.
 simulationEnabled: true
 
+# Demo International Airport (DMO) topology and zone profile v12 in Ariva.Api.Main (ARV-019). Fictional data: refused
+# in k8s-prd by the chart (validate.yaml) and by the API itself.
+demoSeed: false
+
 # Per service overrides follow the AMAN key style, for example:
 # apiMainReplicas: 2
 # apiMainHpaMin: 1

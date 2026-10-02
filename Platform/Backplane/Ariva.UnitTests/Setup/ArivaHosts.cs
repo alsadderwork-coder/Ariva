@@ -166,6 +166,7 @@ internal sealed class ArivaWebApplicationFactory<TEntryPoint>(string environment
         // No broker in-process: the bus is off and domain events stay in the outbox (ARV-020). The consume pipe is
         // covered by ConsumePipelineTests and the broker by Ariva.IntegrationTests (Testcontainers.Kafka).
         builder.UseSetting("Kafka:Enabled", "false");
+        builder.UseSetting("Seed:DemoTopology", "false");
 
         // No mounted token keys in-process: a development key of this host's own, whatever the environment under test
         // (cluster files name /app/secrets paths). Tests sign tokens with the host's TokenKeys.

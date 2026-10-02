@@ -171,6 +171,7 @@ Main settings:
 | `Microservices:<Host>:External`, `Internal` | Ingress URL, `http://<service>` | Set External URLs to the site's hosts |
 | `Email:*` (Integration) | Disabled, `127.0.0.1:1025` | Set the site's SMTP relay, sender address and TLS |
 | `Simulation:Seed`, `SiteCode` | 9303, `DMO` | Simulation is disabled in production |
+| `Seed:DemoTopology` (Main) | `true` in vm-local; set by the `demoSeed` Helm value in clusters | Seeds the fictional Demo International Airport (site `DMO`) and its zone profile v12 at startup, idempotently. Api.Main refuses to start with it on unless both `DOTNET_ENVIRONMENT` and `Application:Environment` are `vm-local`, `k8s-dev` or `k8s-demo`. Never set it in production |
 
 Main Helm values (`Charts/platform/values*.yaml`):
 
@@ -183,6 +184,7 @@ Main Helm values (`Charts/platform/values*.yaml`):
 | `replicas`, `<service>Replicas`, `<service>HpaMin`, `<service>HpaMax` | Replica counts (AMAN key style) |
 | `<service>CpuRequest`, `MemRequest`, `CpuLimit`, `MemLimit` | Resource overrides per service |
 | `simulationEnabled` | Deploys the simulation host; `false` in production |
+| `demoSeed` | Sets `Seed__DemoTopology` on api-main to seed Demo International Airport; `true` in demo only. The chart refuses to render it for k8s-prd |
 | `otel.endpoint`, `otel.protocol` | OTLP export target (`grpc` by default) |
 | `imageCredentials.registry`, `username`, `password` | Rendered into `dalilacr-secret` when a password is given |
 | `ingresses` | List of `{ name, comment, subdomain, serviceName, annotations }` |

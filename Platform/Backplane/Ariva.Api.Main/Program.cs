@@ -86,6 +86,9 @@ builder.Services.AddAppControllers();
 // Ariva.Api.Main signs users in and issues tokens (ADR-0026); the other hosts only validate them.
 builder.Services.AddArivaTokenIssuing(builder.Configuration);
 
+// Demo Airport (DMO) topology and zone profile v12 in vm-local and k8s-demo; refused outside dev and demo (ARV-019).
+builder.Services.AddArivaDemoSeed(builder.Configuration, builder.Environment.EnvironmentName);
+
 // AMAN: AddAppCaching, AddAppHealthChecks, AddAppRouting, AddAppOpenApi, AddAppSignalR.
 // SignalR: the live queue hub (Hubs/) uses the Redis backplane and the MessagePack protocol.
 

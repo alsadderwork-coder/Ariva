@@ -480,8 +480,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 22,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Offline gates: unit, PostgreSQL integration and a real-host check; helm template not run here. A draft started through the API makes the seed skip v12 (logged), since a site has one draft at a time.",
       "dependsOn": [
         "ARV-017"
       ]

@@ -11,6 +11,10 @@ data:
   RELEASE_VERSION: {{ .Values.releaseVersion | quote }}
   # Floor plans and other uploaded files (ARV-018), on the files volume below
   Storage__LocalRoot: /app/data/files
+  {{- if .Values.demoSeed }}
+  # Demo International Airport (ARV-019); the API refuses this outside vm-local, k8s-dev and k8s-demo
+  Seed__DemoTopology: "true"
+  {{- end }}
 ---
 #Deployment
 apiVersion: apps/v1

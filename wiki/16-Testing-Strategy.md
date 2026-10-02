@@ -57,7 +57,7 @@ The scope reports a failure until the project exists. How to point it at a deplo
 
 ## 5. Replay and golden scenario tests
 
-The reference scenario is the prototype's seeded day at the fictional DMO airport: seed 9303, simulated from 17:40 in the prototype, with scripted events:
+The reference scenario is the prototype's seeded day at the fictional DMO airport, whose topology and zone profile v12 the demo seed creates in dev and demo (ARV-019; layout in the [Administration guide](11-Administration-Guide.md)): seed 9303, simulated from 17:40 in the prototype, with scripted events:
 
 | Time | Event | Expected behaviour |
 |---|---|---|

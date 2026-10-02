@@ -19,6 +19,9 @@ tlsSecretName: ariva-tls
 clusterName: k8s-demo
 releaseVersion: v-0.0.0
 
+# Seed Demo International Airport (DMO) and zone profile v12 on startup (ARV-019).
+demoSeed: true
+
 # Uploaded files (ARV-018): floor plans. PVCs can only grow; never lower size below the live capacity.
 # ReadWriteMany (for example storageClassName azurefile-csi on AKS) is required before api-main scales out.
 fileStorage:

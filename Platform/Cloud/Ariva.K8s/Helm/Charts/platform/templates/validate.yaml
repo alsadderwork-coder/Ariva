@@ -2,6 +2,7 @@
 Release guards. Renders nothing; fails the render when a rule is broken.
 - Production never deploys a moving tag: buildNumber must be an explicit build (ARV-002).
 - No environment deploys the "latest" tag.
+- Production never seeds the fictional demo airport (ARV-019).
 */ -}}
 {{- if and (eq .Values.environment "k8s-prd") (or (empty .Values.buildNumber) (eq (toString .Values.buildNumber) "trunk")) }}
 {{- fail "k8s-prd needs an explicit buildNumber (for example --set buildNumber=main-20261001.3); trunk and empty are not allowed" }}
@@ -11,4 +12,7 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- end }}
 {{- if and (eq (.Values.fileStorage.accessMode | default "ReadWriteOnce") "ReadWriteOnce") (or (gt (int (.Values.apiMainReplicas | default .Values.replicas)) 1) (gt (int (.Values.apiMainHpaMin | default 1)) 1) (gt (int (.Values.apiMainHpaMax | default 1)) 1)) }}
 {{- fail "api-main with more than one replica needs fileStorage.accessMode ReadWriteMany (the floor plan volume, ARV-018)" }}
+{{- end }}
+{{- if and (eq .Values.environment "k8s-prd") .Values.demoSeed }}
+{{- fail "demoSeed seeds a fictional airport and is not allowed in k8s-prd" }}
 {{- end }}
