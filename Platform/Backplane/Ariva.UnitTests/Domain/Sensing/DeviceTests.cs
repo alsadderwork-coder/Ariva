@@ -216,6 +216,50 @@ public sealed class DeviceTests
     }
 
     [Fact]
+    public void SetAccess_Should_NormaliseNetworksAndTheCertificatePin()
+    {
+        var device = NewDevice();
+
+        device.SetAccess([" 10.20.0.0/24 ", "10.20.1.17/32", "", "2001:db8::/48", "10.20.0.0/24"], "AB:CD" + new string('0', 60), Now);
+
+        device.AllowedSources.Should().Be("10.20.0.0/24,10.20.1.17/32,2001:db8::/48");
+        device.AllowedNetworks.Should().HaveCount(3);
+        device.ClientCertificateSha256.Should().Be("abcd" + new string('0', 60));
+        device.DomainEvents.OfType<DeviceRegistryChanged>().Last().Change.Should().Be("AccessChanged");
+
+        device.SetAccess([], null, Now);
+        device.AllowedSources.Should().BeNull();
+        device.ClientCertificateSha256.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("10.20.0.1/24")]
+    [InlineData("10.20.0.0")]
+    [InlineData("0.0.0.0/0")]
+    [InlineData("::/0")]
+    [InlineData("10.20.0.0/33")]
+    [InlineData("example.com/24")]
+    public void SetAccess_Should_RefuseANetwork_When_ItIsNotAUsefulCidrBlock(string block)
+    {
+        var device = NewDevice();
+
+        var act = () => device.SetAccess([block], null, Now);
+
+        act.Should().Throw<ArgumentException>();
+        device.AllowedSources.Should().BeNull();
+    }
+
+    [Fact]
+    public void SetAccess_Should_RefuseTooManyNetworksOrABadPin()
+    {
+        var tooMany = () => NewDevice().SetAccess([.. Enumerable.Range(1, 17).Select(i => $"10.{i}.0.0/16")], null, Now);
+        var badPin = () => NewDevice().SetAccess([], "not-a-fingerprint", Now);
+
+        tooMany.Should().Throw<ArgumentException>();
+        badPin.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
     public void Health_Should_OnlyMoveACommissionedDevice()
     {
         var device = NewDevice();

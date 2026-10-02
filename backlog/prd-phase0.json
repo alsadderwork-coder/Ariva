@@ -548,8 +548,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 25,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Offline gates: unit (in-process Ingest), PostgreSQL integration, real-host checks and the matrix; E2E spec type-checked, not run here. Device endpoints so far: GET api/v1/ingest/device and GET api/v1/ingest/zones/{zone}; pushes arrive in ARV-023.",
       "dependsOn": [
         "ARV-010a",
         "ARV-021"

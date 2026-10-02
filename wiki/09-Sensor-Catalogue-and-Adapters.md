@@ -59,6 +59,8 @@ LiDAR hardware behind the platforms (Ouster OS0, OS1, OSDome and the Velodyne li
 
 Every payload is untrusted: schema validated, size limited, timestamps checked against the device clock offset, ids namespaced by device.
 
+Device authentication (ARV-022): every device push and every device call to Ariva.Api.Ingest carries the credential of the device, as `Authorization: Bearer ardk_...`, as the `X-Ariva-Device-Key` header, or as HTTP Basic with the device code as user name and the credential as password. Nothing else is accepted on those endpoints (a user token is 401), and the credential opens nothing else. A device may be limited to source networks and bound to a client certificate; a device acts only on its own queue zone (403 otherwise). `GET /api/v1/ingest/device` answers who the device is with the UTC clock of the server; `GET /api/v1/ingest/zones/<zone>` answers the published zones and lines of the zone of the device, the names its events must use. Where a vendor parent, gateway or perception server pushes for several sensors, that endpoint is the device that holds the credential (a refinement for gateways is planned with the push endpoints).
+
 ## Dialect mappers
 
 | Kind | For | How |

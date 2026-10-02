@@ -13,6 +13,7 @@
     "0010_floor_plan.sql": "33d0d5f3ac23cc8e1c9b9be3cb1dfb531d1f6f212e518fe9bece6ee9cc11d08b",
     "0011_messaging.sql": "def1fb4959b0d549951a6f92eb985279431538e3be4e2acdb8ffb8ba4ea62050",
     "0012_zone_profile.sql": "17c52515a9e8278e27beea77f983fb3e93d68b4f3cc0013c5524f988c6f67545",
-    "0013_device.sql": "d4c78ddf737f142f125ce29b73e06633dc7be48009fd6e66a4202dadfbc681e8"
+    "0013_device.sql": "d4c78ddf737f142f125ce29b73e06633dc7be48009fd6e66a4202dadfbc681e8",
+    "0014_device_access.sql": "d5a96b1b2c4a70d789c0c472eabf540e7cae8ba990b782ddac85876138356406"
   }
 }

@@ -39,8 +39,25 @@ public interface ISvcDevices : ISvcScoped
     Task<Result<IReadOnlyList<CalibrationViewModel>>> CalibrationsAsync(Guid id, CancellationToken ct = default);
     Task<Result<CalibrationViewModel>> RecordCalibrationAsync(Guid id, RecordCalibrationRequest request, CancellationToken ct = default);
     Task<Result<DeviceViewModel>> RetireAsync(Guid id, CancellationToken ct = default);
+
+    /// <summary>Where the device may push from and the client certificate it must present (ARV-022).</summary>
+    Task<Result<DeviceViewModel>> SetAccessAsync(Guid id, SetDeviceAccessRequest request, CancellationToken ct = default);
     Task<Result<bool>> RemoveAsync(Guid id, CancellationToken ct = default);
 
     /// <summary>The BOQ's assumed footprint for a family and mounting height, for the registration form's preview.</summary>
     Result<FootprintViewModel> AssumedFootprint(string family, double mountingHeightMetres);
+}
+
+/// <summary>
+/// The device side of the registry (ARV-022), used by Ariva.Api.Ingest without a user: find the device behind a
+/// presented credential prefix, and read the published geometry of a device's zone. Not site-scoped by a user; the
+/// device's own site and zone are the scope.
+/// </summary>
+public interface ISvcDeviceGateway : ISvcScoped
+{
+    /// <summary>The live device whose credential starts with <paramref name="prefix"/>, or null. Cached for a minute at most.</summary>
+    Task<DeviceCredentialRecord> FindByPrefixAsync(string prefix, CancellationToken ct = default);
+
+    /// <summary>The published queue zone of that name in the site, with the zones that hang off it and their lines.</summary>
+    Task<Result<DeviceZoneViewModel>> PublishedZoneAsync(string siteCode, string queueZoneName, CancellationToken ct = default);
 }

@@ -9,7 +9,7 @@ For Dalil engineers, DevOps, and the customer's security reviewers. It summarise
 | No inbound internet | Users through the ingress on the site network; sensors on their own VLAN behind the gateway; displays on their own VLAN reading a read-only endpoint |
 | Default deny | Every endpoint needs a user permission, an integration scope or device authentication; a test fails the build if one does not |
 | Least data | No images, no biometrics, no officer or passenger identity; AMAN sends aggregates only; only lane-level aggregates leave a border deployment |
-| Separate principals | Users, integration clients and devices have separate signing keys and token audiences |
+| Separate principals | Users and integration clients have separate signing keys and token audiences; devices have a scheme of their own (a per-device credential, never a token), accepted only on device endpoints and nowhere else |
 | Integrity | Zone profiles and contracts are immutable versions; the runtime database role cannot change raw hypertables; evidence packs are sealed with SHA-256; everything is audited |
 | On premises, in country | Every deployment runs in the customer's environment; no telemetry leaves without consent |
 
@@ -38,7 +38,7 @@ For Dalil engineers, DevOps, and the customer's security reviewers. It summarise
 |---|---|---|
 | Users | OIDC with the bundled Keycloak or the customer's identity provider, or Ariva's own sign-in with PBKDF2 hashing (per site, To confirm). MFA with TOTP for administrators; step-up MFA for critical functions | Access token 15 minutes; rotating refresh token |
 | Integration clients | Client id, client secret and TOTP (AMAN-compatible flow, hardened) at `POST /api/v1/auth`; optional `X-TOTP-Code` on every call | JWT, audience `ariva-integration`, 15 minutes, no refresh token |
-| Devices | Per-device credential (bearer key or Basic) over HTTPS, or client certificate or username and key over MQTT with TLS | Device authentication on Ingest endpoints |
+| Devices | Per-device credential over HTTPS (`Authorization: Bearer ardk_...`, `X-Ariva-Device-Key`, or Basic with the device code as user name), optionally limited to source networks and bound to a pinned client certificate; client certificate or username and key over MQTT with TLS | Device authentication on Ingest endpoints (ARV-022): 401 for a missing, wrong, revoked or out-of-network credential and for a user token; 403 for the zone of another device; limited per device |
 | Services | Mutual TLS or network policies between services (D5) | |
 
 Ariva's integration authentication follows AMAN's flow but adds hashed secrets, a TOTP replay guard, one generic error, rate limits with lockout, UTC-only time handling and separate keys per principal type.
@@ -58,7 +58,7 @@ Ariva's integration authentication follows AMAN's flow but adds hashed secrets, 
 | Registry credentials | `dalilacr-secret`, rendered from pipeline variables |
 | Integration client secrets | Stored only as PBKDF2 hashes |
 | TOTP seeds, outbound endpoint secrets | Encrypted with the Data Protection key ring |
-| Token signing keys | Separate keys for users, integration clients and devices |
+| Token signing keys | Separate keys for users and integration clients; devices use per-device credentials stored as hashes, not tokens |
 | TLS keys and certificates | Customer PKI; ingress or controller secrets |
 
 At rest, secrets stay in Kubernetes secrets or a vault (D5). Enable encryption at rest for Kubernetes secrets on the customer's cluster. Back up the Data Protection key ring and signing keys separately and encrypted (see [Deployment guide](04-Deployment-Guide.md), backup section).

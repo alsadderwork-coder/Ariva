@@ -31,6 +31,18 @@ public static class JwtAuthenticationExtensions
                 options.IncludeErrorDetails = false;
                 options.RequireHttpsMetadata = false; // no metadata endpoint is used; keys are local
                 options.TokenValidationParameters = AccessTokenIssuer.ValidationParameters(keys, settings.Tokens);
+                // A device credential sent as a bearer (ARV-022) is not a token: skip it quietly instead of failing a JWT
+                // parse on every sensor push. It never authenticates here; only [DeviceAuthenticated] endpoints accept it.
+                options.Events = new JwtBearerEvents
+                {
+                    OnMessageReceived = context =>
+                    {
+                        var authorization = context.Request.Headers.Authorization.ToString();
+                        if (authorization.StartsWith("Bearer " + DeviceCredentials.Marker, StringComparison.OrdinalIgnoreCase))
+                            context.NoResult();
+                        return Task.CompletedTask;
+                    }
+                };
             });
         builder.Services.PostConfigure<AuthenticationOptions>(options => options.DefaultAuthenticateScheme ??= Scheme);
         return builder;

@@ -182,4 +182,15 @@ public sealed class RedactionEnricherTests
 
         ArivaLogging.ApplicationName(configuration).Should().Be(expected);
     }
+
+    [Fact]
+    public void RedactText_Should_MaskADeviceCredential_When_ItAppearsInText()
+    {
+        var credential = Ariva.Infra.Security.DeviceCredentials.New().Credential;
+
+        var redacted = RedactionEnricher.RedactText($"push from S-17 with {credential} refused");
+
+        redacted.Should().NotContain(credential[5..]).And.Contain("ardk_" + RedactionEnricher.Redacted);
+        RedactionEnricher.IsSensitive("X-Ariva-Device-Key").Should().BeTrue();
+    }
 }

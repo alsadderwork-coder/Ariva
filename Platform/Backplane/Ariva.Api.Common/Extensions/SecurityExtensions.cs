@@ -40,7 +40,9 @@ public static class SecurityExtensions
             .AddScheme<AuthenticationSchemeOptions, DenyAuthenticationHandler>(ArivaAuthenticationSchemes.Deny, displayName: null, configureOptions: null)
             // ES256 access tokens from Ariva.Api.Main (ADR-0026, ARV-010a). Deny stays the challenge and forbid scheme,
             // so a missing or invalid token gets the same problem response as before and says nothing about why.
-            .AddArivaJwtBearer();
+            .AddArivaJwtBearer()
+            // Devices (ARV-022): their own scheme and policies, used only by [DeviceAuthenticated] endpoints.
+            .AddArivaDeviceAuthentication();
 
         services.AddArivaAccounts(configuration);
         services.AddHttpContextAccessor();

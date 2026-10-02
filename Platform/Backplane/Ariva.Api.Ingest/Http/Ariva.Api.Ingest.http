@@ -11,3 +11,11 @@ Accept: application/json
 ### Liveness probe
 GET {{Ariva.Api.Ingest_HostAddress}}/health/liveness
 Accept: application/json
+
+### Who Ariva thinks this device is, with the server clock (device credential; ARV-022)
+GET {{Ariva.Api.Ingest_HostAddress}}/api/v1/ingest/device
+X-Ariva-Device-Key: {{deviceKey}}
+
+### The published zones and lines of the device's own queue zone (another zone answers 403)
+GET {{Ariva.Api.Ingest_HostAddress}}/api/v1/ingest/zones/A-VIS
+Authorization: Bearer {{deviceKey}}

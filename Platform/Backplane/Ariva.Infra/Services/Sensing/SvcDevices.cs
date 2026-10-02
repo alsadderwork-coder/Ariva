@@ -11,6 +11,7 @@ using Ariva.Infra.Security;
 using Ariva.Infra.Services.Administration;
 using Ariva.Infra.Services.Foundation;
 using NHibernate.Linq;
+using ZiggyCreatures.Caching.Fusion;
 
 namespace Ariva.Infra.Services.Sensing;
 
@@ -28,9 +29,13 @@ internal sealed class SvcDevices(
     ICurrentUser currentUser,
     TimeProvider timeProvider,
     ISiteScope siteScope,
-    AuditTrail audit) : SvcBase(unitOfWork, currentUser, timeProvider), ISvcDevices
+    AuditTrail audit,
+    IFusionCache cache) : SvcBase(unitOfWork, currentUser, timeProvider), ISvcDevices
 {
     private const string Target = "Device";
+
+    /// <summary>The cache tag of everything Ingest reads about devices (SvcDeviceGateway); every change evicts it.</summary>
+    public const string CacheTag = "devices";
 
     #region Reads
 
@@ -188,6 +193,7 @@ internal sealed class SvcDevices(
                 request.ThresholdPercent ?? DeviceCalibration.DefaultThresholdPercent, request.Notes, published, UtcNow);
             await SaveAsync(calibration, ct);
             await UpdateAsync(device, ct);
+            EvictAfterCommit();
             await audit.RecordAsync($"{Target}.{(calibration.Passed ? "CalibrationPassed" : "CalibrationFailed")}", Target, device.Id, Name(device), before,
                 string.Create(CultureInfo.InvariantCulture,
                     $"{Summary(device)}; calibration={calibration.Id}; method={calibration.Method}; sample={calibration.SampleSize}; accuracy={calibration.CountingAccuracyPercent}; " +
@@ -205,6 +211,18 @@ internal sealed class SvcDevices(
             return new Result<DeviceViewModel>(View(device));
         });
 
+    public Task<Result<DeviceViewModel>> SetAccessAsync(Guid id, SetDeviceAccessRequest request, CancellationToken ct = default) =>
+        ChangeAsync(id, ct, async device =>
+        {
+            var before = Summary(device);
+            device.SetAccess(request.AllowedSources, request.ClientCertificateSha256, UtcNow);
+            if (before == Summary(device))
+                return new Result<DeviceViewModel>(View(device));
+            await UpdateAsync(device, ct);
+            await AuditAsync("AccessChanged", device, before, ct);
+            return new Result<DeviceViewModel>(View(device));
+        });
+
     public Task<Result<bool>> RemoveAsync(Guid id, CancellationToken ct = default) =>
         ChangeAsync(id, ct, async device =>
         {
@@ -213,6 +231,7 @@ internal sealed class SvcDevices(
             var before = Summary(device);
             device.Remove(CurrentUser.UserName, UtcNow);
             await UpdateAsync(device, ct);
+            EvictAfterCommit();
             await audit.RecordAsync($"{Target}.Removed", Target, device.Id, Name(device), before, null, ct);
             return new Result<bool>(true);
         });
@@ -345,8 +364,14 @@ internal sealed class SvcDevices(
         return result;
     }
 
-    private Task AuditAsync(string verb, Device device, string before, CancellationToken ct) =>
-        audit.RecordAsync($"{Target}.{verb}", Target, device.Id, Name(device), before, Summary(device), ct);
+    private Task AuditAsync(string verb, Device device, string before, CancellationToken ct)
+    {
+        EvictAfterCommit();
+        return audit.RecordAsync($"{Target}.{verb}", Target, device.Id, Name(device), before, Summary(device), ct);
+    }
+
+    /// <summary>Ingest authenticates from a cached copy of the device (SvcDeviceGateway); a committed change evicts it on every host (backplane).</summary>
+    private void EvictAfterCommit() => RegisterPostCommitAction(() => cache.RemoveByTagAsync(CacheTag).AsTask());
 
     private static string Name(Device d) => $"{d.SiteCode}/{d.Code}";
 
@@ -357,7 +382,7 @@ internal sealed class SvcDevices(
     private static string Summary(Device d) => string.Create(CultureInfo.InvariantCulture,
         $"code={d.Code}; family={d.Family}; model={Escape(d.Model)}; transport={d.Transport}; dialect={d.Dialect}; clock={d.ClockSource}; state={d.State}; " +
         $"level={d.Level?.Id}; x={d.X}; y={d.Y}; height={d.MountingHeightMetres}; orientation={d.OrientationDegrees}; footprint={d.Footprint.Text} ({d.FootprintSource}); " +
-        $"zone={Escape(d.QueueZoneName)}; credential={d.CredentialPrefix}; credentialIssued={d.CredentialIssuedOn:O}");
+        $"zone={Escape(d.QueueZoneName)}; credential={d.CredentialPrefix}; credentialIssued={d.CredentialIssuedOn:O}; sources={d.AllowedSources}; certificate={d.ClientCertificateSha256}");
 
     private static string Escape(string text) => text?.Replace("\\", "\\\\", StringComparison.Ordinal).Replace(";", "\\;", StringComparison.Ordinal).Replace("=", "\\=", StringComparison.Ordinal);
 
@@ -368,7 +393,8 @@ internal sealed class SvcDevices(
         var last = d.Calibrations.OrderByDescending(c => c.PerformedOn).FirstOrDefault();
         return new DeviceViewModel(d.Id.GetValueOrDefault(), d.Code, d.SiteCode, d.Family.ToString(), d.Model, d.Transport.ToString(), d.Dialect.ToString(),
             d.ClockSource.ToString(), d.State.ToString(), d.Level?.Id ?? Guid.Empty, d.X, d.Y, d.MountingHeightMetres, d.OrientationDegrees, View(d.Footprint),
-            d.QueueZoneName, d.CredentialPrefix, d.CredentialIssuedOn, last?.PerformedOn, last?.Passed, d.RetiredOn, d.CreatedOn);
+            d.QueueZoneName, d.CredentialPrefix, d.CredentialIssuedOn, last?.PerformedOn, last?.Passed, d.RetiredOn, d.CreatedOn,
+            string.IsNullOrEmpty(d.AllowedSources) ? [] : d.AllowedSources.Split(','), d.ClientCertificateSha256);
     }
 
     private static CalibrationViewModel View(DeviceCalibration c, Device d) => new(

@@ -26,7 +26,38 @@ public sealed record DeviceViewModel(
     DateTime? LastCalibratedOn,
     bool? LastCalibrationPassed,
     DateTime? RetiredOn,
-    DateTime? CreatedOn);
+    DateTime? CreatedOn,
+    IReadOnlyList<string> AllowedSources = null,
+    string ClientCertificateSha256 = null);
+
+/// <summary>
+/// What the device authentication handler needs about a presented credential's device (ARV-022): never sent to a
+/// client. Cached briefly under the "devices" tag, which every registry change evicts.
+/// </summary>
+public sealed record DeviceCredentialRecord(
+    Guid DeviceId,
+    string Code,
+    string SiteCode,
+    string QueueZoneName,
+    string State,
+    string CredentialHash,
+    IReadOnlyList<string> AllowedSources,
+    string ClientCertificateSha256);
+
+/// <summary>
+/// The published geometry of a device's queue zone (ARV-022): the queue zone, the zones that hang off it and their
+/// lines, with the profile version and hash, so a device or gateway names lines and zones the way Ariva does.
+/// </summary>
+public sealed record DeviceZoneViewModel(
+    string SiteCode,
+    string QueueZoneName,
+    int Version,
+    string GeometryHash,
+    IReadOnlyList<ZoneViewModel> Zones,
+    IReadOnlyList<LineViewModel> Lines);
+
+/// <summary>Who the authenticated device is, with the server's clock for the device's offset estimate.</summary>
+public sealed record DeviceSelfViewModel(string Code, string SiteCode, string QueueZoneName, string State, DateTime ServerTimeUtc);
 
 /// <summary>
 /// The answer to a registration or a credential rotation: the device and its credential, shown this once. Ariva keeps

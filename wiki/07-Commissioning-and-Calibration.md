@@ -55,7 +55,7 @@ Device statuses: `Commissioning`, `Online`, `Degraded`, `Offline`, `Retired`. A 
 
 | Transport | Credential | Controls |
 |---|---|---|
-| HTTPS push to Ingest | Per-device bearer key or Basic credential | TLS, source IP allowlist, 256 KB body limit |
+| HTTPS push to Ingest | Per-device credential: `Authorization: Bearer ardk_...`, the `X-Ariva-Device-Key` header, or Basic with the device code as the user name | TLS, optional source networks and pinned client certificate per device (set on the device, a critical action), requests limited per device, 256 KB body limit. Check the setup with `GET /api/v1/ingest/device` (who Ariva thinks the device is, and the server clock) and `GET /api/v1/ingest/zones/<zone>` (the published lines and zones of its zone) |
 | MQTT over TLS | Per-device client certificate, or username and key | Topic ACL per device |
 | REST pull by Ingest | Device or controller credential stored with the device | Only registered device addresses are called (SSRF control) |
 | Sensor gateway pushing canonical events | Integration client of kind `SensorGateway` with scope `sensing:write` | See [Integration guide](08-Integration-Guide.md) |

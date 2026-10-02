@@ -25,7 +25,7 @@ public sealed partial class RedactionEnricher : ILogEventEnricher
     {
         "Authorization", "ProxyAuthorization", "Cookie", "SetCookie", "XTotpCode", "TotpCode", "Otp",
         "AccessToken", "RefreshToken", "IdToken", "Token", "BearerToken", "ApiKey", "XApiKey",
-        "Password", "NewPassword", "CurrentPassword", "Secret", "ClientSecret", "RecoveryCode", "XArivaCsrf"
+        "Password", "NewPassword", "CurrentPassword", "Secret", "ClientSecret", "RecoveryCode", "XArivaCsrf", "XArivaDeviceKey", "DeviceKey", "Credential"
     };
 
     private static readonly ScalarValue RedactedValue = new(Redacted);
@@ -54,6 +54,7 @@ public sealed partial class RedactionEnricher : ILogEventEnricher
         var result = AuthorizationScheme().Replace(text, m => m.Groups["scheme"].Value + " " + Redacted);
         result = TokenQueryParameter().Replace(result, m => m.Groups["key"].Value + Redacted);
         result = Jwt().Replace(result, Redacted);
+        result = DeviceKey().Replace(result, m => m.Value[..5] + Redacted);
         return string.Equals(result, text, StringComparison.Ordinal) ? text : result;
     }
 
@@ -115,6 +116,10 @@ public sealed partial class RedactionEnricher : ILogEventEnricher
     private static partial Regex TokenQueryParameter();
 
     // A compact JWS anywhere in text (header.payload.signature, header starting with eyJ).
+    /// <summary>A device credential (ARV-022), wherever it appears: ardk_ and 43 base64url characters.</summary>
+    [GeneratedRegex(@"ardk_[A-Za-z0-9_-]{20,}", RegexOptions.CultureInvariant)]
+    private static partial Regex DeviceKey();
+
     [GeneratedRegex(@"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*", RegexOptions.CultureInvariant)]
     private static partial Regex Jwt();
 }

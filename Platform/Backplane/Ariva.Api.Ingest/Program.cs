@@ -2,6 +2,7 @@ using Ariva.Api.Common.Security;
 using Ariva.Api.Common.Extensions;
 using Ariva.Api.Common.HealthChecks;
 using Ariva.Api.Common.Hosting;
+using Ariva.Api.Common.Filters;
 using Ariva.Di;
 
 // Ariva.Api.Ingest: sensor adapters. Vendor webhooks (Endpoints/) and pollers (Adapters/)
@@ -57,6 +58,11 @@ builder.Services.RegisterArivaServices(builder.Configuration);
 // ProblemDetails errors, trusted forwarded headers and the CORS allow-list.
 builder.Services.AddAppSecurityBaseline(builder.Configuration);
 
+// Device endpoints (ARV-022): controllers with the unit of work filter, and client certificates forwarded by the
+// ingress for devices that pin one.
+builder.Services.AddAppControllers();
+builder.Services.AddAppClientCertificates(builder.Configuration);
+
 // AMAN: AddAppCaching, AddAppHealthChecks, AddAppRouting, AddAppOpenApi.
 // Adapters: one poller per vendor registered as a hosted service; a Kafka producer per normalised topic.
 
@@ -68,6 +74,8 @@ var app = builder.Build();
 
 // AMAN order (UseAppForwardedHeaders, UseErrorHandling, UseRouting, UseRequestTracking, UseAppCors,
 // UseAuthentication, UseSessionContext, UseAuthorization) with the security headers and rate limiting added.
+// Before the forwarded headers: the certificate header is trusted only from a proxy, while the address is still the proxy's.
+app.UseAppClientCertificates(builder.Configuration);
 app.UseAppForwardedHeaders();
 app.UseAppSecurityHeaders();
 app.UseErrorHandling();
@@ -86,6 +94,7 @@ app.UseAuthorization();
 #region Endpoints
 
 app.MapArivaHealthChecks();
+app.MapControllers();
 
 // AMAN: MapOpenApi, MapScalarApiReference. Vendor webhook endpoints (Endpoints/) are mapped here.
 

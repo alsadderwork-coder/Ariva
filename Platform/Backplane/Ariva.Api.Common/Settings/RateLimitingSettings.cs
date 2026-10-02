@@ -14,6 +14,12 @@ public sealed class RateLimitingSettings
 
     /// <summary>Stricter <c>auth</c> policy for login, token and TOTP endpoints. Default 10 requests per minute per IP address (ADR-0026).</summary>
     public FixedWindowSettings Auth { get; set; } = new() { PermitLimit = 10, WindowSeconds = 60 };
+
+    /// <summary>
+    /// The <c>device</c> policy for sensor pushes (ARV-022), partitioned by the presented credential's prefix (by address
+    /// when there is none). Default 600 requests per minute per device: a push every 100 ms.
+    /// </summary>
+    public FixedWindowSettings Device { get; set; } = new() { PermitLimit = 600, WindowSeconds = 60 };
 }
 
 /// <summary>

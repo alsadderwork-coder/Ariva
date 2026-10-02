@@ -85,6 +85,65 @@ public partial class Device : BaseSoftDeletableEntity<Device>, ISiteBound
     public virtual DateTime? CredentialIssuedOn { get; protected set; }
     public virtual DateTime? RetiredOn { get; protected set; }
 
+    /// <summary>
+    /// Source networks the device may push from (ARV-022), as CIDR blocks separated by commas, for example
+    /// "10.20.0.0/24,10.20.1.17/32"; empty means any address. Checked against the client address after the trusted
+    /// proxies (Security:ForwardedHeaders).
+    /// </summary>
+    [System.ComponentModel.DataAnnotations.MaxLength(AllowedSourcesLength)]
+    public virtual string AllowedSources { get; protected set; }
+
+    /// <summary>
+    /// SHA-256 (hex) of the client certificate the device must present (ARV-022), or null when the credential alone
+    /// authenticates it. Pins one certificate, so a stolen credential alone is not enough.
+    /// </summary>
+    public virtual string ClientCertificateSha256 { get; protected set; }
+
+    public const int MaxAllowedSources = 16;
+    public const int AllowedSourcesLength = 1_000;
+
+    /// <summary>The allowed source networks, parsed; empty when any address may push.</summary>
+    public virtual IReadOnlyList<System.Net.IPNetwork> AllowedNetworks =>
+        string.IsNullOrEmpty(AllowedSources) ? [] : [.. AllowedSources.Split(',').Select(c => System.Net.IPNetwork.Parse(c))];
+
+    /// <summary>
+    /// Sets where the device may push from and the client certificate it must present (ARV-022). Every block is
+    /// checked before anything changes; a host bit set below the prefix (10.0.0.1/24) is refused as a likely typo.
+    /// </summary>
+    public virtual void SetAccess(IReadOnlyList<string> allowedSources, string clientCertificateSha256, DateTime utcNow)
+    {
+        EnsureNotRetired();
+        var blocks = (allowedSources ?? []).Where(s => !string.IsNullOrWhiteSpace(s)).Select(s => s.Trim()).ToList();
+        if (blocks.Count > MaxAllowedSources)
+            throw new ArgumentException($"At most {MaxAllowedSources} source networks.", nameof(allowedSources));
+        var normalised = new List<string>();
+        foreach (var block in blocks)
+        {
+            if (!System.Net.IPNetwork.TryParse(block, out var network) || !block.Contains('/', StringComparison.Ordinal))
+                throw new ArgumentException($"'{(block.Length > 50 ? block[..50] : block)}' is not a network in CIDR form, for example 10.20.0.0/24.", nameof(allowedSources));
+            if (!System.Net.IPAddress.TryParse(block[..block.IndexOf('/', StringComparison.Ordinal)], out var given) || !given.Equals(network.BaseAddress))
+                throw new ArgumentException($"'{block}' has host bits set; the network is {network}.", nameof(allowedSources));
+            if (network.PrefixLength == 0)
+                throw new ArgumentException("A /0 network allows every address; leave the list empty instead.", nameof(allowedSources));
+            normalised.Add(network.ToString());
+        }
+
+        string pin = null;
+        if (!string.IsNullOrWhiteSpace(clientCertificateSha256))
+        {
+            pin = clientCertificateSha256.Trim().Replace(":", string.Empty, StringComparison.Ordinal).ToLowerInvariant();
+            if (!Sha256Hex().IsMatch(pin))
+                throw new ArgumentException("A certificate fingerprint is its SHA-256: 64 hex characters, colons allowed.", nameof(clientCertificateSha256));
+        }
+
+        var sources = normalised.Count == 0 ? null : string.Join(',', normalised.Distinct(StringComparer.Ordinal));
+        if (sources == AllowedSources && pin == ClientCertificateSha256)
+            return;
+        AllowedSources = sources;
+        ClientCertificateSha256 = pin;
+        Raise("AccessChanged", utcNow);
+    }
+
     public virtual IList<DeviceCalibration> Calibrations { get; protected set; } = [];
 
     public virtual CoverageFootprint Footprint =>

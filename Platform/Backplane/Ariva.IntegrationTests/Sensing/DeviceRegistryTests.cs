@@ -185,4 +185,37 @@ public sealed class DeviceRegistryTests(PostgresFixture fixture) : IAsyncDisposa
         results.Single(r => r.HasErrors).ErrorMessages.Should().Equal(TopologyErrors.Duplicate);
         (await _host.ReadAsync<long>("SELECT count(*) FROM device WHERE site_code = 'DVD' AND code = 'S-7'")).Should().Be(1);
     }
+
+    [Fact]
+    public async Task Gateway_Should_FindTheDeviceByPrefixAndForgetItAtOnce_When_TheCredentialChanges()
+    {
+        var (admin, level) = await SiteAsync("DVF");
+        var gateway = (IServiceProvider s) => s.GetRequiredService<ISvcDeviceGateway>();
+        var registered = (await _host.AsCallerAsync(admin, s => Devices(s).RegisterAsync(Register("S-1", level), Ct))).Data;
+        var prefix = registered.Credential[..DeviceCredentials.PrefixLength];
+
+        var found = await _host.AsCallerAsync(null, s => gateway(s).FindByPrefixAsync(prefix, Ct));
+        found.Code.Should().Be("S-1");
+        found.QueueZoneName.Should().Be("Snake A");
+        DeviceCredentials.Matches(registered.Credential, found.CredentialHash).Should().BeTrue();
+
+        var access = await _host.AsCallerAsync(admin, s => Devices(s).SetAccessAsync(registered.Device.Id, new SetDeviceAccessRequest(["10.20.0.0/24"], ""), Ct));
+        access.Data.AllowedSources.Should().Equal("10.20.0.0/24");
+        (await _host.AsCallerAsync(null, s => gateway(s).FindByPrefixAsync(prefix, Ct))).AllowedSources.Should().Equal(["10.20.0.0/24"], "the change evicted the cached copy");
+        (await _host.AsCallerAsync(admin, s => Devices(s).SetAccessAsync(registered.Device.Id, new SetDeviceAccessRequest(["10.20.0.1/24"], ""), Ct)))
+            .HasErrors.Should().BeTrue("host bits set");
+
+        var rotated = (await _host.AsCallerAsync(admin, s => Devices(s).RotateCredentialAsync(registered.Device.Id, Ct))).Data;
+        (await _host.AsCallerAsync(null, s => gateway(s).FindByPrefixAsync(prefix, Ct))).Should().BeNull("the old credential is forgotten after the rotation commits");
+        (await _host.AsCallerAsync(null, s => gateway(s).FindByPrefixAsync(rotated.Credential[..DeviceCredentials.PrefixLength], Ct))).Code.Should().Be("S-1");
+
+        var zone = await _host.AsCallerAsync(null, s => gateway(s).PublishedZoneAsync("DVF", "Snake A", Ct));
+        zone.Data.Version.Should().Be(1);
+        zone.Data.Zones.Select(z => z.Name).Should().Equal("Overflow A", "Snake A");
+        zone.Data.Lines.Select(l => l.Name).Should().Equal("Entry A", "Exit A", "Overflow entry A");
+        (await _host.AsCallerAsync(null, s => gateway(s).PublishedZoneAsync("DVF", "Snake Z", Ct))).HasErrors.Should().BeTrue();
+
+        await _host.AsCallerAsync(admin, s => Devices(s).RetireAsync(registered.Device.Id, Ct));
+        (await _host.AsCallerAsync(null, s => gateway(s).FindByPrefixAsync(rotated.Credential[..DeviceCredentials.PrefixLength], Ct))).Should().BeNull("retired");
+    }
 }

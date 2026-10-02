@@ -89,6 +89,20 @@ public sealed class DevicesController(ISvcDevices devices) : ControllerBase
         return TopologyAnswers.Ok(this, await devices.RotateCredentialAsync(id, ct));
     }
 
+    /// <summary>
+    /// Where the device may push from (CIDR blocks; empty for anywhere) and the client certificate it must present
+    /// (SHA-256; empty for none). Critical: it decides who can push as this device (ARV-022).
+    /// </summary>
+    [HttpPut("{id:guid}/access")]
+    [Permission(nameof(Global.Defaults.Permissions.EditDevice))]
+    [RequiresRecentMfa]
+    [ProducesResponseType<DeviceViewModel>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> SetAccess(Guid id, [FromBody] SetDeviceAccessRequest request, CancellationToken ct) =>
+        TopologyAnswers.Ok(this, await devices.SetAccessAsync(id, request, ct));
+
     [HttpGet("{id:guid}/calibrations")]
     [Permission(nameof(Global.Defaults.Permissions.ViewDevice))]
     [ProducesResponseType<IReadOnlyList<CalibrationViewModel>>(StatusCodes.Status200OK)]

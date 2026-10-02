@@ -33,6 +33,15 @@ public sealed record UpdateDeviceRequest(
     [Required, MaxLength(32)] string Dialect,
     [Required, MaxLength(8)] string ClockSource);
 
+/// <summary>
+/// Where a device may push from (CIDR blocks; an empty list for anywhere) and the client certificate it must present
+/// (SHA-256; an empty string for none). Both are required, so a request that only means to change the networks cannot
+/// drop the certificate pin by leaving it out.
+/// </summary>
+public sealed record SetDeviceAccessRequest(
+    [Required, MaxLength(16)] IReadOnlyList<string> AllowedSources,
+    [Required(AllowEmptyStrings = true), MaxLength(95)] string ClientCertificateSha256);
+
 public sealed record RecordCalibrationRequest(
     [Required, MaxLength(32)] string Method,
     [Range(50, 5000)] int SampleSize,

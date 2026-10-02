@@ -81,8 +81,13 @@ public sealed partial class PermissionMatrixTests
                     }
 
                     break;
+                case "device":
+                    // Devices only (ARV-022): no user, whatever their roles, is a device.
+                    foreach (var caller in row.Expected.Keys)
+                        Expect(row, caller, 401, problems);
+                    break;
                 default:
-                    problems.Add($"{row}: access must be anonymous, authenticated or permission");
+                    problems.Add($"{row}: access must be anonymous, authenticated, permission or device");
                     break;
             }
         }
