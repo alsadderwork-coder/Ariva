@@ -47,7 +47,7 @@ From a border deployment to an airport deployment, additionally never: track ids
 | Configuration, contracts, SLA decisions, alerts | Indefinite, audited | D5 |
 | Alert emails (`email_message`: recipient address, subject, body, status) | Kept with the alert as the record of who was told what; the body holds no traveller, officer or document data and no notes, only the staff address. A retention period for staff addresses here is To confirm | ARV-040 |
 | Evidence packs | At least the contract's dispute and audit periods | To confirm |
-| Flight data | | To confirm |
+| Flight data (`flight_leg`, `flight_event`, `counter_allocation`: flight identity, times, places, aircraft, seat and passenger counts; no passenger or crew data) | | To confirm |
 | Logs and traces | No track ids or desk codes in log messages beyond the operating day | Proposed, To confirm |
 | Backups | No longer than the dispute window plus the backup cycle, so backups do not extend sample retention | Proposed |
 | Phase 0 lab recordings (office entrance or corridor) | Including notice to the people recorded | To confirm |

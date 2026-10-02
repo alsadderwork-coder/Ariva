@@ -57,6 +57,10 @@ builder.Services.RegisterArivaServices(builder.Configuration);
 // host with the outbound egress (the site's mail relay), through MailKit with the Email settings.
 builder.Services.AddArivaEmailSending(builder.Configuration);
 
+// Flights (ARV-041): every flight feed (Integration API, AIDX, ACRIS, SSIM) enters the model here, and the stale-feed
+// alarm watches the feeds of each site.
+builder.Services.AddArivaFlights(builder.Configuration);
+
 // Security baseline (docs/security/cwe-controls.md): default deny (fallback policy, Ariva.Deny answers challenges),
 // ES256 access tokens from Ariva.Api.Main with permissions from stored grants (ARV-010a), input limits, rate limiting,
 // ProblemDetails errors, trusted forwarded headers and the CORS allow-list.

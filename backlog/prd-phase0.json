@@ -950,8 +950,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 44,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "FlightLeg (per-field message-time ordering, status from milestones, FlightChanged via outbox), FlightEvent (append-only), CounterAllocation (AODB codes via desk code mappings, unmapped kept apart), FeedFreshness with the stale-feed alarm (system alarm: state, warning log, Ariva.Flights metrics) swept in Integration; ISvcFlightIntake for the ARV-043 to ARV-046 adapters with per-item FlightRules checks (CWE-501), ordered leg locks, script 0024. Security review PASS after fixes.",
       "dependsOn": [
         "ARV-014"
       ]

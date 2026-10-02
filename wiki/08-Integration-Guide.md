@@ -419,6 +419,14 @@ Scope `displays:read`. Returns the display board's bands, already hysteresis-fil
 
 Flight data rules: the layer keeps a canonical flight id map (diversions, renumbering, codeshares), applies messages by their own timestamps, and raises a stale-feed alarm when a heartbeat or expected update is missing. Agree the expected update cadence with each AODB.
 
+How the model applies them (ARV-041), whatever the adapter:
+
+- A leg is identified by the site and its `flightKey`; the direction never changes (the same key with the other direction is refused). Send the leg before its events or counters; events and allocations for a key the site does not know are refused.
+- Each item is checked on its own and a bad one never stops the others: airline designators (two-character IATA or three-letter ICAO), flight numbers of 1 to 4 digits, IATA airport codes, stand, gate and terminal codes, aircraft types, seats and passengers up to 1,000, at most 20 codeshares, enum names exactly as documented (`Arrival`, not `arrival`), every time in UTC, a scheduled time at most 3 days ago and 400 days ahead, estimates and actuals at most a day early and 3 days late.
+- Out of order is safe: the schedule fields are replaced only by a message at least as recent as the one that set them, and each milestone keeps the value of the most recent message that reported it; an older message can still fill a milestone nobody has reported. A status of `Cancelled` or `Diverted` holds until a more recent message states another status. A message that repeats what Ariva knows changes nothing. The message time is the feed's timestamp where the format has one, otherwise when Ariva received it; it may be at most 5 minutes ahead of Ariva's clock.
+- Counter allocations are for departures at check-in checkpoints of the site; counter codes resolve to Ariva desks through the AODB desk code mappings (Administration guide), and codes without a mapping are kept apart and reported as a warning, never guessed. Counters stay open at most 24 hours.
+- A call with at least one item Ariva could check counts as a message from its feed for the stale-feed alarm (Operations runbook 4.3); an empty batch or one whose items are all refused does not. A feed name and site come from the adapter and the client's binding, never from the message.
+
 ## 10. AMAN Kafka feed (border deployments)
 
 | Topic | Key | Contract | Ariva use |

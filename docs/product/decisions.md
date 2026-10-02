@@ -74,6 +74,8 @@ Product and architecture decisions in date order. Architecture decisions with co
 
 - Alert email (ARV-040), decided 2026-10-03: a transactional outbox (`email_message`) written by the host that changes the alert and sent by Ariva.Api.Integration, the host with egress to the site's mail relay (wiki 05, flow 15), through MailKit; at least once; plain text from templates in Ariva.Resources; one recipient per message; limits per address per hour and per minute over all replicas. smtp4dev in development (compose) and in E2E as a pinned local .NET tool, so CI pulls no image for it.
 
+- Flights (ARV-041), decided 2026-10-03: one flight model for every feed, keyed by site and the feed's flight key, applied by message time per field (schedule and each milestone), so ordering never matters; the stale-feed alarm is a system alarm (state in `feed_freshness`, a warning in the log, `Ariva.Flights` metrics for the monitoring stack, runbook section 3), judged per site against the flights due, not a user alert rule metric: alert rules watch zones, and a feed is not a zone.
+
 ## Open decisions
 
 | Topic | Question | Where |
