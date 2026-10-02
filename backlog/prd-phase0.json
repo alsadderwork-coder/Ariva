@@ -797,8 +797,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 37,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "2026-10-02: QueueStreamWorker (raw consumer, receive-order merge across assigned partitions, ZoneProcessor per zone, snapshots + rows + offsets in one transaction per checkpoint, saved offsets authoritative). Script 0018 (the PRD's 0003): queue_minute, queue_bin, desk_minute, egate_minute, stream_zone_state, stream_offset, stream_partition_count, continuous aggregate queue_minute_15m. Integration: restart mid-stream with Kafka offsets lost gives identical minute and bin rows; scale-out and recompute keep every zone. Security review PASS after four rounds. Also fixed ARV-020/026 issues found by the first real integration run (unreadable Kafka values dead-lettered, bus waits for its topics, CA2100 in the fixture). Desk worker wiring is ARV-049.",
       "dependsOn": [
         "ARV-031",
         "ARV-032",

@@ -17,6 +17,7 @@
     "0014_device_access.sql": "d5a96b1b2c4a70d789c0c472eabf540e7cae8ba990b782ddac85876138356406",
     "0015_device_mapping.sql": "89e0764eaa58750d5b8e0af486531e6eab1439693fe1b78c382b4b851a40771d",
     "0016_device_health.sql": "55b2bb1a98524f63ca403853d705f7089665574dc7d71289e66840156c1fa80c",
-    "0017_sensing_event.sql": "77d4cf78c24eb4e15f7ea7677121fc0e73f25fcbeb785f18f42d162296ea6d4e"
+    "0017_sensing_event.sql": "77d4cf78c24eb4e15f7ea7677121fc0e73f25fcbeb785f18f42d162296ea6d4e",
+    "0018_stream_output.sql": "c8410fdf01eb8b1066b1eb5913a0113827fb0429f30ae1bee234deaa585009e2"
   }
 }

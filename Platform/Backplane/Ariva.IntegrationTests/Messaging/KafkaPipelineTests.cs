@@ -16,6 +16,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Testcontainers.Kafka;
 
@@ -125,6 +126,8 @@ public sealed class KafkaPipelineTests(PostgresFixture postgres, KafkaFixture ka
             ["Kafka:Consumers:CheckpointSeconds"] = "1",
             ["Kafka:Consumers:CheckpointMessageCount"] = "1"
         });
+        if (Environment.GetEnvironmentVariable("ARIVA_IT_LOG") is { Length: > 0 } log)
+            builder.Logging.AddProvider(new Ariva.IntegrationTests.Streaming.FileLoggerProvider(log));
         builder.Services.AddArivaPersistence(builder.Configuration);
         builder.Services.AddArivaMessaging(builder.Configuration, messaging => messaging
             .AddEventsFrom(typeof(KafkaProbe).Assembly)
@@ -133,9 +136,12 @@ public sealed class KafkaPipelineTests(PostgresFixture postgres, KafkaFixture ka
         var host = builder.Build();
         await host.StartAsync(Ct);
         var checks = host.Services.GetRequiredService<HealthCheckService>();
-        var until = DateTime.UtcNow.AddSeconds(90);
-        while ((await checks.CheckHealthAsync(c => c.Tags.Contains("ready"), Ct)).Status != HealthStatus.Healthy && DateTime.UtcNow < until)
+        // A cold broker (the first test after the container starts) can take well over a minute to elect and provision.
+        var until = DateTime.UtcNow.AddSeconds(240);
+        HealthStatus status;
+        while ((status = (await checks.CheckHealthAsync(c => c.Tags.Contains("ready"), Ct)).Status) != HealthStatus.Healthy && DateTime.UtcNow < until)
             await Task.Delay(250, Ct);
+        status.Should().Be(HealthStatus.Healthy, "the bus and its rider are ready before a test publishes");
         return host;
     }
 

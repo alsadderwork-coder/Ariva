@@ -141,7 +141,7 @@ public sealed record BinSettings
 /// produce a <see cref="RecomputationRequest"/> instead. Pure: no I/O, no clock. Bounded: open bins, exact waits per
 /// bin and marks; counters are 64-bit.
 /// </summary>
-public sealed class BinAccumulator
+public sealed partial class BinAccumulator
 {
     private sealed class Tally
     {

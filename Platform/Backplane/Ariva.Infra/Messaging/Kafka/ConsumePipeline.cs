@@ -33,5 +33,9 @@ public static class ConsumePipeline
             // the dead-letter topic; MassTransit stops retrying by itself when the endpoint is shutting down.
         });
         endpoint.UseConsumeFilter(typeof(InboxFilter<>), context);
+        endpoint.ConfigureDeadLetter(skipped => skipped.UseFilter(new UnreadableFilter(
+            context.GetRequiredService<IDeadLetterSink>(),
+            context.GetRequiredService<TimeProvider>(),
+            context.GetRequiredService<ILogger<UnreadableFilter>>())));
     }
 }

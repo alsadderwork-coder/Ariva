@@ -122,6 +122,21 @@ SELECT topic, message_key, message_type, attempts, next_attempt_on, last_error
 - `Outbox row ... stuck after N attempts` in the error log (from attempt 10): one key has been held back for a long time. Read its `last_error`; an event refused for size cannot happen (the commit that wrote it would have failed), so it is the broker, the topic (missing, or ACLs) or the principal.
 - Dead letters: a consumer that fails after its retries writes the message to `<topic>.dlq.v1` (AMAN feed topics: `ariva.aman.feed.<contract>.v1.dlq.v1`) with the source partition, offset, key, consumer group and error, and moves on. Read them with any Kafka client from the beginning of the dead-letter topic; the body is base64 of the original value, cut at 512 KB (`bodyTruncated`, `bodyBytes`), in which case read the original from the source topic by partition and offset while its retention lasts. Replay to the source topic is an admin operation (target, audited; not yet built). Never delete a dead-letter topic: it is the record of what was not applied.
 
+### 4.5b Queue stream worker (ARV-034)
+
+Ariva.Api.Stream's queue engine worker (group `ariva-stream.queue-engine`) writes `queue_minute`, `queue_bin`, the zone snapshots (`stream_zone_state`) and its own positions (`stream_offset`) in one transaction per checkpoint. To check it is keeping up, compare `stream_offset.next_offset` with the end of each sensing topic partition and look at `stream_zone_state.updated_on`.
+
+- After a crash or a redeploy nothing needs doing: the worker restores each zone from its snapshot and replays the records after the saved positions, rewriting the same rows.
+- The positions in `stream_offset` are authoritative. Resetting the Kafka consumer group's offsets has no effect on a partition that has a saved position.
+- To recompute a zone from scratch (for example after a geometry fix), stop the worker, delete the zone's `stream_zone_state` row and the group's `stream_offset` rows as the migration login, reset the group to the earliest offsets, and start it again. The topics keep 3 days; older periods come from the archive (4.10).
+- A log line "the saved state of zone ... cannot be restored" means the snapshot failed its checks and the zone started afresh; recompute the affected period from the archive (4.10).
+- `stream_partition_count` remembers every partition count the sensing topics have had, so a recompute still accepts records produced before partitions were added. Keep it when restoring or moving the database; a database restored from before a scale-out needs the earlier count inserted again (as the migration login) before it replays those records.
+- Records of a zone that is not in its site's published profile, or beyond `Stream:MaxZones` zones on one instance, are counted and skipped (warning in the log); publish the profile or add instances, then recompute the period from the archive.
+- "Queue stream checkpoint failed" means the database refused the write; the worker keeps its outputs, retries every checkpoint interval and pauses reading while a zone is at its bound. Nothing is lost unless the instance itself stops, in which case its successor replays from the last checkpoint.
+- Dead letters of the sensing topics (`ariva.device.*.dlq.v1`) are records that are not a batch of the zone their key names. Investigate the producer (Ingest) before replaying them.
+
+A host that logs "Waiting for Kafka topics before starting the bus" is holding its start until Api.Main (or the platform team) has created its topics; after `Kafka:Consumers:StartWaitSeconds` (300) it starts anyway and its readiness check reports the bus.
+
 ### 4.6 Kafka consumer lag growing
 
 - **Symptoms**: lag alarm; screens slow to update; nowcasts stale.

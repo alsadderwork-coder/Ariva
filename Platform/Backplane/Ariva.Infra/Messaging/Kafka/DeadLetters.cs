@@ -58,6 +58,25 @@ public static class DeadLetters
             failedOn);
     }
 
+    /// <summary>A dead letter for a record that never became a message (an unreadable value), from its receive context.</summary>
+    public static DeadLetter FromReceive(ReceiveContext context, string consumer, Exception error, DateTime failedOn)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(error);
+        context.TryGetPayload(out KafkaConsumeContext kafka);
+        context.TryGetPayload(out KafkaConsumeContext<string> keyed);
+        return Create(
+            kafka?.Topic ?? context.InputAddress?.AbsolutePath.Trim('/') ?? "unknown",
+            kafka?.Partition,
+            kafka?.Offset,
+            keyed?.Key,
+            context.Body?.GetBytes(),
+            context.TransportHeaders.GetAll().Select(h => new KeyValuePair<string, string>(h.Key, h.Value?.ToString())),
+            consumer,
+            error,
+            failedOn);
+    }
+
     /// <summary>A dead letter with every part bounded: body, headers (count and length) and error message.</summary>
     public static DeadLetter Create(string topic, int? partition, long? offset, string key, byte[] body,
         IEnumerable<KeyValuePair<string, string>> headers, string consumer, Exception error, DateTime failedOn)

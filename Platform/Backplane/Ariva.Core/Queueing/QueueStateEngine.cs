@@ -104,7 +104,7 @@ public sealed record QueueEngineSettings
 /// Anonymous crossings of an overflow band's entry line are not counted: without a track the same person crosses the
 /// queue's entry line later, and counting both would double the entries.
 /// </summary>
-public sealed class QueueStateEngine
+public sealed partial class QueueStateEngine
 {
     private const string Anonymous = "";
     private const string Unnamespaced = "/";

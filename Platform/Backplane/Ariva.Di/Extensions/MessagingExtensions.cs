@@ -65,6 +65,11 @@ public static partial class MessagingExtensions
             .Select(KafkaTopics.DeadLetter).Distinct(StringComparer.Ordinal).ToList();
 
         services.AddHealthChecks();
+
+        // Before the bus (hosted services start in order): the rider faults for good on a topic that does not exist yet.
+        var consumedTopics = builder.Consumers.Select(c => c.Topic).Distinct(StringComparer.Ordinal).ToList();
+        services.AddHostedService(provider => new KafkaTopicsReady(settings, consumedTopics,
+            provider.GetRequiredService<TimeProvider>(), provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<KafkaTopicsReady>>()));
         services.AddMassTransit(bus =>
         {
             bus.UsingInMemory((context, memory) => memory.ConfigureEndpoints(context));

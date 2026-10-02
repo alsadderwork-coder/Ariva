@@ -58,13 +58,22 @@ public sealed class PostgresFixture : IAsyncLifetime
             TestDatabase.DemoSeedDraft => "CREATE DATABASE it_demo_seed_draft",
             TestDatabase.DeviceHealth => "CREATE DATABASE it_device_health",
             TestDatabase.SensingArchive => "CREATE DATABASE it_sensing_archive",
+            TestDatabase.StreamStraight => "CREATE DATABASE it_stream_straight",
+            TestDatabase.StreamRestart => "CREATE DATABASE it_stream_restart",
+            TestDatabase.StreamStore => "CREATE DATABASE it_stream_store",
+            TestDatabase.StreamDeadLetter => "CREATE DATABASE it_stream_dead_letter",
+            TestDatabase.StreamRoles => "CREATE DATABASE it_stream_roles",
+            TestDatabase.StreamMisplaced => "CREATE DATABASE it_stream_misplaced",
+            TestDatabase.StreamScaleOut => "CREATE DATABASE it_stream_scale_out",
             _ => throw new ArgumentOutOfRangeException(nameof(database))
         };
         var name = sql["CREATE DATABASE ".Length..];
 
         await using var connection = new Npgsql.NpgsqlConnection(_container.GetConnectionString());
         await connection.OpenAsync();
+#pragma warning disable CA2100 // every branch of the switch above is a string literal; no input reaches the statement
         await using var command = new Npgsql.NpgsqlCommand(sql, connection);
+#pragma warning restore CA2100
         await command.ExecuteNonQueryAsync();
         return name;
     }
@@ -124,7 +133,14 @@ public enum TestDatabase
     DemoSeedConflict,
     DemoSeedDraft,
     DeviceHealth,
-    SensingArchive
+    SensingArchive,
+    StreamStraight,
+    StreamRestart,
+    StreamStore,
+    StreamDeadLetter,
+    StreamRoles,
+    StreamMisplaced,
+    StreamScaleOut
 }
 
 [CollectionDefinition(Name)]

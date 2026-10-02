@@ -1,0 +1,203 @@
+using Ariva.Core.Domain.Enums;
+
+namespace Ariva.Core.Queueing;
+
+/// <summary>One buffered or held input in a snapshot: a flat record of the four input kinds (no polymorphism on the wire).</summary>
+public sealed record QueueInputState(
+    string Kind,
+    DateTime TimeUtc,
+    bool Degraded,
+    string Name = null,
+    CrossingDirection Direction = default,
+    string TrackKey = null,
+    DateTime? FromUtc = null,
+    int In = 0,
+    int Out = 0,
+    int Count = 0)
+{
+    internal const string Crossing = "crossing", Interval = "interval", Occupancy = "occupancy", TrackSeen = "track-seen";
+
+    internal static QueueInputState From(QueueInput input) => input switch
+    {
+        QueueCrossing c => new(Crossing, c.TimeUtc, c.Degraded, c.LineName, c.Direction, c.TrackKey),
+        QueueInterval i => new(Interval, i.TimeUtc, i.Degraded, i.LineName, FromUtc: i.FromUtc, In: i.In, Out: i.Out),
+        QueueOccupancy o => new(Occupancy, o.TimeUtc, o.Degraded, o.ZoneName, Count: o.Count),
+        QueueTrackSeen s => new(TrackSeen, s.TimeUtc, s.Degraded, TrackKey: s.TrackKey),
+        _ => throw new ArgumentException($"Unknown input {input?.GetType().Name}.", nameof(input))
+    };
+
+    internal QueueInput ToInput() => Kind switch
+    {
+        Crossing => new QueueCrossing(Name, Direction, TrackKey, Utc(TimeUtc), Degraded),
+        Interval => new QueueInterval(Name, In, Out, Utc(FromUtc ?? TimeUtc), Utc(TimeUtc), Degraded),
+        Occupancy => new QueueOccupancy(Name, Count, Utc(TimeUtc), Degraded),
+        TrackSeen => new QueueTrackSeen(TrackKey, Utc(TimeUtc), Degraded),
+        _ => throw new InvalidDataException($"Unknown input kind '{Kind}' in a queue engine snapshot.")
+    };
+
+    internal static DateTime Utc(DateTime t) => DateTime.SpecifyKind(t, DateTimeKind.Utc);
+}
+
+/// <summary>A buffered input with its arrival order.</summary>
+public sealed record QueueBufferedState(QueueInputState Input, bool Ahead, long Sequence);
+
+/// <summary>A zone's latest occupancy reading.</summary>
+public sealed record QueueOccupancyState(string Zone, int Count, DateTime AtUtc, bool Degraded);
+
+/// <summary>A hand-over deadline of a tracked entrant.</summary>
+public sealed record QueueHandoverState(string Key, DateTime Seen, DateTime Deadline);
+
+/// <summary>Late events of one minute.</summary>
+public sealed record LateMinuteState(DateTime MinuteUtc, long Count);
+
+/// <summary>A held entrant in a snapshot.</summary>
+public sealed record QueueEntrantState(DateTime EntryUtc, string TrackKey, string Group, bool Degraded, WaitMethod Method, long Order, DateTime? LastSeenUtc);
+
+/// <summary>
+/// Everything a <see cref="QueueStateEngine"/> holds, so that a stream worker can persist a zone's state at a checkpoint
+/// and restore it on another instance after a rebalance (ARV-034). Restoring and continuing gives exactly the steps the
+/// original engine would have given. Plain data: serialise it with System.Text.Json.
+/// </summary>
+public sealed record QueueEngineState
+{
+    public const int CurrentVersion = 1;
+
+    public int Version { get; init; } = CurrentVersion;
+    public string QueueZone { get; init; }
+    public IReadOnlyList<QueueBufferedState> Buffer { get; init; } = [];
+    public IReadOnlyList<QueueEntrantState> Held { get; init; } = [];
+    public IReadOnlyList<string> ResolvedTracks { get; init; } = [];
+    public IReadOnlyList<QueueOccupancyState> Occupancy { get; init; } = [];
+    public IReadOnlyList<QueueHandoverState> Handovers { get; init; } = [];
+    public long Sequence { get; init; }
+    public long Order { get; init; }
+    public DateTime WatermarkUtc { get; init; }
+    public DateTime CursorUtc { get; init; }
+    public bool ResidualSuspect { get; init; }
+
+    // What happened since the last step (an Offer can process events when the buffer is full).
+    public IReadOnlyList<MovementCount> Movements { get; init; } = [];
+    public IReadOnlyList<RealisedWait> Waits { get; init; } = [];
+    public IReadOnlyList<EntrantResolution> Resolutions { get; init; } = [];
+    public IReadOnlyList<long> Counters { get; init; } = [];
+    public int Reanchors { get; init; }
+    public DateTime? EarliestLateUtc { get; init; }
+    public IReadOnlyList<LateMinuteState> LateByMinute { get; init; } = [];
+    public long BeyondHorizon { get; init; }
+    public bool More { get; init; }
+}
+
+public sealed partial class QueueStateEngine
+{
+    /// <summary>The engine's whole state (see <see cref="QueueEngineState"/>).</summary>
+    public QueueEngineState Capture() => new()
+    {
+        QueueZone = _geometry.QueueZone,
+        Buffer = [.. _buffer.UnorderedItems.OrderBy(i => i.Priority.Time).ThenBy(i => i.Priority.Sequence)
+            .Select(i => new QueueBufferedState(QueueInputState.From(i.Element.Input), i.Element.Ahead, i.Priority.Sequence))],
+        Held = [.. _held.Select(e => new QueueEntrantState(e.EntryUtc, e.TrackKey, e.Group, e.Degraded, e.Method, e.Order, e.LastSeenUtc))],
+        ResolvedTracks = [.. _resolvedOrder],
+        Occupancy = [.. _occupancy.OrderBy(o => o.Key, StringComparer.Ordinal).Select(o => new QueueOccupancyState(o.Key, o.Value.Count, o.Value.AtUtc, o.Value.Degraded))],
+        Handovers = [.. _handovers.UnorderedItems.OrderBy(h => h.Priority).ThenBy(h => h.Element.Key, StringComparer.Ordinal).ThenBy(h => h.Element.Seen)
+            .Select(h => new QueueHandoverState(h.Element.Key, h.Element.Seen, h.Priority))],
+        Sequence = _sequence,
+        Order = _order,
+        WatermarkUtc = _watermark,
+        CursorUtc = _cursor,
+        ResidualSuspect = _residualSuspect,
+        Movements = [.. _movements.OrderBy(m => m.Key).Select(m => new MovementCount(m.Key, m.Value.In, m.Value.Out, m.Value.DegradedIn, m.Value.DegradedOut))],
+        Waits = [.. _waits],
+        Resolutions = [.. _resolutions],
+        Counters = [_late, _future, _invalid, _unknown, _duplicates, _reverse, _unmatched, _negative, _bufferFull, _forced, _tooManyDevices],
+        Reanchors = _reanchors,
+        EarliestLateUtc = _earliestLate,
+        LateByMinute = [.. _lateByMinute.OrderBy(m => m.Key).Select(m => new LateMinuteState(m.Key, m.Value))],
+        BeyondHorizon = _beyondHorizon,
+        More = _more
+    };
+
+    /// <summary>
+    /// An engine in the captured state, for the same geometry and settings. The state is checked against the bounds of
+    /// <paramref name="settings"/> (a snapshot is data from storage, not trusted to be small).
+    /// </summary>
+    public static QueueStateEngine Restore(QueueZoneGeometry geometry, QueueEngineSettings settings, QueueEngineState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        var engine = new QueueStateEngine(geometry, settings);
+        var s = engine._settings;
+        if (state.Version != QueueEngineState.CurrentVersion)
+            throw new InvalidDataException($"Queue engine snapshot version {state.Version} is not {QueueEngineState.CurrentVersion}.");
+        if (!string.Equals(state.QueueZone, geometry.QueueZone, StringComparison.Ordinal))
+            throw new InvalidDataException($"The snapshot is for {state.QueueZone}, not {geometry.QueueZone}.");
+        if ((state.Buffer?.Count ?? 0) > s.MaxBufferedEvents || (state.Held?.Count ?? 0) > s.MaxOpenEntrants ||
+            (state.ResolvedTracks?.Count ?? 0) > s.MaxRememberedTracks || (state.Occupancy?.Count ?? 0) > 1 + geometry.OverflowZones.Count ||
+            (state.Handovers?.Count ?? 0) > 2 * s.MaxOpenEntrants + 1024 || (state.Counters?.Count ?? 0) != 11 ||
+            (state.LateByMinute?.Count ?? 0) > MaxLateMinutes ||
+            (state.Movements?.Count ?? 0) + (state.Waits?.Count ?? 0) + (state.Resolutions?.Count ?? 0) > s.MaxStepRecords + s.MaxBufferedEvents)
+            throw new InvalidDataException("The queue engine snapshot exceeds the engine's bounds.");
+
+        foreach (var (input, ahead, sequence) in state.Buffer ?? [])
+        {
+            if (input is null)
+                throw new InvalidDataException("The queue engine snapshot has an empty input.");
+            engine._buffer.Enqueue((input.ToInput(), ahead), (QueueInputState.Utc(input.TimeUtc), sequence));
+            if (ahead)
+                engine._aheadBuffered++;
+        }
+
+        foreach (var e in state.Held ?? [])
+        {
+            if (e is null)
+                throw new InvalidDataException("The queue engine snapshot has an empty entrant.");
+            var group = e.Group ?? Anonymous;
+            if (!engine._groups.TryGetValue(group, out var members))
+                engine._groups[group] = members = new LinkedList<Entrant>();
+            var entrant = new Entrant(QueueInputState.Utc(e.EntryUtc), e.TrackKey, group, e.Degraded, e.Method, e.Order)
+            {
+                LastSeenUtc = e.LastSeenUtc is { } seen ? QueueInputState.Utc(seen) : null
+            };
+            entrant.InAll = engine._held.AddLast(entrant);
+            entrant.InGroup = members.AddLast(entrant);
+            if (e.TrackKey is not null && !engine._byTrack.TryAdd(e.TrackKey, entrant))
+                throw new InvalidDataException("The queue engine snapshot holds a track twice.");
+            if (e.Degraded)
+                engine._degradedHeld++;
+        }
+
+        foreach (var track in state.ResolvedTracks ?? [])
+        {
+            if (track is not null && engine._resolvedTracks.Add(track))
+                engine._resolvedOrder.Enqueue(track);
+        }
+
+        foreach (var (zone, count, at, degraded) in state.Occupancy ?? [])
+        {
+            if (zone is not null)
+                engine._occupancy[zone] = (count, QueueInputState.Utc(at), degraded);
+        }
+
+        foreach (var (key, seen, deadline) in state.Handovers ?? [])
+            if (key is not null)
+                engine._handovers.Enqueue((key, QueueInputState.Utc(seen)), QueueInputState.Utc(deadline));
+
+        engine._sequence = state.Sequence;
+        engine._order = state.Order;
+        engine._watermark = QueueInputState.Utc(state.WatermarkUtc);
+        engine._cursor = QueueInputState.Utc(state.CursorUtc);
+        engine._residualSuspect = state.ResidualSuspect;
+        foreach (var m in (state.Movements ?? []).Where(m => m is not null))
+            engine._movements[QueueInputState.Utc(m.MinuteUtc)] = (m.Entries, m.Exits, m.DegradedEntries, m.DegradedExits);
+        engine._waits.AddRange((state.Waits ?? []).Where(w => w is not null).Select(w => w with { EntryUtc = QueueInputState.Utc(w.EntryUtc), ExitUtc = QueueInputState.Utc(w.ExitUtc) }));
+        engine._resolutions.AddRange((state.Resolutions ?? []).Where(r => r is not null).Select(r => r with { EntryUtc = QueueInputState.Utc(r.EntryUtc), ResolvedUtc = QueueInputState.Utc(r.ResolvedUtc) }));
+        var c = state.Counters;
+        (engine._late, engine._future, engine._invalid, engine._unknown, engine._duplicates, engine._reverse) = (c[0], c[1], c[2], c[3], c[4], c[5]);
+        (engine._unmatched, engine._negative, engine._bufferFull, engine._forced, engine._tooManyDevices) = (c[6], c[7], c[8], c[9], c[10]);
+        engine._reanchors = state.Reanchors;
+        engine._earliestLate = state.EarliestLateUtc is { } late ? QueueInputState.Utc(late) : null;
+        foreach (var (minute, count) in state.LateByMinute ?? [])
+            engine._lateByMinute[QueueInputState.Utc(minute)] = count;
+        engine._beyondHorizon = state.BeyondHorizon;
+        engine._more = state.More;
+        return engine;
+    }
+}

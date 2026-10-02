@@ -52,8 +52,11 @@ builder.Services.AddAppTelemetry(builder.Configuration);
 #region Services
 
 // Stream archives every accepted sensing event for replay and recomputation (ARV-026).
-builder.Services.RegisterArivaServices(builder.Configuration, messaging => messaging.ConsumeSensingArchive());
+builder.Services.RegisterArivaServices(builder.Configuration, messaging => messaging.ConsumeSensingArchive().StreamQueueZones());
 builder.Services.AddArivaSensingArchive();
+
+// The queue engine worker (ARV-034): the sensing topics into zone engines, minute rows, bins and snapshots.
+builder.Services.AddArivaQueueStream(builder.Configuration);
 
 // Security baseline (docs/security/cwe-controls.md): default deny (fallback policy, Ariva.Deny answers challenges),
 // ES256 access tokens from Ariva.Api.Main with permissions from stored grants (ARV-010a), input limits, rate limiting,
@@ -61,7 +64,6 @@ builder.Services.AddArivaSensingArchive();
 builder.Services.AddAppSecurityBaseline(builder.Configuration);
 
 // AMAN: AddAppCaching, AddAppHealthChecks.
-// Workers: each Kafka consumer is a BackgroundService registered with AddHostedService.
 
 #endregion
 

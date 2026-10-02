@@ -103,4 +103,7 @@ public sealed class ConsumerSettings
 
     /// <summary>Parallel lanes per endpoint, split by key so order holds per key.</summary>
     public int ConcurrentMessageLimit { get; init; } = 8;
+
+    /// <summary>How long a host waits at start for the topics it consumes to exist before starting the bus anyway.</summary>
+    public int StartWaitSeconds { get; init; } = 300;
 }

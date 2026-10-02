@@ -17,8 +17,28 @@ public sealed class JsonValueSerializer<T> : IAsyncSerializer<T>, IDeserializer<
     public Task<byte[]> SerializeAsync(T data, SerializationContext context) =>
         Task.FromResult(JsonSerializer.SerializeToUtf8Bytes(data, EventCatalog.Json));
 
-    public T Deserialize(ReadOnlySpan<byte> data, bool isNull, SerializationContext context) =>
-        isNull ? default : JsonSerializer.Deserialize<T>(data, EventCatalog.Json);
+    /// <summary>
+    /// A value that is not a readable <typeparamref name="T"/> gives null rather than an exception: the rider then
+    /// treats the record as skipped and the endpoint's dead-letter pipe (<see cref="UnreadableFilter"/>) sends it to the
+    /// dead-letter topic with its raw bytes, instead of the exception escaping below the consume pipe.
+    /// </summary>
+    public T Deserialize(ReadOnlySpan<byte> data, bool isNull, SerializationContext context)
+    {
+        if (isNull)
+            return default;
+        try
+        {
+            return JsonSerializer.Deserialize<T>(data, EventCatalog.Json);
+        }
+        catch (JsonException)
+        {
+            return default;
+        }
+        catch (NotSupportedException)
+        {
+            return default;
+        }
+    }
 }
 
 /// <summary>

@@ -33,6 +33,8 @@ Supporting projects: Ariva.Utilities, Ariva.Core (domain, service interfaces, fo
 
 Sizing assumption (D5): a busy terminal tracks about 3,000 people at peak; samples stored at 1 Hz at a third of peak are about 1,000 rows per second, 86 million rows and 9 GB a day uncompressed, 1 to 2 GB a day compressed; a 90-day window needs 80 to 160 GB; provision 200 GB. Ingest for 100 sensors at 30 people each and 5 Hz is about 15,000 messages and 1.5 MB per second. See [Deployment guide](04-Deployment-Guide.md) for sizing per site.
 
+
+Stream outputs (ARV-034): per-minute queue rows (`queue_minute`), bin revisions (`queue_bin`), per-desk and per-gate minutes (`desk_minute`, `egate_minute`) and the 15-minute continuous aggregate `queue_minute_15m` are TimescaleDB hypertables written by Ariva.Api.Stream once per checkpoint, together with the zones' snapshots and the worker's positions, so a restart rewrites the same rows.
 ## Kafka topics
 
 Naming is `ariva.<context>.<event>.v1` (ADR-0019); AMAN feed topics are `aman.feed.<contract>.v1` and are produced by AMAN. Zone-keyed topics use the id of the owning queue zone, so a queue's overflow, service and staff zones share one partition. The full table with producers, consumers and retention is in `../docs/architecture/overview.md` section 5.

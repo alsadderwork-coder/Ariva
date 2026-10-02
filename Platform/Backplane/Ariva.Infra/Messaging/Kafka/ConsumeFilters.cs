@@ -110,6 +110,54 @@ public sealed class DeadLetterFilter(int retryLimit, IDeadLetterSink sink, TimeP
     public void Probe(ProbeContext context) => context?.CreateFilterScope("ariva-dead-letter");
 }
 
+/// <summary>
+/// The endpoint's dead-letter pipe: a record no consumer could take because its value is not a readable message (the
+/// rider skipped it) goes to the dead-letter topic with its raw bytes, not dropped and not blocking the partition.
+/// Records skipped for other reasons (an inbox duplicate, one already dead-lettered after its retries) pass through.
+/// </summary>
+public sealed class UnreadableFilter(IDeadLetterSink sink, TimeProvider timeProvider, ILogger<UnreadableFilter> logger) : IFilter<ReceiveContext>
+{
+    public async Task Send(ReceiveContext context, IPipe<ReceiveContext> next)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(next);
+
+        // Only a Kafka record whose value the deserializer could not read (it gave null) is dead-lettered here; a record
+        // skipped for another reason (an inbox duplicate, one already dead-lettered after its retries) is readable.
+        // A tombstone (a null value on a compacted topic) is not unreadable either.
+        if (!context.TryGetPayload(out KafkaConsumeContext kafka) || context.Body?.GetBytes() is not { Length: > 0 } ||
+            (context.TryGetPayload(out ConsumeContext consume) && consume.TryGetMessage<object>(out _)))
+        {
+            await next.Send(context);
+            return;
+        }
+
+        var group = !string.IsNullOrEmpty(kafka.GroupId) ? kafka.GroupId : context.InputAddress?.AbsolutePath.Trim('/') ?? "unknown";
+        var letter = DeadLetters.FromReceive(context, group, new InvalidDataException("The record's value is not a readable message."),
+            timeProvider.GetUtcNow().UtcDateTime);
+        logger.LogError("Unreadable record from {Topic} partition {Partition} offset {Offset}; sending it to the dead-letter topic",
+            letter.Topic, letter.Partition, letter.Offset);
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                await sink.SendAsync(letter, context.CancellationToken);
+                break;
+            }
+            catch (Exception e) when (!context.CancellationToken.IsCancellationRequested)
+            {
+                var wait = TimeSpan.FromSeconds(Math.Min(30, Math.Pow(2, Math.Min(attempt, 5))));
+                logger.LogError(e, "Dead letter for {Topic} offset {Offset} not accepted (attempt {Attempt}); retrying in {Wait}", letter.Topic, letter.Offset, attempt, wait);
+                await Task.Delay(wait, timeProvider, context.CancellationToken);
+            }
+        }
+
+        await next.Send(context);
+    }
+
+    public void Probe(ProbeContext context) => context?.CreateFilterScope("ariva-unreadable");
+}
+
 /// <summary>Who consumed: the consumer group on Kafka (one per service and endpoint), the endpoint name otherwise.</summary>
 public static class ConsumerName
 {

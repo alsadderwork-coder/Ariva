@@ -56,7 +56,7 @@ public sealed record LaneDesks(string Lane, DateTime AtUtc, int Open, int Servin
 /// the latest of their kind are superseded (counted, not applied) so that a late logout cannot undo a newer login.
 /// Bounded: desks, buffered signals and records per step. Not thread-safe; one engine per stream partition.
 /// </summary>
-public sealed class DeskStateEngine
+public sealed partial class DeskStateEngine
 {
     private readonly DeskStateSettings _settings;
     private readonly Dictionary<string, Desk> _desks = new(StringComparer.Ordinal);

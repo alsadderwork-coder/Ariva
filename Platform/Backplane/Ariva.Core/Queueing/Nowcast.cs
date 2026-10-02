@@ -286,7 +286,7 @@ public sealed record ExitWindow(long Exits, int ObservedMinutes, int WindowMinut
 /// that a gap after a restart or an outage reads as unknown rather than as zero exits. Keeps one hour of minutes,
 /// with saturating counts.
 /// </summary>
-public sealed class ExitRate
+public sealed partial class ExitRate
 {
     private const int KeptMinutes = 60;
     private readonly SortedDictionary<DateTime, (long Exits, long Degraded)> _minutes = [];
