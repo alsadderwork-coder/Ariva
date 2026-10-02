@@ -34,7 +34,7 @@ Symptom, likely cause, check, fix. For longer incident procedures see the [Opera
 | Negative or rejected waits, data-quality events | Clock error between sensors, or geometry error | Clock offsets per device | Fix time sync; check line orientation (which side is inside) |
 | Counts drift from manual counts | Mounting height or calibration wrong; obstruction in view; firmware change | Calibration record; photos; firmware version | Re-calibrate; remove the obstruction; keep firmware in the certified range |
 | Clock offset alarm on many sensors at once | Site time source problem | Site NTP server or PTP grandmaster status | Fix the time source; offsets recover |
-| Bins stay provisional for hours | Tracks never resolved (no exit, not timed out); watermark stuck because a partition receives no data | Bin maturity backlog; consumer lag per partition | Fix the input; censoring resolves tracks after T_censor (Proposed 120 minutes) |
+| Bins stay provisional for hours | Tracks never resolved (no exit, not timed out); watermark stuck because a partition receives no data | Bin maturity backlog; consumer lag per partition | Fix the input; censoring resolves tracks after T_censor (Proposed 120 minutes); a tracked exit from a device that never saw the entry is counted as an unmatched exit, not paired with someone it tracks |
 | A new zone shows "Not measured" | No calibrated sensor covers it | Device coverage and calibration | Calibrate a covering sensor |
 | Overflow alert keeps firing | Overflow band polygon overlaps a walkway; people standing in the band | Floor plan; live tracks | Adjust the band in a new profile version |
 

@@ -699,7 +699,7 @@
       ],
       "priority": 32,
       "passes": false,
-      "notes": "",
+      "notes": "Deferred until after ARV-050: needs the Integration API with TOTP clients (ARV-042), immigration endpoints (ARV-048) and the outbound AMAN connector (ARV-050).",
       "dependsOn": [
         "ARV-027",
         "ARV-020"
@@ -718,8 +718,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 33,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Ariva.Core/Queueing/QueueStateEngine: pure, bounded per-zone engine (track, FIFO and cumulative-curve waits, abandonment, censoring, fragmentation, re-anchoring, watermark with late and future events). Table-driven tests from formulas F5, F6, F11 plus scenario and fuzz tests. Security review PASS (CWE-120) after two rounds.",
       "dependsOn": [
         "ARV-016",
         "ARV-021"
