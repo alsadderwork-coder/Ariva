@@ -90,8 +90,10 @@ internal sealed class NHibernateConventionModelMapper : ConventionModelMapper
         }
         else if (type == typeof(string))
         {
+            // The length is also the parameter size, and Npgsql cuts a longer value to it without an error, so a column
+            // wider than the default says so with [MaxLength] on the property (ARV-017: polygons, audit summaries).
             map.Column(column);
-            map.Length(_rules.DefaultStringLength);
+            map.Length(property.GetCustomAttribute<System.ComponentModel.DataAnnotations.MaxLengthAttribute>()?.Length ?? _rules.DefaultStringLength);
         }
         else if (type == typeof(DateTime))
         {

@@ -266,7 +266,7 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
     /// Publishes the draft as <paramref name="version"/> (the service gives the site's next number) after validation;
     /// from then on the profile is immutable. Returns the problems instead when there are any.
     /// </summary>
-    public virtual IReadOnlyList<string> Publish(int version, IReadOnlyDictionary<Guid, Level> levels, string publishedBy, DateTime utcNow)
+    public virtual IReadOnlyList<string> Publish(int version, IReadOnlyDictionary<Guid, Level> levels, string publishedBy, DateTime utcNow, int? replacesVersion = null)
     {
         EnsureDraft();
         ArgumentOutOfRangeException.ThrowIfLessThan(version, 1);
@@ -280,6 +280,19 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
         PublishedOn = utcNow;
         PublishedBy = publishedBy;
         Status = ZoneProfileStatus.Published;
+        // ARV-017: the unit of work writes it to the outbox in this transaction; consumers switch to this geometry.
+        RaiseDomainEvent(new Events.ZoneProfilePublished
+        {
+            ProfileId = Id.GetValueOrDefault(),
+            SiteCode = SiteCode,
+            Version = version,
+            ReplacesVersion = replacesVersion,
+            GeometryHash = GeometryHash,
+            PublishedBy = publishedBy,
+            ZoneCount = Zones.Count,
+            LineCount = Lines.Count,
+            OccurredOn = utcNow
+        });
         return [];
     }
 
@@ -349,6 +362,9 @@ public class Zone : EntityBase<Zone>
 {
     public const int MaxVertices = 200;
 
+    /// <summary>200 vertices of "2000.000 2000.000," (levels are at most 2,000 m) fit with room.</summary>
+    public const int PolygonLength = 4000;
+
     protected Zone()
     {
     }
@@ -375,6 +391,7 @@ public class Zone : EntityBase<Zone>
     public virtual Guid? DeskId { get; protected set; }
 
     /// <summary>Stored vertices: "x y,x y,..." in metres at millimetre precision.</summary>
+    [System.ComponentModel.DataAnnotations.MaxLength(PolygonLength)]
     public virtual string Polygon { get; protected set; }
 
     public virtual IReadOnlyList<FloorPoint> Points => Geometry.ParseRing(Polygon, MaxVertices) ?? [];

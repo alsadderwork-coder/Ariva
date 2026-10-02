@@ -66,6 +66,12 @@
       "method": "PUT",
       "route": "/api/v1/admin/users/{id:guid}/sites",
       "category": "Grant or revoke site access"
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/zone-profiles/{id:guid}/publish",
+      "category": "Publish or retire a zone profile"
     }
   ]
 }

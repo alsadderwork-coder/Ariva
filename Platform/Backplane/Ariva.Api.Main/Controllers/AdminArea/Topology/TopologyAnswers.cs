@@ -3,7 +3,10 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace Ariva.Api.Main.Controllers.AdminArea.Topology;
 
-/// <summary>Maps topology results: 404 not found, 409 duplicate or in use, 403 deployment-wide, 400 otherwise.</summary>
+/// <summary>
+/// Maps topology results: 404 not found, 409 duplicate, in use or not a draft, 403 deployment-wide, 400 otherwise. When
+/// there are several errors (a draft's publishing problems) all of them go in <c>problems</c>.
+/// </summary>
 internal static class TopologyAnswers
 {
     public static IActionResult Ok<T>(ControllerBase controller, Fluentx.Result<T> result) =>
@@ -22,9 +25,13 @@ internal static class TopologyAnswers
         {
             TopologyErrors.NotFound => (StatusCodes.Status404NotFound, "Not found"),
             TopologyErrors.DeploymentWide => (StatusCodes.Status403Forbidden, "Not allowed"),
-            _ when TopologyErrors.Conflicts.Contains(first) => (StatusCodes.Status409Conflict, "Conflict"),
+            _ when TopologyErrors.Conflicts.Contains(first) || ZoneProfileErrors.Conflicts.Contains(first) => (StatusCodes.Status409Conflict, "Conflict"),
             _ => (StatusCodes.Status400BadRequest, "Not valid")
         };
-        return controller.Problem(statusCode: status, title: title, detail: status == StatusCodes.Status404NotFound ? null : first);
+        var problem = controller.Problem(statusCode: status, title: title, detail: status == StatusCodes.Status404NotFound ? null : first);
+        var all = errors?.ToList() ?? [];
+        if (all.Count > 1 && status != StatusCodes.Status404NotFound && problem.Value is ProblemDetails details)
+            details.Extensions["problems"] = all.Skip(1).ToList();
+        return problem;
     }
 }

@@ -118,3 +118,39 @@ Authorization: Bearer {{accessToken}}
 Content-Type: application/json
 
 { "metresPerPixel": 0.1, "originX": 0, "originY": 0 }
+
+### Zone profile history of a site (SearchZoneProfile)
+GET {{Ariva.Api.Main_HostAddress}}/api/v1/admin/zone-profiles?siteCode=AMM
+Authorization: Bearer {{accessToken}}
+
+### New draft, copied from the published version (CreateZoneProfile)
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/admin/zone-profiles/drafts
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "siteCode": "AMM", "name": "Arrivals immigration" }
+
+### Add a queue zone to the draft (EditZoneProfile)
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/admin/zone-profiles/{{profileId}}/zones
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "name": "Snake A", "kind": "Queue", "levelId": "{{levelId}}", "polygon": "10 10,34 10,34 22,10 22" }
+
+### Add its entry line (EditZoneProfile)
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/admin/zone-profiles/{{profileId}}/lines
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "name": "Entry A", "role": "Entry", "levelId": "{{levelId}}", "startX": 10, "startY": 12, "endX": 10, "endY": 16, "zoneId": "{{zoneId}}" }
+
+### What stops the draft from being published (ViewZoneProfile)
+GET {{Ariva.Api.Main_HostAddress}}/api/v1/admin/zone-profiles/{{profileId}}/validation
+Authorization: Bearer {{accessToken}}
+
+### Publish the geometry you validated (PublishZoneProfile; geometryHash from the validation; needs a token from a sign-in or step-up with a code in the last 15 minutes)
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/admin/zone-profiles/{{profileId}}/publish
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "geometryHash": "{{geometryHash}}" }

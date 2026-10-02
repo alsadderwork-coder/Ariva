@@ -262,6 +262,38 @@ public sealed class ZoneProfileTests
     }
 
     [Fact]
+    public void Publish_Should_RaiseZoneProfilePublishedKeyedBySite_When_Valid()
+    {
+        var (profile, level, _) = Publishable();
+        profile.Id = Guid.CreateVersion7();
+
+        profile.Publish(3, Levels(level), "e2e.zonemanager", Now, replacesVersion: 2);
+
+        var published = profile.DomainEvents.Should().ContainSingle().Which.Should().BeOfType<Ariva.Core.Domain.Events.ZoneProfilePublished>().Subject;
+        published.ProfileId.Should().Be(profile.Id.Value);
+        published.SiteCode.Should().Be("DMO-T1");
+        published.GetPartitionKey().Should().Be("DMO-T1", "the activated-profile topic is compacted per site");
+        published.Version.Should().Be(3);
+        published.ReplacesVersion.Should().Be(2);
+        published.GeometryHash.Should().Be(profile.GeometryHash);
+        published.PublishedBy.Should().Be("e2e.zonemanager");
+        (published.ZoneCount, published.LineCount).Should().Be((profile.Zones.Count, profile.Lines.Count));
+        published.OccurredOn.Should().Be(Now);
+    }
+
+    [Fact]
+    public void Publish_Should_RaiseNothing_When_Invalid()
+    {
+        var level = NewLevel();
+        var profile = new ZoneProfile("DMO-T1", "Draft");
+        profile.AddZone("Snake A", ZoneKind.Queue, level, Rect(10, 10, 24, 12));
+
+        profile.Publish(1, Levels(level), "admin", Now);
+
+        profile.DomainEvents.Should().BeEmpty();
+    }
+
+    [Fact]
     public void Publish_Should_ReturnTheProblems_When_Invalid()
     {
         var level = NewLevel();

@@ -140,14 +140,30 @@ public sealed class FakeAdministration : ISvcUsers, ISvcRoleAssignment, ISvcAudi
 }
 
 /// <summary>Topology for in-process hosts (no database): searches are empty and every id is unknown, as for the matrix calls.</summary>
-public sealed class FakeTopology : Ariva.Core.Services.Topology.ISvcTopology, Ariva.Core.Services.Topology.ISvcDeskCodeMappings, Ariva.Core.Services.Topology.ISvcFloorPlans
+public sealed class FakeTopology : Ariva.Core.Services.Topology.ISvcTopology, Ariva.Core.Services.Topology.ISvcDeskCodeMappings, Ariva.Core.Services.Topology.ISvcFloorPlans, Ariva.Core.Services.Topology.ISvcZoneProfiles
 {
     public static void Register(IServiceCollection services)
     {
         services.Replace(ServiceDescriptor.Scoped<Ariva.Core.Services.Topology.ISvcTopology, FakeTopology>());
         services.Replace(ServiceDescriptor.Scoped<Ariva.Core.Services.Topology.ISvcDeskCodeMappings, FakeTopology>());
         services.Replace(ServiceDescriptor.Scoped<Ariva.Core.Services.Topology.ISvcFloorPlans, FakeTopology>());
+        services.Replace(ServiceDescriptor.Scoped<Ariva.Core.Services.Topology.ISvcZoneProfiles, FakeTopology>());
     }
+
+    // Zone profiles (ARV-017): no site and no profile exists, as for the matrix calls.
+    public Task<Fluentx.Result<IReadOnlyList<ZoneProfileSummaryViewModel>>> HistoryAsync(string siteCode, CancellationToken ct = default) => Missing<IReadOnlyList<ZoneProfileSummaryViewModel>>();
+    Task<Fluentx.Result<ZoneProfileViewModel>> Ariva.Core.Services.Topology.ISvcZoneProfiles.GetAsync(Guid id, CancellationToken ct) => Missing<ZoneProfileViewModel>();
+    public Task<Fluentx.Result<ZoneProfileViewModel>> CreateDraftAsync(CreateZoneProfileDraftRequest request, CancellationToken ct = default) =>
+        Task.FromResult(Fluentx.Result.Error<ZoneProfileViewModel>(Ariva.Core.Services.Topology.TopologyErrors.UnknownSite));
+    public Task<Fluentx.Result<ZoneProfileViewModel>> RenameAsync(Guid id, RenameZoneProfileRequest request, CancellationToken ct = default) => Missing<ZoneProfileViewModel>();
+    public Task<Fluentx.Result<ZoneViewModel>> AddZoneAsync(Guid id, AddZoneRequest request, CancellationToken ct = default) => Missing<ZoneViewModel>();
+    public Task<Fluentx.Result<ZoneViewModel>> UpdateZoneAsync(Guid id, Guid zoneId, UpdateZoneRequest request, CancellationToken ct = default) => Missing<ZoneViewModel>();
+    public Task<Fluentx.Result<bool>> RemoveZoneAsync(Guid id, Guid zoneId, CancellationToken ct = default) => Missing<bool>();
+    public Task<Fluentx.Result<LineViewModel>> AddLineAsync(Guid id, AddLineRequest request, CancellationToken ct = default) => Missing<LineViewModel>();
+    public Task<Fluentx.Result<bool>> RemoveLineAsync(Guid id, Guid lineId, CancellationToken ct = default) => Missing<bool>();
+    public Task<Fluentx.Result<ZoneProfileValidationViewModel>> ValidateAsync(Guid id, CancellationToken ct = default) => Missing<ZoneProfileValidationViewModel>();
+    public Task<Fluentx.Result<ZoneProfileSummaryViewModel>> PublishAsync(Guid id, PublishZoneProfileRequest request, CancellationToken ct = default) => Missing<ZoneProfileSummaryViewModel>();
+    public Task<Fluentx.Result<bool>> DiscardAsync(Guid id, CancellationToken ct = default) => Missing<bool>();
 
     Task<Fluentx.Result<FloorPlanViewModel>> Ariva.Core.Services.Topology.ISvcFloorPlans.GetAsync(Guid levelId, CancellationToken ct) => Missing<FloorPlanViewModel>();
     public Task<Fluentx.Result<FloorPlanContent>> OpenAsync(Guid levelId, CancellationToken ct = default) => Missing<FloorPlanContent>();

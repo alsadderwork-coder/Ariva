@@ -117,6 +117,10 @@ export function accounts() {
 		totp: account('e2e.totp', ['TerminalDutyManager'], false, true),
 		enrol: account('e2e.enrol', ['HandlerStationManager']),
 		stepUp: account('e2e.stepup', ['BorderShiftSupervisor'], false, true),
+		// Holds every critical permission, so each critical route answers 401 for its second factor and never 403.
+		stepUpAdmin: account('e2e.stepupadmin', ['SystemAdministrator'], false, true, ['*']),
+		// ARV-017: a duty manager who drafts and publishes zone profiles for E2E2 (publishing needs a second factor).
+		zoneManager: account('e2e.zonemanager', ['TerminalDutyManager'], false, true, ['E2E2']),
 		securityAdmin: account('e2e.secadmin', ['SystemAdministrator'], false, true, ['*']),
 		siteAdmin: account('e2e.siteadmin', ['SystemAdministrator'], false, true, ['*']),
 		siteUser: account('e2e.siteuser', ['BorderShiftSupervisor'], false, false, ['E2E1'])

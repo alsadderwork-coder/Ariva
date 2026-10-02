@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
 import { accounts, call, claimsOf, databaseAvailable, developmentSigningKey, headerOf, login, signIn, signToken, totpCode } from '../support/accounts';
 import { hosts } from '../support/hosts';
+import { pathOf } from '../support/permission-matrix';
 
 // ARV-010d (ADR-0026, RFC 9470): every critical action in security/critical-actions.json answers 401
 // insufficient_user_authentication with max_age=900 when the second factor is older than 15 minutes or missing, and
@@ -15,7 +16,8 @@ const critical: { routes: { host: string; method: string; route: string }[] } = 
 	fs.readFileSync(path.resolve(here, '..', '..', '..', '..', '..', 'security', 'critical-actions.json'), 'utf8')
 );
 const stepUpUrl = `${hosts.main}/api/auth/step-up`;
-const routes = critical.routes.filter((route) => route.host === 'main').map((route) => ({ ...route, url: `${hosts.main}${route.route}` }));
+// Route parameters are filled like the permission matrix does ({id:guid} becomes an id that never exists).
+const routes = critical.routes.filter((route) => route.host === 'main').map((route) => ({ ...route, url: `${hosts.main}${pathOf(route.route)}` }));
 
 test.skip(!databaseAvailable, 'step-up needs the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true)');
 test.describe.configure({ mode: 'serial' });
@@ -36,7 +38,8 @@ function expectMfaRequired(status: number, wwwAuthenticate: string | undefined, 
 }
 
 test('a password-only session is asked to step up on every critical action', async () => {
-	const token = await signIn(accounts().BorderShiftSupervisor);
+	// An administrator holds every critical permission, so no route answers 403 before it asks for the second factor.
+	const token = await signIn(accounts().SystemAdministrator);
 	expect(routes.length).toBeGreaterThan(0);
 
 	for (const route of routes) {
@@ -50,7 +53,7 @@ test('a password-only session is asked to step up on every critical action', asy
 
 test('an old second factor is refused, step-up renews it in the same session, a non-critical endpoint never asks', async () => {
 	test.skip(!developmentSigningKey(), 'needs the run key to age a token');
-	const { userName, password, totpSecret } = accounts().stepUp;
+	const { userName, password, totpSecret } = accounts().stepUpAdmin;
 
 	const signedIn = await login(userName, password, undefined, undefined, { code: totpCode(totpSecret!) });
 	expect(signedIn.status()).toBe(200);

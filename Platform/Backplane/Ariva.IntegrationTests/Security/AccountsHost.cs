@@ -105,6 +105,8 @@ public sealed class AccountsHost : IAsyncDisposable
         services.AddArivaPersistence(configuration);
         services.AddArivaCaching(configuration);
         services.AddArivaTokenIssuing(configuration);
+        // Domain events go to the outbox table, as in the hosts (ARV-020; Kafka is off).
+        services.AddArivaMessaging(configuration);
         services.AddScoped<BreakGlassAccounts>();
         _provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
     }

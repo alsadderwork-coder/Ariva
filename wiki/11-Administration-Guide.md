@@ -137,13 +137,26 @@ See [Commissioning and calibration](07-Commissioning-and-Calibration.md).
 
 | Task | Notes |
 |---|---|
-| New draft | Copies the active profile |
+| New draft | Copies the active profile; one draft per site at a time |
 | Edit the draft | Zones (queue, service, staff, overflow), entry, exit, count and overflow-entry lines, desks, lanes, lane categories, desk code mappings, e-gate reject target lane, site parameters |
 | Publish | Creates the next immutable version; step-up MFA; audited |
 | Activate | From a time, or immediately by a supervisor (for example when stanchions move) |
 | Correct | Always a new version; affected periods can be recomputed as new revisions |
 
 Every result records the profile version it was computed with.
+
+Phase 0 API (ARV-017), `api/v1/admin/zone-profiles`:
+
+| Call | What it does | Who |
+|---|---|---|
+| `GET ?siteCode=` | The site's versions and draft, newest first, with who created and published each and when | Supervisors, duty managers, handler station managers of the site, administrators |
+| `GET {id}`, `GET {id}/validation` | A version with its zones and lines; what stops a draft from being published, and the hash of its geometry | Same |
+| `POST drafts` `{siteCode, name}` | A draft copied from the published version (empty for the first); 409 while a draft exists | Supervisors, duty managers, administrators |
+| `PUT {id}`, `POST {id}/zones`, `PUT {id}/zones/{zoneId}`, `DELETE {id}/zones/{zoneId}`, `POST {id}/lines`, `DELETE {id}/lines/{lineId}` | Edit the draft. Polygons are `"x y,x y,..."` in metres of the level, 3 to 200 points, simple and inside the level; entry and exit lines lie on an edge of their queue zone | Same |
+| `POST {id}/publish` `{geometryHash}` | Publishes the draft as the next version if its geometry still has the hash from the validation the publisher reviewed (409 when someone edited it since), retires the version it replaces and announces it to Stream and Cronz (`ZoneProfilePublished`). Refused with the list of problems when the draft is incomplete | Same, with a second factor in the last 15 minutes (otherwise 401 asking for step-up) |
+| `DELETE {id}` | Discards a draft | Administrators |
+
+Published and retired versions cannot be changed or deleted (409), not even by a database statement (triggers in script 0012). Publishing takes effect immediately; activation from a later time is a target feature.
 
 ## 8. Alert rules
 

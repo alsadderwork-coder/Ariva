@@ -436,8 +436,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 20,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Offline gates: unit, PostgreSQL integration and real-host checks; E2E spec type-checked, not run here. Publish without recent MFA answers 401 (RFC 9470, ADR-0026), not 403 as the criterion reads.",
       "dependsOn": [
         "ARV-014",
         "ARV-016",

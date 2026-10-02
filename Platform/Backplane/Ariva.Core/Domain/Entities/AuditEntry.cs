@@ -41,7 +41,10 @@ public class AuditEntry : EntityBase<AuditEntry>
     public virtual string TargetType { get; protected set; }
     public virtual Guid? TargetId { get; protected set; }
     public virtual string TargetName { get; protected set; }
+    [System.ComponentModel.DataAnnotations.MaxLength(SummaryLength)]
     public virtual string BeforeSummary { get; protected set; }
+
+    [System.ComponentModel.DataAnnotations.MaxLength(SummaryLength)]
     public virtual string AfterSummary { get; protected set; }
     public virtual string IpAddress { get; protected set; }
     public virtual string TraceId { get; protected set; }
