@@ -28,7 +28,11 @@ public sealed record DeviceViewModel(
     DateTime? RetiredOn,
     DateTime? CreatedOn,
     IReadOnlyList<string> AllowedSources = null,
-    string ClientCertificateSha256 = null);
+    string ClientCertificateSha256 = null,
+    string MappingName = null);
+
+/// <summary>A declarative mapping shipped with Ariva (ARV-024): its name, what it reads and the vendor documentation it follows.</summary>
+public sealed record DeviceMappingViewModel(string Name, string Title, string Source, IReadOnlyList<string> Kinds);
 
 /// <summary>
 /// What the device authentication handler needs about a presented credential's device (ARV-022): never sent to a
@@ -46,7 +50,9 @@ public sealed record DeviceCredentialRecord(
     string Dialect = "Canonical",
     double X = 0,
     double Y = 0,
-    double OrientationDegrees = 0);
+    double OrientationDegrees = 0,
+    string MappingName = null,
+    string Transport = "HttpsPush");
 
 /// <summary>
 /// The published geometry of a device's queue zone (ARV-022): the queue zone, the zones that hang off it and their

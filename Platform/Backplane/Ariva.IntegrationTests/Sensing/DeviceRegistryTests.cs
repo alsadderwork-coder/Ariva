@@ -187,6 +187,31 @@ public sealed class DeviceRegistryTests(PostgresFixture fixture) : IAsyncDisposa
     }
 
     [Fact]
+    public async Task Register_Should_TakeAShippedMappingForTheDeclarativeDialectOnly()
+    {
+        var (admin, level) = await SiteAsync("DVM");
+        RegisterDeviceRequest Lidar(string code, string dialect, string mapping) =>
+            new(code, "Lidar", "Gemini", "Mqtt", dialect, "Ntp", new DevicePlacement(level, 20, 16, 6, 0, "Snake A"), mapping);
+
+        var unknown = await _host.AsCallerAsync(admin, s => Devices(s).RegisterAsync(Lidar("L-1", "Declarative", "made-up-v1"), Ct));
+        var missing = await _host.AsCallerAsync(admin, s => Devices(s).RegisterAsync(Lidar("L-2", "Declarative", null), Ct));
+        var stray = await _host.AsCallerAsync(admin, s => Devices(s).RegisterAsync(Lidar("L-3", "Canonical", "ouster-detect-v1"), Ct));
+        var ok = await _host.AsCallerAsync(admin, s => Devices(s).RegisterAsync(Lidar("L-4", "Declarative", "ouster-detect-v1"), Ct));
+
+        new[] { unknown, missing, stray }.Should().OnlyContain(r => r.ErrorMessages.SequenceEqual(new[] { DeviceErrors.UnknownMapping }));
+        ok.HasErrors.Should().BeFalse(string.Join(", ", ok.ErrorMessages ?? []));
+        ok.Data.Device.MappingName.Should().Be("ouster-detect-v1");
+        (await _host.ReadAsync<string>("SELECT mapping_name FROM device WHERE site_code = 'DVM' AND code = 'L-4'")).Should().Be("ouster-detect-v1");
+        var record = await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcDeviceGateway>().FindByPrefixAsync(ok.Data.Device.CredentialPrefix, Ct));
+        (record.Dialect, record.MappingName, record.Transport).Should().Be(("Declarative", "ouster-detect-v1", "Mqtt"));
+
+        var back = await _host.AsCallerAsync(admin, s => Devices(s).UpdateAsync(ok.Data.Device.Id, new UpdateDeviceRequest("Gemini", "Mqtt", "Canonical", "Ntp"), Ct));
+        back.Data.MappingName.Should().BeNull();
+        var sql = async () => await _host.ReadAsync<int>("UPDATE device SET mapping_name = 'ouster-detect-v1' WHERE site_code = 'DVM' AND code = 'L-4' RETURNING 1");
+        await sql.Should().ThrowAsync<PostgresException>("the database keeps a mapping only with the declarative dialect");
+    }
+
+    [Fact]
     public async Task Gateway_Should_FindTheDeviceByPrefixAndForgetItAtOnce_When_TheCredentialChanges()
     {
         var (admin, level) = await SiteAsync("DVF");

@@ -92,7 +92,8 @@ public sealed class SensingIngest(
     ISensingSink sink,
     DeviceClockStore clocks,
     IFusionCache cache,
-    Microsoft.Extensions.Options.IOptions<IngestSettings> settings)
+    Microsoft.Extensions.Options.IOptions<IngestSettings> settings,
+    Declarative.DeclarativeMappingCatalog mappings)
 {
     /// <summary>Further ahead than this, an event cannot be a clock glitch; it is refused.</summary>
     public static readonly TimeSpan MaxFuture = TimeSpan.FromMinutes(5);
@@ -120,6 +121,9 @@ public sealed class SensingIngest(
             {
                 DeviceDialect.Xovis => XovisPushMapper.Map(document.RootElement, new DevicePose(device.X, device.Y, device.OrientationDegrees), max),
                 DeviceDialect.Canonical => CanonicalPushMapper.Map(document.RootElement, max),
+                DeviceDialect.Declarative => Declarative.DeclarativeMapper.Map(document.RootElement,
+                    mappings.Find(device.MappingName) ?? throw new PushFormatException("The device's declarative mapping is not in this version of Ariva."),
+                    new DevicePose(device.X, device.Y, device.OrientationDegrees), max, receivedUtc),
                 _ => throw new PushFormatException($"The {dialect} dialect has no push endpoint.")
             };
         }
@@ -141,8 +145,10 @@ public sealed class SensingIngest(
         var flagged = 0;
         var names = await NamesAsync(device, ct);
 
-        List<Sensed<T>> Check<T>(IReadOnlyList<T> events, string kind, Func<T, string> nameOf, bool isLine, Func<T, T> rewrite) where T : CanonicalEvent
+        List<Sensed<T>> Check<T>(IReadOnlyList<T> events, string kind, Func<T, string> nameOf, bool isLine, Func<T, T> rewrite, PushKinds kindFlag) where T : CanonicalEvent
         {
+            // Stamped with the receipt time by the mapping: already Ariva's clock, nothing to correct.
+            var receiptTimed = (push.ReceiptTimed & kindFlag) != 0;
             var kept = new List<Sensed<T>>(events.Count);
             for (var i = 0; i < events.Count; i++)
             {
@@ -165,7 +171,7 @@ public sealed class SensingIngest(
                     continue;
                 }
 
-                var time = clock.Correct(e.TimeUtc);
+                var time = receiptTimed ? e.TimeUtc : clock.Correct(e.TimeUtc);
                 if (why is null && time > receivedUtc + MaxFuture)
                     why = "the time is more than 5 minutes ahead of Ariva's clock";
                 if (why is null && time < receivedUtc - MaxAge)
@@ -193,10 +199,10 @@ public sealed class SensingIngest(
         LineCrossing NamespacedCrossing(LineCrossing c) => c.TrackId is null ? c : c with { TrackId = CanonicalEventRules.NamespacedTrackId(device.Code, c.TrackId) };
         IntervalCount CorrectedInterval(IntervalCount c) => c with { FromUtc = clock.Correct(c.FromUtc), TimeUtc = clock.Correct(c.TimeUtc) };
 
-        var tracks = Check(push.Tracks, "tracks", null, false, Namespaced);
-        var crossings = Check(push.Crossings, "crossings", c => c.LineName, true, NamespacedCrossing);
-        var occupancy = Check(push.Occupancy, "occupancy", o => o.ZoneName, false, o => o);
-        var intervals = Check(push.Intervals, "intervals", c => c.LineName, true, CorrectedInterval);
+        var tracks = Check(push.Tracks, "tracks", null, false, Namespaced, PushKinds.Tracks);
+        var crossings = Check(push.Crossings, "crossings", c => c.LineName, true, NamespacedCrossing, PushKinds.Crossings);
+        var occupancy = Check(push.Occupancy, "occupancy", o => o.ZoneName, false, o => o, PushKinds.Occupancy);
+        var intervals = Check(push.Intervals, "intervals", c => c.LineName, true, CorrectedInterval, PushKinds.Intervals);
 
         var reading = clock.Reading;
         var commissioned = device.State is "Online" or "Degraded" or "Offline";
@@ -210,7 +216,7 @@ public sealed class SensingIngest(
             batch.DeviceCode = device.Code;
             batch.SiteCode = device.SiteCode;
             batch.QueueZoneName = device.QueueZoneName;
-            batch.Dialect = dialect.ToString();
+            batch.Dialect = dialect == DeviceDialect.Declarative ? $"{dialect}:{device.MappingName}" : dialect.ToString();
             batch.Commissioned = commissioned;
             batch.ReceivedUtc = receivedUtc;
             batch.OccurredOn = receivedUtc;

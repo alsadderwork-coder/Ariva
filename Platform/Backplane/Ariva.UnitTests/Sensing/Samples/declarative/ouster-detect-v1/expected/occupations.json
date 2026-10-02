@@ -1,0 +1,28 @@
+{
+ "pose": [
+  20,
+  16,
+  90
+ ],
+ "sentUtc": null,
+ "packages": [],
+ "ignored": 0,
+ "receiptTimed": [
+  "occupancy"
+ ],
+ "tracks": [],
+ "crossings": [],
+ "intervals": [],
+ "occupancy": [
+  {
+   "zone": "Snake A",
+   "count": 41,
+   "timeUtc": "received"
+  },
+  {
+   "zone": "Overflow A",
+   "count": 3,
+   "timeUtc": "received"
+  }
+ ]
+}

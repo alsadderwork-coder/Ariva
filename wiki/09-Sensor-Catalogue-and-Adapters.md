@@ -30,9 +30,9 @@ Status: **Phase 0** means built and tested against recorded or emulated payloads
 | Family | Products | Transport into Ariva | Tier | Status |
 |---|---|---|---|---|
 | Overhead stereo vision | Xovis PC2, PC2 extended coverage, PC3 series (PF series: verify) | `Xovis` dialect over HTTPS push | T1 to T4 | Phase 0 (recorded payloads) |
-| | | MQTT over TLS | | Pilot |
+| | | MQTT over TLS (the transport is Phase 0; the Xovis MQTT payload is to confirm) | | Pilot |
 | | | REST pull for configuration and health | | Pilot |
-| LiDAR perception platforms | Ouster Gemini, Outsight SHIFT, Seoul Robotics SENSR, Blickfeld Percept and Qb2 | REST, WebSocket or MQTT (verify per platform); one coded adapter per platform | T2, T3 (T4 on some platforms) | One platform certified for the pilot, others Planned. Outsight's interface is unverified in the sources |
+| LiDAR perception platforms | Ouster Gemini, Outsight SHIFT, Seoul Robotics SENSR, Blickfeld Percept and Qb2 | Ouster Detect: declarative mapping `ouster-detect-v1` over HTTPS push or MQTT. Outsight (binary OSEF) and SENSR (protobuf) need coded adapters; Blickfeld: verify | T2, T3 (T4 on some platforms) | Ouster: Phase 0 (from Ouster's documentation, key spelling to confirm on a capture). One platform certified for the pilot, others Planned |
 | Camera 3D and AI counters | Axis 3D People Counter, AXIS Object Analytics | ONVIF Profile M events or Axis HTTP API (verify) | T1, T2 | Planned |
 | | Hikvision and Hanwha people counting cameras | ONVIF Profile M or vendor HTTP push (verify) | T1, T2 | Planned |
 | | Existing CCTV with an analytics server | Analytics server events over MQTT or HTTPS; Ariva never receives video | T1, T2 | Planned |
@@ -51,7 +51,7 @@ LiDAR hardware behind the platforms (Ouster OS0, OS1, OSDome and the Velodyne li
 | Transport | Direction | Controls |
 |---|---|---|
 | HTTPS push (webhook) | Device to Ariva.Api.Ingest | Per-device credential (bearer key or Basic), TLS, IP allowlist, 256 KB body limit |
-| MQTT(S) | Device to broker; Ingest subscribes | TLS, per-device client certificate or username and key, topic ACL per device |
+| MQTT(S) | Device to the broker inside Ingest (port 8883) | TLS, device code and credential as user name and password, optional pinned client certificate, publish only to `ariva/v1/devices/<code>/<dialect>`, no subscriptions |
 | REST pull | Ingest polls the device or controller | Only registered device addresses (SSRF control); `If-Modified-Since` or cursor |
 | WebSocket stream | Perception platform to an Ingest client | JSON or protobuf frames; reconnect with backoff |
 | TCP or UDP stream | Device to listener | Length-prefixed frames, bounds-checked parsing, source address allowlist |
@@ -61,6 +61,8 @@ LiDAR hardware behind the platforms (Ouster OS0, OS1, OSDome and the Velodyne li
 
 Every payload is untrusted: schema validated, size limited, timestamps checked against the device clock offset, ids namespaced by device.
 
+MQTT (ARV-024): when enabled, Ariva.Api.Ingest takes MQTT 3.1.1 and 5 over TLS on port 8883. A device registered on the `Mqtt` transport (and only such a device; it then cannot use the HTTPS push endpoints) connects with its code as user name (and client id) and its credential as password, without a will message, and publishes its data to `ariva/v1/devices/<code>/canonical`, `.../xovis` or `.../declarative`; the data goes through the same checks as an HTTPS push. Publishing anywhere else closes the connection, nothing can be subscribed to, and rotating or retiring the credential closes a live connection at its next message. Details: `../docs/architecture/sensor-adapters.md`, section "MQTT transport".
+
 Device authentication (ARV-022): every device push and every device call to Ariva.Api.Ingest carries the credential of the device, as `Authorization: Bearer ardk_...`, as the `X-Ariva-Device-Key` header, or as HTTP Basic with the device code as user name and the credential as password. Nothing else is accepted on those endpoints (a user token is 401), and the credential opens nothing else. A device may be limited to source networks and bound to a client certificate; a device acts only on its own queue zone (403 otherwise). `GET /api/v1/ingest/device` answers who the device is with the UTC clock of the server; `GET /api/v1/ingest/zones/<zone>` answers the published zones and lines of the zone of the device, the names its events must use. Where a vendor parent, gateway or perception server pushes for several sensors, that endpoint is the device that holds the credential (a refinement for gateways is planned with the push endpoints).
 
 ## Dialect mappers
@@ -68,7 +70,7 @@ Device authentication (ARV-022): every device push and every device call to Ariv
 | Kind | For | How |
 |---|---|---|
 | Coded mapper | First-class families (Xovis, the main LiDAR perception platforms) | Typed parsing in Ariva.Infra with full conformance tests |
-| Declarative mapper | The long tail | JSONPath or XPath field maps stored with the device family. Expressions are paths, not code: the mapper evaluates a restricted path syntax and never executes scripts (CWE-94 control) |
+| Declarative mapper | The long tail | A JSON mapping per vendor format, shipped with Ariva and reviewed like code; the device names it. Paths are a restricted JSONPath subset (names, indexes, one wildcard) and nothing in a mapping is ever evaluated or executed (CWE-94 control). JSON only; XPath is not implemented. `GET /api/v1/admin/devices/mappings` lists the mappings |
 
 A declarative mapper maps each canonical field to a path in the vendor payload. Illustrative only; the mapper format is defined in Phase 0 epic Device gateway and simulator:
 
@@ -123,5 +125,6 @@ T4 on-device KPIs are a cross-check only at every level; they are never the evid
 - Xovis PC3 technical datasheet: https://api.xovis.com/fileadmin/user_upload/file/ressources/PC3_Technical_Datasheet.pdf
 - Example of Xovis data push to a third-party platform: https://docs.evolution.cloud.mrisoftware.com/IoTHubHelp/Content/2ConnectivityIntegrationLayer/IntegrationVendors/Xovis/Xovis.htm
 - Ouster Gemini: https://ouster.com/products/software/gemini
+- Ouster Detect output: https://docs.ouster.com/ouster-detect/connecting_to_output/connecting-to-output.html
 - Outsight people counting: https://www.outsight.ai/solutions/people-counting-technologies
 - Blickfeld LiDAR software: https://www.blickfeld.com/lidar-software/

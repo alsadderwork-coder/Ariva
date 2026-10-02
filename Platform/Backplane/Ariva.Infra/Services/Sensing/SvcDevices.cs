@@ -30,7 +30,8 @@ internal sealed class SvcDevices(
     TimeProvider timeProvider,
     ISiteScope siteScope,
     AuditTrail audit,
-    IFusionCache cache) : SvcBase(unitOfWork, currentUser, timeProvider), ISvcDevices
+    IFusionCache cache,
+    IDeviceMappingCatalog mappings) : SvcBase(unitOfWork, currentUser, timeProvider), ISvcDevices
 {
     private const string Target = "Device";
 
@@ -106,6 +107,8 @@ internal sealed class SvcDevices(
                 return Result.Error<DeviceCredentialViewModel>(DeviceErrors.UnknownFamily);
             if (Kinds(request.Transport, request.Dialect, request.ClockSource) is { } kindError)
                 return Result.Error<DeviceCredentialViewModel>(kindError);
+            if (MappingError(request.Dialect, request.MappingName) is { } mappingError)
+                return Result.Error<DeviceCredentialViewModel>(mappingError);
             var level = await ScopedLevelAsync(request.Placement.LevelId, ct);
             if (level is null)
                 return Result.Error<DeviceCredentialViewModel>(TopologyErrors.NotFound);
@@ -120,7 +123,7 @@ internal sealed class SvcDevices(
                 return Result.Error<DeviceCredentialViewModel>(coverage);
             var device = new Device(request.Code, family, request.Model, Parse<DeviceTransport>(request.Transport), Parse<DeviceDialect>(request.Dialect),
                 Parse<ClockSource>(request.ClockSource), level, request.Placement.X, request.Placement.Y, request.Placement.MountingHeightMetres,
-                request.Placement.OrientationDegrees, footprint, request.Placement.QueueZoneName, UtcNow);
+                request.Placement.OrientationDegrees, footprint, request.Placement.QueueZoneName, UtcNow, request.MappingName);
 
             var issued = await NewCredentialAsync(ct);
             device.IssueCredential(issued.Prefix, issued.Hash, UtcNow);
@@ -134,8 +137,11 @@ internal sealed class SvcDevices(
         {
             if (Kinds(request.Transport, request.Dialect, request.ClockSource) is { } kindError)
                 return Result.Error<DeviceViewModel>(kindError);
+            if (MappingError(request.Dialect, request.MappingName) is { } mappingError)
+                return Result.Error<DeviceViewModel>(mappingError);
             var before = Summary(device);
-            device.UpdateDetails(request.Model, Parse<DeviceTransport>(request.Transport), Parse<DeviceDialect>(request.Dialect), Parse<ClockSource>(request.ClockSource), UtcNow);
+            device.UpdateDetails(request.Model, Parse<DeviceTransport>(request.Transport), Parse<DeviceDialect>(request.Dialect), Parse<ClockSource>(request.ClockSource), UtcNow,
+                request.MappingName);
             if (before == Summary(device))
                 return new Result<DeviceViewModel>(View(device));
             await UpdateAsync(device, ct);
@@ -329,6 +335,12 @@ internal sealed class SvcDevices(
         : !TryKind<ClockSource>(clockSource, out _) ? DeviceErrors.UnknownClockSource
         : null;
 
+    /// <summary>The declarative dialect names a mapping from the shipped catalog (ARV-024); the others name none.</summary>
+    private string MappingError(string dialect, string mappingName) =>
+        Parse<DeviceDialect>(dialect) == DeviceDialect.Declarative
+            ? mappings.Contains(mappingName) ? null : DeviceErrors.UnknownMapping
+            : string.IsNullOrEmpty(mappingName) ? null : DeviceErrors.UnknownMapping;
+
     private static TEnum Parse<TEnum>(string value) where TEnum : struct, Enum => TryKind<TEnum>(value, out var kind) ? kind : throw new ArgumentException($"Unknown {typeof(TEnum).Name}.");
 
     /// <summary>Kinds by name only; numbers and unknown names are refused.</summary>
@@ -380,7 +392,7 @@ internal sealed class SvcDevices(
     /// for another field to someone reading the audit trail.
     /// </summary>
     private static string Summary(Device d) => string.Create(CultureInfo.InvariantCulture,
-        $"code={d.Code}; family={d.Family}; model={Escape(d.Model)}; transport={d.Transport}; dialect={d.Dialect}; clock={d.ClockSource}; state={d.State}; " +
+        $"code={d.Code}; family={d.Family}; model={Escape(d.Model)}; transport={d.Transport}; dialect={d.Dialect}; mapping={d.MappingName}; clock={d.ClockSource}; state={d.State}; " +
         $"level={d.Level?.Id}; x={d.X}; y={d.Y}; height={d.MountingHeightMetres}; orientation={d.OrientationDegrees}; footprint={d.Footprint.Text} ({d.FootprintSource}); " +
         $"zone={Escape(d.QueueZoneName)}; credential={d.CredentialPrefix}; credentialIssued={d.CredentialIssuedOn:O}; sources={d.AllowedSources}; certificate={d.ClientCertificateSha256}");
 
@@ -394,7 +406,7 @@ internal sealed class SvcDevices(
         return new DeviceViewModel(d.Id.GetValueOrDefault(), d.Code, d.SiteCode, d.Family.ToString(), d.Model, d.Transport.ToString(), d.Dialect.ToString(),
             d.ClockSource.ToString(), d.State.ToString(), d.Level?.Id ?? Guid.Empty, d.X, d.Y, d.MountingHeightMetres, d.OrientationDegrees, View(d.Footprint),
             d.QueueZoneName, d.CredentialPrefix, d.CredentialIssuedOn, last?.PerformedOn, last?.Passed, d.RetiredOn, d.CreatedOn,
-            string.IsNullOrEmpty(d.AllowedSources) ? [] : d.AllowedSources.Split(','), d.ClientCertificateSha256);
+            string.IsNullOrEmpty(d.AllowedSources) ? [] : d.AllowedSources.Split(','), d.ClientCertificateSha256, d.MappingName);
     }
 
     private static CalibrationViewModel View(DeviceCalibration c, Device d) => new(

@@ -33,7 +33,7 @@ Ports marked "check the vendor datasheet" depend on the device family. Rows mark
 | # | Source | Destination | Port and protocol | Purpose | Status |
 |---|---|---|---|---|---|
 | 1 | Sensors (sensor VLAN) | Ingest gateway | TCP 443, HTTPS | Webhook push of tracks, counts and health; per-device credential, TLS, source IP allowlist, 256 KB body limit | Decided |
-| 2 | Sensors | MQTT broker at the gateway | TCP 8883, MQTT over TLS | Push with per-device client certificate or username and key; topic ACL per device. Whether the broker is embedded or separate is To confirm | Decided transport, broker To confirm |
+| 2 | Sensors | MQTT broker inside Ariva.Api.Ingest (ARV-024) | TCP 8883, MQTT over TLS | Publish only, with the device code and credential (optional pinned client certificate); topic ACL per device; source networks per device; no subscriptions. Kubernetes: `api-ingest-mqtt-service` | Decided (embedded broker) |
 | 3 | Ingest gateway | Sensors or perception platform | TCP 443 HTTPS (REST pull); WebSocket port per vendor | Configuration and health pull; perception platform streams. Only registered device addresses | Port per vendor: check the vendor datasheet |
 | 4 | Sensors or analytics servers | Ingest listener | TCP or UDP stream, port per adapter | Length-prefixed frames, source address allowlist | Planned families only |
 | 5 | Sensors | Ingest file drop | TCP 22 (SFTP) or FTPS | Interval file upload | Planned families only |
@@ -88,7 +88,7 @@ Examples from the formula tests: offsets 620, 610 and 630 ms are stable and corr
 |---|---|---|
 | Users, displays, integrators to the ingress | HTTPS at the ingress controller; the chart has no `tls` section, so the controller's default certificate applies | Site certificate per host (see [Deployment guide](04-Deployment-Guide.md)) |
 | Ingress to pods, pod to pod | HTTP inside the cluster (Service port 80 to container port 8080) | Mutual TLS or network policies between services (D5) |
-| Sensors to Ingest | Specified: HTTPS push, MQTT over TLS with client certificates | As specified |
+| Sensors to Ingest | Specified: HTTPS push, MQTT over TLS with the device credential (client certificates optional, pinned) | As specified |
 | Services to Kafka | Plaintext `kafka:9092` in the current settings | TLS and per-service ACLs (CWE-269 control); configuration To confirm |
 | Services to PostgreSQL | `Database:UseEncryption` is `false` in the committed settings | Encrypted connections in production |
 | Services to Redis | Plain `redis:6379` | TLS To confirm |

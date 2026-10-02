@@ -46,6 +46,16 @@ simulationEnabled: true
 # in k8s-prd by the chart (validate.yaml) and by the API itself.
 demoSeed: false
 
+# MQTT transport of api-ingest (ARV-024): an MQTT 3.1.1 and 5 broker that only takes device data in, over TLS terminated
+# in the pod with the kubernetes.io/tls secret below (ingress-nginx carries HTTP only). Devices sign in with their code
+# and credential and publish to ariva/v1/devices/<code>/<dialect>. The Service keeps the client address
+# (externalTrafficPolicy Local) so a device's allowed networks still apply; use LoadBalancer or NodePort per site.
+mqtt:
+  enabled: false
+  port: 8883
+  tlsSecretName: ariva-mqtt-tls
+  serviceType: ClusterIP
+
 # Per service overrides follow the AMAN key style, for example:
 # apiMainReplicas: 2
 # apiMainHpaMin: 1

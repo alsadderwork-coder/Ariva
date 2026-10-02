@@ -1,7 +1,7 @@
 // Chart security test (ARV-002, CWE-269). Renders Charts/platform with helm for every environment and fails when a
 // workload lacks the pod or container security context, a writable /tmp, a pinned image tag, or an ingress lacks TLS.
-// It also proves the release guards: production without a build number, the "latest" tag and the demo seed in
-// production (ARV-019) must fail to render.
+// It also proves the release guards: production without a build number, the "latest" tag, the demo seed in
+// production (ARV-019) and the MQTT transport without its TLS secret (ARV-024) must fail to render.
 //   node Platform/Cloud/Ariva.K8s/tests/chart-security.mjs              needs helm 3 on PATH (or HELM=path)
 //   node Platform/Cloud/Ariva.K8s/tests/chart-security.mjs --self-test  checks the rules against fixtures, no helm
 // Without helm the test is skipped locally and fails in CI (CI=true).
@@ -94,7 +94,8 @@ for (const [label, file, sets] of [
 	['production without a build number', 'values-k8s-prd.yaml', []],
 	['production with trunk', 'values-k8s-prd.yaml', ['buildNumber=trunk']],
 	['the latest tag', 'values-k8s-dev.yaml', ['buildNumber=latest']],
-	['production with the demo seed', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1', 'demoSeed=true']]
+	['production with the demo seed', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1', 'demoSeed=true']],
+	['MQTT without its TLS secret', 'values-k8s-dev.yaml', ['mqtt.enabled=true', 'mqtt.tlsSecretName=']]
 ]) {
 	const result = render(file, sets);
 	if (result.status === 0) {

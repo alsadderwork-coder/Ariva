@@ -3,6 +3,7 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 - Production never deploys a moving tag: buildNumber must be an explicit build (ARV-002).
 - No environment deploys the "latest" tag.
 - Production never seeds the fictional demo airport (ARV-019).
+- The MQTT transport always has its TLS secret (ARV-024): device credentials never cross the network in clear.
 */ -}}
 {{- if and (eq .Values.environment "k8s-prd") (or (empty .Values.buildNumber) (eq (toString .Values.buildNumber) "trunk")) }}
 {{- fail "k8s-prd needs an explicit buildNumber (for example --set buildNumber=main-20261001.3); trunk and empty are not allowed" }}
@@ -15,4 +16,7 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- end }}
 {{- if and (eq .Values.environment "k8s-prd") .Values.demoSeed }}
 {{- fail "demoSeed seeds a fictional airport and is not allowed in k8s-prd" }}
+{{- end }}
+{{- if and .Values.mqtt .Values.mqtt.enabled (empty .Values.mqtt.tlsSecretName) }}
+{{- fail "mqtt.enabled needs mqtt.tlsSecretName (a kubernetes.io/tls secret); the MQTT listener is TLS only" }}
 {{- end }}

@@ -1603,6 +1603,22 @@
     {
       "host": "main",
       "method": "GET",
+      "route": "/api/v1/admin/devices/mappings",
+      "access": "permission",
+      "permissions": [
+        "SearchDevice"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 200,
+        "TerminalDutyManager": 200,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
       "route": "/api/v1/admin/devices/{id:guid}",
       "access": "permission",
       "permissions": [
@@ -1846,6 +1862,20 @@
       "host": "ingest",
       "method": "POST",
       "route": "/api/v1/ingest/zones/{zone}/xovis",
+      "access": "device",
+      "body": {},
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "ingest",
+      "method": "POST",
+      "route": "/api/v1/ingest/zones/{zone}/declarative",
       "access": "device",
       "body": {},
       "expected": {

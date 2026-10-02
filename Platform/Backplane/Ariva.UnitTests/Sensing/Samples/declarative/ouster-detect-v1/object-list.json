@@ -1,0 +1,166 @@
+{
+  "object_list": [
+    {
+      "frame_count": 226599,
+      "timestamp": 1790949900500000,
+      "objects": [
+        {
+          "id": 1094,
+          "uuid": "74b4e42e-1f3a-4c5d-9e8f-000000001094",
+          "classification": "PERSON",
+          "classification_confidence": 0.93,
+          "position": {
+            "x": 0.967,
+            "y": -1.567,
+            "z": 1.069
+          },
+          "velocity": {
+            "x": -0.035,
+            "y": 0.017,
+            "z": 0.0
+          },
+          "dimensions": {
+            "length": 0.52,
+            "width": 0.48,
+            "height": 1.74
+          },
+          "orientation": {
+            "qw": 1.0,
+            "qx": 0.0,
+            "qy": 0.0,
+            "qz": 0.0
+          },
+          "num_points": 212,
+          "creation_ts": 1790949896500000,
+          "update_ts": 1790949900500000
+        },
+        {
+          "id": 1095,
+          "uuid": "74b4e42e-1f3a-4c5d-9e8f-000000001095",
+          "classification": "PERSON",
+          "classification_confidence": 0.93,
+          "position": {
+            "x": 2.25,
+            "y": 0.5,
+            "z": 0.85
+          },
+          "velocity": {
+            "x": -0.035,
+            "y": 0.017,
+            "z": 0.0
+          },
+          "dimensions": {
+            "length": 0.52,
+            "width": 0.48,
+            "height": 1.62
+          },
+          "orientation": {
+            "qw": 1.0,
+            "qx": 0.0,
+            "qy": 0.0,
+            "qz": 0.0
+          },
+          "num_points": 212,
+          "creation_ts": 1790949896500000,
+          "update_ts": 1790949900500000
+        },
+        {
+          "id": 2001,
+          "uuid": "74b4e42e-1f3a-4c5d-9e8f-000000002001",
+          "classification": "VEHICLE",
+          "classification_confidence": 0.93,
+          "position": {
+            "x": 6.0,
+            "y": 3.0,
+            "z": 0.7
+          },
+          "velocity": {
+            "x": -0.035,
+            "y": 0.017,
+            "z": 0.0
+          },
+          "dimensions": {
+            "length": 0.52,
+            "width": 0.48,
+            "height": 1.4
+          },
+          "orientation": {
+            "qw": 1.0,
+            "qx": 0.0,
+            "qy": 0.0,
+            "qz": 0.0
+          },
+          "num_points": 212,
+          "creation_ts": 1790949896500000,
+          "update_ts": 1790949900500000
+        }
+      ]
+    },
+    {
+      "frame_count": 226600,
+      "timestamp": 1790949900600000,
+      "objects": [
+        {
+          "id": 1094,
+          "uuid": "74b4e42e-1f3a-4c5d-9e8f-000000001094",
+          "classification": "PERSON",
+          "classification_confidence": 0.93,
+          "position": {
+            "x": 0.95,
+            "y": -1.55,
+            "z": 1.07
+          },
+          "velocity": {
+            "x": -0.035,
+            "y": 0.017,
+            "z": 0.0
+          },
+          "dimensions": {
+            "length": 0.52,
+            "width": 0.48,
+            "height": 1.74
+          },
+          "orientation": {
+            "qw": 1.0,
+            "qx": 0.0,
+            "qy": 0.0,
+            "qz": 0.0
+          },
+          "num_points": 212,
+          "creation_ts": 1790949896500000,
+          "update_ts": 1790949900500000
+        },
+        {
+          "id": 3001,
+          "uuid": "74b4e42e-1f3a-4c5d-9e8f-000000003001",
+          "classification": "BICYCLE",
+          "classification_confidence": 0.93,
+          "position": {
+            "x": 4.0,
+            "y": 4.0,
+            "z": 0.6
+          },
+          "velocity": {
+            "x": -0.035,
+            "y": 0.017,
+            "z": 0.0
+          },
+          "dimensions": {
+            "length": 0.52,
+            "width": 0.48,
+            "height": 1.1
+          },
+          "orientation": {
+            "qw": 1.0,
+            "qx": 0.0,
+            "qy": 0.0,
+            "qz": 0.0
+          },
+          "num_points": 212,
+          "creation_ts": 1790949896500000,
+          "update_ts": 1790949900500000
+        }
+      ]
+    }
+  ]
+}

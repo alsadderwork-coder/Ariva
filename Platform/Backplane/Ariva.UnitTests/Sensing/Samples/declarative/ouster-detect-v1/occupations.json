@@ -1,0 +1,21 @@
+{
+  "occupations": [
+    {
+      "id": 1658947733821,
+      "name": "Snake A",
+      "num_objects": 41,
+      "num_points": 8800,
+      "objects": [
+        1094,
+        1095
+      ]
+    },
+    {
+      "id": 1658947733822,
+      "name": "Overflow A",
+      "num_objects": 3,
+      "num_points": 610,
+      "objects": []
+    }
+  ]
+}

@@ -593,8 +593,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 27,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Declarative dialect with shipped JSON mappings (ouster-detect-v1) and a closed JSONPath subset; MQTT transport (MQTTnet 5.2.0.1603, confirmed on nuget.org since the NuGet MCP is unavailable) embedded in Ariva.Api.Ingest on 8883 with TLS. Security review PASS after fixes (backlog/progress.md). Integration Kafka tests and helm rendering run in CI.",
       "dependsOn": [
         "ARV-023"
       ]

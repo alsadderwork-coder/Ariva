@@ -5,6 +5,7 @@ using Ariva.Core.Domain.ViewModels;
 using Ariva.Core.Sensing;
 using Ariva.Core.Services.Sensing;
 using Ariva.Infra.Sensing;
+using Ariva.UnitTests.Setup;
 using FluentAssertions;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
@@ -56,7 +57,7 @@ public sealed class SensingIngestTests
         var sink = new Sink();
         var clocks = new DeviceClockStore();
         var cache = new FusionCache(new FusionCacheOptions(), new MemoryCache(new MemoryCacheOptions()));
-        return (new SensingIngest(new Gateway(published), sink, clocks, cache, Options.Create(new IngestSettings { MaxEventsPerMessage = max })), sink, clocks);
+        return (new SensingIngest(new Gateway(published), sink, clocks, cache, Options.Create(new IngestSettings { MaxEventsPerMessage = max }), Ariva.Infra.Sensing.Declarative.DeclarativeMappingCatalog.Embedded), sink, clocks);
     }
 
     private static ReadOnlyMemory<byte> Json(string json) => Encoding.UTF8.GetBytes(json);
@@ -313,5 +314,48 @@ public sealed class SensingIngestTests
         };
 
         System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(batch, Ariva.Infra.Messaging.EventCatalog.Json).Length.Should().BeLessThan(1_000_000);
+    }
+
+    private static DeviceCredentialRecord Ouster(string mapping = "ouster-detect-v1") =>
+        new(Guid.Parse("0199a000-0000-7000-8000-0000000d0024"), "L-24", "DMO", "Snake A", "Online", new string('a', 64), [], null, "Declarative", 20, 16, 90, mapping);
+
+    [Fact]
+    public async Task Ingest_Should_MapThroughTheDevicesMapping_And_NotCorrectReceiptTimes()
+    {
+        var (ingest, sink, clocks) = Create();
+        // The device's clock is known to be 2 seconds ahead and stable; occupancy stamped at receipt is Ariva's own time.
+        var id = Guid.Parse("0199a000-0000-7000-8000-0000000d0024");
+        for (var k = 0; k < 10; k++)
+            clocks.Observe(id, Received.AddSeconds(-60 + (k * 5)).AddMilliseconds(2_000), Received.AddSeconds(-60 + (k * 5)));
+        clocks.Current(id).Reading.State.Should().Be(ClockState.Corrected, "the setup is a device whose clock would be corrected");
+        var occupations = File.ReadAllText(RepositoryPaths.Resolve("Platform/Backplane/Ariva.UnitTests/Sensing/Samples/declarative/ouster-detect-v1/occupations.json"));
+
+        var result = await ingest.IngestAsync(Ouster(), DeviceDialect.Declarative, Json(occupations), Received, CancellationToken.None);
+
+        result.HasErrors.Should().BeFalse(string.Join("; ", result.ErrorMessages));
+        result.Data.Accepted.Should().Be(2);
+        var batch = sink.Published.OfType<ZoneOccupancyBatch>().Single();
+        batch.Dialect.Should().Be("Declarative:ouster-detect-v1");
+        batch.Occupancy.Select(o => (o.Event.ZoneName, o.Event.Count, o.TimeUtc, o.Flags)).Should().Equal(
+            ("Snake A", 41, Received, SensedFlags.None), ("Overflow A", 3, Received, SensedFlags.None));
+
+        var tracks = File.ReadAllText(RepositoryPaths.Resolve("Platform/Backplane/Ariva.UnitTests/Sensing/Samples/declarative/ouster-detect-v1/object-list.json"));
+        var tracked = await ingest.IngestAsync(Ouster(), DeviceDialect.Declarative, Json(tracks), Received, CancellationToken.None);
+        tracked.Data.Accepted.Should().Be(3);
+        tracked.Data.Ignored.Should().Be(2, "the vehicle and the bicycle are left out by the mapping");
+        sink.Published.OfType<TrackSampleBatch>().Single().Samples.Select(t => t.Event.TrackId).Should().Equal("L-24/1094", "L-24/1095", "L-24/1094");
+    }
+
+    [Fact]
+    public async Task Ingest_Should_Refuse_When_TheMappingIsNotShippedOrTheDialectDiffers()
+    {
+        var (ingest, sink, _) = Create();
+
+        var unknown = await ingest.IngestAsync(Ouster("gone-v9"), DeviceDialect.Declarative, Json("{}"), Received, CancellationToken.None);
+        var other = await ingest.IngestAsync(Ouster(), DeviceDialect.Canonical, Json(Push()), Received, CancellationToken.None);
+
+        unknown.ErrorMessages.Should().ContainSingle().Which.Should().Contain("not in this version of Ariva");
+        other.ErrorMessages.Should().ContainSingle().Which.Should().Contain("Declarative dialect");
+        sink.Published.Should().BeEmpty();
     }
 }

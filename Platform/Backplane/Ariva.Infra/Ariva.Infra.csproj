@@ -32,6 +32,7 @@
     <ItemGroup>
         <!-- Versioned scripts ship inside the assembly, so the migration job and the startup check read exactly what was built (ARV-006) -->
         <EmbeddedResource Include="Timescale\Scripts\*.sql" LogicalName="Ariva.Infra.Timescale.Scripts.%(Filename)%(Extension)" />
+        <EmbeddedResource Include="Sensing\Mappings\*.json" LogicalName="Ariva.Infra.Sensing.Mappings.%(Filename)%(Extension)" />
         <EmbeddedResource Include="Security\Resources\password-blocklist.txt.gz" LogicalName="Ariva.Infra.Security.password-blocklist.txt.gz" />
     </ItemGroup>
 

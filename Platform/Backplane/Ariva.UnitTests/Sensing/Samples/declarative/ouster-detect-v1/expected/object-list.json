@@ -1,0 +1,39 @@
+{
+ "pose": [
+  20,
+  16,
+  90
+ ],
+ "sentUtc": null,
+ "packages": [
+  226599
+ ],
+ "ignored": 2,
+ "receiptTimed": ["occupancy"],
+ "tracks": [
+  {
+   "id": "1094",
+   "x": 21.567,
+   "y": 16.967,
+   "height": 1.74,
+   "timeUtc": "2026-10-02T14:05:00.5Z"
+  },
+  {
+   "id": "1095",
+   "x": 19.5,
+   "y": 18.25,
+   "height": 1.62,
+   "timeUtc": "2026-10-02T14:05:00.5Z"
+  },
+  {
+   "id": "1094",
+   "x": 21.55,
+   "y": 16.95,
+   "height": 1.74,
+   "timeUtc": "2026-10-02T14:05:00.6Z"
+  }
+ ],
+ "occupancy": [],
+ "crossings": [],
+ "intervals": []
+}

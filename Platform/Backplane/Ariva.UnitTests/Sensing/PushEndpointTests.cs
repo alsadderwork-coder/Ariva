@@ -23,12 +23,16 @@ public sealed class PushEndpointTests
 {
     private static readonly DeviceCredentials.Issued Canonical = DeviceCredentials.New();
     private static readonly DeviceCredentials.Issued Xovis = DeviceCredentials.New();
+    private static readonly DeviceCredentials.Issued Ouster = DeviceCredentials.New();
+    private static readonly DeviceCredentials.Issued OnMqtt = DeviceCredentials.New();
 
     private sealed class Gateway : ISvcDeviceGateway
     {
         public Task<DeviceCredentialRecord> FindByPrefixAsync(string prefix, CancellationToken ct = default) => Task.FromResult(
             prefix == Canonical.Prefix ? new DeviceCredentialRecord(Guid.NewGuid(), "S-17", "DMO", "Snake A", "Online", Canonical.Hash, [], null, "Canonical", 20, 16, 0)
             : prefix == Xovis.Prefix ? new DeviceCredentialRecord(Guid.NewGuid(), "S-18", "DMO", "Snake A", "Online", Xovis.Hash, [], null, "Xovis", 20, 16, 0)
+            : prefix == OnMqtt.Prefix ? new DeviceCredentialRecord(Guid.NewGuid(), "M-30", "DMO", "Snake A", "Online", OnMqtt.Hash, [], null, "Canonical", 20, 16, 0, null, "Mqtt")
+            : prefix == Ouster.Prefix ? new DeviceCredentialRecord(Guid.NewGuid(), "L-24", "DMO", "Snake A", "Online", Ouster.Hash, [], null, "Declarative", 20, 16, 90, "ouster-detect-v1")
             : null);
 
         public Task<Fluentx.Result<DeviceZoneViewModel>> PublishedZoneAsync(string siteCode, string queueZoneName, CancellationToken ct = default) =>
@@ -135,5 +139,25 @@ public sealed class PushEndpointTests
         {
             Sink.Fail = false;
         }
+    }
+
+    [Fact]
+    public async Task Push_Should_AcceptAnOusterSampleThroughTheDeclarativeEndpoint()
+    {
+        await using var host = Ingest();
+        using var client = host.CreateClient();
+        var sample = File.ReadAllText(RepositoryPaths.Resolve("Platform/Backplane/Ariva.UnitTests/Sensing/Samples/declarative/ouster-detect-v1/occupations.json"));
+
+        var result = await PostAsync(client, "/api/v1/ingest/zones/Snake%20A/declarative", Ouster.Credential, JsonBody(sample));
+        var wrong = await PostAsync(client, "/api/v1/ingest/zones/Snake%20A/declarative", Canonical.Credential, JsonBody(Push));
+
+        result.Status.Should().Be(HttpStatusCode.Accepted, result.Body);
+        result.Body.Should().Contain("\"accepted\":1").And.Contain("\"rejected\":1", "Overflow A is not in this zone's published geometry");
+        wrong.Status.Should().Be(HttpStatusCode.BadRequest);
+        wrong.Body.Should().Contain("Canonical dialect");
+
+        var mqtt = await PostAsync(client, "/api/v1/ingest/zones/Snake%20A/events", OnMqtt.Credential, JsonBody(Push));
+        mqtt.Status.Should().Be(HttpStatusCode.Forbidden, "a device registered on MQTT does not push over HTTPS");
+        mqtt.Body.Should().Contain("Mqtt transport");
     }
 }

@@ -1,0 +1,23 @@
+{
+  "name": "ouster-detect-v1",
+  "title": "Ouster Detect (Gemini) perception output: object_list tracks and occupations zone counts, JSON over MQTT, WebSocket or the TCP relay",
+  "source": "https://docs.ouster.com/ouster-detect/connecting_to_output/connecting-to-output.html",
+  "positions": { "frame": "device", "scale": 1 },
+  "package": "$.object_list[0].frame_count",
+  "tracks": {
+    "groups": "$.object_list[*]",
+    "items": "^.objects[*]",
+    "where": [{ "path": "@.classification", "equals": ["PERSON"] }],
+    "trackId": "@.id",
+    "x": "@.position.x",
+    "y": "@.position.y",
+    "height": "@.dimensions.height",
+    "time": { "path": "^.timestamp", "unit": "us" }
+  },
+  "occupancy": {
+    "items": "$.occupations[*]",
+    "zone": "@.name",
+    "count": "@.num_objects",
+    "time": { "received": true }
+  }
+}

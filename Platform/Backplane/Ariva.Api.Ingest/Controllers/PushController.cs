@@ -8,7 +8,7 @@ using Microsoft.AspNetCore.RateLimiting;
 namespace Ariva.Api.Ingest.Controllers;
 
 /// <summary>
-/// Sensor pushes (ARV-023) for the device's own zone: the canonical dialect and the Xovis dialect, JSON of at most 256 KB
+/// Sensor pushes (ARV-023, ARV-024) for the device's own zone: the canonical, Xovis and declarative dialects, JSON of at most 256 KB
 /// (413 beyond) and 2,000 events. 202 with what was accepted, refused, flagged and ignored; 400 when the message is
 /// malformed or the device speaks another dialect; 503 when the events could not be stored, so the device sends again.
 /// </summary>
@@ -35,11 +35,24 @@ public sealed class PushController(SensingIngest ingest, TimeProvider timeProvid
     [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
     public Task<IActionResult> Xovis(string zone, CancellationToken ct) => PushAsync(DeviceDialect.Xovis, ct);
 
+    /// <summary>A payload read with the device's declarative mapping (ARV-024), from the catalog shipped with Ariva.</summary>
+    [HttpPost("declarative")]
+    [DeviceAuthenticated(ownZoneOnly: true)]
+    [RequestSizeLimit(IngestSettings.MaxBodyBytes)]
+    [ProducesResponseType<IngestOutcome>(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status413PayloadTooLarge)]
+    [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
+    public Task<IActionResult> Declarative(string zone, CancellationToken ct) => PushAsync(DeviceDialect.Declarative, ct);
+
     private async Task<IActionResult> PushAsync(DeviceDialect dialect, CancellationToken ct)
     {
         var device = DeviceAuthentication.RecordOf(HttpContext);
         if (device is null)
             return Forbid();
+        // A device pushes over the transport it is registered for (ARV-024): one rate limit, one way in.
+        if (!string.Equals(device.Transport, nameof(DeviceTransport.HttpsPush), StringComparison.Ordinal))
+            return Problem(statusCode: StatusCodes.Status403Forbidden, title: "Forbidden", detail: $"This device is registered for the {device.Transport} transport.");
         var received = timeProvider.GetUtcNow().UtcDateTime;
         // Checked here rather than with [Consumes]: a mismatch there leaves no endpoint, and the caller would get the
         // fallback 401 instead of being told the body must be JSON.

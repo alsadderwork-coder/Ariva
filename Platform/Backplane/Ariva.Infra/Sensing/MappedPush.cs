@@ -7,7 +7,8 @@ namespace Ariva.Infra.Sensing;
 /// <summary>
 /// A vendor payload mapped to canonical events (ARV-023), before validation: the device's own send time and package id
 /// when the payload has them, the events, how many vendor items were ignored on purpose (types Ariva does not use) and
-/// short notes on why. A connection test carries nothing.
+/// short notes on why. A connection test carries nothing. Events of the kinds in <c>ReceiptTimed</c> carry Ariva's receipt
+/// time because the payload has none (ARV-024); their times are not corrected by the device's clock offset.
 /// </summary>
 public sealed record MappedPush(
     DateTime? DeviceSentUtc,
@@ -19,9 +20,21 @@ public sealed record MappedPush(
     DeviceStatus Status,
     int Ignored,
     IReadOnlyList<string> Notes,
-    bool ConnectionTest = false)
+    bool ConnectionTest = false,
+    PushKinds ReceiptTimed = PushKinds.None)
 {
     public int EventCount => Tracks.Count + Crossings.Count + Occupancy.Count + Intervals.Count + (Status is null ? 0 : 1);
+}
+
+/// <summary>Kinds of events in a push; <see cref="MappedPush.ReceiptTimed"/> names those stamped with Ariva's receipt time (no clock correction).</summary>
+[Flags]
+public enum PushKinds
+{
+    None = 0,
+    Tracks = 1,
+    Crossings = 2,
+    Occupancy = 4,
+    Intervals = 8
 }
 
 /// <summary>The payload is not what the dialect expects (400); the message says what, never echoing the payload.</summary>

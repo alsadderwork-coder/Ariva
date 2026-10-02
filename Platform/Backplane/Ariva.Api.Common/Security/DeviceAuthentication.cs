@@ -159,29 +159,19 @@ public sealed class DeviceAuthenticationHandler(
     ILoggerFactory logger,
     UrlEncoder encoder) : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
 {
-    /// <summary>Compared against when no device matches, so a miss costs the same hash as a hit.</summary>
-    private static readonly string NoDeviceHash = new('0', 64);
-
     protected override async Task<AuthenticateResult> HandleAuthenticateAsync()
     {
         var (key, basicUser) = DeviceAuthentication.Presented(Request);
         if (key is null)
             return AuthenticateResult.NoResult();
-        if (!DeviceCredentials.IsWellFormed(key))
-            return Refuse(null, "malformed credential");
 
-        var prefix = key[..DeviceCredentials.PrefixLength];
-        var device = await Context.RequestServices.GetRequiredService<ISvcDeviceGateway>().FindByPrefixAsync(prefix, Context.RequestAborted);
-        var matches = DeviceCredentials.Matches(key, device?.CredentialHash ?? NoDeviceHash);
-        if (device is null || !matches)
-            return Refuse(prefix, "unknown or wrong credential");
-        if (basicUser is not null && !string.Equals(basicUser, device.Code, StringComparison.Ordinal))
-            return Refuse(prefix, "Basic user name is not the device code");
-        if (device.AllowedSources.Count > 0 && !FromAllowedNetwork(device.AllowedSources))
-            return Refuse(prefix, "client address outside the device's allowed networks");
-        if (device.ClientCertificateSha256 is { } pin && !await PresentsPinnedCertificateAsync(pin))
-            return Refuse(prefix, "pinned client certificate not presented");
+        var check = await DeviceCredentialCheck.VerifyAsync(Context.RequestServices.GetRequiredService<ISvcDeviceGateway>(), key, basicUser,
+            Context.Connection.RemoteIpAddress, async ct => Context.Connection.ClientCertificate ?? await Context.Connection.GetClientCertificateAsync(ct),
+            Context.RequestAborted);
+        if (check.Device is null)
+            return Refuse(check.Prefix, check.Refusal);
 
+        var device = check.Device;
         Context.Items[DeviceAuthentication.RecordItem] = device;
         var identity = new ClaimsIdentity(
         [
@@ -212,10 +202,46 @@ public sealed class DeviceAuthenticationHandler(
         Logger.LogWarning("Device authentication refused for {CredentialPrefix} from {Address}: {Reason}", prefix ?? "(none)", Context.Connection.RemoteIpAddress, reason);
         return AuthenticateResult.Fail("Device authentication failed.");
     }
+}
 
-    private bool FromAllowedNetwork(IReadOnlyList<string> allowed)
+/// <summary>
+/// The checks on a presented device credential (ARV-022), shared by the HTTPS scheme and the MQTT transport (ARV-024):
+/// well formed, the device behind its prefix found (cached briefly, evicted on every registry change), the SHA-256
+/// compared in constant time (a miss costs the same hash), the user name, when one is given, equal to the device code,
+/// the client address inside the device's allowed networks, and the pinned client certificate presented when one is
+/// pinned. The refusal reason is for the log only, never for the caller.
+/// </summary>
+public static class DeviceCredentialCheck
+{
+    private static readonly string NoDeviceHash = new('0', 64);
+
+    public sealed record Outcome(DeviceCredentialRecord Device, string Prefix, string Refusal);
+
+    public static async Task<Outcome> VerifyAsync(ISvcDeviceGateway gateway, string key, string userName, IPAddress remote,
+        Func<CancellationToken, Task<System.Security.Cryptography.X509Certificates.X509Certificate2>> certificate, CancellationToken ct)
     {
-        var address = Context.Connection.RemoteIpAddress;
+        ArgumentNullException.ThrowIfNull(gateway);
+        ArgumentNullException.ThrowIfNull(certificate);
+        if (!DeviceCredentials.IsWellFormed(key))
+            return new Outcome(null, null, "malformed credential");
+
+        var prefix = key[..DeviceCredentials.PrefixLength];
+        var device = await gateway.FindByPrefixAsync(prefix, ct);
+        var matches = DeviceCredentials.Matches(key, device?.CredentialHash ?? NoDeviceHash);
+        if (device is null || !matches)
+            return new Outcome(null, prefix, "unknown or wrong credential");
+        if (userName is not null && !string.Equals(userName, device.Code, StringComparison.Ordinal))
+            return new Outcome(null, prefix, "user name is not the device code");
+        if (device.AllowedSources.Count > 0 && !FromAllowedNetwork(remote, device.AllowedSources))
+            return new Outcome(null, prefix, "client address outside the device's allowed networks");
+        if (device.ClientCertificateSha256 is { } pin && !Pinned(await certificate(ct), pin))
+            return new Outcome(null, prefix, "pinned client certificate not presented");
+        return new Outcome(device, prefix, null);
+    }
+
+    public static bool FromAllowedNetwork(IPAddress address, IReadOnlyList<string> allowed)
+    {
+        ArgumentNullException.ThrowIfNull(allowed);
         if (address is null)
             return false;
         if (address.IsIPv4MappedToIPv6)
@@ -229,9 +255,8 @@ public sealed class DeviceAuthenticationHandler(
         return false;
     }
 
-    private async Task<bool> PresentsPinnedCertificateAsync(string pin)
+    private static bool Pinned(System.Security.Cryptography.X509Certificates.X509Certificate2 certificate, string pin)
     {
-        var certificate = Context.Connection.ClientCertificate ?? await Context.Connection.GetClientCertificateAsync(Context.RequestAborted);
         if (certificate is null)
             return false;
         var presented = Convert.ToHexStringLower(SHA256.HashData(certificate.RawData));

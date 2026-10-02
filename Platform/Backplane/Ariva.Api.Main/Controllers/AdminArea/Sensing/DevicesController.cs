@@ -37,6 +37,12 @@ public sealed class DevicesController(ISvcDevices devices) : ControllerBase
     public IActionResult AssumedFootprint([FromQuery] string family, [FromQuery] double mountingHeightMetres) =>
         TopologyAnswers.Ok(this, devices.AssumedFootprint(family, mountingHeightMetres));
 
+    /// <summary>The declarative mappings shipped with this version of Ariva (ARV-024), for a device on the declarative dialect.</summary>
+    [HttpGet("mappings")]
+    [Permission(nameof(Global.Defaults.Permissions.SearchDevice))]
+    [ProducesResponseType<IReadOnlyList<DeviceMappingViewModel>>(StatusCodes.Status200OK)]
+    public IActionResult Mappings([FromServices] IDeviceMappingCatalog catalog) => Ok(catalog.Mappings);
+
     [HttpGet("{id:guid}")]
     [Permission(nameof(Global.Defaults.Permissions.ViewDevice))]
     [ProducesResponseType<DeviceViewModel>(StatusCodes.Status200OK)]

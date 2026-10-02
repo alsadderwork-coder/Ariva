@@ -17,6 +17,7 @@ public static class DeviceErrors
     public const string UnknownClockSource = "Unknown clock source.";
     public const string UnknownMethod = "Unknown calibration method.";
     public const string UnknownState = "Unknown device state.";
+    public const string UnknownMapping = "The declarative dialect needs a mapping from the catalog shipped with Ariva (GET devices/mappings); other dialects take none.";
 
     /// <summary>Errors that mean the request conflicts with the device's state (409).</summary>
     public static readonly IReadOnlySet<string> Conflicts = new HashSet<string>(StringComparer.Ordinal) { Retired, NotRemovable };
@@ -69,4 +70,16 @@ public interface ISvcDeviceGateway : ISvcScoped
 public interface ISensingSink
 {
     Task PublishAsync(IReadOnlyList<Ariva.Core.Domain.Contracts.IEvent> events, CancellationToken ct = default);
+}
+
+/// <summary>
+/// The declarative mappings shipped with Ariva (ARV-024), read and checked at start-up. A device on the declarative
+/// dialect names one; there is no way to add a mapping at run time, so a mapping is reviewed like code.
+/// </summary>
+public interface IDeviceMappingCatalog
+{
+    /// <summary>The mappings by name, with a title and the vendor documentation they follow.</summary>
+    IReadOnlyList<DeviceMappingViewModel> Mappings { get; }
+
+    bool Contains(string name);
 }

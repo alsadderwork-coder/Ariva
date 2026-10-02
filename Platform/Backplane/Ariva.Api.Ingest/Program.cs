@@ -3,6 +3,7 @@ using Ariva.Api.Common.Extensions;
 using Ariva.Api.Common.HealthChecks;
 using Ariva.Api.Common.Hosting;
 using Ariva.Api.Common.Filters;
+using Ariva.Api.Ingest.Mqtt;
 using Ariva.Di;
 using Ariva.Di.Extensions;
 
@@ -66,6 +67,11 @@ builder.Services.AddAppClientCertificates(builder.Configuration);
 
 // Sensor pushes (ARV-023): dialect mappers, per-device clock estimates, batches to Kafka keyed by zone.
 builder.Services.AddArivaSensingIngest(builder.Configuration);
+
+// MQTT transport (ARV-024), off unless Ingest:Mqtt:Enabled: a broker on its own TLS listener that takes device data in
+// through the same ingest, with the device credential, a topic per device and no subscriptions.
+builder.Services.AddArivaMqttTransport(builder.Configuration, environment);
+builder.WebHost.UseArivaMqttListener();
 
 // AMAN: AddAppCaching, AddAppHealthChecks, AddAppRouting, AddAppOpenApi.
 // Adapters: one poller per vendor registered as a hosted service; a Kafka producer per normalised topic.

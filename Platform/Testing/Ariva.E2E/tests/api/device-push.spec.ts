@@ -4,7 +4,8 @@ import { hosts } from '../support/hosts';
 
 // ARV-023: sensor pushes on Ariva.Api.Ingest for the device's own zone and dialect: 202 with the counts; the unknown
 // line refused; another zone 403; another dialect 400; not JSON 415; over 256 KB 413; a Xovis firmware 5 logics push
-// mapped to an interval count and an occupancy.
+// mapped to an interval count and an occupancy. ARV-024: an Ouster Detect occupations message through the declarative
+// mapping ouster-detect-v1, the mappings list, and an unknown mapping refused at registration.
 
 test.skip(!databaseAvailable, 'pushes need the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true)');
 test.describe.configure({ mode: 'serial' });
@@ -15,6 +16,8 @@ const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const random = (n: number) => Array.from({ length: n }, () => letters[Math.floor(Math.random() * 26)]).join('');
 const site = `DP${random(4)}`;
 const keys: Record<string, string> = {};
+let adminToken = '';
+let level = '';
 
 const push = (path: string, key: string, body: string, contentType = 'application/json') =>
 	call('POST', `${ingest}/${path}`, { headers: { 'X-Ariva-Device-Key': key, 'Content-Type': contentType }, raw: body });
@@ -32,17 +35,19 @@ test.beforeAll(async () => {
 	const airport = await create('airports', { iataCode: random(3), name: `E2E pushes ${site}`, timeZoneId: 'Asia/Dubai' });
 	const terminal = await create('terminals', { airportId: airport, code: 'T1', name: 'T1', siteCode: site });
 	const levelId = await create('levels', { terminalId: terminal, code: 'L0', name: 'L0', floorNumber: 0, widthMetres: 100, depthMetres: 50 });
+	adminToken = token;
+	level = levelId;
 	const draft = await create('zone-profiles/drafts', { siteCode: site, name: 'Arrivals' });
 	const zoneId = await create(`zone-profiles/${draft}/zones`, { name: 'Snake A', kind: 'Queue', levelId, polygon: '10 10,34 10,34 22,10 22' });
 	await create(`zone-profiles/${draft}/lines`, { name: 'Entry A', role: 'Entry', levelId, startX: 10, startY: 12, endX: 10, endY: 16, zoneId });
 	await create(`zone-profiles/${draft}/lines`, { name: 'Exit A', role: 'Exit', levelId, startX: 30, startY: 22, endX: 34, endY: 22, zoneId });
 	const { geometryHash } = await (await call('GET', `${admin}/zone-profiles/${draft}/validation`, { token })).json();
 	expect((await call('POST', `${admin}/zone-profiles/${draft}/publish`, { token, data: { geometryHash } })).status()).toBe(200);
-	for (const [code, dialect] of [['S-1', 'Canonical'], ['S-2', 'Xovis']]) {
+	for (const [code, dialect, mappingName] of [['S-1', 'Canonical', null], ['S-2', 'Xovis', null], ['L-1', 'Declarative', 'ouster-detect-v1']] as const) {
 		const registered = await call('POST', `${admin}/devices`, {
 			token,
 			data: {
-				code, family: 'StereoVision', model: 'PC2SE', transport: 'HttpsPush', dialect, clockSource: 'Ntp',
+				code, family: 'StereoVision', model: 'PC2SE', transport: 'HttpsPush', dialect, clockSource: 'Ntp', mappingName,
 				placement: { levelId, x: 20, y: 16, mountingHeightMetres: 5, orientationDegrees: 0, queueZoneName: 'Snake A' }
 			}
 		});
@@ -91,4 +96,31 @@ test('a Xovis firmware 5 logics push becomes an interval count and an occupancy'
 	const accepted = await push('xovis', keys.Xovis, body);
 	expect(accepted.status(), await accepted.text()).toBe(202);
 	expect((await accepted.json()).accepted).toBe(2);
+});
+
+test('an Ouster occupations message is read through the declarative mapping', async () => {
+	const body = JSON.stringify({
+		occupations: [
+			{ id: 1658947733821, name: 'Snake A', num_objects: 41, num_points: 8800, objects: [1094, 1095] },
+			{ id: 1658947733822, name: 'Nowhere', num_objects: 3, num_points: 610, objects: [] }
+		]
+	});
+	const accepted = await push('declarative', keys.Declarative, body);
+	expect(accepted.status(), await accepted.text()).toBe(202);
+	const outcome = await accepted.json();
+	expect(outcome.accepted).toBe(1);
+	expect(outcome.rejected).toBe(1);
+	expect((await push('declarative', keys.Canonical, body)).status()).toBe(400);
+
+	const mappings = await call('GET', `${admin}/devices/mappings`, { token: adminToken });
+	expect(mappings.status()).toBe(200);
+	expect((await mappings.json()).map((m: { name: string }) => m.name)).toContain('ouster-detect-v1');
+	const unknown = await call('POST', `${admin}/devices`, {
+		token: adminToken,
+		data: {
+			code: 'L-9', family: 'Lidar', model: 'Gemini', transport: 'Mqtt', dialect: 'Declarative', clockSource: 'Ntp', mappingName: 'made-up-v1',
+			placement: { levelId: level, x: 20, y: 16, mountingHeightMetres: 6, orientationDegrees: 0, queueZoneName: 'Snake A' }
+		}
+	});
+	expect(unknown.status()).toBe(400);
 });

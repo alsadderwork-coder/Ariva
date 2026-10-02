@@ -20,7 +20,7 @@ Penalty-grade evaluation (v1) requires T3 data or T1 data validated against manu
 | Transport | Direction | Notes |
 |---|---|---|
 | HTTPS push (webhook) | Device to `Ariva.Api.Ingest` | Per-device credential (bearer key or Basic), TLS, IP allowlist, 256 KB body limit |
-| MQTT(S) | Device to broker; `Ariva.Api.Ingest` subscribes | TLS, per-device client certificate or username and key; topic ACL per device |
+| MQTT(S) | Device to the broker inside `Ariva.Api.Ingest` (ARV-024) | TLS on its own port (8883), device code and credential as user name and password, optional pinned client certificate, topic ACL per device, publish only |
 | REST pull | `Ariva.Api.Ingest` polls the device or controller | Only registered device addresses (SSRF control); `If-Modified-Since` or cursor |
 | WebSocket stream | Perception platform to `Ariva.Api.Ingest` client | JSON or protobuf frames; reconnect with backoff |
 | TCP or UDP stream | Device to listener | Length-prefixed frames, bounds-checked parsing, source address allowlist |
@@ -34,7 +34,7 @@ A dialect maps a vendor payload to canonical events: `LineCrossing` (lineId, dir
 
 Two kinds:
 - **Coded mappers** for first-class families (Xovis, the main LiDAR perception platforms), with typed parsing and full conformance tests.
-- **Declarative mappers** (JSONPath or XPath field maps stored with the device family) for the long tail. Expressions are paths, not code (CWE-94): the mapper evaluates a restricted path syntax and never executes scripts.
+- **Declarative mappers** (ARV-024) for the long tail: a JSON mapping document per vendor format, shipped with Ariva and reviewed like code, read with a restricted path syntax. Expressions are paths, not code (CWE-94): nothing in a mapping is evaluated, compiled or executed. JSON only; XPath is not implemented.
 
 Every payload is untrusted (CWE-501): schema validated, size limited, timestamps checked against the device clock offset, ids namespaced by device. The canonical records and their bounds live in `Ariva.Core.Sensing` (`CanonicalEventRules`, ARV-021). A device is tied to its owning queue zone by the zone's name in the site's profiles, which survives new profile versions (zone ids do not), so the zone key of a device's events is stable.
 
@@ -53,13 +53,13 @@ Xovis models share one data interface family, so one adapter covers them; the mo
 | PC3 series | PC3 (6 to 14 m), PC3-L (6 to 9 m), PC3-M1, PC3-M2, PC3-H, PC3-UH (16 to 20 m), outdoor -O variants | 6 to 20 m | Check-in halls and high ceilings |
 | PF series | Listed in the 2025 selection guide | verify | verify |
 
-Data output: data push over HTTP(S), MQTT(S), FTP(S), SFTP, TCP and UDP, and a REST API with Swagger documentation (PC3 datasheet); JSON payloads with counting-line and zone logics, intervals and track data in multi-sensor setups; four privacy modes, text-only output. Ariva adapter: `Xovis` dialect over HTTPS push (Phase 0, against recorded payloads), MQTT (Pilot), REST pull for configuration and health (Pilot). Multi-sensor stitching is done by the Xovis multi-sensor setup, not by Ariva.
+Data output: data push over HTTP(S), MQTT(S), FTP(S), SFTP, TCP and UDP, and a REST API with Swagger documentation (PC3 datasheet); JSON payloads with counting-line and zone logics, intervals and track data in multi-sensor setups; four privacy modes, text-only output. Ariva adapter: `Xovis` dialect over HTTPS push (Phase 0, against recorded payloads) and over the MQTT transport (Phase 0 transport; the Xovis MQTT payload is assumed to be the push JSON, to confirm), REST pull for configuration and health (Pilot). Multi-sensor stitching is done by the Xovis multi-sensor setup, not by Ariva.
 
 ### LiDAR (through perception platforms)
 
 | Layer | Products | Ariva integration |
 |---|---|---|
-| Perception platforms (what Ariva connects to) | Ouster Gemini, Outsight SHIFT (Augmented LiDAR), Seoul Robotics SENSR, Blickfeld Percept and Qb2 smart LiDAR | Coded adapters per platform; outputs are tracks, zone occupancy and line counts over REST, WebSocket or MQTT (verify per platform). One platform certified for the pilot, others Planned |
+| Perception platforms (what Ariva connects to) | Ouster Gemini, Outsight SHIFT (Augmented LiDAR), Seoul Robotics SENSR, Blickfeld Percept and Qb2 smart LiDAR | Ouster Detect through the declarative mapping `ouster-detect-v1` over HTTPS push or MQTT (Phase 0, from documentation); coded adapters for binary outputs (Outsight OSEF, SENSR protobuf); outputs are tracks, zone occupancy and line counts. One platform certified for the pilot, others Planned |
 | LiDAR hardware (behind the platform) | Ouster (OS0, OS1, OSDome, and Velodyne lines after the merger), Hesai (XT and JT series), RoboSense, Livox, Seyond, Blickfeld | Not consumed directly; supported if the chosen perception platform supports it |
 
 Coverage for LiDAR is radius-based and depends on the platform's tracking range; the BOQ uses an assumed 10 m effective radius until a platform is certified.
@@ -119,6 +119,49 @@ Firmware 5 data push in JSON (`package_info.version` "5.0"), one envelope or an 
 
 `package_info.id` is the package id (duplicates repeat their batch id); `sensor_info.time` is the device's send time for the clock estimate. Conformance samples and their expected canonical events are in `Platform/Backplane/Ariva.UnitTests/Sensing/Samples`. To confirm with Xovis or the reseller before certification: a real live data capture (units, origin and axes, what normalization level 1 changes), multi-sensor and HUB payloads (identity, coordinate frame), the official push schema per firmware, queue logic counter names and units, when bodies are arrays, which status codes count as success and whether package ids repeat on retry, and TLS details.
 
+## Declarative mappings (ARV-024)
+
+A device on the `Declarative` dialect names a mapping (`mappingName`, for example `ouster-detect-v1`), and pushes to `POST api/v1/ingest/zones/{zone}/declarative` or publishes over MQTT. Mappings are the JSON files in `Platform/Backplane/Ariva.Infra/Sensing/Mappings`, embedded in the assembly and checked when a host starts (a broken mapping stops it); `GET api/v1/admin/devices/mappings` lists them. There is no way to add or change a mapping at run time: a new vendor format is a reviewed pull request with a documented sample and its expected events.
+
+```json
+{ "name": "ouster-detect-v1", "title": "...", "source": "https://docs.ouster.com/...",
+  "positions": { "frame": "device", "scale": 1 },
+  "package": "$.object_list[0].frame_count",
+  "tracks": { "groups": "$.object_list[*]", "items": "^.objects[*]", "where": [{ "path": "@.classification", "equals": ["PERSON"] }],
+              "trackId": "@.id", "x": "@.position.x", "y": "@.position.y", "height": "@.dimensions.height", "time": { "path": "^.timestamp", "unit": "us" } },
+  "occupancy": { "items": "$.occupations[*]", "zone": "@.name", "count": "@.num_objects", "time": { "received": true } } }
+```
+
+| Part | Rule |
+|---|---|
+| Paths | Start at `$` (the payload), `^` (the current group) or `@` (the current item); then `.name`, `['name with spaces']` or `[index]`; one `[*]` only in `groups` and `items`. No filters, recursive descent, slices, unions, negative indexes, functions or expressions; at most 200 characters and 16 steps. Evaluating a path only walks JSON values |
+| Sections | `tracks`, `crossings`, `occupancy`, `intervals`; each enumerates `items` from the payload or, with `groups`, from each group; up to 4 `where` filters keep items whose value equals one of the listed strings, numbers or booleans (others are ignored and counted) |
+| Values | Ids are strings or integers; names are strings; positions finite numbers in metres times `scale`, on the floor (`floor`) or in the device's frame placed with its registered position and orientation (`device`); counts integers; a missing or mistyped required value refuses the message, naming the mapping path and never the payload |
+| Times | RFC 3339 with an offset, or Unix time in `s`, `ms`, `us` or `ns`, between 2000 and 2100; `received` stamps events with Ariva's receipt time for payloads that carry none (no clock correction for those); `sentTime` and `package` feed the clock estimate and duplicate detection as for the coded dialects |
+| Limits | A mapping document is at most 32 KB and strict (unknown members, comments and wrong types refuse it); per message at most four times the event limit of items are looked at and at most the event limit become events |
+
+Shipped mappings:
+
+| Mapping | Vendor format | Status |
+|---|---|---|
+| `ouster-detect-v1` | Ouster Detect (Gemini) perception output: `object_list` frames (`frame_count`, `timestamp` in microseconds, objects with `id`, `classification`, `position` in metres, `dimensions`) become tracks of PERSON objects in the device's frame; `occupations` (`name`, `num_objects`) become zone occupancy at receipt, since that stream carries no time | Field names from Ouster's documentation (connecting to output, appendix); positions are in the Gemini world frame, so register the device at the world origin with its rotation; key spelling to confirm against a recorded payload before certification |
+
+Samples and expected events are in `Platform/Backplane/Ariva.UnitTests/Sensing/Samples/declarative/<mapping>`; every shipped mapping must have them. Other LiDAR platforms do not fit a JSON mapping today: Outsight streams the binary OSEF format and Seoul Robotics SENSR protobuf, so they need coded adapters; Blickfeld Percept's JSON nesting is not documented precisely enough to write one without a capture.
+
+## MQTT transport (ARV-024)
+
+`Ariva.Api.Ingest` runs an MQTT 3.1.1 and 5 broker (MQTTnet 5.2.0.1603) on its own Kestrel listener when `Ingest:Mqtt:Enabled` is true. It only takes device data in:
+
+- TLS on port 8883 with the certificate in `Ingest:Mqtt:CertificatePath` and `CertificateKeyPath` (PEM, a mounted `kubernetes.io/tls` secret); clear text only in vm-local. Client certificates are optional and checked against a device's pin, not a CA. The certificate is read at start-up, so a renewed secret needs a rollout.
+- CONNECT: user name the device code, password the device credential, checked exactly like an HTTPS push (prefix lookup, constant-time hash, allowed networks, pinned certificate), for devices registered on the `Mqtt` transport only (and HTTPS push takes only devices registered on `HttpsPush`, 403 otherwise, so a device has one way in and one rate limit). The client id is the device code; with MQTT 5 it may be empty and is then assigned, with MQTT 3.1.1 it must be the code. One device cannot take over another's session. A CONNECT asking for a will message is refused (a will would be ingested as data after any unclean disconnect).
+- Limits before authentication: at most `MaxConnections` (2,000) connections and `MaxConnectionsPerAddress` (50) per client address, dropped before TLS; `ConnectTimeoutSeconds` (10) to finish TLS and CONNECT, after which the server closes the connection; `ConnectsPerAddressPerMinute` (30) CONNECT checks per address before any lookup. The first packet must be a CONNECT of at most 8 KB, and every packet stays under 8 KB until the CONNECT is accepted. Where sensors reach the broker through one NAT, firewall or source-NATing load balancer address, that address is what the per-address limits and a device's allowed networks see; raise `MaxConnectionsPerAddress` for such a site.
+- PUBLISH to `ariva/v1/devices/<code>/<dialect>` with `canonical`, `xovis` or `declarative`, for the device's own queue zone. The payload goes through the same ingest as an HTTPS push, under a per-device rate limit of the same size (`Security:RateLimiting:Device`). MQTT 5 acknowledgements carry PayloadFormatInvalid with the reason when the ingest refuses a message, QuotaExceeded when over the rate limit; when the events cannot be stored the connection closes without an acknowledgement, so a QoS 1 message is sent again. Anything published elsewhere closes the connection; messages are never routed to subscribers or retained.
+- The device's access is checked again on every message (a cached lookup evicted on every registry change): rotating or retiring the credential, moving the device off MQTT, narrowing its networks so they no longer hold the connection's address, or pinning a certificate the connection did not present closes a live connection at its next message. A reconnect that takes over a live session with `CleanSession` false keeps that session's identity, which fails closed after a rotation: the connection is closed at its first message and the next reconnect works.
+- SUBSCRIBE is refused. No persistent sessions.
+- After the CONNECT is accepted, a packet declaring more than 260 KB (a 256 KB push and its topic and properties) or a malformed length closes the connection before its body is buffered; MQTTnet alone would buffer up to 256 MB per packet. Size `MaxConnections` with the pod's memory: an accepted device can have one packet and the transport's read buffer (up to 1 MB) waiting.
+
+In Kubernetes, `mqtt.enabled` adds the port, mounts `mqtt.tlsSecretName` and adds `api-ingest-mqtt-service` (`mqtt.serviceType`, with `externalTrafficPolicy: Local` outside ClusterIP so the device address is kept for allowed networks); the chart refuses MQTT without its TLS secret. Declaring the MQTT listener in code replaces the URLs Kestrel would otherwise bind, so the HTTP endpoints are declared again from `urls`, `http_ports` or `Application:BindingPort` (8080 by default); Kestrel logs that it overrides the configured addresses.
+
 ## Conformance kit (how a family gets certified)
 
 1. Record real payloads from the device (or vendor samples) into `Platform/Simulation/Ariva.Simulation.Api/Emulators/Sensors/<Family>/samples/`.
@@ -137,5 +180,8 @@ Firmware 5 data push in JSON (`package_info.version` "5.0"), one envelope or an 
 - xovis-sdk (unofficial, models generated from the firmware 5.9 API): https://pypi.org/project/xovis-sdk/
 - Legacy (firmware 3 and 4) payloads, IoTnxt Raptor: https://community.iotnxt.com/docs/raptor/supported-devices/v-raptor/xovis-integration/
 - Ouster Gemini: https://ouster.com/products/software/gemini
+- Ouster Detect output (object_list and occupations, transports and ports): https://docs.ouster.com/ouster-detect/connecting_to_output/connecting-to-output.html and https://docs.ouster.com/ouster-detect/appendix/appendix.html
+- MQTTnet 5.2.0.1603 on nuget.org: https://www.nuget.org/packages/MQTTnet.AspNetCore/
+- MQTT 3.1.1, fixed header and remaining length (2.2.3): https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html
 - Outsight people counting: https://www.outsight.ai/solutions/people-counting-technologies
 - Blickfeld LiDAR software: https://www.blickfeld.com/lidar-software/

@@ -4,7 +4,8 @@ namespace Ariva.Core.Domain.InputModels;
 
 // Device registry requests (ARV-021). Kinds are names (StereoVision, HttpsPush, Xovis, Ntp); the entity validates
 // every value again. A footprint is either length and width or a radius (LiDAR); without one the BOQ's assumed
-// footprint for the mounting height is used and labelled as an estimate.
+// footprint for the mounting height is used and labelled as an estimate. The declarative dialect names a mapping from
+// the catalog shipped with Ariva (ARV-024); the other dialects name none.
 
 /// <summary>Where a sensor hangs and what it covers.</summary>
 public sealed record DevicePlacement(
@@ -25,13 +26,15 @@ public sealed record RegisterDeviceRequest(
     [Required, MaxLength(32)] string Transport,
     [Required, MaxLength(32)] string Dialect,
     [Required, MaxLength(8)] string ClockSource,
-    [Required] DevicePlacement Placement);
+    [Required] DevicePlacement Placement,
+    [MaxLength(64)] string MappingName = null);
 
 public sealed record UpdateDeviceRequest(
     [Required, MaxLength(100)] string Model,
     [Required, MaxLength(32)] string Transport,
     [Required, MaxLength(32)] string Dialect,
-    [Required, MaxLength(8)] string ClockSource);
+    [Required, MaxLength(8)] string ClockSource,
+    [MaxLength(64)] string MappingName = null);
 
 /// <summary>
 /// Where a device may push from (CIDR blocks; an empty list for anywhere) and the client certificate it must present

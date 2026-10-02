@@ -71,4 +71,11 @@
         <ProjectReference Include="..\Ariva.Api.Common\Ariva.Api.Common.csproj" />
     </ItemGroup>
 
+    <ItemGroup>
+        <!-- MQTT transport (ARV-024) -->
+        <PackageReference Include="MQTTnet" />
+        <PackageReference Include="MQTTnet.Server" />
+        <PackageReference Include="MQTTnet.AspNetCore" />
+    </ItemGroup>
+
 </Project>

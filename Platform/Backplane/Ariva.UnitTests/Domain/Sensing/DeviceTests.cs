@@ -216,6 +216,29 @@ public sealed class DeviceTests
     }
 
     [Fact]
+    public void Mapping_Should_BeNamedExactlyForTheDeclarativeDialect()
+    {
+        Device Declarative(string mapping) => new("L-24", DeviceFamily.Lidar, "Gemini", DeviceTransport.Mqtt, DeviceDialect.Declarative, ClockSource.Ntp, NewLevel(), 30, 20, 6, 0,
+            CoverageFootprint.Assumed(DeviceFamily.Lidar, 6), "A-VIS", Now, mapping);
+
+        Declarative("ouster-detect-v1").MappingName.Should().Be("ouster-detect-v1");
+        foreach (var bad in new[] { null, "", "Ouster", "ouster detect", "-ouster", "ouster/../x", new string('a', 65) })
+            ((Action)(() => Declarative(bad))).Should().Throw<ArgumentException>($"'{bad}' is not a mapping name");
+        var xovis = () => new Device("S-17", DeviceFamily.StereoVision, "PC2SE", DeviceTransport.HttpsPush, DeviceDialect.Xovis, ClockSource.Ntp, NewLevel(), 30, 20, 5, 0,
+            CoverageFootprint.Assumed(DeviceFamily.StereoVision, 5), "A-VIS", Now, "ouster-detect-v1");
+        xovis.Should().Throw<ArgumentException>().WithMessage("*only for the declarative dialect*");
+
+        var device = Declarative("ouster-detect-v1");
+        device.RecordCalibration(CalibrationMethod.ManualCountTally, 200, 98, 0.3, 95, null, true, Now);
+        device.UpdateDetails("Gemini", DeviceTransport.Mqtt, DeviceDialect.Declarative, ClockSource.Ntp, Now, "ouster-detect-v1").Should().BeFalse();
+        device.State.Should().Be(DeviceState.Online);
+        device.UpdateDetails("Gemini", DeviceTransport.Mqtt, DeviceDialect.Declarative, ClockSource.Ntp, Now, "ouster-detect-v2").Should().BeTrue("another mapping reads the payload differently");
+        device.State.Should().Be(DeviceState.Commissioning);
+        device.UpdateDetails("Gemini", DeviceTransport.Mqtt, DeviceDialect.Canonical, ClockSource.Ntp, Now);
+        device.MappingName.Should().BeNull("a dialect change drops the mapping");
+    }
+
+    [Fact]
     public void SetAccess_Should_NormaliseNetworksAndTheCertificatePin()
     {
         var device = NewDevice();

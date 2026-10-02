@@ -29,7 +29,7 @@ public partial class Device : BaseSoftDeletableEntity<Device>, ISiteBound
 
     public Device(string code, DeviceFamily family, string model, DeviceTransport transport, DeviceDialect dialect, ClockSource clockSource,
         Level level, double x, double y, double mountingHeightMetres, double orientationDegrees, CoverageFootprint footprint, string queueZoneName,
-        DateTime utcNow)
+        DateTime utcNow, string mappingName = null)
     {
         ArgumentNullException.ThrowIfNull(level);
         if (level.IsDeleted)
@@ -39,7 +39,7 @@ public partial class Device : BaseSoftDeletableEntity<Device>, ISiteBound
         Family = Defined(family, nameof(family));
         SiteCode = level.SiteCode;
         State = DeviceState.Commissioning;
-        UpdateDetails(model, transport, dialect, clockSource);
+        UpdateDetails(model, transport, dialect, clockSource, null, mappingName);
         Place(level, x, y, mountingHeightMetres, orientationDegrees, footprint, queueZoneName);
         Raise("Registered", utcNow);
     }
@@ -75,6 +75,29 @@ public partial class Device : BaseSoftDeletableEntity<Device>, ISiteBound
     /// device's events stays the same across versions (ADR-0019 keys sensor events by the owning zone).
     /// </summary>
     public virtual string QueueZoneName { get; protected set; }
+
+    /// <summary>
+    /// The declarative mapping that reads this device's payloads (ARV-024), by name from the catalog shipped with Ariva;
+    /// set exactly when the dialect is <see cref="DeviceDialect.Declarative"/>.
+    /// </summary>
+    public virtual string MappingName { get; protected set; }
+
+    public const int MappingNameLength = 64;
+
+    /// <summary>A mapping name for the declarative dialect (lower case letters, digits and hyphens), none for the others.</summary>
+    private static string Mapping(DeviceDialect dialect, string mappingName)
+    {
+        if (dialect != DeviceDialect.Declarative)
+        {
+            if (!string.IsNullOrWhiteSpace(mappingName))
+                throw new ArgumentException("A mapping is named only for the declarative dialect.", nameof(mappingName));
+            return null;
+        }
+
+        if (mappingName is null || !MappingNamePattern().IsMatch(mappingName))
+            throw new ArgumentException("The declarative dialect needs a mapping name: lower case letters, digits and hyphens, at most 64.", nameof(mappingName));
+        return mappingName;
+    }
 
     /// <summary>The first characters of the credential, stored in clear to find the device for a presented key (ARV-022).</summary>
     public virtual string CredentialPrefix { get; protected set; }
@@ -161,15 +184,18 @@ public partial class Device : BaseSoftDeletableEntity<Device>, ISiteBound
     /// transport and mapped by one dialect, so changing any of those sends a commissioned device back to
     /// <see cref="DeviceState.Commissioning"/>; a clock source change does not. Returns true when it went back.
     /// </summary>
-    public virtual bool UpdateDetails(string model, DeviceTransport transport, DeviceDialect dialect, ClockSource clockSource, DateTime? utcNow = null)
+    public virtual bool UpdateDetails(string model, DeviceTransport transport, DeviceDialect dialect, ClockSource clockSource, DateTime? utcNow = null,
+        string mappingName = null)
     {
         EnsureNotRetired();
         // Everything is checked before anything changes, so a refused update leaves the device as it was.
         var checkedModel = DisplayText.Require(model, ModelLength, nameof(model));
         var (t, d, c) = (Defined(transport, nameof(transport)), Defined(dialect, nameof(dialect)), Defined(clockSource, nameof(clockSource)));
-        var measuredWithChanged = Model is not null && (!string.Equals(Model, checkedModel, StringComparison.Ordinal) || Transport != t || Dialect != d);
+        var mapping = Mapping(d, mappingName);
+        var measuredWithChanged = Model is not null &&
+                                  (!string.Equals(Model, checkedModel, StringComparison.Ordinal) || Transport != t || Dialect != d || !string.Equals(MappingName, mapping, StringComparison.Ordinal));
         var changed = measuredWithChanged || ClockSource != c;
-        (Transport, Dialect, ClockSource, Model) = (t, d, c, checkedModel);
+        (Transport, Dialect, ClockSource, Model, MappingName) = (t, d, c, checkedModel, mapping);
         if (Model is null || !changed || utcNow is null)
             return false;
 
@@ -332,6 +358,9 @@ public partial class Device : BaseSoftDeletableEntity<Device>, ISiteBound
 
     [GeneratedRegex("^[0-9a-f]{64}\\z", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
     private static partial Regex Sha256Hex();
+
+    [GeneratedRegex("^[a-z0-9][a-z0-9-]{0,63}\\z", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
+    private static partial Regex MappingNamePattern();
 }
 
 /// <summary>
