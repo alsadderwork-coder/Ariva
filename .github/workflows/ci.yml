@@ -167,6 +167,8 @@ jobs:
     timeout-minutes: 15
     defaults:
       run:
+        # A job's defaults replace the workflow's: name the shell again, or piped steps lose pipefail.
+        shell: bash
         working-directory: Platform/Frontplane/Ariva.Web
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -255,6 +257,8 @@ jobs:
       Database__Password: e2e-runtime-login-${{ github.run_id }}-${{ github.run_attempt }}
     defaults:
       run:
+        # A job's defaults replace the workflow's: name the shell again, or piped steps lose pipefail.
+        shell: bash
         working-directory: Platform/Testing/Ariva.E2E
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
