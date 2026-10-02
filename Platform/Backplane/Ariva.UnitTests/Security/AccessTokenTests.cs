@@ -200,6 +200,18 @@ public sealed class AccessTokenTests : IDisposable
             File.GetUnixFileMode(Path.Combine(_directory, "token-signing-dev.key")).Should().Be(UnixFileMode.UserRead | UnixFileMode.UserWrite);
     }
 
+    [Fact]
+    public void Load_Should_NameTheFile_When_TheDevelopmentKeyIsIncomplete()
+    {
+        Directory.CreateDirectory(_directory);
+        var path = Path.Combine(_directory, "token-signing-dev.key");
+        File.WriteAllText(path, "-----BEGIN PRIVATE KEY-----\nMIGH");
+
+        var load = () => DevelopmentKeys();
+
+        load.Should().Throw<InvalidOperationException>().WithMessage($"*{path}*delete it*");
+    }
+
     #endregion
 
     #region Helpers

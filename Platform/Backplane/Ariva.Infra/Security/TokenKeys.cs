@@ -33,8 +33,9 @@ public sealed class TokenKeys
 
         if (string.IsNullOrWhiteSpace(signingPath) && publicPaths.Count == 0 && settings.UseDevelopmentKeys)
         {
-            (signingPath, var publicPath) = DevelopmentKeyPair(settings.DevelopmentKeyDirectory);
-            publicPaths.Add(publicPath);
+            // One read of the development key gives both halves, so they always belong together.
+            var development = DevelopmentKey(settings.DevelopmentKeyDirectory);
+            return new TokenKeys(requireSigningKey ? development : null, [PublicOf(development.ECDsa)]);
         }
 
         if (publicPaths.Count == 0)
@@ -79,6 +80,11 @@ public sealed class TokenKeys
         var ecdsa = ECDsa.Create();
         ecdsa.ImportFromPem(File.ReadAllText(path));
         RequireP256(ecdsa, path);
+        return PublicOf(ecdsa);
+    }
+
+    private static ECDsaSecurityKey PublicOf(ECDsa ecdsa)
+    {
         var publicOnly = ECDsa.Create(ecdsa.ExportParameters(includePrivateParameters: false));
         return new ECDsaSecurityKey(publicOnly) { KeyId = KeyIdOf(publicOnly) };
     }
@@ -90,39 +96,64 @@ public sealed class TokenKeys
     }
 
     /// <summary>
-    /// One P-256 key per developer machine, shared by the hosts running there. Created once with an atomic move, so
-    /// hosts starting together cannot write two different keys; the public key is read from the same file.
+    /// One P-256 key per developer machine, shared by the hosts running there. The file is created exclusively
+    /// (CreateNew, so exactly one host writes it, even where the file system cannot move atomically) and held
+    /// unshared while it is written; the other hosts read it once it is complete, retrying for up to five seconds.
     /// </summary>
-    private static (string SigningPath, string PublicPath) DevelopmentKeyPair(string directory)
+    private static ECDsaSecurityKey DevelopmentKey(string directory)
     {
         directory = string.IsNullOrWhiteSpace(directory)
             ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Ariva")
             : directory;
         var signingPath = Path.Combine(directory, "token-signing-dev.key");
+        Directory.CreateDirectory(directory);
 
         if (!File.Exists(signingPath))
         {
-            Directory.CreateDirectory(directory);
-            var temporary = Path.Combine(directory, $"token-signing-dev.{Guid.NewGuid():N}.tmp");
-            using (var key = ECDsa.Create(ECCurve.NamedCurves.nistP256))
-            {
-                var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write };
-                if (!OperatingSystem.IsWindows())
-                    options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
-                using var writer = new StreamWriter(temporary, options);
-                writer.Write(key.ExportPkcs8PrivateKeyPem());
-            }
-
+            FileStream created = null;
             try
             {
-                File.Move(temporary, signingPath, overwrite: false);
+                var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None };
+                if (!OperatingSystem.IsWindows())
+                    options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+                created = new FileStream(signingPath, options);
             }
             catch (IOException) when (File.Exists(signingPath))
             {
-                File.Delete(temporary); // another host created it first; use theirs
+                // Another host created it first; use theirs.
+            }
+
+            if (created is not null)
+            {
+                try
+                {
+                    using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+                    using var writer = new StreamWriter(created);
+                    writer.Write(key.ExportPkcs8PrivateKeyPem());
+                }
+                catch
+                {
+                    // Never leave a half-written key behind for every later start to trip over.
+                    created.Dispose();
+                    File.Delete(signingPath);
+                    throw;
+                }
             }
         }
 
-        return (signingPath, signingPath);
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return LoadPrivate(signingPath);
+            }
+            catch (Exception e) when (e is IOException or ArgumentException or CryptographicException)
+            {
+                if (attempt >= 250)
+                    throw new InvalidOperationException(
+                        $"The development signing key {signingPath} is unreadable or incomplete; delete it and start again.", e);
+                Thread.Sleep(20); // still being written by the host that created it
+            }
+        }
     }
 }
