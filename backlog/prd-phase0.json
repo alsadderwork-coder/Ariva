@@ -776,8 +776,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 36,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "2026-10-02: Ariva.Core/Desks (DeskRule F10 precedence and staleness, DeskStateEngine with exact per-desk minute aggregates and transitions, LaneDesks for n_open, LaneCycle). 45 tests incl. the reference day's Visitors staffing replayed. Security review PASS after fixes (buffer fairness and trimming, MaxLate, MaxCatchUp). Host requirements for ARV-034 in the F10 note.",
       "dependsOn": [
         "ARV-030"
       ]
