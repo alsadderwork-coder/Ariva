@@ -255,3 +255,25 @@ public sealed class FakeDevices : Ariva.Core.Services.Sensing.ISvcDevices, Ariva
     private static Task<Fluentx.Result<T>> Missing<T>() =>
         Task.FromResult(Fluentx.Result.Error<T>(Ariva.Core.Services.Topology.TopologyErrors.NotFound));
 }
+
+/// <summary>Alert rules (ARV-037) for in-process hosts: no rule exists, and a creation names no site the caller holds.</summary>
+public sealed class FakeAlertRules : Ariva.Core.Services.Alerting.ISvcAlertRules
+{
+    public static void Register(IServiceCollection services) =>
+        services.Replace(ServiceDescriptor.Scoped<Ariva.Core.Services.Alerting.ISvcAlertRules, FakeAlertRules>());
+
+    public Task<Fluentx.Result<PageViewModel<AlertRuleViewModel>>> SearchAsync(AlertRuleCriteria criteria, CancellationToken ct = default) =>
+        Task.FromResult(new Fluentx.Result<PageViewModel<AlertRuleViewModel>>(new PageViewModel<AlertRuleViewModel>([], 0, 1, 50)));
+
+    public Task<Fluentx.Result<AlertRuleViewModel>> GetAsync(Guid id, CancellationToken ct = default) => Missing<AlertRuleViewModel>();
+
+    public Task<Fluentx.Result<AlertRuleViewModel>> CreateAsync(AlertRuleRequest request, CancellationToken ct = default) =>
+        Task.FromResult(Fluentx.Result.Error<AlertRuleViewModel>(Ariva.Core.Services.Topology.TopologyErrors.UnknownSite));
+
+    public Task<Fluentx.Result<AlertRuleViewModel>> UpdateAsync(Guid id, AlertRuleRequest request, CancellationToken ct = default) => Missing<AlertRuleViewModel>();
+
+    public Task<Fluentx.Result<bool>> DeleteAsync(Guid id, CancellationToken ct = default) => Missing<bool>();
+
+    private static Task<Fluentx.Result<T>> Missing<T>() =>
+        Task.FromResult(Fluentx.Result.Error<T>(Ariva.Core.Services.Topology.TopologyErrors.NotFound));
+}

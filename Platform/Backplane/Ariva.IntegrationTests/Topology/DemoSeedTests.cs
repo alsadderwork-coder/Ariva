@@ -32,6 +32,7 @@ public sealed class DemoSeedTests(PostgresFixture fixture) : IAsyncDisposable
         await _host.ReadAsync<long>("SELECT count(*) FROM zone z JOIN zone_profile p ON p.id = z.profile_id WHERE p.site_code = 'DMO'"),
         await _host.ReadAsync<long>("SELECT count(*) FROM line l JOIN zone_profile p ON p.id = l.profile_id WHERE p.site_code = 'DMO'"),
         await _host.ReadAsync<long>("SELECT count(*) FROM audit_entry"),
+        await _host.ReadAsync<long>("SELECT count(*) FROM alert_rule"),
         await _host.ReadAsync<long>("SELECT count(*) FROM outbox_message WHERE message_key = 'DMO'"),
         await _host.ReadAsync<long>("SELECT count(*) FROM desk WHERE site_code = 'DMO' AND modified_on IS NOT NULL"),
         await _host.ReadAsync<long>("SELECT count(*) FROM zone_profile WHERE site_code = 'DMO' AND modified_on IS NOT NULL AND modified_on <> created_on"));
@@ -60,6 +61,9 @@ public sealed class DemoSeedTests(PostgresFixture fixture) : IAsyncDisposable
         (await _host.ReadAsync<string>("SELECT published_by FROM zone_profile WHERE site_code = 'DMO' AND status = 'Published'")).Should().Be("demo-seed");
         (await _host.ReadAsync<long>("SELECT count(*) FROM outbox_message WHERE message_key = 'DMO'")).Should().Be(1, "ZoneProfilePublished for v12");
         (await _host.ReadAsync<long>("SELECT count(*) FROM audit_entry WHERE action = 'Seed.DemoTopology'")).Should().Be(1);
+        (await _host.ReadAsync<string>("SELECT string_agg(code, ',' ORDER BY code) FROM alert_rule WHERE site_code = 'DMO'")).Should().Be("R-001,R-002,R-003,R-004,R-005",
+            "the prototype's rules, once (ARV-037)");
+        (await _host.ReadAsync<long>("SELECT count(*) FROM audit_entry WHERE action = 'AlertRule.Created' AND after_summary LIKE '{\"site\":\"DMO\"%'")).Should().Be(5, "each seeded rule is audited with its values");
         (await _host.ReadAsync<string>("SELECT after_summary FROM audit_entry WHERE action = 'ZoneProfile.Published'")).Should()
             .Contain("version=12").And.MatchRegex("hash=[0-9a-f]{64}");
         (await _host.ReadAsync<long>("SELECT count(*) FROM \"user\" WHERE created_by = 'demo-seed'")).Should().Be(0, "the seed creates topology only, never accounts (CWE-269)");
@@ -104,5 +108,6 @@ public sealed class DemoSeedTests(PostgresFixture fixture) : IAsyncDisposable
         (await host.ReadAsync<long>("SELECT count(*) FROM desk WHERE site_code = 'DMO'")).Should().Be(112, "the topology is still seeded");
         (await host.ReadAsync<long>("SELECT count(*) FROM zone_profile WHERE site_code = 'DMO'")).Should().Be(1, "the draft is left alone and nothing is published");
         (await host.ReadAsync<string>("SELECT name FROM zone_profile WHERE site_code = 'DMO'")).Should().Be("Someone's draft");
+        (await host.ReadAsync<long>("SELECT count(*) FROM alert_rule")).Should().Be(0, "the rules watch v12's zones, which were not published");
     }
 }

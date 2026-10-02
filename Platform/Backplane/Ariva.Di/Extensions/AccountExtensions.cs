@@ -76,6 +76,8 @@ public static class AccountExtensions
             .ValidateOnStart();
         services.TryAddSingleton<Ariva.Infra.Sensing.DeviceHealthMetrics>();
         services.TryAddScoped<Ariva.Core.Services.Sensing.ISvcDeviceHealth, Ariva.Infra.Services.Sensing.SvcDeviceHealth>();
+        // Alert rules (ARV-037): Ariva.Api.Main only, like the rest of the administration.
+        services.TryAddScoped<Ariva.Core.Services.Alerting.ISvcAlertRules, Ariva.Infra.Services.Alerting.SvcAlertRules>();
 
         var environment = configuration["Application:Environment"];
         if (settings.DevelopmentUsers.Count > 0)

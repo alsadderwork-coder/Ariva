@@ -203,6 +203,31 @@ Seed rules from the prototype (reference values):
 
 Rules evaluate nowcasts and forecasts, never realised waits (except the SLA-oriented realised P90 per bin metric, which is informative and not a penalty decision).
 
+Phase 0 API (ARV-037), `api/v1/admin/alert-rules`. A rule is the typed fields below and nothing else; there is no expression, formula or script anywhere, and enum fields take their names exactly (`Nowcast`; not `nowcast`, `0`, `Nowcast ` with a space or `Nowcast,BinP90`).
+
+| Call | What it does | Who |
+|---|---|---|
+| `GET ?siteCode=&metric=&enabled=&text=` | The rules of your sites, by site and code; `text` matches the code or the name | Supervisors, duty managers, handler station managers of the site, administrators |
+| `GET {id}` | One rule | Same |
+| `POST` | Creates a rule in one of your sites; the server gives the next code (`R-006` after the seeded five); 400 with the problems when a value is out of range | Supervisors, duty managers, administrators |
+| `PUT {id}` | Changes every field but the site and the code | Same |
+| `DELETE {id}` | Deletes the rule; its code is never given again in that site | Same, with a second factor in the last 15 minutes (otherwise 401 asking for step-up) |
+
+| Field | Accepted values |
+|---|---|
+| `siteCode`, `name`, `zones` | A site you hold; a name of up to 200 characters without control or invisible characters (stored and shown as plain text); 1 to 64 zones, each a queue or overflow zone of the site's published zone profile (desk service and staff zones cannot be watched) |
+| `metric` | `Nowcast` and `BinP90` (minutes, 0 to 600), `QueueLength` (people, 0 to 100,000), `DesksBelowPlan` (desks, 0 to 1,000), `OverflowOccupied` and `SensorOffline` (true or false) |
+| `comparator`, `threshold` | `GreaterThan`, `GreaterOrEqual`, `LessThan` or `LessOrEqual` with a threshold for numbers; `IsTrue` without a threshold for the two conditions |
+| `minQueueLength` | Nowcast only: raise only with at least this many queuing |
+| `clearThreshold` | Optional; strictly on the clearing side of the threshold (below it for a rule that fires above) |
+| `sustainMinutes`, `clearAfterMinutes` | 1 to 120 |
+| `severity` | `Info`, `Warning`, `Critical` |
+| `ownerRole`, `escalateToRole` | Optional role codes. Empty owner means the zone's owner. Unless you are an administrator you can set only roles you hold yourself, and you cannot change or clear a role you do not hold that is already on the rule (editing other fields with it left as it is works) |
+| `escalateAfterMinutes`, `escalationContact` | 1 to 1,440 minutes, required when there is an escalation role or contact; the contact (up to 100 characters) names a function outside Ariva's roles, such as the border operations duty officer, never a person by name |
+| `notifyByEmail`, `enabled` | Email is the MVP's second channel; disabled rules are kept but never evaluated |
+
+At most 500 rules per site, and codes stop at R-999999. Every create, change and delete is in the audit log with the rule's values before and after as JSON (fixed fields first, then the zones' count and SHA-256, then the zone list). Reading, changing or deleting a rule of another site answers 404, like one that does not exist; creating one in a site you do not hold answers 400, like an unknown site. The database repeats the checks above and keeps a rule's site and code. The demo seed (ARV-019) adds R-001 to R-005 above to the demo airport once, each audited, and only when the published profile has the zones they watch; a site where they were deleted does not get them back. The backtest preview, duplication and suppression windows come with the alert evaluation and lifecycle stories (ARV-038, ARV-039).
+
 ## 9. Displays
 
 | Field | Notes |

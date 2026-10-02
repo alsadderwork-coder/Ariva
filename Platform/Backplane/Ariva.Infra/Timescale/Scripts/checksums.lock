@@ -19,6 +19,7 @@
     "0016_device_health.sql": "55b2bb1a98524f63ca403853d705f7089665574dc7d71289e66840156c1fa80c",
     "0017_sensing_event.sql": "77d4cf78c24eb4e15f7ea7677121fc0e73f25fcbeb785f18f42d162296ea6d4e",
     "0018_stream_output.sql": "c8410fdf01eb8b1066b1eb5913a0113827fb0429f30ae1bee234deaa585009e2",
-    "0019_replay.sql": "1ef597fc896497e143c31dcbe1f4f8cdc39bf6552da62e69e4ac7d4c14d3a514"
+    "0019_replay.sql": "1ef597fc896497e143c31dcbe1f4f8cdc39bf6552da62e69e4ac7d4c14d3a514",
+    "0020_alert_rule.sql": "7493ed1e8481d4cb2c7bfa094b6735fe26a2a3d2f7fd82cd8fa4a7caca88b79d"
   }
 }

@@ -121,6 +121,16 @@ public static class Global
 
             #endregion
 
+            #region Alerting (E5)
+
+            public static Permission ViewAlertRule { get; } = new("AlertRule", PermissionAction.View);
+            public static Permission CreateAlertRule { get; } = new("AlertRule", PermissionAction.Create);
+            public static Permission EditAlertRule { get; } = new("AlertRule", PermissionAction.Edit);
+            public static Permission SearchAlertRule { get; } = new("AlertRule", PermissionAction.Search);
+            public static Permission DeleteAlertRule { get; } = new("AlertRule", PermissionAction.Delete);
+
+            #endregion
+
             private static readonly Lazy<IReadOnlyDictionary<string, Permission>> ByName = new(() =>
                 typeof(Permissions)
                     .GetProperties(BindingFlags.Public | BindingFlags.Static)

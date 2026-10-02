@@ -135,6 +135,7 @@ public sealed partial class PermissionMatrixTests
             FakeAdministration.Register(services);
             FakeTopology.Register(services);
             FakeDevices.Register(services);
+            FakeAlertRules.Register(services);
         }));
         using var client = app.CreateClient();
         var mismatches = new List<string>();

@@ -867,8 +867,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 40,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "api/v1/admin/alert-rules: typed rules per site (no expression anywhere, enums by exact name), codes R-001 onwards never reused, zones of the published profile (queue and overflow), owner and escalation roles the caller holds, delete is a step-up critical action, JSON audit summaries; script 0020 repeats the checks and keeps site and code. Demo seed adds R-001 to R-005, which raise exactly the prototype's alerts on the reference day. Security review PASS after fixes. Open decision: disabling or weakening a rule without step-up (decisions.md).",
       "dependsOn": [
         "ARV-014",
         "ARV-009"

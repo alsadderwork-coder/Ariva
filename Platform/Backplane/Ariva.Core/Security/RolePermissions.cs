@@ -27,15 +27,21 @@ public static class RolePermissions
         Permissions.ViewDevice, Permissions.SearchDevice, Permissions.CreateDevice, Permissions.EditDevice
     ];
 
-    /// <summary>Border shift supervisor: immigration halls, their zones and sensors.</summary>
-    public static IReadOnlySet<Permission> BorderShiftSupervisor { get; } = new HashSet<Permission>([.. TopologyRead, .. ZonesAndDevices, Permissions.ViewLiveQueue]);
+    /// <summary>Alert rules (ARV-037): the supervisors and duty managers who own alerts write the rules; handlers read them.</summary>
+    private static readonly Permission[] AlertRulesWrite =
+    [
+        Permissions.ViewAlertRule, Permissions.SearchAlertRule, Permissions.CreateAlertRule, Permissions.EditAlertRule, Permissions.DeleteAlertRule
+    ];
+
+    /// <summary>Border shift supervisor: immigration halls, their zones and sensors, and the alert rules of its sites.</summary>
+    public static IReadOnlySet<Permission> BorderShiftSupervisor { get; } = new HashSet<Permission>([.. TopologyRead, .. ZonesAndDevices, Permissions.ViewLiveQueue, .. AlertRulesWrite]);
 
     /// <summary>Terminal duty manager: everything airport-side, including zones, sensors and desk code mappings.</summary>
     public static IReadOnlySet<Permission> TerminalDutyManager { get; } = new HashSet<Permission>(
     [
         .. TopologyRead, .. ZonesAndDevices,
         Permissions.ViewDeskCodeMapping, Permissions.SearchDeskCodeMapping,
-        Permissions.ViewLiveQueue
+        Permissions.ViewLiveQueue, .. AlertRulesWrite
     ]);
 
     /// <summary>Handler station manager: its own counters; reads topology and zones, changes none of them.</summary>
@@ -43,7 +49,7 @@ public static class RolePermissions
     [
         .. TopologyRead,
         Permissions.ViewZoneProfile, Permissions.SearchZoneProfile,
-        Permissions.ViewLiveQueue
+        Permissions.ViewLiveQueue, Permissions.ViewAlertRule, Permissions.SearchAlertRule
     ]);
 
     /// <summary>

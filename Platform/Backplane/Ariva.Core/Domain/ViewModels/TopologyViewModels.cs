@@ -17,3 +17,27 @@ public sealed record FloorPlanViewModel(Guid Id, Guid LevelId, string ContentTyp
 
 /// <summary>The stored plan bytes and how to serve them.</summary>
 public sealed record FloorPlanContent(Stream Content, string ContentType, string Sha256);
+
+/// <summary>An alert rule (ARV-037) as the API shows it.</summary>
+public sealed record AlertRuleViewModel(
+    Guid Id,
+    string SiteCode,
+    string Code,
+    string Name,
+    IReadOnlyList<string> Zones,
+    string Metric,
+    string Comparator,
+    double? Threshold,
+    int? MinQueueLength,
+    double? ClearThreshold,
+    int SustainMinutes,
+    int ClearAfterMinutes,
+    string Severity,
+    string OwnerRole,
+    int? EscalateAfterMinutes,
+    string EscalateToRole,
+    string EscalationContact,
+    bool NotifyByEmail,
+    bool Enabled,
+    DateTime? CreatedOn,
+    DateTime? ModifiedOn);

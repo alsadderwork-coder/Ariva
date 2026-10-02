@@ -22,7 +22,8 @@
     "EditIntegrationClient",
     "DeleteIntegrationClient",
     "CreateDevice",
-    "PublishZoneProfile"
+    "PublishZoneProfile",
+    "DeleteAlertRule"
   ],
   "routes": [
     {
@@ -96,6 +97,12 @@
       "method": "PUT",
       "route": "/api/v1/admin/devices/{id:guid}/access",
       "category": "Create or regenerate integration clients and device credentials"
+    },
+    {
+      "host": "main",
+      "method": "DELETE",
+      "route": "/api/v1/admin/alert-rules/{id:guid}",
+      "category": "Delete alert rules"
     }
   ]
 }

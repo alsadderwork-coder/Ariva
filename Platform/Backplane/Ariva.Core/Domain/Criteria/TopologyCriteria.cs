@@ -75,3 +75,24 @@ public sealed record DeviceCriteria : BaseCriteria
     [Range(1, 500)]
     public int PageSize { get; set; } = 50;
 }
+
+/// <summary>Alert rule search (ARV-037): by site, metric, enabled and text in the code or name.</summary>
+public sealed record AlertRuleCriteria : BaseCriteria
+{
+    [MaxLength(17)]
+    public string SiteCode { get; set; }
+
+    [MaxLength(32)]
+    public string Metric { get; set; }
+
+    public bool? Enabled { get; set; }
+
+    [MaxLength(64)]
+    public string Text { get; set; }
+
+    [Range(1, int.MaxValue)]
+    public int PageIndex { get; set; } = 1;
+
+    [Range(1, 500)]
+    public int PageSize { get; set; } = 50;
+}

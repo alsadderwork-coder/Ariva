@@ -86,3 +86,4 @@ Product and architecture decisions in date order. Architecture decisions with co
 | Queue engine parameters | T_censor, T_stale, nowcast blend weight and window, debounce window, staleness thresholds | formulas.md |
 | Privacy | UAE PDPL, Angola, Tanzania and GDPR applicability; Angola authorisation for stereo sensors | data-boundary.md |
 | Name | Trademark and domain availability for "Ariva" | ADR-0015 |
+| Disabling alert rules | Deleting a rule needs step-up MFA (the PRD's critical action, ARV-037); disabling one with `PUT` (or raising its threshold until it never fires) has the same effect and needs none, only the audit trail. Confirm, or make disabling and edits that weaken a rule critical too | wiki 11 section 8 |

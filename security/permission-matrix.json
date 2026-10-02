@@ -2119,6 +2119,116 @@
         "HandlerStationManager": 405,
         "SystemAdministrator": 405
       }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/admin/alert-rules",
+      "access": "permission",
+      "permissions": [
+        "SearchAlertRule"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 200,
+        "TerminalDutyManager": 200,
+        "HandlerStationManager": 200,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/alert-rules",
+      "access": "permission",
+      "permissions": [
+        "CreateAlertRule"
+      ],
+      "body": {
+        "siteCode": "ZZ9",
+        "name": "Matrix rule",
+        "zones": [
+          "MATRIX-ZONE"
+        ],
+        "metric": "Nowcast",
+        "comparator": "GreaterThan",
+        "threshold": 15,
+        "sustainMinutes": 1,
+        "clearAfterMinutes": 1,
+        "severity": "Warning",
+        "notifyByEmail": false,
+        "enabled": true
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 400,
+        "TerminalDutyManager": 400,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 400
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/admin/alert-rules/{id:guid}",
+      "access": "permission",
+      "permissions": [
+        "ViewAlertRule"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 404,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "PUT",
+      "route": "/api/v1/admin/alert-rules/{id:guid}",
+      "access": "permission",
+      "permissions": [
+        "EditAlertRule"
+      ],
+      "body": {
+        "siteCode": "ZZ9",
+        "name": "Matrix rule",
+        "zones": [
+          "MATRIX-ZONE"
+        ],
+        "metric": "Nowcast",
+        "comparator": "GreaterThan",
+        "threshold": 15,
+        "sustainMinutes": 1,
+        "clearAfterMinutes": 1,
+        "severity": "Warning",
+        "notifyByEmail": false,
+        "enabled": true
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "DELETE",
+      "route": "/api/v1/admin/alert-rules/{id:guid}",
+      "access": "permission",
+      "permissions": [
+        "DeleteAlertRule"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 401
+      }
     }
   ]
 }

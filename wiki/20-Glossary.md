@@ -69,6 +69,7 @@ A short version of Ariva's ubiquitous language. The authoritative glossary, with
 | Allowance | Breached bins per evaluation window that carry no penalty |
 | Evaluation | The result of applying a contract to final bins in a window |
 | Alert | A raised condition with an owner role and an escalation path: `Raised`, `Acknowledged`, `Escalated`, `Resolved` |
+| Alert rule | Typed data that says when to raise an alert: metric, comparator, threshold, sustain and clear minutes, severity, owner role and escalation; coded R-001, R-002 and so on per site, never an expression |
 | Module | A separately licensed part of Ariva: Border or Airport Operations |
 | Deployment kind | Border, Airport or Small; a combined site is two deployments |
 | Organisation | A party within a deployment: airport operator, handler, security contractor, border authority |

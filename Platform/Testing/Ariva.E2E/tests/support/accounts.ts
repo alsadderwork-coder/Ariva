@@ -130,6 +130,8 @@ export function accounts() {
 		zoneManager: account('e2e.zonemanager', ['TerminalDutyManager'], false, true, ['E2E2']),
 		securityAdmin: account('e2e.secadmin', ['SystemAdministrator'], false, true, ['*']),
 		siteAdmin: account('e2e.siteadmin', ['SystemAdministrator'], false, true, ['*']),
+		// ARV-037: deleting an alert rule is a critical action, so the alert rule suite signs in with a second factor.
+		alertAdmin: account('e2e.alertadmin', ['SystemAdministrator'], false, true, ['*']),
 		siteUser: account('e2e.siteuser', ['BorderShiftSupervisor'], false, false, ['E2E1'])
 	} as const;
 }

@@ -21,6 +21,7 @@ internal interface IDemoTopologySeed
 /// North and South with 5 lanes each, arrival immigration with 22 desks and 6 e-gates, departure immigration with 22
 /// desks and 4 e-gates, and zone profile version 12 (the prototype's base geometry, docs/design/prototype/app/assets/
 /// floorplan.js, at 0.1 m per drawing unit).
+/// Also the prototype's alert rules R-001 to R-005 (ARV-037, <see cref="DemoAlertRules"/>).
 /// <para>
 /// Idempotent: every record is looked up by its code and created only when missing, and zone profile v12 only when the
 /// site has no zone profile at all, so a re-run changes nothing (no updates, no audit entries). A draft someone started
@@ -147,6 +148,31 @@ internal sealed class DemoTopologySeed(IUnitOfWork unitOfWork, ICurrentUser curr
             // The same evidence the API records for a publish (SvcZoneProfiles), so v12's geometry hash is in the audit trail.
             await audit.RecordAsync("ZoneProfile.Published", "ZoneProfile", profile.Id, SiteCode, null,
                 $"site={profile.SiteCode}; name={profile.Name}; status={profile.Status}; version={profile.Version}; zones={profile.Zones.Count}; lines={profile.Lines.Count}; hash={profile.GeometryHash}", ct);
+        }
+
+        // R-001 to R-005 of the prototype (ARV-037), once: only while the site has no alert rule at all (a deleted one
+        // counts, so a rule someone removed does not come back; the session hides deleted rows, so the table is read
+        // directly) and only when the published profile has every queue and overflow zone they watch. Each is audited
+        // with its values, as the API records a rule it creates.
+        if (skipped is null && (await Storage.ExecuteSqlAsync<LockRow>("""SELECT CAST(count(*) AS integer) AS "Value" FROM alert_rule WHERE site_code = :site""",
+                new Dictionary<string, object> { ["site"] = SiteCode }, ct)).Single().Value == 0)
+        {
+            await Storage.FlushAsync(ct);
+            var watched = DemoAlertRules.Values.SelectMany(v => v.Zones).Distinct(StringComparer.Ordinal).ToList();
+            var published = await Storage.Query<Zone>()
+                .Where(z => z.Profile.SiteCode == SiteCode && z.Profile.Status == ZoneProfileStatus.Published && watched.Contains(z.Name) &&
+                            (z.Kind == ZoneKind.Queue || z.Kind == ZoneKind.Overflow))
+                .Select(z => z.Name)
+                .ToListAsync(ct);
+            if (published.Distinct(StringComparer.Ordinal).Count() == watched.Count)
+            {
+                var number = 0;
+                foreach (var values in DemoAlertRules.Values)
+                {
+                    var rule = await Save(new AlertRule(SiteCode, ++number, values));
+                    await audit.RecordAsync("AlertRule.Created", "AlertRule", rule.Id, $"{SiteCode}:{rule.Code}", null, rule.AuditSummary(), ct);
+                }
+            }
         }
 
         if (created > 0)
