@@ -33,7 +33,7 @@ public partial class Site : BaseAuditableEntity<Site>
 
     public static bool IsValidCode(string code) => code is not null && CodePattern().IsMatch(code);
 
-    [GeneratedRegex("^[A-Z0-9]{2,8}(-[A-Z0-9]{1,8})?$", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
+    [GeneratedRegex("^[A-Z0-9]{2,8}(-[A-Z0-9]{1,8})?\\z", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
     private static partial Regex CodePattern();
 }
 

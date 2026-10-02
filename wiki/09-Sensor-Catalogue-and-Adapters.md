@@ -17,6 +17,8 @@ Every adapter emits the same events, whatever the vendor sends.
 | `DeviceStatus` (`DeviceHealth`) | Online, temperature, frame rate, clock offset; every 10 to 30 seconds | All |
 | `VendorLineCrossing` | Vendor-computed crossing, kept as a cross-check and fallback | Optional |
 
+Bounds checked on every event before use (`CanonicalEventRules`, ARV-021): times in UTC; coordinates finite and within 2,100 m; heights 0 to 3 m; track ids 1 to 64 letters, digits, dots, hyphens or underscores, namespaced as `<device code>/<track id>`; line and zone names 1 to 200 printable characters as in the zone profile; occupancy 0 to 10,000; interval counts 0 to 100,000 over at most a day; temperature -60 to 150 degrees Celsius; frame rate 0 to 1,000; clock offset at most a day either way.
+
 Track samples arrive at 2 to 5 Hz per track and are downsampled to 1 Hz for heat maps. Ariva computes its own crossings from tracks against its versioned lines (ADR-0003); vendor crossings never replace them where tracks exist.
 
 ## Adapter matrix

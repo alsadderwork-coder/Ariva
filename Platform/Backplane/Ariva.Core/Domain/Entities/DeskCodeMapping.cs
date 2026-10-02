@@ -57,6 +57,6 @@ public partial class DeskCodeMapping : BaseSoftDeletableEntity<DeskCodeMapping>,
         return normalized is not null && Shape().IsMatch(normalized) ? normalized : null;
     }
 
-    [GeneratedRegex("^[A-Z0-9][A-Z0-9._/-]{0,31}$", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
+    [GeneratedRegex("^[A-Z0-9][A-Z0-9._/-]{0,31}\\z", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
     private static partial Regex Shape();
 }

@@ -74,6 +74,6 @@ public sealed partial class LocalDiskFileStorage : IFileStorage
         return path;
     }
 
-    [GeneratedRegex("^[0-9a-f]{32}\\.(png|jpg|svg)$", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
+    [GeneratedRegex("^[0-9a-f]{32}\\.(png|jpg|svg)\\z", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
     private static partial Regex KeyPattern();
 }

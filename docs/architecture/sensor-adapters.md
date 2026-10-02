@@ -36,7 +36,7 @@ Two kinds:
 - **Coded mappers** for first-class families (Xovis, the main LiDAR perception platforms), with typed parsing and full conformance tests.
 - **Declarative mappers** (JSONPath or XPath field maps stored with the device family) for the long tail. Expressions are paths, not code (CWE-94): the mapper evaluates a restricted path syntax and never executes scripts.
 
-Every payload is untrusted (CWE-501): schema validated, size limited, timestamps checked against the device clock offset, ids namespaced by device.
+Every payload is untrusted (CWE-501): schema validated, size limited, timestamps checked against the device clock offset, ids namespaced by device. The canonical records and their bounds live in `Ariva.Core.Sensing` (`CanonicalEventRules`, ARV-021). A device is tied to its owning queue zone by the zone's name in the site's profiles, which survives new profile versions (zone ids do not), so the zone key of a device's events is stable.
 
 ## Device family catalogue
 

@@ -51,3 +51,27 @@ public sealed record DeskCodeMappingCriteria : BaseCriteria
     [Range(1, 500)]
     public int PageSize { get; set; } = 50;
 }
+
+/// <summary>Device search (ARV-021): code or model text, site, level, state, owning queue zone; sorted by code.</summary>
+public sealed record DeviceCriteria : BaseCriteria
+{
+    [MaxLength(64)]
+    public string Text { get; set; }
+
+    [MaxLength(17)]
+    public string SiteCode { get; set; }
+
+    public Guid? LevelId { get; set; }
+
+    [MaxLength(32)]
+    public string State { get; set; }
+
+    [MaxLength(200)]
+    public string QueueZoneName { get; set; }
+
+    [Range(1, int.MaxValue)]
+    public int PageIndex { get; set; } = 1;
+
+    [Range(1, 500)]
+    public int PageSize { get; set; } = 50;
+}

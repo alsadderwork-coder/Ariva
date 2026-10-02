@@ -40,13 +40,13 @@ public static partial class TopologyCodes
             throw new InvalidOperationException($"{what} {code} already exists here.");
     }
 
-    [GeneratedRegex("^(?=.{1,16}$)[A-Z0-9]+(-[A-Z0-9]+)*$", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
+    [GeneratedRegex("^(?=.{1,16}\\z)[A-Z0-9]+(-[A-Z0-9]+)*\\z", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
     private static partial Regex Code();
 
-    [GeneratedRegex("^[A-Z]{3}$", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
+    [GeneratedRegex("^[A-Z]{3}\\z", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
     private static partial Regex Iata();
 
-    [GeneratedRegex("^[A-Z]{4}$", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
+    [GeneratedRegex("^[A-Z]{4}\\z", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
     private static partial Regex Icao();
 }
 
@@ -66,7 +66,7 @@ public static partial class LaneCategory
 
     public static bool IsValid(string code) => code is not null && Shape().IsMatch(code);
 
-    [GeneratedRegex("^[A-Z]{2,4}$", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
+    [GeneratedRegex("^[A-Z]{2,4}\\z", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
     private static partial Regex Shape();
 }
 

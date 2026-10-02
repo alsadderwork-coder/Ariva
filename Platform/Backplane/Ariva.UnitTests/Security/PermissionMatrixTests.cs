@@ -122,6 +122,7 @@ public sealed partial class PermissionMatrixTests
             services.Replace(ServiceDescriptor.Scoped<ISvcAuthenticator, FakeAuthenticator>());
             FakeAdministration.Register(services);
             FakeTopology.Register(services);
+            FakeDevices.Register(services);
         }));
         using var client = app.CreateClient();
         var mismatches = new List<string>();

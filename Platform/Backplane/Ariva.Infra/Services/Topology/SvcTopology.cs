@@ -213,8 +213,10 @@ internal sealed class SvcTopology(
             var level = await ScopedLiveAsync<Level>(id, ct);
             if (level is null)
                 return Result.Error<bool>(TopologyErrors.NotFound);
-            // A live floor plan counts as a child: deleting the level would orphan the plan and its file (ARV-018).
-            if (await Query<Checkpoint>().AnyAsync(c => c.Level.Id == id, ct) || await Query<FloorPlan>().AnyAsync(p => p.Level.Id == id, ct))
+            // A live floor plan counts as a child: deleting the level would orphan the plan and its file (ARV-018); so does
+            // a device that is not retired (ARV-021): it would hang on a level that no longer exists.
+            if (await Query<Checkpoint>().AnyAsync(c => c.Level.Id == id, ct) || await Query<FloorPlan>().AnyAsync(p => p.Level.Id == id, ct) ||
+                await Query<Device>().AnyAsync(d => d.Level.Id == id && d.State != Ariva.Core.Domain.Enums.DeviceState.Retired, ct))
                 return Result.Error<bool>(TopologyErrors.HasChildren);
             return await SoftDeleteAsync(level, "Level", Path(level), Summary(level), ct);
         });

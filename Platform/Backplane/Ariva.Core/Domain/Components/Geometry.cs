@@ -69,6 +69,48 @@ public static class Geometry
     }
 
     /// <summary>
+    /// True when <paramref name="p"/> lies inside the ring or on its boundary (within <see cref="Tolerance"/>), by
+    /// ray casting. The ring is closed implicitly (last vertex to first).
+    /// </summary>
+    public static bool ContainsPoint(IReadOnlyList<FloorPoint> ring, FloorPoint p)
+    {
+        if (ring is null || ring.Count < 3)
+            return false;
+        var inside = false;
+        for (int i = 0, j = ring.Count - 1; i < ring.Count; j = i++)
+        {
+            var a = ring[j];
+            var b = ring[i];
+            if (DistanceToSegment(p, a, b) <= Tolerance)
+                return true;
+            if ((b.Y > p.Y) != (a.Y > p.Y) && p.X < ((a.X - b.X) * (p.Y - b.Y) / (a.Y - b.Y)) + b.X)
+                inside = !inside;
+        }
+
+        return inside;
+    }
+
+    /// <summary>
+    /// True when two rings share any area or boundary point: an edge of one touches an edge of the other, or one lies
+    /// inside the other. Used to check that a sensor's coverage footprint reaches its zone (ARV-021).
+    /// </summary>
+    public static bool Overlaps(IReadOnlyList<FloorPoint> first, IReadOnlyList<FloorPoint> second)
+    {
+        if (first is null || second is null || first.Count < 3 || second.Count < 3)
+            return false;
+        for (int i = 0, j = first.Count - 1; i < first.Count; j = i++)
+        {
+            for (int k = 0, l = second.Count - 1; k < second.Count; l = k++)
+            {
+                if (SegmentsIntersect(first[j], first[i], second[l], second[k]))
+                    return true;
+            }
+        }
+
+        return ContainsPoint(second, first[0]) || ContainsPoint(first, second[0]);
+    }
+
+    /// <summary>
     /// A simple polygon: at least three distinct vertices, no repeated vertex, non-zero area, and no two edges touching
     /// except neighbours at their shared vertex.
     /// </summary>

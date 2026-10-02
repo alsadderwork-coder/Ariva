@@ -526,8 +526,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 24,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Offline gates: unit, PostgreSQL integration, real-host checks and the matrix; E2E spec type-checked, not run here. Retiring is also a critical action. The owning queue zone is named, not referenced by id (stable across profile versions).",
       "dependsOn": [
         "ARV-014",
         "ARV-020"

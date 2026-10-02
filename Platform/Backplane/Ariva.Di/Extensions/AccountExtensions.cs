@@ -63,6 +63,7 @@ public static class AccountExtensions
         services.TryAddSingleton<Ariva.Core.Services.Storage.IFileStorage, Ariva.Infra.Storage.LocalDiskFileStorage>();
         services.TryAddScoped<Ariva.Core.Services.Topology.ISvcFloorPlans, Ariva.Infra.Services.Topology.SvcFloorPlans>();
         services.TryAddScoped<Ariva.Core.Services.Topology.ISvcZoneProfiles, Ariva.Infra.Services.Topology.SvcZoneProfiles>();
+        services.TryAddScoped<Ariva.Core.Services.Sensing.ISvcDevices, Ariva.Infra.Services.Sensing.SvcDevices>();
 
         var environment = configuration["Application:Environment"];
         if (settings.DevelopmentUsers.Count > 0)

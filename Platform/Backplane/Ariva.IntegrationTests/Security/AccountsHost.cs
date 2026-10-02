@@ -218,7 +218,7 @@ public sealed class AccountsHost : IAsyncDisposable
 
     #region Database reads
 
-    public async Task<T> ReadAsync<T>([System.Diagnostics.CodeAnalysis.ConstantExpected] string sql, Guid? id = null)
+    public async Task<T> ReadAsync<T>([System.Diagnostics.CodeAnalysis.ConstantExpected] string sql, Guid? id = null, string secret = null)
     {
         await using var connection = new NpgsqlConnection(_fixture.ConnectionString(await DatabaseAsync()));
         await connection.OpenAsync(TestContext.Current.CancellationToken);
@@ -227,6 +227,8 @@ public sealed class AccountsHost : IAsyncDisposable
 #pragma warning restore CA2100
         if (id is { } value)
             command.Parameters.AddWithValue("id", value);
+        if (secret is not null)
+            command.Parameters.AddWithValue("secret", secret);
         var result = await command.ExecuteScalarAsync(TestContext.Current.CancellationToken);
         return result is DBNull or null ? default : (T)result;
     }

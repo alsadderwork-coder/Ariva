@@ -72,6 +72,24 @@
       "method": "POST",
       "route": "/api/v1/admin/zone-profiles/{id:guid}/publish",
       "category": "Publish or retire a zone profile"
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/devices",
+      "category": "Create or regenerate integration clients and device credentials"
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/devices/{id:guid}/credential",
+      "category": "Create or regenerate integration clients and device credentials"
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/devices/{id:guid}/retire",
+      "category": "Create or regenerate integration clients and device credentials"
     }
   ]
 }

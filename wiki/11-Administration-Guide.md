@@ -128,10 +128,19 @@ Secrets are encrypted at rest. Redirects are never followed. Creating an endpoin
 
 | Task | Notes |
 |---|---|
-| Register | Family, model, transport, credential, mounting height, position, coverage footprint, owning queue zone, clock source (NTP or PTP). New devices start in `Commissioning` |
-| Record calibration | Method, sample size, counting accuracy, wait-time error, pass threshold (95 percent by default), notes. A pass sets the device `Online` |
-| Replace or move | Set back to `Commissioning`, re-calibrate; re-validate penalty-grade zones |
-| Retire | Status `Retired`; history is kept |
+| Register | Code (the physical label, for example `S-17`), family, model, transport, dialect, clock source (NTP or PTP), level, position, mounting height (2 to 20 m), orientation, owning queue zone, and the footprint from the vendor's table if you have it. New devices start in `Commissioning`. Registering is a critical action (a second factor within 15 minutes); the answer carries the device credential once |
+| Record calibration | Method (tally counters or two observers), sample size (50 to 5,000 passengers), counting accuracy, wait-time error, pass threshold (95 percent by default), notes. A pass sets the device `Online`; a failure keeps it, or puts it back, in `Commissioning`. Calibrations are never changed or deleted |
+| Replace or move | Change the placement: anything that changes what the sensor sees or which zone owns it sends it back to `Commissioning` until a calibration passes; re-validate penalty-grade zones. So does a new model, transport or dialect (the calibration was measured with the old ones); a clock source change does not |
+| Rotate the credential | A new credential, shown once; the previous one stops working at once. Critical action |
+| Retire | Status `Retired`; the credential stops working, history is kept. Administrators only, and a critical action. A device registered by mistake and never calibrated can be removed instead. A level cannot be deleted while a device that is not retired hangs on it |
+
+The API is `api/v1/admin/devices` (ARV-021): search by text, site, level, state and owning zone; view; register; `PUT {id}` for details; `PUT {id}/placement`; `POST {id}/credential`; `GET` and `POST {id}/calibrations`; `POST {id}/retire`; `DELETE {id}`; and `GET assumed-footprint?family=&mountingHeightMetres=` for the form's preview.
+
+The owning queue zone is named as in the site's zone profiles: it must be a queue zone in the published profile or in the draft, on the device's level, and the device's footprint must reach it or a zone that hangs off it (overflow, service, staff). A device can be registered while its zone is still in the draft, but it goes `Online` only once the zone is published, on the device's level and within its footprint, as checked when the passing calibration is recorded. The name, not a zone id, ties a device to its zone, because every profile version copies its zones with new ids and keeps their names; sensor events stay keyed by the same zone across versions.
+
+Without a vendor footprint, the BOQ's planning assumption for the mounting height is used and labelled as an estimate everywhere it shows: 10 x 10 m from 4 to 6 m, 12 x 9 m from 10 to 14 m, interpolated between 6 and 10 m, scaled below 4 m and above 14 m; a 10 m radius for LiDAR until a perception platform is certified. Enter the vendor's footprint for the model and height as soon as you have it.
+
+The credential (`ardk_` followed by 43 characters) is shown when the device is registered and when it is rotated, never again: copy it into the device or the vendor tool at once. Ariva keeps only its first 13 characters and a hash, so a lost credential is replaced, not recovered.
 
 See [Commissioning and calibration](07-Commissioning-and-Calibration.md).
 

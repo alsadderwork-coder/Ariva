@@ -211,3 +211,35 @@ public sealed class FakeTopology : Ariva.Core.Services.Topology.ISvcTopology, Ar
     public Task<Fluentx.Result<IReadOnlyList<DeskViewModel>>> CreateDeskRangeAsync(CreateDeskRangeRequest request, CancellationToken ct = default) => Missing<IReadOnlyList<DeskViewModel>>();
     public Task<Fluentx.Result<bool>> DeleteDeskAsync(Guid id, CancellationToken ct = default) => Missing<bool>();
 }
+
+/// <summary>The device registry for in-process hosts (no database): searches are empty and every id is unknown (ARV-021).</summary>
+public sealed class FakeDevices : Ariva.Core.Services.Sensing.ISvcDevices
+{
+    public static void Register(IServiceCollection services) =>
+        services.Replace(ServiceDescriptor.Scoped<Ariva.Core.Services.Sensing.ISvcDevices, FakeDevices>());
+
+    public Task<Fluentx.Result<PageViewModel<DeviceViewModel>>> SearchAsync(DeviceCriteria criteria, CancellationToken ct = default) =>
+        Task.FromResult(new Fluentx.Result<PageViewModel<DeviceViewModel>>(new PageViewModel<DeviceViewModel>([], 0, 1, 50)));
+
+    public Task<Fluentx.Result<DeviceViewModel>> GetAsync(Guid id, CancellationToken ct = default) => Missing<DeviceViewModel>();
+    public Task<Fluentx.Result<DeviceCredentialViewModel>> RegisterAsync(RegisterDeviceRequest request, CancellationToken ct = default) => Missing<DeviceCredentialViewModel>();
+    public Task<Fluentx.Result<DeviceViewModel>> UpdateAsync(Guid id, UpdateDeviceRequest request, CancellationToken ct = default) => Missing<DeviceViewModel>();
+    public Task<Fluentx.Result<DeviceViewModel>> MoveAsync(Guid id, DevicePlacement request, CancellationToken ct = default) => Missing<DeviceViewModel>();
+    public Task<Fluentx.Result<DeviceCredentialViewModel>> RotateCredentialAsync(Guid id, CancellationToken ct = default) => Missing<DeviceCredentialViewModel>();
+    public Task<Fluentx.Result<IReadOnlyList<CalibrationViewModel>>> CalibrationsAsync(Guid id, CancellationToken ct = default) => Missing<IReadOnlyList<CalibrationViewModel>>();
+    public Task<Fluentx.Result<CalibrationViewModel>> RecordCalibrationAsync(Guid id, RecordCalibrationRequest request, CancellationToken ct = default) => Missing<CalibrationViewModel>();
+    public Task<Fluentx.Result<DeviceViewModel>> RetireAsync(Guid id, CancellationToken ct = default) => Missing<DeviceViewModel>();
+    public Task<Fluentx.Result<bool>> RemoveAsync(Guid id, CancellationToken ct = default) => Missing<bool>();
+
+    /// <summary>Like the real service: an unknown family is refused before anything else.</summary>
+    public Fluentx.Result<FootprintViewModel> AssumedFootprint(string family, double mountingHeightMetres) =>
+        Enum.TryParse<Ariva.Core.Domain.Enums.DeviceFamily>(family, out var parsed) && family is { Length: > 0 } && char.IsLetter(family[0])
+            ? new Fluentx.Result<FootprintViewModel>(Footprint(Ariva.Core.Domain.Components.CoverageFootprint.Assumed(parsed, Math.Max(2, mountingHeightMetres))))
+            : Fluentx.Result.Error<FootprintViewModel>(Ariva.Core.Services.Sensing.DeviceErrors.UnknownFamily);
+
+    private static FootprintViewModel Footprint(Ariva.Core.Domain.Components.CoverageFootprint f) =>
+        new(f.LengthMetres, f.WidthMetres, f.RadiusMetres, f.Source.ToString(), f.Text, f.Note);
+
+    private static Task<Fluentx.Result<T>> Missing<T>() =>
+        Task.FromResult(Fluentx.Result.Error<T>(Ariva.Core.Services.Topology.TopologyErrors.NotFound));
+}

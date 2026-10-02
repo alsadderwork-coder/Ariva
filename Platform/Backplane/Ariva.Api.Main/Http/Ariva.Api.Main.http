@@ -154,3 +154,34 @@ Authorization: Bearer {{accessToken}}
 Content-Type: application/json
 
 { "geometryHash": "{{geometryHash}}" }
+
+### Devices of a site (SearchDevice; ARV-021)
+GET {{Ariva.Api.Main_HostAddress}}/api/v1/admin/devices?siteCode=DMO&state=Commissioning
+Authorization: Bearer {{accessToken}}
+
+### The BOQ's assumed footprint for the form (SearchDevice)
+GET {{Ariva.Api.Main_HostAddress}}/api/v1/admin/devices/assumed-footprint?family=StereoVision&mountingHeightMetres=5
+Authorization: Bearer {{accessToken}}
+
+### Register a sensor over a queue zone (CreateDevice; critical: a code in the last 15 minutes). The answer carries the credential once.
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/admin/devices
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "code": "S-17", "family": "StereoVision", "model": "PC2SE", "transport": "HttpsPush", "dialect": "Xovis", "clockSource": "Ntp",
+  "placement": { "levelId": "{{levelId}}", "x": 30, "y": 25, "mountingHeightMetres": 5, "orientationDegrees": 0, "queueZoneName": "A-VIS" } }
+
+### Record a calibration; at or above 95 percent the device goes Online (EditDevice)
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/admin/devices/{{deviceId}}/calibrations
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "method": "ManualCountTally", "sampleSize": 200, "countingAccuracyPercent": 96.5, "waitTimeErrorMinutes": 0.4, "notes": "Morning peak, two hours" }
+
+### Rotate the credential (CreateDevice; critical); the old one stops working at once
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/admin/devices/{{deviceId}}/credential
+Authorization: Bearer {{accessToken}}
+
+### Retire (DeleteDevice)
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/admin/devices/{{deviceId}}/retire
+Authorization: Bearer {{accessToken}}
