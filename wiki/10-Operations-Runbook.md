@@ -184,6 +184,14 @@ SELECT job_id, hypertable_name, last_run_status, last_successful_finish, next_st
 - **Logs**: the `/hubs` ingress writes no access log by design (its URLs carry tokens); use Main's logs, which name the connection id only.
 - **Actions**: restore Redis or fix the settings; the next checkpoint rewrites every zone's snapshot and clients receive it without reconnecting. Restart Main only if no replica holds the relay lease for more than a minute.
 
+### 4.8b Alerts not raised or not clearing (ARV-038)
+
+- **Symptoms**: a queue is clearly over a rule's threshold but no alert appears, or an alert stays open after the queue is back.
+- **Checks**: is the rule enabled, and are its zones queue or overflow zones of the published profile? Is the stream writing the zone's minutes (`queue_minute` for the last minutes, 4.5b)? The evaluation only judges minutes the stream stored and that have ended. While the queue length is degraded (a sensor out, 4.1) a nowcast rule skips those minutes, so the sustain or clear count waits. Run the rule's backtest over the last hour: it is the same evaluation and shows whether, and when, it should have fired. In the database, `alert_rule_state` shows each target's counts and the last minute taken.
+- **Log lines**: Stream logs "Alert evaluation: n raised, n cleared, n withdrawn, n failed" when a tick changes something, "Alert evaluation of rule {id} failed" with the error when one rule fails (the others go on; it is tried again next tick), and "Alert evaluation tick failed" when a whole tick fails.
+- **Known limits**: `OverflowOccupied` and `DesksBelowPlan` rules have nothing to judge yet; predicted-nowcast rules need the arrival-wave projection (ARV-047). A new or re-enabled rule starts at the present (use the backtest for the past). After the Stream host was down for more than three hours (`Alerts:Evaluation:MaxCatchUpMinutes`), evaluation continues from the last three hours.
+- **Actions**: fix the data source; an edit of the rule restarts its counts. Do not delete `alert_rule_state` rows by hand.
+
 ### 4.9 Certificate expiry
 
 - **Checks**:

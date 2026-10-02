@@ -166,3 +166,43 @@ test("other sites' callers see nothing, roles they lack are refused, and handler
 		await call('DELETE', `${api}/${probe.id}`, { token: administrator });
 	}
 });
+
+// ARV-038: the backtest judges a rule (saved or not) on the stored minutes of an ended range of up to a day.
+test('a backtest returns the count and first fire time, within bounds, for creators only', async () => {
+	const now = Date.now();
+	const fromUtc = new Date(now - 3 * 3600_000).toISOString();
+	const toUtc = new Date(now - 60_000).toISOString();
+	const ok = await call('POST', `${api}/backtest`, { token: administrator, data: { rule: rule(), fromUtc, toUtc } });
+	expect(ok.status(), await ok.text()).toBe(200);
+	const result = await ok.json();
+	expect(result).toMatchObject({ targets: 2, truncated: false });
+	expect(result.count).toBeGreaterThanOrEqual(0);
+	expect(result.alerts.length).toBe(result.count);
+	expect(result.firstRaisedUtc === null || typeof result.firstRaisedUtc === 'string').toBe(true);
+
+	const predicted = await call('POST', `${api}/backtest`, {
+		token: administrator,
+		data: { rule: rule({ metric: 'PredictedNowcast', leadMinutes: 30, minQueueLength: null }), fromUtc, toUtc }
+	});
+	expect(predicted.status(), await predicted.text()).toBe(200);
+	expect((await predicted.json()).targetsWithData, 'no arrival-wave projection before ARV-047').toBe(0);
+
+	for (const [why, data] of [
+		['longer than a day', { rule: rule(), fromUtc: new Date(now - 26 * 3600_000).toISOString(), toUtc }],
+		['not yet ended', { rule: rule(), fromUtc, toUtc: new Date(now + 3600_000).toISOString() }],
+		['not UTC', { rule: rule(), fromUtc: fromUtc.replace('Z', ''), toUtc: toUtc.replace('Z', '') }],
+		['backwards', { rule: rule(), fromUtc: toUtc, toUtc: fromUtc }],
+		['lead time on a nowcast', { rule: rule({ leadMinutes: 30 }), fromUtc, toUtc }],
+		['lead time out of range', { rule: rule({ metric: 'PredictedNowcast', leadMinutes: 90, minQueueLength: null }), fromUtc, toUtc }],
+		['no rule', { fromUtc, toUtc }]
+	] as const) {
+		const refused = await call('POST', `${api}/backtest`, { token: administrator, data });
+		expect(refused.status(), `${why}: ${await refused.text()}`).toBe(400);
+	}
+
+	const border = (await signIn(accounts().BorderShiftSupervisor)).accessToken;
+	expect((await call('POST', `${api}/backtest`, { token: border, data: { rule: rule(), fromUtc, toUtc } })).status(), 'a site outside the caller').toBe(400);
+	const handler = (await signIn(accounts().HandlerStationManager)).accessToken;
+	expect((await call('POST', `${api}/backtest`, { token: handler, data: { rule: rule({ siteCode: 'E2E1' }), fromUtc, toUtc } })).status()).toBe(403);
+	expect((await call('POST', `${api}/backtest`, { data: { rule: rule(), fromUtc, toUtc } })).status()).toBe(401);
+});

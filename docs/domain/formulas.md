@@ -479,6 +479,21 @@ Reference values: mix CIT 0.35, RES 0.20, VIS 0.35, CRW 0.02, TRF 0.08; e = 0.40
 
 Arrival-wave alert: the sum of A_l(t) over [now + 5, now + 25] min per hall or lane, compared with a threshold or with the capacity of staffed desks over the same window (threshold To confirm).
 
+Predicted breach (ARV-038, rule metric `PredictedNowcast`, lead time L from 15 to 60 minutes): from the queue Q(t) and the throughput mu(t) of the minute (F8),
+
+```
+Q(t + k) = max(0, Q(t + k - 1) + A(t + k) - mu(t))     for k = 1 to L, with Q(t + 0) = Q(t)
+W(t + k) = (Q(t + k) + 1) / mu(t)
+predicted(t) = max over k of W(t + k), for the first k that reaches it
+```
+
+The rule judges predicted(t) against its threshold like a nowcast, and its alert names t + k as the minute the breach is projected for. Taking the highest W over the horizon, not only W(t + L), keeps a wave that the desks would have cleared by t + L. No value without mu(t) > 0 or without A for every minute of the horizon, and none while the queue length is degraded.
+
+Tests (ARV-038):
+
+- Q = 20, mu = 5, A = 10 per minute for L = 15: W peaks at k = 15, (20 + 75 + 1) / 5 = 19.2.
+- Q = 0, mu = 10, a single minute of 100 arrivals at k = 3 and none after: W peaks at k = 3, (90 + 1) / 10 = 9.1.
+
 Tests:
 
 - P = 200, one lane, T = 18:00, d = 10: arrivals per minute from 18:10 to 18:21 are 6, 12, 18, 22, 24, 24, 22, 20, 16, 14, 12, 10 (sum 200).

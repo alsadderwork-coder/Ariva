@@ -19,6 +19,8 @@ public class AlertRule : BaseSoftDeletableEntity<AlertRule>, ISiteBound
     public const int MaxContactLength = 100;
     public const int MaxMinutes = 120;
     public const int MaxEscalationMinutes = 1440;
+    public const int MinLeadMinutes = 15;
+    public const int MaxLeadMinutes = 60;
 
     /// <summary>The last number a site's codes reach (R-999999, the table's check); deleted rules keep theirs.</summary>
     public const int MaxNumber = 999_999;
@@ -70,6 +72,9 @@ public class AlertRule : BaseSoftDeletableEntity<AlertRule>, ISiteBound
 
     public virtual bool Enabled { get; protected set; }
 
+    /// <summary>How far ahead a <see cref="AlertMetric.PredictedNowcast"/> rule looks (15 to 60 minutes); null otherwise.</summary>
+    public virtual int? LeadMinutes { get; protected set; }
+
     public virtual IReadOnlyList<string> Zones => ScopeZones is null ? [] : ScopeZones.Split('\n');
 
     public static string CodeOf(int number) => "R-" + number.ToString("000", CultureInfo.InvariantCulture);
@@ -97,6 +102,7 @@ public class AlertRule : BaseSoftDeletableEntity<AlertRule>, ISiteBound
         EscalationContact = string.IsNullOrWhiteSpace(values.EscalationContact) ? null : values.EscalationContact.Trim();
         NotifyByEmail = values.NotifyByEmail;
         Enabled = values.Enabled;
+        LeadMinutes = values.LeadMinutes;
     }
 
     /// <summary>
@@ -125,14 +131,19 @@ public class AlertRule : BaseSoftDeletableEntity<AlertRule>, ISiteBound
             contact = EscalationContact,
             email = NotifyByEmail,
             enabled = Enabled,
+            lead = LeadMinutes,
             zoneCount = Zones.Count,
             zonesSha256 = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(zones))),
             zones = Zones
         });
     }
 
+    /// <summary>SHA-256 of <see cref="AuditSummary"/>: changes whenever any of the rule's values changes.</summary>
+    public virtual string ValuesHash() =>
+        Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(AuditSummary())));
+
     public virtual AlertRuleValues Values() => new(Name, Zones, Metric, Comparator, Threshold, MinQueueLength, ClearThreshold, SustainMinutes, ClearAfterMinutes,
-        Severity, OwnerRole, EscalateAfterMinutes, EscalateToRole, EscalationContact, NotifyByEmail, Enabled);
+        Severity, OwnerRole, EscalateAfterMinutes, EscalateToRole, EscalationContact, NotifyByEmail, Enabled, LeadMinutes);
 }
 
 /// <summary>Everything an alert rule says, as one value; <see cref="Problems"/> lists what makes it unusable.</summary>
@@ -152,12 +163,13 @@ public sealed record AlertRuleValues(
     string EscalateToRole,
     string EscalationContact,
     bool NotifyByEmail,
-    bool Enabled)
+    bool Enabled,
+    int? LeadMinutes = null)
 {
     /// <summary>The largest threshold per unit: minutes for waits, people for queue length, desks for desks below plan.</summary>
     public static double MaxThreshold(AlertMetric metric) => metric switch
     {
-        AlertMetric.Nowcast or AlertMetric.BinP90 => 600,
+        AlertMetric.Nowcast or AlertMetric.BinP90 or AlertMetric.PredictedNowcast => 600,
         AlertMetric.QueueLength => 100_000,
         AlertMetric.DesksBelowPlan => 1_000,
         _ => 0
@@ -202,6 +214,11 @@ public sealed record AlertRuleValues(
             if (MinQueueLength is { } q && (Metric != AlertMetric.Nowcast || q is < 0 or > 100_000))
                 problems.Add("A minimum queue length (0 to 100,000 people) applies to the nowcast only.");
         }
+
+        if (Metric == AlertMetric.PredictedNowcast
+                ? LeadMinutes is not { } lead || lead < AlertRule.MinLeadMinutes || lead > AlertRule.MaxLeadMinutes
+                : LeadMinutes is not null)
+            problems.Add($"A predicted nowcast looks {AlertRule.MinLeadMinutes} to {AlertRule.MaxLeadMinutes} minutes ahead; other metrics take no lead time.");
 
         if (SustainMinutes is < 1 or > AlertRule.MaxMinutes || ClearAfterMinutes is < 1 or > AlertRule.MaxMinutes)
             problems.Add($"Sustain and clear are 1 to {AlertRule.MaxMinutes} minutes.");

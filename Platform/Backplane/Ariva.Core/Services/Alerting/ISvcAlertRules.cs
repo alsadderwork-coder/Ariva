@@ -9,6 +9,7 @@ public static class AlertRuleErrors
 {
     public const string UnknownZones = "Every zone in scope must be a zone of the site's published zone profile.";
     public const string RoleNotHeld = "Only an administrator can give a rule to, escalate it to, or take it from a role the caller does not hold.";
+    public const string BacktestRange = "A backtest covers 1 minute to 24 hours that have ended, in the last 90 days, in UTC (ending in Z).";
     public const string TooManyRules = "A site has at most 500 alert rules, and its codes end at R-999999.";
 }
 
@@ -24,4 +25,10 @@ public interface ISvcAlertRules : ISvcScoped
     Task<Result<AlertRuleViewModel>> CreateAsync(AlertRuleRequest request, CancellationToken ct = default);
     Task<Result<AlertRuleViewModel>> UpdateAsync(Guid id, AlertRuleRequest request, CancellationToken ct = default);
     Task<Result<bool>> DeleteAsync(Guid id, CancellationToken ct = default);
+
+    /// <summary>
+    /// Judges a rule (as it would be created, checked like a create) on the stored minutes of a range: the alerts it
+    /// would have raised, the same fold the live evaluation makes from the range's start (ARV-038).
+    /// </summary>
+    Task<Result<AlertBacktestViewModel>> BacktestAsync(AlertBacktestRequest request, CancellationToken ct = default);
 }

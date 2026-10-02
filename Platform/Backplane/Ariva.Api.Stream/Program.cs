@@ -73,6 +73,9 @@ builder.Services.AddArivaSensingArchive();
 // The queue engine worker (ARV-034): the sensing topics into zone engines, minute rows, bins and snapshots.
 builder.Services.AddArivaQueueStream(builder.Configuration);
 
+// The live alert evaluation (ARV-038): every enabled rule judged each minute on the stored minutes; raises and clears.
+builder.Services.AddArivaAlertEvaluation(builder.Configuration);
+
 // Security baseline (docs/security/cwe-controls.md): default deny (fallback policy, Ariva.Deny answers challenges),
 // ES256 access tokens from Ariva.Api.Main with permissions from stored grants (ARV-010a), input limits, rate limiting,
 // ProblemDetails errors, trusted forwarded headers and the CORS allow-list.

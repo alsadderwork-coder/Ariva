@@ -2169,6 +2169,41 @@
     },
     {
       "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/alert-rules/backtest",
+      "access": "permission",
+      "permissions": [
+        "CreateAlertRule"
+      ],
+      "body": {
+        "rule": {
+          "siteCode": "ZZ9",
+          "name": "Matrix rule",
+          "zones": [
+            "MATRIX-ZONE"
+          ],
+          "metric": "Nowcast",
+          "comparator": "GreaterThan",
+          "threshold": 15,
+          "sustainMinutes": 1,
+          "clearAfterMinutes": 1,
+          "severity": "Warning",
+          "notifyByEmail": false,
+          "enabled": true
+        },
+        "fromUtc": "2026-09-28T17:00:00Z",
+        "toUtc": "2026-09-28T20:30:00Z"
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 400,
+        "TerminalDutyManager": 400,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 400
+      }
+    },
+    {
+      "host": "main",
       "method": "GET",
       "route": "/api/v1/admin/alert-rules/{id:guid}",
       "access": "permission",

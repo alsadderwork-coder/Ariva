@@ -32,7 +32,8 @@ public interface IStorageProvider
     /// Runs a parameterised SQL query and maps each row to <typeparamref name="T"/> by column alias. The SQL must be
     /// a constant: values go in <paramref name="parameters"/> and are bound by name (:name). CA1857 (an error in
     /// .editorconfig) rejects an interpolated or concatenated string at compile time and the security scanner
-    /// rejects it in review (CWE-89). There is deliberately no overload that takes a FormattableString.
+    /// rejects it in review (CWE-89). There is deliberately no overload that takes a FormattableString. A value that is a
+    /// collection of strings binds as a parameter list, for <c>IN (:name)</c>; it must not be empty.
     /// </summary>
     Task<List<T>> ExecuteSqlAsync<T>([ConstantExpected] string sql, IReadOnlyDictionary<string, object> parameters = null, CancellationToken ct = default) where T : class, new();
 

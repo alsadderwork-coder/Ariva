@@ -41,6 +41,30 @@ public sealed class HostServicesTests
         missing.Should().BeEmpty($"every service a {host} endpoint takes is registered by {host} itself");
     }
 
+    [Theory]
+    [MemberData(nameof(ArivaHosts.BackplaneHosts), MemberType = typeof(ArivaHosts))]
+    public async Task Host_Should_BuildEveryHostedService_When_ItStarts(string host)
+    {
+        await using var app = ArivaHosts.Create(host);
+
+        var build = () => app.Services.GetServices<Microsoft.Extensions.Hosting.IHostedService>().ToList();
+
+        build.Should().NotThrow($"every worker {host} hosts is built from {host}'s own registrations");
+    }
+
+    [Fact]
+    public async Task Stream_Should_ResolveWhatTheAlertEvaluationRunsWith_When_ItTicks()
+    {
+        await using var app = ArivaHosts.Create(ArivaHosts.Stream);
+        await using var scope = app.Services.CreateAsyncScope();
+
+        // ARV-038: resolved from a scope per rule at every tick, not through a constructor, so only this shows a gap.
+        app.Services.GetServices<Microsoft.Extensions.Hosting.IHostedService>().Should().Contain(s => s is Ariva.Infra.Alerting.AlertEvaluationWorker);
+        scope.ServiceProvider.GetService<Ariva.Infra.Alerting.AlertRuleTick>().Should().NotBeNull();
+        scope.ServiceProvider.GetService<Ariva.Infra.Alerting.AlertInputs>().Should().NotBeNull();
+        scope.ServiceProvider.GetService<Ariva.Core.Alerting.IArrivalWaveSource>().Should().NotBeNull();
+    }
+
     [Fact]
     public async Task Ingest_Should_ResolveTheDeviceGateway_When_ADeviceAuthenticates()
     {

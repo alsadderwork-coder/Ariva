@@ -1,3 +1,4 @@
+using Ariva.Api.Common.Extensions;
 using Ariva.Api.Common.Security;
 using Ariva.Api.Main.Controllers.AdminArea.Topology;
 using Ariva.Core;
@@ -6,6 +7,7 @@ using Ariva.Core.Domain.InputModels;
 using Ariva.Core.Domain.ViewModels;
 using Ariva.Core.Services.Alerting;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace Ariva.Api.Main.Controllers.AdminArea.Alerting;
 
@@ -40,6 +42,19 @@ public sealed class AlertRulesController(ISvcAlertRules rules) : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> Create([FromBody] AlertRuleRequest request, CancellationToken ct) =>
         TopologyAnswers.Created(this, await rules.CreateAsync(request, ct), view => view.Id, "/" + Route);
+
+    /// <summary>
+    /// How often a rule (as it would be created) would have fired on the stored minutes of a range of up to a day, and
+    /// first when (ARV-038): the same evaluation the live alerts come from. It shows past queue values, so the caller
+    /// must also see live queues (checked by the service); two run at a time per host.
+    /// </summary>
+    [HttpPost("backtest")]
+    [Permission(nameof(Global.Defaults.Permissions.CreateAlertRule))]
+    [EnableRateLimiting(RateLimitingExtensions.BacktestPolicy)]
+    [ProducesResponseType<AlertBacktestViewModel>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> Backtest([FromBody] AlertBacktestRequest request, CancellationToken ct) =>
+        TopologyAnswers.Ok(this, await rules.BacktestAsync(request, ct));
 
     [HttpPut("{id:guid}")]
     [Permission(nameof(Global.Defaults.Permissions.EditAlertRule))]

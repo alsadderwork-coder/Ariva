@@ -23,4 +23,14 @@ public sealed record AlertRuleRequest(
     [MaxLength(32)] string EscalateToRole,
     [MaxLength(100)] string EscalationContact,
     bool NotifyByEmail,
-    bool Enabled = true);
+    bool Enabled = true,
+    [Range(15, 60)] int? LeadMinutes = null);
+
+/// <summary>
+/// A backtest of a rule (ARV-038): the rule as it would be created (saved or not) judged on the stored minutes of a
+/// range of at most a day that has ended, given in UTC (ending in Z).
+/// </summary>
+public sealed record AlertBacktestRequest(
+    [Required] AlertRuleRequest Rule,
+    DateTime FromUtc,
+    DateTime ToUtc);

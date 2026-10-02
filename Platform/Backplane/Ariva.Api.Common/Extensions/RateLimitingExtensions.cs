@@ -31,6 +31,12 @@ public static class RateLimitingExtensions
     public const string UploadPolicy = "upload";
 
     /// <summary>
+    /// Named policy for alert rule backtests (ARV-038): each reads up to a day of minutes and bins of up to 64 zones, so
+    /// two run at a time per host process and two wait; the rest get 429 (CWE-400, CWE-770).
+    /// </summary>
+    public const string BacktestPolicy = "backtest";
+
+    /// <summary>
     /// Named policy for device endpoints (ARV-022): a fixed window per device, keyed by the presented credential's
     /// prefix before any database work, so one chatty or broken sensor cannot starve the others behind the same address.
     /// </summary>
@@ -80,6 +86,13 @@ public static class RateLimitingExtensions
                     RateLimitPartition.GetConcurrencyLimiter(UploadPolicy, _ => new ConcurrencyLimiterOptions
                     {
                         PermitLimit = 1,
+                        QueueLimit = 2,
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst
+                    }));
+                options.AddPolicy(BacktestPolicy, _ =>
+                    RateLimitPartition.GetConcurrencyLimiter(BacktestPolicy, _ => new ConcurrencyLimiterOptions
+                    {
+                        PermitLimit = 2,
                         QueueLimit = 2,
                         QueueProcessingOrder = QueueProcessingOrder.OldestFirst
                     }));

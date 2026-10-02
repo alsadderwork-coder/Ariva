@@ -40,4 +40,14 @@ public sealed record AlertRuleViewModel(
     bool NotifyByEmail,
     bool Enabled,
     DateTime? CreatedOn,
-    DateTime? ModifiedOn);
+    DateTime? ModifiedOn,
+    int? LeadMinutes = null);
+
+/// <summary>One alert a backtest raised: its target, when it was raised and cleared (null when still open at the range's end), and the value.</summary>
+public sealed record AlertBacktestAlert(string ZoneName, string DeviceCode, DateTime RaisedUtc, DateTime? ClearedUtc, double Value, DateTime? BinStartUtc, DateTime? PredictedForUtc);
+
+/// <summary>
+/// What a backtest found (ARV-038): how many alerts the rule would have raised and the first, the alerts (at most 200,
+/// earliest first), and how many of its targets had anything to judge.
+/// </summary>
+public sealed record AlertBacktestViewModel(int Count, DateTime? FirstRaisedUtc, IReadOnlyList<AlertBacktestAlert> Alerts, bool Truncated, int Targets, int TargetsWithData);

@@ -166,6 +166,28 @@ public sealed class UnitOfWorkRoundTripTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task ExecuteSqlAsync_Should_BindEachListElementAsData_When_AListIsPassed()
+    {
+        var (a, b) = (NewCode(), NewCode());
+        await SaveZoneAsync(a);
+        await SaveZoneAsync(b);
+
+        await Host.InScopeAsync(async (uow, _) =>
+        {
+            const string sql = "select code as \"Code\", name as \"Name\" from sample_zone where code in (:codes) order by code";
+            var found = await uow.StorageProvider.ExecuteSqlAsync<ZoneNameRow>(sql, new Dictionary<string, object> { ["codes"] = new List<string> { a, b, "missing" } });
+            var injected = await uow.StorageProvider.ExecuteSqlAsync<ZoneNameRow>(sql,
+                new Dictionary<string, object> { ["codes"] = new List<string> { "x') OR ('1'='1", "x' OR '1'='1", a + "') --" } });
+            var empty = () => uow.StorageProvider.ExecuteSqlAsync<ZoneNameRow>(sql, new Dictionary<string, object> { ["codes"] = new List<string>() });
+
+            found.Select(r => r.Code).Should().Equal(new[] { a, b }.Order(StringComparer.Ordinal), "ARV-038: a list binds one parameter per element");
+            injected.Should().BeEmpty("each element is a value, never SQL");
+            (await empty.Should().ThrowAsync<ArgumentException>()).WithMessage("*'codes'*empty*");
+            return true;
+        });
+    }
+
+    [Fact]
     public async Task SaveAsync_Should_QuoteTableName_When_EntityNameIsReservedWord()
     {
         var userName = "officer." + Guid.CreateVersion7().ToString("N")[..8];

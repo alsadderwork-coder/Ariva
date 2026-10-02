@@ -36,6 +36,8 @@ A short version of Ariva's ubiquitous language. The authoritative glossary, with
 | E-gate reject coupling | Every e-gate reject becomes an arrival in a manual lane |
 | Show-up curve | How long before departure passengers reach a departure process, learned per segment |
 | Arrival wave | The burst of arriving passengers reaching the immigration hall after flights go on-block |
+| Backtest | A rule evaluated on stored minutes of a past range, to see how often and when it would have fired; the same evaluation as the live alerts |
+| Predicted breach | An alert raised before a queue passes its threshold, from the nowcast projected over the next 15 to 60 minutes with the arrival wave |
 | Calibration | Fixing a sensor's position and orientation and proving its counting accuracy; recorded as a calibration record |
 | Coverage footprint | The rectangle a downward-facing sensor tracks at the tracking plane; vendor tables are authoritative |
 | Evidence pack | The sealed bundle behind an SLA evaluation, with a SHA-256 content hash |

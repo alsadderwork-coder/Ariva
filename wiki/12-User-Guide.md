@@ -63,8 +63,9 @@ MVP. Shows the rules that drive every alert, with their status.
 
 Common tasks:
 
-1. Create a rule: name, scope, metric, condition and threshold, sustain time, severity, owner role, escalation, channels. Check the backtest preview ("Would have fired 3 times today, first at 18:05") before saving.
-2. Enable, disable or duplicate a rule.
+1. Create a rule: name, scope, metric, condition and threshold, sustain time, severity, owner role, escalation, channels. Check the backtest preview ("Would have fired 3 times today, first at 18:05") before saving: it is the same evaluation the live alerts come from, on the stored minutes of the range you choose (up to a day).
+2. For an early warning, choose the predicted nowcast and a lead time of 15 to 60 minutes: the rule fires when the queue is projected to pass the threshold within that time, from the arrival wave of landing flights (available once the flight feed is connected).
+3. Enable, disable or duplicate a rule.
 
 You can only create rules for queues your role can see.
 

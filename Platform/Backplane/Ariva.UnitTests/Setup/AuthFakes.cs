@@ -274,6 +274,9 @@ public sealed class FakeAlertRules : Ariva.Core.Services.Alerting.ISvcAlertRules
 
     public Task<Fluentx.Result<bool>> DeleteAsync(Guid id, CancellationToken ct = default) => Missing<bool>();
 
+    public Task<Fluentx.Result<AlertBacktestViewModel>> BacktestAsync(AlertBacktestRequest request, CancellationToken ct = default) =>
+        Task.FromResult(Fluentx.Result.Error<AlertBacktestViewModel>(Ariva.Core.Services.Topology.TopologyErrors.UnknownSite));
+
     private static Task<Fluentx.Result<T>> Missing<T>() =>
         Task.FromResult(Fluentx.Result.Error<T>(Ariva.Core.Services.Topology.TopologyErrors.NotFound));
 }

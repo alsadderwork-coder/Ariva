@@ -62,7 +62,18 @@ internal sealed class NHibernateStorageProvider(
 
         var query = Session.CreateSQLQuery(sql);
         foreach (var (name, value) in parameters ?? new Dictionary<string, object>())
-            query.SetParameter(name, value);
+        {
+            // A list binds as a parameter list, for "IN (:name)" (each element its own parameter, never inlined); an
+            // empty one would make "IN ()", which is not SQL, so it is refused here with the parameter's name.
+            if (value is IReadOnlyCollection<string> strings)
+            {
+                if (strings.Count == 0)
+                    throw new ArgumentException($"The parameter list '{name}' is empty.", nameof(parameters));
+                query.SetParameterList(name, strings);
+            }
+            else
+                query.SetParameter(name, value);
+        }
 
         query.SetResultTransformer(Transformers.AliasToBean<T>());
         var rows = await query.ListAsync<T>(ct);

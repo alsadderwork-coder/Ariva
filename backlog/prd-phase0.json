@@ -889,8 +889,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 41,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "AlertEvaluator (the prototype's rule engine: skipped minutes, sustain, one open alert per rule and target, auto-resolve) on the stored minutes (AlertInputs); live evaluation in Ariva.Api.Stream once a minute, one replica under an advisory lock, each rule in its own transaction; POST alert-rules/backtest is the same fold, proved equal to the live alerts on the 9303 evening (R-001 at 18:05, also R-003, R-004, R-005). Predicted-breach metric PredictedNowcast (lead 15 to 60 min, peak over the horizon) reads IArrivalWaveSource; the projection itself is ARV-047. Script 0021: alert, alert_rule_state. OverflowOccupied and DesksBelowPlan have no data yet. Security review PASS after three rounds.",
       "dependsOn": [
         "ARV-037",
         "ARV-034"

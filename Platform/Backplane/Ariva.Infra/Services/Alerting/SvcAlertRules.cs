@@ -1,3 +1,4 @@
+using Ariva.Core.Alerting;
 using Ariva.Core.Domain.Criteria;
 using Ariva.Core.Domain.Enums;
 using Ariva.Core.Domain.InputModels;
@@ -5,6 +6,7 @@ using Ariva.Core.Domain.ViewModels;
 using Ariva.Core.Security;
 using Ariva.Core.Services.Alerting;
 using Ariva.Core.Services.Topology;
+using Ariva.Infra.Alerting;
 using Ariva.Infra.Services.Administration;
 using Ariva.Infra.Services.Foundation;
 using NHibernate.Linq;
@@ -26,11 +28,20 @@ internal sealed class SvcAlertRules(
     TimeProvider timeProvider,
     ISiteScope siteScope,
     CallerRoles callerRoles,
-    AuditTrail audit) : SvcBase(unitOfWork, currentUser, timeProvider), ISvcAlertRules
+    AuditTrail audit,
+    AlertInputs inputs) : SvcBase(unitOfWork, currentUser, timeProvider), ISvcAlertRules
 {
     public const int MaxRulesPerSite = 500;
 
     public const int MaxCode = AlertRule.MaxNumber;
+
+    /// <summary>The longest range a backtest judges, and how far back it may start.</summary>
+    public static readonly TimeSpan MaxBacktest = TimeSpan.FromHours(24);
+
+    public static readonly TimeSpan BacktestHistory = TimeSpan.FromDays(90);
+
+    /// <summary>The most alerts a backtest lists (all are counted).</summary>
+    public const int MaxBacktestAlerts = 200;
     private const string Target = "AlertRule";
 
     public async Task<Result<PageViewModel<AlertRuleViewModel>>> SearchAsync(AlertRuleCriteria criteria, CancellationToken ct = default)
@@ -123,6 +134,46 @@ internal sealed class SvcAlertRules(
         return new Result<bool>(true);
     }
 
+    public async Task<Result<AlertBacktestViewModel>> BacktestAsync(AlertBacktestRequest request, CancellationToken ct = default)
+    {
+        var rule = request?.Rule;
+        if (rule is null || string.IsNullOrWhiteSpace(rule.SiteCode) || !(await siteScope.GetAsync(ct)).Allows(rule.SiteCode) ||
+            !await QueryAsNoTracking<Site>().AnyAsync(s => s.Code == rule.SiteCode, ct))
+            return Result.Error<AlertBacktestViewModel>(TopologyErrors.UnknownSite);
+        var now = UtcNow;
+        var (from, to) = (request.FromUtc, request.ToUtc);
+        if (from.Kind != DateTimeKind.Utc || to.Kind != DateTimeKind.Utc || to <= from || to - from > MaxBacktest || to > now || from < now - BacktestHistory)
+            return Result.Error<AlertBacktestViewModel>(AlertRuleErrors.BacktestRange);
+        // A backtest shows the site's past queue values: only for a caller who sees its live queues (CWE-863).
+        if (!RolePermissions.For(await callerRoles.GetAsync(ct)).Contains(Ariva.Core.Global.Defaults.Permissions.ViewLiveQueue))
+            return Result.Error<AlertBacktestViewModel>(TopologyErrors.UnknownSite);
+        var (values, problems) = await CheckAsync(rule.SiteCode, rule, null, ct);
+        if (problems.Count > 0)
+            return Result.Error<AlertBacktestViewModel>(problems);
+
+        // The live evaluation's fold from a fresh state at the range's start, on the same minutes.
+        var start = AlertInputs.Minute(from).AddMinutes(-1);
+        var end = AlertInputs.Minute(to);
+        var targets = await inputs.TargetsAsync(rule.SiteCode, values, ct);
+        var series = await inputs.ReadAsync(rule.SiteCode, values, targets, start, end, ct);
+        var alerts = new List<AlertBacktestAlert>();
+        foreach (var target in series)
+        {
+            var (_, transitions) = AlertEvaluator.Run(values, AlertTargetState.Fresh, target.Minutes);
+            foreach (var t in transitions)
+            {
+                if (t.Kind == AlertTransitionKind.Raised)
+                    alerts.Add(new AlertBacktestAlert(target.Target.ZoneName, target.Target.DeviceCode, t.MinuteUtc, null, t.Value, t.BinStartUtc, t.PredictedForUtc));
+                else if (alerts.FindLastIndex(a => a.ZoneName == target.Target.ZoneName && a.DeviceCode == target.Target.DeviceCode) is var i and >= 0)
+                    alerts[i] = alerts[i] with { ClearedUtc = t.MinuteUtc };
+            }
+        }
+
+        var ordered = alerts.OrderBy(a => a.RaisedUtc).ThenBy(a => a.ZoneName, StringComparer.Ordinal).ThenBy(a => a.DeviceCode, StringComparer.Ordinal).ToList();
+        return new Result<AlertBacktestViewModel>(new AlertBacktestViewModel(ordered.Count, ordered.FirstOrDefault()?.RaisedUtc, [.. ordered.Take(MaxBacktestAlerts)],
+            ordered.Count > MaxBacktestAlerts, targets.Count, series.Count(s => s.Minutes.Any(m => m.Value is not null))));
+    }
+
     // The request as typed values (exact names only for the enums), the entity's checks, the zones against the site's
     // published profile, and the roles against the caller's (for an update, against the rule's current roles too).
     private async Task<(AlertRuleValues Values, IReadOnlyList<string> Problems)> CheckAsync(string siteCode, AlertRuleRequest request, AlertRule existing, CancellationToken ct)
@@ -137,12 +188,14 @@ internal sealed class SvcAlertRules(
 
         var values = new AlertRuleValues(request.Name, request.Zones ?? [], metric, comparator, request.Threshold, request.MinQueueLength, request.ClearThreshold,
             request.SustainMinutes, request.ClearAfterMinutes, severity, Blank(request.OwnerRole), request.EscalateAfterMinutes, Blank(request.EscalateToRole),
-            request.EscalationContact, request.NotifyByEmail, request.Enabled);
+            request.EscalationContact, request.NotifyByEmail, request.Enabled, request.LeadMinutes);
         problems.AddRange(values.Problems());
         if (problems.Count > 0)
             return (values, problems);
 
+        // The values as the rule keeps them: zones trimmed and once each (a backtest judges what a saved rule would).
         var zones = values.Zones.Select(z => z.Trim()).Distinct(StringComparer.Ordinal).ToList();
+        values = values with { Zones = zones };
         var known = await Query<Zone>()
             .Where(z => z.Profile.SiteCode == siteCode && z.Profile.Status == ZoneProfileStatus.Published && zones.Contains(z.Name) &&
                         (z.Kind == ZoneKind.Queue || z.Kind == ZoneKind.Overflow))
@@ -207,5 +260,5 @@ internal sealed class SvcAlertRules(
     private static AlertRuleViewModel View(AlertRule r) =>
         new(r.Id.Value, r.SiteCode, r.Code, r.Name, r.Zones, r.Metric.ToString(), r.Comparator.ToString(), r.Threshold, r.MinQueueLength, r.ClearThreshold,
             r.SustainMinutes, r.ClearAfterMinutes, r.Severity.ToString(), r.OwnerRole, r.EscalateAfterMinutes, r.EscalateToRole, r.EscalationContact,
-            r.NotifyByEmail, r.Enabled, r.CreatedOn, r.ModifiedOn);
+            r.NotifyByEmail, r.Enabled, r.CreatedOn, r.ModifiedOn, r.LeadMinutes);
 }
