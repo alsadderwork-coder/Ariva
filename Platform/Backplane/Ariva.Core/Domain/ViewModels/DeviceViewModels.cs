@@ -88,3 +88,31 @@ public sealed record CalibrationViewModel(
     DateTime PerformedOn,
     string PerformedBy,
     string DeviceState);
+
+/// <summary>
+/// A device's health (ARV-025): its state, when Ariva last heard from it and how long ago, and what it last reported
+/// (online flag, frame rate, temperature) with Ariva's clock estimate. Null fields mean nothing was heard yet.
+/// </summary>
+public sealed record DeviceHealthViewModel(
+    Guid Id,
+    string Code,
+    string SiteCode,
+    string QueueZoneName,
+    string State,
+    DateTime? LastSeenOn,
+    double? SecondsSinceSeen,
+    bool? ReportedOnline,
+    double? FrameRate,
+    double? TemperatureCelsius,
+    double? ClockOffsetMilliseconds,
+    string ClockState);
+
+/// <summary>A queue zone's sensing health (ARV-025).</summary>
+public sealed record ZoneHealthViewModel(string SiteCode, string QueueZoneName, string State, int Devices, int DevicesOffline, int DevicesDegraded, DateTime ChangedOn);
+
+/// <summary>
+/// The health of a site's devices and zones, with the heartbeat timeout that marks a device offline. At most 2,000 of
+/// each, offline and degraded first; <see cref="Truncated"/> says when there were more.
+/// </summary>
+public sealed record DeviceHealthOverviewViewModel(int HeartbeatTimeoutSeconds, IReadOnlyList<DeviceHealthViewModel> Devices, IReadOnlyList<ZoneHealthViewModel> Zones,
+    bool Truncated = false);

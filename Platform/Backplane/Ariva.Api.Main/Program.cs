@@ -75,7 +75,8 @@ builder.Services.AddAppTelemetry(builder.Configuration);
 
 #region Services
 
-builder.Services.RegisterArivaServices(builder.Configuration);
+// Main consumes device health reports into heartbeats (ARV-025).
+builder.Services.RegisterArivaServices(builder.Configuration, messaging => messaging.ConsumeDeviceHealth());
 
 // Security baseline (docs/security/cwe-controls.md): default deny (fallback policy, Ariva.Deny answers challenges),
 // ES256 access tokens from Ariva.Api.Main with permissions from stored grants (ARV-010a), input limits, rate limiting,
@@ -88,6 +89,10 @@ builder.Services.AddArivaTokenIssuing(builder.Configuration);
 
 // Demo Airport (DMO) topology and zone profile v12 in vm-local and k8s-demo; refused outside dev and demo (ARV-019).
 builder.Services.AddArivaDemoSeed(builder.Configuration, builder.Environment.EnvironmentName);
+
+// Device heartbeats (ARV-025): a commissioned device not heard from for Devices:Health:HeartbeatTimeoutSeconds goes
+// Offline and its queue zone Degraded; one sweep at a time across replicas.
+builder.Services.AddArivaDeviceHealthMonitor();
 
 // AMAN: AddAppCaching, AddAppHealthChecks, AddAppRouting, AddAppOpenApi, AddAppSignalR.
 // SignalR: the live queue hub (Hubs/) uses the Redis backplane and the MessagePack protocol.

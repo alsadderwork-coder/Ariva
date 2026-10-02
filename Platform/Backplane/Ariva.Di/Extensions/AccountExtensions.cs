@@ -67,6 +67,14 @@ public static class AccountExtensions
         // The declarative device mappings shipped with Ariva (ARV-024); the registry checks names against them.
         services.TryAddSingleton<Ariva.Core.Services.Sensing.IDeviceMappingCatalog>(Ariva.Infra.Sensing.Declarative.DeclarativeMappingCatalog.Embedded);
         services.TryAddScoped<Ariva.Core.Services.Sensing.ISvcDeviceGateway, Ariva.Infra.Services.Sensing.SvcDeviceGateway>();
+        // Device heartbeats and zone degradation (ARV-025): reads for the health API, recording for the consumer; the
+        // heartbeat monitor itself runs only in Ariva.Api.Main (AddArivaDeviceHealthMonitor).
+        services.AddOptions<Ariva.Infra.Sensing.DeviceHealthSettings>()
+            .Bind(configuration.GetSection(Ariva.Infra.Sensing.DeviceHealthSettings.SectionName))
+            .Validate(s => s.IsValid, "Devices:Health:HeartbeatTimeoutSeconds is from 30 to 3600 and SweepSeconds from 5 to 300, below the timeout.")
+            .ValidateOnStart();
+        services.TryAddSingleton<Ariva.Infra.Sensing.DeviceHealthMetrics>();
+        services.TryAddScoped<Ariva.Core.Services.Sensing.ISvcDeviceHealth, Ariva.Infra.Services.Sensing.SvcDeviceHealth>();
 
         var environment = configuration["Application:Environment"];
         if (settings.DevelopmentUsers.Count > 0)

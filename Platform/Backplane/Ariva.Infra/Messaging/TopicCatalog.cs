@@ -24,6 +24,7 @@ public static class TopicCatalog
         [KafkaTopics.DeviceIntervalCount] = Short,
         [KafkaTopics.DeviceHealth] = Short,
         [KafkaTopics.DeviceRegistryChanged] = null,
+        [KafkaTopics.DeviceZoneHealth] = null,
         [KafkaTopics.TopologyZoneProfileActivated] = null,
         [KafkaTopics.TopologyDeskChanged] = null,
         [KafkaTopics.FlowZoneCrossing] = Short,

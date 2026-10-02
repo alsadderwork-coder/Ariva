@@ -143,6 +143,8 @@ Without a vendor footprint, the BOQ's planning assumption for the mounting heigh
 
 The credential (`ardk_` followed by 43 characters) is shown when the device is registered and when it is rotated, never again: copy it into the device or the vendor tool at once. Ariva keeps only its first 13 characters and a hash, so a lost credential is replaced, not recovered.
 
+Health (ARV-025): `GET api/v1/admin/devices/health` (optionally `?siteCode=`) shows every device of your sites with its state, when it was last heard from and what it last reported (online, frame rate, temperature, clock offset), every queue zone as `Healthy`, `Degraded` or `Unmonitored`, and the heartbeat timeout; `GET {id}/health` shows one device. A commissioned device not heard from for the timeout (`Devices:Health:HeartbeatTimeoutSeconds`, 180 seconds by default) becomes `Offline` and its zone `Degraded`; a device that reports itself unwell becomes `Degraded`; both return to `Online` by themselves when the device reports again. Nothing in the health view can be changed by hand: fix the device, and its state follows. A device in `Commissioning` keeps that state whatever it reports.
+
 See [Commissioning and calibration](07-Commissioning-and-Calibration.md).
 
 ## 7. Zone profiles

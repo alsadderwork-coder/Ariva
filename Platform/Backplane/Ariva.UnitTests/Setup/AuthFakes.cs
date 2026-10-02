@@ -212,11 +212,22 @@ public sealed class FakeTopology : Ariva.Core.Services.Topology.ISvcTopology, Ar
     public Task<Fluentx.Result<bool>> DeleteDeskAsync(Guid id, CancellationToken ct = default) => Missing<bool>();
 }
 
-/// <summary>The device registry for in-process hosts (no database): searches are empty and every id is unknown (ARV-021).</summary>
-public sealed class FakeDevices : Ariva.Core.Services.Sensing.ISvcDevices
+/// <summary>The device registry and health for in-process hosts (no database): searches are empty and every id is unknown (ARV-021, ARV-025).</summary>
+public sealed class FakeDevices : Ariva.Core.Services.Sensing.ISvcDevices, Ariva.Core.Services.Sensing.ISvcDeviceHealth
 {
-    public static void Register(IServiceCollection services) =>
+    public static void Register(IServiceCollection services)
+    {
         services.Replace(ServiceDescriptor.Scoped<Ariva.Core.Services.Sensing.ISvcDevices, FakeDevices>());
+        services.Replace(ServiceDescriptor.Scoped<Ariva.Core.Services.Sensing.ISvcDeviceHealth, FakeDevices>());
+    }
+
+    public Task<Fluentx.Result<DeviceHealthOverviewViewModel>> OverviewAsync(string siteCode, CancellationToken ct = default) =>
+        Task.FromResult(new Fluentx.Result<DeviceHealthOverviewViewModel>(new DeviceHealthOverviewViewModel(180, [], [])));
+
+    Task<Fluentx.Result<DeviceHealthViewModel>> Ariva.Core.Services.Sensing.ISvcDeviceHealth.GetAsync(Guid deviceId, CancellationToken ct) => Missing<DeviceHealthViewModel>();
+    public Task RecordAsync(Ariva.Core.Sensing.DeviceHealthReported report, CancellationToken ct = default) => Task.CompletedTask;
+    public Task<Ariva.Core.Services.Sensing.DeviceHealthSweep> SweepAsync(CancellationToken ct = default) =>
+        Task.FromResult(new Ariva.Core.Services.Sensing.DeviceHealthSweep(false, 0, 0, 0, 0, 0));
 
     public Task<Fluentx.Result<PageViewModel<DeviceViewModel>>> SearchAsync(DeviceCriteria criteria, CancellationToken ct = default) =>
         Task.FromResult(new Fluentx.Result<PageViewModel<DeviceViewModel>>(new PageViewModel<DeviceViewModel>([], 0, 1, 50)));

@@ -1619,6 +1619,22 @@
     {
       "host": "main",
       "method": "GET",
+      "route": "/api/v1/admin/devices/health",
+      "access": "permission",
+      "permissions": [
+        "SearchDevice"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 200,
+        "TerminalDutyManager": 200,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
       "route": "/api/v1/admin/devices/{id:guid}",
       "access": "permission",
       "permissions": [
@@ -1730,6 +1746,22 @@
       "host": "main",
       "method": "GET",
       "route": "/api/v1/admin/devices/{id:guid}/calibrations",
+      "access": "permission",
+      "permissions": [
+        "ViewDevice"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/admin/devices/{id:guid}/health",
       "access": "permission",
       "permissions": [
         "ViewDevice"

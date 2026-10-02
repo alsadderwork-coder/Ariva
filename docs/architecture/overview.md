@@ -89,7 +89,7 @@ Nine bounded contexts from D5, each with its own schema. Two are anti-corruption
 | Context | Aggregates | Key domain events | Host (Proposed) | Module | First phase |
 |---|---|---|---|---|---|
 | Site Topology | Site, FloorPlan, Zone (queue, service, staff, overflow) with entry and exit Lines, ZoneProfile, Desk, Lane | ZoneProfilePublished, ZoneProfileActivated, DeskRegistered, LaneCategoryChanged | Main | Core | Phase 0 (config file), Phase 1 (editor) |
-| Device Management | Device, CalibrationRecord, AdapterConfig | DeviceRegistered, DeviceCalibrated, DeviceHeartbeatLost, DeviceRecovered | Main (registry), Ingest (adapters, health) | Core | Phase 0 |
+| Device Management | Device, CalibrationRecord, AdapterConfig, ZoneHealth | DeviceRegistryChanged (Registered, CalibrationPassed, HealthOffline for a lost heartbeat, HealthOnline for a recovery, and the rest), ZoneHealthChanged | Main (registry, heartbeats), Ingest (adapters, health reports) | Core | Phase 0 |
 | Flow Measurement | ZoneState (stream state per zone), QueueInterval | PassengerEnteredZone, PassengerExitedZone, QueueIntervalClosed (provisional, then final), OverflowDetected, NowcastUpdated | Stream | Core | Phase 0 |
 | Desk Operations | DeskState (the state machine), DeskInterval | DeskStateChanged, DeskIntervalClosed (service time, cycle time, throughput) | Stream | Core | Phase 0 (simulated signals), Phase 1 (AMAN) |
 | Flight Demand | Flight (canonical), PassengerCounts, DeskAllocation | FlightScheduled, FlightEstimateChanged, FlightOnBlock, PassengerCountsUpdated, DeskAllocationChanged | Integration | Core | MVP (SSIM import), v1 (AIDX and one vendor AODB) |
@@ -125,6 +125,7 @@ Key for zone-keyed topics: the queue zone that owns the process, written `<site>
 | `ariva.device.interval-count.v1` | (none; ARV-023, T1 devices) | Zone id | Ingest | Stream | Short | 3 days |
 | `ariva.device.health.v1` | device.health.v1 | Device id | Ingest | Stream, Main | Short | 3 days |
 | `ariva.device.registry-changed.v1` | | Device id | Main | Ingest, Stream | Compacted | compacted |
+| `ariva.device.zone-health.v1` | (none; ARV-025) | Zone key (`<site>/<queue zone name>`) | Main | Stream | Compacted | compacted |
 | `ariva.topology.zone-profile-activated.v1` | | Site id | Main | Stream, Cronz | Compacted | compacted |
 | `ariva.topology.desk-changed.v1` | | Desk id | Main | Stream, Integration | Compacted | compacted |
 | `ariva.flow.zone-crossing.v1` | (internal events) | Zone id | Stream | Stream (internal only) | Short | 3 days |

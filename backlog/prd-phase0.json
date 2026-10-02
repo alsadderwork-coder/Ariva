@@ -614,8 +614,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 28,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Heartbeats from ariva.device.health.v1 into device_heartbeat; sweep marks devices Offline after Devices:Health:HeartbeatTimeoutSeconds (180) and zones Degraded; recovery; DeviceRegistryChanged and ZoneHealthChanged (ariva.device.zone-health.v1); health API and Ariva.Devices metrics. E2E is API-level (no device screen yet). Security review PASS after fixes (backlog/progress.md).",
       "dependsOn": [
         "ARV-023"
       ]

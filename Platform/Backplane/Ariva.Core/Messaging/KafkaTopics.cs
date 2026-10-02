@@ -20,6 +20,9 @@ public static partial class KafkaTopics
     public const string DeviceHealth = "ariva.device.health.v1";
     public const string DeviceRegistryChanged = "ariva.device.registry-changed.v1";
 
+    // The health of each queue zone's sensing (ARV-025): Healthy, Degraded or Unmonitored, keyed by zone, compacted.
+    public const string DeviceZoneHealth = "ariva.device.zone-health.v1";
+
     // Topology (Main)
     public const string TopologyZoneProfileActivated = "ariva.topology.zone-profile-activated.v1";
     public const string TopologyDeskChanged = "ariva.topology.desk-changed.v1";

@@ -43,6 +43,25 @@ public sealed class DevicesController(ISvcDevices devices) : ControllerBase
     [ProducesResponseType<IReadOnlyList<DeviceMappingViewModel>>(StatusCodes.Status200OK)]
     public IActionResult Mappings([FromServices] IDeviceMappingCatalog catalog) => Ok(catalog.Mappings);
 
+    /// <summary>
+    /// The health of the devices and queue zones of the caller's sites, or of one site (ARV-025): each device's state and
+    /// when it was last heard from, each zone Healthy, Degraded or Unmonitored, and the heartbeat timeout.
+    /// </summary>
+    [HttpGet("health")]
+    [Permission(nameof(Global.Defaults.Permissions.SearchDevice))]
+    [ProducesResponseType<DeviceHealthOverviewViewModel>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> Health([FromQuery] string siteCode, [FromServices] ISvcDeviceHealth health, CancellationToken ct) =>
+        TopologyAnswers.Ok(this, await health.OverviewAsync(siteCode, ct));
+
+    /// <summary>One device's health (ARV-025).</summary>
+    [HttpGet("{id:guid}/health")]
+    [Permission(nameof(Global.Defaults.Permissions.ViewDevice))]
+    [ProducesResponseType<DeviceHealthViewModel>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> DeviceHealth(Guid id, [FromServices] ISvcDeviceHealth health, CancellationToken ct) =>
+        TopologyAnswers.Ok(this, await health.GetAsync(id, ct));
+
     [HttpGet("{id:guid}")]
     [Permission(nameof(Global.Defaults.Permissions.ViewDevice))]
     [ProducesResponseType<DeviceViewModel>(StatusCodes.Status200OK)]

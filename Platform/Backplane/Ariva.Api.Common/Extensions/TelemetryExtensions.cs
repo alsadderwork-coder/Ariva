@@ -52,6 +52,8 @@ public static class TelemetryExtensions
                 .AddRuntimeInstrumentation()
                 // MassTransit's consume, produce and fault counters and durations (ADR-0018).
                 .AddMeter(MassTransitActivitySource)
+                // Device heartbeats and zone degradation (ARV-025).
+                .AddMeter(Ariva.Infra.Sensing.DeviceHealthMetrics.MeterName)
                 .AddOtlpExporter(options => Configure(options, otlp.Endpoint, protocol)));
 
         return services;

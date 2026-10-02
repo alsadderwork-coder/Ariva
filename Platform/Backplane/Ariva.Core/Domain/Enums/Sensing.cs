@@ -90,3 +90,15 @@ public enum CrossingDirection
     In,
     Out
 }
+
+/// <summary>
+/// The health of a queue zone's sensing (ARV-025): Healthy when every commissioned device of the zone is online;
+/// Degraded while any is offline or degraded (its numbers are flagged, never guessed); Unmonitored when it has no
+/// commissioned device. Stored by name.
+/// </summary>
+public enum ZoneHealthState
+{
+    Healthy,
+    Degraded,
+    Unmonitored
+}
