@@ -1,0 +1,5 @@
+{
+    "_comment": "ARV-036: the output hash of the golden replay of the reference evening (seed 9303, GoldenReplayTests). Update only after reviewing the change in the engine's outputs, with the human's approval.",
+    "outputHead": "451f62ed547d4806ceb5e2e9587705cc67275442a4883f3b435021605ea11729",
+    "outputs": 2083
+}

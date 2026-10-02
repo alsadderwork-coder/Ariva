@@ -17,6 +17,18 @@ public sealed record ZoneProcessorSettings
     /// <summary>Outputs held between checkpoints at most; beyond it the zone asks for a checkpoint (<see cref="ZoneProcessor.Full"/>).</summary>
     public int MaxPendingOutputs { get; init; } = 50_000;
 
+    /// <summary>
+    /// A device heard before and silent for longer than this is out and its zone degraded (ARV-036); the same 180 seconds
+    /// as Devices:Health:HeartbeatTimeoutSeconds, so the stream and the health screen agree.
+    /// </summary>
+    public int DeviceSilenceSeconds { get; init; } = 180;
+
+    /// <summary>A device silent this long is treated as removed: its outage ends there and it is no longer tracked.</summary>
+    public int DeviceForgetHours { get; init; } = 24;
+
+    /// <summary>Devices tracked per zone at most.</summary>
+    public int MaxDevices { get; init; } = 256;
+
     public IEnumerable<string> Problems()
     {
         foreach (var p in Engine?.Problems() ?? ["Engine settings are required."])
@@ -29,6 +41,12 @@ public sealed record ZoneProcessorSettings
             yield return "ExitWindowMinutes is from 1 to 60.";
         if (MaxPendingOutputs is < 100 or > 1_000_000)
             yield return "MaxPendingOutputs is from 100 to 1,000,000.";
+        if (DeviceSilenceSeconds is < 30 or > 3_600)
+            yield return "DeviceSilenceSeconds is from 30 to 3,600.";
+        if (DeviceForgetHours is < 1 or > 72 || DeviceForgetHours * 3_600 <= DeviceSilenceSeconds)
+            yield return "DeviceForgetHours is from 1 to 72 and longer than the silence limit.";
+        if (MaxDevices is < 1 or > 4_096)
+            yield return "MaxDevices is from 1 to 4,096.";
     }
 }
 
@@ -47,15 +65,18 @@ public sealed record QueueLiveMinute(
     NoServiceReason? NoService,
     bool NowcastDegraded);
 
-/// <summary>What a zone produced since the last drain: rows to persist and what to recompute.</summary>
+/// <summary>What a zone produced since the last drain: rows to persist, what to recompute, and device outages that ended.</summary>
 public sealed record ZoneOutputs(
     string ZoneKey,
     IReadOnlyList<MinuteResult> Minutes,
     IReadOnlyList<BinResult> Bins,
     IReadOnlyList<QueueLiveMinute> Live,
-    IReadOnlyList<RecomputationRequest> Recomputations)
+    IReadOnlyList<RecomputationRequest> Recomputations,
+    IReadOnlyList<DeviceOutage> Outages = null)
 {
-    public int Count => Minutes.Count + Bins.Count + Live.Count + Recomputations.Count;
+    public IReadOnlyList<DeviceOutage> Outages { get; init; } = Outages ?? [];
+
+    public int Count => Minutes.Count + Bins.Count + Live.Count + Recomputations.Count + Outages.Count;
 }
 
 /// <summary>Counts of what a zone refused, for health.</summary>
@@ -64,7 +85,8 @@ public sealed record ZoneProcessorCounters(long Batches, long Uncommissioned, lo
 /// <summary>Everything a <see cref="ZoneProcessor"/> holds between checkpoints (outputs drained).</summary>
 public sealed record ZoneProcessorState
 {
-    public const int CurrentVersion = 1;
+    /// <summary>2 adds device liveness (ARV-036); a version 1 snapshot restores with no devices heard yet.</summary>
+    public const int CurrentVersion = 2;
 
     public int Version { get; init; } = CurrentVersion;
     public string ZoneKey { get; init; }
@@ -75,6 +97,8 @@ public sealed record ZoneProcessorState
     public DateTime ReferenceUtc { get; init; }
     public DateTime? LastLiveMinuteUtc { get; init; }
     public ZoneProcessorCounters Counters { get; init; }
+    public IReadOnlyList<DeviceLivenessState> Devices { get; init; } = [];
+    public IReadOnlyList<RecentOutageState> RecentOutages { get; init; } = [];
 }
 
 /// <summary>
@@ -98,6 +122,9 @@ public sealed class ZoneProcessor
     private readonly List<BinResult> _binResults = [];
     private readonly List<QueueLiveMinute> _live = [];
     private readonly List<RecomputationRequest> _recomputations = [];
+    private readonly List<DeviceOutage> _outages = [];
+    private DeviceLiveness _liveness;
+    private bool _watchDevices = true;
 
     public ZoneProcessor(string zoneKey, QueueZoneGeometry geometry, int profileVersion, ZoneProcessorSettings settings = null)
     {
@@ -113,7 +140,11 @@ public sealed class ZoneProcessor
         _engine = new QueueStateEngine(geometry, _settings.Engine);
         _bins = new BinAccumulator(geometry.QueueZone, profileVersion, _settings.Bins);
         _exits = new ExitRate();
+        _liveness = NewLiveness(_settings);
     }
+
+    private static DeviceLiveness NewLiveness(ZoneProcessorSettings settings) =>
+        new(TimeSpan.FromSeconds(settings.DeviceSilenceSeconds), TimeSpan.FromHours(settings.DeviceForgetHours), settings.MaxDevices);
 
     public string ZoneKey { get; }
 
@@ -127,7 +158,7 @@ public sealed class ZoneProcessor
     public ZoneProcessorCounters Counters => new(_batches, _uncommissioned, _wrongZone, _invalid);
 
     /// <summary>Outputs are waiting beyond the bound: checkpoint before offering more.</summary>
-    public bool Full => _minutes.Count + _binResults.Count + _live.Count + _recomputations.Count >= _settings.MaxPendingOutputs;
+    public bool Full => _minutes.Count + _binResults.Count + _live.Count + _recomputations.Count + _outages.Count >= _settings.MaxPendingOutputs;
 
     /// <summary>
     /// Offers one batch and steps the zone to its receive time (never backwards; <paramref name="referenceCapUtc"/>
@@ -150,8 +181,7 @@ public sealed class ZoneProcessor
             return;
         }
 
-        if (!Plausible(batch.ReceivedUtc) || string.IsNullOrWhiteSpace(batch.DeviceCode) || batch.DeviceCode.Length > 16 ||
-            batch.DeviceCode.Contains('/', StringComparison.Ordinal))
+        if (!Plausible(batch.ReceivedUtc) || !DeviceCodes.IsValid(batch.DeviceCode))
         {
             _invalid++;
             return;
@@ -160,6 +190,9 @@ public sealed class ZoneProcessor
         var reference = batch.ReceivedUtc < referenceCapUtc ? batch.ReceivedUtc : referenceCapUtc;
         if (reference > _reference)
             _reference = reference;
+        // Every batch of a commissioned device says it was heard; a health report may say it is offline (ARV-036).
+        if (_liveness.Heard(ZoneKey, batch.DeviceCode, _reference, batch is not DeviceStatusBatch { Online: false }) is { } ended)
+            Ended(ended.Outage, ended.MarkFromUtc);
         var unreliable = batch.Clock?.State == ClockState.Unreliable;
         foreach (var input in Inputs(batch, unreliable))
         {
@@ -188,35 +221,45 @@ public sealed class ZoneProcessor
     private IEnumerable<QueueInput> Inputs(SensingBatch batch, bool unreliable)
     {
         bool Degraded(SensedFlags flags) => unreliable || flags != SensedFlags.None;
-        string Track(string id) => id is null ? null : $"{batch.DeviceCode}/{id}";
+        var prefix = batch.DeviceCode + "/";
+        // Ingest namespaces track ids by device (<code>/<id>) and the archive keeps a day's pseudonym (<code>/~ and 22
+        // characters) instead; the engine's id is <code>/<the device's own part>, and the canonical rules check that part.
+        string Local(string id) => id is null ? null : id.StartsWith(prefix, StringComparison.Ordinal) ? id[prefix.Length..] : id;
+        string Track(string id) => id is null ? null : prefix + Local(id);
+        static string Checkable(string local) => local is { Length: 23 } && local[0] == '~' && local.AsSpan(1).ContainsAnyExcept(Base64Url) == false ? "pseudonym" : local;
 
         // Every event is checked against the canonical bounds again (CWE-501), and so is its corrected time.
-        static bool Valid<T>(Sensed<T> e) where T : CanonicalEvent =>
-            e?.Event is not null && Plausible(e.TimeUtc) && CanonicalEventRules.Validate(e.Event).Count == 0;
+        static bool Valid<T>(Sensed<T> e, T checkable) where T : CanonicalEvent =>
+            e?.Event is not null && Plausible(e.TimeUtc) && CanonicalEventRules.Validate(checkable).Count == 0;
         switch (batch)
         {
             case VendorLineCrossingBatch c:
                 foreach (var e in (c.Crossings ?? []).Take(MaxEventsPerBatch))
-                    yield return !Valid(e) ? null : new QueueCrossing(e.Event.LineName, e.Event.Direction, Track(e.Event.TrackId), e.TimeUtc, Degraded(e.Flags));
+                    yield return e?.Event is null || !Valid(e, e.Event with { TrackId = e.Event.TrackId is null ? null : Checkable(Local(e.Event.TrackId)) }) ? null
+                        : new QueueCrossing(e.Event.LineName, e.Event.Direction, Track(e.Event.TrackId), e.TimeUtc, Degraded(e.Flags));
                 break;
             case ZoneOccupancyBatch o:
                 foreach (var e in (o.Occupancy ?? []).Take(MaxEventsPerBatch))
-                    yield return !Valid(e) ? null : new QueueOccupancy(e.Event.ZoneName, e.Event.Count, e.TimeUtc, Degraded(e.Flags));
+                    yield return !Valid(e, e?.Event) ? null : new QueueOccupancy(e.Event.ZoneName, e.Event.Count, e.TimeUtc, Degraded(e.Flags));
                 break;
             case IntervalCountBatch i:
                 foreach (var e in (i.Intervals ?? []).Take(MaxEventsPerBatch))
                 {
-                    var from = Valid(e) ? Shift(e.Event.FromUtc, e.Event.TimeUtc, e.TimeUtc) : null;
+                    var from = Valid(e, e?.Event) ? Shift(e.Event.FromUtc, e.Event.TimeUtc, e.TimeUtc) : null;
                     yield return from is null ? null : new QueueInterval(e.Event.LineName, e.Event.In, e.Event.Out, from.Value, e.TimeUtc, Degraded(e.Flags));
                 }
 
                 break;
             case TrackSampleBatch t:
                 foreach (var e in (t.Samples ?? []).Take(MaxEventsPerBatch))
-                    yield return !Valid(e) ? null : new QueueTrackSeen(Track(e.Event.TrackId), e.TimeUtc, Degraded(e.Flags));
+                    yield return e?.Event is null || !Valid(e, e.Event with { TrackId = Checkable(Local(e.Event.TrackId)) }) ? null
+                        : new QueueTrackSeen(Track(e.Event.TrackId), e.TimeUtc, Degraded(e.Flags));
                 break;
         }
     }
+
+    private static readonly System.Buffers.SearchValues<char> Base64Url =
+        System.Buffers.SearchValues.Create("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_");
 
     /// <summary>A time the engines can work with: UTC, from the year 2000 and well before the end of the calendar.</summary>
     public static bool Plausible(DateTime t) => t.Kind == DateTimeKind.Utc && t >= EarliestUtc && t <= LatestUtc;
@@ -231,8 +274,28 @@ public sealed class ZoneProcessor
         return Plausible(start) ? start : null;
     }
 
+    private void Ended(DeviceOutage outage, DateTime markFromUtc)
+    {
+        _outages.Add(outage);
+        _recomputations.AddRange(_bins.Mark(markFromUtc, outage.ToUtc, BinQuality.Degraded));
+    }
+
+    // Before the engine steps, so that bins finalised in this step already carry the marks of the devices out now.
+    private void WatchDevices()
+    {
+        if (!_watchDevices || _reference == DateTime.MinValue)
+            return;
+        foreach (var (outage, markFrom) in _liveness.Observe(ZoneKey, _reference))
+            Ended(outage, markFrom);
+        foreach (var (from, to) in _liveness.MarksDue(_reference, MarkEvery))
+            _recomputations.AddRange(_bins.Mark(from, to, BinQuality.Degraded));
+    }
+
+    private static readonly TimeSpan MarkEvery = TimeSpan.FromMinutes(5);
+
     private void Step()
     {
+        WatchDevices();
         var before = _engine.WatermarkUtc;
         QueueStep step;
         var guard = 0;
@@ -262,25 +325,45 @@ public sealed class ZoneProcessor
             return;
         _lastLive = minute;
         var length = step.Length;
+        var deviceOut = _liveness.OutDuring(minute);
         var window = _exits.Window(minute.AddMinutes(1), _settings.ExitWindowMinutes);
         var nowcast = Nowcast.Compute(new NowcastInput
         {
             QueueLength = length.Count,
             ExitsInWindow = window.Complete ? window.Exits : null,
             ExitWindowMinutes = _settings.ExitWindowMinutes,
-            Degraded = length.Degraded || window.DegradedExits > 0
+            Degraded = length.Degraded || deviceOut || window.DegradedExits > 0
         }, _settings.Nowcast);
-        _live.Add(new QueueLiveMinute(ZoneKey, minute, length.Count, length.FromSensors, length.Degraded, nowcast.Minutes, nowcast.Throughput, nowcast.NoService, nowcast.Degraded));
+        _live.Add(new QueueLiveMinute(ZoneKey, minute, length.Count, length.FromSensors, length.Degraded || deviceOut, nowcast.Minutes, nowcast.Throughput,
+            nowcast.NoService, nowcast.Degraded));
+        _liveness.Published(minute);
+    }
+
+    /// <summary>
+    /// Ends a replay (ARV-036): steps to <paramref name="endUtc"/> as usual, reports the device outages still open there
+    /// (marked through the end, <see cref="DeviceOutage.Closed"/> false), then stops watching devices and settles the
+    /// engine to <paramref name="settleUtc"/> so the bins before the end become final without inventing outages after it.
+    /// </summary>
+    public void Finish(DateTime endUtc, DateTime settleUtc)
+    {
+        Tick(endUtc);
+        foreach (var (open, markFrom) in _liveness.EndAll(ZoneKey, endUtc))
+            Ended(open, markFrom);
+
+        _watchDevices = false;
+        if (settleUtc > endUtc)
+            Tick(settleUtc);
     }
 
     /// <summary>The outputs since the last drain, which the host persists with the zone's state in one transaction.</summary>
     public ZoneOutputs Drain()
     {
-        var outputs = new ZoneOutputs(ZoneKey, [.. _minutes], [.. _binResults], [.. _live], [.. _recomputations]);
+        var outputs = new ZoneOutputs(ZoneKey, [.. _minutes], [.. _binResults], [.. _live], [.. _recomputations], [.. _outages]);
         _minutes.Clear();
         _binResults.Clear();
         _live.Clear();
         _recomputations.Clear();
+        _outages.Clear();
         return outputs;
     }
 
@@ -288,7 +371,7 @@ public sealed class ZoneProcessor
     /// The outputs since the last acknowledgement, without removing them: the host writes them with the zone's state and
     /// calls <see cref="Acknowledge"/> only after its transaction committed, so a failed or cancelled write loses nothing.
     /// </summary>
-    public ZoneOutputs Peek() => new(ZoneKey, [.. _minutes], [.. _binResults], [.. _live], [.. _recomputations]);
+    public ZoneOutputs Peek() => new(ZoneKey, [.. _minutes], [.. _binResults], [.. _live], [.. _recomputations], [.. _outages]);
 
     /// <summary>Removes the outputs a <see cref="Peek"/> returned (the ones before any produced since).</summary>
     public void Acknowledge(ZoneOutputs written)
@@ -298,6 +381,7 @@ public sealed class ZoneProcessor
         _binResults.RemoveRange(0, Math.Min(written.Bins.Count, _binResults.Count));
         _live.RemoveRange(0, Math.Min(written.Live.Count, _live.Count));
         _recomputations.RemoveRange(0, Math.Min(written.Recomputations.Count, _recomputations.Count));
+        _outages.RemoveRange(0, Math.Min(written.Outages.Count, _outages.Count));
     }
 
     /// <summary>
@@ -306,8 +390,11 @@ public sealed class ZoneProcessor
     /// </summary>
     public ZoneProcessorState Capture()
     {
+        var (devices, recent) = _liveness.Capture();
         return new ZoneProcessorState
         {
+            Devices = devices,
+            RecentOutages = recent,
             ZoneKey = ZoneKey,
             ProfileVersion = ProfileVersion,
             Engine = _engine.Capture(),
@@ -339,6 +426,7 @@ public sealed class ZoneProcessor
         zone._lastLive = state.LastLiveMinuteUtc is { } live ? DateTime.SpecifyKind(live, DateTimeKind.Utc) : null;
         if (state.Counters is { } c)
             (zone._batches, zone._uncommissioned, zone._wrongZone, zone._invalid) = (c.Batches, c.Uncommissioned, c.WrongZone, c.Invalid);
+        zone._liveness.Restore(state.Devices, state.RecentOutages);
         return zone;
     }
 }

@@ -53,11 +53,32 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
             await WriteBinsAsync(connection, bins, now, ct);
         if (checkpoint.DeskMinutes.Count > 0)
             await WriteDeskMinutesAsync(connection, checkpoint.DeskMinutes, now, ct);
+        var outages = checkpoint.Outputs.SelectMany(o => o.Outages).ToList();
+        if (outages.Count > 0)
+            await WriteOutagesAsync(connection, outages, now, ct);
         foreach (var state in checkpoint.States)
             await SaveStateAsync(connection, state, now, ct);
         if (checkpoint.Offsets.Count > 0)
             await SaveOffsetsAsync(connection, checkpoint.ConsumerGroup, checkpoint.Offsets, now, ct);
         await transaction.CommitAsync(ct);
+    }
+
+    // A zone's device outages (ARV-036), keyed by zone, device and start: a replay of the same records writes the same rows.
+    private static async Task WriteOutagesAsync(NpgsqlConnection connection, List<DeviceOutage> outages, DateTime now, CancellationToken ct)
+    {
+        var rows = outages.GroupBy(o => (o.ZoneKey, o.DeviceCode, o.FromUtc)).Select(g => g.Last()).ToList();
+        await using var upsert = new NpgsqlCommand("""
+            INSERT INTO zone_outage (zone_key, device_code, from_utc, to_utc, closed, recorded_on)
+            SELECT * FROM unnest(@zones, @devices, @froms, @tos, @closed, @now)
+            ON CONFLICT (zone_key, device_code, from_utc) DO UPDATE SET to_utc = EXCLUDED.to_utc, closed = EXCLUDED.closed, recorded_on = EXCLUDED.recorded_on
+            """, connection);
+        upsert.Parameters.AddWithValue("zones", rows.Select(o => o.ZoneKey).ToArray());
+        upsert.Parameters.AddWithValue("devices", rows.Select(o => o.DeviceCode).ToArray());
+        upsert.Parameters.AddWithValue("froms", rows.Select(o => Utc(o.FromUtc)).ToArray());
+        upsert.Parameters.AddWithValue("tos", rows.Select(o => Utc(o.ToUtc)).ToArray());
+        upsert.Parameters.AddWithValue("closed", rows.Select(o => o.Closed).ToArray());
+        upsert.Parameters.AddWithValue("now", rows.Select(_ => now).ToArray());
+        await upsert.ExecuteNonQueryAsync(ct);
     }
 
     private static async Task WriteMinutesAsync(NpgsqlConnection connection, List<(string Zone, MinuteResult Minute)> rows, Func<string, int> version, DateTime now, CancellationToken ct)

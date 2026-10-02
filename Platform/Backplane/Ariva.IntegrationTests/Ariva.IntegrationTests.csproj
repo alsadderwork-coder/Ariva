@@ -64,6 +64,13 @@
         <ProjectReference Include="..\Ariva.Di\Ariva.Di.csproj" />
         <ProjectReference Include="..\Ariva.Api.Common\Ariva.Api.Common.csproj" />
         <ProjectReference Include="..\..\Business\Ariva.Business.Contracts\Ariva.Business.Contracts.csproj" />
+        <!-- ARV-036: the reference evening (sensor emulator, Ingest) for the golden replay over the archive. -->
+        <ProjectReference Include="..\..\Simulation\Ariva.Simulation.Api\Ariva.Simulation.Api.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Compile Include="..\Ariva.UnitTests\Replay\ReferenceReplay.cs" Link="Replay\ReferenceReplay.cs" />
+        <Compile Include="..\Ariva.UnitTests\Setup\RepositoryPaths.cs" Link="Replay\RepositoryPaths.cs" />
     </ItemGroup>
 
 </Project>

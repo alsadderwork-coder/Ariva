@@ -102,7 +102,7 @@ public sealed class SensingIngestTests
         batches.Should().OnlyContain(b => b.GetPartitionKey() == "DMO/Snake A" && b.Commissioned && b.PackageId == 4711 && b.DeviceCode == "S-17");
         sink.Published.OfType<TrackSampleBatch>().Single().Samples.Single().Event.TrackId.Should().Be("S-17/7", "track ids are namespaced by device");
         sink.Published.OfType<VendorLineCrossingBatch>().Single().Crossings.Single().Event.TrackId.Should().Be("S-17/7");
-        sink.Published.OfType<DeviceHealthReported>().Should().ContainSingle(h => h.GetPartitionKey() == Device().DeviceId.ToString());
+        sink.Published.OfType<DeviceHealthReported>().Should().ContainSingle(h => h.GetPartitionKey() == "DMO/Snake A" && h.Commissioned, "health reports are keyed by zone like the batches (ARV-036)");
     }
 
     [Fact]

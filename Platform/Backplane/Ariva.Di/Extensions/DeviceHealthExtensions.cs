@@ -28,10 +28,14 @@ public static class SensingArchiveExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
         services.AddSingleton<Ariva.Core.Sensing.ISensingArchive, SensingArchive>();
+        services.AddSingleton<Ariva.Core.Sensing.IDeviceHealthArchive, DeviceHealthArchive>();
         return services;
     }
 
-    /// <summary>Archives the four sensing topics, one consumer group each (<c>ariva-stream.sensing-archive-*</c>).</summary>
+    /// <summary>
+    /// Archives the four sensing topics and the device health topic (ARV-036), one consumer group each
+    /// (<c>ariva-stream.sensing-archive-*</c>, <c>ariva-stream.health-archive</c>).
+    /// </summary>
     public static ArivaMessagingBuilder ConsumeSensingArchive(this ArivaMessagingBuilder messaging)
     {
         ArgumentNullException.ThrowIfNull(messaging);
@@ -39,6 +43,7 @@ public static class SensingArchiveExtensions
             .Consume<Ariva.Core.Sensing.TrackSampleBatch, SensingArchiveConsumer<Ariva.Core.Sensing.TrackSampleBatch>>(Ariva.Core.Messaging.KafkaTopics.DeviceTrackSample, "sensing-archive-tracks")
             .Consume<Ariva.Core.Sensing.VendorLineCrossingBatch, SensingArchiveConsumer<Ariva.Core.Sensing.VendorLineCrossingBatch>>(Ariva.Core.Messaging.KafkaTopics.DeviceVendorLineCrossing, "sensing-archive-crossings")
             .Consume<Ariva.Core.Sensing.ZoneOccupancyBatch, SensingArchiveConsumer<Ariva.Core.Sensing.ZoneOccupancyBatch>>(Ariva.Core.Messaging.KafkaTopics.DeviceZoneOccupancy, "sensing-archive-occupancy")
-            .Consume<Ariva.Core.Sensing.IntervalCountBatch, SensingArchiveConsumer<Ariva.Core.Sensing.IntervalCountBatch>>(Ariva.Core.Messaging.KafkaTopics.DeviceIntervalCount, "sensing-archive-intervals");
+            .Consume<Ariva.Core.Sensing.IntervalCountBatch, SensingArchiveConsumer<Ariva.Core.Sensing.IntervalCountBatch>>(Ariva.Core.Messaging.KafkaTopics.DeviceIntervalCount, "sensing-archive-intervals")
+            .Consume<Ariva.Core.Sensing.DeviceHealthReported, DeviceHealthArchiveConsumer>(Ariva.Core.Messaging.KafkaTopics.DeviceHealth, "health-archive");
     }
 }

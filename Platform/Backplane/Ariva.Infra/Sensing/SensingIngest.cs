@@ -185,6 +185,8 @@ public sealed class SensingIngest(
                 }
 
                 var flags = time != e.TimeUtc ? SensedFlags.Corrected : SensedFlags.None;
+                if (clock.Reading.State == ClockState.Unreliable)
+                    flags |= SensedFlags.ClockUnreliable;
                 if (time > receivedUtc.AddMilliseconds(ClockOffset.ToleranceMilliseconds) || time < receivedUtc - Late)
                     flags |= SensedFlags.Skewed;
                 if ((flags & SensedFlags.Skewed) != 0)
@@ -288,6 +290,7 @@ public sealed class SensingIngest(
         Status = status,
         Clock = clock,
         ReceivedUtc = receivedUtc,
+        Commissioned = device.State is "Online" or "Degraded" or "Offline",
         OccurredOn = status.TimeUtc
     };
 

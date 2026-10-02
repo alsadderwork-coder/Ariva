@@ -65,6 +65,7 @@ public sealed class PostgresFixture : IAsyncLifetime
             TestDatabase.StreamRoles => "CREATE DATABASE it_stream_roles",
             TestDatabase.StreamMisplaced => "CREATE DATABASE it_stream_misplaced",
             TestDatabase.StreamScaleOut => "CREATE DATABASE it_stream_scale_out",
+            TestDatabase.Replay => "CREATE DATABASE it_replay",
             _ => throw new ArgumentOutOfRangeException(nameof(database))
         };
         var name = sql["CREATE DATABASE ".Length..];
@@ -140,7 +141,8 @@ public enum TestDatabase
     StreamDeadLetter,
     StreamRoles,
     StreamMisplaced,
-    StreamScaleOut
+    StreamScaleOut,
+    Replay
 }
 
 [CollectionDefinition(Name)]

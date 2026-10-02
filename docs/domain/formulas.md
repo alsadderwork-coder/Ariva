@@ -397,6 +397,8 @@ Source: D5 invariants and failure modes.
 
 The worst flag of any input wins. Every interval result, nowcast and forecast carries its flag.
 
+Implementation of "a sensor degraded" in the stream (ARV-036, `Ariva.Core/Queueing/DeviceLiveness`, Proposed): the zone processor follows its commissioned devices from its own records, so a replay finds the same outages as the live run. Every sensing batch and every device health report (`ariva.device.health.v1`, keyed by zone since ARV-036) means the device was heard at its receive time; a health report may say it is offline. A device heard before and silent for longer than 180 seconds (`DeviceSilenceSeconds`, the same as `Devices:Health:HeartbeatTimeoutSeconds`), or reporting itself offline, is out from the minute it was last heard in until the minute it is heard again online (`DeviceOutage`, kept in `zone_outage`). While a device is out the zone's live minutes are `Degraded` (from the moment the silence passes the limit) and its bins are marked `Degraded` for the outage, as it grows and once more when it ends; a bin already final asks for a recomputation. A device silent for 24 hours (`DeviceForgetHours`) is treated as removed: its outage ends there and it no longer counts. On the reference evening S-17 is last heard at 18:20 and again at 18:31, so the Visitors zone's outage is 18:20 to 18:31 and its 18:15 and 18:30 bins are `Degraded`.
+
 ## F12. E-gate reject coupling
 
 Source: D4; lag and live form from the reference simulator.

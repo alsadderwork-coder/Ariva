@@ -61,7 +61,10 @@ public enum SensedFlags
     Skewed = 1,
 
     /// <summary>The time was corrected by the device's estimated clock offset.</summary>
-    Corrected = 2
+    Corrected = 2,
+
+    /// <summary>The device's clock was unreliable for the batch (F19); kept on each event so the archive replays it (ARV-036).</summary>
+    ClockUnreliable = 4
 }
 
 [KafkaTopic(KafkaTopics.DeviceTrackSample)]
@@ -89,7 +92,11 @@ public sealed class IntervalCountBatch : SensingBatch
     public IReadOnlyList<Sensed<IntervalCount>> Intervals { get; set; } = [];
 }
 
-/// <summary>A device's health (every 10 to 30 seconds), keyed by device id: what it reported, or Online with Ariva's clock estimate when it sent data but no status.</summary>
+/// <summary>
+/// A device's health (every 10 to 30 seconds): what it reported, or Online with Ariva's clock estimate when it sent data
+/// but no status. Keyed by the zone key like the sensing batches (ARV-036), so the queue stream reads a zone's device
+/// liveness on the same partition as its events and a replay sees the same order; a device's reports stay in order.
+/// </summary>
 [KafkaTopic(KafkaTopics.DeviceHealth)]
 public sealed class DeviceHealthReported : EventBase
 {
@@ -101,11 +108,58 @@ public sealed class DeviceHealthReported : EventBase
     public ClockReading Clock { get; set; }
     public DateTime ReceivedUtc { get; set; }
 
-    public override string GetPartitionKey() => DeviceId.ToString();
+    /// <summary>Whether the device was commissioned (out of commissioning, ARV-023); only commissioned devices count for a zone.</summary>
+    public bool Commissioned { get; set; }
+
+    public string ZoneKey => ZoneKeys.For(SiteCode, QueueZoneName);
+
+    public override string GetPartitionKey() => ZoneKey;
+}
+
+/// <summary>
+/// A device health report in the form the queue stream processes (ARV-036): a batch without events that says the device
+/// was heard, and whether it reported itself online. Not a Kafka message of its own: the stream and the replay build it
+/// from <see cref="DeviceHealthReported"/> or from the health archive.
+/// </summary>
+public sealed class DeviceStatusBatch : SensingBatch
+{
+    public bool Online { get; set; }
+
+    public static DeviceStatusBatch From(DeviceHealthReported report)
+    {
+        ArgumentNullException.ThrowIfNull(report);
+        return new DeviceStatusBatch
+        {
+            Id = report.Id,
+            OccurredOn = report.ReceivedUtc,
+            DeviceId = report.DeviceId,
+            DeviceCode = report.DeviceCode,
+            SiteCode = report.SiteCode,
+            QueueZoneName = report.QueueZoneName,
+            Dialect = "health",
+            Commissioned = report.Commissioned,
+            ReceivedUtc = report.ReceivedUtc,
+            Clock = report.Clock,
+            Online = report.Status?.Online ?? true
+        };
+    }
 }
 
 /// <summary>The partition key of a zone's sensor events: the site and the owning queue zone's name.</summary>
 public static class ZoneKeys
 {
     public static string For(string siteCode, string queueZoneName) => $"{siteCode}/{queueZoneName}";
+}
+
+/// <summary>
+/// A device code as the registry writes it (ARV-036: one rule for the stream, its snapshots and the archives): 1 to 16
+/// upper-case letters and digits in hyphen-separated groups.
+/// </summary>
+public static class DeviceCodes
+{
+    public const int MaxLength = 16;
+
+    public static bool IsValid(string code) =>
+        code is { Length: >= 1 and <= MaxLength } && code[0] != '-' && code[^1] != '-' && !code.Contains("--", StringComparison.Ordinal) &&
+        code.All(c => c is (>= 'A' and <= 'Z') or (>= '0' and <= '9') or '-');
 }

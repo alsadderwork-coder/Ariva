@@ -1,3 +1,5 @@
+using Ariva.Core.Sensing;
+
 namespace Ariva.Core.Queueing;
 
 /// <summary>
@@ -16,8 +18,8 @@ public static class SnapshotChecks
             yield break;
         }
 
-        if (state.Version != ZoneProcessorState.CurrentVersion)
-            yield return $"Version {state.Version} is not {ZoneProcessorState.CurrentVersion}.";
+        if (state.Version is < 1 or > ZoneProcessorState.CurrentVersion)
+            yield return $"Version {state.Version} is not 1 to {ZoneProcessorState.CurrentVersion}.";
         if (!string.Equals(state.ZoneKey, zoneKey, StringComparison.Ordinal))
             yield return "The snapshot is for another zone.";
         if (state.ProfileVersion != profileVersion || profileVersion < 0)
@@ -211,9 +213,55 @@ public static class SnapshotChecks
             }
         }
 
+        // Device liveness (ARV-036): codes as Ingest writes them, times plausible, an outage starting no later than the
+        // device was last heard, a bounded list.
+        // Device times are always set: unlike the engines' "never stepped" start, none of them may be the calendar's start.
+        void Set(DateTime t)
+        {
+            if (t == DateTime.MinValue)
+                bad++;
+            else
+                Time(t);
+        }
+
+        if ((state.Devices?.Count ?? 0) > MaxDevices || (state.RecentOutages?.Count ?? 0) > MaxDevices * 4)
+        {
+            yield return "The snapshot tracks more devices or outages than a zone keeps.";
+            yield break;
+        }
+
+        var codes = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var d in state.Devices ?? [])
+        {
+            if (d is null || !DeviceCodes.IsValid(d.DeviceCode) || !codes.Add(d.DeviceCode) || d.OutSinceUtc > d.LastHeardUtc || d.MarkedThroughUtc < d.OutSinceUtc)
+                bad++;
+            else
+            {
+                Set(d.LastHeardUtc);
+                if (d.OutSinceUtc is { } o)
+                    Set(o);
+                if (d.MarkedThroughUtc is { } m)
+                    Set(m);
+            }
+        }
+
+        foreach (var r in state.RecentOutages ?? [])
+        {
+            if (r is null || !DeviceCodes.IsValid(r.DeviceCode) || r.ToUtc <= r.FromUtc)
+                bad++;
+            else
+            {
+                Set(r.FromUtc);
+                Set(r.ToUtc);
+            }
+        }
+
         if (bad > 0)
             yield return $"{bad} values of the snapshot are not plausible (negative counts, implausible times or empty items).";
     }
+
+    /// <summary>Devices a snapshot may track at most (the largest <see cref="ZoneProcessorSettings.MaxDevices"/>).</summary>
+    public const int MaxDevices = 4_096;
 
     /// <summary>The largest count a snapshot may hold (a trillion people or events).</summary>
     public const long MaxCount = 1_000_000_000_000;

@@ -90,16 +90,28 @@ public sealed class QueueStreamWorker(
     /// <summary>The name the sensing topics' partition counts are recorded under.</summary>
     public const string TopicSet = "sensing";
 
+    /// <summary>
+    /// The four sensing topics and the device health topic (ARV-036), all keyed by the zone key and co-partitioned; in
+    /// this order when records share a receive time.
+    /// </summary>
     public static readonly IReadOnlyList<string> Topics =
-        [KafkaTopics.DeviceVendorLineCrossing, KafkaTopics.DeviceZoneOccupancy, KafkaTopics.DeviceIntervalCount, KafkaTopics.DeviceTrackSample];
+        [KafkaTopics.DeviceVendorLineCrossing, KafkaTopics.DeviceZoneOccupancy, KafkaTopics.DeviceIntervalCount, KafkaTopics.DeviceTrackSample, KafkaTopics.DeviceHealth];
 
     private static readonly Dictionary<string, Type> TypeOf = new(StringComparer.Ordinal)
     {
         [KafkaTopics.DeviceVendorLineCrossing] = typeof(VendorLineCrossingBatch),
         [KafkaTopics.DeviceZoneOccupancy] = typeof(ZoneOccupancyBatch),
         [KafkaTopics.DeviceIntervalCount] = typeof(IntervalCountBatch),
-        [KafkaTopics.DeviceTrackSample] = typeof(TrackSampleBatch)
+        [KafkaTopics.DeviceTrackSample] = typeof(TrackSampleBatch),
+        [KafkaTopics.DeviceHealth] = typeof(DeviceHealthReported)
     };
+
+    /// <summary>A record as the zone processor takes it: a sensing batch, or a device health report as a status batch.</summary>
+    public static SensingBatch Read(string topic, byte[] value)
+    {
+        var read = JsonSerializer.Deserialize(value, TypeOf[topic], EventCatalog.Json);
+        return read is DeviceHealthReported health ? DeviceStatusBatch.From(health) : (SensingBatch)read;
+    }
 
     private readonly ZoneProcessorSettings _zoneSettings = zoneSettings ?? new ZoneProcessorSettings();
     private readonly Dictionary<string, (ZoneProcessor Zone, int Partition, DateTime LastRecordWall)> _zones = new(StringComparer.Ordinal);
@@ -117,7 +129,7 @@ public sealed class QueueStreamWorker(
     private long _forcedReleases, _failedBatches, _wrongPartition;
     private readonly HashSet<int> _assigned = [];
     private readonly Dictionary<string, (ZoneGeometry Geometry, DateTime Until)> _geometryCache = new(StringComparer.Ordinal);
-    private long _skippedUnknownZone, _skippedFull, _deadLettered, _records;
+    private long _skippedUnknownZone, _skippedFull, _deadLettered, _records, _legacyHealth;
 
     public string GroupId => PartitionedConsumer<object>.GroupId(kafka, Purpose);
 
@@ -335,8 +347,16 @@ public sealed class QueueStreamWorker(
         SensingBatch batch = null;
         try
         {
-            batch = result.Message.Value is null ? null : (SensingBatch)JsonSerializer.Deserialize(result.Message.Value, TypeOf[result.Topic], EventCatalog.Json);
-            if (batch is null || batch.SiteCode is not { Length: > 0 and <= 17 } || batch.QueueZoneName is not { Length: > 0 and <= 200 } ||
+            batch = result.Message.Value is null ? null : Read(result.Topic, result.Message.Value);
+            // Health reports Ingest published before ARV-036 are keyed by device id: skipped and counted, not dead-lettered
+            // (they are not misplaced records, and a rolling upgrade or the topic's three days would flood the dead letters).
+            if (batch is DeviceStatusBatch legacy && Guid.TryParse(result.Message.Key, out var keyed) && keyed == legacy.DeviceId)
+            {
+                if (_legacyHealth++ % 1000 == 0)
+                    logger.LogWarning("Device health reports keyed by device id (published before ARV-036) are skipped; {Count} so far", _legacyHealth);
+                batch = null;
+            }
+            else if (batch is null || batch.SiteCode is not { Length: > 0 and <= 17 } || batch.QueueZoneName is not { Length: > 0 and <= 200 } ||
                 !string.Equals(result.Message.Key, batch.ZoneKey, StringComparison.Ordinal) || batch.ReceivedUtc.Kind != DateTimeKind.Utc)
                 throw new InvalidDataException("The record is not a sensing batch of the zone its key names.");
         }

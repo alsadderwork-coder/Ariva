@@ -19,6 +19,11 @@ using Ariva.Di.Extensions;
 // appsettings.base.json, appsettings.base.<env>.json, appsettings.service.json, appsettings.service.<env>.json,
 // then environment variables and command line arguments, which keep the highest precedence.
 // The environment is also the host environment name, so error handling sees the same value as the files.
+// --replay and --verify-replay (ARV-036) are commands, never configuration.
+var replayArgs = args;
+var replay = ReplayCommand.IsRequested(args);
+args = ReplayCommand.WithoutFlags(args);
+
 var environment = ArivaEnvironment.Resolve(args, AppContext.BaseDirectory);
 
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions
@@ -37,6 +42,16 @@ builder.Configuration
     .AddJsonFile("appsettings.local.json", optional: true, reloadOnChange: false)
     .AddEnvironmentVariables()
     .AddCommandLine(args);
+
+#endregion
+
+#region Replay command
+
+// Golden replay over the archive, or the check of an exported replay (ARV-036); the host itself does not start.
+if (replay)
+{
+    return await ReplayCommand.RunAsync(builder.Configuration, replayArgs, Console.Out);
+}
 
 #endregion
 
@@ -103,3 +118,4 @@ app.MapArivaHealthChecks();
 #endregion
 
 await app.RunAsync();
+return 0;

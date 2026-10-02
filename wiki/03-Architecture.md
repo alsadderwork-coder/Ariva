@@ -36,6 +36,8 @@ Sizing assumption (D5): a busy terminal tracks about 3,000 people at peak; sampl
 
 Stream outputs (ARV-034): per-minute queue rows (`queue_minute`), bin revisions (`queue_bin`), per-desk and per-gate minutes (`desk_minute`, `egate_minute`) and the 15-minute continuous aggregate `queue_minute_15m` are TimescaleDB hypertables written by Ariva.Api.Stream once per checkpoint, together with the zones' snapshots and the worker's positions, so a restart rewrites the same rows.
 
+Golden replay (ARV-036): the stream follows each zone's devices from the zone's own records (device health is keyed by zone and merged with the sensing topics), records device outages in `zone_outage`, and the Stream host archives health reports in `device_health_event`. `Ariva.Api.Stream --replay` replays the archive for a site, zones, range and profile version with hash-chained inputs and outputs, records the run in `replay_run` and writes a tamper-evident export; `--verify-replay` checks one.
+
 Live push (ARV-035): Ariva.Api.Stream writes each zone's latest live row to Redis and announces it; Ariva.Api.Main's hub `/hubs/live` pushes it to the browsers that joined the zone. Connecting needs `LiveQueue.View` (Border shift supervisor, Terminal duty manager, Handler station manager, System administrator); joining a zone needs its site among the caller's sites. One Main replica relays at a time (a Redis lease) and the SignalR Redis backplane reaches the others.
 ## Kafka topics
 

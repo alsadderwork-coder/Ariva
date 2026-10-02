@@ -446,6 +446,15 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
             await producer.ProduceAsync(KafkaTopics.DeviceZoneOccupancy, new Message<string, byte[]> { Key = "DMO/Q9", Value = "{not json"u8.ToArray() }, Ct);
             var wrongKey = Evening("Q1", 0)[1];
             await producer.ProduceAsync(KafkaTopics.DeviceZoneOccupancy, new Message<string, byte[]> { Key = "DMO/elsewhere", Value = JsonSerializer.SerializeToUtf8Bytes(wrongKey, wrongKey.GetType(), EventCatalog.Json) }, Ct);
+            // ARV-036: a health report published before the topic was keyed by zone is skipped, not dead-lettered; an
+            // unreadable one is.
+            var legacy = new DeviceHealthReported
+            {
+                DeviceId = Guid.Parse("0199a000-0000-7000-8000-0000000000a1"), DeviceCode = "S-15", SiteCode = "DMO", QueueZoneName = "Q1", Commissioned = true,
+                Status = new DeviceStatus(true, null, null, null, Start.AddMinutes(30)), ReceivedUtc = Start.AddMinutes(30)
+            };
+            await producer.ProduceAsync(KafkaTopics.DeviceHealth, new Message<string, byte[]> { Key = legacy.DeviceId.ToString(), Value = JsonSerializer.SerializeToUtf8Bytes(legacy, EventCatalog.Json) }, Ct);
+            await producer.ProduceAsync(KafkaTopics.DeviceHealth, new Message<string, byte[]> { Key = "DMO/Q9", Value = "{not json"u8.ToArray() }, Ct);
         }
 
         using var host = Host(database, "it-deadletter");
@@ -463,7 +472,21 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
                 keys.Add(message.Key);
         }
 
+        using var health = new ConsumerBuilder<string, string>(new ConsumerConfig
+        {
+            BootstrapServers = kafka.BootstrapServers, GroupId = "it-dl-health-" + Guid.NewGuid().ToString("N"), AutoOffsetReset = AutoOffsetReset.Earliest
+        }).Build();
+        health.Subscribe(KafkaTopics.DeadLetter(KafkaTopics.DeviceHealth));
+        var healthKeys = new HashSet<string>();
+        until = DateTime.UtcNow.AddSeconds(60);
+        while (DateTime.UtcNow < until && !healthKeys.Contains("DMO/Q9"))
+        {
+            if (health.Consume(TimeSpan.FromSeconds(1)) is { Message: { } message })
+                healthKeys.Add(message.Key);
+        }
+
         await host.StopAsync(Ct);
         keys.Should().Contain(["DMO/Q9", "DMO/elsewhere"]);
+        healthKeys.Should().Equal(["DMO/Q9"], "the report keyed by device id is skipped, not dead-lettered");
     }
 }

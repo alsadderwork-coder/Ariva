@@ -65,3 +65,45 @@ public interface ISensingArchive
 
     IAsyncEnumerable<ArchivedSensingEvent> ReadAsync(SensingReplayQuery query, CancellationToken ct = default);
 }
+
+/// <summary>
+/// One device health report as archived (ARV-036): when Ariva received it, for which zone and device, and whether the
+/// device said it was online. <see cref="ToBatch"/> gives the status batch the queue stream processed.
+/// </summary>
+public sealed record ArchivedDeviceHealth(
+    DateTime ReceivedUtc,
+    string SiteCode,
+    string QueueZoneName,
+    Guid DeviceId,
+    string DeviceCode,
+    Guid EventId,
+    bool Online,
+    bool Commissioned,
+    DateTime? StatusUtc,
+    ClockState? ClockState)
+{
+    public DeviceStatusBatch ToBatch() => new()
+    {
+        Id = EventId,
+        OccurredOn = ReceivedUtc,
+        DeviceId = DeviceId,
+        DeviceCode = DeviceCode,
+        SiteCode = SiteCode,
+        QueueZoneName = QueueZoneName,
+        Dialect = "health",
+        Commissioned = Commissioned,
+        ReceivedUtc = ReceivedUtc,
+        Clock = ClockState is { } state ? new ClockReading(0, state != Sensing.ClockState.Unreliable, state) : null,
+        Online = Online
+    };
+}
+
+/// <summary>The device health archive (ARV-036): every report Ingest published, each at most once, read back by zone and range.</summary>
+public interface IDeviceHealthArchive
+{
+    /// <summary>Archives the reports; returns how many were new.</summary>
+    Task<int> WriteAsync(IReadOnlyList<DeviceHealthReported> reports, CancellationToken ct = default);
+
+    /// <summary>A zone's reports received in [from, to), at most 31 days, in receive order.</summary>
+    IAsyncEnumerable<ArchivedDeviceHealth> ReadAsync(string siteCode, string queueZoneName, DateTime fromUtc, DateTime toUtc, CancellationToken ct = default);
+}

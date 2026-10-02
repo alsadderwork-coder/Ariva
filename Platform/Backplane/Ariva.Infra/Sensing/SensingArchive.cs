@@ -233,7 +233,7 @@ public sealed class SensingArchive(DatabaseSettings database, TimeProvider timeP
 
     private static readonly TimeSpan MaxLate = TimeSpan.FromDays(3) + TimeSpan.FromHours(1);
     private static readonly TimeSpan MaxAhead = TimeSpan.FromHours(1);
-    private const SensedFlags KnownFlags = SensedFlags.Skewed | SensedFlags.Corrected;
+    private const SensedFlags KnownFlags = SensedFlags.Skewed | SensedFlags.Corrected | SensedFlags.ClockUnreliable;
 
     /// <summary>A batch the archive can file: site, zone and device as Ingest writes them, received within the window.</summary>
     private static bool Usable(SensingBatch batch, DateTime now)
@@ -269,8 +269,7 @@ public sealed class SensingArchive(DatabaseSettings database, TimeProvider timeP
     }
 
     /// <summary>A device code as the registry writes it: upper case letters and digits in hyphen-separated groups.</summary>
-    private static bool DeviceCode(string code) =>
-        code.All(c => c is (>= 'A' and <= 'Z') or (>= '0' and <= '9') or '-') && code[0] != '-' && code[^1] != '-' && !code.Contains("--", StringComparison.Ordinal);
+    private static bool DeviceCode(string code) => DeviceCodes.IsValid(code);
 
     private static string Local(SensingBatch batch, string trackId) =>
         trackId is not null && trackId.StartsWith(batch.DeviceCode + "/", StringComparison.Ordinal) ? trackId[(batch.DeviceCode.Length + 1)..] : null;

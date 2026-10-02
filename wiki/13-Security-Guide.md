@@ -10,7 +10,7 @@ For Dalil engineers, DevOps, and the customer's security reviewers. It summarise
 | Default deny | Every endpoint needs a user permission, an integration scope or device authentication; a test fails the build if one does not |
 | Least data | No images, no biometrics, no officer or passenger identity; AMAN sends aggregates only; only lane-level aggregates leave a border deployment |
 | Separate principals | Users and integration clients have separate signing keys and token audiences; devices have a scheme of their own (a per-device credential, never a token), accepted only on device endpoints and nowhere else |
-| Integrity | Zone profiles and contracts are immutable versions; the runtime database role cannot change raw hypertables; evidence packs are sealed with SHA-256; everything is audited |
+| Integrity | Zone profiles and contracts are immutable versions; the runtime database role cannot change raw hypertables; evidence packs are sealed with SHA-256; a golden replay of the archive hash-chains its inputs and outputs and is recorded append-only in `replay_run` (time, login and a chain link set by the database), so a change to an exported replay is detected; the archive and that record are as trustworthy as the runtime database login (ARV-036); everything is audited |
 | On premises, in country | Every deployment runs in the customer's environment; no telemetry leaves without consent |
 
 ## 2. Control summary (14 CWEs)

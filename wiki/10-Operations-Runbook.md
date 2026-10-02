@@ -134,6 +134,8 @@ Ariva.Api.Stream's queue engine worker (group `ariva-stream.queue-engine`) write
 - Records of a zone that is not in its site's published profile, or beyond `Stream:MaxZones` zones on one instance, are counted and skipped (warning in the log); publish the profile or add instances, then recompute the period from the archive.
 - "Queue stream checkpoint failed" means the database refused the write; the worker keeps its outputs, retries every checkpoint interval and pauses reading while a zone is at its bound. Nothing is lost unless the instance itself stops, in which case its successor replays from the last checkpoint.
 - Dead letters of the sensing topics (`ariva.device.*.dlq.v1`) are records that are not a batch of the zone their key names. Investigate the producer (Ingest) before replaying them.
+- Upgrading to ARV-036: Ingest keys device health reports by zone from then on. Upgrade Ingest before Stream if you can; reports Ingest published before (keyed by device id) are skipped by the queue worker and counted in a warning ("keyed by device id"), not dead-lettered. Add partitions to `ariva.device.health.v1` first if its count differs from the sensing topics'.
+- Device outages (ARV-036): `zone_outage` lists, per zone, each device silent beyond 180 seconds or reporting itself offline, from the minute it was last heard in to the minute it was heard again. A zone degraded on the live screens with no outage there is degraded by its inputs (skewed or unreliable clocks, F11). A device removed from a zone stops counting 24 hours after it was last heard.
 
 A host that logs "Waiting for Kafka topics before starting the bus" is holding its start until Api.Main (or the platform team) has created its topics; after `Kafka:Consumers:StartWaitSeconds` (300) it starts anyway and its readiness check reports the bus.
 
@@ -203,6 +205,21 @@ Three kinds of replay exist; pick the right one.
 | Recover after a crash, rebalance or Kafka outage | Automatic: consumers resume from committed offsets; idempotent upserts by (zone, bin start, revision) and event-id deduplication make replay safe | Built into the stream design |
 | Recompute a disputed or misconfigured period | Recompute from raw samples in TimescaleDB (not from Kafka) under a named zone profile version; the result is a new revision and the original is kept | Target procedure, implemented in v1 epic SLA and penalty engine (recomputation and revision tooling) |
 | Reproduce a day for tests or a demo | The AODB replay harness and Ariva.Simulation.Api replay recorded feeds and the reference scenario deterministically | Target procedure, implemented in Phase 0 epic Device gateway and simulator |
+| Evidence for a period, or a regression check of an engine change | Golden replay of the archive (ARV-036): `Ariva.Api.Stream --replay`, below | Built |
+
+Golden replay (ARV-036). Run the Stream image as a one-off job (or the host locally) with the runtime database login, as for the migration job:
+
+```
+dotnet Ariva.Api.Stream.dll --replay --replay-site=DMO --replay-zone=A-VIS --replay-zone=CI-C \
+  --replay-from=2026-09-28T17:00:00Z --replay-to=2026-09-28T20:30:00Z --replay-profile-version=12 \
+  --replay-output=/evidence/dmo-2026-09-28.jsonl
+```
+
+- Without `--replay-zone` every queue zone of the profile version is replayed; without `--replay-profile-version` the published one is used. Times are UTC and end in `Z`; a range is at most 31 days and a zone at most a million archived events and a million health reports (about 400 MB each in memory; split longer ranges, and give the job the Stream pod's memory). The archive keeps 90 days.
+- The command prints the manifest (site, zones, range, profile version, engine version, settings hash), the hashes (`outputHead` is the stable output hash: the same archive, version and settings always give it), each zone's counters and the run's `rowHash`, and records the run in `replay_run`: the database sets the row's time and login and chains it to the run before, so a run cannot be backdated or slipped in later unnoticed. The export file is created new (never over an existing file or a link) with owner-only permissions; it holds one JSON line per archived record and per output row, each with its chain value. Hand it over with the printed `replayHash`, and keep the `rowHash` outside the database (in the evidence pack or the ticket) as the anchor.
+- To check an export: `dotnet Ariva.Api.Stream.dll --verify-replay=/evidence/dmo-2026-09-28.jsonl`. Exit code 0 means every line is exactly as written, every chain value holds and the run is on record in `replay_run` (the output lists the recorded runs with their time, login and row hash); 3 means a line was changed, dropped, added, moved or given an extra property, the file is incomplete, or no such run was recorded (a recomputed chain shows here).
+- What the chains prove, and what they do not: anyone who changes the export after the run is caught. The archive and `replay_run` are only as trustworthy as the runtime database login: whoever holds it can add archive rows or record runs (with the database's time, chained after the real ones). Keep that login to the Stream pods and the replay job, and compare a run's `rowHash` with the one kept outside.
+- Expect the replay to equal what the stream wrote for the period except where records share a receive time (ordered by kind and id rather than Kafka offsets) and for tracks that cross UTC midnight (the archive's pseudonyms change daily); the zones start empty at `--replay-from`, so start an hour or two before the period of interest.
 
 Do not reset consumer offsets by hand to "replay" a period until the procedure has been verified in Phase 0 epic Queue engine core; Kafka keeps track samples for only a few days, and raw samples in TimescaleDB are the source for anything older.
 

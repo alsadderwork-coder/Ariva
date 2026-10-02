@@ -69,6 +69,7 @@
 
     <ItemGroup>
         <InternalsVisibleTo Include="Ariva.UnitTests" />
+        <InternalsVisibleTo Include="Ariva.IntegrationTests" />
     </ItemGroup>
 
     <ItemGroup>

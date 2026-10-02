@@ -845,8 +845,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 39,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Ariva.Api.Stream --replay over the archive (sensing and the new device health archive) for a site, zones, range and profile version; stable output hash (golden 451f62ed..., replay-golden.json); seed 9303 reproduces 18:05, S-17 18:20 to 18:31 and the 19:00 to 19:30 breach; hash-chained canonical export with --verify-replay and a database-anchored replay_run. Device liveness now in the stream (health topic keyed by zone). Fixed: the stream rejected every Ingest crossing with a track id since ARV-034. Security review PASS after fixes.",
       "dependsOn": [
         "ARV-034",
         "ARV-028"
