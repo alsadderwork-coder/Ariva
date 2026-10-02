@@ -594,6 +594,8 @@ Above the threshold: if stable, subtract the offset from the sensor's timestamps
 
 Test: offsets 620, 610, 630 ms (stable): corrected. Offsets 100, 900, 300 ms: not stable, sensor degraded.
 
+Implementation (ARV-023, `ClockOffset`): each push gives one reading, the device's send time minus Ariva's receive time (network delay included, a few milliseconds on a site LAN). The estimate is an exponentially weighted moving average with weight 0.2 for the newest reading; the stability test uses the last 10 raw readings and needs at least 3. The clock is Ok while the estimate and every recent reading are within 500 ms; otherwise Corrected (event times shifted by the estimate) when stable, and Unreliable when not.
+
 ## F20. Alert rule evaluation
 
 Source: D5 (hysteresis, hold times, deduplication, suppression); parameters from the prototype's seed rules.

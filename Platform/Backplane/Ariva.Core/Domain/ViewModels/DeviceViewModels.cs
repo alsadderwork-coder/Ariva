@@ -42,7 +42,11 @@ public sealed record DeviceCredentialRecord(
     string State,
     string CredentialHash,
     IReadOnlyList<string> AllowedSources,
-    string ClientCertificateSha256);
+    string ClientCertificateSha256,
+    string Dialect = "Canonical",
+    double X = 0,
+    double Y = 0,
+    double OrientationDegrees = 0);
 
 /// <summary>
 /// The published geometry of a device's queue zone (ARV-022): the queue zone, the zones that hang off it and their

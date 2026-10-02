@@ -19,3 +19,19 @@ X-Ariva-Device-Key: {{deviceKey}}
 ### The published zones and lines of the device's own queue zone (another zone answers 403)
 GET {{Ariva.Api.Ingest_HostAddress}}/api/v1/ingest/zones/A-VIS
 Authorization: Bearer {{deviceKey}}
+
+### Canonical push for the device's own zone (ARV-023): 202 with what was accepted, refused, flagged and ignored
+POST {{Ariva.Api.Ingest_HostAddress}}/api/v1/ingest/zones/A-VIS/events
+X-Ariva-Device-Key: {{deviceKey}}
+Content-Type: application/json
+
+{ "sentUtc": "2026-10-02T14:05:00.250Z", "packageId": 1,
+  "occupancy": [{ "zoneName": "A-VIS", "count": 41, "timeUtc": "2026-10-02T14:05:00Z" }] }
+
+### Xovis firmware 5 logics push (what a Xovis push agent sends, with BEARER_TOKEN set to the device credential)
+POST {{Ariva.Api.Ingest_HostAddress}}/api/v1/ingest/zones/A-VIS/xovis
+Authorization: Bearer {{deviceKey}}
+Content-Type: application/json
+
+{"logics_data":{"package_info":{"version":"5.0","id":34,"agent_id":1000},"sensor_info":{"serial_number":"00:6E:02:08:92:64","type":"SINGLE_SENSOR","time":"2026-10-02T18:05:00.741+04:00"},
+ "logics":[{"id":1000,"name":"A-VIS entry","records":[{"from":"2026-10-02T18:00:00+04:00","to":"2026-10-02T18:05:00+04:00","samples":5,"samples_expected":5,"counts":[{"id":1,"name":"fw","value":31},{"id":2,"name":"bw","value":2}]}]}]}}

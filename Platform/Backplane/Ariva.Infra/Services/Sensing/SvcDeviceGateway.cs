@@ -31,7 +31,8 @@ internal sealed class SvcDeviceGateway(IUnitOfWork unitOfWork, IFusionCache cach
             return device is null
                 ? null
                 : new DeviceCredentialRecord(device.Id.GetValueOrDefault(), device.Code, device.SiteCode, device.QueueZoneName, device.State.ToString(),
-                    device.CredentialHash, string.IsNullOrEmpty(device.AllowedSources) ? [] : device.AllowedSources.Split(','), device.ClientCertificateSha256);
+                    device.CredentialHash, string.IsNullOrEmpty(device.AllowedSources) ? [] : device.AllowedSources.Split(','), device.ClientCertificateSha256,
+                    device.Dialect.ToString(), device.X, device.Y, device.OrientationDegrees);
         }, options =>
         {
             // A credential decision must never come from a stale copy: no fail-safe (which would serve an expired entry

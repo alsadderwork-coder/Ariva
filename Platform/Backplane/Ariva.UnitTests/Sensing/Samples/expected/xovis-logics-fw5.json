@@ -1,0 +1,5 @@
+{"pose":[20,16,0],"sentUtc":"2026-10-02T14:05:00.741Z","packages":[34],"ignored":1,
+ "intervals":[{"line":"Entry A","in":31,"out":2,"fromUtc":"2026-10-02T14:00:00Z","toUtc":"2026-10-02T14:05:00Z"},
+              {"line":"Exit A","in":0,"out":28,"fromUtc":"2026-10-02T14:00:00Z","toUtc":"2026-10-02T14:05:00Z"}],
+ "occupancy":[{"zone":"Snake A","count":41,"timeUtc":"2026-10-02T14:05:00Z"}],
+ "tracks":[]}

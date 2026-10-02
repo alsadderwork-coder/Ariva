@@ -20,6 +20,8 @@ public static class TopicCatalog
     {
         [KafkaTopics.DeviceTrackSample] = Short,
         [KafkaTopics.DeviceVendorLineCrossing] = Short,
+        [KafkaTopics.DeviceZoneOccupancy] = Short,
+        [KafkaTopics.DeviceIntervalCount] = Short,
         [KafkaTopics.DeviceHealth] = Short,
         [KafkaTopics.DeviceRegistryChanged] = null,
         [KafkaTopics.TopologyZoneProfileActivated] = null,

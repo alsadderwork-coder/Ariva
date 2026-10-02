@@ -1,0 +1,5 @@
+{"pose":[20,16,0],"sentUtc":"2026-10-02T14:06:00.6Z","packages":[35,36],"ignored":0,
+ "intervals":[{"line":"Entry A","in":12,"out":0,"fromUtc":"2026-10-02T14:00:00Z","toUtc":"2026-10-02T14:05:00Z"},
+              {"line":"Entry A","in":9,"out":1,"fromUtc":"2026-10-02T14:05:00Z","toUtc":"2026-10-02T14:10:00Z"}],
+ "occupancy":[],
+ "tracks":[]}

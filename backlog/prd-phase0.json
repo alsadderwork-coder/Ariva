@@ -571,8 +571,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 26,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Offline gates: unit (conformance, Ingest host), integration and real-host checks; E2E not run here. Topics follow ADR-0019 (track-sample, vendor-line-crossing, health) plus zone-occupancy and interval-count, keyed by <site>/<queue zone>, instead of ariva.sensing.events.v1. Xovis live data units and frame are inferred; confirm with Xovis before certification.",
       "dependsOn": [
         "ARV-020",
         "ARV-022"

@@ -13,6 +13,10 @@ public static partial class KafkaTopics
     // Device (Ingest)
     public const string DeviceTrackSample = "ariva.device.track-sample.v1";
     public const string DeviceVendorLineCrossing = "ariva.device.vendor-line-crossing.v1";
+
+    // Counting (T1) and occupancy (T2) devices (ARV-023): not in D5, which assumed tracks everywhere.
+    public const string DeviceZoneOccupancy = "ariva.device.zone-occupancy.v1";
+    public const string DeviceIntervalCount = "ariva.device.interval-count.v1";
     public const string DeviceHealth = "ariva.device.health.v1";
     public const string DeviceRegistryChanged = "ariva.device.registry-changed.v1";
 

@@ -1827,6 +1827,34 @@
         "HandlerStationManager": 401,
         "SystemAdministrator": 401
       }
+    },
+    {
+      "host": "ingest",
+      "method": "POST",
+      "route": "/api/v1/ingest/zones/{zone}/events",
+      "access": "device",
+      "body": {},
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "ingest",
+      "method": "POST",
+      "route": "/api/v1/ingest/zones/{zone}/xovis",
+      "access": "device",
+      "body": {},
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401
+      }
     }
   ]
 }

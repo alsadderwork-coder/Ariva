@@ -61,3 +61,12 @@ public interface ISvcDeviceGateway : ISvcScoped
     /// <summary>The published queue zone of that name in the site, with the zones that hang off it and their lines.</summary>
     Task<Result<DeviceZoneViewModel>> PublishedZoneAsync(string siteCode, string queueZoneName, CancellationToken ct = default);
 }
+
+/// <summary>
+/// Where mapped sensing batches go (ARV-023): Kafka through <see cref="ISvcMessageBus"/> in the hosts; a test can
+/// capture them instead. A failure means the push was not stored and the device should send it again (503).
+/// </summary>
+public interface ISensingSink
+{
+    Task PublishAsync(IReadOnlyList<Ariva.Core.Domain.Contracts.IEvent> events, CancellationToken ct = default);
+}

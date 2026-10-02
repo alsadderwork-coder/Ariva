@@ -60,7 +60,7 @@ Device statuses: `Commissioning`, `Online`, `Degraded`, `Offline`, `Retired`. A 
 | REST pull by Ingest | Device or controller credential stored with the device | Only registered device addresses are called (SSRF control) |
 | Sensor gateway pushing canonical events | Integration client of kind `SensorGateway` with scope `sensing:write` | See [Integration guide](08-Integration-Guide.md) |
 
-Then configure the device or the vendor tool to send its output to the gateway. For Xovis, the multi-sensor setup does the stitching; configure track output (T3) for queue zones. Vendor-computed line crossings may also be sent: Ariva keeps them as a cross-check and fallback (`ariva.device.vendor-line-crossing.v1`), but its own crossings from tracks are the primary source.
+Then configure the device or the vendor tool to send its output to Ariva: for Xovis, a data push agent to `https://<ingest host>/api/v1/ingest/zones/<queue zone>/xovis` in JSON (firmware 5 format, RFC 3339 or Unix milliseconds time) with authentication `BEARER_TOKEN` set to the device credential; name each Xovis logic after the Ariva line or zone it measures, because Ariva refuses names its published profile does not have. The push answer lists what was refused and why, and the clock estimate: a state other than `Ok` means the sensor's time source needs fixing before calibration. For Xovis, the multi-sensor setup does the stitching; configure track output (T3) for queue zones. Vendor-computed line crossings may also be sent: Ariva keeps them as a cross-check and fallback (`ariva.device.vendor-line-crossing.v1`), but its own crossings from tracks are the primary source.
 
 ## 4. Verify health and time
 

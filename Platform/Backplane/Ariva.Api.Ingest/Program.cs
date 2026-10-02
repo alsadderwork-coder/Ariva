@@ -4,6 +4,7 @@ using Ariva.Api.Common.HealthChecks;
 using Ariva.Api.Common.Hosting;
 using Ariva.Api.Common.Filters;
 using Ariva.Di;
+using Ariva.Di.Extensions;
 
 // Ariva.Api.Ingest: sensor adapters. Vendor webhooks (Endpoints/) and pollers (Adapters/)
 // normalise sensor readings and produce them to Kafka.
@@ -62,6 +63,9 @@ builder.Services.AddAppSecurityBaseline(builder.Configuration);
 // ingress for devices that pin one.
 builder.Services.AddAppControllers();
 builder.Services.AddAppClientCertificates(builder.Configuration);
+
+// Sensor pushes (ARV-023): dialect mappers, per-device clock estimates, batches to Kafka keyed by zone.
+builder.Services.AddArivaSensingIngest(builder.Configuration);
 
 // AMAN: AddAppCaching, AddAppHealthChecks, AddAppRouting, AddAppOpenApi.
 // Adapters: one poller per vendor registered as a hosted service; a Kafka producer per normalised topic.

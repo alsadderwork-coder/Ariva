@@ -19,6 +19,8 @@ Every adapter emits the same events, whatever the vendor sends.
 
 Bounds checked on every event before use (`CanonicalEventRules`, ARV-021): times in UTC; coordinates finite and within 2,100 m; heights 0 to 3 m; track ids 1 to 64 letters, digits, dots, hyphens or underscores, namespaced as `<device code>/<track id>`; line and zone names 1 to 200 printable characters as in the zone profile; occupancy 0 to 10,000; interval counts 0 to 100,000 over at most a day; temperature -60 to 150 degrees Celsius; frame rate 0 to 1,000; clock offset at most a day either way.
 
+Pushes (ARV-023): `POST /api/v1/ingest/zones/<zone>/events` for the canonical dialect and `POST /api/v1/ingest/zones/<zone>/xovis` for Xovis firmware 5 JSON, at most 256 KB and 2,000 events each. The answer is 202 with what was accepted, refused, flagged and ignored, the device clock estimate and the first problems; 400 for a malformed message or a device of another dialect; 413 too large; 415 not JSON; 503 when Ariva could not store it (send again). Line and zone names must be those of the published zone profile. Formats, mapping rules and what is verified about Xovis: `../docs/architecture/sensor-adapters.md`.
+
 Track samples arrive at 2 to 5 Hz per track and are downsampled to 1 Hz for heat maps. Ariva computes its own crossings from tracks against its versioned lines (ADR-0003); vendor crossings never replace them where tracks exist.
 
 ## Adapter matrix

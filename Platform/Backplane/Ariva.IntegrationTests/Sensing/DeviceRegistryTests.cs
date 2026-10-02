@@ -125,7 +125,7 @@ public sealed class DeviceRegistryTests(PostgresFixture fixture) : IAsyncDisposa
         (await _host.AsCallerAsync(admin, s => Devices(s).RotateCredentialAsync(device.Id, Ct))).ErrorMessages.Should().Equal(DeviceErrors.Retired);
         (await _host.AsCallerAsync(admin, s => Devices(s).CalibrationsAsync(device.Id, Ct))).Data.Should().HaveCount(2, "history stays");
 
-        (await _host.ReadAsync<long>("SELECT count(*) FROM outbox_message WHERE topic = 'ariva.device.registry-changed.v1' AND message_key = 'DVA' AND payload->>'deviceId' = @id::text", device.Id))
+        (await _host.ReadAsync<long>("SELECT count(*) FROM outbox_message WHERE topic = 'ariva.device.registry-changed.v1' AND message_key = @id::text AND payload->>'deviceId' = @id::text", device.Id))
             .Should().Be(6, "Registered, CalibrationFailed, CalibrationPassed, Moved, CredentialRotated and Retired; nothing for the refused move");
         (await _host.ReadAsync<long>("SELECT count(*) FROM outbox_message WHERE position(@secret IN payload::text) > 0", null, credential[13..])).Should().Be(0);
     }

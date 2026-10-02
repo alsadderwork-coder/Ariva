@@ -115,12 +115,14 @@ Kafka carries facts. Integration and domain events use MassTransit 8.5 with the 
 
 Topic naming is `ariva.<context>.<event>.v1` (Decided); the names live in `KafkaTopics` and every consumed topic has a dead-letter topic `<topic>.dlq.v1` (AMAN's feed topics get the `ariva.` prefix in front, ARV-020). Sensor events are keyed by zone id. AMAN feed topics are `aman.feed.<contract>.v1`, produced by AMAN. D5's topic names are given for traceability.
 
-Key for zone-keyed topics: the id of the queue zone that owns the process. Overflow, service and staff zones attached to that queue share its key, so a track crossing from the overflow band into the snake stays on one partition (D5 keyed by "zone group"; the decision is zone id; this rule reconciles both). Each device is registered to exactly one owning queue zone.
+Key for zone-keyed topics: the queue zone that owns the process, written `<site>/<queue zone name>` (ARV-021: zone ids change with every profile version, names do not). Overflow, service and staff zones attached to that queue share its key, so a track crossing from the overflow band into the snake stays on one partition (D5 keyed by "zone group"; the decision is zone id; this rule reconciles both). Each device is registered to exactly one owning queue zone.
 
 | Topic | D5 name | Key | Producer | Main consumers | Retention class (D5) | Proposed default |
 |---|---|---|---|---|---|---|
 | `ariva.device.track-sample.v1` | tracks.samples.v1 | Zone id | Ingest | Stream | Short | 3 days |
 | `ariva.device.vendor-line-crossing.v1` | (VendorLineCrossing event) | Zone id | Ingest | Stream (cross-check, fallback) | Short | 3 days |
+| `ariva.device.zone-occupancy.v1` | (none; ARV-023, T2 devices) | Zone id | Ingest | Stream | Short | 3 days |
+| `ariva.device.interval-count.v1` | (none; ARV-023, T1 devices) | Zone id | Ingest | Stream | Short | 3 days |
 | `ariva.device.health.v1` | device.health.v1 | Device id | Ingest | Stream, Main | Short | 3 days |
 | `ariva.device.registry-changed.v1` | | Device id | Main | Ingest, Stream | Compacted | compacted |
 | `ariva.topology.zone-profile-activated.v1` | | Site id | Main | Stream, Cronz | Compacted | compacted |

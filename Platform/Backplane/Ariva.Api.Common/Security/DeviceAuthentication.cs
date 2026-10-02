@@ -3,6 +3,7 @@ using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Encodings.Web;
+using Ariva.Core.Domain.ViewModels;
 using Ariva.Core.Services.Sensing;
 using Ariva.Infra.Security;
 using Microsoft.AspNetCore.Authentication;
@@ -28,6 +29,13 @@ public static class DeviceAuthentication
     public const string Policy = "Ariva.Device";
     public const string OwnZonePolicy = "Ariva.Device.OwnZone";
     public const string KeyHeader = "X-Ariva-Device-Key";
+
+    /// <summary>HttpContext.Items key of the authenticated device's record (placement and dialect for the ingest).</summary>
+    public const string RecordItem = "ariva:device-record";
+
+    /// <summary>The authenticated device's record, or null outside a device request.</summary>
+    public static DeviceCredentialRecord RecordOf(HttpContext context) =>
+        context?.Items.TryGetValue(RecordItem, out var record) == true ? record as DeviceCredentialRecord : null;
 
     /// <summary>The route value a device-zone endpoint names its zone with.</summary>
     public const string ZoneRouteValue = "zone";
@@ -174,6 +182,7 @@ public sealed class DeviceAuthenticationHandler(
         if (device.ClientCertificateSha256 is { } pin && !await PresentsPinnedCertificateAsync(pin))
             return Refuse(prefix, "pinned client certificate not presented");
 
+        Context.Items[DeviceAuthentication.RecordItem] = device;
         var identity = new ClaimsIdentity(
         [
             new Claim(DeviceAuthentication.DeviceIdClaim, device.DeviceId.ToString()),
