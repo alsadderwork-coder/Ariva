@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { accounts, call, databaseAvailable, login, totpCode } from '../support/accounts';
-import { hosts } from '../support/hosts';
+import { hosts, kafkaAvailable } from '../support/hosts';
 
 // ARV-025: device health. A calibrated device that pushes a status is Online with its last report; the health overview
 // lists the site's devices and queue zones with the heartbeat timeout; one device's health; another site's caller sees
@@ -22,7 +22,7 @@ const tokenOf = async (account: { userName: string; password: string; totpSecret
 		.accessToken as string;
 
 test.beforeAll(async () => {
-	token = await tokenOf(accounts().stepUpAdmin);
+	token = await tokenOf(accounts().deviceHealthAdmin);
 	const create = async (path: string, data: unknown) => {
 		const response = await call('POST', `${admin}/${path}`, { token, data });
 		expect(response.status(), `${path}: ${await response.text()}`).toBe(201);
@@ -36,8 +36,10 @@ test.beforeAll(async () => {
 	const draft = await create('zone-profiles/drafts', { siteCode: site, name: 'Arrivals' });
 	const zoneId = await create(`zone-profiles/${draft}/zones`, { name: 'Snake A', kind: 'Queue', levelId, polygon: '10 10,34 10,34 22,10 22' });
 	await create(`zone-profiles/${draft}/lines`, { name: 'Entry A', role: 'Entry', levelId, startX: 10, startY: 12, endX: 10, endY: 16, zoneId });
+	await create(`zone-profiles/${draft}/lines`, { name: 'Exit A', role: 'Exit', levelId, startX: 30, startY: 22, endX: 34, endY: 22, zoneId });
 	const { geometryHash } = await (await call('GET', `${admin}/zone-profiles/${draft}/validation`, { token })).json();
-	expect((await call('POST', `${admin}/zone-profiles/${draft}/publish`, { token, data: { geometryHash } })).status()).toBe(200);
+	const published = await call('POST', `${admin}/zone-profiles/${draft}/publish`, { token, data: { geometryHash } });
+	expect(published.status(), await published.text()).toBe(200);
 	const registered = await call('POST', `${admin}/devices`, {
 		token,
 		data: {
@@ -57,6 +59,7 @@ test.beforeAll(async () => {
 });
 
 test('the health overview lists the site\'s devices and zones', async () => {
+	test.skip(!kafkaAvailable, 'an accepted push needs Kafka (ARIVA_E2E_KAFKA_BOOTSTRAP)');
 	const now = new Date().toISOString();
 	const pushed = await call('POST', `${hosts.ingest}/api/v1/ingest/zones/${encodeURIComponent('Snake A')}/events`, {
 		headers: { 'X-Ariva-Device-Key': key, 'Content-Type': 'application/json' },

@@ -36,6 +36,11 @@ if (isCi && !databaseAvailable) {
 	throw new Error('CI runs need ARIVA_E2E_SCHEMA_UPDATE=true and the Database__* variables (see README.md)');
 }
 
+// Sensor pushes are accepted only once they are in Kafka; CI starts one (ci.yml), so its absence there is an error.
+if (isCi && !process.env.ARIVA_E2E_KAFKA_BOOTSTRAP) {
+	throw new Error('CI runs need ARIVA_E2E_KAFKA_BOOTSTRAP (see README.md)');
+}
+
 // One random seed per run for the E2E account passwords (tests/support/accounts.ts). Set in the runner process before
 // the workers start, so every worker derives the same passwords; never written to disk.
 process.env.ARIVA_E2E_ACCOUNT_SEED ||= crypto.randomBytes(24).toString('base64url');
@@ -76,6 +81,36 @@ function dotnetHost(projectPath: string, healthUrl: string, buildFirst = false, 
 	};
 }
 
+// The live hub (ARV-035) reads Stream's snapshots from Redis: ARIVA_E2E_REDIS_URL (redis://[:password@]host:port) points
+// Ariva.Api.Main and live-hub.spec.ts at the run's Redis. Without it the hub runs without Redis and the update test skips.
+function redisEnvironment(): Record<string, string> {
+	const url = process.env.ARIVA_E2E_REDIS_URL;
+	if (!url) return {};
+	const parsed = new URL(url);
+	const password = parsed.password ? `,password=${decodeURIComponent(parsed.password)}` : '';
+	return {
+		Redis__Enabled: 'true',
+		Redis__ConnectionString: `${parsed.hostname}:${parsed.port || '6379'}${password}`,
+		Redis__InstanceName: process.env.ARIVA_E2E_REDIS_INSTANCE || 'ariva:'
+	};
+}
+
+// Sensor pushes (ARV-023) are answered 202 only once their events are in Kafka: ARIVA_E2E_KAFKA_BOOTSTRAP (host:port of
+// a single-broker Kafka) lets Ariva.Api.Ingest provision its topics there and publish. Without it Ingest answers 503 and
+// the push suites skip their accepted-push steps.
+function kafkaEnvironment(): Record<string, string> {
+	const bootstrap = process.env.ARIVA_E2E_KAFKA_BOOTSTRAP;
+	if (!bootstrap) return {};
+	return {
+		Kafka__Enabled: 'true',
+		Kafka__BootstrapServers: bootstrap,
+		Kafka__ProvisionTopics: 'true',
+		Kafka__Topics__Partitions: '1',
+		Kafka__Topics__ReplicationFactor: '1',
+		Kafka__Topics__MinInSyncReplicas: '1'
+	};
+}
+
 export default defineConfig({
 	testDir: './tests',
 	globalSetup: './tests/support/global-setup.ts',
@@ -108,9 +143,12 @@ export default defineConfig({
 		}
 	],
 	webServer: [
-		dotnetHost(project('Backplane/Ariva.Api.Main'), `${hosts.main}/health/readiness`, true, databaseAvailable ? developmentUserEnvironment() : {}),
+		dotnetHost(project('Backplane/Ariva.Api.Main'), `${hosts.main}/health/readiness`, true, {
+			...(databaseAvailable ? developmentUserEnvironment() : {}),
+			...redisEnvironment()
+		}),
 		dotnetHost(project('Backplane/Ariva.Api.Integration'), `${hosts.integration}/health/readiness`),
-		dotnetHost(project('Backplane/Ariva.Api.Ingest'), `${hosts.ingest}/health/readiness`),
+		dotnetHost(project('Backplane/Ariva.Api.Ingest'), `${hosts.ingest}/health/readiness`, false, kafkaEnvironment()),
 		dotnetHost(project('Simulation/Ariva.Simulation.Api'), `${hosts.simulation}/health/readiness`, false, {
 			Simulation__Control__Keys__0__Name: 'e2e',
 			Simulation__Control__Keys__0__Sha256: simulationKeyDigest,

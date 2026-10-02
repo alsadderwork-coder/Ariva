@@ -22,7 +22,7 @@ let key: string;
 const asDevice = (url: string, credential: string, address?: string) => call('GET', url, { headers: { 'X-Ariva-Device-Key': credential }, address });
 
 test.beforeAll(async () => {
-	const { userName, password, totpSecret } = accounts().stepUpAdmin;
+	const { userName, password, totpSecret } = accounts().deviceAuthAdmin;
 	withSecondFactor = (await (await login(userName, password, undefined, undefined, { code: totpCode(totpSecret!) })).json()).accessToken;
 	const create = async (path: string, data: unknown) => {
 		const response = await call('POST', `${admin}/${path}`, { token: withSecondFactor, data });

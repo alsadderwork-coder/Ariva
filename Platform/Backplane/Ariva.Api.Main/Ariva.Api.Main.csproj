@@ -19,6 +19,12 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <!-- The live hub (ARV-035): MessagePack protocol and the Redis backplane. -->
+        <PackageReference Include="Microsoft.AspNetCore.SignalR.Protocols.MessagePack" />
+        <PackageReference Include="Microsoft.AspNetCore.SignalR.StackExchangeRedis" />
+    </ItemGroup>
+
+    <ItemGroup>
         <Content Include="..\Ariva.Api.Common\appsettings.base.json">
             <Link>appsettings.base.json</Link>
             <CopyToOutputDirectory>Always</CopyToOutputDirectory>

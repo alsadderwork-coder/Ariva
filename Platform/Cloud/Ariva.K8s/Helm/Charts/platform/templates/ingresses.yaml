@@ -19,6 +19,16 @@ metadata:
     nginx.ingress.kubernetes.io/modsecurity-snippet: |
       SecRuleEngine On
       SecRule FILES "@rx \.(exe|dll|bat|cmd|com|msi|sh|ps1|php|jsp|asp|aspx)$" "id:100001,phase:2,deny,status:403,log,msg:'Dangerous file upload blocked'"
+      {{- if .tokenInQuery }}
+      SecAuditEngine Off
+      {{- end }}
+    {{- if .tokenInQuery }}
+    # The SignalR WebSocket carries the access token as access_token in its URL (ARV-035, CWE-598): no access log, no
+    # ModSecurity audit log and only critical errors here, so no log line ever holds the request line with the token.
+    nginx.ingress.kubernetes.io/enable-access-log: "false"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      error_log /dev/stderr crit;
+    {{- end }}
     {{- range $key, $value := .annotations }}
     {{ $key }}: {{ $value | quote }}
     {{- end }}

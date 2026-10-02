@@ -9,6 +9,12 @@ export const hosts = {
 	simulation: process.env.ARIVA_E2E_SIMULATION_URL || 'http://localhost:51020'
 } as const;
 
+/**
+ * Whether the run has Kafka (ARIVA_E2E_KAFKA_BOOTSTRAP): Ingest answers a push 202 only once its events are in Kafka,
+ * so the accepted-push tests need it. CI always provides one.
+ */
+export const kafkaAvailable = !!process.env.ARIVA_E2E_KAFKA_BOOTSTRAP;
+
 export type HostName = keyof typeof hosts;
 
 /** Every API host the e2e web servers start, in a stable order for parameterised tests. */

@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { accounts, call, databaseAvailable, login, totpCode } from '../support/accounts';
-import { hosts } from '../support/hosts';
+import { hosts, kafkaAvailable } from '../support/hosts';
 
 // ARV-023: sensor pushes on Ariva.Api.Ingest for the device's own zone and dialect: 202 with the counts; the unknown
 // line refused; another zone 403; another dialect 400; not JSON 415; over 256 KB 413; a Xovis firmware 5 logics push
@@ -23,7 +23,7 @@ const push = (path: string, key: string, body: string, contentType = 'applicatio
 	call('POST', `${ingest}/${path}`, { headers: { 'X-Ariva-Device-Key': key, 'Content-Type': contentType }, raw: body });
 
 test.beforeAll(async () => {
-	const { userName, password, totpSecret } = accounts().stepUpAdmin;
+	const { userName, password, totpSecret } = accounts().devicePushAdmin;
 	const token = (await (await login(userName, password, undefined, undefined, { code: totpCode(totpSecret!) })).json()).accessToken;
 	const create = async (path: string, data: unknown) => {
 		const response = await call('POST', `${admin}/${path}`, { token, data });
@@ -57,6 +57,7 @@ test.beforeAll(async () => {
 });
 
 test('a canonical push is accepted for the own zone and refused elsewhere', async () => {
+	test.skip(!kafkaAvailable, 'an accepted push needs Kafka (ARIVA_E2E_KAFKA_BOOTSTRAP)');
 	const now = new Date();
 	const minuteAgo = new Date(now.getTime() - 60_000);
 	const body = JSON.stringify({
@@ -82,6 +83,7 @@ test('a canonical push is accepted for the own zone and refused elsewhere', asyn
 });
 
 test('a Xovis firmware 5 logics push becomes an interval count and an occupancy', async () => {
+	test.skip(!kafkaAvailable, 'an accepted push needs Kafka (ARIVA_E2E_KAFKA_BOOTSTRAP)');
 	const ms = Date.now();
 	const body = JSON.stringify({
 		logics_data: {
@@ -99,6 +101,7 @@ test('a Xovis firmware 5 logics push becomes an interval count and an occupancy'
 });
 
 test('an Ouster occupations message is read through the declarative mapping', async () => {
+	test.skip(!kafkaAvailable, 'an accepted push needs Kafka (ARIVA_E2E_KAFKA_BOOTSTRAP)');
 	const body = JSON.stringify({
 		occupations: [
 			{ id: 1658947733821, name: 'Snake A', num_objects: 41, num_points: 8800, objects: [1094, 1095] },

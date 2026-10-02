@@ -1,3 +1,4 @@
+using Ariva.Api.Common.Hubs;
 using Ariva.Api.Common.Extensions;
 using Ariva.Api.Common.Filters;
 using Ariva.Api.Common.Security;
@@ -95,7 +96,22 @@ builder.Services.AddArivaDemoSeed(builder.Configuration, builder.Environment.Env
 builder.Services.AddArivaDeviceHealthMonitor();
 
 // AMAN: AddAppCaching, AddAppHealthChecks, AddAppRouting, AddAppOpenApi, AddAppSignalR.
-// SignalR: the live queue hub (Hubs/) uses the Redis backplane and the MessagePack protocol.
+// SignalR (ARV-035): the live queue hub with session checks (ADR-0026), MessagePack beside JSON, bounded messages, and
+// the Redis backplane when Redis is configured; the relay forwards Stream's live snapshots to the zone groups.
+var signalR = builder.Services.AddSignalR(options =>
+    {
+        options.MaximumReceiveMessageSize = 8 * 1024;
+        options.EnableDetailedErrors = false;
+        options.MaximumParallelInvocationsPerClient = 1;
+    })
+    .AddMessagePackProtocol()
+    .AddArivaHubSessions();
+var redisSettings = Ariva.Infra.Caching.RedisSettings.From(builder.Configuration);
+if (redisSettings.Enabled)
+    signalR.AddStackExchangeRedis(redisSettings.ConnectionString, options => options.Configuration.ChannelPrefix =
+        StackExchange.Redis.RedisChannel.Literal(redisSettings.InstanceName + "signalr"));
+builder.Services.AddScoped<Ariva.Infra.Live.LiveZoneDirectory>();
+builder.Services.AddHostedService<Ariva.Api.Main.Hubs.LiveRelay>();
 
 #endregion
 
@@ -124,6 +140,8 @@ app.UseAuthorization();
 
 app.MapArivaHealthChecks();
 app.MapControllers();
+// The hub's [Permission] and RequireAuthorization both apply, so the hub stays closed even without its attribute.
+app.MapHub<Ariva.Api.Main.Hubs.LiveHub>(Ariva.Api.Main.Hubs.LiveHub.Path, Ariva.Api.Main.Hubs.LiveHub.Configure).RequireAuthorization();
 
 // AMAN: MapOpenApi, MapScalarApiReference. Controllers live in Controllers/AdminArea/<Entity>/Controller.cs
 // and Controllers/OpsArea/<Entity>/Controller.cs; hubs are mapped here with MapHub and RequireAuthorization.

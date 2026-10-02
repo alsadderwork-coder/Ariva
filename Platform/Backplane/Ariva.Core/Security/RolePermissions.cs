@@ -28,20 +28,22 @@ public static class RolePermissions
     ];
 
     /// <summary>Border shift supervisor: immigration halls, their zones and sensors.</summary>
-    public static IReadOnlySet<Permission> BorderShiftSupervisor { get; } = new HashSet<Permission>([.. TopologyRead, .. ZonesAndDevices]);
+    public static IReadOnlySet<Permission> BorderShiftSupervisor { get; } = new HashSet<Permission>([.. TopologyRead, .. ZonesAndDevices, Permissions.ViewLiveQueue]);
 
     /// <summary>Terminal duty manager: everything airport-side, including zones, sensors and desk code mappings.</summary>
     public static IReadOnlySet<Permission> TerminalDutyManager { get; } = new HashSet<Permission>(
     [
         .. TopologyRead, .. ZonesAndDevices,
-        Permissions.ViewDeskCodeMapping, Permissions.SearchDeskCodeMapping
+        Permissions.ViewDeskCodeMapping, Permissions.SearchDeskCodeMapping,
+        Permissions.ViewLiveQueue
     ]);
 
     /// <summary>Handler station manager: its own counters; reads topology and zones, changes none of them.</summary>
     public static IReadOnlySet<Permission> HandlerStationManager { get; } = new HashSet<Permission>(
     [
         .. TopologyRead,
-        Permissions.ViewZoneProfile, Permissions.SearchZoneProfile
+        Permissions.ViewZoneProfile, Permissions.SearchZoneProfile,
+        Permissions.ViewLiveQueue
     ]);
 
     /// <summary>

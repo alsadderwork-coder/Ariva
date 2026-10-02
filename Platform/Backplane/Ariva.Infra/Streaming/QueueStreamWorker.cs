@@ -82,6 +82,7 @@ public sealed class QueueStreamWorker(
     IDeadLetterSink deadLetters,
     TimeProvider timeProvider,
     ILogger<QueueStreamWorker> logger,
+    Ariva.Infra.Live.ILiveSnapshotStore live = null,
     ZoneProcessorSettings zoneSettings = null) : BackgroundService
 {
     public const string Purpose = "queue-engine";
@@ -691,6 +692,22 @@ public sealed class QueueStreamWorker(
         // Only now, with the rows committed, are they removed from the zones: a failed or cancelled write loses nothing.
         for (var k = 0; k < zones.Count; k++)
             zones[k].Acknowledge(outputs[k]);
+
+        // The latest minute of each zone that has a new one goes to the live hub (ARV-035); screens are best effort,
+        // so a Redis failure is logged and the next checkpoint carries on.
+        if (live is not null)
+        {
+            var now = timeProvider.GetUtcNow().UtcDateTime;
+            var latest = outputs.Where(o => o.Live.Count > 0).Select(o => Ariva.Infra.Live.LiveZoneSnapshot.From(System.Linq.Enumerable.MaxBy(o.Live, l => l.MinuteUtc), now)).ToList();
+            try
+            {
+                await live.PublishAsync(latest, ct);
+            }
+            catch (Exception e) when (e is StackExchange.Redis.RedisException or TimeoutException or OperationCanceledException && !ct.IsCancellationRequested)
+            {
+                logger.LogWarning(e, "Live snapshots not published; the next checkpoint publishes again");
+            }
+        }
         try
         {
             consumer.Commit(offsets.Select(o => new TopicPartitionOffset(o.Topic, new Partition(o.Partition), new Offset(o.NextOffset))));

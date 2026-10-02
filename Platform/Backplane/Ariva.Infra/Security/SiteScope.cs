@@ -9,7 +9,7 @@ namespace Ariva.Infra.Security;
 /// that every change of roles, sites or account state evicts. A caller without an id (anonymous, system jobs without
 /// a user) and a disabled account have no site access.
 /// </summary>
-internal sealed class SiteScope(IUnitOfWork unitOfWork, ICurrentUser currentUser, IFusionCache cache) : ISiteScope
+internal sealed class SiteScope(SiteAccessResolver resolver, ICurrentUser currentUser) : ISiteScope
 {
     private SiteAccess _resolved;
 
@@ -19,7 +19,18 @@ internal sealed class SiteScope(IUnitOfWork unitOfWork, ICurrentUser currentUser
             return _resolved;
         if (currentUser.Id is not { } userId)
             return _resolved = SiteAccess.None;
+        return _resolved = await resolver.ForUserAsync(userId, ct);
+    }
+}
 
+/// <summary>
+/// A user's sites from the stored bindings, by user id (for callers without an HTTP request, such as a hub method),
+/// with the same one-minute cache and eviction tag as <see cref="SiteScope"/>. A disabled or unknown user has none.
+/// </summary>
+public class SiteAccessResolver(IUnitOfWork unitOfWork, IFusionCache cache)
+{
+    public virtual async Task<SiteAccess> ForUserAsync(Guid userId, CancellationToken ct = default)
+    {
         var stored = await cache.GetOrSetAsync<StoredAccess>(
             $"sites:{userId:N}",
             async (_, token) =>
@@ -40,7 +51,7 @@ internal sealed class SiteScope(IUnitOfWork unitOfWork, ICurrentUser currentUser
             tags: [StoredPermissionResolver.Tag(userId)],
             token: ct);
 
-        return _resolved = new SiteAccess(stored.AllSites, stored.SiteCodes.ToHashSet(StringComparer.Ordinal));
+        return new SiteAccess(stored.AllSites, stored.SiteCodes.ToHashSet(StringComparer.Ordinal));
     }
 
     /// <summary>The cached form (a plain record the distributed cache can serialise).</summary>

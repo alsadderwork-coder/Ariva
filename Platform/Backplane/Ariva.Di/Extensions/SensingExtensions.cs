@@ -18,6 +18,9 @@ public static class SensingExtensions
             .Bind(configuration.GetSection(IngestSettings.SectionName))
             .Validate(s => s.MaxEventsPerMessage is > 0 and <= IngestSettings.MaxEventsLimit, $"Ingest:MaxEventsPerMessage is from 1 to {IngestSettings.MaxEventsLimit}.")
             .ValidateOnStart();
+        // The device registry's lookup for the device scheme and the ingest (ARV-022). Ariva.Api.Main registers it with
+        // the accounts; Ingest needs its own registration (a host test resolves every device service).
+        services.TryAddScoped<ISvcDeviceGateway, Ariva.Infra.Services.Sensing.SvcDeviceGateway>();
         services.TryAddSingleton<DeviceClockStore>();
         // The declarative mappings shipped with Ariva (ARV-024), parsed here so a broken one stops the host at start-up.
         services.TryAddSingleton(DeclarativeMappingCatalog.Embedded);

@@ -97,13 +97,26 @@ ingresses:
   # ADR-0026: the web app and the API share one host, so the refresh cookie (Path=/api/auth, SameSite=Strict) and
   # SignalR need no cross-origin calls. A separate Ingress object because the web ingress rewrites every path to /.
   - name: web-api
-    comment: Ariva API on the web host (/api and /hubs to Ariva.Api.Main)
+    comment: Ariva API on the web host (/api to Ariva.Api.Main)
     subdomain: ariva
     serviceName: api-main-service
     paths:
       - /api
-      - /hubs
     annotations:
       nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
       nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
       nginx.ingress.kubernetes.io/proxy-body-size: "21m"  # ARV-018: a 20 MB floor plan plus multipart framing
+
+  # The live hub (ARV-035) on its own Ingress: its WebSocket URL carries the access token, so this one keeps no access log,
+  # no ModSecurity audit log and only critical errors (tokenInQuery in templates/ingresses.yaml).
+  - name: web-hubs
+    comment: Ariva live hub on the web host (/hubs to Ariva.Api.Main)
+    subdomain: ariva
+    serviceName: api-main-service
+    tokenInQuery: true
+    paths:
+      - /hubs
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-body-size: "64k"

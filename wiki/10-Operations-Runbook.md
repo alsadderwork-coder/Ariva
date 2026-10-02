@@ -173,6 +173,15 @@ SELECT job_id, hypertable_name, last_run_status, last_successful_finish, next_st
 - **Checks**: is the zone's nowcast itself stale (see 4.1, 4.6) or only the board? From the display VLAN, can the player reach the display page and the read-only endpoint? Is the player's browser in kiosk mode and online?
 - **Actions**: fix the upstream cause or the player's network; reload the kiosk page.
 
+### 4.8a Live dashboards not updating (ARV-035)
+
+- **Symptoms**: dashboards connect but their queue figures stop changing; or the browser cannot connect to `/hubs/live`.
+- **Checks**: is the stream itself writing (4.5b, `queue_minute` for the last minutes)? In Redis, does `ariva:live:zone:<site>/<zone>` change after each checkpoint, and does `ariva:live:relay` exist (one Main replica holds it, renewed every 5 seconds)? Do Api.Main and Api.Stream use the same `Redis:ConnectionString` and `InstanceName`? Does the ingress pass WebSocket upgrades on `/hubs` (a 400 or a connection closed at once)?
+- **Log lines**: Stream logs "Live snapshots not published" when Redis refuses the write (the database checkpoint is not affected); Main logs "Live relay could not subscribe" or "Live relay lease not renewed" while Redis is unreachable and retries every 5 seconds.
+- **Access**: a user who cannot join a zone gets `forbidden` (no `LiveQueue.View`, the zone's site is not among the user's sites, or the zone is not a queue zone of the site's published profile; a newly published zone is joinable within a minute), `too_many_zones` (more than 64 zones on one connection), `too_many_joins` (more than 120 joins a minute) or, on connecting, `too_many_connections` (more than 8 hub connections of one sign-in on one replica).
+- **Logs**: the `/hubs` ingress writes no access log by design (its URLs carry tokens); use Main's logs, which name the connection id only.
+- **Actions**: restore Redis or fix the settings; the next checkpoint rewrites every zone's snapshot and clients receive it without reconnecting. Restart Main only if no replica holds the relay lease for more than a minute.
+
 ### 4.9 Certificate expiry
 
 - **Checks**:

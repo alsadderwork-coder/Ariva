@@ -35,6 +35,8 @@ Sizing assumption (D5): a busy terminal tracks about 3,000 people at peak; sampl
 
 
 Stream outputs (ARV-034): per-minute queue rows (`queue_minute`), bin revisions (`queue_bin`), per-desk and per-gate minutes (`desk_minute`, `egate_minute`) and the 15-minute continuous aggregate `queue_minute_15m` are TimescaleDB hypertables written by Ariva.Api.Stream once per checkpoint, together with the zones' snapshots and the worker's positions, so a restart rewrites the same rows.
+
+Live push (ARV-035): Ariva.Api.Stream writes each zone's latest live row to Redis and announces it; Ariva.Api.Main's hub `/hubs/live` pushes it to the browsers that joined the zone. Connecting needs `LiveQueue.View` (Border shift supervisor, Terminal duty manager, Handler station manager, System administrator); joining a zone needs its site among the caller's sites. One Main replica relays at a time (a Redis lease) and the SignalR Redis backplane reaches the others.
 ## Kafka topics
 
 Naming is `ariva.<context>.<event>.v1` (ADR-0019); AMAN feed topics are `aman.feed.<contract>.v1` and are produced by AMAN. Zone-keyed topics use the id of the owning queue zone, so a queue's overflow, service and staff zones share one partition. The full table with producers, consumers and retention is in `../docs/architecture/overview.md` section 5.

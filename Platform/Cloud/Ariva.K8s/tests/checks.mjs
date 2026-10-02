@@ -73,6 +73,16 @@ export function checkManifests(docs, { environment }) {
 			for (const entry of tls) {
 				if (!entry.secretName) findings.push(`${id}: tls entry without secretName`);
 			}
+			// The SignalR hubs take the access token in the URL (ARV-035, CWE-598): an ingress that serves /hubs keeps no
+			// access log, no ModSecurity audit log and only critical errors, and serves nothing else.
+			const paths = (doc.spec?.rules ?? []).flatMap((rule) => (rule.http?.paths ?? []).map((entry) => entry.path));
+			if (paths.some((value) => value === '/hubs' || value?.startsWith('/hubs/'))) {
+				const annotations = doc.metadata?.annotations ?? {};
+				if (annotations['nginx.ingress.kubernetes.io/enable-access-log'] !== 'false') findings.push(`${id}: /hubs carries tokens in its URL; the ingress must disable the access log`);
+				if (!/SecAuditEngine\s+Off/.test(annotations['nginx.ingress.kubernetes.io/modsecurity-snippet'] ?? '')) findings.push(`${id}: /hubs carries tokens in its URL; the ingress must turn the ModSecurity audit log off`);
+				if (!/error_log\s+\S+\s+crit;/.test(annotations['nginx.ingress.kubernetes.io/configuration-snippet'] ?? '')) findings.push(`${id}: /hubs carries tokens in its URL; the ingress must log only critical errors`);
+				if (paths.some((value) => !(value === '/hubs' || value?.startsWith('/hubs/')))) findings.push(`${id}: /hubs carries tokens in its URL; serve it from its own ingress`);
+			}
 		}
 	}
 	return findings;

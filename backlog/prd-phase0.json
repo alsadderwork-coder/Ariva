@@ -822,8 +822,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 38,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Redis snapshots per zone written by Stream after each checkpoint; LiveHub /hubs/live in Main with LiveQueue.View, per-join grant, site and published-zone checks, MessagePack, Redis backplane, a leased relay; access_token only on /hubs, redacted, and the /hubs ingress keeps no logs. Also fixed the Ingest device gateway registration (500 since ARV-022) and added Kafka to the e2e run. Security review PASS after fixes.",
       "dependsOn": [
         "ARV-034",
         "ARV-010b",

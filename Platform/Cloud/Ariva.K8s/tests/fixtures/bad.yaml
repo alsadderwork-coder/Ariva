@@ -43,3 +43,10 @@ spec:
           image: registry.example/api-ingest:1.2.3
           securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
           volumeMounts: [{ name: tmp, mountPath: /tmp }]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata: { name: bad-hubs-logged }
+spec:
+  tls: [{ hosts: [ariva.example], secretName: ariva-tls }]
+  rules: [{ host: ariva.example, http: { paths: [{ path: /api }, { path: /hubs }] } }]

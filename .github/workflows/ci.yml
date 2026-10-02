@@ -206,9 +206,45 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
+      # The live hub (ARV-035) reads Stream's snapshots from Redis; the suite publishes one as Stream would.
+      redis:
+        image: redis:8.2-alpine
+        ports:
+          - 6380:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      # Ingest answers a sensor push 202 only once its events are in Kafka (ARV-023); one KRaft broker, the dev image.
+      kafka:
+        image: apache/kafka:4.1.0
+        env:
+          KAFKA_NODE_ID: 1
+          KAFKA_PROCESS_ROLES: broker,controller
+          KAFKA_LISTENERS: HOST://0.0.0.0:9092,INTERNAL://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
+          KAFKA_ADVERTISED_LISTENERS: HOST://localhost:19092,INTERNAL://localhost:29092
+          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: HOST:PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+          KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+          KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+          KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+          KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+          KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+          KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+          KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'false'
+        ports:
+          - 19092:9092
+        options: >-
+          --health-cmd "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:29092"
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 30
     env:
       CI: true
       ARIVA_E2E_SCHEMA_UPDATE: 'true'
+      ARIVA_E2E_REDIS_URL: redis://localhost:6380
+      ARIVA_E2E_KAFKA_BOOTSTRAP: localhost:19092
       Database__Host: localhost
       Database__Port: '5433'
       Database__Name: postgres

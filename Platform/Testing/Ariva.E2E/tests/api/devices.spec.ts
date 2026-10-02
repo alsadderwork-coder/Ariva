@@ -36,7 +36,7 @@ const body = (code: string, overrides: Record<string, unknown> = {}, placement: 
 });
 
 test.beforeAll(async () => {
-	const { userName, password, totpSecret } = accounts().stepUpAdmin;
+	const { userName, password, totpSecret } = accounts().devicesAdmin;
 	const signedIn = await login(userName, password, undefined, undefined, { code: totpCode(totpSecret!) });
 	expect(signedIn.status()).toBe(200);
 	withSecondFactor = (await signedIn.json()).accessToken;

@@ -32,7 +32,9 @@ public sealed class PermissionModelTests
     public void Permissions_Should_CoverViewCreateEditSearchDelete_When_EntityIsCatalogued()
     {
         var byEntity = Global.Defaults.Permissions.All.Values
-            .Where(p => p.Entity != "SystemInfo")
+            // View-only entities: nothing is created, edited, searched or deleted through them (the system information
+            // endpoint; the live queue stream of ARV-035).
+            .Where(p => p.Entity is not ("SystemInfo" or "LiveQueue"))
             .GroupBy(p => p.Entity);
 
         byEntity.Should().AllSatisfy(entity =>

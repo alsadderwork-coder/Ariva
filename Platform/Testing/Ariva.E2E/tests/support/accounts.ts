@@ -119,6 +119,13 @@ export function accounts() {
 		stepUp: account('e2e.stepup', ['BorderShiftSupervisor'], false, true),
 		// Holds every critical permission, so each critical route answers 401 for its second factor and never 403.
 		stepUpAdmin: account('e2e.stepupadmin', ['SystemAdministrator'], false, true, ['*']),
+		// The device suites sign in with a fresh second factor in parallel; a TOTP code counts once per account (replay
+		// guard), so each suite has its own administrator rather than sharing stepUpAdmin.
+		devicesAdmin: account('e2e.devicesadmin', ['SystemAdministrator'], false, true, ['*']),
+		deviceAuthAdmin: account('e2e.devauthadmin', ['SystemAdministrator'], false, true, ['*']),
+		devicePushAdmin: account('e2e.devpushadmin', ['SystemAdministrator'], false, true, ['*']),
+		deviceHealthAdmin: account('e2e.devhealthadmin', ['SystemAdministrator'], false, true, ['*']),
+		emulatorAdmin: account('e2e.emuadmin', ['SystemAdministrator'], false, true, ['*']),
 		// ARV-017: a duty manager who drafts and publishes zone profiles for E2E2 (publishing needs a second factor).
 		zoneManager: account('e2e.zonemanager', ['TerminalDutyManager'], false, true, ['E2E2']),
 		securityAdmin: account('e2e.secadmin', ['SystemAdministrator'], false, true, ['*']),

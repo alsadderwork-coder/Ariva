@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { accounts, call, databaseAvailable, login, totpCode } from '../support/accounts';
-import { hosts } from '../support/hosts';
+import { hosts, kafkaAvailable } from '../support/hosts';
 
 // ARV-028: the sensor emulator plays a 10-minute accelerated run (18:15 to 18:25 at speed 60) of the reference day to
 // Ingest as devices registered for the DMO demo airport (canonical and Xovis), and Ingest accepts exactly the events the
@@ -27,7 +27,7 @@ const registeredIds: string[] = [];
 let adminToken = '';
 
 test.beforeAll(async () => {
-	const account = accounts().stepUpAdmin;
+	const account = accounts().emulatorAdmin;
 	const token = (await (await login(account.userName, account.password, undefined, undefined, { code: totpCode(account.totpSecret!) })).json())
 		.accessToken as string;
 	adminToken = token;
@@ -73,6 +73,7 @@ test('the controls need the control scope', async () => {
 });
 
 test('a 10-minute accelerated run reaches Ingest event for event', async () => {
+	test.skip(!kafkaAvailable, 'an accepted push needs Kafka (ARIVA_E2E_KAFKA_BOOTSTRAP)');
 	test.setTimeout(90_000);
 	const loaded = await call('PUT', `${sensors}/devices`, { headers: operator, data: { devices: credentials } });
 	expect(loaded.status(), await loaded.text()).toBe(200);

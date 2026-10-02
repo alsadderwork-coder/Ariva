@@ -2087,6 +2087,38 @@
         "HandlerStationManager": 401,
         "SystemAdministrator": 401
       }
+    },
+    {
+      "host": "main",
+      "method": "*",
+      "route": "/hubs/live/negotiate",
+      "access": "permission",
+      "permissions": [
+        "ViewLiveQueue"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 405,
+        "TerminalDutyManager": 405,
+        "HandlerStationManager": 405,
+        "SystemAdministrator": 405
+      }
+    },
+    {
+      "host": "main",
+      "method": "*",
+      "route": "/hubs/live",
+      "access": "permission",
+      "permissions": [
+        "ViewLiveQueue"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 405,
+        "TerminalDutyManager": 405,
+        "HandlerStationManager": 405,
+        "SystemAdministrator": 405
+      }
     }
   ]
 }

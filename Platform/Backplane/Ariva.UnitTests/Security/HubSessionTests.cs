@@ -64,9 +64,9 @@ public sealed class HubSessionTests
         var first = new FakeCaller(ended);
         var second = new FakeCaller(ended);
         var other = new FakeCaller(live);
-        _registry.Add(ended, first);
-        _registry.Add(ended, second);
-        _registry.Add(live, other);
+        _registry.TryAdd(ended, first).Should().BeTrue();
+        _registry.TryAdd(ended, second).Should().BeTrue();
+        _registry.TryAdd(live, other).Should().BeTrue();
         _sessions[ended] = SessionState.Revoked;
 
         var sweeper = new HubSessionSweeper(_registry, _services.GetRequiredService<IServiceScopeFactory>(), NullLogger<HubSessionSweeper>.Instance);
@@ -78,6 +78,24 @@ public sealed class HubSessionTests
         other.Aborted.Should().BeFalse();
         _registry.Count.Should().Be(1);
         HubSessionSweeper.Interval.Should().BeLessThan(TimeSpan.FromSeconds(5), "revoked sessions lose their hub connections within 5 seconds");
+    }
+
+    [Fact]
+    public async Task OnConnected_Should_RefuseAndAbort_When_TheSessionHoldsTheMostConnections()
+    {
+        var sessionId = Guid.CreateVersion7();
+        for (var k = 0; k < HubSessionRegistry.MaxConnectionsPerSession; k++)
+            await new SessionHubFilter(_registry).OnConnectedAsync(new HubLifetimeContext(new FakeCaller(sessionId), _services, null), _ => Task.CompletedTask);
+        var extra = new FakeCaller(sessionId);
+        var other = new FakeCaller(Guid.CreateVersion7());
+
+        var connect = () => new SessionHubFilter(_registry).OnConnectedAsync(new HubLifetimeContext(extra, _services, null), _ => Task.CompletedTask);
+
+        await connect.Should().ThrowAsync<HubException>().WithMessage("too_many_connections");
+        extra.Aborted.Should().BeTrue();
+        _registry.Count.Should().Be(HubSessionRegistry.MaxConnectionsPerSession);
+        await new SessionHubFilter(_registry).OnConnectedAsync(new HubLifetimeContext(other, _services, null), _ => Task.CompletedTask);
+        other.Aborted.Should().BeFalse("another session has its own allowance");
     }
 
     private sealed class FakeCaller(Guid sessionId) : HubCallerContext

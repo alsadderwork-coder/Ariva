@@ -30,6 +30,7 @@ public static class AccountExtensions
         services.TryAddSingleton(_ => new PasswordPolicy(settings.ContextWords.Append(configuration["Application:SiteCode"])));
         services.TryAddScoped<IPermissionResolver, StoredPermissionResolver>();
         services.TryAddScoped<ISessionValidator, SessionValidator>();
+        services.TryAddScoped<SiteAccessResolver>();
         services.TryAddScoped<ISiteScope, SiteScope>();
         return services;
     }

@@ -16,14 +16,25 @@ namespace Ariva.Api.Common.Hubs;
 /// </summary>
 public sealed class HubSessionRegistry
 {
+    /// <summary>Open hub connections one session may hold on one replica (a few dashboard tabs; CWE-400).</summary>
+    public const int MaxConnectionsPerSession = 8;
+
     private readonly ConcurrentDictionary<string, (Guid SessionId, HubCallerContext Context)> _connections = new(StringComparer.Ordinal);
+    private readonly Lock _adding = new();
 
     public int Count => _connections.Count;
 
-    public void Add(Guid sessionId, HubCallerContext context)
+    /// <summary>Tracks the connection; false (nothing tracked) when the session already holds the most it may.</summary>
+    public bool TryAdd(Guid sessionId, HubCallerContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
-        _connections[context.ConnectionId] = (sessionId, context);
+        lock (_adding)
+        {
+            if (_connections.Values.Count(c => c.SessionId == sessionId) >= MaxConnectionsPerSession)
+                return false;
+            _connections[context.ConnectionId] = (sessionId, context);
+            return true;
+        }
     }
 
     public void Remove(string connectionId) => _connections.TryRemove(connectionId, out _);
@@ -55,8 +66,12 @@ public sealed class SessionHubFilter(HubSessionRegistry registry) : IHubFilter
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(next);
 
-        if (await SessionOf(context.Context, context.ServiceProvider) is { } sessionId)
-            registry.Add(sessionId, context.Context);
+        if (await SessionOf(context.Context, context.ServiceProvider) is { } sessionId && !registry.TryAdd(sessionId, context.Context))
+        {
+            context.Context.Abort();
+            throw new HubException("too_many_connections");
+        }
+
         await next(context);
     }
 

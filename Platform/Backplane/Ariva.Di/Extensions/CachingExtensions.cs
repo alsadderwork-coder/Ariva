@@ -5,6 +5,7 @@ using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Caching.StackExchangeRedis;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using ZiggyCreatures.Caching.Fusion;
 using ZiggyCreatures.Caching.Fusion.Backplane.StackExchangeRedis;
 using ZiggyCreatures.Caching.Fusion.Serialization.SystemTextJson;
@@ -54,10 +55,15 @@ public static class CachingExtensions
             }));
 
         if (!redis.Enabled)
+        {
+            // Live snapshots (ARV-035) need Redis between Stream and Main; without it there is no live state.
+            services.TryAddSingleton<Ariva.Infra.Live.ILiveSnapshotStore, Ariva.Infra.Live.NoLiveSnapshots>();
             return services;
+        }
 
         services.AddSingleton(redis);
         services.AddSingleton<RedisConnection>();
+        services.TryAddSingleton<Ariva.Infra.Live.ILiveSnapshotStore, Ariva.Infra.Live.RedisLiveSnapshots>();
         builder
             .WithDistributedCache(provider =>
             {

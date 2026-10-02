@@ -108,7 +108,7 @@ const RULES = [
     re: /\[AllowAnonymous\]|\.AllowAnonymous\s*\(\s*\)/,
     msg: 'Anonymous access. Every anonymous endpoint needs an entry in security/allowlist.json with a reason.' },
   { id: 'SEC-053', cwe: ['CWE-862', 'CWE-306'], langs: ['cs'], severity: 'error', fileCheck: 'hubAuth',
-    msg: 'SignalR hub without [Authorize].' },
+    msg: 'SignalR hub without [Authorize] or [Permission].' },
 
   { id: 'SEC-060', cwe: ['CWE-863'], langs: ['cs'], severity: 'error',
     re: /\[Authorize\s*\(\s*Roles\s*=|\bUser\.IsInRole\s*\(/,
@@ -209,7 +209,8 @@ function hubAuth(text, lines) {
   for (let i = 0; i < lines.length; i++) {
     if (/\bclass\s+\w+[^:]*:\s*Hub(<|\b)/.test(lines[i])) {
       const head = lines.slice(Math.max(0, i - 6), i + 1).join('\n');
-      if (!/\[Authorize\b/.test(head)) out.push(i + 1);
+      // [Permission(...)] derives from AuthorizeAttribute (Ariva.Api.Common), as SEC-050 accepts on controllers.
+      if (!/\[(Authorize|Permission)\b/.test(head)) out.push(i + 1);
     }
   }
   return out;

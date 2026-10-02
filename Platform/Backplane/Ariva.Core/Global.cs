@@ -114,6 +114,13 @@ public static class Global
 
             #endregion
 
+            #region Live operations (E4)
+
+            /// <summary>Join a zone's live state on the hub (ARV-035): queue length and nowcast as they change.</summary>
+            public static Permission ViewLiveQueue { get; } = new("LiveQueue", PermissionAction.View);
+
+            #endregion
+
             private static readonly Lazy<IReadOnlyDictionary<string, Permission>> ByName = new(() =>
                 typeof(Permissions)
                     .GetProperties(BindingFlags.Public | BindingFlags.Static)
