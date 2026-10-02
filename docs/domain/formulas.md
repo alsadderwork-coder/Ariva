@@ -282,7 +282,7 @@ Degraded band (reference): when the zone is degraded show [5 * floor(0.75 * W_no
 
 Stale data: when the latest nowcast is older than the staleness threshold (To confirm per site), screens switch to a neutral message instead of freezing on an old number.
 
-Display precedence (first match wins): stale data or no service shows the neutral message; a degraded zone shows the degraded band; W_now below 5 min shows "under 5 min"; otherwise the 5-minute band with hysteresis.
+Display precedence (first match wins): stale data or no service shows the neutral message; W_now at or above 120 min shows "over 120 min" (Proposed, ARV-032); a degraded zone shows the degraded band; W_now below 5 min shows "under 5 min"; otherwise the 5-minute band with hysteresis (extended in ARV-032, Proposed, to the "under 5 min" message, the degraded band and "over 120 min").
 
 Tests:
 
@@ -292,6 +292,8 @@ Tests:
 - n_open = 0: null (no service).
 - Hysteresis: W_ref = 12 (band 10 to 15); W_now = 15.5 keeps "10 to 15"; W_now = 17.2 switches to "15 to 20".
 - Degraded: W_now = 12 gives "5 to 15"; W_now = 4 gives "0 to 10".
+
+Implementation (ARV-032, `Ariva.Core/Queueing/Nowcast`): `Nowcast.Compute` blends the desk and exit terms when both are known, uses either alone otherwise (the exit term alone is flagged `Degraded`, since it lags desk changes), applies the fast-track share and the e-gate reject rate (`Nowcast.EgateRate`, F12), and returns no number with a reason (`NothingOpen`, `ThroughputTooLow` below 0.01 a minute, `NoThroughputData`, `NoQueueLength`, `Implausible` when no finite wait results). Cycle times under 0.05 minutes (3 seconds, Proposed) count as unknown, so a bad desk feed cannot produce an infinite throughput; an unknown fast-track share or reject rate is not assumed to be 1 or 0 silently but flags the result `Degraded`. `NowcastDisplays.Next` applies the display precedence and the hysteresis above, keeping W_ref between updates. Two display rules beyond the reference (Proposed): a wait at or above 120 minutes (the reference cap) shows "over 120 min", degraded or not, since a band there would exclude the estimate, and the degraded band is clamped to 120 while keeping its 10-minute width; a throughput above 1,000 passengers a minute (Proposed) is not real and gives `Implausible`, so a corrupt exit count cannot show "under 5 min"; the hysteresis also holds the "under 5 min" message and the degraded band, so a wait hovering at 5 minutes does not flap, while a change between degraded and live always shows at once. `ExitRate` sums the engine's per-minute exits over the last m whole minutes (one hour kept). Measured on the reference evening through the emulator and the queue engine with the exit term, the Visitors nowcast is within 2 minutes of the scenario's from 18:04 to 18:10 and passes 15 minutes at 18:05 to 18:06; the desk term arrives with the desk state engine (ARV-033).
 
 ## F9. Backlog recursion and capacity
 

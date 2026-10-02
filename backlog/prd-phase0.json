@@ -757,8 +757,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 35,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "2026-10-02: Ariva.Core/Queueing/Nowcast.cs (F8 compute, display bands with hysteresis, F12 e-gate rate, exit window). 61 tests incl. the reference evening crossing 15 min at 18:05. Security review PASS after fixes. The desk term is wired by ARV-033.",
       "dependsOn": [
         "ARV-030"
       ]
