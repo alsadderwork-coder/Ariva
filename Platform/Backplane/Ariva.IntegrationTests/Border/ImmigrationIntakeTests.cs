@@ -190,6 +190,8 @@ public sealed class ImmigrationIntakeTests(PostgresFixture fixture) : IAsyncDisp
     public async Task ArrivalWave_Should_ProjectTheSitesArrivalsWithAmansLaneDemandWherePresent_When_Asked()
     {
         await SeedAsync();
+        // Each test of the shared database projects its own day, so the order the tests run in never mixes their flights.
+        _host.Clock.Advance(TimeSpan.FromDays(1));
         FlightLegData Leg(string key, DateTime? estimated = null, DateTime? onBlock = null, int? seats = null, int? pax = null, string direction = "Arrival") =>
             new(key, "AW", key[2..5], null, direction, Now.AddMinutes(15), estimated, null, onBlock, null, Origin: direction == "Arrival" ? "BEY" : "DMO",
                 Destination: direction == "Arrival" ? "DMO" : "BEY", Stand: "B12", Seats: seats, PaxEstimate: pax);
@@ -249,6 +251,8 @@ public sealed class ImmigrationIntakeTests(PostgresFixture fixture) : IAsyncDisp
     public async Task ArrivalWave_Should_KeepEachSitesFlightsAndLaneDemandApart_When_TwoSitesShareAFlightKey()
     {
         await SeedAsync();
+        // Each test of the shared database projects its own day, so the order the tests run in never mixes their flights.
+        _host.Clock.Advance(TimeSpan.FromDays(3));
         await ProbeSiteAsync();
         _waveAdmin = await WaveUserAsync(RoleCodes.SystemAdministrator);
         FlightLegData Leg(int pax) => new("XK1-CROSS-A", "XK", "1", null, "Arrival", Now.AddMinutes(15), Now.AddMinutes(5), null, null, null, Origin: "BEY",
@@ -273,6 +277,8 @@ public sealed class ImmigrationIntakeTests(PostgresFixture fixture) : IAsyncDisp
     public async Task ProjectedArrivalWave_Should_GiveEachQueueZoneTheLanesItsDesksServe_When_ARuleReadsIt()
     {
         await SeedAsync();
+        // Each test of the shared database projects its own day, so the order the tests run in never mixes their flights.
+        _host.Clock.Advance(TimeSpan.FromDays(2));
         // A second site at the demo airport whose published profile links queue zones to desks through service zones:
         // two queues for visitors, one for citizens and residents, an overflow band of the first, and a queue with no desk.
         await ProbeSiteAsync();
@@ -348,6 +354,8 @@ public sealed class ImmigrationIntakeTests(PostgresFixture fixture) : IAsyncDisp
     public async Task DeskFeed_Should_DriveTheDeskEngineFromAmanAndFillTheEgateMinutes_When_AmanRecordsAreStored()
     {
         await SeedAsync();
+        // Each test of the shared database projects its own day, so the order the tests run in never mixes their flights.
+        _host.Clock.Advance(TimeSpan.FromDays(4));
         await ProbeSiteAsync();
         var feed = new Ariva.Infra.Border.DeskFeed(_host.Provider.GetRequiredService<Ariva.Infra.Settings.DatabaseSettings>(), _host.Clock,
             new Ariva.Infra.Border.DeskFeedSettings(), Microsoft.Extensions.Logging.Abstractions.NullLogger<Ariva.Infra.Border.DeskFeed>.Instance);
