@@ -25,7 +25,15 @@ type Flight = {
 	lanes: Lanes;
 	hallFirstUtc: string;
 };
-type Wave = { siteCode: string; windowMinutes: number; delayMinutes: number; flights: Flight[]; minutes: { minuteUtc: string; lanes: Lanes }[] };
+type Wave = {
+	siteCode: string;
+	windowMinutes: number;
+	delayMinutes: number;
+	egateRejectRate: number | null;
+	rejectLane: string | null;
+	flights: Flight[];
+	minutes: { minuteUtc: string; lanes: Lanes }[];
+};
 
 const inside = () => `10.${1 + Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250)}.${1 + Math.floor(Math.random() * 250)}`;
 const run = Date.now().toString(36).toUpperCase();
@@ -130,7 +138,10 @@ test('a border shift supervisor of the site sees the flights landing soon with t
 	const answer = await call('GET', wave(), { token });
 	expect(answer.status(), await answer.text()).toBe(200);
 	const projection: Wave = await answer.json();
-	expect(projection).toMatchObject({ siteCode: 'DMO', windowMinutes: 30 });
+	expect(projection).toMatchObject({ siteCode: 'DMO', windowMinutes: 30, rejectLane: 'VIS' });
+	// ARV-049: the e-gate reject rate (F12), measured from AMAN or the reference, for the lane split's readers.
+	expect(projection.egateRejectRate).toBeGreaterThanOrEqual(0);
+	expect(projection.egateRejectRate).toBeLessThanOrEqual(1);
 	expect(projection.minutes).toHaveLength(30 + projection.delayMinutes + 12);
 
 	const mine = new Map(projection.flights.filter((f) => f.flightKey.startsWith(`AW-${run}-`)).map((f) => [f.flightKey, f]));
@@ -171,6 +182,7 @@ test('the projection is refused to other roles, other sites and bad windows with
 	const terminal: Wave = await totals.json();
 	const mine = terminal.flights.find((f) => f.flightKey === key(2))!;
 	expect(mine).toMatchObject({ laneSource: null, lanes: { cit: null, res: null, vis: null, crw: null, eGate: null, total: 184 } });
+	expect(terminal).toMatchObject({ egateRejectRate: null, rejectLane: null });
 	expect(terminal.minutes.every((m) => m.lanes.vis === null && m.lanes.total >= 0)).toBe(true);
 
 	for (const query of ['?minutes=4', '?minutes=121', '?minutes=<script>']) {

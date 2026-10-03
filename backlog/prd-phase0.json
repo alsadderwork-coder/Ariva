@@ -1123,8 +1123,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 52,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "DeskFeed in Ariva.Api.Stream: AMAN records stored by the intake (by receipt time, overlap and taken ids, bounded) into one DeskStateEngine per site at their F10 rank (sessions rank 2, interval transactions rank 1 as activity), the feed as every AMAN desk's heartbeat (clamped to the clock); desk_minute and egate_minute written with the engine snapshot (desk_feed_state, script 0031) under a per-site advisory lock. E-gate rejects join their manual lane (F12, EgateCoupling) in the projection predicted rules read; r shown in the arrival-wave API to border roles. Security review FAIL (stuck cursor, future heartbeat, two missing tests) then PASS. Gates: unit 1970, integration 287, e2e 355 (1 known flaky skip link), scan 0 errors, docs. Nowcast desk term and staff/service zones into the desk engine open.",
       "dependsOn": [
         "ARV-048",
         "ARV-033"

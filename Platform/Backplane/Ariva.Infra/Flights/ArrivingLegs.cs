@@ -1,4 +1,5 @@
 using Ariva.Core.Alerting;
+using Ariva.Core.Border;
 using Ariva.Core.Flights;
 
 namespace Ariva.Infra.Flights;
@@ -90,11 +91,14 @@ public static class ArrivingLegs
 /// no projection (null), so its predicted rules have nothing to judge. Minutes are projected from the current minute
 /// with the longest window (<see cref="ArrivalWave.MaxWindow"/>); earlier minutes have no projection, so a predicted
 /// value needs every minute after it to be from now on: a backtest finds none, except at most for its last minute when it
-/// ends at the current minute. One read per site and lifetime (a scope: one evaluation tick).
+/// ends at the current minute. The e-gate rejects join their manual lane (ARV-049, F12, <see cref="EgateCoupling"/>):
+/// r measured from AMAN's e-gate intervals over the window (<see cref="EgateRejects"/>), times the e-gate eligible
+/// arrivals a lag earlier. One read per site and lifetime (a scope: one evaluation tick).
 /// </summary>
-public sealed class ProjectedArrivalWave(IUnitOfWork unitOfWork, TimeProvider timeProvider, ArrivalWaveSettings settings) : IArrivalWaveSource
+public sealed class ProjectedArrivalWave(IUnitOfWork unitOfWork, TimeProvider timeProvider, ArrivalWaveSettings settings, EgateCouplingSettings coupling)
+    : IArrivalWaveSource
 {
-    private readonly Dictionary<string, ArrivalWaveProjection> _projections = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, IReadOnlyList<MinuteDemand>> _projections = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<string, (bool Queue, IReadOnlyList<string> Lanes)>> _lanes = new(StringComparer.Ordinal);
 
     public async Task<IReadOnlyDictionary<DateTime, double>> ArrivalsAsync(string siteCode, string zoneName, DateTime fromUtc, DateTime toUtc,
@@ -110,14 +114,16 @@ public sealed class ProjectedArrivalWave(IUnitOfWork unitOfWork, TimeProvider ti
         var sharing = served.ToDictionary(lane => lane, lane => Math.Max(1, zones.Values.Count(z => z.Queue && System.Linq.Enumerable.Contains(z.Lanes, lane, StringComparer.Ordinal))),
             StringComparer.Ordinal);
 
-        if (!_projections.TryGetValue(siteCode, out var projection))
+        if (!_projections.TryGetValue(siteCode, out var minutes))
         {
             var now = timeProvider.GetUtcNow().UtcDateTime;
             var flights = await ArrivingLegs.ReadAsync(unitOfWork.StorageProvider, siteCode, now, ArrivalWave.MaxWindow, settings, ct);
-            _projections[siteCode] = projection = ArrivalWave.Project(flights, now, ArrivalWave.MaxWindow, settings);
+            var projection = ArrivalWave.Project(flights, now, ArrivalWave.MaxWindow, settings);
+            var gates = await EgateRejects.ReadAsync(unitOfWork.StorageProvider, siteCode, now, coupling, ct);
+            _projections[siteCode] = minutes = EgateCoupling.Couple(projection.Minutes, gates.Rate, coupling.LagMinutes, coupling.RejectLane, gates.LiveRejects);
         }
 
-        return projection.Minutes
+        return minutes
             .Where(m => m.MinuteUtc > fromUtc && m.MinuteUtc <= toUtc)
             .ToDictionary(m => m.MinuteUtc, m => served.Sum(lane => Of(m.Lanes, lane) / sharing[lane]));
     }
@@ -126,15 +132,7 @@ public sealed class ProjectedArrivalWave(IUnitOfWork unitOfWork, TimeProvider ti
     public static double Of(LaneCounts lanes, string code)
     {
         ArgumentNullException.ThrowIfNull(lanes);
-        return code switch
-        {
-            "CIT" => lanes.Cit,
-            "RES" => lanes.Res,
-            "VIS" => lanes.Vis,
-            "CRW" => lanes.Crw,
-            "EG" => lanes.EGate,
-            _ => 0
-        };
+        return lanes.Of(code);
     }
 
     private async Task<Dictionary<string, (bool Queue, IReadOnlyList<string> Lanes)>> LanesAsync(string siteCode, CancellationToken ct)
@@ -163,5 +161,43 @@ public sealed class ProjectedArrivalWave(IUnitOfWork unitOfWork, TimeProvider ti
         public string Zone { get; set; }
         public string Kind { get; set; }
         public string Codes { get; set; }
+    }
+}
+
+/// <summary>
+/// AMAN's e-gate rejects at a site (ARV-049, F12), read from the stored e-gate intervals of mapped gates (ARV-048; unmapped
+/// codes are kept apart): the reject rate r over
+/// the coupling window (or the reference when too few attempts), and the rejects per minute of the minutes just before
+/// now, which reach the manual lane within the lag.
+/// </summary>
+public static class EgateRejects
+{
+    public sealed record Reading(double Rate, bool Measured, IReadOnlyDictionary<DateTime, double> LiveRejects);
+
+    public static async Task<Reading> ReadAsync(IStorageProvider storage, string siteCode, DateTime now, EgateCouplingSettings settings, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(storage);
+        ArgumentNullException.ThrowIfNull(settings);
+        var minute = new DateTime(now.Ticks - now.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc);
+        var rows = await storage.ExecuteSqlAsync<MinuteRow>("""
+            SELECT interval_start_utc AS "MinuteUtc", SUM(attempts) AS "Attempts", SUM(rejected) AS "Rejected"
+              FROM border_egate_interval
+             WHERE site_code = :site AND desk_id IS NOT NULL AND interval_start_utc >= :from AND interval_start_utc < :to
+             GROUP BY interval_start_utc
+            """, new Dictionary<string, object>
+        {
+            ["site"] = siteCode, ["from"] = minute.AddMinutes(-settings.RateWindowMinutes), ["to"] = minute
+        }, ct);
+        var (rate, measured) = EgateCoupling.RejectRate(rows.Sum(r => r.Attempts), rows.Sum(r => r.Rejected), settings);
+        var live = rows.Where(r => r.MinuteUtc >= minute.AddMinutes(-settings.LagMinutes))
+            .ToDictionary(r => DateTime.SpecifyKind(r.MinuteUtc, DateTimeKind.Utc), r => (double)r.Rejected);
+        return new Reading(rate, measured, live);
+    }
+
+    private sealed class MinuteRow
+    {
+        public DateTime MinuteUtc { get; set; }
+        public long Attempts { get; set; }
+        public long Rejected { get; set; }
     }
 }

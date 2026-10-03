@@ -1,0 +1,312 @@
+using System.Text.Json;
+using Ariva.Core.Border;
+using Ariva.Core.Desks;
+using Ariva.Infra.Messaging;
+using Ariva.Infra.Settings;
+using Ariva.Infra.Streaming;
+using Microsoft.Extensions.Hosting;
+using Npgsql;
+using NpgsqlTypes;
+
+namespace Ariva.Infra.Border;
+
+/// <summary>
+/// The desk feed settings (<c>Border:DeskFeed</c>, ARV-049): whether Ariva.Api.Stream runs the feed, how often it reads,
+/// how late AMAN's records may arrive and still be applied in order (AMAN publishes an interval when it closes, and the
+/// feed reads every few seconds), and how many records one read takes at most.
+/// </summary>
+public sealed record DeskFeedSettings
+{
+    public const string SectionName = "Border:DeskFeed";
+
+    public bool Enabled { get; init; } = true;
+
+    public int PollSeconds { get; init; } = 15;
+
+    public int LatenessSeconds { get; init; } = 90;
+
+    public int MaxRead { get; init; } = 20_000;
+
+    public IEnumerable<string> Problems()
+    {
+        if (PollSeconds is < 1 or > 300)
+            yield return $"{SectionName}:PollSeconds is 1 to 300.";
+        if (LatenessSeconds is < 0 or > 900)
+            yield return $"{SectionName}:LatenessSeconds is 0 to 900.";
+        if (MaxRead is < 100 or > 200_000)
+            yield return $"{SectionName}:MaxRead is 100 to 200,000.";
+    }
+
+    /// <summary>The desk engine's settings for AMAN desks: the reference values with this feed's lateness.</summary>
+    public DeskStateSettings Engine => new() { Lateness = TimeSpan.FromSeconds(LatenessSeconds), MaxLate = TimeSpan.FromMinutes(15) };
+}
+
+/// <summary>What the desk feed keeps per site between reads (<c>desk_feed_state</c>, script 0031).</summary>
+public sealed record DeskFeedState(int Version, DeskEngineState Engine, AmanFeedCursor Cursor, DateTime? HeartbeatUtc)
+{
+    public const int CurrentVersion = 1;
+}
+
+/// <summary>
+/// The desk feed of Ariva.Api.Stream (ARV-049): for each site with AMAN desk code mappings, AMAN's stored records
+/// (ARV-048, read by receipt time from <see cref="AmanFeedCursor"/>) become desk state signals at their F10 rank
+/// (<see cref="AmanDeskFeed"/>) for the site's <see cref="DeskStateEngine"/> (one per site, AMAN desks with a session and
+/// transaction source each), whose closed minutes are written to <c>desk_minute</c>; AMAN's e-gate intervals become
+/// <c>egate_minute</c> rows. Each site is one transaction holding a per-site advisory lock (class 49), so replicas share
+/// the sites and none is read twice; the engine's snapshot, the read position and the heartbeat are saved with the rows.
+/// Keys are site, checkpoint and desk code (<see cref="AmanDeskFeed.Key"/>). Parameterised SQL only.
+/// </summary>
+public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvider, DeskFeedSettings settings, ILogger<DeskFeed> logger)
+{
+    /// <summary>A saved state larger than this is refused (CWE-120).</summary>
+    public const int MaxStateBytes = 64 * 1024 * 1024;
+
+    /// <summary>Reads every site's new records once; returns the sites read.</summary>
+    public async Task<int> TickAsync(CancellationToken ct)
+    {
+        IReadOnlyList<string> sites;
+        await using (var connection = await OpenAsync(ct))
+        {
+            sites = await ReadAsync(connection, null, """
+                SELECT DISTINCT m.site_code FROM desk_code_mapping m JOIN desk d ON d.id = m.desk_id AND d.site_code = m.site_code
+                 WHERE m.system = 'Aman' AND m.deleted_on IS NULL AND d.deleted_on IS NULL ORDER BY m.site_code
+                """, [], r => r.GetString(0), ct);
+        }
+
+        var read = 0;
+        foreach (var site in sites)
+        {
+            try
+            {
+                if (await SiteAsync(site, ct))
+                    read++;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+#pragma warning disable CA1031 // one site that fails is logged and tried again next time; the other sites go on
+            catch (Exception e)
+#pragma warning restore CA1031
+            {
+                logger.LogError(e, "Desk feed of site {Site} failed", site);
+            }
+        }
+
+        return read;
+    }
+
+    /// <summary>Reads one site's new records into its engine and minutes; false when another replica holds the site.</summary>
+    public async Task<bool> SiteAsync(string siteCode, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(siteCode);
+        var now = timeProvider.GetUtcNow().UtcDateTime;
+        await using var connection = await OpenAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(ct);
+        var site = new NpgsqlParameter("site", siteCode);
+        var locked = await ReadAsync(connection, transaction, "SELECT pg_try_advisory_xact_lock(49, hashtext(@site))", [site], r => r.GetBoolean(0), ct);
+        if (!locked[0])
+            return false;
+
+        var desks = await ReadAsync(connection, transaction, """
+            SELECT c.code, d.code, COALESCE(d.lane_category_codes, ''), d.kind
+              FROM desk_code_mapping m
+              JOIN desk d ON d.id = m.desk_id AND d.site_code = m.site_code AND d.deleted_on IS NULL AND d.kind IN ('Desk', 'EGate')
+              JOIN checkpoint c ON c.id = d.checkpoint_id
+             WHERE m.site_code = @site AND m.system = 'Aman' AND m.deleted_on IS NULL
+             ORDER BY c.code, d.code
+            """, [site.Clone()], r => (Key: AmanDeskFeed.Key(siteCode, r.GetString(0), r.GetString(1)), Lane: Lane(r.GetString(2)), Desk: r.GetString(3) == "Desk"), ct);
+        // Checkpoint codes are unique per level, so two desks can share a key: both are left out (and logged) rather than merged.
+        var shared = desks.GroupBy(d => d.Key, StringComparer.Ordinal).Where(g => g.Count() > 1).Select(g => g.Key).ToHashSet(StringComparer.Ordinal);
+        if (shared.Count > 0)
+            logger.LogWarning("Desk feed of site {Site}: {Count} desk keys are shared by desks of checkpoints with the same code on different levels; they are left out",
+                siteCode, shared.Count);
+        var profiles = desks.Where(d => d.Desk && !shared.Contains(d.Key))
+            .Select(d => new DeskProfile(d.Key, d.Lane, HasTransactions: true, HasSession: true, HasStaffZone: false, HasServiceZone: false)).ToList();
+
+        var saved = await ReadAsync(connection, transaction,
+            "SELECT CASE WHEN octet_length(state::text) <= @max THEN state::text END FROM desk_feed_state WHERE site_code = @site FOR UPDATE",
+            [site.Clone(), new NpgsqlParameter("max", MaxStateBytes)], r => r.IsDBNull(0) ? null : r.GetString(0), ct);
+        if (saved.Count > 0 && saved[0] is null)
+            logger.LogWarning("The desk feed state of site {Site} is larger than {Max} bytes; its desks start again from now", siteCode, MaxStateBytes);
+        var state = saved.Count == 0 || saved[0] is null ? null : Load(saved[0]);
+        var engineSettings = settings.Engine;
+        DeskStateEngine engine;
+        try
+        {
+            engine = state?.Engine is null ? new DeskStateEngine(profiles, Floor(now), engineSettings) : DeskStateEngine.Restore(profiles, engineSettings, state.Engine);
+        }
+        catch (InvalidDataException e)
+        {
+            logger.LogWarning(e, "The desk feed state of site {Site} is not valid; the desks start again from now", siteCode);
+            engine = new DeskStateEngine(profiles, Floor(now), engineSettings);
+            state = null;
+        }
+
+        var cursor = state?.Cursor ?? AmanFeedCursor.Start(now);
+        var records = await ReadAsync(connection, transaction, """
+            SELECT 'S', b.id, b.received_utc, c.code, d.code, b.occurred_utc, b.state, 0, 0, 0, 0
+              FROM border_desk_session b LEFT JOIN desk d ON d.id = b.desk_id AND d.site_code = b.site_code LEFT JOIN checkpoint c ON c.id = d.checkpoint_id
+             WHERE b.site_code = @site AND b.received_utc >= @from AND b.id <> ALL(@taken)
+            UNION ALL
+            SELECT 'I', b.id, b.received_utc, c.code, d.code, b.interval_start_utc, NULL, b.transactions_processed, 0, 0, b.mean_cycle_seconds
+              FROM border_desk_interval b LEFT JOIN desk d ON d.id = b.desk_id AND d.site_code = b.site_code LEFT JOIN checkpoint c ON c.id = d.checkpoint_id
+             WHERE b.site_code = @site AND b.received_utc >= @from AND b.id <> ALL(@taken)
+            UNION ALL
+            SELECT 'G', b.id, b.received_utc, c.code, d.code, b.interval_start_utc, NULL, 0, b.attempts, b.rejected, b.mean_cycle_seconds
+              FROM border_egate_interval b LEFT JOIN desk d ON d.id = b.desk_id AND d.site_code = b.site_code LEFT JOIN checkpoint c ON c.id = d.checkpoint_id
+             WHERE b.site_code = @site AND b.received_utc >= @from AND b.id <> ALL(@taken)
+             ORDER BY 3, 2
+             LIMIT @limit
+            """, [site.Clone(), new NpgsqlParameter("from", NpgsqlDbType.TimestampTz) { Value = cursor.ReadFromUtc },
+                new NpgsqlParameter("taken", NpgsqlDbType.Array | NpgsqlDbType.Uuid) { Value = cursor.TakenIds }, new NpgsqlParameter("limit", settings.MaxRead)],
+            r => new AmanFeedRecord(
+                r.GetString(0) switch { "S" => AmanRecordKind.DeskSession, "I" => AmanRecordKind.DeskInterval, _ => AmanRecordKind.EgateInterval },
+                r.GetGuid(1), Utc(r.GetDateTime(2)),
+                r.IsDBNull(3) || r.IsDBNull(4) || shared.Contains(AmanDeskFeed.Key(siteCode, r.GetString(3), r.GetString(4)))
+                    ? null : AmanDeskFeed.Key(siteCode, r.GetString(3), r.GetString(4)),
+                r.GetString(0) == "G" ? Ariva.Core.Domain.Entities.LaneCategory.EGateEligible : null,
+                Utc(r.GetDateTime(5)), r.IsDBNull(6) ? null : r.GetString(6), r.GetInt32(7), r.GetInt32(8), r.GetInt32(9),
+                r.IsDBNull(10) ? 0 : r.GetDouble(10)), ct);
+
+        var (fresh, next) = cursor.Take(records, 2 * settings.MaxRead);
+        var step = AmanDeskFeed.Step(fresh, profiles.Select(p => p.DeskCode).ToList(), state?.HeartbeatUtc, now);
+        foreach (var signal in step.Signals)
+            engine.Offer(signal, now);
+        var minutes = new List<DeskMinute>();
+        for (var i = 0; i < 100; i++)
+        {
+            var advanced = engine.Advance(now);
+            minutes.AddRange(advanced.Minutes);
+            if (!advanced.More)
+                break;
+        }
+
+        if (minutes.Count > 0)
+            await StreamStore.WriteDeskMinutesAsync(connection, minutes, now, ct);
+        if (step.EgateMinutes.Count > 0)
+            await WriteEgateMinutesAsync(connection, transaction, step.EgateMinutes, now, ct);
+
+        var json = JsonSerializer.Serialize(new DeskFeedState(DeskFeedState.CurrentVersion, engine.Capture(), next, step.HeartbeatUtc), EventCatalog.Json);
+        if (json.Length > MaxStateBytes / 4)
+        {
+            // A state this large (the cursor or the engine's buffers far beyond any airport) is not kept: the desks start
+            // again from now at the read position reached (logged), keeping the records taken at that very instant so none is
+            // taken twice, and the next read stays bounded.
+            logger.LogWarning("The desk feed state of site {Site} is too large to keep; its desks start again from now", siteCode);
+            json = JsonSerializer.Serialize(new DeskFeedState(DeskFeedState.CurrentVersion, new DeskStateEngine(profiles, Floor(now), engineSettings).Capture(),
+                new AmanFeedCursor(next.PositionUtc, [.. next.Taken.Where(t => t.ReceivedUtc == next.PositionUtc)], next.PositionUtc), step.HeartbeatUtc), EventCatalog.Json);
+        }
+
+        await using (var upsert = new NpgsqlCommand("""
+            INSERT INTO desk_feed_state (site_code, state, updated_on) VALUES (@site, CAST(@state AS jsonb), @now)
+            ON CONFLICT (site_code) DO UPDATE SET state = EXCLUDED.state, updated_on = EXCLUDED.updated_on
+            """, connection, transaction))
+        {
+            upsert.Parameters.Add(new NpgsqlParameter("site", siteCode));
+            upsert.Parameters.Add(new NpgsqlParameter("state", json));
+            upsert.Parameters.Add(new NpgsqlParameter("now", NpgsqlDbType.TimestampTz) { Value = now });
+            await upsert.ExecuteNonQueryAsync(ct);
+        }
+
+        await transaction.CommitAsync(ct);
+        if (fresh.Count > 0)
+            logger.LogDebug("Desk feed of site {Site}: {Records} records, {Minutes} desk minutes, {Gates} e-gate minutes", siteCode, fresh.Count, minutes.Count,
+                step.EgateMinutes.Count);
+        return true;
+    }
+
+    private DeskFeedState Load(string json)
+    {
+        if (json.Length > MaxStateBytes)
+            return null;
+        try
+        {
+            var state = JsonSerializer.Deserialize<DeskFeedState>(json, EventCatalog.Json);
+            return state?.Version == DeskFeedState.CurrentVersion ? state : null;
+        }
+        catch (JsonException e)
+        {
+            logger.LogWarning(e, "A desk feed state could not be read; its site starts again from now");
+            return null;
+        }
+    }
+
+    private static async Task WriteEgateMinutesAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, IReadOnlyList<EgateMinute> rows, DateTime now,
+        CancellationToken ct)
+    {
+        foreach (var g in rows.GroupBy(r => (r.GateKey, r.MinuteUtc)).Select(g => g.Last()))
+        {
+            await using var upsert = new NpgsqlCommand("""
+                INSERT INTO egate_minute (gate_code, lane, minute_utc, in_service_seconds, processed, rejected, mean_cycle_seconds, degraded, updated_on)
+                VALUES (@gate, @lane, @minute, 60, @processed, @rejected, @cycle, false, @now)
+                ON CONFLICT (gate_code, minute_utc) DO UPDATE SET lane = EXCLUDED.lane, in_service_seconds = EXCLUDED.in_service_seconds,
+                    processed = EXCLUDED.processed, rejected = EXCLUDED.rejected, mean_cycle_seconds = EXCLUDED.mean_cycle_seconds,
+                    degraded = EXCLUDED.degraded, updated_on = EXCLUDED.updated_on
+                """, connection, transaction);
+            upsert.Parameters.Add(new NpgsqlParameter("gate", g.GateKey));
+            upsert.Parameters.Add(new NpgsqlParameter("lane", g.Lane));
+            upsert.Parameters.Add(new NpgsqlParameter("minute", NpgsqlDbType.TimestampTz) { Value = g.MinuteUtc });
+            upsert.Parameters.Add(new NpgsqlParameter("processed", g.Processed));
+            upsert.Parameters.Add(new NpgsqlParameter("rejected", g.Rejected));
+            upsert.Parameters.Add(new NpgsqlParameter("cycle", NpgsqlDbType.Double) { Value = (object)g.MeanCycleSeconds ?? DBNull.Value });
+            upsert.Parameters.Add(new NpgsqlParameter("now", NpgsqlDbType.TimestampTz) { Value = now });
+            await upsert.ExecuteNonQueryAsync(ct);
+        }
+    }
+
+    private async Task<NpgsqlConnection> OpenAsync(CancellationToken ct)
+    {
+        var connection = new NpgsqlConnection(database.BuildConnectionString());
+        await connection.OpenAsync(ct);
+        return connection;
+    }
+
+    private static async Task<List<T>> ReadAsync<T>(NpgsqlConnection connection, NpgsqlTransaction transaction,
+        [System.Diagnostics.CodeAnalysis.ConstantExpected] string sql, NpgsqlParameter[] parameters, Func<NpgsqlDataReader, T> map, CancellationToken ct)
+    {
+#pragma warning disable CA2100 // every caller passes a literal (ConstantExpected)
+        await using var command = new NpgsqlCommand(sql, connection, transaction);
+#pragma warning restore CA2100
+        command.Parameters.AddRange(parameters);
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        var rows = new List<T>();
+        while (await reader.ReadAsync(ct))
+            rows.Add(map(reader));
+        return rows;
+    }
+
+    // A desk's lanes as the engine groups it (its lane category codes; a border desk always has one, ARV-013).
+    private static string Lane(string codes) => string.IsNullOrWhiteSpace(codes) ? "UNASSIGNED" : codes.Length > 64 ? codes[..64] : codes;
+
+    private static DateTime Floor(DateTime value) => new(value.Ticks - value.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc);
+
+    private static DateTime Utc(DateTime value) => DateTime.SpecifyKind(value, DateTimeKind.Utc);
+}
+
+/// <summary>Runs the desk feed every <see cref="DeskFeedSettings.PollSeconds"/> in Ariva.Api.Stream (ARV-049).</summary>
+public sealed class DeskFeedWorker(DeskFeed feed, DeskFeedSettings settings, TimeProvider timeProvider, ILogger<DeskFeedWorker> logger) : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(settings.PollSeconds), timeProvider);
+        do
+        {
+            try
+            {
+                await feed.TickAsync(stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                return;
+            }
+#pragma warning disable CA1031 // one failed read is logged; the next tries again from the saved position
+            catch (Exception e)
+#pragma warning restore CA1031
+            {
+                logger.LogError(e, "Desk feed read failed");
+            }
+        }
+        while (await timer.WaitForNextTickAsync(stoppingToken));
+    }
+}

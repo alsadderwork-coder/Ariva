@@ -44,6 +44,28 @@ public sealed record LaneCounts(double Cit, double Res, double Vis, double Crw, 
 
     public LaneCounts Times(double factor) => new(Cit * factor, Res * factor, Vis * factor, Crw * factor, EGate * factor);
 
+    /// <summary>The passengers of one lane category code (CIT, RES, VIS, CRW, EG); another code has none.</summary>
+    public double Of(string code) => code switch
+    {
+        "CIT" => Cit,
+        "RES" => Res,
+        "VIS" => Vis,
+        "CRW" => Crw,
+        "EG" => EGate,
+        _ => 0
+    };
+
+    /// <summary>These counts with <paramref name="value"/> added to one lane category (CIT, RES, VIS, CRW or EG).</summary>
+    public LaneCounts Add(string code, double value) => code switch
+    {
+        "CIT" => this with { Cit = Cit + value },
+        "RES" => this with { Res = Res + value },
+        "VIS" => this with { Vis = Vis + value },
+        "CRW" => this with { Crw = Crw + value },
+        "EG" => this with { EGate = EGate + value },
+        _ => throw new ArgumentException("The lane category is CIT, RES, VIS, CRW or EG.", nameof(code))
+    };
+
     /// <summary>Each count rounded to <paramref name="digits"/> decimals, for an answer.</summary>
     public LaneCounts Rounded(int digits = 2) =>
         new(Math.Round(Cit, digits), Math.Round(Res, digits), Math.Round(Vis, digits), Math.Round(Crw, digits), Math.Round(EGate, digits));

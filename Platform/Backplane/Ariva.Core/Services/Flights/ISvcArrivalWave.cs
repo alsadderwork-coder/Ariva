@@ -50,7 +50,9 @@ public sealed record ArrivalWaveMinuteViewModel(DateTime MinuteUtc, LaneCountsVi
 /// The arrival-wave projection of a site (ARV-047, formulas.md F14): the flights landing within the window (and those
 /// landed whose passengers are still reaching the hall), the predicted hall arrivals per minute and lane from this
 /// minute on, the alert window's sum (now + 5 to now + 25 minutes), how many flights have no passenger figure, and
-/// whether the site had more arriving legs than are read (<c>Truncated</c>: the latest scheduled were left out).
+/// whether the site had more arriving legs than are read (<c>Truncated</c>: the latest scheduled were left out). With the
+/// lane split, also the e-gate reject rate r (F12: measured from AMAN's e-gate intervals, or the reference) and the manual
+/// lane the rejects join (ARV-049); the curve itself is hall arrivals, before the rejects are added to that lane.
 /// </summary>
 public sealed record ArrivalWaveViewModel(
     string SiteCode,
@@ -61,7 +63,10 @@ public sealed record ArrivalWaveViewModel(
     IReadOnlyList<ArrivalWaveMinuteViewModel> Minutes,
     LaneCountsViewModel AlertWindow,
     int FlightsWithoutPassengers,
-    bool Truncated);
+    bool Truncated,
+    double? EgateRejectRate = null,
+    bool? EgateRejectRateMeasured = null,
+    string RejectLane = null);
 
 /// <summary>
 /// The arrival-wave projection (ARV-047): a site's arriving legs that are neither cancelled nor diverted, with AMAN's

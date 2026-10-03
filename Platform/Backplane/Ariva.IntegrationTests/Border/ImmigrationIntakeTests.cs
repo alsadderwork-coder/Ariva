@@ -301,8 +301,9 @@ public sealed class ImmigrationIntakeTests(PostgresFixture fixture) : IAsyncDisp
 
     /// <summary>
     /// A second site, XS2, at the demo airport (once per database): a terminal, an immigration checkpoint with desks for
-    /// visitors (two) and citizens and residents, and a published profile linking queue zones to the desks through service
-    /// zones: two visitor queues, one for citizens and residents, an overflow band of the first and a queue with no desk.
+    /// visitors (two) and citizens and residents and an e-gate, all mapped to AMAN codes (XV1, XV2, XC1, XG1), and a
+    /// published profile linking queue zones to the desks through service zones: two visitor queues, one for citizens and
+    /// residents, an overflow band of the first and a queue with no desk.
     /// </summary>
     private Task ProbeSiteAsync() => ExecuteAsMigrationAsync("""
         DO $probe$
@@ -320,7 +321,13 @@ public sealed class ImmigrationIntakeTests(PostgresFixture fixture) : IAsyncDisp
                 INSERT INTO desk (id, checkpoint_id, site_code, code, name, kind, lane_category_codes) VALUES
                     ('a0470000-0000-0000-0000-000000000011', 'a0470000-0000-0000-0000-000000000003', 'XS2', 'V1', 'Visitors 1', 'Desk', 'VIS'),
                     ('a0470000-0000-0000-0000-000000000012', 'a0470000-0000-0000-0000-000000000003', 'XS2', 'V2', 'Visitors 2', 'Desk', 'VIS'),
-                    ('a0470000-0000-0000-0000-000000000013', 'a0470000-0000-0000-0000-000000000003', 'XS2', 'C1', 'Citizens 1', 'Desk', 'CIT,RES');
+                    ('a0470000-0000-0000-0000-000000000013', 'a0470000-0000-0000-0000-000000000003', 'XS2', 'C1', 'Citizens 1', 'Desk', 'CIT,RES'),
+                    ('a0470000-0000-0000-0000-000000000014', 'a0470000-0000-0000-0000-000000000003', 'XS2', 'G1', 'E-gate 1', 'EGate', 'EG');
+                INSERT INTO desk_code_mapping (id, system, external_code, desk_id, site_code) VALUES
+                    (gen_random_uuid(), 'Aman', 'XV1', 'a0470000-0000-0000-0000-000000000011', 'XS2'),
+                    (gen_random_uuid(), 'Aman', 'XV2', 'a0470000-0000-0000-0000-000000000012', 'XS2'),
+                    (gen_random_uuid(), 'Aman', 'XC1', 'a0470000-0000-0000-0000-000000000013', 'XS2'),
+                    (gen_random_uuid(), 'Aman', 'XG1', 'a0470000-0000-0000-0000-000000000014', 'XS2');
                 INSERT INTO zone_profile (id, site_code, name, status) VALUES ('a0470000-0000-0000-0000-000000000020', 'XS2', 'Probe', 'Draft');
                 INSERT INTO zone (id, profile_id, name, kind, level_id, queue_zone_id, desk_id, polygon) VALUES
                     ('a0470000-0000-0000-0000-000000000021', 'a0470000-0000-0000-0000-000000000020', 'Q-VIS-1', 'Queue', 'a0470000-0000-0000-0000-000000000002', NULL, NULL, 'probe'),
@@ -336,6 +343,130 @@ public sealed class ImmigrationIntakeTests(PostgresFixture fixture) : IAsyncDisp
         END
         $probe$;
         """);
+
+    [Fact]
+    public async Task DeskFeed_Should_DriveTheDeskEngineFromAmanAndFillTheEgateMinutes_When_AmanRecordsAreStored()
+    {
+        await SeedAsync();
+        await ProbeSiteAsync();
+        var feed = new Ariva.Infra.Border.DeskFeed(_host.Provider.GetRequiredService<Ariva.Infra.Settings.DatabaseSettings>(), _host.Clock,
+            new Ariva.Infra.Border.DeskFeedSettings(), Microsoft.Extensions.Logging.Abstractions.NullLogger<Ariva.Infra.Border.DeskFeed>.Instance);
+        var t0 = new DateTime(Now.Ticks - Now.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc).AddMinutes(1);
+        _host.Clock.Advance(t0 - Now);
+        (await feed.SiteAsync("XS2", Ct)).Should().BeTrue("the engine starts now");
+        (await feed.SiteAsync("DMO", Ct)).Should().BeTrue();
+        var id = 0;
+        string Id() => $"df-{++id}";
+        async Task Minute(int m, params object[] records)
+        {
+            _host.Clock.Advance(t0.AddMinutes(m + 1).AddSeconds(5) - Now);
+            foreach (var record in records)
+            {
+                var results = record switch
+                {
+                    DeskSessionChanged session => await Apply<DeskSessionChanged>(i => i.ApplyDeskSessionsAsync(ImmigrationScope.ForSite("XS2"), "aman-kafka", [session], Ct)),
+                    DeskIntervalStats desk => await Apply<DeskIntervalStats>(i => i.ApplyDeskIntervalsAsync(ImmigrationScope.ForSite("XS2"), "aman-kafka", [desk], Ct)),
+                    EGateIntervalStats gate => await Apply<EGateIntervalStats>(i => i.ApplyEgateIntervalsAsync(ImmigrationScope.ForSite("XS2"), "aman-kafka", [gate], Ct)),
+                    _ => throw new ArgumentException("record", nameof(records))
+                };
+                results.Should().OnlyContain(r => r.Applied && r.Warnings.Count == 0);
+            }
+
+            (await feed.SiteAsync("XS2", Ct)).Should().BeTrue();
+            (await feed.SiteAsync("DMO", Ct)).Should().BeTrue();
+        }
+
+        DateTimeOffset At(int m, int s = 0) => new(t0.AddMinutes(m).AddSeconds(s));
+        EGateIntervalStats Gate(int m) => new("XS2", "XG1", At(m), 60, 10, 7, 3, new Dictionary<EGateRejectCategory, int> { [EGateRejectCategory.DocumentRead] = 3 }, 18, Id());
+        DeskIntervalStats Desk(int m, int transactions) => new("XS2", "XV1", At(m), 60, transactions, transactions, 40, 60, 30, "VIS", Id());
+
+        await Minute(0, new DeskSessionChanged("XS2", "XV1", DeskSessionState.Opened, "VIS", At(0, 20), Id()),
+            new DeskSessionChanged("XS2", "XV2", DeskSessionState.Closed, "", At(0, 20), Id()), Desk(0, 2), Gate(0));
+        // The same desk code shapes at DMO in the same minutes: they reach DMO's desks only (CWE-863).
+        (await Apply<DeskIntervalStats>(i => i.ApplyDeskIntervalsAsync(ImmigrationScope.ForSite("DMO"), "aman-kafka",
+            [new("DMO", "IN09", At(0), 60, 50, 50, 40, 60, 30, "VIS", Id())], Ct))).Should().OnlyContain(r => r.Applied);
+        for (var m = 1; m < 8; m++)
+            await Minute(m, Desk(m, 2), Gate(m));
+        // A replay of the same read changes nothing: each record is taken once.
+        (await feed.SiteAsync("XS2", Ct)).Should().BeTrue();
+
+        async Task<Dictionary<string, (double Idle, double Closed, double Unknown, long Transactions)>> Desks(int fromMinute, int toMinute) =>
+            await RowsAsync("""
+                SELECT desk_code, sum(idle_seconds + serving_seconds), sum(closed_seconds), sum(unknown_seconds), sum(transactions) FROM desk_minute
+                 WHERE desk_code LIKE 'XS2/IMM/%' AND minute_utc >= @from AND minute_utc < @to GROUP BY desk_code
+                """, r => (r.GetString(0), (r.GetDouble(1), r.GetDouble(2), r.GetDouble(3), r.GetInt64(4))), t0.AddMinutes(fromMinute), t0.AddMinutes(toMinute));
+
+        var settled = await Desks(1, 6);
+        settled["XS2/IMM/V1"].Idle.Should().Be(5 * 60, "logged in with transactions every minute: open");
+        settled["XS2/IMM/V2"].Closed.Should().Be(5 * 60, "logged out: closed, and kept so by the feed's heartbeat");
+        settled["XS2/IMM/C1"].Closed.Should().Be(5 * 60, "a desk AMAN reports no session for, while its feed is alive, is not logged in (F10 row 9)");
+        (await _host.ReadAsync<long>("SELECT count(*) FROM egate_minute WHERE gate_code = 'XS2/IMM/G1' AND processed = 10 AND rejected = 3")).Should().Be(8);
+
+        // AMAN stops: its desks turn unknown after T_stale.
+        _host.Clock.Advance(t0.AddMinutes(20) - Now);
+        (await feed.SiteAsync("XS2", Ct)).Should().BeTrue();
+        (await Desks(14, 18))["XS2/IMM/V2"].Unknown.Should().Be(4 * 60);
+        (await Desks(0, 18))["XS2/IMM/V1"].Transactions.Should().Be(2 * 8, "each interval's transactions counted once, and none of DMO's");
+        (await feed.SiteAsync("DMO", Ct)).Should().BeTrue();
+        var dmo = await RowsAsync("SELECT desk_code, sum(transactions) FROM desk_minute WHERE desk_code LIKE 'DMO/%' AND minute_utc >= @from AND minute_utc < @to GROUP BY desk_code",
+            r => (r.GetString(0), r.GetInt64(1)), t0, t0.AddMinutes(18));
+        dmo["DMO/IMM/AR-09"].Should().BeGreaterThanOrEqualTo(50, "DMO's interval reached DMO's desk (other tests feed DMO too)");
+        (await _host.ReadAsync<long>("SELECT count(*) FROM desk_minute WHERE desk_code NOT LIKE 'DMO/%' AND desk_code NOT LIKE 'XS2/%'")).Should().Be(0);
+
+
+        // Another replica holding the site: this one skips it.
+        await using (var other = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync())))
+        {
+            await other.OpenAsync(Ct);
+            await using (var hold = new NpgsqlCommand("SELECT pg_advisory_lock(49, hashtext('XS2'))", other))
+                await hold.ExecuteNonQueryAsync(Ct);
+            (await feed.SiteAsync("XS2", Ct)).Should().BeFalse();
+        }
+
+        // The rejects join the visitors' demand (F12): r measured from AMAN (30 percent here) times the e-gate eligible a minute earlier.
+        async Task<double> Visitors() => (await _host.AsCallerAsync(null, s => s.GetRequiredService<Ariva.Core.Alerting.IArrivalWaveSource>()
+            .ArrivalsAsync("XS2", "Q-VIS-1", Now.AddMinutes(-1), Now.AddMinutes(60), Ct))).Values.Sum();
+        var before = await Visitors();
+        var leg = new FlightLegData("XG1-WAVE-A", "XG", "1", null, "Arrival", Now.AddMinutes(10), null, null, Now.AddMinutes(-11), null, Origin: "BEY",
+            Destination: "DMO", PaxEstimate: 100);
+        (await _host.AsCallerAsync(null, s => s.GetRequiredService<ISvcFlightIntake>().ApplyLegsAsync("XS2", "it-wave", [leg], Now.AddMinutes(-1), Ct)))
+            .Should().OnlyContain(r => !r.HasErrors);
+        (await Apply<InboundFlightLaneDemand>(i => i.ApplyLaneDemandAsync(ImmigrationScope.ForSite("XS2"), "aman-kafka",
+            [new("XS2", "XG1-WAVE-A", new DateTimeOffset(Now.AddMinutes(10)), 100, new Dictionary<string, int>(), 100, new DateTimeOffset(Now.AddMinutes(-1)), "xg1-ld")], Ct)))
+            .Should().OnlyContain(r => r.Applied);
+        (await Visitors() - before).Should().BeApproximately(0.3 * 100 / 2, 1e-6,
+            "the flight brings only e-gate passengers; 30 of its 100 are rejected and shared by the two visitor queues");
+
+        // A burst larger than one read (250 records in one batch, received at one instant, reads of 100) is read over a few steps, each once.
+        var burst = new Ariva.Infra.Border.DeskFeed(_host.Provider.GetRequiredService<Ariva.Infra.Settings.DatabaseSettings>(), _host.Clock,
+            new Ariva.Infra.Border.DeskFeedSettings { MaxRead = 100 }, Microsoft.Extensions.Logging.Abstractions.NullLogger<Ariva.Infra.Border.DeskFeed>.Instance);
+        (await Apply<EGateIntervalStats>(i => i.ApplyEgateIntervalsAsync(ImmigrationScope.ForSite("XS2"), "aman-kafka",
+            [.. Enumerable.Range(1, 250).Select(k => new EGateIntervalStats("XS2", "XG1", At(-k), 60, 4, 4, 0, null, 18, Id()))], Ct))).Should().OnlyContain(r => r.Applied);
+        for (var k = 0; k < 4; k++)
+            (await burst.SiteAsync("XS2", Ct)).Should().BeTrue();
+        (await _host.ReadAsync<long>("SELECT count(*) FROM egate_minute WHERE gate_code = 'XS2/IMM/G1' AND processed = 4")).Should().Be(250);
+    }
+
+    private async Task<Dictionary<string, T>> RowsAsync<T>([System.Diagnostics.CodeAnalysis.ConstantExpected] string sql, Func<NpgsqlDataReader, (string, T)> map,
+        DateTime from, DateTime to)
+    {
+        await using var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync()));
+        await connection.OpenAsync(Ct);
+#pragma warning disable CA2100 // literal statements of this class
+        await using var command = new NpgsqlCommand(sql, connection);
+#pragma warning restore CA2100
+        command.Parameters.AddWithValue("from", from);
+        command.Parameters.AddWithValue("to", to);
+        await using var reader = await command.ExecuteReaderAsync(Ct);
+        var rows = new Dictionary<string, T>(StringComparer.Ordinal);
+        while (await reader.ReadAsync(Ct))
+        {
+            var (key, value) = map(reader);
+            rows[key] = value;
+        }
+
+        return rows;
+    }
 
     private Task<Fluentx.Result<ArrivalWaveViewModel>> Wave(string site, int minutes, Guid? caller = null) =>
         _host.AsCallerAsync(caller ?? _waveAdmin, s => s.GetRequiredService<ISvcArrivalWave>().GetAsync(site, minutes, Ct));
@@ -361,6 +492,8 @@ public sealed class ImmigrationIntakeTests(PostgresFixture fixture) : IAsyncDisp
     [InlineData("DELETE FROM border_egate_interval", "42501")]
     [InlineData("UPDATE border_desk_session SET state = 'Closed'", "42501")]
     [InlineData("DELETE FROM border_desk_interval", "42501")]
+    [InlineData("DELETE FROM desk_feed_state", "42501")]
+    [InlineData("TRUNCATE desk_feed_state", "42501")]
     [InlineData("INSERT INTO border_egate_interval (id, site_code, gate_code, interval_start_utc, attempts, accepted, rejected, rejects_other, rejects_document_read, rejects_biometric_capture, rejects_eligibility, rejects_referred_to_officer, rejects_technical, mean_cycle_seconds, feed, source_event_id, received_utc) VALUES (gen_random_uuid(), 'DMO', 'EGIN1', date_trunc('minute', now()), 4, 2, 2, 0, 2, 0, 0, 0, 0, 18, 'aman-kafka', 'db-small-cell', now())", "23514")]
     [InlineData("INSERT INTO border_desk_interval (id, site_code, desk_code, interval_start_utc, transactions_processed, documents_processed, mean_service_seconds, p90_service_seconds, mean_cycle_seconds, lane_category, feed, source_event_id, received_utc) VALUES (gen_random_uuid(), 'DMO', 'IN01', date_trunc('minute', now()), 5, 3, 30, 40, 12, 'CIT', 'aman-kafka', 'db-sums', now())", "23514")]
     public async Task Database_Should_RefuseChangesAndBrokenRecords_When_TheRuntimeRoleTries(string sql, string state)

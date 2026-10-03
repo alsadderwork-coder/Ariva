@@ -42,7 +42,8 @@ public static class FlightExtensions
 
     /// <summary>
     /// The arrival wave that predicted-breach rules read (ARV-038, ARV-047; Ariva.Api.Stream's evaluation and Ariva.Api.Main's
-    /// backtest): the settings (<c>Flights:ArrivalWave</c>, checked at start) and <see cref="ProjectedArrivalWave"/>.
+    /// backtest): the settings (<c>Flights:ArrivalWave</c> and <c>Border:EgateCoupling</c>, checked at start) and
+    /// <see cref="ProjectedArrivalWave"/>.
     /// </summary>
     public static IServiceCollection AddArivaArrivalWaveSource(this IServiceCollection services, IConfiguration configuration)
     {
@@ -54,6 +55,12 @@ public static class FlightExtensions
         if (problems.Count > 0)
             throw new InvalidOperationException(string.Join(" ", problems));
         services.TryAddSingleton(settings);
+        var coupling = configuration.GetSection(Ariva.Core.Border.EgateCouplingSettings.SectionName).Get<Ariva.Core.Border.EgateCouplingSettings>() ??
+                       new Ariva.Core.Border.EgateCouplingSettings();
+        var couplingProblems = coupling.Problems().ToList();
+        if (couplingProblems.Count > 0)
+            throw new InvalidOperationException(string.Join(" ", couplingProblems));
+        services.TryAddSingleton(coupling);
         services.TryAddSingleton(TimeProvider.System);
         services.TryAddScoped<Ariva.Core.Alerting.IArrivalWaveSource, ProjectedArrivalWave>();
         return services;

@@ -225,7 +225,7 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
             """, ct);
     }
 
-    private static async Task WriteDeskMinutesAsync(NpgsqlConnection connection, IReadOnlyList<DeskMinute> rows, DateTime now, CancellationToken ct)
+    internal static async Task WriteDeskMinutesAsync(NpgsqlConnection connection, IReadOnlyList<DeskMinute> rows, DateTime now, CancellationToken ct)
     {
         await Execute(connection, "CREATE TEMP TABLE stage_desk_minute (LIKE desk_minute INCLUDING DEFAULTS) ON COMMIT DROP", ct);
         await using (var copy = await connection.BeginBinaryImportAsync("""

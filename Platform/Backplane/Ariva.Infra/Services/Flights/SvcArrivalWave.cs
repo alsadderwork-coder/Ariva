@@ -13,7 +13,7 @@ namespace Ariva.Infra.Services.Flights;
 /// (<see cref="ArrivingLegs"/>) projected with <see cref="ArrivalWave"/>.
 /// </summary>
 internal sealed class SvcArrivalWave(IUnitOfWork unitOfWork, ICurrentUser currentUser, TimeProvider timeProvider, ArrivalWaveSettings settings,
-    ISiteScope siteScope, CallerRoles callerRoles) : SvcBase(unitOfWork, currentUser, timeProvider), ISvcArrivalWave
+    ISiteScope siteScope, CallerRoles callerRoles, Ariva.Core.Border.EgateCouplingSettings coupling) : SvcBase(unitOfWork, currentUser, timeProvider), ISvcArrivalWave
 {
     public async Task<Result<ArrivalWaveViewModel>> GetAsync(string siteCode, int windowMinutes, CancellationToken ct = default)
     {
@@ -27,10 +27,12 @@ internal sealed class SvcArrivalWave(IUnitOfWork unitOfWork, ICurrentUser curren
         var now = UtcNow;
         var flights = await ArrivingLegs.ReadAsync(UnitOfWork.StorageProvider, siteCode, now, windowMinutes, settings, ct);
         var projection = ArrivalWave.Project(flights, now, windowMinutes, settings);
+        var gates = lanes ? await EgateRejects.ReadAsync(UnitOfWork.StorageProvider, siteCode, now, coupling, ct) : null;
         return new Result<ArrivalWaveViewModel>(new ArrivalWaveViewModel(siteCode, now, projection.WindowMinutes, projection.DelayMinutes,
             projection.Flights.Select(f => View(f, lanes)).ToList(),
             projection.Minutes.Select(m => new ArrivalWaveMinuteViewModel(m.MinuteUtc, LaneCountsViewModel.Of(m.Lanes, lanes))).ToList(),
-            LaneCountsViewModel.Of(projection.AlertWindow, lanes), projection.FlightsWithoutPassengers, flights.Count >= ArrivingLegs.MaxLegs));
+            LaneCountsViewModel.Of(projection.AlertWindow, lanes), projection.FlightsWithoutPassengers, flights.Count >= ArrivingLegs.MaxLegs,
+            gates is null ? null : Math.Round(gates.Rate, 4), gates?.Measured, gates is null ? null : coupling.RejectLane));
     }
 
     private static ArrivalWaveFlightViewModel View(FlightWave wave, bool lanes) =>

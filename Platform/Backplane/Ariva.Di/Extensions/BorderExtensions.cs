@@ -33,6 +33,26 @@ public static class BorderExtensions
         return services;
     }
 
+    /// <summary>
+    /// The desk feed of Ariva.Api.Stream (ARV-049): AMAN's stored records into the desk state engine and the e-gate minutes,
+    /// its settings (<c>Border:DeskFeed</c>, checked at start) and, when enabled, its worker.
+    /// </summary>
+    public static IServiceCollection AddArivaDeskFeed(this IServiceCollection services, IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configuration);
+        var settings = configuration.GetSection(DeskFeedSettings.SectionName).Get<DeskFeedSettings>() ?? new DeskFeedSettings();
+        var problems = settings.Problems().ToList();
+        if (problems.Count > 0)
+            throw new InvalidOperationException(string.Join(" ", problems));
+        services.TryAddSingleton(settings);
+        services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton<DeskFeed>();
+        if (settings.Enabled)
+            services.AddHostedService<DeskFeedWorker>();
+        return services;
+    }
+
     /// <summary>Consumes AMAN's four feed topics (<c>aman.feed.*.v1</c>), each with its own consumer group, read strictly.</summary>
     public static ArivaMessagingBuilder ConsumeAmanFeed(this ArivaMessagingBuilder messaging)
     {

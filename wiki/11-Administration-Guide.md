@@ -240,12 +240,12 @@ Evaluation (ARV-038). Ariva.Api.Stream evaluates every enabled rule once a minut
 
 | Metric | Value per minute |
 |---|---|
-| `Nowcast` | The minute's nowcast; skipped while the queue length is degraded. A nowcast flagged only because its throughput comes from exits (no desk state before ARV-049) is judged |
+| `Nowcast` | The minute's nowcast; skipped while the queue length is degraded. A nowcast flagged only because its throughput comes from exits (the desk state of ARV-049 is not yet joined to the nowcast) is judged |
 | `QueueLength` | People in the queue zone and its overflow bands |
 | `BinP90` | The largest P90 among the zone's 15-minute bins that ended in the last 150 minutes (their latest revision, so a backtest after bins became final can differ from what was judged live) |
 | `SensorOffline` | 1 while the device is in an outage the stream recorded, or offline in the registry since it was last heard; otherwise 0 |
 | `PredictedNowcast` | The highest nowcast projected within the lead time: the queue now, stepped a minute at a time with the arrival-wave projection and what the desks clear at the current throughput. The projection (ARV-047, formulas F14) gives a queue zone the arrivals of the lane categories its desks serve (through the service zones linked to desks in the published profile), shared among the queue zones serving the same lane; a zone serving no lane has nothing to judge, and a backtest finds none (projections are not stored) |
-| `OverflowOccupied`, `DesksBelowPlan` | Nothing yet: the stream does not store an overflow band's occupancy, and there is no staffing plan before ARV-049 |
+| `OverflowOccupied`, `DesksBelowPlan` | Nothing yet: the stream does not store an overflow band's occupancy, and there is no staffing plan yet |
 
 ## 9. Displays
 
