@@ -22,6 +22,10 @@ public static partial class IntegrationBatches
     public const string Legs = "flights.legs";
     public const string Events = "flights.events";
     public const string Allocations = "allocations";
+    public const string Aidx = "aodb.aidx";
+
+    /// <summary>An AIDX 22.1 message is at most 5 MB (ARV-044).</summary>
+    public const int MaxAidxBytes = 5 * 1024 * 1024;
 
     /// <summary>
     /// An idempotency key: 8 to 64 letters, digits or <c>. _ : -</c>, starting with a letter or digit (a UUID fits).

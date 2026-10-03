@@ -168,8 +168,8 @@ curl -sS -X POST "$BASE/api/v1/integration/sites/DMO/flights/events" \
 | Body size, JSON APIs | 1 MB (413 beyond) |
 | Body size, AIDX | 5 MB |
 | Items per batch | 1 to 500 |
-| Batches per client | 120 a minute per Ariva.Api.Integration replica (429 with `Retry-After` beyond) |
-| Batches at once | 8 per replica, 16 waiting (429 beyond, before the body is read) |
+| Calls per client | 120 a minute per Ariva.Api.Integration replica, every Integration API call counted (429 with `Retry-After` beyond) |
+| Batches at once | 8 per replica, 16 waiting (429 beyond, before the body is read); AIDX messages 2, with 4 waiting |
 | JSON nesting depth, batches | 8 |
 | Unknown or repeated members | Rejected (400); member names are exact camelCase |
 | Comments, trailing commas, numbers as strings | Rejected (400) |
@@ -382,9 +382,48 @@ Scope `immigration:write`. An array of `InboundFlightLaneDemand`, computed from 
 
 The four immigration contracts are the same records AMAN publishes on Kafka (`Ariva.Business.Contracts.Aman.V1`), so a non-AMAN immigration system integrates by sending the same JSON. They carry no person, document or officer identifiers, and the API rejects unknown fields. JSON property casing follows the OpenAPI document (camelCase shown here).
 
-### POST /api/v1/aodb/aidx
+### POST /api/v1/integration/sites/{siteCode}/aodb/aidx
 
-Scope `flights:write`. Body: an IATA AIDX 22.1 `IATA_AIDX_FlightLegNotifRQ` message, `Content-Type` XML, up to 5 MB. Ariva disables external entities (XXE), validates against the 22.1 schema and maps flight legs and status to `FlightLeg` and `FlightEvent`. Site-specific `TPA_Extensions` are mapped per site. Note: D5 records that SITA's AIDX API supports the 21.2 schema; the version used by each AODB is To confirm during onboarding.
+Scope `flights:write`. Body: one IATA AIDX `IATA_AIDX_FlightLegNotifRQ` message in the AIDX namespace `http://www.iata.org/IATA/2007/00`, `Content-Type: application/xml` or `text/xml`, up to 5 MB and 500 `FlightLeg` elements. The root `TimeStamp` is required (UTC, ending in `Z`): it is the message time, and a message sent again carries its original `TimeStamp`, so it is no newer than what it would overwrite and changes nothing. `Idempotency-Key` is therefore optional here: send one when your system can, and a retry gets the first answer.
+
+How Ariva reads it:
+
+- No DOCTYPE is accepted (so no external entity, no entity expansion and no external DTD), no resolver is used, processing instructions and comments are ignored, and nesting deeper than 32 levels is refused.
+- The message is validated against Ariva's AIDX 22.1 profile: every element Ariva reads is typed (codes of at most 16 letters, digits or `. / _ -`, flight numbers of 1 to 4 digits, `OriginDate` a date, `OperationTime` a date and time with `OperationQualifier` and `TimeType`, `Resource` with `DepartureOrArrival`), and everything else (including `TPA_Extension`) is let through unread. A message that breaks the profile is refused whole with its line and position. Validating against IATA's own XSDs as well, for a customer licensed for them: To confirm per deployment.
+- The root `TimeStamp` (required; UTC, ending in `Z`; at most 5 minutes ahead of Ariva's clock and 30 days behind it) is the message time.
+
+How a `FlightLeg` maps (a leg Ariva cannot place is refused on its own; the rest go through the rules above):
+
+| AIDX | Ariva |
+|---|---|
+| `LegIdentifier/ArrivalAirport` is an airport of the site (IATA or ICAO code of an airport with a terminal in the site) | `direction: Arrival` |
+| `LegIdentifier/DepartureAirport` is an airport of the site | `direction: Departure`; a leg touching none or both of the site's airports is refused |
+| `Airline`, `FlightNumber`, `OperationalSuffix`, `OriginDate` | `carrier`, `number`, `suffix`; the flight key is `RJ111-20261003-A` (airline, number, suffix, origin date, direction), the same key the JSON examples use, so the same flight from both routes is one leg |
+| `DepartureAirport`, `ArrivalAirport` | `origin`, `destination` |
+| `OperationTime` `ONB`/`SCT` (arrival) or `OFB`/`SCT` (departure); `TDN` or `TKO` when there is no block time | `scheduledUtc` |
+| `ONB`/`EST` (arrival) or `OFB`/`EST` (departure); `TDN` or `TKO` when there is no block time | `estimatedUtc` |
+| `TDN`/`ACT` (arrival), `TKO`/`ACT` (departure) | `actualUtc` (landed, airborne) |
+| `ONB`/`ACT` (arrival), `OFB`/`ACT` (departure) | `onBlockUtc`, `offBlockUtc` |
+| `AirportResources/Resource` of the site's side: `AircraftTerminal`, `AircraftParkingPosition`, `PassengerGate` (`Usage="Actual"` wins over `Planned`) | `terminal`, `stand`, `gate` |
+| `AircraftInfo/AircraftType` | `aircraftType` |
+| `CodeShareInfo/Airline` and `FlightNumber` | `codeshares` |
+| `OperationalStatus` `DX` (cancelled) or `DV` (diverted), PADIS code set 2005 | `status: Cancelled` or `Diverted`; other codes leave the status to the times |
+
+When an `OperationTime` of the same qualifier and type appears more than once, the last one counts. A time without its zone, or with an offset other than `Z`, is refused for its field (the leg is refused with the reason). Check-in counters are not read from AIDX; send them to `allocations/batch`.
+
+The answer is an `IATA_AIDX_FlightLegRS` acknowledgement in the OTA pattern, `application/xml`:
+
+```xml
+<IATA_AIDX_FlightLegRS xmlns="http://www.iata.org/IATA/2007/00" Version="22.1" TimeStamp="2026-10-03T09:00:01Z" TransactionIdentifier="T-42">
+  <Success/>
+  <Warnings>
+    <Warning RecordID="1" Status="Refused" ShortText="The leg must arrive at or depart from exactly one airport of this site."/>
+    <Warning RecordID="2" Status="Unchanged" ShortText="Nothing newer than what is known."/>
+  </Warnings>
+</IATA_AIDX_FlightLegRS>
+```
+
+`RecordID` is the leg's position in the message, from 0; legs without a warning were applied. Your `TransactionIdentifier` is echoed when it is a plain identifier (letters, digits, `. _ : -`). Whether your AODB needs another acknowledgement shape: To confirm during onboarding. A message Ariva cannot read at all is a 400 problem (`application/problem+json`), 413 beyond 5 MB, 415 for anything but XML, 429 beyond the client's allowance or the AIDX messages a replica takes at once (2, with 4 waiting). Note: D5 records that SITA's AIDX API supports the 21.2 schema; the version each AODB sends is To confirm during onboarding (the elements Ariva reads are the same in 21.2).
 
 ### GET /api/v1/queues/current?checkpoint=
 
@@ -435,7 +474,7 @@ Scope `displays:read`. Returns the display board's bands, already hysteresis-fil
 
 | Adapter | Status | Notes |
 |---|---|---|
-| AIDX 22.1 inbound | Phase 0 against a mock | Primary AODB adapter; flight legs and status |
+| AIDX 22.1 inbound | Phase 0 (ARV-044); the AODB emulator follows in ARV-029 | Primary AODB adapter; flight legs, times, resources and status (section 8) |
 | ACRIS flight API pull | Phase 0 against a mock | Ariva polls with `If-Modified-Since` through a registered `OutboundEndpoint`; maps to `FlightLeg`. ACRIS Passenger Wait Times API v1.6.0 is the reference for Ariva's outbound wait-times publishing (v1) |
 | SSIM chapter 7 import | Phase 0 | File upload through Ariva.Api.Main (file imports up to 20 MB, streamed). Seasonal schedule fallback and day-one pilots without a live feed. Endpoint path To confirm |
 | AMAN Kafka feed | Phase 0 against the simulator | Same contracts as the REST immigration endpoints |

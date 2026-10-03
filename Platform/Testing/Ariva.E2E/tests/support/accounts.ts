@@ -144,7 +144,9 @@ export function accounts() {
 		// ARV-042: registering and changing integration clients are critical actions, so this suite signs in with a second factor.
 		integrationAdmin: account('e2e.intadmin', ['SystemAdministrator'], false, true, ['*']),
 		// ARV-043: its own account, so its sign-in code never collides with integration-auth.spec.ts's in the same TOTP step (replay guard).
-		feedAdmin: account('e2e.feedadmin', ['SystemAdministrator'], false, true, ['*'])
+		feedAdmin: account('e2e.feedadmin', ['SystemAdministrator'], false, true, ['*']),
+		// ARV-044: the same, for aidx.spec.ts.
+		aidxAdmin: account('e2e.aidxadmin', ['SystemAdministrator'], false, true, ['*'])
 	} as const;
 }
 

@@ -114,6 +114,34 @@ public sealed class FlightIntakeTests(PostgresFixture fixture) : IAsyncDisposabl
         (await LegsAsync("DMO", "aidx", null, Departure(key)))[0].Errors.Should().ContainSingle().Which.Should().Contain("other direction");
     }
 
+    private AidxLeg AidxLeg(string number, string from, string to, int inMinutes) =>
+        new("RJ", number, null, from, to, DateOnly.FromDateTime(Now), null,
+            [new AidxTime(to == "DMO" ? "ONB" : "OFB", "SCT", Now.AddMinutes(inMinutes))], AidxResources.None, new AidxResources("T1", "B7", "G7"), "320", ["XR1214"]);
+
+    [Fact]
+    public async Task Aidx_Should_ApplyTheSitesLegsAtTheirOwnIndex_When_AMessageArrives()
+    {
+        await AdminAsync();
+        var message = new AidxMessage(Now.AddMinutes(-1), "T-1", [
+            AidxLeg("701", "AMM", "DMO", 90),
+            AidxLeg("702", "AMM", "CAI", 90),
+            null,
+            AidxLeg("703", "DMO", "CAI", 150)
+        ]);
+
+        var results = await _host.AsCallerAsync(null, s => s.GetRequiredService<ISvcAidxIntake>().ApplyAsync("DMO", "api-aidx", message, Ct));
+
+        results.Select(r => (r.Index, r.Applied, r.HasErrors)).Should().Equal((0, true, false), (1, false, true), (2, false, true), (3, true, false));
+        var day = Now.ToString("yyyyMMdd", System.Globalization.CultureInfo.InvariantCulture);
+        results[0].FlightKey.Should().Be($"RJ701-{day}-A");
+        results[3].FlightKey.Should().Be($"RJ703-{day}-D");
+        (await _host.ReadAsync<string>("SELECT direction || ' ' || coalesce(stand, '-') || ' ' || feed FROM flight_leg WHERE site_code = 'DMO' AND flight_key = @secret",
+            secret: $"RJ701-{day}-A")).Should().Be("Arrival B7 api-aidx");
+
+        var none = await _host.AsCallerAsync(null, s => s.GetRequiredService<ISvcAidxIntake>().ApplyAsync("FRS", "api-aidx", message, Ct));
+        none.Should().OnlyContain(r => r.HasErrors, "a site without airports has no side of any leg");
+    }
+
     [Fact]
     public async Task Call_Should_BeRefusedAsAWhole_When_TheSiteFeedOrMessageTimeCannotBeRight()
     {

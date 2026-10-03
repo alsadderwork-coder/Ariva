@@ -35,6 +35,12 @@ public sealed class RateLimitingSettings
     public ConcurrencySettings IntegrationBatch { get; set; } = new() { PermitLimit = 8, QueueLimit = 16 };
 
     /// <summary>
+    /// The <c>integration-aidx</c> policy for AIDX messages (ARV-044): up to 5 MB each and read into a document, so fewer
+    /// at once per host process than JSON batches. Default 2 at once and 4 waiting.
+    /// </summary>
+    public ConcurrencySettings IntegrationAidx { get; set; } = new() { PermitLimit = 2, QueueLimit = 4 };
+
+    /// <summary>
     /// Batches one integration client may send per window to one host process (ARV-043), counted after its token is
     /// validated so no one can spend another client's allowance. Default 120 a minute.
     /// </summary>

@@ -52,6 +52,9 @@ public static class RateLimitingExtensions
     /// </summary>
     public const string IntegrationBatchPolicy = "integration-batch";
 
+    /// <summary>Named policy for AIDX messages (ARV-044): like <see cref="IntegrationBatchPolicy"/>, for bodies of up to 5 MB.</summary>
+    public const string IntegrationAidxPolicy = "integration-aidx";
+
     private const string UnknownClient = "unknown";
 
     #endregion
@@ -75,7 +78,7 @@ public static class RateLimitingExtensions
             .AddOptions<RateLimitingSettings>()
             .Bind(configuration.GetSection(RateLimitingSettings.SectionName))
             .Validate(settings => settings.Global.IsValid && settings.Auth.IsValid && settings.Device.IsValid && settings.IntegrationAuth.IsValid &&
-                                settings.IntegrationBatch.IsValid && settings.IntegrationClient.IsValid,
+                                settings.IntegrationBatch.IsValid && settings.IntegrationAidx.IsValid && settings.IntegrationClient.IsValid,
                 $"{RateLimitingSettings.SectionName} limits need a positive PermitLimit and WindowSeconds and a QueueLimit of zero or more.")
             .ValidateOnStart();
 
@@ -107,6 +110,13 @@ public static class RateLimitingExtensions
                     {
                         PermitLimit = limits.IntegrationBatch.PermitLimit,
                         QueueLimit = limits.IntegrationBatch.QueueLimit,
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst
+                    }));
+                options.AddPolicy(IntegrationAidxPolicy, _ =>
+                    RateLimitPartition.GetConcurrencyLimiter(IntegrationAidxPolicy, _ => new ConcurrencyLimiterOptions
+                    {
+                        PermitLimit = limits.IntegrationAidx.PermitLimit,
+                        QueueLimit = limits.IntegrationAidx.QueueLimit,
                         QueueProcessingOrder = QueueProcessingOrder.OldestFirst
                     }));
                 options.AddPolicy(BacktestPolicy, _ =>

@@ -36,18 +36,27 @@ public static class BatchBody
         Microsoft.Net.Http.Headers.MediaTypeHeaderValue.TryParse(contentType, out var type) &&
         (type.MediaType.Equals("application/json", StringComparison.OrdinalIgnoreCase) || type.Suffix.Equals("json", StringComparison.OrdinalIgnoreCase));
 
+    /// <summary>True when the content type is XML (application/xml, text/xml or a +xml type).</summary>
+    public static bool IsXml(string contentType) =>
+        Microsoft.Net.Http.Headers.MediaTypeHeaderValue.TryParse(contentType, out var type) &&
+        (type.MediaType.Equals("application/xml", StringComparison.OrdinalIgnoreCase) || type.MediaType.Equals("text/xml", StringComparison.OrdinalIgnoreCase) ||
+         type.Suffix.Equals("xml", StringComparison.OrdinalIgnoreCase));
+
     /// <summary>The body, or null when it is larger than <see cref="IntegrationBatches.MaxBodyBytes"/>.</summary>
-    public static async Task<byte[]> ReadAsync(HttpRequest request, CancellationToken ct)
+    public static Task<byte[]> ReadAsync(HttpRequest request, CancellationToken ct) => ReadAsync(request, IntegrationBatches.MaxBodyBytes, ct);
+
+    /// <summary>The body, or null when it is larger than <paramref name="maxBytes"/> (also when it has no length).</summary>
+    public static async Task<byte[]> ReadAsync(HttpRequest request, int maxBytes, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(request);
-        if (request.ContentLength is > IntegrationBatches.MaxBodyBytes)
+        if (request.ContentLength > maxBytes)
             return null;
         using var buffer = new MemoryStream(request.ContentLength is { } length ? (int)length : 16 * 1024);
         var chunk = new byte[16 * 1024];
         int read;
         while ((read = await request.Body.ReadAsync(chunk, ct)) > 0)
         {
-            if (buffer.Length + read > IntegrationBatches.MaxBodyBytes)
+            if (buffer.Length + read > maxBytes)
                 return null;
             buffer.Write(chunk, 0, read);
         }

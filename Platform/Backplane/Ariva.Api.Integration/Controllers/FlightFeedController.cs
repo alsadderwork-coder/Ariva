@@ -26,7 +26,7 @@ namespace Ariva.Api.Integration.Controllers;
 [ApiController]
 [Route("api/v1/integration/sites/{siteCode}")]
 [EnableRateLimiting(RateLimitingExtensions.IntegrationBatchPolicy)]
-public sealed class FlightFeedController(ISvcFlightIntake intake, ISvcIntegrationIdempotency idempotency, IntegrationClientRateLimiter clientLimiter, TimeProvider timeProvider)
+public sealed class FlightFeedController(ISvcFlightIntake intake, ISvcIntegrationIdempotency idempotency, TimeProvider timeProvider)
     : ControllerBase
 {
     [HttpPost("flights/batch")]
@@ -78,13 +78,6 @@ public sealed class FlightFeedController(ISvcFlightIntake intake, ISvcIntegratio
         var caller = IntegrationAuthentication.CallerOf(HttpContext);
         if (caller is null)
             return Forbid();
-        var (allowed, retryAfter) = clientLimiter.TryAcquire(caller.ClientId);
-        if (!allowed)
-        {
-            Response.Headers.RetryAfter = ((int)Math.Ceiling((retryAfter ?? TimeSpan.FromSeconds(60)).TotalSeconds)).ToString(System.Globalization.CultureInfo.InvariantCulture);
-            return Problem(statusCode: StatusCodes.Status429TooManyRequests, title: "Too many requests",
-                detail: "This client sent more batches than it may in a minute; retry later with the same Idempotency-Key.");
-        }
 
         var keys = Request.Headers[IntegrationBatches.IdempotencyKeyHeader];
         if (keys.Count != 1 || !IntegrationBatches.IsKey(keys[0]))

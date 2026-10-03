@@ -66,8 +66,20 @@ ingresses:
     annotations:
       nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
       nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
-      nginx.ingress.kubernetes.io/proxy-body-size: "1m"  # ARV-043: the largest Integration API body is a 1 MB batch (ARV-044 raises it for 5 MB AIDX)
+      nginx.ingress.kubernetes.io/proxy-body-size: "1m"  # ARV-043: the token exchange and the JSON batches take at most 1 MB
       nginx.ingress.kubernetes.io/rewrite-target: /
+
+  - name: api-integration-feeds
+    comment: Ariva API Integration feeds (AIDX up to 5 MB; ARV-044)
+    subdomain: api-integration-dev-ariva
+    serviceName: api-integration-service
+    # No rewrite-target: a path-scoped ingress keeps the request path as it is.
+    paths:
+      - /api/v1/integration/
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-body-size: "5m"  # ARV-044: only the authenticated feed endpoints take 5 MB (AIDX); the host stops JSON batches at 1 MB
 
   - name: simulation
     comment: Ariva Simulation Ingress

@@ -21,6 +21,7 @@ public static class FlightExtensions
         services.TryAddSingleton(TimeProvider.System);
         services.TryAddSingleton<FlightMetrics>();
         services.TryAddScoped<ISvcFlightIntake, Ariva.Infra.Services.Flights.SvcFlightIntake>();
+        services.TryAddScoped<ISvcAidxIntake, Ariva.Infra.Services.Flights.SvcAidxIntake>();
         services.TryAddScoped<ISvcFeedFreshness, Ariva.Infra.Services.Flights.SvcFeedFreshness>();
         if (watchFeeds)
             services.AddHostedService<FeedFreshnessMonitor>();

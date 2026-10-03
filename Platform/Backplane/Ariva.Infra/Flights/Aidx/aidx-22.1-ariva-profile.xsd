@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Ariva's validation profile for IATA AIDX 22.1 IATA_AIDX_FlightLegNotifRQ (ARV-044). It types every element Ariva reads
+  (codes and times with their lengths and patterns) and lets the rest of a message through without reading it, so an
+  AODB's full message validates while nothing Ariva uses can be malformed or oversized. Elements are declared globally
+  so lax wildcards validate them wherever they appear. This is not IATA's schema: a customer licensed for IATA's AIDX
+  XSDs can validate against them in addition (To confirm per deployment).
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns="http://www.iata.org/IATA/2007/00"
+           targetNamespace="http://www.iata.org/IATA/2007/00"
+           elementFormDefault="qualified"
+           attributeFormDefault="unqualified">
+
+  <xs:simpleType name="Code">
+    <xs:restriction base="xs:token">
+      <xs:minLength value="1"/>
+      <xs:maxLength value="16"/>
+      <xs:pattern value="[A-Za-z0-9./_-]+"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="ShortText">
+    <xs:restriction base="xs:string">
+      <xs:maxLength value="64"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:complexType name="CodeWithContext">
+    <xs:simpleContent>
+      <xs:extension base="Code">
+        <xs:anyAttribute processContents="skip"/>
+      </xs:extension>
+    </xs:simpleContent>
+  </xs:complexType>
+
+  <xs:complexType name="Open">
+    <xs:sequence>
+      <xs:any namespace="##any" processContents="lax" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+    <xs:anyAttribute processContents="skip"/>
+  </xs:complexType>
+
+  <xs:element name="IATA_AIDX_FlightLegNotifRQ">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any namespace="##any" processContents="lax" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+      <xs:attribute name="TimeStamp" type="xs:dateTime" use="required"/>
+      <xs:attribute name="TransactionIdentifier" type="ShortText" use="optional"/>
+      <xs:attribute name="Version" type="ShortText" use="optional"/>
+      <xs:anyAttribute processContents="skip"/>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:element name="FlightLeg" type="Open"/>
+  <xs:element name="LegIdentifier" type="Open"/>
+  <xs:element name="LegData" type="Open"/>
+  <xs:element name="AircraftInfo" type="Open"/>
+  <xs:element name="CodeShareInfo" type="Open"/>
+
+  <xs:element name="Airline" type="CodeWithContext"/>
+  <xs:element name="FlightNumber">
+    <xs:simpleType>
+      <xs:restriction base="xs:token">
+        <xs:pattern value="[0-9]{1,4}"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+  <xs:element name="OperationalSuffix">
+    <xs:simpleType>
+      <xs:restriction base="xs:token">
+        <xs:pattern value="[A-Za-z]"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+  <xs:element name="DepartureAirport" type="CodeWithContext"/>
+  <xs:element name="ArrivalAirport" type="CodeWithContext"/>
+  <xs:element name="OriginDate" type="xs:date"/>
+  <xs:element name="OperationalStatus" type="CodeWithContext"/>
+  <xs:element name="AircraftType" type="CodeWithContext"/>
+  <xs:element name="AircraftParkingPosition" type="CodeWithContext"/>
+  <xs:element name="PassengerGate" type="CodeWithContext"/>
+  <xs:element name="AircraftTerminal" type="CodeWithContext"/>
+
+  <xs:element name="OperationTime">
+    <xs:complexType>
+      <xs:simpleContent>
+        <xs:extension base="xs:dateTime">
+          <xs:attribute name="OperationQualifier" type="Code" use="required"/>
+          <xs:attribute name="TimeType" type="Code" use="required"/>
+          <xs:anyAttribute processContents="skip"/>
+        </xs:extension>
+      </xs:simpleContent>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:element name="AirportResources">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any namespace="##any" processContents="lax" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+      <xs:attribute name="Usage" type="Code" use="optional"/>
+      <xs:anyAttribute processContents="skip"/>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:element name="Resource">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:any namespace="##any" processContents="lax" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+      <xs:attribute name="DepartureOrArrival" use="required">
+        <xs:simpleType>
+          <xs:restriction base="xs:token">
+            <xs:enumeration value="Departure"/>
+            <xs:enumeration value="Arrival"/>
+          </xs:restriction>
+        </xs:simpleType>
+      </xs:attribute>
+      <xs:anyAttribute processContents="skip"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>

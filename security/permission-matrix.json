@@ -2601,6 +2601,19 @@
         "HandlerStationManager": 401,
         "SystemAdministrator": 401
       }
+    },
+    {
+      "host": "integration",
+      "method": "POST",
+      "route": "/api/v1/integration/sites/{siteCode}/aodb/aidx",
+      "access": "integration",
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401
+      }
     }
   ]
 }

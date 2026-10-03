@@ -133,8 +133,14 @@ public static class IntegrationAuthentication
             string sha = null;
             long bytes = 0;
             var tooLarge = false;
+            TimeSpan? limited = null;
             var authenticated = await context.AuthenticateAsync(Scheme);
-            if (authenticated.Succeeded)
+            // The client's allowance is spent before its body is read, on every Integration API call (refused ones too),
+            // so a client cannot hold the at-once permits with calls it is not allowed to make (ARV-043, ARV-044).
+            if (authenticated.Succeeded && CallerOf(context) is { } allowanceOf &&
+                context.RequestServices.GetRequiredService<IntegrationClientRateLimiter>().TryAcquire(allowanceOf.ClientId) is { Allowed: false } refusedAllowance)
+                limited = refusedAllowance.RetryAfter ?? TimeSpan.FromSeconds(60);
+            if (authenticated.Succeeded && limited is null)
             {
                 if (endpoint.Metadata.GetMetadata<Microsoft.AspNetCore.Http.Metadata.IRequestSizeLimitMetadata>()?.MaxRequestBodySize is { } limit &&
                     context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } size)
@@ -153,7 +159,13 @@ public static class IntegrationAuthentication
                 }
             }
 
-            if (tooLarge)
+            if (limited is { } wait)
+            {
+                context.Response.Headers.RetryAfter = ((int)Math.Ceiling(wait.TotalSeconds)).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                await Results.Problem(statusCode: StatusCodes.Status429TooManyRequests, title: "Too many requests",
+                    detail: "This client sent more calls than it may in a minute; retry later (with the same Idempotency-Key for a batch).").ExecuteAsync(context);
+            }
+            else if (tooLarge)
                 await Results.Problem(statusCode: StatusCodes.Status413PayloadTooLarge, title: "Too large", detail: "The body is larger than this endpoint takes.")
                     .ExecuteAsync(context);
             else

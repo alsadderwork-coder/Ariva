@@ -29,6 +29,16 @@ public interface ISvcFlightIntake : ISvcScoped
 }
 
 /// <summary>
+/// AIDX 22.1 inbound (ARV-044): a read message's legs, mapped for the site (<see cref="AidxMapping"/>; its airports
+/// decide each leg's direction) and applied through <see cref="ISvcFlightIntake"/> with the message's TimeStamp as
+/// the message time. One result per FlightLeg of the message, in order. System calls.
+/// </summary>
+public interface ISvcAidxIntake : ISvcScoped
+{
+    Task<IReadOnlyList<FlightItemResult>> ApplyAsync(string siteCode, string feed, AidxMessage message, CancellationToken ct = default);
+}
+
+/// <summary>
 /// The stale-feed alarm (ARV-041, runbook 4.3): every sweep judges each feed of each site with
 /// <see cref="FeedFreshnessRule"/> against the flights due at the site, records the state and reports changes (a
 /// warning in the log and the <c>Ariva.Flights</c> metrics). System calls (no user).
