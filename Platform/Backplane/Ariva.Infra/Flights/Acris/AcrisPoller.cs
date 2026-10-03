@@ -106,6 +106,12 @@ internal sealed class AcrisPoller(IServiceScopeFactory scopes, OutboundClients c
             status = e.Message;
             logger.LogWarning("ACRIS pull from {Endpoint} refused: {Reason}", claim.Target.Code, e.Message);
         }
+        catch (System.Security.Cryptography.CryptographicException e)
+        {
+            // A secret protected with a key the ring no longer has (or another ring's): this endpoint fails, the others still pull.
+            status = "The endpoint's secret cannot be read with this key ring; set the secret again.";
+            logger.LogError(e, "ACRIS pull from {Endpoint}: its secret cannot be unprotected", claim.Target.Code);
+        }
         catch (Exception e) when (e is HttpRequestException or TimeoutException or TaskCanceledException && !ct.IsCancellationRequested)
         {
             status = e is OutboundUnavailableException ? e.Message : "The endpoint could not be reached or did not answer in time.";

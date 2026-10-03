@@ -5,12 +5,14 @@ using Ariva.Core.Services.Administration;
 using Ariva.Core.Services.Integration;
 using Ariva.Di.Extensions;
 using Ariva.Infra.Flights.Acris;
+using Ariva.Infra.Integration;
 using Ariva.Infra.Services.Administration;
 using Ariva.Infra.Services.Seed;
 using Ariva.IntegrationTests.Security;
 using Ariva.IntegrationTests.Setup;
 using FluentAssertions;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
@@ -174,8 +176,20 @@ public sealed class OutboundEndpointTests(PostgresFixture fixture) : IAsyncDispo
         var moved = await CreateAsync(p.All, ApiKey("acris-moved", $"http://127.0.0.1:{server.Port}/", ["DMO"], "AcrisFlights", "/acris/moved"));
         moved.HasErrors.Should().BeFalse();
 
+        // An endpoint whose secret another key ring protected (a lost or replaced ring) fails alone; the others still pull.
+        var lost = await CreateAsync(p.All, ApiKey("acris-lost", $"http://127.0.0.1:{server.Port}/", ["DMO"], "AcrisFlights", "/acris/flights"));
+        lost.HasErrors.Should().BeFalse();
+        var otherRing = new EphemeralDataProtectionProvider().CreateProtector(OutboundSecrets.Purpose).Protect("{\"apiKey\":\"the-key-acris-dmo\"}");
+        await _host.ReadAsync<int>("UPDATE outbound_endpoint SET secret_protected = @secret WHERE code = 'acris-lost' RETURNING 1", secret: otherRing);
+        // Only this test's endpoints are due (another test of the class may have registered one in the same database).
+        await _host.ReadAsync<long>("WITH d AS (UPDATE outbound_endpoint SET status = 'Disabled' WHERE purpose = 'AcrisFlights' AND code NOT LIKE 'acris-%' RETURNING 1) " +
+            "SELECT count(*) FROM d");
+
         var poller = await _host.AsCallerAsync(null, s => Task.FromResult(s.GetServices<IHostedService>().OfType<AcrisPoller>().Single()));
-        (await poller.RunOnceAsync(Ct)).Should().Be(2);
+        (await poller.RunOnceAsync(Ct)).Should().Be(3);
+        (await _host.ReadAsync<string>("SELECT last_status || ' ' || consecutive_failures FROM outbound_endpoint WHERE code = 'acris-lost'"))
+            .Should().Be("The endpoint's secret cannot be read with this key ring; set the secret again. 1");
+        await _host.ReadAsync<long>("WITH d AS (UPDATE outbound_endpoint SET status = 'Disabled' WHERE code = 'acris-lost' RETURNING 1) SELECT count(*) FROM d");
 
         (await _host.ReadAsync<string>("SELECT string_agg(flight_key || ' ' || direction || ' ' || feed, ',' ORDER BY flight_key) FROM flight_leg WHERE flight_key LIKE 'QR4%'"))
             .Should().Be($"QR401-{Now:yyyyMMdd}-A Arrival acris-acris-dmo,QR402-{Now:yyyyMMdd}-D Departure acris-acris-dmo");
