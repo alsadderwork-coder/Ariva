@@ -92,7 +92,7 @@ export const navItems: readonly NavItem[] = [
 		href: '/zones',
 		icon: Timer,
 		group: 'administration',
-		ready: false,
+		ready: true,
 		story: 'ARV-053',
 		permission: 'ZoneProfile.View'
 	},

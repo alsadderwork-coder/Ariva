@@ -167,6 +167,8 @@ See [Commissioning and calibration](07-Commissioning-and-Calibration.md).
 
 Every result records the profile version it was computed with.
 
+In Ariva.Web the Zones screen (ARV-053) does all of this on the floor plan: New draft, zones and lines drawn by dragging or typed in a corner table, Check the draft, Publish (step-up), Discard the draft (administrators), and for administrators Upload a floor plan for the chosen level with its scale and origin. See the [User guide](12-User-Guide.md), Zones.
+
 Phase 0 API (ARV-017), `api/v1/admin/zone-profiles`:
 
 | Call | What it does | Who |

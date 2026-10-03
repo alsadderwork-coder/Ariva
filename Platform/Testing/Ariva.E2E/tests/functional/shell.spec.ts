@@ -11,7 +11,8 @@ const requiredDirectives = [
 	"default-src 'self'",
 	"script-src 'self' 'sha256-",
 	"style-src 'self'",
-	"img-src 'self' data:",
+	// blob: shows a floor plan fetched with the user's token (ARV-053); nothing else is added.
+	"img-src 'self' data: blob:;",
 	"connect-src 'self'",
 	"object-src 'none'",
 	"base-uri 'self'",

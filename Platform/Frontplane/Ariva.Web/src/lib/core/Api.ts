@@ -23,6 +23,8 @@ export interface RequestOptions {
 	signal?: AbortSignal;
 	/** True for a call that must not carry the signed-in user's token (a call to another host, for example). */
 	anonymous?: boolean;
+	/** 'blob' reads a successful answer as a Blob (an image); errors are still read as problems. */
+	responseType?: 'json' | 'blob';
 }
 
 /** Builds a successful result around data. */
@@ -68,9 +70,15 @@ function buildUrl(path: string, options: RequestOptions): string {
 	return query ? `${url}?${query}` : url;
 }
 
-async function readPayload(response: Response): Promise<unknown> {
+async function readPayload(
+	response: Response,
+	responseType: 'json' | 'blob' = 'json'
+): Promise<unknown> {
 	if (response.status === 204) {
 		return null;
+	}
+	if (responseType === 'blob' && response.ok) {
+		return await response.blob();
 	}
 
 	const contentType = response.headers.get('content-type') ?? '';
@@ -151,9 +159,12 @@ export async function request<T>(
 
 	for (let attempt = 0; attempt < 2; attempt++) {
 		const headers: Record<string, string> = { Accept: 'application/json', ...options.headers };
-		let body: string | undefined;
+		let body: string | FormData | undefined;
 
-		if (options.body !== undefined) {
+		if (options.body instanceof FormData) {
+			// Multipart (a file upload): the browser sets the content type with its boundary.
+			body = options.body;
+		} else if (options.body !== undefined) {
 			headers['Content-Type'] = 'application/json';
 			body = JSON.stringify(options.body);
 		}
@@ -179,7 +190,7 @@ export async function request<T>(
 	}
 
 	const answer = response!;
-	const payload = await readPayload(answer);
+	const payload = await readPayload(answer, options.responseType);
 
 	if (isResult(payload)) {
 		const result = normalise(payload as Result<T>);

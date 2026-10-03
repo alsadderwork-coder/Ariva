@@ -1205,8 +1205,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 56,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Done 2026-10-03: /zones editor on the floor plan (drag and keyboard handles, vertex table, lines on zone edges), check and publish with step-up, floor plan upload and blob display. Security review PASS after one fix round (backlog/progress.md).",
       "dependsOn": [
         "ARV-051",
         "ARV-017",

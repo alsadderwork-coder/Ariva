@@ -158,7 +158,9 @@ ARV-052. The airports, terminals, levels, checkpoints and desks of your sites in
 
 ## Zones
 
-Phase 0 from a configuration file; MVP editor. Shows the floor plan per level with zones, entry and exit lines, and the list of profile versions (for example v12 active, v13 draft).
+ARV-053. Shows each level's floor plan with its zones (queue, service, staff, overflow, each in its own colour and named on the plan) and lines (entry, exit, count, overflow entry), and the site's versions (for example v12 published, a draft from v12). Handler station managers see them read only; supervisors and duty managers edit; only a draft changes.
+
+Editing a draft: Add a zone starts a small square in the middle of the level, Add a line starts a line on an edge of its queue zone (an exit across from the entry). Select a zone or line on the plan or in the lists; drag a corner or a line end and let go to save, or use the keyboard: Tab to a handle, arrow keys move it by 0.1 m (1 m with Shift), Enter saves. The corner table beside the plan takes exact coordinates in metres, adds a corner after any other or removes one (at least three), and Save the zone saves the name and the shape. The server checks every shape (inside the level, no crossing edges, entry and exit lines on their queue zone's edge) and a refused move puts the shape back. Check the draft lists what still stops it from being published; Publish then publishes exactly what was checked and asks for a fresh authenticator code if the last one is older than 15 minutes.
 
 Common tasks (editor): create a draft from the active profile; add or change zones and lines; publish (creates the next version; needs step-up MFA). A newly published zone shows "Not measured: no calibrated sensor" until a calibrated sensor covers it. Details in [Commissioning and calibration](07-Commissioning-and-Calibration.md).
 

@@ -168,7 +168,9 @@ export function accounts() {
 		webExpiry: account('e2e.webexpiry', ['TerminalDutyManager'], false, true, ['DMO']),
 		webCancel: account('e2e.webcancel', ['TerminalDutyManager'], false, true, ['DMO']),
 		// ARV-052: a border supervisor at the demo airport, for the read-only screens.
-		webBorder: account('e2e.webborder', ['BorderShiftSupervisor'], false, false, ['DMO'])
+		webBorder: account('e2e.webborder', ['BorderShiftSupervisor'], false, false, ['DMO']),
+		// ARV-053: draws and publishes zones at a site of its own (publishing needs a second factor).
+		webZones: account('e2e.webzones', ['TerminalDutyManager'], false, true, ['E2EZ'])
 	} as const;
 }
 
