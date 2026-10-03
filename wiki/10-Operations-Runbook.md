@@ -223,6 +223,12 @@ SELECT job_id, hypertable_name, last_run_status, last_successful_finish, next_st
 - **Checks**: Integration logs "ACRIS pull from {endpoint} refused: {reason}" (warning) or "... failed". `lastStatus` says which: "Refused to connect: the address is outside the endpoint's allowed networks" (the partner moved or its DNS changed: confirm with the partner before widening the networks, and never to a broad range), "...link-local or metadata..." or "...loopback..." (the name now points at a forbidden address: treat as an attack until explained), "...redirect, which Ariva does not follow" (ask for the final URL), "The circuit to {endpoint} is open after N failures in a row" (it retries after the break), "The endpoint answered 401" (the key or credentials changed: replace the secret), "Not modified." (normal), "Pulled N flights: a applied, r refused" (refused flights touch none or both of the site's airports, or break the flight rules).
 - **Actions**: fix the cause with the partner; change the connection or replace the secret (both critical actions); the next due pull uses it. Disable an endpoint that must stop at once.
 
+### 4.8g SSIM import refused or partial (ARV-046)
+
+- **Symptoms**: a preview or import answers 400, 409 or 413, or the preview lists line errors.
+- **Checks**: 400 "no flight leg records" means the file is not chapter 7 (or is another encoding); "The site has no airport" means the site has no terminal under an airport in the topology; 409 means the import is not what was previewed (the file was re-exported or edited, the horizon or site differs, another administrator sent it, the day changed, or the preview is older than two hours): preview again; 413 is a file over 20 MB (split it by carrier). Line errors give the line number and the field that broke (period, days, times, variations, frequency, length, characters). Legs of other airports are skipped, not errors. An import that reports many `unchanged` legs met legs a live feed has reported (`flight_leg.schedule_fallback = false`) or an earlier import that said the same: expected, since a schedule never changes a leg a live feed has reported. The audit entry `FlightSchedule.Imported` holds each import's SHA-256, outcome (`completed` or `failed`), units committed and counts; a failed import keeps the units it committed (500 legs each) and can be imported again, since repeated legs are `unchanged`.
+- **Actions**: fix the file with the airline or the AODB team, preview again, import with the new preview token.
+
 ### 4.9 Certificate expiry
 
 - **Checks**:

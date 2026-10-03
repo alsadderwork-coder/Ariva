@@ -9,8 +9,10 @@ namespace Ariva.Core.Domain.Entities;
 /// order, so nothing here depends on the order messages come in: the schedule (identity, airports, places, aircraft,
 /// counts, codeshares) is replaced only by a message at least as recent as the one that set it, and each milestone
 /// (estimate, actual, on-block, gate open, boarding, off-block, cancelled, diverted) keeps the value of the most recent
-/// message that reported it; an older message can still fill a milestone nobody reported yet. The status follows from
-/// the milestones known. A change raises <see cref="FlightChanged"/>. The direction never changes.
+/// message that reported it; an older message can still fill a milestone nobody reported yet. A fallback feed (an SSIM
+/// schedule file, ARV-046) sets the schedule of a leg it creates and replaces only a schedule a fallback set; a live feed
+/// always replaces a fallback's schedule, whatever the message times. The status follows from the milestones known. A
+/// change raises <see cref="FlightChanged"/>. The direction never changes.
 /// </summary>
 public class FlightLeg : EntityBase<FlightLeg>, ISiteBound
 {
@@ -18,7 +20,7 @@ public class FlightLeg : EntityBase<FlightLeg>, ISiteBound
     {
     }
 
-    public FlightLeg(string siteCode, FlightLegValues values, string feed, DateTime sourceUtc, DateTime receivedUtc)
+    public FlightLeg(string siteCode, FlightLegValues values, string feed, DateTime sourceUtc, DateTime receivedUtc, bool fallback = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(siteCode);
         ArgumentNullException.ThrowIfNull(values);
@@ -26,7 +28,7 @@ public class FlightLeg : EntityBase<FlightLeg>, ISiteBound
         SiteCode = siteCode;
         FlightKey = values.FlightKey;
         Direction = values.Direction;
-        Apply(values, feed, sourceUtc, receivedUtc);
+        Apply(values, feed, sourceUtc, receivedUtc, fallback);
     }
 
     public virtual string SiteCode { get; protected set; }
@@ -50,6 +52,12 @@ public class FlightLeg : EntityBase<FlightLeg>, ISiteBound
 
     /// <summary>The message time of the schedule fields above.</summary>
     public virtual DateTime ScheduleSourceUtc { get; protected set; }
+
+    /// <summary>The feed whose message set the schedule fields.</summary>
+    public virtual string ScheduleFeed { get; protected set; }
+
+    /// <summary>Whether a fallback feed (an SSIM schedule) set the schedule fields: no live feed has reported the leg's schedule yet.</summary>
+    public virtual bool ScheduleFallback { get; protected set; }
 
     /// <summary>Estimated in-block (arrival) or off-block (departure).</summary>
     public virtual DateTime? EstimatedUtc { get; protected set; }
@@ -85,8 +93,11 @@ public class FlightLeg : EntityBase<FlightLeg>, ISiteBound
     /// <summary>The estimated time if there is one, else the scheduled time.</summary>
     public virtual DateTime ExpectedUtc => EstimatedUtc ?? ScheduledUtc;
 
-    /// <summary>Takes a snapshot of the leg from a message of <paramref name="sourceUtc"/>; true when anything changed.</summary>
-    public virtual bool Apply(FlightLegValues values, string feed, DateTime sourceUtc, DateTime receivedUtc)
+    /// <summary>
+    /// Takes a snapshot of the leg from a message of <paramref name="sourceUtc"/>; true when anything changed. A
+    /// <paramref name="fallback"/> message (a schedule file) only replaces a schedule a fallback set.
+    /// </summary>
+    public virtual bool Apply(FlightLegValues values, string feed, DateTime sourceUtc, DateTime receivedUtc, bool fallback = false)
     {
         ArgumentNullException.ThrowIfNull(values);
         RequireUtc(sourceUtc, nameof(sourceUtc));
@@ -96,13 +107,17 @@ public class FlightLeg : EntityBase<FlightLeg>, ISiteBound
             throw new InvalidOperationException("A flight leg keeps its direction; a different direction is a different flight key.");
 
         var before = Fingerprint();
-        if (Carrier is null || sourceUtc >= ScheduleSourceUtc)
+        var replaces = Carrier is null
+            || (fallback ? ScheduleFallback && sourceUtc >= ScheduleSourceUtc : ScheduleFallback || sourceUtc >= ScheduleSourceUtc);
+        if (replaces)
         {
             (Carrier, Number, Suffix, ScheduledUtc) = (values.Carrier, values.Number, values.Suffix, values.ScheduledUtc);
             (Origin, Destination, Terminal, Stand, Gate) = (values.Origin, values.Destination, values.Terminal, values.Stand, values.Gate);
             (AircraftType, Seats, PaxEstimate) = (values.AircraftType, values.Seats, values.PaxEstimate);
             CodeshareCodes = values.Codeshares.Count == 0 ? null : string.Join(' ', values.Codeshares);
             ScheduleSourceUtc = sourceUtc;
+            ScheduleFeed = FlightRules.NormalizeFeed(feed) ?? throw new ArgumentException("A feed name is 2 to 32 lower case letters, digits or hyphens.", nameof(feed));
+            ScheduleFallback = fallback;
         }
 
         if (values.EstimatedUtc is { } estimated)
@@ -218,8 +233,9 @@ public class FlightLeg : EntityBase<FlightLeg>, ISiteBound
             (Diverted, DivertedSourceUtc) = (value, sourceUtc);
     }
 
-    // Every field a reader sees, so a message that repeats what is known changes nothing and raises nothing.
-    private string Fingerprint() => string.Join('|', Carrier, Number, Suffix, ScheduledUtc.Ticks, Origin, Destination, Terminal, Stand, Gate, AircraftType, Seats,
+    // Every field a reader sees, so a message that repeats what is known changes nothing and raises nothing. A live feed
+    // confirming a fallback's schedule is a change (it must be stored, or the next schedule file would overwrite it).
+    private string Fingerprint() => string.Join('|', ScheduleFallback, Carrier, Number, Suffix, ScheduledUtc.Ticks, Origin, Destination, Terminal, Stand, Gate, AircraftType, Seats,
         PaxEstimate, CodeshareCodes, EstimatedUtc?.Ticks, ActualUtc?.Ticks, OnBlockUtc?.Ticks, GateOpenUtc?.Ticks, BoardingStartUtc?.Ticks, OffBlockUtc?.Ticks,
         Cancelled, Diverted);
 

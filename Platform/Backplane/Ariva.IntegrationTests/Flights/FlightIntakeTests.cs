@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Ariva.Core;
 using Ariva.Core.Domain.Enums;
 using Ariva.Core.Domain.InputModels;
@@ -14,6 +15,7 @@ using Ariva.IntegrationTests.Setup;
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Npgsql;
 
 namespace Ariva.IntegrationTests.Flights;
@@ -32,7 +34,41 @@ public sealed class FlightIntakeTests(PostgresFixture fixture) : IAsyncDisposabl
     private static Guid? _admin;
 
     private readonly AccountsHost _host = new(fixture, database: TestDatabase.Flights,
-        configure: services => services.AddArivaFlights(new ConfigurationBuilder().Build(), watchFeeds: false));
+        configure: services =>
+        {
+            services.AddArivaFlights(new ConfigurationBuilder().Build(), watchFeeds: false);
+            services.AddArivaFlightSchedules(new ConfigurationBuilder().Build());
+            // The intake, with a schedule unit that can be made to fail after applying its legs (before its commit).
+            services.AddScoped<Ariva.Infra.Services.Flights.SvcFlightIntake>();
+            services.Replace(ServiceDescriptor.Scoped<ISvcFlightIntake>(s => new FailingIntake(s.GetRequiredService<Ariva.Infra.Services.Flights.SvcFlightIntake>())));
+        });
+
+    /// <summary>The real intake; while <see cref="FailScheduleCall"/> is set, that call of the schedule path throws once its legs are applied.</summary>
+    private sealed class FailingIntake(ISvcFlightIntake inner) : ISvcFlightIntake
+    {
+        public static int FailScheduleCall;
+        private static int _calls;
+
+        public static void Arm(int call) => (FailScheduleCall, _calls) = (call, 0);
+
+        public Task<IReadOnlyList<FlightItemResult>> ApplyLegsAsync(string siteCode, string feed, IReadOnlyList<FlightLegData> legs, DateTime? sourceUtc,
+            CancellationToken ct = default) => inner.ApplyLegsAsync(siteCode, feed, legs, sourceUtc, ct);
+
+        public async Task<IReadOnlyList<FlightItemResult>> ApplyScheduleLegsAsync(string siteCode, string feed, IReadOnlyList<FlightLegData> legs, DateTime sourceUtc,
+            CancellationToken ct = default)
+        {
+            var results = await inner.ApplyScheduleLegsAsync(siteCode, feed, legs, sourceUtc, ct);
+            if (FailScheduleCall > 0 && Interlocked.Increment(ref _calls) == FailScheduleCall)
+                throw new InvalidOperationException("A unit failed after applying its legs (test).");
+            return results;
+        }
+
+        public Task<IReadOnlyList<FlightItemResult>> ApplyEventsAsync(string siteCode, string feed, IReadOnlyList<FlightEventData> events, DateTime? sourceUtc,
+            CancellationToken ct = default) => inner.ApplyEventsAsync(siteCode, feed, events, sourceUtc, ct);
+
+        public Task<IReadOnlyList<FlightItemResult>> ApplyAllocationsAsync(string siteCode, string feed, IReadOnlyList<CounterAllocationData> allocations,
+            DateTime? sourceUtc, CancellationToken ct = default) => inner.ApplyAllocationsAsync(siteCode, feed, allocations, sourceUtc, ct);
+    }
 
     public ValueTask DisposeAsync() => _host.DisposeAsync();
 
@@ -140,6 +176,175 @@ public sealed class FlightIntakeTests(PostgresFixture fixture) : IAsyncDisposabl
 
         var none = await _host.AsCallerAsync(null, s => s.GetRequiredService<ISvcAidxIntake>().ApplyAsync("FRS", "api-aidx", message, Ct));
         none.Should().OnlyContain(r => r.HasErrors, "a site without airports has no side of any leg");
+    }
+
+    /// <summary>An SSIM file (time mode U) with one daily leg record per (number, from, to).</summary>
+    private string Ssim(params (string Number, string From, string To)[] legs)
+    {
+        string Date(DateTime d) => d.ToString("ddMMMyy", System.Globalization.CultureInfo.InvariantCulture).ToUpperInvariant();
+        var lines = new List<string> { "1AIRLINE STANDARD SCHEDULE DATA SET".PadRight(200), "2UQR ".PadRight(200) };
+        foreach (var (number, from, to) in legs)
+        {
+            var line = new System.Text.StringBuilder(new string(' ', 200));
+            void Put(int start, string value) => line.Remove(start - 1, value.Length).Insert(start - 1, value);
+            Put(1, "3"); Put(3, "QR "); Put(6, number.PadLeft(4, '0')); Put(10, "0101J");
+            Put(15, Date(Now.AddDays(-5))); Put(22, Date(Now.AddDays(30))); Put(29, "1234567");
+            Put(37, from); Put(40, "0800"); Put(44, "0800"); Put(48, "+0000");
+            Put(55, to); Put(58, "1200"); Put(62, "1200"); Put(66, "+0000"); Put(71, "T2"); Put(73, "359");
+            lines.Add(line.ToString());
+        }
+
+        return string.Join("\n", lines) + "\n";
+    }
+
+    private Task<Fluentx.Result<Ariva.Core.Domain.ViewModels.SsimPreviewViewModel>> PreviewAsync(Guid? caller, string text, int horizon, string site = "DMO") =>
+        _host.AsCallerAsync(caller, s => s.GetRequiredService<ISvcFlightSchedules>().PreviewAsync(site, new MemoryStream(System.Text.Encoding.ASCII.GetBytes(text)), horizon, Ct));
+
+    private Task<Fluentx.Result<Ariva.Core.Domain.ViewModels.SsimImportViewModel>> ImportAsync(Guid? caller, string text, int horizon, string token, CancellationToken? ct = null,
+        string site = "DMO") =>
+        _host.AsCallerAsync(caller, s => s.GetRequiredService<ISvcFlightSchedules>().ImportAsync(site, new MemoryStream(System.Text.Encoding.ASCII.GetBytes(text)), horizon, token,
+            ct ?? Ct));
+
+    // The audit entry of an import of the file with this outcome.
+    private Task<string> ImportAuditAsync(string sha256, string outcome) =>
+        _host.ReadAsync<string>("SELECT after_summary FROM audit_entry WHERE action = 'FlightSchedule.Imported' AND target_name = 'DMO' AND after_summary LIKE @secret " +
+            "ORDER BY occurred_on DESC LIMIT 1", secret: $"%\"sha256\":\"{sha256}\"%\"outcome\":\"{outcome}\"%");
+
+    [Fact]
+    public async Task Ssim_Should_ImportOnlyWhatWasPreviewedAndNeverChangeALiveLeg_When_Uploaded()
+    {
+        var admin = await AdminAsync();
+        var text = Ssim(("0901", "DOH", "DMO"), ("902", "DMO", "DOH"), ("903", "DOH", "KWI"));
+        var day = Now.ToString("yyyyMMdd", System.Globalization.CultureInfo.InvariantCulture);
+
+        var preview = await PreviewAsync(admin, text, 7);
+        preview.HasErrors.Should().BeFalse(string.Join(", ", preview.ErrorMessages ?? []));
+        preview.Data.Should().Match<Ariva.Core.Domain.ViewModels.SsimPreviewViewModel>(p => p.LegRecords == 3 && p.LegRecordsOfSite == 2 && p.Arrivals == 9 && p.Departures == 9);
+        (await _host.ReadAsync<long>("SELECT count(*) FROM flight_leg WHERE flight_key LIKE 'QR90%'")).Should().Be(0, "a preview changes nothing");
+
+        // A live feed reported the arrival long ago (40 days before the import): its schedule and stand are still never changed by a schedule file.
+        (await LegsAsync("DMO", "aidx", Now.AddMinutes(-1),
+            new FlightLegData($"QR901-{day}-A", "QR", "901", null, "Arrival", Now.Date.AddHours(12).AddMinutes(25), Origin: "DOH", Destination: "DMO", Stand: "B12")))[0]
+            .Applied.Should().BeTrue();
+        await _host.ReadAsync<int>("UPDATE flight_leg SET schedule_source_utc = schedule_source_utc - interval '40 days' WHERE flight_key = @secret RETURNING 1",
+            secret: $"QR901-{day}-A");
+
+        // The preview binds the file, the horizon and the user.
+        var other = await _host.CreateUserAsync("it.flight.admin2." + Guid.NewGuid().ToString("N")[..6], roles: [RoleCodes.SystemAdministrator]);
+        await _host.ReadAsync<int>("UPDATE \"user\" SET all_sites = true WHERE id = @id RETURNING 1", other);
+        (await ImportAsync(admin, text, 7, "not-a-token")).ErrorMessages.Should().Equal([FlightScheduleErrors.NotThePreview]);
+        (await ImportAsync(admin, text.Replace("T2", "T3", StringComparison.Ordinal), 7, preview.Data.PreviewToken)).ErrorMessages.Should()
+            .Equal([FlightScheduleErrors.NotThePreview], "another file");
+        (await ImportAsync(admin, text, 200, preview.Data.PreviewToken)).ErrorMessages.Should().Equal([FlightScheduleErrors.NotThePreview], "another horizon");
+        (await ImportAsync(other, text, 7, preview.Data.PreviewToken)).ErrorMessages.Should().Equal([FlightScheduleErrors.NotThePreview], "another user");
+        (await _host.ReadAsync<long>("SELECT count(*) FROM flight_leg WHERE flight_key LIKE 'QR90%' AND feed = 'ssim'")).Should().Be(0);
+
+        var imported = await ImportAsync(admin, text, 7, preview.Data.PreviewToken);
+        imported.HasErrors.Should().BeFalse(string.Join(", ", imported.ErrorMessages ?? []));
+        imported.Data.Should().Match<Ariva.Core.Domain.ViewModels.SsimImportViewModel>(i => i.Legs == 18 && i.Refused == 0 && i.Applied == 17 && i.Unchanged == 1);
+
+        (await _host.ReadAsync<long>("SELECT count(*) FROM flight_leg WHERE flight_key LIKE 'QR90%' AND schedule_feed = 'ssim' AND schedule_fallback")).Should().Be(17);
+        (await _host.ReadAsync<string>("SELECT to_char(scheduled_utc, 'HH24:MI') || ' ' || coalesce(stand, '-') || ' ' || schedule_feed FROM flight_leg WHERE flight_key = @secret",
+            secret: $"QR901-{day}-A")).Should().Be("12:25 B12 aidx", "the live feed's schedule and stand stay, however old its message");
+        (await ImportAuditAsync(preview.Data.Sha256, "completed")).Should().Contain("\"unitsCommitted\":1");
+        (await _host.ReadAsync<long>("SELECT count(*) FROM audit_entry WHERE action = 'FlightSchedule.Imported' AND actor_id = @id", admin)).Should()
+            .BeGreaterThan(0, "the importing administrator is the actor");
+
+        // A live feed then takes over a leg the schedule created, even with an older message; a later import leaves it alone.
+        var taken = $"QR902-{day}-D";
+        (await LegsAsync("DMO", "aidx", Now.AddDays(-2),
+            new FlightLegData(taken, "QR", "902", null, "Departure", Now.Date.AddHours(8).AddMinutes(10), Origin: "DMO", Destination: "DOH", Gate: "A3")))[0]
+            .Applied.Should().BeTrue();
+        var again = await ImportAsync(admin, text, 7, (await PreviewAsync(admin, text, 7)).Data.PreviewToken);
+        again.Data.Applied.Should().Be(0, "nothing in the file changed");
+        (await _host.ReadAsync<string>("SELECT to_char(scheduled_utc, 'HH24:MI') || ' ' || coalesce(gate, '-') || ' ' || schedule_feed FROM flight_leg WHERE flight_key = @secret",
+            secret: taken)).Should().Be("08:10 A3 aidx");
+
+        (await PreviewAsync(admin, text, 7, "FRS")).ErrorMessages.Should().ContainSingle().Which.Should().Contain("no airport");
+    }
+
+    [Fact]
+    public async Task Ssim_Should_RefuseAPreviewToken_When_UsedAtAnotherSiteOrAfterTwoHours()
+    {
+        var admin = await AdminAsync();
+        var text = Ssim(("0951", "DOH", "DMO"));
+
+        // A second site with a terminal at the demo airport reads the same file the same way; only the token's site differs.
+        var airport = await _host.ReadAsync<Guid>("SELECT a.id FROM airport a JOIN terminal t ON t.airport_id = a.id WHERE t.site_code = 'DMO' LIMIT 1");
+        (await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcSites>().CreateAsync(new CreateSiteRequest("SSB", "Second schedule site"), Ct))).HasErrors.Should().BeFalse();
+        (await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcTopology>().CreateTerminalAsync(new CreateTerminalRequest(airport, "TS", "Schedule terminal", "SSB"), Ct)))
+            .HasErrors.Should().BeFalse();
+        var atDmo = await PreviewAsync(admin, text, 7);
+        (await PreviewAsync(admin, text, 7, "SSB")).Data.Sha256.Should().Be(atDmo.Data.Sha256, "the same file reads the same at the second site");
+        (await ImportAsync(admin, text, 7, atDmo.Data.PreviewToken, site: "SSB")).ErrorMessages.Should().Equal([FlightScheduleErrors.NotThePreview], "another site");
+
+        _host.Clock.Advance(TimeSpan.FromHours(2) + TimeSpan.FromMinutes(1));
+        (await ImportAsync(admin, text, 7, atDmo.Data.PreviewToken)).ErrorMessages.Should().Equal([FlightScheduleErrors.NotThePreview], "older than two hours");
+        (await _host.ReadAsync<long>("SELECT count(*) FROM flight_leg WHERE flight_key LIKE 'QR951-%'")).Should().Be(0);
+        (await ImportAsync(admin, text, 7, (await PreviewAsync(admin, text, 7)).Data.PreviewToken)).HasErrors.Should().BeFalse("a fresh preview imports");
+    }
+
+    [Fact]
+    public async Task Ssim_Should_RollBackAFailedUnitAndAuditWhatWasCommitted_When_TheImportFailsPartWay()
+    {
+        var admin = await AdminAsync();
+        var many = Ssim([.. Enumerable.Range(1000, 40).Select(n => (n.ToString(System.Globalization.CultureInfo.InvariantCulture), "DOH", "DMO"))]);
+        var preview = await PreviewAsync(admin, many, 14);
+        preview.Data.Legs.Should().BeInRange(FlightRules.MaxBatch + 1, 2 * FlightRules.MaxBatch, "two units");
+
+        // The second unit fails after applying its legs: it is rolled back whole (its scope's disposal would otherwise commit
+        // it), the first stays, and the audit says the import failed after one unit.
+        FailingIntake.Arm(2);
+        try
+        {
+            var failing = () => ImportAsync(admin, many, 14, preview.Data.PreviewToken);
+            await failing.Should().ThrowAsync<InvalidOperationException>();
+        }
+        finally
+        {
+            FailingIntake.Arm(0);
+        }
+
+        (await _host.ReadAsync<long>("SELECT count(*) FROM flight_leg WHERE flight_key LIKE 'QR10%'")).Should().Be(FlightRules.MaxBatch);
+        (await ImportAuditAsync(preview.Data.Sha256, "failed")).Should().Contain("\"unitsCommitted\":1").And.Contain($"\"applied\":{FlightRules.MaxBatch}");
+
+        // The first unit fails: nothing is committed, and the failure is still audited.
+        var other = Ssim([.. Enumerable.Range(1200, 2).Select(n => (n.ToString(System.Globalization.CultureInfo.InvariantCulture), "DOH", "DMO"))]);
+        var small = await PreviewAsync(admin, other, 7);
+        FailingIntake.Arm(1);
+        try
+        {
+            var failing = () => ImportAsync(admin, other, 7, small.Data.PreviewToken);
+            await failing.Should().ThrowAsync<InvalidOperationException>();
+        }
+        finally
+        {
+            FailingIntake.Arm(0);
+        }
+
+        (await _host.ReadAsync<long>("SELECT count(*) FROM flight_leg WHERE flight_key LIKE 'QR120%'")).Should().Be(0);
+        (await ImportAuditAsync(small.Data.Sha256, "failed")).Should().Contain("\"unitsCommitted\":0").And.Contain("\"applied\":0");
+    }
+
+    [Fact]
+    public async Task Ssim_Should_RunToItsEnd_When_TheCallerGoesAwayAfterTheFirstUnit()
+    {
+        var admin = await AdminAsync();
+        var many = Ssim([.. Enumerable.Range(1100, 40).Select(n => (n.ToString(System.Globalization.CultureInfo.InvariantCulture), "DOH", "DMO"))]);
+        var preview = await PreviewAsync(admin, many, 14);
+
+        using var leaving = new CancellationTokenSource();
+        var import = ImportAsync(admin, many, 14, preview.Data.PreviewToken, leaving.Token);
+        var waited = Stopwatch.StartNew();
+        while (!import.IsCompleted && waited.Elapsed < TimeSpan.FromSeconds(60)
+               && await _host.ReadAsync<long>("SELECT count(*) FROM flight_leg WHERE flight_key LIKE 'QR11%'") == 0)
+            await Task.Delay(20, Ct);
+        await leaving.CancelAsync();
+
+        var done = await import;
+        done.Data.Applied.Should().Be(preview.Data.Legs);
+        (await _host.ReadAsync<long>("SELECT count(*) FROM flight_leg WHERE flight_key LIKE 'QR11%'")).Should().Be(preview.Data.Legs);
+        (await ImportAuditAsync(preview.Data.Sha256, "completed")).Should().Contain($"\"applied\":{preview.Data.Legs}");
     }
 
     [Fact]

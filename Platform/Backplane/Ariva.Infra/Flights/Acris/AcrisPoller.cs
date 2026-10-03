@@ -140,10 +140,21 @@ internal sealed class AcrisPoller(IServiceScopeFactory scopes, OutboundClients c
         foreach (var chunk in System.Linq.Enumerable.Chunk(legs, FlightRules.MaxBatch))
         {
             await using var scope = scopes.CreateAsyncScope();
-            var results = await scope.ServiceProvider.GetRequiredService<SvcAcrisPull>().ApplyAsync(claim.SiteCode, "acris-" + claim.Target.Code, chunk, source, ct);
             var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-            unitOfWork.PromiseToCommit();
-            await unitOfWork.EndAsync(ct);
+            IReadOnlyList<FlightItemResult> results;
+            try
+            {
+                results = await scope.ServiceProvider.GetRequiredService<SvcAcrisPull>().ApplyAsync(claim.SiteCode, "acris-" + claim.Target.Code, chunk, source, ct);
+                unitOfWork.PromiseToCommit();
+                await unitOfWork.EndAsync(ct);
+            }
+            catch
+            {
+                // Disposing a unit that was never ended commits what was promised: a unit that failed part way is rolled back.
+                await unitOfWork.RollbackAsync(CancellationToken.None);
+                throw;
+            }
+
             applied += results.Count(r => r.Applied);
             refused += results.Count(r => r.HasErrors);
         }

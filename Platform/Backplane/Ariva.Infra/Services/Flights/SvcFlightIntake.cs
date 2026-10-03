@@ -20,8 +20,14 @@ internal sealed class SvcFlightIntake(IUnitOfWork unitOfWork, ICurrentUser curre
 {
     public const int LockClass = 41;
 
-    public async Task<IReadOnlyList<FlightItemResult>> ApplyLegsAsync(string siteCode, string feed, IReadOnlyList<FlightLegData> legs, DateTime? sourceUtc,
-        CancellationToken ct = default)
+    public Task<IReadOnlyList<FlightItemResult>> ApplyLegsAsync(string siteCode, string feed, IReadOnlyList<FlightLegData> legs, DateTime? sourceUtc,
+        CancellationToken ct = default) => LegsAsync(siteCode, feed, legs, sourceUtc, false, ct);
+
+    public Task<IReadOnlyList<FlightItemResult>> ApplyScheduleLegsAsync(string siteCode, string feed, IReadOnlyList<FlightLegData> legs, DateTime sourceUtc,
+        CancellationToken ct = default) => LegsAsync(siteCode, feed, legs, sourceUtc, true, ct);
+
+    private async Task<IReadOnlyList<FlightItemResult>> LegsAsync(string siteCode, string feed, IReadOnlyList<FlightLegData> legs, DateTime? sourceUtc, bool fallback,
+        CancellationToken ct)
     {
         var (name, source, now) = await BeginAsync(siteCode, feed, legs, sourceUtc, ct);
         await LockAsync(siteCode, legs.Select(l => l?.FlightKey), ct);
@@ -39,7 +45,7 @@ internal sealed class SvcFlightIntake(IUnitOfWork unitOfWork, ICurrentUser curre
             var leg = await LegAsync(siteCode, values.FlightKey, known, ct);
             if (leg is null)
             {
-                leg = new FlightLeg(siteCode, values, name, source, now);
+                leg = new FlightLeg(siteCode, values, name, source, now, fallback);
                 await SaveAsync(leg, ct);
                 // Flushed now: an event or allocation later in the same call, or the next call, must find it.
                 await FlushAsync(ct);
@@ -54,7 +60,13 @@ internal sealed class SvcFlightIntake(IUnitOfWork unitOfWork, ICurrentUser curre
                 continue;
             }
 
-            var applied = leg.Apply(values, name, source, now);
+            if (fallback && !leg.ScheduleFallback)
+            {
+                results.Add(new FlightItemResult(i, values.FlightKey, false, [], ["A live feed has reported this leg; a schedule file does not change it."]));
+                continue;
+            }
+
+            var applied = leg.Apply(values, name, source, now, fallback);
             if (applied)
                 await UpdateAsync(leg, ct);
             results.Add(new FlightItemResult(i, values.FlightKey, applied, [], applied ? [] : ["Nothing newer than what is known."]));

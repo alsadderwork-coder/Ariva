@@ -2762,6 +2762,38 @@
         "HandlerStationManager": 403,
         "SystemAdministrator": 401
       }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/sites/{siteCode}/flight-schedules/preview",
+      "access": "permission",
+      "permissions": [
+        "CreateFlightSchedule"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/sites/{siteCode}/flight-schedules/import",
+      "access": "permission",
+      "permissions": [
+        "CreateFlightSchedule"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
     }
   ]
 }

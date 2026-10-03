@@ -229,6 +229,29 @@ public sealed class FlightTests
     }
 
     [Fact]
+    public void Leg_Should_LetAScheduleFileFillOnlyWhatALiveFeedHasNotReported_When_BothSendTheSchedule()
+    {
+        var live = Leg(Arrival(), Now.AddDays(-40));
+        live.Apply(Values(Arrival() with { Stand = null, Gate = null, Terminal = "T2" }), "ssim", Now, Now, fallback: true).Should()
+            .BeFalse("a schedule file never changes a leg a live feed set, however old the live message");
+        live.Should().Match<FlightLeg>(l => l.Stand == "B12" && l.Terminal == "T1" && l.ScheduleFeed == "aidx" && !l.ScheduleFallback);
+
+        var scheduled = new FlightLeg("DMO", Values(Arrival("QR1-20261001-A") with { Carrier = "QR", Number = "1", Stand = null, Gate = null }), "ssim", Now, Now,
+            fallback: true);
+        scheduled.Should().Match<FlightLeg>(l => l.ScheduleFeed == "ssim" && l.ScheduleFallback);
+        scheduled.Apply(Values(Arrival("QR1-20261001-A") with { Carrier = "QR", Number = "1", Terminal = "T3", Stand = null, Gate = null }), "ssim", Now.AddMinutes(1),
+            Now, fallback: true).Should().BeTrue("a newer schedule file replaces an older one");
+        scheduled.Terminal.Should().Be("T3");
+
+        scheduled.Apply(Values(Arrival("QR1-20261001-A") with { Carrier = "QR", Number = "1" }), "aidx", Now.AddDays(-2), Now).Should()
+            .BeTrue("a live feed replaces a schedule file's values, even with an older message");
+        scheduled.Should().Match<FlightLeg>(l => l.Stand == "B12" && l.Terminal == "T1" && l.ScheduleFeed == "aidx" && !l.ScheduleFallback);
+        scheduled.Apply(Values(Arrival("QR1-20261001-A") with { Carrier = "QR", Number = "1", Terminal = "T3" }), "ssim", Now.AddDays(1), Now, fallback: true)
+            .Should().BeFalse("once a live feed has reported the leg");
+        scheduled.Terminal.Should().Be("T1");
+    }
+
+    [Fact]
     public void Events_Should_BeCheckedByExactName_When_Parsed()
     {
         FlightRules.Check(new FlightEventData("DM214-20261001-A", "OnBlock", Scheduled)).Errors.Should().BeEmpty();

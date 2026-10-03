@@ -27,4 +27,14 @@ public static class FlightExtensions
             services.AddHostedService<FeedFreshnessMonitor>();
         return services;
     }
+
+    /// <summary>SSIM schedule imports (ARV-046, Ariva.Api.Main): the flight intake without the freshness sweep, and the import service.</summary>
+    public static IServiceCollection AddArivaFlightSchedules(this IServiceCollection services, IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        services.AddArivaFlights(configuration, watchFeeds: false);
+        services.TryAddScoped<Ariva.Infra.Services.Administration.AuditTrail>();
+        services.TryAddScoped<ISvcFlightSchedules, Ariva.Infra.Services.Flights.SvcFlightSchedules>();
+        return services;
+    }
 }

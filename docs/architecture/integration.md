@@ -128,7 +128,7 @@ Secrets are encrypted at rest. Calls use `IHttpClientFactory` named clients crea
 |---|---|---|
 | AIDX 22.1 inbound | Phase 0 against a mock | Flight legs and status; maps to `FlightLeg` and `FlightEvent` |
 | ACRIS flight API pull | Phase 0 (ARV-045); the emulator follows in ARV-029 | Polls with `If-Modified-Since` through an `AcrisFlights` outbound endpoint; maps to `FlightLeg` |
-| SSIM chapter 7 import | Phase 0 | Seasonal schedule fallback when no live feed exists |
+| SSIM chapter 7 import | Phase 0 (ARV-046) | Seasonal schedule fallback when no live feed exists: `SsimReader` streams the file (20 MB, 200,000 lines of at most 200 printable ASCII characters, 100,000 expanded legs), expands each record 3 touching the site per operating date within a 1 to 200 day horizon in UTC, and reports bad lines by number; every expanded leg is checked by `FlightRules` before it is counted. Ariva.Api.Main previews and returns a preview token (Data Protection purpose `Ariva.FlightSchedules.Preview.v1`, binding the SHA-256, site, horizon, window, user and issue time, valid two hours), then imports only what the token binds through `ISvcFlightIntake.ApplyScheduleLegsAsync` as the fallback feed: it creates legs and updates only legs whose schedule a fallback set (`flight_leg.schedule_feed`, `schedule_fallback`, script 0029); a live feed always replaces a fallback's schedule. Units of 500, each its own transaction and rolled back on failure; the audit entry is written in its own transaction whatever the outcome |
 | AMAN Kafka feed | Phase 0 against the simulator | Same contracts as the REST immigration endpoints |
 | Vendor AODB REST (SITA, Amadeus, others) | Per project | Built as a mapping onto `FlightLeg` once API access is granted; mocked until then |
 

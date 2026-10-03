@@ -1,4 +1,5 @@
 using Ariva.Core.Flights;
+using Ariva.Core.Domain.ViewModels;
 
 namespace Ariva.Core.Services.Flights;
 
@@ -14,6 +15,13 @@ public interface ISvcFlightIntake : ISvcScoped
 {
     /// <summary>Creates or updates flight legs. Unknown sites are refused as a whole.</summary>
     Task<IReadOnlyList<FlightItemResult>> ApplyLegsAsync(string siteCode, string feed, IReadOnlyList<FlightLegData> legs, DateTime? sourceUtc,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Creates legs from a schedule file, the fallback feed (ARV-046): a leg is created, or updated only when a schedule
+    /// file set its schedule; a leg any live feed has reported is left as it is (unchanged), whatever the message times.
+    /// </summary>
+    Task<IReadOnlyList<FlightItemResult>> ApplyScheduleLegsAsync(string siteCode, string feed, IReadOnlyList<FlightLegData> legs, DateTime sourceUtc,
         CancellationToken ct = default);
 
     /// <summary>Records milestones of known legs; an event for a key the site does not know is refused (a feed must send the leg first).</summary>
@@ -50,3 +58,25 @@ public interface ISvcFeedFreshness : ISvcScoped
 
 /// <summary>What a sweep did: whether it ran (one replica at a time), the feeds judged, stale now, and changes of state.</summary>
 public sealed record FeedFreshnessSweep(bool Ran, int Feeds, int Stale, int Changed);
+
+/// <summary>
+/// SSIM schedule files for a site (ARV-046, Ariva.Api.Main): preview what a file would do, then import exactly what was
+/// previewed (the preview token binds the file's SHA-256, the site, the horizon, the window and the user). The schedule
+/// is a fallback feed: it creates legs and updates only legs a schedule file set; a leg any live feed has reported is
+/// never changed by it. Calls of an administrator within the site (the controller is site-scoped).
+/// </summary>
+public interface ISvcFlightSchedules : ISvcScoped
+{
+    /// <summary>Whether the site exists (checked before the upload is read, so an unknown site answers 404 like one the caller does not hold).</summary>
+    Task<bool> SiteExistsAsync(string siteCode, CancellationToken ct = default);
+
+    Task<Result<SsimPreviewViewModel>> PreviewAsync(string siteCode, Stream file, int horizonDays, CancellationToken ct = default);
+
+    Task<Result<SsimImportViewModel>> ImportAsync(string siteCode, Stream file, int horizonDays, string previewToken, CancellationToken ct = default);
+}
+
+public static class FlightScheduleErrors
+{
+    public const string NotThePreview =
+        "This is not what was previewed (the file, the site, the horizon or the day differs, or the preview is older than two hours); preview it again.";
+}

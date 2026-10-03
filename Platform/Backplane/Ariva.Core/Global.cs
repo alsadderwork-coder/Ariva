@@ -47,6 +47,14 @@ public static class Global
             public static Permission SearchIntegrationClient { get; } = new("IntegrationClient", PermissionAction.Search);
             public static Permission DeleteIntegrationClient { get; } = new("IntegrationClient", PermissionAction.Delete);
 
+            // ARV-046: SSIM schedule files previewed and imported for a site. Only Create is used (a schedule is applied, not
+            // kept); the other four exist because every catalogued entity has all five (PermissionModelTests).
+            public static Permission ViewFlightSchedule { get; } = new("FlightSchedule", PermissionAction.View);
+            public static Permission CreateFlightSchedule { get; } = new("FlightSchedule", PermissionAction.Create);
+            public static Permission EditFlightSchedule { get; } = new("FlightSchedule", PermissionAction.Edit);
+            public static Permission SearchFlightSchedule { get; } = new("FlightSchedule", PermissionAction.Search);
+            public static Permission DeleteFlightSchedule { get; } = new("FlightSchedule", PermissionAction.Delete);
+
             #endregion
 
             #region Topology (E1)

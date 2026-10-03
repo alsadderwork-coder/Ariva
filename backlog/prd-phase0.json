@@ -1057,8 +1057,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 49,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "SSIM chapter 7 preview and import for a site in Ariva.Api.Main (streamed reader with size, line and leg limits; expanded legs checked by FlightRules; preview token binding file, site, horizon, window and user for two hours); applied through the intake as the fallback feed ssim by schedule ownership (script 0029): creates legs and updates only fallback-owned ones, never a leg a live feed reported; units of 500 rolled back on failure; every import audited in its own transaction with its outcome. Security review FAIL then PASS. Gates: unit 1879, integration 264, e2e 334, scan 0 errors, docs.",
       "dependsOn": [
         "ARV-041"
       ]
