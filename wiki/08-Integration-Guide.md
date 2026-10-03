@@ -474,8 +474,8 @@ Scope `displays:read`. Returns the display board's bands, already hysteresis-fil
 
 | Adapter | Status | Notes |
 |---|---|---|
-| AIDX 22.1 inbound | Phase 0 (ARV-044); the AODB emulator follows in ARV-029 | Primary AODB adapter; flight legs, times, resources and status (section 8) |
-| ACRIS flight API pull | Phase 0 (ARV-045); the emulator follows in ARV-029 | Ariva polls an `AcrisFlights` outbound endpoint every 30 s or more with `If-Modified-Since`; see ACRIS below. ACRIS Passenger Wait Times API v1.6.0 is the reference for Ariva's outbound wait-times publishing (v1) |
+| AIDX 22.1 inbound | Phase 0 (ARV-044); the AODB emulator pushes it (ARV-029) | Primary AODB adapter; flight legs, times, resources and status (section 8) |
+| ACRIS flight API pull | Phase 0 (ARV-045); the AODB emulator serves it (ARV-029) | Ariva polls an `AcrisFlights` outbound endpoint every 30 s or more with `If-Modified-Since`; see ACRIS below. ACRIS Passenger Wait Times API v1.6.0 is the reference for Ariva's outbound wait-times publishing (v1) |
 | SSIM chapter 7 import | Phase 0 (ARV-046) | File upload through Ariva.Api.Main at `api/v1/admin/sites/{siteCode}/flight-schedules` (preview, then import; up to 20 MB, streamed). Seasonal schedule fallback and day-one pilots without a live feed; see SSIM below |
 | AMAN Kafka feed | Phase 0 against the simulator | Same contracts as the REST immigration endpoints |
 | Vendor AODB REST (SITA, Amadeus, others) | Per project | A mapping onto `FlightLeg` once API access and documentation are granted; mocked until then |
@@ -553,10 +553,12 @@ A missing or wrong `X-TOTP-Code` on a data call, for a client whose policy needs
 
 `Ariva.Simulation.Api` provides:
 
-- A mock AODB: AIDX push and ACRIS pull.
-- A mock AMAN: Kafka and REST, with its own TOTP client so Ariva's outbound `TotpClientCredentials` handler is exercised.
-- A mock immigration system that uses the generic REST endpoints.
-- A sensor emulator (ARV-028) that plays the reference day to Ingest as registered devices, at up to 60 times real time, with start, pause, speed and jump controls.
+- A sensor emulator (ARV-028) that plays the reference day to Ingest as registered devices, at up to 60 times real time, with start, pause, speed and jump controls. Its demo clock drives the emulators below, so they all describe the same minute.
+- A mock AODB (ARV-029): AIDX 22.1 notifications pushed to Ariva with its own integration client (every leg when a run starts, then the legs whose estimate or block time changed), and an ACRIS flight API (`aodb/acris/flights`, API key, `If-Modified-Since`) for Ariva's ACRIS pull.
+- A mock AMAN (ARV-029): desk sessions, desk and e-gate intervals and inbound lane demand from the reference day, with AMAN's own desk and e-gate codes, on the `aman.feed.*.v1` Kafka topics and through the immigration REST endpoints with its own TOTP client; and a mock AMAN Integration API (`aman/api/v1/auth`, `aman/api/v1/feed/{contract}`) so Ariva's outbound `TotpClientCredentials` handler is exercised.
+- A mock immigration system (ARV-029) that sends the same contracts through the generic REST endpoints with its own client (departure immigration by default).
+
+`api/v1/simulation/feeds` shows the emulators' status, lists AMAN's codes with the Ariva desks they stand for, plays one minute at once and loads the integration clients Ariva issued (operator key). `Platform/Simulation/Ariva.Simulation.Api/Emulators/README.md` describes what each sends.
 
 The reference scenario is the seeded day at the fictional Demo International Airport (site code `DMO`, seed 9303). Dalil issues test clients on the dev or demo environment (`https://api-integration-dev-ariva.dalilhub.tech`, simulator at `https://simulation-dev-ariva.dalilhub.tech`). Ariva's end-to-end tests (`Platform/Testing/Ariva.E2E`) cover the token exchange, TOTP replay rejection, scope and site enforcement, idempotency and every endpoint above; use them as the reference behaviour.
 

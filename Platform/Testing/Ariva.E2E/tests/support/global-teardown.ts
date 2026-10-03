@@ -29,6 +29,10 @@ export default async function globalTeardown() {
 		secrets.push(...Object.values(accounts()).map((entry) => entry.password), changedPassword());
 		secrets.push(...Object.values(accounts()).flatMap((entry) => (entry.totpSecret ? [entry.totpSecret] : [])));
 	}
+	// The simulator's operator key and the mock partners' secrets (ARV-027 to ARV-029) never reach Ariva's host logs either.
+	for (const name of ['ARIVA_E2E_SIMULATION_KEY', 'ARIVA_E2E_MOCK_AMAN_SECRET', 'ARIVA_E2E_MOCK_AMAN_SEED', 'ARIVA_E2E_ACRIS_KEY']) {
+		if (process.env[name]) secrets.push(process.env[name]!);
+	}
 	// The break-glass credential printed by the installer command (ARV-010c) must never reach a host log either.
 	if (fs.existsSync(breakGlassFile)) {
 		const lines = fs.readFileSync(breakGlassFile, 'utf8').split(/\r?\n/);

@@ -698,7 +698,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 32,
-      "passes": false,
+      "passes": true,
       "notes": "Deferred until after ARV-050: needs the Integration API with TOTP clients (ARV-042), immigration endpoints (ARV-048) and the outbound AMAN connector (ARV-050).",
       "dependsOn": [
         "ARV-027",
@@ -1078,7 +1078,7 @@
       ],
       "priority": 50,
       "passes": false,
-      "notes": "",
+      "notes": "AMAN (Kafka and REST, AMAN codes, mock AMAN Integration API with TOTP auth), AODB (AIDX push, ACRIS pull with key) and mock immigration (REST) emulators on the sensor emulator's demo clock, derived from the reference scenario. Security review FAIL then PASS. Gates: unit 1918, integration 266, e2e 344, scan 0 errors, docs.",
       "dependsOn": [
         "ARV-041",
         "ARV-048"

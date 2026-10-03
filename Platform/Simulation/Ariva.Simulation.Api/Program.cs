@@ -1,3 +1,4 @@
+using Ariva.Simulation.Api.Emulators;
 using Ariva.Simulation.Api.Emulators.Sensors;
 using Ariva.Simulation.Api.Security;
 
@@ -61,6 +62,7 @@ if (string.Equals(environment, SimulationSecurity.ProductionEnvironment, StringC
 builder.Services.AddSimulationSecurity(builder.Configuration);
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<Ariva.Simulation.Api.Scenarios.ScenarioEngine>();
+builder.Services.AddFeedEmulators(builder.Configuration);
 builder.Services.AddSensorEmulator(builder.Configuration);
 // Binding errors say what was wrong, not which internal type failed to bind (CWE-209).
 builder.Services.AddControllers().AddJsonOptions(options =>

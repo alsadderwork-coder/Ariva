@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using Ariva.Simulation.Api.Emulators;
 using Ariva.Simulation.Api.Scenarios;
 using Ariva.Simulation.Api.Scenarios.Engine;
 using Microsoft.Extensions.Options;
@@ -54,6 +55,7 @@ public sealed class SensorEmulator : BackgroundService
     private readonly TimeProvider _time;
     private readonly ILogger<SensorEmulator> _logger;
     private readonly SemaphoreSlim _tick = new(1, 1);
+    private readonly SinkPump[] _sinks;
 
     private Device[] _devices;
     private bool _running;
@@ -64,8 +66,9 @@ public sealed class SensorEmulator : BackgroundService
     private int? _untilMinute;
 
     public SensorEmulator(ScenarioEngine engine, IHttpClientFactory http, IOptionsMonitor<SensorEmulatorSettings> settings, TimeProvider time,
-        ILogger<SensorEmulator> logger)
+        ILogger<SensorEmulator> logger, IEnumerable<IDemoMinuteSink> sinks = null)
     {
+        _sinks = [.. (sinks ?? []).Select(sink => new SinkPump(sink, Dropped))];
         ArgumentNullException.ThrowIfNull(settings);
         _engine = engine;
         _http = http;
@@ -139,6 +142,7 @@ public sealed class SensorEmulator : BackgroundService
 
             _untilMinute = untilMinute;
             _running = true;
+            Interlocked.Exchange(ref _dropLogged, 0);
             _logger.LogInformation("Sensor emulator started by {Operator} at demo minute {Minute}, speed {Speed}, until {Until}", by, _nextMinute, _speed, untilMinute);
         }
 
@@ -214,6 +218,21 @@ public sealed class SensorEmulator : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        var pumps = _sinks.Select(pump => Task.Run(() => PumpAsync(pump, stoppingToken), CancellationToken.None)).ToList();
+        try
+        {
+            await TickLoopAsync(stoppingToken);
+        }
+        finally
+        {
+            foreach (var pump in _sinks)
+                pump.Queue.Writer.TryComplete();
+            await Task.WhenAll(pumps).ContinueWith(_ => { }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        }
+    }
+
+    private async Task TickLoopAsync(CancellationToken stoppingToken)
+    {
         while (!stoppingToken.IsCancellationRequested)
         {
             try
@@ -270,6 +289,10 @@ public sealed class SensorEmulator : BackgroundService
                 }
 
                 DateTime WallOf(double demoMinute) => (wallAnchor + TimeSpan.FromMinutes((demoMinute - demoAnchor) / speed)).UtcDateTime;
+                // Every other emulator on the demo clock (AODB, AMAN, immigration) gets the same minute in order, played by its
+                // own pump so that a slow partner (Kafka, Ariva's API) never holds the sensors back.
+                foreach (var sink in _sinks)
+                    sink.Queue.Writer.TryWrite((minute, WallOf));
                 await PlayMinuteAsync(minute, devices, WallOf, ct);
 
                 lock (_gate)
@@ -283,6 +306,58 @@ public sealed class SensorEmulator : BackgroundService
         finally
         {
             _tick.Release();
+        }
+    }
+
+    /// <summary>Minutes a feed emulator can fall behind the clock before its oldest queued minute is dropped (CWE-400).</summary>
+    public const int FeedQueueCapacity = 120;
+
+    private long _feedMinutesDropped;
+    private int _dropLogged;
+
+    /// <summary>Demo minutes dropped from a feed emulator's queue because it fell more than <see cref="FeedQueueCapacity"/> minutes behind.</summary>
+    public long FeedMinutesDropped => Interlocked.Read(ref _feedMinutesDropped);
+
+    private void Dropped(IDemoMinuteSink sink, int minute)
+    {
+        Interlocked.Increment(ref _feedMinutesDropped);
+        if (Interlocked.Exchange(ref _dropLogged, 1) == 0)
+            _logger.LogWarning("{Emulator} fell {Capacity} demo minutes behind the clock; its oldest minutes are dropped (from {Minute})", sink.GetType().Name,
+                FeedQueueCapacity, minute);
+    }
+
+    /// <summary>One feed emulator's minutes, played in order by its own loop, at most <see cref="FeedQueueCapacity"/> waiting.</summary>
+    private sealed class SinkPump
+    {
+        public SinkPump(IDemoMinuteSink sink, Action<IDemoMinuteSink, int> dropped)
+        {
+            Sink = sink;
+            Queue = System.Threading.Channels.Channel.CreateBounded<(int Minute, Func<double, DateTime> WallOf)>(
+                new System.Threading.Channels.BoundedChannelOptions(FeedQueueCapacity)
+                {
+                    FullMode = System.Threading.Channels.BoundedChannelFullMode.DropOldest,
+                    SingleReader = true
+                },
+                item => dropped(sink, item.Minute));
+        }
+
+        public IDemoMinuteSink Sink { get; }
+
+        public System.Threading.Channels.Channel<(int Minute, Func<double, DateTime> WallOf)> Queue { get; }
+    }
+
+    private async Task PumpAsync(SinkPump pump, CancellationToken ct)
+    {
+        await foreach (var (minute, wallOf) in pump.Queue.Reader.ReadAllAsync(ct))
+        {
+            try
+            {
+                await pump.Sink.PlayAsync(minute, wallOf, ct);
+            }
+            catch (Exception e) when (e is not OperationCanceledException || !ct.IsCancellationRequested)
+            {
+                _logger.LogError(e, "{Emulator} failed to play demo minute {Minute}", pump.Sink.GetType().Name, minute);
+            }
         }
     }
 

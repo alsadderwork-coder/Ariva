@@ -77,6 +77,9 @@ public static class SimulationScopes
 
     /// <summary>Rate limit of scenario re-runs, per key.</summary>
     public const string RerunLimit = "simulation.rerun";
+
+    /// <summary>Rate limit of minutes played at once on the feed emulators, per key (ARV-029): 60 a minute.</summary>
+    public const string PlayLimit = "simulation.play";
 }
 
 /// <summary>

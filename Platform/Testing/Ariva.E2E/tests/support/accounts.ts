@@ -148,7 +148,9 @@ export function accounts() {
 		// ARV-044: the same, for aidx.spec.ts.
 		aidxAdmin: account('e2e.aidxadmin', ['SystemAdministrator'], false, true, ['*']),
 		// ARV-045: outbound endpoints are critical actions too.
-		outboundAdmin: account('e2e.outadmin', ['SystemAdministrator'], false, true, ['*'])
+		outboundAdmin: account('e2e.outadmin', ['SystemAdministrator'], false, true, ['*']),
+		// ARV-029: registers the emulated AODB's and AMAN's integration clients (critical actions).
+		emulatorFeedAdmin: account('e2e.emufeedadmin', ['SystemAdministrator'], false, true, ['*'])
 	} as const;
 }
 

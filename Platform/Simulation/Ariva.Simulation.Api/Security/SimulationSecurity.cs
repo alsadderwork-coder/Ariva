@@ -65,6 +65,8 @@ internal static class SimulationSecurity
         services.AddRateLimiter(limiter =>
         {
             limiter.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+            limiter.AddPolicy(SimulationScopes.PlayLimit, context => RateLimitPartition.GetFixedWindowLimiter(context.User.Identity?.Name ?? "anonymous",
+                _ => new FixedWindowRateLimiterOptions { PermitLimit = 60, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
             limiter.AddPolicy(SimulationScopes.RerunLimit, context =>
             {
                 var perMinute = context.RequestServices.GetRequiredService<IOptionsMonitor<SimulationControlSettings>>().CurrentValue.RerunsPerMinute;

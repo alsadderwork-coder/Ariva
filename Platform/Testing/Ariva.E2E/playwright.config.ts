@@ -48,6 +48,25 @@ process.env.ARIVA_E2E_KEY_DIR ||= keyDirectory;
 // One simulator operator key per run (ARV-027, ARV-028): the simulator gets only its SHA-256, the tests the key.
 process.env.ARIVA_E2E_SIMULATION_KEY ||= 'sim-e2e-' + crypto.randomBytes(24).toString('base64url');
 const simulationKeyDigest = crypto.createHash('sha256').update(process.env.ARIVA_E2E_SIMULATION_KEY).digest('hex');
+// ARV-029: one client of the mock AMAN Integration API per run; the simulator gets the secret's SHA-256 and the seed.
+process.env.ARIVA_E2E_MOCK_AMAN_SECRET ||= 'aman-e2e-' + crypto.randomBytes(24).toString('base64url');
+process.env.ARIVA_E2E_MOCK_AMAN_SEED ||= base32Of(crypto.randomBytes(20));
+// ARV-029: the API key Ariva's ACRIS pull would present to the emulated AODB.
+process.env.ARIVA_E2E_ACRIS_KEY ||= 'acris-e2e-' + crypto.randomBytes(24).toString('base64url');
+
+function base32Of(bytes: Buffer): string {
+	const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+	let bits = 0, value = 0, out = '';
+	for (const byte of bytes) {
+		value = (value << 8) | byte;
+		bits += 8;
+		while (bits >= 5) {
+			out += alphabet[(value >>> (bits - 5)) & 31];
+			bits -= 5;
+		}
+	}
+	return bits > 0 ? out + alphabet[(value << (5 - bits)) & 31] : out;
+}
 
 /**
  * ARV-045: the ACRIS stand-in of outbound-endpoints.spec.ts listens on 127.0.0.1 over plain HTTP, which only a lab
@@ -209,7 +228,15 @@ export default defineConfig({
 			Simulation__Control__Keys__0__Scopes__1: 'control',
 			// The sensor emulator pushes to the Ingest under test; plain HTTP only over loopback.
 			Simulation__Sensors__IngestUrl: hosts.ingest,
-			Simulation__Sensors__AllowInsecureTransport: /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/.test(hosts.ingest) ? 'true' : 'false'
+			Simulation__Sensors__AllowInsecureTransport: /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/.test(hosts.ingest) ? 'true' : 'false',
+			// ARV-029: the AODB, AMAN and immigration emulators call the Integration host under test.
+			Simulation__Ariva__IntegrationUrl: hosts.integration,
+			Simulation__Ariva__AllowInsecureTransport: /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/.test(hosts.integration) ? 'true' : 'false',
+			Simulation__Aman__Kafka__BootstrapServers: process.env.ARIVA_E2E_KAFKA_BOOTSTRAP ?? '',
+			Simulation__Aman__Mock__Clients__0__ClientId: 'e2e-aman-connector',
+			Simulation__Aman__Mock__Clients__0__SecretSha256: crypto.createHash('sha256').update(process.env.ARIVA_E2E_MOCK_AMAN_SECRET).digest('hex'),
+			Simulation__Aman__Mock__Clients__0__TotpSecret: process.env.ARIVA_E2E_MOCK_AMAN_SEED,
+			Simulation__Aodb__AcrisKeySha256: crypto.createHash('sha256').update(process.env.ARIVA_E2E_ACRIS_KEY).digest('hex')
 		}),
 		{
 			command: 'npm run build && npm run preview',

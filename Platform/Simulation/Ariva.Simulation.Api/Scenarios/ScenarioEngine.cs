@@ -70,6 +70,14 @@ public sealed class ScenarioEngine : IDisposable
         }
     }
 
+    /// <summary>Reads the current day under the engine's lock (views of a day are not thread safe), for the feed emulators.</summary>
+    internal T Read<T>(Func<ScenarioDay, T> read)
+    {
+        ArgumentNullException.ThrowIfNull(read);
+        lock (_gate)
+            return read(_day);
+    }
+
     /// <summary>The day's summary.</summary>
     public ScenarioSummary Summary()
     {

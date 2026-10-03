@@ -178,6 +178,25 @@ public sealed class FlightIntakeTests(PostgresFixture fixture) : IAsyncDisposabl
         none.Should().OnlyContain(r => r.HasErrors, "a site without airports has no side of any leg");
     }
 
+    [Fact]
+    public async Task AodbEmulator_Should_HaveEveryLegApplied_When_ItsAidxReachesTheIntake()
+    {
+        await AdminAsync();
+        // ARV-029: the emulated AODB's notification for a demo minute, laid on the clock's day as the emulator does.
+        var day = Ariva.Simulation.Api.Scenarios.Engine.ScenarioDay.Run(Ariva.Simulation.Api.Scenarios.Engine.ScenarioConfig.Reference(9303));
+        var dayStart = Now.AddMinutes(-1110);
+        var legs = Ariva.Simulation.Api.Emulators.Aodb.AodbSchedule.At(day, 1110, m => dayStart.AddMinutes(m), "DMO");
+        var xml = Ariva.Simulation.Api.Emulators.Aodb.AodbSchedule.Aidx(legs, Now, "SIM-1110-0");
+        var (message, error) = Ariva.Infra.Flights.Aidx.AidxReader.Read(System.Text.Encoding.UTF8.GetBytes(xml));
+        error.Should().BeNull();
+
+        var results = await _host.AsCallerAsync(null, s => s.GetRequiredService<ISvcAidxIntake>().ApplyAsync("DMO", "api-sim-aodb", message, Ct));
+
+        results.Where(r => !r.Applied).Select(r => r.FlightKey + ": " + string.Join(" ", r.Errors.Concat(r.Warnings))).Should().BeEmpty();
+        results.Should().HaveCount(legs.Count);
+        (await _host.ReadAsync<long>("SELECT count(*) FROM flight_leg WHERE feed = 'api-sim-aodb'")).Should().Be(legs.Count);
+    }
+
     /// <summary>An SSIM file (time mode U) with one daily leg record per (number, from, to).</summary>
     private string Ssim(params (string Number, string From, string To)[] legs)
     {

@@ -76,4 +76,9 @@
         <ProjectReference Include="..\..\Business\Ariva.Business.Contracts\Ariva.Business.Contracts.csproj" />
     </ItemGroup>
 
+    <ItemGroup>
+        <!-- The emulated AMAN publishes its feed topics with a plain producer, as a partner system would (ARV-029). -->
+        <PackageReference Include="Confluent.Kafka" />
+    </ItemGroup>
+
 </Project>

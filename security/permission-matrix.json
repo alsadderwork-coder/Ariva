@@ -11,7 +11,8 @@
     "alpha": "TerminalDutyManager",
     "siteCode": "ZZ9",
     "zone": "MATRIX-ZONE",
-    "queue": "A-VIS"
+    "queue": "A-VIS",
+    "contract": "desk-sessions"
   },
   "endpoints": [
     {
@@ -409,6 +410,106 @@
       "body": {
         "devices": []
       },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "simulation",
+      "method": "GET",
+      "route": "/api/v1/simulation/feeds",
+      "access": "simulation",
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "simulation",
+      "method": "GET",
+      "route": "/api/v1/simulation/feeds/aman-codes",
+      "access": "simulation",
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "simulation",
+      "method": "POST",
+      "route": "/api/v1/simulation/feeds/play",
+      "access": "simulation",
+      "body": {
+        "minute": 1
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "simulation",
+      "method": "PUT",
+      "route": "/api/v1/simulation/feeds/clients",
+      "access": "simulation",
+      "body": {},
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "simulation",
+      "method": "POST",
+      "route": "/aman/api/v1/auth",
+      "access": "anonymous",
+      "body": {
+        "clientId": "matrix-probe",
+        "clientSecret": "not-a-secret",
+        "totpCode": "000000"
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "simulation",
+      "method": "GET",
+      "route": "/aman/api/v1/feed/{contract}",
+      "access": "simulation",
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "simulation",
+      "method": "GET",
+      "route": "/aodb/acris/flights",
+      "access": "simulation",
       "expected": {
         "anonymous": 401,
         "BorderShiftSupervisor": 401,
