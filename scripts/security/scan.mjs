@@ -72,8 +72,13 @@ const RULES = [
     msg: 'Template compiled from a non-embedded source. Templates edited at runtime must be sandboxed and admin-only.' },
 
   { id: 'SEC-020', cwe: ['CWE-918'], langs: ['cs'], severity: 'error',
-    re: /new\s+HttpClient\s*\(|WebRequest\.Create\s*\(|\bHttpWebRequest\b|new\s+WebClient\s*\(/,
-    msg: 'Outbound HTTP outside IHttpClientFactory. Use a named client bound to an admin-registered OutboundEndpoint.' },
+    re: /new\s+HttpClient\s*\(|\bHttpClient\s+\w+\s*=\s*new\s*\(|WebRequest\.Create\s*\(|\bHttpWebRequest\b|new\s+WebClient\s*\(/,
+    msg: 'Outbound HTTP outside IHttpClientFactory and the outbound endpoint registry (OutboundClients). Use a named client, or an OutboundEndpoint registered by an administrator.' },
+  // ARV-045: a handler of Ariva's own decides where a connection goes; in Backplane only the outbound transport
+  // (OutboundTransport, with its checked ConnectCallback) may build one, and it is allowlisted.
+  { id: 'SEC-023', cwe: ['CWE-918'], langs: ['cs'], severity: 'error', paths: [/Platform[\\/]Backplane[\\/]/],
+    re: /new\s+(SocketsHttpHandler|HttpClientHandler)\b/,
+    msg: 'HTTP handler built in Backplane outside the outbound transport. Outbound connections go through OutboundTransport, which checks every address it dials.' },
   { id: 'SEC-021', cwe: ['CWE-918'], langs: ['cs'], severity: 'error',
     re: /\$@?"https?:\/\/\{|new\s+Uri\s*\(\s*(request|input|dto|model|body|query|payload)\.|BaseAddress\s*=\s*new\s+Uri\s*\(\s*(request|input|dto|model|body|query|payload)\./i,
     msg: 'Outbound URL host built from variable or request data. Hosts come only from the OutboundEndpoint registry.' },

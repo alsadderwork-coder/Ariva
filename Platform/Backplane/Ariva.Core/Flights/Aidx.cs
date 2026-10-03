@@ -1,5 +1,3 @@
-using System.Globalization;
-
 namespace Ariva.Core.Flights;
 
 /// <summary>
@@ -55,14 +53,9 @@ public static class AidxMapping
             return (null, "The FlightLeg has no LegIdentifier.");
         if (leg.OriginDate is not { } date)
             return (null, "LegIdentifier/OriginDate is required.");
-        var arrives = leg.ArrivalAirport is not null && siteAirports.Contains(leg.ArrivalAirport.Trim().ToUpperInvariant());
-        var departs = leg.DepartureAirport is not null && siteAirports.Contains(leg.DepartureAirport.Trim().ToUpperInvariant());
-        if (arrives == departs)
-            return (null, "The leg must arrive at or depart from exactly one airport of this site.");
-
-        var arrival = arrives;
-        var key = string.Concat(leg.Airline?.Trim().ToUpperInvariant(), leg.FlightNumber?.Trim(), leg.Suffix?.Trim().ToUpperInvariant(), "-",
-            date.ToString("yyyyMMdd", CultureInfo.InvariantCulture), arrival ? "-A" : "-D");
+        if (FlightKeys.SiteSide(leg.DepartureAirport, leg.ArrivalAirport, siteAirports) is not { } arrival)
+            return (null, FlightKeys.NotThisSite);
+        var key = FlightKeys.Of(leg.Airline, leg.FlightNumber, leg.Suffix, date, arrival);
         var side = arrival ? leg.ArrivalResources : leg.DepartureResources;
         side ??= AidxResources.None;
         var block = arrival ? "ONB" : "OFB";
@@ -77,7 +70,7 @@ public static class AidxMapping
         return (new FlightLegData(
             key,
             leg.Airline,
-            leg.FlightNumber,
+            FlightKeys.Number(leg.FlightNumber),
             leg.Suffix,
             arrival ? "Arrival" : "Departure",
             Time(leg, block, "SCT") ?? Time(leg, wheels, "SCT"),
@@ -100,4 +93,33 @@ public static class AidxMapping
     // The last time of that qualifier and type (a later OperationTime of the same kind supersedes an earlier one).
     private static DateTime? Time(AidxLeg leg, string qualifier, string type) =>
         leg.Times?.LastOrDefault(t => string.Equals(t.Qualifier, qualifier, StringComparison.Ordinal) && string.Equals(t.Type, type, StringComparison.Ordinal))?.Time;
+}
+
+/// <summary>
+/// The flight key every adapter builds the same way (ARV-044, ARV-045): airline, flight number without leading zeros,
+/// suffix, origin date and direction (<c>RJ111-20261003-A</c>), so one flight sent by AIDX, ACRIS or the JSON API is one
+/// leg; and which side of a leg a site is on.
+/// </summary>
+public static class FlightKeys
+{
+    public const string NotThisSite = "The leg must arrive at or depart from exactly one airport of this site.";
+
+    public static string Number(string number)
+    {
+        var trimmed = number?.Trim();
+        return string.IsNullOrEmpty(trimmed) ? trimmed : trimmed.TrimStart('0') is { Length: > 0 } digits ? digits : "0";
+    }
+
+    public static string Of(string airline, string number, string suffix, DateOnly originDate, bool arrival) =>
+        string.Concat(airline?.Trim().ToUpperInvariant(), Number(number), suffix?.Trim().ToUpperInvariant(), "-",
+            originDate.ToString("yyyyMMdd", System.Globalization.CultureInfo.InvariantCulture), arrival ? "-A" : "-D");
+
+    /// <summary>True when the leg arrives at the site, false when it departs from it, null when it touches none or both of its airports (codes compared in upper case).</summary>
+    public static bool? SiteSide(string departureAirport, string arrivalAirport, IReadOnlySet<string> siteAirports)
+    {
+        ArgumentNullException.ThrowIfNull(siteAirports);
+        var arrives = arrivalAirport is not null && siteAirports.Contains(arrivalAirport.Trim().ToUpperInvariant());
+        var departs = departureAirport is not null && siteAirports.Contains(departureAirport.Trim().ToUpperInvariant());
+        return arrives == departs ? null : arrives;
+    }
 }

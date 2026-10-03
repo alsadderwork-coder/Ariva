@@ -49,6 +49,14 @@ process.env.ARIVA_E2E_KEY_DIR ||= keyDirectory;
 process.env.ARIVA_E2E_SIMULATION_KEY ||= 'sim-e2e-' + crypto.randomBytes(24).toString('base64url');
 const simulationKeyDigest = crypto.createHash('sha256').update(process.env.ARIVA_E2E_SIMULATION_KEY).digest('hex');
 
+/**
+ * ARV-045: the ACRIS stand-in of outbound-endpoints.spec.ts listens on 127.0.0.1 over plain HTTP, which only a lab
+ * deployment may call (Integration:Outbound, allowed in vm-local only). Main checks registrations with it, Integration calls.
+ */
+function outboundLabEnvironment(): Record<string, string> {
+	return { Integration__Outbound__AllowLoopback: 'true', Integration__Outbound__LabHosts__0: '127.0.0.1' };
+}
+
 function dotnetHost(projectPath: string, healthUrl: string, buildFirst = false, extraEnvironment: Record<string, string> = {}) {
 	const run = `dotnet run --no-build --configuration ${configuration} --project "${projectPath}"`;
 	const logFile = path.join(logDirectory, `${path.basename(projectPath)}.log`);
@@ -179,7 +187,8 @@ export default defineConfig({
 		},
 		dotnetHost(project('Backplane/Ariva.Api.Main'), `${hosts.main}/health/readiness`, true, {
 			...(databaseAvailable ? developmentUserEnvironment() : {}),
-			...redisEnvironment()
+			...redisEnvironment(),
+			...outboundLabEnvironment()
 		}),
 		dotnetHost(project('Backplane/Ariva.Api.Integration'), `${hosts.integration}/health/readiness`, false, {
 			...smtpEnvironment(),
@@ -189,7 +198,8 @@ export default defineConfig({
 			// waiting per host, and 120 batches a minute per client.
 			Security__RateLimiting__IntegrationBatch__PermitLimit: '2',
 			Security__RateLimiting__IntegrationBatch__QueueLimit: '2',
-			Security__RateLimiting__IntegrationClient__PermitLimit: '60'
+			Security__RateLimiting__IntegrationClient__PermitLimit: '60',
+			...outboundLabEnvironment()
 		}),
 		dotnetHost(project('Backplane/Ariva.Api.Ingest'), `${hosts.ingest}/health/readiness`, false, kafkaEnvironment()),
 		dotnetHost(project('Simulation/Ariva.Simulation.Api'), `${hosts.simulation}/health/readiness`, false, {

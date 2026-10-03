@@ -344,3 +344,29 @@ public sealed class FakeIntegrationClients : Ariva.Core.Services.Integration.ISv
     private static Task<Fluentx.Result<T>> Missing<T>() =>
         Task.FromResult(Fluentx.Result.Error<T>(Ariva.Core.Services.Integration.IntegrationErrors.NotFound));
 }
+
+/// <summary>Outbound endpoints without a database (ARV-045): none listed, every id unknown, every change refused as an unknown site.</summary>
+public sealed class FakeOutboundEndpoints : Ariva.Core.Services.Integration.ISvcOutboundEndpoints
+{
+    public static void Register(IServiceCollection services) =>
+        services.Replace(ServiceDescriptor.Scoped<Ariva.Core.Services.Integration.ISvcOutboundEndpoints, FakeOutboundEndpoints>());
+
+    public Task<Fluentx.Result<IReadOnlyList<OutboundEndpointViewModel>>> ListAsync(string siteCode, CancellationToken ct = default) =>
+        Task.FromResult(new Fluentx.Result<IReadOnlyList<OutboundEndpointViewModel>>((IReadOnlyList<OutboundEndpointViewModel>)Array.Empty<OutboundEndpointViewModel>()));
+
+    public Task<Fluentx.Result<OutboundEndpointViewModel>> GetAsync(Guid id, CancellationToken ct = default) => Missing();
+
+    public Task<Fluentx.Result<OutboundEndpointViewModel>> CreateAsync(CreateOutboundEndpointRequest request, CancellationToken ct = default) =>
+        Task.FromResult(Fluentx.Result.Error<OutboundEndpointViewModel>(Ariva.Core.Services.Integration.OutboundErrors.UnknownSite));
+
+    public Task<Fluentx.Result<OutboundEndpointViewModel>> UpdateAsync(Guid id, UpdateOutboundEndpointRequest request, CancellationToken ct = default) => Missing();
+
+    public Task<Fluentx.Result<OutboundEndpointViewModel>> SetSecretAsync(Guid id, OutboundSecretRequest request, CancellationToken ct = default) => Missing();
+
+    public Task<Fluentx.Result<OutboundEndpointViewModel>> DisableAsync(Guid id, CancellationToken ct = default) => Missing();
+
+    public Task<Fluentx.Result<OutboundEndpointViewModel>> EnableAsync(Guid id, CancellationToken ct = default) => Missing();
+
+    private static Task<Fluentx.Result<OutboundEndpointViewModel>> Missing() =>
+        Task.FromResult(Fluentx.Result.Error<OutboundEndpointViewModel>(Ariva.Core.Services.Integration.OutboundErrors.NotFound));
+}

@@ -475,12 +475,14 @@ Scope `displays:read`. Returns the display board's bands, already hysteresis-fil
 | Adapter | Status | Notes |
 |---|---|---|
 | AIDX 22.1 inbound | Phase 0 (ARV-044); the AODB emulator follows in ARV-029 | Primary AODB adapter; flight legs, times, resources and status (section 8) |
-| ACRIS flight API pull | Phase 0 against a mock | Ariva polls with `If-Modified-Since` through a registered `OutboundEndpoint`; maps to `FlightLeg`. ACRIS Passenger Wait Times API v1.6.0 is the reference for Ariva's outbound wait-times publishing (v1) |
+| ACRIS flight API pull | Phase 0 (ARV-045); the emulator follows in ARV-029 | Ariva polls an `AcrisFlights` outbound endpoint every 30 s or more with `If-Modified-Since`; see ACRIS below. ACRIS Passenger Wait Times API v1.6.0 is the reference for Ariva's outbound wait-times publishing (v1) |
 | SSIM chapter 7 import | Phase 0 | File upload through Ariva.Api.Main (file imports up to 20 MB, streamed). Seasonal schedule fallback and day-one pilots without a live feed. Endpoint path To confirm |
 | AMAN Kafka feed | Phase 0 against the simulator | Same contracts as the REST immigration endpoints |
 | Vendor AODB REST (SITA, Amadeus, others) | Per project | A mapping onto `FlightLeg` once API access and documentation are granted; mocked until then |
 
 Flight data rules: the layer keeps a canonical flight id map (diversions, renumbering, codeshares), applies messages by their own timestamps, and raises a stale-feed alarm when a heartbeat or expected update is missing. Agree the expected update cadence with each AODB.
+
+ACRIS flights (ARV-045): your pull path answers `200` with a JSON array of flights (or `{ "flights": [...] }`, at most 5,000), or `304` when nothing changed since Ariva's `If-Modified-Since`; send `Last-Modified`. Ariva reads these members of each flight and ignores the others: `flightNumber { airlineCode, trackNumber, suffix }`, `originDate` (date), `departureAirport`, `arrivalAirport`, `departure` and `arrival` (each `{ scheduled, estimated, actual, block, terminal, gate, stand }`, times in UTC ending in `Z`; `actual` is take-off or touchdown, `block` off-block or on-block), `aircraftType`, `flightStatus` (`Cancelled` or `Diverted` carry meaning; others leave the status to the times) and `codeShares` (`[{ airlineCode, trackNumber }]`). The side of the site, the key (`EK501-20261003-A`, leading zeros of the number dropped) and the checks are as for AIDX. These member names follow the ACRIS Semantic Model flight resource; the profile your AODB serves: To confirm during onboarding.
 
 How the model applies them (ARV-041), whatever the adapter:
 
@@ -519,6 +521,13 @@ Ariva calls other systems only through `OutboundEndpoint` records created by adm
 | `MutualTls` | Client certificate only |
 
 URLs are never taken from a caller at request time, redirects are not followed, HTTPS is required (HTTP only for allowlisted lab hosts), and the resolved IP must fall inside the endpoint's allowed CIDRs.
+
+What this means for the system Ariva calls (ARV-045):
+
+- Give the administrator the networks your service's addresses are in (CIDR, at most 16). Every address your host name resolves to must be inside them, or Ariva refuses to connect; a redirect is never followed, so serve the final URL.
+- Present a certificate the system roots trust, or give the administrator your CA (PEM) to pin; the host name must match the certificate.
+- API key: Ariva sends the key in the header you name (not `Host`, `Cookie` or another transport header). HMAC: verify `X-Ariva-Signature` as base64 of HMAC-SHA256 over `METHOD\npath?query\ntimestamp\nsha256-hex-of-body` with the shared key, and reject a `X-Ariva-Timestamp` more than a few minutes off. OAuth 2.0: Ariva uses client credentials with HTTP Basic client authentication at the token path you give (on the same host). AMAN style: Ariva posts `{ clientId, clientSecret, totpCode }` and expects `{ accessToken, expiresAt }`.
+- Ariva retries GET calls on 408, 429, 5xx and timeouts (with backoff, honouring a short Retry-After), stops calling for a while after repeated failures, and reads at most 10 MB of an answer.
 
 ## 12. Errors and rate limits
 

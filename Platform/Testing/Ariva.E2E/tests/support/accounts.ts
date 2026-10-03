@@ -146,7 +146,9 @@ export function accounts() {
 		// ARV-043: its own account, so its sign-in code never collides with integration-auth.spec.ts's in the same TOTP step (replay guard).
 		feedAdmin: account('e2e.feedadmin', ['SystemAdministrator'], false, true, ['*']),
 		// ARV-044: the same, for aidx.spec.ts.
-		aidxAdmin: account('e2e.aidxadmin', ['SystemAdministrator'], false, true, ['*'])
+		aidxAdmin: account('e2e.aidxadmin', ['SystemAdministrator'], false, true, ['*']),
+		// ARV-045: outbound endpoints are critical actions too.
+		outboundAdmin: account('e2e.outadmin', ['SystemAdministrator'], false, true, ['*'])
 	} as const;
 }
 

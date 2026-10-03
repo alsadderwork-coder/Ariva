@@ -90,6 +90,7 @@ builder.Services.AddArivaTokenIssuing(builder.Configuration);
 
 // Integration clients (ARV-042): administrators register the systems that call the Integration API.
 builder.Services.AddArivaIntegrationClients();
+builder.Services.AddArivaOutboundEndpoints(builder.Configuration, builder.Environment.EnvironmentName);
 
 // Demo Airport (DMO) topology and zone profile v12 in vm-local and k8s-demo; refused outside dev and demo (ARV-019).
 builder.Services.AddArivaDemoSeed(builder.Configuration, builder.Environment.EnvironmentName);

@@ -73,6 +73,7 @@ builder.Services.AddAppControllers();
 builder.Services.AddAuthentication().AddArivaIntegrationAuthentication(builder.Configuration);
 builder.Services.AddArivaIntegrationAuth();
 builder.Services.AddArivaIntegrationBatches();
+builder.Services.AddArivaOutboundCalls(builder.Configuration, builder.Environment.EnvironmentName);
 builder.Services.AddSingleton<Ariva.Api.Common.Security.IntegrationClientRateLimiter>();
 
 // AMAN: AddAppCaching, AddAppHealthChecks, AddAppRouting, AddAppOpenApi.

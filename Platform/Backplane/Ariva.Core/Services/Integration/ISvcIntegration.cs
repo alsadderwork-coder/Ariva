@@ -105,3 +105,34 @@ public sealed record IdempotencyClaim(IdempotencyOutcome Outcome, int StatusCode
     public static readonly IdempotencyClaim Claimed = new(IdempotencyOutcome.Claimed);
     public static readonly IdempotencyClaim Mismatch = new(IdempotencyOutcome.Mismatch);
 }
+
+public static class OutboundErrors
+{
+    public const string NotFound = "The record does not exist.";
+    public const string InvalidPurpose = "Purpose is Generic or AcrisFlights.";
+    public const string DuplicateCode = "An endpoint with this code exists.";
+    public const string BeyondOwnSites = "You cannot bind an endpoint to sites you cannot access yourself.";
+    public const string UnknownSite = "Unknown site.";
+}
+
+/// <summary>
+/// Outbound endpoints for administrators (ARV-045). Visible only when the caller's sites cover all of the endpoint's
+/// (404 otherwise); bound only to sites the caller holds. Secret material is checked, protected and never returned; every
+/// change is audited without it. Changes are critical actions (a second factor in the last 15 minutes, at the controller).
+/// </summary>
+public interface ISvcOutboundEndpoints : ISvcScoped
+{
+    Task<Result<IReadOnlyList<OutboundEndpointViewModel>>> ListAsync(string siteCode, CancellationToken ct = default);
+
+    Task<Result<OutboundEndpointViewModel>> GetAsync(Guid id, CancellationToken ct = default);
+
+    Task<Result<OutboundEndpointViewModel>> CreateAsync(CreateOutboundEndpointRequest request, CancellationToken ct = default);
+
+    Task<Result<OutboundEndpointViewModel>> UpdateAsync(Guid id, UpdateOutboundEndpointRequest request, CancellationToken ct = default);
+
+    Task<Result<OutboundEndpointViewModel>> SetSecretAsync(Guid id, OutboundSecretRequest request, CancellationToken ct = default);
+
+    Task<Result<OutboundEndpointViewModel>> DisableAsync(Guid id, CancellationToken ct = default);
+
+    Task<Result<OutboundEndpointViewModel>> EnableAsync(Guid id, CancellationToken ct = default);
+}

@@ -62,5 +62,23 @@
     "proposedBy": "Claude (ARV-042, 2026-10-03)",
     "approvedBy": "PENDING: Ahmad Al-Sadder",
     "date": "2026-10-03"
+  },
+  {
+    "rule": "SEC-020",
+    "path": "Platform/Backplane/Ariva.Infra/Integration/Outbound/OutboundClients.cs",
+    "contains": "new HttpClient(resilience",
+    "reason": "The outbound endpoint registry's client factory (ARV-045): each HttpClient is built only from an administrator-registered OutboundEndpoint record (URL, networks, TLS, authentication), rebuilt when the record changes, over OutboundTransport, whose ConnectCallback resolves the host itself, refuses any address outside the endpoint's networks or in a forbidden range (loopback, link-local and metadata, multicast, reserved) and dials only an address it checked; no proxy, no redirects, answers capped. IHttpClientFactory cannot carry a per-record ConnectCallback and rebuild by version.",
+    "proposedBy": "Claude (ARV-045, 2026-10-03)",
+    "approvedBy": "PENDING: Ahmad Al-Sadder",
+    "date": "2026-10-03"
+  },
+  {
+    "rule": "SEC-023",
+    "path": "Platform/Backplane/Ariva.Infra/Integration/Outbound/OutboundTransport.cs",
+    "contains": "new SocketsHttpHandler",
+    "reason": "The outbound transport itself (ARV-045): the only Backplane handler, with UseProxy false, AllowAutoRedirect false, no cookies, a ConnectCallback that checks every resolved address against the endpoint's networks and the forbidden ranges and dials only a checked one (DNS rebinding), TLS chain built without certificate or revocation downloads and against the pinned CA when there is one.",
+    "proposedBy": "Claude (ARV-045, 2026-10-03)",
+    "approvedBy": "PENDING: Ahmad Al-Sadder",
+    "date": "2026-10-03"
   }
 ]

@@ -2614,6 +2614,154 @@
         "HandlerStationManager": 401,
         "SystemAdministrator": 401
       }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/admin/outbound-endpoints",
+      "access": "permission",
+      "permissions": [
+        "SearchIntegrationClient"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/admin/outbound-endpoints/{id:guid}",
+      "access": "permission",
+      "permissions": [
+        "ViewIntegrationClient"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/outbound-endpoints",
+      "access": "permission",
+      "permissions": [
+        "CreateIntegrationClient"
+      ],
+      "body": {
+        "code": "matrix",
+        "name": "Matrix",
+        "purpose": "Generic",
+        "siteCodes": [
+          "ZZ9"
+        ],
+        "connection": {
+          "baseUrl": "https://aodb.example.invalid/",
+          "allowedNetworks": [
+            "10.0.0.0/8"
+          ],
+          "authKind": "ApiKeyHeader",
+          "headerName": "X-Api-Key"
+        },
+        "secret": {
+          "apiKey": "matrix-key-1"
+        }
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "main",
+      "method": "PUT",
+      "route": "/api/v1/admin/outbound-endpoints/{id:guid}",
+      "access": "permission",
+      "permissions": [
+        "EditIntegrationClient"
+      ],
+      "body": {
+        "name": "Matrix",
+        "siteCodes": [
+          "ZZ9"
+        ],
+        "connection": {
+          "baseUrl": "https://aodb.example.invalid/",
+          "allowedNetworks": [
+            "10.0.0.0/8"
+          ],
+          "authKind": "ApiKeyHeader",
+          "headerName": "X-Api-Key"
+        }
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "main",
+      "method": "PUT",
+      "route": "/api/v1/admin/outbound-endpoints/{id:guid}/secret",
+      "access": "permission",
+      "permissions": [
+        "CreateIntegrationClient"
+      ],
+      "body": {
+        "apiKey": "matrix-key-1"
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/outbound-endpoints/{id:guid}/disable",
+      "access": "permission",
+      "permissions": [
+        "DeleteIntegrationClient"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/outbound-endpoints/{id:guid}/enable",
+      "access": "permission",
+      "permissions": [
+        "EditIntegrationClient"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 401
+      }
     }
   ]
 }

@@ -172,6 +172,7 @@ internal sealed class ArivaWebApplicationFactory<TEntryPoint>(string environment
         // cannot hold for every host: give the in-process hosts vm-local's smtp4dev. Nothing connects to it here.
         builder.UseSetting("Email:Smtp:Host", "localhost");
         // The integration key ring (ARV-042): Integration's own development key, whatever the environment under test.
+        builder.UseSetting("Integration:Outbound:PollAcris", "false");
         builder.UseSetting("Auth:IntegrationTokens:UseDevelopmentKeys", "true");
         builder.UseSetting("Auth:IntegrationTokens:DevelopmentKeyDirectory", DevelopmentKeyDirectory);
         builder.UseSetting("Auth:IntegrationTokens:SigningKeyPath", string.Empty);

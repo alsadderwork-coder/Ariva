@@ -1037,8 +1037,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 48,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "OutboundEndpoint registry (script 0028, step-up MFA, site-scoped, secrets protected, moves need the secret), five auth handlers, per-endpoint clients over a transport whose ConnectCallback checks every resolved address (networks, forbidden ranges, rebinding), no proxy or redirects, TLS with pinned CA and no downloads, own resilience handler; ACRIS pull (AcrisPoller) tested against a stand-in AODB (the ARV-029 emulator follows). Security review PASS after fixes; SEC-020 and SEC-023 allowlist entries pending approval.",
       "dependsOn": [
         "ARV-042",
         "ARV-029"
