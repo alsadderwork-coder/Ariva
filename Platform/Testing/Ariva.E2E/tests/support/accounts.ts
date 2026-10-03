@@ -174,7 +174,9 @@ export function accounts() {
 		// ARV-054: registers devices at the demo airport through the screen (registering needs a second factor).
 		webDevices: account('e2e.webdevices', ['TerminalDutyManager'], false, true, ['DMO']),
 		// ARV-056: writes alert rules at the demo airport through the screen (deleting needs a second factor).
-		webRules: account('e2e.webrules', ['BorderShiftSupervisor'], false, true, ['DMO'])
+		webRules: account('e2e.webrules', ['BorderShiftSupervisor'], false, true, ['DMO']),
+		// ARV-058: sets up passenger displays at the demo airport through the screen (creating needs a second factor).
+		webDisplays: account('e2e.webdisplays', ['TerminalDutyManager'], false, true, ['DMO'])
 	} as const;
 }
 

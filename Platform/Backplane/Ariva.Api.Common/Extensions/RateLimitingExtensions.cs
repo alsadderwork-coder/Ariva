@@ -42,6 +42,9 @@ public static class RateLimitingExtensions
     /// </summary>
     public const string DevicePolicy = "device";
 
+    /// <summary>Named policy for display players (ARV-058): per presented credential, else per address, at the device rate.</summary>
+    public const string DisplayPolicy = "display";
+
     /// <summary>Named policy for the integration token exchange (ARV-042): a fixed window per client address.</summary>
     public const string IntegrationAuthPolicy = "integration-auth";
 
@@ -56,6 +59,7 @@ public static class RateLimitingExtensions
     public const string IntegrationAidxPolicy = "integration-aidx";
 
     private const string UnknownClient = "unknown";
+
 
     #endregion
 
@@ -98,6 +102,8 @@ public static class RateLimitingExtensions
                     RateLimitPartition.GetFixedWindowLimiter(ClientKey(context), _ => ToLimiterOptions(limits.IntegrationAuth)));
                 options.AddPolicy(DevicePolicy, context =>
                     RateLimitPartition.GetFixedWindowLimiter(Ariva.Api.Common.Security.DeviceAuthentication.RateLimitPartition(context), _ => ToLimiterOptions(limits.Device)));
+                options.AddPolicy(DisplayPolicy, context =>
+                    RateLimitPartition.GetFixedWindowLimiter(Ariva.Api.Common.Security.DisplayAuthentication.RateLimitPartition(context), _ => ToLimiterOptions(limits.Device)));
                 options.AddPolicy(UploadPolicy, _ =>
                     RateLimitPartition.GetConcurrencyLimiter(UploadPolicy, _ => new ConcurrencyLimiterOptions
                     {

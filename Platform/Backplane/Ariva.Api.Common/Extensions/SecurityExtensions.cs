@@ -42,7 +42,9 @@ public static class SecurityExtensions
             // so a missing or invalid token gets the same problem response as before and says nothing about why.
             .AddArivaJwtBearer()
             // Devices (ARV-022): their own scheme and policies, used only by [DeviceAuthenticated] endpoints.
-            .AddArivaDeviceAuthentication();
+            .AddArivaDeviceAuthentication()
+            // Display players (ARV-058): their own scheme, used only by [DisplayAuthenticated] endpoints.
+            .AddArivaDisplayAuthentication();
 
         services.AddArivaAccounts(configuration);
         services.AddHttpContextAccessor();

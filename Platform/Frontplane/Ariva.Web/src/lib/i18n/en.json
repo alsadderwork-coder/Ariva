@@ -756,5 +756,80 @@
 			"Unknown": "Unknown"
 		},
 		"served": "{count} served"
+	},
+	"displays": {
+		"title": "Passenger displays",
+		"description": "Boards that show waits as bands of minutes in the site's languages",
+		"listTitle": "Displays",
+		"none": "No displays at this site yet",
+		"enabled": "Enabled",
+		"disabled": "Disabled",
+		"bandSummary": "{band} min bands, {hysteresis} min hysteresis, stale after {stale} s",
+		"playerHint": "Open this address on the display's player (kiosk browser, full screen, 1920 by 1080). It holds the player's credential: it is shown once. A new credential replaces it at once.",
+		"credentialNote": "Players sign in with their display's own credential, never with a user's account.",
+		"columns": {
+			"code": "Code",
+			"name": "Name",
+			"languages": "Languages",
+			"entries": "Queues",
+			"band": "Bands",
+			"credential": "Credential",
+			"status": "Status",
+			"actions": "Actions"
+		},
+		"actions": {
+			"add": "New display",
+			"create": "Create the display",
+			"save": "Save",
+			"cancel": "Cancel",
+			"edit": "Edit",
+			"delete": "Delete",
+			"confirmDelete": "Delete the display",
+			"newCredential": "New credential",
+			"confirmNewCredential": "Replace the credential",
+			"addEntry": "Add a queue",
+			"removeEntry": "Remove queue {n}"
+		},
+		"form": {
+			"createTitle": "New display",
+			"editTitle": "Edit {code}",
+			"noZones": "This site has no published queue zones yet."
+		},
+		"fields": {
+			"code": "Code",
+			"name": "Name",
+			"location": "Location (optional)",
+			"orientation": "Orientation",
+			"band": "Band width (minutes)",
+			"hysteresis": "Hysteresis (minutes)",
+			"stale": "Stale after (seconds)",
+			"languages": "Languages",
+			"entries": "Queues on the board",
+			"zone": "Queue zone",
+			"label": "Label ({language})",
+			"fallback": "Message when the data is stale",
+			"fallbackIn": "Message ({language})",
+			"enabled": "Enabled"
+		},
+		"hints": {
+			"hysteresis": "The band changes only when the wait leaves it by this much.",
+			"stale": "Older data shows the message instead of a number.",
+			"order": "Shown in this order: {order}"
+		},
+		"orientations": {
+			"Landscape": "Landscape",
+			"Portrait": "Portrait"
+		},
+		"languages": {
+			"en": "English",
+			"ar": "Arabic",
+			"pt": "Portuguese",
+			"sw": "Swahili"
+		},
+		"messages": {
+			"saved": "Display {code} saved.",
+			"deleted": "Display {code} deleted.",
+			"failed": "That did not work: {reason}"
+		}
 	}
 }

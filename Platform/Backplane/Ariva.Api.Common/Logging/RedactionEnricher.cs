@@ -25,7 +25,7 @@ public sealed partial class RedactionEnricher : ILogEventEnricher
     {
         "Authorization", "ProxyAuthorization", "Cookie", "SetCookie", "XTotpCode", "TotpCode", "Otp",
         "AccessToken", "RefreshToken", "IdToken", "Token", "BearerToken", "ApiKey", "XApiKey",
-        "Password", "NewPassword", "CurrentPassword", "Secret", "ClientSecret", "RecoveryCode", "XArivaCsrf", "XArivaDeviceKey", "DeviceKey", "Credential"
+        "Password", "NewPassword", "CurrentPassword", "Secret", "ClientSecret", "RecoveryCode", "XArivaCsrf", "XArivaDeviceKey", "DeviceKey", "XArivaDisplayKey", "DisplayKey", "Credential"
     };
 
     private static readonly ScalarValue RedactedValue = new(Redacted);
@@ -112,12 +112,15 @@ public sealed partial class RedactionEnricher : ILogEventEnricher
     private static partial Regex AuthorizationScheme();
 
     // ?access_token=... in SignalR negotiate and WebSocket URLs, and other token-bearing query parameters.
-    [GeneratedRegex(@"(?<key>[?&#](access_token|refresh_token|id_token|token|code|totp|otp|password)=)[^&#\s""']+", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"(?<key>[?&#](access_token|refresh_token|id_token|token|code|totp|otp|password|key)=)[^&#\s""']+", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex TokenQueryParameter();
 
     // A compact JWS anywhere in text (header.payload.signature, header starting with eyJ).
-    /// <summary>A device credential (ARV-022), wherever it appears: ardk_ and 43 base64url characters.</summary>
-    [GeneratedRegex(@"ardk_[A-Za-z0-9_-]{20,}", RegexOptions.CultureInvariant)]
+    /// <summary>
+    /// A device credential (ARV-022, ardk_) or a display player credential (ARV-058, ardp_), wherever it appears: the
+    /// marker and 43 base64url characters.
+    /// </summary>
+    [GeneratedRegex(@"ard[kp]_[A-Za-z0-9_-]{20,}", RegexOptions.CultureInvariant)]
     private static partial Regex DeviceKey();
 
     [GeneratedRegex(@"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*", RegexOptions.CultureInvariant)]

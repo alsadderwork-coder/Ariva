@@ -1,0 +1,9 @@
+{
+	"title": "Tempo de espera",
+	"band": "{low} a {high} min",
+	"under": "Menos de {high} min",
+	"minutes": "min",
+	"updated": "Atualizado às {time}",
+	"unavailable": "Este ecrã não está configurado. Contacte o balcão de serviço.",
+	"connecting": "A ligar"
+}

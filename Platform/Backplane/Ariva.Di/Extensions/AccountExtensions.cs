@@ -79,6 +79,8 @@ public static class AccountExtensions
         services.TryAddScoped<Ariva.Core.Services.Sensing.ISvcDeviceHealth, Ariva.Infra.Services.Sensing.SvcDeviceHealth>();
         // Alert rules (ARV-037): Ariva.Api.Main only, like the rest of the administration.
         services.TryAddScoped<Ariva.Core.Services.Alerting.ISvcAlertRules, Ariva.Infra.Services.Alerting.SvcAlertRules>();
+        services.TryAddScoped<Ariva.Core.Services.Displays.ISvcDisplays, Ariva.Infra.Services.Displays.SvcDisplays>();
+        services.TryAddScoped<Ariva.Core.Services.Displays.ISvcDisplayBoard, Ariva.Infra.Services.Displays.SvcDisplayBoard>();
         // ARV-038: the stored minutes rules are judged on, and the arrival wave (ARV-047).
         services.AddArivaArrivalWaveSource(configuration);
         services.TryAddScoped<Ariva.Infra.Alerting.AlertInputs>();

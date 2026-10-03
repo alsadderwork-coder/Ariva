@@ -374,3 +374,43 @@ public sealed class FakeOutboundEndpoints : Ariva.Core.Services.Integration.ISvc
     private static Task<Fluentx.Result<OutboundEndpointViewModel>> Missing() =>
         Task.FromResult(Fluentx.Result.Error<OutboundEndpointViewModel>(Ariva.Core.Services.Integration.OutboundErrors.NotFound));
 }
+
+/// <summary>Passenger displays (ARV-058) for in-process hosts: no display exists, and a creation names no site the caller holds.</summary>
+public sealed class FakeDisplays : Ariva.Core.Services.Displays.ISvcDisplays, Ariva.Core.Services.Displays.ISvcDisplayBoard
+{
+    public static void Register(IServiceCollection services)
+    {
+        RegisterAdmin(services);
+        services.Replace(ServiceDescriptor.Scoped<Ariva.Core.Services.Displays.ISvcDisplayBoard, FakeDisplays>());
+    }
+
+    public static void RegisterAdmin(IServiceCollection services) =>
+        services.Replace(ServiceDescriptor.Scoped<Ariva.Core.Services.Displays.ISvcDisplays, FakeDisplays>());
+
+    public Task<Fluentx.Result<IReadOnlyList<Ariva.Core.Services.Displays.DisplayViewModel>>> SearchAsync(string siteCode, CancellationToken ct = default) =>
+        Task.FromResult(new Fluentx.Result<IReadOnlyList<Ariva.Core.Services.Displays.DisplayViewModel>>((IReadOnlyList<Ariva.Core.Services.Displays.DisplayViewModel>)[]));
+
+    public Task<Fluentx.Result<Ariva.Core.Services.Displays.DisplayViewModel>> GetAsync(Guid id, CancellationToken ct = default) =>
+        Missing<Ariva.Core.Services.Displays.DisplayViewModel>();
+
+    public Task<Fluentx.Result<Ariva.Core.Services.Displays.DisplayIssuedViewModel>> CreateAsync(Ariva.Core.Services.Displays.DisplayRequest request, CancellationToken ct = default) =>
+        Task.FromResult(Fluentx.Result.Error<Ariva.Core.Services.Displays.DisplayIssuedViewModel>(Ariva.Core.Services.Topology.TopologyErrors.UnknownSite));
+
+    public Task<Fluentx.Result<Ariva.Core.Services.Displays.DisplayViewModel>> UpdateAsync(Guid id, Ariva.Core.Services.Displays.DisplayRequest request, CancellationToken ct = default) =>
+        Missing<Ariva.Core.Services.Displays.DisplayViewModel>();
+
+    public Task<Fluentx.Result<Ariva.Core.Services.Displays.DisplayIssuedViewModel>> NewCredentialAsync(Guid id, CancellationToken ct = default) =>
+        Missing<Ariva.Core.Services.Displays.DisplayIssuedViewModel>();
+
+    public Task<Fluentx.Result<bool>> DeleteAsync(Guid id, CancellationToken ct = default) => Missing<bool>();
+
+    public Task<Ariva.Core.Services.Displays.DisplayPlayer> FindAsync(string code, string credential, CancellationToken ct = default) =>
+        Task.FromResult<Ariva.Core.Services.Displays.DisplayPlayer>(null);
+
+    Task<Fluentx.Result<Ariva.Core.Services.Displays.DisplayBoardViewModel>> Ariva.Core.Services.Displays.ISvcDisplayBoard.GetAsync(Guid displayId, string credentialPrefix,
+        CancellationToken ct) =>
+        Missing<Ariva.Core.Services.Displays.DisplayBoardViewModel>();
+
+    private static Task<Fluentx.Result<T>> Missing<T>() =>
+        Task.FromResult(Fluentx.Result.Error<T>(Ariva.Core.Services.Topology.TopologyErrors.NotFound));
+}

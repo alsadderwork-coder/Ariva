@@ -3024,6 +3024,163 @@
         "HandlerStationManager": 403,
         "SystemAdministrator": 404
       }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/admin/displays",
+      "access": "permission",
+      "permissions": [
+        "SearchDisplay"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 200,
+        "TerminalDutyManager": 200,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/displays",
+      "access": "permission",
+      "permissions": [
+        "CreateDisplay"
+      ],
+      "body": {
+        "siteCode": "ZZ9",
+        "code": "MATRIX-D",
+        "name": "Matrix display",
+        "orientation": "Landscape",
+        "languages": [
+          "en"
+        ],
+        "bandMinutes": 5,
+        "hysteresisMinutes": 1,
+        "staleSeconds": 150,
+        "entries": [
+          {
+            "zone": "MATRIX-ZONE",
+            "labels": {
+              "en": "Matrix"
+            }
+          }
+        ],
+        "fallback": {
+          "en": "Please follow the signs"
+        },
+        "enabled": true
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/admin/displays/{id:guid}",
+      "access": "permission",
+      "permissions": [
+        "ViewDisplay"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "PUT",
+      "route": "/api/v1/admin/displays/{id:guid}",
+      "access": "permission",
+      "permissions": [
+        "EditDisplay"
+      ],
+      "body": {
+        "siteCode": "ZZ9",
+        "code": "MATRIX-D",
+        "name": "Matrix display",
+        "orientation": "Landscape",
+        "languages": [
+          "en"
+        ],
+        "bandMinutes": 5,
+        "hysteresisMinutes": 1,
+        "staleSeconds": 150,
+        "entries": [
+          {
+            "zone": "MATRIX-ZONE",
+            "labels": {
+              "en": "Matrix"
+            }
+          }
+        ],
+        "fallback": {
+          "en": "Please follow the signs"
+        },
+        "enabled": true
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/displays/{id:guid}/credential",
+      "access": "permission",
+      "permissions": [
+        "EditDisplay"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "main",
+      "method": "DELETE",
+      "route": "/api/v1/admin/displays/{id:guid}",
+      "access": "permission",
+      "permissions": [
+        "DeleteDisplay"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/display/board",
+      "access": "device",
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401
+      }
     }
   ]
 }

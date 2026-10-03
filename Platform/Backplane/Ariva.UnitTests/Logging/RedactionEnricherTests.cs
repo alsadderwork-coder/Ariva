@@ -193,4 +193,16 @@ public sealed class RedactionEnricherTests
         redacted.Should().NotContain(credential[5..]).And.Contain("ardk_" + RedactionEnricher.Redacted);
         RedactionEnricher.IsSensitive("X-Ariva-Device-Key").Should().BeTrue();
     }
+
+    [Fact]
+    public void RedactText_Should_MaskADisplayCredential_When_ItAppearsInTextOrAPlayerAddress()
+    {
+        // ARV-058: a display player's credential, in free text, under its header's name and in the player's address.
+        var credential = Ariva.Infra.Security.DisplayCredentials.New().Credential;
+
+        RedactionEnricher.RedactText($"board for E2E-1 with {credential} refused").Should().NotContain(credential[5..]).And.Contain("ardp_" + RedactionEnricher.Redacted);
+        RedactionEnricher.RedactText($"/display?code=E2E-1#key={credential}").Should().NotContain(credential[5..]);
+        RedactionEnricher.IsSensitive("X-Ariva-Display-Key").Should().BeTrue();
+        RedactionEnricher.IsSensitive("DisplayKey").Should().BeTrue();
+    }
 }

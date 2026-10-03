@@ -9,6 +9,8 @@ export const canary = {
 	opaqueToken: ['canary', 'opaque', 'token', '7f3c9d2e41'].join('-'),
 	refreshCookie: ['canary', 'refresh', 'cookie', '5b8a1e6c'].join('-'),
 	totpCode: String(400000 + 93817),
+	// A well-formed display player credential (ARV-058) that no display holds.
+	displayKey: ['ardp', '_', 'canaryDisplayKey', 'x'.repeat(27)].join(''),
 	password,
 	// Basic credential for canary:<password>, so the scan looks for the exact header value.
 	basic: Buffer.from(`canary:${password}`).toString('base64')

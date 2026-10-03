@@ -39,9 +39,18 @@ public static class RolePermissions
     /// </summary>
     private static readonly Permission[] Alerts = [Permissions.ViewAlert, Permissions.SearchAlert, Permissions.EditAlert];
 
+    /// <summary>
+    /// Passenger displays (ARV-058): the duty manager sets them up airport-side, the border shift supervisor in the
+    /// immigration halls (a border deployment has no duty manager); handlers do not.
+    /// </summary>
+    private static readonly Permission[] Displays =
+    [
+        Permissions.ViewDisplay, Permissions.SearchDisplay, Permissions.CreateDisplay, Permissions.EditDisplay, Permissions.DeleteDisplay
+    ];
+
     /// <summary>Border shift supervisor: immigration halls, their zones and sensors, the arrival wave, and the alert rules of its sites.</summary>
     public static IReadOnlySet<Permission> BorderShiftSupervisor { get; } = new HashSet<Permission>(
-        [.. TopologyRead, .. ZonesAndDevices, Permissions.ViewLiveQueue, Permissions.ViewArrivalWave, Permissions.ViewArrivalWaveLanes, Permissions.ViewBorderDesks, Permissions.ViewImmigration, .. AlertRulesWrite, .. Alerts]);
+        [.. TopologyRead, .. ZonesAndDevices, Permissions.ViewLiveQueue, Permissions.ViewArrivalWave, Permissions.ViewArrivalWaveLanes, Permissions.ViewBorderDesks, Permissions.ViewImmigration, .. AlertRulesWrite, .. Alerts, .. Displays]);
 
     /// <summary>
     /// Terminal duty manager: everything airport-side, including zones, sensors and desk code mappings; the arrival wave as
@@ -51,7 +60,8 @@ public static class RolePermissions
     [
         .. TopologyRead, .. ZonesAndDevices,
         Permissions.ViewDeskCodeMapping, Permissions.SearchDeskCodeMapping,
-        Permissions.ViewLiveQueue, Permissions.ViewArrivalWave, Permissions.ViewAirportDesks, Permissions.ViewImmigration, .. AlertRulesWrite, .. Alerts
+        Permissions.ViewLiveQueue, Permissions.ViewArrivalWave, Permissions.ViewAirportDesks, Permissions.ViewImmigration, .. AlertRulesWrite, .. Alerts,
+        .. Displays
     ]);
 
     /// <summary>Handler station manager: its own counters; reads topology and zones, changes none of them.</summary>

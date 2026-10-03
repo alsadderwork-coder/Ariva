@@ -176,7 +176,8 @@ const RULES = [
 // ---------------------------------------------------------------------------------------------
 // structural checks (need the whole file)
 
-const AUTH_ATTR = /\[(Authorize|Permission|IntegrationScope|DeviceAuthenticated)\b/;
+// Device (ARV-022) and display player (ARV-058) attributes derive from AuthorizeAttribute with a scheme of their own.
+const AUTH_ATTR = /\[(Authorize|Permission|IntegrationScope|DeviceAuthenticated|DisplayAuthenticated)\b/;
 
 function controllerAuth(text, lines) {
   if (!/\[ApiController\]|:\s*(ControllerBase|Controller)\b/.test(text)) return [];

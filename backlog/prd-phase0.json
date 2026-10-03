@@ -1309,8 +1309,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 61,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Done 2026-10-04: /displays configuration (Display.*, create and new credential step-up), kiosk player /display with its own credential scheme (Ariva.Display, ardp_), bands in up to four languages with hysteresis, degraded widening and stale fallback, script 0035. Security review PASS (backlog/progress.md).",
       "dependsOn": [
         "ARV-051",
         "ARV-035"

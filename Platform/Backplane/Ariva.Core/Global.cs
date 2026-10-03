@@ -172,6 +172,17 @@ public static class Global
 
             #endregion
 
+            #region Passenger displays (E8)
+
+            /// <summary>Passenger displays (ARV-058): the boards' settings and their players' credentials.</summary>
+            public static Permission ViewDisplay { get; } = new("Display", PermissionAction.View);
+            public static Permission SearchDisplay { get; } = new("Display", PermissionAction.Search);
+            public static Permission CreateDisplay { get; } = new("Display", PermissionAction.Create);
+            public static Permission EditDisplay { get; } = new("Display", PermissionAction.Edit);
+            public static Permission DeleteDisplay { get; } = new("Display", PermissionAction.Delete);
+
+            #endregion
+
             private static readonly Lazy<IReadOnlyDictionary<string, Permission>> ByName = new(() =>
                 typeof(Permissions)
                     .GetProperties(BindingFlags.Public | BindingFlags.Static)

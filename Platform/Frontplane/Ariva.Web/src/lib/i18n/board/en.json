@@ -1,0 +1,9 @@
+{
+	"title": "Waiting time",
+	"band": "{low} to {high} min",
+	"under": "Under {high} min",
+	"minutes": "min",
+	"updated": "Updated {time}",
+	"unavailable": "This display is not set up. Ask the duty desk.",
+	"connecting": "Connecting"
+}

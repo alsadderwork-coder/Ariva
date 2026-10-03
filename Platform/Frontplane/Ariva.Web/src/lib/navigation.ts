@@ -65,9 +65,9 @@ export const navItems: readonly NavItem[] = [
 		href: '/displays',
 		icon: MonitorPlay,
 		group: 'operations',
-		ready: false,
+		ready: true,
 		story: 'ARV-058',
-		permission: 'LiveQueue.View'
+		permission: 'Display.Search'
 	},
 	{
 		id: 'reports',

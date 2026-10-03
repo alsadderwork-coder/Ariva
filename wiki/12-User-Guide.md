@@ -182,7 +182,11 @@ Common tasks: register a sensor (code, family, model, transport, dialect, clock,
 
 Phase 0 (page), MVP (languages and stale handling). A 16:9 full-screen board per display channel, showing the nowcast per checkpoint in 5-minute bands (for example "Passport control: 10 to 15 min") in the site's languages. The band changes only when the nowcast moves a full band (hysteresis). A degraded zone shows a wider band. When data is stale the board shows a neutral message instead of an old number. Boards never show a realised wait.
 
-Common tasks (Terminal duty manager): add a display (location, orientation, checkpoints, language order, band size, hysteresis, stale threshold, fallback messages).
+Delivered in ARV-058. The settings screen is `/displays` (`Display.*`: terminal duty managers airport-side, border shift supervisors for the immigration halls, administrators; handler station managers have none). A display has a code, a name, a location, an orientation, its languages in order (English, Arabic, Portuguese and Swahili have board resource files; Arabic reads right to left), the band width (1 to 30 minutes, 5 by default), the hysteresis (less than the band; the band changes only when the nowcast leaves it by that much), the stale threshold (60 to 1,800 seconds), up to 12 queue zones of the published profile with a label in each language, and the neutral message in each language.
+
+The player is a kiosk browser on the screen (full screen, 1920 by 1080) opened at the address shown once when the display is created or gets a new credential: `/display?code=CODE#key=CREDENTIAL`. The credential sits in the fragment, so it is never sent to a server or logged; the player keeps it for its tab and removes it from the address bar. The player asks for its board every 10 seconds with the credential in the `X-Ariva-Display-Key` header (`GET api/v1/display/board?code=`), never with a user's account; a wrong or replaced credential, or a deleted or disabled display, shows "This display is not set up". Creating a display and issuing a new credential ask for a fresh authenticator code. The board's type shrinks to fit every row on the screen.
+
+Common tasks (terminal duty manager, border shift supervisor): add a display; change its queues, labels or bands; issue a new credential when a player is replaced or its address may have leaked (the old one stops at once); disable or delete it.
 
 ## Reports
 
