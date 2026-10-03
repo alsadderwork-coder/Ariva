@@ -2680,6 +2680,58 @@
     {
       "host": "integration",
       "method": "POST",
+      "route": "/api/v1/integration/sites/{siteCode}/immigration/desk-sessions",
+      "access": "integration",
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "integration",
+      "method": "POST",
+      "route": "/api/v1/integration/sites/{siteCode}/immigration/desk-interval-stats",
+      "access": "integration",
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "integration",
+      "method": "POST",
+      "route": "/api/v1/integration/sites/{siteCode}/immigration/egate-interval-stats",
+      "access": "integration",
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "integration",
+      "method": "POST",
+      "route": "/api/v1/integration/sites/{siteCode}/immigration/inbound-lane-demand",
+      "access": "integration",
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "integration",
+      "method": "POST",
       "route": "/api/v1/integration/sites/{siteCode}/flights/events",
       "access": "integration",
       "expected": {

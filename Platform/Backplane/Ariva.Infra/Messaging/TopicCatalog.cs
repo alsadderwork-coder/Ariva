@@ -65,6 +65,12 @@ public static class TopicCatalog
             specs.Add(Spec(defaults, topic, retention is null, retention));
         }
 
+        if (defaults.ProvisionAmanFeed)
+        {
+            foreach (var topic in KafkaTopics.All.Except(KafkaTopics.Owned))
+                specs.Add(Spec(defaults, topic, compacted: false, Medium));
+        }
+
         foreach (var topic in KafkaTopics.All)
             specs.Add(Spec(defaults, KafkaTopics.DeadLetter(topic), compacted: false, Long));
         return specs;

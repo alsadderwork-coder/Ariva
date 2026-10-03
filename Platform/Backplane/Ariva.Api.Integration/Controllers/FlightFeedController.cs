@@ -1,5 +1,3 @@
-using System.Security.Cryptography;
-using System.Text.Json;
 using Ariva.Api.Common.Security;
 using Ariva.Api.Integration.Batches;
 using Ariva.Core.Flights;
@@ -72,57 +70,8 @@ public sealed class FlightFeedController(ISvcFlightIntake intake, ISvcIntegratio
         BatchAsync<CounterAllocationData>(siteCode, IntegrationBatches.Allocations,
             (feed, items, source) => intake.ApplyAllocationsAsync(siteCode, feed, items, source, ct), ct);
 
-    private async Task<IActionResult> BatchAsync<T>(string siteCode, string operation,
-        Func<string, IReadOnlyList<T>, DateTime?, Task<IReadOnlyList<FlightItemResult>>> apply, CancellationToken ct)
-    {
-        var caller = IntegrationAuthentication.CallerOf(HttpContext);
-        if (caller is null)
-            return Forbid();
-
-        var keys = Request.Headers[IntegrationBatches.IdempotencyKeyHeader];
-        if (keys.Count != 1 || !IntegrationBatches.IsKey(keys[0]))
-            return Problem(statusCode: StatusCodes.Status400BadRequest, title: "Not valid",
-                detail: $"One {IntegrationBatches.IdempotencyKeyHeader} header of 8 to 64 letters, digits or . _ : - characters is required (a UUID fits).");
-        // Checked here rather than with [Consumes]: a mismatch there leaves no endpoint, and the caller would get a 404.
-        if (!BatchBody.IsJson(Request.ContentType))
-            return Problem(statusCode: StatusCodes.Status415UnsupportedMediaType, title: "Unsupported media type", detail: "A batch is application/json.");
-
-        byte[] body;
-        try
-        {
-            body = await BatchBody.ReadAsync(Request, ct);
-        }
-        catch (BadHttpRequestException e) when (e.StatusCode == StatusCodes.Status413PayloadTooLarge)
-        {
-            body = null;
-        }
-
-        if (body is null)
-            return Problem(statusCode: StatusCodes.Status413PayloadTooLarge, title: "Too large", detail: "A batch is at most 1 MB.");
-
-        var (batch, error) = BatchBody.Parse<T>(body);
-        if (error is not null)
-            return Problem(statusCode: StatusCodes.Status400BadRequest, title: "Not valid", detail: error);
-        var now = timeProvider.GetUtcNow().UtcDateTime;
-        if (batch.MessageTimeUtc is { } sent && !FlightRules.IsPlausibleSource(sent, now))
-            return Problem(statusCode: StatusCodes.Status400BadRequest, title: "Not valid",
-                detail: "messageTimeUtc is UTC (ending in Z), at most 5 minutes ahead of Ariva's clock and 30 days behind it.");
-
-        var request = new IdempotencyRequest(caller.ClientId, keys[0], operation, siteCode, Convert.ToHexStringLower(SHA256.HashData(body)));
-        var claim = await idempotency.ClaimAsync(request, ct);
-        switch (claim.Outcome)
-        {
-            case IdempotencyOutcome.Mismatch:
-                return Problem(statusCode: StatusCodes.Status422UnprocessableEntity, title: "Key reused",
-                    detail: $"This {IntegrationBatches.IdempotencyKeyHeader} was used for another request in the last 24 hours; use a new key for a new batch.");
-            case IdempotencyOutcome.Replay:
-                Response.Headers[IntegrationBatches.ReplayedHeader] = "true";
-                return new ContentResult { StatusCode = claim.StatusCode, Content = claim.ResponseBody, ContentType = "application/json; charset=utf-8" };
-        }
-
-        var results = await apply(IntegrationBatches.FeedOf(caller.ClientId), batch.Items, batch.MessageTimeUtc);
-        var answer = JsonSerializer.Serialize(IntegrationBatchViewModel.Of(results), JsonSerializerOptions.Web);
-        await idempotency.CompleteAsync(request, StatusCodes.Status200OK, answer, ct);
-        return new ContentResult { StatusCode = StatusCodes.Status200OK, Content = answer, ContentType = "application/json; charset=utf-8" };
-    }
+    private Task<IActionResult> BatchAsync<T>(string siteCode, string operation,
+        Func<string, IReadOnlyList<T>, DateTime?, Task<IReadOnlyList<FlightItemResult>>> apply, CancellationToken ct) =>
+        BatchCall.HandleAsync<T>(this, siteCode, operation, idempotency, timeProvider, BatchBody.Strict,
+            async (feed, batch) => IntegrationBatchViewModel.Of(await apply(feed, batch.Items, batch.MessageTimeUtc)), ct);
 }

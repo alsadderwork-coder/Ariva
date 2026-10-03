@@ -104,12 +104,14 @@ public static class AmanFeed
     /// What AMAN publishes when demo minute <paramref name="minute"/> completes, for <paramref name="sides"/>.
     /// <paramref name="timeOf"/> gives a demo minute's UTC time; <paramref name="firstOfRun"/> states every open desk.
     /// </summary>
-    internal static AmanMinute Build(ScenarioDay day, int minute, Func<int, DateTime> timeOf, string siteCode, BorderSides sides, bool firstOfRun)
+    internal static AmanMinute Build(ScenarioDay day, int minute, Func<int, DateTime> timeOf, string siteCode, BorderSides sides, bool firstOfRun,
+        string system = "aman")
     {
         ArgumentNullException.ThrowIfNull(day);
         ArgumentNullException.ThrowIfNull(timeOf);
         var at = new DateTimeOffset(timeOf(minute), TimeSpan.Zero);
-        var tag = $"sim-{day.Seed.ToString(CultureInfo.InvariantCulture)}-{timeOf(0):yyyyMMdd}";
+        // Source event ids are the system's own: AMAN's and another immigration system's never coincide.
+        var tag = $"{system}-{day.Seed.ToString(CultureInfo.InvariantCulture)}-{timeOf(0):yyyyMMdd}";
         var sessions = new List<DeskSessionChanged>();
         var desks = new List<DeskIntervalStats>();
         var gates = new List<EGateIntervalStats>();

@@ -29,6 +29,7 @@
     "0026_integration_idempotency.sql": "14acc394014690c6377bf994f3d4aa212831ecb9dd747897e74d4f68b65b808a",
     "0027_aidx_idempotency.sql": "97d4a691555a552b684c1aef003c360f3260087980dcc61d664d99db9d3c1981",
     "0028_outbound_endpoint.sql": "cbf6a3de24c43d7786a738b0f6b8f6498e8912a79959dc1697c9bdaf85b4b726",
-    "0029_flight_leg_schedule_feed.sql": "a372e085e0c9daa3eef1028a99055d5d509f246f28379b69e8bcdeb3bb641ce7"
+    "0029_flight_leg_schedule_feed.sql": "a372e085e0c9daa3eef1028a99055d5d509f246f28379b69e8bcdeb3bb641ce7",
+    "0030_border_feed.sql": "889e0e4c8fee0305010d97ef0af2cfb9f8d7b7355b05a071f18de75afaa711ca"
   }
 }

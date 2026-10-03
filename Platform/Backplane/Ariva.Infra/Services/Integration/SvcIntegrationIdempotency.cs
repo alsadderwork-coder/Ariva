@@ -87,7 +87,7 @@ internal sealed class SvcIntegrationIdempotency(IUnitOfWork unitOfWork, ICurrent
     {
         ArgumentNullException.ThrowIfNull(request);
         if (!IntegrationBatches.IsKey(request.Key) || !Core.Domain.Entities.IntegrationClient.IsClientId(request.ClientId) ||
-            request.Operation is not (IntegrationBatches.Legs or IntegrationBatches.Events or IntegrationBatches.Allocations or IntegrationBatches.Aidx) ||
+            request.Operation is null || !IntegrationBatches.Operations.Contains(request.Operation) ||
             request.RequestSha256 is not { Length: 64 } || string.IsNullOrEmpty(request.SiteCode))
             throw new ArgumentException("Not an idempotency request.", nameof(request));
     }

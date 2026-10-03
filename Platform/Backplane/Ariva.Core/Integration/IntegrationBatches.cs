@@ -23,6 +23,14 @@ public static partial class IntegrationBatches
     public const string Events = "flights.events";
     public const string Allocations = "allocations";
     public const string Aidx = "aodb.aidx";
+    public const string DeskSessions = "immigration.desk-sessions";
+    public const string DeskIntervals = "immigration.desk-interval-stats";
+    public const string EgateIntervals = "immigration.egate-interval-stats";
+    public const string LaneDemand = "immigration.inbound-lane-demand";
+
+    /// <summary>Every operation a key is claimed for (the idempotency table's check, scripts 0026, 0027, 0030).</summary>
+    public static readonly IReadOnlySet<string> Operations =
+        new HashSet<string>([Legs, Events, Allocations, Aidx, DeskSessions, DeskIntervals, EgateIntervals, LaneDemand], StringComparer.Ordinal);
 
     /// <summary>An AIDX 22.1 message is at most 5 MB (ARV-044).</summary>
     public const int MaxAidxBytes = 5 * 1024 * 1024;

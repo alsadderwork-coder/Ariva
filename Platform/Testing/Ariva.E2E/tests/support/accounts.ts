@@ -150,7 +150,9 @@ export function accounts() {
 		// ARV-045: outbound endpoints are critical actions too.
 		outboundAdmin: account('e2e.outadmin', ['SystemAdministrator'], false, true, ['*']),
 		// ARV-029: registers the emulated AODB's and AMAN's integration clients (critical actions).
-		emulatorFeedAdmin: account('e2e.emufeedadmin', ['SystemAdministrator'], false, true, ['*'])
+		emulatorFeedAdmin: account('e2e.emufeedadmin', ['SystemAdministrator'], false, true, ['*']),
+		// ARV-048: registers the immigration clients of aman-feed.spec.ts.
+		amanFeedAdmin: account('e2e.amanfeedadmin', ['SystemAdministrator'], false, true, ['*'])
 	} as const;
 }
 

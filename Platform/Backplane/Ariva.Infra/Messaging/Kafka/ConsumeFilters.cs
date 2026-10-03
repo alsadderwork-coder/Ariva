@@ -10,14 +10,17 @@ namespace Ariva.Infra.Messaging.Kafka;
 /// The filter owns the commit: a consumer that must not commit throws (and is retried, then dead-lettered); calling
 /// <see cref="IUnitOfWork.PromiseNotToCommit"/> has no effect here.
 /// </summary>
-public sealed class InboxFilter<T>(IInbox inbox, IUnitOfWork unitOfWork, ILogger<InboxFilter<T>> logger) : IFilter<ConsumeContext<T>> where T : class
+public sealed class InboxFilter<T>(IInbox inbox, IUnitOfWork unitOfWork, ILogger<InboxFilter<T>> logger, IEnumerable<IInboxKey<T>> keys = null)
+    : IFilter<ConsumeContext<T>> where T : class
 {
     public async Task Send(ConsumeContext<T> context, IPipe<ConsumeContext<T>> next)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(next);
         var consumer = ConsumerName.Of(context);
-        var eventId = context.Message is IEvent message && message.Id != Guid.Empty ? message.Id : context.MessageId ?? Guid.Empty;
+        var eventId = context.Message is IEvent message && message.Id != Guid.Empty ? message.Id
+            : keys?.FirstOrDefault() is { } key ? key.KeyOf(context.Message)
+            : context.MessageId ?? Guid.Empty;
         if (eventId == Guid.Empty)
             throw new InvalidOperationException($"{typeof(T).Name} carries no event id; the inbox cannot deduplicate it.");
 

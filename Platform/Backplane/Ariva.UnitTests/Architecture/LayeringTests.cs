@@ -46,15 +46,17 @@ public sealed class LayeringTests
     ];
 
     [Fact]
-    public void GetReferencedAssemblies_Should_ContainNoArivaAssemblyExceptUtilities_When_AssemblyIsCore()
+    public void GetReferencedAssemblies_Should_ContainNoArivaAssemblyExceptUtilitiesAndContracts_When_AssemblyIsCore()
     {
-        var allowed = UtilitiesAssembly.GetName().Name;
+        // Ariva.Business.Contracts is a dependency-free package of feed records (tested below to stand alone); the
+        // immigration intake checks those records as they are (ARV-048), so the domain may name them.
+        var allowed = new[] { UtilitiesAssembly.GetName().Name, BusinessContractsAssembly.GetName().Name };
 
         var violations = ArivaReferencesOf(CoreAssembly)
-            .Where(name => name != allowed)
+            .Where(name => !allowed.Contains(name))
             .ToList();
 
-        violations.Should().BeEmpty("Ariva.Core is the domain layer and may depend on Ariva.Utilities only");
+        violations.Should().BeEmpty("Ariva.Core is the domain layer and may depend on Ariva.Utilities and the standalone feed contracts only");
     }
 
     [Fact]

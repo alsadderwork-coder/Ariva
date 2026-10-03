@@ -86,13 +86,25 @@ internal sealed class DemoTopologySeed(IUnitOfWork unitOfWork, ICurrentUser curr
             return checkpoint;
         }
 
-        async Task DeskAsync(Checkpoint checkpoint, string code, DeskKind kind, params string[] lanes)
+        async Task<Desk> DeskAsync(Checkpoint checkpoint, string code, DeskKind kind, params string[] lanes)
         {
             var desk = checkpoint.Desks.FirstOrDefault(d => !d.IsDeleted && d.Code == code);
             if (desk is null)
-                await Save(checkpoint.AddDesk(code, null, kind, lanes));
-            else if (desk.Kind != kind)
+                return await Save(checkpoint.AddDesk(code, null, kind, lanes));
+            if (desk.Kind != kind)
                 throw new InvalidOperationException($"Desk {code} of the demo airport is a {desk.Kind}, not a {kind}.");
+            return desk;
+        }
+
+        // AMAN's own codes for the border positions (ARV-048; the simulator's AMAN uses them): arrival desks IN01 to IN22,
+        // e-gates EGIN1 to EGIN6, departure desks OUT01 to OUT22, e-gates EGOUT1 to EGOUT4. A code already mapped is left
+        // as it is, wherever an administrator pointed it.
+        var amanCodes = (await Storage.Query<DeskCodeMapping>().Where(m => m.SiteCode == SiteCode && m.System == ExternalSystem.Aman && m.DeletedOn == null)
+            .Select(m => m.ExternalCode).ToListAsync(ct)).ToHashSet(StringComparer.Ordinal);
+        async Task AmanAsync(Desk desk, string amanCode)
+        {
+            if (amanCodes.Add(amanCode))
+                await Save(new DeskCodeMapping(ExternalSystem.Aman, amanCode, desk));
         }
 
         var checkIn = await CheckpointAsync(departures, "CI", "Check-in", CheckpointKind.CheckIn);
@@ -109,21 +121,21 @@ internal sealed class DemoTopologySeed(IUnitOfWork unitOfWork, ICurrentUser curr
                 await DeskAsync(security, $"{prefix}{n}", DeskKind.SecurityLane);
         }
 
-        foreach (var (level, code, name, kind, desk, gate, gates) in new[]
+        foreach (var (level, code, name, kind, desk, gate, gates, aman) in new[]
                  {
-                     (arrivals, "IMM", "Arrival immigration", CheckpointKind.Immigration, "AR-", "AG-", 6),
-                     (departures, "EMI", "Departure immigration", CheckpointKind.Emigration, "DP-", "DG-", 4)
+                     (arrivals, "IMM", "Arrival immigration", CheckpointKind.Immigration, "AR-", "AG-", 6, "IN"),
+                     (departures, "EMI", "Departure immigration", CheckpointKind.Emigration, "DP-", "DG-", 4, "OUT")
                  })
         {
             var border = await CheckpointAsync(level, code, name, kind);
             foreach (var (lane, from, to) in BorderDesks)
             {
                 for (var n = from; n <= to; n++)
-                    await DeskAsync(border, $"{desk}{n:00}", DeskKind.Desk, lane);
+                    await AmanAsync(await DeskAsync(border, $"{desk}{n:00}", DeskKind.Desk, lane), $"{aman}{n:00}");
             }
 
             for (var n = 1; n <= gates; n++)
-                await DeskAsync(border, $"{gate}{n}", DeskKind.EGate, LaneCategory.EGateEligible);
+                await AmanAsync(await DeskAsync(border, $"{gate}{n}", DeskKind.EGate, LaneCategory.EGateEligible), $"EG{aman}{n}");
         }
 
         // v12 is inserted as a draft (zones and lines can only be added to a draft) and published in the same transaction,

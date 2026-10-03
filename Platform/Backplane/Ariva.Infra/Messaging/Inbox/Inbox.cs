@@ -2,6 +2,15 @@ using System.Data;
 
 namespace Ariva.Infra.Messaging.Inbox;
 
+/// <summary>
+/// The inbox key of a message that is not an Ariva event and carries no message id (a partner's record, ARV-048):
+/// derived from the partner's own event id, so a redelivery is recognised.
+/// </summary>
+public interface IInboxKey<in T>
+{
+    Guid KeyOf(T message);
+}
+
 /// <summary>Records that a consumer applied an event (the inbox of ADR-0018).</summary>
 public interface IInbox
 {

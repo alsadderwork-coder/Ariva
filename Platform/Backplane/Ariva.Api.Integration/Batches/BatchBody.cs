@@ -26,10 +26,30 @@ public static class BatchBody
     };
 
     private static readonly HashSet<string> Members = new(
-        new[] { typeof(IntegrationBatch<object>), typeof(FlightLegData), typeof(FlightEventData), typeof(CounterAllocationData) }
+        new[]
+            {
+                typeof(IntegrationBatch<object>), typeof(FlightLegData), typeof(FlightEventData), typeof(CounterAllocationData),
+                typeof(Ariva.Business.Contracts.Aman.V1.DeskSessionChanged), typeof(Ariva.Business.Contracts.Aman.V1.DeskIntervalStats),
+                typeof(Ariva.Business.Contracts.Aman.V1.EGateIntervalStats), typeof(Ariva.Business.Contracts.Aman.V1.InboundFlightLaneDemand)
+            }
             .SelectMany(t => t.GetProperties(BindingFlags.Public | BindingFlags.Instance))
             .Select(p => JsonNamingPolicy.CamelCase.ConvertName(p.Name)),
         StringComparer.Ordinal);
+
+    /// <summary>
+    /// <see cref="Strict"/> for the AMAN feed contracts (ARV-048), with the same converters as the Kafka feed
+    /// (<see cref="Ariva.Infra.Border.StrictFeedConverters"/>): enums by their exact member name (<c>"state": "Opened"</c>,
+    /// reject categories as member names) and times with an explicit offset.
+    /// </summary>
+    public static readonly JsonSerializerOptions StrictWithEnumNames = WithFeedConverters();
+
+    private static JsonSerializerOptions WithFeedConverters()
+    {
+        var options = new JsonSerializerOptions(Strict);
+        foreach (var converter in Ariva.Infra.Border.StrictFeedConverters.All())
+            options.Converters.Add(converter);
+        return options;
+    }
 
     /// <summary>True when the content type is JSON (application/json or a +json type).</summary>
     public static bool IsJson(string contentType) =>
@@ -65,13 +85,13 @@ public static class BatchBody
     }
 
     /// <summary>The batch, or why it is not one.</summary>
-    public static (IntegrationBatch<T> Batch, string Error) Parse<T>(byte[] body)
+    public static (IntegrationBatch<T> Batch, string Error) Parse<T>(byte[] body, JsonSerializerOptions options = null)
     {
         ArgumentNullException.ThrowIfNull(body);
         IntegrationBatch<T> batch;
         try
         {
-            batch = JsonSerializer.Deserialize<IntegrationBatch<T>>(body, Strict);
+            batch = JsonSerializer.Deserialize<IntegrationBatch<T>>(body, options ?? Strict);
         }
         catch (JsonException e)
         {

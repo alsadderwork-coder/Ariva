@@ -52,7 +52,9 @@ builder.Services.AddAppTelemetry(builder.Configuration);
 
 #region Services
 
-builder.Services.RegisterArivaServices(builder.Configuration);
+// AMAN feed (ARV-048): the four aman.feed.*.v1 topics, when Kafka is on; the same records also arrive over REST.
+builder.Services.RegisterArivaServices(builder.Configuration, messaging => messaging.ConsumeAmanFeed());
+builder.Services.AddArivaBorderFeed(builder.Configuration);
 
 // Email notifications (ARV-040): the alert emails the other hosts write with each alert change are sent from here, the
 // host with the outbound egress (the site's mail relay), through MailKit with the Email settings.
@@ -77,7 +79,6 @@ builder.Services.AddArivaOutboundCalls(builder.Configuration, builder.Environmen
 builder.Services.AddSingleton<Ariva.Api.Common.Security.IntegrationClientRateLimiter>();
 
 // AMAN: AddAppCaching, AddAppHealthChecks, AddAppRouting, AddAppOpenApi.
-// AMAN feed: consumes Ariva.Business.Contracts Aman.V1 messages; identities never cross.
 
 #endregion
 

@@ -159,8 +159,15 @@ public sealed class ArivaMessagingBuilder
     /// <summary>Consumes <paramref name="topic"/> with <typeparamref name="TConsumer"/> through the Ariva consume pipe.</summary>
     public ArivaMessagingBuilder Consume<TMessage, TConsumer>(string topic, string purpose)
         where TMessage : class
+        where TConsumer : class, IConsumer<TMessage> =>
+        Consume<TMessage, TConsumer>(topic, purpose, new JsonValueSerializer<TMessage>());
+
+    /// <summary>The same with a value reader of its own (a partner's topic read strictly, ARV-048).</summary>
+    public ArivaMessagingBuilder Consume<TMessage, TConsumer>(string topic, string purpose, IDeserializer<TMessage> deserializer)
+        where TMessage : class
         where TConsumer : class, IConsumer<TMessage>
     {
+        ArgumentNullException.ThrowIfNull(deserializer);
         if (!KafkaTopics.IsKnown(topic))
             throw new ArgumentException($"Unknown topic '{topic}'. Use a KafkaTopics constant.", nameof(topic));
         if (purpose is null || !MessagingExtensions.PurposeRule().IsMatch(purpose))
@@ -179,7 +186,7 @@ public sealed class ArivaMessagingBuilder
                 endpoint.ConcurrentMessageLimit = settings.Consumers.ConcurrentMessageLimit;
                 endpoint.CheckpointInterval = TimeSpan.FromSeconds(settings.Consumers.CheckpointSeconds);
                 endpoint.CheckpointMessageCount = settings.Consumers.CheckpointMessageCount;
-                endpoint.SetValueDeserializer(new JsonValueSerializer<TMessage>());
+                endpoint.SetValueDeserializer(deserializer);
                 ConsumePipeline.Configure(endpoint, context, settings.Consumers);
                 endpoint.ConfigureConsumer<TConsumer>(context);
             })));

@@ -211,6 +211,8 @@ export default defineConfig({
 		}),
 		dotnetHost(project('Backplane/Ariva.Api.Integration'), `${hosts.integration}/health/readiness`, false, {
 			...smtpEnvironment(),
+			// ARV-048: Integration consumes AMAN's feed topics (aman.feed.*.v1), which the simulator's AMAN publishes.
+			...kafkaEnvironment(),
 			// The lockout test fails one client ten times in a few seconds (ARV-042); production keeps 5 a minute.
 			Auth__IntegrationAttemptsPerMinute: '30',
 			// ARV-043: small enough for flights-api.spec.ts to reach both batch limits; production keeps 8 at once and 16

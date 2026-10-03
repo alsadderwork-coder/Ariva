@@ -60,6 +60,12 @@ public sealed class TopicDefaults
     public int MinInSyncReplicas { get; init; } = 2;
 
     public Dictionary<string, TopicOverride> Overrides { get; init; } = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Also creates AMAN's feed topics (<c>aman.feed.*.v1</c>, ARV-048). AMAN owns them in a shared cluster; set this only
+    /// where no AMAN creates them (vm-local, dev and demo, where the simulator plays AMAN).
+    /// </summary>
+    public bool ProvisionAmanFeed { get; init; }
 }
 
 public sealed class TopicOverride

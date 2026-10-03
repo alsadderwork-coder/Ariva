@@ -15,6 +15,8 @@
 
     <ItemGroup>
         <ProjectReference Include="..\Ariva.Utilities\Ariva.Utilities.csproj" />
+        <!-- The AMAN feed contracts V1 (ARV-048): the immigration endpoints and the Kafka consumers read them as they are. -->
+        <ProjectReference Include="..\..\Business\Ariva.Business.Contracts\Ariva.Business.Contracts.csproj" />
     </ItemGroup>
 
 </Project>

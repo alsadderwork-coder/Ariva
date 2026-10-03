@@ -301,86 +301,96 @@ Scope `allocations:write` (separate from `flights:write`). A batch of `CounterAl
 
 Counters stay open at most 24 hours; 1 to 100 counter codes per allocation.
 
-### POST /api/v1/immigration/desk-sessions
+### POST /api/v1/integration/sites/{siteCode}/immigration/desk-sessions
 
-Scope `immigration:write`. An array of `DeskSessionChanged` (contract V1). `state` is `Opened`, `Closed` or `Paused` (numeric values 1, 2, 3 are fixed by the contract; the JSON representation is To confirm). `laneCategory` is empty when closed. No officer identity is accepted.
-
-```json
-[
-  {
-    "siteCode": "DMO",
-    "deskCode": "A-07",
-    "state": "Opened",
-    "laneCategory": "VIS",
-    "occurredAtUtc": "2026-10-01T14:20:00Z",
-    "sourceEventId": "imm-7f3c2a"
-  }
-]
-```
-
-### POST /api/v1/immigration/desk-interval-stats
-
-Scope `immigration:write`. An array of `DeskIntervalStats`. Intervals are one minute: `intervalSeconds` must be 60. `transactionsProcessed` counts approaches (a family of four is one); `documentsProcessed` counts documents (the same family is four).
+Scope `immigration:write` (ARV-048). A batch of `DeskSessionChanged` (contract V1) in `items`. `state` is `Opened`, `Closed` or `Paused`, by its exact name: a number, another case (`opened`), padding or comma-joined names are refused, and the same holds for the keys of `rejectsByCategory`. `laneCategory` is empty when closed. No officer identity is accepted.
 
 ```json
-[
-  {
-    "siteCode": "DMO",
-    "deskCode": "A-07",
-    "intervalStartUtc": "2026-10-01T14:31:00Z",
-    "intervalSeconds": 60,
-    "transactionsProcessed": 1,
-    "documentsProcessed": 3,
-    "meanServiceSeconds": 41.0,
-    "p90ServiceSeconds": 41.0,
-    "meanCycleSeconds": 58.0,
-    "laneCategory": "VIS",
-    "sourceEventId": "imm-7f3c2b"
-  }
-]
+{
+  "items": [
+    {
+      "siteCode": "DMO",
+      "deskCode": "IN07",
+      "state": "Opened",
+      "laneCategory": "VIS",
+      "occurredAtUtc": "2026-10-01T14:20:00Z",
+      "sourceEventId": "imm-7f3c2a"
+    }
+  ]
+}
 ```
 
-### POST /api/v1/immigration/egate-interval-stats
+### POST /api/v1/integration/sites/{siteCode}/immigration/desk-interval-stats
 
-Scope `immigration:write`. An array of `EGateIntervalStats`. `rejectsByCategory` uses the coarse categories `Other`, `DocumentRead`, `BiometricCapture`, `Eligibility`, `ReferredToOfficer`, `Technical`; its values sum to `rejected`. Any category with fewer than 3 rejects in the interval must be folded into `Other`, so no individual outcome can be inferred. In this example two rejects of different kinds both go to `Other`.
+Scope `immigration:write`. A batch of `DeskIntervalStats`. Intervals start on a whole minute. Intervals are one minute: `intervalSeconds` must be 60. `transactionsProcessed` counts approaches (a family of four is one); `documentsProcessed` counts documents (the same family is four).
 
 ```json
-[
-  {
-    "siteCode": "DMO",
-    "gateCode": "EG-03",
-    "intervalStartUtc": "2026-10-01T14:31:00Z",
-    "intervalSeconds": 60,
-    "attempts": 4,
-    "accepted": 2,
-    "rejected": 2,
-    "rejectsByCategory": { "Other": 2 },
-    "meanCycleSeconds": 18.0,
-    "sourceEventId": "imm-7f3c2c"
-  }
-]
+{
+  "items": [
+    {
+      "siteCode": "DMO",
+      "deskCode": "IN07",
+      "intervalStartUtc": "2026-10-01T14:31:00Z",
+      "intervalSeconds": 60,
+      "transactionsProcessed": 1,
+      "documentsProcessed": 3,
+      "meanServiceSeconds": 41.0,
+      "p90ServiceSeconds": 41.0,
+      "meanCycleSeconds": 58.0,
+      "laneCategory": "VIS",
+      "sourceEventId": "imm-7f3c2b"
+    }
+  ]
+}
 ```
 
-### POST /api/v1/immigration/inbound-lane-demand
+### POST /api/v1/integration/sites/{siteCode}/immigration/egate-interval-stats
 
-Scope `immigration:write`. An array of `InboundFlightLaneDemand`, computed from API data. `passengersByLane` covers the manual lanes (`CIT`, `RES`, `VIS`, `CRW`); `eGateEligible` is separate. `boardedTotal` need not equal the sum (transfers and crew). The latest `computedAtUtc` wins. The example is the reference split for 200 passengers.
+Scope `immigration:write`. A batch of `EGateIntervalStats`; the categories are member names. `rejectsByCategory` uses the coarse categories `Other`, `DocumentRead`, `BiometricCapture`, `Eligibility`, `ReferredToOfficer`, `Technical`; its values sum to `rejected`. Any category with fewer than 3 rejects in the interval must be folded into `Other`, so no individual outcome can be inferred. In this example two rejects of different kinds both go to `Other`.
 
 ```json
-[
-  {
-    "siteCode": "DMO",
-    "flightKey": "DM214-20261001-A",
-    "scheduledArrivalUtc": "2026-10-01T14:05:00Z",
-    "boardedTotal": 200,
-    "passengersByLane": { "CIT": 42, "RES": 24, "VIS": 70, "CRW": 4 },
-    "eGateEligible": 44,
-    "computedAtUtc": "2026-10-01T12:40:00Z",
-    "sourceEventId": "imm-7f3c2d"
-  }
-]
+{
+  "items": [
+    {
+      "siteCode": "DMO",
+      "gateCode": "EGIN3",
+      "intervalStartUtc": "2026-10-01T14:31:00Z",
+      "intervalSeconds": 60,
+      "attempts": 4,
+      "accepted": 2,
+      "rejected": 2,
+      "rejectsByCategory": { "Other": 2 },
+      "meanCycleSeconds": 18.0,
+      "sourceEventId": "imm-7f3c2c"
+    }
+  ]
+}
 ```
 
-The four immigration contracts are the same records AMAN publishes on Kafka (`Ariva.Business.Contracts.Aman.V1`), so a non-AMAN immigration system integrates by sending the same JSON. They carry no person, document or officer identifiers, and the API rejects unknown fields. JSON property casing follows the OpenAPI document (camelCase shown here).
+### POST /api/v1/integration/sites/{siteCode}/immigration/inbound-lane-demand
+
+Scope `immigration:write`. A batch of `InboundFlightLaneDemand`, computed from API data. `passengersByLane` covers the manual lanes (`CIT`, `RES`, `VIS`, `CRW`); `eGateEligible` is separate. `boardedTotal` need not equal the sum (transfers and crew). The lanes and `eGateEligible` add up to at most `boardedTotal`. The latest `computedAtUtc` wins; an older computation is unchanged. The example is the reference split for 200 passengers.
+
+```json
+{
+  "items": [
+    {
+      "siteCode": "DMO",
+      "flightKey": "DM214-20261001-A",
+      "scheduledArrivalUtc": "2026-10-01T14:05:00Z",
+      "boardedTotal": 200,
+      "passengersByLane": { "CIT": 42, "RES": 24, "VIS": 70, "CRW": 4 },
+      "eGateEligible": 44,
+      "computedAtUtc": "2026-10-01T12:40:00Z",
+      "sourceEventId": "imm-7f3c2d"
+    }
+  ]
+}
+```
+
+The four immigration contracts are the same records AMAN publishes on Kafka (`Ariva.Business.Contracts.Aman.V1`), so a non-AMAN immigration system integrates by sending the same JSON. They carry no person, document or officer identifiers, and the API rejects unknown fields.
+
+The immigration endpoints work like the flight batches above (ARV-048): `{ "messageTimeUtc"?, "items": [ 1 to 500 records ] }`, at most 1 MB, `Idempotency-Key` required, read strictly, and 200 with `{ received, applied, unchanged, refused, items: [{ index, key, applied, errors, warnings }] }` (`key` is the desk, gate or flight; null when the code does not have the desk code mapping shape, so a refused value is never echoed). Each record names the site of the path (another site is refused); its desk or gate code is the system's own and is resolved through the site's AMAN desk code mappings, counting only a mapping whose desk is at the same site (an unmapped code is kept apart with a warning, never guessed). A record is kept once per site by its `sourceEventId`, so a retry, a redelivery or the same record over Kafka and REST is `unchanged`. The contracts' times are `DateTimeOffset`, so each carries its offset (`Z`, or `+00:00` as .NET writes it); a time without one is refused rather than read in the server's zone. Times lie between 7 days ago and a few minutes after Ariva's clock (`Border:Feed:AheadMinutes`, 5 by default); intervals are 60 seconds on a whole minute; counts add up (accepted and rejected to attempts, categories to rejected, transactions at most documents); a category other than `Other` holds 0 or at least 3. JSON property casing follows the OpenAPI document (camelCase shown here).
 
 ### POST /api/v1/integration/sites/{siteCode}/aodb/aidx
 
@@ -504,8 +514,9 @@ How the model applies them (ARV-041), whatever the adapter:
 | `aman.feed.inbound-flight-lane-demand.v1` | AMAN flight key | `InboundFlightLaneDemand` | Arrival lane split |
 
 - AMAN publishes through its existing outbox inside the border deployment; Ariva consumes only. Ariva never writes back to AMAN through these types.
-- Consumption is idempotent by `SourceEventId`; interval records with any length other than 60 seconds are rejected.
-- AMAN codes are resolved against the active zone profile's desk code mappings; unknown codes are parked and alerted, never guessed.
+- Ariva.Api.Integration consumes the four topics (ARV-048), each with its own consumer group (`ariva-integration.aman-desk-sessions` and so on) and the Ariva consume pipe (retries, inbox, dead letter). Values are read strictly: a value that is not the contract (an unknown member, an enum that is not an exact member name, a time without an offset, malformed JSON) goes to `ariva.<topic>.dlq.v1` with its raw bytes. A record the rules refuse (the same rules as the REST endpoints) is logged with Ariva's reasons, counted and acknowledged. Records are stored as the feed `aman-kafka`, for the site the record names, which must be an Ariva site (AMAN site codes are Ariva site codes; To confirm per deployment).
+- Consumption is idempotent by `SourceEventId` per site, across both transports; interval records with any length other than 60 seconds are rejected.
+- AMAN codes are resolved against the site's AMAN desk code mappings; unknown codes are kept apart (stored with no desk, logged once per code and site, at most 1,000 codes per site, counted in `ariva.border.feed.unmapped`), never guessed. The demo airport's seed maps AMAN's IN, OUT, EGIN and EGOUT codes to its desks and e-gates.
 - The feed's heartbeat is watched: when it stops, desk state falls back to sensor zones and service rates to their last known values, flagged.
 - In a shared cluster, Ariva's consumer has read ACLs on `aman.feed.` and write ACLs only on `ariva.`.
 - Versioning: additive changes within V1 bump `ContractVersion.Current` (currently `1.0`); breaking changes go to `Aman/V2` and run in parallel until AMAN moves over. A data-boundary test fails the build if a contract property looks like a person or officer identifier.

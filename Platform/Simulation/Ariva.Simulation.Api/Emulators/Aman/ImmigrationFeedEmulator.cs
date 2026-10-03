@@ -94,7 +94,8 @@ public sealed class ImmigrationFeedEmulator : IDemoMinuteSink
         var at = _time.Observe(minute, wallOf);
         var dayStart = at.AddMinutes(-minute);
         var day = _engine.CurrentDay;
-        var records = _engine.Read(d => AmanFeed.Build(d, minute, m => dayStart.AddMinutes(m), settings.SiteCode, settings.Sides, firstOfRun));
+        var records = _engine.Read(d => AmanFeed.Build(d, minute, m => dayStart.AddMinutes(m), settings.SiteCode, settings.Sides, firstOfRun,
+            Name == "aman" ? "aman" : "imm"));
         _lastMinute = minute;
         Interlocked.Add(ref _records, records.Count);
         _buffer?.Add(records, settings.RetainMinutes);
