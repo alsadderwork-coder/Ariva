@@ -12,7 +12,8 @@ const screens = [
 	{ name: 'account security', path: '/account', signedIn: true },
 	{ name: 'topology', path: '/topology', signedIn: true },
 	{ name: 'zones', path: '/zones', signedIn: true },
-	{ name: 'devices', path: '/devices', signedIn: true }
+	{ name: 'devices', path: '/devices', signedIn: true },
+	{ name: 'alert rules', path: '/alert-rules', signedIn: true }
 ];
 /** Opens the screen and waits for its heading (a signed-in screen first takes a token from the refresh cookie). */
 async function open(page: Page, path: string): Promise<void> {

@@ -19,7 +19,7 @@
 		"items": {
 			"liveOperations": "Live operations",
 			"immigration": "Immigration",
-			"alerts": "Alerts",
+			"alertRules": "Alert rules",
 			"displays": "Passenger displays",
 			"reports": "Reports",
 			"topology": "Topology",
@@ -560,5 +560,134 @@
 		"assumed": "assumed",
 		"zonesHealth": "Queue zone sensing",
 		"heartbeat": "A device is offline after {seconds} s without a heartbeat."
+	},
+	"alertRules": {
+		"title": "Alert rules",
+		"description": "The rules that drive every alert, with a preview of when they would have fired",
+		"listTitle": "Rules",
+		"count": "{count, plural, one {# rule} other {# rules}}",
+		"none": "No alert rules at this site yet",
+		"enabled": "Enabled",
+		"disabled": "Disabled",
+		"copyOf": "Copy of {name}",
+		"columns": {
+			"code": "Code",
+			"name": "Name",
+			"condition": "Condition",
+			"zones": "Zones",
+			"severity": "Severity",
+			"owner": "Owner",
+			"status": "Status",
+			"actions": "Actions"
+		},
+		"actions": {
+			"add": "New rule",
+			"create": "Create the rule",
+			"save": "Save",
+			"cancel": "Cancel",
+			"edit": "Edit",
+			"duplicate": "Duplicate",
+			"delete": "Delete",
+			"confirmDelete": "Delete the rule",
+			"enable": "Enable or disable {code}"
+		},
+		"form": {
+			"createTitle": "New rule",
+			"editTitle": "Edit {code}",
+			"noZones": "This site has no published queue zones yet.",
+			"zonesRequired": "Choose at least one zone.",
+			"noOwner": "Every role of the site",
+			"noRole": "None"
+		},
+		"fields": {
+			"name": "Name",
+			"zones": "Zones",
+			"metric": "Metric",
+			"comparator": "Condition",
+			"threshold": "Threshold ({unit})",
+			"clearThreshold": "Clear threshold ({unit}, optional)",
+			"minQueueLength": "Minimum queue (people, optional)",
+			"leadMinutes": "Lead time (minutes)",
+			"sustainMinutes": "Sustain (minutes)",
+			"clearAfterMinutes": "Clear after (minutes)",
+			"severity": "Severity",
+			"ownerRole": "Owner role",
+			"escalateAfterMinutes": "Escalate after (minutes, optional)",
+			"escalateToRole": "Escalate to role",
+			"escalationContact": "Escalation contact (optional)",
+			"notifyByEmail": "Notify by email",
+			"enabled": "Enabled"
+		},
+		"hints": {
+			"clearThreshold": "Beyond this, on the clearing side, the alert clears. Empty: when the condition ends.",
+			"minQueueLength": "Only fire when at least this many people are queuing.",
+			"leadMinutes": "15 to 60 minutes ahead, from the arrival wave of landing flights.",
+			"escalation": "Unacknowledged alerts go to the role or contact after this.",
+			"condition": "This metric is true or false: the rule fires while it is true."
+		},
+		"units": {
+			"minutes": "minutes",
+			"people": "people",
+			"desks": "desks",
+			"condition": ""
+		},
+		"metrics": {
+			"Nowcast": "Nowcast wait",
+			"PredictedNowcast": "Predicted nowcast",
+			"BinP90": "P90 wait of a 15-minute bin",
+			"QueueLength": "Queue length",
+			"SensorOffline": "Sensor offline",
+			"OverflowOccupied": "Overflow occupied",
+			"DesksBelowPlan": "Desks below plan"
+		},
+		"comparators": {
+			"GreaterThan": "Above",
+			"GreaterOrEqual": "At or above",
+			"LessThan": "Below",
+			"LessOrEqual": "At or below"
+		},
+		"comparatorSigns": {
+			"GreaterThan": ">",
+			"GreaterOrEqual": "≥",
+			"LessThan": "<",
+			"LessOrEqual": "≤"
+		},
+		"severities": {
+			"Info": "Info",
+			"Warning": "Warning",
+			"Critical": "Critical"
+		},
+		"roles": {
+			"BorderShiftSupervisor": "Border shift supervisor",
+			"TerminalDutyManager": "Terminal duty manager",
+			"HandlerStationManager": "Handler station manager",
+			"SystemAdministrator": "System administrator"
+		},
+		"summary": {
+			"threshold": "{metric} {comparator} {threshold} {unit} for {sustain} min",
+			"condition": "{metric} for {sustain} min"
+		},
+		"preview": {
+			"title": "Backtest preview",
+			"description": "The same evaluation the live alerts come from, on the stored minutes of the range (UTC, up to a day that has ended).",
+			"from": "From (UTC)",
+			"to": "To (UTC)",
+			"run": "Preview",
+			"badRange": "Choose a start and an end.",
+			"never": "Would not have fired in this range.",
+			"fired": "Would have fired {count, plural, one {once} other {# times}}, first at {first}.",
+			"coverage": "{withData} of {targets} targets had stored minutes in this range.",
+			"truncated": " Only the first 200 alerts are listed.",
+			"zone": "Zone",
+			"raised": "Raised",
+			"cleared": "Cleared",
+			"value": "Value",
+			"open": "Still open"
+		},
+		"messages": {
+			"saved": "Rule {code} saved.",
+			"deleted": "Rule {code} deleted.",
+			"failed": "That did not work: {reason}"
+		}
 	}
 }

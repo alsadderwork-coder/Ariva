@@ -1268,8 +1268,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 59,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Done 2026-10-03: /alert-rules list, create, edit, enable and disable, duplicate, delete with step-up, backtest preview in UTC; the preview equals the saved rule's backtest (Playwright) and the live evaluation's first minute (integration test, Stream not in the E2E run). Security review PASS (backlog/progress.md).",
       "dependsOn": [
         "ARV-051",
         "ARV-038"

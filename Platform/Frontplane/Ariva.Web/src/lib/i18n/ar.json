@@ -19,7 +19,7 @@
 		"items": {
 			"liveOperations": "العمليات الحية",
 			"immigration": "الجوازات",
-			"alerts": "التنبيهات",
+			"alertRules": "قواعد التنبيه",
 			"displays": "شاشات المسافرين",
 			"reports": "التقارير",
 			"topology": "المخطط",
@@ -560,5 +560,134 @@
 		"assumed": "مفترضة",
 		"zonesHealth": "استشعار مناطق الطوابير",
 		"heartbeat": "يصبح الجهاز غير متصل بعد {seconds} ث دون نبضة."
+	},
+	"alertRules": {
+		"title": "قواعد التنبيه",
+		"description": "القواعد التي تولّد كل تنبيه، مع معاينة لمتى كانت ستعمل",
+		"listTitle": "القواعد",
+		"count": "{count, plural, zero {لا قواعد} one {قاعدة واحدة} two {قاعدتان} few {# قواعد} many {# قاعدة} other {# قاعدة}}",
+		"none": "لا توجد قواعد تنبيه في هذا الموقع بعد",
+		"enabled": "مفعّلة",
+		"disabled": "معطّلة",
+		"copyOf": "نسخة من {name}",
+		"columns": {
+			"code": "الرمز",
+			"name": "الاسم",
+			"condition": "الشرط",
+			"zones": "المناطق",
+			"severity": "الخطورة",
+			"owner": "المسؤول",
+			"status": "الحالة",
+			"actions": "الإجراءات"
+		},
+		"actions": {
+			"add": "قاعدة جديدة",
+			"create": "إنشاء القاعدة",
+			"save": "حفظ",
+			"cancel": "إلغاء",
+			"edit": "تعديل",
+			"duplicate": "نسخ",
+			"delete": "حذف",
+			"confirmDelete": "حذف القاعدة",
+			"enable": "تفعيل أو تعطيل {code}"
+		},
+		"form": {
+			"createTitle": "قاعدة جديدة",
+			"editTitle": "تعديل {code}",
+			"noZones": "لا توجد مناطق طوابير منشورة في هذا الموقع بعد.",
+			"zonesRequired": "اختر منطقة واحدة على الأقل.",
+			"noOwner": "كل أدوار الموقع",
+			"noRole": "لا أحد"
+		},
+		"fields": {
+			"name": "الاسم",
+			"zones": "المناطق",
+			"metric": "المقياس",
+			"comparator": "الشرط",
+			"threshold": "الحد ({unit})",
+			"clearThreshold": "حد الإلغاء ({unit}، اختياري)",
+			"minQueueLength": "أدنى طول للطابور (أشخاص، اختياري)",
+			"leadMinutes": "المهلة المسبقة (دقائق)",
+			"sustainMinutes": "الاستمرار (دقائق)",
+			"clearAfterMinutes": "الإلغاء بعد (دقائق)",
+			"severity": "الخطورة",
+			"ownerRole": "الدور المسؤول",
+			"escalateAfterMinutes": "التصعيد بعد (دقائق، اختياري)",
+			"escalateToRole": "التصعيد إلى دور",
+			"escalationContact": "جهة التصعيد (اختياري)",
+			"notifyByEmail": "إشعار بالبريد الإلكتروني",
+			"enabled": "مفعّلة"
+		},
+		"hints": {
+			"clearThreshold": "بعد هذا الحد، في جهة الإلغاء، يُلغى التنبيه. فارغ: عند انتهاء الشرط.",
+			"minQueueLength": "لا يعمل إلا عندما يصطف هذا العدد من الأشخاص على الأقل.",
+			"leadMinutes": "من 15 إلى 60 دقيقة مقدمًا، من موجة الوصول للرحلات القادمة.",
+			"escalation": "تذهب التنبيهات غير المؤكدة إلى الدور أو الجهة بعد هذه المدة.",
+			"condition": "هذا المقياس صحيح أو خاطئ: تعمل القاعدة ما دام صحيحًا."
+		},
+		"units": {
+			"minutes": "دقائق",
+			"people": "أشخاص",
+			"desks": "مكاتب",
+			"condition": ""
+		},
+		"metrics": {
+			"Nowcast": "الانتظار الحالي",
+			"PredictedNowcast": "الانتظار المتوقع",
+			"BinP90": "انتظار P90 لفترة 15 دقيقة",
+			"QueueLength": "طول الطابور",
+			"SensorOffline": "مستشعر غير متصل",
+			"OverflowOccupied": "منطقة الفائض مشغولة",
+			"DesksBelowPlan": "مكاتب أقل من الخطة"
+		},
+		"comparators": {
+			"GreaterThan": "أعلى من",
+			"GreaterOrEqual": "يساوي أو أعلى من",
+			"LessThan": "أقل من",
+			"LessOrEqual": "يساوي أو أقل من"
+		},
+		"comparatorSigns": {
+			"GreaterThan": ">",
+			"GreaterOrEqual": "≥",
+			"LessThan": "<",
+			"LessOrEqual": "≤"
+		},
+		"severities": {
+			"Info": "معلومة",
+			"Warning": "تحذير",
+			"Critical": "حرج"
+		},
+		"roles": {
+			"BorderShiftSupervisor": "مشرف مناوبة الحدود",
+			"TerminalDutyManager": "مدير مناوبة المبنى",
+			"HandlerStationManager": "مدير محطة المناولة",
+			"SystemAdministrator": "مسؤول النظام"
+		},
+		"summary": {
+			"threshold": "{metric} {comparator} {threshold} {unit} لمدة {sustain} دقيقة",
+			"condition": "{metric} لمدة {sustain} دقيقة"
+		},
+		"preview": {
+			"title": "معاينة الاختبار الرجعي",
+			"description": "التقييم نفسه الذي تأتي منه التنبيهات المباشرة، على الدقائق المخزنة في المدى (بتوقيت UTC، حتى يوم واحد انتهى).",
+			"from": "من (UTC)",
+			"to": "إلى (UTC)",
+			"run": "معاينة",
+			"badRange": "اختر بداية ونهاية.",
+			"never": "ما كانت لتعمل في هذا المدى.",
+			"fired": "كانت ستعمل {count, plural, one {مرة واحدة} two {مرتين} few {# مرات} many {# مرة} other {# مرة}}، أولها في {first}.",
+			"coverage": "{withData} من {targets} أهداف لها دقائق مخزنة في هذا المدى.",
+			"truncated": " تُعرض أول 200 تنبيه فقط.",
+			"zone": "المنطقة",
+			"raised": "أُطلق",
+			"cleared": "أُلغي",
+			"value": "القيمة",
+			"open": "ما زال مفتوحًا"
+		},
+		"messages": {
+			"saved": "حُفظت القاعدة {code}.",
+			"deleted": "حُذفت القاعدة {code}.",
+			"failed": "لم ينجح ذلك: {reason}"
+		}
 	}
 }

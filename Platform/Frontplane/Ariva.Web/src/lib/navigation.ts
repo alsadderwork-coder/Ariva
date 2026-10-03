@@ -52,13 +52,13 @@ export const navItems: readonly NavItem[] = [
 		permission: 'ArrivalWave.View'
 	},
 	{
-		id: 'alerts',
-		href: '/alerts',
+		id: 'alertRules',
+		href: '/alert-rules',
 		icon: BellRing,
 		group: 'operations',
-		ready: false,
+		ready: true,
 		story: 'ARV-056',
-		permission: 'Alert.View'
+		permission: 'AlertRule.Search'
 	},
 	{
 		id: 'displays',

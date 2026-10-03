@@ -255,6 +255,34 @@ public sealed class AlertEvaluationTests(PostgresFixture fixture) : IAsyncDispos
     }
 
     [Fact]
+    public async Task ScreenRule_Should_FireLiveAtThePreviewsFirstMinute_When_TickedEveryMinute()
+    {
+        // ARV-056: the rule the alert rules screen's test creates (queue above 40 for 3 minutes, clear after 2), judged
+        // live a minute at a time and by the backtest the screen previews: the same first minute, 12 minutes in.
+        var admin = await EveningAsync();
+        var first = ReferenceReplay.WallOf(28 * 60);
+        var request = new AlertRuleRequest("DMO", "Screen preview", ["D-CRW"], "QueueLength", "GreaterThan", 40, null, null, 3, 2, "Critical",
+            RoleCodes.BorderShiftSupervisor, null, null, null, false);
+        var rule = (await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcAlertRules>().CreateAsync(request, Ct))).Data;
+        (await TickAsync(first.AddSeconds(5))).Failed.Should().Be(0);
+        await MinutesAsync("D-CRW", first, [.. Enumerable.Repeat(5L, 10), .. Enumerable.Repeat(50L, 20)]);
+
+        for (var minute = 1; minute <= 30; minute++)
+            (await TickAsync(first.AddMinutes(minute).AddSeconds(5))).Failed.Should().Be(0);
+
+        var preview = await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcAlertRules>().BacktestAsync(
+            new AlertBacktestRequest(request, first.AddMinutes(-10), first.AddMinutes(40)), Ct));
+        preview.HasErrors.Should().BeFalse(string.Join(", ", preview.ErrorMessages ?? []));
+        preview.Data.Should().Match<AlertBacktestViewModel>(b => b.Count == 1 && b.FirstRaisedUtc == first.AddMinutes(12));
+        (await _host.ReadAsync<DateTime>("SELECT raised_utc FROM alert WHERE rule_id = @id", rule.Id)).ToUniversalTime()
+            .Should().Be(first.AddMinutes(12), "the live evaluation fires at the minute the preview showed");
+
+        // Withdrawn and its alert resolved here, so later ticks of other tests in this class find nothing of it.
+        (await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcAlertRules>().UpdateAsync(rule.Id, request with { Enabled = false }, Ct))).HasErrors.Should().BeFalse();
+        (await TickAsync(first.AddMinutes(31).AddSeconds(5))).Withdrawn.Should().Be(1);
+    }
+
+    [Fact]
     public async Task Tick_Should_RaiseClearAndRaiseAgain_When_OneTargetFlapsWithinOneTick()
     {
         var admin = await EveningAsync();

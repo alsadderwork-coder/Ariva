@@ -96,15 +96,15 @@ API (`api/v1/alerts`): `GET ?siteCode=&state=&open=&zoneName=&ruleCode=&fromUtc=
 
 ## Alert rules
 
-MVP. Shows the rules that drive every alert, with their status.
+MVP. Shows the rules that drive every alert, with their status. Delivered in ARV-056 at `/alert-rules` (`AlertRule.Search`): the site's rules with their code, name, condition in words, zones, severity, owner role and whether they are enabled. Border shift supervisors, terminal duty managers and administrators create, change, enable or disable, duplicate and delete rules (deleting asks for a fresh second factor); handler station managers read them.
 
 Common tasks:
 
-1. Create a rule: name, scope, metric, condition and threshold, sustain time, severity, owner role, escalation, channels. Check the backtest preview ("Would have fired 3 times today, first at 18:05") before saving: it is the same evaluation the live alerts come from, on the stored minutes of the range you choose (up to a day).
+1. Create a rule: name, scope, metric, condition and threshold, sustain time, severity, owner role, escalation, channels. Check the backtest preview ("Would have fired 3 times, first at 2026-10-02 18:05 UTC") before saving: it is the same evaluation the live alerts come from, on the stored minutes of the range you choose (in UTC, up to a day that has ended, within the last 90 days). The preview judges the form as it is, saved or not, and lists the first 20 alerts it would have raised. It needs the live queue view as well as creating rules, because it shows past queue values.
 2. For an early warning, choose the predicted nowcast and a lead time of 15 to 60 minutes: the rule fires when the queue is projected to pass the threshold within that time, from the arrival wave of landing flights (available once the flight feed is connected).
-3. Enable, disable or duplicate a rule.
+3. Enable, disable or duplicate a rule. A duplicate opens as a new rule named "Copy of" the original.
 
-You can only create rules for queues your role can see.
+You can only create rules for queues your role can see, and give a rule (or escalate it) only to a role you hold; an administrator can give it to any role or to every role of the site. Rules are typed fields only, never an expression.
 
 ## Immigration (Border module)
 

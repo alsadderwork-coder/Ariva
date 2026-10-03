@@ -89,7 +89,7 @@ public sealed class AlertRuleServiceTests(PostgresFixture fixture) : IAsyncDispo
         (await _host.ReadAsync<string>("SELECT scope_zones FROM alert_rule WHERE id = @id", created.Data.Id)).Should().Be("A-VIS\nD-VIS");
         (await _host.ReadAsync<string>("SELECT metric FROM alert_rule WHERE id = @id", created.Data.Id)).Should().Be("Nowcast", "enums are stored by name");
 
-        var updated = await _host.AsCallerAsync(supervisor, s => Rules(s).UpdateAsync(created.Data.Id, Request("Visitors wave, both halls") with { Threshold = 25, Enabled = false }, Ct));
+        var updated = await _host.AsCallerAsync(supervisor, s => Rules(s).UpdateAsync(created.Data.Id, Request("Visitors wave, both halls", owner: RoleCodes.BorderShiftSupervisor) with { Threshold = 25, Enabled = false }, Ct));
         updated.HasErrors.Should().BeFalse(string.Join(", ", updated.ErrorMessages ?? []));
         updated.Data.Code.Should().Be(created.Data.Code, "an update keeps the code");
         updated.Data.Threshold.Should().Be(25);
@@ -101,7 +101,7 @@ public sealed class AlertRuleServiceTests(PostgresFixture fixture) : IAsyncDispo
         (await _host.AsCallerAsync(supervisor, s => Rules(s).GetAsync(created.Data.Id, Ct))).ErrorMessages.Should().Equal(TopologyErrors.NotFound);
         (await _host.ReadAsync<DateTime?>("SELECT deleted_on FROM alert_rule WHERE id = @id", created.Data.Id)).Should().NotBeNull("deletes are soft");
 
-        var next = await _host.AsCallerAsync(supervisor, s => Rules(s).CreateAsync(Request("After the delete"), Ct));
+        var next = await _host.AsCallerAsync(supervisor, s => Rules(s).CreateAsync(Request("After the delete", owner: RoleCodes.BorderShiftSupervisor), Ct));
         Number(next.Data.Code).Should().BeGreaterThan(Number(created.Data.Code), "a deleted rule keeps its code");
 
         (await _host.ReadAsync<long>("SELECT count(*) FROM audit_entry WHERE target_id = @id AND action IN ('AlertRule.Created', 'AlertRule.Updated', 'AlertRule.Deleted')", created.Data.Id))
@@ -135,7 +135,7 @@ public sealed class AlertRuleServiceTests(PostgresFixture fixture) : IAsyncDispo
         var admin = await AdminAsync("it.alert.refuse.admin");
         var supervisor = await SupervisorAsync(admin, "it.alert.refuse.supervisor");
 
-        (await _host.AsCallerAsync(supervisor, s => Rules(s).CreateAsync(Request(zones: ["A-VIS", "NOT-A-ZONE"]), Ct)))
+        (await _host.AsCallerAsync(supervisor, s => Rules(s).CreateAsync(Request(zones: ["A-VIS", "NOT-A-ZONE"], owner: RoleCodes.BorderShiftSupervisor), Ct)))
             .ErrorMessages.Should().Equal(AlertRuleErrors.UnknownZones);
         (await _host.AsCallerAsync(supervisor, s => Rules(s).CreateAsync(Request(owner: RoleCodes.SystemAdministrator), Ct)))
             .ErrorMessages.Should().Equal(AlertRuleErrors.RoleNotHeld);
@@ -170,6 +170,32 @@ public sealed class AlertRuleServiceTests(PostgresFixture fixture) : IAsyncDispo
             Metric = "OverflowOccupied", Comparator = "IsTrue", Threshold = null, MinQueueLength = null, ClearThreshold = null
         }, Ct))).HasErrors.Should().BeFalse("overflow zones can be watched");
         (await _host.ReadAsync<long>("SELECT count(*) FROM alert_rule WHERE scope_zones LIKE '%NOT-A-ZONE%'")).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task EveryRole_Should_BeAnAdministratorsChoice_When_ARuleHasNoOwner()
+    {
+        // ARV-056: a rule without an owner belongs to every role of the site (its alerts reach handlers too), so only an
+        // administrator creates one, gives a rule to every role or takes one from every role.
+        var admin = await AdminAsync("it.alert.every.admin");
+        var supervisor = await SupervisorAsync(admin, "it.alert.every.supervisor");
+
+        (await _host.AsCallerAsync(supervisor, s => Rules(s).CreateAsync(Request("Everyone's", owner: null), Ct)))
+            .ErrorMessages.Should().Equal(AlertRuleErrors.RoleNotHeld);
+        var own = (await _host.AsCallerAsync(supervisor, s => Rules(s).CreateAsync(Request("Own", owner: RoleCodes.BorderShiftSupervisor), Ct))).Data;
+        (await _host.AsCallerAsync(supervisor, s => Rules(s).UpdateAsync(own.Id, Request("Own", owner: null), Ct)))
+            .ErrorMessages.Should().Equal(AlertRuleErrors.RoleNotHeld);
+        var everyone = (await _host.AsCallerAsync(admin, s => Rules(s).CreateAsync(Request("Every role", owner: null), Ct)));
+        everyone.HasErrors.Should().BeFalse("an administrator may give a rule to every role");
+        (await _host.AsCallerAsync(supervisor, s => Rules(s).UpdateAsync(everyone.Data.Id, Request("Every role", owner: RoleCodes.BorderShiftSupervisor), Ct)))
+            .ErrorMessages.Should().Equal(AlertRuleErrors.RoleNotHeld);
+        (await _host.AsCallerAsync(supervisor, s => Rules(s).UpdateAsync(everyone.Data.Id, Request("Every role, renamed", owner: null) with { Threshold = 25 }, Ct)))
+            .HasErrors.Should().BeFalse("an unchanged owner can stay");
+        // A preview stores nothing and shows the same queue values whoever owns the rule: a supervisor previews R-003-like rules.
+        var preview = await _host.AsCallerAsync(supervisor, s => Rules(s).BacktestAsync(new AlertBacktestRequest(Request("Preview", owner: null),
+            new DateTime(2026, 9, 30, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 9, 30, 1, 0, 0, DateTimeKind.Utc)), Ct));
+        preview.HasErrors.Should().BeFalse(string.Join(", ", preview.ErrorMessages ?? []));
+        (await _host.AsCallerAsync(admin, s => Rules(s).UpdateAsync(own.Id, Request("Own", owner: null), Ct))).HasErrors.Should().BeFalse();
     }
 
     [Fact]

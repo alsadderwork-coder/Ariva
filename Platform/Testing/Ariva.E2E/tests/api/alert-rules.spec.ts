@@ -155,6 +155,14 @@ test("other sites' callers see nothing, roles they lack are refused, and handler
 		const lacked = await call('POST', api, { token: border, data: rule({ siteCode: 'E2E1', ownerRole: 'SystemAdministrator' }) });
 		expect(lacked.status(), 'a role the creator does not hold').toBe(400);
 		expect(await lacked.text(), 'refused for the role, not only for the zones').toContain('a role the caller does not hold');
+		// ARV-056: a rule without an owner belongs to every role of the site, handlers included: an administrator's choice.
+		const supervisor = (await signIn(accounts().webBorder)).accessToken;
+		const everyRole = await call('POST', api, {
+			token: supervisor,
+			data: rule({ zones: ['A-CRW'], ownerRole: null, escalateAfterMinutes: null, escalateToRole: null, enabled: false })
+		});
+		expect(everyRole.status(), 'every role of the site from a supervisor').toBe(400);
+		expect(await everyRole.text()).toContain('a role the caller does not hold');
 
 		const handler = (await signIn(accounts().HandlerStationManager)).accessToken;
 		expect((await call('GET', api, { token: handler })).status()).toBe(200);

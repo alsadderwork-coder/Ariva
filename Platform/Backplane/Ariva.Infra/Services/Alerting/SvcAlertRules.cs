@@ -147,7 +147,7 @@ internal sealed class SvcAlertRules(
         // A backtest shows the site's past queue values: only for a caller who sees its live queues (CWE-863).
         if (!RolePermissions.For(await callerRoles.GetAsync(ct)).Contains(Ariva.Core.Global.Defaults.Permissions.ViewLiveQueue))
             return Result.Error<AlertBacktestViewModel>(TopologyErrors.UnknownSite);
-        var (values, problems) = await CheckAsync(rule.SiteCode, rule, null, ct);
+        var (values, problems) = await CheckAsync(rule.SiteCode, rule, null, ct, preview: true);
         if (problems.Count > 0)
             return Result.Error<AlertBacktestViewModel>(problems);
 
@@ -176,7 +176,8 @@ internal sealed class SvcAlertRules(
 
     // The request as typed values (exact names only for the enums), the entity's checks, the zones against the site's
     // published profile, and the roles against the caller's (for an update, against the rule's current roles too).
-    private async Task<(AlertRuleValues Values, IReadOnlyList<string> Problems)> CheckAsync(string siteCode, AlertRuleRequest request, AlertRule existing, CancellationToken ct)
+    private async Task<(AlertRuleValues Values, IReadOnlyList<string> Problems)> CheckAsync(string siteCode, AlertRuleRequest request, AlertRule existing, CancellationToken ct,
+        bool preview = false)
     {
         var problems = new List<string>();
         if (!TryParse<AlertMetric>(request.Metric, out var metric) | !TryParse<AlertComparator>(request.Comparator, out var comparator) |
@@ -205,16 +206,24 @@ internal sealed class SvcAlertRules(
             problems.Add(AlertRuleErrors.UnknownZones);
 
         // A role the caller does not hold can be neither given nor taken away: an unchanged role is fine, a changed one
-        // must be held before and after.
+        // must be held before and after. A rule without an owner belongs to every role of the site (Alert.IsFor), so
+        // only an administrator creates one, or gives a rule to every role, or takes one from every role (ARV-056). A preview
+        // stores nothing and shows the same queue values whoever owns the rule, so it judges a rule whatever roles it names (R-003 has no owner).
         var touched = new List<string>();
-        if (!string.Equals(values.OwnerRole, existing?.OwnerRole, StringComparison.Ordinal))
+        var everyRole = false;
+        var ownerChanged = !preview && (existing is null || !string.Equals(values.OwnerRole, existing.OwnerRole, StringComparison.Ordinal));
+        if (ownerChanged)
+        {
             touched.AddRange(new[] { values.OwnerRole, existing?.OwnerRole }.Where(r => r is not null));
-        if (!string.Equals(values.EscalateToRole, existing?.EscalateToRole, StringComparison.Ordinal))
+            everyRole = values.OwnerRole is null || (existing is not null && existing.OwnerRole is null);
+        }
+
+        if (!preview && !string.Equals(values.EscalateToRole, existing?.EscalateToRole, StringComparison.Ordinal))
             touched.AddRange(new[] { values.EscalateToRole, existing?.EscalateToRole }.Where(r => r is not null));
-        if (touched.Count > 0)
+        if (touched.Count > 0 || everyRole)
         {
             var held = (await callerRoles.GetAsync(ct)).ToHashSet(StringComparer.Ordinal);
-            if (!held.Contains(Ariva.Core.RoleCodes.SystemAdministrator) && touched.Any(r => !held.Contains(r)))
+            if (!held.Contains(Ariva.Core.RoleCodes.SystemAdministrator) && (everyRole || touched.Any(r => !held.Contains(r))))
                 problems.Add(AlertRuleErrors.RoleNotHeld);
         }
 

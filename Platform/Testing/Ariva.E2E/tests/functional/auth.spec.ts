@@ -391,7 +391,7 @@ test.describe('role-aware sidebar', () => {
 		const nav = page.getByTestId('app-sidebar').getByRole('navigation');
 		await expect(nav).toBeVisible();
 
-		for (const visible of ['Live operations', 'Alerts', 'Topology', 'Zones']) await expect(nav.getByText(visible, { exact: true })).toBeVisible();
+		for (const visible of ['Live operations', 'Alert rules', 'Topology', 'Zones']) await expect(nav.getByText(visible, { exact: true })).toBeVisible();
 		for (const hidden of ['Immigration', 'Devices', 'Users and access']) await expect(nav.getByText(hidden, { exact: true })).toHaveCount(0);
 		await expect(page.getByTestId('user-card')).toContainText('Handler station manager');
 
