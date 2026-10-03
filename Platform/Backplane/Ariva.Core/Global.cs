@@ -136,6 +136,19 @@ public static class Global
             /// </summary>
             public static Permission ViewArrivalWaveLanes { get; } = new("ArrivalWaveLanes", PermissionAction.View);
 
+            /// <summary>
+            /// The states of immigration and emigration desks and e-gates on the live screen (ARV-055): border data, so border
+            /// roles see them; airport roles never do (wiki 01, 12).
+            /// </summary>
+            public static Permission ViewBorderDesks { get; } = new("BorderDesks", PermissionAction.View);
+
+            /// <summary>
+            /// The states of every check-in counter and security lane of a site on the live screen (ARV-055): the terminal duty
+            /// manager's view. A handler sees only its own counters (wiki 01), which needs handler tenancy, so handlers do not
+            /// hold this until then; border roles do not see check-in data.
+            /// </summary>
+            public static Permission ViewAirportDesks { get; } = new("AirportDesks", PermissionAction.View);
+
             #endregion
 
             #region Alerting (E5)

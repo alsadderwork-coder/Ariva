@@ -89,6 +89,9 @@ public interface ISvcFloorPlans : ISvcScoped
 {
     Task<Result<FloorPlanViewModel>> GetAsync(Guid levelId, CancellationToken ct = default);
 
+    /// <summary>The current plans of a site's live levels (ARV-055): which levels have one, without asking level by level.</summary>
+    Task<Result<IReadOnlyList<FloorPlanViewModel>>> ListAsync(string siteCode, CancellationToken ct = default);
+
     Task<Result<FloorPlanContent>> OpenAsync(Guid levelId, CancellationToken ct = default);
 
     Task<Result<FloorPlanViewModel>> UploadAsync(Guid levelId, FloorPlanUpload upload, CancellationToken ct = default);

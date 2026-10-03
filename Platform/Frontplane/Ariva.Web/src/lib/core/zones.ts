@@ -188,6 +188,54 @@ export function floorPlan(levelId: string): Promise<Result<FloorPlan>> {
 	return ids([levelId], () => Api.get<FloorPlan>(`/api/v1/admin/levels/${levelId}/floor-plan`));
 }
 
+/** The site's floor plans by level id: the screens ask once instead of getting 404 for the levels without one. */
+export async function floorPlans(siteCode: string): Promise<Record<string, FloorPlan>> {
+	const result = await Api.get<FloorPlan[]>('/api/v1/admin/floor-plans', { query: { siteCode } });
+	return Object.fromEntries((result.data ?? []).map((plan) => [plan.levelId, plan]));
+}
+
+/** A plan placed on its level: an object URL (revoke it when done) and its position and size in metres. */
+export interface PlanImage {
+	url: string;
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+}
+
+/**
+ * Fetches a plan's image with the user's token and places it by its scale and origin. Null when it cannot be read or
+ * when <paramref name="current"/> says the level is no longer shown (the URL is revoked then).
+ */
+export async function planImage(
+	plan: FloorPlan,
+	current: () => boolean
+): Promise<PlanImage | null> {
+	const content = await floorPlanContent(plan.levelId);
+	if (content.hasErrors || !(content.data instanceof Blob) || !current()) return null;
+	const url = URL.createObjectURL(content.data);
+	let width = plan.widthPixels;
+	let height = plan.heightPixels;
+	if (!width || !height) {
+		const image = new Image();
+		image.src = url;
+		await image.decode().catch(() => undefined);
+		width = image.naturalWidth || 1;
+		height = image.naturalHeight || 1;
+	}
+	if (!current()) {
+		URL.revokeObjectURL(url);
+		return null;
+	}
+	return {
+		url,
+		x: plan.originX,
+		y: plan.originY,
+		width: width * plan.metresPerPixel,
+		height: height * plan.metresPerPixel
+	};
+}
+
 /** The plan image, fetched with the user's token and shown through an object URL (img-src blob:). */
 export function floorPlanContent(levelId: string): Promise<Result<Blob>> {
 	return ids([levelId], () =>

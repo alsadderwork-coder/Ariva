@@ -30,9 +30,9 @@
 	let registering = $state(false);
 	/** The credential of the last registration or rotation, shown once and dropped when the user is done. */
 	let issued = $state<Issued | null>(null);
-	let plan = $state<{ url: string; x: number; y: number; width: number; height: number } | null>(
-		null
-	);
+	let plan = $state<zones.PlanImage | null>(null);
+	/** The site's floor plans by level (asked once per site). */
+	let plans: Record<string, zones.FloorPlan> = {};
 	let destroyed = false;
 	/** The site's levels and zones are in: registering needs them. */
 	let loaded = $state(false);
@@ -105,6 +105,7 @@
 	}
 
 	async function loadSite(): Promise<void> {
+		plans = await zones.floorPlans(siteCode);
 		selectedId = null;
 		registering = false;
 		loaded = false;
@@ -130,34 +131,12 @@
 	async function loadPlan(): Promise<void> {
 		dropPlan();
 		const target = levelId;
-		if (!target) return;
-		const meta = await zones.floorPlan(target);
-		if (meta.hasErrors || !meta.data) return;
-		const content = await zones.floorPlanContent(target);
-		if (content.hasErrors || !(content.data instanceof Blob) || target !== levelId || destroyed)
-			return;
-		const url = URL.createObjectURL(content.data);
-		let w = meta.data.widthPixels;
-		let h = meta.data.heightPixels;
-		if (!w || !h) {
-			const image = new Image();
-			image.src = url;
-			await image.decode().catch(() => undefined);
-			w = image.naturalWidth || 1;
-			h = image.naturalHeight || 1;
-		}
-		if (target !== levelId || destroyed) {
-			URL.revokeObjectURL(url);
-			return;
-		}
+		const meta = target ? plans[target] : undefined;
+		if (!meta) return;
+		const image = await zones.planImage(meta, () => target === levelId && !destroyed);
+		if (!image) return;
 		dropPlan();
-		plan = {
-			url,
-			x: meta.data.originX,
-			y: meta.data.originY,
-			width: w * meta.data.metresPerPixel,
-			height: h * meta.data.metresPerPixel
-		};
+		plan = image;
 	}
 
 	onMount(async () => {

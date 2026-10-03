@@ -16,6 +16,8 @@ test.describe.configure({ mode: 'serial' });
 
 /** A fresh IATA code for this run's airport (deployment-wide and unique). */
 const iata = Array.from(crypto.randomBytes(3), (b) => String.fromCharCode(65 + (b % 26))).join('');
+// Checkpoint codes are unique across a site (ARV-055): each run uses its own in the shared site E2E1.
+const checkpointCode = `I${iata}`;
 
 function column(page: Page, entity: string) {
 	return page.getByTestId(`column-${entity}`);
@@ -70,12 +72,12 @@ test('an administrator builds an airport down to its desks, edits a desk, maps i
 	await column(page, 'level').getByRole('button', { name: /^L1\b/ }).click();
 
 	await page.getByTestId('add-checkpoint').click();
-	await page.getByTestId('create-checkpoint').getByLabel('Code').fill('IMM');
+	await page.getByTestId('create-checkpoint').getByLabel('Code').fill(checkpointCode);
 	await page.getByTestId('create-checkpoint').getByLabel('Name').fill('Immigration');
 	await page.getByTestId('create-checkpoint').getByLabel('Kind').selectOption('Immigration');
 	await page.getByTestId('create-checkpoint').getByRole('button', { name: 'Create' }).click();
 	await column(page, 'checkpoint')
-		.getByRole('button', { name: /^IMM\b/ })
+		.getByRole('button', { name: new RegExp(`^${checkpointCode}\\b`) })
 		.click();
 
 	// A range of three desks for citizens.

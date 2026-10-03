@@ -41,7 +41,7 @@ public static class RolePermissions
 
     /// <summary>Border shift supervisor: immigration halls, their zones and sensors, the arrival wave, and the alert rules of its sites.</summary>
     public static IReadOnlySet<Permission> BorderShiftSupervisor { get; } = new HashSet<Permission>(
-        [.. TopologyRead, .. ZonesAndDevices, Permissions.ViewLiveQueue, Permissions.ViewArrivalWave, Permissions.ViewArrivalWaveLanes, .. AlertRulesWrite, .. Alerts]);
+        [.. TopologyRead, .. ZonesAndDevices, Permissions.ViewLiveQueue, Permissions.ViewArrivalWave, Permissions.ViewArrivalWaveLanes, Permissions.ViewBorderDesks, .. AlertRulesWrite, .. Alerts]);
 
     /// <summary>
     /// Terminal duty manager: everything airport-side, including zones, sensors and desk code mappings; the arrival wave as
@@ -51,7 +51,7 @@ public static class RolePermissions
     [
         .. TopologyRead, .. ZonesAndDevices,
         Permissions.ViewDeskCodeMapping, Permissions.SearchDeskCodeMapping,
-        Permissions.ViewLiveQueue, Permissions.ViewArrivalWave, .. AlertRulesWrite, .. Alerts
+        Permissions.ViewLiveQueue, Permissions.ViewArrivalWave, Permissions.ViewAirportDesks, .. AlertRulesWrite, .. Alerts
     ]);
 
     /// <summary>Handler station manager: its own counters; reads topology and zones, changes none of them.</summary>

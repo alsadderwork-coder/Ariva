@@ -38,6 +38,7 @@
 	"dependencies": {
 		"@fontsource-variable/dm-sans": "^5.3.0",
 		"@fontsource-variable/noto-sans-arabic": "^5.3.0",
+		"@microsoft/signalr": "8.0.17",
 		"echarts": "^6.0.0",
 		"qrcode-generator": "1.4.4",
 		"svelte": "^5.38.0",

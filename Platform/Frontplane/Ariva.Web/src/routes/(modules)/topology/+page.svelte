@@ -123,7 +123,12 @@
 			siteCode: entity === 'airport' ? undefined : site || undefined
 		});
 		// A newer choice (another parent or site) won while this answer was on its way: it belongs to nothing shown.
-		if ((index > 0 && selection[order[index - 1]] !== parent) || siteCode !== site) return;
+		// Airports are deployment-wide, so a site change does not make their answer stale.
+		if (
+			(index > 0 && selection[order[index - 1]] !== parent) ||
+			(entity !== 'airport' && siteCode !== site)
+		)
+			return;
 		if (result.hasErrors || !result.data) {
 			toast.error(
 				$_('topology.messages.loadFailed', { values: { reason: result.errorMessages[0] ?? '' } })

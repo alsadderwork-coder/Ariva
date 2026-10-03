@@ -169,6 +169,7 @@ public sealed class FakeTopology : Ariva.Core.Services.Topology.ISvcTopology, Ar
     public Task<Fluentx.Result<bool>> DiscardAsync(Guid id, CancellationToken ct = default) => Missing<bool>();
 
     Task<Fluentx.Result<FloorPlanViewModel>> Ariva.Core.Services.Topology.ISvcFloorPlans.GetAsync(Guid levelId, CancellationToken ct) => Missing<FloorPlanViewModel>();
+    Task<Fluentx.Result<IReadOnlyList<FloorPlanViewModel>>> Ariva.Core.Services.Topology.ISvcFloorPlans.ListAsync(string siteCode, CancellationToken ct) => Missing<IReadOnlyList<FloorPlanViewModel>>();
     public Task<Fluentx.Result<FloorPlanContent>> OpenAsync(Guid levelId, CancellationToken ct = default) => Missing<FloorPlanContent>();
     public Task<Fluentx.Result<FloorPlanViewModel>> UploadAsync(Guid levelId, FloorPlanUpload upload, CancellationToken ct = default) => Missing<FloorPlanViewModel>();
     public Task<Fluentx.Result<FloorPlanViewModel>> CalibrateAsync(Guid levelId, CalibrateFloorPlanRequest request, CancellationToken ct = default) => Missing<FloorPlanViewModel>();

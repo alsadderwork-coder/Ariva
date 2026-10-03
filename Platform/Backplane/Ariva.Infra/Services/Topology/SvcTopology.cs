@@ -251,6 +251,12 @@ internal sealed class SvcTopology(
             if (level is null)
                 return Result.Error<CheckpointViewModel>(TopologyErrors.NotFound);
 
+            // A checkpoint code is unique across its site, not only its level (ARV-055, script 0033): desks are known by
+            // site/checkpoint/desk, so a reused code would merge two desks' live data.
+            var code = request.Code;
+            if (code is not null && await Query<Checkpoint>().AnyAsync(c => c.SiteCode == level.SiteCode && c.Code == code && c.DeletedOn == null, ct))
+                return Result.Error<CheckpointViewModel>(TopologyErrors.Duplicate);
+
             var checkpoint = level.AddCheckpoint(request.Code, request.Name, kind);
             await SaveAsync(checkpoint, ct);
             await AuditAsync("Checkpoint", "Created", checkpoint.Id, Path(checkpoint), null, Summary(checkpoint), ct);
@@ -373,6 +379,11 @@ internal sealed class SvcTopology(
         }
         catch (InvalidOperationException e) when (e.Message.Contains("already exists", StringComparison.Ordinal))
         {
+            return Result.Error<T>(TopologyErrors.Duplicate);
+        }
+        catch (global::NHibernate.Exceptions.GenericADOException e) when (e.InnerException is global::Npgsql.PostgresException { SqlState: "23505" })
+        {
+            // Two creates of one code at the same moment: both pass the check, the unique index refuses the second.
             return Result.Error<T>(TopologyErrors.Duplicate);
         }
         catch (ArgumentException e)

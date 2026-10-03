@@ -31,13 +31,15 @@ function database(): pg.Client {
 
 const ids: Record<string, string> = {};
 
-// One open alert per rule and target: earlier runs' open alerts on the targets used here are resolved first.
+// One open alert per rule and target: earlier runs' open alerts on the targets used here (and only those: live-operations.spec
+// plants its own on A-RES) are resolved first.
 async function plant(): Promise<void> {
 	const db = database();
 	await db.connect();
 	try {
 		await db.query(`UPDATE alert SET state = 'Resolved', resolution = 'Manual', resolved_utc = now(), resolved_by = 'e2e-cleanup', resolution_note = 'cleanup'
-		                WHERE state <> 'Resolved' AND site_code = 'DMO' AND rule_code IN ('R-001', 'R-003', 'R-004')`);
+		                WHERE state <> 'Resolved' AND site_code = 'DMO' AND ((rule_code = 'R-001' AND zone_name = 'A-VIS') OR (rule_code = 'R-003' AND device_code = 'S-17')
+		                      OR (rule_code = 'R-004' AND zone_name = 'CI-C'))`);
 		for (const [key, code, zone, device, metric, value] of [
 			['r001', 'R-001', 'A-VIS', null, 'Nowcast', 16.3],
 			['r003', 'R-003', 'A-VIS', 'S-17', 'SensorOffline', 1],

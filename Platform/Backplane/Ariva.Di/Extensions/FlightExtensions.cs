@@ -37,6 +37,8 @@ public static class FlightExtensions
         services.AddArivaArrivalWaveSource(configuration);
         services.TryAddScoped<Ariva.Infra.Services.Administration.CallerRoles>();
         services.TryAddScoped<ISvcArrivalWave, Ariva.Infra.Services.Flights.SvcArrivalWave>();
+        // ARV-055: the live screen's desk states, scoped like the arrival wave.
+        services.TryAddScoped<Ariva.Core.Services.Live.ISvcDeskStates, Ariva.Infra.Services.Live.SvcDeskStates>();
         return services;
     }
 

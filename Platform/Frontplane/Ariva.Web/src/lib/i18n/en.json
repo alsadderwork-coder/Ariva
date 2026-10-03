@@ -47,41 +47,105 @@
 	},
 	"liveOperations": {
 		"title": "Live operations",
-		"description": "Queue length, wait against target and staffing for every queue zone",
-		"demoNotice": "Example data from the Demo International Airport reference scenario. Live figures arrive with the stream engine and the live hub (ARV-030 to ARV-035).",
+		"description": "Queue length and nowcast wait for every queue zone, desk states, alerts and the arrival wave, live",
 		"metrics": {
 			"label": "Summary",
 			"waiting": "Passengers waiting",
 			"longestWait": "Longest wait",
 			"minutes": "minutes",
 			"overTarget": "Zones over target",
-			"sensorsOnline": "Sensors online"
+			"sensorsOnline": "Sensors online",
+			"openAlerts": "Open alerts",
+			"zonesLive": "Zones reporting"
 		},
 		"zones": {
 			"title": "Queue zones",
-			"description": "Wait is the nowcast for a passenger joining now, in minutes, against the zone's target.",
-			"noEstimate": "No estimate (sensor data degraded)",
+			"description": "Wait is the nowcast for a passenger joining now, in minutes.",
+			"noEstimate": "No estimate",
 			"waitOfTarget": "{wait} / {target}",
 			"columns": {
 				"zone": "Zone",
-				"area": "Area",
 				"inQueue": "In queue",
-				"wait": "Wait / target (min)",
-				"serversOpen": "Desks open",
-				"status": "Status"
+				"wait": "Wait (min)",
+				"throughput": "Served per min",
+				"status": "Status",
+				"updated": "Updated"
 			}
-		},
-		"areas": {
-			"departures": "Departures",
-			"arrivals": "Arrivals",
-			"transfer": "Transfer"
 		},
 		"status": {
 			"withinTarget": "Within target",
 			"nearTarget": "Near target",
 			"overTarget": "Over target",
-			"degraded": "Data degraded"
-		}
+			"degraded": "Data degraded",
+			"noData": "No data"
+		},
+		"connection": {
+			"connecting": "Connecting",
+			"connected": "Live",
+			"reconnecting": "Reconnecting",
+			"disconnected": "Not live: figures may be old"
+		},
+		"stale": "Stale",
+		"staleHint": "No update for more than {seconds} s",
+		"noData": "No data yet",
+		"refused": "Not available to you",
+		"plan": "Floor plan by nowcast",
+		"planLabel": "Floor plan with the queue zones coloured by their nowcast wait",
+		"thresholds": "Near target from {near} min, over target from {over} min (reference R-001).",
+		"noService": {
+			"NothingOpen": "No desk open",
+			"ThroughputTooLow": "Too few served to estimate",
+			"NoThroughputData": "No throughput data"
+		},
+		"chart": {
+			"title": "Wait over time: {zone}",
+			"label": "Nowcast wait of {zone} over the last minutes",
+			"empty": "The chart fills as minutes arrive.",
+			"axis": "min"
+		},
+		"desks": {
+			"title": "Desk states",
+			"description": "Each desk's latest minute.",
+			"none": "No desk minutes in the last 15 minutes",
+			"borderHidden": "Immigration desks are border data and are not shown to your role.",
+			"states": {
+				"Serving": "Serving",
+				"Idle": "Idle",
+				"Paused": "Paused",
+				"Closed": "Closed",
+				"Unknown": "Unknown"
+			},
+			"transactions": "{count} served"
+		},
+		"alerts": {
+			"title": "Alerts",
+			"none": "No open alerts",
+			"raised": "Raised {time}",
+			"acknowledge": "Acknowledge",
+			"note": "Note (optional)",
+			"acknowledged": "Acknowledged {time}",
+			"done": "Alert acknowledged.",
+			"states": {
+				"Raised": "Raised",
+				"Acknowledged": "Acknowledged",
+				"Escalated": "Escalated",
+				"Cleared": "Cleared",
+				"Resolved": "Resolved"
+			},
+			"severities": {
+				"Info": "Info",
+				"Warning": "Warning",
+				"Critical": "Critical"
+			}
+		},
+		"wave": {
+			"title": "Arrival wave",
+			"description": "Passengers predicted to reach the arrivals hall per minute, next {minutes} minutes.",
+			"alertWindow": "{count} passengers between now + 5 and now + 25 min",
+			"none": "No arriving flights in the window",
+			"label": "Predicted hall arrivals per minute"
+		},
+		"noAccess": "Your role has no live operations view. Ask an administrator for a role at your site."
 	},
 	"errors": {
 		"notFound": {

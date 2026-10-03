@@ -12,6 +12,8 @@ test.describe.configure({ mode: 'serial' });
 const api = `${hosts.main}/api/v1/admin`;
 const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const iata = Array.from({ length: 3 }, (_, i) => letters[Math.floor(Date.now() / 1000 / 26 ** i) % 26]).join('');
+// Checkpoint codes are unique across a site (ARV-055): each run uses its own in the shared site E2E1.
+const checkpointCode = `I${iata}`;
 const ids: Record<string, string> = {};
 let admin: string;
 
@@ -35,7 +37,7 @@ test('an administrator builds the tree: airport, terminals in two sites, level, 
 	const level = await create('levels', { terminalId: ids.t1, code: 'L0', name: 'Arrivals', floorNumber: 0, widthMetres: 300, depthMetres: 120 });
 	ids.level = level.id;
 	expect(level.siteCode, 'the site flows down from the terminal').toBe('E2E1');
-	ids.checkpoint = (await create('checkpoints', { levelId: ids.level, code: 'IMM', name: 'Immigration', kind: 'Immigration' })).id;
+	ids.checkpoint = (await create('checkpoints', { levelId: ids.level, code: checkpointCode, name: 'Immigration', kind: 'Immigration' })).id;
 	const desk = await create('desks', { checkpointId: ids.checkpoint, code: 'D01', kind: 'Desk', laneCategories: ['res', 'CIT'] });
 	ids.desk = desk.id;
 	expect(desk.laneCategories).toEqual(['CIT', 'RES']);

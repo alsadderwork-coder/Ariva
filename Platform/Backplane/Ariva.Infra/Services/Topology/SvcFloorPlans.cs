@@ -31,6 +31,17 @@ internal sealed class SvcFloorPlans(
         return plan is null ? Result.Error<FloorPlanViewModel>(TopologyErrors.NotFound) : new Result<FloorPlanViewModel>(View(plan));
     }
 
+    public async Task<Result<IReadOnlyList<FloorPlanViewModel>>> ListAsync(string siteCode, CancellationToken ct = default)
+    {
+        // A site the caller cannot see and a site that does not exist answer the same (CWE-863).
+        if (siteCode is null || !(await siteScope.GetAsync(ct)).Allows(siteCode) || !await Query<Site>().AnyAsync(s => s.Code == siteCode, ct))
+            return Result.Error<IReadOnlyList<FloorPlanViewModel>>(TopologyErrors.NotFound);
+        var plans = await Query<FloorPlan>()
+            .Where(p => p.SiteCode == siteCode && p.DeletedOn == null && p.Level.DeletedOn == null)
+            .ToListAsync(ct);
+        return new Result<IReadOnlyList<FloorPlanViewModel>>(plans.Select(View).OrderBy(p => p.LevelId).ToList());
+    }
+
     public async Task<Result<FloorPlanContent>> OpenAsync(Guid levelId, CancellationToken ct = default)
     {
         var plan = await CurrentAsync(levelId, ct);

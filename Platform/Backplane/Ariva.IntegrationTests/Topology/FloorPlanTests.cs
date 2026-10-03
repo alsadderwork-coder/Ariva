@@ -65,6 +65,28 @@ public sealed class FloorPlanTests(PostgresFixture fixture) : IAsyncDisposable
     }
 
     [Fact]
+    public async Task List_Should_GiveTheSitesLivePlansOnly_When_Asked()
+    {
+        var (admin, level) = await LevelAsync("rl");
+        var plans = (IServiceProvider s) => s.GetRequiredService<ISvcFloorPlans>();
+        (await _host.AsCallerAsync(admin, s => plans(s).ListAsync("PRL", Ct))).Data.Should().BeEmpty("no level has a plan yet");
+
+        await _host.AsCallerAsync(admin, s => plans(s).UploadAsync(level, Upload("one"), Ct));
+        var second = await _host.AsCallerAsync(admin, s => plans(s).UploadAsync(level, Upload("two"), Ct));
+
+        (await _host.AsCallerAsync(admin, s => plans(s).ListAsync("PRL", Ct))).Data.Should().ContainSingle()
+            .Which.Should().Match<Ariva.Core.Domain.ViewModels.FloorPlanViewModel>(p => p.Id == second.Data.Id && p.LevelId == level, "the replaced plan is not listed");
+
+        // Another site's caller and no caller are told nothing (CWE-863).
+        var other = await _host.CreateUserAsync("it.plan.rl.other", roles: [RoleCodes.SystemAdministrator]);
+        (await _host.AsCallerAsync(other, s => plans(s).ListAsync("PRL", Ct))).ErrorMessages.Should().Equal(TopologyErrors.NotFound);
+        (await _host.AsCallerAsync(null, s => plans(s).ListAsync("PRL", Ct))).HasErrors.Should().BeTrue();
+
+        // An all-sites administrator is told the same for a site that does not exist.
+        (await _host.AsCallerAsync(admin, s => plans(s).ListAsync("NOPE", Ct))).ErrorMessages.Should().Equal(TopologyErrors.NotFound);
+    }
+
+    [Fact]
     public async Task Upload_Should_LeaveOneLivePlan_When_UploadsRace()
     {
         var (admin, level) = await LevelAsync("rb");

@@ -1247,8 +1247,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 58,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Done 2026-10-03: live home screen over the live hub (zones by nowcast on the plan and table, live updates, stale marking, wait chart, alerts with acknowledge, arrival-wave strip, desk states by role with AirportDesks.View and BorderDesks.View, checkpoint codes unique per site). Security review PASS (backlog/progress.md).",
       "dependsOn": [
         "ARV-051",
         "ARV-035",

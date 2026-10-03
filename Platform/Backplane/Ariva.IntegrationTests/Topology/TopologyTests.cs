@@ -65,6 +65,14 @@ public sealed class TopologyTests(PostgresFixture fixture) : IAsyncDisposable
 
         (await _host.ReadAsync<long>("SELECT count(*) FROM audit_entry WHERE action IN ('Airport.Created', 'Terminal.Created', 'Level.Created', 'Checkpoint.Created', 'Desk.Created') AND target_name LIKE 'TPX%'"))
             .Should().Be(6, "airport, two terminals, level, checkpoint and desk, named by their path from the airport");
+
+        // A checkpoint code is unique across the site, not only the level (ARV-055): desks are known by site/checkpoint/desk.
+        var upper = await _host.AsCallerAsync(admin, s => Topology(s).CreateLevelAsync(new CreateLevelRequest(t1.Data.Id, "L1", "Departures", 1, 300, 120), Ct));
+        (await _host.AsCallerAsync(admin, s => Topology(s).CreateCheckpointAsync(new CreateCheckpointRequest(upper.Data.Id, "IMM", "Check-in", "CheckIn"), Ct)))
+            .ErrorMessages.Should().Equal(TopologyErrors.Duplicate);
+        var otherSite = await _host.AsCallerAsync(admin, s => Topology(s).CreateLevelAsync(new CreateLevelRequest(t2.Data.Id, "L0", "Arrivals", 0, 300, 120), Ct));
+        (await _host.AsCallerAsync(admin, s => Topology(s).CreateCheckpointAsync(new CreateCheckpointRequest(otherSite.Data.Id, "IMM", "Immigration", "Immigration"), Ct)))
+            .HasErrors.Should().BeFalse("another site may use the code");
     }
 
     [Fact]

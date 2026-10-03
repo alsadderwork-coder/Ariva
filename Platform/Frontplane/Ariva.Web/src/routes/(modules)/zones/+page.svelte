@@ -26,9 +26,9 @@
 	let levels = $state<Level[]>([]);
 	let levelId = $state('');
 	let desks = $state<Desk[]>([]);
-	let plan = $state<{ url: string; x: number; y: number; width: number; height: number } | null>(
-		null
-	);
+	let plan = $state<zones.PlanImage | null>(null);
+	/** The site's floor plans by level (asked once per site). */
+	let plans: Record<string, zones.FloorPlan> = {};
 	let selected = $state<Selected>(null);
 	let adding = $state<'zone' | 'line' | null>(null);
 	let uploading = $state(false);
@@ -120,6 +120,7 @@
 	}
 
 	async function loadSite(): Promise<void> {
+		plans = await zones.floorPlans(siteCode);
 		const [levelResult, deskResult] = await Promise.all([
 			topology.search<Level>('level', { siteCode }),
 			topology.search<Desk>('desk', { siteCode })
@@ -138,36 +139,13 @@
 	/** The level's plan: fetched with the token, shown through an object URL at its origin and scale. */
 	async function loadPlan(): Promise<void> {
 		dropPlan();
-		if (!levelId) return;
 		const target = levelId;
-		const meta = await zones.floorPlan(target);
-		if (meta.hasErrors || !meta.data) return;
-		const content = await zones.floorPlanContent(target);
-		if (content.hasErrors || !(content.data instanceof Blob) || target !== levelId) return;
-		if (destroyed) return;
-		const url = URL.createObjectURL(content.data);
-		let widthPixels = meta.data.widthPixels;
-		let heightPixels = meta.data.heightPixels;
-		if (!widthPixels || !heightPixels) {
-			const image = new Image();
-			image.src = url;
-			await image.decode().catch(() => undefined);
-			widthPixels = image.naturalWidth || 1;
-			heightPixels = image.naturalHeight || 1;
-		}
-		// Another level was chosen (or the screen left) while the image decoded: this plan belongs to nothing shown.
-		if (target !== levelId || destroyed) {
-			URL.revokeObjectURL(url);
-			return;
-		}
+		const meta = target ? plans[target] : undefined;
+		if (!meta) return;
+		const image = await zones.planImage(meta, () => target === levelId && !destroyed);
+		if (!image) return;
 		dropPlan();
-		plan = {
-			url,
-			x: meta.data.originX,
-			y: meta.data.originY,
-			width: widthPixels * meta.data.metresPerPixel,
-			height: heightPixels * meta.data.metresPerPixel
-		};
+		plan = image;
 	}
 
 	onMount(async () => {
@@ -416,7 +394,9 @@
 		<FloorPlanUpload
 			levelId={level.id}
 			onCancel={() => (uploading = false)}
-			onUploaded={async () => ((uploading = false), await loadPlan())}
+			onUploaded={async () => (
+				(uploading = false), (plans = await zones.floorPlans(siteCode)), await loadPlan()
+			)}
 		/>
 	</div>
 {/if}

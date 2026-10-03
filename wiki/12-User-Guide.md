@@ -58,21 +58,23 @@ No screen ever shows officer identities.
 
 ## Live operations
 
-Phase 0 (minimal), MVP (complete).
+ARV-055, the home screen. Live over the live hub (WebSockets): a chip in the header says Live, Reconnecting or Not live (figures may be old). For the chosen site it shows:
 
-Shows:
-
-- KPI tiles: the longest current wait and its lane, people queuing, desks staffed of total, e-gates in use and reject rate.
-- The floor plan with zones coloured by nowcast and desks by state; hover for details.
-- A wait chart: the last two hours of realised wait, the current nowcast, and (v1) the next two hours of forecast as a P50 line with a P90 band, against a dashed target line (15 minutes in the reference setup).
-- The alert list: severity, rule, owner role, time, an acknowledge button and the escalation countdown.
-- The arrival-wave strip (border): flights landing in the next 30 minutes with passengers by lane and the predicted hall arrival curve.
+- KPI tiles: passengers waiting and the longest nowcast wait over the zones reporting, open alerts, and how many queue zones are reporting.
+- The floor plan of a level with the queue zones of the published profile coloured by nowcast (within target, near target from 10 minutes, over target above 15 minutes, the reference rule R-001; grey when degraded or stale) and the wait written on each zone.
+- The queue zones table: people in queue, the nowcast wait (or why there is none, for example no desk open), a status in words, and the minute it is for. A zone not heard from for more than 150 seconds is marked Stale; one the hub does not let the user see is marked Not available.
+- A wait chart of the selected zone: its nowcast minute by minute since the screen opened, against the 15-minute line. (v1 adds realised waits and the forecast band.)
+- Alerts the user's role is responsible for, with severity, rule, zone and time; Acknowledge takes one on, with an optional note. New alerts and changes arrive live.
+- The arrival wave (border shift supervisors, terminal duty managers, administrators): predicted hall arrivals per minute for the next 60 minutes, with the sum for now + 5 to now + 25 minutes.
+- Desk states: each desk's latest minute (Serving, Idle, Paused, Closed, Unknown) with the people served. Immigration and emigration desks and e-gates are border data and show only to border shift supervisors and administrators; check-in counters and security lanes show to terminal duty managers and administrators. A handler station manager sees only its own counters, which needs handler tenancy, so until then the panel is not shown to handlers.
 
 Common tasks:
 
 1. Acknowledge an alert you own before its escalation timer runs out; then act (open desks, redirect passengers).
-2. When a zone shows a band or a neutral message, check the Devices screen and tell the site administrator.
-3. Use the arrival-wave strip to open desks before a wave reaches the hall.
+2. When a zone shows Stale or Data degraded, check the Devices screen and tell the site administrator.
+3. Use the arrival wave to open desks before a wave reaches the hall.
+
+Desk states API (ARV-055, `LiveQueue.View`): `GET api/v1/sites/{siteCode}/desk-states` answers each desk's latest minute within the last 15 minutes from Ariva.Api.Stream's desk engine, with the state that held most of the minute; check-in counters and security lanes only with `AirportDesks.View` (terminal duty managers, administrators), immigration and emigration desks and e-gates only with `BorderDesks.View` (border shift supervisors, administrators); a caller with neither gets an empty list. A desk is known by site/checkpoint/desk, so checkpoint codes are unique across a site (script 0033), and a minute whose key ever named a desk the caller may not see (a deleted checkpoint included) is left out. `GET api/v1/admin/floor-plans?siteCode=` lists the site's current floor plans, so screens fetch only the plans that exist; a site the caller cannot see and a site that does not exist both answer 404.
 
 Arrival-wave API (ARV-047, `ArrivalWave.View`: border shift supervisors, terminal duty managers and administrators of the site): `GET api/v1/sites/{siteCode}/arrival-wave?minutes=30` (5 to 120) answers the flights landing within that many minutes and those landed whose passengers are still reaching the hall, each with its in-block time and where it comes from (`OnBlock`, `Landed` plus taxi-in, `Estimated`, `Scheduled`), its passengers (`Aman`, `PaxEstimate` or `Seats`; none when the feeds give none) and lanes (`Aman` or `DefaultMix`), then the predicted hall arrivals per minute and lane (`cit`, `res`, `vis`, `crw`, `eGate`), and the sum over the next 5 to 25 minutes. The split by lane is border data (`ArrivalWaveLanes.View`): a terminal duty manager gets the same answer with totals only (the lane counts and `laneSource` null). `truncated` is true when the site had more arriving legs than Ariva reads at once (2,000; the latest scheduled are left out). Passengers reach the hall 8 to 15 minutes after on-block (11 by default) over about 12 minutes (formulas F14). Cancelled and diverted flights are left out.
 

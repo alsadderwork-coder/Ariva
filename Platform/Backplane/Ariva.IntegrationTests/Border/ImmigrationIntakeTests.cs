@@ -476,6 +476,107 @@ public sealed class ImmigrationIntakeTests(PostgresFixture fixture) : IAsyncDisp
         return rows;
     }
 
+    [Fact]
+    public async Task DeskStates_Should_ShowEachDesksLatestMinuteAndKeepBorderDesksForBorderRoles_When_Asked()
+    {
+        await SeedAsync();
+        await ProbeSiteAsync();
+        _host.Clock.Advance(TimeSpan.FromDays(9));
+        var minute = new DateTime(Now.Ticks - Now.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc);
+        // What Ariva.Api.Stream writes (ARV-049): an immigration desk serving then idle, a check-in counter closed, and an
+        // e-gate whose last minute is older than the 15-minute window.
+        var rows = new (string Key, string Lane, int Ago, double Closed, double Idle, double Serving, int Transactions)[]
+        {
+            ("DMO/IMM/AR-08", "VIS", 3, 0, 10, 50, 4),
+            ("DMO/IMM/AR-08", "VIS", 1, 0, 45, 15, 1),
+            ("DMO/CI/A01", "", 2, 60, 0, 0, 0),
+            ("DMO/IMM/AG-1", "EG", 20, 0, 0, 60, 9)
+        };
+        foreach (var row in rows)
+        {
+            await using var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync()));
+            await connection.OpenAsync(Ct);
+            await using var command = new NpgsqlCommand("""
+                INSERT INTO desk_minute (desk_code, lane, minute_utc, closed_seconds, idle_seconds, serving_seconds, paused_seconds, unknown_seconds, transactions,
+                                         sensor_derived_seconds, present_seconds, degraded, updated_on)
+                VALUES (@key, @lane, @minute, @closed, @idle, @serving, 0, 0, @transactions, 0, 0, false, now())
+                ON CONFLICT (desk_code, minute_utc) DO NOTHING
+                """, connection);
+            command.Parameters.AddWithValue("key", row.Key);
+            command.Parameters.AddWithValue("lane", row.Lane);
+            command.Parameters.AddWithValue("minute", minute.AddMinutes(-row.Ago));
+            command.Parameters.AddWithValue("closed", row.Closed);
+            command.Parameters.AddWithValue("idle", row.Idle);
+            command.Parameters.AddWithValue("serving", row.Serving);
+            command.Parameters.AddWithValue("transactions", row.Transactions);
+            await command.ExecuteNonQueryAsync(Ct);
+        }
+
+        // Desk states at immigration are border data and check-in counters airport data (wiki 01): a border role sees the
+        // immigration desk only, a terminal duty manager the check-in counter only.
+        var border = (await States("DMO", await WaveUserAsync(RoleCodes.BorderShiftSupervisor, "DMO"))).Data;
+        border.Should().Match<Ariva.Core.Services.Live.DeskStatesViewModel>(v => v.BorderIncluded && !v.AirportIncluded);
+        border.Desks.Should().ContainSingle().Which.Should().Match<Ariva.Core.Services.Live.DeskStateViewModel>(d =>
+            d.Desk == "AR-08" && d.State == "Idle" && d.Transactions == 1 && d.Checkpoint == "IMM" && d.CheckpointKind == "Immigration" && d.MinuteUtc == minute.AddMinutes(-1));
+
+        var airport = (await States("DMO", await WaveUserAsync(RoleCodes.TerminalDutyManager, "DMO"))).Data;
+        airport.Should().Match<Ariva.Core.Services.Live.DeskStatesViewModel>(v => !v.BorderIncluded && v.AirportIncluded);
+        airport.Desks.Should().ContainSingle().Which.Should().Match<Ariva.Core.Services.Live.DeskStateViewModel>(d => d.Desk == "A01" && d.State == "Closed");
+
+        // A handler sees only its own counters, which needs handler tenancy: until then it is shown no desks.
+        var handler = (await States("DMO", await WaveUserAsync(RoleCodes.HandlerStationManager, "DMO"))).Data;
+        handler.Should().Match<Ariva.Core.Services.Live.DeskStatesViewModel>(v => !v.BorderIncluded && !v.AirportIncluded && v.Desks.Count == 0);
+
+        var everything = (await States("DMO", await WaveUserAsync(RoleCodes.SystemAdministrator, "DMO"))).Data;
+        everything.Desks.Select(d => d.Desk).Should().BeEquivalentTo(["A01", "AR-08"], "its last minute is older than the window, so AG-1 is not shown");
+
+        // A code that once named a border desk (a deleted immigration checkpoint) and now names a check-in counter: its
+        // minutes may be the border desk's, so an airport role is not shown them (CWE-863).
+        await using (var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync())))
+        {
+            await connection.OpenAsync(Ct);
+            await using var command = new NpgsqlCommand("""
+                INSERT INTO checkpoint (id, level_id, site_code, code, name, kind, deleted_on)
+                SELECT 'a0550000-0000-0000-0000-000000000001', level_id, 'DMO', 'RE1', 'Old immigration', 'Immigration', now() - interval '5 minutes'
+                  FROM checkpoint WHERE site_code = 'DMO' AND code = 'IMM' AND deleted_on IS NULL;
+                INSERT INTO checkpoint (id, level_id, site_code, code, name, kind)
+                SELECT 'a0550000-0000-0000-0000-000000000002', level_id, 'DMO', 'RE1', 'New check-in', 'CheckIn'
+                  FROM checkpoint WHERE site_code = 'DMO' AND code = 'IMM' AND deleted_on IS NULL;
+                INSERT INTO desk (id, checkpoint_id, site_code, code, name, kind, deleted_on) VALUES
+                    ('a0550000-0000-0000-0000-000000000011', 'a0550000-0000-0000-0000-000000000001', 'DMO', 'X1', 'Old desk', 'Desk', now() - interval '5 minutes'),
+                    ('a0550000-0000-0000-0000-000000000012', 'a0550000-0000-0000-0000-000000000002', 'DMO', 'X1', 'New counter', 'Counter', NULL);
+                INSERT INTO desk_minute (desk_code, lane, minute_utc, closed_seconds, idle_seconds, serving_seconds, paused_seconds, unknown_seconds, transactions,
+                                         sensor_derived_seconds, present_seconds, degraded, updated_on)
+                VALUES ('DMO/RE1/X1', 'VIS', @minute, 0, 0, 60, 0, 0, 7, 0, 0, false, now());
+                """, connection);
+            command.Parameters.AddWithValue("minute", minute.AddMinutes(-2));
+            (await command.ExecuteNonQueryAsync(Ct)).Should().Be(5);
+        }
+
+        try
+        {
+            (await States("DMO", await WaveUserAsync(RoleCodes.TerminalDutyManager, "DMO"))).Data.Desks.Should().NotContain(d => d.Desk == "X1");
+            (await States("DMO", await WaveUserAsync(RoleCodes.BorderShiftSupervisor, "DMO"))).Data.Desks.Should().NotContain(d => d.Desk == "X1");
+            (await States("DMO", await WaveUserAsync(RoleCodes.SystemAdministrator, "DMO"))).Data.Desks.Should().Contain(d => d.Desk == "X1" && d.Checkpoint == "RE1");
+        }
+        finally
+        {
+            await ExecuteAsMigrationAsync("""
+                DELETE FROM desk_minute WHERE desk_code = 'DMO/RE1/X1';
+                DELETE FROM desk WHERE id IN ('a0550000-0000-0000-0000-000000000011', 'a0550000-0000-0000-0000-000000000012');
+                DELETE FROM checkpoint WHERE id IN ('a0550000-0000-0000-0000-000000000001', 'a0550000-0000-0000-0000-000000000002');
+                """);
+        }
+
+        // Another site's caller, an unknown site and no caller are not told anything.
+        (await States("DMO", await WaveUserAsync(RoleCodes.BorderShiftSupervisor, "XS2"))).ErrorMessages.Should().Equal(Ariva.Core.Services.Topology.TopologyErrors.NotFound);
+        (await States("NOPE", await WaveUserAsync(RoleCodes.SystemAdministrator))).ErrorMessages.Should().Equal(Ariva.Core.Services.Topology.TopologyErrors.NotFound);
+        (await _host.AsCallerAsync(null, s => s.GetRequiredService<Ariva.Core.Services.Live.ISvcDeskStates>().GetAsync("DMO", Ct))).HasErrors.Should().BeTrue();
+    }
+
+    private Task<Fluentx.Result<Ariva.Core.Services.Live.DeskStatesViewModel>> States(string site, Guid caller) =>
+        _host.AsCallerAsync(caller, s => s.GetRequiredService<Ariva.Core.Services.Live.ISvcDeskStates>().GetAsync(site, Ct));
+
     private Task<Fluentx.Result<ArrivalWaveViewModel>> Wave(string site, int minutes, Guid? caller = null) =>
         _host.AsCallerAsync(caller ?? _waveAdmin, s => s.GetRequiredService<ISvcArrivalWave>().GetAsync(site, minutes, Ct));
 

@@ -110,37 +110,3 @@ test.describe('application shell', () => {
 		await expect(page.locator('main')).toBeFocused();
 	});
 });
-
-test.describe('live operations (example data)', () => {
-	test('labels the example data and pairs every status with text', async ({ page }) => {
-		const guards = await guardPage(page);
-		await page.goto('/');
-		await expect(page.getByRole('heading', { level: 1 })).toHaveText(homeHeading.en);
-
-		await expect(page.getByTestId('demo-banner')).toContainText('Example data');
-		await expect(page.getByTestId('environment-chip')).toHaveText('Demo data');
-
-		const rows = page.getByTestId('zone-row');
-		expect(await rows.count()).toBeGreaterThan(5);
-		const badges = page.locator('[data-status]').filter({ has: page.locator('span') });
-		for (const badge of await badges.all()) {
-			await expect(badge).not.toHaveText('');
-		}
-		await expect(page.getByTestId('zones-table')).toContainText('Over target');
-		await expect(page.getByTestId('zones-table')).toContainText('Data degraded');
-		await guards.expectClean();
-	});
-
-	test('summary figures add up from the zone rows', async ({ page }) => {
-		await page.goto('/');
-		await expect(page.getByRole('heading', { level: 1 })).toHaveText(homeHeading.en);
-
-		const inQueue = await page.getByTestId('zone-row').evaluateAll((rows) =>
-			rows.reduce((sum, row) => sum + Number(row.querySelectorAll('td')[2]?.textContent?.replace(/\D/g, '') ?? 0), 0)
-		);
-		await expect(page.getByTestId('metric-waiting')).toContainText(new Intl.NumberFormat('en').format(inQueue));
-
-		const overTarget = await page.getByTestId('zone-row').filter({ hasText: 'Over target' }).count();
-		await expect(page.getByTestId('metric-over-target')).toContainText(String(overTarget));
-	});
-});
