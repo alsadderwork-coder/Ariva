@@ -60,7 +60,8 @@ async function register(name: string, kind: string, scopes: string[], perRequest
 			kind,
 			scopes,
 			siteCodes: ['DMO'],
-			allowedNetworks: ['127.0.0.0/8', '10.0.0.0/8'],
+			// The simulator calls Ariva directly on localhost: 127.0.0.1, or ::1 where IPv6 is up (CI).
+			allowedNetworks: ['127.0.0.0/8', '::1/128', '10.0.0.0/8'],
 			requireTotpPerRequest: perRequestTotp
 		}
 	});

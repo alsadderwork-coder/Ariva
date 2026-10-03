@@ -61,7 +61,14 @@ test('feed controls need the control scope and client secrets never come back ou
 test('the emulated AODB pushes the demo schedule to Ariva as AIDX with its own client', async () => {
 	const created = await call('POST', `${hosts.main}/api/v1/admin/integration-clients`, {
 		token: admin,
-		data: { name: 'E2E emulated AODB', kind: 'Aodb', scopes: ['flights:write'], siteCodes: ['DMO'], allowedNetworks: ['127.0.0.0/8', '10.0.0.0/8'] }
+		// The simulator calls Ariva directly (no X-Forwarded-For) on localhost, which resolves to ::1 where IPv6 is up (CI).
+		data: {
+			name: 'E2E emulated AODB',
+			kind: 'Aodb',
+			scopes: ['flights:write'],
+			siteCodes: ['DMO'],
+			allowedNetworks: ['127.0.0.0/8', '::1/128', '10.0.0.0/8']
+		}
 	});
 	expect(created.status(), await created.text()).toBe(201);
 	const credentials = await created.json();
