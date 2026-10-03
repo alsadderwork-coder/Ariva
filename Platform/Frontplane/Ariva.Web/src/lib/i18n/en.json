@@ -186,5 +186,93 @@
 	"access": {
 		"title": "No access",
 		"description": "Your role does not include this screen. Ask your administrator if you need it."
+	},
+	"topology": {
+		"title": "Topology",
+		"description": "Airports, terminals, levels, checkpoints and desks of your sites",
+		"site": "Site",
+		"readOnly": "You can view the topology of your sites. Changes are made by a system administrator.",
+		"deploymentWide": "Airports are shared by every site; only an administrator of all sites adds or changes them.",
+		"columns": {
+			"airport": "Airports",
+			"terminal": "Terminals",
+			"level": "Levels",
+			"checkpoint": "Checkpoints",
+			"desk": "Desks"
+		},
+		"choose": {
+			"terminal": "Choose an airport",
+			"level": "Choose a terminal",
+			"checkpoint": "Choose a level",
+			"desk": "Choose a checkpoint"
+		},
+		"empty": "None yet",
+		"count": "{shown} of {total}",
+		"fields": {
+			"code": "Code",
+			"name": "Name",
+			"iataCode": "IATA code",
+			"icaoCode": "ICAO code",
+			"timeZoneId": "Time zone (IANA)",
+			"floorNumber": "Floor",
+			"widthMetres": "Width (m)",
+			"depthMetres": "Depth (m)",
+			"kind": "Kind",
+			"laneCategories": "Lane categories",
+			"inService": "In service",
+			"prefix": "Prefix",
+			"from": "From",
+			"to": "To",
+			"width": "Digits",
+			"siteCode": "Site"
+		},
+		"kinds": {
+			"CheckIn": "Check-in",
+			"Security": "Security",
+			"Emigration": "Emigration",
+			"Immigration": "Immigration",
+			"Counter": "Counter",
+			"SecurityLane": "Security lane",
+			"Desk": "Desk",
+			"EGate": "E-gate"
+		},
+		"lanes": {
+			"CRW": "Crew and diplomats",
+			"CIT": "Citizens",
+			"RES": "Residents",
+			"VIS": "Visitors",
+			"EG": "E-gate eligible"
+		},
+		"actions": {
+			"add": "Add",
+			"addRange": "Add a range",
+			"create": "Create",
+			"save": "Save",
+			"delete": "Delete",
+			"confirmDelete": "Delete {code} for good",
+			"cancel": "Cancel",
+			"close": "Close"
+		},
+		"details": "Details",
+		"rangeHint": "For example prefix D, from 1 to 22, 2 digits: D01 to D22 (at most 200).",
+		"outOfService": "Out of service",
+		"messages": {
+			"created": "{code} created.",
+			"createdRange": "{count} desks created.",
+			"saved": "Saved.",
+			"deleted": "{code} deleted.",
+			"failed": "That did not work: {reason}",
+			"loadFailed": "The topology could not be loaded: {reason}"
+		},
+		"mappings": {
+			"title": "Codes in other systems",
+			"description": "The codes AMAN and the AODB use for this desk.",
+			"system": "System",
+			"externalCode": "Their code",
+			"add": "Add the code",
+			"none": "No codes mapped",
+			"Aman": "AMAN",
+			"Aodb": "AODB"
+		}
 	}
 }

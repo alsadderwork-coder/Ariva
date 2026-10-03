@@ -83,7 +83,7 @@ export const navItems: readonly NavItem[] = [
 		href: '/topology',
 		icon: Map,
 		group: 'administration',
-		ready: false,
+		ready: true,
 		story: 'ARV-052',
 		permission: 'Site.View'
 	},

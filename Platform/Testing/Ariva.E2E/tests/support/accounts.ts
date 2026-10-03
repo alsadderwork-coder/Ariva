@@ -166,7 +166,9 @@ export function accounts() {
 		webTotp: account('e2e.webtotp', ['BorderShiftSupervisor'], false, true, ['DMO']),
 		webStepUp: account('e2e.webstepup', ['TerminalDutyManager'], false, true, ['DMO']),
 		webExpiry: account('e2e.webexpiry', ['TerminalDutyManager'], false, true, ['DMO']),
-		webCancel: account('e2e.webcancel', ['TerminalDutyManager'], false, true, ['DMO'])
+		webCancel: account('e2e.webcancel', ['TerminalDutyManager'], false, true, ['DMO']),
+		// ARV-052: a border supervisor at the demo airport, for the read-only screens.
+		webBorder: account('e2e.webborder', ['BorderShiftSupervisor'], false, false, ['DMO'])
 	} as const;
 }
 

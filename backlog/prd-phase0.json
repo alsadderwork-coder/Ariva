@@ -1185,8 +1185,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 55,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Done 2026-10-03: /topology screen (five columns and details), admin create, range, edit, delete and desk code mappings with on-page confirmation; read only per role. Security review PASS after one fix round (backlog/progress.md).",
       "dependsOn": [
         "ARV-051",
         "ARV-014"

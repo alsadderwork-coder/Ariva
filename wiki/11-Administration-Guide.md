@@ -46,7 +46,9 @@ Phase 0 API (ARV-011), under `api/v1/admin`: `users` (search with text, role and
 
 Sessions: access tokens last 15 minutes; a new session id is minted at every sign-in; refresh tokens rotate on every use, are stored hashed, and reuse of an old refresh token revokes the whole family. The refresh cookie is HttpOnly, Secure, SameSite Strict.
 
-## 2a. Site topology (Phase 0 API)
+## 2a. Site topology
+
+In Ariva.Web, Topology (ARV-052) shows the tree as five columns, airports to desks: pick the site, then an airport, terminal, level and checkpoint; the details of the item last picked show below. An administrator adds items with Add on each column (Add a range for desks), edits names, floors, sizes, lane categories and in service in the details, deletes with a confirmation on the page, and maps a desk's AMAN or AODB code in the desk's details. Airports are added or changed only by an administrator of all sites. Every other role sees its sites read only; terminal duty managers also see the desk codes, border shift supervisors and handler station managers do not. The screen calls the API below, which checks every change.
 
 ARV-014 adds `api/v1/admin/airports`, `terminals`, `levels`, `checkpoints` and `desks`, each with search (text, parent, site, an allowlisted sort, pages of at most 500), view, create, update and delete.
 

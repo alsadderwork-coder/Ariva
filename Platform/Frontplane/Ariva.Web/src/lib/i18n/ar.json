@@ -186,5 +186,93 @@
 	"access": {
 		"title": "لا صلاحية",
 		"description": "دورك لا يشمل هذه الشاشة. اطلب من المسؤول إن كنت تحتاجها."
+	},
+	"topology": {
+		"title": "الطوبولوجيا",
+		"description": "المطارات والمباني والطوابق ونقاط التفتيش والمكاتب في مواقعك",
+		"site": "الموقع",
+		"readOnly": "يمكنك عرض طوبولوجيا مواقعك. يُجري التغييرات مسؤول النظام.",
+		"deploymentWide": "المطارات مشتركة بين كل المواقع؛ يضيفها أو يغيّرها مسؤول كل المواقع فقط.",
+		"columns": {
+			"airport": "المطارات",
+			"terminal": "المباني",
+			"level": "الطوابق",
+			"checkpoint": "نقاط التفتيش",
+			"desk": "المكاتب"
+		},
+		"choose": {
+			"terminal": "اختر مطاراً",
+			"level": "اختر مبنى",
+			"checkpoint": "اختر طابقاً",
+			"desk": "اختر نقطة تفتيش"
+		},
+		"empty": "لا يوجد بعد",
+		"count": "{shown} من {total}",
+		"fields": {
+			"code": "الرمز",
+			"name": "الاسم",
+			"iataCode": "رمز IATA",
+			"icaoCode": "رمز ICAO",
+			"timeZoneId": "المنطقة الزمنية (IANA)",
+			"floorNumber": "الطابق",
+			"widthMetres": "العرض (م)",
+			"depthMetres": "العمق (م)",
+			"kind": "النوع",
+			"laneCategories": "فئات المسارات",
+			"inService": "في الخدمة",
+			"prefix": "البادئة",
+			"from": "من",
+			"to": "إلى",
+			"width": "الخانات",
+			"siteCode": "الموقع"
+		},
+		"kinds": {
+			"CheckIn": "تسجيل الوصول",
+			"Security": "التفتيش الأمني",
+			"Emigration": "المغادرة",
+			"Immigration": "القدوم",
+			"Counter": "كاونتر",
+			"SecurityLane": "مسار تفتيش",
+			"Desk": "مكتب",
+			"EGate": "بوابة إلكترونية"
+		},
+		"lanes": {
+			"CRW": "الطواقم والدبلوماسيون",
+			"CIT": "المواطنون",
+			"RES": "المقيمون",
+			"VIS": "الزوار",
+			"EG": "مؤهلو البوابات الإلكترونية"
+		},
+		"actions": {
+			"add": "إضافة",
+			"addRange": "إضافة مجموعة",
+			"create": "إنشاء",
+			"save": "حفظ",
+			"delete": "حذف",
+			"confirmDelete": "احذف {code} نهائياً",
+			"cancel": "إلغاء",
+			"close": "إغلاق"
+		},
+		"details": "التفاصيل",
+		"rangeHint": "مثلاً البادئة D من 1 إلى 22 بخانتين: من D01 إلى D22 (200 كحد أقصى).",
+		"outOfService": "خارج الخدمة",
+		"messages": {
+			"created": "أُنشئ {code}.",
+			"createdRange": "أُنشئ {count} مكتباً.",
+			"saved": "حُفظ.",
+			"deleted": "حُذف {code}.",
+			"failed": "لم ينجح ذلك: {reason}",
+			"loadFailed": "تعذّر تحميل الطوبولوجيا: {reason}"
+		},
+		"mappings": {
+			"title": "الرموز في الأنظمة الأخرى",
+			"description": "الرموز التي يستخدمها AMAN ونظام AODB لهذا المكتب.",
+			"system": "النظام",
+			"externalCode": "رمزهم",
+			"add": "أضف الرمز",
+			"none": "لا رموز مربوطة",
+			"Aman": "AMAN",
+			"Aodb": "AODB"
+		}
 	}
 }

@@ -152,6 +152,10 @@ Common tasks:
 2. Add a roster override: queue, from and to (15-minute aligned), planned desks, reason.
 3. Add an ad-hoc flight when the AODB feed is stale or for diversions and extra sections: code, arrival or departure, on-block time or STD, seats, expected load, lane mix.
 
+## Topology
+
+ARV-052. The airports, terminals, levels, checkpoints and desks of your sites in five columns, with each desk's kind, lane categories and whether it is in service, and (terminal duty managers) the codes AMAN and the AODB use for it. Read only for the operational roles; administrators change it (see the [Administration guide](11-Administration-Guide.md), section 2a).
+
 ## Zones
 
 Phase 0 from a configuration file; MVP editor. Shows the floor plan per level with zones, entry and exit lines, and the list of profile versions (for example v12 active, v13 draft).
