@@ -583,6 +583,19 @@
     },
     {
       "host": "main",
+      "method": "GET",
+      "route": "/api/auth/me",
+      "access": "authenticated",
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 200,
+        "TerminalDutyManager": 200,
+        "HandlerStationManager": 200,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "main",
       "method": "POST",
       "route": "/api/auth/logout",
       "access": "authenticated",

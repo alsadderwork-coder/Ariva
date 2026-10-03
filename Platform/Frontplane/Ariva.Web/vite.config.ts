@@ -40,15 +40,28 @@ function previewSecurityHeaders(): Plugin {
 	};
 }
 
+/**
+ * ADR-0026: Ariva.Api.Main answers on the web origin, as the ingress does in a deployment (/api and /hubs on the web
+ * host), so the refresh cookie (Path=/api/auth, SameSite=Strict) and the live hub need no cross-origin call.
+ * ARIVA_WEB_API_PROXY points the dev and preview servers at another Main (default: launchSettings.json's port).
+ * The browser's own X-Forwarded-For (none) passes through untouched; Main trusts only its configured proxies.
+ */
+const apiTarget = process.env.ARIVA_WEB_API_PROXY || 'http://localhost:51001';
+const apiProxy = {
+	'/api': { target: apiTarget, changeOrigin: true },
+	'/hubs': { target: apiTarget, changeOrigin: true, ws: true }
+};
+
 // The preview server sends the production security headers, the same values nginx sends (csp.config.js and
 // static/nginx/default.conf), so the Playwright functional tests exercise the real policy.
 export default defineConfig({
 	plugins: [tailwindcss(), sveltekit(), previewSecurityHeaders()],
-	server: { port: 51010 },
+	server: { port: 51010, proxy: apiProxy },
 	preview: {
 		port: 51011,
 		strictPort: true,
 		cors: false,
+		proxy: apiProxy,
 		headers: {
 			...securityHeaders,
 			'Content-Security-Policy': serializeCsp(cspDirectives())

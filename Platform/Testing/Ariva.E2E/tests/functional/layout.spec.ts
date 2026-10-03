@@ -1,14 +1,23 @@
 import { expect, test } from '@playwright/test';
 import { guardPage } from '../support/browser-guards';
 import { homeHeading } from '../support/shell';
+import { databaseAvailable, signInThroughUi } from '../support/web-auth';
 
 // The application shell follows Aman.Web's design system: sidebar with grouped navigation, sticky header with a
-// breadcrumb, light and dark modes from the same tokens, and a right to left mirror in Arabic.
+// breadcrumb, light and dark modes from the same tokens, and a right to left mirror in Arabic. The shell is behind the
+// sign-in (ARV-051): every test signs in as a terminal duty manager first, then reloads, which takes a new access token
+// from the refresh cookie.
+
+test.skip(!databaseAvailable, 'signing in needs the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true)');
+test.beforeEach(async ({ page }) => {
+	await signInThroughUi(page);
+});
 
 test.describe('application shell', () => {
 	test('shows the grouped sidebar, the breadcrumb and the active item', async ({ page }) => {
 		const guards = await guardPage(page);
 		await page.goto('/');
+		await expect(page.getByRole('heading', { level: 1 })).toHaveText(homeHeading.en);
 
 		const sidebar = page.getByTestId('app-sidebar');
 		await expect(sidebar).toBeVisible();
@@ -23,9 +32,10 @@ test.describe('application shell', () => {
 
 	test('screens that are not built yet are shown as planned, not as links', async ({ page }) => {
 		await page.goto('/');
+		await expect(page.getByRole('heading', { level: 1 })).toHaveText(homeHeading.en);
 		const sidebar = page.getByTestId('app-sidebar');
 
-		await expect(sidebar.getByRole('link')).toHaveCount(1);
+		await expect(sidebar.getByRole('navigation').getByRole('link')).toHaveCount(1);
 		const planned = sidebar.locator('[aria-disabled="true"]');
 		await expect(planned.first()).toHaveAttribute('title', /Planned in ARV-\d{3}/);
 		expect(await planned.count()).toBeGreaterThan(0);
@@ -34,6 +44,7 @@ test.describe('application shell', () => {
 	test('collapsing the sidebar to the icon rail survives a reload', async ({ page }) => {
 		const guards = await guardPage(page);
 		await page.goto('/');
+		await expect(page.getByRole('heading', { level: 1 })).toHaveText(homeHeading.en);
 		const sidebar = page.getByTestId('app-sidebar');
 
 		await page.getByTestId('sidebar-toggle').click();
@@ -41,6 +52,7 @@ test.describe('application shell', () => {
 		await expect.poll(async () => (await sidebar.boundingBox())?.width).toBeLessThanOrEqual(64);
 
 		await page.reload();
+		await expect(page.getByRole('heading', { level: 1 })).toHaveText(homeHeading.en);
 		await expect(page.getByTestId('app-sidebar')).toHaveAttribute('data-state', 'collapsed');
 
 		await page.getByTestId('sidebar-toggle').click();
@@ -52,6 +64,7 @@ test.describe('application shell', () => {
 		const guards = await guardPage(page);
 		await page.emulateMedia({ colorScheme: 'light' });
 		await page.goto('/');
+		await expect(page.getByRole('heading', { level: 1 })).toHaveText(homeHeading.en);
 		const html = page.locator('html');
 		const background = () => page.evaluate(() => getComputedStyle(document.body).backgroundColor);
 
@@ -64,6 +77,7 @@ test.describe('application shell', () => {
 		expect(await background()).not.toBe(lightBackground);
 
 		await page.reload();
+		await expect(page.getByRole('heading', { level: 1 })).toHaveText(homeHeading.en);
 		await expect(html).toHaveClass(/\bdark\b/);
 		await guards.expectClean();
 	});
@@ -71,6 +85,7 @@ test.describe('application shell', () => {
 	test('in Arabic the sidebar moves to the right and the page mirrors', async ({ page }) => {
 		const guards = await guardPage(page);
 		await page.goto('/');
+		await expect(page.getByRole('heading', { level: 1 })).toHaveText(homeHeading.en);
 
 		await page.getByTestId('language-toggle').click();
 		await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
@@ -84,6 +99,7 @@ test.describe('application shell', () => {
 
 	test('the skip link moves focus to the main content', async ({ page }) => {
 		await page.goto('/');
+		await expect(page.getByRole('heading', { level: 1 })).toHaveText(homeHeading.en);
 
 		await page.keyboard.press('Tab');
 		const skip = page.getByRole('link', { name: 'Skip to content' });
@@ -99,6 +115,7 @@ test.describe('live operations (example data)', () => {
 	test('labels the example data and pairs every status with text', async ({ page }) => {
 		const guards = await guardPage(page);
 		await page.goto('/');
+		await expect(page.getByRole('heading', { level: 1 })).toHaveText(homeHeading.en);
 
 		await expect(page.getByTestId('demo-banner')).toContainText('Example data');
 		await expect(page.getByTestId('environment-chip')).toHaveText('Demo data');
@@ -116,6 +133,7 @@ test.describe('live operations (example data)', () => {
 
 	test('summary figures add up from the zone rows', async ({ page }) => {
 		await page.goto('/');
+		await expect(page.getByRole('heading', { level: 1 })).toHaveText(homeHeading.en);
 
 		const inQueue = await page.getByTestId('zone-row').evaluateAll((rows) =>
 			rows.reduce((sum, row) => sum + Number(row.querySelectorAll('td')[2]?.textContent?.replace(/\D/g, '') ?? 0), 0)

@@ -156,13 +156,28 @@ export function accounts() {
 		// ARV-047: registers the clients that feed arrival-wave.spec.ts.
 		arrivalWaveAdmin: account('e2e.arrivalwaveadmin', ['SystemAdministrator'], false, true, ['*']),
 		// ARV-050: registers the AMAN pull endpoints of aman-pull.spec.ts (critical actions).
-		amanPullAdmin: account('e2e.amanpulladmin', ['SystemAdministrator'], false, true, ['*'])
+		amanPullAdmin: account('e2e.amanpulladmin', ['SystemAdministrator'], false, true, ['*']),
+		// ARV-051: the web app's sign-in. The shell suites sign in as a duty manager in parallel (password only, so no
+		// replay guard); each TOTP flow has its own account, because a code counts once per account.
+		web: account('e2e.web', ['TerminalDutyManager'], false, false, ['DMO']),
+		webHandler: account('e2e.webhandler', ['HandlerStationManager'], false, false, ['DMO']),
+		webAdmin: account('e2e.webadmin', ['SystemAdministrator'], false, false, ['*']),
+		webFirst: account('e2e.webfirst', [], true),
+		webTotp: account('e2e.webtotp', ['BorderShiftSupervisor'], false, true, ['DMO']),
+		webStepUp: account('e2e.webstepup', ['TerminalDutyManager'], false, true, ['DMO']),
+		webExpiry: account('e2e.webexpiry', ['TerminalDutyManager'], false, true, ['DMO']),
+		webCancel: account('e2e.webcancel', ['TerminalDutyManager'], false, true, ['DMO'])
 	} as const;
 }
 
 /** The password the change-password test sets on e2e.changer before it changes it back. */
 export function changedPassword(): string {
 	return crypto.createHash('sha256').update(`${seed()}|e2e.changer|next`).digest('base64url').slice(0, 24);
+}
+
+/** The password the web first-login test chooses for e2e.webfirst (ARV-051). */
+export function webFirstPassword(): string {
+	return crypto.createHash('sha256').update(`${seed()}|e2e.webfirst|chosen`).digest('base64url').slice(0, 24);
 }
 
 /** Auth__DevelopmentUsers__* variables for Ariva.Api.Main. */

@@ -64,6 +64,9 @@ public interface ISvcAuthenticator : ISvcScoped
     /// </summary>
     Task<Result<TokenViewModel>> StepUpAsync(StepUpRequest request, CancellationToken ct = default);
 
+    /// <summary>The signed-in user of the current session (ARV-051); an error when the session is not the caller's.</summary>
+    Task<Result<CurrentUserViewModel>> CurrentAsync(CancellationToken ct = default);
+
     /// <summary>New recovery codes after a valid TOTP code; the old ones stop working.</summary>
     Task<Result<RecoveryCodesViewModel>> RegenerateRecoveryCodesAsync(TotpCodeRequest request, CancellationToken ct = default);
 }

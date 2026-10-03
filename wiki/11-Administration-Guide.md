@@ -71,7 +71,7 @@ Codes are 1 to 16 upper case letters or digits with single inner hyphens. Delete
 Enrolment:
 
 1. Administrators enrol TOTP at first sign-in, before any other action. Other roles: whether MFA is mandatory is To confirm per site (D5 requires MFA for administrators).
-2. Ariva shows a QR code and the `otpauth://` URI once; the user scans it into an authenticator app and confirms with a current code.
+2. Ariva shows a QR code and the key once (first sign-in in Ariva.Web, or Account security later); the user scans it into an authenticator app and confirms with a current code. Ariva then shows 10 recovery codes once, with a copy action (ARV-051).
 3. TOTP follows RFC 6238 with a replay guard: a code cannot be used twice.
 
 Reset (lost or replaced phone):

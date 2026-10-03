@@ -24,6 +24,11 @@ export interface NavItem {
 	ready: boolean;
 	/** Backlog story that delivers the screen */
 	story: string;
+	/**
+	 * Permission ("Entity.Action", GET /api/auth/me) the screen's data needs; the item is hidden without it. Hiding is
+	 * only convenience: the server checks every call.
+	 */
+	permission: string;
 }
 
 /** Sidebar navigation, grouped like Aman.Web (Operations, Oversight, Administration). */
@@ -34,7 +39,8 @@ export const navItems: readonly NavItem[] = [
 		icon: Activity,
 		group: 'operations',
 		ready: true,
-		story: 'ARV-055'
+		story: 'ARV-055',
+		permission: 'LiveQueue.View'
 	},
 	{
 		id: 'immigration',
@@ -42,7 +48,8 @@ export const navItems: readonly NavItem[] = [
 		icon: ScanLine,
 		group: 'operations',
 		ready: false,
-		story: 'ARV-057'
+		story: 'ARV-057',
+		permission: 'ArrivalWave.View'
 	},
 	{
 		id: 'alerts',
@@ -50,7 +57,8 @@ export const navItems: readonly NavItem[] = [
 		icon: BellRing,
 		group: 'operations',
 		ready: false,
-		story: 'ARV-056'
+		story: 'ARV-056',
+		permission: 'Alert.View'
 	},
 	{
 		id: 'displays',
@@ -58,7 +66,8 @@ export const navItems: readonly NavItem[] = [
 		icon: MonitorPlay,
 		group: 'operations',
 		ready: false,
-		story: 'ARV-058'
+		story: 'ARV-058',
+		permission: 'LiveQueue.View'
 	},
 	{
 		id: 'reports',
@@ -66,7 +75,8 @@ export const navItems: readonly NavItem[] = [
 		icon: FileChartColumn,
 		group: 'oversight',
 		ready: false,
-		story: 'ARV-061'
+		story: 'ARV-061',
+		permission: 'LiveQueue.View'
 	},
 	{
 		id: 'topology',
@@ -74,7 +84,8 @@ export const navItems: readonly NavItem[] = [
 		icon: Map,
 		group: 'administration',
 		ready: false,
-		story: 'ARV-052'
+		story: 'ARV-052',
+		permission: 'Site.View'
 	},
 	{
 		id: 'zones',
@@ -82,7 +93,8 @@ export const navItems: readonly NavItem[] = [
 		icon: Timer,
 		group: 'administration',
 		ready: false,
-		story: 'ARV-053'
+		story: 'ARV-053',
+		permission: 'ZoneProfile.View'
 	},
 	{
 		id: 'devices',
@@ -90,7 +102,8 @@ export const navItems: readonly NavItem[] = [
 		icon: Cpu,
 		group: 'administration',
 		ready: false,
-		story: 'ARV-054'
+		story: 'ARV-054',
+		permission: 'Device.View'
 	},
 	{
 		id: 'users',
@@ -98,9 +111,15 @@ export const navItems: readonly NavItem[] = [
 		icon: UserCog,
 		group: 'administration',
 		ready: false,
-		story: 'ARV-059'
+		story: 'ARV-059',
+		permission: 'User.View'
 	}
 ];
+
+/** The items a user with these permissions may see. */
+export function visibleItems(can: (permission: string) => boolean): NavItem[] {
+	return navItems.filter((item) => can(item.permission));
+}
 
 export const navGroups: readonly NavGroup[] = ['operations', 'oversight', 'administration'];
 

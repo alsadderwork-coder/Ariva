@@ -2,15 +2,19 @@
 	import { page } from '$app/state';
 	import { _ } from 'svelte-i18n';
 	import { cn } from '$lib/utils';
-	import { isActive, navGroups, navItems } from '$lib/navigation';
+	import { auth } from '$lib/core/auth.svelte';
+	import { isActive, navGroups, visibleItems } from '$lib/navigation';
 
 	let { collapsed = false, onNavigate }: { collapsed?: boolean; onNavigate?: () => void } =
 		$props();
+
+	// Only the screens the signed-in user's permissions cover (GET /api/auth/me); the server still checks every call.
+	const allowed = $derived(visibleItems((permission) => auth.can(permission)));
 </script>
 
 <nav aria-label={$_('navigation.label')} class="flex flex-col">
 	{#each navGroups as group (group)}
-		{@const items = navItems.filter((item) => item.group === group)}
+		{@const items = allowed.filter((item) => item.group === group)}
 		{#if items.length}
 			<p
 				class={cn(

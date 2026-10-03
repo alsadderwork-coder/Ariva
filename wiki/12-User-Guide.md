@@ -4,6 +4,23 @@ For supervisors, duty managers and handler staff who use Ariva during operations
 
 Status: in Phase 0 only a minimal live operations dashboard and the passenger display page exist (on simulated data). The MVP (pilot) adds the full border screens; v1 adds the airport and SLA screens.
 
+## Signing in
+
+Ariva.Web opens on the sign-in page when you have no session (ARV-051). Enter your username and password; if your account has an authenticator app, Ariva then asks for the 6-digit code it shows, or one of your recovery codes instead. One message covers every refusal (wrong username, password or code), and after 10 attempts a minute from one address Ariva asks you to wait a minute. A link to a screen that needed sign-in brings you back to that screen afterwards; Ariva only returns to its own pages.
+
+First sign-in, with the temporary password your administrator gave you:
+
+1. Choose your own password: 12 to 128 characters, not a common or breached password, without your username or the product name.
+2. Set up an authenticator app: scan the QR code (or type the key shown under it), then enter the code the app shows. Deployments that require MFA (all production deployments) do not let you skip this step.
+3. Save the 10 recovery codes. They are shown only this once; Copy the codes puts them on the clipboard. Each signs you in once if you lose the phone. Then continue to Ariva.
+
+While signed in:
+
+- The sidebar shows only the screens of your role, and the card at its foot shows your name, roles and sites, with Account security and Sign out. Hidden screens are a convenience: Ariva's server checks every request.
+- Your session lasts across tabs and reloads of the same browser. Signing out in one tab signs out every tab. When the session ends on the server (signed out elsewhere, your account changed by an administrator, or the refresh period over), Ariva returns to the sign-in page and then to the screen you were on.
+- Critical actions (publishing a zone profile, changing users, devices, integrations or alert rules, new recovery codes) need a code from the authenticator within the last 15 minutes. If yours is older, a dialog asks for a fresh code (or a recovery code) and then completes the action; Cancel leaves it undone.
+- Account security: change your password (your other sessions are signed out), set up an authenticator if you have none, and generate new recovery codes (the old ones stop working).
+
 ## Reading the numbers
 
 | You see | It means |

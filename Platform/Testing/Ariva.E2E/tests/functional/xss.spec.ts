@@ -2,6 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { guardPage } from '../support/browser-guards';
 import { homeHeading } from '../support/shell';
 import { domMarkers, xssPayloads } from '../support/payloads';
+import { databaseAvailable, signInThroughUi } from '../support/web-auth';
 
 // Script payloads in the URL must never run (no dialog), never be injected as markup and never trip the CSP
 // (CWE-79). Svelte renders text through interpolation only; {@html} is banned by the security scanner (SEC-110).
@@ -24,6 +25,8 @@ async function expectNothingInjected(page: Page): Promise<void> {
 test.describe('XSS payloads in the URL', () => {
 	xssPayloads.forEach((payload, index) => {
 		test(`payload ${index + 1} in the query and the hash is neither executed nor injected`, async ({ page }) => {
+			test.skip(!databaseAvailable, 'signing in needs the E2E database');
+			await signInThroughUi(page);
 			const guards = await guardPage(page);
 			const value = encodeURIComponent(payload);
 
@@ -37,6 +40,8 @@ test.describe('XSS payloads in the URL', () => {
 	});
 
 	test('a raw payload in the hash is neither executed nor injected', async ({ page }) => {
+		test.skip(!databaseAvailable, 'signing in needs the E2E database');
+		await signInThroughUi(page);
 		const guards = await guardPage(page);
 
 		await page.goto('/#<img src=x onerror=alert(document.domain)>');

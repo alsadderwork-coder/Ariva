@@ -10,9 +10,12 @@ import { loadEnv } from 'vite';
 
 /** @typedef {NonNullable<NonNullable<import('@sveltejs/kit').KitConfig['csp']>['directives']>} CspDirectives */
 
-/** API base URLs and their local defaults; keep in step with src/lib/core/Endpoints.ts. */
+/**
+ * API base URLs and their local defaults; keep in step with src/lib/core/Endpoints.ts. Ariva.Api.Main is on the web
+ * origin by default (empty: 'self' covers it, its WebSocket included), so it adds no origin to connect-src.
+ */
 const API_DEFAULTS = {
-	VITE_ARIVA_API_MAIN_URL: 'http://localhost:51001',
+	VITE_ARIVA_API_MAIN_URL: '',
 	VITE_ARIVA_API_INGEST_URL: 'http://localhost:51002',
 	VITE_ARIVA_API_CRONZ_URL: 'http://localhost:51004',
 	VITE_ARIVA_API_INTEGRATION_URL: 'http://localhost:51005',
@@ -74,7 +77,9 @@ export function loadArivaEnv(mode = 'production') {
 export function apiOrigins(env) {
 	const origins = new Set();
 	for (const key of Object.keys(API_DEFAULTS)) {
-		const url = new URL(env[key] || API_DEFAULTS[key]);
+		const value = env[key] || API_DEFAULTS[key];
+		if (!value) continue;
+		const url = new URL(value);
 		origins.add(url.origin);
 		if (key === WEBSOCKET_API) {
 			origins.add(`${url.protocol === 'https:' ? 'wss:' : 'ws:'}//${url.host}`);

@@ -1,6 +1,11 @@
 /**
  * Base URLs and routes of the Ariva hosts. Local defaults match each host's launchSettings.json;
  * deployed builds override them with VITE_ARIVA_* variables at build time.
+ *
+ * Ariva.Api.Main is reached on the web app's own origin (ADR-0026, ARV-051): the ingress sends /api and /hubs on the web
+ * host to it, and `vite dev` and `vite preview` proxy them (vite.config.ts). The refresh cookie (Path=/api/auth,
+ * SameSite=Strict) and the X-Ariva-Csrf header then need no cross-origin call. Leave VITE_ARIVA_API_MAIN_URL unset
+ * unless the API has its own host and the cookie is not needed.
  */
 const env = import.meta.env;
 
@@ -12,7 +17,7 @@ const health = {
 
 export const Endpoints = {
 	main: {
-		baseUrl: (env.VITE_ARIVA_API_MAIN_URL as string | undefined) ?? 'http://localhost:51001',
+		baseUrl: (env.VITE_ARIVA_API_MAIN_URL as string | undefined) ?? '',
 		health
 	},
 	ingest: {

@@ -5,7 +5,6 @@
 	import type { Snippet } from 'svelte';
 	import { locale } from 'svelte-i18n';
 	import { Toaster } from 'svelte-sonner';
-	import AppShell from '$lib/components/layout/AppShell.svelte';
 	import { directionFor, setupI18n } from '$lib/i18n';
 	import { theme } from '$lib/theme/theme.svelte';
 
@@ -32,6 +31,5 @@
 	dir={directionFor($locale)}
 />
 
-<AppShell>
-	{@render children()}
-</AppShell>
+<!-- The signed-in screens are under (modules), with the shell; sign-in and first-login are under (public). -->
+{@render children()}

@@ -14,7 +14,9 @@
 			? $_('errors.notFound.title')
 			: current
 				? $_(`navigation.items.${current.id}`)
-				: ''
+				: page.url.pathname.startsWith('/account')
+					? $_('account.title')
+					: ''
 	);
 
 	function toggleLanguage(): void {

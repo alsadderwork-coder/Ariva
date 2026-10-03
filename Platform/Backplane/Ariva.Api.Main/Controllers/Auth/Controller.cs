@@ -105,6 +105,24 @@ public sealed class AuthController(ISvcAuthenticator authenticator, IOptions<Cor
         return NoContent();
     }
 
+    /// <summary>
+    /// The signed-in user (ARV-051): names, roles, permissions, sites, and what the first sign-in still needs. Allowed
+    /// for a pending session, so the web app can lead the first-login steps.
+    /// </summary>
+    [HttpGet("me")]
+    [Authorize]
+    [AllowPendingScope]
+    [ProducesResponseType<CurrentUserViewModel>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> Me(CancellationToken ct)
+    {
+        Response.Headers.CacheControl = "no-store";
+        var result = await authenticator.CurrentAsync(ct);
+        return result.HasErrors
+            ? Problem(statusCode: StatusCodes.Status401Unauthorized, title: "Your session has ended", detail: "Sign in again.", type: "https://ariva/problems/session-expired")
+            : Ok(result.Data);
+    }
+
     /// <summary>Starts TOTP enrolment: the secret and otpauth URI, shown this once (ARV-010c).</summary>
     [HttpPost("totp/enroll")]
     [Authorize]

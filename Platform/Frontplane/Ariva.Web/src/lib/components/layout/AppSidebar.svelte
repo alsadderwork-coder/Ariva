@@ -3,6 +3,7 @@
 	import { cn } from '$lib/utils';
 	import Logo from './Logo.svelte';
 	import SidebarNav from './SidebarNav.svelte';
+	import UserCard from './UserCard.svelte';
 
 	let { open = true }: { open?: boolean } = $props();
 </script>
@@ -34,18 +35,7 @@
 		<SidebarNav collapsed={!open} />
 	</div>
 
-	{#if open}
-		<div class="border-t border-sidebar-border p-4">
-			<div class="flex items-center gap-3 rounded-lg bg-muted/60 p-3">
-				<span
-					class="flex size-9 shrink-0 items-center justify-center rounded-full bg-sidebar-primary text-xs font-semibold text-sidebar-primary-foreground"
-					aria-hidden="true">DM</span
-				>
-				<div class="grid min-w-0 text-start leading-tight">
-					<span class="truncate text-sm font-semibold">{$_('shell.site.name')}</span>
-					<span class="truncate text-xs text-muted-foreground">{$_('shell.site.detail')}</span>
-				</div>
-			</div>
-		</div>
-	{/if}
+	<div class={cn('border-t border-sidebar-border', open ? 'p-4' : 'px-1.5 py-3')}>
+		<UserCard collapsed={!open} />
+	</div>
 </aside>

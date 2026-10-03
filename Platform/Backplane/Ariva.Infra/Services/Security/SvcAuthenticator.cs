@@ -287,6 +287,20 @@ internal sealed class SvcAuthenticator(
 
     #region TOTP and recovery codes
 
+    public async Task<Result<CurrentUserViewModel>> CurrentAsync(CancellationToken ct = default)
+    {
+        var (user, _) = await CallerAsync(ct);
+        if (user is null)
+            return Result.Error<CurrentUserViewModel>(ISvcAuthenticator.InvalidCredentials);
+        var roles = user.Roles.Select(r => r.RoleCode).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList();
+        var pending = user.IsPending(settings.TotpRequired);
+        // A pending account holds no permission (StoredPermissionResolver), so the web shows nothing but the first-login steps.
+        var permissions = pending ? [] : Ariva.Core.Security.RolePermissions.For(roles).Select(p => p.ToString()).Order(StringComparer.Ordinal).ToList();
+        return new Result<CurrentUserViewModel>(new CurrentUserViewModel(user.UserName, string.IsNullOrWhiteSpace(user.DisplayName) ? user.UserName : user.DisplayName,
+            roles, permissions, user.AllSites, user.AllSites ? [] : user.Sites.Select(s => s.SiteCode).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList(),
+            user.MustChangePassword, user.TotpEnrolled || user.IsBreakGlass, pending));
+    }
+
     public async Task<Result<TotpEnrolmentViewModel>> EnrolTotpAsync(CancellationToken ct = default)
     {
         var (user, _) = await CallerAsync(ct);

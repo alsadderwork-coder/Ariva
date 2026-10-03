@@ -10,6 +10,22 @@ public sealed record TokenViewModel(string AccessToken, string TokenType, int Ex
     public int? RecoveryCodesRemaining { get; init; }
 }
 
+/// <summary>
+/// The signed-in user as the web app needs it (ARV-051): names, roles and the permissions they grant ("Entity.Action";
+/// none while the account is pending), the sites (or all), and what the first sign-in still needs (a new password, an
+/// authenticator). The server stays the authority: the web only uses this to choose what to show.
+/// </summary>
+public sealed record CurrentUserViewModel(
+    string UserName,
+    string DisplayName,
+    IReadOnlyList<string> Roles,
+    IReadOnlyList<string> Permissions,
+    bool AllSites,
+    IReadOnlyList<string> Sites,
+    bool MustChangePassword,
+    bool TotpEnrolled,
+    bool Pending);
+
 /// <summary>A started TOTP enrolment: the secret as base32 text and the otpauth URI the web app shows as a QR code. Shown once.</summary>
 public sealed record TotpEnrolmentViewModel(string Secret, string OtpAuthUri);
 

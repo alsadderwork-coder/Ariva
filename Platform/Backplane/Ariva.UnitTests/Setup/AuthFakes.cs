@@ -75,6 +75,9 @@ public sealed class FakeAuthenticator : ISvcAuthenticator
     public Task<Fluentx.Result<RecoveryCodesViewModel>> RegenerateRecoveryCodesAsync(TotpCodeRequest request, CancellationToken ct = default) =>
         Task.FromResult(Fluentx.Result.Error<RecoveryCodesViewModel>(ISvcAuthenticator.InvalidCode));
 
+    public Task<Fluentx.Result<CurrentUserViewModel>> CurrentAsync(CancellationToken ct = default) =>
+        Task.FromResult(new Fluentx.Result<CurrentUserViewModel>(new CurrentUserViewModel("fake", "Fake user", [], [], false, [], false, true, false)));
+
     private Task<Fluentx.Result<SignInResult>> Answer(SignInContext context, string error)
     {
         Contexts.Add(context);

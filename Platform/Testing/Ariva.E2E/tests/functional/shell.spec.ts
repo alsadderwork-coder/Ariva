@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { guardPage } from '../support/browser-guards';
 import { homeHeading } from '../support/shell';
 import { webUrl } from '../support/hosts';
+import { databaseAvailable, signInThroughUi } from '../support/web-auth';
 
 // The web shell served by `vite preview` with the production headers (the same values nginx sends).
 
@@ -28,7 +29,9 @@ const requiredHeaders: Readonly<Record<string, string>> = {
 
 test.describe('web shell', () => {
 	test('loads with the Ariva title, no console errors and no CSP violations', async ({ page }) => {
+		test.skip(!databaseAvailable, 'signing in needs the E2E database');
 		const guards = await guardPage(page);
+		await signInThroughUi(page);
 
 		const response = await page.goto('/');
 
@@ -68,8 +71,9 @@ test.describe('web shell', () => {
 	});
 
 	test('switching the language to Arabic sets lang="ar" and dir="rtl"', async ({ page }) => {
+		test.skip(!databaseAvailable, 'signing in needs the E2E database');
 		const guards = await guardPage(page);
-		await page.goto('/');
+		await signInThroughUi(page);
 		const toggle = page.getByTestId('language-toggle');
 
 		await toggle.click();

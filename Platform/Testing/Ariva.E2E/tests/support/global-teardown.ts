@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { accounts, breakGlassFile, changedPassword, integrationSeedsFile } from './accounts';
+import { accounts, breakGlassFile, changedPassword, integrationSeedsFile, webFirstPassword } from './accounts';
 import { canary } from './log-canary';
 
 // ARV-007 (CWE-532): after the run, no host log line may contain a credential. The API suite sends the canary values
@@ -26,7 +26,7 @@ export default async function globalTeardown() {
 
 	const secrets: string[] = [...Object.values(canary)];
 	if (process.env.ARIVA_E2E_ACCOUNT_SEED) {
-		secrets.push(...Object.values(accounts()).map((entry) => entry.password), changedPassword());
+		secrets.push(...Object.values(accounts()).map((entry) => entry.password), changedPassword(), webFirstPassword());
 		secrets.push(...Object.values(accounts()).flatMap((entry) => (entry.totpSecret ? [entry.totpSecret] : [])));
 	}
 	// The simulator's operator key and the mock partners' secrets (ARV-027 to ARV-029) never reach Ariva's host logs either.

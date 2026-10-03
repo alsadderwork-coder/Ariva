@@ -1166,8 +1166,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 54,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Done 2026-10-03: same-origin Main, in-memory token with Web Locks and BroadcastChannel, GET /api/auth/me, (public) login and setup, (modules) guard and account screen, step-up dialog, permission-filtered sidebar with user card. Security review PASS after two rounds (backlog/progress.md).",
       "dependsOn": [
         "ARV-010d"
       ]

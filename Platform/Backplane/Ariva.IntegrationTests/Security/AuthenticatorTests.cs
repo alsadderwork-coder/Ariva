@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Ariva.Core;
+using Ariva.Core.Domain.ViewModels;
 using Ariva.Core.Security;
 using Ariva.Core.Services.Security;
 using Ariva.IntegrationTests.Setup;
@@ -199,6 +200,31 @@ public sealed class AuthenticatorTests(PostgresFixture fixture) : IAsyncDisposab
 
         (await resolver.GetPermissionsAsync(disabled, TestContext.Current.CancellationToken)).Should().BeEmpty();
         (await resolver.GetPermissionsAsync(pending, TestContext.Current.CancellationToken)).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Current_Should_DescribeTheCallerAndWhatTheFirstSignInNeeds_When_Asked()
+    {
+        var fullId = await _host.CreateUserAsync("it.me.full", roles: [RoleCodes.TerminalDutyManager]);
+        var pendingId = await _host.CreateUserAsync("it.me.pending", temporary: true, roles: [RoleCodes.SystemAdministrator]);
+        var fullSession = SessionOf((await _host.LoginAsync("it.me.full", Password)).Data.Token.AccessToken);
+        var pendingSession = SessionOf((await _host.LoginAsync("it.me.pending", Password)).Data.Token.AccessToken);
+
+        var full = await _host.AsAsync(fullId, fullSession, service => service.CurrentAsync(TestContext.Current.CancellationToken));
+        var pending = await _host.AsAsync(pendingId, pendingSession, service => service.CurrentAsync(TestContext.Current.CancellationToken));
+        var nobody = await _host.AsAsync(null, null, service => service.CurrentAsync(TestContext.Current.CancellationToken));
+
+        full.HasErrors.Should().BeFalse();
+        full.Data.Should().Match<CurrentUserViewModel>(u => u.UserName == "it.me.full" && !u.Pending && !u.MustChangePassword && !u.TotpEnrolled);
+        full.Data.Roles.Should().Equal(RoleCodes.TerminalDutyManager);
+        full.Data.Permissions.Should().BeEquivalentTo(RolePermissions.TerminalDutyManager.Select(p => p.Code)).And.BeInAscendingOrder(StringComparer.Ordinal);
+        full.Data.Permissions.Should().Contain("LiveQueue.View").And.NotContain("User.View");
+
+        pending.Data.Should().Match<CurrentUserViewModel>(u => u.Pending && u.MustChangePassword);
+        pending.Data.Permissions.Should().BeEmpty("a pending account holds no permission until its first sign-in is done");
+        pending.Data.Roles.Should().Equal(RoleCodes.SystemAdministrator);
+
+        nobody.HasErrors.Should().BeTrue();
     }
 
     #endregion

@@ -6,6 +6,7 @@
 	import AppSidebar from './AppSidebar.svelte';
 	import Logo from './Logo.svelte';
 	import SidebarNav from './SidebarNav.svelte';
+	import UserCard from './UserCard.svelte';
 
 	let { children }: { children: Snippet } = $props();
 
@@ -74,6 +75,9 @@
 				</div>
 				<div class="sidebar-scroll flex-1 overflow-y-auto p-4">
 					<SidebarNav onNavigate={() => (mobileOpen = false)} />
+				</div>
+				<div class="border-t border-sidebar-border p-4">
+					<UserCard />
 				</div>
 			</div>
 		</div>

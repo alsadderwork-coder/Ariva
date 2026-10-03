@@ -89,5 +89,102 @@
 			"description": "The address does not match a screen in Ariva.",
 			"back": "Back to live operations"
 		}
+	},
+	"auth": {
+		"brand": "Airport queue management",
+		"login": {
+			"title": "Sign in",
+			"description": "Use your Ariva account.",
+			"userName": "Username",
+			"password": "Password",
+			"code": "Authenticator code",
+			"codeHint": "The 6-digit code from your authenticator app.",
+			"recoveryCode": "Recovery code",
+			"recoveryHint": "One of the recovery codes you saved when you set up the authenticator.",
+			"useRecovery": "Use a recovery code instead",
+			"useCode": "Use the authenticator code",
+			"submit": "Sign in",
+			"working": "Signing in",
+			"failed": "The username, password or code is not correct.",
+			"tooMany": "Too many attempts. Wait a minute and try again.",
+			"unavailable": "Ariva cannot be reached. Try again in a moment.",
+			"codeNeeded": "Enter the code from your authenticator app.",
+			"recoveryLeft": "You signed in with a recovery code; {count} left. Generate new ones in Account security."
+		},
+		"setup": {
+			"title": "Set up your account",
+			"description": "Your administrator gave you a temporary password. Choose your own and set up an authenticator app.",
+			"steps": "Setup steps",
+			"stepPassword": "New password",
+			"stepTotp": "Authenticator",
+			"stepRecovery": "Recovery codes",
+			"currentPassword": "Temporary password",
+			"newPassword": "New password",
+			"repeatPassword": "Repeat the new password",
+			"passwordRules": "12 to 128 characters. Not a common or breached password, and without your username or the product name.",
+			"mismatch": "The two new passwords differ.",
+			"savePassword": "Change the password",
+			"totpIntro": "Scan this code with an authenticator app (for example Microsoft Authenticator or Google Authenticator), then enter the 6-digit code it shows.",
+			"qrLabel": "QR code to add Ariva to your authenticator app",
+			"manualKey": "Or enter this key by hand",
+			"confirmCode": "Code from the app",
+			"confirm": "Confirm the code",
+			"codeRefused": "The code was not accepted. Check that the time on your phone is right and try the next code.",
+			"skip": "Not now",
+			"recoveryIntro": "Keep these codes somewhere safe, away from your phone. Each one signs you in once if you lose the authenticator. They are shown only now.",
+			"recoveryList": "Recovery codes",
+			"copy": "Copy the codes",
+			"copied": "The codes are copied. Paste them somewhere safe, then copy something else so they do not stay on this computer's clipboard.",
+			"copyFailed": "Copying failed. Select the codes and copy them yourself.",
+			"saved": "I have saved the codes",
+			"continue": "Continue to Ariva"
+		},
+		"stepUp": {
+			"title": "Confirm it is you",
+			"description": "This action needs a fresh code from your authenticator app.",
+			"confirm": "Confirm",
+			"cancel": "Cancel",
+			"refused": "The code was not accepted."
+		},
+		"user": {
+			"account": "Account security",
+			"signOut": "Sign out",
+			"allSites": "All sites",
+			"sites": "Sites: {sites}",
+			"roles": {
+				"BorderShiftSupervisor": "Border shift supervisor",
+				"TerminalDutyManager": "Terminal duty manager",
+				"HandlerStationManager": "Handler station manager",
+				"SystemAdministrator": "System administrator"
+			},
+			"signOutFailed": "Ariva could not end your session on the server. Sign out again when the network is back, or close the browser."
+		},
+		"loading": "Loading your session"
+	},
+	"account": {
+		"title": "Account security",
+		"description": "Your password, your authenticator app and your recovery codes",
+		"password": {
+			"title": "Password",
+			"submit": "Change the password",
+			"done": "Your password is changed. Your other sessions are signed out."
+		},
+		"totp": {
+			"title": "Authenticator app",
+			"enrolled": "An authenticator app is set up for your account.",
+			"notEnrolled": "No authenticator app is set up for your account yet.",
+			"enrol": "Set up an authenticator app"
+		},
+		"recovery": {
+			"title": "Recovery codes",
+			"description": "New codes replace the old ones, which stop working. Enter a code from your authenticator app to generate them.",
+			"code": "Authenticator code",
+			"submit": "Generate new recovery codes"
+		},
+		"failed": "That did not work: {reason}"
+	},
+	"access": {
+		"title": "No access",
+		"description": "Your role does not include this screen. Ask your administrator if you need it."
 	}
 }
