@@ -1692,7 +1692,7 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 401
       }
     },
     {

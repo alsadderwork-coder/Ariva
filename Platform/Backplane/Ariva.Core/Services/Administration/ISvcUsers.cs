@@ -17,6 +17,8 @@ public static class AdministrationErrors
     public const string UnknownSite = "Unknown site.";
     public const string SiteTaken = "That site code is already in use.";
     public const string BeyondOwnSites = "You cannot grant access to sites you cannot access yourself.";
+    public const string SitesRequired = "Give the account at least one of your sites.";
+    public const string InvalidDisplayName = "The name is at most 200 characters, without control, invisible or broken characters.";
     public const string InvalidEmail = "The email must be one plain address (name@example.org), without a display name, spaces or line breaks.";
 
     /// <summary>Errors that mean "not allowed" (403) rather than "not valid" (400).</summary>

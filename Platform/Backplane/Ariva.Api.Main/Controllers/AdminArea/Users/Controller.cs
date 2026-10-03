@@ -30,10 +30,11 @@ public sealed class UsersController(ISvcAuthenticator authenticator, ISvcUsers u
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct) => Answer(await users.GetAsync(id, ct));
 
-    /// <summary>Creates the account with a temporary password, shown once in the response.</summary>
+    /// <summary>Creates the account with its sites and a temporary password, shown once in the response.</summary>
     [HttpPost]
     [Permission(nameof(Global.Defaults.Permissions.CreateUser))]
     [RequiresRecentMfa]
+    [SiteScoped]
     [ProducesResponseType<UserCreatedViewModel>(StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
@@ -120,8 +121,10 @@ public sealed class UsersController(ISvcAuthenticator authenticator, ISvcUsers u
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> Disable(Guid id, CancellationToken ct) => Answer(await authenticator.DisableAsync(id, ct));
 
+    /// <summary>Gives a disabled account its access back: a critical action, like the resets (ARV-059).</summary>
     [HttpPost("{id:guid}/enable")]
     [Permission(nameof(Global.Defaults.Permissions.EditUser))]
+    [RequiresRecentMfa]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> Enable(Guid id, CancellationToken ct) => Answer(await authenticator.EnableAsync(id, ct));

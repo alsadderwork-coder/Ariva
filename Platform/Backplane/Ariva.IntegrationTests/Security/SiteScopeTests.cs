@@ -1,5 +1,6 @@
 using Ariva.Core;
 using Ariva.Core.Domain.InputModels;
+using Ariva.Core.Domain.ViewModels;
 using Ariva.Core.Security;
 using Ariva.Core.Services.Administration;
 using Ariva.IntegrationTests.Setup;
@@ -86,6 +87,9 @@ public sealed class SiteScopeTests(PostgresFixture fixture) : IAsyncDisposable
         var target = await _host.CreateUserAsync("it.site.target");
 
         (await _host.AsCallerAsync(admin, s => Users(s).SetSitesAsync(target, new SiteAccessRequest(false, ["NOPE"]), Ct))).ErrorMessages.Should().Equal(AdministrationErrors.UnknownSite);
+        // Without sites the target is beyond the limited administrator (ARV-059); inside ITD it is its to administer.
+        (await _host.AsCallerAsync(limited, s => Users(s).SetSitesAsync(target, new SiteAccessRequest(false, ["ITD"]), Ct))).ErrorMessages.Should().Equal(AdministrationErrors.NotFound);
+        (await _host.AsCallerAsync(admin, s => Users(s).SetSitesAsync(target, new SiteAccessRequest(false, ["ITD"]), Ct))).HasErrors.Should().BeFalse();
         (await _host.AsCallerAsync(admin, s => Users(s).SetSitesAsync(target, new SiteAccessRequest(false, ["itd"]), Ct))).ErrorMessages.Should().Equal(AdministrationErrors.UnknownSite);
         (await _host.AsCallerAsync(admin, s => Users(s).SetSitesAsync(admin, new SiteAccessRequest(false, []), Ct))).ErrorMessages.Should().Equal(AdministrationErrors.OwnAccount);
         (await _host.AsCallerAsync(limited, s => Users(s).SetSitesAsync(target, new SiteAccessRequest(false, ["ITE"]), Ct))).ErrorMessages.Should().Equal(AdministrationErrors.BeyondOwnSites);
@@ -138,6 +142,40 @@ public sealed class SiteScopeTests(PostgresFixture fixture) : IAsyncDisposable
         var fresh = await _host.CreateUserAsync("it.site.fresh.admin", roles: [RoleCodes.SystemAdministrator]);
         (await _host.AsCallerAsync(limited, s => Users(s).ResetPasswordAsync(fresh, Ct)))
             .ErrorMessages.Should().Equal(new[] { AdministrationErrors.NotFound }, "an administrator without sites yet belongs to the all-sites administrators");
+
+        // ARV-059: any account without sites, not only an administrator, is beyond a site-limited administrator: it may
+        // be about to get any site, and resetting it now would let the site administrator sign in as it later.
+        var unsited = await _host.CreateUserAsync("it.site.unsited", roles: [RoleCodes.TerminalDutyManager]);
+        (await _host.AsCallerAsync(limited, s => Users(s).GetAsync(unsited, Ct))).ErrorMessages.Should().Equal(AdministrationErrors.NotFound);
+        (await _host.AsCallerAsync(limited, s => Users(s).ResetPasswordAsync(unsited, Ct))).ErrorMessages.Should().Equal(AdministrationErrors.NotFound);
+        (await _host.AsCallerAsync(limited, s => Users(s).ResetTotpAsync(unsited, Ct))).ErrorMessages.Should().Equal(AdministrationErrors.NotFound);
+        (await _host.AsCallerAsync(limited, s => Users(s).SetSitesAsync(unsited, new SiteAccessRequest(false, ["ITH"]), Ct))).ErrorMessages.Should().Equal(AdministrationErrors.NotFound);
+        (await _host.AsCallerAsync(limited, s => roles(s).GrantAsync(unsited, RoleCodes.BorderShiftSupervisor, Ct))).ErrorMessages.Should().Equal(AdministrationErrors.NotFound);
+        (await _host.AsCallerAsync(limited, s => auth(s).DisableAsync(unsited, Ct))).ErrorMessages.Should().Equal(Ariva.Core.Services.Security.ISvcAuthenticator.UserNotFound);
+        (await _host.AsCallerAsync(limited, s => auth(s).UnlockAsync(unsited, Ct))).ErrorMessages.Should().Equal(Ariva.Core.Services.Security.ISvcAuthenticator.UserNotFound);
+
+        // An account is created with its sites in the same request: a site administrator gives one of its own, never none,
+        // another site or every site; what it creates stays inside its sites and administrable by it.
+        (await _host.AsCallerAsync(limited, s => Users(s).CreateAsync(new CreateUserRequest("it.site.made.none", Roles: [RoleCodes.TerminalDutyManager]), Ct)))
+            .ErrorMessages.Should().Equal(AdministrationErrors.SitesRequired);
+        (await _host.AsCallerAsync(limited, s => Users(s).CreateAsync(new CreateUserRequest("it.site.made.iti", SiteCodes: ["ITI"]), Ct)))
+            .ErrorMessages.Should().Equal(AdministrationErrors.BeyondOwnSites);
+        (await _host.AsCallerAsync(limited, s => Users(s).CreateAsync(new CreateUserRequest("it.site.made.all", AllSites: true), Ct)))
+            .ErrorMessages.Should().Equal(AdministrationErrors.BeyondOwnSites);
+        (await _host.AsCallerAsync(limited, s => Users(s).CreateAsync(new CreateUserRequest("it.site.made.nope", SiteCodes: ["NOPE"]), Ct)))
+            .ErrorMessages.Should().Equal(new[] { AdministrationErrors.BeyondOwnSites }, "an unknown site answers like another site's");
+        var made = await _host.AsCallerAsync(limited, s => Users(s).CreateAsync(
+            new CreateUserRequest("it.site.made.admin", Roles: [RoleCodes.SystemAdministrator], SiteCodes: ["ITH"]), Ct));
+        made.HasErrors.Should().BeFalse(string.Join(", ", made.ErrorMessages ?? []));
+        made.Data.User.Should().Match<UserViewModel>(u => !u.AllSites && u.Sites.SequenceEqual(new[] { "ITH" }));
+        (await _host.AsCallerAsync(limited, s => Users(s).GetAsync(made.Data.User.Id, Ct))).HasErrors.Should().BeFalse("its own creation stays its to administer");
+        (await _host.ReadAsync<string>("SELECT after_summary FROM audit_entry WHERE target_id = @id AND action = 'User.Created'", made.Data.User.Id))
+            .Should().Contain("sites=ITH;", "the sites are part of the creation");
+
+        // An all-sites administrator may still create an account for every site, or one without sites for later.
+        var everywhere = await _host.AsCallerAsync(wide, s => Users(s).CreateAsync(new CreateUserRequest("it.site.made.every", AllSites: true), Ct));
+        everywhere.Data.User.AllSites.Should().BeTrue();
+        (await _host.AsCallerAsync(wide, s => Users(s).CreateAsync(new CreateUserRequest("it.site.made.later"), Ct))).HasErrors.Should().BeFalse();
 
         var listed = await _host.AsCallerAsync(limited, s => Users(s).SearchAsync(new Ariva.Core.Domain.Criteria.UserCriteria { Text = "it.site.", PageSize = 500 }, Ct));
         listed.Data.Data.Select(u => u.UserName).Should().Contain("it.site.inside").And.NotContain(["it.site.wide", "it.site.outside"]);

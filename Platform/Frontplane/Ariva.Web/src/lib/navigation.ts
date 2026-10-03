@@ -110,9 +110,9 @@ export const navItems: readonly NavItem[] = [
 		href: '/users',
 		icon: UserCog,
 		group: 'administration',
-		ready: false,
+		ready: true,
 		story: 'ARV-059',
-		permission: 'User.View'
+		permission: 'User.Search'
 	}
 ];
 

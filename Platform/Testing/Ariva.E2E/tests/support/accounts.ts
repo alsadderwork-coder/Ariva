@@ -176,7 +176,15 @@ export function accounts() {
 		// ARV-056: writes alert rules at the demo airport through the screen (deleting needs a second factor).
 		webRules: account('e2e.webrules', ['BorderShiftSupervisor'], false, true, ['DMO']),
 		// ARV-058: sets up passenger displays at the demo airport through the screen (creating needs a second factor).
-		webDisplays: account('e2e.webdisplays', ['TerminalDutyManager'], false, true, ['DMO'])
+		webDisplays: account('e2e.webdisplays', ['TerminalDutyManager'], false, true, ['DMO']),
+		// ARV-059: administers accounts through the Users and access screen (creating, resets and role grants need a second
+		// factor); the second is limited to the demo airport, to show that the screen and the server keep it there.
+		webUsers: account('e2e.webusers', ['SystemAdministrator'], false, true, ['*']),
+		webSiteAdmin: account('e2e.websiteadmin', ['SystemAdministrator'], false, true, ['DMO']),
+		// ARV-059: enabling an account is a critical action, so the session suite re-enables with a second factor.
+		sessionAdmin: account('e2e.sessionadmin', ['SystemAdministrator'], false, true, ['*']),
+		// ARV-059: the break-glass test asks enable with a fresh second factor, so the answer is the account's absence.
+		breakGlassAdmin: account('e2e.bgadmin', ['SystemAdministrator'], false, true, ['*'])
 	} as const;
 }
 

@@ -187,7 +187,7 @@ public sealed class SessionTests(PostgresFixture fixture) : IAsyncDisposable
     [Fact]
     public async Task Disable_Should_EndEverySessionOfTheUser_When_AdministratorDisables()
     {
-        var administratorId = await _host.CreateUserAsync("it.s.admin", roles: [RoleCodes.SystemAdministrator]);
+        var administratorId = await _host.CreateUserAsync("it.s.admin", roles: [RoleCodes.SystemAdministrator], allSites: true);
         await _host.CreateUserAsync("it.s.victim", roles: [RoleCodes.TerminalDutyManager]);
         var victimId = await _host.ReadAsync<Guid>("SELECT id FROM \"user\" WHERE user_name = 'it.s.victim'");
         var first = (await _host.LoginAsync("it.s.victim", Password)).Data;

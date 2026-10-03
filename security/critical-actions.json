@@ -53,6 +53,12 @@
     },
     {
       "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/users/{id:guid}/enable",
+      "category": "Create or reset users and TOTP"
+    },
+    {
+      "host": "main",
       "method": "PUT",
       "route": "/api/v1/admin/users/{id:guid}/roles/{roleCode:alpha}",
       "category": "Grant or revoke roles"

@@ -197,3 +197,15 @@ Common tasks: run a report now; schedule a report (template, scope within your v
 ## Access and data boundary
 
 MVP. Lists, per role, what is visible and what is not, the create rights of each role, the users of the deployment (administrators), and the audit log. It states that no screen shows officer identities.
+
+## Users and access
+
+Delivered in ARV-059, for system administrators (`User.*` and `AuditEntry.Search`; other roles have no item in the sidebar, the address shows "No access", and the API answers 403). The screen at `/users` has two tabs.
+
+Accounts lists the deployment's accounts with their roles, sites and state (active or disabled, locked, still on a temporary password, no authenticator yet), searchable by username or name, role and state. Picking an account opens its panel: the name and email; the roles, granted or revoked as soon as a box changes; the sites (every site, or a list); and the actions reset password, reset authenticator, unlock, disable and enable. Adding an account takes a username (3 to 64 letters, digits or `. _ - @`), an optional name and email, roles and sites, all in one step; its temporary password is shown once with a copy action (switching tabs or leaving the page drops it), and the person changes it at the first sign-in and sets up an authenticator then. An administrator limited to some sites must give a new account at least one of its own sites; only an administrator of every site may create an account without sites (it reaches nothing until it gets some) or for every site. An account without sites is administered only by administrators of every site. A name is one line of visible text in any script.
+
+The audit log shows every change, newest first, in UTC: who, what action, about which account or site, the before and after summaries (shown on demand, always as text; names and emails are quoted so they cannot read as other fields), the address and the trace id. Filter by action and UTC day, or open it from an account's panel for the changes to that account or by that account. Nobody can change or delete an entry.
+
+What the screen will not do, and the server refuses even when asked directly: change your own roles, sites, password, authenticator or status (your own account's panel is read only) (another administrator does; your own password and authenticator are under Account security); grant a role above your own; give a site you cannot reach yourself, or every site when you have only some; show or touch an account beyond your sites. An administrator limited to some sites sees only the accounts inside them and only their audit entries. Creating an account, resetting a password or an authenticator, granting or revoking a role, changing sites and enabling a disabled account ask for a fresh authenticator code if the last one is older than 15 minutes.
+
+Common tasks (system administrator): add an account for a new supervisor and give it its site; reset the password or authenticator of someone who lost theirs; disable a leaver (their sessions end within seconds); find who changed an account and when.

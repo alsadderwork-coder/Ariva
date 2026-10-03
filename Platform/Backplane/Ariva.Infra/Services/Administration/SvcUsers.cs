@@ -1,4 +1,5 @@
 using Ariva.Core;
+using Ariva.Core.Domain.Components;
 using Ariva.Core.Domain.Constants;
 using Ariva.Core.Domain.Criteria;
 using Ariva.Core.Domain.InputModels;
@@ -48,6 +49,17 @@ internal sealed class SvcUsers(
 
         if (!IsUsableEmail(request.Email))
             return Result.Error<UserCreatedViewModel>(AdministrationErrors.InvalidEmail);
+        if (!IsUsableDisplayName(request.DisplayName))
+            return Result.Error<UserCreatedViewModel>(AdministrationErrors.InvalidDisplayName);
+
+        // The sites in the same request: a site-limited administrator gives at least one of its own (a sites-less
+        // account is administrable by all-sites administrators only, so it would be beyond its creator at once).
+        var siteCodes = (request.SiteCodes ?? []).Distinct(StringComparer.Ordinal).ToList();
+        var sitesProblem = await SitesProblemAsync(request.AllSites, siteCodes, ct);
+        if (sitesProblem is not null)
+            return Result.Error<UserCreatedViewModel>(sitesProblem);
+        if (!request.AllSites && siteCodes.Count == 0 && !(await siteScope.GetAsync(ct)).AllSites)
+            return Result.Error<UserCreatedViewModel>(AdministrationErrors.SitesRequired);
 
         var userName = UserNames.Normalize(request.UserName);
         if (await Query<User>().AnyAsync(u => u.UserName == userName, ct))
@@ -60,6 +72,10 @@ internal sealed class SvcUsers(
         await SaveAsync(user, ct);
         foreach (var role in roles)
             await SaveAsync(user.Grant(role, CurrentUser.Id, now), ct);
+        foreach (var site in user.SetSites(request.AllSites, siteCodes, CurrentUser.Id, now).Added)
+            await SaveAsync(site, ct);
+        if (request.AllSites)
+            await UpdateAsync(user, ct);
 
         await audit.RecordAsync(AuditActions.UserCreated, AuditActions.UserTarget, user.Id, user.UserName, null, AuditTrail.Summary(user), ct);
         logger.LogInformation(UserCreated, "Account {UserId} created by {AdministratorId} with roles {Roles}", user.Id, CurrentUser.Id, string.Join(",", roles));
@@ -67,6 +83,30 @@ internal sealed class SvcUsers(
     }
 
     // ARV-040: an address alert emails can go to, or none (CWE-93: nothing that could add a header or a recipient).
+    /// <summary>
+    /// Why the caller cannot give this site access, or null. Scope first: a site outside the caller's own answers the
+    /// same whether it exists or not (CWE-204); then every code must be a site.
+    /// </summary>
+    private async Task<string> SitesProblemAsync(bool allSites, IReadOnlyList<string> codes, CancellationToken ct)
+    {
+        var wanted = new SiteAccess(allSites, codes.ToHashSet(StringComparer.Ordinal));
+        if (!(await siteScope.GetAsync(ct)).Covers(wanted))
+            return AdministrationErrors.BeyondOwnSites;
+        if (codes.Any(code => !Site.IsValidCode(code)))
+            return AdministrationErrors.UnknownSite;
+        if (codes.Count > 0 && await Query<Site>().CountAsync(s => codes.Contains(s.Code), ct) != codes.Count)
+            return AdministrationErrors.UnknownSite;
+        return null;
+    }
+
+    /// <summary>
+    /// A name is shown on screens and in the audit trail: no control, invisible or broken characters (CWE-117, CWE-79),
+    /// except the zero-width non-joiner and joiner, which Persian and some Indic names need.
+    /// </summary>
+    internal static bool IsUsableDisplayName(string displayName) =>
+        string.IsNullOrWhiteSpace(displayName) ||
+        (displayName.Trim().Length <= 200 && DisplayText.IsClean(displayName.Trim().Replace("\u200C", "", StringComparison.Ordinal).Replace("\u200D", "", StringComparison.Ordinal)));
+
     private static bool IsUsableEmail(string email) => string.IsNullOrWhiteSpace(email) || Ariva.Infra.Notifications.EmailAddresses.IsValid(email.Trim());
 
     public async Task<Result<UserViewModel>> GetAsync(Guid id, CancellationToken ct = default)
@@ -131,6 +171,8 @@ internal sealed class SvcUsers(
 
         if (!IsUsableEmail(request?.Email))
             return Result.Error<UserViewModel>(AdministrationErrors.InvalidEmail);
+        if (!IsUsableDisplayName(request?.DisplayName))
+            return Result.Error<UserViewModel>(AdministrationErrors.InvalidDisplayName);
 
         var before = AuditTrail.Summary(user);
         user.UpdateProfile(request?.DisplayName, request?.Email);
@@ -169,14 +211,9 @@ internal sealed class SvcUsers(
         var codes = (request?.SiteCodes ?? []).Distinct(StringComparer.Ordinal).ToList();
         var allSites = request?.AllSites == true;
 
-        // Scope first: a site outside the caller's own answers the same whether it exists or not (CWE-204).
-        var wanted = new SiteAccess(allSites, codes.ToHashSet(StringComparer.Ordinal));
-        if (!(await siteScope.GetAsync(ct)).Covers(wanted))
-            return Result.Error<UserViewModel>(AdministrationErrors.BeyondOwnSites);
-        if (codes.Any(code => !Site.IsValidCode(code)))
-            return Result.Error<UserViewModel>(AdministrationErrors.UnknownSite);
-        if (codes.Count > 0 && await Query<Site>().CountAsync(s => codes.Contains(s.Code), ct) != codes.Count)
-            return Result.Error<UserViewModel>(AdministrationErrors.UnknownSite);
+        var sitesProblem = await SitesProblemAsync(allSites, codes, ct);
+        if (sitesProblem is not null)
+            return Result.Error<UserViewModel>(sitesProblem);
 
         var before = AuditTrail.Summary(user);
         var narrowed = (user.AllSites && !allSites) || user.Sites.Any(s => !codes.Contains(s.SiteCode));

@@ -81,7 +81,9 @@ test('break-glass: signs in with a recovery code, is never locked out, and every
 	expect(signedIn.status(), 'never locked out').toBe(200);
 	const userId = claimsOf((await signedIn.json()).accessToken).sub;
 
-	const admin = await signIn(accounts().SystemAdministrator);
+	// Enabling is a critical action (ARV-059), so the administrator has a fresh second factor: the answer is the account's absence.
+	const { userName, password, totpSecret } = accounts().breakGlassAdmin;
+	const admin = await (await login(userName, password, undefined, undefined, { code: totpCode(totpSecret!) })).json();
 	expect((await call('POST', `${hosts.main}/api/v1/admin/users/${userId}/enable`, { token: admin.accessToken })).status(), 'no API re-enables it').toBe(404);
 
 	const logDirectory = process.env.ARIVA_E2E_LOG_DIR;

@@ -117,7 +117,7 @@ public sealed class AccountsHost : IAsyncDisposable
         _provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
     }
 
-    public async Task<Guid> CreateUserAsync(string userName, bool temporary = false, bool disabled = false, int iterations = 600_000, string[] roles = null)
+    public async Task<Guid> CreateUserAsync(string userName, bool temporary = false, bool disabled = false, int iterations = 600_000, string[] roles = null, bool allSites = false)
     {
         await EnsureProviderAsync();
         await using var scope = Provider.CreateAsyncScope();
@@ -130,6 +130,9 @@ public sealed class AccountsHost : IAsyncDisposable
         user.SetPassword(iterations == PasswordHasher.Iterations ? PasswordHasher.Hash(Password) : WeakHash(iterations), temporary);
         if (disabled)
             user.Disable();
+        // An administrator acting on accounts without sites must reach every site (ARV-059); see AdministrationGuards.
+        if (allSites)
+            user.SetSites(true, [], null, DateTime.UtcNow);
         await storage.SaveAsync(user, TestContext.Current.CancellationToken);
         foreach (var role in roles ?? [])
         {

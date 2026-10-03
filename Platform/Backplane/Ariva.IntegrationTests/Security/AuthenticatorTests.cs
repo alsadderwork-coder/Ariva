@@ -128,7 +128,8 @@ public sealed class AuthenticatorTests(PostgresFixture fixture) : IAsyncDisposab
         for (var attempt = 0; attempt < 10; attempt++)
             await _host.LoginAsync("it.unlock", WrongPassword);
 
-        var result = await _host.AsAsync(Guid.CreateVersion7(), null, service => service.UnlockAsync(userId, TestContext.Current.CancellationToken));
+        var administrator = await _host.CreateUserAsync("it.unlock.admin", roles: [RoleCodes.SystemAdministrator], allSites: true);
+        var result = await _host.AsAsync(administrator, null, service => service.UnlockAsync(userId, TestContext.Current.CancellationToken));
 
         result.HasErrors.Should().BeFalse();
         (await _host.LoginAsync("it.unlock", Password)).HasErrors.Should().BeFalse();

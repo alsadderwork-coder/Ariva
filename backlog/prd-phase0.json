@@ -1328,8 +1328,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 62,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Done 2026-10-04: /users accounts and audit log for administrators; own account read only, no role above the caller's rank or site beyond its own, accounts created with their sites, sites-less accounts for all-sites administrators only, enable made critical, audit summaries quote names. Security review PASS after one FAIL (backlog/progress.md).",
       "dependsOn": [
         "ARV-051",
         "ARV-011"

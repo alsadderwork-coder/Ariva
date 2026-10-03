@@ -26,11 +26,20 @@ internal sealed class AuditTrail(IUnitOfWork unitOfWork, ICurrentUser currentUse
         return SaveAsync(entry, ct);
     }
 
-    /// <summary>The summary of a user the audit keeps: names, roles and state flags, never credentials.</summary>
+    /// <summary>
+    /// The summary of a user the audit keeps: names, roles and state flags, never credentials. The free-text fields are
+    /// quoted as JSON strings, so a name such as <c>x; roles=SystemAdministrator</c> cannot read as another field (ARV-059).
+    /// </summary>
     public static string Summary(User user) =>
         user is null
             ? null
-            : $"userName={user.UserName}; displayName={user.DisplayName}; email={user.Email}; roles={string.Join(",", user.Roles.Select(r => r.RoleCode).Order(StringComparer.Ordinal))}; " +
+            : $"userName={user.UserName}; displayName={Quoted(user.DisplayName)}; email={Quoted(user.Email)}; roles={string.Join(",", user.Roles.Select(r => r.RoleCode).Order(StringComparer.Ordinal))}; " +
               $"sites={(user.AllSites ? "*" : string.Join(",", user.Sites.Select(s => s.SiteCode).Order(StringComparer.Ordinal)))}; " +
               $"disabled={user.IsDisabled}; totp={user.TotpEnrolled}; mustChangePassword={user.MustChangePassword}";
+
+    private static readonly System.Text.Json.JsonSerializerOptions QuotedText =
+        new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+
+    /// <summary>A JSON string ("..." with quotes, backslashes and control characters escaped), or nothing for no value.</summary>
+    internal static string Quoted(string text) => text is null ? string.Empty : System.Text.Json.JsonSerializer.Serialize(text, QuotedText);
 }

@@ -11,7 +11,8 @@ import {
 	refreshUrl,
 	refreshCookieName,
 	refusedWithin,
-	signIn
+	signIn,
+	totpCode
 } from '../support/accounts';
 import { expectProblemDetails } from '../support/api-assertions';
 import { foreignOrigin, hosts, systemInfoPath, webOrigin } from '../support/hosts';
@@ -159,8 +160,13 @@ test.describe('session lifecycle', () => {
 			expect((await refresh(session.refreshToken)).status()).toBe(401);
 			expect((await login(target.userName, target.password)).status()).toBe(401);
 		} finally {
-			// Re-enable so a retry of this test starts from the same state.
-			await call('POST', `${hosts.main}/api/v1/admin/users/${userId}/enable`, { token: admin.accessToken });
+			// Re-enable so a retry of this test starts from the same state. Enabling gives access back, so it is a critical
+			// action (ARV-059): a password-only administrator is asked for a second factor first.
+			const enable = `${hosts.main}/api/v1/admin/users/${userId}/enable`;
+			expect((await call('POST', enable, { token: admin.accessToken })).status(), 'enable without a recent second factor').toBe(401);
+			const { userName, password, totpSecret } = accounts().sessionAdmin;
+			const stepped = await login(userName, password, undefined, undefined, { code: totpCode(totpSecret!) });
+			expect((await call('POST', enable, { token: (await stepped.json()).accessToken })).status()).toBe(204);
 		}
 
 		expect((await login(target.userName, target.password)).status()).toBe(200);

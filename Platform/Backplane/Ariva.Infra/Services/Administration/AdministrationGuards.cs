@@ -24,26 +24,28 @@ internal sealed class AdministrationGuards(IUnitOfWork unitOfWork, ISiteScope si
         new(user.AllSites, user.Sites.Select(s => s.SiteCode).ToHashSet(StringComparer.Ordinal));
 
     /// <summary>
-    /// True when the caller's sites cover everything the target account can reach. An administrator without sites yet
-    /// (just created) is covered only by an all-sites caller, so a site-limited administrator cannot take it over
-    /// before its sites are set.
+    /// True when the caller's sites cover everything the target account can reach. An account without sites, whatever
+    /// its roles, is covered only by an all-sites caller: it may be about to get any site, so a site-limited
+    /// administrator must not be able to reset it and sign in as it once it has them (ARV-059, CWE-269).
     /// </summary>
     public async Task<bool> CoversAsync(User target, CancellationToken ct = default)
     {
         var caller = await siteScope.GetAsync(ct);
-        if (!caller.AllSites && !target.AllSites && target.Sites.Count == 0 && target.Holds(RoleCodes.SystemAdministrator))
+        if (!caller.AllSites && !target.AllSites && target.Sites.Count == 0)
             return false;
         return caller.Covers(AccessOf(target));
     }
 
-    /// <summary>The accounts the caller may administer: all for an all-sites caller, otherwise those inside its sites.</summary>
+    /// <summary>
+    /// The accounts the caller may administer: all for an all-sites caller, otherwise those with at least one site and
+    /// every site inside the caller's.
+    /// </summary>
     public static IQueryable<User> Administrable(IQueryable<User> users, SiteAccess caller)
     {
         if (caller.AllSites)
             return users;
         var codes = caller.SiteCodes.ToList();
-        return users.Where(u => !u.AllSites && !u.Sites.Any(s => !codes.Contains(s.SiteCode)) &&
-                                (u.Sites.Any() || !u.Roles.Any(r => r.RoleCode == RoleCodes.SystemAdministrator)));
+        return users.Where(u => !u.AllSites && u.Sites.Any() && !u.Sites.Any(s => !codes.Contains(s.SiteCode)));
     }
 
     /// <summary>

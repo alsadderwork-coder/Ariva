@@ -39,7 +39,7 @@ public sealed class AdministrationTests(PostgresFixture fixture) : IAsyncDisposa
     [Fact]
     public async Task Create_Should_IssueAOneTimeTemporaryPasswordAndAudit_When_AdministratorCreatesAUser()
     {
-        var admin = await _host.CreateUserAsync("it.adm.creator", roles: [RoleCodes.SystemAdministrator]);
+        var admin = await _host.CreateUserAsync("it.adm.creator", roles: [RoleCodes.SystemAdministrator], allSites: true);
 
         var created = await As(admin, s => Users(s).CreateAsync(new CreateUserRequest("IT.Adm.New", "New Officer", "new@example.org", [RoleCodes.BorderShiftSupervisor]), Ct));
         var duplicate = await As(admin, s => Users(s).CreateAsync(new CreateUserRequest("it.adm.new"), Ct));
@@ -63,8 +63,8 @@ public sealed class AdministrationTests(PostgresFixture fixture) : IAsyncDisposa
     [Fact]
     public async Task Grant_Should_RefuseSelfAndAboveOwnRank_When_RulesAreBroken()
     {
-        var admin = await _host.CreateUserAsync("it.adm.granter", roles: [RoleCodes.SystemAdministrator]);
-        var manager = await _host.CreateUserAsync("it.adm.manager", roles: [RoleCodes.TerminalDutyManager]);
+        var admin = await _host.CreateUserAsync("it.adm.granter", roles: [RoleCodes.SystemAdministrator], allSites: true);
+        var manager = await _host.CreateUserAsync("it.adm.manager", roles: [RoleCodes.TerminalDutyManager], allSites: true);
         var target = await _host.CreateUserAsync("it.adm.target");
 
         (await As(admin, s => Roles(s).GrantAsync(admin, RoleCodes.BorderShiftSupervisor, Ct))).ErrorMessages.Should().Equal(AdministrationErrors.OwnAccount);
@@ -80,7 +80,7 @@ public sealed class AdministrationTests(PostgresFixture fixture) : IAsyncDisposa
     [Fact]
     public async Task Revoke_Should_EndTheUsersSessionsAndAudit_When_RoleIsRemoved()
     {
-        var admin = await _host.CreateUserAsync("it.adm.revoker", roles: [RoleCodes.SystemAdministrator]);
+        var admin = await _host.CreateUserAsync("it.adm.revoker", roles: [RoleCodes.SystemAdministrator], allSites: true);
         var officer = await _host.CreateUserAsync("it.adm.officer", roles: [RoleCodes.BorderShiftSupervisor]);
         var session = SessionOf((await _host.LoginAsync("it.adm.officer", Password)).Data.Token.AccessToken);
 
@@ -108,18 +108,18 @@ public sealed class AdministrationTests(PostgresFixture fixture) : IAsyncDisposa
             await command.ExecuteNonQueryAsync(Ct);
         }
 
-        var last = await _host.CreateUserAsync("it.adm.last", roles: [RoleCodes.SystemAdministrator]);
+        var last = await _host.CreateUserAsync("it.adm.last", roles: [RoleCodes.SystemAdministrator], allSites: true);
         (await As(breakGlass, s => Roles(s).RevokeAsync(last, RoleCodes.SystemAdministrator, Ct))).ErrorMessages.Should().Equal(AdministrationErrors.LastAdministrator);
         (await As(breakGlass, s => Users(s).GetAsync(breakGlass, Ct))).ErrorMessages.Should().Equal(new[] { AdministrationErrors.NotFound }, "the break-glass account is not administered through the API");
 
-        await _host.CreateUserAsync("it.adm.next", roles: [RoleCodes.SystemAdministrator]);
+        await _host.CreateUserAsync("it.adm.next", roles: [RoleCodes.SystemAdministrator], allSites: true);
         (await As(breakGlass, s => Roles(s).RevokeAsync(last, RoleCodes.SystemAdministrator, Ct))).HasErrors.Should().BeFalse("another active administrator remains");
     }
 
     [Fact]
     public async Task Resets_Should_EndSessionsClearTotpAndAudit_When_AdministratorResets()
     {
-        var admin = await _host.CreateUserAsync("it.adm.resetter", roles: [RoleCodes.SystemAdministrator]);
+        var admin = await _host.CreateUserAsync("it.adm.resetter", roles: [RoleCodes.SystemAdministrator], allSites: true);
         var officer = await _host.CreateUserAsync("it.adm.reset", roles: [RoleCodes.TerminalDutyManager]);
         var session = SessionOf((await _host.LoginAsync("it.adm.reset", Password)).Data.Token.AccessToken);
         var secret = Base32.Decode((await _host.EnrolAsync(officer, session)).Data.Secret);
@@ -148,7 +148,7 @@ public sealed class AdministrationTests(PostgresFixture fixture) : IAsyncDisposa
     [Fact]
     public async Task Search_Should_FilterSortPageAndHideBreakGlass_When_Queried()
     {
-        var admin = await _host.CreateUserAsync("it.adm.searcher", roles: [RoleCodes.SystemAdministrator]);
+        var admin = await _host.CreateUserAsync("it.adm.searcher", roles: [RoleCodes.SystemAdministrator], allSites: true);
         await _host.CreateUserAsync("it.adm.find.b", roles: [RoleCodes.HandlerStationManager]);
         await _host.CreateUserAsync("it.adm.find.a", roles: [RoleCodes.HandlerStationManager]);
         await _host.CreateUserAsync("it.adm.find.c", disabled: true);
@@ -169,9 +169,32 @@ public sealed class AdministrationTests(PostgresFixture fixture) : IAsyncDisposa
     }
 
     [Fact]
+    public async Task Names_Should_BeCleanTextAndQuotedInTheAudit_When_AnAdministratorSetsThem()
+    {
+        var admin = await _host.CreateUserAsync("it.adm.namer", roles: [RoleCodes.SystemAdministrator], allSites: true);
+        var target = await _host.CreateUserAsync("it.adm.named");
+
+        foreach (var name in new[] { "Line\nbreak", "Right\u202Eto left", "Bell\u0007", new string('x', 201) })
+        {
+            (await As(admin, s => Users(s).UpdateAsync(target, new UpdateUserRequest(name), Ct))).ErrorMessages.Should()
+                .Equal(new[] { AdministrationErrors.InvalidDisplayName }, "a name is one line of visible text");
+            (await As(admin, s => Users(s).CreateAsync(new CreateUserRequest($"it.adm.bad{name.Length}", name), Ct))).ErrorMessages.Should()
+                .Equal(new[] { AdministrationErrors.InvalidDisplayName }, "the same rule when creating");
+        }
+
+        // A name that looks like more fields stays one quoted value in the trail.
+        var forged = "Officer; roles=SystemAdministrator; sites=*";
+        (await As(admin, s => Users(s).UpdateAsync(target, new UpdateUserRequest(forged, "named@example.org"), Ct))).HasErrors.Should().BeFalse();
+        var after = await _host.ReadAsync<string>("SELECT after_summary FROM audit_entry WHERE target_id = @id AND action = 'User.Updated'", target);
+        after.Should().Contain("displayName=\"Officer; roles=SystemAdministrator; sites=*\"; email=\"named@example.org\"; roles=;")
+            .And.Contain("sites=;", "the real fields follow the quoted name");
+        (await As(admin, s => Users(s).UpdateAsync(target, new UpdateUserRequest("المسؤول أحمد"), Ct))).Data.DisplayName.Should().Be("المسؤول أحمد", "any script is a name");
+    }
+
+    [Fact]
     public async Task AuditEntry_Should_BeAppendOnly_When_TheRuntimeRoleTriesToChangeIt()
     {
-        var admin = await _host.CreateUserAsync("it.adm.auditor", roles: [RoleCodes.SystemAdministrator]);
+        var admin = await _host.CreateUserAsync("it.adm.auditor", roles: [RoleCodes.SystemAdministrator], allSites: true);
         var target = await _host.CreateUserAsync("it.adm.audited");
         await As(admin, s => Users(s).UpdateAsync(target, new UpdateUserRequest("Audited"), Ct));
 

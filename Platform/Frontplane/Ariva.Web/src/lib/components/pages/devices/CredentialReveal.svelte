@@ -3,15 +3,25 @@
 	import { _ } from 'svelte-i18n';
 	import { toast } from 'svelte-sonner';
 
-	let { code, credential, onDone }: { code: string; credential: string; onDone: () => void } =
-		$props();
+	interface Props {
+		code: string;
+		credential: string;
+		onDone: () => void;
+		/**
+		 * The words of the reveal, under one i18n prefix with title, once, copy, copied, copyFailed and done; the device
+		 * credential's by default (a user's temporary password uses users.temporaryPassword).
+		 */
+		words?: string;
+	}
+
+	let { code, credential, onDone, words = 'devices.credential' }: Props = $props();
 
 	let box = $state<HTMLElement>();
 
 	async function copy(): Promise<void> {
 		try {
 			await navigator.clipboard.writeText(credential);
-			toast.success($_('devices.credential.copied'));
+			toast.success($_(`${words}.copied`));
 		} catch {
 			const selection = window.getSelection();
 			if (box && selection) {
@@ -20,7 +30,7 @@
 				selection.removeAllRanges();
 				selection.addRange(range);
 			}
-			toast.error($_('devices.credential.copyFailed'));
+			toast.error($_(`${words}.copyFailed`));
 		}
 	}
 </script>
@@ -35,10 +45,10 @@
 	<div class="flex items-center gap-2">
 		<KeyRound class="size-5" aria-hidden="true" />
 		<h2 id="credential-title" class="text-base font-semibold">
-			{$_('devices.credential.title')}: <span class="font-mono">{code}</span>
+			{$_(`${words}.title`)}: <span class="font-mono">{code}</span>
 		</h2>
 	</div>
-	<p class="text-sm">{$_('devices.credential.once')}</p>
+	<p class="text-sm">{$_(`${words}.once`)}</p>
 	<code
 		bind:this={box}
 		data-testid="credential-value"
@@ -54,7 +64,7 @@
 			class="inline-flex h-9 items-center gap-2 rounded-md border bg-card px-3 text-sm font-medium text-foreground hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
 		>
 			<Copy class="size-4" aria-hidden="true" />
-			{$_('devices.credential.copy')}
+			{$_(`${words}.copy`)}
 		</button>
 		<button
 			type="button"
@@ -62,7 +72,7 @@
 			onclick={onDone}
 			class="inline-flex h-9 items-center rounded-md bg-button-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none dark:text-white"
 		>
-			{$_('devices.credential.done')}
+			{$_(`${words}.done`)}
 		</button>
 	</div>
 </section>

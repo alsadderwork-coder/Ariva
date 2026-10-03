@@ -831,5 +831,113 @@
 			"deleted": "Display {code} deleted.",
 			"failed": "That did not work: {reason}"
 		}
+	},
+	"users": {
+		"title": "Users and access",
+		"description": "Accounts, their roles and sites, resets, and the audit trail",
+		"listTitle": "Accounts",
+		"none": "No account matches",
+		"pick": "Pick an account to see and change its roles, sites and status.",
+		"search": "Username or name",
+		"filters": "Account filters",
+		"anyRole": "Any role",
+		"anyStatus": "Any status",
+		"allSites": "Every site",
+		"someSites": "These sites",
+		"never": "never",
+		"lastSignIn": "Last sign-in: {when}",
+		"count": "{total} accounts, page {page} of {pages}",
+		"profile": "Profile",
+		"ownAccount": "This is your own account. Change your password and authenticator under Account security; another administrator changes your roles, sites and status.",
+		"rolesHint": "A role is granted or revoked as soon as its box changes, after a fresh second factor. Its sessions end when a role is taken away.",
+		"sitesHint": "You can grant only the sites you can reach yourself.",
+		"tabs": {
+			"label": "Users and access",
+			"users": "Accounts",
+			"audit": "Audit log"
+		},
+		"fields": {
+			"userName": "Username",
+			"displayName": "Name",
+			"email": "Email (optional)",
+			"roles": "Roles",
+			"role": "Role",
+			"sites": "Sites",
+			"status": "Status"
+		},
+		"roles": {
+			"BorderShiftSupervisor": "Border shift supervisor",
+			"TerminalDutyManager": "Terminal duty manager",
+			"HandlerStationManager": "Handler station manager",
+			"SystemAdministrator": "System administrator"
+		},
+		"status": {
+			"active": "Active",
+			"disabled": "Disabled",
+			"locked": "Locked",
+			"mustChange": "Temporary password",
+			"noTotp": "No authenticator"
+		},
+		"form": {
+			"createTitle": "New account",
+			"userNameRule": "3 to 64 letters, digits or . _ - @",
+			"sitesRequired": "Give the account at least one of your sites.",
+			"sitesOptional": "An account without sites reaches no site until it is given some."
+		},
+		"temporaryPassword": {
+			"title": "Temporary password",
+			"once": "Shown this once. Give it to the person through a channel you trust; they choose their own password and set up their authenticator at their first sign-in.",
+			"copy": "Copy the password",
+			"copied": "The password is copied. Paste it where it goes, then copy something else.",
+			"copyFailed": "Copying failed. Select the password and copy it yourself.",
+			"done": "I have passed it on"
+		},
+		"actions": {
+			"add": "Add account",
+			"create": "Create account",
+			"cancel": "Cancel",
+			"search": "Search",
+			"previous": "Previous page",
+			"next": "Next page",
+			"saveProfile": "Save name and email",
+			"saveSites": "Save sites",
+			"resetPassword": "Reset password",
+			"confirmResetPassword": "Issue a temporary password now",
+			"resetTotp": "Reset authenticator",
+			"confirmResetTotp": "Clear the authenticator now",
+			"unlock": "Unlock",
+			"disable": "Disable",
+			"confirmDisable": "Disable and end its sessions now",
+			"enable": "Enable",
+			"auditAbout": "Changes to this account",
+			"auditBy": "Changes by this account"
+		},
+		"messages": {
+			"failed": "The request failed: {reason}",
+			"created": "Account {user} created"
+		},
+		"audit": {
+			"title": "Audit log",
+			"filters": "Audit filters",
+			"action": "Action",
+			"from": "From (UTC day)",
+			"to": "To (UTC day)",
+			"when": "When (UTC)",
+			"actor": "By",
+			"target": "About",
+			"change": "Change",
+			"source": "Address and trace",
+			"system": "Ariva",
+			"show": "Show",
+			"before": "Before",
+			"after": "After",
+			"trace": "Trace id",
+			"none": "No entry matches",
+			"count": "{total} entries, page {page} of {pages}",
+			"clearFilter": "Show every account",
+			"about": "About {user}",
+			"by": "By {user}",
+			"utcNote": "Newest first. The trail is read only: nobody, administrators included, can change or delete an entry."
+		}
 	}
 }

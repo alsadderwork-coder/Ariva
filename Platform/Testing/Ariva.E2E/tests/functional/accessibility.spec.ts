@@ -1,5 +1,6 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page } from '@playwright/test';
+import { accounts } from '../support/accounts';
 import { databaseAvailable, signInThroughUi } from '../support/web-auth';
 
 // WCAG 2.2 AA checks with axe-core on every built screen, in light and dark mode and in Arabic.
@@ -15,7 +16,9 @@ const screens = [
 	{ name: 'devices', path: '/devices', signedIn: true },
 	{ name: 'alert rules', path: '/alert-rules', signedIn: true },
 	{ name: 'immigration', path: '/immigration', signedIn: true },
-	{ name: 'passenger displays', path: '/displays', signedIn: true }
+	{ name: 'passenger displays', path: '/displays', signedIn: true },
+	// An administrator's screen: the duty manager would see the no-access message.
+	{ name: 'users and access', path: '/users', signedIn: true, account: () => accounts().webAdmin }
 ];
 /** Opens the screen and waits for its heading (a signed-in screen first takes a token from the refresh cookie). */
 async function open(page: Page, path: string): Promise<void> {
@@ -37,7 +40,7 @@ for (const screen of screens) {
 	test.describe(`accessibility: ${screen.name}`, () => {
 		test.skip(screen.signedIn && !databaseAvailable, 'signing in needs the E2E database');
 		test.beforeEach(async ({ page }) => {
-			if (screen.signedIn) await signInThroughUi(page);
+			if (screen.signedIn) await signInThroughUi(page, 'account' in screen && screen.account ? screen.account() : undefined);
 		});
 
 		test('light mode, English', async ({ page }) => {
