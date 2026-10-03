@@ -134,5 +134,7 @@ public sealed class ArrivalWaveTests
         bound.DelayMinutes.Should().Be(12);
         bound.Mix.Should().Be(new LaneMix(0.5, 0.1, 0.3, 0.05, 0.05, 0.6));
         bound.Problems().Should().BeEmpty();
+        LaneMix.Reference.Should().Be(new LaneMix(0.35, 0.20, 0.35, 0.02, 0.08, 0.40), "binding never changes the reference mix");
+        ArrivalWaveSettings.Default.Mix.Should().Be(LaneMix.Reference);
     }
 }

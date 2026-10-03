@@ -77,8 +77,11 @@ public sealed record LaneCounts(double Cit, double Res, double Vis, double Crw, 
 /// </summary>
 public sealed record LaneMix(double Cit, double Res, double Vis, double Crw, double Trf, double EGateShare)
 {
-    /// <summary>The reference mix (formulas.md F14): CIT 0.35, RES 0.20, VIS 0.35, CRW 0.02, TRF 0.08, e-gate 0.40.</summary>
-    public static LaneMix Reference { get; } = new(0.35, 0.20, 0.35, 0.02, 0.08, 0.40);
+    /// <summary>
+    /// The reference mix (formulas.md F14): CIT 0.35, RES 0.20, VIS 0.35, CRW 0.02, TRF 0.08, e-gate 0.40. A new instance
+    /// each time: configuration binding sets the properties of the instance it finds, so a shared one would change.
+    /// </summary>
+    public static LaneMix Reference => new(0.35, 0.20, 0.35, 0.02, 0.08, 0.40);
 
     public IEnumerable<string> Problems(string name)
     {
@@ -99,8 +102,8 @@ public sealed record ArrivalWaveSettings
 {
     public const string SectionName = "Flights:ArrivalWave";
 
-    /// <summary>The reference settings (F14): delay 11, taxi-in 5, load factor 0.8, the reference mix.</summary>
-    public static ArrivalWaveSettings Default { get; } = new();
+    /// <summary>The reference settings (F14): delay 11, taxi-in 5, load factor 0.8, the reference mix (a new instance each time).</summary>
+    public static ArrivalWaveSettings Default => new();
 
     /// <summary>d_f: on-block to the first arrival at the hall, 8 to 15 minutes (reference midpoint 11 when unknown).</summary>
     public int DelayMinutes { get; init; } = 11;
