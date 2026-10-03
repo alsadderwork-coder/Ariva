@@ -35,7 +35,28 @@ public sealed class RedisConnection : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         if (_connection.IsValueCreated)
-            await (await _connection.Value).DisposeAsync();
+            await CloseQuietlyAsync(_connection.Value);
+    }
+
+    /// <summary>
+    /// Ends the connection at shutdown without throwing: StackExchange.Redis 2.10 can throw a NullReferenceException from
+    /// inside its own close while a reconnect is in flight (ConnectionMultiplexer.AllComplete), and a connection that
+    /// never connected has nothing to close. Either way the process is letting go of Redis, so nothing is left to do.
+    /// </summary>
+    internal static async ValueTask CloseQuietlyAsync(Task<IConnectionMultiplexer> connection)
+    {
+        try
+        {
+            await (await connection).DisposeAsync();
+        }
+        catch (NullReferenceException)
+        {
+            // The library's own close race at shutdown; whatever it did not release goes with the process.
+        }
+        catch (RedisConnectionException)
+        {
+            // The first connect failed: there is no connection to end.
+        }
     }
 }
 
