@@ -4,7 +4,7 @@
 	import { _ } from 'svelte-i18n';
 	import { toast } from 'svelte-sonner';
 	import AddShapeForm from '$lib/components/pages/zones/AddShapeForm.svelte';
-	import ConfirmButton from '$lib/components/pages/zones/ConfirmButton.svelte';
+	import ConfirmButton from '$lib/components/shared/ConfirmButton.svelte';
 	import FloorPlanUpload from '$lib/components/pages/zones/FloorPlanUpload.svelte';
 	import LineDetails from '$lib/components/pages/zones/LineDetails.svelte';
 	import PublishPanel from '$lib/components/pages/zones/PublishPanel.svelte';

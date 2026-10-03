@@ -101,7 +101,7 @@ export const navItems: readonly NavItem[] = [
 		href: '/devices',
 		icon: Cpu,
 		group: 'administration',
-		ready: false,
+		ready: true,
 		story: 'ARV-054',
 		permission: 'Device.View'
 	},

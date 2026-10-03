@@ -362,5 +362,139 @@
 		"upload": "ارفع",
 		"planUploaded": "رُفع مخطط الطابق.",
 		"unsaved": "احفظ التغييرات على المخطط أو تراجع عنها أولاً: النشر يأخذ المسودة المحفوظة."
+	},
+	"devices": {
+		"title": "الأجهزة",
+		"description": "حسّاسات مواقعك: السجل والتغطية على المخطط والمعايرة والحالة",
+		"register": "تسجيل جهاز",
+		"list": "الأجهزة",
+		"none": "لا أجهزة في هذا الموقع بعد",
+		"noRights": "يمكنك عرض أجهزة مواقعك.",
+		"columns": {
+			"code": "الرمز",
+			"family": "الفئة",
+			"zone": "منطقة الطابور",
+			"state": "الحالة",
+			"lastSeen": "آخر اتصال",
+			"calibration": "المعايرة"
+		},
+		"states": {
+			"Commissioning": "قيد التشغيل التجريبي",
+			"Online": "متصل",
+			"Degraded": "متدهور",
+			"Offline": "غير متصل",
+			"Retired": "متقاعد"
+		},
+		"zoneStates": {
+			"Healthy": "سليمة",
+			"Degraded": "متدهورة",
+			"Unmonitored": "غير مراقَبة"
+		},
+		"families": {
+			"StereoVision": "رؤية مجسّمة",
+			"Lidar": "ليدار",
+			"CameraAnalytics": "تحليلات الكاميرا",
+			"ThermalOrTimeOfFlight": "حراري أو زمن الطيران",
+			"Simulator": "محاكي"
+		},
+		"transports": {
+			"HttpsPush": "دفع HTTPS",
+			"Mqtt": "MQTT",
+			"RestPull": "سحب REST",
+			"WebSocket": "WebSocket",
+			"TcpOrUdp": "TCP أو UDP",
+			"FileDrop": "إسقاط ملف",
+			"OnvifProfileM": "ONVIF Profile M"
+		},
+		"dialects": {
+			"Canonical": "صيغة أريفا",
+			"Xovis": "Xovis",
+			"Declarative": "ربط وصفي"
+		},
+		"fields": {
+			"code": "الرمز",
+			"family": "الفئة",
+			"model": "الطراز",
+			"transport": "النقل",
+			"dialect": "الصيغة",
+			"clockSource": "الساعة",
+			"mapping": "الربط",
+			"level": "الطابق",
+			"x": "x (م)",
+			"y": "y (م)",
+			"height": "ارتفاع التركيب (م)",
+			"orientation": "الاتجاه (درجات)",
+			"queueZone": "منطقة الطابور",
+			"footprintLength": "طول التغطية (م)",
+			"footprintWidth": "عرض التغطية (م)",
+			"footprintRadius": "نصف قطر التغطية (م)",
+			"allowedSources": "الشبكات المسموحة (CIDR في كل سطر؛ لا شيء لأي مكان)",
+			"certificate": "بصمة SHA-256 لشهادة العميل (فارغة لعدم الاشتراط)",
+			"method": "الطريقة",
+			"sampleSize": "حجم العينة",
+			"accuracy": "دقة العدّ (%)",
+			"waitError": "خطأ زمن الانتظار (دقيقة)",
+			"threshold": "حد النجاح (%)",
+			"notes": "ملاحظات"
+		},
+		"footprintHint": "اترك التغطية فارغة لاستخدام التغطية المفترضة في جدول الكميات للفئة والارتفاع.",
+		"never": "أبداً",
+		"secondsAgo": "قبل {seconds} ث",
+		"notCalibrated": "غير معايَر",
+		"passed": "نجحت {date}",
+		"failedOn": "فشلت {date}",
+		"credential": {
+			"title": "بيانات اعتماد الجهاز",
+			"once": "تظهر هذه المرة فقط. تحتفظ أريفا ببصمتها فقط: خزّنها في الجهاز الآن. البيانات المفقودة تُستبدل ولا تُسترجع.",
+			"copy": "انسخ بيانات الاعتماد",
+			"copied": "نُسخت بيانات الاعتماد. الصقها في الجهاز ثم انسخ شيئاً آخر.",
+			"copyFailed": "تعذّر النسخ. حدّد بيانات الاعتماد وانسخها بنفسك.",
+			"done": "خزّنتها",
+			"prefix": "بيانات الاعتماد {prefix}، صدرت {date}",
+			"none": "لا بيانات اعتماد",
+			"rotate": "أصدر بيانات اعتماد جديدة",
+			"confirmRotate": "استبدل بيانات الاعتماد الآن (تتوقف القديمة خلال دقيقة)"
+		},
+		"sections": {
+			"details": "التفاصيل",
+			"placement": "الموضع",
+			"access": "الوصول الشبكي",
+			"calibration": "المعايرة",
+			"danger": "إيقاف أو حذف"
+		},
+		"actions": {
+			"save": "حفظ",
+			"move": "نقل",
+			"setAccess": "احفظ الوصول",
+			"record": "سجّل المعايرة",
+			"retire": "إيقاف نهائي",
+			"confirmRetire": "أوقف {code} نهائياً",
+			"remove": "حذف",
+			"confirmRemove": "احذف {code} (سُجّل خطأً)",
+			"close": "إغلاق"
+		},
+		"moveHint": "نقل الجهاز أو تغيير اتجاهه أو منطقته يعيده إلى التشغيل التجريبي حتى تنجح معايرة.",
+		"calibrationHint": "عند الحد أو فوقه (95 % ما لم يُحدَّد) يصبح الجهاز متصلاً.",
+		"noCalibrations": "لا معايرات بعد",
+		"calibrationRow": "{date}: {accuracy} % على {sample}، {result}",
+		"result": {
+			"pass": "نجحت",
+			"fail": "فشلت"
+		},
+		"messages": {
+			"registered": "سُجّل {code}.",
+			"saved": "حُفظ {code}.",
+			"moved": "نُقل {code}؛ عاد إلى التشغيل التجريبي.",
+			"accessSaved": "حُفظ الوصول الشبكي.",
+			"recorded": "سُجّلت المعايرة: {result}.",
+			"retired": "أُوقف {code} نهائياً.",
+			"removed": "حُذف {code}.",
+			"rotated": "صدرت بيانات اعتماد جديدة لـ {code}."
+		},
+		"plan": "التغطية على المخطط",
+		"planLabel": "مخطط الطابق مع مناطق الطوابير وتغطية الأجهزة",
+		"assumed": "مفترضة",
+		"zonesHealth": "استشعار مناطق الطوابير",
+		"heartbeat": "يصبح الجهاز غير متصل بعد {seconds} ث دون نبضة."
 	}
 }

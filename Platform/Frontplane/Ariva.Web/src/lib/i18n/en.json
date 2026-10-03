@@ -362,5 +362,139 @@
 		"upload": "Upload",
 		"planUploaded": "Floor plan uploaded.",
 		"unsaved": "Save or undo the changes on the plan first: publishing takes the saved draft."
+	},
+	"devices": {
+		"title": "Devices",
+		"description": "Sensors of your sites: registry, coverage on the plan, calibration and health",
+		"register": "Register a device",
+		"list": "Devices",
+		"none": "No devices at this site yet",
+		"noRights": "You can view the devices of your sites.",
+		"columns": {
+			"code": "Code",
+			"family": "Family",
+			"zone": "Queue zone",
+			"state": "State",
+			"lastSeen": "Last heard",
+			"calibration": "Calibration"
+		},
+		"states": {
+			"Commissioning": "Commissioning",
+			"Online": "Online",
+			"Degraded": "Degraded",
+			"Offline": "Offline",
+			"Retired": "Retired"
+		},
+		"zoneStates": {
+			"Healthy": "Healthy",
+			"Degraded": "Degraded",
+			"Unmonitored": "Unmonitored"
+		},
+		"families": {
+			"StereoVision": "Stereo vision",
+			"Lidar": "Lidar",
+			"CameraAnalytics": "Camera analytics",
+			"ThermalOrTimeOfFlight": "Thermal or time of flight",
+			"Simulator": "Simulator"
+		},
+		"transports": {
+			"HttpsPush": "HTTPS push",
+			"Mqtt": "MQTT",
+			"RestPull": "REST pull",
+			"WebSocket": "WebSocket",
+			"TcpOrUdp": "TCP or UDP",
+			"FileDrop": "File drop",
+			"OnvifProfileM": "ONVIF Profile M"
+		},
+		"dialects": {
+			"Canonical": "Ariva canonical",
+			"Xovis": "Xovis",
+			"Declarative": "Declarative mapping"
+		},
+		"fields": {
+			"code": "Code",
+			"family": "Family",
+			"model": "Model",
+			"transport": "Transport",
+			"dialect": "Dialect",
+			"clockSource": "Clock",
+			"mapping": "Mapping",
+			"level": "Level",
+			"x": "x (m)",
+			"y": "y (m)",
+			"height": "Mounting height (m)",
+			"orientation": "Orientation (degrees)",
+			"queueZone": "Queue zone",
+			"footprintLength": "Footprint length (m)",
+			"footprintWidth": "Footprint width (m)",
+			"footprintRadius": "Footprint radius (m)",
+			"allowedSources": "Allowed networks (one CIDR a line; none for anywhere)",
+			"certificate": "Client certificate SHA-256 (empty for none)",
+			"method": "Method",
+			"sampleSize": "Sample size",
+			"accuracy": "Counting accuracy (%)",
+			"waitError": "Wait time error (min)",
+			"threshold": "Pass threshold (%)",
+			"notes": "Notes"
+		},
+		"footprintHint": "Leave the footprint empty to use the BOQ's assumed coverage for the family and height.",
+		"never": "Never",
+		"secondsAgo": "{seconds} s ago",
+		"notCalibrated": "Not calibrated",
+		"passed": "Passed {date}",
+		"failedOn": "Failed {date}",
+		"credential": {
+			"title": "The device's credential",
+			"once": "Shown this once. Ariva keeps only a hash: store it in the device now. A lost credential is replaced, never recovered.",
+			"copy": "Copy the credential",
+			"copied": "The credential is copied. Paste it into the device, then copy something else.",
+			"copyFailed": "Copying failed. Select the credential and copy it yourself.",
+			"done": "I have stored it",
+			"prefix": "Credential {prefix}, issued {date}",
+			"none": "No credential",
+			"rotate": "Issue a new credential",
+			"confirmRotate": "Replace the credential now (the old one stops within a minute)"
+		},
+		"sections": {
+			"details": "Details",
+			"placement": "Placement",
+			"access": "Network access",
+			"calibration": "Calibration",
+			"danger": "Retire or remove"
+		},
+		"actions": {
+			"save": "Save",
+			"move": "Move",
+			"setAccess": "Save the access",
+			"record": "Record the calibration",
+			"retire": "Retire",
+			"confirmRetire": "Retire {code} for good",
+			"remove": "Remove",
+			"confirmRemove": "Remove {code} (registered by mistake)",
+			"close": "Close"
+		},
+		"moveHint": "Moving, re-aiming or reassigning the device takes it back to Commissioning until a calibration passes.",
+		"calibrationHint": "At or above the threshold (95 % unless set) the device goes Online.",
+		"noCalibrations": "No calibrations yet",
+		"calibrationRow": "{date}: {accuracy} % over {sample}, {result}",
+		"result": {
+			"pass": "passed",
+			"fail": "failed"
+		},
+		"messages": {
+			"registered": "{code} registered.",
+			"saved": "{code} saved.",
+			"moved": "{code} moved; it is commissioning again.",
+			"accessSaved": "Network access saved.",
+			"recorded": "Calibration recorded: {result}.",
+			"retired": "{code} retired.",
+			"removed": "{code} removed.",
+			"rotated": "New credential issued for {code}."
+		},
+		"plan": "Coverage on the plan",
+		"planLabel": "Floor plan with the queue zones and the devices' coverage",
+		"assumed": "assumed",
+		"zonesHealth": "Queue zone sensing",
+		"heartbeat": "A device is offline after {seconds} s without a heartbeat."
 	}
 }

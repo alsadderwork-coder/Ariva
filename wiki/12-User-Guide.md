@@ -166,9 +166,9 @@ Common tasks (editor): create a draft from the active profile; add or change zon
 
 ## Devices
 
-MVP. Shows the sensor registry (id, type, zone, status, frame rate, clock offset, last calibration), the sensors on the floor plan with their coverage, and outage history.
+ARV-054, for border shift supervisors, terminal duty managers and administrators (handler station managers have no devices screen). Shows the site's sensor registry (code, family, owning queue zone, state, when Ariva last heard from it, last calibration), each queue zone's sensing health (Healthy, Degraded, Unmonitored, with the heartbeat timeout), and a level's floor plan with the queue zones and each device's coverage (a dashed outline when the footprint is the BOQ's assumption).
 
-Common tasks: check why a zone is degraded; register a sensor and record its calibration (administrators and field engineers).
+Common tasks: register a sensor (code, family, model, transport, dialect, clock, level, position, height, orientation, queue zone, footprint if the vendor gives one); store its credential, which is shown once with a copy action and never again (a lost one is replaced, not recovered); record a calibration (a pass at the threshold takes it Online); move it (back to Commissioning until a calibration passes); restrict the networks it may push from or pin its client certificate; issue a new credential; retire it (administrators). Registering, a new credential, network access and retiring ask for a fresh authenticator code if the last one is older than 15 minutes.
 
 ## Passenger display
 

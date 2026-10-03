@@ -4,7 +4,7 @@
 	import FormField from '$lib/components/shared/FormField.svelte';
 	import type { Point, Zone } from '$lib/core/zones';
 	import { round } from '$lib/core/zones';
-	import ConfirmButton from './ConfirmButton.svelte';
+	import ConfirmButton from '$lib/components/shared/ConfirmButton.svelte';
 
 	interface Props {
 		zone: Zone;

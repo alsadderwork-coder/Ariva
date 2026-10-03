@@ -170,7 +170,9 @@ export function accounts() {
 		// ARV-052: a border supervisor at the demo airport, for the read-only screens.
 		webBorder: account('e2e.webborder', ['BorderShiftSupervisor'], false, false, ['DMO']),
 		// ARV-053: draws and publishes zones at a site of its own (publishing needs a second factor).
-		webZones: account('e2e.webzones', ['TerminalDutyManager'], false, true, ['E2EZ'])
+		webZones: account('e2e.webzones', ['TerminalDutyManager'], false, true, ['E2EZ']),
+		// ARV-054: registers devices at the demo airport through the screen (registering needs a second factor).
+		webDevices: account('e2e.webdevices', ['TerminalDutyManager'], false, true, ['DMO'])
 	} as const;
 }
 

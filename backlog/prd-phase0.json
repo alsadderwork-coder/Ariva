@@ -1226,8 +1226,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 57,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Done 2026-10-03: /devices registry, zone health, coverage on the plan, register with step-up and the credential shown once, calibration, placement, access, rotation, retire. Security review PASS (backlog/progress.md).",
       "dependsOn": [
         "ARV-051",
         "ARV-021",

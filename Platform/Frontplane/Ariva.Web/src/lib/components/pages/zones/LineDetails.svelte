@@ -3,7 +3,7 @@
 	import { _ } from 'svelte-i18n';
 	import type { Line, Point } from '$lib/core/zones';
 	import { round } from '$lib/core/zones';
-	import ConfirmButton from './ConfirmButton.svelte';
+	import ConfirmButton from '$lib/components/shared/ConfirmButton.svelte';
 
 	interface Props {
 		line: Line;
