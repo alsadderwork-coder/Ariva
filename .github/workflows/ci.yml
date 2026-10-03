@@ -275,6 +275,10 @@ jobs:
           npm ci --prefix ../../Frontplane/Ariva.Web
           npm ci
           npx playwright install --with-deps chromium
+      # The hosts listen on 51001 to 51020 and 51011, inside Linux's ephemeral port range (32768 to 60999): an outgoing
+      # connection made while the hosts start can take one of them and fail the run (address already in use). Reserve them.
+      - name: Reserve the hosts' ports from the ephemeral range
+        run: sudo sysctl -w net.ipv4.ip_local_reserved_ports=51000-51100,25251,5081
       - name: Run the suite (Playwright starts the hosts and the web preview)
         run: npx playwright test 2>&1 | tee e2e.log
       - name: Report failures on the pull request
