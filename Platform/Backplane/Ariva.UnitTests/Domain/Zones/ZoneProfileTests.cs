@@ -359,6 +359,28 @@ public sealed class ZoneProfileTests
     }
 
     [Fact]
+    public void SetZoneLane_Should_MarkAQueueAsALanesQueueWithoutChangingTheHash_When_Set()
+    {
+        // ARV-057: the immigration screen's waits per lane come from this link; it is no geometry.
+        var (profile, level, queue) = Publishable();
+        var hash = profile.ComputeGeometryHash();
+        profile.SetZoneLane(queue, "CIT");
+        queue.LaneCategory.Should().Be("CIT");
+        profile.ComputeGeometryHash().Should().Be(hash);
+        profile.Invoking(p => p.SetZoneLane(queue, "cit")).Should().Throw<ArgumentException>();
+        profile.Invoking(p => p.SetZoneLane(queue, "CITIZENS")).Should().Throw<ArgumentException>();
+        profile.Invoking(p => p.SetZoneLane(profile.Zones.Single(z => z.Kind == ZoneKind.Overflow), "CIT")).Should().Throw<InvalidOperationException>("only a queue zone is a lane's queue");
+
+        profile.Publish(12, Levels(level), "admin", Now);
+        profile.Invoking(p => p.SetZoneLane(queue, null)).Should().Throw<InvalidOperationException>("a published version never changes");
+        var draft = profile.CreateDraft("v13");
+        var copy = draft.Zones.Single(z => z.Kind == ZoneKind.Queue);
+        copy.LaneCategory.Should().Be("CIT", "a draft keeps the lanes");
+        draft.SetZoneLane(copy, null);
+        copy.LaneCategory.Should().BeNull();
+    }
+
+    [Fact]
     public void Retire_Should_OnlyRetireAPublishedVersion_When_Called()
     {
         var (profile, level, _) = Publishable();

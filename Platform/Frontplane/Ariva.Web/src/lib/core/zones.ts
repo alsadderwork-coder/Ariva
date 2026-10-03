@@ -37,7 +37,12 @@ export interface Zone {
 	deskId: string | null;
 	polygon: string;
 	areaSquareMetres: number;
+	/** The lane category whose queue this queue zone is (ARV-057), or null. */
+	laneCategory: string | null;
 }
+
+/** The lane categories a queue zone can be the queue of (the reference set; a site may configure others). */
+export const laneCategories = ['CIT', 'RES', 'VIS', 'CRW', 'EG'] as const;
 
 export interface Line {
 	id: string;
@@ -146,7 +151,7 @@ export function addZone(
 export function updateZone(
 	id: string,
 	zoneId: string,
-	zone: { name: string; polygon: string }
+	zone: { name: string; polygon: string; laneCategory: string }
 ): Promise<Result<Zone>> {
 	return ids([id, zoneId], () => Api.put<Zone>(`${base}/${id}/zones/${zoneId}`, zone));
 }

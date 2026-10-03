@@ -425,7 +425,10 @@
 		"originY": "Origin y (m)",
 		"upload": "Upload",
 		"planUploaded": "Floor plan uploaded.",
-		"unsaved": "Save or undo the changes on the plan first: publishing takes the saved draft."
+		"unsaved": "Save or undo the changes on the plan first: publishing takes the saved draft.",
+		"lane": "Lane",
+		"noLane": "No lane",
+		"laneHint": "The lane category whose queue this is: the immigration screen shows its wait for that lane."
 	},
 	"devices": {
 		"title": "Devices",
@@ -689,5 +692,69 @@
 			"deleted": "Rule {code} deleted.",
 			"failed": "That did not work: {reason}"
 		}
+	},
+	"immigration": {
+		"title": "Immigration",
+		"description": "Border halls: waits per lane, desks and e-gates from AMAN's interval aggregates",
+		"halls": "Halls",
+		"hallNames": {
+			"Immigration": "Arrivals",
+			"Emigration": "Departures"
+		},
+		"amanLink": "Officer analytics open in AMAN",
+		"amanHint": "Officer-level data stays in the border system and is not shown in Ariva.",
+		"lanesTitle": "Lanes",
+		"lanesDescription": "Waits now from the queue sensors; desks staffed now; people served and service times over the last {minutes} minutes from AMAN.",
+		"noLanes": "No lane queues or desks reported for this hall yet.",
+		"columns": {
+			"lane": "Lane",
+			"wait": "Wait now",
+			"queue": "Queuing",
+			"open": "Desks open",
+			"paused": "Paused",
+			"served": "Served",
+			"service": "Mean service",
+			"p90": "P90 service",
+			"gate": "E-gate"
+		},
+		"lanes": {
+			"CIT": "Citizens",
+			"RES": "Residents",
+			"VIS": "Visitors",
+			"CRW": "Crew and diplomats",
+			"EG": "E-gate eligible"
+		},
+		"minutes": "{value} min",
+		"seconds": "{value} s",
+		"noWait": "No live wait",
+		"eGatesTitle": "E-gates",
+		"eGatesUsed": "{used} of {configured} gates used in the window",
+		"utilisation": "Utilisation",
+		"attempts": "Attempts",
+		"rejected": "Rejected",
+		"rejectRate": "Reject rate",
+		"rejectsTitle": "Rejects by category",
+		"rejects": {
+			"documentRead": "Document read",
+			"biometricCapture": "Biometric capture",
+			"eligibility": "Eligibility",
+			"referredToOfficer": "Referred to an officer",
+			"technical": "Technical",
+			"other": "Other"
+		},
+		"extraNone": "No rejects in the window: no extra load on manual desks.",
+		"extraLoad": "Rejects add about {deskMinutes} desk-minutes to the manual lanes (an estimate at the manual desks' mean service time).",
+		"extraWait": " Spread over the desks open now, about {minutes} min of extra wait.",
+		"desksTitle": "Desks",
+		"desksDescription": "Each desk's latest state from AMAN and its interval aggregates. No officer names or ids.",
+		"desksHidden": "Desk and e-gate figures are border data: your role sees the lane totals above.",
+		"noDesks": "No desk has reported in this hall yet.",
+		"deskStates": {
+			"Opened": "Open",
+			"Paused": "Paused",
+			"Closed": "Closed",
+			"Unknown": "Unknown"
+		},
+		"served": "{count} served"
 	}
 }

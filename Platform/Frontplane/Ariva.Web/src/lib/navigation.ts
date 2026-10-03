@@ -47,9 +47,9 @@ export const navItems: readonly NavItem[] = [
 		href: '/immigration',
 		icon: ScanLine,
 		group: 'operations',
-		ready: false,
+		ready: true,
 		story: 'ARV-057',
-		permission: 'ArrivalWave.View'
+		permission: 'Immigration.View'
 	},
 	{
 		id: 'alertRules',

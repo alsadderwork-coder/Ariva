@@ -149,6 +149,12 @@ public static class Global
             /// </summary>
             public static Permission ViewAirportDesks { get; } = new("AirportDesks", PermissionAction.View);
 
+            /// <summary>
+            /// The immigration screen (ARV-057): lane waits, lane aggregates of the border desks and e-gate totals for border
+            /// roles and terminal duty managers; per-desk and per-gate figures also need <see cref="ViewBorderDesks"/>.
+            /// </summary>
+            public static Permission ViewImmigration { get; } = new("Immigration", PermissionAction.View);
+
             #endregion
 
             #region Alerting (E5)

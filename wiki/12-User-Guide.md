@@ -108,7 +108,7 @@ You can only create rules for queues your role can see, and give a rule (or esca
 
 ## Immigration (Border module)
 
-MVP. Arrivals and departures tabs.
+MVP, delivered in ARV-057 at `/immigration` (`Immigration.View`: border shift supervisors, terminal duty managers, administrators; handler station managers have no immigration screen). Arrivals and departures tabs (the halls of the site's Immigration and Emigration checkpoints).
 
 Shows:
 
@@ -116,6 +116,10 @@ Shows:
 - Waits per lane category (citizens, residents, visitors, crew and diplomats, e-gate eligible, as configured per site).
 - E-gate utilisation, rejects by coarse category, and the predicted extra load that rejects put on manual desks.
 - A disabled link "Officer analytics open in AMAN": officer-level data stays in the border system.
+
+Where the figures come from: the wait per lane is the live nowcast of the lane's queue zone (the zone profile says which queue zone is which lane's queue, see Zones), on the live hub; desks open and paused are each desk's latest AMAN session event; people served, mean and P90 service and cycle times are AMAN's interval aggregates over the last 15 minutes, weighted by the people served; e-gate utilisation is the used gates' busy time (attempts times mean cycle) over the configured gates' time; the extra manual load is each rejected traveller at the manual desks' mean service time, in desk-minutes, and spread over the desks open now as minutes of extra wait (an estimate). Desk and e-gate codes are Ariva's (AMAN's codes are mapped, ARV-015). Terminal duty managers see the lane and e-gate totals only: the server leaves every desk and gate row out of their answer (`BorderDesks.View`), and a lane's service and cycle times when fewer than three desks served in the window (one or two desks' times would be those desks' own).
+
+API (ARV-057, `Immigration.View`): `GET api/v1/sites/{siteCode}/immigration` answers both halls with their lane queues, lane aggregates and e-gate totals, plus desk and gate rows for callers with `BorderDesks.View`.
 
 Common tasks: compare staffed desks with the lane waits; watch e-gate rejects that will load a manual lane.
 
@@ -163,6 +167,8 @@ ARV-052. The airports, terminals, levels, checkpoints and desks of your sites in
 ARV-053. Shows each level's floor plan with its zones (queue, service, staff, overflow, each in its own colour and named on the plan) and lines (entry, exit, count, overflow entry), and the site's versions (for example v12 published, a draft from v12). Handler station managers see them read only; supervisors and duty managers edit; only a draft changes.
 
 Editing a draft: Add a zone starts a small square in the middle of the level, Add a line starts a line on an edge of its queue zone (an exit across from the entry). Select a zone or line on the plan or in the lists; drag a corner or a line end and let go to save, or use the keyboard: Tab to a handle, arrow keys move it by 0.1 m (1 m with Shift), Enter saves. The corner table beside the plan takes exact coordinates in metres, adds a corner after any other or removes one (at least three), and Save the zone saves the name and the shape. The server checks every shape (inside the level, no crossing edges, entry and exit lines on their queue zone's edge) and a refused move puts the shape back. Check the draft lists what still stops it from being published; Publish then publishes exactly what was checked and asks for a fresh authenticator code if the last one is older than 15 minutes.
+
+A queue zone can say which lane category it is the queue of (CIT, RES, VIS, CRW, EG; ARV-057): choose it under Lane and save the zone. The immigration screen shows the wait per lane from it. It goes with the published version like the shapes, and does not change the geometry hash. Through the API, a zone change without `laneCategory` keeps the lane and an empty one clears it.
 
 Common tasks (editor): create a draft from the active profile; add or change zones and lines; publish (creates the next version; needs step-up MFA). A newly published zone shows "Not measured: no calibrated sensor" until a calibrated sensor covers it. Details in [Commissioning and calibration](07-Commissioning-and-Calibration.md).
 

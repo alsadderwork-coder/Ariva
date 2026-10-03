@@ -18,12 +18,15 @@ public sealed record AddZoneRequest(
     [Required] Guid? LevelId,
     [Required, MaxLength(Entities.Zone.PolygonLength)] string Polygon,
     Guid? QueueZoneId = null,
-    Guid? DeskId = null);
+    Guid? DeskId = null,
+    [MaxLength(4)] string LaneCategory = null);
 
 /// <summary>Renames and reshapes a zone; it stays on its level.</summary>
+/// <summary>A zone's new name and shape; <c>LaneCategory</c> null keeps its lane, an empty string clears it (ARV-057).</summary>
 public sealed record UpdateZoneRequest(
     [Required, MaxLength(200)] string Name,
-    [Required, MaxLength(Entities.Zone.PolygonLength)] string Polygon);
+    [Required, MaxLength(Entities.Zone.PolygonLength)] string Polygon,
+    [MaxLength(4)] string LaneCategory = null);
 
 public sealed record AddLineRequest(
     [Required, MaxLength(200)] string Name,

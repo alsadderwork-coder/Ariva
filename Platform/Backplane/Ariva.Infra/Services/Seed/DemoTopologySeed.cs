@@ -225,9 +225,11 @@ internal sealed class DemoTopologySeed(IUnitOfWork unitOfWork, ICurrentUser curr
         {
             foreach (var (prefix, level, x0, x1) in new[] { ("A", arrivals, 190.0, 480.0), ("D", departures, 746.0, 894.0) })
             {
-                Queue($"{prefix}-{lane}", level, x0, top, x1 - x0, bottom - top,
+                var queue = Queue($"{prefix}-{lane}", level, x0, top, x1 - x0, bottom - top,
                     (x0, top + 3, x0, Math.Min(top + 19, bottom - 3)),
                     (x1, top + 3, x1, bottom - 3));
+                // The immigration screen's waits per lane (ARV-057).
+                profile.SetZoneLane(queue, lane);
             }
         }
 

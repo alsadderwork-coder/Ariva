@@ -84,6 +84,8 @@ test('a duty manager draws a queue zone and its lines, checks the draft and publ
 	// Keyboard alternative: type a corner, then save.
 	await page.getByLabel('Corner 2, x in metres').fill('36');
 	await page.getByLabel('Corner 2, x in metres').press('Tab');
+	// ARV-057: the queue of the visitors' lane, for the immigration screen's waits per lane.
+	await page.getByTestId('zone-details').getByLabel('Lane').selectOption('VIS');
 	await page.getByTestId('save-zone').click();
 	await expect(page.getByText('Snake Z saved.')).toBeVisible();
 
@@ -154,8 +156,9 @@ test('a duty manager draws a queue zone and its lines, checks the draft and publ
 	const history = (await (await call('GET', `${api}/zone-profiles?siteCode=E2EZ`, { token })).json()) as { id: string; status: string }[];
 	const live = history.find((p) => p.status === 'Published')!;
 	const profile = await (await call('GET', `${api}/zone-profiles/${live.id}`, { token })).json();
-	const snake = (profile.zones as { name: string; polygon: string }[]).find((z) => z.name === 'Snake Z')!;
+	const snake = (profile.zones as { name: string; polygon: string; laneCategory: string | null }[]).find((z) => z.name === 'Snake Z')!;
 	expect(snake.polygon.split(',')[1].split(' ').map(Number)).toEqual([36, 18]);
+	expect(snake.laneCategory, 'the lane went with the published version').toBe('VIS');
 	const entry = (profile.lines as { name: string; endX: number }[]).find((l) => l.name === 'In Z')!;
 	expect(entry.endX).toBe(35);
 	allowStatuses(guards, 400, 401, 404);

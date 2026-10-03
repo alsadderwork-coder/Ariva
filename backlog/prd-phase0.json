@@ -1288,8 +1288,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 60,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Done 2026-10-04: /immigration arrivals and departures halls, lane waits from the lane queues (new zone lane link, script 0034), lane aggregates and e-gate totals for duty managers, desks and gates for border roles only (Immigration.View, BorderDesks.View), extra manual load estimate. Security review PASS (backlog/progress.md).",
       "dependsOn": [
         "ARV-051",
         "ARV-049"

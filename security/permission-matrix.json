@@ -888,6 +888,22 @@
     {
       "host": "main",
       "method": "GET",
+      "route": "/api/v1/sites/{siteCode}/immigration",
+      "access": "permission",
+      "permissions": [
+        "ViewImmigration"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
       "route": "/api/v1/admin/roles",
       "access": "permission",
       "permissions": [

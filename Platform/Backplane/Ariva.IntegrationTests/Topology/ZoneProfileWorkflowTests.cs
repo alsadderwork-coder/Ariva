@@ -62,8 +62,9 @@ public sealed class ZoneProfileWorkflowTests(PostgresFixture fixture) : IAsyncDi
         (await _host.AsCallerAsync(admin, s => Profiles(s).CreateDraftAsync(new CreateZoneProfileDraftRequest("ZPA", "Again"), Ct)))
             .ErrorMessages.Should().Equal(ZoneProfileErrors.DraftExists);
 
-        var queue = await _host.AsCallerAsync(admin, s => Profiles(s).AddZoneAsync(id, new AddZoneRequest("Snake A", "Queue", level, Rect(10, 10, 24, 12)), Ct));
+        var queue = await _host.AsCallerAsync(admin, s => Profiles(s).AddZoneAsync(id, new AddZoneRequest("Snake A", "Queue", level, Rect(10, 10, 24, 12), LaneCategory: "CIT"), Ct));
         queue.HasErrors.Should().BeFalse(string.Join(", ", queue.ErrorMessages ?? []));
+        queue.Data.LaneCategory.Should().Be("CIT", "the queue of the citizens' lane (ARV-057)");
         var notYet = await PublishReviewedAsync(admin, id);
         notYet.ErrorMessages.First().Should().Be(ZoneProfileErrors.NotPublishable);
         notYet.ErrorMessages.Should().HaveCountGreaterThan(1, "the problems follow");
@@ -85,14 +86,28 @@ public sealed class ZoneProfileWorkflowTests(PostgresFixture fixture) : IAsyncDi
             .ErrorMessages.Should().Equal(ZoneProfileErrors.NotADraft);
         var sqlEdit = () => _host.ReadAsync<int>("UPDATE zone SET polygon = '0 0,1 0,1 1' WHERE profile_id = @id RETURNING 1", id);
         (await sqlEdit.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be("23001", "the trigger keeps published geometry fixed");
+        var laneEdit = () => _host.ReadAsync<int>("UPDATE zone SET lane_category = 'VIS' WHERE profile_id = @id RETURNING 1", id);
+        (await laneEdit.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be("23001", "a published version's lanes are fixed too");
 
         var next = await _host.AsCallerAsync(admin, s => Profiles(s).CreateDraftAsync(new CreateZoneProfileDraftRequest("ZPA", null), Ct));
         next.Data.Profile.BasedOnVersion.Should().Be(1);
         next.Data.Zones.Should().HaveCount(2);
         next.Data.Lines.Should().HaveCount(2);
         var snake = next.Data.Zones.Single(z => z.Name == "Snake A");
+        snake.LaneCategory.Should().Be("CIT", "a draft keeps the lanes");
+        (await _host.AsCallerAsync(admin, s => Profiles(s).UpdateZoneAsync(next.Data.Profile.Id, snake.Id, new UpdateZoneRequest("Snake A", "10 10,34 10,36 16,34 22,10 22", "VIS"), Ct)))
+            .Data.LaneCategory.Should().Be("VIS");
         (await _host.AsCallerAsync(admin, s => Profiles(s).UpdateZoneAsync(next.Data.Profile.Id, snake.Id, new UpdateZoneRequest("Snake A", "10 10,34 10,36 16,34 22,10 22"), Ct)))
-            .HasErrors.Should().BeFalse();
+            .Data.LaneCategory.Should().Be("VIS", "a request without a lane keeps the zone's lane");
+        (await _host.AsCallerAsync(admin, s => Profiles(s).UpdateZoneAsync(next.Data.Profile.Id, snake.Id, new UpdateZoneRequest("Snake A", "10 10,34 10,36 16,34 22,10 22", ""), Ct)))
+            .Data.LaneCategory.Should().BeNull("an empty lane clears it");
+        (await _host.AsCallerAsync(admin, s => Profiles(s).UpdateZoneAsync(next.Data.Profile.Id, snake.Id, new UpdateZoneRequest("Snake A", "10 10,34 10,36 16,34 22,10 22", "VIS"), Ct)))
+            .Data.LaneCategory.Should().Be("VIS");
+        var service = next.Data.Zones.Single(z => z.Name == "Service A");
+        (await _host.AsCallerAsync(admin, s => Profiles(s).UpdateZoneAsync(next.Data.Profile.Id, service.Id, new UpdateZoneRequest("Service A", service.Polygon, "VIS"), Ct)))
+            .HasErrors.Should().BeTrue("only a queue zone is a lane's queue");
+        (await _host.AsCallerAsync(admin, s => Profiles(s).UpdateZoneAsync(next.Data.Profile.Id, snake.Id, new UpdateZoneRequest("Snake A", "10 10,34 10,36 16,34 22,10 22", "vis!"), Ct)))
+            .HasErrors.Should().BeTrue("a lane is 2 to 4 capitals");
         var v2 = await PublishReviewedAsync(admin, next.Data.Profile.Id);
         v2.Data.Version.Should().Be(2);
         v2.Data.GeometryHash.Should().NotBe(v1.Data.GeometryHash);

@@ -56,6 +56,14 @@ test('a draft is edited, validated and published as version 1 only with a recent
 	queueId = (await zone.json()).id;
 	const crossing = await call('POST', `${api}/${firstId}/zones`, { token: withSecondFactor, data: { name: 'Bow', kind: 'Queue', levelId, polygon: '0 0,10 10,10 0,0 10' } });
 	expect(crossing.status(), 'self-crossing polygon').toBe(400);
+	// ARV-057: a lane is 2 to 4 capitals; markup or a long string never becomes one.
+	for (const laneCategory of ['<img src=x onerror=alert(1)>', 'cit', 'CITIZENS']) {
+		const lane = await call('POST', `${api}/${firstId}/zones`, {
+			token: withSecondFactor,
+			data: { name: 'Laned', kind: 'Queue', levelId, polygon: '50 10,60 10,60 20', laneCategory }
+		});
+		expect(lane.status(), laneCategory).toBe(400);
+	}
 	const markup = await call('POST', `${api}/${firstId}/zones`, { token: withSecondFactor, data: { name: '<script>alert(1)</script>', kind: 'Queue', levelId, polygon: '50 10,60 10,60 20' } });
 	expect([201, 400], 'markup is refused or stored as inert text').toContain(markup.status());
 	if (markup.status() === 201) await call('DELETE', `${api}/${firstId}/zones/${(await markup.json()).id}`, { token: withSecondFactor });

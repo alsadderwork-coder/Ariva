@@ -574,6 +574,59 @@ public sealed class ImmigrationIntakeTests(PostgresFixture fixture) : IAsyncDisp
         (await _host.AsCallerAsync(null, s => s.GetRequiredService<Ariva.Core.Services.Live.ISvcDeskStates>().GetAsync("DMO", Ct))).HasErrors.Should().BeTrue();
     }
 
+    [Fact]
+    public async Task ImmigrationView_Should_GiveLaneAggregatesToEveryoneAndDesksToBorderRolesOnly_When_AmanReported()
+    {
+        await SeedAsync();
+        await ProbeSiteAsync();
+        // The 18:35 minute of the reference day as AMAN's emulator sends it, on a feed of its own and without the opening
+        // snapshot (the intake test counts its own minute's records), then two minutes on, so it lies in the window.
+        var minute = Minute(1115, first: false);
+        await Apply<DeskSessionChanged>(i => i.ApplyDeskSessionsAsync(ImmigrationScope.RecordSite, "aman-view", minute.Sessions, Ct));
+        await Apply<DeskIntervalStats>(i => i.ApplyDeskIntervalsAsync(ImmigrationScope.RecordSite, "aman-view", minute.Desks, Ct));
+        await Apply<EGateIntervalStats>(i => i.ApplyEgateIntervalsAsync(ImmigrationScope.RecordSite, "aman-view", minute.Gates, Ct));
+        _host.Clock.Advance(TimeSpan.FromMinutes(2));
+
+        var border = (await View("DMO", await WaveUserAsync(RoleCodes.BorderShiftSupervisor, "DMO"))).Data;
+        border.DesksIncluded.Should().BeTrue();
+        var arrivals = border.Halls.Single(h => h.Kind == "Immigration");
+        arrivals.Lanes.Should().NotBeEmpty().And.OnlyContain(l => new[] { "CIT", "RES", "VIS", "CRW" }.Contains(l.Lane));
+        arrivals.Lanes.Sum(l => l.Transactions).Should().Be(arrivals.Desks.Sum(d => d.Transactions), "lanes are the desks added up");
+        arrivals.Desks.Should().NotBeEmpty().And.OnlyContain(d => d.Desk.StartsWith("AR-", StringComparison.Ordinal), "Ariva's desk codes, never AMAN's");
+        arrivals.EGates.GatesConfigured.Should().Be(6);
+        arrivals.EGates.Attempts.Should().Be(arrivals.Gates.Sum(g => g.Attempts));
+        arrivals.Gates.Should().OnlyContain(g => g.Gate.StartsWith("AG-", StringComparison.Ordinal));
+        border.Halls.Single(h => h.Kind == "Emigration").EGates.GatesConfigured.Should().Be(4);
+        // The lanes' queues, as the zone profile says (check-in and security queues on the departures level are no lane's).
+        arrivals.Queues.Should().Contain(new Ariva.Core.Services.Border.ImmigrationQueueViewModel("DMO/A-CIT", "A-CIT", "CIT"))
+            .And.Contain(q => q.Zone == "A-EG" && q.Lane == "EG").And.HaveCount(5);
+        border.Halls.Single(h => h.Kind == "Emigration").Queues.Select(q => q.Zone).Should().BeEquivalentTo(["D-CIT", "D-CRW", "D-EG", "D-RES", "D-VIS"]);
+
+        // A terminal duty manager gets the same lane and e-gate totals and not one desk or gate code.
+        var airport = (await View("DMO", await WaveUserAsync(RoleCodes.TerminalDutyManager, "DMO"))).Data;
+        airport.DesksIncluded.Should().BeFalse();
+        airport.Halls.Should().OnlyContain(h => h.Desks.Count == 0 && h.Gates.Count == 0);
+        airport.Halls.Single(h => h.Kind == "Immigration").Lanes.Select(l => (l.Lane, l.DesksOpen, l.DesksPaused, l.Transactions))
+            .Should().Equal(arrivals.Lanes.Select(l => (l.Lane, l.DesksOpen, l.DesksPaused, l.Transactions)));
+        foreach (var lane in airport.Halls.Single(h => h.Kind == "Immigration").Lanes)
+        {
+            var desks = arrivals.Desks.Count(d => d.Lane == lane.Lane && d.Transactions > 0);
+            (lane.MeanServiceSeconds is null).Should().Be(desks < 3, $"{lane.Lane}: times from {desks} desks");
+        }
+        airport.Halls.Single(h => h.Kind == "Immigration").Queues.Should().Equal(arrivals.Queues, "lane waits are aggregates");
+        airport.Halls.Single(h => h.Kind == "Immigration").EGates.Should().BeEquivalentTo(arrivals.EGates);
+        var json = System.Text.Json.JsonSerializer.Serialize(airport);
+        json.Should().NotContain("AR-").And.NotContain("AG-").And.NotContain("IN0").And.NotContain("EGIN");
+
+        // Another site's caller, an unknown site and no caller are not told anything.
+        (await View("DMO", await WaveUserAsync(RoleCodes.BorderShiftSupervisor, "XS2"))).ErrorMessages.Should().Equal(Ariva.Core.Services.Topology.TopologyErrors.NotFound);
+        (await View("NOPE", await WaveUserAsync(RoleCodes.SystemAdministrator))).ErrorMessages.Should().Equal(Ariva.Core.Services.Topology.TopologyErrors.NotFound);
+        (await _host.AsCallerAsync(null, s => s.GetRequiredService<Ariva.Core.Services.Border.ISvcImmigrationView>().GetAsync("DMO", Ct))).HasErrors.Should().BeTrue();
+    }
+
+    private Task<Fluentx.Result<Ariva.Core.Services.Border.ImmigrationViewModel>> View(string site, Guid caller) =>
+        _host.AsCallerAsync(caller, s => s.GetRequiredService<Ariva.Core.Services.Border.ISvcImmigrationView>().GetAsync(site, Ct));
+
     private Task<Fluentx.Result<Ariva.Core.Services.Live.DeskStatesViewModel>> States(string site, Guid caller) =>
         _host.AsCallerAsync(caller, s => s.GetRequiredService<Ariva.Core.Services.Live.ISvcDeskStates>().GetAsync(site, Ct));
 

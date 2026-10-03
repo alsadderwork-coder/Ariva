@@ -121,6 +121,7 @@ internal sealed class SvcZoneProfiles(
                 return Result.Error<ZoneViewModel>(TopologyErrors.NotFound);
 
             var zone = draft.AddZone(request.Name, kind, level, polygon, queueZone, request.DeskId);
+            draft.SetZoneLane(zone, Lane(request.LaneCategory));
             await SaveAsync(zone, ct);
             await TouchAsync(draft, ct);
             await AuditPartAsync("ZoneAdded", draft, zone.Name, null, Describe(zone), ct);
@@ -144,6 +145,9 @@ internal sealed class SvcZoneProfiles(
             if (!string.Equals(zone.Name, request.Name?.Trim(), StringComparison.Ordinal))
                 draft.RenameZone(zone, request.Name);
             draft.MoveZone(zone, level, polygon);
+            // An absent lane keeps the zone's lane; an empty one clears it.
+            if (request.LaneCategory is not null)
+                draft.SetZoneLane(zone, Lane(request.LaneCategory));
             await UpdateAsync(zone, ct);
             await TouchAsync(draft, ct);
             await AuditPartAsync("ZoneChanged", draft, zone.Name, before, Describe(zone), ct);
@@ -368,8 +372,11 @@ internal sealed class SvcZoneProfiles(
     private Task AuditPartAsync(string verb, ZoneProfile profile, string part, string before, string after, CancellationToken ct) =>
         audit.RecordAsync($"{Target}.{verb}", Target, profile.Id, $"{profile.SiteCode}/{part}", before, after, ct);
 
+    /// <summary>An empty lane is no lane; a lane is given in capitals (the entity checks its shape).</summary>
+    private static string Lane(string laneCategory) => string.IsNullOrWhiteSpace(laneCategory) ? null : laneCategory.Trim();
+
     private static string Describe(Zone z) =>
-        $"zone={z.Name}; kind={z.Kind}; level={z.LevelId}; queueZone={z.QueueZone?.Name}; desk={z.DeskId}; points={z.Points.Count}; " +
+        $"zone={z.Name}; kind={z.Kind}; level={z.LevelId}; queueZone={z.QueueZone?.Name}; desk={z.DeskId}; lane={z.LaneCategory}; points={z.Points.Count}; " +
         $"polygonSha256={Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(z.Polygon ?? string.Empty)))}";
 
     private static string Describe(Line l) =>
@@ -387,7 +394,7 @@ internal sealed class SvcZoneProfiles(
         new(Summary(p), [.. p.Zones.OrderBy(z => z.Name, StringComparer.Ordinal).Select(View)], [.. p.Lines.OrderBy(l => l.Name, StringComparer.Ordinal).Select(View)]);
 
     private static ZoneViewModel View(Zone z) =>
-        new(z.Id.GetValueOrDefault(), z.Name, z.Kind.ToString(), z.LevelId, z.QueueZone?.Id, z.DeskId, z.Polygon, Math.Round(z.AreaSquareMetres, 3));
+        new(z.Id.GetValueOrDefault(), z.Name, z.Kind.ToString(), z.LevelId, z.QueueZone?.Id, z.DeskId, z.Polygon, Math.Round(z.AreaSquareMetres, 3), z.LaneCategory);
 
     private static LineViewModel View(Line l) =>
         new(l.Id.GetValueOrDefault(), l.Name, l.Role.ToString(), l.Zone?.Id, l.LevelId, l.StartX, l.StartY, l.EndX, l.EndY, Math.Round(l.LengthMetres, 3));

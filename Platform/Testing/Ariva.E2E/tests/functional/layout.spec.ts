@@ -35,7 +35,7 @@ test.describe('application shell', () => {
 		await expect(page.getByRole('heading', { level: 1 })).toHaveText(homeHeading.en);
 		const sidebar = page.getByTestId('app-sidebar');
 
-		await expect(sidebar.getByRole('navigation').getByRole('link')).toHaveCount(5);
+		await expect(sidebar.getByRole('navigation').getByRole('link')).toHaveCount(6);
 		const planned = sidebar.locator('[aria-disabled="true"]');
 		await expect(planned.first()).toHaveAttribute('title', /Planned in ARV-\d{3}/);
 		expect(await planned.count()).toBeGreaterThan(0);

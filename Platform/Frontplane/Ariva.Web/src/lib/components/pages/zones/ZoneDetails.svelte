@@ -3,7 +3,7 @@
 	import { _ } from 'svelte-i18n';
 	import FormField from '$lib/components/shared/FormField.svelte';
 	import type { Point, Zone } from '$lib/core/zones';
-	import { round } from '$lib/core/zones';
+	import { laneCategories, round } from '$lib/core/zones';
 	import ConfirmButton from '$lib/components/shared/ConfirmButton.svelte';
 
 	interface Props {
@@ -16,6 +16,8 @@
 		width: number;
 		depth: number;
 		name: string;
+		/** The lane whose queue this is (queue zones only, ARV-057); empty for none. */
+		lane: string;
 		onPoints: (points: Point[]) => void;
 		onSave: () => void | Promise<void>;
 		onRevert: () => void;
@@ -32,6 +34,7 @@
 		width,
 		depth,
 		name = $bindable(),
+		lane = $bindable(),
 		onPoints,
 		onSave,
 		onRevert,
@@ -86,6 +89,24 @@
 		maxlength={200}
 		readonly={!editable}
 	/>
+	{#if zone.kind === 'Queue'}
+		<div class="flex min-w-0 flex-col gap-1">
+			<label for="zone-lane" class="text-xs font-medium">{$_('zones.lane')}</label>
+			<select
+				id="zone-lane"
+				bind:value={lane}
+				disabled={!editable}
+				aria-describedby="zone-lane-hint"
+				class="h-9 min-w-0 rounded-md border border-input bg-background px-2 text-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:bg-muted"
+			>
+				<option value="">{$_('zones.noLane')}</option>
+				{#each [...new Set([...laneCategories, ...(lane ? [lane] : [])])] as code (code)}
+					<option value={code}>{code}</option>
+				{/each}
+			</select>
+			<p id="zone-lane-hint" class="text-xs text-muted-foreground">{$_('zones.laneHint')}</p>
+		</div>
+	{/if}
 	<div class="overflow-x-auto">
 		<table class="w-full text-sm" data-testid="vertex-table">
 			<caption class="mb-1 text-start text-xs font-semibold"

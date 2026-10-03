@@ -87,3 +87,81 @@ export function deskStates(siteCode: string): Promise<Result<DeskStates>> {
 	if (!site.test(siteCode)) return Promise.resolve(fail<DeskStates>('Refused: not a site.'));
 	return Api.get<DeskStates>(`/api/v1/sites/${siteCode}/desk-states`);
 }
+
+/** A queue zone of a border hall that is a lane's queue (ARV-057); its wait comes live from the hub by zone key. */
+export interface ImmigrationQueue {
+	zoneKey: string;
+	zone: string;
+	lane: string;
+}
+
+export interface ImmigrationLane {
+	lane: string;
+	desksOpen: number;
+	desksPaused: number;
+	transactions: number;
+	meanServiceSeconds: number | null;
+	maxP90ServiceSeconds: number | null;
+	meanCycleSeconds: number | null;
+}
+
+export interface ImmigrationEGates {
+	gatesConfigured: number;
+	gatesUsed: number;
+	attempts: number;
+	accepted: number;
+	rejected: number;
+	rejectRate: number | null;
+	utilisation: number | null;
+	rejects: {
+		documentRead: number;
+		biometricCapture: number;
+		eligibility: number;
+		referredToOfficer: number;
+		technical: number;
+		other: number;
+	};
+	extraManualDeskMinutes: number;
+	extraManualWaitMinutes: number | null;
+}
+
+export interface ImmigrationDesk {
+	desk: string;
+	lane: string | null;
+	state: 'Opened' | 'Paused' | 'Closed' | 'Unknown' | string;
+	transactions: number;
+	meanServiceSeconds: number | null;
+	p90ServiceSeconds: number | null;
+	lastIntervalUtc: string | null;
+}
+
+export interface ImmigrationGate {
+	gate: string;
+	attempts: number;
+	rejected: number;
+	utilisation: number | null;
+	meanCycleSeconds: number | null;
+}
+
+export interface ImmigrationHall {
+	kind: 'Immigration' | 'Emigration' | string;
+	queues: ImmigrationQueue[];
+	lanes: ImmigrationLane[];
+	eGates: ImmigrationEGates;
+	desks: ImmigrationDesk[];
+	gates: ImmigrationGate[];
+}
+
+/** The immigration view (ARV-057): lane and e-gate totals; desks and gates only for border roles (decided by the server). */
+export interface Immigration {
+	siteCode: string;
+	asOfUtc: string;
+	windowMinutes: number;
+	desksIncluded: boolean;
+	halls: ImmigrationHall[];
+}
+
+export function immigration(siteCode: string): Promise<Result<Immigration>> {
+	if (!site.test(siteCode)) return Promise.resolve(fail<Immigration>('Refused: not a site.'));
+	return Api.get<Immigration>(`/api/v1/sites/${siteCode}/immigration`);
+}

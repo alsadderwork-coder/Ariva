@@ -45,6 +45,18 @@ function snapshot(zone: string, queueLength: number, nowcastMinutes: number | nu
 	};
 }
 
+/** People queuing at the demo airport's zones whose snapshot in Redis is fresh (published within 150 seconds). */
+async function freshQueueLengths(redis: ReturnType<typeof createClient>): Promise<number> {
+	let total = 0;
+	for (const key of await redis.keys(`${instance}live:zone:DMO/*`)) {
+		const value = await redis.get(key);
+		if (!value) continue;
+		const snapshot = JSON.parse(value) as { queueLength: number; publishedUtc: string };
+		if (Date.now() - Date.parse(snapshot.publishedUtc) <= 150_000) total += snapshot.queueLength;
+	}
+	return total;
+}
+
 test('the 18:05 minute: zones by nowcast, a live update, a stale zone, and the R-001 alert acknowledged', async ({ page }) => {
 	test.skip(!redisUrl, "the live hub needs the run's Redis (ARIVA_E2E_REDIS_URL)");
 	const guards = await guardPage(page);
@@ -72,7 +84,15 @@ test('the 18:05 minute: zones by nowcast, a live update, a stale zone, and the R
 		await expect(page.locator('[data-testid="zone-row"][data-zone="A-CRW"]')).toContainText('Stale');
 		await page.getByRole('region', { name: 'Floor plan by nowcast' }).getByLabel('Level').selectOption({ label: 'ARR, Arrivals' });
 		await expect(page.locator('[data-testid="plan-zone"][data-zone="A-RES"]')).toHaveAttribute('data-status', 'overTarget');
-		await expect(page.getByTestId('metric-waiting')).toContainText('73');
+		// 61 + 12 people at the fresh zones planted here (the crew lane is stale), plus any other fresh DMO zone another
+		// suite has planted meanwhile (the immigration suite's e-gate lane): the tile adds up every fresh queue zone.
+		await expect
+			.poll(async () => {
+				const fresh = await freshQueueLengths(redis);
+				const shown = Number(((await page.getByTestId('metric-waiting').textContent()) ?? '').match(/\d+/g)?.pop());
+				return shown === fresh && fresh >= 73;
+			})
+			.toBe(true);
 
 		// A minute later Stream announces the next snapshot: the row and the chart follow without a reload.
 		await page.locator('[data-testid="zone-row"][data-zone="A-RES"]').getByRole('button').click();

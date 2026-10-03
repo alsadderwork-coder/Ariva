@@ -36,6 +36,7 @@
 	let zoneEdits = $state<Record<string, Point[]>>({});
 	let lineEdits = $state<Record<string, [Point, Point]>>({});
 	let zoneName = $state('');
+	let zoneLane = $state('');
 	/** Bumped after every saved change, so the publish panel asks for a fresh check. */
 	let revision = $state(0);
 
@@ -82,8 +83,9 @@
 	function select(next: Selected): void {
 		selected = next;
 		adding = null;
-		zoneName =
-			next?.kind === 'zone' ? (profile?.zones.find((z) => z.id === next.id)?.name ?? '') : '';
+		const zone = next?.kind === 'zone' ? profile?.zones.find((z) => z.id === next.id) : undefined;
+		zoneName = zone?.name ?? '';
+		zoneLane = zone?.laneCategory ?? '';
 	}
 
 	async function loadHistory(prefer?: string): Promise<void> {
@@ -177,10 +179,13 @@
 	async function saveZone(id: string): Promise<void> {
 		const zone = profile?.zones.find((z) => z.id === id);
 		if (!zone || !profile) return;
-		const name = selected?.kind === 'zone' && selected.id === id ? zoneName.trim() : zone.name;
+		const chosen = selected?.kind === 'zone' && selected.id === id;
+		const name = chosen ? zoneName.trim() : zone.name;
 		const result = await zones.updateZone(profile.profile.id, id, {
 			name,
-			polygon: zones.formatPolygon(pointsOf(zone))
+			polygon: zones.formatPolygon(pointsOf(zone)),
+			// An empty lane clears it; the server keeps the lane when the field is absent.
+			laneCategory: (chosen ? zoneLane : zone.laneCategory) ?? ''
 		});
 		if (result.hasErrors || !result.data) return failed(result.errorMessages[0] ?? '');
 		delete zoneEdits[id];
@@ -458,15 +463,19 @@
 								null}
 							deskCode={desks.find((d) => d.id === selectedZone.deskId)?.code ?? null}
 							{editable}
-							dirty={!!zoneEdits[selectedZone.id] || zoneName.trim() !== selectedZone.name}
+							dirty={!!zoneEdits[selectedZone.id] ||
+								zoneName.trim() !== selectedZone.name ||
+								zoneLane !== (selectedZone.laneCategory ?? '')}
 							width={level.widthMetres}
 							depth={level.depthMetres}
 							bind:name={zoneName}
+							bind:lane={zoneLane}
 							onPoints={(points) => (zoneEdits[selectedZone.id] = points)}
 							onSave={() => saveZone(selectedZone.id)}
 							onRevert={() => {
 								delete zoneEdits[selectedZone.id];
 								zoneName = selectedZone.name;
+								zoneLane = selectedZone.laneCategory ?? '';
 							}}
 							onDelete={() => deleteZone(selectedZone)}
 						/>

@@ -68,7 +68,10 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
         var map = new Dictionary<Zone, Zone>();
         foreach (var zone in Zones.Where(z => z.QueueZone is null).Concat(Zones.Where(z => z.QueueZone is not null)))
         {
-            var copy = new Zone(draft, zone.Name, zone.Kind, zone.LevelId, zone.Points, zone.QueueZone is null ? null : map[zone.QueueZone], zone.DeskId);
+            var copy = new Zone(draft, zone.Name, zone.Kind, zone.LevelId, zone.Points, zone.QueueZone is null ? null : map[zone.QueueZone], zone.DeskId)
+            {
+                LaneCategory = zone.LaneCategory
+            };
             draft.Zones.Add(copy);
             map[zone] = copy;
         }
@@ -134,6 +137,28 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
         if (Zones.Any(z => z != own && string.Equals(z.Name, trimmed, StringComparison.OrdinalIgnoreCase)))
             throw new InvalidOperationException($"Zone {trimmed} already exists here.");
         own.Rename(trimmed);
+    }
+
+    /// <summary>
+    /// Says which lane category a queue zone is the queue of (ARV-057): the immigration screen shows a hall's waits per
+    /// lane from it, as configured per site. Null for a zone that is no lane's queue (check-in, security). Not part of
+    /// the geometry hash: it changes no count or wait.
+    /// </summary>
+    public virtual void SetZoneLane(Zone zone, string laneCategory)
+    {
+        EnsureDraft();
+        var own = Own(zone);
+        if (laneCategory is null)
+        {
+            own.LaneCategory = null;
+            return;
+        }
+
+        if (own.Kind != ZoneKind.Queue)
+            throw new InvalidOperationException("Only a queue zone is the queue of a lane.");
+        if (!LaneCategory.IsValid(laneCategory))
+            throw new ArgumentException("A lane category is 2 to 4 capital letters, such as CIT.", nameof(laneCategory));
+        own.LaneCategory = laneCategory;
     }
 
     /// <summary>Removes a zone and its lines; refused while other zones hang off it.</summary>
@@ -389,6 +414,9 @@ public class Zone : EntityBase<Zone>
     public virtual Zone QueueZone { get; protected set; }
 
     public virtual Guid? DeskId { get; protected set; }
+
+    /// <summary>The lane category whose queue this queue zone is (CIT, RES, VIS, CRW, EG ...), or null (ARV-057).</summary>
+    public virtual string LaneCategory { get; protected internal set; }
 
     /// <summary>Stored vertices: "x y,x y,..." in metres at millimetre precision.</summary>
     [System.ComponentModel.DataAnnotations.MaxLength(PolygonLength)]
