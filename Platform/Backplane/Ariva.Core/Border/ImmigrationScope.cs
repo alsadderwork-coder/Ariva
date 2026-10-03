@@ -8,11 +8,14 @@ namespace Ariva.Core.Border;
 /// </summary>
 public readonly record struct ImmigrationScope
 {
-    private ImmigrationScope(string siteCode, bool anyKnownSite)
+    private ImmigrationScope(string siteCode, bool anyKnownSite, string transport)
     {
         SiteCode = siteCode;
         AnyKnownSite = anyKnownSite;
+        _transport = transport;
     }
+
+    private readonly string _transport;
 
     /// <summary>The one site the call may write, or null for <see cref="RecordSite"/>.</summary>
     public string SiteCode { get; }
@@ -23,11 +26,14 @@ public readonly record struct ImmigrationScope
     /// <summary>True when the scope was chosen with <see cref="ForSite"/> or <see cref="RecordSite"/>.</summary>
     public bool IsChosen => SiteCode is not null || AnyKnownSite;
 
-    /// <summary>The transport, for metrics: <c>rest</c> for one site, <c>kafka</c> for the record's site.</summary>
-    public string Transport => AnyKnownSite ? "kafka" : "rest";
+    /// <summary>The transport, for metrics: <c>rest</c> or <c>pull</c> for one site, <c>kafka</c> for the record's site.</summary>
+    public string Transport => _transport ?? (AnyKnownSite ? "kafka" : "rest");
 
-    public static ImmigrationScope ForSite(string siteCode) => new(siteCode ?? throw new ArgumentNullException(nameof(siteCode)), false);
+    public static ImmigrationScope ForSite(string siteCode) => new(siteCode ?? throw new ArgumentNullException(nameof(siteCode)), false, "rest");
+
+    /// <summary>One site, for the records Ariva pulls from AMAN's Integration API for it (ARV-050; transport <c>pull</c>).</summary>
+    public static ImmigrationScope ForPull(string siteCode) => new(siteCode ?? throw new ArgumentNullException(nameof(siteCode)), false, "pull");
 
     /// <summary>Each record's own site, which must be a site Ariva knows: AMAN's Kafka feed only.</summary>
-    public static ImmigrationScope RecordSite { get; } = new(null, true);
+    public static ImmigrationScope RecordSite { get; } = new(null, true, "kafka");
 }

@@ -93,8 +93,8 @@ public class OutboundEndpoint : BaseAuditableEntity<OutboundEndpoint>
         ArgumentNullException.ThrowIfNull(connection);
         if (sites is null || sites.Count is 0 or > MaxSites || sites.Any(s => !Site.IsValidCode(s)))
             throw new ArgumentException("An endpoint is bound to 1 to 32 sites.", nameof(sites));
-        if (Purpose == OutboundEndpointPurpose.AcrisFlights && sites.Count != 1)
-            throw new ArgumentException("An ACRIS flight pull feeds exactly one site.", nameof(sites));
+        if (Purpose is OutboundEndpointPurpose.AcrisFlights or OutboundEndpointPurpose.AmanFeed && sites.Count != 1)
+            throw new ArgumentException("A flight or AMAN pull feeds exactly one site.", nameof(sites));
         if (SecretProtected is not null && connection.AuthKind != AuthKind)
             throw new ArgumentException("The authentication kind of an endpoint does not change; register a new endpoint.", nameof(connection));
         SiteCodes = string.Join(' ', sites.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal));

@@ -519,6 +519,7 @@ How the model applies them (ARV-041), whatever the adapter:
 - AMAN codes are resolved against the site's AMAN desk code mappings; unknown codes are kept apart (stored with no desk, logged once per code and site, at most 1,000 codes per site, counted in `ariva.border.feed.unmapped`), never guessed. The demo airport's seed maps AMAN's IN, OUT, EGIN and EGOUT codes to its desks and e-gates.
 - The feed's heartbeat is watched: when it stops, desk state falls back to sensor zones and service rates to their last known values, flagged.
 - In a shared cluster, Ariva's consumer has read ACLs on `aman.feed.` and write ACLs only on `ariva.`.
+- Where AMAN's Kafka is not shared, Ariva pulls the same four contracts from AMAN's Integration API instead (ARV-050): an administrator registers an `AmanFeed` outbound endpoint for the site with AMAN's client id, secret and TOTP seed (Administration guide); Ariva exchanges them for a token (one exchange per TOTP step, the token kept until a minute before it expires), sends `X-TOTP-Code` on every call (always, for an AMAN pull), asks `GET {feed path}{contract}?after={position}&limit=500` for `desk-sessions`, `desk-interval-stats`, `egate-interval-stats` and `inbound-lane-demand`, and keeps its position per contract. The records go through the same checks and mapping as the Kafka values (feed `aman-` and the endpoint's code); a record received over both is kept once. AMAN's paging is To confirm against AMAN's Integration API (the mock AMAN of the simulator serves it this way).
 - Versioning: additive changes within V1 bump `ContractVersion.Current` (currently `1.0`); breaking changes go to `Aman/V2` and run in parallel until AMAN moves over. A data-boundary test fails the build if a contract property looks like a person or officer identifier.
 
 ## 11. Outbound connections
@@ -527,7 +528,7 @@ Ariva calls other systems only through `OutboundEndpoint` records created by adm
 
 | Handler | Behaviour |
 |---|---|
-| `TotpClientCredentials` | AMAN style: posts client id, secret and a fresh TOTP code to the remote auth endpoint, caches the token until 60 seconds before expiry, sends `X-TOTP-Code` per request when required. This is the AMAN connector |
+| `TotpClientCredentials` | AMAN style: posts client id, secret and a fresh TOTP code to the remote auth endpoint (at most once per TOTP step), caches the token until 60 seconds before expiry, sends `X-TOTP-Code` per request when required. This is the AMAN connector (the `AmanFeed` pull, ARV-050) |
 | `OAuth2ClientCredentials` | Standard token endpoint, scopes, cached token |
 | `ApiKeyHeader` | Named header with a secret value |
 | `HmacSignature` | Signs method, path, timestamp and body SHA-256 with a shared key |

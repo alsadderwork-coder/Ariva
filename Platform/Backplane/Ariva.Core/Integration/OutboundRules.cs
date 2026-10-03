@@ -159,9 +159,24 @@ public static partial class OutboundRules
             if (request.PollSeconds is < MinPollSeconds or > MaxPollSeconds)
                 errors.Add("pollSeconds is 30 to 3,600.");
         }
+        else if (purpose == OutboundEndpointPurpose.AmanFeed)
+        {
+            // AMAN's Integration API: TOTP client credentials only (CWE-287), its feed below one path that ends in a slash
+            // (the contract names follow it), no query of the endpoint's own.
+            if (kind != OutboundAuthKind.TotpClientCredentials)
+                errors.Add("An AMAN feed pull authenticates with TotpClientCredentials.");
+            else if (!request.TotpPerRequest)
+                errors.Add("An AMAN feed pull sends X-TOTP-Code on every call (totpPerRequest).");
+            if (!IsRelativePath(request.PullPath, allowQuery: false) || !request.PullPath.EndsWith('/'))
+                errors.Add("pullPath is the path of AMAN's feed on the endpoint's own host, ending in a slash, such as /feed/.");
+            else
+                pullPath = request.PullPath;
+            if (request.PollSeconds is < MinPollSeconds or > MaxPollSeconds)
+                errors.Add("pollSeconds is 30 to 3,600.");
+        }
         else if (request.PullPath is not null)
         {
-            errors.Add("pullPath is for the AcrisFlights purpose only.");
+            errors.Add("pullPath is for the AcrisFlights and AmanFeed purposes only.");
         }
 
         if (errors.Count > 0)
@@ -175,7 +190,7 @@ public static partial class OutboundRules
             kind == OutboundAuthKind.HmacSignature ? request.KeyId : null,
             kind == OutboundAuthKind.TotpClientCredentials && request.TotpPerRequest,
             request.PinnedCaPem, request.TimeoutSeconds, request.RetryCount, request.BreakerFailures, request.BreakSeconds,
-            pullPath, purpose == OutboundEndpointPurpose.AcrisFlights ? request.PollSeconds : 0), errors);
+            pullPath, purpose is OutboundEndpointPurpose.AcrisFlights or OutboundEndpointPurpose.AmanFeed ? request.PollSeconds : 0), errors);
     }
 
     /// <summary>The secret's shape for the kind: the fields it uses present and well-formed, the others absent. The certificate itself is checked where it is loaded.</summary>

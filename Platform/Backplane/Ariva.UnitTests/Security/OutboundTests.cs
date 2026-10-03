@@ -333,8 +333,13 @@ public sealed class OutboundTests
         stub.Requests[1].Headers.GetValues("X-TOTP-Code").Single().Should().HaveLength(6);
 
         (await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://aodb.example.test/api/stale"), Ct)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        // ARV-050: one exchange per TOTP step (AMAN's replay guard): within the step of the first, no second exchange is sent.
+        var again = () => invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://aodb.example.test/api/c"), Ct);
+        await again.Should().ThrowAsync<OutboundUnavailableException>();
+        stub.Requests.Count(r => r.Method == HttpMethod.Post).Should().Be(1);
+        clock.Advance(TimeSpan.FromSeconds(30));
         await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://aodb.example.test/api/c"), Ct);
-        tokens.Should().Be(2, "a 401 drops the token");
+        tokens.Should().Be(2, "a 401 drops the token; the next step exchanges again");
 
         clock.Advance(TimeSpan.FromMinutes(15));
         await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://aodb.example.test/api/d"), Ct);

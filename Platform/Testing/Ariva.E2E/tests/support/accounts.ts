@@ -154,7 +154,9 @@ export function accounts() {
 		// ARV-048: registers the immigration clients of aman-feed.spec.ts.
 		amanFeedAdmin: account('e2e.amanfeedadmin', ['SystemAdministrator'], false, true, ['*']),
 		// ARV-047: registers the clients that feed arrival-wave.spec.ts.
-		arrivalWaveAdmin: account('e2e.arrivalwaveadmin', ['SystemAdministrator'], false, true, ['*'])
+		arrivalWaveAdmin: account('e2e.arrivalwaveadmin', ['SystemAdministrator'], false, true, ['*']),
+		// ARV-050: registers the AMAN pull endpoints of aman-pull.spec.ts (critical actions).
+		amanPullAdmin: account('e2e.amanpulladmin', ['SystemAdministrator'], false, true, ['*'])
 	} as const;
 }
 

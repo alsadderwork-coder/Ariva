@@ -1143,8 +1143,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 53,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Outbound purpose AmanFeed (script 0032): TotpClientCredentials with X-TOTP-Code on every call, one site, a feed path; AmanPoller in Ariva.Api.Integration pulls the four contracts page by page (strict envelope and items, position checks, 20 pages a poll), applies them through the immigration intake (ForPull) with the position per contract (aman_pull_cursor) in one unit of work, backs off a failing endpoint; TokenHandler caches the token and tries one TOTP exchange per step. Tested against a stand-in AMAN (integration) and the simulator's mock AMAN (e2e). Security review FAIL (three missing control tests) then PASS. Gates: unit 1979, integration 295, e2e 358, scan 0 errors, docs. AMAN's paging To confirm.",
       "dependsOn": [
         "ARV-045",
         "ARV-048"

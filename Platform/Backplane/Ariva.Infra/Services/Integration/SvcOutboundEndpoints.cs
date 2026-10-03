@@ -175,8 +175,8 @@ internal sealed class SvcOutboundEndpoints(
         var codes = Sites(sites);
         if (codes.Count is 0 or > OutboundEndpoint.MaxSites || codes.Any(s => !Site.IsValidCode(s)))
             return ["An endpoint is bound to 1 to 32 site codes."];
-        if (purpose == OutboundEndpointPurpose.AcrisFlights && codes.Count != 1)
-            return ["An ACRIS flight pull feeds exactly one site."];
+        if (purpose is OutboundEndpointPurpose.AcrisFlights or OutboundEndpointPurpose.AmanFeed && codes.Count != 1)
+            return ["A flight or AMAN pull feeds exactly one site."];
         var mine = await siteScope.GetAsync(ct);
         if (!mine.Covers(new SiteAccess(false, codes.ToHashSet(StringComparer.Ordinal))))
             return [OutboundErrors.BeyondOwnSites];

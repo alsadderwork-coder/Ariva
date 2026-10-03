@@ -54,7 +54,7 @@ public static class IntegrationExtensions
 
     /// <summary>
     /// Outbound calls (ARV-045, Ariva.Api.Integration): the guarded clients of the registered endpoints and, unless
-    /// <paramref name="pollAcris"/> is false, the ACRIS flight pull.
+    /// <paramref name="pollAcris"/> is false, the ACRIS flight pull and the AMAN feed pull (ARV-050).
     /// </summary>
     public static IServiceCollection AddArivaOutboundCalls(this IServiceCollection services, IConfiguration configuration, string hostEnvironment, bool pollAcris = true)
     {
@@ -64,8 +64,14 @@ public static class IntegrationExtensions
         services.TryAddSingleton<Ariva.Infra.Integration.Outbound.IOutboundResolver, Ariva.Infra.Integration.Outbound.DnsOutboundResolver>();
         services.TryAddSingleton<Ariva.Infra.Integration.Outbound.OutboundClients>();
         services.TryAddScoped<Ariva.Infra.Services.Flights.SvcAcrisPull>();
+        // ARV-050: the AMAN pull (AmanFeed endpoints) hands records to the immigration intake (AddArivaBorderFeed).
+        services.TryAddScoped<Ariva.Infra.Border.SvcAmanPull>();
         if (pollAcris)
+        {
             services.AddHostedService<Ariva.Infra.Flights.Acris.AcrisPoller>();
+            services.AddHostedService<Ariva.Infra.Border.AmanPoller>();
+        }
+
         return services;
     }
 

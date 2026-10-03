@@ -46,6 +46,7 @@ public sealed class OutboundEndpointTests(PostgresFixture fixture) : IAsyncDispo
     private readonly AccountsHost _host = new(fixture, database: TestDatabase.Outbound, configure: services =>
     {
         services.AddArivaFlights(new ConfigurationBuilder().Build(), watchFeeds: false);
+        services.AddArivaBorderFeed(new ConfigurationBuilder().Build());
         services.AddArivaOutboundEndpoints(Lab, "vm-local");
         services.AddArivaOutboundCalls(Lab, "vm-local");
     });
@@ -205,16 +206,121 @@ public sealed class OutboundEndpointTests(PostgresFixture fixture) : IAsyncDispo
         calls.Should().Be(2);
     }
 
+    [Fact]
+    public async Task AmanPull_Should_PullEveryContractWithOneTokenAndATotpCodeOnEachCall_When_Due()
+    {
+        var p = await AdminsAsync();
+        var seed = Ariva.Infra.Security.Base32.Encode(Ariva.Infra.Security.Totp.NewSecret());
+        var minute = new DateTime(Now.Ticks - Now.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc).AddMinutes(-2);
+        var good = System.Text.Json.JsonSerializer.Serialize(new Ariva.Business.Contracts.Aman.V1.DeskIntervalStats("DMO", "IN09", new DateTimeOffset(minute), 60, 2, 3, 41,
+            60, 30, "VIS", "pull-1"), Ariva.Infra.Border.AmanFeedJson<Ariva.Business.Contracts.Aman.V1.DeskIntervalStats>.Options);
+        var unreadable = good.Replace("\"pull-1\"", "\"pull-2\",\"officerId\":\"OFFICER-7\"", StringComparison.Ordinal);
+        // A record naming another site (one that exists): the pull feeds its endpoint's one site only (CWE-863).
+        var otherSite = good.Replace("\"pull-1\"", "\"pull-3\"", StringComparison.Ordinal).Replace("\"siteCode\":\"DMO\"", "\"siteCode\":\"OUT\"", StringComparison.Ordinal);
+        var exchanges = 0;
+        var calls = new System.Collections.Concurrent.ConcurrentQueue<(string Contract, string After, bool Code)>();
+        bool CodeOk(string code) => code is not null && Ariva.Infra.Security.Totp.Match(Ariva.Infra.Security.Base32.Decode(seed), code, _host.Clock.GetUtcNow(), null) is not null;
+        await using var server = await LoopbackServer.StartAsync(async c =>
+        {
+            c.Response.ContentType = "application/json";
+            if (c.Request.Path == "/aman/api/v1/auth" && c.Request.Method == "POST")
+            {
+                using var body = await System.Text.Json.JsonDocument.ParseAsync(c.Request.Body, cancellationToken: Ct);
+                var r = body.RootElement;
+                if (r.GetProperty("clientId").GetString() != "ariva-pull" || r.GetProperty("clientSecret").GetString() != "aman-secret-1" ||
+                    !CodeOk(r.GetProperty("totpCode").GetString()))
+                {
+                    c.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                    return;
+                }
+
+                Interlocked.Increment(ref exchanges);
+                await c.Response.WriteAsync($$"""{"accessToken":"tok-1","expiresAt":"{{_host.Clock.GetUtcNow().AddMinutes(15):O}}","sessionId":"{{Guid.NewGuid()}}"}""", Ct);
+                return;
+            }
+
+            var contract = c.Request.Path.Value!.Replace("/aman/api/v1/feed/", "", StringComparison.Ordinal);
+            var after = c.Request.Query["after"].ToString();
+            calls.Enqueue((contract, after, CodeOk(c.Request.Headers["X-TOTP-Code"])));
+            if (c.Request.Headers.Authorization != "Bearer tok-1" || !CodeOk(c.Request.Headers["X-TOTP-Code"]))
+            {
+                c.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                return;
+            }
+
+            await c.Response.WriteAsync(contract == "desk-interval-stats" && after == "0"
+                ? $$"""{"data":{"items":[{{good}},{{unreadable}},{{otherSite}}],"next":3},"hasErrors":false,"errorMessages":[]}"""
+                : $$"""{"data":{"items":[],"next":{{after}}},"hasErrors":false,"errorMessages":[]}""", Ct);
+        });
+
+        CreateOutboundEndpointRequest Aman(string code, string secret, string authKind = "TotpClientCredentials", string pullPath = "/feed/", string[] sites = null) =>
+            new(code, "AMAN " + code, "AmanFeed", sites ?? ["DMO"],
+                new OutboundConnectionRequest($"http://127.0.0.1:{server.Port}/aman/api/v1/", ["127.0.0.0/8"], authKind, TokenPath: authKind == "TotpClientCredentials" ? "/auth" : null,
+                    ClientId: authKind == "TotpClientCredentials" ? "ariva-pull" : null, HeaderName: authKind == "ApiKeyHeader" ? "X-Api-Key" : null,
+                    TotpPerRequest: true, PullPath: pullPath, PollSeconds: 30, RetryCount: 0),
+                authKind == "TotpClientCredentials" ? new OutboundSecretRequest(ClientSecret: secret, TotpSeed: seed) : new OutboundSecretRequest(ApiKey: secret));
+
+        // AMAN's Integration API is pulled with TOTP client credentials only, below a feed path, for one site (CWE-287).
+        (await CreateAsync(p.All, Aman("aman-key", "a-key-of-sorts", authKind: "ApiKeyHeader"))).ErrorMessages.Should().Contain(e => e.Contains("TotpClientCredentials", StringComparison.Ordinal));
+        (await CreateAsync(p.All, Aman("aman-path", "aman-secret-1", pullPath: "/feed"))).ErrorMessages.Should().Contain(e => e.Contains("ending in a slash", StringComparison.Ordinal));
+        (await CreateAsync(p.All, Aman("aman-two", "aman-secret-1", sites: ["DMO", "OUT"]))).ErrorMessages.Should().Contain(e => e.Contains("exactly one site", StringComparison.Ordinal));
+        (await CreateAsync(p.All, Aman("aman-dmo", "aman-secret-1"))).HasErrors.Should().BeFalse();
+        (await CreateAsync(p.All, Aman("aman-wrong", "not-the-secret"))).HasErrors.Should().BeFalse();
+
+        // Only this test's endpoints are due (another test of the class may have registered one in the same database).
+        await _host.ReadAsync<long>("WITH d AS (UPDATE outbound_endpoint SET status = 'Disabled' WHERE purpose = 'AmanFeed' AND code NOT LIKE 'aman-%' RETURNING 1) " +
+            "SELECT count(*) FROM d");
+        var poller = await _host.AsCallerAsync(null, s => Task.FromResult(s.GetServices<IHostedService>().OfType<Ariva.Infra.Border.AmanPoller>().Single()));
+        (await poller.RunOnceAsync(Ct)).Should().Be(2);
+
+        exchanges.Should().Be(1, "one token for the four contracts; the wrong secret's exchange is refused");
+        var dmoCalls = calls.ToList();
+        dmoCalls.Select(c => c.Contract).Should().BeEquivalentTo(["desk-sessions", "desk-interval-stats", "egate-interval-stats", "inbound-lane-demand"]);
+        dmoCalls.Should().OnlyContain(c => c.Code, "X-TOTP-Code on every call");
+        (await _host.ReadAsync<string>("SELECT feed || ' ' || (desk_id IS NOT NULL) FROM border_desk_interval WHERE source_event_id = 'pull-1'")).Should().Be("aman-aman-dmo true");
+        (await _host.ReadAsync<long>("SELECT count(*) FROM border_desk_interval WHERE source_event_id = 'pull-2'")).Should().Be(0, "an unreadable record is never stored");
+        (await _host.ReadAsync<string>("SELECT last_status || ' ' || consecutive_failures FROM outbound_endpoint WHERE code = 'aman-dmo'"))
+            .Should().Be("Pulled 3 AMAN records: 1 applied, 0 unchanged, 1 refused, 1 unreadable. 0").And.NotContain("OFFICER");
+        (await _host.ReadAsync<long>("SELECT count(*) FROM border_desk_interval WHERE source_event_id = 'pull-3'")).Should().Be(0, "another site's record is refused");
+        (await _host.ReadAsync<string>("SELECT last_status || ' ' || consecutive_failures FROM outbound_endpoint WHERE code = 'aman-wrong'"))
+            .Should().Be("AMAN answered 401. 1");
+        (await _host.ReadAsync<long>("SELECT after_sequence FROM aman_pull_cursor c JOIN outbound_endpoint e ON e.id = c.endpoint_id WHERE e.code = 'aman-dmo' AND c.contract = 'desk-interval-stats'"))
+            .Should().Be(3);
+
+        // The next poll continues after the position with the cached token.
+        while (calls.TryDequeue(out _))
+        {
+        }
+
+        _host.Clock.Advance(TimeSpan.FromSeconds(31));
+        (await poller.RunOnceAsync(Ct)).Should().Be(1, "the failing endpoint waits twice its interval before AMAN is asked again");
+        exchanges.Should().Be(1, "the token is cached until shortly before it expires");
+        calls.Should().Contain(("desk-interval-stats", "3", true));
+        (await _host.ReadAsync<string>("SELECT last_status FROM outbound_endpoint WHERE code = 'aman-dmo'")).Should().StartWith("Pulled 0 AMAN records");
+    }
+
     [Theory]
     [InlineData("DELETE FROM outbound_endpoint", "42501")]
     [InlineData("TRUNCATE outbound_endpoint", "42501")]
     [InlineData("UPDATE outbound_endpoint SET base_url = 'gopher://x/'", "23514")]
     [InlineData("UPDATE outbound_endpoint SET pull_path = 'http://169.254.169.254/' WHERE purpose = 'AcrisFlights'", "23514")]
+    [InlineData("DELETE FROM aman_pull_cursor", "42501")]
+    [InlineData("TRUNCATE aman_pull_cursor", "42501")]
+    [InlineData("UPDATE outbound_endpoint SET auth_kind = 'ApiKeyHeader', header_name = 'X-Key', token_path = NULL, client_id = NULL WHERE purpose = 'AmanFeed'", "23514")]
+    [InlineData("UPDATE outbound_endpoint SET totp_per_request = false WHERE purpose = 'AmanFeed'", "23514")]
+    [InlineData("UPDATE outbound_endpoint SET pull_path = NULL WHERE purpose = 'AmanFeed'", "23514")]
+    [InlineData("UPDATE outbound_endpoint SET pull_path = '/feed/?all=1' WHERE purpose = 'AmanFeed'", "23514")]
+    [InlineData("UPDATE outbound_endpoint SET site_codes = 'DMO OUT' WHERE purpose = 'AmanFeed'", "23514")]
     public async Task Database_Should_RefuseUnsafeChanges_When_TheRuntimeRoleTries(string sql, string state)
     {
         var p = await AdminsAsync();
         if (await _host.ReadAsync<long>("SELECT count(*) FROM outbound_endpoint WHERE purpose = 'AcrisFlights'") == 0)
             (await CreateAsync(p.All, ApiKey("db-acris", "https://aodb.example.test/", ["DMO"], "AcrisFlights", "/flights"))).HasErrors.Should().BeFalse();
+        if (await _host.ReadAsync<long>("SELECT count(*) FROM outbound_endpoint WHERE purpose = 'AmanFeed'") == 0)
+            (await CreateAsync(p.All, new CreateOutboundEndpointRequest("db-aman", "AMAN", "AmanFeed", ["DMO"],
+                new OutboundConnectionRequest("https://aman.example.test/aman/api/v1/", ["10.0.0.0/8"], "TotpClientCredentials", TokenPath: "/auth", ClientId: "ariva",
+                    TotpPerRequest: true, PullPath: "/feed/", PollSeconds: 30),
+                new OutboundSecretRequest(ClientSecret: "aman-secret-1", TotpSeed: Ariva.Infra.Security.Base32.Encode(Ariva.Infra.Security.Totp.NewSecret()))))).HasErrors.Should().BeFalse();
 
         await using var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync()));
         await connection.OpenAsync(Ct);

@@ -51,6 +51,9 @@ const simulationKeyDigest = crypto.createHash('sha256').update(process.env.ARIVA
 // ARV-029: one client of the mock AMAN Integration API per run; the simulator gets the secret's SHA-256 and the seed.
 process.env.ARIVA_E2E_MOCK_AMAN_SECRET ||= 'aman-e2e-' + crypto.randomBytes(24).toString('base64url');
 process.env.ARIVA_E2E_MOCK_AMAN_SEED ||= base32Of(crypto.randomBytes(20));
+// ARV-050: a second mock AMAN client for Ariva's own AMAN pull (one exchange per TOTP step and client, so not shared).
+process.env.ARIVA_E2E_MOCK_AMAN_PULL_SECRET ||= 'aman-pull-' + crypto.randomBytes(24).toString('base64url');
+process.env.ARIVA_E2E_MOCK_AMAN_PULL_SEED ||= base32Of(crypto.randomBytes(20));
 // ARV-029: the API key Ariva's ACRIS pull would present to the emulated AODB.
 process.env.ARIVA_E2E_ACRIS_KEY ||= 'acris-e2e-' + crypto.randomBytes(24).toString('base64url');
 
@@ -238,6 +241,9 @@ export default defineConfig({
 			Simulation__Aman__Mock__Clients__0__ClientId: 'e2e-aman-connector',
 			Simulation__Aman__Mock__Clients__0__SecretSha256: crypto.createHash('sha256').update(process.env.ARIVA_E2E_MOCK_AMAN_SECRET).digest('hex'),
 			Simulation__Aman__Mock__Clients__0__TotpSecret: process.env.ARIVA_E2E_MOCK_AMAN_SEED,
+			Simulation__Aman__Mock__Clients__1__ClientId: 'e2e-aman-pull',
+			Simulation__Aman__Mock__Clients__1__SecretSha256: crypto.createHash('sha256').update(process.env.ARIVA_E2E_MOCK_AMAN_PULL_SECRET).digest('hex'),
+			Simulation__Aman__Mock__Clients__1__TotpSecret: process.env.ARIVA_E2E_MOCK_AMAN_PULL_SEED,
 			Simulation__Aodb__AcrisKeySha256: crypto.createHash('sha256').update(process.env.ARIVA_E2E_ACRIS_KEY).digest('hex')
 		}),
 		{

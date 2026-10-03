@@ -201,7 +201,10 @@ public sealed class HmacSignatureHandler(string keyId, byte[] key, TimeProvider 
 /// A bearer token from the endpoint's own token path, cached until 60 seconds before it expires and dropped when the
 /// endpoint answers 401: AMAN-style TOTP client credentials (client id, secret and a fresh TOTP code; <c>X-TOTP-Code</c>
 /// on every call when the endpoint needs it) or OAuth 2.0 client credentials (HTTP Basic client authentication, RFC 6749).
-/// The token request goes to the same origin as the calls, through the same guarded transport.
+/// The token request goes to the same origin as the calls, through the same guarded transport. A TOTP exchange is tried
+/// at most once per TOTP step (ARV-050, CWE-287): AMAN accepts one exchange per step and client (a replay guard) and
+/// counts refusals toward its lockout, so a second attempt in the same step (a 401 that dropped the token, a retry)
+/// fails here without a call and the next step tries again.
 /// </summary>
 public sealed class TokenHandler(OutboundTarget target, OutboundSecret secret, TimeProvider time) : DelegatingHandler
 {
@@ -209,6 +212,7 @@ public sealed class TokenHandler(OutboundTarget target, OutboundSecret secret, T
     private readonly SemaphoreSlim _gate = new(1, 1);
     private string _token;
     private DateTimeOffset _expires;
+    private long _lastExchangeStep = -1;
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
@@ -249,7 +253,11 @@ public sealed class TokenHandler(OutboundTarget target, OutboundSecret secret, T
             using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(target.BaseUrl, target.TokenPath.TrimStart('/')));
             if (target.AuthKind == Core.Domain.Enums.OutboundAuthKind.TotpClientCredentials)
             {
-                request.Content = JsonContent.Create(new { clientId = target.ClientId, clientSecret = secret.ClientSecret, totpCode = Code() });
+                var step = Totp.StepAt(time.GetUtcNow());
+                if (step <= _lastExchangeStep)
+                    throw new OutboundUnavailableException($"The token of {target.Code} was already requested in this TOTP step; the next step tries again.");
+                _lastExchangeStep = step;
+                request.Content = JsonContent.Create(new { clientId = target.ClientId, clientSecret = secret.ClientSecret, totpCode = Totp.Code(Base32.Decode(secret.TotpSeed), step) });
             }
             else
             {

@@ -31,6 +31,7 @@
     "0028_outbound_endpoint.sql": "cbf6a3de24c43d7786a738b0f6b8f6498e8912a79959dc1697c9bdaf85b4b726",
     "0029_flight_leg_schedule_feed.sql": "a372e085e0c9daa3eef1028a99055d5d509f246f28379b69e8bcdeb3bb641ce7",
     "0030_border_feed.sql": "889e0e4c8fee0305010d97ef0af2cfb9f8d7b7355b05a071f18de75afaa711ca",
-    "0031_desk_feed.sql": "63241eeffec7b2d837b6c531c4821642fd693409ef9fdd5d2da306570e5a762c"
+    "0031_desk_feed.sql": "63241eeffec7b2d837b6c531c4821642fd693409ef9fdd5d2da306570e5a762c",
+    "0032_aman_pull.sql": "afb45a8d53cc71b871dfc7bd648f06d3361e343c601218157353058b736425c2"
   }
 }

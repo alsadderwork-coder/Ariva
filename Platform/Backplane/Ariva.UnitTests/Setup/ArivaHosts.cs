@@ -173,6 +173,7 @@ internal sealed class ArivaWebApplicationFactory<TEntryPoint>(string environment
         builder.UseSetting("Email:Smtp:Host", "localhost");
         // The integration key ring (ARV-042): Integration's own development key, whatever the environment under test.
         builder.UseSetting("Integration:Outbound:PollAcris", "false");
+        builder.UseSetting("Integration:Outbound:PollAman", "false");
         builder.UseSetting("Auth:IntegrationTokens:UseDevelopmentKeys", "true");
         builder.UseSetting("Auth:IntegrationTokens:DevelopmentKeyDirectory", DevelopmentKeyDirectory);
         builder.UseSetting("Auth:IntegrationTokens:SigningKeyPath", string.Empty);
