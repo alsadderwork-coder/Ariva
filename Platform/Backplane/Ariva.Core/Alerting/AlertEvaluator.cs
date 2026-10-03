@@ -157,8 +157,8 @@ public static class PredictedWait
 
 /// <summary>
 /// The arrival-wave projection a predicted-breach rule reads (F14): projected arrivals per minute at a queue zone. The
-/// AODB and AMAN projection is ARV-047; until then <see cref="NoArrivalWave"/> answers null and predicted rules have
-/// nothing to judge.
+/// hosts read the AODB and AMAN projection (ARV-047, <c>Ariva.Infra.Flights.ProjectedArrivalWave</c>); where there is
+/// none (<see cref="NoArrivalWave"/>, or a zone serving no lane) predicted rules have nothing to judge.
 /// </summary>
 public interface IArrivalWaveSource
 {
@@ -166,7 +166,7 @@ public interface IArrivalWaveSource
     Task<IReadOnlyDictionary<DateTime, double>> ArrivalsAsync(string siteCode, string zoneName, DateTime fromUtc, DateTime toUtc, CancellationToken ct = default);
 }
 
-/// <summary>No projection yet (before ARV-047).</summary>
+/// <summary>No projection (tests and evaluations without flights).</summary>
 public sealed class NoArrivalWave : IArrivalWaveSource
 {
     public Task<IReadOnlyDictionary<DateTime, double>> ArrivalsAsync(string siteCode, string zoneName, DateTime fromUtc, DateTime toUtc, CancellationToken ct = default) =>

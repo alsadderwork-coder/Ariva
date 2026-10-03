@@ -1,7 +1,10 @@
 using Ariva.Business.Contracts.Aman.V1;
+using Ariva.Core;
 using Ariva.Core.Border;
 using Ariva.Core.Services;
+using Ariva.Core.Flights;
 using Ariva.Core.Services.Border;
+using Ariva.Core.Services.Flights;
 using Ariva.Di.Extensions;
 using Ariva.Infra.Services.Administration;
 using Ariva.Infra.Services.Seed;
@@ -30,7 +33,12 @@ public sealed class ImmigrationIntakeTests(PostgresFixture fixture) : IAsyncDisp
     private static bool _seeded;
 
     private readonly AccountsHost _host = new(fixture, database: TestDatabase.Border,
-        configure: services => services.AddArivaBorderFeed(new ConfigurationBuilder().Build()));
+        configure: services =>
+        {
+            services.AddArivaBorderFeed(new ConfigurationBuilder().Build());
+            services.AddArivaFlights(new ConfigurationBuilder().Build(), watchFeeds: false);
+            services.AddArivaArrivalWave(new ConfigurationBuilder().Build());
+        });
 
     public ValueTask DisposeAsync() => _host.DisposeAsync();
 
@@ -176,6 +184,173 @@ public sealed class ImmigrationIntakeTests(PostgresFixture fixture) : IAsyncDisp
         (await Apply<InboundFlightLaneDemand>(i => i.ApplyLaneDemandAsync(ImmigrationScope.ForSite("DMO"), "aman-kafka", [Demand(190, at.AddMinutes(-5), "ld-latest")], Ct)))[0].Applied.Should().BeTrue();
         (await _host.ReadAsync<string>("SELECT boarded_total || ' ' || vis || ' ' || source_event_id FROM inbound_lane_demand WHERE flight_key = 'QR900-20261003-A'"))
             .Should().Be("190 95 ld-latest");
+    }
+
+    [Fact]
+    public async Task ArrivalWave_Should_ProjectTheSitesArrivalsWithAmansLaneDemandWherePresent_When_Asked()
+    {
+        await SeedAsync();
+        FlightLegData Leg(string key, DateTime? estimated = null, DateTime? onBlock = null, int? seats = null, int? pax = null, string direction = "Arrival") =>
+            new(key, "AW", key[2..5], null, direction, Now.AddMinutes(15), estimated, null, onBlock, null, Origin: direction == "Arrival" ? "BEY" : "DMO",
+                Destination: direction == "Arrival" ? "DMO" : "BEY", Stand: "B12", Seats: seats, PaxEstimate: pax);
+        var legs = await _host.AsCallerAsync(null, s => s.GetRequiredService<ISvcFlightIntake>().ApplyLegsAsync("DMO", "it-wave", [
+            Leg("AW101-WAVE-A", onBlock: Now.AddMinutes(-5), pax: 160),
+            Leg("AW102-WAVE-A", estimated: Now.AddMinutes(20), pax: 100),
+            Leg("AW103-WAVE-A", estimated: Now.AddMinutes(20), pax: 100),
+            Leg("AW104-WAVE-A", estimated: Now.AddMinutes(45), pax: 100),
+            Leg("AW105-WAVE-A", estimated: Now.AddMinutes(10), seats: 180),
+            Leg("AW106-WAVE-A", estimated: Now.AddMinutes(25)),
+            Leg("AW107-WAVE-D", estimated: Now.AddMinutes(10), pax: 100, direction: "Departure")], Now.AddMinutes(-1), Ct));
+        legs.Should().OnlyContain(r => !r.HasErrors);
+        (await _host.AsCallerAsync(null, s => s.GetRequiredService<ISvcFlightIntake>().ApplyEventsAsync("DMO", "it-wave",
+            [new FlightEventData("AW103-WAVE-A", "Cancelled", Now.AddMinutes(-1))], Now.AddMinutes(-1), Ct))).Should().OnlyContain(r => !r.HasErrors);
+        var lanes = new Dictionary<string, int> { ["CIT"] = 40, ["RES"] = 20, ["VIS"] = 90, ["CRW"] = 4 };
+        (await Apply<InboundFlightLaneDemand>(i => i.ApplyLaneDemandAsync(ImmigrationScope.ForSite("DMO"), "aman-kafka",
+            [new("DMO", "AW101-WAVE-A", new DateTimeOffset(Now.AddMinutes(15)), 200, lanes, 30, new DateTimeOffset(Now.AddMinutes(-10)), "aw-ld-1")], Ct)))
+            .Should().OnlyContain(r => r.Applied);
+
+        _waveAdmin = await WaveUserAsync(RoleCodes.SystemAdministrator);
+        var wave = await Wave("DMO", 30);
+
+        wave.HasErrors.Should().BeFalse();
+        var view = wave.Data;
+        view.Flights.Select(f => f.FlightKey).Should().Equal("AW101-WAVE-A", "AW105-WAVE-A", "AW102-WAVE-A", "AW106-WAVE-A");
+        view.Flights[0].Should().Match<ArrivalWaveFlightViewModel>(f => f.PassengerSource == "Aman" && f.LaneSource == "Aman" && f.InBlockSource == "OnBlock" && f.Landed &&
+                                                                         f.Lanes.Vis == 90 && f.Lanes.EGate == 30 && f.Passengers == 200);
+        view.Flights[1].Should().Match<ArrivalWaveFlightViewModel>(f => f.PassengerSource == "Seats" && f.Passengers == 144 && f.LaneSource == "DefaultMix");
+        view.Flights[2].Should().Match<ArrivalWaveFlightViewModel>(f => f.PassengerSource == "PaxEstimate" && f.Lanes.Vis == 35 && f.InBlockSource == "Estimated" && !f.Landed);
+        view.Flights[3].Passengers.Should().BeNull();
+        view.FlightsWithoutPassengers.Should().Be(1);
+        // Every flight's passengers lie inside the horizon: the curve holds them all (AMAN's 184 of 200 boarded, the mix's 92 percent of the rest).
+        view.Minutes.Sum(m => m.Lanes.Total).Should().BeApproximately(184 + 144 * 0.92 + 100 * 0.92, 0.1);
+        view.Minutes.Should().HaveCount(30 + 11 + 12);
+
+        (await Wave("DMO", 60)).Data.Flights.Select(f => f.FlightKey).Should().Contain("AW104-WAVE-A");
+        (await Wave("ZZ9", 30)).ErrorMessages.Should().Equal(Ariva.Core.Services.Topology.TopologyErrors.NotFound);
+        (await Wave("DMO", 4)).ErrorMessages.Should().ContainSingle().Which.Should().Contain("minutes is 5 to 120");
+
+        // A site the caller cannot see is not found, whatever the endpoint checked (CWE-863); no caller sees nothing.
+        await ProbeSiteAsync();
+        (await Wave("DMO", 30, await WaveUserAsync(RoleCodes.BorderShiftSupervisor, "XS2"))).ErrorMessages.Should().Equal(Ariva.Core.Services.Topology.TopologyErrors.NotFound);
+        (await _host.AsCallerAsync(null, s => s.GetRequiredService<ISvcArrivalWave>().GetAsync("DMO", 30, Ct))).HasErrors.Should().BeTrue();
+
+        // An airport role sees flight and minute totals only: the lane split is border data (wiki 01).
+        var totals = (await Wave("DMO", 30, await WaveUserAsync(RoleCodes.TerminalDutyManager, "DMO"))).Data;
+        var aman = totals.Flights.Single(f => f.FlightKey == "AW101-WAVE-A");
+        aman.Should().Match<ArrivalWaveFlightViewModel>(f => f.Lanes.Vis == null && f.Lanes.Cit == null && f.Lanes.EGate == null && f.Lanes.Total == 184 && f.LaneSource == null);
+        totals.Minutes.Should().OnlyContain(m => m.Lanes.Vis == null && m.Lanes.Cit == null);
+        totals.Minutes.Sum(m => m.Lanes.Total).Should().BeApproximately(view.Minutes.Sum(m => m.Lanes.Total), 0.1);
+        totals.AlertWindow.Vis.Should().BeNull();
+        (await Wave("DMO", 30, await WaveUserAsync(RoleCodes.BorderShiftSupervisor, "DMO"))).Data.Flights.Single(f => f.FlightKey == "AW101-WAVE-A").Lanes.Vis
+            .Should().Be(90);
+    }
+
+    [Fact]
+    public async Task ArrivalWave_Should_KeepEachSitesFlightsAndLaneDemandApart_When_TwoSitesShareAFlightKey()
+    {
+        await SeedAsync();
+        await ProbeSiteAsync();
+        _waveAdmin = await WaveUserAsync(RoleCodes.SystemAdministrator);
+        FlightLegData Leg(int pax) => new("XK1-CROSS-A", "XK", "1", null, "Arrival", Now.AddMinutes(15), Now.AddMinutes(5), null, null, null, Origin: "BEY",
+            Destination: "DMO", PaxEstimate: pax);
+        foreach (var (site, pax) in new[] { ("DMO", 100), ("XS2", 300) })
+            (await _host.AsCallerAsync(null, s => s.GetRequiredService<ISvcFlightIntake>().ApplyLegsAsync(site, "it-cross", [Leg(pax)], Now.AddMinutes(-1), Ct)))
+                .Should().OnlyContain(r => !r.HasErrors);
+        (await Apply<InboundFlightLaneDemand>(i => i.ApplyLaneDemandAsync(ImmigrationScope.ForSite("XS2"), "aman-kafka",
+            [new("XS2", "XK1-CROSS-A", new DateTimeOffset(Now.AddMinutes(15)), 250, new Dictionary<string, int> { ["VIS"] = 200 }, 0,
+                new DateTimeOffset(Now.AddMinutes(-5)), "xk1-ld")], Ct))).Should().OnlyContain(r => r.Applied);
+
+        var dmo = (await Wave("DMO", 30)).Data.Flights.Single(f => f.FlightKey == "XK1-CROSS-A");
+        dmo.Should().Match<ArrivalWaveFlightViewModel>(f => f.PassengerSource == "PaxEstimate" && f.LaneSource == "DefaultMix" && f.Passengers == 100,
+            "XS2's lane demand for the same key never reaches DMO");
+        var xs2 = (await Wave("XS2", 30)).Data;
+        xs2.Flights.Single(f => f.FlightKey == "XK1-CROSS-A").Should().Match<ArrivalWaveFlightViewModel>(f => f.PassengerSource == "Aman" && f.Passengers == 250);
+        xs2.Flights.Select(f => f.FlightKey).Should().NotContain(k => k.StartsWith("AW1", StringComparison.Ordinal), "DMO's legs never reach XS2");
+        (await Wave("DMO", 30)).Data.Flights.Select(f => f.FlightKey).Should().NotContain(k => k.StartsWith("XP1", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ProjectedArrivalWave_Should_GiveEachQueueZoneTheLanesItsDesksServe_When_ARuleReadsIt()
+    {
+        await SeedAsync();
+        // A second site at the demo airport whose published profile links queue zones to desks through service zones:
+        // two queues for visitors, one for citizens and residents, an overflow band of the first, and a queue with no desk.
+        await ProbeSiteAsync();
+        var minute = new DateTime(Now.Ticks - Now.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc);
+        var leg = new FlightLegData("XP1-WAVE-A", "XP", "1", null, "Arrival", minute.AddMinutes(10), null, null, minute.AddMinutes(-11), null, Origin: "BEY",
+            Destination: "DMO", PaxEstimate: 300);
+        (await _host.AsCallerAsync(null, s => s.GetRequiredService<ISvcFlightIntake>().ApplyLegsAsync("XS2", "it-wave", [leg], Now.AddMinutes(-1), Ct)))
+            .Should().OnlyContain(r => !r.HasErrors);
+        (await Apply<InboundFlightLaneDemand>(i => i.ApplyLaneDemandAsync(ImmigrationScope.ForSite("XS2"), "aman-kafka",
+            [new("XS2", "XP1-WAVE-A", new DateTimeOffset(minute.AddMinutes(10)), 200, new Dictionary<string, int> { ["VIS"] = 100, ["CIT"] = 40, ["RES"] = 10 }, 0,
+                new DateTimeOffset(Now.AddMinutes(-5)), "xp1-ld")], Ct))).Should().OnlyContain(r => r.Applied);
+
+        async Task<IReadOnlyDictionary<DateTime, double>> Arrivals(string zone) =>
+            await _host.AsCallerAsync(null, s => s.GetRequiredService<Ariva.Core.Alerting.IArrivalWaveSource>().ArrivalsAsync("XS2", zone, minute.AddMinutes(-1), minute.AddMinutes(60), Ct));
+
+        // On-block 11 minutes ago: the 12 hall minutes start now, so the whole flight lies ahead; visitors are shared by two queues.
+        (await Arrivals("Q-VIS-1")).Values.Sum().Should().BeApproximately(50, 1e-6);
+        (await Arrivals("Q-VIS-2")).Values.Sum().Should().BeApproximately(50, 1e-6);
+        (await Arrivals("OV-1")).Values.Sum().Should().BeApproximately(50, 1e-6, "an overflow band takes its queue's arrivals");
+        (await Arrivals("Q-CIT")).Values.Sum().Should().BeApproximately(50, 1e-6);
+        (await Arrivals("Q-CIT"))[minute].Should().BeApproximately(50 * 0.03, 1e-6);
+        (await Arrivals("Q-NONE")).Should().BeNull("a queue serving no lane has no projection");
+        (await _host.AsCallerAsync(null, s => s.GetRequiredService<Ariva.Core.Alerting.IArrivalWaveSource>()
+            .ArrivalsAsync("XS2", "Q-VIS-1", minute.AddMinutes(-120), minute.AddMinutes(-60), Ct))).Should().BeEmpty("the past has no projection");
+    }
+
+    /// <summary>
+    /// A second site, XS2, at the demo airport (once per database): a terminal, an immigration checkpoint with desks for
+    /// visitors (two) and citizens and residents, and a published profile linking queue zones to the desks through service
+    /// zones: two visitor queues, one for citizens and residents, an overflow band of the first and a queue with no desk.
+    /// </summary>
+    private Task ProbeSiteAsync() => ExecuteAsMigrationAsync("""
+        DO $probe$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM zone_profile WHERE id = 'a0470000-0000-0000-0000-000000000020') THEN
+                RETURN;
+            END IF;
+                INSERT INTO site (id, code, name) SELECT gen_random_uuid(), 'XS2', 'Arrival wave probe' WHERE NOT EXISTS (SELECT 1 FROM site WHERE code = 'XS2');
+                INSERT INTO terminal (id, airport_id, code, name, site_code)
+                     SELECT 'a0470000-0000-0000-0000-000000000001', id, 'XT2', 'Probe terminal', 'XS2' FROM airport WHERE iata_code = 'DMO' AND deleted_on IS NULL;
+                INSERT INTO level (id, terminal_id, site_code, code, name, floor_number, width_metres, depth_metres)
+                     VALUES ('a0470000-0000-0000-0000-000000000002', 'a0470000-0000-0000-0000-000000000001', 'XS2', 'L0', 'Arrivals', 0, 100, 100);
+                INSERT INTO checkpoint (id, level_id, site_code, code, name, kind)
+                     VALUES ('a0470000-0000-0000-0000-000000000003', 'a0470000-0000-0000-0000-000000000002', 'XS2', 'IMM', 'Immigration', 'Immigration');
+                INSERT INTO desk (id, checkpoint_id, site_code, code, name, kind, lane_category_codes) VALUES
+                    ('a0470000-0000-0000-0000-000000000011', 'a0470000-0000-0000-0000-000000000003', 'XS2', 'V1', 'Visitors 1', 'Desk', 'VIS'),
+                    ('a0470000-0000-0000-0000-000000000012', 'a0470000-0000-0000-0000-000000000003', 'XS2', 'V2', 'Visitors 2', 'Desk', 'VIS'),
+                    ('a0470000-0000-0000-0000-000000000013', 'a0470000-0000-0000-0000-000000000003', 'XS2', 'C1', 'Citizens 1', 'Desk', 'CIT,RES');
+                INSERT INTO zone_profile (id, site_code, name, status) VALUES ('a0470000-0000-0000-0000-000000000020', 'XS2', 'Probe', 'Draft');
+                INSERT INTO zone (id, profile_id, name, kind, level_id, queue_zone_id, desk_id, polygon) VALUES
+                    ('a0470000-0000-0000-0000-000000000021', 'a0470000-0000-0000-0000-000000000020', 'Q-VIS-1', 'Queue', 'a0470000-0000-0000-0000-000000000002', NULL, NULL, 'probe'),
+                    ('a0470000-0000-0000-0000-000000000022', 'a0470000-0000-0000-0000-000000000020', 'Q-VIS-2', 'Queue', 'a0470000-0000-0000-0000-000000000002', NULL, NULL, 'probe'),
+                    ('a0470000-0000-0000-0000-000000000023', 'a0470000-0000-0000-0000-000000000020', 'Q-CIT', 'Queue', 'a0470000-0000-0000-0000-000000000002', NULL, NULL, 'probe'),
+                    ('a0470000-0000-0000-0000-000000000024', 'a0470000-0000-0000-0000-000000000020', 'Q-NONE', 'Queue', 'a0470000-0000-0000-0000-000000000002', NULL, NULL, 'probe');
+                INSERT INTO zone (id, profile_id, name, kind, level_id, queue_zone_id, desk_id, polygon) VALUES
+                    ('a0470000-0000-0000-0000-000000000031', 'a0470000-0000-0000-0000-000000000020', 'S-V1', 'Service', 'a0470000-0000-0000-0000-000000000002', 'a0470000-0000-0000-0000-000000000021', 'a0470000-0000-0000-0000-000000000011', 'probe'),
+                    ('a0470000-0000-0000-0000-000000000032', 'a0470000-0000-0000-0000-000000000020', 'S-V2', 'Service', 'a0470000-0000-0000-0000-000000000002', 'a0470000-0000-0000-0000-000000000022', 'a0470000-0000-0000-0000-000000000012', 'probe'),
+                    ('a0470000-0000-0000-0000-000000000033', 'a0470000-0000-0000-0000-000000000020', 'S-C1', 'Service', 'a0470000-0000-0000-0000-000000000002', 'a0470000-0000-0000-0000-000000000023', 'a0470000-0000-0000-0000-000000000013', 'probe'),
+                    ('a0470000-0000-0000-0000-000000000034', 'a0470000-0000-0000-0000-000000000020', 'OV-1', 'Overflow', 'a0470000-0000-0000-0000-000000000002', 'a0470000-0000-0000-0000-000000000021', NULL, 'probe');
+                UPDATE zone_profile SET status = 'Published', version = 1, geometry_hash = repeat('a', 64), published_on = now() WHERE id = 'a0470000-0000-0000-0000-000000000020';
+        END
+        $probe$;
+        """);
+
+    private Task<Fluentx.Result<ArrivalWaveViewModel>> Wave(string site, int minutes, Guid? caller = null) =>
+        _host.AsCallerAsync(caller ?? _waveAdmin, s => s.GetRequiredService<ISvcArrivalWave>().GetAsync(site, minutes, Ct));
+
+    private Guid? _waveAdmin;
+
+    /// <summary>An administrator of every site (the lane split included), and a user with one role at the given sites.</summary>
+    private async Task<Guid> WaveUserAsync(string role, params string[] sites)
+    {
+        var user = await _host.CreateUserAsync("it.wave." + Guid.NewGuid().ToString("N")[..10], roles: [role]);
+        if (sites.Length == 0)
+            await _host.ReadAsync<int>("UPDATE \"user\" SET all_sites = true WHERE id = @id RETURNING 1", user);
+        foreach (var site in sites)
+            await ExecuteAsMigrationAsync($"INSERT INTO user_site (id, user_id, site_code) VALUES (gen_random_uuid(), '{user}', '{site}')");
+        return user;
     }
 
     [Theory]

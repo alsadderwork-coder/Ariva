@@ -152,7 +152,9 @@ export function accounts() {
 		// ARV-029: registers the emulated AODB's and AMAN's integration clients (critical actions).
 		emulatorFeedAdmin: account('e2e.emufeedadmin', ['SystemAdministrator'], false, true, ['*']),
 		// ARV-048: registers the immigration clients of aman-feed.spec.ts.
-		amanFeedAdmin: account('e2e.amanfeedadmin', ['SystemAdministrator'], false, true, ['*'])
+		amanFeedAdmin: account('e2e.amanfeedadmin', ['SystemAdministrator'], false, true, ['*']),
+		// ARV-047: registers the clients that feed arrival-wave.spec.ts.
+		arrivalWaveAdmin: account('e2e.arrivalwaveadmin', ['SystemAdministrator'], false, true, ['*'])
 	} as const;
 }
 

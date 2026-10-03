@@ -1077,8 +1077,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 50,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "ArrivalWave (formulas F14) in Ariva.Core: in-block precedence, AMAN lane demand or the default mix, 12-minute spread after the delay, alert window; GET api/v1/sites/{siteCode}/arrival-wave (ViewArrivalWave, site-scoped in the endpoint and the service; lane split only with ViewArrivalWaveLanes, totals for airport roles); ProjectedArrivalWave feeds predicted-breach rules per queue zone through the desks its service zones stand at. Security review FAIL (missing cross-site test) then PASS. Gates: unit 1961, integration 284, e2e 355 (1 flaky AIDX oversize EPIPE, passed on retry), scan 0 errors, docs. No web strip yet.",
       "dependsOn": [
         "ARV-041",
         "ARV-048"

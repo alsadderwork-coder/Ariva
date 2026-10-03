@@ -57,6 +57,8 @@ Common tasks:
 2. When a zone shows a band or a neutral message, check the Devices screen and tell the site administrator.
 3. Use the arrival-wave strip to open desks before a wave reaches the hall.
 
+Arrival-wave API (ARV-047, `ArrivalWave.View`: border shift supervisors, terminal duty managers and administrators of the site): `GET api/v1/sites/{siteCode}/arrival-wave?minutes=30` (5 to 120) answers the flights landing within that many minutes and those landed whose passengers are still reaching the hall, each with its in-block time and where it comes from (`OnBlock`, `Landed` plus taxi-in, `Estimated`, `Scheduled`), its passengers (`Aman`, `PaxEstimate` or `Seats`; none when the feeds give none) and lanes (`Aman` or `DefaultMix`), then the predicted hall arrivals per minute and lane (`cit`, `res`, `vis`, `crw`, `eGate`), and the sum over the next 5 to 25 minutes. The split by lane is border data (`ArrivalWaveLanes.View`): a terminal duty manager gets the same answer with totals only (the lane counts and `laneSource` null). `truncated` is true when the site had more arriving legs than Ariva reads at once (2,000; the latest scheduled are left out). Passengers reach the hall 8 to 15 minutes after on-block (11 by default) over about 12 minutes (formulas F14). Cancelled and diverted flights are left out.
+
 ### Alerts (ARV-039)
 
 You see the alerts of your sites that your role is responsible for: the rule's owner role, the escalation role once an alert has been escalated, and every role for a rule without an owner (administrators see all). An alert moves forward only:

@@ -23,7 +23,7 @@ public static class AlertingExtensions
         services.AddSingleton(settings);
         services.TryAddSingleton(TimeProvider.System);
         // What each rule's evaluation reads and runs with (also registered for Api.Main's backtest).
-        services.TryAddSingleton<Ariva.Core.Alerting.IArrivalWaveSource, Ariva.Core.Alerting.NoArrivalWave>();
+        services.AddArivaArrivalWaveSource(configuration);
         services.TryAddScoped<AlertInputs>();
         services.TryAddScoped<AlertRuleTick>();
         // Raised and escalated alerts write their emails (ARV-040); Integration sends them.

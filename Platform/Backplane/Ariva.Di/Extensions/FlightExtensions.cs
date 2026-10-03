@@ -28,6 +28,37 @@ public static class FlightExtensions
         return services;
     }
 
+    /// <summary>
+    /// The arrival-wave projection (ARV-047, Ariva.Api.Main): its settings (<c>Flights:ArrivalWave</c>, checked at start)
+    /// and the service.
+    /// </summary>
+    public static IServiceCollection AddArivaArrivalWave(this IServiceCollection services, IConfiguration configuration)
+    {
+        services.AddArivaArrivalWaveSource(configuration);
+        services.TryAddScoped<Ariva.Infra.Services.Administration.CallerRoles>();
+        services.TryAddScoped<ISvcArrivalWave, Ariva.Infra.Services.Flights.SvcArrivalWave>();
+        return services;
+    }
+
+    /// <summary>
+    /// The arrival wave that predicted-breach rules read (ARV-038, ARV-047; Ariva.Api.Stream's evaluation and Ariva.Api.Main's
+    /// backtest): the settings (<c>Flights:ArrivalWave</c>, checked at start) and <see cref="ProjectedArrivalWave"/>.
+    /// </summary>
+    public static IServiceCollection AddArivaArrivalWaveSource(this IServiceCollection services, IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configuration);
+        var settings = configuration.GetSection(Ariva.Core.Flights.ArrivalWaveSettings.SectionName).Get<Ariva.Core.Flights.ArrivalWaveSettings>() ??
+                       new Ariva.Core.Flights.ArrivalWaveSettings();
+        var problems = settings.Problems().ToList();
+        if (problems.Count > 0)
+            throw new InvalidOperationException(string.Join(" ", problems));
+        services.TryAddSingleton(settings);
+        services.TryAddSingleton(TimeProvider.System);
+        services.TryAddScoped<Ariva.Core.Alerting.IArrivalWaveSource, ProjectedArrivalWave>();
+        return services;
+    }
+
     /// <summary>SSIM schedule imports (ARV-046, Ariva.Api.Main): the flight intake without the freshness sweep, and the import service.</summary>
     public static IServiceCollection AddArivaFlightSchedules(this IServiceCollection services, IConfiguration configuration)
     {

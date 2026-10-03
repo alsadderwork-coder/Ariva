@@ -127,6 +127,15 @@ public static class Global
             /// <summary>Join a zone's live state on the hub (ARV-035): queue length and nowcast as they change.</summary>
             public static Permission ViewLiveQueue { get; } = new("LiveQueue", PermissionAction.View);
 
+            /// <summary>The arrival-wave projection of a site (ARV-047): flights landing soon and the hall arrivals they bring.</summary>
+            public static Permission ViewArrivalWave { get; } = new("ArrivalWave", PermissionAction.View);
+
+            /// <summary>
+            /// The arrival wave's split by lane category and e-gate eligibility (ARV-047): border data, so border roles see it;
+            /// airport roles see flight and minute totals only (wiki 01, 12).
+            /// </summary>
+            public static Permission ViewArrivalWaveLanes { get; } = new("ArrivalWaveLanes", PermissionAction.View);
+
             #endregion
 
             #region Alerting (E5)
