@@ -994,8 +994,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 46,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "POST api/v1/integration/sites/{siteCode}/flights/batch, flights/events and allocations/batch: strict JSON (no unknown or repeated members, depth 8), 1 to 500 items, 1 MB (413, also chunked), per-item results via ISvcFlightIntake, feed per client; required Idempotency-Key claimed in the applying transaction (script 0026, replay, 422 on reuse, per client, 24 h, swept); at-once and per-client limits (429); ingress 1 MB. Security review PASS after fixes.",
       "dependsOn": [
         "ARV-042",
         "ARV-041"

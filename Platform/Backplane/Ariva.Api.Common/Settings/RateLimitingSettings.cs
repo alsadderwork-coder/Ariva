@@ -26,6 +26,29 @@ public sealed class RateLimitingSettings
     /// (the 5 a minute per client are counted in the database).
     /// </summary>
     public FixedWindowSettings IntegrationAuth { get; set; } = new() { PermitLimit = 20, WindowSeconds = 60 };
+
+    /// <summary>
+    /// The <c>integration-batch</c> policy for the Integration API's batch endpoints (ARV-043): batches of up to 1 MB
+    /// handled at once per host process, and how many may wait, before any body is read; the rest get 429 (CWE-400).
+    /// Default 8 at once and 16 waiting.
+    /// </summary>
+    public ConcurrencySettings IntegrationBatch { get; set; } = new() { PermitLimit = 8, QueueLimit = 16 };
+
+    /// <summary>
+    /// Batches one integration client may send per window to one host process (ARV-043), counted after its token is
+    /// validated so no one can spend another client's allowance. Default 120 a minute.
+    /// </summary>
+    public FixedWindowSettings IntegrationClient { get; set; } = new() { PermitLimit = 120, WindowSeconds = 60 };
+}
+
+/// <summary>A concurrency limiter: <see cref="PermitLimit"/> requests at once and <see cref="QueueLimit"/> waiting.</summary>
+public sealed class ConcurrencySettings
+{
+    public int PermitLimit { get; set; }
+
+    public int QueueLimit { get; set; }
+
+    public bool IsValid => PermitLimit > 0 && QueueLimit >= 0;
 }
 
 /// <summary>

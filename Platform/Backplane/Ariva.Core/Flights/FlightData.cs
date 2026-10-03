@@ -49,6 +49,7 @@ public sealed record CounterAllocationData(
 /// <summary>The outcome of one item of a feed batch: applied (it changed something), or why not.</summary>
 public sealed record FlightItemResult(int Index, string FlightKey, bool Applied, IReadOnlyList<string> Errors, IReadOnlyList<string> Warnings)
 {
+    [System.Text.Json.Serialization.JsonIgnore]
     public bool HasErrors => Errors.Count > 0;
 }
 

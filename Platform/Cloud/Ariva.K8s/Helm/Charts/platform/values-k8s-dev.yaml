@@ -66,7 +66,7 @@ ingresses:
     annotations:
       nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
       nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
-      nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+      nginx.ingress.kubernetes.io/proxy-body-size: "1m"  # ARV-043: the largest Integration API body is a 1 MB batch (ARV-044 raises it for 5 MB AIDX)
       nginx.ingress.kubernetes.io/rewrite-target: /
 
   - name: simulation

@@ -68,3 +68,40 @@ public sealed record IntegrationCallCheck(IntegrationCallerViewModel Caller, str
 /// <summary>One audited Integration API call: who, which scope, what, for which site, the answer and the payload's SHA-256.</summary>
 public sealed record IntegrationCallRecord(string ClientId, Guid? SessionId, string Scope, string Method, string Route, string SiteCode, int Status, string PayloadSha256,
     long PayloadBytes, IPAddress Remote, DateTime AtUtc);
+
+/// <summary>
+/// Idempotency of Integration API batches (ARV-043, script 0026). <see cref="ClaimAsync"/> runs in the transaction that
+/// applies the batch: the first call with a key claims it, a concurrent call with the same key waits for that transaction,
+/// and a later call gets what the first one stored with <see cref="CompleteAsync"/>. Keys are per client and kept for
+/// <see cref="Integration.IntegrationBatches.KeyLifetime"/>. System calls (the caller is the authenticated client).
+/// </summary>
+public interface ISvcIntegrationIdempotency : ISvcScoped
+{
+    Task<IdempotencyClaim> ClaimAsync(IdempotencyRequest request, CancellationToken ct = default);
+
+    Task CompleteAsync(IdempotencyRequest request, int statusCode, string responseBody, CancellationToken ct = default);
+
+    /// <summary>Deletes expired keys, at most <paramref name="limit"/>; the number deleted.</summary>
+    Task<int> SweepAsync(int limit, CancellationToken ct = default);
+}
+
+/// <summary>A batch's claim on its key: the client, the key, what it does (operation and site) and the SHA-256 of its body.</summary>
+public sealed record IdempotencyRequest(string ClientId, string Key, string Operation, string SiteCode, string RequestSha256);
+
+public enum IdempotencyOutcome
+{
+    /// <summary>The key is this call's: apply the batch and complete the key.</summary>
+    Claimed,
+
+    /// <summary>The key answered an identical request before: send <see cref="IdempotencyClaim.StatusCode"/> and the body again.</summary>
+    Replay,
+
+    /// <summary>The key was used for another request (body, operation or site): refuse (422).</summary>
+    Mismatch
+}
+
+public sealed record IdempotencyClaim(IdempotencyOutcome Outcome, int StatusCode = 0, string ResponseBody = null)
+{
+    public static readonly IdempotencyClaim Claimed = new(IdempotencyOutcome.Claimed);
+    public static readonly IdempotencyClaim Mismatch = new(IdempotencyOutcome.Mismatch);
+}

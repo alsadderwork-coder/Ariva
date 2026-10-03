@@ -67,9 +67,9 @@ On success: a JWT access token, audience `ariva-integration`, signed with the in
 
 | Method and path | Scope | Body |
 |---|---|---|
-| `POST /api/v1/flights/batch` | `flights:write` | Array of `FlightLeg`: `flightKey`, `carrier`, `number`, `suffix`, `direction` (Arrival, Departure), `scheduledUtc`, `estimatedUtc`, `actualUtc`, `onBlockUtc`, `offBlockUtc`, `origin`, `destination`, `terminal`, `stand`, `gate`, `aircraftType`, `seats`, `paxEstimate`, `status`, `codeshares[]` |
-| `POST /api/v1/flights/events` | `flights:write` | Array of `FlightEvent`: `flightKey`, `eventType` (Estimated, Landed, OnBlock, GateOpen, BoardingStart, OffBlock, Cancelled, Diverted), `timeUtc` |
-| `POST /api/v1/allocations/batch` | `allocations:write` | Array of `CounterAllocation`: `flightKey`, `checkpointCode`, `counterCodes[]`, `openUtc`, `closeUtc`, `handlerCode` |
+| `POST /api/v1/integration/sites/{siteCode}/flights/batch` (ARV-043) | `flights:write` | Batch of `FlightLeg`: `flightKey`, `carrier`, `number`, `suffix`, `direction` (Arrival, Departure), `scheduledUtc`, `estimatedUtc`, `actualUtc`, `onBlockUtc`, `offBlockUtc`, `origin`, `destination`, `terminal`, `stand`, `gate`, `aircraftType`, `seats`, `paxEstimate`, `status`, `codeshares[]` |
+| `POST /api/v1/integration/sites/{siteCode}/flights/events` (ARV-043) | `flights:write` | Batch of `FlightEvent`: `flightKey`, `eventType` (Estimated, Landed, OnBlock, GateOpen, BoardingStart, OffBlock, Cancelled, Diverted), `timeUtc` |
+| `POST /api/v1/integration/sites/{siteCode}/allocations/batch` (ARV-043) | `allocations:write` | Batch of `CounterAllocation`: `flightKey`, `checkpointCode`, `counterCodes[]`, `openUtc`, `closeUtc`, `handlerCode` |
 | `POST /api/v1/immigration/desk-sessions` | `immigration:write` | Array of `DeskSessionChanged` (contract V1) |
 | `POST /api/v1/immigration/desk-interval-stats` | `immigration:write` | Array of `DeskIntervalStats` (contract V1) |
 | `POST /api/v1/immigration/egate-interval-stats` | `immigration:write` | Array of `EGateIntervalStats` (contract V1) |
@@ -80,7 +80,17 @@ On success: a JWT access token, audience `ariva-integration`, signed with the in
 
 The immigration contracts are the same records AMAN publishes on Kafka (`Ariva.Business.Contracts.Aman.V1`), so a non-AMAN immigration system integrates by sending the same JSON. The contracts carry no person, document or officer identifiers, and the API rejects unknown fields.
 
-Responses use the AMAN `Result<T>` shape: `{ hasErrors, errorMessages, warningMessages, infoMessages, data }`, with per-item results for batches.
+Every Integration API path names the site (`/api/v1/integration/sites/{siteCode}/...`), which must be one of the client's bound sites; the site never comes from the body. The paths of the endpoints not yet built follow the same pattern when their stories land.
+
+Responses follow Ariva's API convention, not AMAN's `Result<T>` envelope: the data on success and RFC 9457 problem details on failure. A batch answers 200 with `{ received, applied, unchanged, refused, items: [{ index, flightKey, applied, errors, warnings }] }`, also when some or all items were refused.
+
+### Batches (ARV-043)
+
+- Body: `{ "messageTimeUtc": optional UTC time the AODB produced the batch, "items": [ 1 to 500 items ] }`, `application/json`, at most 1 MB (413 beyond, answered by the call audit before the action and recorded). Read strictly: exact camelCase member names, no unknown or repeated member, no comments or trailing commas, numbers as numbers, at most 8 levels deep; a refusal names where the body went wrong only through members Ariva knows, so the client's text is never echoed (CWE-20, CWE-117).
+- `Idempotency-Key` is required (one header, 8 to 64 letters, digits or `. _ : -`). The key is claimed in the transaction that applies the batch (script 0026, `integration_idempotency`, primary key client and key): a retry with the same key, operation, site and body SHA-256 gets the stored answer with `Idempotent-Replayed: true` and nothing is applied again; a concurrent retry waits on the uncommitted claim and then gets the same answer; the same key with another request is 422; a batch that fails (5xx) leaves no claim. Keys are kept 24 hours and swept every 10 minutes by Ariva.Api.Integration; the runtime role cannot rewrite an answer or delete a key before it expires.
+- Limits (CWE-400): the `integration-batch` concurrency policy (`Security:RateLimiting:IntegrationBatch`, 8 at once and 16 waiting per replica) runs before authentication and before the call audit buffers a body, so excess batches get 429 without being read; each client may send `Security:RateLimiting:IntegrationClient` batches a minute per replica (120), counted in the action after the token and the client's record were checked (`IntegrationClientRateLimiter`), so a forged token cannot spend another client's allowance; the call audit buffers a body within the endpoint's limit in memory only; the ingress refuses bodies over 1 MB. A batch refused by the at-once limit is refused before authentication, so it appears in the rate limiter's metrics, not in `integration_call`; one refused by the client's allowance is recorded.
+- The feed is the client's own (`api-` and the client id's 26 characters), so each client's freshness and stale-feed alarm are its own and the body cannot name another feed. Each item goes through `ISvcFlightIntake` (ARV-041): checked by `FlightRules`, applied on its own, never stopping the others.
+
 
 ## Outbound connections (Ariva calls the other system)
 

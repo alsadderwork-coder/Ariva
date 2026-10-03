@@ -132,16 +132,32 @@ public static class IntegrationAuthentication
 
             string sha = null;
             long bytes = 0;
+            var tooLarge = false;
             var authenticated = await context.AuthenticateAsync(Scheme);
             if (authenticated.Succeeded)
             {
                 if (endpoint.Metadata.GetMetadata<Microsoft.AspNetCore.Http.Metadata.IRequestSizeLimitMetadata>()?.MaxRequestBodySize is { } limit &&
                     context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } size)
                     size.MaxRequestBodySize = limit;
-                (sha, bytes) = await HashBodyAsync(context.Request);
+                try
+                {
+                    (sha, bytes) = await HashBodyAsync(context.Request,
+                        endpoint.Metadata.GetMetadata<Microsoft.AspNetCore.Http.Metadata.IRequestSizeLimitMetadata>()?.MaxRequestBodySize);
+                }
+                catch (BadHttpRequestException e) when (e.StatusCode == StatusCodes.Status413PayloadTooLarge)
+                {
+                    // Beyond the endpoint's limit: answered here, and still recorded (with no payload hash).
+                    sha = null;
+                    bytes = 0;
+                    tooLarge = true;
+                }
             }
 
-            await next(context);
+            if (tooLarge)
+                await Results.Problem(statusCode: StatusCodes.Status413PayloadTooLarge, title: "Too large", detail: "The body is larger than this endpoint takes.")
+                    .ExecuteAsync(context);
+            else
+                await next(context);
 
             var caller = CallerOf(context);
             var refused = context.Items.TryGetValue(RefusedItem, out var item) && item is ValueTuple<string, string, string> r ? r : default;
@@ -172,12 +188,16 @@ public static class IntegrationAuthentication
             }
         });
 
-    // The body's SHA-256 (empty for none); the body stays readable for the endpoint. Its size is bounded by Kestrel's limit.
-    private static async Task<(string Sha, long Bytes)> HashBodyAsync(HttpRequest request)
+    // The body's SHA-256 (empty for none); the body stays readable for the endpoint. Its size is bounded by the endpoint's
+    // limit, and a body within it is buffered in memory, never in a temporary file (the pod's /tmp is small).
+    private static async Task<(string Sha, long Bytes)> HashBodyAsync(HttpRequest request, long? limit)
     {
-        if (request.ContentLength is 0 || (request.ContentLength is null && !request.Headers.ContainsKey("Transfer-Encoding")))
+        if (request.HttpContext.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpRequestBodyDetectionFeature>() is { CanHaveBody: false } || request.ContentLength is 0)
             return (null, 0);
-        request.EnableBuffering();
+        if (limit is { } max and > 0 and <= int.MaxValue)
+            request.EnableBuffering((int)max);
+        else
+            request.EnableBuffering();
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         var buffer = new byte[16 * 1024];
         long total = 0;

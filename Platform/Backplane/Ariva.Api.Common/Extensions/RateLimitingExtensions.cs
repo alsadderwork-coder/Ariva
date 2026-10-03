@@ -45,6 +45,13 @@ public static class RateLimitingExtensions
     /// <summary>Named policy for the integration token exchange (ARV-042): a fixed window per client address.</summary>
     public const string IntegrationAuthPolicy = "integration-auth";
 
+    /// <summary>
+    /// Named policy for the Integration API's batch endpoints (ARV-043): a concurrency limit per host process, applied
+    /// before authentication and before any body is buffered, so a burst of 1 MB batches cannot exhaust memory or the
+    /// temporary volume (CWE-400). The rest get 429; integrators retry with the same Idempotency-Key.
+    /// </summary>
+    public const string IntegrationBatchPolicy = "integration-batch";
+
     private const string UnknownClient = "unknown";
 
     #endregion
@@ -67,7 +74,8 @@ public static class RateLimitingExtensions
         services
             .AddOptions<RateLimitingSettings>()
             .Bind(configuration.GetSection(RateLimitingSettings.SectionName))
-            .Validate(settings => settings.Global.IsValid && settings.Auth.IsValid && settings.Device.IsValid && settings.IntegrationAuth.IsValid,
+            .Validate(settings => settings.Global.IsValid && settings.Auth.IsValid && settings.Device.IsValid && settings.IntegrationAuth.IsValid &&
+                                settings.IntegrationBatch.IsValid && settings.IntegrationClient.IsValid,
                 $"{RateLimitingSettings.SectionName} limits need a positive PermitLimit and WindowSeconds and a QueueLimit of zero or more.")
             .ValidateOnStart();
 
@@ -92,6 +100,13 @@ public static class RateLimitingExtensions
                     {
                         PermitLimit = 1,
                         QueueLimit = 2,
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst
+                    }));
+                options.AddPolicy(IntegrationBatchPolicy, _ =>
+                    RateLimitPartition.GetConcurrencyLimiter(IntegrationBatchPolicy, _ => new ConcurrencyLimiterOptions
+                    {
+                        PermitLimit = limits.IntegrationBatch.PermitLimit,
+                        QueueLimit = limits.IntegrationBatch.QueueLimit,
                         QueueProcessingOrder = QueueProcessingOrder.OldestFirst
                     }));
                 options.AddPolicy(BacktestPolicy, _ =>

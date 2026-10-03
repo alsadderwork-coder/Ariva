@@ -162,7 +162,7 @@ sequenceDiagram
   N->>R: Time step newer than the last accepted step?
   R-->>N: Yes, step recorded
   N-->>C: accessToken, expiresAt, sessionId
-  C->>N: POST /api/v1/flights/batch
+  C->>N: POST /api/v1/integration/sites/{siteCode}/flights/batch
   Note over C,N: Authorization Bearer token, X-TOTP-Code, Idempotency-Key
   N->>N: Scope, site binding and idempotency checks
   N-->>C: Result with per-item results

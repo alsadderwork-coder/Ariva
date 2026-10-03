@@ -142,7 +142,9 @@ export function accounts() {
 		// ARV-040: creates the email rule and sets the DMO people's addresses (neither is a critical action).
 		emailAdmin: account('e2e.emailadmin', ['SystemAdministrator'], false, false, ['*']),
 		// ARV-042: registering and changing integration clients are critical actions, so this suite signs in with a second factor.
-		integrationAdmin: account('e2e.intadmin', ['SystemAdministrator'], false, true, ['*'])
+		integrationAdmin: account('e2e.intadmin', ['SystemAdministrator'], false, true, ['*']),
+		// ARV-043: its own account, so its sign-in code never collides with integration-auth.spec.ts's in the same TOTP step (replay guard).
+		feedAdmin: account('e2e.feedadmin', ['SystemAdministrator'], false, true, ['*'])
 	} as const;
 }
 

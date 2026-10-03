@@ -72,6 +72,8 @@ builder.Services.AddAppControllers();
 // ring and audience, that every Integration API endpoint ([IntegrationScope]) accepts and nothing else does.
 builder.Services.AddAuthentication().AddArivaIntegrationAuthentication(builder.Configuration);
 builder.Services.AddArivaIntegrationAuth();
+builder.Services.AddArivaIntegrationBatches();
+builder.Services.AddSingleton<Ariva.Api.Common.Security.IntegrationClientRateLimiter>();
 
 // AMAN: AddAppCaching, AddAppHealthChecks, AddAppRouting, AddAppOpenApi.
 // AMAN feed: consumes Ariva.Business.Contracts Aman.V1 messages; identities never cross.

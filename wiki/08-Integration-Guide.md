@@ -91,11 +91,11 @@ var auth = await http.PostAsJsonAsync("/api/v1/auth", new
 auth.EnsureSuccessStatusCode();
 var token = await auth.Content.ReadFromJsonAsync<AuthResponse>();
 
-using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/flights/events")
+using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/integration/sites/DMO/flights/events")
 {
-    Content = JsonContent.Create(new[]
+    Content = JsonContent.Create(new
     {
-        new { flightKey = "DM214-20261001-A", eventType = "OnBlock", timeUtc = DateTime.UtcNow } // serialised with a Z suffix
+        items = new[] { new { flightKey = "DM214-20261001-A", eventType = "OnBlock", timeUtc = DateTime.UtcNow } } // serialised with a Z suffix
     })
 };
 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token!.AccessToken);
@@ -125,8 +125,8 @@ auth = requests.post(f"{base}/api/v1/auth", json={
 auth.raise_for_status()
 token = auth.json()["accessToken"]
 
-events = [{"flightKey": "DM214-20261001-A", "eventType": "OnBlock", "timeUtc": "2026-10-01T14:21:00Z"}]
-r = requests.post(f"{base}/api/v1/flights/events", json=events, timeout=10, headers={
+events = {"items": [{"flightKey": "DM214-20261001-A", "eventType": "OnBlock", "timeUtc": "2026-10-01T14:21:00Z"}]}
+r = requests.post(f"{base}/api/v1/integration/sites/DMO/flights/events", json=events, timeout=10, headers={
     "Authorization": f"Bearer {token}",
     "X-TOTP-Code": totp.now(),
     "Idempotency-Key": str(uuid.uuid4()),
@@ -146,12 +146,12 @@ TOKEN=$(curl -sS -X POST "$BASE/api/v1/auth" \
   -d "{\"clientId\":\"$ARIVA_CLIENT_ID\",\"clientSecret\":\"$ARIVA_CLIENT_SECRET\",\"totpCode\":\"$(oathtool --totp -b "$ARIVA_TOTP_SEED")\"}" \
   | jq -r .accessToken)
 
-curl -sS -X POST "$BASE/api/v1/flights/events" \
+curl -sS -X POST "$BASE/api/v1/integration/sites/DMO/flights/events" \
   -H "Authorization: Bearer $TOKEN" \
   -H "X-TOTP-Code: $(oathtool --totp -b "$ARIVA_TOTP_SEED")" \
   -H "Idempotency-Key: $(uuidgen)" \
   -H 'Content-Type: application/json' \
-  -d '[{"flightKey":"DM214-20261001-A","eventType":"OnBlock","timeUtc":"2026-10-01T14:21:00Z"}]'
+  -d '{"items":[{"flightKey":"DM214-20261001-A","eventType":"OnBlock","timeUtc":"2026-10-01T14:21:00Z"}]}'
 ```
 
 ## 5. Headers, idempotency and limits
@@ -160,17 +160,20 @@ curl -sS -X POST "$BASE/api/v1/flights/events" \
 |---|---|---|
 | `Authorization: Bearer <token>` | Every call | Token from `/api/v1/auth` |
 | `X-TOTP-Code: <current code>` | Every call when the client's per-request TOTP policy is on | On by default for immigration clients (AMAN parity) |
-| `Idempotency-Key: <uuid>` | Every write | Ariva stores keys for 24 hours and returns the original result for a repeat. Reuse the same key when retrying the same request; use a new key for new data. Behaviour when the same key arrives with a different body: To confirm |
+| `Idempotency-Key: <key>` | Every batch write (required) | 8 to 64 letters, digits or `. _ : -` (a UUID fits). Ariva keeps keys for 24 hours per client. A retry with the same key and the same body to the same endpoint and site gets the original answer with `Idempotent-Replayed: true`, and nothing is applied twice, also when retries overlap. The same key with a different body, endpoint or site answers 422. Use a new key for new data. |
 | `Content-Type` | Every write | `application/json`; AIDX uses XML |
 
 | Limit | Value |
 |---|---|
-| Body size, JSON APIs | 1 MB |
+| Body size, JSON APIs | 1 MB (413 beyond) |
 | Body size, AIDX | 5 MB |
-| Items per batch | 500 |
-| JSON nesting depth | 32 |
-| Unknown fields | Rejected |
-| Timestamps | UTC, ISO 8601 (for example `2026-10-01T14:21:00Z`) |
+| Items per batch | 1 to 500 |
+| Batches per client | 120 a minute per Ariva.Api.Integration replica (429 with `Retry-After` beyond) |
+| Batches at once | 8 per replica, 16 waiting (429 beyond, before the body is read) |
+| JSON nesting depth, batches | 8 |
+| Unknown or repeated members | Rejected (400); member names are exact camelCase |
+| Comments, trailing commas, numbers as strings | Rejected (400) |
+| Timestamps | UTC, ISO 8601 ending in `Z` (for example `2026-10-01T14:21:00Z`); a time with an offset is refused |
 
 Authorisation is by scope (`[IntegrationScope("flights:write")]` on each endpoint) and by site binding: a client bound to `DMO` cannot write `BEY`. Every call is audited with client, scope, endpoint, site, result and the payload's SHA-256.
 
@@ -187,99 +190,116 @@ Authorisation is by scope (`[IntegrationScope("flights:write")]` on each endpoin
 
 ## 7. Response shape
 
-Responses use AMAN's `Result<T>` shape, with per-item results for batches:
+Ariva answers like the rest of its API: the data on success and RFC 9457 problem details (`application/problem+json`) on failure. A batch answers 200 with one result per item, in order, also when some or all items were refused:
 
 ```json
 {
-  "hasErrors": false,
-  "errorMessages": [],
-  "warningMessages": [],
-  "infoMessages": [],
-  "data": [ { "index": 0, "hasErrors": false, "errorMessages": [] } ]
-}
-```
-
-The per-item object above is illustrative; its exact fields come with the OpenAPI document. Whether a batch with some failed items returns 200 or an error status is To confirm.
-
-## 8. Endpoints
-
-### POST /api/v1/flights/batch
-
-Scope `flights:write`. An array of `FlightLeg`. The `flightKey` is a stable key you choose, unique per flight leg (format To confirm; examples use carrier, number, date and direction). `status` values are illustrative.
-
-```json
-[
-  {
-    "flightKey": "DM214-20261001-A",
-    "carrier": "DM",
-    "number": "214",
-    "suffix": null,
-    "direction": "Arrival",
-    "scheduledUtc": "2026-10-01T14:05:00Z",
-    "estimatedUtc": "2026-10-01T14:12:00Z",
-    "actualUtc": null,
-    "onBlockUtc": null,
-    "offBlockUtc": null,
-    "origin": "BEY",
-    "destination": "DMO",
-    "terminal": "T1",
-    "stand": "B12",
-    "gate": "B12",
-    "aircraftType": "A320",
-    "seats": 180,
-    "paxEstimate": 162,
-    "status": "Scheduled",
-    "codeshares": ["XR1214"]
-  }
-]
-```
-
-Illustrative response for a batch of two legs where the second failed validation (per-item field names follow the OpenAPI document once published):
-
-```json
-{
-  "hasErrors": true,
-  "errorMessages": [],
-  "warningMessages": [],
-  "infoMessages": [],
-  "data": [
-    { "index": 0, "flightKey": "DM214-20261001-A", "hasErrors": false, "errorMessages": [] },
-    { "index": 1, "flightKey": "QL118-20261001-A", "hasErrors": true, "errorMessages": ["scheduledUtc is required"] }
+  "received": 2,
+  "applied": 1,
+  "unchanged": 0,
+  "refused": 1,
+  "items": [
+    { "index": 0, "flightKey": "DM214-20261001-A", "applied": true, "errors": [], "warnings": [] },
+    { "index": 1, "flightKey": "QL118-20261001-A", "applied": false, "errors": ["scheduledUtc is required."], "warnings": [] }
   ]
 }
 ```
 
-The other write endpoints answer with the same shape, one item per element of the request array.
+`applied` is true when the item changed something; an item that carries nothing newer than what Ariva knows is `unchanged`, with a warning. Item errors name the field and the rule, never your value. A whole batch that is not valid (bad JSON, unknown member, no or too many items, a bad `Idempotency-Key`) is one 400 problem and nothing is applied.
 
-### POST /api/v1/flights/events
+## 8. Endpoints
 
-Scope `flights:write`. An array of `FlightEvent`. `eventType` is one of `Estimated`, `Landed`, `OnBlock`, `GateOpen`, `BoardingStart`, `OffBlock`, `Cancelled`, `Diverted`.
+Every endpoint names the site in its path: `/api/v1/integration/sites/{siteCode}/...`, where `siteCode` is one of the sites your client is bound to (403 otherwise). Your batches are your client's own feed: Ariva tracks each client's freshness and raises the stale-feed alarm per client. Two connectivity checks, `GET .../flights/check` and `GET .../immigration/check`, answer 200 with who you are when your token, scope and site are right.
 
-```json
-[
-  { "flightKey": "DM214-20261001-A", "eventType": "Landed", "timeUtc": "2026-10-01T14:14:00Z" },
-  { "flightKey": "DM214-20261001-A", "eventType": "OnBlock", "timeUtc": "2026-10-01T14:21:00Z" }
-]
+### POST /api/v1/integration/sites/{siteCode}/flights/batch
+
+Scope `flights:write`. A batch of `FlightLeg`. The `flightKey` is a stable key you choose, unique per flight leg at the site (1 to 64 letters, digits or `. _ : -`; examples use carrier, number, date and direction); a key keeps its direction. `messageTimeUtc` is when your system produced the batch (optional; at most 5 minutes ahead of Ariva's clock and 30 days behind): Ariva applies each field by the time of the message that set it, so late and out-of-order batches are safe. Without it, Ariva's receive time is used. `status` is a flight status name; only `Cancelled` and `Diverted` carry meaning of their own, the rest follows from the times.
+
+```http
+POST /api/v1/integration/sites/DMO/flights/batch
+Authorization: Bearer <token>
+Idempotency-Key: 0f8fad5b-d9cb-469f-a165-70867728950e
+Content-Type: application/json
 ```
 
-Send each event with the time it happened; Ariva applies messages by their own timestamps, so late or out-of-order delivery is safe.
+```json
+{
+  "messageTimeUtc": "2026-10-01T13:58:00Z",
+  "items": [
+    {
+      "flightKey": "DM214-20261001-A",
+      "carrier": "DM",
+      "number": "214",
+      "suffix": null,
+      "direction": "Arrival",
+      "scheduledUtc": "2026-10-01T14:05:00Z",
+      "estimatedUtc": "2026-10-01T14:12:00Z",
+      "actualUtc": null,
+      "onBlockUtc": null,
+      "offBlockUtc": null,
+      "origin": "BEY",
+      "destination": "DMO",
+      "terminal": "T1",
+      "stand": "B12",
+      "gate": "B12",
+      "aircraftType": "A320",
+      "seats": 180,
+      "paxEstimate": 162,
+      "status": null,
+      "codeshares": ["XR1214"]
+    }
+  ]
+}
+```
 
-### POST /api/v1/allocations/batch
+| Field | Rule |
+|---|---|
+| `carrier` | Two-character IATA or three-letter ICAO designator |
+| `number`, `suffix` | 1 to 4 digits; one letter |
+| `direction` | `Arrival` or `Departure` |
+| `scheduledUtc` | Required; at most 3 days ago and 400 days ahead |
+| `estimatedUtc`, `actualUtc`, `onBlockUtc`, `offBlockUtc` | At most a day before and 3 days after `scheduledUtc`; on-block for arrivals, off-block for departures |
+| `origin`, `destination` | IATA or ICAO airport codes |
+| `terminal`, `stand`, `gate` | 1 to 16 letters, digits or `. _ / -` |
+| `aircraftType` | 2 to 4 letters or digits |
+| `seats`, `paxEstimate` | 0 to 1,000 |
+| `codeshares` | At most 20, each a designator and number such as `XR1214` |
 
-Scope `allocations:write`. An array of `CounterAllocation`.
+### POST /api/v1/integration/sites/{siteCode}/flights/events
+
+Scope `flights:write`. A batch of `FlightEvent` for legs already sent (an event for an unknown key is refused). `eventType` is exactly one of `Estimated`, `Landed`, `OnBlock`, `GateOpen`, `BoardingStart`, `OffBlock`, `Cancelled`, `Diverted`.
 
 ```json
-[
-  {
-    "flightKey": "XR331-20261001-D",
-    "checkpointCode": "CI-C",
-    "counterCodes": ["C01", "C02", "C03", "C04"],
-    "openUtc": "2026-10-01T15:30:00Z",
-    "closeUtc": "2026-10-01T17:45:00Z",
-    "handlerCode": "HB"
-  }
-]
+{
+  "items": [
+    { "flightKey": "DM214-20261001-A", "eventType": "Landed", "timeUtc": "2026-10-01T14:14:00Z" },
+    { "flightKey": "DM214-20261001-A", "eventType": "OnBlock", "timeUtc": "2026-10-01T14:21:00Z" }
+  ]
+}
 ```
+
+Send each event with the time it happened; Ariva keeps the most recent report of each milestone, so late or out-of-order delivery is safe.
+
+### POST /api/v1/integration/sites/{siteCode}/allocations/batch
+
+Scope `allocations:write` (separate from `flights:write`). A batch of `CounterAllocation` for departing legs already sent, at a check-in checkpoint of the site. Counter codes are your AODB's; Ariva resolves them through the desk code mappings of the checkpoint (system `Aodb`) and keeps unmapped codes apart with a warning, never guessing.
+
+```json
+{
+  "items": [
+    {
+      "flightKey": "XR331-20261001-D",
+      "checkpointCode": "CI",
+      "counterCodes": ["C01", "C02", "C03", "C04"],
+      "openUtc": "2026-10-01T15:30:00Z",
+      "closeUtc": "2026-10-01T17:45:00Z",
+      "handlerCode": "HB"
+    }
+  ]
+}
+```
+
+Counters stay open at most 24 hours; 1 to 100 counter codes per allocation.
 
 ### POST /api/v1/immigration/desk-sessions
 
@@ -465,16 +485,19 @@ URLs are never taken from a caller at request time, redirects are not followed, 
 
 | Status | When | What to do |
 |---|---|---|
-| 200 with `hasErrors: false` | Accepted | |
-| 200 or error status with per-item errors | Some items rejected (status To confirm) | Fix and resend those items with new idempotency keys |
-| 400 | Validation failure, unknown field, JSON deeper than 32 levels, malformed AIDX | Fix the payload; do not retry unchanged |
+| 200 | Batch processed; check `refused` and each item's `errors` | Fix and resend the refused items as a new batch with a new `Idempotency-Key` |
+| 200 with `Idempotent-Replayed: true` | A retry of a batch already processed | Nothing to do; the answer is the original one |
+| 400 | Not a batch: malformed JSON, unknown or repeated member, wrong type, JSON deeper than 8 levels, no or more than 500 items, a bad or missing `Idempotency-Key`, a `messageTimeUtc` out of range; malformed AIDX | Fix the payload; do not retry unchanged |
+| 415 | Not `application/json` | Send JSON |
+| 422 | The `Idempotency-Key` was used in the last 24 hours for another request | Use a new key for new data |
+| 429 | Too many batches from your client in a minute, or too many batches arriving at once | Wait (`Retry-After` when given), then retry with the same `Idempotency-Key`; nothing was applied |
 | 401 `invalid_client` | Any token exchange failure, including rate limiting and lockout | Check credentials, clock and source IP; back off |
 | 401 | Missing or expired token | Re-authenticate |
 | 403 | Scope not granted, or site not bound to the client | Ask the administrator; do not retry |
 | 413 | Body larger than the limit | Split the batch |
 | 5xx | Server or dependency failure | Retry with the same `Idempotency-Key` and exponential backoff |
 
-Status for a missing or wrong `X-TOTP-Code` on a data call: To confirm. Rate limits on data endpoints: To confirm (the token exchange limits are fixed above).
+A missing or wrong `X-TOTP-Code` on a data call, for a client whose policy needs one, is 401. Batch endpoints have the per-client and at-once limits above, on top of the per-address limit of every Ariva API.
 
 ## 13. Test environment
 
