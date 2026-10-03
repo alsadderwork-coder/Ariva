@@ -225,6 +225,9 @@ function totpReplay(text, lines) {
 function siteScope(text, lines) {
   if (!/\[ApiController\]|:\s*ControllerBase\b/.test(text)) return [];
   if (/ISiteScope|SiteScope\.|\[SiteScoped\]/.test(text)) return [];
+  // Integration API actions: the scope handler checks the {siteCode} route token against the client's sites, and
+  // SiteScopeTests (architecture test) fails any other site reference in an [IntegrationScope] action (ARV-042).
+  if (/\[IntegrationScope\(/.test(text)) return [];
   const out = [];
   lines.forEach((l, i) => { if (/\b(Guid|string|int)\s+(siteId|airportId|terminalId|siteCode)\b/.test(l) && /\(/.test(l)) out.push(i + 1); });
   return out;

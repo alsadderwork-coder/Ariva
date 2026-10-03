@@ -41,22 +41,43 @@ public sealed class SiteScopeTests
             "FixtureUnscopedController.Create(SiteCode)");
     }
 
-    /// <summary>Actions with a site reference in a parameter or route template and no [SiteScoped] on the action or controller.</summary>
+    [Fact]
+    public void Unscoped_Should_ReportSiteReferencesBeyondTheRouteSite_When_AnIntegrationActionTakesThem()
+    {
+        var violations = Unscoped([typeof(FixtureIntegrationController), typeof(FixtureIntegrationFlatController)]);
+
+        violations.Should().BeEquivalentTo(
+            "FixtureIntegrationController.Body(SiteCode)",
+            "FixtureIntegrationController.Query(airportCode)",
+            "FixtureIntegrationController.Terminal(terminalId)",
+            "FixtureIntegrationController.Header(siteCode)",
+            "FixtureIntegrationFlatController.QuerySite(siteCode)");
+    }
+
+    /// <summary>
+    /// Actions with a site reference in a parameter or route template and no [SiteScoped] on the action or controller.
+    /// An Integration API action ([IntegrationScope], ARV-042) is checked against the client's sites by the scope handler,
+    /// which reads only the <c>{siteCode}</c> route token: it may name a site there and nowhere else.
+    /// </summary>
     public static List<string> Unscoped(IEnumerable<Type> types)
     {
         var violations = new List<string>();
         foreach (var controller in types.Where(t => typeof(ControllerBase).IsAssignableFrom(t) && !t.IsAbstract))
         {
             var controllerScoped = controller.GetCustomAttribute<SiteScopedAttribute>(inherit: true) is not null;
+            var controllerRoute = controller.GetCustomAttributes<RouteAttribute>().SelectMany(r => RouteParameters(r.Template)).ToList();
             foreach (var action in controller.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly))
             {
                 if (controllerScoped || action.GetCustomAttribute<SiteScopedAttribute>(inherit: true) is not null)
                     continue;
 
-                var references = action.GetParameters().Select(p => p.Name)
+                var route = action.GetCustomAttributes<Microsoft.AspNetCore.Mvc.Routing.HttpMethodAttribute>().SelectMany(RouteParameters).Concat(controllerRoute).ToList();
+                var integration = action.GetCustomAttribute<IntegrationScopeAttribute>(inherit: true) is not null ||
+                                  controller.GetCustomAttribute<IntegrationScopeAttribute>(inherit: true) is not null;
+                var routeSite = integration && route.Contains(IntegrationRouteSite, StringComparer.Ordinal);
+                var references = action.GetParameters().Where(p => !(routeSite && p.Name == IntegrationRouteSite && FromRouteOnly(p))).Select(p => p.Name)
                     .Concat(action.GetParameters().Where(p => IsRequestModel(p.ParameterType)).SelectMany(p => p.ParameterType.GetProperties().Select(property => property.Name)))
-                    .Concat(action.GetCustomAttributes<Microsoft.AspNetCore.Mvc.Routing.HttpMethodAttribute>().SelectMany(RouteParameters))
-                    .Concat(controller.GetCustomAttributes<RouteAttribute>().SelectMany(r => RouteParameters(r.Template)))
+                    .Concat(route.Where(name => !(integration && name == IntegrationRouteSite)))
                     .Where(name => SiteScopedAttribute.SiteReferences.Contains(name))
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList();
@@ -67,6 +88,14 @@ public sealed class SiteScopeTests
 
         return violations;
     }
+
+    /// <summary>A parameter bound from the route (no attribute, or [FromRoute]): one with [FromQuery], [FromHeader] or [FromBody] could differ from the route value the handler checks.</summary>
+    private static bool FromRouteOnly(ParameterInfo parameter) =>
+        parameter.GetCustomAttributes(inherit: true).OfType<Microsoft.AspNetCore.Mvc.ModelBinding.IBindingSourceMetadata>()
+            .All(b => b.BindingSource == Microsoft.AspNetCore.Mvc.ModelBinding.BindingSource.Path);
+
+    /// <summary>The one route token through which an Integration API action names its site.</summary>
+    private const string IntegrationRouteSite = "siteCode";
 
     /// <summary>Request models (Ariva or fixture types bound from the body or query) whose properties may name a site.</summary>
     private static bool IsRequestModel(Type type) =>

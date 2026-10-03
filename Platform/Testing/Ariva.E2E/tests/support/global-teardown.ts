@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { accounts, breakGlassFile, changedPassword } from './accounts';
+import { accounts, breakGlassFile, changedPassword, integrationSeedsFile } from './accounts';
 import { canary } from './log-canary';
 
 // ARV-007 (CWE-532): after the run, no host log line may contain a credential. The API suite sends the canary values
@@ -10,7 +10,9 @@ const patterns: { name: string; re: RegExp }[] = [
 	// Token-like only (16+ characters with a digit or a dot), so prose such as "Bearer authentication" is not a finding.
 	{ name: 'bearer credential', re: /\bBearer\s+(?!\[REDACTED\])(?=[A-Za-z0-9\-._~+/]*[0-9.])[A-Za-z0-9\-._~+/]{16,}/i },
 	{ name: 'JWT', re: /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*/ },
-	{ name: 'access_token value', re: /access_token=(?!\[REDACTED\])[^&\s"\\]+/i }
+	{ name: 'access_token value', re: /access_token=(?!\[REDACTED\])[^&\s"\\]+/i },
+	// ARV-042: an integration client secret (ics_ and 43 base64url characters) never reaches a log.
+	{ name: 'integration client secret', re: /\bics_[A-Za-z0-9_-]{43}\b/ }
 ];
 
 export default async function globalTeardown() {
@@ -32,6 +34,11 @@ export default async function globalTeardown() {
 		const lines = fs.readFileSync(breakGlassFile, 'utf8').split(/\r?\n/);
 		secrets.push(...lines.filter((line) => line.startsWith('password: ')).map((line) => line.slice('password: '.length).trim()));
 		secrets.push(...lines.filter((line) => line.startsWith('  ')).map((line) => line.trim()));
+	}
+
+	// The TOTP seeds of the integration clients registered in the run (integration-auth.spec.ts).
+	if (fs.existsSync(integrationSeedsFile)) {
+		secrets.push(...fs.readFileSync(integrationSeedsFile, 'utf8').split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length >= 16));
 	}
 
 	const findings: string[] = [];

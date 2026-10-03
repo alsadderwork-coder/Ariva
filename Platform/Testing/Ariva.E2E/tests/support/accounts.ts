@@ -21,6 +21,8 @@ export const keyDirectory = process.env.ARIVA_E2E_KEY_DIR || path.resolve(here, 
 
 /** Where the global setup writes the break-glass credential the installer command prints (ARV-010c). */
 export const breakGlassFile = path.resolve(here, '..', '..', '.e2e-keys', 'break-glass.txt');
+/** Integration client TOTP seeds received in the run (ARV-042), one per line: the log scan looks for each one. */
+export const integrationSeedsFile = path.resolve(here, '..', '..', '.e2e-keys', 'integration-seeds.txt');
 
 /** Seconds a used refresh token still returns its successor in the E2E run (Auth:Sessions:RefreshGraceSeconds). */
 export const refreshGraceSeconds = 3;
@@ -138,7 +140,9 @@ export function accounts() {
 		dmoHandler: account('e2e.dmohandler', ['HandlerStationManager'], false, false, ['DMO']),
 		siteUser: account('e2e.siteuser', ['BorderShiftSupervisor'], false, false, ['E2E1']),
 		// ARV-040: creates the email rule and sets the DMO people's addresses (neither is a critical action).
-		emailAdmin: account('e2e.emailadmin', ['SystemAdministrator'], false, false, ['*'])
+		emailAdmin: account('e2e.emailadmin', ['SystemAdministrator'], false, false, ['*']),
+		// ARV-042: registering and changing integration clients are critical actions, so this suite signs in with a second factor.
+		integrationAdmin: account('e2e.intadmin', ['SystemAdministrator'], false, true, ['*'])
 	} as const;
 }
 

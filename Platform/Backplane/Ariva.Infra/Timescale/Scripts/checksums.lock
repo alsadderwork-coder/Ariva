@@ -24,6 +24,7 @@
     "0021_alert.sql": "515d44ef626d8fd0195a258591aa4e76fa2a68decbc6eeb0ef13546dee835f8c",
     "0022_alert_lifecycle.sql": "b78d8a0d1ea302d636f3bcf55602fca501fbcb052676e3ef3df478db36faa988",
     "0023_email_message.sql": "f240b42909523cee9ebd43cf6ad9a656f8aa7f5fb984c078a425327d8cd3f5e6",
-    "0024_flights.sql": "985b63b090d88c1d60ab5210853bf0c83b7fc7e725c4fd7d85768eb9c223b38d"
+    "0024_flights.sql": "985b63b090d88c1d60ab5210853bf0c83b7fc7e725c4fd7d85768eb9c223b38d",
+    "0025_integration_client.sql": "696a28d5394e4b82206772d48e2587e86cfe296799734425be9c0414615d36e2"
   }
 }

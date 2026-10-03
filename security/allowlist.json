@@ -50,5 +50,17 @@
     "proposedBy": "Claude (ARV-010b, 2026-10-01)",
     "approvedBy": "PENDING: Ahmad Al-Sadder",
     "date": "2026-10-01"
+  },
+  {
+    "rule": "SEC-052",
+    "path": "Platform/Backplane/Ariva.Api.Integration/Controllers/AuthController.cs",
+    "contains": "AllowAnonymous",
+    "routes": [
+      "/api/v1/auth"
+    ],
+    "reason": "The integration token exchange is how an integration client obtains a token, so it cannot require one (ARV-042, docs/architecture/integration.md, AMAN-compatible). It takes a client id, a 256-bit client secret checked against a PBKDF2 hash and a TOTP code with a replay guard; it is limited to 20 attempts a minute per address and 5 per client, locks a client after 10 consecutive failures for 15 minutes, refuses exchanges from outside the client's allowed networks before counting anything, answers every credential failure with the same 401 invalid_client after the same PBKDF2 work (a body that is not JSON or exceeds the size limit gets the standard 400 or 413 before any client is looked up), never caches its response and returns nothing but a 15-minute token of the separate integration audience on success.",
+    "proposedBy": "Claude (ARV-042, 2026-10-03)",
+    "approvedBy": "PENDING: Ahmad Al-Sadder",
+    "date": "2026-10-03"
   }
 ]

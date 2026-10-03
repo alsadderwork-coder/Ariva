@@ -1,5 +1,5 @@
 {
-  "_comment": "Every endpoint of every host with the expected status per caller (ARV-009). access is anonymous (allowlisted in allowlist.json), authenticated (any signed-in user), permission (any one of permissions, names from Global.Defaults.Permissions), device (a device credential only, ARV-022: every user caller gets 401) or simulation (a simulator operator key only, ARV-027: every user caller gets 401). Routes are the route templates; a {name:guid} parameter is called with routeValues.guid, an id that never exists, and an unconstrained {name} with routeValues.name (siteCode ZZ9, a site that never exists). body, when present, is sent as JSON and is chosen so the call fails the same way with or without a database (unknown user, wrong current password, unknown id; refresh without the CSRF header is 403 before any lookup), which keeps the in-process and E2E answers equal. Ariva.UnitTests fails when an endpoint is missing here, when a permission row disagrees with the role seed (RolePermissions), or when a host answers differently; the E2E suite reads the same rows with real tokens. A critical action ([RequiresRecentMfa], security/critical-actions.json) answers 401 mfa_required to every caller here, because the matrix callers have no recent second factor (ARV-010d). Add rows in the story that adds the endpoint.",
+  "_comment": "Every endpoint of every host with the expected status per caller (ARV-009). access is anonymous (allowlisted in allowlist.json), authenticated (any signed-in user), permission (any one of permissions, names from Global.Defaults.Permissions), device (a device credential only, ARV-022: every user caller gets 401), simulation (a simulator operator key only, ARV-027: every user caller gets 401) or integration (an integration client token only, ARV-042: every user caller gets 401). Routes are the route templates; a {name:guid} parameter is called with routeValues.guid, an id that never exists, and an unconstrained {name} with routeValues.name (siteCode ZZ9, a site that never exists). body, when present, is sent as JSON and is chosen so the call fails the same way with or without a database (unknown user, wrong current password, unknown id; refresh without the CSRF header is 403 before any lookup), which keeps the in-process and E2E answers equal. Ariva.UnitTests fails when an endpoint is missing here, when a permission row disagrees with the role seed (RolePermissions), or when a host answers differently; the E2E suite reads the same rows with real tokens. A critical action ([RequiresRecentMfa], security/critical-actions.json) answers 401 mfa_required to every caller here, because the matrix callers have no recent second factor (ARV-010d). Add rows in the story that adds the endpoint.",
   "roles": [
     "BorderShiftSupervisor",
     "TerminalDutyManager",
@@ -2352,6 +2352,215 @@
         "TerminalDutyManager": 404,
         "HandlerStationManager": 404,
         "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/admin/integration-clients",
+      "access": "permission",
+      "permissions": [
+        "SearchIntegrationClient"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/admin/integration-clients/{id:guid}",
+      "access": "permission",
+      "permissions": [
+        "ViewIntegrationClient"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/integration-clients",
+      "access": "permission",
+      "permissions": [
+        "CreateIntegrationClient"
+      ],
+      "body": {
+        "name": "Matrix",
+        "kind": "Aodb",
+        "scopes": [
+          "flights:write"
+        ],
+        "siteCodes": [
+          "ZZ9"
+        ]
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "main",
+      "method": "PUT",
+      "route": "/api/v1/admin/integration-clients/{id:guid}",
+      "access": "permission",
+      "permissions": [
+        "EditIntegrationClient"
+      ],
+      "body": {
+        "name": "Matrix",
+        "scopes": [
+          "flights:write"
+        ],
+        "siteCodes": [
+          "ZZ9"
+        ],
+        "allowedNetworks": [],
+        "requireTotpPerRequest": false
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/integration-clients/{id:guid}/secret",
+      "access": "permission",
+      "permissions": [
+        "CreateIntegrationClient"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/integration-clients/{id:guid}/totp",
+      "access": "permission",
+      "permissions": [
+        "CreateIntegrationClient"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/integration-clients/{id:guid}/disable",
+      "access": "permission",
+      "permissions": [
+        "DeleteIntegrationClient"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/integration-clients/{id:guid}/enable",
+      "access": "permission",
+      "permissions": [
+        "EditIntegrationClient"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/integration-clients/{id:guid}/unlock",
+      "access": "permission",
+      "permissions": [
+        "EditIntegrationClient"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "integration",
+      "method": "POST",
+      "route": "/api/v1/auth",
+      "access": "anonymous",
+      "body": {
+        "clientId": "ic_aaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "clientSecret": "ics_matrix",
+        "totpCode": "000000"
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "integration",
+      "method": "GET",
+      "route": "/api/v1/integration/sites/{siteCode}/flights/check",
+      "access": "integration",
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "integration",
+      "method": "GET",
+      "route": "/api/v1/integration/sites/{siteCode}/immigration/check",
+      "access": "integration",
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401
       }
     }
   ]

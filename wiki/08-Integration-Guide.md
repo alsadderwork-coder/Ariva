@@ -45,7 +45,7 @@ Consequences for your client:
 
 - Keep its clock on NTP.
 - To authenticate twice within one 30-second step, wait for the next step.
-- Whether the replay guard also applies to `X-TOTP-Code` on data calls (which would limit a client to one call per step) is To confirm; until it is, generate the header from the current time on every call and test the behaviour in the test environment.
+- `X-TOTP-Code` on data calls (clients whose per-request policy is on) is checked against the same window but without the replay guard, so a client can make many calls in one step (decided in ARV-042). Generate it from the current time on every call; it proves the caller still holds the seed, and it never works without a valid token.
 
 ## 4. Token exchange
 
@@ -65,7 +65,11 @@ Any failure: `401` with `{ "error": "invalid_client" }`. The checks, in order: c
 
 The token is a JWT with audience `ariva-integration`, lifetime 15 minutes, claims `sub` (client id), `sid` (new session id), `scope` and `site`. There is no refresh token: re-authenticate with a fresh TOTP code before `expiresAt` (Ariva's own outbound connector refreshes 60 seconds before expiry; do the same).
 
-Rate limits and lockout on `/api/v1/auth`: 5 attempts per minute per client, 20 per minute per IP; 10 consecutive failures lock the client for 15 minutes and alert Ariva's administrators. Rate-limited attempts also return `401 invalid_client`.
+Rate limits and lockout on `/api/v1/auth`: 5 attempts per minute per client, 20 per minute per IP; 10 consecutive failures lock the client for 15 minutes and alert Ariva's administrators. Rate-limited attempts also return `401 invalid_client` (a per-client attempt over the limit does not count toward the lockout, so nobody can lock a client out by hammering its id).
+
+Formats (ARV-042): the client id is `ic_` and 26 lower-case letters or digits 2 to 7; the secret is `ics_` and 43 base64url characters. Any change an administrator makes to the client (scopes, sites, networks, the per-request policy, a new secret or seed, disabling it) stops the tokens it already holds; exchange again. Each call is also checked against the client's allowed networks.
+
+Connectivity check: `GET /api/v1/integration/sites/{siteCode}/flights/check` (scope `flights:write`) and `GET /api/v1/integration/sites/{siteCode}/immigration/check` (scope `immigration:write`) answer 200 with your client id, scopes and sites when your token holds that scope for that site, 403 when it does not and 401 without a valid token (or without a fresh `X-TOTP-Code` when your policy needs one). They change nothing; use them to test your set-up.
 
 ### C# (Otp.NET)
 

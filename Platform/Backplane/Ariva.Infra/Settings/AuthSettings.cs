@@ -18,6 +18,9 @@ public sealed class AuthSettings
     /// </summary>
     public bool TotpRequired { get; init; } = true;
 
+    /// <summary>Token exchanges one integration client may attempt in a minute (ARV-042), across replicas; more answer invalid_client.</summary>
+    public int IntegrationAttemptsPerMinute { get; init; } = 5;
+
     /// <summary>Extra words a password may not contain, besides the username and "ariva" (for example the site code).</summary>
     public List<string> ContextWords { get; init; } = [];
 
@@ -48,6 +51,40 @@ public sealed class TokenSettings
     public bool UseDevelopmentKeys { get; init; }
 
     public string DevelopmentKeyDirectory { get; init; } = string.Empty;
+
+    /// <summary>The development key's file name in <see cref="DevelopmentKeyDirectory"/> (each key ring its own).</summary>
+    public string DevelopmentKeyFile { get; init; } = "token-signing-dev.key";
+}
+
+/// <summary>
+/// Integration client tokens (ARV-042, <c>Auth:IntegrationTokens</c>): a key ring of their own and the audience
+/// ariva-integration, so a client token is never a user token and the reverse. Only Ariva.Api.Integration reads it; it
+/// issues and validates them.
+/// </summary>
+public static class IntegrationTokenSettings
+{
+    public const string SectionName = "Auth:IntegrationTokens";
+    public const string Audience = "ariva-integration";
+
+    /// <summary>The section, with the defaults of a separate ring; in development the key sits next to the user key.</summary>
+    public static TokenSettings From(Microsoft.Extensions.Configuration.IConfiguration configuration, TokenSettings userTokens)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentNullException.ThrowIfNull(userTokens);
+        var section = configuration.GetSection(SectionName).Get<TokenSettings>() ?? new TokenSettings();
+        return new TokenSettings
+        {
+            Issuer = section.Issuer,
+            Audience = Audience,
+            LifetimeMinutes = section.LifetimeMinutes,
+            ClockSkewSeconds = section.ClockSkewSeconds,
+            SigningKeyPath = section.SigningKeyPath,
+            PublicKeyPaths = section.PublicKeyPaths,
+            UseDevelopmentKeys = section.UseDevelopmentKeys,
+            DevelopmentKeyDirectory = string.IsNullOrWhiteSpace(section.DevelopmentKeyDirectory) ? userTokens.DevelopmentKeyDirectory : section.DevelopmentKeyDirectory,
+            DevelopmentKeyFile = "integration-token-signing-dev.key"
+        };
+    }
 }
 
 /// <summary>TOTP (ARV-010c). The algorithm parameters are fixed in <see cref="Security.Totp"/>.</summary>

@@ -171,6 +171,12 @@ internal sealed class ArivaWebApplicationFactory<TEntryPoint>(string environment
         // The mail relay is Integration's own setting (appsettings.service.<env>.json), which the shared test output
         // cannot hold for every host: give the in-process hosts vm-local's smtp4dev. Nothing connects to it here.
         builder.UseSetting("Email:Smtp:Host", "localhost");
+        // The integration key ring (ARV-042): Integration's own development key, whatever the environment under test.
+        builder.UseSetting("Auth:IntegrationTokens:UseDevelopmentKeys", "true");
+        builder.UseSetting("Auth:IntegrationTokens:DevelopmentKeyDirectory", DevelopmentKeyDirectory);
+        builder.UseSetting("Auth:IntegrationTokens:SigningKeyPath", string.Empty);
+        builder.UseSetting("Auth:IntegrationTokens:PublicKeyPaths:0", string.Empty);
+        builder.UseSetting("Auth:IntegrationTokens:PublicKeyPaths:1", string.Empty);
 
         // No mounted token keys in-process: a development key of this host's own, whatever the environment under test
         // (cluster files name /app/secrets paths). Tests sign tokens with the host's TokenKeys.

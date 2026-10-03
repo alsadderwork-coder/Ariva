@@ -20,6 +20,12 @@ public sealed class RateLimitingSettings
     /// when there is none). Default 600 requests per minute per device: a push every 100 ms.
     /// </summary>
     public FixedWindowSettings Device { get; set; } = new() { PermitLimit = 600, WindowSeconds = 60 };
+
+    /// <summary>
+    /// The <c>integration-auth</c> policy for the integration token exchange (ARV-042): 20 a minute per client address
+    /// (the 5 a minute per client are counted in the database).
+    /// </summary>
+    public FixedWindowSettings IntegrationAuth { get; set; } = new() { PermitLimit = 20, WindowSeconds = 60 };
 }
 
 /// <summary>

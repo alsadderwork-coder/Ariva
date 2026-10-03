@@ -972,8 +972,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 45,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "IntegrationClient (hashed secret, protected seed, scopes, 1 to 32 sites, required CIDRs, per-request TOTP policy, token version), step-up admin API in Main, POST /api/v1/auth in Integration (replay guard, per-address and per-client limits, lockout that stops new exchanges only, same 401 invalid_client, separate audience and key), Ariva.Integration scheme with per-call record check, [IntegrationScope] reading scopes and sites from the database with {siteCode} route binding, integration_call audit of every call including refused ones, script 0025. Security review PASS after fixes; SEC-052 allowlist entry for /api/v1/auth pending approval.",
       "dependsOn": [
         "ARV-010a",
         "ARV-008",

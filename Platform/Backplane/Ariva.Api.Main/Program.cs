@@ -88,6 +88,9 @@ builder.Services.AddAppControllers();
 // Ariva.Api.Main signs users in and issues tokens (ADR-0026); the other hosts only validate them.
 builder.Services.AddArivaTokenIssuing(builder.Configuration);
 
+// Integration clients (ARV-042): administrators register the systems that call the Integration API.
+builder.Services.AddArivaIntegrationClients();
+
 // Demo Airport (DMO) topology and zone profile v12 in vm-local and k8s-demo; refused outside dev and demo (ARV-019).
 builder.Services.AddArivaDemoSeed(builder.Configuration, builder.Environment.EnvironmentName);
 

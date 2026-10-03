@@ -1,3 +1,4 @@
+using Ariva.Api.Common.Filters;
 using Ariva.Api.Common.Security;
 using Ariva.Api.Common.Extensions;
 using Ariva.Api.Common.HealthChecks;
@@ -65,6 +66,12 @@ builder.Services.AddArivaFlights(builder.Configuration);
 // ES256 access tokens from Ariva.Api.Main with permissions from stored grants (ARV-010a), input limits, rate limiting,
 // ProblemDetails errors, trusted forwarded headers and the CORS allow-list.
 builder.Services.AddAppSecurityBaseline(builder.Configuration);
+builder.Services.AddAppControllers();
+
+// Integration clients (ARV-042): the token exchange (POST /api/v1/auth) and the integration scheme, with its own key
+// ring and audience, that every Integration API endpoint ([IntegrationScope]) accepts and nothing else does.
+builder.Services.AddAuthentication().AddArivaIntegrationAuthentication(builder.Configuration);
+builder.Services.AddArivaIntegrationAuth();
 
 // AMAN: AddAppCaching, AddAppHealthChecks, AddAppRouting, AddAppOpenApi.
 // AMAN feed: consumes Ariva.Business.Contracts Aman.V1 messages; identities never cross.
@@ -87,6 +94,8 @@ app.UseAppRateLimiting();
 app.UseAuthentication();
 app.UseSessionValidation();
 app.UsePendingScope();
+// Every Integration API call is recorded (client, scope, route, site, answer, payload SHA-256), refused ones too.
+app.UseIntegrationCallAudit();
 // AMAN: UseSessionContext
 app.UseAuthorization();
 
@@ -95,6 +104,7 @@ app.UseAuthorization();
 #region Endpoints
 
 app.MapArivaHealthChecks();
+app.MapControllers();
 
 // AMAN: MapOpenApi, MapScalarApiReference. AODB push endpoints are mapped here.
 

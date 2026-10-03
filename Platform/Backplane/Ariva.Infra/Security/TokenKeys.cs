@@ -34,7 +34,7 @@ public sealed class TokenKeys
         if (string.IsNullOrWhiteSpace(signingPath) && publicPaths.Count == 0 && settings.UseDevelopmentKeys)
         {
             // One read of the development key gives both halves, so they always belong together.
-            var development = DevelopmentKey(settings.DevelopmentKeyDirectory);
+            var development = DevelopmentKey(settings.DevelopmentKeyDirectory, settings.DevelopmentKeyFile);
             return new TokenKeys(requireSigningKey ? development : null, [PublicOf(development.ECDsa)]);
         }
 
@@ -100,12 +100,12 @@ public sealed class TokenKeys
     /// (CreateNew, so exactly one host writes it, even where the file system cannot move atomically) and held
     /// unshared while it is written; the other hosts read it once it is complete, retrying for up to five seconds.
     /// </summary>
-    private static ECDsaSecurityKey DevelopmentKey(string directory)
+    private static ECDsaSecurityKey DevelopmentKey(string directory, string fileName)
     {
         directory = string.IsNullOrWhiteSpace(directory)
             ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Ariva")
             : directory;
-        var signingPath = Path.Combine(directory, "token-signing-dev.key");
+        var signingPath = Path.Combine(directory, string.IsNullOrWhiteSpace(fileName) ? "token-signing-dev.key" : Path.GetFileName(fileName));
         Directory.CreateDirectory(directory);
 
         if (!File.Exists(signingPath))

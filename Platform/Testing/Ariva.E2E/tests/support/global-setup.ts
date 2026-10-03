@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { breakGlassFile, databaseAvailable } from './accounts';
+import { breakGlassFile, databaseAvailable, integrationSeedsFile } from './accounts';
 
 // ARV-010c: the break-glass account exists only through the installer command, so the run creates it the way an
 // installer does (Ariva.Api.Main --create-break-glass) once the hosts are up, writing the credential to a git-ignored
@@ -15,6 +15,8 @@ export default async function globalSetup() {
 	if (!databaseAvailable) return;
 
 	fs.mkdirSync(path.dirname(breakGlassFile), { recursive: true });
+	// ARV-042: the run's integration client seeds, collected afresh for the log scan.
+	fs.rmSync(integrationSeedsFile, { force: true });
 	for (const flag of ['--create-break-glass', '--rotate-break-glass']) {
 		fs.rmSync(breakGlassFile, { force: true });
 		const result = spawnSync(

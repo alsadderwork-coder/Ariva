@@ -301,3 +301,46 @@ public sealed class FakeAlertRules : Ariva.Core.Services.Alerting.ISvcAlertRules
     private static Task<Fluentx.Result<T>> Missing<T>() =>
         Task.FromResult(Fluentx.Result.Error<T>(Ariva.Core.Services.Topology.TopologyErrors.NotFound));
 }
+
+/// <summary>Integration clients without a database (ARV-042): none exists, so every id answers 404 and every exchange invalid_client.</summary>
+public sealed class FakeIntegrationClients : Ariva.Core.Services.Integration.ISvcIntegrationClients, Ariva.Core.Services.Integration.ISvcIntegrationAuth
+{
+    public static void Register(IServiceCollection services)
+    {
+        services.Replace(ServiceDescriptor.Scoped<Ariva.Core.Services.Integration.ISvcIntegrationClients, FakeIntegrationClients>());
+        services.Replace(ServiceDescriptor.Scoped<Ariva.Core.Services.Integration.ISvcIntegrationAuth, FakeIntegrationClients>());
+    }
+
+    public Task<Fluentx.Result<IReadOnlyList<IntegrationClientViewModel>>> ListAsync(string siteCode, CancellationToken ct = default) =>
+        Task.FromResult(new Fluentx.Result<IReadOnlyList<IntegrationClientViewModel>>((IReadOnlyList<IntegrationClientViewModel>)Array.Empty<IntegrationClientViewModel>()));
+
+    public Task<Fluentx.Result<IntegrationClientViewModel>> GetAsync(Guid id, CancellationToken ct = default) => Missing<IntegrationClientViewModel>();
+
+    public Task<Fluentx.Result<IntegrationClientCredentialsViewModel>> CreateAsync(CreateIntegrationClientRequest request, CancellationToken ct = default) =>
+        Task.FromResult(Fluentx.Result.Error<IntegrationClientCredentialsViewModel>(Ariva.Core.Services.Integration.IntegrationErrors.UnknownSite));
+
+    public Task<Fluentx.Result<IntegrationClientViewModel>> UpdateAsync(Guid id, UpdateIntegrationClientRequest request, CancellationToken ct = default) =>
+        Missing<IntegrationClientViewModel>();
+
+    public Task<Fluentx.Result<IntegrationClientCredentialsViewModel>> RotateSecretAsync(Guid id, CancellationToken ct = default) => Missing<IntegrationClientCredentialsViewModel>();
+
+    public Task<Fluentx.Result<IntegrationClientCredentialsViewModel>> ResetTotpAsync(Guid id, CancellationToken ct = default) => Missing<IntegrationClientCredentialsViewModel>();
+
+    public Task<Fluentx.Result<IntegrationClientViewModel>> DisableAsync(Guid id, CancellationToken ct = default) => Missing<IntegrationClientViewModel>();
+
+    public Task<Fluentx.Result<IntegrationClientViewModel>> EnableAsync(Guid id, CancellationToken ct = default) => Missing<IntegrationClientViewModel>();
+
+    public Task<Fluentx.Result<IntegrationClientViewModel>> UnlockAsync(Guid id, CancellationToken ct = default) => Missing<IntegrationClientViewModel>();
+
+    public Task<Fluentx.Result<IntegrationTokenViewModel>> ExchangeAsync(IntegrationTokenRequest request, System.Net.IPAddress remote, CancellationToken ct = default) =>
+        Task.FromResult(Fluentx.Result.Error<IntegrationTokenViewModel>(Ariva.Core.Services.Integration.IntegrationErrors.InvalidClient));
+
+    public Task<Ariva.Core.Services.Integration.IntegrationCallCheck> CheckCallAsync(string clientId, int tokenVersion, System.Net.IPAddress remote, string totpCode,
+        CancellationToken ct = default) =>
+        Task.FromResult(new Ariva.Core.Services.Integration.IntegrationCallCheck(null, "unknown client"));
+
+    public Task RecordCallAsync(Ariva.Core.Services.Integration.IntegrationCallRecord call, CancellationToken ct = default) => Task.CompletedTask;
+
+    private static Task<Fluentx.Result<T>> Missing<T>() =>
+        Task.FromResult(Fluentx.Result.Error<T>(Ariva.Core.Services.Integration.IntegrationErrors.NotFound));
+}

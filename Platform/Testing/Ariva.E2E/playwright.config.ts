@@ -181,7 +181,11 @@ export default defineConfig({
 			...(databaseAvailable ? developmentUserEnvironment() : {}),
 			...redisEnvironment()
 		}),
-		dotnetHost(project('Backplane/Ariva.Api.Integration'), `${hosts.integration}/health/readiness`, false, smtpEnvironment()),
+		dotnetHost(project('Backplane/Ariva.Api.Integration'), `${hosts.integration}/health/readiness`, false, {
+			...smtpEnvironment(),
+			// The lockout test fails one client ten times in a few seconds (ARV-042); production keeps 5 a minute.
+			Auth__IntegrationAttemptsPerMinute: '30'
+		}),
 		dotnetHost(project('Backplane/Ariva.Api.Ingest'), `${hosts.ingest}/health/readiness`, false, kafkaEnvironment()),
 		dotnetHost(project('Simulation/Ariva.Simulation.Api'), `${hosts.simulation}/health/readiness`, false, {
 			Simulation__Control__Keys__0__Name: 'e2e',

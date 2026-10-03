@@ -95,9 +95,11 @@ Created for each AODB, immigration system, sensor gateway or consumer of the wai
 | Bound site codes | A client bound to one site cannot write another |
 | Allowed source CIDRs | Calls from elsewhere fail |
 | Per-request TOTP policy | Requires `X-TOTP-Code` on every call; on by default for immigration clients |
-| Status | Active or suspended |
+| Status | Active or Disabled |
 
 On creation Ariva shows the client secret and the TOTP provisioning URI once. Hand them over out of band by two separate channels.
+
+API (ARV-042), under `api/v1/admin/integration-clients`, System administrator only: list (optionally `?siteCode=`), view, create, `PUT` to change name, scopes, sites, networks and the per-request policy, `secret` to rotate the secret, `totp` to reset the seed (each shown once), `disable`, `enable` and `unlock`. Every change needs a second factor in the last 15 minutes and is audited without secrets. You can bind a client only to sites you hold, and you see only clients whose sites are all yours. Every client needs at least one allowed source network (CIDR, at most 16, no `/0`, no host bits): token exchanges from anywhere else are refused and not counted. Any change stops the client's current tokens on their next call. A client locked after 10 failed token exchanges unlocks by itself after 15 minutes or when you unlock it; find the cause first (Operations runbook, integration client locked out). A lock stops new tokens only; tokens the client already holds run until they expire, so to stop a client at once, disable it. Enabling a disabled client does not clear a lock: unlock it separately. Clients are never deleted: disable them, so their recorded calls stay attributable.
 
 Operations:
 

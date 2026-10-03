@@ -93,8 +93,15 @@ public sealed partial class PermissionMatrixTests
                     foreach (var caller in row.Expected.Keys)
                         Expect(row, caller, 401, problems);
                     break;
+                case "integration":
+                    // Integration client tokens only (ARV-042): an Ariva user's token is of another audience and key ring.
+                    if (row.Host != "integration")
+                        problems.Add($"{row}: integration access belongs to the integration host");
+                    foreach (var caller in row.Expected.Keys)
+                        Expect(row, caller, 401, problems);
+                    break;
                 default:
-                    problems.Add($"{row}: access must be anonymous, authenticated, permission, device or simulation");
+                    problems.Add($"{row}: access must be anonymous, authenticated, permission, device, simulation or integration");
                     break;
             }
         }
@@ -137,6 +144,7 @@ public sealed partial class PermissionMatrixTests
             FakeDevices.Register(services);
             FakeAlertRules.Register(services);
             FakeAlerts.Register(services);
+            FakeIntegrationClients.Register(services);
         }));
         using var client = app.CreateClient();
         var mismatches = new List<string>();

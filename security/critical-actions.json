@@ -103,6 +103,48 @@
       "method": "DELETE",
       "route": "/api/v1/admin/alert-rules/{id:guid}",
       "category": "Delete alert rules"
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/integration-clients",
+      "category": "Create or regenerate integration clients and device credentials"
+    },
+    {
+      "host": "main",
+      "method": "PUT",
+      "route": "/api/v1/admin/integration-clients/{id:guid}",
+      "category": "Create or regenerate integration clients and device credentials"
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/integration-clients/{id:guid}/secret",
+      "category": "Create or regenerate integration clients and device credentials"
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/integration-clients/{id:guid}/totp",
+      "category": "Create or regenerate integration clients and device credentials"
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/integration-clients/{id:guid}/disable",
+      "category": "Create or regenerate integration clients and device credentials"
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/integration-clients/{id:guid}/enable",
+      "category": "Create or regenerate integration clients and device credentials"
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/integration-clients/{id:guid}/unlock",
+      "category": "Create or regenerate integration clients and device credentials"
     }
   ]
 }

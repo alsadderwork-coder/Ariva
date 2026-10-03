@@ -42,6 +42,9 @@ public static class RateLimitingExtensions
     /// </summary>
     public const string DevicePolicy = "device";
 
+    /// <summary>Named policy for the integration token exchange (ARV-042): a fixed window per client address.</summary>
+    public const string IntegrationAuthPolicy = "integration-auth";
+
     private const string UnknownClient = "unknown";
 
     #endregion
@@ -64,7 +67,7 @@ public static class RateLimitingExtensions
         services
             .AddOptions<RateLimitingSettings>()
             .Bind(configuration.GetSection(RateLimitingSettings.SectionName))
-            .Validate(settings => settings.Global.IsValid && settings.Auth.IsValid && settings.Device.IsValid,
+            .Validate(settings => settings.Global.IsValid && settings.Auth.IsValid && settings.Device.IsValid && settings.IntegrationAuth.IsValid,
                 $"{RateLimitingSettings.SectionName} limits need a positive PermitLimit and WindowSeconds and a QueueLimit of zero or more.")
             .ValidateOnStart();
 
@@ -80,6 +83,8 @@ public static class RateLimitingExtensions
                     RateLimitPartition.GetFixedWindowLimiter(ClientKey(context), _ => ToLimiterOptions(limits.Global)));
                 options.AddPolicy(AuthPolicy, context =>
                     RateLimitPartition.GetFixedWindowLimiter(ClientKey(context), _ => ToLimiterOptions(limits.Auth)));
+                options.AddPolicy(IntegrationAuthPolicy, context =>
+                    RateLimitPartition.GetFixedWindowLimiter(ClientKey(context), _ => ToLimiterOptions(limits.IntegrationAuth)));
                 options.AddPolicy(DevicePolicy, context =>
                     RateLimitPartition.GetFixedWindowLimiter(Ariva.Api.Common.Security.DeviceAuthentication.RateLimitPartition(context), _ => ToLimiterOptions(limits.Device)));
                 options.AddPolicy(UploadPolicy, _ =>
