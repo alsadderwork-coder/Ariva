@@ -31,7 +31,7 @@ Critical functions (step-up MFA required):
 | Organisation | Border authority, airport operator, a handler (for example Handler B), or a security contractor |
 | Role | Only roles valid for that organisation and deployment: Border shift supervisor in a border deployment; Terminal duty manager and Handler station manager in an airport deployment; System administrator in either |
 | Deployment | Derived and enforced: a border deployment user cannot hold an airport role, and the reverse |
-| Sign-in method | OIDC through the bundled Keycloak or the customer's identity provider (D5), or Ariva's own sign-in with PBKDF2 password hashing and TOTP (security controls). Which applies per site: To confirm |
+| Sign-in method | Ariva's own sign-in: PBKDF2 password hashing, TOTP for every account and step-up for critical actions (ADR-0026, security guide section 3). Sign-in through the customer's identity provider (OIDC, D5's option) is not built |
 | Expiry | Optional end date for temporary accounts |
 
 Role grant rules:

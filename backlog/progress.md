@@ -508,3 +508,32 @@ One entry per story, newest last. Format:
 - Also: CI on 40da919 failed the E2E log scan once ("a canary credential or an E2E account password" in the Main log, line 18705; host logs are not uploaded, so the line could not be read; fd8a2c9 and every local run were clean). The log scan now names which credential it found and the line's level, logger and message template, with every known secret and credential pattern masked, so a repeat can be traced.
 - Gates: backend PASS (unit 2266); integration 314 passed, 1 pre-existing skip (the 5 fault tests about 4 minutes); e2e 491 passed, 1 skipped; docs PASS; security scan 0 errors.
 - Security review (independent reviewer, CWE-400): FAIL on the first pass (the teardown's printed template could carry a pattern-only credential; the stall test could not show that a timeout leaves no cached miss). Fixed: patterns masked too, a seeded device looked up during and after the stall with the same cache; the handler logs the exception. Second pass: PASS. Non-blocking, recorded: a slow client-controlled query that hits Npgsql's command timeout now answers 503 (a server-side statement_timeout would make it 500); Retry-After is a constant 5 seconds with no jitter (sensors may retry in step when the database returns; the per-device rate limit softens it); Testcontainers binds Toxiproxy's unauthenticated API on the host during the run.
+
+## 2026-10-05 ARV-074 OWASP ASVS 5.0 Level 2 mapping
+- Summary: `docs/security/asvs-l2.md` maps all 253 ASVS 5.0.0 requirements at Level 1 and 2: 122 Met, 72 Partly, 9 Gap, 50 N/A (122 of the 203 that apply, 60 percent). Each row cites the file, symbol and test checked in the code, or says what is missing. Four reviewers mapped the chapters against the code, and a fifth sampled about 40 rows and found no unsupported Met. Every Partly and Gap row belongs to exactly one of 17 stories in the new `backlog/prd-asvs-gaps.json` (ARV-080 to ARV-096, outside the Phase 0 count). The security reviewer now checks the touched ASVS rows on every story (`.claude/agents/security-reviewer.md` step 4; CLAUDE.md).
+- Most important open gaps:
+  - the Data Protection key ring is wrapped with RSA PKCS#1 v1.5 and AES-CBC without a MAC (ARV-080);
+  - backend connections in the cluster are not encrypted (ARV-082);
+  - every host shares one database login, one Kafka principal and one settings secret (ARV-083);
+  - uploads are not malware-scanned (ARV-092);
+  - there is no HSTS, and machine endpoints are silently redirected from HTTP (ARV-084).
+- Found and fixed on the way:
+  - ARV-081 (V16.5.3): the session, role, site and live zone join caches used the hosts' defaults (fail-safe for an hour, 500 ms soft timeout). A revoked session or a removed role could therefore pass when the database was slow or down. They now use `SecurityCacheOptions` (no fail-safe, no soft timeout, a 5 second bound, an outage answers 503), as the device credential cache already did. Tests:
+    - `SecurityCacheOptionsTests`: the behaviour, plus source tests that every decision cache uses the options;
+    - `DatabaseStallTests.Session_Should_FailAsAnOutageRatherThanPassOnAStaleCopy_When_RevokedAndTheDatabaseStalls` (red without the fix).
+  - Chart (37e5495 and the fsGroup commit): two faults meant these pods could not have started in any cluster. The chart now has rules for both.
+    - Ariva.Api.Integration's integration token key ring was never mounted.
+    - The cronz, ingest, integration and stream pods had no `fsGroup`, so their non-root user could not read the 0400 key files they mount.
+  - Docs:
+    - The security and administration guides described OIDC sign-in through Keycloak, which is not built. Section 3 now lists every authentication pathway (users, integration clients, devices, displays, Cronz dashboard, simulator, services).
+    - The CWE-89 row cited a test that does not exist; it now cites the real ones.
+- Gates:
+  - backend PASS (unit 2276);
+  - integration 315 passed, 1 pre-existing skip;
+  - e2e 491 passed, 1 skipped (production code as committed);
+  - chart render clean for every environment with helm 3.16.4 (22 rules self-tested);
+  - docs PASS; security scan 0 errors.
+- Security review (independent reviewer, all 14 CWEs plus ASVS accuracy):
+  - First pass FAIL: the ARV-081 wiring was untested; the CWE-89 citation was wrong; the simulator handler was misnamed; fsGroup was missing. All fixed.
+  - Second pass PASS.
+  - Non-blocking, recorded: the chart rules match secret names by text, so a renamed secret would pass them; `HubSessionSweeper` ends a pass at the first outage exception instead of going on with the other sessions.

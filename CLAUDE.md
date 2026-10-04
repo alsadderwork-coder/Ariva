@@ -87,7 +87,7 @@ Setup and prerequisites: `docs/harness/README.md`.
 2. Plan briefly: files to touch, CWEs involved, tests to write. For domain or contract changes, consult `docs/domain/*` first.
 3. Write tests and code together. Follow the layering; run `dotnet build` early.
 4. Run the gates in the story's acceptance criteria (`node scripts/verify.mjs backend` at minimum; `web` and `e2e` for UI or API stories).
-5. Ask the `security-reviewer` subagent to review the diff against `docs/security/cwe-controls.md`; fix what it finds.
+5. Ask the `security-reviewer` subagent to review the diff against `docs/security/cwe-controls.md` and the touched rows of `docs/security/asvs-l2.md`; fix what it finds.
 6. Update docs or wiki pages the change affects. Append what you learned to `backlog/progress.md` (one dated entry: story, what changed, gotchas).
 7. Set `"passes": true` for the story in `backlog/prd-phase0.json` only when every criterion is met. Commit with message `ARV-nnn: <title>`, push the story branch and fast-forward `main` to it (rule 8), or open a pull request that follows `.github/pull_request_template.md` when CI must run first. Under ralph-tui, end with `<promise>COMPLETE</promise>`.
 
@@ -99,4 +99,4 @@ architect, domain-modeler, backend-engineer, stream-engineer, integration-engine
 
 ## Key docs
 
-`docs/architecture/overview.md`, `docs/architecture/adr/README.md`, `docs/architecture/integration.md`, `docs/architecture/sensor-adapters.md`, `docs/domain/formulas.md`, `docs/domain/glossary.md`, `docs/domain/data-boundary.md`, `docs/security/cwe-controls.md`, `docs/product/roadmap.md`, `docs/plan/implementation-plan.md`, `docs/design/prototype/` (clickable prototype and its spec: the UI and behaviour reference).
+`docs/architecture/overview.md`, `docs/architecture/adr/README.md`, `docs/architecture/integration.md`, `docs/architecture/sensor-adapters.md`, `docs/domain/formulas.md`, `docs/domain/glossary.md`, `docs/domain/data-boundary.md`, `docs/security/cwe-controls.md`, `docs/security/asvs-l2.md`, `docs/product/roadmap.md`, `docs/plan/implementation-plan.md`, `docs/design/prototype/` (clickable prototype and its spec: the UI and behaviour reference).

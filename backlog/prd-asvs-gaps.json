@@ -1,0 +1,371 @@
+{
+  "name": "Ariva ASVS 5.0 Level 2 gaps",
+  "branchName": "story/<id>-<slug>",
+  "description": "Stories from the ARV-074 mapping (docs/security/asvs-l2.md): every Gap and Partly requirement belongs to exactly one story below. Not part of the Phase 0 count; schedule them with the product owner (most are hardening before a tender or a production go-live).",
+  "userStories": [
+    {
+      "id": "ARV-080",
+      "title": "[ASVS] Data Protection key ring with RSA-OAEP and AES-GCM, and crypto agility",
+      "description": "The key ring that protects refresh cookies, TOTP seeds and outbound secrets is wrapped by the framework's certificate encryptor with RSA PKCS#1 v1.5 and AES-CBC without a MAC. Replace it with an encryptor using RSA-OAEP-SHA256 and AES-256-GCM, refuse weak certificates at startup, and make stored secrets re-protectable under a new key. ASVS 5.0: V11.3.1, V11.3.2, V11.3.3, V11.2.2, V11.2.3. Effort M.",
+      "acceptanceCriteria": [
+        "A custom IXmlEncryptor and IXmlDecryptor wrap new keys with RSA-OAEP-SHA256 and AES-256-GCM; existing keys stay readable for migration; a test fails on rsa-1_5 or CBC in a written key",
+        "A Data Protection certificate under RSA 3072 (or an EC key under P-256) is refused at startup",
+        "Stored hashes and protected values carry their algorithm; a job re-protects TOTP seeds and outbound secrets under the current key",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 100,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-074"
+      ]
+    },
+    {
+      "id": "ARV-081",
+      "title": "[ASVS] No fail-safe on security decision caches",
+      "description": "Session, role and site caches may serve a stale entry when the database is slow (fail-safe), so a revoked session or a removed role could pass during an outage. Turn fail-safe and soft timeouts off for every cache that feeds an authentication or authorization decision, as already done for the device credential. ASVS 5.0: V16.5.3. Effort S.",
+      "acceptanceCriteria": [
+        "Every cache used for a session, role, site scope, integration client or display decision has fail-safe off and a hard timeout; an architecture test finds any security cache with fail-safe on",
+        "An integration test with the database stalled shows a revoked session refused (503), never accepted from a stale entry",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 101,
+      "passes": true,
+      "notes": "Done with ARV-074 (2026-10-05): SecurityCacheOptions on the session, role, site, device credential and live zone join caches; SecurityCacheOptionsTests (behaviour, and a source test that every decision cache uses it); DatabaseStallTests with a revoked session during a stall (verified red without it).",
+      "dependsOn": [
+        "ARV-074"
+      ]
+    },
+    {
+      "id": "ARV-082",
+      "title": "[ASVS] Encrypted backend connections in production",
+      "description": "Production talks to PostgreSQL, Redis and the pods without TLS. Enforce TLS on every backend connection in k8s-prd, with pinned internal CAs. ASVS 5.0: V12.3.1, V12.3.3, V12.3.4. Effort M.",
+      "acceptanceCriteria": [
+        "A k8s-prd host refuses to start with Database:UseEncryption false, a Redis connection string without ssl=true, or a non-HTTPS OTLP endpoint (as Kafka already does)",
+        "PostgreSQL and Redis verify against a pinned internal CA (RootCertificate, sslCaPath), not the system store",
+        "The ingress reaches the pods over TLS with a cluster CA (backend-protocol HTTPS) or a service mesh with mutual TLS is documented and tested",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 102,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-074"
+      ]
+    },
+    {
+      "id": "ARV-083",
+      "title": "[ASVS] Per-service backend identities and least privilege",
+      "description": "Every host shares one database login, one Kafka principal and one base settings secret. Give each host its own identity with only the grants and secrets it needs. ASVS 5.0: V13.2.1, V13.2.2, V13.3.2, V13.3.1. Effort L.",
+      "acceptanceCriteria": [
+        "One database login and one Kafka principal per host, with grants limited to the tables and topics each uses, starting with Ingest and Stream; Redis ACL users",
+        "base-appsettings-secret split so each pod mounts only its own credentials; the Kafka password only where Kafka is used",
+        "A chart test fails a pod that mounts another host's credentials",
+        "Secrets are created, rotated and destroyed through a vault or the External Secrets Operator",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 103,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-074"
+      ]
+    },
+    {
+      "id": "ARV-084",
+      "title": "[ASVS] Ingress transport and header hardening",
+      "description": "HSTS is not set (the controller default is six months), TLS versions and ciphers are not pinned, machine endpoints are redirected from HTTP silently, and responses the ingress generates itself lack the security headers. ASVS 5.0: V3.4.1, V3.4.4, V3.4.6, V3.3.1, V3.3.2, V4.1.2, V12.1.1, V12.1.2, V12.2.2. Effort M.",
+      "acceptanceCriteria": [
+        "Strict-Transport-Security max-age=31536000; includeSubDomains on every host, and nosniff and frame-ancestors 'none' on ingress-generated responses, each with a chart test",
+        "The api-ingest, api-integration and api-main ingresses refuse plain HTTP instead of redirecting; the web and Cronz hosts keep the redirect",
+        "Controller ssl-protocols TLSv1.2 TLSv1.3 and Mozilla intermediate ciphers documented and shipped; MQTT pinned to TLS 1.2 and 1.3; a TLS check in the release gate",
+        "Ingress affinity cookies Secure and SameSite=Strict, the sidebar cookie Secure with a __Host- name",
+        "The deployment guide states which CA each host certificate must chain to; the TLS table in wiki 05 is current",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 104,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-074"
+      ]
+    },
+    {
+      "id": "ARV-085",
+      "title": "[ASVS] Network policies, trusted proxies and private probes",
+      "description": "Any pod can reach any other, the trusted proxy networks are wide, and the health probes and the job dashboard are reachable through the public ingress. ASVS 5.0: V13.2.5, V4.1.3, V15.3.4, V13.4.5. Effort M.",
+      "acceptanceCriteria": [
+        "A default-deny NetworkPolicy with ingress and egress rules for the firewall matrix flows ships in the chart, with a chart test",
+        "Security:ForwardedHeaders:KnownNetworks in k8s-prd is the ingress controller's pod network (a Helm value) and use-forwarded-headers is pinned off on the controller",
+        "/health is not routed by any ingress; a source range is mandatory on the Cronz ingress in k8s-prd",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 105,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-074"
+      ]
+    },
+    {
+      "id": "ARV-086",
+      "title": "[ASVS] Session management completeness",
+      "description": "No per-account session limit, no credential rotation on step-up, no way for a user or an administrator to list or end sessions, and unattended tabs keep refreshing. ASVS 5.0: V7.1.2, V7.2.4, V7.3.1, V7.4.3, V7.4.5, V7.5.2. Effort L.",
+      "acceptanceCriteria": [
+        "A configurable session limit per account with a documented behaviour at the limit",
+        "Step-up rotates the refresh token and starts a new session generation; earlier access tokens are refused",
+        "GET and DELETE api/auth/sessions (step-up) and an account screen listing device, address and times; administrator endpoints to end one user's or all sessions (step-up, audited)",
+        "After password change or recovery code regeneration the user is offered to end other sessions",
+        "Ariva.Web refreshes only after user activity, so the server idle timeout applies to unattended tabs (display players are unaffected)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 106,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-074"
+      ]
+    },
+    {
+      "id": "ARV-087",
+      "title": "[ASVS] Cronz job dashboard behind user sign-in and MFA",
+      "description": "The TickerQ dashboard is protected by a static operator key kept in the browser's local storage, outside user sessions and MFA. ASVS 5.0: V6.3.3, V6.3.4, V7.2.2. Effort M.",
+      "acceptanceCriteria": [
+        "The dashboard needs an Ariva administrator session with a fresh step-up, or a recorded exception with compensating controls (administration network only, key rotation) approved by the product owner",
+        "A test checks that every registered authentication scheme appears in the security guide's pathway table",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 107,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-074"
+      ]
+    },
+    {
+      "id": "ARV-088",
+      "title": "[ASVS] Authentication secret hardening",
+      "description": "Recovery codes have 50 bits and unsalted SHA-256, temporary passwords never expire, TOTP accepts the next step, per-request integration TOTP codes can be replayed, and the context word list is empty by default. ASVS 5.0: V6.5.1, V6.5.2, V6.5.5, V6.4.1, V11.5.1, V6.1.2, V6.2.11. Effort M.",
+      "acceptanceCriteria": [
+        "Recovery codes of at least 128 bits, or stored with PBKDF2 and a per-code salt",
+        "Temporary passwords expire (for example after 72 hours); sign-in with an expired one fails",
+        "TOTP accepts the current and the previous step only, or the drift is documented; a per-request X-TOTP-Code is accepted once per step and client",
+        "A default context word list (Dalil, Ariva, AMAN, airport and authority names, role names) ships as Auth:ContextWords and is enforced by a test",
+        "Cronz and simulation keys documented as 32 random bytes with a generator command",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 108,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-074"
+      ]
+    },
+    {
+      "id": "ARV-089",
+      "title": "[ASVS] Strict input parsing",
+      "description": "Unknown and duplicate JSON members are accepted, numbers may arrive as strings, repeated query parameters are not refused, and the web app is not compiled with strict TypeScript or guarded against prototype pollution. ASVS 5.0: V2.2.1, V15.3.5, V15.3.6, V15.3.7. Effort M.",
+      "acceptanceCriteria": [
+        "Controller JSON refuses unmapped members, duplicate properties and string numbers (400 with a test on each host); repeated query parameters are refused",
+        "Ariva.Web compiles with strictNullChecks and noImplicitAny; objects keyed by server data use Map or Object.create(null), with a scan rule for __proto__ and bracket writes from data",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 109,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-074"
+      ]
+    },
+    {
+      "id": "ARV-090",
+      "title": "[ASVS] Live hub without a token in the URL, and an Origin check",
+      "description": "The SignalR connection carries the access token in the query string and the hub does not check the Origin of the WebSocket upgrade. ASVS 5.0: V14.2.1, V4.4.2. Effort M.",
+      "acceptanceCriteria": [
+        "The web app connects with a short-lived single-use hub ticket (or a same-origin cookie) instead of access_token; no bearer token appears in a URL",
+        "The /hubs/live upgrade checks Origin against Security:Cors:AllowedOrigins and the host itself, with unit and e2e tests",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 110,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-074"
+      ]
+    },
+    {
+      "id": "ARV-091",
+      "title": "[ASVS] Security event logging",
+      "description": "Sign-in success and failure, logout, failed authorization and refused controls are not logged as security events, log lines lack who and where, and log shipping and protection are not enforced in production. ASVS 5.0: V16.1.1, V16.2.1, V16.2.3, V16.2.5, V16.3.1, V16.3.2, V16.3.3, V16.4.2, V16.4.3. Effort L.",
+      "acceptanceCriteria": [
+        "SecurityEvent entries for sign-in success and failure (user or unknown, address, amr), logout, forbidden and challenged outcomes, rate-limit rejections, CSRF and validation refusals",
+        "A request enricher adds user id, session id, client address and trace id to every log event",
+        "A log inventory per layer (apps, nginx, ingress, PostgreSQL, Kafka) with events, format, store, access and retention; the file sink documented or limited to vm-local",
+        "Staff emails, track ids and desk codes masked or hashed per protection level, with tests",
+        "k8s-prd ships logs over TLS by default and refuses to start without a collector; access and retention of logs documented for Loki or the customer SIEM",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 111,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-074"
+      ]
+    },
+    {
+      "id": "ARV-092",
+      "title": "[ASVS] Upload safety",
+      "description": "Floor plans and SSIM files are not scanned for malware, downloads carry no server filename, the file policy is not written down, and nginx sends no charset. ASVS 5.0: V5.4.3, V5.4.1, V5.1.1, V4.1.1. Effort M.",
+      "acceptanceCriteria": [
+        "Uploads are scanned (ClamAV clamd service or sidecar) before they are stored or imported; a detection is refused and audited",
+        "Floor plan downloads send Content-Disposition inline with a server-generated filename; SVG plans and text responses carry charset=utf-8",
+        "The security guide has a file handling section per upload: types, extensions, sizes, unpacked limits, how files are served, what happens on a malicious file",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 112,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-074"
+      ]
+    },
+    {
+      "id": "ARV-093",
+      "title": "[ASVS] Web client state and policy tightening",
+      "description": "The CSP allows base-uri 'self', sign-out leaves cached state, the display player keeps its key in sessionStorage, and the cookie prefix choices are not recorded. ASVS 5.0: V3.4.3, V14.3.1, V14.3.3, V3.3.3. Effort S.",
+      "acceptanceCriteria": [
+        "base-uri 'none' in csp.config.js, the nginx fallback and the Cronz page, and base-uri 'none'; object-src 'none' in the API baseline policy",
+        "Sign-out answers Clear-Site-Data cache and storage and loads /login fully",
+        "The display player exchanges its key for a short-lived session token kept in memory, or the sessionStorage use is recorded as an accepted exception",
+        "ADR-0026 records why the refresh and hub cookies keep __Secure- with a narrow path",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 113,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-074"
+      ]
+    },
+    {
+      "id": "ARV-094",
+      "title": "[ASVS] Cryptography and data protection documents",
+      "description": "There is no key management policy, no cryptographic inventory and no classification of Ariva's own sensitive data with protection requirements per level. ASVS 5.0: V11.1.1, V11.1.2, V14.1.1, V14.1.2, V14.2.4. Effort M.",
+      "acceptanceCriteria": [
+        "docs/security/key-management.md: owner, generation, custody, rotation, compromise response and destruction for every key and certificate (NIST SP 800-57)",
+        "docs/security/crypto-inventory.md: every key, certificate and algorithm in use",
+        "A data classification of credentials, keys, staff emails, JWT claims and track ids into protection levels, a requirement matrix per level, and each control mapped to its level with tests for any missing one",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 114,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-074"
+      ]
+    },
+    {
+      "id": "ARV-095",
+      "title": "[ASVS] Authentication, authorization and operations documents",
+      "description": "Several requirements need a written rule that does not exist yet or is spread out. ASVS 5.0: V6.1.1, V6.1.3, V6.4.4, V7.1.1, V8.1.2, V8.4.1, V2.1.2, V15.1.1, V15.1.3. Effort M.",
+      "acceptanceCriteria": [
+        "The security guide documents brute force controls and why per-account lockout cannot deny known users, lists every authentication pathway with its strength, and justifies the session timeouts against NIST SP 800-63B",
+        "The administration guide defines identity proofing for a lost authenticator and lists the cross-field validation rules",
+        "A field-level authorization document per entity and role; the security guide states that site scope is the tenant boundary (or handler tenancy is built)",
+        "Remediation time frames per severity for dependencies and base images; one inventory of costly operations with their limits and timeouts",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 115,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-074"
+      ]
+    },
+    {
+      "id": "ARV-096",
+      "title": "[ASVS] Supply chain and resource controls in CI",
+      "description": "No NuGet package source mapping or lock files, no SBOM per release, remediation time frames not enforced, and report endpoints have no request timeout or concurrency policy. ASVS 5.0: V15.1.2, V15.2.1, V15.2.2. Effort M.",
+      "acceptanceCriteria": [
+        "nuget.config with package source mapping, NuGet lock files, and an SBOM attached to each release",
+        "CI fails when an open Dependabot or audit finding is older than its severity's time frame; web dev dependencies audited",
+        "AddRequestTimeouts defaults and a concurrency policy on on-demand report and CSV endpoints, with tests",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 116,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "ARV-074"
+      ]
+    }
+  ]
+}

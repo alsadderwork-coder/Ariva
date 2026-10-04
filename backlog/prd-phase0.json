@@ -1638,8 +1638,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 77,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "docs/security/asvs-l2.md; gap stories in backlog/prd-asvs-gaps.json; see progress 2026-10-05.",
       "dependsOn": [
         "ARV-010d",
         "ARV-011"
