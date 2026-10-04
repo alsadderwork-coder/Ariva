@@ -189,7 +189,14 @@ const hostServers = {
 		Security__RateLimiting__IntegrationClient__PermitLimit: '60',
 		...outboundLabEnvironment()
 	}),
-	'api-ingest': dotnetHost(project('Backplane/Ariva.Api.Ingest'), `${hosts.ingest}/health/readiness`, false, kafkaEnvironment()),
+	'api-ingest': dotnetHost(project('Backplane/Ariva.Api.Ingest'), `${hosts.ingest}/health/readiness`, false, {
+		...kafkaEnvironment(),
+		// A device's own limit (600 a minute by default) lowered so the load smoke's flood reaches it with 200 requests,
+		// well inside the per-address budget the parallel suites share; every device here pushes about once a minute.
+		// The full load run (ARIVA_LOAD_MODE=full) keeps the production 600; Ingest's per-address limit (20,000 a minute, for
+		// sensors behind one gateway) covers 40 sensors from this one address either way.
+		Security__RateLimiting__Device__PermitLimit: process.env.ARIVA_LOAD_MODE === 'full' ? '600' : '120'
+	}),
 	// ARV-060: TickerQ runs the scheduled reports and mails them through the run's smtp4dev; the dashboard is on with
 	// the run's key so reports.spec.ts can run the delivery job on demand.
 	'api-cronz': dotnetHost(project('Backplane/Ariva.Api.Cronz'), `${hosts.cronz}/health/readiness`, false, {

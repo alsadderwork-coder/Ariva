@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <!--
+      Load tests (ARV-071): sensor pushes through Ariva.Api.Ingest and live fan-out from Ariva.Api.Main, run against hosts
+      that are already up (the E2E run or a lab install). The base class library only, plus StackExchange.Redis (already
+      used by Ariva.Infra) to publish live snapshots as Ariva.Api.Stream does. Not deployed: no image, no chart.
+    -->
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <IsPackable>false</IsPackable>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="StackExchange.Redis" />
+    </ItemGroup>
+
+</Project>

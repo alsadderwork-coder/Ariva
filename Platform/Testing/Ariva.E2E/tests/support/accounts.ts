@@ -157,6 +157,12 @@ export function accounts() {
 		arrivalWaveAdmin: account('e2e.arrivalwaveadmin', ['SystemAdministrator'], false, true, ['*']),
 		// ARV-050: registers the AMAN pull endpoints of aman-pull.spec.ts (critical actions).
 		amanPullAdmin: account('e2e.amanpulladmin', ['SystemAdministrator'], false, true, ['*']),
+		// ARV-071: provisions the load run's site, devices and displays.
+		loadAdmin: account('e2e.loadadmin', ['SystemAdministrator'], false, true, ['*']),
+		// ARV-071: the load run's screens, signed in once per few screens (a hub session holds at most 8 connections).
+		loadScreen: account('e2e.loadscreen', ['TerminalDutyManager'], false, false, ['*']),
+		// ARV-071: provisions the site of the functional screen-under-load test (apart from loadAdmin: a TOTP code is accepted once).
+		loadWebAdmin: account('e2e.loadwebadmin', ['SystemAdministrator'], false, true, ['*']),
 		// ARV-051: the web app's sign-in. The shell suites sign in as a duty manager in parallel (password only, so no
 		// replay guard); each TOTP flow has its own account, because a code counts once per account.
 		web: account('e2e.web', ['TerminalDutyManager'], false, false, ['DMO']),

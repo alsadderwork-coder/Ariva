@@ -13,7 +13,9 @@ const projects = [
 	'Backplane/Ariva.Api.Integration/Ariva.Api.Integration.csproj',
 	'Backplane/Ariva.Api.Ingest/Ariva.Api.Ingest.csproj',
 	'Backplane/Ariva.Api.Cronz/Ariva.Api.Cronz.csproj',
-	'Simulation/Ariva.Simulation.Api/Ariva.Simulation.Api.csproj'
+	'Simulation/Ariva.Simulation.Api/Ariva.Simulation.Api.csproj',
+	// ARV-071: the load harness load.spec.ts runs against these hosts.
+	'Testing/Ariva.LoadTests/Ariva.LoadTests.csproj'
 ];
 
 for (const project of projects) {

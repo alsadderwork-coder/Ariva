@@ -92,5 +92,14 @@
     "proposedBy": "Claude (ARV-029, 2026-10-03)",
     "approvedBy": "PENDING: Ahmad Al-Sadder",
     "date": "2026-10-03"
+  },
+  {
+    "rule": "SEC-020",
+    "path": "Platform/Testing/Ariva.LoadTests/Program.cs",
+    "contains": "new HttpClient(handler)",
+    "reason": "The ARV-071 load harness's one client: a test console that is in no image, chart or deployment, and calls only the Ingest and Main URLs the operator or the E2E spec passes in ARIVA_LOAD_INGEST_URL and ARIVA_LOAD_MAIN_URL (no URL comes from a response or from data). It needs its own SocketsHttpHandler (512 connections per server, 10 second connect timeout) to drive 40 sensors and 50 displays at once; IHttpClientFactory would add a host for nothing.",
+    "proposedBy": "Claude (ARV-071, 2026-10-04)",
+    "approvedBy": "PENDING: Ahmad Al-Sadder",
+    "date": "2026-10-04"
   }
 ]

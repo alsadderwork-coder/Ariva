@@ -108,7 +108,7 @@ Data at rest is encrypted (D5); secrets live in Kubernetes secrets or a vault.
 
 ## Bandwidth estimates per sensor tier
 
-Estimates of the application payload per sensor, before TLS and protocol overhead. Based on D5's assumption of about 100 bytes per sample. Confirm with the vendor and measure in the lab.
+Estimates of the application payload per sensor, before TLS and protocol overhead. Based on D5's assumption of about 100 bytes per sample. Confirm with the vendor and measure in the lab. The ARV-071 lab run measured about 14.5 KB for a one-second push of 150 positions in Ariva's canonical JSON (see the sizing notes below), in line with the T3 row.
 
 | Tier | What is sent | Estimate per sensor |
 |---|---|---|
@@ -119,3 +119,36 @@ Estimates of the application payload per sensor, before TLS and protocol overhea
 | Health | `DeviceHealth` every 10 to 30 seconds | Negligible |
 
 Site totals (D5): 100 sensors at 30 people and 5 Hz are about 15,000 messages and 1.5 MB per second into the gateway, trivial for a local LAN and Kafka. Size uplinks from the sensor switches for the peak, add headroom for firmware downloads during maintenance (size per the vendor datasheet), and keep the AMAN, AODB and border-to-airport flows (aggregates only) in mind as small by comparison.
+
+## Sizing notes: lab measurements (ARV-071)
+
+Lab measurements from the load harness (`Platform/Testing/Ariva.LoadTests`, driven by `tests/api/load.spec.ts`), not site figures. The run was on one 2-core, 8 GB development VM that also ran PostgreSQL with TimescaleDB, Kafka, Redis, the harness and every host, so the numbers are a floor for one pod of each host rather than a capacity limit. Ariva.Api.Stream is not in the run: the harness stands in for it and announces the zone's snapshot through Redis once a second (Stream announces once a minute), so the fan-out is about 60 times production's rate per zone. Repeat the full run on the site's hardware before sizing a BOQ on it: `ARIVA_LOAD_MODE=full`, the E2E prerequisites, then `npx playwright test tests/api/load.spec.ts`; the report is `.verify/load/full/load-report.md` and `.json`.
+
+Shape (full run, 2026-10-04): 40 canonical T3 sensors, each pushing 30 tracks of 5 samples (150 positions, about 14.5 KB) once a second for 120 seconds, then three times that for 30 seconds; 150 dashboards on the live hub joined to the zone, 50 passenger displays polling their board every 10 seconds (200 connections in all); one device sending 150 pushes a second for 6 seconds during the burst; then 20 bodies over 256 KB.
+
+| Scenario | Requests | Per second | p50 ms | p95 ms | p99 ms | Outcome |
+|---|---|---|---|---|---|---|
+| Sensor pushes, steady (6,000 positions/s, 0.58 MB/s) | 4,800 | 40 | 7.5 | 33.3 | 3,045 | All 202 |
+| Sensor pushes, 3x burst (18,000 positions/s, 1.73 MB/s), with the flood below at the same time | 3,588 | 119 | 15.6 | 41.0 | 119.3 | All 202 |
+| Bodies over 256 KB | 20 | 5 | 2.6 | 5.6 | 15.2 | All 413 |
+| One device past its limit (600 a minute), during the burst | 900 | 140 | 29.9 | 71.8 | 452.2 | 600 accepted, 300 answered 429 with Retry-After; no measured device got a 429 |
+| Dashboards connect and join the zone | 150 | 73 | 29.2 | 731.6 | 823.2 | All joined |
+| Snapshot delivery, publication to each dashboard | 22,500 | 147 | 5.9 | 19.5 | 81.3 | All delivered, none dropped |
+| Display board polls | 767 | 5 | 8.6 | 18.7 | 36.9 | All 200 |
+
+No request failed (no 5xx, no transport error). The steady p99 is the first second: each sensor's first push looks its credential up in the database and the hosts compile their paths; after it, pushes stay under 45 ms at p95 at three times the rate with a device flooding beside them. A previous full run the same day, with the flood after the burst, gave the same picture (burst p99 32 ms, steady p99 2.1 s).
+
+| Host process (one each) | CPU average, percent of one core | CPU peak | Memory peak |
+|---|---|---|---|
+| Ariva.Api.Ingest | 21 | 92 | 284 MB |
+| Ariva.Api.Main (hub and display boards) | 9 | 85 | 294 MB |
+| Ariva.Api.Integration | 2 | 5 | 226 MB |
+| Ariva.Api.Cronz | 2 | 28 | 177 MB |
+
+What this means for sizing (Estimate, to confirm on site hardware):
+
+- One Ingest pod with one core takes 40 T3 sensors at their rate with room for a 3x burst; plan one Ingest core per 40 to 60 T3 sensors plus a second replica for availability. T1, T2 and T4 sensors send a small fraction of this.
+- One Main pod carries 200 live connections at under 10 percent of a core; connection count is not what sizes Main at a single site.
+- Limits behave under load: bodies over 256 KB get 413 from their Content-Length, before they are read; a device flooding past its rate during the burst gets 429 with Retry-After while none of the 40 measured devices gets a 429; nothing turns into a 5xx.
+- The hub holds at most 8 connections per signed-in session on one replica (CWE-400; `load.spec.ts` checks that a ninth is closed while the eight keep receiving). A wall of screens needs a sign-in per screen, or per few screens, not one shared session.
+- Per-address limits: Ingest allows 20,000 requests a minute per address (sensors behind one gateway or NAT; 40 sensors at 3x use about 7,200), Main 1,000. Both need `Security:ForwardedHeaders` to name the ingress network, or every client shares the ingress controller's address; an operations room behind one NAT with many dashboards is the case to watch on Main.

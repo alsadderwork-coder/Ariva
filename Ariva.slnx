@@ -30,6 +30,9 @@
   <Folder Name="/Platform/Simulation/">
     <Project Path="Platform/Simulation/Ariva.Simulation.Api/Ariva.Simulation.Api.csproj" />
   </Folder>
+  <Folder Name="/Platform/Testing/">
+    <Project Path="Platform/Testing/Ariva.LoadTests/Ariva.LoadTests.csproj" />
+  </Folder>
   <Folder Name="/Solution Items/">
     <File Path=".dockerignore" />
     <File Path=".editorconfig" />

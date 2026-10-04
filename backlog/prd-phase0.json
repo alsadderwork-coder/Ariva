@@ -1578,8 +1578,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 74,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Own harness instead of NBomber (licence); see progress 2026-10-04.",
       "dependsOn": [
         "ARV-034",
         "ARV-035"
