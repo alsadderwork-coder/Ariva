@@ -39,6 +39,12 @@ export function checkManifests(docs, { environment }) {
 			// pod validates tokens and needs the public keys.
 			const secretVolumes = (pod.volumes ?? []).map((volume) => volume.secret?.secretName ?? '');
 			const integrationRing = (name) => name.includes('integration-token');
+			// Secret files are root-owned without fsGroup: a non-root pod cannot read a 0400 key file and fails to start (0400 parses
+			// as 256 under YAML 1.1 and as 400 under YAML 1.2).
+			const ownerOnly = (pod.volumes ?? []).some((volume) => volume.secret && [256, 400, '0400'].includes(volume.secret.defaultMode));
+			if (ownerOnly && psc.runAsNonRoot === true && !(Number(psc.fsGroup) > 0)) {
+				findings.push(`${id}: a non-root pod mounting 0400 secrets needs securityContext.fsGroup`);
+			}
 			if (secretVolumes.some((name) => name.includes('token-signing') && !integrationRing(name)) && doc.metadata?.name !== 'api-main-deployment') {
 				findings.push(`${id}: only api-main-deployment may mount the token signing key`);
 			}

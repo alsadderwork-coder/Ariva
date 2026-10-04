@@ -78,6 +78,8 @@ spec:
         runAsNonRoot: true
         runAsUser: 10001
         runAsGroup: 10001
+        # Group ownership of the secret volumes, so the app user can read the 0400 key files (as in api-main)
+        fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
       containers:

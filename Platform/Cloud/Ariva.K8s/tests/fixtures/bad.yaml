@@ -38,7 +38,7 @@ spec:
       volumes:
         - { name: tmp, emptyDir: {} }
         - { name: token-signing, secret: { secretName: ariva-token-signing } }
-        - { name: integration-token-signing, secret: { secretName: ariva-integration-token-signing } }
+        - { name: integration-token-signing, secret: { secretName: ariva-integration-token-signing, defaultMode: 0400 } }
       containers:
         - name: app
           image: registry.example/api-ingest:1.2.3
