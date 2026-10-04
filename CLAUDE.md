@@ -46,6 +46,7 @@ node scripts/verify.mjs web           Ariva.Web check, lint, build
 node scripts/verify.mjs e2e           Playwright API end-to-end and functional tests (starts the hosts)
 node scripts/verify.mjs integration   Testcontainers tests (Docker required)
 node scripts/verify.mjs all           everything except integration
+node scripts/verify.mjs mutation      Stryker.NET on the engines (about an hour; nothing else may build meanwhile)
 node scripts/security/scan.mjs        CWE gate; --self-test proves every rule fires
 dotnet build Ariva.slnx
 dotnet run --project Platform/Backplane/Ariva.Api.Main

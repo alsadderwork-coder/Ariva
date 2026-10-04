@@ -1,0 +1,40 @@
+{
+  "stryker-config": {
+    "project": "Ariva.Core.csproj",
+    "test-projects": [
+      "Ariva.UnitTests.csproj"
+    ],
+    "mutate": [
+      "**/Queueing/Nowcast.cs",
+      "**/Queueing/WaitStatistics.cs",
+      "**/Queueing/QueueStateEngine.cs",
+      "**/Queueing/QueueBins.cs",
+      "**/Queueing/ZoneProcessor.cs",
+      "**/Border/EgateCoupling.cs",
+      "**/Flights/ArrivalWave.cs"
+    ],
+    "coverage-analysis": "perTest",
+    "mutation-level": "Standard",
+    "ignore-methods": [
+      "ToString",
+      "*Exception.ctor",
+      "ArgumentNullException.ThrowIfNull",
+      "ArgumentException.ThrowIfNullOrWhiteSpace",
+      "ArgumentOutOfRangeException.ThrowIfNegative"
+    ],
+    "thresholds": {
+      "high": 80,
+      "low": 70,
+      "break": 70
+    },
+    "reporters": [
+      "html",
+      "json",
+      "progress",
+      "cleartext"
+    ],
+    "concurrency": 2,
+    "additional-timeout": 10000,
+    "test-runner": "mtp"
+  }
+}

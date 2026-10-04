@@ -50,3 +50,6 @@ deploy/.kubeconfig-path
 
 # The pinned local .NET tools (smtp4dev for development and E2E, ARV-040).
 !/.config/dotnet-tools.json
+
+# Stryker.NET output when run without --output (ARV-069)
+StrykerOutput/

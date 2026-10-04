@@ -23,8 +23,25 @@ public sealed class AmanPactFile : IDisposable
 {
     private readonly string _directory = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ariva-pact-" + Guid.NewGuid().ToString("N"));
 
+    /// <summary>
+    /// True in a Stryker.NET run (ARV-069): its test server has STRYKER_MUTANT_FILE from the start (the initial run uses
+    /// the unmutated build), and a mutated Ariva.Core carries Stryker's injected MutantControl. The pacts are no engine
+    /// test, and the Pact FFI aborts the test host Stryker runs in server mode, so they do not run there.
+    /// </summary>
+    public static bool UnderMutationTesting { get; } =
+        Environment.GetEnvironmentVariable("STRYKER_MUTANT_FILE") is not null ||
+        typeof(Ariva.Core._IAssemblyMark).Assembly.GetTypes().Any(t => t.Name == "MutantControl");
+
     public AmanPactFile()
     {
+        if (UnderMutationTesting)
+        {
+            Path = string.Empty;
+            Reasons = new Dictionary<string, IReadOnlyList<string>>();
+            Pact = [];
+            return;
+        }
+
         System.IO.Directory.CreateDirectory(_directory);
         Path = System.IO.Path.Combine(_directory, AmanFeedPacts.FileName);
         Reasons = AmanFeedPacts.Write(_directory);
@@ -42,7 +59,11 @@ public sealed class AmanPactFile : IDisposable
 
     public JsonObject Pact { get; }
 
-    public void Dispose() => System.IO.Directory.Delete(_directory, recursive: true);
+    public void Dispose()
+    {
+        if (System.IO.Directory.Exists(_directory))
+            System.IO.Directory.Delete(_directory, recursive: true);
+    }
 }
 
 /// <summary>
@@ -50,8 +71,16 @@ public sealed class AmanPactFile : IDisposable
 /// its producers against it (wiki 08 has the harness), and the same harness is run here against the simulator's AMAN.
 /// The data boundary is checked beside the pact: Pact lets a provider add members, Ariva dead-letters them.
 /// </summary>
-public sealed class AmanFeedPactTests(AmanPactFile file) : IClassFixture<AmanPactFile>
+public sealed class AmanFeedPactTests : IClassFixture<AmanPactFile>
 {
+    private readonly AmanPactFile _file;
+
+    public AmanFeedPactTests(AmanPactFile file)
+    {
+        Assert.SkipWhen(AmanPactFile.UnderMutationTesting, "Mutation run (Stryker.NET): the pacts are not engine tests.");
+        _file = file;
+    }
+
     private static readonly DateTimeOffset Minute = new(2026, 10, 3, 18, 30, 0, TimeSpan.Zero);
 
     internal static string Directory()
@@ -67,7 +96,7 @@ public sealed class AmanFeedPactTests(AmanPactFile file) : IClassFixture<AmanPac
     public static TheoryData<string> Descriptions => [.. AmanFeedPacts.All.Select(i => i.Description)];
 
     private JsonObject Interaction(string description) =>
-        ((JsonArray)file.Pact["interactions"]!).Select(i => i!.AsObject()).Single(i => i["description"]!.GetValue<string>() == description);
+        ((JsonArray)_file.Pact["interactions"]!).Select(i => i!.AsObject()).Single(i => i["description"]!.GetValue<string>() == description);
 
     private static IEnumerable<string> Members(Type record) =>
         record.GetConstructors().Single().GetParameters().Select(p => JsonNamingPolicy.CamelCase.ConvertName(p.Name!));
@@ -76,21 +105,21 @@ public sealed class AmanFeedPactTests(AmanPactFile file) : IClassFixture<AmanPac
     [MemberData(nameof(Descriptions))]
     public void Ariva_Should_KeepTheExample_When_ItReadsItLikeAnAmanRecord(string description)
     {
-        file.Reasons.Should().ContainKey(description);
-        file.Reasons[description].Should().BeEmpty("the example is a record Ariva's strict reader and intake rules keep");
+        _file.Reasons.Should().ContainKey(description);
+        _file.Reasons[description].Should().BeEmpty("the example is a record Ariva's strict reader and intake rules keep");
     }
 
     [Fact]
     public void Pact_Should_HoldOneV4MessagePerContract_BetweenArivaAndAman()
     {
-        file.Pact["consumer"]!["name"]!.GetValue<string>().Should().Be("Ariva");
-        file.Pact["provider"]!["name"]!.GetValue<string>().Should().Be("AMAN");
-        file.Pact["metadata"]!["pactSpecification"]!["version"]!.GetValue<string>().Should().StartWith("4.");
-        file.Pact["metadata"]!["arivaContract"]!["version"]!.GetValue<string>().Should().Be(ContractVersion.Current);
-        file.Pact["metadata"]!["arivaDataBoundary"]!["rule"]!.GetValue<string>().Should().Contain("no officer, traveller, passenger or document identifier");
-        file.Pact["metadata"]!["arivaSmallCellSuppression"]!["rule"]!.GetValue<string>().Should().Contain("at least 3");
+        _file.Pact["consumer"]!["name"]!.GetValue<string>().Should().Be("Ariva");
+        _file.Pact["provider"]!["name"]!.GetValue<string>().Should().Be("AMAN");
+        _file.Pact["metadata"]!["pactSpecification"]!["version"]!.GetValue<string>().Should().StartWith("4.");
+        _file.Pact["metadata"]!["arivaContract"]!["version"]!.GetValue<string>().Should().Be(ContractVersion.Current);
+        _file.Pact["metadata"]!["arivaDataBoundary"]!["rule"]!.GetValue<string>().Should().Contain("no officer, traveller, passenger or document identifier");
+        _file.Pact["metadata"]!["arivaSmallCellSuppression"]!["rule"]!.GetValue<string>().Should().Contain("at least 3");
 
-        var interactions = ((JsonArray)file.Pact["interactions"]!).Select(i => i!.AsObject()).ToList();
+        var interactions = ((JsonArray)_file.Pact["interactions"]!).Select(i => i!.AsObject()).ToList();
         interactions.Should().HaveCount(4);
         interactions.Select(i => i["type"]!.GetValue<string>()).Should().AllBe("Asynchronous/Messages");
         AmanFeedPacts.All.Select(i => i.Topic).Should().BeEquivalentTo(KafkaTopics.All.Where(t => t.StartsWith("aman.feed.", StringComparison.Ordinal)));
@@ -269,7 +298,7 @@ public sealed class AmanFeedPactTests(AmanPactFile file) : IClassFixture<AmanPac
                 .WithMessages(scenarios => scenarios.Add(description, builder => builder
                     .WithMetadata(new { contentType = "application/json", kafkaTopic = topic })
                     .WithContent(() => record)), AmanContracts.Json)
-                .WithFileSource(new FileInfo(file.Path))
+                .WithFileSource(new FileInfo(_file.Path))
                 .WithFilter(description)
                 .Verify();
             // A filter that matches nothing verifies nothing and still passes: the message must have been checked.

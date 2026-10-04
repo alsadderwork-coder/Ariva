@@ -13,6 +13,7 @@ How Ariva is tested, from pure formula tests to field validation, and how to run
 | Functional UI tests | `Platform/Testing/Ariva.E2E` (Playwright) | Screens, role visibility, create flows, XSS payloads rendered as text with no CSP violation | Planned |
 | Contract tests (AMAN feed) | `Ariva.UnitTests/Contracts` (PactNet 5) | Ariva's message pact for the four AMAN V1 contracts (examples read by Ariva's strict reader and rules), its matchers, no identifier member, and the provider harness of wiki 08 run against the simulator's AMAN, with broken messages that must fail it | `AmanFeedPactTests` (ARV-068); the pact is the `aman-pact` CI artifact |
 | Event catalogue | `Ariva.UnitTests/Messaging/AsyncApi` | `docs/architecture/asyncapi.yaml` and the wiki 08 topic table equal the code; references resolve; consumer groups exist in code | `AsyncApiTests` (ARV-067); the AsyncAPI CLI validates the document in CI |
+| Mutation tests | Stryker.NET (`Ariva.UnitTests/stryker-config.json`, `.github/workflows/mutation.yml`) | The unit tests catch real faults in the pure engines: formulas, the queue state engine and bins, realised wait attribution, the nowcast, e-gate coupling, the arrival wave | Weekly and on demand (ARV-069); break below 70 percent, target 80 |
 | Replay and golden scenario tests | Ariva.Simulation.Api reference scenario | The seeded day (seed 9303) produces the same outputs every run: alert at 18:05, degraded zone 18:20 to 18:30, SLA breach at 19:10 | `ScenarioParityTests` (bit for bit against `sim.js`), `ReferenceScenarioTests` (ARV-027) |
 | Conformance tests per sensor family | `Emulators/Sensors/<Family>/samples/` | Each adapter maps recorded payloads to the expected canonical events, including malformed and oversized payloads | Planned per family |
 | AODB replay | Replay harness with recorded feeds | Adapters handle real feeds: out-of-order messages, identity changes, stale feeds | Planned; recorded feeds from each pilot airport join the suite |
@@ -34,6 +35,16 @@ node scripts/verify.mjs unit
 # or
 dotnet test Platform/Backplane/Ariva.UnitTests/Ariva.UnitTests.csproj
 ```
+
+### Mutation testing (Stryker.NET)
+
+Agents write many tests; mutation testing checks that they would catch a real fault. Stryker.NET changes the engine code one small fault at a time (a `<` for a `<=`, a `+` for a `-`, a removed statement) and runs the unit tests that exercise it; a mutant the tests do not notice "survives".
+
+- Scope (`Platform/Backplane/Ariva.UnitTests/stryker-config.json`): in Ariva.Core, `Queueing/QueueStateEngine.cs`, `QueueBins.cs`, `ZoneProcessor.cs`, `WaitStatistics.cs` (realised wait attribution), `Nowcast.cs`, `Border/EgateCoupling.cs` and `Flights/ArrivalWave.cs`; Stryker records which unit tests cover each mutant and runs only those against it. Snapshot persistence and guard clauses are left out.
+- Thresholds: the run fails below 70 percent of mutants killed; 80 is the target. Surviving mutants are triaged in `backlog/progress.md`: a missing test is added, an equivalent mutant (a change no input can observe) is recorded as such.
+- When: weekly (Saturday night) and on demand (Actions, mutation, Run workflow); the HTML and JSON reports are the `mutation-report` artifact. Locally: `node scripts/verify.mjs mutation` (about an hour on two cores; the report goes to `.verify/stryker`). Stryker replaces Ariva.Core in the unit tests' output while it runs, so nothing else should build or test in that checkout meanwhile.
+- Runner: Stryker's Microsoft Testing Platform runner (`test-runner: mtp`; the unit test executable has `UseMicrosoftTestingPlatformRunner`, while `dotnet test` still runs through VSTest). Under VSTest Stryker could neither activate mutants nor capture coverage in the xUnit v3 test process, so every mutant "survived". The AMAN pact tests skip themselves in a Stryker run: the Pact FFI aborts Stryker's test server, and they test no engine.
+- Compile errors: Stryker drops every mutant of a method where one mutant does not compile (its safe mode), mostly where a local is assigned through `out` in a condition. Those methods are listed in the latest triage in `backlog/progress.md`.
 
 ## 3. Integration tests (Testcontainers)
 
@@ -121,6 +132,7 @@ The script is cross-platform (Windows, Linux, CI) and has no dependencies beyond
 |---|---|---|
 | CI on every push and pull request (GitHub Actions) | `.github/workflows/ci.yml` | Security gate and docs rules; AsyncAPI validation (its own job); Release build, unit tests (publishing the AMAN pact as `aman-pact`) and integration tests with Testcontainers; web check, lint and build; the e2e suite with docker compose |
 | Security scans | `.github/workflows/security-scan.yml` | Trivy filesystem scan, Semgrep, SBOM, on pull requests and weekly |
+| Mutation tests | `.github/workflows/mutation.yml` | Stryker.NET on the engines, weekly and on demand; report as the `mutation-report` artifact |
 | Azure DevOps PR validation (deployment mirror) | `Platform/Cloud/Ariva.Cicd/AzureDevOps/Common/Analyze-solution.yaml` | .NET 10 restore and build (Release), unit and integration test projects with published results, web `npm ci`, `npm run check`, `npm run build` |
 | Image builds | `K8s/Build-k8s-<service>.yaml`, fan-out `Build-k8s-all.yaml` | Docker build and push per service on trunk changes to its paths |
 | Release to dev | `K8s/Release-ariva-k8s-dev.yaml` | Secrets and `helmfile apply` |

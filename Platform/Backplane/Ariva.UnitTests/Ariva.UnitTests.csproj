@@ -6,6 +6,9 @@
         <IsTestProject>true</IsTestProject>
         <!-- PACT_DO_NOT_TRACK for the Pact FFI (ARV-068) -->
         <RunSettingsFilePath>$(MSBuildProjectDirectory)/Ariva.UnitTests.runsettings</RunSettingsFilePath>
+        <!-- Microsoft Testing Platform in the test executable (ARV-069): Stryker.NET's mtp runner activates mutants and
+             captures coverage through it; dotnet test keeps running the tests through VSTest (xunit.runner.visualstudio). -->
+        <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
     </PropertyGroup>
 
     <ItemGroup>

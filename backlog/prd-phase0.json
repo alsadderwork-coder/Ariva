@@ -1535,8 +1535,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 72,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Done 2026-10-04: Stryker.NET 5.0.0 on the engines (queue state engine, bins, zone processor, realised wait statistics, nowcast, e-gate coupling, arrival wave) with Microsoft Testing Platform and per-test coverage, thresholds 80 and break 70; weekly and on demand (mutation.yml), report artifact; score 79.6 then 89.4 percent after the triage tests; surviving mutants triaged in backlog/progress.md. Security review PASS (backlog/progress.md).",
       "dependsOn": [
         "ARV-030",
         "ARV-031",

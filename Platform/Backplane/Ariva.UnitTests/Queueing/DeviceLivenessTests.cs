@@ -93,6 +93,27 @@ public sealed class DeviceLivenessTests
     }
 
     [Fact]
+    public void Zone_Should_RemoveEveryKindOfOutput_When_AWriteIsAcknowledged()
+    {
+        // ARV-069 triage: an outage yields minutes, bins, live minutes, the outage and its marks; each list is removed once
+        // written, so nothing is written twice.
+        var zone = Play(m => m is > 10 and < 21);
+        var written = zone.Peek();
+        written.Minutes.Should().NotBeEmpty();
+        written.Bins.Should().NotBeEmpty();
+        written.Live.Should().NotBeEmpty();
+        written.Outages.Should().NotBeEmpty();
+        zone.Acknowledge(written);
+
+        var left = zone.Peek();
+        left.Minutes.Should().BeEmpty();
+        left.Bins.Should().BeEmpty();
+        left.Live.Should().BeEmpty();
+        left.Recomputations.Should().BeEmpty();
+        left.Outages.Should().BeEmpty();
+    }
+
+    [Fact]
     public void Replay_Should_ReportAnOpenOutage_When_TheRangeEndsWhileADeviceIsOut()
     {
         var outputs = Play(m => m > 30).Drain();

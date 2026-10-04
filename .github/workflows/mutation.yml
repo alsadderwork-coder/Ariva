@@ -1,0 +1,48 @@
+# Mutation testing of the pure engines (ARV-069): Stryker.NET mutates the formulas, the queue state engine, realised wait
+# attribution and the nowcast in Ariva.Core and runs the unit tests that cover them against each mutant. The score must
+# stay at 70 percent or more (the run fails below it; 80 is the target). Weekly and on demand; the HTML and JSON reports
+# are an artifact, and surviving mutants are triaged in backlog/progress.md. Scope and thresholds:
+# Platform/Backplane/Ariva.UnitTests/stryker-config.json.
+name: mutation
+
+on:
+  schedule:
+    - cron: '41 1 * * 6' # Saturdays 01:41 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  PACT_DO_NOT_TRACK: true
+
+jobs:
+  stryker:
+    name: Stryker.NET on the engines
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '10.0.x'
+      - name: Restore the pinned tools (dotnet-stryker)
+        run: dotnet tool restore
+      - name: Mutation run (fails below the break threshold)
+        working-directory: Platform/Backplane/Ariva.UnitTests
+        run: dotnet dotnet-stryker --concurrency 4 --output "$GITHUB_WORKSPACE/.verify/stryker"
+      - name: Mutation report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutation-report
+          path: .verify/stryker/reports/
+          if-no-files-found: warn

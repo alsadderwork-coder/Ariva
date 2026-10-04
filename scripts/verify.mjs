@@ -11,6 +11,7 @@
 //   security     scanner self-test + full scan + dependency audits
 //   docs         text rules on Markdown (no em dashes, no double hyphens in prose)
 //   backend      build + unit + security
+//   mutation     Stryker.NET on the pure engines (ARV-069; about an hour on two cores, report in .verify/stryker)
 //   all          everything except integration (add --with-integration)
 // Writes .verify/last.json with per-step results.
 
@@ -99,6 +100,14 @@ const steps = {
     if (fs.existsSync(path.join(E2E, 'package-lock.json'))) run('npm audit (e2e)', 'npm', ['audit', '--audit-level=high'], E2E, { optional: true });
   },
   docs: () => docsCheck(),
+  // Scope and thresholds in Platform/Backplane/Ariva.UnitTests/stryker-config.json; exits non-zero below the break threshold.
+  // Stryker replaces Ariva.Core.dll in the unit tests' output while it runs: do not build or test in this checkout meanwhile.
+  mutation: () => {
+    process.env.PACT_DO_NOT_TRACK = 'true'; // the Pact FFI's usage reporting stays off (the pacts skip under Stryker anyway)
+    run('dotnet tool restore', 'dotnet', ['tool', 'restore']);
+    run('mutation tests (Stryker.NET)', 'dotnet', ['dotnet-stryker', '--output', path.join(ROOT, '.verify', 'stryker')],
+      path.join(ROOT, 'Platform', 'Backplane', 'Ariva.UnitTests'));
+  },
   backend: () => { steps.unit(); steps.security(); },
   all: () => { steps.unit(); steps.web(); steps.security(); steps.docs(); steps.e2e(); if (args.includes('--with-integration')) steps.integration(); }
 };
