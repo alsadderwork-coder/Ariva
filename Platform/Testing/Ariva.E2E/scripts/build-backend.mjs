@@ -12,6 +12,7 @@ const projects = [
 	'Backplane/Ariva.Api.Main/Ariva.Api.Main.csproj',
 	'Backplane/Ariva.Api.Integration/Ariva.Api.Integration.csproj',
 	'Backplane/Ariva.Api.Ingest/Ariva.Api.Ingest.csproj',
+	'Backplane/Ariva.Api.Cronz/Ariva.Api.Cronz.csproj',
 	'Simulation/Ariva.Simulation.Api/Ariva.Simulation.Api.csproj'
 ];
 

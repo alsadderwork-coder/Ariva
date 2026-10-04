@@ -56,6 +56,8 @@ process.env.ARIVA_E2E_MOCK_AMAN_PULL_SECRET ||= 'aman-pull-' + crypto.randomByte
 process.env.ARIVA_E2E_MOCK_AMAN_PULL_SEED ||= base32Of(crypto.randomBytes(20));
 // ARV-029: the API key Ariva's ACRIS pull would present to the emulated AODB.
 process.env.ARIVA_E2E_ACRIS_KEY ||= 'acris-e2e-' + crypto.randomBytes(24).toString('base64url');
+// ARV-060: the TickerQ dashboard of Ariva.Api.Cronz takes this key (the host keeps only its SHA-256).
+process.env.ARIVA_E2E_CRONZ_KEY ||= 'cronz-e2e-' + crypto.randomBytes(24).toString('base64url');
 
 function base32Of(bytes: Buffer): string {
 	const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
@@ -226,6 +228,13 @@ export default defineConfig({
 			...outboundLabEnvironment()
 		}),
 		dotnetHost(project('Backplane/Ariva.Api.Ingest'), `${hosts.ingest}/health/readiness`, false, kafkaEnvironment()),
+		// ARV-060: TickerQ runs the scheduled reports and mails them through the run's smtp4dev; the dashboard is on with
+		// the run's key so reports.spec.ts can run the delivery job on demand.
+		dotnetHost(project('Backplane/Ariva.Api.Cronz'), `${hosts.cronz}/health/readiness`, false, {
+			...smtpEnvironment(),
+			Cronz__Dashboard__Enabled: 'true',
+			Cronz__Dashboard__KeySha256: crypto.createHash('sha256').update(process.env.ARIVA_E2E_CRONZ_KEY).digest('hex')
+		}),
 		dotnetHost(project('Simulation/Ariva.Simulation.Api'), `${hosts.simulation}/health/readiness`, false, {
 			Simulation__Control__Keys__0__Name: 'e2e',
 			Simulation__Control__Keys__0__Sha256: simulationKeyDigest,

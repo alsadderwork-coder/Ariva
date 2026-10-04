@@ -184,7 +184,10 @@ export function accounts() {
 		// ARV-059: enabling an account is a critical action, so the session suite re-enables with a second factor.
 		sessionAdmin: account('e2e.sessionadmin', ['SystemAdministrator'], false, true, ['*']),
 		// ARV-059: the break-glass test asks enable with a fresh second factor, so the answer is the account's absence.
-		breakGlassAdmin: account('e2e.bgadmin', ['SystemAdministrator'], false, true, ['*'])
+		breakGlassAdmin: account('e2e.bgadmin', ['SystemAdministrator'], false, true, ['*']),
+		// ARV-060: the scheduled report's recipients at the demo airport (their own addresses, so no other suite's mail mixes in).
+		reportBorder: account('e2e.reportborder', ['BorderShiftSupervisor'], false, false, ['DMO']),
+		reportTerminal: account('e2e.reportterminal', ['TerminalDutyManager'], false, false, ['DMO'])
 	} as const;
 }
 

@@ -1351,8 +1351,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 63,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Done 2026-10-04: daily report per site and local day from minute histograms (JSON and CSV), schedules to Ariva accounts only, delivered once per recipient by TickerQ in Cronz; TickerQ dashboard behind an operator key with a same-origin hub ticket. Security review PASS after one FAIL (backlog/progress.md).",
       "dependsOn": [
         "ARV-034",
         "ARV-040"

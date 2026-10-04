@@ -3172,6 +3172,155 @@
     {
       "host": "main",
       "method": "GET",
+      "route": "/api/v1/sites/{siteCode}/reports/daily",
+      "access": "permission",
+      "permissions": [
+        "ViewReport"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/sites/{siteCode}/reports/daily.csv",
+      "access": "permission",
+      "permissions": [
+        "ViewReport"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/report-schedules",
+      "access": "permission",
+      "permissions": [
+        "SearchReportSchedule"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 200,
+        "TerminalDutyManager": 200,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 200
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/report-schedules/recipients",
+      "access": "permission",
+      "permissions": [
+        "CreateReportSchedule",
+        "EditReportSchedule"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/report-schedules/{id:guid}",
+      "access": "permission",
+      "permissions": [
+        "ViewReportSchedule"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/report-schedules",
+      "access": "permission",
+      "permissions": [
+        "CreateReportSchedule"
+      ],
+      "body": {
+        "siteCode": "ZZ9",
+        "name": "Matrix schedule",
+        "template": "DailyPeaks",
+        "sendAt": "07:00",
+        "recipientIds": [
+          "0199a000-0000-7000-8000-00000000a1a1"
+        ],
+        "enabled": true
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "PUT",
+      "route": "/api/v1/report-schedules/{id:guid}",
+      "access": "permission",
+      "permissions": [
+        "EditReportSchedule"
+      ],
+      "body": {
+        "siteCode": "ZZ9",
+        "name": "Matrix schedule",
+        "template": "DailyPeaks",
+        "sendAt": "07:00",
+        "recipientIds": [
+          "0199a000-0000-7000-8000-00000000a1a1"
+        ],
+        "enabled": true
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "DELETE",
+      "route": "/api/v1/report-schedules/{id:guid}",
+      "access": "permission",
+      "permissions": [
+        "DeleteReportSchedule"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
       "route": "/api/v1/display/board",
       "access": "device",
       "expected": {

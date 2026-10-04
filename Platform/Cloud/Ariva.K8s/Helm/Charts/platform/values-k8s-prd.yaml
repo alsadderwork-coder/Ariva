@@ -70,6 +70,8 @@ ingresses:
     subdomain: api-cronz-ariva
     serviceName: api-cronz-service
     annotations:
+      # Limit the dashboard to the administration network (wiki 04): set the customer's CIDRs, for example
+      # nginx.ingress.kubernetes.io/whitelist-source-range: "10.10.0.0/24"
       nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
       nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
       nginx.ingress.kubernetes.io/proxy-body-size: "10m"

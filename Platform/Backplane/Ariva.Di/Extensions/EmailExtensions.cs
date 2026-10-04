@@ -36,9 +36,32 @@ public static class EmailExtensions
     /// </summary>
     public static IServiceCollection AddArivaEmailSending(this IServiceCollection services, IConfiguration configuration)
     {
+        if (AddRelay(services, configuration))
+            services.AddHostedService<EmailSenderWorker>();
+        services.TryAddScoped<EmailSender>();
+        return services;
+    }
+
+    /// <summary>
+    /// The scheduled reports (ARV-060, Ariva.Api.Cronz): the relay as for alert emails (the same settings and checks, no
+    /// alert sending worker) and the delivery round TickerQ runs. With <c>Email:Enabled</c> off a round sends nothing.
+    /// </summary>
+    public static IServiceCollection AddArivaReportDeliveries(this IServiceCollection services, IConfiguration configuration)
+    {
+        AddRelay(services, configuration);
+        services.TryAddScoped<Ariva.Infra.Services.Reports.ReportReader>();
+        services.TryAddScoped<Ariva.Core.Services.Reports.ISvcReportDeliveries, Ariva.Infra.Services.Reports.SvcReportDeliveries>();
+        services.TryAddSingleton<Ariva.Infra.Services.Reports.ReportDeliveryRound>();
+        return services;
+    }
+
+    /// <summary>The settings, the relay (checked when sending is on) and MailKit; true when sending is on.</summary>
+    private static bool AddRelay(IServiceCollection services, IConfiguration configuration)
+    {
         services.AddArivaEmailOutbox(configuration);
         var smtp = configuration.GetSection(SmtpSettings.SectionName).Get<SmtpSettings>() ?? new SmtpSettings();
-        if (Settings(configuration).Enabled)
+        var enabled = Settings(configuration).Enabled;
+        if (enabled)
         {
             var problems = smtp.Problems().ToList();
             var environment = configuration["Application:Environment"];
@@ -46,14 +69,12 @@ public static class EmailExtensions
                 problems.Add($"Email:Smtp:AllowInsecure is only allowed in {string.Join(" and ", InsecureEnvironments.Order(StringComparer.Ordinal))}.");
             if (problems.Count > 0)
                 throw new InvalidOperationException(string.Join(" ", problems));
-            services.AddHostedService<EmailSenderWorker>();
         }
 
         services.TryAddSingleton(smtp);
         services.TryAddSingleton(TimeProvider.System);
         services.TryAddSingleton<IEmailTransport, MailKitTransport>();
-        services.TryAddScoped<EmailSender>();
-        return services;
+        return enabled;
     }
 
     private static EmailSettings Settings(IConfiguration configuration) =>

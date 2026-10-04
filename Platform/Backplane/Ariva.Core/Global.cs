@@ -183,6 +183,20 @@ public static class Global
 
             #endregion
 
+            #region Reports (E9)
+
+            /// <summary>The daily report of a site (ARV-060): lane waits, alerts and device uptime, read and exported.</summary>
+            public static Permission ViewReport { get; } = new("Report", PermissionAction.View);
+
+            /// <summary>Report schedules (ARV-060): the daily report sent by email to accounts of the site.</summary>
+            public static Permission ViewReportSchedule { get; } = new("ReportSchedule", PermissionAction.View);
+            public static Permission SearchReportSchedule { get; } = new("ReportSchedule", PermissionAction.Search);
+            public static Permission CreateReportSchedule { get; } = new("ReportSchedule", PermissionAction.Create);
+            public static Permission EditReportSchedule { get; } = new("ReportSchedule", PermissionAction.Edit);
+            public static Permission DeleteReportSchedule { get; } = new("ReportSchedule", PermissionAction.Delete);
+
+            #endregion
+
             private static readonly Lazy<IReadOnlyDictionary<string, Permission>> ByName = new(() =>
                 typeof(Permissions)
                     .GetProperties(BindingFlags.Public | BindingFlags.Static)

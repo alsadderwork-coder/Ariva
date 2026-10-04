@@ -336,6 +336,13 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
 
         (await RowsAsync(database, "SELECT bucket_utc, entries FROM queue_minute_15m WHERE zone_key = 'DMO/Q1' ORDER BY bucket_utc")).Should().HaveCountGreaterThan(5);
 
+        // ARV-060: every minute with waits keeps its histogram, whose counts add up to its waits (F7), so reports merge hours.
+        (await RowsAsync(database, """
+            SELECT count(*) FILTER (WHERE waits > 0), count(*) FILTER (WHERE waits > 0 AND wait_buckets IS NOT NULL
+                   AND (SELECT sum(c) FROM unnest(wait_counts) AS c) = waits)
+            FROM queue_minute WHERE zone_key = 'DMO/Q1'
+            """)).Single().Split('|').Should().Match<string[]>(r => r[0] == r[1] && r[0] != "0", "each minute with waits has a complete histogram");
+
         // A stored state above the bound is refused before it is read (CWE-120).
         await using (var connection = new NpgsqlConnection(postgres.ConnectionString(database)))
         {

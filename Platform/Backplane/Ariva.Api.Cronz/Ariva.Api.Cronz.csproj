@@ -71,4 +71,10 @@
         <ProjectReference Include="..\Ariva.Api.Common\Ariva.Api.Common.csproj" />
     </ItemGroup>
 
+    <ItemGroup>
+        <!-- ADR-0020: TickerQ runs the scheduled jobs (in memory; the jobs keep their own state in PostgreSQL). -->
+        <PackageReference Include="TickerQ" />
+        <PackageReference Include="TickerQ.Dashboard" />
+    </ItemGroup>
+
 </Project>

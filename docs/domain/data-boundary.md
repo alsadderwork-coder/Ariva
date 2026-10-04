@@ -114,6 +114,7 @@ Rules (Proposed):
 | Ariva Kafka topics | Short, medium, long or compacted classes (see the overview) | D5; values Proposed |
 | queue_intervals, desk_intervals, forecast_values, border_lane_kpis | Indefinite | D5 |
 | Hourly and daily report aggregates | Indefinite | D5 |
+| Report schedules and deliveries (schedule, local day, recipient account, status; ARV-060). Report emails carry lane aggregates, alerts and device uptime only, to Ariva accounts allowed the site. The recipient picker lists the user names and display names of the accounts allowed the site that hold a report role, all-sites administrators included, to whoever may manage that site's schedules | To confirm; Proposed: 400 days for delivery rows, schedules until deleted (audited) | Proposed |
 | Configuration, contracts, SLA decisions, alerts | Indefinite, audited | D5 |
 | Evidence packs | To confirm (at least the contract's dispute and audit periods) | |
 | Flight data | To confirm | |

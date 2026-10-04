@@ -6,6 +6,7 @@ export const hosts = {
 	main: process.env.ARIVA_E2E_MAIN_URL || 'http://localhost:51001',
 	ingest: process.env.ARIVA_E2E_INGEST_URL || 'http://localhost:51002',
 	integration: process.env.ARIVA_E2E_INTEGRATION_URL || 'http://localhost:51005',
+	cronz: process.env.ARIVA_E2E_CRONZ_URL || 'http://localhost:51004',
 	simulation: process.env.ARIVA_E2E_SIMULATION_URL || 'http://localhost:51020'
 } as const;
 

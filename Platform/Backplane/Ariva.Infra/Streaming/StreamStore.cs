@@ -86,7 +86,8 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
         await Execute(connection, """
             CREATE TEMP TABLE stage_queue_minute (zone_key varchar(220), minute_utc timestamptz, profile_version integer, status varchar(12),
                 entries bigint, exits bigint, waits bigint, mean_wait_minutes double precision, p50_wait_minutes double precision,
-                p90_wait_minutes double precision, p95_wait_minutes double precision, share_within_target double precision) ON COMMIT DROP
+                p90_wait_minutes double precision, p95_wait_minutes double precision, share_within_target double precision,
+                wait_buckets integer[], wait_counts integer[]) ON COMMIT DROP
             """, ct);
         await using (var copy = await connection.BeginBinaryImportAsync(
             "COPY stage_queue_minute FROM STDIN (FORMAT BINARY)", ct))
@@ -107,6 +108,10 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
                 await Nullable(copy, m.Waits.P90Minutes, ct);
                 await Nullable(copy, m.Waits.P95Minutes, ct);
                 await Nullable(copy, m.Waits.ShareWithinTarget, ct);
+                // The minute's histogram (ARV-060, F7), so hours and days merge counts instead of averaging percentiles.
+                var histogram = m.Waits.Histogram ?? [];
+                await copy.WriteAsync(histogram.Select(h => h.Bucket).ToArray(), NpgsqlDbType.Array | NpgsqlDbType.Integer, ct);
+                await copy.WriteAsync(histogram.Select(h => checked((int)h.Count)).ToArray(), NpgsqlDbType.Array | NpgsqlDbType.Integer, ct);
             }
 
             await copy.CompleteAsync(ct);
@@ -114,13 +119,14 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
 
         await using var upsert = new NpgsqlCommand("""
             INSERT INTO queue_minute (zone_key, minute_utc, profile_version, status, entries, exits, waits, mean_wait_minutes, p50_wait_minutes,
-                p90_wait_minutes, p95_wait_minutes, share_within_target, updated_on)
+                p90_wait_minutes, p95_wait_minutes, share_within_target, wait_buckets, wait_counts, updated_on)
             SELECT zone_key, minute_utc, profile_version, status, entries, exits, waits, mean_wait_minutes, p50_wait_minutes,
-                p90_wait_minutes, p95_wait_minutes, share_within_target, @now FROM stage_queue_minute
+                p90_wait_minutes, p95_wait_minutes, share_within_target, wait_buckets, wait_counts, @now FROM stage_queue_minute
             ON CONFLICT (zone_key, minute_utc) DO UPDATE SET profile_version = EXCLUDED.profile_version, status = EXCLUDED.status,
                 entries = EXCLUDED.entries, exits = EXCLUDED.exits, waits = EXCLUDED.waits, mean_wait_minutes = EXCLUDED.mean_wait_minutes,
                 p50_wait_minutes = EXCLUDED.p50_wait_minutes, p90_wait_minutes = EXCLUDED.p90_wait_minutes, p95_wait_minutes = EXCLUDED.p95_wait_minutes,
-                share_within_target = EXCLUDED.share_within_target, updated_on = EXCLUDED.updated_on
+                share_within_target = EXCLUDED.share_within_target, wait_buckets = EXCLUDED.wait_buckets, wait_counts = EXCLUDED.wait_counts,
+                updated_on = EXCLUDED.updated_on
             """, connection);
         upsert.Parameters.AddWithValue("now", now);
         await upsert.ExecuteNonQueryAsync(ct);

@@ -144,6 +144,7 @@ public sealed partial class PermissionMatrixTests
             FakeDevices.Register(services);
             FakeAlertRules.Register(services);
             FakeDisplays.Register(services);
+            FakeReports.Register(services);
             FakeAlerts.Register(services);
             FakeIntegrationClients.Register(services);
             FakeOutboundEndpoints.Register(services);

@@ -48,9 +48,19 @@ public static class RolePermissions
         Permissions.ViewDisplay, Permissions.SearchDisplay, Permissions.CreateDisplay, Permissions.EditDisplay, Permissions.DeleteDisplay
     ];
 
+    /// <summary>
+    /// Reports (ARV-060): the daily report and its schedules, for the supervisor and the duty manager of the site; the
+    /// handler's own-counter report comes with its module (Phase 1).
+    /// </summary>
+    private static readonly Permission[] Reports =
+    [
+        Permissions.ViewReport, Permissions.ViewReportSchedule, Permissions.SearchReportSchedule, Permissions.CreateReportSchedule,
+        Permissions.EditReportSchedule, Permissions.DeleteReportSchedule
+    ];
+
     /// <summary>Border shift supervisor: immigration halls, their zones and sensors, the arrival wave, and the alert rules of its sites.</summary>
     public static IReadOnlySet<Permission> BorderShiftSupervisor { get; } = new HashSet<Permission>(
-        [.. TopologyRead, .. ZonesAndDevices, Permissions.ViewLiveQueue, Permissions.ViewArrivalWave, Permissions.ViewArrivalWaveLanes, Permissions.ViewBorderDesks, Permissions.ViewImmigration, .. AlertRulesWrite, .. Alerts, .. Displays]);
+        [.. TopologyRead, .. ZonesAndDevices, Permissions.ViewLiveQueue, Permissions.ViewArrivalWave, Permissions.ViewArrivalWaveLanes, Permissions.ViewBorderDesks, Permissions.ViewImmigration, .. AlertRulesWrite, .. Alerts, .. Displays, .. Reports]);
 
     /// <summary>
     /// Terminal duty manager: everything airport-side, including zones, sensors and desk code mappings; the arrival wave as
@@ -61,7 +71,7 @@ public static class RolePermissions
         .. TopologyRead, .. ZonesAndDevices,
         Permissions.ViewDeskCodeMapping, Permissions.SearchDeskCodeMapping,
         Permissions.ViewLiveQueue, Permissions.ViewArrivalWave, Permissions.ViewAirportDesks, Permissions.ViewImmigration, .. AlertRulesWrite, .. Alerts,
-        .. Displays
+        .. Displays, .. Reports
     ]);
 
     /// <summary>Handler station manager: its own counters; reads topology and zones, changes none of them.</summary>

@@ -81,6 +81,10 @@ public static class AccountExtensions
         services.TryAddScoped<Ariva.Core.Services.Alerting.ISvcAlertRules, Ariva.Infra.Services.Alerting.SvcAlertRules>();
         services.TryAddScoped<Ariva.Core.Services.Displays.ISvcDisplays, Ariva.Infra.Services.Displays.SvcDisplays>();
         services.TryAddScoped<Ariva.Core.Services.Displays.ISvcDisplayBoard, Ariva.Infra.Services.Displays.SvcDisplayBoard>();
+        // Reports (ARV-060): the daily report and its schedules; deliveries run in Ariva.Api.Cronz (AddArivaReportDeliveries).
+        services.TryAddScoped<Ariva.Infra.Services.Reports.ReportReader>();
+        services.TryAddScoped<Ariva.Core.Services.Reports.ISvcReports, Ariva.Infra.Services.Reports.SvcReports>();
+        services.TryAddScoped<Ariva.Core.Services.Reports.ISvcReportSchedules, Ariva.Infra.Services.Reports.SvcReportSchedules>();
         // ARV-038: the stored minutes rules are judged on, and the arrival wave (ARV-047).
         services.AddArivaArrivalWaveSource(configuration);
         services.TryAddScoped<Ariva.Infra.Alerting.AlertInputs>();

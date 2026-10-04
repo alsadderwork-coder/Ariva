@@ -414,3 +414,35 @@ public sealed class FakeDisplays : Ariva.Core.Services.Displays.ISvcDisplays, Ar
     private static Task<Fluentx.Result<T>> Missing<T>() =>
         Task.FromResult(Fluentx.Result.Error<T>(Ariva.Core.Services.Topology.TopologyErrors.NotFound));
 }
+
+/// <summary>Reports (ARV-060) without a database: every site and schedule is unknown, the schedule list is empty.</summary>
+public sealed class FakeReports : Ariva.Core.Services.Reports.ISvcReports, Ariva.Core.Services.Reports.ISvcReportSchedules
+{
+    public static void Register(IServiceCollection services)
+    {
+        services.Replace(ServiceDescriptor.Scoped<Ariva.Core.Services.Reports.ISvcReports, FakeReports>());
+        services.Replace(ServiceDescriptor.Scoped<Ariva.Core.Services.Reports.ISvcReportSchedules, FakeReports>());
+    }
+
+    private static Task<Fluentx.Result<T>> Missing<T>() => Task.FromResult(Fluentx.Result.Error<T>(Ariva.Core.Services.Reports.ReportErrors.NotFound));
+
+    public Task<Fluentx.Result<Ariva.Core.Reports.DailyReport>> DailyAsync(string siteCode, DateOnly? date, CancellationToken ct = default) =>
+        Missing<Ariva.Core.Reports.DailyReport>();
+
+    public Task<Fluentx.Result<IReadOnlyList<Ariva.Core.Services.Reports.ReportScheduleViewModel>>> SearchAsync(string siteCode, CancellationToken ct = default) =>
+        Task.FromResult(new Fluentx.Result<IReadOnlyList<Ariva.Core.Services.Reports.ReportScheduleViewModel>>((IReadOnlyList<Ariva.Core.Services.Reports.ReportScheduleViewModel>)[]));
+
+    public Task<Fluentx.Result<Ariva.Core.Services.Reports.ReportScheduleViewModel>> GetAsync(Guid id, CancellationToken ct = default) =>
+        Missing<Ariva.Core.Services.Reports.ReportScheduleViewModel>();
+
+    public Task<Fluentx.Result<IReadOnlyList<Ariva.Core.Services.Reports.ReportRecipientViewModel>>> RecipientsAsync(string siteCode, CancellationToken ct = default) =>
+        Missing<IReadOnlyList<Ariva.Core.Services.Reports.ReportRecipientViewModel>>();
+
+    public Task<Fluentx.Result<Ariva.Core.Services.Reports.ReportScheduleViewModel>> CreateAsync(Ariva.Core.Services.Reports.ReportScheduleRequest request, CancellationToken ct = default) =>
+        Missing<Ariva.Core.Services.Reports.ReportScheduleViewModel>();
+
+    public Task<Fluentx.Result<Ariva.Core.Services.Reports.ReportScheduleViewModel>> UpdateAsync(Guid id, Ariva.Core.Services.Reports.ReportScheduleRequest request, CancellationToken ct = default) =>
+        Missing<Ariva.Core.Services.Reports.ReportScheduleViewModel>();
+
+    public Task<Fluentx.Result<bool>> DeleteAsync(Guid id, CancellationToken ct = default) => Missing<bool>();
+}

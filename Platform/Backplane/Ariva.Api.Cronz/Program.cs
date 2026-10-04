@@ -2,7 +2,10 @@ using Ariva.Api.Common.Security;
 using Ariva.Api.Common.Extensions;
 using Ariva.Api.Common.HealthChecks;
 using Ariva.Api.Common.Hosting;
+using Ariva.Api.Cronz.Jobs;
 using Ariva.Di;
+using Ariva.Di.Extensions;
+using TickerQ.DependencyInjection;
 
 // Ariva.Api.Cronz: scheduled jobs (Jobs/) run by TickerQ: forecasts, SLA evaluation,
 // scheduled reports and data retention.
@@ -58,7 +61,10 @@ builder.Services.RegisterArivaServices(builder.Configuration);
 builder.Services.AddAppSecurityBaseline(builder.Configuration);
 
 // AMAN: AddAppCaching, AddAppHealthChecks, AddAppRouting, AddAppOpenApi.
-// Jobs: TickerQ with its EF Core operational store, Redis coordination and OpenTelemetry instrumentation.
+// Jobs (ADR-0020): TickerQ in memory, each job idempotent with its state in PostgreSQL; the dashboard only with a key.
+// The scheduled reports (ARV-060) send through the mail relay, as alert emails do from Ariva.Api.Integration.
+builder.Services.AddArivaReportDeliveries(builder.Configuration);
+builder.Services.AddArivaJobs(builder.Configuration);
 
 #endregion
 
@@ -75,6 +81,9 @@ app.UseRouting();
 // AMAN: UseRequestTracking
 app.UseAppCors();
 app.UseAppRateLimiting();
+// The TickerQ schedulers start here, and the dashboard branch (when enabled) answers before user authentication: it has
+// no Ariva session and checks its own key (JobsDashboardGuard). Everything after this stays default deny.
+app.UseTickerQ();
 app.UseAuthentication();
 app.UseSessionValidation();
 app.UsePendingScope();
@@ -87,7 +96,7 @@ app.UseAuthorization();
 
 app.MapArivaHealthChecks();
 
-// AMAN: MapOpenApi, MapScalarApiReference. The TickerQ dashboard is mapped here.
+// AMAN: MapOpenApi, MapScalarApiReference. The TickerQ dashboard is a branch of the middleware above.
 
 #endregion
 

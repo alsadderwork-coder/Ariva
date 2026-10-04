@@ -99,6 +99,38 @@ public sealed class EmailTests
     }
 
     [Fact]
+    public void Message_Should_CarryTheReportFilesAsAttachments_When_TheEmailHasThem()
+    {
+        var settings = new EmailSettings { Enabled = true, FromAddress = "no-reply@ariva.test" };
+        var csv = Encoding.UTF8.GetBytes("site,zone\r\nDMO,'=cmd\r\n");
+        using var message = MailKitTransport.Build(settings, new OutgoingEmail(Guid.NewGuid(), "border@ariva.test", "Ariva daily report DMO 2026-09-30", "Summary")
+        {
+            Attachments = [new EmailAttachment("ariva-DMO-2026-09-30-hours.csv", "text/csv", csv)]
+        });
+
+        message.TextBody.Should().Be("Summary");
+        var attachment = message.Attachments.OfType<MimeKit.MimePart>().Single();
+        attachment.FileName.Should().Be("ariva-DMO-2026-09-30-hours.csv");
+        attachment.ContentType.MimeType.Should().Be("text/csv");
+        using var content = new MemoryStream();
+        attachment.Content.DecodeTo(content, TestContext.Current.CancellationToken);
+        content.ToArray().Should().Equal(csv);
+    }
+
+    [Theory]
+    [InlineData("report.csv\r\nX: y", "text/csv")]
+    [InlineData("../report.csv", "text/csv")]
+    [InlineData("\"; filename=evil.exe", "text/csv")]
+    [InlineData("report.html", "text/html")]
+    public void Attachment_Should_BeRefused_When_ItsNameOrTypeIsNotTheServers(string name, string type)
+    {
+        var attach = () => new EmailAttachment(name, type, [1]);
+        attach.Should().Throw<ArgumentException>();
+        var large = () => new EmailAttachment("big.csv", "text/csv", new byte[EmailAttachment.MaxBytes + 1]);
+        large.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
     public void Settings_Should_RefuseClearTextAndMissingParts_When_EmailIsOn()
     {
         new EmailSettings().Problems().Should().BeEmpty("off needs nothing");

@@ -44,6 +44,7 @@ From a border deployment to an airport deployment, additionally never: track ids
 | Ariva Kafka topics | Short, medium, long or compacted classes (3, 14, 30 days) | D5; values Proposed |
 | Queue intervals, desk intervals, forecasts, border lane KPIs | Indefinite (aggregates) | D5 |
 | Hourly and daily report aggregates | Indefinite | D5 |
+| Report schedules and deliveries (schedule, local day, recipient account, status; ARV-060). Report emails carry lane aggregates, alerts and device uptime only, to Ariva accounts allowed the site | To confirm; Proposed: 400 days for delivery rows, schedules until deleted (audited) | Proposed |
 | Configuration, contracts, SLA decisions, alerts | Indefinite, audited | D5 |
 | Alert emails (`email_message`: recipient address, subject, body, status) | Kept with the alert as the record of who was told what; the body holds no traveller, officer or document data and no notes, only the staff address. A retention period for staff addresses here is To confirm | ARV-040 |
 | Evidence packs | At least the contract's dispute and audit periods | To confirm |

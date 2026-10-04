@@ -180,7 +180,38 @@ public sealed partial class EmailTemplates
 }
 
 /// <summary>An email ready for the wire.</summary>
-public sealed record OutgoingEmail(Guid Id, string Recipient, string Subject, string Body);
+public sealed record OutgoingEmail(Guid Id, string Recipient, string Subject, string Body)
+{
+    /// <summary>Files sent with the email (the daily report's CSV, ARV-060); none for alert emails.</summary>
+    public IReadOnlyList<EmailAttachment> Attachments { get; init; } = [];
+}
+
+/// <summary>
+/// A file sent with an email. The name is the server's own (letters, digits, dot, dash, underscore), never a user's text,
+/// so it cannot inject header parameters (CWE-93).
+/// </summary>
+public sealed record EmailAttachment
+{
+    public const int MaxBytes = 5 * 1024 * 1024;
+
+    public EmailAttachment(string fileName, string mediaType, byte[] content)
+    {
+        if (fileName is null || !System.Text.RegularExpressions.Regex.IsMatch(fileName, "^[A-Za-z0-9._-]{1,100}$", System.Text.RegularExpressions.RegexOptions.None, TimeSpan.FromSeconds(1)))
+            throw new ArgumentException("An attachment's name is 1 to 100 letters, digits, dots, dashes or underscores.", nameof(fileName));
+        if (mediaType is not ("text/csv" or "text/plain"))
+            throw new ArgumentException("Only CSV and plain text are attached.", nameof(mediaType));
+        ArgumentNullException.ThrowIfNull(content);
+        if (content.Length > MaxBytes)
+            throw new ArgumentException("An attachment is at most 5 MB.", nameof(content));
+        FileName = fileName;
+        MediaType = mediaType;
+        Content = content;
+    }
+
+    public string FileName { get; }
+    public string MediaType { get; }
+    public byte[] Content { get; }
+}
 
 /// <summary>Where emails go (an SMTP server through MailKit; a recorder in tests).</summary>
 public interface IEmailTransport
@@ -274,7 +305,29 @@ public sealed class MailKitTransport(EmailSettings settings, SmtpSettings smtp) 
         message.To.Add(MailboxAddress.Parse(email.Recipient));
         message.Subject = EmailTemplates.Clean(email.Subject, EmailMessage.MaxSubjectLength);
         message.Headers.Add("Auto-Submitted", "auto-generated");
-        message.Body = new TextPart("plain") { Text = email.Body };
+        var text = new TextPart("plain") { Text = email.Body };
+        if (email.Attachments is not { Count: > 0 })
+        {
+            message.Body = text;
+            return message;
+        }
+
+        var mixed = new Multipart("mixed") { text };
+        foreach (var file in email.Attachments)
+        {
+            var type = file.MediaType.Split('/');
+            var part = new MimePart(type[0], type[1])
+            {
+                Content = new MimeContent(new MemoryStream(file.Content)),
+                ContentDisposition = new ContentDisposition(ContentDisposition.Attachment),
+                ContentTransferEncoding = ContentEncoding.Base64,
+                FileName = file.FileName
+            };
+            part.ContentType.Charset = "utf-8";
+            mixed.Add(part);
+        }
+
+        message.Body = mixed;
         return message;
     }
 }
