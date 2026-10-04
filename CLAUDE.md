@@ -15,6 +15,7 @@ Platform/Backplane/
   Ariva.Infra            service implementations, NHibernate, Timescale scripts and COPY writers, Kafka, adapters' transports
   Ariva.Di               composition root extensions
   Ariva.Api.Common       security baseline, health, config layering (appsettings.base*.json)
+  Ariva.ServiceDefaults  OpenTelemetry, health check service, HttpClient resilience (no endpoints; ARV-066)
   Ariva.Api.Main         51001  config and operations REST, SignalR live hub
   Ariva.Api.Ingest       51002  sensor adapters to Kafka
   Ariva.Api.Stream       51003  queue state engine (Kafka consumers)
@@ -26,6 +27,7 @@ Platform/Frontplane/Ariva.Web                SvelteKit 2, Svelte 5, Tailwind 4, 
 Platform/Simulation/Ariva.Simulation.Api     sensor, AODB and AMAN emulators; reference scenario seed 9303   51020
 Platform/Testing/Ariva.E2E                   Playwright: API end-to-end and browser functional tests
 Platform/Cloud/Ariva.K8s, Ariva.Cicd         Helm and Helmfile, Azure DevOps YAML (optional CD to Dalil Container Registry)
+Platform/Cloud/Ariva.AppHost                 .NET Aspire AppHost: one F5 for containers, hosts, simulator, web (dev and test only)
 .github/                                     GitHub Actions (ci, security-scan, codeql, claude, images), Dependabot, templates
 docs/        architecture, ADRs, domain formulas, data boundary, security controls, product roadmap
 wiki/        project wiki in Markdown, rendered on GitHub (deployment, business flow, integration, operations, user and admin guides)

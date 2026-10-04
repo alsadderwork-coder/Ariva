@@ -98,7 +98,7 @@ test.beforeAll(async () => {
 	allocationsOnly = await client('E2E AODB allocations', ['allocations:write']);
 });
 
-test('the site\'s legs of a message are applied and acknowledged; a leg that does not touch the site is refused', async () => {
+test("the site's legs of a message are applied and acknowledged; a leg that does not touch the site is refused", async () => {
 	const xml = message(leg(run, 'AMM', 'DMO') + leg(run + 1, 'AMM', 'CAI') + leg(run + 2, 'DMO', 'CAI'));
 	const answer = await push(xml, { key: `E2E-AIDX-${run}-1` });
 	const text = await answer.text();
@@ -134,8 +134,12 @@ test('the site\'s legs of a message are applied and acknowledged; a leg that doe
 
 test('a later message moves a leg on: actual touchdown and on-block, and a cancellation', async () => {
 	const update = message(
-		leg(run, 'AMM', 'DMO', `<OperationTime OperationQualifier="TDN" CodeContext="9750" TimeType="ACT">${at(115)}</OperationTime><OperationTime OperationQualifier="ONB" CodeContext="9750" TimeType="ACT">${at(121)}</OperationTime>`) +
-			leg(run + 2, 'DMO', 'CAI').replace('<LegData>', '<LegData><OperationalStatus CodeContext="2005">DX</OperationalStatus>')
+		leg(
+			run,
+			'AMM',
+			'DMO',
+			`<OperationTime OperationQualifier="TDN" CodeContext="9750" TimeType="ACT">${at(115)}</OperationTime><OperationTime OperationQualifier="ONB" CodeContext="9750" TimeType="ACT">${at(121)}</OperationTime>`
+		) + leg(run + 2, 'DMO', 'CAI').replace('<LegData>', '<LegData><OperationalStatus CodeContext="2005">DX</OperationalStatus>')
 	);
 	const answer = await push(update);
 	expect(answer.status(), await answer.text()).toBe(200);
@@ -155,14 +159,21 @@ test('XXE, entity expansion, external DTDs, profile breaks, deep nesting, oversi
 		['XXE', () => push(message(good, '<!DOCTYPE r [<!ENTITY x SYSTEM "file:///etc/passwd">]>').replace('<Originator', '<Originator Note="&x;"')), 400],
 		['entity expansion', () => push(message(good, '<!DOCTYPE r [<!ENTITY a "aaaaaaaaaa"><!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">]>')), 400],
 		['an external DTD', () => push(message(good, '<!DOCTYPE r SYSTEM "http://169.254.169.254/latest/meta-data/">')), 400],
-		['a flight number with SQL', () => push(message(good.replace(`<FlightNumber>${run + 10}</FlightNumber>`, "<FlightNumber>1' OR '1'='1</FlightNumber>"))), 400],
-		['markup in a code', () => push(message(good.replace('<Airline CodeContext="3">RJ</Airline>', '<Airline CodeContext="3"><script>alert(1)</script></Airline>'))), 400],
+		[
+			'a flight number with SQL',
+			() => push(message(good.replace(`<FlightNumber>${run + 10}</FlightNumber>`, "<FlightNumber>1' OR '1'='1</FlightNumber>"))),
+			400
+		],
+		[
+			'markup in a code',
+			() => push(message(good.replace('<Airline CodeContext="3">RJ</Airline>', '<Airline CodeContext="3"><script>alert(1)</script></Airline>'))),
+			400
+		],
 		['not well-formed', () => push(message(good).slice(0, -20)), 400],
 		['nested too deep', () => push(message(good.replace('<TPA_Extension>', '<TPA_Extension>' + '<y>'.repeat(40) + '</y>'.repeat(40)))), 400],
 		['a TimeStamp with an offset', () => push(message(good, '', '2026-10-03T12:00:00+03:00')), 400],
 		['no TimeStamp', () => push(message(good).replace(/ TimeStamp="[^"]*"/, '')), 400],
-		['JSON', () => push('{"items":[]}', { type: 'application/json' }), 415],
-		['more than 5 MB', () => push(message(good + '<!--' + 'x'.repeat(5_300_000) + '-->')), 413]
+		['JSON', () => push('{"items":[]}', { type: 'application/json' }), 415]
 	];
 	for (const [why, sending, status] of cases) {
 		const answer = await sending();
@@ -172,15 +183,28 @@ test('XXE, entity expansion, external DTDs, profile breaks, deep nesting, oversi
 		expectNoLeak(text, why);
 		for (const echoed of ['passwd', '169.254', "OR '1'='1", '<script>', 'meta-data']) expect(text, why).not.toContain(echoed);
 	}
+	// Over the size limit the host answers 413 from the Content-Length and stops reading, so the client may instead see
+	// the connection closed while it is still sending (as in flight-schedules.spec.ts). Either way nothing is read.
+	const oversized = await push(message(good + '<!--' + 'x'.repeat(5_300_000) + '-->')).then(
+		async (r) => {
+			expect(r.headers()['content-type'], 'more than 5 MB').toContain('application/problem+json');
+			expectNoLeak(await r.text(), 'more than 5 MB');
+			return r.status();
+		},
+		(e: Error) => `closed: ${e.message}`
+	);
+	expect([413, 'closed: fetch failed'], 'more than 5 MB').toContain(oversized);
 	const rows = await query(`SELECT 1 FROM flight_leg WHERE flight_key = $1`, [`RJ${run + 10}-${day}-A`]);
 	expect(rows, 'nothing of a refused message was applied').toHaveLength(0);
 });
 
-test('AIDX needs flights:write and the client\'s own site', async () => {
+test("AIDX needs flights:write and the client's own site", async () => {
 	const xml = message(leg(run + 20, 'AMM', 'DMO'));
 	expect((await push(xml, { token: allocationsOnly.token })).status(), 'another scope').toBe(403);
 	expect((await push(xml, { code: 'E2E1' })).status(), 'another site').toBe(403);
 	expect((await call('POST', url(), { raw: xml, headers: { 'Content-Type': 'application/xml' }, address: inside() })).status(), 'no token').toBe(401);
-	const recorded = await query<{ status: number }>(`SELECT status FROM integration_call WHERE client_id = $1 AND route LIKE '%aodb/aidx'`, [aodb.credentials.client.clientId]);
+	const recorded = await query<{ status: number }>(`SELECT status FROM integration_call WHERE client_id = $1 AND route LIKE '%aodb/aidx'`, [
+		aodb.credentials.client.clientId
+	]);
 	expect(recorded.map((r) => r.status)).toEqual(expect.arrayContaining([200, 400, 413, 415, 403]));
 });

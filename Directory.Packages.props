@@ -100,5 +100,13 @@
     <PackageVersion Include="Testcontainers.Redis" Version="4.15.0" />
     <!-- Kafka pipeline tests (ARV-020): same Testcontainers release as the modules above -->
     <PackageVersion Include="Testcontainers.Kafka" Version="4.15.0" />
+    <!-- Local orchestration (ARV-066, approved by Ahmad Al-Sadder 2026-10-04): .NET Aspire 13.6.0, the latest stable on
+         nuget.org (flat container index, 4 October 2026). Development and test only: Ariva.AppHost and the unit tests
+         reference these; no deployed host does. The AppHost SDK (Ariva.AppHost.csproj, same version) brings Aspire.Hosting.AppHost itself. -->
+    <PackageVersion Include="Aspire.Hosting.PostgreSQL" Version="13.6.0" />
+    <PackageVersion Include="Aspire.Hosting.Kafka" Version="13.6.0" />
+    <PackageVersion Include="Aspire.Hosting.Redis" Version="13.6.0" />
+    <PackageVersion Include="Aspire.Hosting.JavaScript" Version="13.6.0" />
+    <PackageVersion Include="Aspire.Hosting.Testing" Version="13.6.0" />
   </ItemGroup>
 </Project>

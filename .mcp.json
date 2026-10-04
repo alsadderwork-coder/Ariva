@@ -54,6 +54,19 @@
       "env": {
         "DATABASE_URI": "${ARIVA_DEV_DATABASE_URI:-postgresql://ariva_readonly@localhost:5433/ariva}"
       }
+    },
+    "aspire": {
+      "command": "dotnet",
+      "args": [
+        "tool",
+        "run",
+        "aspire",
+        "--",
+        "agent",
+        "mcp",
+        "--nologo",
+        "--non-interactive"
+      ]
     }
   }
 }

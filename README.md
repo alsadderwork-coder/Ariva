@@ -25,6 +25,7 @@ Ariva/
       Ariva.Infra                service implementations, NHibernate, Timescale scripts, Kafka
       Ariva.Di                   dependency registration (RegisterArivaServices)
       Ariva.Api.Common           shared API plumbing, layered appsettings, health endpoints
+      Ariva.ServiceDefaults      OpenTelemetry, health check service, HttpClient resilience (every host)
       Ariva.Api.Main             configuration and operations REST API, SignalR live hub
       Ariva.Api.Ingest           sensor adapters: vendor webhooks and pollers into Kafka
       Ariva.Api.Stream           Kafka stream workers that compute queue state
@@ -43,6 +44,7 @@ Ariva/
     Cloud/
       Ariva.K8s                  Helm chart (platform, timescaledb) and helmfile
       Ariva.Cicd                 Azure DevOps pipelines (optional CD to Dalil Container Registry; CI runs on GitHub Actions)
+      Ariva.AppHost              .NET Aspire AppHost: every container, host, the simulator and the web dev server (local only)
 ```
 
 ## Ports
@@ -64,6 +66,13 @@ Prerequisites: .NET 10 SDK, Node 22, Docker Desktop or Rancher Desktop for the l
 ```
 node scripts/dev-up.mjs     # TimescaleDB, Kafka (KRaft), Redis, smtp4dev; creates .env and appsettings.local.json
 node scripts/dev-down.mjs   # stop (add --volumes to delete the data)
+```
+
+Or start everything at once with the Aspire AppHost (ARV-066): the containers, the five API hosts, the simulator and the web dev server, with the Aspire dashboard for resources, logs, traces and metrics. Stop compose first (same ports).
+
+```
+cd Platform/Frontplane/Ariva.Web && npm ci && cd ../../..
+dotnet run --project Platform/Cloud/Ariva.AppHost   # dashboard at http://localhost:15880 (login link in the console)
 ```
 
 

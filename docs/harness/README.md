@@ -21,8 +21,16 @@
 | github | HTTP | Issues, pull requests, Actions runs, Dependabot alerts | GitHub's remote MCP server (https://api.githubcopilot.com/mcp/) with `GITHUB_PERSONAL_ACCESS_TOKEN`; tools require approval (`ask`) |
 | semgrep | stdio, uvx | `security_check` on changed files | The standalone repo is archived and moving into the semgrep CLI; switch to `semgrep mcp` when your CLI version supports it |
 | postgres-dev | stdio, uvx | Read-only inspection of the dev database | Postgres MCP Pro in `--access-mode=restricted` |
+| aspire | stdio, `dotnet tool run aspire` (local tool, `.config/dotnet-tools.json`) | Resources, health, console and structured logs, traces and commands of a running Ariva.AppHost (ARV-066) | Aspire CLI 13.6 `aspire agent mcp`; finds an AppHost started with `dotnet run`; shows variable names but never their values. Run `dotnet tool restore` once |
 
 If a stdio server fails to start on native Windows, wrap the command: `"command": "cmd", "args": ["/c", "npx", ...]`.
+
+## Running the system for agents (ARV-066)
+
+`dotnet run --project Platform/Cloud/Ariva.AppHost` starts every dependency and host (see wiki 04, "One F5"). With it running, agents read resource state, logs and traces through the aspire MCP server instead of guessing from process output.
+
+- E2E against the AppHost: `node scripts/e2e-apphost.mjs [playwright arguments]` draws the run's secrets, has the Playwright config write each host's variables (`ARIVA_E2E_WRITE_HOST_ENV`), starts the AppHost with them (no Stream, no dev server, throwaway containers without a volume, ports apart from the development AppHost), runs Playwright against those hosts and stops everything afterwards. CI keeps compose and Playwright's own host start.
+- Integration tests against an existing server: set `ARIVA_IT_POSTGRES` to a superuser connection string (for example the AppHost's TimescaleDB: `Host=localhost;Port=5433;Username=ariva;Password=<database-owner-password>`); the tests drop and recreate only their own `ariva_it` and `it_*` databases there. Without it they start their own container.
 
 ## Ways to work
 

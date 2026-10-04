@@ -12,6 +12,7 @@
     <Project Path="Platform/Backplane/Ariva.Infra/Ariva.Infra.csproj" />
     <Project Path="Platform/Backplane/Ariva.IntegrationTests/Ariva.IntegrationTests.csproj" />
     <Project Path="Platform/Backplane/Ariva.Resources/Ariva.Resources.csproj" />
+    <Project Path="Platform/Backplane/Ariva.ServiceDefaults/Ariva.ServiceDefaults.csproj" />
     <Project Path="Platform/Backplane/Ariva.UnitTests/Ariva.UnitTests.csproj" />
     <Project Path="Platform/Backplane/Ariva.Utilities/Ariva.Utilities.csproj" />
   </Folder>
@@ -19,6 +20,7 @@
     <Project Path="Platform/Business/Ariva.Business.Contracts/Ariva.Business.Contracts.csproj" />
   </Folder>
   <Folder Name="/Platform/Cloud/">
+    <Project Path="Platform/Cloud/Ariva.AppHost/Ariva.AppHost.csproj" />
     <Project Path="Platform/Cloud/Ariva.Cicd/Ariva.Cicd.csproj" />
     <Project Path="Platform/Cloud/Ariva.K8s/Ariva.K8s.csproj" />
   </Folder>

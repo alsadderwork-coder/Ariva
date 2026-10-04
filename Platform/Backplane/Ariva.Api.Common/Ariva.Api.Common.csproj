@@ -20,15 +20,12 @@
         <PackageReference Include="Serilog.Sinks.Grafana.Loki" />
         <PackageReference Include="Serilog.Sinks.OpenTelemetry" />
         <PackageReference Include="Npgsql.OpenTelemetry" />
-        <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" />
-        <PackageReference Include="OpenTelemetry.Extensions.Hosting" />
-        <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" />
-        <PackageReference Include="OpenTelemetry.Instrumentation.Http" />
-        <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" />
     </ItemGroup>
 
     <ItemGroup>
         <ProjectReference Include="..\Ariva.Di\Ariva.Di.csproj" />
+        <!-- OpenTelemetry, health checks and HttpClient resilience (ARV-066) -->
+        <ProjectReference Include="..\Ariva.ServiceDefaults\Ariva.ServiceDefaults.csproj" />
     </ItemGroup>
 
 </Project>

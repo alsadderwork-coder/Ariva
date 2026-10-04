@@ -21,6 +21,7 @@ COPY ["Directory.Build.props", "./"]
 # Copy all project files for restore
 COPY ["Platform/Backplane/Ariva.Api.Integration/Ariva.Api.Integration.csproj", "Platform/Backplane/Ariva.Api.Integration/"]
 COPY ["Platform/Backplane/Ariva.Api.Common/Ariva.Api.Common.csproj", "Platform/Backplane/Ariva.Api.Common/"]
+COPY ["Platform/Backplane/Ariva.ServiceDefaults/Ariva.ServiceDefaults.csproj", "Platform/Backplane/Ariva.ServiceDefaults/"]
 COPY ["Platform/Backplane/Ariva.Di/Ariva.Di.csproj", "Platform/Backplane/Ariva.Di/"]
 COPY ["Platform/Backplane/Ariva.Infra/Ariva.Infra.csproj", "Platform/Backplane/Ariva.Infra/"]
 COPY ["Platform/Backplane/Ariva.Core/Ariva.Core.csproj", "Platform/Backplane/Ariva.Core/"]

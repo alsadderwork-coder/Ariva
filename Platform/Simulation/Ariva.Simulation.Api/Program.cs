@@ -1,3 +1,4 @@
+using Ariva.ServiceDefaults;
 using Ariva.Simulation.Api.Emulators;
 using Ariva.Simulation.Api.Emulators.Sensors;
 using Ariva.Simulation.Api.Security;
@@ -59,6 +60,13 @@ if (string.Equals(environment, SimulationSecurity.ProductionEnvironment, StringC
 
 #region Services
 
+// Traces, metrics and logs over OTLP when an endpoint is configured (the Aspire AppHost sets one), and resilience for
+// the emulators' HttpClients: POSTs are never retried, so no sensor event or feed message is sent twice (ARV-066).
+builder.AddArivaServiceDefaults(options =>
+{
+    options.ServiceName = "ariva-simulation";
+    options.ExportLogs = true;
+});
 builder.Services.AddSimulationSecurity(builder.Configuration);
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<Ariva.Simulation.Api.Scenarios.ScenarioEngine>();

@@ -94,7 +94,8 @@
     "nuget",
     "github",
     "semgrep",
-    "postgres-dev"
+    "postgres-dev",
+    "aspire"
   ],
   "env": {
     "DOTNET_CLI_TELEMETRY_OPTOUT": "1",

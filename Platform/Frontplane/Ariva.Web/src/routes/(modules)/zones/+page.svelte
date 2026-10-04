@@ -262,6 +262,8 @@
 	}
 
 	async function newDraft(): Promise<void> {
+		// Not before the site is known: a draft belongs to one site (the button stays disabled until then).
+		if (!siteCode) return;
 		const result = await zones.createDraft(siteCode);
 		if (result.hasErrors || !result.data) return failed(result.errorMessages[0] ?? '');
 		toast.success($_('zones.draftCreated'));
@@ -368,8 +370,9 @@
 			<button
 				type="button"
 				data-testid="new-draft"
+				disabled={!siteCode}
 				onclick={newDraft}
-				class="inline-flex h-10 items-center rounded-lg bg-button-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none dark:text-white"
+				class="inline-flex h-10 items-center rounded-lg bg-button-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-60 dark:text-white"
 			>
 				{$_('zones.newDraft')}
 			</button>

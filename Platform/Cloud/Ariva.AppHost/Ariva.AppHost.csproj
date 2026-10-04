@@ -1,0 +1,33 @@
+<Project Sdk="Aspire.AppHost.Sdk/13.6.0">
+
+    <!-- Ariva.AppHost (ARV-066): one F5 starts TimescaleDB, Kafka, Redis, smtp4dev, the five API hosts, the simulator and
+         the web dev server, with the Aspire dashboard for resources, logs, traces and metrics. Local development and test
+         only: no image or chart references it. docker-compose.dev.yml stays for CI and machines without it. -->
+
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <IsPackable>false</IsPackable>
+        <!-- Generated passwords (persisted parameters) live in the user secrets of this project, never in the repository. -->
+        <UserSecretsId>ariva-apphost-7f3c9a1e</UserSecretsId>
+        <!-- ASPIRE010: without the Aspire CLI bundle the SDK references the dashboard and orchestrator packages, so a plain
+             dotnet run (or F5) works on a machine with only the .NET SDK. The CLI stays optional (aspire run, aspire mcp). -->
+        <NoWarn>$(NoWarn);ASPIRE010</NoWarn>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Aspire.Hosting.PostgreSQL" />
+        <PackageReference Include="Aspire.Hosting.Kafka" />
+        <PackageReference Include="Aspire.Hosting.Redis" />
+        <PackageReference Include="Aspire.Hosting.JavaScript" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\..\Backplane\Ariva.Api.Main\Ariva.Api.Main.csproj" />
+        <ProjectReference Include="..\..\Backplane\Ariva.Api.Ingest\Ariva.Api.Ingest.csproj" />
+        <ProjectReference Include="..\..\Backplane\Ariva.Api.Stream\Ariva.Api.Stream.csproj" />
+        <ProjectReference Include="..\..\Backplane\Ariva.Api.Cronz\Ariva.Api.Cronz.csproj" />
+        <ProjectReference Include="..\..\Backplane\Ariva.Api.Integration\Ariva.Api.Integration.csproj" />
+        <ProjectReference Include="..\..\Simulation\Ariva.Simulation.Api\Ariva.Simulation.Api.csproj" />
+    </ItemGroup>
+
+</Project>

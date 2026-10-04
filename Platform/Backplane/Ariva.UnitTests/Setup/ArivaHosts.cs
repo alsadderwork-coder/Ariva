@@ -1,6 +1,8 @@
 using Ariva.Api.Common.Hosting;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 
 namespace Ariva.UnitTests.Setup;
 
@@ -156,6 +158,13 @@ internal sealed class ArivaWebApplicationFactory<TEntryPoint>(string environment
         // (cluster environments). Persistence is covered by Ariva.IntegrationTests against a real PostgreSQL.
         builder.UseSetting("Database:AllowSchemaUpdate", "false");
         builder.UseSetting("Database:VerifySchemaOnStartup", "false");
+        // Nor a database readiness check, which would answer 503 here: the probes' authorization is what these hosts
+        // test; the check itself is covered by ServiceDefaultsTests (ARV-066).
+        builder.ConfigureServices(services => services.PostConfigure<HealthCheckServiceOptions>(options =>
+        {
+            foreach (var database in options.Registrations.Where(r => r.Name == "database").ToList())
+                options.Registrations.Remove(database);
+        }));
 
         // No mounted certificate and no Redis in-process: a development Data Protection certificate and a memory-only
         // cache, whatever the environment under test.

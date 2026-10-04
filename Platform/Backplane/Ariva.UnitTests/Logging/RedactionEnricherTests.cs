@@ -1,3 +1,4 @@
+using Ariva.ServiceDefaults;
 using Ariva.Api.Common.Logging;
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;

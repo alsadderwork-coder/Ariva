@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, devices } from '@playwright/test';
@@ -61,7 +62,9 @@ process.env.ARIVA_E2E_CRONZ_KEY ||= 'cronz-e2e-' + crypto.randomBytes(24).toStri
 
 function base32Of(bytes: Buffer): string {
 	const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-	let bits = 0, value = 0, out = '';
+	let bits = 0,
+		value = 0,
+		out = '';
 	for (const byte of bytes) {
 		value = (value << 8) | byte;
 		bits += 8;
@@ -166,6 +169,64 @@ function smtpEnvironment(): Record<string, string> {
 	};
 }
 
+// The .NET hosts, by the resource names Ariva.AppHost uses (ARV-066). Playwright starts them in this order.
+const hostServers = {
+	'api-main': dotnetHost(project('Backplane/Ariva.Api.Main'), `${hosts.main}/health/readiness`, true, {
+		...(databaseAvailable ? developmentUserEnvironment() : {}),
+		...redisEnvironment(),
+		...outboundLabEnvironment()
+	}),
+	'api-integration': dotnetHost(project('Backplane/Ariva.Api.Integration'), `${hosts.integration}/health/readiness`, false, {
+		...smtpEnvironment(),
+		// ARV-048: Integration consumes AMAN's feed topics (aman.feed.*.v1), which the simulator's AMAN publishes.
+		...kafkaEnvironment(),
+		// The lockout test fails one client ten times in a few seconds (ARV-042); production keeps 5 a minute.
+		Auth__IntegrationAttemptsPerMinute: '30',
+		// ARV-043: small enough for flights-api.spec.ts to reach both batch limits; production keeps 8 at once and 16
+		// waiting per host, and 120 batches a minute per client.
+		Security__RateLimiting__IntegrationBatch__PermitLimit: '2',
+		Security__RateLimiting__IntegrationBatch__QueueLimit: '2',
+		Security__RateLimiting__IntegrationClient__PermitLimit: '60',
+		...outboundLabEnvironment()
+	}),
+	'api-ingest': dotnetHost(project('Backplane/Ariva.Api.Ingest'), `${hosts.ingest}/health/readiness`, false, kafkaEnvironment()),
+	// ARV-060: TickerQ runs the scheduled reports and mails them through the run's smtp4dev; the dashboard is on with
+	// the run's key so reports.spec.ts can run the delivery job on demand.
+	'api-cronz': dotnetHost(project('Backplane/Ariva.Api.Cronz'), `${hosts.cronz}/health/readiness`, false, {
+		...smtpEnvironment(),
+		Cronz__Dashboard__Enabled: 'true',
+		Cronz__Dashboard__KeySha256: crypto.createHash('sha256').update(process.env.ARIVA_E2E_CRONZ_KEY).digest('hex')
+	}),
+	simulation: dotnetHost(project('Simulation/Ariva.Simulation.Api'), `${hosts.simulation}/health/readiness`, false, {
+		Simulation__Control__Keys__0__Name: 'e2e',
+		Simulation__Control__Keys__0__Sha256: simulationKeyDigest,
+		Simulation__Control__Keys__0__Scopes__0: 'read',
+		Simulation__Control__Keys__0__Scopes__1: 'control',
+		// The sensor emulator pushes to the Ingest under test; plain HTTP only over loopback.
+		Simulation__Sensors__IngestUrl: hosts.ingest,
+		Simulation__Sensors__AllowInsecureTransport: /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/.test(hosts.ingest) ? 'true' : 'false',
+		// ARV-029: the AODB, AMAN and immigration emulators call the Integration host under test.
+		Simulation__Ariva__IntegrationUrl: hosts.integration,
+		Simulation__Ariva__AllowInsecureTransport: /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/.test(hosts.integration) ? 'true' : 'false',
+		Simulation__Aman__Kafka__BootstrapServers: process.env.ARIVA_E2E_KAFKA_BOOTSTRAP ?? '',
+		Simulation__Aman__Mock__Clients__0__ClientId: 'e2e-aman-connector',
+		Simulation__Aman__Mock__Clients__0__SecretSha256: crypto.createHash('sha256').update(process.env.ARIVA_E2E_MOCK_AMAN_SECRET).digest('hex'),
+		Simulation__Aman__Mock__Clients__0__TotpSecret: process.env.ARIVA_E2E_MOCK_AMAN_SEED,
+		Simulation__Aman__Mock__Clients__1__ClientId: 'e2e-aman-pull',
+		Simulation__Aman__Mock__Clients__1__SecretSha256: crypto.createHash('sha256').update(process.env.ARIVA_E2E_MOCK_AMAN_PULL_SECRET).digest('hex'),
+		Simulation__Aman__Mock__Clients__1__TotpSecret: process.env.ARIVA_E2E_MOCK_AMAN_PULL_SEED,
+		Simulation__Aodb__AcrisKeySha256: crypto.createHash('sha256').update(process.env.ARIVA_E2E_ACRIS_KEY).digest('hex')
+	})
+};
+
+// ARV-066: with ARIVA_E2E_WRITE_HOST_ENV set, the exact variables each host gets here are written to that file (owner
+// only) for Ariva.AppHost's AppHost:HostEnvironmentFile, so scripts/e2e-apphost.mjs can run the suite against hosts the
+// AppHost started, configured exactly as Playwright would start them. The file holds this run's derived settings.
+if (process.env.ARIVA_E2E_WRITE_HOST_ENV) {
+	const variables = Object.fromEntries(Object.entries(hostServers).map(([name, server]) => [name, server.env]));
+	fs.writeFileSync(process.env.ARIVA_E2E_WRITE_HOST_ENV, JSON.stringify(variables, null, 2), { mode: 0o600 });
+}
+
 export default defineConfig({
 	testDir: './tests',
 	globalSetup: './tests/support/global-setup.ts',
@@ -209,52 +270,7 @@ export default defineConfig({
 			stdout: 'ignore' as const,
 			stderr: 'pipe' as const
 		},
-		dotnetHost(project('Backplane/Ariva.Api.Main'), `${hosts.main}/health/readiness`, true, {
-			...(databaseAvailable ? developmentUserEnvironment() : {}),
-			...redisEnvironment(),
-			...outboundLabEnvironment()
-		}),
-		dotnetHost(project('Backplane/Ariva.Api.Integration'), `${hosts.integration}/health/readiness`, false, {
-			...smtpEnvironment(),
-			// ARV-048: Integration consumes AMAN's feed topics (aman.feed.*.v1), which the simulator's AMAN publishes.
-			...kafkaEnvironment(),
-			// The lockout test fails one client ten times in a few seconds (ARV-042); production keeps 5 a minute.
-			Auth__IntegrationAttemptsPerMinute: '30',
-			// ARV-043: small enough for flights-api.spec.ts to reach both batch limits; production keeps 8 at once and 16
-			// waiting per host, and 120 batches a minute per client.
-			Security__RateLimiting__IntegrationBatch__PermitLimit: '2',
-			Security__RateLimiting__IntegrationBatch__QueueLimit: '2',
-			Security__RateLimiting__IntegrationClient__PermitLimit: '60',
-			...outboundLabEnvironment()
-		}),
-		dotnetHost(project('Backplane/Ariva.Api.Ingest'), `${hosts.ingest}/health/readiness`, false, kafkaEnvironment()),
-		// ARV-060: TickerQ runs the scheduled reports and mails them through the run's smtp4dev; the dashboard is on with
-		// the run's key so reports.spec.ts can run the delivery job on demand.
-		dotnetHost(project('Backplane/Ariva.Api.Cronz'), `${hosts.cronz}/health/readiness`, false, {
-			...smtpEnvironment(),
-			Cronz__Dashboard__Enabled: 'true',
-			Cronz__Dashboard__KeySha256: crypto.createHash('sha256').update(process.env.ARIVA_E2E_CRONZ_KEY).digest('hex')
-		}),
-		dotnetHost(project('Simulation/Ariva.Simulation.Api'), `${hosts.simulation}/health/readiness`, false, {
-			Simulation__Control__Keys__0__Name: 'e2e',
-			Simulation__Control__Keys__0__Sha256: simulationKeyDigest,
-			Simulation__Control__Keys__0__Scopes__0: 'read',
-			Simulation__Control__Keys__0__Scopes__1: 'control',
-			// The sensor emulator pushes to the Ingest under test; plain HTTP only over loopback.
-			Simulation__Sensors__IngestUrl: hosts.ingest,
-			Simulation__Sensors__AllowInsecureTransport: /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/.test(hosts.ingest) ? 'true' : 'false',
-			// ARV-029: the AODB, AMAN and immigration emulators call the Integration host under test.
-			Simulation__Ariva__IntegrationUrl: hosts.integration,
-			Simulation__Ariva__AllowInsecureTransport: /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/.test(hosts.integration) ? 'true' : 'false',
-			Simulation__Aman__Kafka__BootstrapServers: process.env.ARIVA_E2E_KAFKA_BOOTSTRAP ?? '',
-			Simulation__Aman__Mock__Clients__0__ClientId: 'e2e-aman-connector',
-			Simulation__Aman__Mock__Clients__0__SecretSha256: crypto.createHash('sha256').update(process.env.ARIVA_E2E_MOCK_AMAN_SECRET).digest('hex'),
-			Simulation__Aman__Mock__Clients__0__TotpSecret: process.env.ARIVA_E2E_MOCK_AMAN_SEED,
-			Simulation__Aman__Mock__Clients__1__ClientId: 'e2e-aman-pull',
-			Simulation__Aman__Mock__Clients__1__SecretSha256: crypto.createHash('sha256').update(process.env.ARIVA_E2E_MOCK_AMAN_PULL_SECRET).digest('hex'),
-			Simulation__Aman__Mock__Clients__1__TotpSecret: process.env.ARIVA_E2E_MOCK_AMAN_PULL_SEED,
-			Simulation__Aodb__AcrisKeySha256: crypto.createHash('sha256').update(process.env.ARIVA_E2E_ACRIS_KEY).digest('hex')
-		}),
+		...Object.values(hostServers),
 		{
 			command: 'npm run build && npm run preview',
 			cwd: project('Frontplane/Ariva.Web'),

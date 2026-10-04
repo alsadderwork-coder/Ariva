@@ -74,6 +74,8 @@
 
     <ItemGroup>
         <ProjectReference Include="..\..\Business\Ariva.Business.Contracts\Ariva.Business.Contracts.csproj" />
+        <!-- OpenTelemetry, health checks and HttpClient resilience (ARV-066); references no Ariva application layer -->
+        <ProjectReference Include="..\..\Backplane\Ariva.ServiceDefaults\Ariva.ServiceDefaults.csproj" />
     </ItemGroup>
 
     <ItemGroup>

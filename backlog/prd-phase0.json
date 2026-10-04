@@ -1475,8 +1475,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 69,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Done 2026-10-04: Ariva.AppHost (Aspire 13.6, dev and test only) for every container, host, the simulator and the web dev server; Ariva.ServiceDefaults (OpenTelemetry, health checks, resilience; no endpoints); readiness checks the database; aspire MCP as a pinned local tool; E2E and integration tests can target the AppHost; compose stays for CI. Security review PASS (backlog/progress.md).",
       "dependsOn": [
         "ARV-003",
         "ARV-007"

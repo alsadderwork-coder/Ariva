@@ -16,10 +16,6 @@ test('the jobs dashboard loads under its own policy, asks for the key and works 
 	await expect(page.getByRole('heading', { name: 'Host Authentication' })).toBeVisible({ timeout: 15_000 });
 	await expect(page.getByText('ReportDeliveries')).toHaveCount(0);
 
-	await page.getByRole('textbox', { name: /Access Key/ }).fill(process.env.ARIVA_E2E_CRONZ_KEY!);
-	await page.getByRole('button', { name: 'Set Access Key' }).click();
-	await expect(page.getByRole('heading', { name: 'Host Authentication' })).toHaveCount(0, { timeout: 15_000 });
-	await page.screenshot({ path: test.info().outputPath('dashboard-signed-in.png') });
 	// The hub's WebSockets: every one opened and every one closed, so a connection TickerQ drops after the handshake shows.
 	const sockets: { url: string; closed: boolean }[] = [];
 	page.on('websocket', (socket) => {
@@ -28,16 +24,20 @@ test('the jobs dashboard loads under its own policy, asks for the key and works 
 		sockets.push(entry);
 		socket.on('close', () => (entry.closed = true));
 	});
-	await page.goto(`${dashboard}/cron-tickers`);
-	await expect(page.getByText('ReportDeliveries').first()).toBeVisible({ timeout: 15_000 });
+	await page.getByRole('textbox', { name: /Access Key/ }).fill(process.env.ARIVA_E2E_CRONZ_KEY!);
+	await page.getByRole('button', { name: 'Set Access Key' }).click();
+	await expect(page.getByRole('heading', { name: 'Host Authentication' })).toHaveCount(0, { timeout: 15_000 });
 	await expect(page.getByText('WebSocket Connected')).toBeVisible({ timeout: 15_000 });
+
+	// Within the app, as an operator moves (a reload here would abort the page's own requests mid-flight).
+	await page.getByText('Cron Tickers', { exact: true }).click();
+	await expect(page.getByText('ReportDeliveries').first()).toBeVisible({ timeout: 15_000 });
 	// Still the one connection ten seconds on: the hub kept it, and nothing secret is in its address.
 	await page.waitForTimeout(10_000);
 	await expect(page.getByText('WebSocket Connected')).toBeVisible();
 	expect(sockets.length, 'one hub connection').toBe(1);
 	expect(sockets[0].closed, 'the hub keeps the connection').toBe(false);
 	expect(sockets[0].url).not.toContain('access_token');
-	await page.screenshot({ path: test.info().outputPath('dashboard-cron-tickers.png') });
 
 	// Before the key its API and its hub answer 401, which the page and SignalR log as errors; those, and only those, are
 	// expected. Policy violations are checked as for every screen.

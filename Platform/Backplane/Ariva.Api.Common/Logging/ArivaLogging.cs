@@ -1,3 +1,4 @@
+using Ariva.ServiceDefaults;
 using Microsoft.Extensions.Configuration;
 using Serilog;
 using Serilog.Events;
@@ -83,32 +84,5 @@ public static class ArivaLogging
         if (string.IsNullOrWhiteSpace(name))
             return "ariva";
         return name.Replace("${Application:ShortName}", configuration["Application:ShortName"] ?? "base", StringComparison.Ordinal);
-    }
-}
-
-/// <summary>
-/// The OTLP target, shared by the Serilog sink and the trace and metric exporters. Enabled by Otlp:Enabled or by the
-/// standard OTEL_EXPORTER_OTLP_ENDPOINT variable the Helm chart sets; off when neither is set, so an unreachable
-/// collector never affects startup.
-/// </summary>
-public sealed record OtlpSettings(bool Enabled, Uri Endpoint, bool UseHttp)
-{
-    private const string DefaultEndpoint = "http://localhost:4317";
-
-    public static OtlpSettings From(IConfiguration configuration)
-    {
-        ArgumentNullException.ThrowIfNull(configuration);
-
-        var fromEnvironment = configuration["OTEL_EXPORTER_OTLP_ENDPOINT"];
-        var enabled = (bool.TryParse(configuration["Otlp:Enabled"], out var flag) && flag) || !string.IsNullOrWhiteSpace(fromEnvironment);
-        var endpointText = configuration["Otlp:Endpoint"];
-        if (string.IsNullOrWhiteSpace(endpointText))
-            endpointText = string.IsNullOrWhiteSpace(fromEnvironment) ? DefaultEndpoint : fromEnvironment;
-        var protocol = configuration["Otlp:Protocol"] ?? configuration["OTEL_EXPORTER_OTLP_PROTOCOL"] ?? "grpc";
-
-        return new OtlpSettings(
-            enabled && Uri.TryCreate(endpointText, UriKind.Absolute, out _),
-            Uri.TryCreate(endpointText, UriKind.Absolute, out var endpoint) ? endpoint : new Uri(DefaultEndpoint),
-            protocol.StartsWith("http", StringComparison.OrdinalIgnoreCase));
     }
 }

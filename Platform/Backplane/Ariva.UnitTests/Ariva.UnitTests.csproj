@@ -8,6 +8,8 @@
 
     <ItemGroup>
         <PackageReference Include="AutoFixture" />
+        <!-- The Ariva.AppHost model, built in process (ARV-066) -->
+        <PackageReference Include="Aspire.Hosting.Testing" />
         <PackageReference Include="Bogus" />
         <PackageReference Include="coverlet.collector">
             <PrivateAssets>all</PrivateAssets>
@@ -80,6 +82,7 @@
         <ProjectReference Include="..\Ariva.Api.Cronz\Ariva.Api.Cronz.csproj" />
         <ProjectReference Include="..\Ariva.Api.Integration\Ariva.Api.Integration.csproj" />
         <ProjectReference Include="..\..\Simulation\Ariva.Simulation.Api\Ariva.Simulation.Api.csproj" />
+        <ProjectReference Include="..\..\Cloud\Ariva.AppHost\Ariva.AppHost.csproj" />
     </ItemGroup>
 
 </Project>

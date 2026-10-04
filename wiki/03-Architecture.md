@@ -21,7 +21,7 @@ Ariva is an event-driven .NET 10 system on Kafka and PostgreSQL 17 with Timescal
 
 Every .NET host answers `/health/startup`, `/health/readiness` and `/health/liveness`; the web image answers `/healthz`. Ports 510xx are distinct from AMAN's 500xx so both can run side by side on a developer machine.
 
-Supporting projects: Ariva.Utilities, Ariva.Core (domain, service interfaces, formulas as pure functions, persisted workflow state machines), Ariva.Resources (Arabic, English, Portuguese, Swahili strings), Ariva.Infra (NHibernate, Timescale script runner, Kafka behind `ISvcMessageBus`, outbox relay, FusionCache, adapters), Ariva.Di, Ariva.Api.Common (layered appsettings, middleware, security, health endpoints), Ariva.Business.Contracts (AMAN feed contracts V1), Ariva.UnitTests, Ariva.IntegrationTests, Ariva.K8s (Helm and Helmfile), Ariva.Cicd (Azure DevOps YAML).
+Supporting projects: Ariva.Utilities, Ariva.Core (domain, service interfaces, formulas as pure functions, persisted workflow state machines), Ariva.Resources (Arabic, English, Portuguese, Swahili strings), Ariva.Infra (NHibernate, Timescale script runner, Kafka behind `ISvcMessageBus`, outbox relay, FusionCache, adapters), Ariva.Di, Ariva.Api.Common (layered appsettings, middleware, security, health endpoints), Ariva.Business.Contracts (AMAN feed contracts V1), Ariva.UnitTests, Ariva.IntegrationTests, Ariva.ServiceDefaults (OpenTelemetry, the health check service and HttpClient resilience, shared by every host, ARV-066), Ariva.K8s (Helm and Helmfile), Ariva.Cicd (Azure DevOps YAML), Ariva.AppHost (.NET Aspire local orchestration, development and test only).
 
 ## Data stores
 

@@ -55,6 +55,8 @@ node scripts/verify.mjs e2e
 
 The scope reports a failure until the project exists. How to point it at a deployed environment is To confirm.
 
+Against Ariva.AppHost (ARV-066): `node scripts/e2e-apphost.mjs [playwright arguments]` runs the same suite against hosts the AppHost starts, configured exactly as Playwright would start them (the config writes each host's variables when `ARIVA_E2E_WRITE_HOST_ENV` names a file; the AppHost applies them with `AppHost:HostEnvironmentFile`), on throwaway containers. It is for local runs and agents; CI keeps compose. The integration tests use an existing PostgreSQL instead of their own container when `ARIVA_IT_POSTGRES` holds a superuser connection string (they recreate only their `ariva_it` and `it_*` databases there).
+
 Alert emails (ARV-040): the run starts smtp4dev from the pinned local tool (`.config/dotnet-tools.json`, `dotnet tool restore`) on 127.0.0.1 (SMTP 25251, web API 5081, `ARIVA_E2E_SMTP_PORT` and `ARIVA_E2E_SMTP4DEV_URL` to change them), so neither a developer machine nor CI pulls an image; `alert-emails.spec.ts` reads what arrived through its API. The integration tests use a small SMTP server in the test process (`Setup/SmtpSink.cs`) that can refuse a recipient or drop the connection.
 
 ## 5. Replay and golden scenario tests

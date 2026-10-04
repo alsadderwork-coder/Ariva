@@ -5,6 +5,7 @@
 	"type": "module",
 	"scripts": {
 		"dev": "vite --open",
+		"dev:apphost": "vite dev --strictPort",
 		"build": "vite build && node scripts/postbuild-nginx.mjs",
 		"preview": "vite preview",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",

@@ -1,70 +1,34 @@
-using System.Reflection;
 using Ariva.Api.Common.Logging;
-using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
+using Ariva.ServiceDefaults;
+using Microsoft.AspNetCore.Builder;
 using Npgsql;
-using OpenTelemetry.Exporter;
-using OpenTelemetry.Metrics;
-using OpenTelemetry.Resources;
-using OpenTelemetry.Trace;
 
 namespace Ariva.Api.Common.Extensions;
 
 /// <summary>
-/// Traces and metrics over OTLP, ported from AMAN's AddAppTelemetry (ARV-007). Off unless Otlp:Enabled or
-/// OTEL_EXPORTER_OTLP_ENDPOINT is set. Logs travel through Serilog's OTLP sink instead, after redaction. The ASP.NET
-/// Core and HttpClient instrumentations redact query string values by default (OpenTelemetry .NET 1.9 and later), so
-/// access_token never reaches a span; do not set OTEL_DOTNET_EXPERIMENTAL_ASPNETCORE_DISABLE_URL_QUERY_REDACTION.
+/// The service defaults of a Backplane host (ARV-007, ARV-066): <see cref="ServiceDefaultsExtensions.AddArivaServiceDefaults{TBuilder}"/>
+/// with Ariva's own sources and meters. Traces and metrics go over OTLP when Otlp:Enabled or OTEL_EXPORTER_OTLP_ENDPOINT is
+/// set; logs travel through Serilog's OTLP sink instead, after redaction. The ASP.NET Core and HttpClient
+/// instrumentations redact query string values by default (OpenTelemetry .NET 1.9 and later), so access_token never
+/// reaches a span; do not set OTEL_DOTNET_EXPERIMENTAL_ASPNETCORE_DISABLE_URL_QUERY_REDACTION.
 /// </summary>
 public static class TelemetryExtensions
 {
     // MassTransit's Kafka produce and consume spans and its meter share this name (ADR-0018).
-    private const string MassTransitActivitySource = "MassTransit";
+    private const string MassTransit = "MassTransit";
 
-    public static IServiceCollection AddAppTelemetry(this IServiceCollection services, IConfiguration configuration)
+    public static WebApplicationBuilder AddAppServiceDefaults(this WebApplicationBuilder builder)
     {
-        ArgumentNullException.ThrowIfNull(services);
-        ArgumentNullException.ThrowIfNull(configuration);
-
-        var otlp = OtlpSettings.From(configuration);
-        if (!otlp.Enabled)
-            return services;
-
-        var protocol = otlp.UseHttp ? OtlpExportProtocol.HttpProtobuf : OtlpExportProtocol.Grpc;
-        services
-            .AddOpenTelemetry()
-            .ConfigureResource(resource => resource
-                .AddService(
-                    ArivaLogging.ApplicationName(configuration),
-                    serviceNamespace: "ariva",
-                    serviceVersion: Assembly.GetEntryAssembly()?.GetName().Version?.ToString())
-                .AddAttributes([new KeyValuePair<string, object>("deployment.environment", configuration["Application:Environment"] ?? "unknown")]))
-            .WithTracing(tracing => tracing
-                .AddAspNetCoreInstrumentation(options => options.Filter = context => !IsNoise(context.Request.Path))
-                .AddHttpClientInstrumentation()
-                .AddNpgsql()
-                .AddSource(MassTransitActivitySource)
-                .AddOtlpExporter(options => Configure(options, otlp.Endpoint, protocol)))
-            .WithMetrics(metrics => metrics
-                .AddAspNetCoreInstrumentation()
-                .AddHttpClientInstrumentation()
-                .AddRuntimeInstrumentation()
-                // MassTransit's consume, produce and fault counters and durations (ADR-0018).
-                .AddMeter(MassTransitActivitySource)
-                // Device heartbeats and zone degradation (ARV-025).
-                .AddMeter(Ariva.Infra.Sensing.DeviceHealthMetrics.MeterName)
-                .AddOtlpExporter(options => Configure(options, otlp.Endpoint, protocol)));
-
-        return services;
+        ArgumentNullException.ThrowIfNull(builder);
+        return builder.AddArivaServiceDefaults(options =>
+        {
+            options.ServiceName = ArivaLogging.ApplicationName(builder.Configuration);
+            options.Environment = builder.Configuration["Application:Environment"] ?? "unknown";
+            options.ActivitySources.Add(MassTransit);
+            options.Meters.Add(MassTransit);
+            // Device heartbeats and zone degradation (ARV-025).
+            options.Meters.Add(Ariva.Infra.Sensing.DeviceHealthMetrics.MeterName);
+            options.ConfigureTracing = tracing => tracing.AddNpgsql();
+        });
     }
-
-    private static void Configure(OtlpExporterOptions options, Uri endpoint, OtlpExportProtocol protocol)
-    {
-        options.Endpoint = endpoint;
-        options.Protocol = protocol;
-    }
-
-    // Kubernetes probes poll constantly and would dominate the trace volume.
-    private static bool IsNoise(PathString path) => path.StartsWithSegments("/health");
 }

@@ -21,6 +21,7 @@ COPY ["Directory.Build.props", "./"]
 # Copy all project files for restore
 COPY ["Platform/Simulation/Ariva.Simulation.Api/Ariva.Simulation.Api.csproj", "Platform/Simulation/Ariva.Simulation.Api/"]
 COPY ["Platform/Business/Ariva.Business.Contracts/Ariva.Business.Contracts.csproj", "Platform/Business/Ariva.Business.Contracts/"]
+COPY ["Platform/Backplane/Ariva.ServiceDefaults/Ariva.ServiceDefaults.csproj", "Platform/Backplane/Ariva.ServiceDefaults/"]
 
 # Restore packages with caching
 RUN --mount=type=cache,id=nuget,sharing=locked,target=/root/.nuget/packages \

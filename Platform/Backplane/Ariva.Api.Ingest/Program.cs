@@ -46,7 +46,7 @@ builder.Configuration
 
 // Serilog with secret redaction, JSON console, Loki and OTLP by configuration; traces and metrics over OTLP (ARV-007).
 builder.AddAppLogging();
-builder.Services.AddAppTelemetry(builder.Configuration);
+builder.AddAppServiceDefaults();
 // AMAN: builder.Host.AddAppHosting(); builder.WebHost.AddAppWebHost(...);
 
 #endregion

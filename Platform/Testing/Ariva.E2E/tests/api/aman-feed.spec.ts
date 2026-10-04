@@ -143,8 +143,13 @@ test('the AMAN emulator feeds Ariva over Kafka, codes resolved through the AMAN 
 		(r) => Number(r[0].n) > 10
 	);
 	expect(Number(rows[0].n), 'the minute 18:20 desk intervals arrived over Kafka').toBeGreaterThan(10);
-	const mapped = await query<{ code: string; kind: string }>(
-		`SELECT d.code, d.kind FROM border_desk_interval b JOIN desk d ON d.id = b.desk_id WHERE b.feed = 'aman-kafka' AND b.desk_code = 'IN09' LIMIT 1`
+	// The minute's records land in more than one batch: wait for IN09's own row rather than reading once.
+	const mapped = await until(
+		() =>
+			query<{ code: string; kind: string }>(
+				`SELECT d.code, d.kind FROM border_desk_interval b JOIN desk d ON d.id = b.desk_id WHERE b.feed = 'aman-kafka' AND b.desk_code = 'IN09' LIMIT 1`
+			),
+		(r) => r.length > 0
 	);
 	expect(mapped[0], 'AMAN IN09 is Ariva AR-09').toMatchObject({
 		code: 'AR-09',
