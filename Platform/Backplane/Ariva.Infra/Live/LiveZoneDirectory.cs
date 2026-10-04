@@ -40,7 +40,8 @@ public class LiveZoneDirectory(IUnitOfWork unitOfWork, IFusionCache cache)
                     context.Options.Duration = KeepEmpty;
                 return found;
             },
-            options => options.SetDuration(Keep),
+            // Part of the hub's join decision: no answer from an expired copy (ARV-081).
+            options => Ariva.Infra.Security.SecurityCacheOptions.Apply(options, Keep),
             token: ct);
         return Array.IndexOf(names, LiveZones.NameOf(zoneKey)) >= 0;
     }

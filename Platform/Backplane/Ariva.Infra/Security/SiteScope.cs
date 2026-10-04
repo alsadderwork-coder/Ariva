@@ -47,7 +47,7 @@ public class SiteAccessResolver(IUnitOfWork unitOfWork, IFusionCache cache)
                     .ToListAsync(token);
                 return new StoredAccess(user.AllSites, [.. codes]);
             },
-            options => options.SetDuration(TimeSpan.FromMinutes(1)),
+            options => SecurityCacheOptions.Apply(options, TimeSpan.FromMinutes(1)),
             tags: [StoredPermissionResolver.Tag(userId)],
             token: ct);
 

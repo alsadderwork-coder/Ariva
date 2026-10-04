@@ -30,8 +30,8 @@ internal sealed class SessionValidator(IUnitOfWork unitOfWork, IFusionCache cach
                     .FirstOrDefaultAsync(token);
                 return row is null ? null : new SessionSnapshot(row.IdleExpiresOn, row.AbsoluteExpiresOn, row.RevokedOn is not null || row.IsDisabled);
             },
-            options => options
-                .SetDuration(TimeSpan.FromSeconds(settings.Sessions.CacheSeconds))
+            // No stale copy past its time for a session decision (ARV-081): fail-safe and soft timeouts off.
+            options => SecurityCacheOptions.Apply(options, TimeSpan.FromSeconds(settings.Sessions.CacheSeconds))
                 .SetDistributedCacheDuration(TimeSpan.FromMinutes(5)),
             token: ct);
 

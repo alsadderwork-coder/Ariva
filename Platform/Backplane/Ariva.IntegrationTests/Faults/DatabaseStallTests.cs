@@ -87,7 +87,8 @@ public sealed class DatabaseStallTests(FaultsFixture faults) : IAsyncLifetime
                    0, 'Vendor', 3, 'Hall', @prefix, repeat('a', 64) FROM l
             """, sql);
         command.Parameters.AddWithValue("site", site);
-        command.Parameters.AddWithValue("iata", "Q" + suffix[..2]);
+        // Three letters (the airport check); the hex suffix may hold digits.
+        command.Parameters.AddWithValue("iata", new string([.. Enumerable.Range(0, 3).Select(_ => (char)('A' + System.Security.Cryptography.RandomNumberGenerator.GetInt32(26)))]));
         command.Parameters.AddWithValue("prefix", prefix);
         (await command.ExecuteNonQueryAsync(Ct)).Should().Be(1);
         return prefix;
@@ -147,6 +148,99 @@ public sealed class DatabaseStallTests(FaultsFixture faults) : IAsyncLifetime
         }
 
         found.Code.Should().Be("FLT-01");
+    }
+
+    [Fact]
+    public async Task Session_Should_FailAsAnOutageRatherThanPassOnAStaleCopy_When_RevokedAndTheDatabaseStalls()
+    {
+        // ARV-081 (ASVS V16.5.3): with the hosts' default cache options (fail-safe, 500 ms soft timeout) the expired copy
+        // "active" would be served for up to an hour; the session check must fail (503) instead, then see the revocation.
+        await using var provider = Provider();
+        using var cache = new FusionCache(new FusionCacheOptions
+        {
+            DefaultEntryOptions = new FusionCacheEntryOptions
+            {
+                Duration = TimeSpan.FromMinutes(5),
+                IsFailSafeEnabled = true,
+                FailSafeMaxDuration = TimeSpan.FromHours(1),
+                FactorySoftTimeout = TimeSpan.FromMilliseconds(500),
+                FactoryHardTimeout = TimeSpan.FromSeconds(30),
+                AllowTimedOutFactoryBackgroundCompletion = true
+            }
+        });
+        var settings = new Ariva.Infra.Settings.AuthSettings { Sessions = new Ariva.Infra.Settings.SessionSettings { CacheSeconds = 1 } };
+        var sessionId = await SeedSessionAsync();
+        async Task<(Ariva.Core.Security.SessionState? State, Exception Failure)> CheckAsync()
+        {
+            await using var scope = provider.CreateAsyncScope();
+            var validator = new Ariva.Infra.Security.SessionValidator(scope.ServiceProvider.GetRequiredService<IUnitOfWork>(), cache, settings, TimeProvider.System);
+            try
+            {
+                return (await validator.CheckAsync(sessionId, Ct), null);
+            }
+            catch (Exception e) when (e is not OperationCanceledException || !Ct.IsCancellationRequested)
+            {
+                return (null, e);
+            }
+        }
+
+        (await CheckAsync()).State.Should().Be(Ariva.Core.Security.SessionState.Active);
+
+        // Revoked while the eviction is lost (the outage case), then the database stalls once the copy has expired.
+        await ExecuteDirectAsync("UPDATE user_session SET revoked_on = now() WHERE id = @id", sessionId);
+        await faults.StallAsync(Proxy);
+        await Task.Delay(TimeSpan.FromSeconds(1.5), Ct);
+
+        var (state, failure) = await CheckAsync();
+        state.Should().BeNull($"a revoked session must not pass on the expired copy (it answered {state})");
+        DependencyOutage.Is(failure!).Should().BeTrue($"the request is answered 503 with Retry-After ({failure?.GetType().Name})");
+
+        await faults.RestoreAsync(Proxy);
+
+        var until = DateTime.UtcNow.AddSeconds(60);
+        while (true)
+        {
+            var (after, error) = await CheckAsync();
+            if (error is null)
+            {
+                after.Should().Be(Ariva.Core.Security.SessionState.Revoked);
+                break;
+            }
+
+            DependencyOutage.Is(error).Should().BeTrue(error.GetType().Name);
+            DateTime.UtcNow.Should().BeBefore(until);
+            await Task.Delay(500, Ct);
+        }
+    }
+
+    /// <summary>A user and an active session (idle and absolute deadlines a day away), written over the direct connection.</summary>
+    private async Task<Guid> SeedSessionAsync()
+    {
+        var sessionId = Guid.NewGuid();
+        await using var sql = new NpgsqlConnection(faults.DirectConnectionString);
+        await sql.OpenAsync(Ct);
+        await using var command = new NpgsqlCommand("""
+            WITH u AS (INSERT INTO "user" (id, user_name, password_hash, password_salt, password_algorithm, password_iterations)
+                       VALUES (gen_random_uuid(), @name, 'x', 'x', 'PBKDF2-SHA256', 600000) RETURNING id)
+            INSERT INTO user_session (id, user_id, family_id, started_on, authenticated_on, authentication_methods, last_seen_on,
+                                      idle_timeout_seconds, idle_expires_on, absolute_expires_on)
+            SELECT @session, u.id, gen_random_uuid(), now(), now(), 'pwd otp', now(), 14400, now() + interval '1 day', now() + interval '1 day' FROM u
+            """, sql);
+        command.Parameters.AddWithValue("name", "it.faults." + sessionId.ToString("N")[..8]);
+        command.Parameters.AddWithValue("session", sessionId);
+        (await command.ExecuteNonQueryAsync(Ct)).Should().Be(1);
+        return sessionId;
+    }
+
+    private async Task ExecuteDirectAsync(string statement, Guid id)
+    {
+        await using var sql = new NpgsqlConnection(faults.DirectConnectionString);
+        await sql.OpenAsync(Ct);
+#pragma warning disable CA2100 // the statement is a constant of this class; the id is a parameter
+        await using var command = new NpgsqlCommand(statement, sql);
+#pragma warning restore CA2100
+        command.Parameters.AddWithValue("id", id);
+        await command.ExecuteNonQueryAsync(Ct);
     }
 
     [Fact]

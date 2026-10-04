@@ -36,7 +36,7 @@ internal sealed class StoredPermissionResolver(IUnitOfWork unitOfWork, IFusionCa
                 .Where(r => r.User.Id == userId && !r.User.IsDisabled)
                 .Select(r => r.RoleCode)
                 .ToListAsync(token)).ToArray(),
-            options => options.SetDuration(TimeSpan.FromMinutes(1)),
+            options => SecurityCacheOptions.Apply(options, TimeSpan.FromMinutes(1)),
             tags: [Tag(userId)],
             token: ct);
 

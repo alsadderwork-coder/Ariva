@@ -25,7 +25,7 @@ internal sealed class SvcDeviceGateway(IUnitOfWork unitOfWork, IFusionCache cach
     /// 503 with Retry-After after this (DependencyOutage) instead of holding the request for Npgsql's 30 second command
     /// timeout, so sensors back off and push again rather than piling up connections.
     /// </summary>
-    internal static readonly TimeSpan LookupTimeout = TimeSpan.FromSeconds(5);
+    internal static readonly TimeSpan LookupTimeout = Ariva.Infra.Security.SecurityCacheOptions.LookupTimeout;
 
     public async Task<DeviceCredentialRecord> FindByPrefixAsync(string prefix, CancellationToken ct = default)
     {
@@ -47,11 +47,7 @@ internal sealed class SvcDeviceGateway(IUnitOfWork unitOfWork, IFusionCache cach
             // A credential decision must never come from a stale copy: no fail-safe (which would serve an expired entry
             // for up to an hour when the database is slow or down), no soft timeout, and memory only (no copy of the
             // hash, and no misses, in Redis). Eviction still reaches every host through the backplane's tag removal.
-            options.Duration = Duration;
-            options.IsFailSafeEnabled = false;
-            options.FactorySoftTimeout = Timeout.InfiniteTimeSpan;
-            options.FactoryHardTimeout = LookupTimeout;
-            options.AllowTimedOutFactoryBackgroundCompletion = false;
+            Ariva.Infra.Security.SecurityCacheOptions.Apply(options, Duration);
             options.SkipDistributedCacheRead = true;
             options.SkipDistributedCacheWrite = true;
         }, tags: [SvcDevices.CacheTag], token: ct);
