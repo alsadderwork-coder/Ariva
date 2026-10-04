@@ -81,6 +81,38 @@ public sealed class ErrorHandlingTests
         ShouldBeProblemWithoutLeaks(response, await response.BodyAsync(), 405);
     }
 
+    [Theory]
+    [InlineData("postgres")]
+    [InlineData("redis")]
+    [InlineData("timeout")]
+    public async Task Get_Should_Return503WithRetryAfter_When_ADependencyIsUnavailable(string dependency)
+    {
+        await using var app = CreateAuthenticatedHost(ArivaEnvironment.K8sPrd);
+        using var client = CreateUserClient(app);
+
+        using var response = await client.GetAsync(ThrowingStartupFilter.OutagePath + dependency, TestContext.Current.CancellationToken);
+        var body = await response.BodyAsync();
+
+        // ARV-072: the client keeps its data and tries again; the answer says nothing about the dependency.
+        response.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
+        response.Headers.RetryAfter!.Delta.Should().Be(TimeSpan.FromSeconds(Ariva.Infra.Resilience.DependencyOutage.RetryAfterSeconds));
+        ShouldBeProblemWithoutLeaks(response, body, 503);
+        body.Should().NotContain(ThrowingStartupFilter.SecretMessage);
+    }
+
+    [Fact]
+    public async Task Get_Should_Return500_When_ARegexTimesOut()
+    {
+        await using var app = CreateAuthenticatedHost(ArivaEnvironment.K8sPrd);
+        using var client = CreateUserClient(app);
+
+        using var response = await client.GetAsync(ThrowingStartupFilter.OutagePath + "regex", TestContext.Current.CancellationToken);
+
+        // A ReDoS guard refusing an input is not an outage; nothing invites the caller to retry it.
+        response.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
+        response.Headers.RetryAfter.Should().BeNull();
+    }
+
     #endregion
 
     #region Helpers

@@ -15,6 +15,25 @@ const patterns: { name: string; re: RegExp }[] = [
 	{ name: 'integration client secret', re: /\bics_[A-Za-z0-9_-]{43}\b/ }
 ];
 
+/**
+ * Where a finding came from, without the value: the line's logger and message template (Serilog's JSON lines), so a
+ * leak seen only in CI (where the host logs are not uploaded, since they may hold the secret) can be traced.
+ */
+function origin(line: string, values: string[]): string {
+	try {
+		const entry = JSON.parse(line) as { Level?: string; MessageTemplate?: string; Properties?: { SourceContext?: string } };
+		// A template built by interpolation can hold the value itself: masked before it is printed.
+		let template = entry.MessageTemplate ?? '';
+		// Longer values first, so a secret that contains another leaves no fragment; then every credential pattern.
+		for (const value of [...values].sort((x, y) => y.length - x.length)) template = template.split(value).join('[secret]');
+		for (const { name, re } of patterns) template = template.replace(new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g'), `[${name}]`);
+		template = template.replace(/eyJ[A-Za-z0-9_.-]+/g, '[jwt]').slice(0, 160);
+		return ` (${entry.Level ?? '?'} ${entry.Properties?.SourceContext ?? 'no logger'}: "${template}")`;
+	} catch {
+		return ' (not a JSON log line)';
+	}
+}
+
 export default async function globalTeardown() {
 	const directory = process.env.ARIVA_E2E_LOG_DIR;
 	if (!directory || !fs.existsSync(directory)) {
@@ -24,11 +43,16 @@ export default async function globalTeardown() {
 	const files = fs.readdirSync(directory).filter((name) => name.endsWith('.log'));
 	if (files.length === 0) throw new Error(`log scan: ${directory} has no .log files`);
 
-	const secrets: string[] = [...Object.values(canary)];
+	// Each secret with a label, so a finding says which credential leaked (never the value itself).
+	const labelled: { label: string; value: string }[] = Object.entries(canary).map(([key, value]) => ({ label: `canary ${key}`, value }));
 	if (process.env.ARIVA_E2E_ACCOUNT_SEED) {
-		secrets.push(...Object.values(accounts()).map((entry) => entry.password), changedPassword(), webFirstPassword());
-		secrets.push(...Object.values(accounts()).flatMap((entry) => (entry.totpSecret ? [entry.totpSecret] : [])));
+		for (const entry of Object.values(accounts())) {
+			labelled.push({ label: `password of ${entry.userName}`, value: entry.password });
+			if (entry.totpSecret) labelled.push({ label: `TOTP secret of ${entry.userName}`, value: entry.totpSecret });
+		}
+		labelled.push({ label: 'changed password', value: changedPassword() }, { label: 'first-sign-in password', value: webFirstPassword() });
 	}
+	const secrets: string[] = [];
 	// The simulator's operator key and the mock partners' secrets (ARV-027 to ARV-029) never reach Ariva's host logs either.
 	for (const name of ['ARIVA_E2E_SIMULATION_KEY', 'ARIVA_E2E_MOCK_AMAN_SECRET', 'ARIVA_E2E_MOCK_AMAN_SEED', 'ARIVA_E2E_MOCK_AMAN_PULL_SECRET', 'ARIVA_E2E_MOCK_AMAN_PULL_SEED', 'ARIVA_E2E_ACRIS_KEY']) {
 		if (process.env[name]) secrets.push(process.env[name]!);
@@ -45,6 +69,8 @@ export default async function globalTeardown() {
 		secrets.push(...fs.readFileSync(integrationSeedsFile, 'utf8').split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length >= 16));
 	}
 
+	const all = [...labelled, ...secrets.filter(Boolean).map((value) => ({ label: 'a configured secret', value }))];
+	const values = all.map((entry) => entry.value).filter(Boolean);
 	const findings: string[] = [];
 	let lines = 0;
 	for (const file of files) {
@@ -52,11 +78,11 @@ export default async function globalTeardown() {
 		content.split(/\r?\n/).forEach((line, index) => {
 			if (!line) return;
 			lines++;
-			for (const value of secrets) {
-				if (line.includes(value)) findings.push(`${file}:${index + 1} contains a canary credential or an E2E account password`);
+			for (const { label, value } of all) {
+				if (value && line.includes(value)) findings.push(`${file}:${index + 1} contains ${label}${origin(line, values)}`);
 			}
 			for (const { name, re } of patterns) {
-				if (re.test(line)) findings.push(`${file}:${index + 1} contains a ${name}`);
+				if (re.test(line)) findings.push(`${file}:${index + 1} contains a ${name}${origin(line, values)}`);
 			}
 		});
 	}

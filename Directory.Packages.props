@@ -103,6 +103,8 @@
     <!-- Load harness HTTP (ARV-071, Ahmad Al-Sadder 2026-10-04: use Apizr rather than a hand-built HttpClient): Apizr 6.4.2,
          the latest stable on nuget.org (4 October 2026), Apache-2.0; brings Refit 8 and Polly 8. Test projects only: the load harness and the fault tests (ARV-072). -->
     <PackageVersion Include="Apizr" Version="6.4.2" />
+    <!-- Failure-injection tests (ARV-072, approved by Ahmad Al-Sadder 2026-10-04): same Testcontainers release -->
+    <PackageVersion Include="Testcontainers.Toxiproxy" Version="4.15.0" />
     <!-- Consumer-driven contracts for the AMAN feed (ARV-068, approved by Ahmad Al-Sadder 2026-10-04): PactNet 5.0.1, the
          latest stable on nuget.org (flat container index, 4 October 2026). Unit tests only; it carries the Pact FFI native library. -->
     <PackageVersion Include="PactNet" Version="5.0.1" />

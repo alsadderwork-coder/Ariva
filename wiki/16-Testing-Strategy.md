@@ -19,7 +19,7 @@ How Ariva is tested, from pure formula tests to field validation, and how to run
 | Conformance tests per sensor family | `Emulators/Sensors/<Family>/samples/` | Each adapter maps recorded payloads to the expected canonical events, including malformed and oversized payloads | Planned per family |
 | AODB replay | Replay harness with recorded feeds | Adapters handle real feeds: out-of-order messages, identity changes, stale feeds | Planned; recorded feeds from each pilot airport join the suite |
 | Load test | `Platform/Testing/Ariva.LoadTests` (a console harness: HTTP through Apizr, the hub over a plain WebSocket, StackExchange.Redis), run by `Ariva.E2E/tests/api/load.spec.ts`; `functional/live-under-load.spec.ts` | 40 sensors at their push rate and 3x, 200 live hub and display connections, 413 and 429 rather than failures; p50, p95, p99, throughput, CPU and memory per host (wiki 05, sizing notes); a live screen keeps up while 40 others watch | Smoke in every E2E run; the full run (`ARIVA_LOAD_MODE=full`) on demand, recorded as lab measurements. The site-scale 15,000 messages a second stays with Phase 1 Hardening |
-| Failure-mode tests | Phase 1 epic Hardening | The failure table in the architecture overview: sensor offline, Kafka outage, database failover, stream pod crash, stale feeds, clock drift | Planned |
+| Failure-mode tests | `Ariva.IntegrationTests/Faults` (Testcontainers.Toxiproxy; PostgreSQL, Redis and Kafka reached only through Toxiproxy) | Broker cut off: the outbox holds, readiness reports it, a direct publish fails (Ingest answers 503), the relay resumes in order per key. Redis cut off and stalled: publishes fail within the client timeout with what Stream's checkpoint catches, reads fail as outages (503), the subscription comes back without a restart. Database stalled and cut off: a cold credential lookup fails within 5 seconds (503), the sensing archive waits the outage out and stores each batch once | Partly done (ARV-072). Pod crash, failover and clock drift stay with Phase 1 Hardening |
 | Accuracy validation | On site | Field accuracy against manual counts, tracers and observer logs | Pilot |
 
 ## 2. Unit tests
@@ -51,6 +51,8 @@ Agents write many tests; mutation testing checks that they would catch a real fa
 ## 3. Integration tests (Testcontainers)
 
 Containers: `timescale/timescaledb-ha` (PostgreSQL 17 with TimescaleDB), Kafka, Redis. Shared fixtures (container lifetime, connection strings, script runner) live in `Ariva.IntegrationTests/Setup`. Typical tests: the Timescale script runner applies all scripts and records them; a checksum change stops startup; COPY writers and upserts are idempotent by (zone, bin start, revision); a consumer replays after a rebalance without double counting.
+
+Failure injection (ARV-072): `Faults/FaultsFixture` starts PostgreSQL, Redis and Kafka on their own Docker network behind one Toxiproxy (`ghcr.io/shopify/toxiproxy:2.12.0`), driven through its HTTP API with an Apizr client; Kafka advertises the proxy's address, so broker connections after bootstrap go through it too. Tests cut a dependency off (proxy disabled), stall it (Toxiproxy's `timeout` toxic, nothing comes back) and restore it while the code under test keeps running. The checks are the indicators operators and screens rely on: readiness, 503 with Retry-After (`DependencyOutage`), the publication time that turns screens and boards stale, and the stored rows (outbox, sensing archive). About four minutes; they run with the rest of the integration suite.
 
 Run (needs Docker):
 

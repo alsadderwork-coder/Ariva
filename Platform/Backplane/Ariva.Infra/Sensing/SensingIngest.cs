@@ -350,6 +350,9 @@ public sealed class SensingIngest(
         {
             options.Duration = TimeSpan.FromMinutes(1);
             options.IsFailSafeEnabled = false;
+            // A stalled database answers the device 503 after the credential lookup's bound, not Npgsql's 30 seconds (ARV-072).
+            options.FactoryHardTimeout = Ariva.Infra.Services.Sensing.SvcDeviceGateway.LookupTimeout;
+            options.AllowTimedOutFactoryBackgroundCompletion = false;
             options.SkipDistributedCacheRead = true;
             options.SkipDistributedCacheWrite = true;
         }, token: ct);

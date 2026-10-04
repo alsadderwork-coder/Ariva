@@ -1599,8 +1599,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 75,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Faults collection in Ariva.IntegrationTests; see progress 2026-10-04.",
       "dependsOn": [
         "ARV-020",
         "ARV-034",

@@ -22,7 +22,8 @@ public static class ErrorHandlingExtensions
 
     /// <summary>
     /// Registers the ProblemDetails service. Unhandled exceptions become 500 (or the status of a
-    /// <see cref="BadHttpRequestException"/>, for example 413) with a generic title and a trace id; only in
+    /// <see cref="BadHttpRequestException"/>, for example 413; 503 with Retry-After when PostgreSQL or Redis is
+    /// unavailable, <see cref="DependencyOutageHandler"/>) with a generic title and a trace id; only in
     /// vm-local the exception message and stack trace are added, for developers.
     /// </summary>
     /// <param name="services">The host's service collection.</param>
@@ -32,6 +33,8 @@ public static class ErrorHandlingExtensions
         ArgumentNullException.ThrowIfNull(services);
 
         services.AddProblemDetails(options => options.CustomizeProblemDetails = CustomizeProblemDetails);
+        // ARV-072: a dependency outage answers 503 with Retry-After, not 500 (DependencyOutageHandler).
+        services.AddExceptionHandler<DependencyOutageHandler>();
 
         return services;
     }

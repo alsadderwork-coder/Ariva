@@ -16,6 +16,9 @@ public sealed class ThrowingStartupFilter : IStartupFilter
     /// <summary>The path that throws.</summary>
     public const string Path = "/tests/throw";
 
+    /// <summary>ARV-072: paths that throw what a dependency outage throws (PostgreSQL wrapped by NHibernate, Redis, a timeout), and a ReDoS guard's timeout.</summary>
+    public const string OutagePath = "/tests/outage/";
+
     /// <summary>Exception message that looks like a leaked secret; it must never reach a client outside vm-local.</summary>
     public const string SecretMessage = "Host=timescaledb;Username=ariva;Password=not-for-clients";
 
@@ -32,6 +35,19 @@ public sealed class ThrowingStartupFilter : IStartupFilter
             if (context.Request.Path == Path)
             {
                 throw new InvalidOperationException(SecretMessage);
+            }
+
+            if (context.Request.Path.StartsWithSegments(OutagePath.TrimEnd('/'), out var rest))
+            {
+                throw rest.Value switch
+                {
+                    "/postgres" => new NHibernate.Exceptions.GenericADOException(SecretMessage,
+                        new Npgsql.NpgsqlException(SecretMessage, new System.Net.Sockets.SocketException(111))),
+                    "/redis" => new StackExchange.Redis.RedisConnectionException(StackExchange.Redis.ConnectionFailureType.UnableToConnect, SecretMessage),
+                    "/timeout" => new TimeoutException(SecretMessage),
+                    "/regex" => new System.Text.RegularExpressions.RegexMatchTimeoutException(SecretMessage),
+                    _ => new InvalidOperationException(SecretMessage)
+                };
             }
 
             context.Response.StatusCode = StatusCodes.Status404NotFound;
