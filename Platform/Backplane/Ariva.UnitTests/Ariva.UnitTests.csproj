@@ -16,6 +16,8 @@
         <!-- The Ariva.AppHost model, built in process (ARV-066) -->
         <PackageReference Include="Aspire.Hosting.Testing" />
         <PackageReference Include="Bogus" />
+        <!-- Property-based tests of the formulas and parsers (ARV-070) -->
+        <PackageReference Include="CsCheck" />
         <PackageReference Include="coverlet.collector">
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>

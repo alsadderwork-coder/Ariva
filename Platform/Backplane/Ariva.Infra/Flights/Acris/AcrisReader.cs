@@ -46,5 +46,10 @@ public static class AcrisReader
         {
             return (null, "The answer is not ACRIS flight JSON as Ariva reads it (malformed, a repeated member or a wrong type).");
         }
+        catch (InvalidOperationException)
+        {
+            // A member name escaping a lone surrogate (\uDC00) parses and fails only when read (found by ARV-070's review).
+            return (null, "The answer is not ACRIS flight JSON as Ariva reads it (malformed, a repeated member or a wrong type).");
+        }
     }
 }

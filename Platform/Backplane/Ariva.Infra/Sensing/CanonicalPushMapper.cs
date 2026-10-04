@@ -45,6 +45,11 @@ public static class CanonicalPushMapper
             throw new PushFormatException($"Not a canonical push at {KnownPath(e.Path)}: unknown member, wrong type or a missing value.");
         }
 
+        // "crossings": [null] reads as a list holding null: refused here rather than failing below (found by ARV-070).
+        NoEmptyItem(payload.Tracks, "tracks");
+        NoEmptyItem(payload.Crossings, "crossings");
+        NoEmptyItem(payload.Occupancy, "occupancy");
+        NoEmptyItem(payload.Intervals, "intervals");
         var count = (payload.Tracks?.Count ?? 0) + (payload.Crossings?.Count ?? 0) + (payload.Occupancy?.Count ?? 0) + (payload.Intervals?.Count ?? 0);
         if (count > maxEvents)
             throw new PushFormatException($"At most {maxEvents} events per message.");
@@ -109,6 +114,12 @@ public static class CanonicalPushMapper
         if (time.Offset != TimeSpan.Zero)
             throw new PushFormatException($"{what} must be UTC (Z or +00:00).");
         return time.UtcDateTime;
+    }
+
+    private static void NoEmptyItem<T>(List<T> items, string what) where T : class
+    {
+        if (items is not null && items.Contains(null))
+            throw new PushFormatException($"{what}[] has an empty item.");
     }
 
     private static double Need(double? value, string what) => value ?? throw new PushFormatException($"tracks[].{what} is missing.");

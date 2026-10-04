@@ -296,28 +296,46 @@ public sealed class TokenHandler(OutboundTarget target, OutboundSecret secret, T
         }
     }
 
-    // AMAN answers { accessToken, expiresAt }; OAuth 2.0 { access_token, expires_in }.
     private (string Token, DateTimeOffset Expires) Parse(byte[] bytes)
     {
+        var (token, expires, error) = ReadToken(bytes, time.GetUtcNow());
+        return error is null ? (token, expires) : throw new HttpRequestException($"The token answer of {target.Code} {error}");
+    }
+
+    /// <summary>
+    /// A token answer: AMAN's { accessToken, expiresAt } or OAuth 2.0's { access_token, expires_in }; five minutes when it
+    /// gives no usable expiry. Any body gives a token or the reason (ending a sentence about the answer), never an
+    /// exception (ARV-070 checks this with generated answers).
+    /// </summary>
+    internal static (string Token, DateTimeOffset Expires, string Error) ReadToken(byte[] bytes, DateTimeOffset now)
+    {
+        if (bytes is null || !System.Text.Unicode.Utf8.IsValid(bytes))
+            return (null, default, "is not UTF-8 JSON.");
         try
         {
             using var document = JsonDocument.Parse(bytes, new JsonDocumentOptions { MaxDepth = 8 });
             var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+                return (null, default, "has no usable token.");
             var token = (root.TryGetProperty("accessToken", out var a) ? a : root.TryGetProperty("access_token", out var b) ? b : default) is { ValueKind: JsonValueKind.String } t
                 ? t.GetString()
                 : null;
             if (string.IsNullOrEmpty(token) || token.Length > 8192 || token.Any(c => c is < '!' or > '~'))
-                throw new HttpRequestException($"The token answer of {target.Code} has no usable token.");
-            var now = time.GetUtcNow();
+                return (null, default, "has no usable token.");
             if (root.TryGetProperty("expiresAt", out var at) && at.ValueKind == JsonValueKind.String && at.TryGetDateTimeOffset(out var expiresAt))
-                return (token, expiresAt);
-            if (root.TryGetProperty("expires_in", out var seconds) && seconds.TryGetInt32(out var s) && s is > 0 and <= 86400)
-                return (token, now.AddSeconds(s));
-            return (token, now.AddMinutes(5));
+                return (token, expiresAt, null);
+            if (root.TryGetProperty("expires_in", out var seconds) && seconds.ValueKind == JsonValueKind.Number && seconds.TryGetInt32(out var s) && s is > 0 and <= 86400)
+                return (token, now.AddSeconds(s), null);
+            return (token, now.AddMinutes(5), null);
         }
-        catch (JsonException e)
+        catch (JsonException)
         {
-            throw new HttpRequestException($"The token answer of {target.Code} is not JSON.", e);
+            return (null, default, "is not JSON.");
+        }
+        catch (InvalidOperationException)
+        {
+            // A string or member name escaping a lone surrogate parses and fails only when read.
+            return (null, default, "is not JSON.");
         }
     }
 

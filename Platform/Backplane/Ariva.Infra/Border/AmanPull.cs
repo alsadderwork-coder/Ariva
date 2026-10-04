@@ -42,6 +42,9 @@ public static class AmanFeedPages
     public static (AmanFeedPage<T> Page, string Error) Read<T>(byte[] body, long after) where T : class
     {
         ArgumentNullException.ThrowIfNull(body);
+        // Strings holding invalid UTF-8 parse and fail only when read; a number test before reading one (both found by ARV-070).
+        if (!System.Text.Unicode.Utf8.IsValid(body))
+            return (null, "AMAN's answer is not UTF-8 JSON.");
         try
         {
             using var document = JsonDocument.Parse(body, new JsonDocumentOptions { MaxDepth = 16 });
@@ -52,7 +55,7 @@ public static class AmanFeedPages
                 return (null, "AMAN answered with errors.");
             if (!root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object ||
                 !data.TryGetProperty("items", out var items) || items.ValueKind != JsonValueKind.Array ||
-                !data.TryGetProperty("next", out var nextElement) || !nextElement.TryGetInt64(out var next))
+                !data.TryGetProperty("next", out var nextElement) || nextElement.ValueKind != JsonValueKind.Number || !nextElement.TryGetInt64(out var next))
                 return (null, "AMAN's answer is not its feed envelope.");
             var count = items.GetArrayLength();
             if (count > MaxItems)
@@ -85,6 +88,11 @@ public static class AmanFeedPages
         }
         catch (JsonException)
         {
+            return (null, "AMAN's answer is not JSON.");
+        }
+        catch (InvalidOperationException)
+        {
+            // A string or member name escaping a lone surrogate parses and fails only when read.
             return (null, "AMAN's answer is not JSON.");
         }
     }

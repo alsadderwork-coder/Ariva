@@ -106,35 +106,55 @@ public sealed class SensingIngest(
 
     public static readonly TimeSpan HealthEvery = TimeSpan.FromSeconds(10);
 
+    /// <summary>
+    /// The adapter boundary of a push (ARV-023, CWE-120): the body parsed as JSON (depth 16, no comments) and mapped by the
+    /// dialect's mapper to at most <paramref name="maxEvents"/> events. Any body gives a push or Ariva's reason, never an
+    /// exception (ARV-070 checks this with generated, truncated and mutated payloads).
+    /// </summary>
+    public static (MappedPush Push, string Error) Read(ReadOnlyMemory<byte> body, DeviceDialect dialect, DevicePose pose, Declarative.DeclarativeMapping mapping,
+        int maxEvents, DateTime receivedUtc)
+    {
+        // JsonDocument accepts a string holding invalid UTF-8 and only fails when it is read (an InvalidOperationException
+        // from the mapper): the whole body is checked first (found by ARV-070's generated payloads).
+        if (!System.Text.Unicode.Utf8.IsValid(body.Span))
+            return (null, "The body is not valid UTF-8.");
+        try
+        {
+            using var document = JsonDocument.Parse(body, new JsonDocumentOptions { MaxDepth = 16, CommentHandling = JsonCommentHandling.Disallow });
+            return (dialect switch
+            {
+                DeviceDialect.Xovis => XovisPushMapper.Map(document.RootElement, pose, maxEvents),
+                DeviceDialect.Canonical => CanonicalPushMapper.Map(document.RootElement, maxEvents),
+                DeviceDialect.Declarative => Declarative.DeclarativeMapper.Map(document.RootElement,
+                    mapping ?? throw new PushFormatException("The device's declarative mapping is not in this version of Ariva."), pose, maxEvents, receivedUtc),
+                _ => throw new PushFormatException($"The {dialect} dialect has no push endpoint.")
+            }, null);
+        }
+        catch (JsonException)
+        {
+            return (null, "The body is not well-formed JSON.");
+        }
+        catch (InvalidOperationException)
+        {
+            // A string or member name escaping a lone surrogate (\uDC00) parses and fails only when read (found by ARV-070's review).
+            return (null, "The body is not well-formed JSON.");
+        }
+        catch (PushFormatException e)
+        {
+            return (null, e.Message);
+        }
+    }
+
     public async Task<Fluentx.Result<IngestOutcome>> IngestAsync(DeviceCredentialRecord device, DeviceDialect dialect, ReadOnlyMemory<byte> body, DateTime receivedUtc, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(device);
         if (!string.Equals(device.Dialect, dialect.ToString(), StringComparison.Ordinal))
             return Fluentx.Result.Error<IngestOutcome>($"This device is registered for the {device.Dialect} dialect.");
 
-        MappedPush push;
-        try
-        {
-            using var document = JsonDocument.Parse(body, new JsonDocumentOptions { MaxDepth = 16, CommentHandling = JsonCommentHandling.Disallow });
-            var max = Math.Max(1, settings.Value.MaxEventsPerMessage);
-            push = dialect switch
-            {
-                DeviceDialect.Xovis => XovisPushMapper.Map(document.RootElement, new DevicePose(device.X, device.Y, device.OrientationDegrees), max),
-                DeviceDialect.Canonical => CanonicalPushMapper.Map(document.RootElement, max),
-                DeviceDialect.Declarative => Declarative.DeclarativeMapper.Map(document.RootElement,
-                    mappings.Find(device.MappingName) ?? throw new PushFormatException("The device's declarative mapping is not in this version of Ariva."),
-                    new DevicePose(device.X, device.Y, device.OrientationDegrees), max, receivedUtc),
-                _ => throw new PushFormatException($"The {dialect} dialect has no push endpoint.")
-            };
-        }
-        catch (JsonException)
-        {
-            return Fluentx.Result.Error<IngestOutcome>("The body is not well-formed JSON.");
-        }
-        catch (PushFormatException e)
-        {
-            return Fluentx.Result.Error<IngestOutcome>(e.Message);
-        }
+        var (push, error) = Read(body, dialect, new DevicePose(device.X, device.Y, device.OrientationDegrees),
+            device.MappingName is null ? null : mappings.Find(device.MappingName), Math.Max(1, settings.Value.MaxEventsPerMessage), receivedUtc);
+        if (error is not null)
+            return Fluentx.Result.Error<IngestOutcome>(error);
 
         var clock = push.DeviceSentUtc is { } sent ? clocks.Observe(device.DeviceId, sent, receivedUtc) : clocks.Current(device.DeviceId);
         if (push.ConnectionTest)

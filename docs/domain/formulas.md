@@ -682,3 +682,27 @@ line|<name>|<role>|<zone name or empty>|<level id>|<x y>|<x y>
 Numbers are written with three decimals in invariant culture. Changing this form needs a new prefix (`ariva-zone-profile-v2`) while v1 stays verifiable.
 
 Tests: the reference profile in `ZoneProfileTests` (snake 24 x 12 m at (10, 10) with an entry and an exit line, an overflow band with its entry line, one count line) hashes to `fd3d7d1585070bd347de877d87aa3bb4e28d2b571081986650ec934471d9a1da`, recomputed independently in Python; moving a vertex by 1 mm changes the hash, by 0.4 mm does not.
+
+## Property tests (ARV-070)
+
+Beyond the fixed cases above, `Ariva.UnitTests/Properties/FormulaPropertyTests.cs` checks invariants over generated inputs with CsCheck (2,000 inputs per property in every build; `ARIVA_FUZZ_ITERATIONS=10000` runs 50,000, done once for ARV-070). A failure prints the shrunk input and its seed; the case then joins the formula's own tests.
+
+| Formula | Property | Status |
+|---|---|---|
+| F1 | Footprints are positive; length never shrinks as the sensor goes higher, nor the area beyond the 0.1 m rounding | Property |
+| F2, F3, F21 | Sensor counts, BOQ footprints and sizing arithmetic | Not in Ariva.Core (planning and BOQ work); no property |
+| F4 | Segment intersection does not depend on order or direction; a ring keeps its area (sign flips when reversed) and its contents when rotated or reversed; a convex ring is simple and holds the mean of its corners | Property |
+| F5, F6 | Realised waits and their attribution | Covered by the reference scenario, the queue engine tests and mutation testing (ARV-069); the engine's state machine has no independent model to generate against |
+| F7 | A percentile is one of the waits, grows with p, and does not change when every weight is scaled; the share within target is a fraction that grows with the target; the mean lies within the waits; a histogram percentile is the exact one to the bucket, and merging two halves gives what the whole would | Property |
+| F8 | The nowcast is finite and positive, equals (Q + 1) / mu, and never falls as the queue grows or rejects rise; a displayed band holds the estimate (live bands 5 minutes wide, degraded at least 10, within the ceiling) | Property |
+| F9 | A predicted peak is at least the first minute's nowcast and never falls when arrivals rise | Property |
+| F10 | Every second of each desk minute is in exactly one state; transitions chain (each leaves the state the previous one entered) in time order; a lane's counts add up | Property |
+| F11 | Data-quality propagation | Covered by the device liveness and zone processor tests; no property |
+| F12 | Coupling adds exactly rate x the e-gate demand lag minutes earlier to the reject lane and nothing else; the reject rate is a share, the reference value below the minimum attempts | Property |
+| F13, F15, F16, F17, F18 | Departure demand, Monte Carlo, staffing, SLA evaluation, validation metrics | Not implemented yet; properties come with them |
+| F14 | The lane split keeps every passenger but transfers; the projection spreads each flight's passengers over the hall without losing or adding any | Property |
+| F19 | The clock estimate stays within its readings, keeps at most 10, ignores readings beyond a day, and a steady offset is corrected exactly | Property |
+| F20 | Alerts alternate raised and cleared, a run equals its steps, and minutes already seen change nothing | Property |
+| F22 | The ring text the geometry hash covers reads back to itself, each coordinate within half a millimetre | Property |
+
+The parsers at Ariva's edge have their own properties (`ParserPropertyTests`, CWE-120): random bytes and valid samples cut short, mutated or with a value retyped give a result or Ariva's reason, never an exception, and a sensing push never more events than its limit. They found four faults and the security review a fifth, each fixed with a regression test: a JSON string holding invalid UTF-8 (parsed, then threw when read) in the sensing ingest and AMAN's pull pages; a null item in a canonical push list; AMAN's page position given as something other than a number; a token answer that is not an object or gives its expiry as text; and a member name or string escaping a lone surrogate (`\uDC00`, valid UTF-8 that parses and throws when read) in the sensing ingest, AMAN's pull pages, the token answer and the ACRIS reader. The generators now insert such escapes.

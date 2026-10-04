@@ -103,6 +103,9 @@
     <!-- Consumer-driven contracts for the AMAN feed (ARV-068, approved by Ahmad Al-Sadder 2026-10-04): PactNet 5.0.1, the
          latest stable on nuget.org (flat container index, 4 October 2026). Unit tests only; it carries the Pact FFI native library. -->
     <PackageVersion Include="PactNet" Version="5.0.1" />
+    <!-- Property-based tests (ARV-070, approved by Ahmad Al-Sadder 2026-10-04): CsCheck 4.9.1, the latest stable on nuget.org
+         (flat container index, 4 October 2026); no dependencies. Unit tests only. -->
+    <PackageVersion Include="CsCheck" Version="4.9.1" />
     <!-- Local orchestration (ARV-066, approved by Ahmad Al-Sadder 2026-10-04): .NET Aspire 13.6.0, the latest stable on
          nuget.org (flat container index, 4 October 2026). Development and test only: Ariva.AppHost and the unit tests
          reference these; no deployed host does. The AppHost SDK (Ariva.AppHost.csproj, same version) brings Aspire.Hosting.AppHost itself. -->

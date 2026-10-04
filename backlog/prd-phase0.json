@@ -1556,8 +1556,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 73,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Done 2026-10-04: CsCheck properties for every formula Ariva.Core implements (F1, F4, F7, F8, F9, F10, F12, F14, F19, F20, F22; the rest mapped in docs/domain/formulas.md) and for every parser at the edge with random, truncated, mutated, retyped and surrogate-escaped payloads; five parser faults found and fixed, each with a regression test. Security review PASS (backlog/progress.md).",
       "dependsOn": [
         "ARV-023",
         "ARV-030"
