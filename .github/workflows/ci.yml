@@ -26,6 +26,7 @@ defaults:
 env:
   DOTNET_NOLOGO: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
+  PACT_DO_NOT_TRACK: true # the Pact FFI's usage reporting (ARV-068; Ariva.UnitTests.runsettings sets it too)
   NODE_VERSION: '22'
 
 jobs:
@@ -107,6 +108,14 @@ jobs:
         run: dotnet build Ariva.slnx -c Release --no-restore 2>&1 | tee build.log
       - name: Unit, architecture and security tests
         run: dotnet test Platform/Backplane/Ariva.UnitTests/Ariva.UnitTests.csproj -c Release --no-build --logger trx --results-directory TestResults 2>&1 | tee unit.log
+      # ARV-068: the AMAN feed's message pact, written by the unit tests, for AMAN's provider verification (wiki 08).
+      - name: Publish the AMAN pact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aman-pact
+          path: .verify/pacts/Ariva-AMAN.json
+          if-no-files-found: error
       - name: Integration tests (Testcontainers, Docker on the runner)
         run: dotnet test Platform/Backplane/Ariva.IntegrationTests/Ariva.IntegrationTests.csproj -c Release --no-build --logger trx --results-directory TestResults 2>&1 | tee integration.log
       - name: Test counts (fails when a suite ran no tests)

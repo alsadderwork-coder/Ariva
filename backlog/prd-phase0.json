@@ -1517,8 +1517,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 71,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Done 2026-10-04: PactNet 5.0.1 message pact Ariva-AMAN.json (V4) for the four V1 contracts, each example read by Ariva's strict reader and rules, published as the aman-pact CI artifact; provider harness for AMAN in wiki 08 with a shape check (members and JSON types) for what Pact allows; the harness verified against the simulator's AMAN, with broken messages that must fail it. Security review PASS (backlog/progress.md).",
       "dependsOn": [
         "ARV-048"
       ]

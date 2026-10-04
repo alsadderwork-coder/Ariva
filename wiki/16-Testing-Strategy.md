@@ -11,6 +11,8 @@ How Ariva is tested, from pure formula tests to field validation, and how to run
 | Integration tests | `Platform/Backplane/Ariva.IntegrationTests` with Testcontainers | Persistence (NHibernate mappings, Timescale scripts, binary COPY, upserts), Kafka consumers (rebalance, replay from committed offsets, idempotency), Redis | Placeholder test skipped until story ARV-007 adds Testcontainers for PostgreSQL with TimescaleDB, Kafka and Redis |
 | API end-to-end tests | `Platform/Testing/Ariva.E2E` (Playwright test runner) | Integration API token exchange, TOTP replay rejection, scope and site enforcement, idempotency, every endpoint; security attack payloads | Planned; the project is not yet in the repository |
 | Functional UI tests | `Platform/Testing/Ariva.E2E` (Playwright) | Screens, role visibility, create flows, XSS payloads rendered as text with no CSP violation | Planned |
+| Contract tests (AMAN feed) | `Ariva.UnitTests/Contracts` (PactNet 5) | Ariva's message pact for the four AMAN V1 contracts (examples read by Ariva's strict reader and rules), its matchers, no identifier member, and the provider harness of wiki 08 run against the simulator's AMAN, with broken messages that must fail it | `AmanFeedPactTests` (ARV-068); the pact is the `aman-pact` CI artifact |
+| Event catalogue | `Ariva.UnitTests/Messaging/AsyncApi` | `docs/architecture/asyncapi.yaml` and the wiki 08 topic table equal the code; references resolve; consumer groups exist in code | `AsyncApiTests` (ARV-067); the AsyncAPI CLI validates the document in CI |
 | Replay and golden scenario tests | Ariva.Simulation.Api reference scenario | The seeded day (seed 9303) produces the same outputs every run: alert at 18:05, degraded zone 18:20 to 18:30, SLA breach at 19:10 | `ScenarioParityTests` (bit for bit against `sim.js`), `ReferenceScenarioTests` (ARV-027) |
 | Conformance tests per sensor family | `Emulators/Sensors/<Family>/samples/` | Each adapter maps recorded payloads to the expected canonical events, including malformed and oversized payloads | Planned per family |
 | AODB replay | Replay harness with recorded feeds | Adapters handle real feeds: out-of-order messages, identity changes, stale feeds | Planned; recorded feeds from each pilot airport join the suite |
@@ -117,7 +119,9 @@ The script is cross-platform (Windows, Linux, CI) and has no dependencies beyond
 
 | Pipeline | File | Runs |
 |---|---|---|
-| PR validation (branch policy on trunk) | `Platform/Cloud/Ariva.Cicd/AzureDevOps/Common/Analyze-solution.yaml` | .NET 10 restore and build (Release), unit and integration test projects with published results, web `npm ci`, `npm run check`, `npm run build` |
+| CI on every push and pull request (GitHub Actions) | `.github/workflows/ci.yml` | Security gate and docs rules; AsyncAPI validation (its own job); Release build, unit tests (publishing the AMAN pact as `aman-pact`) and integration tests with Testcontainers; web check, lint and build; the e2e suite with docker compose |
+| Security scans | `.github/workflows/security-scan.yml` | Trivy filesystem scan, Semgrep, SBOM, on pull requests and weekly |
+| Azure DevOps PR validation (deployment mirror) | `Platform/Cloud/Ariva.Cicd/AzureDevOps/Common/Analyze-solution.yaml` | .NET 10 restore and build (Release), unit and integration test projects with published results, web `npm ci`, `npm run check`, `npm run build` |
 | Image builds | `K8s/Build-k8s-<service>.yaml`, fan-out `Build-k8s-all.yaml` | Docker build and push per service on trunk changes to its paths |
 | Release to dev | `K8s/Release-ariva-k8s-dev.yaml` | Secrets and `helmfile apply` |
 

@@ -522,6 +522,53 @@ How the model applies them (ARV-041), whatever the adapter:
 - Where AMAN's Kafka is not shared, Ariva pulls the same four contracts from AMAN's Integration API instead (ARV-050): an administrator registers an `AmanFeed` outbound endpoint for the site with AMAN's client id, secret and TOTP seed (Administration guide); Ariva exchanges them for a token (one exchange per TOTP step, the token kept until a minute before it expires), sends `X-TOTP-Code` on every call (always, for an AMAN pull), asks `GET {feed path}{contract}?after={position}&limit=500` for `desk-sessions`, `desk-interval-stats`, `egate-interval-stats` and `inbound-lane-demand`, and keeps its position per contract. The records go through the same checks and mapping as the Kafka values (feed `aman-` and the endpoint's code); a record received over both is kept once. AMAN's paging is To confirm against AMAN's Integration API (the mock AMAN of the simulator serves it this way).
 - Versioning: additive changes within V1 bump `ContractVersion.Current` (currently `1.0`); breaking changes go to `Aman/V2` and run in parallel until AMAN moves over. A data-boundary test fails the build if a contract property looks like a person or officer identifier.
 
+### Contract tests with AMAN (Pact)
+
+Ariva is the consumer of AMAN's feed, so it states what it needs as a Pact message contract (ARV-068) and AMAN verifies its producers against it before it releases.
+
+- The pact: `Ariva-AMAN.json`, Pact specification V4, consumer `Ariva`, provider `AMAN`, one message interaction per V1 contract (`a desk session change`, `a desk's one-minute statistics`, `an e-gate's one-minute statistics`, `an inbound flight's lane demand`), each with the `kafkaTopic` and `contentType` it travels with. The unit tests write it to `.verify/pacts/` and every CI run publishes it as the `aman-pact` artifact. Each example is first read by Ariva's strict reader and intake rules, so the pact never asks for a record Ariva would refuse.
+- What it matches: codes, site codes and source event ids by Ariva's patterns; times as ISO 8601 with an offset (interval starts on a whole minute); `state` as `Opened`, `Closed` or `Paused` by name; `laneCategory` as `CIT`, `RES`, `VIS` or `CRW` (empty when a desk closes); counts as integers, seconds as numbers; `intervalSeconds` exactly 60; `rejectsByCategory` and `passengersByLane` as maps with any of their keys, each value an integer.
+- What Pact cannot say: it lets a provider add members, and it matches a pattern against the text of a number or a boolean (a `deskCode` of `101` passes the code pattern). Ariva does neither (such a record is dead-lettered) and the data boundary forbids identifiers, so the pact's metadata states the rule (`arivaDataBoundary`, with `arivaSmallCellSuppression` and `arivaContract` for the version) and the harness below adds a shape check: each member a producer sends must be one the pact's example names, with the example's JSON type. Ariva's own tests also check that no member of the pact is named like a person, officer, traveller or document identifier.
+- What the pact leaves to Ariva's intake rules (a record that breaks them is logged, counted and dropped, not stored): ranges (counts 0 to 10,000, passengers 0 to 1,000, seconds 0 to 3,600), sums (accepted and rejected make attempts, the categories make rejected, transactions at most documents, lanes and e-gate eligible at most boarded), small-cell suppression, times within 7 days, and a closed desk's empty lane. AMAN's own tests cover those; the reasons are in `ImmigrationRules`.
+
+**Provider harness for AMAN's pipeline** (.NET, PactNet 5.0.1; AMAN serialises as it publishes: camelCase, enums by name):
+
+```csharp
+using var verifier = new PactVerifier("AMAN", new PactVerifierConfig { LogLevel = PactLogLevel.Warn });
+verifier
+    // PactNet 5.0.1 needs an HTTP endpoint declared first for message-only verification; nothing is sent to it.
+    .WithHttpEndpoint(new Uri("http://localhost:9"))
+    .WithMessages(scenarios =>
+    {
+        scenarios.Add("a desk session change", b => b
+            .WithMetadata(new { contentType = "application/json", kafkaTopic = "aman.feed.desk-session-changed.v1" })
+            .WithContent(() => producer.BuildDeskSessionChanged(sampleSession)));
+        // the same for the other three contracts, from AMAN's real producers
+    }, amanWireJsonOptions)
+    .WithFileSource(new FileInfo("Ariva-AMAN.json"))
+    .Verify(); // throws PactFailureException with the mismatches
+
+// Shape (the data boundary and the JSON types): only the members the pact's example names, each with the example's type.
+using var pact = JsonDocument.Parse(File.ReadAllText("Ariva-AMAN.json"));
+foreach (var (description, message) in producedSamples)
+{
+    var example = pact.RootElement.GetProperty("interactions").EnumerateArray()
+        .Single(i => i.GetProperty("description").GetString() == description).GetProperty("contents").GetProperty("content");
+    foreach (var member in JsonSerializer.SerializeToElement(message, amanWireJsonOptions).EnumerateObject())
+    {
+        if (!example.TryGetProperty(member.Name, out var expected))
+            throw new InvalidOperationException($"{description}: {member.Name} is not a member of the contract");
+        if (member.Value.ValueKind != expected.ValueKind)
+            throw new InvalidOperationException($"{description}: {member.Name} is {member.Value.ValueKind}, the contract has {expected.ValueKind}");
+    }
+}
+```
+
+- Run it with `PACT_DO_NOT_TRACK=true` in the process environment: the Pact FFI otherwise reports usage to Pact's analytics (Ariva sets it in `Ariva.UnitTests.runsettings` and `ci.yml`, and its pact tests refuse to run without it).
+- Verify with samples that cover each case: open, paused and closed desks, an e-gate with rejects and one without (an empty map), several lane mixes.
+- Ariva runs this same harness against the simulator's AMAN in every build (`AmanFeedPactTests`), together with broken messages that must fail it (a wrong enum spelling, a time without an offset or with Arabic-Indic digits, a count as text, another interval length, a missing member, an unknown reject category) and messages Pact accepts that the shape check refuses (an added identifier, a code as a number, an id as a boolean); every sample that passes is also read by Ariva's strict reader.
+- A change to a V1 contract changes the pact in the same pull request; AMAN verifies the new pact before either side releases. Until a Pact Broker is agreed with AMAN, the pact travels as the CI artifact or from the repository's build.
+
 ### All Kafka topics (AsyncAPI)
 
 Every topic Ariva produces or consumes, with AMAN's feed, is described in AsyncAPI 3 in [`docs/architecture/asyncapi.yaml`](../docs/architecture/asyncapi.yaml) (ARV-067): channels with their partitions, cleanup policy and retention, each message's JSON Schema, its Kafka key and headers, producers and consumer groups, and the dead-letter topics. It is generated from the code (topic constants, retention catalog and message types) and checked in CI by a unit test and the AsyncAPI CLI validator; browse it with the AsyncAPI extension for VS Code or a local AsyncAPI Studio (it holds no secret, but there is no need to paste it into a third-party site). Reserved topics are declared and provisioned with nothing on them yet. After changing a topic or an event, regenerate both with `ARIVA_UPDATE_ASYNCAPI=1 dotnet test Platform/Backplane/Ariva.UnitTests --filter AsyncApiTests` and check the result with `CI=true npx --yes @asyncapi/cli@6.2.0 validate docs/architecture/asyncapi.yaml --fail-severity warn` (`CI=true` keeps the CLI's usage metrics off; `npm_config_ignore_scripts=true` as in CI skips install scripts). The table below is generated from the same model.

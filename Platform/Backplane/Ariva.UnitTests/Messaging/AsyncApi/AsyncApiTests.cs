@@ -1,6 +1,7 @@
 using System.Text.Json.Nodes;
 using Ariva.Core.Messaging;
 using Ariva.Simulation.Api.Emulators.Aman;
+using Ariva.UnitTests.Contracts;
 using FluentAssertions;
 
 namespace Ariva.UnitTests.Messaging.AsyncApi;
@@ -142,13 +143,6 @@ public sealed class AsyncApiTests
     public void AmanSchemas_Should_CarryAggregatesOnly()
     {
         // ADR-0010: no officer, traveller or document identifier in any AMAN contract (as LayeringTests checks the types).
-        string[] identifiers =
-        [
-            "officer", "badge", "staff", "employee", "user", "person", "traveller", "traveler", "passenger", "passport", "document",
-            "visa", "name", "nationality", "birth", "gender", "sex", "email", "phone", "address", "biometric", "face", "finger", "photo"
-        ];
-        // Counts whose names contain one of those words without being an identifier; a new one is added here on review.
-        string[] aggregates = ["documentsprocessed", "passengersbylane"];
         var schemas = (JsonObject)AsyncApiDocument.Build()["components"]!["schemas"]!;
         foreach (var topic in KafkaTopics.All.Where(t => t.StartsWith("aman.feed.", StringComparison.Ordinal)))
         {
@@ -157,8 +151,8 @@ public sealed class AsyncApiTests
             schema["additionalProperties"]!.GetValue<bool>().Should().BeFalse("Ariva dead-letters an unknown member of {0}", name);
             var properties = PropertyNames(schema).ToList();
             properties.Should().NotBeEmpty();
-            foreach (var property in properties.Where(p => !aggregates.Contains(p)))
-                identifiers.Should().NotContain(i => property.Contains(i, StringComparison.Ordinal), "{0}.{1} is an aggregate field", name, property);
+            foreach (var property in properties)
+                DataBoundary.IdentifierIn(property).Should().BeNull("{0}.{1} is an aggregate field (DataBoundary)", name, property);
         }
     }
 

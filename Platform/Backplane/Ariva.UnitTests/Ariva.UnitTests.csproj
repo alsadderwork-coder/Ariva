@@ -4,6 +4,8 @@
         <OutputType>Exe</OutputType>
         <IsPackable>false</IsPackable>
         <IsTestProject>true</IsTestProject>
+        <!-- PACT_DO_NOT_TRACK for the Pact FFI (ARV-068) -->
+        <RunSettingsFilePath>$(MSBuildProjectDirectory)/Ariva.UnitTests.runsettings</RunSettingsFilePath>
     </PropertyGroup>
 
     <ItemGroup>
@@ -20,6 +22,8 @@
         <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
         <PackageReference Include="Microsoft.NET.Test.Sdk" />
         <PackageReference Include="Moq" />
+        <!-- Message pacts for AMAN's feed and their verification against the simulator's AMAN (ARV-068) -->
+        <PackageReference Include="PactNet" />
         <PackageReference Include="xunit.runner.visualstudio">
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>

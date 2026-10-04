@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Environment of the test host process (native code reads it too, unlike variables set from .NET at run time). -->
+<RunSettings>
+  <RunConfiguration>
+    <EnvironmentVariables>
+      <!-- ARV-068: the Pact FFI behind PactNet reports usage to Pact's analytics unless this is set. -->
+      <PACT_DO_NOT_TRACK>true</PACT_DO_NOT_TRACK>
+    </EnvironmentVariables>
+  </RunConfiguration>
+</RunSettings>
