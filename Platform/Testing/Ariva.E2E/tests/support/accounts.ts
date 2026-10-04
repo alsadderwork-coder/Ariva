@@ -163,6 +163,8 @@ export function accounts() {
 		loadScreen: account('e2e.loadscreen', ['TerminalDutyManager'], false, false, ['*']),
 		// ARV-071: provisions the site of the functional screen-under-load test (apart from loadAdmin: a TOTP code is accepted once).
 		loadWebAdmin: account('e2e.loadwebadmin', ['SystemAdministrator'], false, true, ['*']),
+		// ARV-075: the visual baselines' display player (created through the admin API).
+		visualAdmin: account('e2e.visualadmin', ['SystemAdministrator'], false, true, ['*']),
 		// ARV-051: the web app's sign-in. The shell suites sign in as a duty manager in parallel (password only, so no
 		// replay guard); each TOTP flow has its own account, because a code counts once per account.
 		web: account('e2e.web', ['TerminalDutyManager'], false, false, ['DMO']),

@@ -8,6 +8,8 @@
 //   integration  Ariva.IntegrationTests (needs Docker for Testcontainers)
 //   web          Ariva.Web: npm ci, svelte-check, lint, build
 //   e2e          Platform/Testing/Ariva.E2E: API end-to-end and Playwright functional tests
+//   visual       visual regression baselines (ARV-075) in the pinned Playwright image (Docker); --update regenerates them;
+//                run it before e2e on a fresh database (the demo seed)
 //   security     scanner self-test + full scan + dependency audits
 //   docs         text rules on Markdown (no em dashes, no double hyphens in prose)
 //   backend      build + unit + security
@@ -17,7 +19,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -87,6 +89,19 @@ const steps = {
     if (!fs.existsSync(path.join(WEB, 'node_modules'))) run('web npm ci', 'npm', ['ci'], WEB);
     if (!fs.existsSync(path.join(E2E, 'node_modules'))) run('e2e npm ci', 'npm', ['ci'], E2E);
     run('e2e tests (API and functional)', 'npx', ['playwright', 'test'], E2E);
+  },
+  // ARV-075: renders only in the Playwright image pinned in scripts/visual-browser.mjs (needs Docker), never a local browser.
+  visual: () => {
+    if (!fs.existsSync(path.join(WEB, 'node_modules'))) run('web npm ci', 'npm', ['ci'], WEB);
+    if (!fs.existsSync(path.join(E2E, 'node_modules'))) run('e2e npm ci', 'npm', ['ci'], E2E);
+    const endpoint = execFileSync('node', ['scripts/visual-browser.mjs', 'start'], { cwd: E2E, encoding: 'utf8' }).trim();
+    process.env.ARIVA_E2E_VISUAL_WS = endpoint;
+    try {
+      run('visual regression (pinned image)', 'npx', ['playwright', 'test', '--project=visual', '--output=test-results-visual', ...(args.includes('--update') ? ['--update-snapshots'] : [])], E2E);
+    } finally {
+      execFileSync('node', ['scripts/visual-browser.mjs', 'stop'], { cwd: E2E });
+      delete process.env.ARIVA_E2E_VISUAL_WS;
+    }
   },
   security: () => {
     run('security scanner self-test', 'node', ['scripts/security/scan.mjs', '--self-test']);

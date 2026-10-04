@@ -1658,8 +1658,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 78,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Baselines in Ariva.E2E/tests/visual; pinned image in scripts/visual-browser.mjs; see progress 2026-10-05.",
       "dependsOn": [
         "ARV-055",
         "ARV-057",

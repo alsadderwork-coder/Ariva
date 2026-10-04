@@ -196,7 +196,7 @@ test('a handler station manager has no immigration screen and the server refuses
 		await other.getByTestId('app-sidebar').getByRole('link', { name: 'Immigration' }).click();
 		await other.getByTestId('language-toggle').click();
 		await expect(other.locator('html')).toHaveAttribute('dir', 'rtl');
-		await expect(other.getByRole('heading', { level: 1 })).toHaveText('الهجرة');
+		await expect(other.getByRole('heading', { level: 1 })).toHaveText('الجوازات');
 		await expect(other.getByTestId('hall-Immigration')).toHaveText('القدوم');
 		allowStatuses(otherGuards, 404);
 		await otherGuards.expectClean();

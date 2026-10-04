@@ -9,6 +9,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      update-visual-baselines:
+        description: Regenerate the visual regression baselines (ARV-075); they are uploaded as the visual-baselines artifact to review and commit
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -311,7 +316,35 @@ jobs:
       # connection made while the hosts start can take one of them and fail the run (address already in use). Reserve them.
       - name: Reserve the hosts' ports from the ephemeral range
         run: sudo sysctl -w net.ipv4.ip_local_reserved_ports=51000-51100,25251,5081
+      # ARV-075: the visual baselines, first and on their own, on the fresh demo seed, rendered by the Playwright image
+      # pinned in scripts/visual-browser.mjs. A changed screen fails the job but does not stop the suite below.
+      - name: Visual regression (pinned Playwright image)
+        id: visual
+        env:
+          UPDATE_BASELINES: ${{ inputs.update-visual-baselines && '--update-snapshots' || '' }}
+        run: |
+          ARIVA_E2E_VISUAL_WS="$(node scripts/visual-browser.mjs start)"
+          export ARIVA_E2E_VISUAL_WS
+          npx playwright test --project=visual --output=test-results-visual $UPDATE_BASELINES 2>&1 | tee visual.log
+      - name: Stop the visual browser
+        if: always()
+        run: node scripts/visual-browser.mjs stop
+      - name: Visual differences (expected, actual and diff images)
+        if: always() && steps.visual.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: visual-diffs
+          path: Platform/Testing/Ariva.E2E/test-results-visual
+          retention-days: 14
+      - name: Regenerated visual baselines (review, then commit to tests/visual/__screenshots__)
+        if: inputs.update-visual-baselines && steps.visual.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: visual-baselines
+          path: Platform/Testing/Ariva.E2E/tests/visual/__screenshots__
+          retention-days: 14
       - name: Run the suite (Playwright starts the hosts and the web preview)
+        if: ${{ !cancelled() && (steps.visual.outcome == 'success' || steps.visual.outcome == 'failure') }}
         run: npx playwright test 2>&1 | tee e2e.log
       - name: Report failures on the pull request
         if: failure() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository

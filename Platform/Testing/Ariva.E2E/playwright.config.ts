@@ -28,6 +28,12 @@ const logDirectory = process.env.ARIVA_E2E_LOG_DIR;
 // CI installs the Chromium build that matches this Playwright version (npx playwright install chromium).
 // Elsewhere an already installed Chromium can be used instead: ARIVA_E2E_CHROMIUM=/path/to/chrome.
 const chromiumExecutable = process.env.ARIVA_E2E_CHROMIUM || undefined;
+// ARV-075: the visual regression project renders only in the pinned Playwright image (scripts/visual-browser.mjs), so
+// it exists only when that browser is up. Run it on its own and first (`--project=visual`, on the fresh demo seed),
+// then the rest without ARIVA_E2E_VISUAL_WS: no other suite's alerts, snapshots or records are then on screen, and a
+// changed screenshot never stops the other suites (a project dependency would skip them).
+const visualEndpoint = process.env.ARIVA_E2E_VISUAL_WS || '';
+const visual = visualEndpoint.length > 0;
 
 const project = (relative: string) => path.join(repositoryRoot, 'Platform', relative);
 
@@ -244,12 +250,37 @@ export default defineConfig({
 	retries: isCi ? 1 : 0,
 	workers: isCi ? 2 : undefined,
 	timeout: 30_000,
-	expect: { timeout: 5_000 },
 	reporter: [['list'], ['html', { outputFolder: 'playwright-report', open: 'never' }]],
 	use: {
 		trace: 'retain-on-failure'
 	},
+	// Visual baselines (ARV-075): one PNG per screen and variant, no platform suffix, since only the pinned image renders them.
+	snapshotPathTemplate: '{testDir}/__screenshots__/{testFilePath}/{arg}{ext}',
+	expect: {
+		timeout: 5_000,
+		toHaveScreenshot: { animations: 'disabled', caret: 'hide', scale: 'css', threshold: 0.01, maxDiffPixelRatio: 0.0005 }
+	},
 	projects: [
+		...(visual
+			? [
+					{
+						name: 'visual',
+						testDir: './tests/visual',
+						fullyParallel: false,
+						use: {
+							...devices['Desktop Chrome'],
+							viewport: { width: 1440, height: 900 },
+							deviceScaleFactor: 1,
+							baseURL: webUrl,
+							locale: 'en-US',
+							timezoneId: 'Asia/Dubai',
+							connectOptions: { wsEndpoint: visualEndpoint },
+							// The PNGs (expected, actual, diff) are the evidence; a trace would carry the sign-in and the player's credential.
+							trace: 'off' as const
+						}
+					}
+				]
+			: []),
 		{
 			name: 'api',
 			testDir: './tests/api'

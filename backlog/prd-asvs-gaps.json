@@ -352,6 +352,7 @@
       "description": "No NuGet package source mapping or lock files, no SBOM per release, remediation time frames not enforced, and report endpoints have no request timeout or concurrency policy. ASVS 5.0: V15.1.2, V15.2.1, V15.2.2. Effort M.",
       "acceptanceCriteria": [
         "nuget.config with package source mapping, NuGet lock files, and an SBOM attached to each release",
+        "Third-party images run outside the chart (the Playwright image pinned in Platform/Testing/Ariva.E2E/scripts/visual-browser.mjs) are resolved and checked like the base images (scripts/base-images.mjs)",
         "CI fails when an open Dependabot or audit finding is older than its severity's time frame; web dev dependencies audited",
         "AddRequestTimeouts defaults and a concurrency policy on on-demand report and CSV endpoints, with tests",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",

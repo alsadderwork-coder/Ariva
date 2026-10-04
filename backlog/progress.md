@@ -537,3 +537,30 @@ One entry per story, newest last. Format:
   - First pass FAIL: the ARV-081 wiring was untested; the CWE-89 citation was wrong; the simulator handler was misnamed; fsGroup was missing. All fixed.
   - Second pass PASS.
   - Non-blocking, recorded: the chart rules match secret names by text, so a renamed secret would pass them; `HubSessionSweeper` ends a pass at the first outage exception instead of going on with the other sessions.
+
+## 2026-10-05 ARV-075 Visual regression baselines for the key screens
+- Summary: `Ariva.E2E/tests/visual/screens.spec.ts` compares 14 screenshots with baselines committed in `tests/visual/__screenshots__`:
+  - sign-in, live operations and immigration, in English and Arabic, light and dark;
+  - the bilingual passenger display, light and dark.
+- How the pixels are made comparable:
+  - Rendering happens only in the official Playwright image pinned by digest (`scripts/visual-browser.mjs`). It runs as a Playwright server on 127.0.0.1 with a random path, no capabilities and no new privileges, and serves this checkout's own playwright-core. Tests and hosts run as usual, so CI and a developer machine get the same pixels.
+  - Ariva.Web bundles its fonts.
+  - Live values are planted: fixed snapshots for every DMO queue zone, and one fixed text in place of the publication times, whose digits move the column widths.
+  - Anything that follows the clock or AMAN's feed is masked.
+- Thresholds: colour distance 0.01 per pixel, 0.05 percent of pixels per screen.
+  - Two consecutive clean runs passed, and so did a third after the machine restarted.
+  - Changing the light-mode primary colour by five units failed both light immigration screens and nothing else (red check).
+- Runs:
+  - In CI the visual step runs first in the E2E job, on the fresh demo seed, and the suite still runs after a visual failure. A failure uploads `visual-diffs` (expected, actual, diff).
+  - `workflow_dispatch` on `ci` with `update-visual-baselines` regenerates the baselines and uploads them as `visual-baselines`, for review and commit. The bot does not commit.
+  - Locally: `node scripts/verify.mjs visual [--update]`. The run removes the display and snapshots it planted.
+- Found on the way: the Arabic immigration screen was titled "الهجرة" while the navigation says "الجوازات". It is now "الجوازات" throughout.
+- Gates:
+  - web PASS; docs PASS; security scan 0 errors;
+  - e2e 491 passed, 1 skipped; visual 14 passed.
+- Security review (CWE-79 and the matrix): PASS with no required fixes. Notes acted on:
+  - traces are off for the visual project (no credential in uploaded artifacts);
+  - the Playwright server listens on a random path and runs with all capabilities dropped and no new privileges.
+- Recorded:
+  - the image digest is not covered by the base-image check (added to ARV-096);
+  - the container name is fixed, so two checkouts on one machine share it.
