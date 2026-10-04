@@ -124,26 +124,26 @@ Site totals (D5): 100 sensors at 30 people and 5 Hz are about 15,000 messages an
 
 Lab measurements from the load harness (`Platform/Testing/Ariva.LoadTests`, driven by `tests/api/load.spec.ts`), not site figures. The run was on one 2-core, 8 GB development VM that also ran PostgreSQL with TimescaleDB, Kafka, Redis, the harness and every host, so the numbers are a floor for one pod of each host rather than a capacity limit. Ariva.Api.Stream is not in the run: the harness stands in for it and announces the zone's snapshot through Redis once a second (Stream announces once a minute), so the fan-out is about 60 times production's rate per zone. Repeat the full run on the site's hardware before sizing a BOQ on it: `ARIVA_LOAD_MODE=full`, the E2E prerequisites, then `npx playwright test tests/api/load.spec.ts`; the report is `.verify/load/full/load-report.md` and `.json`.
 
-Shape (full run, 2026-10-04): 40 canonical T3 sensors, each pushing 30 tracks of 5 samples (150 positions, about 14.5 KB) once a second for 120 seconds, then three times that for 30 seconds; 150 dashboards on the live hub joined to the zone, 50 passenger displays polling their board every 10 seconds (200 connections in all); one device sending 150 pushes a second for 6 seconds during the burst; then 20 bodies over 256 KB.
+Shape (full run, 2026-10-04, the harness's HTTP through Apizr): 40 canonical T3 sensors, each pushing 30 tracks of 5 samples (150 positions, about 14.5 KB) once a second for 120 seconds, then three times that for 30 seconds; 150 dashboards on the live hub joined to the zone, 50 passenger displays polling their board every 10 seconds (200 connections in all); one device sending 150 pushes a second for 6 seconds during the burst; then 20 bodies over 256 KB.
 
 | Scenario | Requests | Per second | p50 ms | p95 ms | p99 ms | Outcome |
 |---|---|---|---|---|---|---|
-| Sensor pushes, steady (6,000 positions/s, 0.58 MB/s) | 4,800 | 40 | 7.5 | 33.3 | 3,045 | All 202 |
-| Sensor pushes, 3x burst (18,000 positions/s, 1.73 MB/s), with the flood below at the same time | 3,588 | 119 | 15.6 | 41.0 | 119.3 | All 202 |
-| Bodies over 256 KB | 20 | 5 | 2.6 | 5.6 | 15.2 | All 413 |
-| One device past its limit (600 a minute), during the burst | 900 | 140 | 29.9 | 71.8 | 452.2 | 600 accepted, 300 answered 429 with Retry-After; no measured device got a 429 |
-| Dashboards connect and join the zone | 150 | 73 | 29.2 | 731.6 | 823.2 | All joined |
-| Snapshot delivery, publication to each dashboard | 22,500 | 147 | 5.9 | 19.5 | 81.3 | All delivered, none dropped |
-| Display board polls | 767 | 5 | 8.6 | 18.7 | 36.9 | All 200 |
+| Sensor pushes, steady (6,000 positions/s, 0.58 MB/s) | 4,800 | 40 | 8.6 | 24.7 | 1,129.7 | All 202 |
+| Sensor pushes, 3x burst (18,000 positions/s, 1.74 MB/s), with the flood below at the same time | 3,600 | 120 | 16.2 | 33.2 | 45.0 | All 202 |
+| Bodies over 256 KB | 20 | 5 | 2.7 | 3.7 | 18.7 | All 413 |
+| One device past its limit (600 a minute), during the burst | 915 | 150 | 24.1 | 41.0 | 52.4 | 600 accepted, 315 answered 429 with Retry-After; no measured device got a 429 |
+| Dashboards connect and join the zone | 150 | 74 | 8.8 | 357.9 | 436.1 | All joined |
+| Snapshot delivery, publication to each dashboard | 22,500 | 147 | 6.1 | 17.2 | 27.2 | All delivered, none dropped |
+| Display board polls | 767 | 5 | 10.4 | 19.6 | 31.9 | All 200 |
 
-No request failed (no 5xx, no transport error). The steady p99 is the first second: each sensor's first push looks its credential up in the database and the hosts compile their paths; after it, pushes stay under 45 ms at p95 at three times the rate with a device flooding beside them. A previous full run the same day, with the flood after the burst, gave the same picture (burst p99 32 ms, steady p99 2.1 s).
+No request failed (no 5xx, no transport error). The steady p99 is the first second: each sensor's first push looks its credential up in the database and the hosts compile their paths; after it, pushes stay under 35 ms at p95 at three times the rate with a device flooding beside them. Earlier full runs the same day (the flood after the burst, then during it, and a hand-built HTTP client before the harness moved to Apizr) gave the same picture: burst p95 22 to 41 ms, steady p99 1.1 to 3.0 s from the first second.
 
 | Host process (one each) | CPU average, percent of one core | CPU peak | Memory peak |
 |---|---|---|---|
-| Ariva.Api.Ingest | 21 | 92 | 284 MB |
-| Ariva.Api.Main (hub and display boards) | 9 | 85 | 294 MB |
-| Ariva.Api.Integration | 2 | 5 | 226 MB |
-| Ariva.Api.Cronz | 2 | 28 | 177 MB |
+| Ariva.Api.Ingest | 20 | 96 | 283 MB |
+| Ariva.Api.Main (hub and display boards) | 9 | 90 | 300 MB |
+| Ariva.Api.Integration | 3 | 5 | 227 MB |
+| Ariva.Api.Cronz | 1 | 3 | 178 MB |
 
 What this means for sizing (Estimate, to confirm on site hardware):
 

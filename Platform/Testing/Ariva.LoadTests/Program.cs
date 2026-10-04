@@ -12,15 +12,8 @@ using Ariva.LoadTests;
 
 var settings = LoadSettings.FromEnvironment();
 using var cancel = new CancellationTokenSource(TimeSpan.FromMinutes(settings.Full ? 15 : 5));
-using var handler = new SocketsHttpHandler
-{
-    MaxConnectionsPerServer = 512,
-    PooledConnectionLifetime = TimeSpan.FromMinutes(5),
-    ConnectTimeout = TimeSpan.FromSeconds(10)
-};
-using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(30) };
-var ingest = new IngestScenarios(settings, http);
-var fanout = new LiveFanout(settings, http);
+var ingest = new IngestScenarios(settings, ArivaApis.Ingest(settings.Ingest));
+var fanout = new LiveFanout(settings, ArivaApis.Display(settings.Main));
 var started = DateTime.UtcNow;
 
 Console.WriteLine(LoadSettings.Invariant($"ARV-071 load run ({(settings.Full ? "full" : "smoke")}): {settings.DeviceKeys.Count} devices, {settings.Screens} screens, {settings.DisplayKeys.Count} displays."));

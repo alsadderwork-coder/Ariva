@@ -16,7 +16,7 @@ namespace Ariva.LoadTests;
 /// publication to each screen, delivered share, and the boards' answers. The hub is spoken in SignalR's JSON protocol
 /// over a plain WebSocket (no client package), as the web app connects: WebSockets only, the token as access_token.
 /// </summary>
-public sealed class LiveFanout(LoadSettings settings, HttpClient http)
+public sealed class LiveFanout(LoadSettings settings, IDisplayApi displays)
 {
     private const char Separator = '\u001e';
 
@@ -175,12 +175,10 @@ public sealed class LiveFanout(LoadSettings settings, HttpClient http)
         {
             if (ct.IsCancellationRequested)
                 return;
-            using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(settings.Main, "api/v1/display/board?code=" + Uri.EscapeDataString(code)));
-            request.Headers.Add("X-Ariva-Display-Key", key);
             var clock = Stopwatch.StartNew();
             try
             {
-                using var response = await http.SendAsync(request, ct);
+                using var response = await displays.BoardAsync(code, key, ct);
                 var bytes = (await response.Content.ReadAsByteArrayAsync(ct)).LongLength;
                 measure.Record(clock.Elapsed.TotalMilliseconds, response.StatusCode, bytes);
             }
@@ -188,7 +186,7 @@ public sealed class LiveFanout(LoadSettings settings, HttpClient http)
             {
                 return;
             }
-            catch (HttpRequestException e)
+            catch (Exception e) when (e is HttpRequestException or Refit.ApiException)
             {
                 measure.Record(clock.Elapsed.TotalMilliseconds, "error " + e.GetType().Name);
             }

@@ -2,8 +2,8 @@
 
     <!--
       Load tests (ARV-071): sensor pushes through Ariva.Api.Ingest and live fan-out from Ariva.Api.Main, run against hosts
-      that are already up (the E2E run or a lab install). The base class library only, plus StackExchange.Redis (already
-      used by Ariva.Infra) to publish live snapshots as Ariva.Api.Stream does. Not deployed: no image, no chart.
+      that are already up (the E2E run or a lab install). HTTP through Apizr (typed Refit interfaces), StackExchange.Redis
+      (already used by Ariva.Infra) to publish live snapshots as Ariva.Api.Stream does. Not deployed: no image, no chart.
     -->
     <PropertyGroup>
         <OutputType>Exe</OutputType>
@@ -11,6 +11,7 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <PackageReference Include="Apizr" />
         <PackageReference Include="StackExchange.Redis" />
     </ItemGroup>
 

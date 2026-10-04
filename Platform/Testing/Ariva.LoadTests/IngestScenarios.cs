@@ -11,10 +11,8 @@ namespace Ariva.LoadTests;
 /// sends its tracks about once a second: 30 people at 5 Hz is 150 positions a push), then three times that rate as a
 /// burst, with a device far past its rate during the burst; then bodies over the limit: bodies over 256 KB must get 413 and a device past its rate 429 with Retry-After, never a 5xx.
 /// </summary>
-public sealed class IngestScenarios(LoadSettings settings, HttpClient http)
+public sealed class IngestScenarios(LoadSettings settings, IIngestApi ingest)
 {
-    private Uri Events => new(settings.Ingest, $"api/v1/ingest/zones/{Uri.EscapeDataString(settings.ZoneName)}/events");
-
     /// <summary>One push: <c>people</c> tracks walking through the zone (10 to 34 x 10 to 22 m), <c>samples</c> positions each.</summary>
     public byte[] Body(long packageId, int people, int samples, int padding = 0)
     {
@@ -48,18 +46,15 @@ public sealed class IngestScenarios(LoadSettings settings, HttpClient http)
 
     private async Task PushAsync(Measure measure, string key, byte[] body, CancellationToken ct)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Post, Events) { Content = new ByteArrayContent(body) };
-        request.Content.Headers.ContentType = new("application/json");
-        request.Headers.Add("X-Ariva-Device-Key", key);
         var clock = Stopwatch.StartNew();
         try
         {
-            using var response = await http.SendAsync(request, ct);
+            using var response = await ingest.PushAsync(settings.ZoneName, new MemoryStream(body, writable: false), key, ct);
             measure.Record(clock.Elapsed.TotalMilliseconds, response.StatusCode, body.Length);
             if (response.StatusCode == HttpStatusCode.TooManyRequests && response.Headers.RetryAfter is null)
                 measure.Record(0, "429 without Retry-After");
         }
-        catch (Exception e) when (e is HttpRequestException or TaskCanceledException)
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException or Refit.ApiException)
         {
             measure.Record(clock.Elapsed.TotalMilliseconds, "error " + e.GetType().Name);
         }
