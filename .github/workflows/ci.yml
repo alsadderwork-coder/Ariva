@@ -64,6 +64,29 @@ jobs:
           path: .verify/security-report.md
           if-no-files-found: ignore
 
+  # ARV-067: the generated event catalogue is valid AsyncAPI 3 (AsyncApiTests in the backend job keeps it equal to the code).
+  # A job of its own: the CLI's package tree is not pinned by a lockfile (it carries advisories the Trivy gate would fail
+  # on; open decision "AsyncAPI validator" in decisions.md), so it runs where it can change no other gate's files. CI=true
+  # keeps the CLI's usage metrics off; no install scripts run; the token reads only.
+  asyncapi:
+    name: AsyncAPI document valid
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Validate docs/architecture/asyncapi.yaml
+        env:
+          CI: 'true'
+          npm_config_ignore_scripts: 'true'
+        run: npx --yes @asyncapi/cli@6.2.0 validate docs/architecture/asyncapi.yaml --fail-severity warn
+
   backend:
     name: Backend build and unit tests
     runs-on: ubuntu-24.04

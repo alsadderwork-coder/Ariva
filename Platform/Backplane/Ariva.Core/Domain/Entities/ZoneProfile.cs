@@ -310,7 +310,7 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
         {
             ProfileId = Id.GetValueOrDefault(),
             SiteCode = SiteCode,
-            Version = version,
+            ProfileVersion = version,
             ReplacesVersion = replacesVersion,
             GeometryHash = GeometryHash,
             PublishedBy = publishedBy,

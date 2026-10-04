@@ -273,7 +273,8 @@ public sealed class ZoneProfileTests
         published.ProfileId.Should().Be(profile.Id.Value);
         published.SiteCode.Should().Be("DMO-T1");
         published.GetPartitionKey().Should().Be("DMO-T1", "the activated-profile topic is compacted per site");
-        published.Version.Should().Be(3);
+        published.ProfileVersion.Should().Be(3);
+        published.Version.Should().Be(1, "the event's schema version, as on every event");
         published.ReplacesVersion.Should().Be(2);
         published.GeometryHash.Should().Be(profile.GeometryHash);
         published.PublishedBy.Should().Be("e2e.zonemanager");

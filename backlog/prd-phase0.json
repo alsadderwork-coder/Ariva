@@ -1496,8 +1496,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 70,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Done 2026-10-04: docs/architecture/asyncapi.yaml (AsyncAPI 3.0) generated from KafkaTopics, TopicCatalog and the message types, with the AMAN V1 contracts (aggregate only, small-cell suppression, strict reading); unit tests keep it and the wiki 08 topic table equal to the code; the AsyncAPI CLI validates it in its own CI job. Drift fixed: ZoneProfilePublished.ProfileVersion, unused GroupId settings, the health topic key. Security review PASS (backlog/progress.md).",
       "dependsOn": [
         "ARV-020"
       ]

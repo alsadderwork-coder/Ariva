@@ -141,7 +141,7 @@ Key for zone-keyed topics: the queue zone that owns the process, written `<site>
 | `ariva.device.vendor-line-crossing.v1` | (VendorLineCrossing event) | Zone id | Ingest | Stream (cross-check, fallback) | Short | 3 days |
 | `ariva.device.zone-occupancy.v1` | (none; ARV-023, T2 devices) | Zone id | Ingest | Stream | Short | 3 days |
 | `ariva.device.interval-count.v1` | (none; ARV-023, T1 devices) | Zone id | Ingest | Stream | Short | 3 days |
-| `ariva.device.health.v1` | device.health.v1 | Device id | Ingest | Stream, Main | Short | 3 days |
+| `ariva.device.health.v1` | device.health.v1 | Zone key (`<site>/<queue zone name>`, so a zone's devices stay in order with its samples) | Ingest | Stream, Main | Short | 3 days |
 | `ariva.device.registry-changed.v1` | | Device id | Main | Ingest, Stream | Compacted | compacted |
 | `ariva.device.zone-health.v1` | (none; ARV-025) | Zone key (`<site>/<queue zone name>`) | Main | Stream | Compacted | compacted |
 | `ariva.topology.zone-profile-activated.v1` | | Site id | Main | Stream, Cronz | Compacted | compacted |

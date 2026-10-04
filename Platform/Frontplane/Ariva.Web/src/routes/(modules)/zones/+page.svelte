@@ -89,7 +89,10 @@
 	}
 
 	async function loadHistory(prefer?: string): Promise<void> {
-		const result = await zones.history(siteCode);
+		const site = siteCode;
+		const result = await zones.history(site);
+		// Another site was picked while this one loaded: its own load fills the screen.
+		if (site !== siteCode) return;
 		history = result.data ?? [];
 		const pick =
 			prefer ??
@@ -110,7 +113,10 @@
 			profile = null;
 			return;
 		}
+		const site = siteCode;
 		const result = await zones.get(id);
+		// Another version or site was picked while this one loaded.
+		if (id !== profileId || site !== siteCode) return;
 		if (result.hasErrors || !result.data) {
 			profile = null;
 			return failed(result.errorMessages[0] ?? '');
@@ -122,11 +128,16 @@
 	}
 
 	async function loadSite(): Promise<void> {
-		plans = await zones.floorPlans(siteCode);
-		const [levelResult, deskResult] = await Promise.all([
-			topology.search<Level>('level', { siteCode }),
-			topology.search<Desk>('desk', { siteCode })
+		// The default site's load can still be running when another site is picked: a load whose site is no longer the
+		// selected one drops its results, so the last pick always wins whatever order the answers come back in.
+		const site = siteCode;
+		const [planResult, levelResult, deskResult] = await Promise.all([
+			zones.floorPlans(site),
+			topology.search<Level>('level', { siteCode: site }),
+			topology.search<Desk>('desk', { siteCode: site })
 		]);
+		if (site !== siteCode) return;
+		plans = planResult;
 		levels = levelResult.data?.data ?? [];
 		desks = deskResult.data?.data ?? [];
 		levelId = '';

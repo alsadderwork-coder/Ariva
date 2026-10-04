@@ -116,7 +116,7 @@ public sealed class ZoneProfileWorkflowTests(PostgresFixture fixture) : IAsyncDi
         history.Data.Select(h => (h.Version, h.Status)).Should().Equal((2, "Published"), (1, "Retired"));
         history.Data.Should().OnlyContain(h => h.PublishedBy == "it-admin" && h.PublishedOn != null && h.CreatedOn != null);
         (await _host.ReadAsync<long>("SELECT count(*) FROM outbox_message WHERE message_key = 'ZPA'")).Should().Be(2);
-        (await _host.ReadAsync<string>("SELECT payload->>'replacesVersion' FROM outbox_message WHERE payload->>'version' = '2' AND message_key = 'ZPA'")).Should().Be("1");
+        (await _host.ReadAsync<string>("SELECT payload->>'replacesVersion' FROM outbox_message WHERE payload->>'profileVersion' = '2' AND message_key = 'ZPA'")).Should().Be("1");
         (await _host.ReadAsync<long>("SELECT count(*) FROM audit_entry WHERE action = 'ZoneProfile.Published' AND target_name = 'ZPA'")).Should().Be(2);
     }
 

@@ -12,7 +12,11 @@ public sealed class ZoneProfilePublished : EventBase
 {
     public Guid ProfileId { get; set; }
     public string SiteCode { get; set; }
-    public int Version { get; set; }
+    /// <summary>
+    /// The published profile version. Not <c>Version</c>: that is the event's schema version (EventBase, the
+    /// ariva-event-version header), which this property used to hide (ARV-067).
+    /// </summary>
+    public int ProfileVersion { get; set; }
 
     /// <summary>The version this one replaced, null for the site's first.</summary>
     public int? ReplacesVersion { get; set; }
