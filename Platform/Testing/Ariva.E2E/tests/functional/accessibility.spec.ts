@@ -17,6 +17,7 @@ const screens = [
 	{ name: 'alert rules', path: '/alert-rules', signedIn: true },
 	{ name: 'immigration', path: '/immigration', signedIn: true },
 	{ name: 'passenger displays', path: '/displays', signedIn: true },
+	{ name: 'reports', path: '/reports', signedIn: true },
 	// An administrator's screen: the duty manager would see the no-access message.
 	{ name: 'users and access', path: '/users', signedIn: true, account: () => accounts().webAdmin }
 ];

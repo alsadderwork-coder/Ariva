@@ -28,10 +28,19 @@
 	let allSites = $state(false);
 	/** A caller with one site gives that one by default. */
 	let siteCodes = $state<string[]>(untrack(() => (sites.length === 1 ? [sites[0].code] : [])));
+	/** True once the user has changed the sites; until then a site list that arrives late still gets the default. */
+	let sitesTouched = false;
 	let problems = $state<string[]>([]);
 	let busy = $state(false);
 
+	$effect(() => {
+		// The form can open before the caller's sites have loaded: give the one site when it arrives.
+		if (!sitesTouched && sites.length === 1 && untrack(() => siteCodes.length === 0))
+			siteCodes = [sites[0].code];
+	});
+
 	function toggleSite(code: string, on: boolean): void {
+		sitesTouched = true;
 		siteCodes = on ? [...siteCodes, code] : siteCodes.filter((c) => c !== code);
 	}
 

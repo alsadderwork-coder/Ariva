@@ -267,6 +267,18 @@ test('a site administrator sees and grants only its own site; the API refuses wi
 
 	const guards = await guardPage(page);
 	await signInThroughUi(page, account);
+	// The site list arrives after the form opens (a slow network): its one site is still given by default.
+	let held = false;
+	await page.route(
+		(url) => url.pathname === '/api/v1/sites',
+		async (route) => {
+			if (!held) {
+				held = true;
+				await new Promise((resolve) => setTimeout(resolve, 1_500));
+			}
+			await route.continue();
+		}
+	);
 	await page.goto('/users');
 	await page.getByTestId('add-user').click();
 	const sites = page.getByTestId('new-user-sites');

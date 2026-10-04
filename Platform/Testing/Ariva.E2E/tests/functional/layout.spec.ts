@@ -30,15 +30,15 @@ test.describe('application shell', () => {
 		await guards.expectClean();
 	});
 
-	test('screens that are not built yet are shown as planned, not as links', async ({ page }) => {
+	test('every screen of the role is a link; none is left as planned', async ({ page }) => {
 		await page.goto('/');
 		await expect(page.getByRole('heading', { level: 1 })).toHaveText(homeHeading.en);
 		const sidebar = page.getByTestId('app-sidebar');
 
-		await expect(sidebar.getByRole('navigation').getByRole('link')).toHaveCount(7);
-		const planned = sidebar.locator('[aria-disabled="true"]');
-		await expect(planned.first()).toHaveAttribute('title', /Planned in ARV-\d{3}/);
-		expect(await planned.count()).toBeGreaterThan(0);
+		// The duty manager's eight screens (users and access is an administrator's). Since ARV-061 every item of the
+		// navigation is built; an item added before its screen would show as planned again, with its story in the title.
+		await expect(sidebar.getByRole('navigation').getByRole('link')).toHaveCount(8);
+		await expect(sidebar.locator('[aria-disabled="true"]')).toHaveCount(0);
 	});
 
 	test('collapsing the sidebar to the icon rail survives a reload', async ({ page }) => {

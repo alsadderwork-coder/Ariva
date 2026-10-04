@@ -1370,8 +1370,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 64,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Done 2026-10-04: /reports for Report.View: the site's local day with headline, lanes, hour strips, hours, alerts by role and device uptime, server CSV files saved as they are, and a Schedules tab by permission. Security review PASS (backlog/progress.md).",
       "dependsOn": [
         "ARV-060",
         "ARV-051"

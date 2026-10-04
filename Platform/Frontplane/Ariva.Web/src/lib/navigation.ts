@@ -74,9 +74,9 @@ export const navItems: readonly NavItem[] = [
 		href: '/reports',
 		icon: FileChartColumn,
 		group: 'oversight',
-		ready: false,
+		ready: true,
 		story: 'ARV-061',
-		permission: 'LiveQueue.View'
+		permission: 'Report.View'
 	},
 	{
 		id: 'topology',
