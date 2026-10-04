@@ -34,7 +34,10 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: '10.0.x'
-      - name: Restore the pinned tools (dotnet-stryker)
+      # The tool has its own manifest beside stryker-config.json: with SDK 10.0.4xx, restoring it from the same manifest
+      # as aspire.cli fails ("not contained in the package"), which broke every job that restores the root tools.
+      - name: Restore the pinned tool (dotnet-stryker)
+        working-directory: Platform/Backplane/Ariva.UnitTests
         run: dotnet tool restore
       - name: Mutation run (fails below the break threshold)
         working-directory: Platform/Backplane/Ariva.UnitTests

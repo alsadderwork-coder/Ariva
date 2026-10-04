@@ -104,7 +104,8 @@ const steps = {
   // Stryker replaces Ariva.Core.dll in the unit tests' output while it runs: do not build or test in this checkout meanwhile.
   mutation: () => {
     process.env.PACT_DO_NOT_TRACK = 'true'; // the Pact FFI's usage reporting stays off (the pacts skip under Stryker anyway)
-    run('dotnet tool restore', 'dotnet', ['tool', 'restore']);
+    // dotnet-stryker has its own manifest in Ariva.UnitTests/.config (kept apart from aspire.cli for SDK 10.0.4xx).
+    run('dotnet tool restore (dotnet-stryker)', 'dotnet', ['tool', 'restore'], path.join(ROOT, 'Platform', 'Backplane', 'Ariva.UnitTests'));
     run('mutation tests (Stryker.NET)', 'dotnet', ['dotnet-stryker', '--output', path.join(ROOT, '.verify', 'stryker')],
       path.join(ROOT, 'Platform', 'Backplane', 'Ariva.UnitTests'));
   },
