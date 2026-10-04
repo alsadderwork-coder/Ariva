@@ -143,7 +143,7 @@ public sealed class PasswordTests
     [InlineData("ab")]
     [InlineData("officer one")]
     [InlineData("officer;drop")]
-    [InlineData("off​icer")] // zero width space
+    [InlineData("off\u200Bicer")] // zero width space
     [InlineData(null)]
     public void IsValid_Should_BeFalse_When_UserNameIsTooShortOrHasOtherCharacters(string input)
     {

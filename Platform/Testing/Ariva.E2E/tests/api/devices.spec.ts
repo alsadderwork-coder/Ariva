@@ -87,7 +87,7 @@ test('registering needs a recent second factor and returns the credential once',
 test('registration refuses duplicates, numbers for kinds, hidden characters and footprints that miss the zone', async () => {
 	expect((await call('POST', api, { token: withSecondFactor, data: body('S-1') })).status(), 'same code').toBe(409);
 	expect((await call('POST', api, { token: withSecondFactor, data: body('S-2', { family: '1' }) })).status(), 'family as a number').toBe(400);
-	expect((await call('POST', api, { token: withSecondFactor, data: body('S-2', { model: 'PC2SE‮gpj.exe' }) })).status(), 'right-to-left override').toBe(400);
+	expect((await call('POST', api, { token: withSecondFactor, data: body('S-2', { model: 'PC2SE\u202Egpj.exe' }) })).status(), 'right-to-left override').toBe(400);
 	const far = await call('POST', api, { token: withSecondFactor, data: body('S-2', {}, { x: 90 }) });
 	expect(far.status()).toBe(400);
 	expect(await far.text()).toContain('does not reach');

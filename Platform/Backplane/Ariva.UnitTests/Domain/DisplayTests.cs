@@ -51,7 +51,7 @@ public sealed class DisplayTests
         { "13 entries", Values(entries: [.. Enumerable.Range(1, 13).Select(i => new DisplayEntry($"Z{i}", Text(("ar", "س"), ("en", "x"))))]) },
         { "a zone twice", Values(entries: [new DisplayEntry("A-CIT", Text(("ar", "س"), ("en", "x"))), new DisplayEntry("A-CIT", Text(("ar", "س"), ("en", "y")))]) },
         { "a label in a language the display does not show", Values(entries: [new DisplayEntry("A-CIT", Text(("ar", "س"), ("en", "x"), ("pt", "y")))]) },
-        { "an invisible character", Values(entries: [new DisplayEntry("A-CIT", Text(("ar", "س‏"), ("en", "x")))]) },
+        { "an invisible character", Values(entries: [new DisplayEntry("A-CIT", Text(("ar", "س\u200F"), ("en", "x")))]) },
         { "a label too long", Values(entries: [new DisplayEntry("A-CIT", Text(("ar", "س"), ("en", new string('x', 81))))]) },
         { "a missing message", Values(fallback: Text(("en", "Please follow the signs"))) },
         { "labels in emoji past the stored room", Values(languages: Four, entries: [.. Enumerable.Range(1, 12).Select(i => new DisplayEntry($"Z{i}", All(Emoji(40))))], fallback: All("x")) },

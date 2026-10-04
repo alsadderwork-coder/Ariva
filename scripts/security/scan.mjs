@@ -166,6 +166,10 @@ const RULES = [
   { id: 'SEC-113', cwe: ['CWE-79'], langs: ['nginx'], severity: 'error', fileCheck: 'nginxHeaders',
     msg: 'Web server config without Content-Security-Policy and X-Content-Type-Options headers.' },
 
+  { id: 'SEC-130', cwe: ['CWE-94'], langs: ['cs', 'js', 'svelte'], severity: 'error',
+    re: /[\u200B-\u200F\u202A-\u202E\u2066-\u2069]/,
+    msg: 'Invisible or bidirectional control character in source (Trojan Source): code can read differently from how it runs. Write it as an escape (\\u202E) in a string literal.' },
+
   { id: 'SEC-121', cwe: ['CWE-863', 'CWE-306'], langs: ['yaml', 'docker', 'json', 'env'], severity: 'error',
     re: /(ASPNETCORE|DOTNET)_FORWARDEDHEADERS_ENABLED\s*[=:]\s*["']?true|"ForwardedHeaders_Enabled"\s*:\s*(true|"true")/i,
     msg: 'Forwarded headers enabled through the environment clears KnownProxies and KnownIPNetworks, so any client can spoof its IP and defeat per-client CIDR allowlists and rate limits. Configure trusted proxies in Security:ForwardedHeaders instead.' },

@@ -80,7 +80,7 @@ public sealed class AlertLifecycleTests
     [InlineData("Resolved by opening desks", true, true)]
     [InlineData("Line one\nline two", true, true)]
     [InlineData("Bell\u0007", false, false)]
-    [InlineData("Flip ‮", false, false)]
+    [InlineData("Flip \u202E", false, false)]
     public void Note_Should_BeCheckedForLengthAndCharacters_When_GivenWithAnAction(string note, bool required, bool valid)
     {
         Alert.IsValidNote(note, required).Should().Be(valid);

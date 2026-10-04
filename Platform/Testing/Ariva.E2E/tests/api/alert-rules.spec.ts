@@ -108,7 +108,7 @@ test('typed values only: numbers for enums, misfit comparators, unknown zones an
 		['escalation without minutes', { escalateAfterMinutes: null }],
 		['sustain out of range', { sustainMinutes: 0 }],
 		['name with a control character', { name: 'Rule\u0007' }],
-		['name with a bidirectional override', { name: 'Rule ‮evil' }],
+		['name with a bidirectional override', { name: 'Rule \u202Eevil' }],
 		['an expression field', { expression: 'queue > 10', name: 'E2E expression' }]
 	] as const) {
 		const response = await call('POST', api, { token: administrator, data: rule(overrides) });

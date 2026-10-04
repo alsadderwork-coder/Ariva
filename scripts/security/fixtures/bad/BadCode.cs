@@ -33,3 +33,6 @@ public class BadCode
     [DllImport("native.dll")]
     static extern void Native();
 }
+
+// SEC-130: a literal right-to-left override hides what the line does.
+internal static class TrojanSource { public const string Name = "admin‮ // check"; }

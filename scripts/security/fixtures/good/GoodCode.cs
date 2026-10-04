@@ -15,3 +15,6 @@ public class GoodCode(IHttpClientFactory httpClientFactory, IStorageProvider sto
         cookie.SecurePolicy = CookieSecurePolicy.Always;
     }
 }
+
+// SEC-130: the same character written as an escape is visible in review.
+internal static class VisibleEscape { public const string Name = "admin\u202E"; }

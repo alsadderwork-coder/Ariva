@@ -73,8 +73,8 @@ public sealed class DeviceTests
     }
 
     [Theory]
-    [InlineData("PC2SE‮")]
-    [InlineData("PC2SE​")]
+    [InlineData("PC2SE\u202E")]
+    [InlineData("PC2SE\u200B")]
     [InlineData("PC2\nSE")]
     [InlineData("split surrogate")] // attribute data cannot carry a lone surrogate; the test builds it
     public void Register_Should_RefuseTheModel_When_ItHidesCharacters(string model)
@@ -182,7 +182,7 @@ public sealed class DeviceTests
     {
         var device = NewDevice();
 
-        var act = () => device.Move(device.Level, 40, 30, 6, 90, device.Footprint, "Bad‮name", Now);
+        var act = () => device.Move(device.Level, 40, 30, 6, 90, device.Footprint, "Bad\u202Ename", Now);
 
         act.Should().Throw<ArgumentException>();
         (device.X, device.Y, device.MountingHeightMetres, device.OrientationDegrees, device.QueueZoneName).Should().Be((30d, 20d, 5d, 0d, "A-VIS"));

@@ -129,7 +129,7 @@ public sealed class SensingModelTests
         { new TrackPosition("7", 1, 1, null, DateTime.SpecifyKind(T, DateTimeKind.Local)), "UTC" },
         { new TrackPosition("7", 1, 1, null, default), "UTC" },
         { new LineCrossing("", CrossingDirection.In, null, T), "line name" },
-        { new LineCrossing("Entry‮", CrossingDirection.In, null, T), "line name" },
+        { new LineCrossing("Entry\u202E", CrossingDirection.In, null, T), "line name" },
         { new LineCrossing("Entry", (CrossingDirection)7, null, T), "direction" },
         { new ZoneOccupancy("A-VIS", -1, T), "Occupancy" },
         { new ZoneOccupancy("A-VIS", 10_001, T), "Occupancy" },

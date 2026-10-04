@@ -114,7 +114,7 @@ test('the owner acknowledges, escalates and resolves with a note; out-of-order a
 		['no note', ''],
 		['blank note', '   '],
 		['control character', 'Bell\u0007'],
-		['bidirectional override', 'Done ‮evil'],
+		['bidirectional override', 'Done \u202Eevil'],
 		['too long', 'n'.repeat(501)]
 	] as const) {
 		const refused = await call('POST', `${api}/${ids.r001}/resolve`, { token: border, data: { note } });
