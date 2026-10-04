@@ -31,6 +31,9 @@ dataProtectionSecretName: ariva-dataprotection
 # ariva-token-signing (signing.key, P-256 PKCS#8) only into api-main.
 tokenPublicSecretName: ariva-token-public
 tokenSigningSecretName: ariva-token-signing
+# Integration token key ring (ARV-042), mounted by api-integration only
+integrationTokenPublicSecretName: ariva-integration-token-public
+integrationTokenSigningSecretName: ariva-integration-token-signing
 
 # Schema migration Job (ARV-006): api-main --migrate as a Helm hook before each upgrade. The migration login comes
 # from Database:Migration in base-appsettings-secret; hosts use the DML-only runtime login.

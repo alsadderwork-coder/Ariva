@@ -127,6 +127,7 @@ In Kubernetes the two environment files are not taken from the image. The releas
 | `ariva-dataprotection` (type `kubernetes.io/tls`; name set by `dataProtectionSecretName`) | `tls.crt`, `tls.key` | `/app/secrets/dataprotection/` in every API host, read-only. Encrypts the shared Data Protection key ring at rest (ARV-008); an API pod does not start without it |
 | `ariva-token-public` (generic; name set by `tokenPublicSecretName`) | `public.pem`, and `previous.pem` during a key rotation | `/app/secrets/token-public/` in every API host, read-only. The P-256 public keys that verify user access tokens (ARV-010a, ADR-0026); a host refuses every token without it |
 | `ariva-token-signing` (generic; name set by `tokenSigningSecretName`) | `signing.key` (PKCS#8 PEM, P-256) | `/app/secrets/token-signing/` in `api-main` only, mode 0400. Signs user access tokens; no other pod mounts it (the chart test fails if one does) |
+| `ariva-integration-token-public` and `ariva-integration-token-signing` (generic; names set by `integrationTokenPublicSecretName` and `integrationTokenSigningSecretName`) | `public.pem` (and `previous.pem` during a rotation); `signing.key` (PKCS#8 PEM, P-256) | `/app/secrets/integration-token-public/` and `/app/secrets/integration-token-signing/` (mode 0400) in `api-integration` only. The integration client ring (ARV-042), apart from the user ring; Integration does not start without them, and the chart test fails if another pod mounts the signing key or `api-integration` lacks either |
 
 Real credentials never live in the repository: the committed `k8s-*` files carry empty passwords.
 
@@ -284,6 +285,18 @@ kubectl create secret generic ariva-token-signing --from-file=signing.key \
 kubectl create secret generic ariva-token-public --from-file=public.pem \
   --namespace="$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
 shred -u signing.key   # after it is in the secret store
+```
+
+Integration's own ring (ARV-042) is made the same way, with its own pair, and mounted by `api-integration` only:
+
+```bash
+openssl ecparam -name prime256v1 -genkey -noout | openssl pkcs8 -topk8 -nocrypt -out signing.key
+openssl ec -in signing.key -pubout -out public.pem
+kubectl create secret generic ariva-integration-token-signing --from-file=signing.key \
+  --namespace="$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+kubectl create secret generic ariva-integration-token-public --from-file=public.pem \
+  --namespace="$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+shred -u signing.key
 ```
 
 Rotation every 90 days, without signing anyone out:

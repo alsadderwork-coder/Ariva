@@ -53,6 +53,15 @@ spec:
           secret:
             secretName: {{ .Values.tokenPublicSecretName | default "ariva-token-public" }}
             defaultMode: 0444
+        # Integration token key ring (ARV-042): its own P-256 pair, apart from the user ring; only this pod mounts it
+        - name: integration-token-public
+          secret:
+            secretName: {{ .Values.integrationTokenPublicSecretName | default "ariva-integration-token-public" }}
+            defaultMode: 0444
+        - name: integration-token-signing
+          secret:
+            secretName: {{ .Values.integrationTokenSigningSecretName | default "ariva-integration-token-signing" }}
+            defaultMode: 0400
         - name: api-integration-appsettings-base-volume
           secret:
             secretName: base-appsettings-secret
@@ -87,6 +96,12 @@ spec:
               readOnly: true
             - name: token-public
               mountPath: /app/secrets/token-public
+              readOnly: true
+            - name: integration-token-public
+              mountPath: /app/secrets/integration-token-public
+              readOnly: true
+            - name: integration-token-signing
+              mountPath: /app/secrets/integration-token-signing
               readOnly: true
             - name: api-integration-appsettings-base-volume
               mountPath: /app/appsettings.base.{{ .Values.environment }}.json

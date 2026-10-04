@@ -24,7 +24,7 @@ function selfTest() {
 	const expected = [
 		'runAsNonRoot', 'runAsUser', 'seccompProfile', 'hostNetwork', 'allowPrivilegeEscalation', 'privileged',
 		'capabilities.drop', 'readOnlyRootFilesystem', '/tmp', 'latest', 'needs a tls section', 'not covered by tls', 'production must pin',
-		'token signing key', 'token public keys', 'disable the access log', 'audit log off', 'only critical errors', 'its own ingress'
+		'token signing key', 'integration token signing key', 'integration token key ring', 'token public keys', 'disable the access log', 'audit log off', 'only critical errors', 'its own ingress'
 	];
 	const missing = expected.filter((rule) => !bad.some((finding) => finding.includes(rule)));
 	if (good.length || missing.length) {

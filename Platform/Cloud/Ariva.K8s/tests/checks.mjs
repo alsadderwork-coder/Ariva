@@ -38,8 +38,17 @@ export function checkManifests(docs, { environment }) {
 			// ARV-010a: only Ariva.Api.Main signs access tokens, so only its pod may mount the signing key; every API
 			// pod validates tokens and needs the public keys.
 			const secretVolumes = (pod.volumes ?? []).map((volume) => volume.secret?.secretName ?? '');
-			if (secretVolumes.some((name) => name.includes('token-signing')) && doc.metadata?.name !== 'api-main-deployment') {
+			const integrationRing = (name) => name.includes('integration-token');
+			if (secretVolumes.some((name) => name.includes('token-signing') && !integrationRing(name)) && doc.metadata?.name !== 'api-main-deployment') {
 				findings.push(`${id}: only api-main-deployment may mount the token signing key`);
+			}
+			// ARV-042: Ariva.Api.Integration signs integration tokens with a ring of its own; it alone mounts it, and must.
+			if (secretVolumes.some((name) => name.includes('integration-token-signing')) && doc.metadata?.name !== 'api-integration-deployment') {
+				findings.push(`${id}: only api-integration-deployment may mount the integration token signing key`);
+			}
+			if (doc.metadata?.name === 'api-integration-deployment' &&
+				!(secretVolumes.some((name) => name.includes('integration-token-signing')) && secretVolumes.some((name) => name.includes('integration-token-public')))) {
+				findings.push(`${id}: api-integration-deployment must mount the integration token key ring (signing and public)`);
 			}
 			if (/^api-[a-z]+-deployment$/.test(doc.metadata?.name ?? '') && !secretVolumes.some((name) => name.includes('token-public'))) {
 				findings.push(`${id}: API pods must mount the token public keys`);

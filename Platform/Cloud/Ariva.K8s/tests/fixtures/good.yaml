@@ -1,5 +1,23 @@
 apiVersion: apps/v1
 kind: Deployment
+metadata: { name: api-integration-deployment }
+spec:
+  template:
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+        - { name: token-public, secret: { secretName: ariva-token-public } }
+        - { name: integration-token-public, secret: { secretName: ariva-integration-token-public } }
+        - { name: integration-token-signing, secret: { secretName: ariva-integration-token-signing } }
+      containers:
+        - name: app
+          image: registry.example/api-integration:main-20261001.1
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+---
+apiVersion: apps/v1
+kind: Deployment
 metadata: { name: good }
 spec:
   template:
