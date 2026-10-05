@@ -112,7 +112,7 @@ public sealed class DatabaseStallTests(FaultsFixture faults) : IAsyncLifetime
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 300_000)] // a fault test never hangs the run: a dependency that does not come back fails it
     public async Task CredentialLookup_Should_FailAsAnOutageWithinItsBoundAndCacheNothing_When_TheDatabaseStalls()
     {
         await using var provider = Provider();
@@ -150,7 +150,7 @@ public sealed class DatabaseStallTests(FaultsFixture faults) : IAsyncLifetime
         found.Code.Should().Be("FLT-01");
     }
 
-    [Fact]
+    [Fact(Timeout = 300_000)] // a fault test never hangs the run: a dependency that does not come back fails it
     public async Task Session_Should_FailAsAnOutageRatherThanPassOnAStaleCopy_When_RevokedAndTheDatabaseStalls()
     {
         // ARV-081 (ASVS V16.5.3): with the hosts' default cache options (fail-safe, 500 ms soft timeout) the expired copy
@@ -243,7 +243,7 @@ public sealed class DatabaseStallTests(FaultsFixture faults) : IAsyncLifetime
         await command.ExecuteNonQueryAsync(Ct);
     }
 
-    [Fact]
+    [Fact(Timeout = 300_000)] // a fault test never hangs the run: a dependency that does not come back fails it
     public async Task SensingArchive_Should_ArchiveTheBatchOnceTheDatabaseIsBack_When_ItWasCutOffMeanwhile()
     {
         var archive = new SensingArchive(Settings, TimeProvider.System);

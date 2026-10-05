@@ -100,7 +100,7 @@ public sealed class RedisAlertNotices(RedisConnection redis) : IAlertNotices
         {
             var json = JsonSerializer.SerializeToUtf8Bytes(notice, EventCatalog.Json);
             if (json.Length <= MaxBytes)
-                await subscriber.PublishAsync(Channel, json).WaitAsync(ct);
+                await subscriber.PublishAsync(Channel, json).WaitAsync(RedisLiveSnapshots.OperationTimeout, ct);
         }
     }
 

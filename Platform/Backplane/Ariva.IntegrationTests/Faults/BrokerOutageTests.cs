@@ -139,7 +139,7 @@ public sealed class BrokerOutageTests(FaultsFixture faults) : IAsyncLifetime
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 300_000)] // a fault test never hangs the run: a dependency that does not come back fails it
     public async Task Outbox_Should_HoldEventsWhileTheBrokerIsDownAndRelayThemInOrder_When_ItIsBack()
     {
         using var host = await StartHostAsync();

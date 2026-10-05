@@ -36,7 +36,7 @@ public sealed class RedisLossTests(FaultsFixture faults) : IAsyncLifetime
     /// <summary>Stream's checkpoint catches these and carries on (QueueStreamWorker.Checkpoint).</summary>
     private static bool StreamCarriesOn(Exception e) => e is RedisException or TimeoutException;
 
-    [Fact]
+    [Fact(Timeout = 300_000)] // a fault test never hangs the run: a dependency that does not come back fails it
     public async Task LiveView_Should_FailFastWhileRedisIsCutOffAndRecoverWithoutRestart_When_RedisComesBack()
     {
         const string instance = "it-faults-cut:";
@@ -81,7 +81,7 @@ public sealed class RedisLossTests(FaultsFixture faults) : IAsyncLifetime
         await stop.CancelAsync();
     }
 
-    [Fact]
+    [Fact(Timeout = 300_000)] // a fault test never hangs the run: a dependency that does not come back fails it
     public async Task LiveView_Should_TimeOutRatherThanHang_When_RedisStalls()
     {
         const string instance = "it-faults-stall:";

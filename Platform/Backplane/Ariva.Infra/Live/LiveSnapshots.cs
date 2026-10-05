@@ -90,6 +90,14 @@ public sealed class RedisLiveSnapshots(RedisConnection redis) : ILiveSnapshotSto
     public const int MaxBytes = 4 * 1024;
     private static readonly TimeSpan Keep = TimeSpan.FromDays(1);
 
+    /// <summary>
+    /// ARV-072: how long a write or a read waits for Redis. StackExchange.Redis times commands out after 5 seconds, but a
+    /// batch issued while the connection is down was seen to wait without end in the fault tests; Stream's checkpoint
+    /// awaits the publish, so a hang there would stop the stream. Past this the call fails with a TimeoutException,
+    /// which the checkpoint logs and moves past, and which the board and the hub answer as an outage (503).
+    /// </summary>
+    public static readonly TimeSpan OperationTimeout = TimeSpan.FromSeconds(6);
+
     private string Key(string zoneKey) => $"{redis.Settings.InstanceName}live:zone:{zoneKey}";
 
     private RedisChannel Channel => RedisChannel.Literal($"{redis.Settings.InstanceName}live:zones");
@@ -113,7 +121,7 @@ public sealed class RedisLiveSnapshots(RedisConnection redis) : ILiveSnapshotSto
         }
 
         batch.Execute();
-        await Task.WhenAll(pending).WaitAsync(ct);
+        await Task.WhenAll(pending).WaitAsync(OperationTimeout, ct);
     }
 
     public async Task<LiveZoneSnapshot> GetAsync(string zoneKey, CancellationToken ct)
@@ -121,7 +129,7 @@ public sealed class RedisLiveSnapshots(RedisConnection redis) : ILiveSnapshotSto
         if (!LiveZones.IsZoneKey(zoneKey))
             return null;
         var connection = await redis.GetAsync();
-        var value = await connection.GetDatabase().StringGetAsync(Key(zoneKey)).WaitAsync(ct);
+        var value = await connection.GetDatabase().StringGetAsync(Key(zoneKey)).WaitAsync(OperationTimeout, ct);
         var snapshot = Read(value);
         return snapshot is not null && string.Equals(snapshot.ZoneKey, zoneKey, StringComparison.Ordinal) ? snapshot : null;
     }

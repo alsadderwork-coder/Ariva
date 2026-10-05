@@ -564,3 +564,9 @@ One entry per story, newest last. Format:
 - Recorded:
   - the image digest is not covered by the base-image check (added to ARV-096);
   - the container name is fixed, so two checkouts on one machine share it.
+
+## 2026-10-05 ARV-072 follow-up: Redis live operations bounded by their own timeout
+- Found by the ARV-076 run inside the dev container: under the full integration suite, `RedisLossTests` hung twice with Redis cut off (once for 26 minutes, once until a 5 minute test timeout). A batch publish issued while the connection is down did not end at StackExchange.Redis's 5 second command timeout. Stream's checkpoint awaits that publish, so in production the same hang would stop the queue stream.
+- Fix: `RedisLiveSnapshots.OperationTimeout` (6 seconds) bounds the snapshot publish, the snapshot read and the alert notice publish. Past it the call fails with a `TimeoutException`, which the checkpoint logs and moves past and which the board and the hub answer as an outage (503 with Retry-After).
+- Every fault test now carries a 5 minute timeout, so a dependency that does not come back fails the run instead of hanging it.
+- Gates: backend PASS (unit 2276); integration 315 passed, 1 pre-existing skip.
