@@ -34,7 +34,34 @@ function origin(line: string, values: string[]): string {
 	}
 }
 
+/**
+ * Whether the line holds the value. A value of digits only (the TOTP canary) counts only as a number of its own: as
+ * part of a longer run of digits it is a coincidence, such as the fraction of a second in a log timestamp
+ * ("06:32:43.4938178" holds 493817), not a code.
+ */
+export function holds(line: string, value: string): boolean {
+	if (!/^\d+$/.test(value)) return line.includes(value);
+	for (let at = line.indexOf(value); at !== -1; at = line.indexOf(value, at + 1)) {
+		if (!/\d/.test(line[at - 1] ?? '') && !/\d/.test(line[at + value.length] ?? '')) return true;
+	}
+	return false;
+}
+
 export default async function globalTeardown() {
+	// The matching rule itself, checked on every run (CWE-532): a code inside a longer run of digits is a coincidence, a
+	// code anywhere else is a leak.
+	const cases: [string, string, boolean][] = [
+		['"Timestamp":"2026-10-05T06:32:43.4938178+04:00"', '493817', false],
+		['{"code":"493817"}', '493817', true],
+		['code=493817&next=1', '493817', true],
+		['493817', '493817', true],
+		['x4938170 and 493817', '493817', true],
+		['password: canary-Pass word', 'canary-Pass word', true]
+	];
+	for (const [line, value, expected] of cases) {
+		if (holds(line, value) !== expected) throw new Error(`log scan self-check: holds(${JSON.stringify(line)}) should be ${expected}`);
+	}
+
 	const directory = process.env.ARIVA_E2E_LOG_DIR;
 	if (!directory || !fs.existsSync(directory)) {
 		throw new Error(`log scan: no host logs at ${directory}; the hosts must write LogFile__Path for this check`);
@@ -79,7 +106,7 @@ export default async function globalTeardown() {
 			if (!line) return;
 			lines++;
 			for (const { label, value } of all) {
-				if (value && line.includes(value)) findings.push(`${file}:${index + 1} contains ${label}${origin(line, values)}`);
+				if (value && holds(line, value)) findings.push(`${file}:${index + 1} contains ${label}${origin(line, values)}`);
 			}
 			for (const { name, re } of patterns) {
 				if (re.test(line)) findings.push(`${file}:${index + 1} contains a ${name}${origin(line, values)}`);

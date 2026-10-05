@@ -34,6 +34,9 @@ const chromiumExecutable = process.env.ARIVA_E2E_CHROMIUM || undefined;
 // changed screenshot never stops the other suites (a project dependency would skip them).
 const visualEndpoint = process.env.ARIVA_E2E_VISUAL_WS || '';
 const visual = visualEndpoint.length > 0;
+// ARV-063: the dynamic security scan (OWASP ZAP in its pinned image, tests/zap). Run it on its own with ARIVA_E2E_ZAP=1
+// and --project=zap: it attacks the hosts and leaves junk records behind. The hosts then serve their OpenAPI documents.
+const zap = process.env.ARIVA_E2E_ZAP === '1';
 
 const project = (relative: string) => path.join(repositoryRoot, 'Platform', relative);
 
@@ -117,6 +120,9 @@ function dotnetHost(projectPath: string, healthUrl: string, buildFirst = false, 
 			// limit applies only where a test means it to (production trusts only the ingress network).
 			Security__ForwardedHeaders__KnownProxies__0: '127.0.0.1',
 			Security__ForwardedHeaders__KnownProxies__1: '::1',
+			// ARV-063: the scan's documents, and a global limit high enough that the scan reaches the endpoints instead of
+			// 429 (the limiter itself is tested in RateLimitingAndCorsTests).
+			...(zap ? { OpenApi__Enabled: 'true', Security__RateLimiting__Global__PermitLimit: '100000' } : {}),
 			...emailEnvironment(),
 			...extraEnvironment
 		}
@@ -278,6 +284,19 @@ export default defineConfig({
 							// The PNGs (expected, actual, diff) are the evidence; a trace would carry the sign-in and the player's credential.
 							trace: 'off' as const
 						}
+					}
+				]
+			: []),
+		...(zap
+			? [
+					{
+						name: 'zap',
+						testDir: './tests/zap',
+						fullyParallel: false,
+						retries: 0,
+						timeout: 120 * 60_000,
+						// The scan's own reports are the evidence; a trace would carry the scan account's sign-in.
+						use: { trace: 'off' as const }
 					}
 				]
 			: []),

@@ -643,3 +643,41 @@ One entry per story, newest last. Format:
     - The digest rule recognises Ariva images by name only.
     - The database runs without TLS (ARV-082).
     - wiki/Home.md's dated status table (1 October) still calls the TimescaleDB chart a placeholder.
+
+## 2026-10-05 ARV-063 Dynamic security scanning pipeline
+- Summary: OWASP ZAP 2.17, pinned by digest, scans the real hosts (Playwright project `zap` in `Platform/Testing/Ariva.E2E/tests/zap`, `node scripts/verify.mjs zap`, `.github/workflows/security-zap.yml` weekly and on demand).
+  - API scans (passive and active) of the Main, Ingest and Integration OpenAPI documents with the token of `e2e.zapadmin`, a system administrator with no second factor, so every critical action answers 401 and none is carried out. The sign-in, session and hub operations are removed from the documents, because ZAP's import calls every operation, and excluded from the active scan and the spider. Each scan must still hold its session at the end.
+  - Baseline scans of every API host, and of the web build under the web image's own nginx image and configuration.
+  - When `ARIVA_DEV_WEB_URL` is set, a passive baseline of the dev deployment.
+  - Gate: the run fails on a High risk alert without an approved entry in `security/zap-triage.json`. An incomplete entry is an error, and a PENDING approver accepts nothing. Reports (HTML, JSON, logs, `summary.md`) are uploaded as artifacts. A grep of the reports found no token, password or Authorization header.
+- OpenAPI documents (needed by the API scan):
+  - Microsoft.AspNetCore.OpenApi, which was already in the package catalog.
+  - Served at `/openapi/v1.json` only with `OpenApi:Enabled`, only to SystemInfo.View, and never in k8s-prd: the host refuses to start (`OpenApiTests`). No UI.
+- Findings and triage (final run: no High, Medium or Low left):
+  - Fixed: four endpoints answered 500 to `siteCode=%00`, because PostgreSQL refuses NUL in text. The reviewer then found the same class elsewhere (search text, topology names). Two fixes:
+    - Every controller now refuses a NUL character with 400 (`NulCharacterFilter` for the query, route values and forms; `NulRejectingStringConverter` for JSON strings). Tests: `NulCharacterTests`, red-checked; e2e `null-bytes.spec.ts`, 11 cases.
+    - `SiteScopedAttribute` answers 404 before the lookup for any other value that cannot be a site code.
+  - Fixed in the harness: the E2E log scan matched the numeric TOTP canary inside a log timestamp (".4938178" holds 493817), a false positive that can fail any long run, possibly the unexplained CI log-scan failure on 40da919. A digits-only secret now counts only as a whole number. The rule is self-checked on every teardown.
+  - Informational, accepted with no action:
+    - 4xx client errors from ZAP's placeholder values;
+    - the CSP being set in a meta tag as well as the header (SvelteKit hash mode, by design);
+    - "Modern Web Application".
+  - Also found: the rate limiter answered most of the first scan with 429, so the scan run raises the global limit; the limiter's own tests are unchanged.
+- Also fixed:
+  - wiki/04 gave a break-glass command that cannot work: `dotnet Ariva.Api.Main.dll` does not exist in the runtime-deps image, and the pod had no settings. It is now `kubectl exec deploy/api-main-deployment -- ./Ariva.Api.Main --create-break-glass`.
+  - `base-images.mjs` keeps the scan's ZAP image equal to the workflow's, and its nginx equal to the web image's base.
+- Gates:
+  - backend PASS (unit 2302);
+  - integration 317 passed, 1 pre-existing skip;
+  - e2e 502 passed, 1 skipped;
+  - zap 5 passed;
+  - docs PASS; security scan 0 errors; base images PASS.
+- Security review (independent reviewer, all 14 CWEs):
+  - First pass FAIL: the triage file could silence a High finding without approval; NUL bytes still reached PostgreSQL through other inputs; the log-scan change had no test. All fixed.
+  - Second pass PASS.
+  - Open, for the product owner: `.claude/hooks/guard-paths.mjs` protects only `security/allowlist.json` from agent approvals. Extending it to `security/zap-triage.json` changes the hooks, which needs your approval.
+  - Follow-ups, non-blocking:
+    - scan depth: ZAP fills placeholder values, so most Main requests end in 404 or 400, and Ingest and Integration are scanned without their own credentials. Seeded example values and device or integration credentials would reach further;
+    - URL-scoped triage entries;
+    - tests for the guard's route and form branches;
+    - the web image serves `/nginx/default.conf` (pre-existing, low risk).

@@ -20,6 +20,8 @@
         <PackageReference Include="Serilog.Sinks.Grafana.Loki" />
         <PackageReference Include="Serilog.Sinks.OpenTelemetry" />
         <PackageReference Include="Npgsql.OpenTelemetry" />
+        <!-- OpenAPI documents for the dynamic scan (ARV-063); mapped only when OpenApi:Enabled, never in k8s-prd -->
+        <PackageReference Include="Microsoft.AspNetCore.OpenApi" />
     </ItemGroup>
 
     <ItemGroup>

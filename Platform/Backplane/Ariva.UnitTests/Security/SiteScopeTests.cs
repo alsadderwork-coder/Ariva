@@ -207,6 +207,35 @@ public sealed class SiteScopeTests
         scope.Calls.Should().Be(1);
     }
 
+    [Theory]
+    [InlineData("/api/v1/sites/AMM%27--")]
+    [InlineData("/api/v1/sites/AMMANAIRPORT1")]
+    [InlineData("/api/v1/admin/displays?siteCode=DM%22")]
+    public async Task SiteScoped_Should_AnswerNotFoundWithoutLookingUp_When_TheValueCannotBeASiteCode(string path)
+    {
+        // ARV-063: ZAP sent siteCode=%00, which reached PostgreSQL and answered 500 (a NUL now answers 400 before any filter,
+        // NulCharacterTests). Any other value that cannot be a site code is a site that does not exist, even for a caller
+        // with every site.
+        var scope = new FixedSiteScope(new SiteAccess(true, new HashSet<string>()));
+        await using var app = ArivaHosts.Create(ArivaHosts.Main, configure: builder => builder.ConfigureTestServices(services =>
+        {
+            TestAuthenticationHandler.Register(services);
+            FakeAdministration.Register(services);
+            FakeDisplays.Register(services);
+            services.Replace(ServiceDescriptor.Scoped<ISiteScope>(_ => scope));
+            services.Replace(ServiceDescriptor.Scoped<Ariva.Core.Services.Administration.ISvcSites, EverySite>());
+        }));
+        using var client = app.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Get, path);
+        request.Headers.Add(TestAuthenticationHandler.UserHeader, "site-admin");
+        request.Headers.Add(TestAuthenticationHandler.RolesHeader, Ariva.Core.RoleCodes.SystemAdministrator);
+
+        using var response = await client.SendAsync(request, TestContext.Current.CancellationToken);
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        scope.Calls.Should().Be(0, "the value never reaches the site lookup");
+    }
+
     #endregion
 
     /// <summary>Finds any site, so only the filter can answer 404.</summary>

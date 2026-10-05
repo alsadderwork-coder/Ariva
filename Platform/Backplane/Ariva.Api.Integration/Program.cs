@@ -69,6 +69,8 @@ builder.Services.AddArivaFlights(builder.Configuration);
 // ProblemDetails errors, trusted forwarded headers and the CORS allow-list.
 builder.Services.AddAppSecurityBaseline(builder.Configuration);
 builder.Services.AddAppControllers();
+// OpenAPI document for the dynamic scan (ARV-063): only with OpenApi:Enabled, administrators only, refused in k8s-prd.
+builder.Services.AddArivaOpenApi(builder.Configuration, builder.Environment.EnvironmentName);
 
 // Integration clients (ARV-042): the token exchange (POST /api/v1/auth) and the integration scheme, with its own key
 // ring and audience, that every Integration API endpoint ([IntegrationScope]) accepts and nothing else does.
@@ -109,6 +111,7 @@ app.UseAuthorization();
 
 app.MapArivaHealthChecks();
 app.MapControllers();
+app.MapArivaOpenApi(app.Configuration);
 
 // AMAN: MapOpenApi, MapScalarApiReference. AODB push endpoints are mapped here.
 

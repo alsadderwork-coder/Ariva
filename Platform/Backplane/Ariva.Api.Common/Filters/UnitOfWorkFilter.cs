@@ -31,10 +31,19 @@ public sealed class UnitOfWorkFilter : IAsyncActionFilter
 
 public static class ControllerExtensions
 {
-    /// <summary>MVC controllers with the Ariva filters (unit of work).</summary>
+    /// <summary>
+    /// MVC controllers with the Ariva filters: no NUL character in any input (ARV-063, <see cref="NulCharacterFilter"/>
+    /// and <see cref="NulRejectingStringConverter"/>) and the unit of work.
+    /// </summary>
     public static IMvcBuilder AddAppControllers(this IServiceCollection services)
     {
         ArgumentNullException.ThrowIfNull(services);
-        return services.AddControllers(options => options.Filters.Add<UnitOfWorkFilter>());
+        return services
+            .AddControllers(options =>
+            {
+                options.Filters.Add<NulCharacterFilter>();
+                options.Filters.Add<UnitOfWorkFilter>();
+            })
+            .AddJsonOptions(json => json.JsonSerializerOptions.Converters.Add(new NulRejectingStringConverter()));
     }
 }

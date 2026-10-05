@@ -93,6 +93,8 @@ builder.Services.RegisterArivaServices(builder.Configuration, messaging => messa
 // ProblemDetails errors, trusted forwarded headers and the CORS allow-list.
 builder.Services.AddAppSecurityBaseline(builder.Configuration);
 builder.Services.AddAppControllers();
+// OpenAPI document for the dynamic scan (ARV-063): only with OpenApi:Enabled, administrators only, refused in k8s-prd.
+builder.Services.AddArivaOpenApi(builder.Configuration, builder.Environment.EnvironmentName);
 
 // Ariva.Api.Main signs users in and issues tokens (ADR-0026); the other hosts only validate them.
 builder.Services.AddArivaTokenIssuing(builder.Configuration);
@@ -155,6 +157,7 @@ app.UseAuthorization();
 
 app.MapArivaHealthChecks();
 app.MapControllers();
+app.MapArivaOpenApi(app.Configuration);
 // The hub's [Permission] and RequireAuthorization both apply, so the hub stays closed even without its attribute.
 app.MapHub<Ariva.Api.Main.Hubs.LiveHub>(Ariva.Api.Main.Hubs.LiveHub.Path, Ariva.Api.Main.Hubs.LiveHub.Configure).RequireAuthorization();
 

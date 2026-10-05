@@ -1,0 +1,159 @@
+# Dynamic security scan (ARV-063, layer 7 of wiki/13-Security-Guide.md): OWASP ZAP, pinned by digest, against the real
+# hosts. Weekly and on demand, not on every pull request: the active scan takes up to an hour and leaves junk records.
+#   ephemeral: the E2E stack in this runner (PostgreSQL, Kafka, Redis, the hosts, the web app under its production nginx
+#              configuration); API scans of each host's OpenAPI document signed in as a system administrator, baseline
+#              scans of every host and the web app (Platform/Testing/Ariva.E2E/tests/zap).
+#   dev:       a baseline scan (spider and passive rules only, no attack) of the dev deployment, when the repository
+#              variable ARIVA_DEV_WEB_URL names it.
+# Either job fails on a High risk alert that security/zap-triage.json does not accept, and always publishes its reports
+# as an artifact (zap-reports, zap-dev-report). Lower risks are triaged in backlog/progress.md.
+name: security-zap
+
+on:
+  schedule:
+    - cron: '41 2 * * 1' # Mondays, before the working week
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-zap
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  NODE_VERSION: '22'
+  # ghcr.io/zaproxy/zaproxy:2.17.0; keep in step with tests/zap/zap.spec.ts.
+  ZAP_IMAGE: ghcr.io/zaproxy/zaproxy@sha256:781a2bdaea47324e7bab583e2263f21d257b0aee61ed51521a5be45f5f5081ef
+
+jobs:
+  ephemeral:
+    name: ZAP API and baseline scans of the E2E stack
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    # The same services and settings as the e2e job of ci.yml; the passwords live for this job only.
+    services:
+      postgres:
+        image: timescale/timescaledb-ha:pg17-ts2.30
+        env:
+          POSTGRES_PASSWORD: zap-${{ github.run_id }}-${{ github.run_attempt }}
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:8.2-alpine
+        ports:
+          - 6380:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      kafka:
+        image: apache/kafka:4.1.0
+        env:
+          KAFKA_NODE_ID: 1
+          KAFKA_PROCESS_ROLES: broker,controller
+          KAFKA_LISTENERS: HOST://0.0.0.0:9092,INTERNAL://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
+          KAFKA_ADVERTISED_LISTENERS: HOST://localhost:19092,INTERNAL://localhost:29092
+          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: HOST:PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+          KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+          KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+          KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+          KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+          KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+          KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+          KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'false'
+        ports:
+          - 19092:9092
+        options: >-
+          --health-cmd "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:29092"
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 30
+    env:
+      CI: true
+      ARIVA_E2E_ZAP: '1'
+      ARIVA_E2E_SCHEMA_UPDATE: 'true'
+      ARIVA_E2E_REDIS_URL: redis://localhost:6380
+      ARIVA_E2E_KAFKA_BOOTSTRAP: localhost:19092
+      Database__Host: localhost
+      Database__Port: '5433'
+      Database__Name: postgres
+      Database__Migration__Username: postgres
+      Database__Migration__Password: zap-${{ github.run_id }}-${{ github.run_attempt }}
+      Database__Username: ariva_app
+      Database__Password: zap-runtime-login-${{ github.run_id }}-${{ github.run_attempt }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: Platform/Testing/Ariva.E2E
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Install web and test dependencies
+        run: |
+          npm ci --prefix ../../Frontplane/Ariva.Web
+          npm ci
+      - name: Reserve the hosts' ports from the ephemeral range
+        run: sudo sysctl -w net.ipv4.ip_local_reserved_ports=51000-51100,25251,5081,3000
+      - name: Scan (Playwright starts the stack; tests/zap runs ZAP)
+        run: npx playwright test --project=zap 2>&1 | tee zap.log
+      - name: ZAP reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: zap-reports
+          path: Platform/Testing/Ariva.E2E/zap-reports
+          retention-days: 30
+      - name: Findings in the job summary
+        if: always()
+        run: |
+          if [ -f zap-reports/summary.md ]; then cat zap-reports/summary.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+  dev:
+    name: ZAP baseline scan of the dev deployment
+    if: ${{ vars.ARIVA_DEV_WEB_URL != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      # Passive only: the spider and the passive rules, no attack on a shared environment.
+      - name: Baseline scan
+        env:
+          TARGET: ${{ vars.ARIVA_DEV_WEB_URL }}
+        run: |
+          mkdir -p zap-dev && chmod 777 zap-dev
+          docker run --rm -v "$PWD/zap-dev:/zap/wrk:rw" "$ZAP_IMAGE" zap-baseline.py -t "$TARGET" -m 3 -J dev.json -r dev.html -I
+      - name: Gate on High risk findings
+        run: node Platform/Testing/Ariva.E2E/scripts/zap-findings.mjs zap-dev/summary.md dev=zap-dev/dev.json
+      - name: ZAP report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: zap-dev-report
+          path: zap-dev
+          retention-days: 30

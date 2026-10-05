@@ -63,6 +63,8 @@ builder.Services.AddAppSecurityBaseline(builder.Configuration);
 // Device endpoints (ARV-022): controllers with the unit of work filter, and client certificates forwarded by the
 // ingress for devices that pin one.
 builder.Services.AddAppControllers();
+// OpenAPI document for the dynamic scan (ARV-063): only with OpenApi:Enabled, administrators only, refused in k8s-prd.
+builder.Services.AddArivaOpenApi(builder.Configuration, builder.Environment.EnvironmentName);
 builder.Services.AddAppClientCertificates(builder.Configuration);
 
 // Sensor pushes (ARV-023): dialect mappers, per-device clock estimates, batches to Kafka keyed by zone.
@@ -105,6 +107,7 @@ app.UseAuthorization();
 
 app.MapArivaHealthChecks();
 app.MapControllers();
+app.MapArivaOpenApi(app.Configuration);
 
 // AMAN: MapOpenApi, MapScalarApiReference. Vendor webhook endpoints (Endpoints/) are mapped here.
 

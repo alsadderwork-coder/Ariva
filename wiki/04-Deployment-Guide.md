@@ -310,9 +310,10 @@ If the signing key leaks, do the same without waiting in step 3: remove the leak
 The break-glass account (ARV-010c) is the way in when every administrator is locked out or has lost their authenticator. Create it once per deployment, after the first migration, with the installer command, and keep the printed credential sealed offline (two-person custody is recommended):
 
 ```bash
-kubectl run ariva-break-glass --rm -it --restart=Never --namespace="$NAMESPACE" \
-  --image="$REGISTRY/api-main:$BUILD_NUMBER" -- dotnet Ariva.Api.Main.dll --create-break-glass
+kubectl exec -it deploy/api-main-deployment --namespace="$NAMESPACE" -- ./Ariva.Api.Main --create-break-glass
 ```
+
+It runs inside a running api-main pod, which already has the database settings mounted; the image holds the self-contained `./Ariva.Api.Main` binary (there is no `dotnet` in the runtime-deps image). It prints the credential once and changes nothing else; `--rotate-break-glass` replaces it.
 
 With the Ariva TimescaleDB chart (section 4), create its credentials before the first release. Generate both passwords (at least 16 characters, for example `openssl rand -base64 24`) and keep them in the customer's password manager; `migration-password` must be the `Database:Migration:Password` of `appsettings.base.<env>.json`. The database reads them only when its volume is first initialised: changing the secret later changes nothing in the database (change the password with `ALTER ROLE` and then update both places).
 

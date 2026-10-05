@@ -113,7 +113,7 @@ Field validation is not a software test but uses the same metrics (F18): count a
 | Architecture and security reflection tests | `node scripts/verify.mjs unit` |
 | Behaviour tests with attack payloads | `node scripts/verify.mjs e2e` |
 | Dependency audits (NuGet, npm) | `node scripts/verify.mjs security` (needs registry access) |
-| OWASP ZAP baseline and OpenAPI scan | Pipeline `Security-zap.yaml` (Phase 1), weekly and before each release |
+| OWASP ZAP API and baseline scans (ARV-063) | `node scripts/verify.mjs zap` (Docker and the E2E database environment), and `.github/workflows/security-zap.yml` weekly and on demand; fails on an untriaged High risk alert |
 | External penetration test | Before the pilot goes live; once per major release |
 
 Details in [Security guide](13-Security-Guide.md).
@@ -129,6 +129,7 @@ Details in [Security guide](13-Security-Guide.md).
 | `web` | Ariva.Web: `npm ci` if needed, `svelte-check`, Prettier lint, build |
 | `e2e` | `Platform/Testing/Ariva.E2E`: `npm ci` if needed, then `npx playwright test` |
 | `security` | Scanner self-test, full scan, NuGet and npm audits |
+| `zap` | The dynamic security scan (ARV-063): `npx playwright test --project=zap` with `ARIVA_E2E_ZAP=1`; reports in `Platform/Testing/Ariva.E2E/zap-reports` |
 | `docs` | Markdown text rules: no em or en dash characters, no double hyphens in prose |
 | `backend` | `unit` plus `security` (the default) |
 | `all` | Everything except integration (add `--with-integration`) |

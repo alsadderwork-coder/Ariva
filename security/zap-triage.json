@@ -1,0 +1,4 @@
+{
+  "description": "ARV-063: ZAP alerts accepted after triage. The dynamic scan (Platform/Testing/Ariva.E2E/tests/zap) fails on any High risk alert without an approved entry here. Every entry has scan (a scan name such as api-main, or * for every scan), pluginid (the ZAP rule id), alert, reason, proposedBy, approvedBy and date; an incomplete entry fails the scan. An agent may propose an entry with approvedBy PENDING, which accepts nothing until a person replaces it with their name.",
+  "entries": []
+}

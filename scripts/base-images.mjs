@@ -163,6 +163,19 @@ function check() {
 		}
 		if (!/^sha256:[0-9a-f]{64}$/.test(field('digest') ?? '')) problems.push('Charts/timescaledb/values.yaml: image.digest must be a sha256 digest');
 	}
+	// ARV-063: the dynamic scan's images. ZAP is pinned by digest in the scan and in its workflow, the same in both; the web
+	// app is scanned under the nginx image its Dockerfile builds on.
+	const zapSpec = path.join(ROOT, 'Platform', 'Testing', 'Ariva.E2E', 'tests', 'zap', 'zap.spec.ts');
+	if (fs.existsSync(zapSpec)) {
+		const spec = fs.readFileSync(zapSpec, 'utf8');
+		const specZap = spec.match(/zapImage = '([^']+)'/)?.[1];
+		const workflowZap = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'security-zap.yml'), 'utf8').match(/ZAP_IMAGE:\s*(\S+)/)?.[1];
+		if (!/^ghcr\.io\/zaproxy\/zaproxy@sha256:[0-9a-f]{64}$/.test(specZap ?? '')) problems.push(`tests/zap/zap.spec.ts: the ZAP image ${specZap} must be pinned by digest`);
+		if (specZap !== workflowZap) problems.push(`security-zap.yml: ZAP_IMAGE ${workflowZap} must be the scan's ${specZap}`);
+		const specNginx = spec.match(/nginxImage = '([^']+)'/)?.[1];
+		const webNginx = fs.readFileSync(path.join(ROOT, 'Platform', 'Frontplane', 'Ariva.Web', 'Dockerfile'), 'utf8').match(/^FROM\s+(nginx:\S+)/m)?.[1];
+		if (specNginx !== webNginx) problems.push(`tests/zap/zap.spec.ts: nginxImage ${specNginx} must be the web image's base ${webNginx}`);
+	}
 	if (problems.length) {
 		console.error(`base images: ${problems.length} problem(s) in ${count} FROM lines\n  ${problems.join('\n  ')}`);
 		console.error('Run the base-images workflow (Actions, base-images, Run workflow) to get pinned lines.');

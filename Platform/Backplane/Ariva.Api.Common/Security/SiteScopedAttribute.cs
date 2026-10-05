@@ -35,18 +35,29 @@ public sealed class SiteScopedAttribute : Attribute, IAsyncActionFilter
             .ToList();
         if (codes.Count > 0)
         {
+            // A value that cannot be a site code (a NUL byte, a quote, too long) is a site that does not exist: the same
+            // 404, before it reaches a query (ARV-063: ZAP's NUL byte reached PostgreSQL and answered 500).
+            if (codes.Any(code => code is not null && !Ariva.Core.Domain.Entities.Site.IsValidCode(code.ToUpperInvariant())))
+            {
+                context.Result = NotFound();
+                return;
+            }
+
             var access = await context.HttpContext.RequestServices.GetRequiredService<ISiteScope>().GetAsync(context.HttpContext.RequestAborted);
             if (codes.Any(code => !access.Allows(code)))
             {
-                context.Result = new ObjectResult(new ProblemDetails { Status = StatusCodes.Status404NotFound, Title = "Not found" })
-                {
-                    StatusCode = StatusCodes.Status404NotFound,
-                    ContentTypes = { "application/problem+json" }
-                };
+                context.Result = NotFound();
                 return;
             }
         }
 
         await next();
     }
+
+    private static ObjectResult NotFound() =>
+        new(new ProblemDetails { Status = StatusCodes.Status404NotFound, Title = "Not found" })
+        {
+            StatusCode = StatusCodes.Status404NotFound,
+            ContentTypes = { "application/problem+json" }
+        };
 }
