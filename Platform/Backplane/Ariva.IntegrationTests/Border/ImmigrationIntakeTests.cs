@@ -98,7 +98,8 @@ public sealed class ImmigrationIntakeTests(PostgresFixture fixture) : IAsyncDisp
         (await _host.ReadAsync<string>("SELECT d.code FROM border_desk_interval b JOIN desk d ON d.id = b.desk_id WHERE b.desk_code = 'IN09' LIMIT 1")).Should().Be("AR-09");
         (await _host.ReadAsync<string>("SELECT d.code || ' ' || d.kind FROM border_egate_interval b JOIN desk d ON d.id = b.desk_id WHERE b.gate_code = 'EGOUT2' LIMIT 1"))
             .Should().Be("DG-2 EGate");
-        (await _host.ReadAsync<long>("SELECT count(*) FROM border_desk_session WHERE feed = 'aman-kafka'")).Should().Be(minute.Sessions.Count);
+        // Other tests of this class write AMAN sessions for XS2 into the same database, so count this site's only.
+        (await _host.ReadAsync<long>("SELECT count(*) FROM border_desk_session WHERE feed = 'aman-kafka' AND site_code = 'DMO'")).Should().Be(minute.Sessions.Count);
     }
 
     [Fact]

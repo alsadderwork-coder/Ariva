@@ -69,7 +69,7 @@ if (provisionTopics)
 // Installer command: the deployment's break-glass account, printed once (ARV-010c).
 if (breakGlass)
 {
-    return await BreakGlassCommand.RunAsync(builder.Configuration, breakGlassArgs, Console.Out);
+    return await BreakGlassCommand.RunAsync(builder.Configuration, builder.Environment.EnvironmentName, breakGlassArgs, Console.Out);
 }
 
 #endregion
@@ -91,13 +91,13 @@ builder.Services.RegisterArivaServices(builder.Configuration, messaging => messa
 // Security baseline (docs/security/cwe-controls.md): default deny (fallback policy, Ariva.Deny answers challenges),
 // ES256 access tokens from Ariva.Api.Main with permissions from stored grants (ARV-010a), input limits, rate limiting,
 // ProblemDetails errors, trusted forwarded headers and the CORS allow-list.
-builder.Services.AddAppSecurityBaseline(builder.Configuration);
+builder.Services.AddAppSecurityBaseline(builder.Configuration, builder.Environment.EnvironmentName);
 builder.Services.AddAppControllers();
 // OpenAPI document for the dynamic scan (ARV-063): only with OpenApi:Enabled, administrators only, refused in k8s-prd.
 builder.Services.AddArivaOpenApi(builder.Configuration, builder.Environment.EnvironmentName);
 
 // Ariva.Api.Main signs users in and issues tokens (ADR-0026); the other hosts only validate them.
-builder.Services.AddArivaTokenIssuing(builder.Configuration);
+builder.Services.AddArivaTokenIssuing(builder.Configuration, builder.Environment.EnvironmentName);
 
 // Integration clients (ARV-042): administrators register the systems that call the Integration API.
 builder.Services.AddArivaIntegrationClients();

@@ -59,7 +59,7 @@ builder.Services.RegisterArivaServices(builder.Configuration);
 // Security baseline (docs/security/cwe-controls.md): default deny (fallback policy, Ariva.Deny answers challenges),
 // ES256 access tokens from Ariva.Api.Main with permissions from stored grants (ARV-010a), input limits, rate limiting,
 // ProblemDetails errors, trusted forwarded headers and the CORS allow-list.
-builder.Services.AddAppSecurityBaseline(builder.Configuration);
+builder.Services.AddAppSecurityBaseline(builder.Configuration, builder.Environment.EnvironmentName);
 
 // Device endpoints (ARV-022): controllers with the unit of work filter, and client certificates forwarded by the
 // ingress for devices that pin one.

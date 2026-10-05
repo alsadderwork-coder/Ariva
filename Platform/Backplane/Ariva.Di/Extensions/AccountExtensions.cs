@@ -18,7 +18,8 @@ namespace Ariva.Di.Extensions;
 public static class AccountExtensions
 {
     /// <summary>Settings, validation keys, password policy, the session check, the stored permission resolver and the site scope; every API host.</summary>
-    public static IServiceCollection AddArivaAccounts(this IServiceCollection services, IConfiguration configuration)
+    /// <param name="hostEnvironment">The host's own environment name (<c>IHostEnvironment.EnvironmentName</c>), never a configuration key.</param>
+    public static IServiceCollection AddArivaAccounts(this IServiceCollection services, IConfiguration configuration, string hostEnvironment)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
@@ -40,12 +41,12 @@ public static class AccountExtensions
     /// Ariva.Api.Main only: the signing key, the token issuer, the sign-in service and user administration; on vm-local also the development
     /// accounts from Auth:DevelopmentUsers.
     /// </summary>
-    public static IServiceCollection AddArivaTokenIssuing(this IServiceCollection services, IConfiguration configuration)
+    public static IServiceCollection AddArivaTokenIssuing(this IServiceCollection services, IConfiguration configuration, string hostEnvironment)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
 
-        services.AddArivaAccounts(configuration);
+        services.AddArivaAccounts(configuration, hostEnvironment);
         var settings = AuthSettings.From(configuration);
         services.Replace(ServiceDescriptor.Singleton(_ => TokenKeys.Load(settings.Tokens, requireSigningKey: true)));
         services.TryAddSingleton<AccessTokenIssuer>();
@@ -94,7 +95,7 @@ public static class AccountExtensions
         // Alerts (ARV-039); their notices come from AddArivaCaching (Redis, or nothing without it).
         services.TryAddScoped<Ariva.Core.Services.Alerting.ISvcAlerts, Ariva.Infra.Services.Alerting.SvcAlerts>();
 
-        if (LocalOnlyProblem(settings, configuration) is { } problem)
+        if (LocalOnlyProblem(settings, configuration, hostEnvironment) is { } problem)
             throw new InvalidOperationException(problem);
         if (settings.DevelopmentUsers.Count > 0)
             services.AddHostedService<DevelopmentUserSeed>();
@@ -104,12 +105,13 @@ public static class AccountExtensions
 
     /// <summary>
     /// Development accounts and sign-in without TOTP are for a developer machine only (CWE-287, CWE-308): both need
-    /// <c>Application:Environment</c> vm-local and, when the process has a host environment (DOTNET_ENVIRONMENT or
-    /// ASPNETCORE_ENVIRONMENT, which Helm sets), that too. Checking both covers a cluster whose mounted settings omit
-    /// <c>Application:Environment</c> (it then defaults to vm-local) and a value injected through an environment variable.
+    /// <c>Application:Environment</c> vm-local and the host environment (DOTNET_ENVIRONMENT, which Helm sets) vm-local.
+    /// Checking both covers a cluster whose mounted settings omit <c>Application:Environment</c> (it then defaults to
+    /// vm-local) and a value injected through an environment variable. The host environment is the host's own name,
+    /// passed in, not the <c>environment</c> configuration key, which an unprefixed ENVIRONMENT variable could override.
     /// Null when the settings are allowed, otherwise why not.
     /// </summary>
-    public static string LocalOnlyProblem(AuthSettings settings, IConfiguration configuration)
+    public static string LocalOnlyProblem(AuthSettings settings, IConfiguration configuration, string hostEnvironment)
     {
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(configuration);
@@ -121,9 +123,8 @@ public static class AccountExtensions
         if (wanted.Count == 0)
             return null;
         var application = configuration["Application:Environment"];
-        var host = configuration[Microsoft.Extensions.Hosting.HostDefaults.EnvironmentKey];
-        return string.Equals(application, "vm-local", StringComparison.Ordinal) && (string.IsNullOrEmpty(host) || string.Equals(host, "vm-local", StringComparison.Ordinal))
+        return string.Equals(application, "vm-local", StringComparison.Ordinal) && string.Equals(hostEnvironment, "vm-local", StringComparison.Ordinal)
             ? null
-            : $"{string.Join(" and ", wanted)} only allowed in vm-local; this host runs as '{host}' with Application:Environment '{application}'.";
+            : $"{string.Join(" and ", wanted)} only allowed in vm-local; this host runs as '{hostEnvironment}' with Application:Environment '{application}'.";
     }
 }

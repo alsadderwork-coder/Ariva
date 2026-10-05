@@ -26,7 +26,7 @@ public static class BreakGlassCommand
         (args ?? []).Where(a => a is not (CreateFlag or RotateFlag) && !a.StartsWith(OutputPrefix, StringComparison.Ordinal)).ToArray();
 
     /// <summary>Issues the credential and returns the process exit code: 0 on success, 1 on failure (logged).</summary>
-    public static async Task<int> RunAsync(IConfiguration configuration, string[] args, TextWriter output, CancellationToken ct = default)
+    public static async Task<int> RunAsync(IConfiguration configuration, string hostEnvironment, string[] args, TextWriter output, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(output);
@@ -37,7 +37,7 @@ public static class BreakGlassCommand
         var services = new ServiceCollection();
         services.AddLogging(logging => logging.AddSimpleConsole(options => options.SingleLine = true));
         services.AddArivaPersistence(configuration);
-        services.AddArivaAccounts(configuration);
+        services.AddArivaAccounts(configuration, hostEnvironment);
         services.AddScoped<BreakGlassAccounts>();
 
         await using var provider = services.BuildServiceProvider();

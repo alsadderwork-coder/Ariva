@@ -32,14 +32,15 @@ public static class SecurityBaselineExtensions
     /// </summary>
     /// <param name="services">The host's service collection.</param>
     /// <param name="configuration">The host's layered configuration (reads the <c>Security</c> section).</param>
+    /// <param name="hostEnvironment">The host's own environment name (<c>builder.Environment.EnvironmentName</c>).</param>
     /// <returns>The same service collection, for chaining.</returns>
-    public static IServiceCollection AddAppSecurityBaseline(this IServiceCollection services, IConfiguration configuration)
+    public static IServiceCollection AddAppSecurityBaseline(this IServiceCollection services, IConfiguration configuration, string hostEnvironment)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
 
         return services
-            .AddAppSecurity(configuration)
+            .AddAppSecurity(configuration, hostEnvironment)
             .AddAppRequestLimits(configuration)
             .AddAppRateLimiting(configuration)
             .AddAppErrorHandling()

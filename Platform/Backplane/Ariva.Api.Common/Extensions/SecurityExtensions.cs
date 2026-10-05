@@ -24,8 +24,9 @@ public static class SecurityExtensions
     /// ARV-010a adds the JWT bearer scheme as the authenticate scheme; Deny still answers every challenge and forbid.
     /// </summary>
     /// <param name="services">The host's service collection.</param>
+    /// <param name="hostEnvironment">The host's own environment name (<c>builder.Environment.EnvironmentName</c>).</param>
     /// <returns>The same service collection, for chaining.</returns>
-    public static IServiceCollection AddAppSecurity(this IServiceCollection services, IConfiguration configuration)
+    public static IServiceCollection AddAppSecurity(this IServiceCollection services, IConfiguration configuration, string hostEnvironment)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
@@ -46,7 +47,7 @@ public static class SecurityExtensions
             // Display players (ARV-058): their own scheme, used only by [DisplayAuthenticated] endpoints.
             .AddArivaDisplayAuthentication();
 
-        services.AddArivaAccounts(configuration);
+        services.AddArivaAccounts(configuration, hostEnvironment);
         services.AddHttpContextAccessor();
         services.Replace(ServiceDescriptor.Scoped<ICurrentUser, HttpCurrentUser>());
 

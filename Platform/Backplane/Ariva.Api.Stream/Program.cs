@@ -82,7 +82,7 @@ builder.Services.AddArivaDeskFeed(builder.Configuration);
 // Security baseline (docs/security/cwe-controls.md): default deny (fallback policy, Ariva.Deny answers challenges),
 // ES256 access tokens from Ariva.Api.Main with permissions from stored grants (ARV-010a), input limits, rate limiting,
 // ProblemDetails errors, trusted forwarded headers and the CORS allow-list.
-builder.Services.AddAppSecurityBaseline(builder.Configuration);
+builder.Services.AddAppSecurityBaseline(builder.Configuration, builder.Environment.EnvironmentName);
 
 // AMAN: AddAppCaching, AddAppHealthChecks.
 

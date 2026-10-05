@@ -36,8 +36,9 @@ public sealed class AuthSettingsTests
     }
 
     [Theory]
-    [InlineData("vm-local", null, true)]
     [InlineData("vm-local", "vm-local", true)]
+    [InlineData("vm-local", null, false)]
+    [InlineData("vm-local", "", false)]
     [InlineData("vm-local", "k8s-prd", false)]
     [InlineData("vm-local", "k8s-demo", false)]
     [InlineData("k8s-dev", "vm-local", false)]
@@ -46,19 +47,36 @@ public sealed class AuthSettingsTests
     public void LocalOnly_Should_AllowDevelopmentAccountsAndNoTotp_When_BothEnvironmentsAreVmLocal(string application, string host, bool allowed)
     {
         // ARV-064: a cluster whose settings omit Application:Environment (it defaults to vm-local) is still refused by its
-        // host environment, which Helm sets; an Auth__TotpRequired=false variable on a cluster refuses to start.
+        // host environment, which Helm sets; an Auth__TotpRequired=false variable on a cluster refuses to start. A host
+        // that does not say which environment it runs in is refused too.
         IConfiguration Settings(params (string Key, string Value)[] extra) => new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string> { ["Application:Environment"] = application, ["environment"] = host }
+            .AddInMemoryCollection(new Dictionary<string, string> { ["Application:Environment"] = application }
                 .Concat(extra.Select(e => new KeyValuePair<string, string>(e.Key, e.Value)))).Build();
         var noTotp = Settings(("Auth:TotpRequired", "false"));
         var accounts = Settings(("Auth:DevelopmentUsers:0:UserName", "demo.border"), ("Auth:DevelopmentUsers:0:Password", "x"));
 
-        (Ariva.Di.Extensions.AccountExtensions.LocalOnlyProblem(AuthSettings.From(noTotp), noTotp) is null).Should().Be(allowed);
-        (Ariva.Di.Extensions.AccountExtensions.LocalOnlyProblem(AuthSettings.From(accounts), accounts) is null).Should().Be(allowed);
+        (Ariva.Di.Extensions.AccountExtensions.LocalOnlyProblem(AuthSettings.From(noTotp), noTotp, host) is null).Should().Be(allowed);
+        (Ariva.Di.Extensions.AccountExtensions.LocalOnlyProblem(AuthSettings.From(accounts), accounts, host) is null).Should().Be(allowed);
         var plain = Settings();
-        Ariva.Di.Extensions.AccountExtensions.LocalOnlyProblem(AuthSettings.From(plain), plain).Should().BeNull("TOTP required and no development accounts are allowed anywhere");
+        Ariva.Di.Extensions.AccountExtensions.LocalOnlyProblem(AuthSettings.From(plain), plain, host).Should().BeNull("TOTP required and no development accounts are allowed anywhere");
         if (!allowed)
-            Ariva.Di.Extensions.AccountExtensions.LocalOnlyProblem(AuthSettings.From(noTotp), noTotp).Should().Contain("Auth:TotpRequired false only allowed in vm-local");
+            Ariva.Di.Extensions.AccountExtensions.LocalOnlyProblem(AuthSettings.From(noTotp), noTotp, host).Should().Contain("Auth:TotpRequired false only allowed in vm-local");
+    }
+
+    [Fact]
+    public void LocalOnly_Should_IgnoreTheEnvironmentConfigurationKey_When_TheHostRunsElsewhere()
+    {
+        // ARV-064 review: an unprefixed ENVIRONMENT variable sets the "environment" configuration key, never the host's
+        // own environment name, so it cannot make a cluster host look like vm-local.
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
+        {
+            ["Application:Environment"] = "vm-local",
+            [Microsoft.Extensions.Hosting.HostDefaults.EnvironmentKey] = "vm-local",
+            ["Auth:TotpRequired"] = "false"
+        }).Build();
+
+        Ariva.Di.Extensions.AccountExtensions.LocalOnlyProblem(AuthSettings.From(configuration), configuration, "k8s-prd")
+            .Should().Contain("this host runs as 'k8s-prd'");
     }
 
     [Fact]
