@@ -20,3 +20,11 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- if and .Values.mqtt .Values.mqtt.enabled (empty .Values.mqtt.tlsSecretName) }}
 {{- fail "mqtt.enabled needs mqtt.tlsSecretName (a kubernetes.io/tls secret); the MQTT listener is TLS only" }}
 {{- end }}
+{{- range $service, $digest := (.Values.imageDigests | default dict) }}
+{{- if not (has $service (list "api-main" "api-ingest" "api-stream" "api-cronz" "api-integration" "simulation" "web")) }}
+{{- fail (printf "imageDigests.%s is not an Ariva service" $service) }}
+{{- end }}
+{{- if not (regexMatch "^sha256:[0-9a-f]{64}$" (toString $digest)) }}
+{{- fail (printf "imageDigests.%s must be a sha256 digest" $service) }}
+{{- end }}
+{{- end }}

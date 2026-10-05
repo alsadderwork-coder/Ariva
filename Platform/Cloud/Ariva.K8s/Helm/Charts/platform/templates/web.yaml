@@ -40,7 +40,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: web-container
-          image: "{{ .Values.imageRepository }}/web:{{ .Values.buildNumber }}"
+          image: {{ include "ariva-platform.image" (list . "web") }}
           imagePullPolicy: {{ .Values.imagePullPolicy | default "Always" }}
           securityContext:
             allowPrivilegeEscalation: false

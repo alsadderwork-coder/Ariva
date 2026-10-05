@@ -7,6 +7,7 @@
 //   node Platform/Cloud/Ariva.K8s/tests/chart-security.mjs              needs helm 3 on PATH (or HELM=path)
 //   node Platform/Cloud/Ariva.K8s/tests/chart-security.mjs --self-test  checks the rules against fixtures, no helm
 // Without helm the test is skipped locally and fails in CI (CI=true).
+import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -185,6 +186,45 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 			console.error(`FAIL helmfile -e ${environment}:\n  ${findings.join('\n  ')}`);
 		} else {
 			console.log(`PASS helmfile -e ${environment}: ${docs.length} objects, database and topics job included`);
+		}
+	}
+	// ARV-002: the GitHub dev release (.github/workflows/release-dev.yml) deploys from GHCR, pins every image by the digest
+	// it verified and owns the pull secret itself. Same --set values as the workflow.
+	{
+		const repository = 'ghcr.io/example/ariva';
+		const services = ['api-main', 'api-ingest', 'api-stream', 'api-cronz', 'api-integration', 'simulation', 'web'];
+		const digestOf = (service) => 'sha256:' + createHash('sha256').update(service).digest('hex');
+		const result = template('dev', ['--state-values-set', 'buildNumber=main-41', '--set', `imageRepository=${repository}`, '--set', 'releaseVersion=main-41',
+			...services.flatMap((service) => ['--set', `imageDigests.${service}=${digestOf(service)}`])]);
+		const findings = [];
+		if (result.status !== 0) findings.push(`template failed\n${result.stderr}`);
+		else {
+			const docs = parse(result.stdout);
+			findings.push(...checkManifests(docs, { environment: 'k8s-dev' }));
+			const images = docs.flatMap((doc) => {
+				const spec = doc?.spec?.template?.spec ?? doc?.spec?.jobTemplate?.spec?.template?.spec;
+				return spec ? [...(spec.initContainers ?? []), ...(spec.containers ?? [])].map((container) => ({ name: `${doc.kind}/${doc.metadata?.name}`, image: String(container.image) })) : [];
+			}).filter(({ name }) => !/timescaledb/.test(name));
+			if (images.length < 9) findings.push(`expected the platform's 9 workloads, found ${images.length} images`);
+			for (const { name, image } of images) {
+				const match = image.match(/^ghcr\.io\/example\/ariva\/([a-z-]+):main-41@(sha256:[0-9a-f]{64})$/);
+				if (!match) findings.push(`${name}: ${image} is not ${repository}/<service>:main-41@sha256:<digest>`);
+				else if (match[2] !== digestOf(match[1])) findings.push(`${name}: ${image} carries another service's digest`);
+			}
+			if (docs.some((doc) => doc?.kind === 'Secret' && doc.metadata?.name === 'dalilacr-secret')) findings.push('the chart renders dalilacr-secret although the workflow owns it');
+		}
+		const refusedWith = (sets, message) => {
+			const attempt = template('dev', ['--state-values-set', 'buildNumber=main-41', ...sets]);
+			return attempt.status !== 0 && attempt.stderr.includes(message);
+		};
+		const refused = refusedWith(['--set', 'imageDigests.api-main=latest'], 'imageDigests.api-main must be a sha256 digest')
+			&& refusedWith(['--set', `imageDigests.other=${digestOf('other')}`], 'imageDigests.other is not an Ariva service');
+		if (!refused) findings.push('a malformed digest or an unknown service in imageDigests was not refused');
+		if (findings.length) {
+			failed = true;
+			console.error(`FAIL helmfile -e dev as release-dev:\n  ${findings.join('\n  ')}`);
+		} else {
+			console.log('PASS helmfile -e dev as release-dev: every image from GHCR pinned by its digest, no chart-owned pull secret, bad digests refused');
 		}
 	}
 	if (template('prd').status === 0) {

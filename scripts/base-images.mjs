@@ -152,6 +152,16 @@ function check() {
 			}
 		}
 	}
+	// ARV-002: the GitHub dev release renders and applies with CI's Helm, as the Azure DevOps release does.
+	{
+		const helmOf = (file) => fs.readFileSync(path.join(ROOT, '.github', 'workflows', file), 'utf8').match(/setup-helm@[^\n]*\n\s*with:\s*\n\s*version:\s*v(\d+\.\d+\.\d+)/)?.[1];
+		const releaseFile = path.join(ROOT, '.github', 'workflows', 'release-dev.yml');
+		if (fs.existsSync(releaseFile)) {
+			const ci = helmOf('ci.yml');
+			const release = helmOf('release-dev.yml');
+			if (!release || release !== ci) problems.push(`.github/workflows/release-dev.yml: Helm ${release ?? 'not found'} must be CI's Helm (${ci ?? 'not found in ci.yml'})`);
+		}
+	}
 	// ARV-062: the cluster's TimescaleDB runs the image the developers, the integration tests and CI run, pinned by digest.
 	const databaseValues = path.join(ROOT, 'Platform', 'Cloud', 'Ariva.K8s', 'Helm', 'Charts', 'timescaledb', 'values.yaml');
 	if (fs.existsSync(databaseValues)) {

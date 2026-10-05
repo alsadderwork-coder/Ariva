@@ -394,7 +394,7 @@ Trust rests on two repository settings, which the owner keeps and confirms befor
 Who may have signed: the `images.yml` workflow of this repository, on a version tag or `main`. Verify with cosign 3, after `docker login ghcr.io` with a token that can read packages (the packages are private):
 
 ```bash
-IMAGE=ghcr.io/alsadderwork-coder/ariva-api-main@sha256:<digest from the release notes>
+IMAGE=ghcr.io/alsadderwork-coder/ariva/api-main@sha256:<digest from the release notes>
 SIGNER='^https://github\.com/alsadderwork-coder/Ariva/\.github/workflows/images\.yml@refs/(tags/v.+|heads/main)$'
 ISSUER=https://token.actions.githubusercontent.com
 REPO=alsadderwork-coder/Ariva
@@ -413,7 +413,7 @@ What keyless signing publishes. Rekor is a public, permanent log. Each signature
 Images for Dalil Container Registry. The Azure DevOps builds (`Build-k8s-<service>`), which the chart deploys from `dalil.azurecr.io`, are not signed and carry no SBOM. To keep the evidence, copy the signed GitHub images instead of rebuilding them, with their referrers, and verify the copy:
 
 ```bash
-oras copy -r ghcr.io/alsadderwork-coder/ariva-api-main@sha256:<digest> dalil.azurecr.io/ariva/api-main:<build number>
+oras copy -r ghcr.io/alsadderwork-coder/ariva/api-main@sha256:<digest> dalil.azurecr.io/ariva/api-main:<build number>
 cosign verify --certificate-identity-regexp "$SIGNER" --certificate-oidc-issuer "$ISSUER" \
   --certificate-github-workflow-repository "$REPO" dalil.azurecr.io/ariva/api-main@sha256:<digest>
 ```
@@ -439,7 +439,7 @@ spec:
               namespaces: ["<namespace>"]
       verifyImages:
         - type: SigstoreBundle
-          imageReferences: ["dalil.azurecr.io/ariva/*", "ghcr.io/alsadderwork-coder/ariva-*"]
+          imageReferences: ["dalil.azurecr.io/ariva/*", "ghcr.io/alsadderwork-coder/ariva/*"]
           mutateDigest: true
           required: true
           attestors:
@@ -452,6 +452,31 @@ spec:
 ```
 
 Replace `<namespace>` with the deployment's namespace (section 6.1). Keep `Audit` until every image in it is signed (the Azure DevOps builds are not, see above), then switch to `Enforce`. The policy passes Kyverno's schema but has not been run against a cluster (To confirm on the customer's cluster); the Sigstore policy-controller (`ClusterImagePolicy`) is an alternative. The policy is not part of the chart: the admission controller is the cluster owner's.
+
+### 6.6 Release to k8s-dev from GitHub
+
+Until the dev cluster moves to Dalil Azure, the dev release runs from GitHub Actions (`.github/workflows/release-dev.yml`) with the images the `images` workflow pushes to `ghcr.io/alsadderwork-coder/ariva/<service>`. The Azure DevOps pipelines (`Build-k8s-*`, `Release-ariva-k8s-dev.yaml`) stay as they are for the move. Both use the same Helmfile and chart; the GitHub release only points `imageRepository` at GHCR and its pull secret at a GHCR token.
+
+Once:
+
+1. GitHub Actions must be able to run jobs on the account (billing and spending limit), and a runner must reach the cluster's API server. A GitHub-hosted runner reaches only a public endpoint; for a private cluster, install a self-hosted runner inside the network and set the repository variable `ARIVA_DEPLOY_RUNNER` to its label.
+2. Create the environment `k8s-dev` (Settings, Environments) and set its deployment branches to `main` only. Environments and deployment branches in a private repository need GitHub Pro, Team or Enterprise; required reviewers need Enterprise, so on Pro or Team the gate is who can run workflows on `main`. Put the secrets in the environment only, never as repository secrets: GitHub falls back to a repository secret of the same name, which every workflow on every branch can read. Environment secrets: `KUBECONFIG_B64`, `APPSETTINGS_BASE`, `APPSETTINGS_API_MAIN`, `APPSETTINGS_API_INGEST`, `APPSETTINGS_API_STREAM`, `APPSETTINGS_API_CRONZ`, `APPSETTINGS_API_INTEGRATION`, `APPSETTINGS_SIMULATION`, `DB_SUPERUSER_PASSWORD`, `DB_MIGRATION_PASSWORD` (16 characters or more), `GHCR_PULL_USERNAME` and `GHCR_PULL_TOKEN` (a classic token with `read:packages` only). The header of the workflow says what each holds. Optional variable: `ARIVA_DEV_NAMESPACE` (default `ariva-k8s-dev`). The kubeconfig should belong to a service account bound to that namespace, not a cluster administrator, with `get` on that one namespace object (a ClusterRole limited by `resourceNames`) so the run can see the namespace exists.
+3. Create the one-time secrets of section 6.2 in the namespace by hand: `ariva-dataprotection`, `ariva-token-public`, `ariva-token-signing`, `ariva-integration-token-public`, `ariva-integration-token-signing` and `ariva-tls`. The release checks they exist.
+
+Each release:
+
+1. Actions, `images`, Run workflow on `main`. It builds, scans, pushes, signs and attaches the SBOM of the seven images, and its summary gives the tag (`main-<run number>`) and the digests.
+2. Actions, `release-dev`, Run workflow on `main` with that tag (and approve the `k8s-dev` environment where required reviewers are set). It verifies that every image is signed by the `images` workflow (and stops if one is not), writes the appsettings, database and pull secrets, applies the Helmfile (TimescaleDB first, then the platform with its migration and Kafka topics jobs), and lists the pods with their security context in its summary.
+3. Check the summary: every pod Running and ready, user 10001 (TimescaleDB 1000), non-root, read-only root filesystem. That list is the ARV-002 evidence.
+
+What the GitHub release does differently from the Azure DevOps one:
+
+- Images are pinned by digest. The release verifies each image's signature, takes the digest from the signed payload and deploys `ghcr.io/.../<service>:<tag>@sha256:<digest>` (chart value `imageDigests`), so a tag moved after the check cannot change what runs.
+- The pull secret `dalilacr-secret` is written by the workflow (type `kubernetes.io/dockerconfigjson`, for `ghcr.io`) and the chart's own copy is turned off (empty `imageCredentials.password`). The Azure DevOps release lets the chart own that secret instead. Switching between the two:
+  - GitHub after Azure DevOps: the workflow stops when it finds a Helm-owned `dalilacr-secret`. Run `kubectl delete secret dalilacr-secret -n ariva-k8s-dev` once, then run the release again. The workflow writes its own secret with the annotation `helm.sh/resource-policy: keep`, because the previous Helm revision still lists `dalilacr-secret` and Helm would otherwise delete it during that same upgrade.
+  - Azure DevOps after GitHub: Helm refuses to adopt the workflow's secret. Run the same `kubectl delete secret dalilacr-secret -n ariva-k8s-dev` before the first Azure DevOps release.
+  Pods already running keep their images; a pod scheduled between the delete and the release cannot pull until the release writes the secret again.
+- A self-hosted runner for a private cluster holds the kubeconfig while it runs. Run it ephemeral (`--ephemeral`, one job per runner), as a non-root user, on a host used for nothing else, and register it to this repository only.
 
 ## 7. First-time bootstrap
 

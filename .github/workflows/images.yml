@@ -32,29 +32,30 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - image: ariva-api-main
+          - image: api-main
             dockerfile: Platform/Backplane/Ariva.Api.Main/Dockerfile
             context: .
-          - image: ariva-api-ingest
+          - image: api-ingest
             dockerfile: Platform/Backplane/Ariva.Api.Ingest/Dockerfile
             context: .
-          - image: ariva-api-stream
+          - image: api-stream
             dockerfile: Platform/Backplane/Ariva.Api.Stream/Dockerfile
             context: .
-          - image: ariva-api-cronz
+          - image: api-cronz
             dockerfile: Platform/Backplane/Ariva.Api.Cronz/Dockerfile
             context: .
-          - image: ariva-api-integration
+          - image: api-integration
             dockerfile: Platform/Backplane/Ariva.Api.Integration/Dockerfile
             context: .
-          - image: ariva-simulation
+          - image: simulation
             dockerfile: Platform/Simulation/Ariva.Simulation.Api/Dockerfile
             context: .
-          - image: ariva-web
+          - image: web
             dockerfile: Platform/Frontplane/Ariva.Web/Dockerfile
             context: .
     env:
-      IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+      # ghcr.io/<owner>/ariva/<service>: the chart's imageRepository/<service> layout, as in Dalil Container Registry.
+      IMAGE: ghcr.io/${{ github.repository_owner }}/ariva/${{ matrix.image }}
       # Pushed and signed only from a version tag or main, the identities a deployment trusts; elsewhere build and scan.
       PUSH: ${{ github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main') }}
       # Who may have signed: this workflow, on a version tag or main (wiki/04, section 6.5).
@@ -168,7 +169,7 @@ jobs:
             echo '| Image | Tag | Digest |'
             echo '|---|---|---|'
             cat digests/*/digest-*.tsv | sort | while IFS=$'\t' read -r image tag digest; do
-              echo "| ghcr.io/$OWNER/$image | $tag | \`$digest\` |"
+              echo "| ghcr.io/$OWNER/ariva/$image | $tag | \`$digest\` |"
             done
             echo
             echo 'Verify any of them (wiki/04, section 6.5):'
@@ -176,7 +177,7 @@ jobs:
             echo '```bash'
             echo "cosign verify --certificate-identity-regexp '^https://github\\.com/$REPOSITORY/\\.github/workflows/images\\.yml@refs/(tags/v.+|heads/main)\$' \\"
             echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-github-workflow-repository $REPOSITORY \\"
-            echo "  ghcr.io/$OWNER/<image>@<digest>"
+            echo "  ghcr.io/$OWNER/ariva/<image>@<digest>"
             echo '```'
           } > image-digests.md
           cat image-digests.md >> "$GITHUB_STEP_SUMMARY"

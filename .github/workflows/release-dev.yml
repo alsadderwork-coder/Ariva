@@ -1,0 +1,235 @@
+# Release to the k8s-dev namespace from GitHub (ARV-002): the GitHub counterpart of
+# Platform/Cloud/Ariva.Cicd/AzureDevOps/K8s/Release-ariva-k8s-dev.yaml, which stays ready for Dalil Azure. Run by hand
+# with the tag the images workflow gave a build (main-<run> or v<version>-<run>); it deploys those images from
+# ghcr.io/<owner>/ariva/<service>, after verifying every one is signed by this repository's images workflow (ARV-073).
+#
+# Everything cluster-specific lives in the GitHub environment "k8s-dev" (Settings, Environments), never in the
+# repository. Limit its deployment branches to main (the control on Pro and Team plans; required reviewers on a private
+# repository need Enterprise). Never put these in repository secrets: every workflow on every branch could read them. Secrets:
+#   KUBECONFIG_B64                    base64 kubeconfig whose current context is the dev cluster, with a Role in the
+#                                     namespace plus get on that one namespace object (create the namespace once by
+#                                     hand, or it also needs to create namespaces)
+#   APPSETTINGS_BASE                  appsettings.base.k8s-dev.json content
+#   APPSETTINGS_API_MAIN, _API_INGEST, _API_STREAM, _API_CRONZ, _API_INTEGRATION, _SIMULATION
+#                                     appsettings.service.k8s-dev.json content per service
+#   DB_SUPERUSER_PASSWORD             TimescaleDB "postgres" superuser (16 characters or more)
+#   DB_MIGRATION_PASSWORD             TimescaleDB migration login; equals Database:Migration:Password in APPSETTINGS_BASE
+#   GHCR_PULL_USERNAME, GHCR_PULL_TOKEN
+#                                     an account and a token with read:packages only, for the cluster's image pulls
+# Variables: ARIVA_DEPLOY_RUNNER (runner label; a self-hosted runner inside the network when the cluster's API is not
+# reachable from GitHub, default ubuntu-24.04) and ARIVA_DEV_NAMESPACE (default ariva-k8s-dev).
+# The one-time secrets (ariva-dataprotection, ariva-token-*, ariva-integration-token-*, ariva-tls) are created by hand
+# once (wiki/04, section 6.2); the run checks they exist. Steps: wiki/04, section 6.6.
+name: release-dev
+
+on:
+  workflow_dispatch:
+    inputs:
+      build:
+        description: Image tag to deploy, as the images workflow gave it (for example main-41)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: read # verifying the image signatures in GHCR
+
+concurrency:
+  group: release-dev
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  release:
+    name: Release ${{ inputs.build }} to k8s-dev
+    # From main only (the k8s-dev environment also allows only main, which is the control: a modified copy of this file on
+    # a branch could drop this line).
+    if: github.ref == 'refs/heads/main'
+    runs-on: ${{ vars.ARIVA_DEPLOY_RUNNER || 'ubuntu-24.04' }}
+    environment: k8s-dev
+    timeout-minutes: 45
+    env:
+      ENVIRONMENT: k8s-dev
+      NAMESPACE: ${{ vars.ARIVA_DEV_NAMESPACE || 'ariva-k8s-dev' }}
+      BUILD: ${{ inputs.build }}
+      REGISTRY: ghcr.io/${{ github.repository_owner }}/ariva
+      SIGNER: ^https://github\.com/${{ github.repository }}/\.github/workflows/images\.yml@refs/(tags/v.+|heads/main)$
+      ISSUER: https://token.actions.githubusercontent.com
+      KUBECTL_VERSION: v1.37.1
+      KUBECTL_SHA256: 65691ff77eb6fa44c908b77a1082c9f092c3b9733b5cefabec0d1104890e21a8
+      HELMFILE_SHA256: e9d870f4e502b9f0850d7e0546cab8b418ff7f44ff4df0ed54cd3df8dfda189c
+      HELM_DIFF_SHA256: 33d8a11dbda6666382b2fc78eb6d7b3cf7bf12005dd734d56addf988effcfe2e
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the build tag
+        run: |
+          # Registry logins and Helm plugins of this job only, never the runner user's (a self-hosted runner keeps $HOME).
+          # Set here: the runner context is not available in job env.
+          echo "DOCKER_CONFIG=$RUNNER_TEMP/docker" >> "$GITHUB_ENV"
+          echo "HELM_PLUGINS=$RUNNER_TEMP/helm-plugins" >> "$GITHUB_ENV"
+          [[ "$BUILD" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { echo "::error::build must be an image tag such as main-41"; exit 1; }
+          [[ "$NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || { echo "::error::ARIVA_DEV_NAMESPACE is not a namespace name"; exit 1; }
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.19.0 # the Helm of ci.yml and the Azure DevOps release
+      - name: kubectl, Helmfile and helm-diff (checksum verified)
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL -o "$RUNNER_TEMP/bin/kubectl" "https://dl.k8s.io/release/$KUBECTL_VERSION/bin/linux/amd64/kubectl"
+          echo "$KUBECTL_SHA256  $RUNNER_TEMP/bin/kubectl" | sha256sum -c -
+          curl -fsSL -o "$RUNNER_TEMP/helmfile.tgz" https://github.com/helmfile/helmfile/releases/download/v1.1.7/helmfile_1.1.7_linux_amd64.tar.gz
+          echo "$HELMFILE_SHA256  $RUNNER_TEMP/helmfile.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/helmfile.tgz" -C "$RUNNER_TEMP/bin" helmfile
+          chmod +x "$RUNNER_TEMP/bin/kubectl" "$RUNNER_TEMP/bin/helmfile"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          # helmfile apply diffs before it applies; the plugin from its release archive, not from git (no checksum there).
+          curl -fsSL -o "$RUNNER_TEMP/helm-diff.tgz" https://github.com/databus23/helm-diff/releases/download/v3.13.0/helm-diff-linux-amd64.tgz
+          echo "$HELM_DIFF_SHA256  $RUNNER_TEMP/helm-diff.tgz" | sha256sum -c -
+          mkdir -p "$HELM_PLUGINS" "$DOCKER_CONFIG"
+          tar -xzf "$RUNNER_TEMP/helm-diff.tgz" -C "$HELM_PLUGINS"
+          helm plugin list | grep -q '^diff'
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: 'v3.0.6'
+      # ARV-073: only images this repository's images workflow signed, on a version tag or main, are deployed.
+      - name: Verify every image's signature
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "$GH_TOKEN" | cosign login ghcr.io -u "$GITHUB_ACTOR" --password-stdin > /dev/null
+          {
+            echo "## Images of $BUILD"
+            echo
+            echo '| Image | Digest |'
+            echo '|---|---|'
+          } >> "$GITHUB_STEP_SUMMARY"
+          for service in api-main api-ingest api-stream api-cronz api-integration simulation web; do
+            ref="$REGISTRY/$service:$BUILD"
+            digest="$(cosign verify --certificate-identity-regexp "$SIGNER" --certificate-oidc-issuer "$ISSUER" \
+              --certificate-github-workflow-repository "$GITHUB_REPOSITORY" "$ref" \
+              | jq -r '[.[].critical.image["docker-manifest-digest"]] | unique | if length == 1 then .[0] else "mixed" end')"
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::$ref is not signed by the images workflow"; exit 1; }
+            echo "| $REGISTRY/$service | \`$digest\` |" >> "$GITHUB_STEP_SUMMARY"
+            # The pods pull this digest, never the tag again (a tag can be moved after the check).
+            echo "DIGEST_${service//-/_}=$digest" >> "$GITHUB_ENV"
+          done
+      - name: Cluster access
+        id: cluster
+        env:
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
+        run: |
+          [ -n "$KUBECONFIG_B64" ] || { echo "::error::the k8s-dev environment has no KUBECONFIG_B64"; exit 1; }
+          umask 077
+          printf '%s' "$KUBECONFIG_B64" | base64 --decode > "$RUNNER_TEMP/kubeconfig"
+          echo "KUBECONFIG=$RUNNER_TEMP/kubeconfig" >> "$GITHUB_ENV"
+          KUBECONFIG="$RUNNER_TEMP/kubeconfig" kubectl version > /dev/null
+      - name: Namespace, appsettings and database secrets
+        env:
+          APPSETTINGS_BASE: ${{ secrets.APPSETTINGS_BASE }}
+          APPSETTINGS_API_MAIN: ${{ secrets.APPSETTINGS_API_MAIN }}
+          APPSETTINGS_API_INGEST: ${{ secrets.APPSETTINGS_API_INGEST }}
+          APPSETTINGS_API_STREAM: ${{ secrets.APPSETTINGS_API_STREAM }}
+          APPSETTINGS_API_CRONZ: ${{ secrets.APPSETTINGS_API_CRONZ }}
+          APPSETTINGS_API_INTEGRATION: ${{ secrets.APPSETTINGS_API_INTEGRATION }}
+          APPSETTINGS_SIMULATION: ${{ secrets.APPSETTINGS_SIMULATION }}
+          DB_SUPERUSER_PASSWORD: ${{ secrets.DB_SUPERUSER_PASSWORD }}
+          DB_MIGRATION_PASSWORD: ${{ secrets.DB_MIGRATION_PASSWORD }}
+          GHCR_PULL_USERNAME: ${{ secrets.GHCR_PULL_USERNAME }}
+          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+        run: |
+          set -euo pipefail
+          umask 077
+          work="$RUNNER_TEMP/secrets"
+          mkdir -p "$work"
+          trap 'rm -rf "$work"' EXIT
+          # Created only when missing (that needs cluster rights; create it once by hand to keep the kubeconfig to the namespace).
+          kubectl get namespace "$NAMESPACE" > /dev/null 2>&1 || kubectl create namespace "$NAMESPACE"
+
+          # The pull secret below is this workflow's. One left by an Azure DevOps release belongs to Helm, which would delete
+          # it during this upgrade: stop instead (wiki/04, section 6.6).
+          if [ "$(kubectl get secret dalilacr-secret -n "$NAMESPACE" -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by}' 2>/dev/null)" = "Helm" ]; then
+            echo "::error::dalilacr-secret in $NAMESPACE belongs to an Azure DevOps (Helm) release; delete it once (kubectl delete secret dalilacr-secret -n $NAMESPACE) and run again"
+            exit 1
+          fi
+
+          # Every value is required; none is ever placed on a command line.
+          for name in APPSETTINGS_BASE APPSETTINGS_API_MAIN APPSETTINGS_API_INGEST APPSETTINGS_API_STREAM APPSETTINGS_API_CRONZ \
+                      APPSETTINGS_API_INTEGRATION APPSETTINGS_SIMULATION DB_SUPERUSER_PASSWORD DB_MIGRATION_PASSWORD GHCR_PULL_USERNAME GHCR_PULL_TOKEN; do
+            [ -n "${!name}" ] || { echo "::error::the k8s-dev environment has no $name"; exit 1; }
+          done
+          for name in DB_SUPERUSER_PASSWORD DB_MIGRATION_PASSWORD; do
+            [ "$(printf '%s' "${!name}" | wc -c)" -ge 16 ] || { echo "::error::$name must have at least 16 characters"; exit 1; }
+          done
+
+          printf '%s' "$APPSETTINGS_BASE" > "$work/appsettings.base.$ENVIRONMENT.json"
+          kubectl create secret generic base-appsettings-secret -n "$NAMESPACE" \
+            --from-file="appsettings.base.$ENVIRONMENT.json=$work/appsettings.base.$ENVIRONMENT.json" --dry-run=client -o yaml | kubectl apply -f -
+          for pair in api-main:APPSETTINGS_API_MAIN api-ingest:APPSETTINGS_API_INGEST api-stream:APPSETTINGS_API_STREAM \
+                      api-cronz:APPSETTINGS_API_CRONZ api-integration:APPSETTINGS_API_INTEGRATION simulation:APPSETTINGS_SIMULATION; do
+            service="${pair%%:*}"; variable="${pair#*:}"
+            printf '%s' "${!variable}" > "$work/$service.json"
+            kubectl create secret generic "$service-appsettings-secret" -n "$NAMESPACE" \
+              --from-file="appsettings.service.$ENVIRONMENT.json=$work/$service.json" --dry-run=client -o yaml | kubectl apply -f -
+          done
+
+          printf '%s' "$DB_SUPERUSER_PASSWORD" > "$work/superuser-password"
+          printf '%s' "$DB_MIGRATION_PASSWORD" > "$work/migration-password"
+          kubectl create secret generic timescaledb-credentials -n "$NAMESPACE" \
+            --from-file=superuser-password="$work/superuser-password" --from-file=migration-password="$work/migration-password" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          # The pull secret the chart's pods name (dalilacr-secret), here for GHCR; the chart renders none (empty password).
+          jq -n '{auths: {"ghcr.io": {username: env.GHCR_PULL_USERNAME, password: env.GHCR_PULL_TOKEN,
+            auth: ("\(env.GHCR_PULL_USERNAME):\(env.GHCR_PULL_TOKEN)" | @base64)}}}' > "$work/dockerconfig.json"
+          kubectl create secret generic dalilacr-secret -n "$NAMESPACE" --type=kubernetes.io/dockerconfigjson \
+            --from-file=.dockerconfigjson="$work/dockerconfig.json" --dry-run=client -o yaml | kubectl apply -f -
+          # After an Azure DevOps release the previous Helm revision still lists dalilacr-secret, and Helm deletes what the new
+          # revision drops, whoever created the live object. Only this annotation on the live object stops that.
+          kubectl annotate secret dalilacr-secret -n "$NAMESPACE" helm.sh/resource-policy=keep --overwrite
+      - name: The one-time secrets exist
+        run: |
+          missing=()
+          for secret in ariva-dataprotection ariva-token-public ariva-token-signing ariva-integration-token-public ariva-integration-token-signing ariva-tls; do
+            kubectl get secret "$secret" -n "$NAMESPACE" > /dev/null 2>&1 || missing+=("$secret")
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::create these secrets once by hand first (wiki/04, section 6.2): ${missing[*]}"
+            exit 1
+          fi
+      # TimescaleDB first (waited for), then the platform with its migration and Kafka topics jobs (ARV-062).
+      - name: Release
+        run: |
+          digests=()
+          for service in api-main api-ingest api-stream api-cronz api-integration simulation web; do
+            variable="DIGEST_${service//-/_}"
+            digests+=(--set "imageDigests.$service=${!variable}")
+          done
+          helmfile apply \
+            -f Platform/Cloud/Ariva.K8s/Helm/helmfile-k8s.yaml.gotmpl \
+            -e dev \
+            --state-values-set buildNumber="$BUILD" \
+            --namespace "$NAMESPACE" \
+            --kube-context "$(kubectl config current-context)" \
+            --set imageRepository="$REGISTRY" \
+            --set releaseVersion="$BUILD" \
+            --set imageCredentials.password= \
+            "${digests[@]}"
+      - name: Pods and their security context (the ARV-002 evidence)
+        if: always() && steps.cluster.outcome == 'success'
+        run: |
+          {
+            echo "## Pods in $NAMESPACE"
+            echo '```'
+            kubectl get pods -n "$NAMESPACE" -o wide || true
+            echo
+            kubectl get pods -n "$NAMESPACE" -o custom-columns='POD:.metadata.name,USER:.spec.securityContext.runAsUser,NONROOT:.spec.securityContext.runAsNonRoot,ROFS:.spec.containers[*].securityContext.readOnlyRootFilesystem,READY:.status.containerStatuses[*].ready' || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove the kubeconfig
+        if: always()
+        run: rm -f "$RUNNER_TEMP/kubeconfig"

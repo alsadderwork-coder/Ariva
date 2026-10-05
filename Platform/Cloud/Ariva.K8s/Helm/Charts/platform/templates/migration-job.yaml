@@ -45,7 +45,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: database-migration
-          image: "{{ .Values.imageRepository }}/api-main:{{ .Values.buildNumber }}"
+          image: {{ include "ariva-platform.image" (list . "api-main") }}
           imagePullPolicy: {{ .Values.imagePullPolicy | default "Always" }}
           args: ["--migrate"]
           securityContext:

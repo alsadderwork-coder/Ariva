@@ -69,7 +69,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: api-stream-container
-          image: "{{ .Values.imageRepository }}/api-stream:{{ .Values.buildNumber }}"
+          image: {{ include "ariva-platform.image" (list . "api-stream") }}
           imagePullPolicy: {{ .Values.imagePullPolicy | default "Always" }}
           securityContext:
             allowPrivilegeEscalation: false

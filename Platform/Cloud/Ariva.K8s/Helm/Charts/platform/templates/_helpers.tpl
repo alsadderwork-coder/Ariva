@@ -56,3 +56,20 @@ Docker config JSON for dalilacr-secret, built from .Values.imageCredentials.
 {{- printf "{\"auths\":{\"%s\":{\"username\":\"%s\",\"password\":\"%s\",\"auth\":\"%s\"}}}" .registry .username .password (printf "%s:%s" .username .password | b64enc) | b64enc }}
 {{- end }}
 {{- end }}
+
+{{/*
+An Ariva image: imageRepository/<service>:buildNumber, and @<digest> when imageDigests.<service> is set, so the cluster
+pulls exactly the image whose signature the release verified (ARV-002 GitHub release; a tag can be moved, a digest cannot).
+Usage: {{ include "ariva-platform.image" (list . "api-main") }}
+*/}}
+{{- define "ariva-platform.image" -}}
+{{- $root := index . 0 -}}
+{{- $service := index . 1 -}}
+{{- $digest := "" -}}
+{{- with $root.Values.imageDigests }}{{ $digest = index . $service | default "" }}{{ end -}}
+{{- if $digest -}}
+{{- printf "%s/%s:%s@%s" $root.Values.imageRepository $service (toString $root.Values.buildNumber) $digest | quote -}}
+{{- else -}}
+{{- printf "%s/%s:%s" $root.Values.imageRepository $service (toString $root.Values.buildNumber) | quote -}}
+{{- end -}}
+{{- end }}

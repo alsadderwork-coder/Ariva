@@ -52,7 +52,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: simulation-container
-          image: "{{ .Values.imageRepository }}/simulation:{{ .Values.buildNumber }}"
+          image: {{ include "ariva-platform.image" (list . "simulation") }}
           imagePullPolicy: {{ .Values.imagePullPolicy | default "Always" }}
           securityContext:
             allowPrivilegeEscalation: false

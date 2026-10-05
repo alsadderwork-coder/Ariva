@@ -54,7 +54,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: kafka-topics
-          image: "{{ .Values.imageRepository }}/api-main:{{ .Values.buildNumber }}"
+          image: {{ include "ariva-platform.image" (list . "api-main") }}
           imagePullPolicy: {{ .Values.imagePullPolicy | default "Always" }}
           args: ["--provision-topics"]
           securityContext:

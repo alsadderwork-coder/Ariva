@@ -78,7 +78,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: api-integration-container
-          image: "{{ .Values.imageRepository }}/api-integration:{{ .Values.buildNumber }}"
+          image: {{ include "ariva-platform.image" (list . "api-integration") }}
           imagePullPolicy: {{ .Values.imagePullPolicy | default "Always" }}
           securityContext:
             allowPrivilegeEscalation: false

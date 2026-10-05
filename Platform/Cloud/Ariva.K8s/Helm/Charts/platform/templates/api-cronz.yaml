@@ -69,7 +69,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: api-cronz-container
-          image: "{{ .Values.imageRepository }}/api-cronz:{{ .Values.buildNumber }}"
+          image: {{ include "ariva-platform.image" (list . "api-cronz") }}
           imagePullPolicy: {{ .Values.imagePullPolicy | default "Always" }}
           securityContext:
             allowPrivilegeEscalation: false

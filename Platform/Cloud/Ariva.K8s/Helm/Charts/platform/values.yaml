@@ -7,6 +7,9 @@ environment: k8s-dev
 buildNumber: trunk
 imageRepository: dalil.azurecr.io/ariva
 imagePullPolicy: Always
+# Optional digests per service (api-main, api-ingest, api-stream, api-cronz, api-integration, simulation, web), set by a
+# release that verified the images' signatures: the pods then pull <repository>/<service>:<buildNumber>@<digest>.
+imageDigests: {}
 replicas: 1
 releaseVersion: v-0.0.0
 

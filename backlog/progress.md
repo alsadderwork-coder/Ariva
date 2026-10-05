@@ -720,3 +720,47 @@ One entry per story, newest last. Format:
     - no SLSA provenance attestation (GitHub artifact attestations for private repositories need Enterprise Cloud);
     - the Azure DevOps builds stay unsigned (Target);
     - CWE-494 is not a row of the 14-CWE matrix.
+
+## 2026-10-05 ARV-002 Release to k8s-dev from GitHub Actions (follow-up)
+
+- Owner's call: release to the dev cluster from GitHub Actions for now, and keep the Azure DevOps pipelines ready for the move to Dalil Azure. Those pipelines are unchanged.
+- Delivered:
+  - `.github/workflows/release-dev.yml`, run by hand on `main` with the tag the `images` workflow gave a build, in the `k8s-dev` environment:
+    - verifies every image's keyless signature against this repository's `images.yml` and stops if one is not signed;
+    - deploys each image pinned by the digest taken from the signed payload;
+    - writes the appsettings, TimescaleDB and GHCR pull secrets (through files, never command lines);
+    - checks the one-time secrets exist;
+    - applies the Helmfile;
+    - lists the pods and their security context as the ARV-002 evidence.
+  - kubectl, Helmfile and helm-diff are checksum-verified; Helm is CI's (enforced by `scripts/base-images.mjs`).
+  - `images.yml` pushes to `ghcr.io/<owner>/ariva/<service>`.
+  - Chart:
+    - value `imageDigests`, rendered by the `ariva-platform.image` helper in all 9 workloads;
+    - `validate.yaml` refuses unknown services and digests that are not sha256.
+  - `chart-security.mjs` renders the Helmfile with the workflow's values and checks every image is GHCR at its own digest, that the chart renders no pull secret, and that bad digests are refused (mutation-tested).
+  - wiki/04 section 6.6:
+    - the one-time setup (environment, deployment branches `main`, plan limits, no repository secrets, namespace-scoped kubeconfig, self-hosted runner hardening);
+    - the steps for each release;
+    - switching the pull secret between the GitHub and Azure DevOps releases.
+  - wiki/18; ASVS V13.3.1 and V15.1.2; wiki/13 CWE-269 row; Platform/Cloud/CLAUDE.md.
+- Gates:
+  - `actionlint` is clean on every workflow.
+  - `chart-security.mjs` passes, including every Helmfile environment.
+  - `base-images.mjs` passes.
+- Not verified: a real run. GitHub Actions jobs do not start on this account (billing), and no cluster is reachable from here.
+- Security review (independent reviewer):
+  - First pass FAIL, all fixed:
+    - jq read the credentials from argv;
+    - tags could move between the check and the deploy;
+    - helm-diff was not verified;
+    - pull-secret ownership;
+    - environment documentation;
+    - tests.
+  - Second pass FAIL, both fixed:
+    - `runner` context in job env (the workflow would not start);
+    - Helm deleting the workflow's pull secret on the first upgrade after an Azure DevOps release (now `helm.sh/resource-policy: keep`).
+  - Final pass PASS.
+  - Residuals:
+    - the digest pin proves the image is signed by `images.yml`, not that it is that build; compare the release summary with the `images` run's digest table;
+    - a Role written from the docs needs `patch` on secrets (for the annotation) and `get` on the namespace object;
+    - actionlint is not part of CI.
