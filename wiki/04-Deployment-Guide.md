@@ -549,7 +549,7 @@ npm run dev                     # http://localhost:51010
 
 The web app calls Ariva.Api.Main on its own origin, as behind the ingress (ARV-051): `vite dev` and `vite preview` proxy `/api` and `/hubs` to `http://localhost:51001`; set `ARIVA_WEB_API_PROXY` to use another Main. Sign in with an account of `Auth:DevelopmentUsers` (vm-local) or the break-glass account.
 
-Prerequisites: .NET 10 SDK, Node 22, Docker Desktop or Rancher Desktop.
+Prerequisites: .NET 10 SDK, Node 22, Docker Desktop or Rancher Desktop; or open the repository in the dev container (`.devcontainer/`, a Codespace or Dev Containers), which has them all and starts the Compose services itself (ARV-076, docs/harness/README.md).
 
 Local dependencies (TimescaleDB, Kafka in KRaft mode, Redis and smtp4dev) come from `docker-compose.dev.yml`:
 

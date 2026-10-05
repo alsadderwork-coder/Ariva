@@ -570,3 +570,21 @@ One entry per story, newest last. Format:
 - Fix: `RedisLiveSnapshots.OperationTimeout` (6 seconds) bounds the snapshot publish, the snapshot read and the alert notice publish. Past it the call fails with a `TimeoutException`, which the checkpoint logs and moves past and which the board and the hub answer as an outage (503 with Retry-After).
 - Every fault test now carries a 5 minute timeout, so a dependency that does not come back fails the run instead of hanging it.
 - Gates: backend PASS (unit 2276); integration 315 passed, 1 pre-existing skip.
+
+## 2026-10-05 ARV-076 Dev container for cloud agent sessions and Codespaces
+- Summary: `.devcontainer/` builds one image for Claude Code cloud sessions, Codespaces and VS Code on a workstation.
+  - Base: the same Playwright image the visual tests render in (Chromium and its fonts), pinned by digest.
+  - Copied in from pinned images: the .NET 10 SDK, Node 22, uv, the Docker CLI with Compose, and Helm at CI's version.
+  - Runs as `pwuser`, with no sudo and no privileged flags. Docker is reached through the host's socket (the docker-outside-of-docker feature, pinned by digest, with the Docker CLI pinned by version), so Testcontainers and the Compose services run on the host's engine.
+  - `post-create.sh` runs `npm ci` for Ariva.Web, the E2E project and the chart tests, `dotnet restore`, and restores both tool manifests; `postStartCommand` starts the Compose services (`scripts/dev-up.mjs`).
+- Pinning: `scripts/base-images.mjs --check` now covers the dev container's FROM lines (20 in all), keeps the Playwright image on the `@playwright/test` lock version and on the same digest as `scripts/visual-browser.mjs` (the ARV-075 gap), and keeps Helm at the version `ci.yml` installs. Dependabot watches `/.devcontainer` (Docker and dev container features); the Playwright image is excluded because it moves with `@playwright/test`.
+- Privilege (CWE-269): `devcontainerProblems()` in the same check fails on a root or missing final USER, sudo, a root `remoteUser` or `containerUser`, privileged run arguments (`--privileged`, `--cap-add`, `--security-opt`, `--pid=host`, `--userns=host`, `--device`), `privileged` or `capAdd`, an unpinned feature, docker-in-docker, and a Docker CLI version that differs from the image's. A self-test on a good and a bad sample runs on every check and fails the gate if a rule stops firing.
+- Verified inside the container (built from the pinned inputs, run as `pwuser` with the host's socket):
+  - `node scripts/verify.mjs all --with-integration` passed every gate except the chart gate, because Helm was missing from the image. Helm was added (with the CI version rule, red-checked with 3.18.0), and `node scripts/verify.mjs security` then passed in the rebuilt image, chart gate included.
+  - The same run found the Redis live operations hang (separate ARV-072 follow-up entry above).
+- Gates on the host: backend PASS (unit 2276); integration 315 passed, 1 pre-existing skip; e2e 491 passed, 1 skipped (log scan clean); docs PASS; security scan 0 errors; base images PASS.
+- Security review (independent reviewer, CWE-269):
+  - First pass FAIL: the privilege posture had no automated check; the CWE-269 row did not describe the container; the Dockerfile and README overstated how the Docker CLI was pinned. All fixed.
+  - Second pass PASS.
+  - Its non-blocking notes were acted on: the self-test's bad sample now exercises every rule, and `0:root` counts as root.
+  - Recorded: the Docker socket is root-equivalent on its host. That is accepted on a disposable Codespace VM; on a workstation it is the developer's own Docker host, and the README says to keep forwarded ports Private. `parseJsonc` strips only whole-line comments, so a trailing comment makes the check throw (it fails closed).

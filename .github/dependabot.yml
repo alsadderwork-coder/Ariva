@@ -49,6 +49,22 @@ updates:
       interval: weekly
     labels: [dependencies, containers]
 
+  # Dev container (ARV-076). The Playwright image follows @playwright/test in Ariva.E2E (scripts/base-images.mjs fails until
+  # it matches): bump it with the package, together with scripts/visual-browser.mjs and the visual baselines.
+  - package-ecosystem: docker
+    directory: /.devcontainer
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: mcr.microsoft.com/playwright
+    labels: [dependencies, containers]
+
+  - package-ecosystem: devcontainers
+    directory: /
+    schedule:
+      interval: weekly
+    labels: [dependencies, containers]
+
   - package-ecosystem: github-actions
     directory: /
     schedule:

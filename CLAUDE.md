@@ -29,6 +29,7 @@ Platform/Testing/Ariva.E2E                   Playwright: API end-to-end and brow
 Platform/Testing/Ariva.LoadTests             Load harness (ARV-071): sensors, live hub and displays; run by tests/api/load.spec.ts
 Platform/Cloud/Ariva.K8s, Ariva.Cicd         Helm and Helmfile, Azure DevOps YAML (optional CD to Dalil Container Registry)
 Platform/Cloud/Ariva.AppHost                 .NET Aspire AppHost: one F5 for containers, hosts, simulator, web (dev and test only)
+.devcontainer/                               Dev container for Codespaces and cloud agent sessions (ARV-076): every gate runs inside
 .github/                                     GitHub Actions (ci, security-scan, codeql, claude, images), Dependabot, templates
 docs/        architecture, ADRs, domain formulas, data boundary, security controls, product roadmap
 wiki/        project wiki in Markdown, rendered on GitHub (deployment, business flow, integration, operations, user and admin guides)

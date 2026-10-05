@@ -8,6 +8,31 @@
 4. Environment variables: `GITHUB_PERSONAL_ACCESS_TOKEN` for the github MCP server (fine-grained token for `alsadderwork-coder/Ariva` only: Contents, Issues, Pull requests and Actions read and write, Metadata read; no Administration). Optional: `ARIVA_DEV_DATABASE_URI` for the read-only dev database MCP (`node scripts/dev-up.mjs` prints it with the generated password), `CONTEXT7_API_KEY` if you have a Context7 key (add a header in `.mcp.json`).
 5. Open the folder in Claude Code; approve the project MCP servers when asked (they are listed in `.claude/settings.json` under `enabledMcpjsonServers`).
 
+## Dev container (Codespaces and cloud agent sessions, ARV-076)
+
+`.devcontainer/` gives a Linux workspace where every gate runs: open the repository in a Codespace (or "Reopen in Container" with the Dev Containers extension), wait for the post-create step, then `node scripts/verify.mjs all --with-integration`.
+
+- Image (`.devcontainer/Dockerfile`): built only from images pinned by version and digest, with nothing downloaded during its own build. The docker-outside-of-docker feature then adds the Docker CLI 29.4.3 from Docker's signed apt repository, pinned by version, not by digest.
+  - The .NET 10.0.103 SDK, the one the host images build with.
+  - Node 22.
+  - The Playwright 1.63.0 image as the base. It brings Chromium for Ariva.E2E's @playwright/test and its libraries, and it is the same image the visual baselines render in (`scripts/visual-browser.mjs`).
+  - uv, for the semgrep and postgres-dev MCP servers.
+  - The Docker CLI with Compose.
+  - Helm, at the version CI installs, for the chart gate.
+- Checks on the image: `scripts/base-images.mjs --check` covers the Dockerfile's FROM lines, holds the Playwright tag to the @playwright/test version in the E2E lock file, requires `scripts/visual-browser.mjs` to use the same digest, and holds Helm to the version `ci.yml` installs. Dependabot updates the others; the Playwright image moves with the package, together with the visual baselines.
+- User and Docker (CWE-269):
+  - The user is the image's non-root `pwuser`, with no sudo.
+  - Docker is the host's engine, reached through its socket by the `docker-outside-of-docker` feature, pinned by digest, with its CLI pinned to the image's version. That socket is root-equivalent on its host. In a Codespace the host is a disposable VM. With "Reopen in Container" on a workstation, the host is your own machine: code in the container (npm install scripts, agents) gets the same reach, so use it only with a checkout you trust. Docker-in-docker would need a privileged container, which is worse.
+  - `scripts/base-images.mjs --check` (the security gate) fails if this posture slips: a root or missing last USER, sudo, root `remoteUser`, privileged `runArgs`, a feature not pinned by digest, docker-in-docker, or a feature CLI version that differs from the image's.
+  - The container uses the host network, so the Compose services' 127.0.0.1 ports and Testcontainers' mapped ports are `localhost` as on a workstation.
+- On creation: `.devcontainer/post-create.sh` runs `npm ci` for Ariva.Web, Ariva.E2E and the chart tests, `dotnet restore`, and both tool manifests.
+- On every start: `node scripts/dev-up.mjs` brings up TimescaleDB, Kafka, Redis and smtp4dev from `docker-compose.dev.yml` (first run: `.env` with random passwords).
+- Everything Ariva runs in the container binds 127.0.0.1, except the ports Testcontainers publishes during integration tests. Keep the Codespace's forwarded ports Private.
+- With the host's engine, bind mounts resolve on the host. Compose's `deploy/local/postgres-init` and the visual browser's `playwright-core` mount may then come up empty in a Codespace (both fail closed). If they do, run those from a workstation.
+- Size: 4 cores and 16 GB of memory (`hostRequirements`). The full E2E run starts five hosts, the simulator and the web preview.
+- The E2E suites need the run's database, Kafka and Redis in their environment, as in CI (`ARIVA_E2E_SCHEMA_UPDATE`, `Database__*`, `ARIVA_E2E_REDIS_URL`, `ARIVA_E2E_KAFKA_BOOTSTRAP`; see the `e2e` job in `.github/workflows/ci.yml`). Without them, the suites that need a database are skipped. The visual baselines need nothing else: `node scripts/verify.mjs visual` starts the pinned image beside the dev container.
+- Checked on 2026-10-05: the image built from the pinned inputs and the post-create step passed. Inside the container, `node scripts/verify.mjs all --with-integration` passed unit, web, security, docs, E2E with the database environment, and integration with Testcontainers through the mounted socket; only the chart gate failed, because Helm was not yet in the image. After Helm was added, `node scripts/verify.mjs security` (chart gate included) passed in the rebuilt image.
+
 ## MCP servers (`.mcp.json`)
 
 | Server | Transport | Purpose | Notes |

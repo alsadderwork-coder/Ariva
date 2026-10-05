@@ -1,0 +1,40 @@
+// Dev container for GitHub Codespaces and cloud agent sessions (ARV-076): the .NET 10 SDK, Node 22, Playwright Chromium,
+// uv, and the Docker CLI with Compose, in an image built only from images pinned by digest (Dockerfile). The Docker
+// engine is the host's, reached through its socket (docker-outside-of-docker), for Testcontainers and the Compose
+// services (TimescaleDB, Kafka, Redis, smtp4dev from docker-compose.dev.yml), which start with the container. The host
+// network keeps their 127.0.0.1 ports, and Testcontainers' mapped ports, reachable as localhost.
+// See docs/harness/README.md, "Dev container".
+{
+	"name": "Ariva",
+	"build": { "dockerfile": "Dockerfile" },
+	"features": {
+		// The engine socket for a non-root user, pinned by digest (1.10.1); its Docker CLI pinned to the image's version.
+		"ghcr.io/devcontainers/features/docker-outside-of-docker@sha256:698f5900fac471e046c6e9d4333fec88c0e8d952c713494fa0712dce80baeca0": {
+			"moby": false,
+			"version": "29.4.3",
+			"dockerDashComposeVersion": "v2"
+		}
+	},
+	"runArgs": ["--network=host"],
+	"remoteUser": "pwuser",
+	"containerEnv": {
+		"DOTNET_CLI_TELEMETRY_OPTOUT": "true",
+		"DOTNET_NOLOGO": "true",
+		"PACT_DO_NOT_TRACK": "true"
+	},
+	"postCreateCommand": "bash .devcontainer/post-create.sh",
+	// The Compose services: dev-up creates .env with random passwords on first run and waits for every health check.
+	"postStartCommand": "node scripts/dev-up.mjs",
+	"forwardPorts": [51010, 51001, 5080],
+	"portsAttributes": {
+		"51010": { "label": "Ariva.Web (vite dev)" },
+		"51001": { "label": "Ariva.Api.Main" },
+		"5080": { "label": "smtp4dev" }
+	},
+	"hostRequirements": { "cpus": 4, "memory": "16gb", "storage": "64gb" },
+	"customizations": {
+		"vscode": {
+			"extensions": ["ms-dotnettools.csdevkit", "svelte.svelte-vscode", "ms-playwright.playwright", "dbaeumer.vscode-eslint", "esbenp.prettier-vscode"]
+		}
+	}
+}
