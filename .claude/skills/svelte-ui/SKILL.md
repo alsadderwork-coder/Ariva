@@ -16,7 +16,7 @@ description: Ariva.Web patterns (SvelteKit 2, Svelte 5 runes, Aman.Web's design 
 - Example data must be labelled on screen (`DemoDataBanner`, "Demo data" chip) until the live source exists.
 
 ## Code
-- MCP: `svelte` (docs, `svelte-autofixer` on every component), `shadcn-svelte` (components, Bits UI, Lucide). Install components with `npx shadcn-svelte@latest add <name>` (components.json matches Aman.Web's); keep them in `src/lib/components/ui`.
+- MCP: `svelte` (docs, `svelte-autofixer` on every component), `shadcn-svelte` (components, Bits UI, Lucide), `shadcn-pro` (shadcn.io Pro blocks and charts, React only: read `get_item_source` as a reference and port to Svelte 5 with our components and tokens; never install its items). Install components with `npx shadcn-svelte@latest add <name>` (components.json matches Aman.Web's); keep them in `src/lib/components/ui`.
 - Structure (Aman style): `src/routes/(modules)/...` for authenticated screens once login exists (ARV-051), `src/routes/(public)/login`, `src/lib/components/{layout,shared,pages/<feature>,ui}`, `src/lib/core/{Api.ts,Endpoints.ts,Live.ts}`, `src/lib/i18n/{en,ar}.json`, `src/lib/navigation.ts` (nav items with `ready` and the delivering story).
 - Runes only: `$state`, `$derived`, `$effect`, `$props`; small components; no global mutable stores for screen state.
 - Live: `Live.ts` wraps the SignalR client (`accessTokenFactory` from the in-memory auth store, automatic reconnect, group join per zone or checkpoint); show "stale" when the last update is older than the threshold.

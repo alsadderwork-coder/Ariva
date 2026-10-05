@@ -41,7 +41,7 @@
 | context7 | HTTP | Library docs (NHibernate, MassTransit, Confluent.Kafka, TickerQ, FusionCache, Otp.NET, Npgsql, Testcontainers, Playwright, ECharts) | Works without a key at lower limits |
 | svelte | HTTP | Svelte 5 and SvelteKit docs, svelte-autofixer | Official, https://mcp.svelte.dev/mcp |
 | shadcn-svelte | HTTP | shadcn-svelte components, Bits UI API, Lucide icons | Community server (Michael-Obele/shadcn-svelte-mcp); the official `shadcn-svelte mcp` command was still a pull request when this was set up |
-| shadcn | HTTP, token in URL | shadcn.io Pro components, blocks and registry items | `https://www.shadcn.io/api/mcp?token=...` from `SHADCN_MCP_URL` (placeholder `https://shadcn.invalid/mcp` when unset); optional, the server simply fails to connect without them. Pro items are React-first: port them to shadcn-svelte and Bits UI, never add React to Ariva.Web |
+| shadcn (local) / shadcn-pro (claude.ai connector in cloud and Cowork) | HTTP, token in URL | shadcn.io Pro components, blocks and registry items | `https://www.shadcn.io/api/mcp?token=...` from `SHADCN_MCP_URL` (placeholder `https://shadcn.invalid/mcp` when unset); optional, the server simply fails to connect without them. Pro items are React-first: port them to shadcn-svelte and Bits UI, never add React to Ariva.Web |
 | playwright | stdio, npx | Drive the running app while writing functional tests | Microsoft |
 | nuget | stdio, dnx (.NET 10 SDK) | Real package versions, vulnerability fixes | Microsoft NuGet MCP server |
 | github | HTTP | Issues, pull requests, Actions runs, Dependabot alerts | GitHub's remote MCP server (https://api.githubcopilot.com/mcp/) with `GITHUB_PERSONAL_ACCESS_TOKEN`; tools require approval (`ask`) |
