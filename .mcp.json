@@ -16,6 +16,13 @@
       "type": "http",
       "url": "https://shadcn-svelte-mcp.svelte-apps.workers.dev/api/mcp/shadcn/mcp"
     },
+    "shadcn": {
+      "type": "http",
+      "url": "${SHADCN_MCP_URL:-https://shadcn.invalid/mcp}",
+      "headers": {
+        "Authorization": "Bearer ${SHADCN_PRO_API_KEY:-}"
+      }
+    },
     "playwright": {
       "command": "npx",
       "args": [
