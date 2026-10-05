@@ -166,7 +166,6 @@ public sealed class ZoneProcessor
 
     public ZoneProcessorCounters Counters => new(_batches, _uncommissioned, _wrongZone, _invalid);
 
-    /// <summary>Outputs are waiting beyond the bound: checkpoint before offering more.</summary>
     /// <summary>
     /// The desk term of the desks serving this queue (ARV-064), from the stream host's desk minutes; null when none is
     /// known. Not part of the saved state: the host gives it again within seconds of a restart. Replays never set it.
@@ -176,6 +175,7 @@ public sealed class ZoneProcessor
     /// <summary>The desk term in use, if any.</summary>
     public DeskTerm Desks => _desks;
 
+    /// <summary>Outputs are waiting beyond the bound: checkpoint before offering more.</summary>
     public bool Full => _minutes.Count + _binResults.Count + _live.Count + _recomputations.Count + _outages.Count >= _settings.MaxPendingOutputs;
 
     /// <summary>

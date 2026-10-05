@@ -13,8 +13,9 @@
 // to 14 minutes earlier, which keeps the 15-minute bins on the scenario's and gives the sensors time to settle). Hosts: ARIVA_MAIN_URL (default
 // http://localhost:51001) and ARIVA_SIMULATION_URL (http://localhost:51020). Runbook: wiki/10, section 4.11.
 //
-// Local only: the accounts sign in without a second factor (Auth:TotpRequired false), which vm-local allows and no
-// other environment does. Never point it at a shared deployment.
+// Local only: the accounts sign in without a second factor (Auth:TotpRequired false). Ariva.Api.Main refuses to start
+// with that setting, or with development accounts, unless both its host environment and Application:Environment are
+// vm-local. The script talks only to loopback addresses; --remote allows another host, for a deliberate test only.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -26,6 +27,19 @@ const ACCOUNTS = path.join(DIR, 'accounts.json');
 const APPHOST = path.join(DIR, 'apphost-environment.json');
 const MAIN = (process.env.ARIVA_MAIN_URL || 'http://localhost:51001').replace(/\/$/, '');
 const SIMULATION = (process.env.ARIVA_SIMULATION_URL || 'http://localhost:51020').replace(/\/$/, '');
+// The administrator's password and code and the simulator key go to these hosts: loopback only, unless asked.
+for (const url of [MAIN, SIMULATION]) {
+	let host = '';
+	try {
+		host = new URL(url).hostname;
+	} catch {
+		host = '';
+	}
+	if (!['localhost', '127.0.0.1', '[::1]', '::1'].includes(host) && !process.argv.includes('--remote')) {
+		console.error(`demo-local: ${url} is not on this machine; the demo sends credentials to it. Add --remote if that is really meant.`);
+		process.exit(1);
+	}
+}
 const WEB = process.env.ARIVA_WEB_URL || 'http://localhost:51010';
 
 /** The demo accounts: who sees each scripted event (wiki/15). */
@@ -113,6 +127,10 @@ function prepare() {
 		const state = { simulationKey: crypto.randomBytes(32).toString('base64url'), people };
 		fs.writeFileSync(ACCOUNTS, JSON.stringify(state, null, 2) + '\n', { mode: 0o600 });
 	}
+	// The modes above apply only to new files; tighten what already exists too (Windows ignores them: keep the
+	// repository in your own profile).
+	fs.chmodSync(DIR, 0o700);
+	fs.chmodSync(ACCOUNTS, 0o600);
 
 	const state = readState();
 	const main = { Auth__TotpRequired: 'false' };
@@ -134,6 +152,7 @@ function prepare() {
 		Simulation__Control__Keys__1__Scopes__1: 'control'
 	};
 	fs.writeFileSync(APPHOST, JSON.stringify({ 'api-main': main, simulation }, null, 2) + '\n', { mode: 0o600 });
+	fs.chmodSync(APPHOST, 0o600);
 	console.log('demo-local: wrote .demo/accounts.json and .demo/apphost-environment.json (git-ignored, owner-only).');
 	console.log('Start Ariva with them:');
 	// An absolute path: dotnet run may start the AppHost in another working directory.

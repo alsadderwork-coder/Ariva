@@ -94,14 +94,36 @@ public static class AccountExtensions
         // Alerts (ARV-039); their notices come from AddArivaCaching (Redis, or nothing without it).
         services.TryAddScoped<Ariva.Core.Services.Alerting.ISvcAlerts, Ariva.Infra.Services.Alerting.SvcAlerts>();
 
-        var environment = configuration["Application:Environment"];
+        if (LocalOnlyProblem(settings, configuration) is { } problem)
+            throw new InvalidOperationException(problem);
         if (settings.DevelopmentUsers.Count > 0)
-        {
-            if (!string.Equals(environment, "vm-local", StringComparison.Ordinal))
-                throw new InvalidOperationException("Auth:DevelopmentUsers is only allowed in vm-local.");
             services.AddHostedService<DevelopmentUserSeed>();
-        }
 
         return services;
+    }
+
+    /// <summary>
+    /// Development accounts and sign-in without TOTP are for a developer machine only (CWE-287, CWE-308): both need
+    /// <c>Application:Environment</c> vm-local and, when the process has a host environment (DOTNET_ENVIRONMENT or
+    /// ASPNETCORE_ENVIRONMENT, which Helm sets), that too. Checking both covers a cluster whose mounted settings omit
+    /// <c>Application:Environment</c> (it then defaults to vm-local) and a value injected through an environment variable.
+    /// Null when the settings are allowed, otherwise why not.
+    /// </summary>
+    public static string LocalOnlyProblem(AuthSettings settings, IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        ArgumentNullException.ThrowIfNull(configuration);
+        var wanted = new List<string>();
+        if (settings.DevelopmentUsers.Count > 0)
+            wanted.Add("Auth:DevelopmentUsers");
+        if (!settings.TotpRequired)
+            wanted.Add("Auth:TotpRequired false");
+        if (wanted.Count == 0)
+            return null;
+        var application = configuration["Application:Environment"];
+        var host = configuration[Microsoft.Extensions.Hosting.HostDefaults.EnvironmentKey];
+        return string.Equals(application, "vm-local", StringComparison.Ordinal) && (string.IsNullOrEmpty(host) || string.Equals(host, "vm-local", StringComparison.Ordinal))
+            ? null
+            : $"{string.Join(" and ", wanted)} only allowed in vm-local; this host runs as '{host}' with Application:Environment '{application}'.";
     }
 }

@@ -17,12 +17,15 @@ namespace Ariva.Infra.Streaming;
 /// <see cref="DeskTerm"/> (<see cref="DeskTerms"/>). A zone without a lane, or
 /// whose desks have no recent minute, has none and its nowcast stays on the exit rate. Parameterised SQL only.
 /// </summary>
-public class DeskTermSource(DatabaseSettings database, TimeProvider timeProvider)
+public class DeskTermSource(DatabaseSettings database, TimeProvider timeProvider, ILogger<DeskTermSource> logger = null)
 {
     /// <summary>How far back desk minutes are read: the freshness allowance and the exit window, with room.</summary>
     public const int LookbackMinutes = 15;
 
-    /// <summary>Desk minute rows read per site at most (CWE-400): 15 minutes of 2,000 desks.</summary>
+    /// <summary>
+    /// Desk minute rows, and interval rows, read per site at most (CWE-400): 15 minutes of 2,000 desks. A site that reaches
+    /// it gets no desk terms (its queues keep the exit rate), never terms from an arbitrary part of its desks.
+    /// </summary>
     public const int MaxRows = 30_000;
 
     /// <summary>The desk terms of the given zone keys (site/zone) that have one.</summary>
@@ -32,7 +35,9 @@ public class DeskTermSource(DatabaseSettings database, TimeProvider timeProvider
         var result = new Dictionary<string, DeskTerm>(StringComparer.Ordinal);
         var bySite = zoneKeys.Select(Split).Where(k => k is not null).GroupBy(k => k.Value.Site, StringComparer.Ordinal);
         var now = timeProvider.GetUtcNow().UtcDateTime;
-        await using var connection = new NpgsqlConnection(database.BuildConnectionString());
+        // Short timeouts: the stream worker reads this inline, and a database that is away must not hold its consumer long.
+        var connectionString = new NpgsqlConnectionStringBuilder(database.BuildConnectionString()) { Timeout = 5, CommandTimeout = 10 }.ConnectionString;
+        await using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync(ct);
         foreach (var site in bySite)
         {
@@ -50,15 +55,18 @@ public class DeskTermSource(DatabaseSettings database, TimeProvider timeProvider
                       JOIN desk d ON d.checkpoint_id = c.id AND d.site_code = @site AND d.deleted_on IS NULL AND d.kind = 'Desk'
                      WHERE q.lane = ANY(string_to_array(COALESCE(d.lane_category_codes, ''), ','))
                 )
-                SELECT 'minute' AS what, ds.zone, m.desk_code, m.minute_utc, m.idle_seconds::float8, m.serving_seconds::float8,
-                       m.unknown_seconds::float8, m.transactions::int, m.degraded
-                  FROM desks ds JOIN desk_minute m ON m.desk_code = ds.desk_key
-                 WHERE m.minute_utc >= @from AND m.minute_utc <= @to
+                (SELECT 'minute' AS what, ds.zone, m.desk_code, m.minute_utc, m.idle_seconds::float8, m.serving_seconds::float8,
+                        m.unknown_seconds::float8, m.transactions::int, m.degraded
+                   FROM desks ds JOIN desk_minute m ON m.desk_code = ds.desk_key
+                  WHERE m.minute_utc >= @from AND m.minute_utc <= @to
+                  ORDER BY m.minute_utc DESC
+                  LIMIT @max)
                 UNION ALL
-                SELECT 'interval', ds.zone, NULL, i.interval_start_utc, i.mean_cycle_seconds::float8, 0, 0, i.transactions_processed::int, false
-                  FROM desks ds JOIN border_desk_interval i ON i.desk_id = ds.desk_id AND i.site_code = @site
-                 WHERE i.interval_start_utc >= @cycleFrom AND i.interval_start_utc <= @to
-                 LIMIT @max
+                (SELECT 'interval', ds.zone, NULL, i.interval_start_utc, i.mean_cycle_seconds::float8, 0, 0, i.transactions_processed::int, false
+                   FROM desks ds JOIN border_desk_interval i ON i.desk_id = ds.desk_id AND i.site_code = @site
+                  WHERE i.interval_start_utc >= @cycleFrom AND i.interval_start_utc <= @to
+                  ORDER BY i.interval_start_utc DESC
+                  LIMIT @max)
                 """, connection);
             command.Parameters.AddWithValue("site", site.Key);
             command.Parameters.Add(new NpgsqlParameter("zones", NpgsqlDbType.Array | NpgsqlDbType.Varchar) { Value = site.Select(k => k.Value.Zone).Distinct(StringComparer.Ordinal).ToArray() });
@@ -80,6 +88,12 @@ public class DeskTermSource(DatabaseSettings database, TimeProvider timeProvider
                         minutes.Add((zone, new DeskMinuteSample(reader.GetString(2), DateTime.SpecifyKind(reader.GetDateTime(3), DateTimeKind.Utc),
                             reader.GetDouble(4), reader.GetDouble(5), reader.GetDouble(6), reader.GetInt32(7), reader.GetBoolean(8))));
                 }
+            }
+
+            if (minutes.Count >= MaxRows || intervals.Count >= MaxRows)
+            {
+                logger?.LogWarning("Desk terms of site {Site}: {Max} rows or more in the window; its queues keep the exit rate", site.Key, MaxRows);
+                continue;
             }
 
             foreach (var zone in minutes.GroupBy(r => r.Zone, StringComparer.Ordinal))

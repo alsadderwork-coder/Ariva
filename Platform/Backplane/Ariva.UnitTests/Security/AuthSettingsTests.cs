@@ -35,6 +35,32 @@ public sealed class AuthSettingsTests
         }
     }
 
+    [Theory]
+    [InlineData("vm-local", null, true)]
+    [InlineData("vm-local", "vm-local", true)]
+    [InlineData("vm-local", "k8s-prd", false)]
+    [InlineData("vm-local", "k8s-demo", false)]
+    [InlineData("k8s-dev", "vm-local", false)]
+    [InlineData("k8s-prd", null, false)]
+    [InlineData(null, null, false)]
+    public void LocalOnly_Should_AllowDevelopmentAccountsAndNoTotp_When_BothEnvironmentsAreVmLocal(string application, string host, bool allowed)
+    {
+        // ARV-064: a cluster whose settings omit Application:Environment (it defaults to vm-local) is still refused by its
+        // host environment, which Helm sets; an Auth__TotpRequired=false variable on a cluster refuses to start.
+        IConfiguration Settings(params (string Key, string Value)[] extra) => new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string> { ["Application:Environment"] = application, ["environment"] = host }
+                .Concat(extra.Select(e => new KeyValuePair<string, string>(e.Key, e.Value)))).Build();
+        var noTotp = Settings(("Auth:TotpRequired", "false"));
+        var accounts = Settings(("Auth:DevelopmentUsers:0:UserName", "demo.border"), ("Auth:DevelopmentUsers:0:Password", "x"));
+
+        (Ariva.Di.Extensions.AccountExtensions.LocalOnlyProblem(AuthSettings.From(noTotp), noTotp) is null).Should().Be(allowed);
+        (Ariva.Di.Extensions.AccountExtensions.LocalOnlyProblem(AuthSettings.From(accounts), accounts) is null).Should().Be(allowed);
+        var plain = Settings();
+        Ariva.Di.Extensions.AccountExtensions.LocalOnlyProblem(AuthSettings.From(plain), plain).Should().BeNull("TOTP required and no development accounts are allowed anywhere");
+        if (!allowed)
+            Ariva.Di.Extensions.AccountExtensions.LocalOnlyProblem(AuthSettings.From(noTotp), noTotp).Should().Contain("Auth:TotpRequired false only allowed in vm-local");
+    }
+
     [Fact]
     public void Defaults_Should_MatchAdr0026_When_BaseFileIsRead()
     {
