@@ -14,7 +14,7 @@
 		"@axe-core/playwright": "^4.13.0",
 		"@microsoft/signalr": "^8.0.17",
 		"@playwright/test": "^1.62.1",
-		"@types/node": "^22.18.0",
+		"@types/node": "^26.6.4",
 		"@types/pg": "^8.23.1",
 		"pg": "^8.23.1",
 		"redis": "^5.8.2",
