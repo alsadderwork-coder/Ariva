@@ -18,6 +18,12 @@ export const kafkaAvailable = !!process.env.ARIVA_E2E_KAFKA_BOOTSTRAP;
 
 export type HostName = keyof typeof hosts;
 
+/**
+ * Ariva.Api.Stream (ARV-064): started only for the scripted demo (ARIVA_E2E_DEMO=1), so it is not one of `hosts`, whose
+ * suites run on every host the ordinary run starts.
+ */
+export const streamUrl = process.env.ARIVA_E2E_STREAM_URL || 'http://localhost:51003';
+
 /** Every API host the e2e web servers start, in a stable order for parameterised tests. */
 export const apiHosts = Object.entries(hosts).map(([name, url]) => ({ name: name as HostName, url }));
 

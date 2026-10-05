@@ -205,9 +205,15 @@ public sealed class ZoneProcessor
         Step();
     }
 
-    /// <summary>Moves an idle zone's clock forward (the host decides when a zone is idle and caught up).</summary>
+    /// <summary>
+    /// Moves an idle zone's clock forward (the host decides when a zone is idle and caught up). A zone that has not taken
+    /// an event yet has no clock to move, so the host's "its clock plus the idle time" is no time at all: nothing happens
+    /// (ARV-064: an uncommissioned device's zone logged an error every idle tick).
+    /// </summary>
     public void Tick(DateTime referenceUtc)
     {
+        if (_reference == DateTime.MinValue && !Plausible(referenceUtc))
+            return;
         if (!Plausible(referenceUtc))
             throw new ArgumentException("The reference time is UTC and plausible.", nameof(referenceUtc));
         if (referenceUtc > _reference)

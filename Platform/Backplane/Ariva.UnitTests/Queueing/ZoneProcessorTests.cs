@@ -134,6 +134,25 @@ public sealed class ZoneProcessorTests
     }
 
     [Fact]
+    public void Tick_Should_DoNothing_When_TheZoneHasNoClockYet()
+    {
+        // The stream worker ticks an idle zone with its clock plus the idle time; before the first event that clock is
+        // DateTime.MinValue, and the tick used to throw (and log an error) every 15 seconds.
+        var zone = new ZoneProcessor(ZoneKey, Geometry, 1);
+
+        var tick = () => zone.Tick(zone.ReferenceUtc + TimeSpan.FromSeconds(15));
+
+        tick.Should().NotThrow();
+        zone.ReferenceUtc.Should().Be(DateTime.MinValue);
+        var implausible = () => zone.Tick(DateTime.SpecifyKind(new DateTime(1999, 1, 1), DateTimeKind.Utc));
+        implausible.Should().NotThrow("an unstarted zone ignores any tick it cannot use");
+        zone.Tick(new DateTime(2026, 10, 5, 14, 0, 0, DateTimeKind.Utc));
+        zone.ReferenceUtc.Should().Be(new DateTime(2026, 10, 5, 14, 0, 0, DateTimeKind.Utc), "a plausible tick still starts the clock");
+        var later = () => zone.Tick(DateTime.SpecifyKind(new DateTime(1999, 1, 1), DateTimeKind.Utc));
+        later.Should().Throw<ArgumentException>("a started zone still refuses an implausible time");
+    }
+
+    [Fact]
     public void Zone_Should_RefuseBatches_When_TheyAreNotForItOrNotCommissioned()
     {
         var zone = new ZoneProcessor(ZoneKey, Geometry, 1);

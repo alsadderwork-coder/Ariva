@@ -10,6 +10,9 @@
 //   e2e          Platform/Testing/Ariva.E2E: API end-to-end and Playwright functional tests
 //   visual       visual regression baselines (ARV-075) in the pinned Playwright image (Docker); --update regenerates them;
 //                run it before e2e on a fresh database (the demo seed)
+//   demo         the scripted demo (ARV-064): the reference evening in real time (about two hours) through the whole
+//                pipeline, Stream included (Docker services and the E2E database environment); ARIVA_DEMO_START and
+//                ARIVA_DEMO_END (demo minutes) shorten it
 //   zap          dynamic security scan (ARV-063): OWASP ZAP in its pinned image against the E2E stack (Docker and the E2E
 //                database environment; about 10 minutes); reports in Platform/Testing/Ariva.E2E/zap-reports
 //   security     scanner self-test + full scan + dependency audits
@@ -103,6 +106,17 @@ const steps = {
     } finally {
       execFileSync('node', ['scripts/visual-browser.mjs', 'stop'], { cwd: E2E });
       delete process.env.ARIVA_E2E_VISUAL_WS;
+    }
+  },
+  // ARV-064: the reference evening through the real pipeline, alone and in real time.
+  demo: () => {
+    if (!fs.existsSync(path.join(WEB, 'node_modules'))) run('web npm ci', 'npm', ['ci'], WEB);
+    if (!fs.existsSync(path.join(E2E, 'node_modules'))) run('e2e npm ci', 'npm', ['ci'], E2E);
+    process.env.ARIVA_E2E_DEMO = '1';
+    try {
+      run('scripted demo (reference evening)', 'npx', ['playwright', 'test', '--project=demo'], E2E);
+    } finally {
+      delete process.env.ARIVA_E2E_DEMO;
     }
   },
   // ARV-063: ZAP API and baseline scans; the run fails on an untriaged High risk finding (security/zap-triage.json).

@@ -168,6 +168,8 @@ export function accounts() {
 		// ARV-063: the dynamic scan's caller. Password only, so every critical action answers 401 for its second factor and
 		// the scan cannot carry one out; the OpenAPI documents need SystemInfo.View.
 		zapAdmin: account('e2e.zapadmin', ['SystemAdministrator'], false, false, ['*']),
+		// ARV-064: registers, calibrates and loads the scripted demo's devices (registering needs a second factor).
+		demoAdmin: account('e2e.demoadmin', ['SystemAdministrator'], false, true, ['*']),
 		// ARV-051: the web app's sign-in. The shell suites sign in as a duty manager in parallel (password only, so no
 		// replay guard); each TOTP flow has its own account, because a code counts once per account.
 		web: account('e2e.web', ['TerminalDutyManager'], false, false, ['DMO']),

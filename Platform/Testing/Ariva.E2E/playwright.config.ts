@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, devices } from '@playwright/test';
 import { databaseAvailable, developmentUserEnvironment, keyDirectory, lockoutSeconds, refreshGraceSeconds } from './tests/support/accounts';
-import { hosts, smtp4dev, webUrl } from './tests/support/hosts';
+import { hosts, smtp4dev, streamUrl, webUrl } from './tests/support/hosts';
 
 // Ariva API end-to-end and functional tests. See README.md.
 //   api          Playwright's request fixture against the running .NET hosts, no browser
@@ -37,6 +37,10 @@ const visual = visualEndpoint.length > 0;
 // ARV-063: the dynamic security scan (OWASP ZAP in its pinned image, tests/zap). Run it on its own with ARIVA_E2E_ZAP=1
 // and --project=zap: it attacks the hosts and leaves junk records behind. The hosts then serve their OpenAPI documents.
 const zap = process.env.ARIVA_E2E_ZAP === '1';
+// ARV-064: the scripted demo (tests/demo) plays the reference day through the whole pipeline: the sensor emulator pushes
+// to Ingest, Ariva.Api.Stream (started only in this mode) computes the queues, snapshots and alerts, and Ariva.Api.Main
+// takes device heartbeats from Kafka. It runs in real time and alone: ARIVA_E2E_DEMO=1 --project=demo.
+const demo = process.env.ARIVA_E2E_DEMO === '1';
 
 const project = (relative: string) => path.join(repositoryRoot, 'Platform', relative);
 
@@ -186,7 +190,9 @@ const hostServers = {
 	'api-main': dotnetHost(project('Backplane/Ariva.Api.Main'), `${hosts.main}/health/readiness`, true, {
 		...(databaseAvailable ? developmentUserEnvironment() : {}),
 		...redisEnvironment(),
-		...outboundLabEnvironment()
+		...outboundLabEnvironment(),
+		// ARV-064: Main records device heartbeats from ariva.device.health.v1, so the demo's devices stay Online.
+		...(demo ? kafkaEnvironment() : {})
 	}),
 	'api-integration': dotnetHost(project('Backplane/Ariva.Api.Integration'), `${hosts.integration}/health/readiness`, false, {
 		...smtpEnvironment(),
@@ -216,6 +222,14 @@ const hostServers = {
 		Cronz__Dashboard__Enabled: 'true',
 		Cronz__Dashboard__KeySha256: crypto.createHash('sha256').update(process.env.ARIVA_E2E_CRONZ_KEY).digest('hex')
 	}),
+	...(demo
+		? {
+				'api-stream': dotnetHost(project('Backplane/Ariva.Api.Stream'), `${streamUrl}/health/readiness`, false, {
+					...kafkaEnvironment(),
+					...redisEnvironment()
+				})
+			}
+		: {}),
 	simulation: dotnetHost(project('Simulation/Ariva.Simulation.Api'), `${hosts.simulation}/health/readiness`, false, {
 		Simulation__Control__Keys__0__Name: 'e2e',
 		Simulation__Control__Keys__0__Sha256: simulationKeyDigest,
@@ -282,6 +296,27 @@ export default defineConfig({
 							timezoneId: 'Asia/Dubai',
 							connectOptions: { wsEndpoint: visualEndpoint },
 							// The PNGs (expected, actual, diff) are the evidence; a trace would carry the sign-in and the player's credential.
+							trace: 'off' as const
+						}
+					}
+				]
+			: []),
+		...(demo
+			? [
+					{
+						name: 'demo',
+						testDir: './tests/demo',
+						fullyParallel: false,
+						retries: 0,
+						// The reference evening in real time, with the setup and a margin.
+						timeout: 4 * 60 * 60_000,
+						use: {
+							...devices['Desktop Chrome'],
+							viewport: { width: 1440, height: 900 },
+							baseURL: webUrl,
+							locale: 'en-US',
+							launchOptions: { executablePath: chromiumExecutable },
+							screenshot: 'on' as const,
 							trace: 'off' as const
 						}
 					}
