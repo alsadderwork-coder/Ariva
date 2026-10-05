@@ -3,7 +3,7 @@ name: $(Build.SourceBranchName)-$(date:yyyyMMdd)$(rev:rr)
 trigger:
   branches:
     include:
-      - refs/heads/trunk
+      - refs/heads/main
   paths:
     include:
     - Platform/Business/Ariva.Business.Contracts

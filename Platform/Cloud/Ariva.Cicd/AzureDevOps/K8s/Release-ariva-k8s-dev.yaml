@@ -19,6 +19,10 @@ variables:
     value: "ariva-k8s-dev"
   - name: K8SCLUSTERCONTEXT
     value: "jupiter"
+  # The image tag to deploy. The Build-k8s-<service> pipelines tag every image with the branch name ("main") and the
+  # build number (main-yyyyMMddrr); override it when queueing the run to deploy a specific build.
+  - name: BUILD_NUMBER
+    value: "main"
 
 pool:
   name: Default
@@ -148,6 +152,7 @@ steps:
       helmfile apply \
         -f Platform/Cloud/Ariva.K8s/Helm/helmfile-k8s.yaml.gotmpl \
         -e dev \
+        --state-values-set buildNumber=$(BUILD_NUMBER) \
         --namespace $(NAMESPACE) \
         --kube-context $(K8SCLUSTERCONTEXT) \
         --set releaseVersion=$(Build.BuildNumber) \
