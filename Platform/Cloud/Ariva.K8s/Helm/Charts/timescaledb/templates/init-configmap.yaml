@@ -1,0 +1,24 @@
+---
+#ConfigMap: run once by the image's entrypoint when the data volume is empty, after it has created the database and
+#the TimescaleDB extension as the superuser. Creates the migration login (CREATEROLE, not superuser) and gives it the
+#database; the migration job (api-main --migrate) then creates the Ariva roles, the schema and the runtime login.
+#Identifiers and the password are quoted by format (%I, %L), never concatenated, and are read from the environment
+#inside psql (\getenv), so the password never appears on a command line.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: timescaledb-init
+  labels:
+    app: timescaledb
+    {{- include "ariva-timescaledb.labels" . | nindent 4 }}
+data:
+  100_ariva_owner.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres <<'SQL'
+    \getenv login ARIVA_MIGRATION_LOGIN
+    \getenv password ARIVA_MIGRATION_PASSWORD
+    \getenv db POSTGRES_DB
+    SELECT format('CREATE ROLE %I LOGIN CREATEROLE NOSUPERUSER NOCREATEDB NOREPLICATION PASSWORD %L', :'login', :'password') \gexec
+    SELECT format('ALTER DATABASE %I OWNER TO %I', :'db', :'login') \gexec
+    SQL

@@ -8,9 +8,10 @@ namespace Ariva.Infra.Messaging.Kafka;
 /// <summary>
 /// Creates the topics Ariva owns, and a dead-letter topic for every topic, when they are missing (ADR-0018). Existing
 /// topics are never altered: a partition or retention change is an operator action. Runs only with
-/// <c>Kafka:ProvisionTopics</c> (the deployment may give hosts a principal without create rights). A broker that is not
-/// reachable yet does not stop the host: provisioning retries every 10 seconds in the background while readiness
-/// reports the bus as not ready, and anything produced before the topics exist waits in the outbox for its retry.
+/// <c>Kafka:ProvisionTopics</c>; in the clusters the Helm topics job (<c>--provision-topics</c>, ARV-062) does it once per
+/// release instead, so the hosts need no create rights. A broker that is not reachable yet does not stop the host:
+/// provisioning retries every 10 seconds in the background while readiness reports the bus as not ready, and anything
+/// produced before the topics exist waits in the outbox for its retry.
 /// </summary>
 internal sealed class TopicProvisioner(KafkaSettings settings, ILogger<TopicProvisioner> logger) : BackgroundService
 {
@@ -20,7 +21,7 @@ internal sealed class TopicProvisioner(KafkaSettings settings, ILogger<TopicProv
         {
             try
             {
-                await ProvisionAsync();
+                await ProvisionAsync(settings, logger, TimeSpan.FromSeconds(30));
                 return;
             }
             catch (KafkaException e)
@@ -32,20 +33,24 @@ internal sealed class TopicProvisioner(KafkaSettings settings, ILogger<TopicProv
         }
     }
 
-    private async Task ProvisionAsync()
+    /// <summary>
+    /// One pass: creates the missing topics and returns their names (empty when every topic exists). Throws
+    /// <see cref="KafkaException"/> when the broker cannot be reached within <paramref name="timeout"/> or refuses a topic.
+    /// </summary>
+    internal static async Task<IReadOnlyList<string>> ProvisionAsync(KafkaSettings settings, ILogger logger, TimeSpan timeout)
     {
         using var admin = new AdminClientBuilder(KafkaClientConfig.Admin(settings)).Build();
-        var existing = admin.GetMetadata(TimeSpan.FromSeconds(30)).Topics.Select(t => t.Topic).ToHashSet(StringComparer.Ordinal);
+        var existing = admin.GetMetadata(timeout).Topics.Select(t => t.Topic).ToHashSet(StringComparer.Ordinal);
         var missing = TopicCatalog.ForProvisioning(settings.Topics).Where(t => !existing.Contains(t.Name)).ToList();
         if (missing.Count == 0)
         {
             logger.LogInformation("Kafka topics present ({Count})", existing.Count);
-            return;
+            return [];
         }
 
         try
         {
-            await admin.CreateTopicsAsync(missing.Select(Specification), new CreateTopicsOptions { RequestTimeout = TimeSpan.FromSeconds(30) });
+            await admin.CreateTopicsAsync(missing.Select(Specification), new CreateTopicsOptions { RequestTimeout = timeout });
         }
         catch (CreateTopicsException e) when (e.Results.All(r => r.Error.Code is ErrorCode.NoError or ErrorCode.TopicAlreadyExists))
         {
@@ -53,6 +58,7 @@ internal sealed class TopicProvisioner(KafkaSettings settings, ILogger<TopicProv
         }
 
         logger.LogInformation("Kafka topics created: {Topics}", string.Join(", ", missing.Select(t => t.Name)));
+        return missing.Select(t => t.Name).ToList();
     }
 
     internal static TopicSpecification Specification(TopicSpec spec)

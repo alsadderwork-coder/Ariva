@@ -2,7 +2,7 @@
 
 How to install Ariva on a customer's on-premises Kubernetes cluster, following AMAN's deployment conventions (Helm chart per platform, Helmfile, appsettings mounted from Kubernetes secrets, Azure DevOps release pipelines). It also covers bootstrap, smoke tests, upgrades, backup and local development.
 
-Status: the chart, Helmfile, pipelines and appsettings exist; the hosts serve health probes only. Steps that depend on code not yet written are marked "Target procedure" with the epic that delivers them (see [Home](Home.md) for epic names).
+Status: the platform and TimescaleDB charts, the Helmfile environments, the migration and Kafka topics jobs, the pipelines and the appsettings exist. Every environment is rendered and checked on each change (`Platform/Cloud/Ariva.K8s/tests/chart-security.mjs`), but no release has yet been verified on a cluster: the first release on the dev cluster is a human step (ARV-002). Steps that depend on code not yet written are marked "Target procedure" with the epic that delivers them (see [Home](Home.md) for epic names).
 
 ## 1. Deployment topologies
 
@@ -80,19 +80,19 @@ Application pods (from the chart defaults and `values-k8s-prd.yaml`: HPA minimum
 | web | 50m, 64Mi | 250m, 128Mi | 2 to 3 |
 | simulation | 100m, 256Mi | 500m, 512Mi | Not deployed in production |
 
-Totals at the HPA minimums: about 2.3 CPU cores and 5 GiB of memory requested. At the HPA maximums the limits add up to about 18 cores and 16 GiB. Add TimescaleDB (the intended values are 500m and 2Gi requested, 2 cores and 4Gi limit), Kafka, Redis, the ingress controller and monitoring. Node size per profile: To confirm after the Phase 1 load test at 15,000 messages per second.
+Totals at the HPA minimums: about 2.3 CPU cores and 5 GiB of memory requested. At the HPA maximums the limits add up to about 18 cores and 16 GiB. Add TimescaleDB (500m and 2Gi requested, 2 cores and 4Gi limit, of which up to 512Mi is shared memory; `Charts/timescaledb/values.yaml`), Kafka, Redis, the ingress controller and monitoring. Node size per profile: To confirm after the Phase 1 load test at 15,000 messages per second.
 
 ## 4. Dependencies
 
 ### PostgreSQL with TimescaleDB
 
 - PostgreSQL 17 with TimescaleDB Community Edition (Tiger Data licence): free to run on self-managed infrastructure, including production inside a product Dalil deploys for a customer; it may not be offered to third parties as a database service, which Ariva never does.
-- The extension must exist on every restore target and in the HA image. The intended image is `timescale/timescaledb-ha` with a pinned pg17 tag.
+- The extension must exist on every restore target and in the HA image. The image is `timescale/timescaledb-ha:pg17-ts2.30`, pinned by digest, the same tag as `docker-compose.dev.yml`, the integration tests and CI (`scripts/base-images.mjs --check` keeps them together).
 - Options per site:
-  1. The Ariva TimescaleDB chart (`Charts/timescaledb`). Today it is a placeholder marked `installed: false` in `helmfile-k8s.yaml.gotmpl` (its StatefulSet, Service and PVC templates are a Target procedure, implemented in Phase 0 epic Skeleton and platform. The base settings expect a Service named `timescaledb` on port 5432.
-  2. A PostgreSQL operator or Patroni with streaming replication for HA, using an image that includes TimescaleDB. The operator should match what AMAN runs (To confirm).
-  3. A customer-managed PostgreSQL 16 or later with TimescaleDB, set through `Database:Host`.
-- Set `timescaledb.telemetry_level` to `off` (the intended chart value).
+  1. The Ariva TimescaleDB chart (`Charts/timescaledb`, ARV-062), installed by the Helmfile in every environment (`timescaledb: true`). One StatefulSet replica with a `data-timescaledb-0` claim (50Gi, cluster default class; kept when the release is deleted), the Service `timescaledb` on port 5432 that the base settings expect, and a NetworkPolicy that admits only pods of the same namespace (add others in `networkPolicy.additionalFrom`). The pod runs as the image's `postgres` user (uid 1000) with a read-only root filesystem, every capability dropped and RuntimeDefault seccomp. Socket connections use peer authentication and every TCP connection, loopback included, needs a password (scram-sha-256). No replication or failover: a node loss stops the database until the pod is rescheduled with its volume.
+  2. A PostgreSQL operator or Patroni with streaming replication for HA, using an image that includes TimescaleDB. The operator should match what AMAN runs (To confirm). Set `timescaledb: false` for the environment in the Helmfile.
+  3. A customer-managed PostgreSQL 16 or later with TimescaleDB, set through `Database:Host`, with `timescaledb: false` in the Helmfile.
+- TimescaleDB telemetry is off (`TIMESCALEDB_TELEMETRY=off` in the chart sets `timescaledb.telemetry_level` and unschedules the telemetry job). Set it yourself with options 2 and 3.
 
 ### Kafka
 
@@ -168,7 +168,7 @@ Main settings:
 | `Kafka:Enabled`, `BootstrapServers` | `true` in the cluster files, `kafka:9092` | Point at the site's brokers. With `false` a host keeps domain events in the outbox and cannot publish |
 | `Kafka:SecurityProtocol`, `SaslMechanism`, `SaslUsername`, `SaslPassword`, `SslCaLocation` | `Plaintext` in dev and demo; `SaslSsl`, `ScramSha512`, `ariva`, the secret, `/app/secrets/kafka-ca/ca.crt` in production | A k8s-prd host with Kafka on refuses to start unless the protocol is `SaslSsl`. Create the secrets before the release: `ariva-kafka` (key `password`, read as `Kafka__SaslPassword`) and `ariva-kafka-ca` (key `ca.crt`, the cluster CA in PEM; for Strimzi, `<cluster>-cluster-ca-cert`). Both are optional mounts, so dev and demo run without them. Use a principal limited to the `ariva.` prefix (read on `aman.feed.` where the border module consumes AMAN's feed) |
 | `Kafka:ServiceName` | the host (`main`, `stream`, `ingest`, `cronz`, `integration`) | Keep; consumer groups are `ariva-<service>.<purpose>`, the names operators use for lag checks |
-| `Kafka:ProvisionTopics` | `true` on Api.Main only | Creates missing topics and dead-letter topics at startup (never changes existing ones). Set `false` where topics are created by the platform team (Strimzi `KafkaTopic` resources) and the principal has no create rights |
+| `Kafka:ProvisionTopics` | `true` on Api.Main only (vm-local); `false` in the clusters while the `kafka-topics` job runs | Creates missing topics and dead-letter topics at startup (never changes existing ones). In the clusters the chart's `kafka-topics` Helm hook job (`kafkaTopics.job`, on by default) does it once per release with `api-main --provision-topics`, and `api-main-configmap` sets `Kafka__ProvisionTopics=false`, so no host creates topics (section 7.2). Turn the job off where topics are created by the platform team (Strimzi `KafkaTopic` resources) |
 | `Kafka:Topics:Partitions`, `ReplicationFactor`, `MinInSyncReplicas`, `Overrides` | 6, 3 and 2 in production; 1 and 1 in dev and demo | Partitions at least the Stream replica count; per-topic overrides by name (partitions, retention days). The four sensing topics (`ariva.device.track-sample.v1`, `vendor-line-crossing`, `zone-occupancy`, `interval-count`) and, since ARV-036, `ariva.device.health.v1` must keep the same partition count: the queue stream worker refuses to start otherwise (ARV-034). An existing deployment whose health topic has another count adds partitions to it before upgrading. To scale out, add partitions to all five at once (the worker takes them up within 30 seconds and still accepts records hashed over the old count); pause Ingest for the change if the zones' minute rows around it must be exact, since a moved zone's last records on its old partition and its first on the new one can briefly be applied by two instances |
 | `Alerts:Evaluation:Enabled`, `IntervalSeconds`, `MaxCatchUpMinutes` | on in Api.Stream; 60 s; 180 minutes | Keep. Every Stream replica runs the worker; an advisory lock lets one evaluate per tick |
 | `Stream:Enabled`, `MaxZones`, `IdleTickSeconds`, `MaxAheadSeconds`, `MaxMergeRecords`, `MaxMergeBytes` | on in Api.Stream; 2,000 zones; 15 s; 60 s; 20,000 records and 64 MB per partition | Keep. Add Stream replicas (and partitions) before a site exceeds 2,000 queue zones per instance |
@@ -239,7 +239,7 @@ The `k8s-dev` release pipeline (`Platform/Cloud/Ariva.Cicd/AzureDevOps/K8s/Relea
 1. Agree the namespace. The dev pipeline uses `ariva-k8s-dev`; for a site, use one namespace per deployment (border and airport separately).
 2. Prepare the site overrides under `deploy/<site>/` in the repository: a values file with the customer's domain, subdomains, `clusterName`, `imageRepository` (mirror if air-gapped), `buildNumber` and `otel.endpoint`. Keep the appsettings JSON with credentials out of git.
 3. Write the environment files: `appsettings.base.<env>.json` and one `appsettings.service.<env>.json` per host, starting from the committed `k8s-prd` files and adding the real hosts and passwords.
-4. Check DNS, TLS, the storage class and that PostgreSQL, Kafka and Redis are reachable from the namespace.
+4. Check DNS, TLS, the storage class and that Kafka and Redis (and PostgreSQL, when the site provides its own) are reachable from the namespace.
 
 ### 6.2 Create the namespace and the appsettings secrets
 
@@ -314,6 +314,20 @@ kubectl run ariva-break-glass --rm -it --restart=Never --namespace="$NAMESPACE" 
   --image="$REGISTRY/api-main:$BUILD_NUMBER" -- dotnet Ariva.Api.Main.dll --create-break-glass
 ```
 
+With the Ariva TimescaleDB chart (section 4), create its credentials before the first release. Generate both passwords (at least 16 characters, for example `openssl rand -base64 24`) and keep them in the customer's password manager; `migration-password` must be the `Database:Migration:Password` of `appsettings.base.<env>.json`. The database reads them only when its volume is first initialised: changing the secret later changes nothing in the database (change the password with `ALTER ROLE` and then update both places).
+
+```bash
+umask 077
+openssl rand -base64 24 > superuser-password
+openssl rand -base64 24 > migration-password
+kubectl create secret generic timescaledb-credentials \
+  --from-file=superuser-password=./superuser-password \
+  --from-file=migration-password=./migration-password \
+  --namespace="$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+rm -f superuser-password migration-password
+```
+
+
 The command prints the username, a random password and ten recovery codes once; every sign-in needs the password and one unused recovery code, is never locked out and logs `SecurityEvent.BreakGlassSignIn` (event 9110) at Critical. Alert on that event in Loki or the SIEM, for example `{app="api-main"} |= "BreakGlassSignIn"`. When the codes run low, after an incident, or when custody changes, run the same command with `--rotate-break-glass`: it issues a new password and codes and ends the account's sessions. No API can create, re-enable or reset the account. Add `--break-glass-output=<path>` to write the credential to a new owner-only file instead of the terminal.
 
 The break-glass account reaches every site and can grant site access, so it can always bootstrap administration (ARV-012). It is not counted as an administrator: when the only regular administrator is compromised, sign in with break-glass, create a replacement administrator (with every site), then disable or revoke the compromised one; Ariva refuses to remove the last active regular administrator first.
@@ -333,6 +347,8 @@ helmfile apply \
   --set imageCredentials.username=<registry user> \
   --set imageCredentials.password=<registry password>
 ```
+
+The Helmfile applies the `timescaledb` release first and waits for the database to be ready, then the `ariva-platform` release. The platform's two Helm hook jobs run the api-main image before the upgraded pods start (after the objects exist on the first install): `database-migration` (`--migrate`, section 7.1) and `kafka-topics` (`--provision-topics`, section 7.2). A failed job fails the release; read its log with `kubectl -n "$NAMESPACE" logs job/<name>` (a failed job is kept until the next release).
 
 The chart refuses to render production without an explicit `buildNumber` (never `trunk`, never empty) and refuses the `latest` tag everywhere. Every ingress needs a TLS certificate secret (`tlsSecretName`, default `ariva-tls`) in the namespace before the release. Customer sites can still layer a site file with Helm directly, using the same release name:
 
@@ -363,7 +379,7 @@ Startup probes allow up to about two minutes per .NET pod (10 seconds initial de
 - The Ingest host is exposed through the shared ingress like the other APIs. The design places one Ingest instance per terminal on the sensor VLAN with a disk-backed buffer; the placement (node affinity or a separate gateway node), the persistent volume for the buffer, and keeping the Ingest ingress off the user network are Target procedures, implemented in Phase 0 epic Device gateway and simulator.
 - The Cronz ingress exposes the TickerQ dashboard; restrict it to the administration network. The dashboard is off unless `Cronz:Dashboard:Enabled` is true with `Cronz:Dashboard:KeySha256`, the SHA-256 of an operator key as 64 hex digits, in `api-cronz-appsettings-secret` (the host refuses to start with a malformed digest). Generate the key with `openssl rand -base64 32`, store it in the customer's password manager, and configure only its digest (`printf %s "$KEY" | sha256sum`). The dashboard is at `/tickerq/` and asks for the key; its browser app keeps the key in the browser's local storage, so use it from an administration workstation and change the key when someone leaves. It can run, stop and restart jobs. The browser app sends the key in the Authorization header; its live notification hub gets a ticket cookie instead (HttpOnly, SameSite=Strict, valid 30 minutes and renewed by every keyed call, issued per Cronz process, so a restart only makes the page reconnect after its next call), and refuses any other origin. No key or ticket travels in a URL, so the `api-cronz` ingress keeps its access log. Set `nginx.ingress.kubernetes.io/whitelist-source-range` to the administration network (the values files carry a commented example).
 - Cronz sends the scheduled reports (ARV-060) through the same mail relay as alert emails: give `api-cronz-appsettings-secret` the same `Email` section (`Enabled`, `FromAddress`, `Smtp`) as Integration's, and allow its egress to the relay. With `Email:Enabled` off it sends nothing and owes nothing.
-- Pods run as user 10001 with `runAsNonRoot`, a read-only root filesystem, every capability dropped and the RuntimeDefault seccomp profile; `/tmp` is a 64 MiB `emptyDir`.
+- Pods run as user 10001 with `runAsNonRoot`, a read-only root filesystem, every capability dropped and the RuntimeDefault seccomp profile; `/tmp` is a 64 MiB `emptyDir`. The TimescaleDB pod has the same restrictions as the image's `postgres` user (uid 1000), with emptyDirs for `/tmp`, the socket directory and `/dev/shm`, and no service account token.
 - Uploaded files (floor plans, ARV-018) live on the `ariva-files` claim (`fileStorage` in the values: size 2Gi, cluster default class), mounted by api-main at `/app/data/files` (`Storage__LocalRoot`). The claim is kept when the release is deleted. Dev, demo and local use ReadWriteOnce: the api-main Deployment then uses the `Recreate` strategy (a short gap on every apply) and the chart refuses more than one api-main replica. Production runs 2 to 4 api-main replicas and asks for ReadWriteMany: set `fileStorage.storageClassName` per customer cluster to a class that supports it (`azurefile-csi` on AKS with mount options `uid=10001,gid=10001,dir_mode=0750,file_mode=0640`; NFS, CephFS or Longhorn RWX on premises). With a class that cannot, the claim stays Pending and the install waits. The api-main `/tmp` volume is 128Mi because multipart uploads over 64 KB are buffered there. An S3-compatible store is a later option behind the same `IFileStorage`.
 - The api-main and web-api ingresses allow 21m request bodies for floor plan uploads; the other hosts keep 10m.
 - Cronz runs one replica in every values file; keep it at one unless TickerQ's multi-instance behaviour is confirmed (To confirm).
@@ -372,7 +388,9 @@ Startup probes allow up to about two minutes per .NET pod (10 seconds initial de
 
 ### 7.1 Database
 
-1. Create the database `ariva`, owned by the migration login (`ariva` by default), and enable the extension: `CREATE EXTENSION IF NOT EXISTS timescaledb;`
+With the Ariva TimescaleDB chart, step 1 is done by the chart on the first start: the image creates the database `ariva` with the TimescaleDB extension, and the chart's init script creates the migration login (`migrationLogin`, default `ariva`, with CREATEROLE but not superuser) and makes it the database owner. The `postgres` superuser keeps the `superuser-password` and is for the database administrator only.
+
+1. With your own PostgreSQL: create the database `ariva`, owned by the migration login (`ariva` by default; it needs CREATEROLE, not superuser), and enable the extension as a superuser: `CREATE EXTENSION IF NOT EXISTS timescaledb;`
 2. Put both logins in `appsettings.base.<env>.json` in `base-appsettings-secret`: `Database:Migration:Username`/`Password` (owner) and `Database:Username`/`Password` (runtime, at least 16 characters; the login does not need to exist yet).
 3. Deploy. The Helm hook Job `database-migration` runs the api-main image with `--migrate` (after the first install, before every upgrade). It applies `Ariva.Infra/Timescale/Scripts/NNNN_*.sql` in numeric order, each in a transaction with its `schema_version` row (name, SHA-256, time, login), under a PostgreSQL advisory lock. `0001_roles.sql` creates `ariva_migration` (DDL) and `ariva_runtime` (DML only); the job then creates or updates the runtime login as a member of `ariva_runtime`.
 4. The hosts connect as the runtime login and check `schema_version` at startup: a missing script or a changed checksum stops the pod (`SchemaBehindException` or `SchemaDriftException` in the log). Scripts are never edited once shipped; `checksums.lock` makes such an edit fail the build.
@@ -384,9 +402,9 @@ Hypertable scripts revoke UPDATE and DELETE on raw sample tables from `ariva_run
 
 ### 7.2 Kafka topics
 
-Target procedure, implemented in Phase 0 epic Skeleton and platform.
+Topics come only from the fixed list in code (`KafkaTopics` constants). The chart's `kafka-topics` job (ARV-062) runs `api-main --provision-topics` before every release (after the objects exist on the first install): it creates each missing topic and its dead-letter topic with the partitions, replication, `min.insync.replicas` and retention of `Kafka:Topics` in the appsettings, never changes an existing topic, and fails the release when the broker is still unreachable after five minutes (exit code 1; Kafka off counts as success, since no host then needs topics). The hosts then run with `Kafka:ProvisionTopics` false. By default the job uses the hosts' principal (`ariva-kafka`), which then still needs create rights on `ariva.`. To take them away from the hosts, create a secret for a principal of the job's own (keys `username` and `password`, create rights on the `ariva.` prefix) and set `kafkaTopics.adminSecretName`; recommended in production. Also set the brokers' `auto.create.topics.enable` to false, so no producer can create an `ariva.` topic with broker defaults before the job has run. Run it by hand with the same image: `./Ariva.Api.Main --provision-topics`.
 
-Topics come only from the fixed list in code (`KafkaTopics` constants); the provisioning step and its tests (`TopicProvisioningTests`) are part of the platform epic. Where Ariva may not create topics (a shared AMAN cluster), the cluster owner creates them with the same names and settings, and grants prefix ACLs on `ariva.` per service. Example for a standard site:
+Where Ariva may not create topics (a shared AMAN cluster), set `kafkaTopics.job` to false; the cluster owner creates them with the same names and settings, and grants prefix ACLs on `ariva.` per service. Example for a standard site:
 
 ```bash
 kafka-topics.sh --bootstrap-server <broker:port> --create \

@@ -1,6 +1,6 @@
 apiVersion: v2
 name: ariva-timescaledb
-description: Single node TimescaleDB for Ariva (placeholder until the backlog adds the StatefulSet, Service and PVC templates)
+description: Single node TimescaleDB (PostgreSQL 17) for Ariva, self managed in the release namespace (ARV-062)
 type: application
-version: 0.1.0
-appVersion: "pg17"
+version: 0.2.0
+appVersion: "pg17-ts2.30"

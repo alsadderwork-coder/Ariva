@@ -23,6 +23,9 @@ using Ariva.Di;
 // --migrate (ARV-006) is handled below and never reaches the configuration command line provider.
 var migrate = DatabaseMigration.IsRequested(args);
 args = DatabaseMigration.WithoutFlag(args);
+// --provision-topics (ARV-062): the Helm topics Job's command, never configuration.
+var provisionTopics = TopicProvisioning.IsRequested(args);
+args = TopicProvisioning.WithoutFlag(args);
 // --create-break-glass / --rotate-break-glass (ARV-010c) are installer commands, never configuration.
 var breakGlassArgs = args;
 var breakGlass = BreakGlassCommand.IsRequested(args);
@@ -49,12 +52,18 @@ builder.Configuration
 
 #endregion
 
-#region Migration job
+#region Migration and topic jobs
 
 // One-shot schema migration: the Helm migration Job starts this image with --migrate before each release.
 if (migrate)
 {
     return await DatabaseMigration.RunAsync(builder.Configuration);
+}
+
+// One-shot topic provisioning: the Helm topics Job starts this image with --provision-topics before each release.
+if (provisionTopics)
+{
+    return await TopicProvisioning.RunAsync(builder.Configuration);
 }
 
 // Installer command: the deployment's break-glass account, printed once (ARV-010c).

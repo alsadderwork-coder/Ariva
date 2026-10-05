@@ -4,6 +4,9 @@
 #   ACR-USERNAME, ACR-PASSWORD             registry credentials rendered into dalilacr-secret
 #   ARIVA-K8S-DEV-BASE-APPSETTINGS         appsettings.base.k8s-dev.json content
 #   ARIVA-K8S-DEV-<SERVICE>-APPSETTINGS    appsettings.service.k8s-dev.json content per service
+#   ARIVA-K8S-DEV-DB-SUPERUSER-PASSWORD    TimescaleDB "postgres" superuser (database administrator only)
+#   ARIVA-K8S-DEV-DB-MIGRATION-PASSWORD    TimescaleDB migration login; equals Database:Migration:Password in the base appsettings
+# Both database passwords are read only when the database volume is first initialised (wiki 04, section 6.2).
 name: $(Build.SourceBranchName)-$(NAMESPACE)-$(Date:yyyyMMdd)$(Rev:rr)
 
 trigger: none
@@ -109,6 +112,36 @@ steps:
       done
     displayName: "Create Kubernetes secrets"
 
+  # The TimescaleDB release's credentials (ARV-062). The passwords reach the step as environment variables and the
+  # secret through files, never through a command line.
+  - script: |
+      set -e
+      export KUBECONFIG="$(Build.SourcesDirectory)/_cicd/jupiter-kube-config.yaml"
+      # An undefined variable reaches the step as its own macro text, which is public in this file: refuse it, and any
+      # password under 16 characters, before the database is initialised with it (V13.2.3, no default credentials).
+      for name in DB_SUPERUSER_PASSWORD DB_MIGRATION_PASSWORD; do
+        value="${!name}"
+        # Written as \$\( so Azure DevOps does not read it as a macro.
+        if [[ "$value" == \$\(* ]]; then
+          echo "##vso[task.logissue type=error]$name is not defined in the variable group"; exit 1
+        fi
+        if [ "${#value}" -lt 16 ]; then
+          echo "##vso[task.logissue type=error]$name must have at least 16 characters"; exit 1
+        fi
+      done
+      umask 077
+      trap 'rm -f "$(Build.SourcesDirectory)/_cicd/db-superuser-password" "$(Build.SourcesDirectory)/_cicd/db-migration-password"' EXIT
+      printf '%s' "$DB_SUPERUSER_PASSWORD" > "$(Build.SourcesDirectory)/_cicd/db-superuser-password"
+      printf '%s' "$DB_MIGRATION_PASSWORD" > "$(Build.SourcesDirectory)/_cicd/db-migration-password"
+      kubectl create secret generic timescaledb-credentials \
+        --from-file=superuser-password=$(Build.SourcesDirectory)/_cicd/db-superuser-password \
+        --from-file=migration-password=$(Build.SourcesDirectory)/_cicd/db-migration-password \
+        --namespace=$(NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+    displayName: "Create the TimescaleDB credentials secret"
+    env:
+      DB_SUPERUSER_PASSWORD: $(ARIVA-K8S-DEV-DB-SUPERUSER-PASSWORD)
+      DB_MIGRATION_PASSWORD: $(ARIVA-K8S-DEV-DB-MIGRATION-PASSWORD)
+
   - script: |
       set -e
       export KUBECONFIG="$(Build.SourcesDirectory)/_cicd/jupiter-kube-config.yaml"
@@ -120,4 +153,5 @@ steps:
         --set releaseVersion=$(Build.BuildNumber) \
         --set imageCredentials.username=$(ACR-USERNAME) \
         --set imageCredentials.password=$(ACR-PASSWORD)
+    # Applies the timescaledb release first (waited for), then ariva-platform with its migration and Kafka topics jobs.
     displayName: "Version and Release"

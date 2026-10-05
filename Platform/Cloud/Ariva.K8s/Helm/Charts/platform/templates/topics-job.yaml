@@ -1,0 +1,108 @@
+{{- if .Values.kafkaTopics.job }}
+---
+#Job: Kafka topic provisioning (ARV-062). Runs the api-main image with --provision-topics once per release, before the
+#upgraded pods start (pre-upgrade), and after the release objects exist on the first install (post-install, as the
+#migration job). It creates the missing topics and their dead-letter topics with the ADR-0018 settings and never
+#changes an existing topic. With this job on, the hosts run with Kafka:ProvisionTopics false (api-main-configmap) and
+#never create topics. Their Kafka principal loses create rights only when kafkaTopics.adminSecretName gives the job a
+#principal of its own; without it the job uses the hosts' principal.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kafka-topics
+  labels:
+    app: kafka-topics
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,pre-upgrade
+    "helm.sh/hook-weight": "-4"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.kafkaTopics.backoffLimit | default 1 }}
+  activeDeadlineSeconds: {{ .Values.kafkaTopics.activeDeadlineSeconds | default 600 }}
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: kafka-topics
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: dalilacr-secret
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        # Kafka cluster CA (ARV-020): PEM ca.crt for SASL over TLS; optional, absent where Kafka is plaintext
+        - name: kafka-ca
+          secret:
+            secretName: {{ .Values.kafkaCaSecretName | default "ariva-kafka-ca" }}
+            optional: true
+            defaultMode: 0444
+        - name: appsettings-base-volume
+          secret:
+            secretName: base-appsettings-secret
+        - name: appsettings-volume
+          secret:
+            secretName: api-main-appsettings-secret
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: kafka-topics
+          image: "{{ .Values.imageRepository }}/api-main:{{ .Values.buildNumber }}"
+          imagePullPolicy: {{ .Values.imagePullPolicy | default "Always" }}
+          args: ["--provision-topics"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          env:
+            - name: DOTNET_ENVIRONMENT
+              value: {{ .Values.environment | quote }}
+            {{- if .Values.kafkaTopics.adminSecretName }}
+            # The job's own Kafka principal, allowed to create the ariva. topics (keys username and password)
+            - name: Kafka__SaslUsername
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.kafkaTopics.adminSecretName }}
+                  key: username
+            - name: Kafka__SaslPassword
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.kafkaTopics.adminSecretName }}
+                  key: password
+            {{- else }}
+            # The hosts' Kafka SASL password (ARV-020); optional, absent where Kafka is plaintext
+            - name: Kafka__SaslPassword
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.kafkaSecretName | default "ariva-kafka" }}
+                  key: password
+                  optional: true
+            {{- end }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: kafka-ca
+              mountPath: /app/secrets/kafka-ca
+              readOnly: true
+            - name: appsettings-base-volume
+              mountPath: /app/appsettings.base.{{ .Values.environment }}.json
+              subPath: appsettings.base.{{ .Values.environment }}.json
+            - name: appsettings-volume
+              mountPath: /app/appsettings.service.{{ .Values.environment }}.json
+              subPath: appsettings.service.{{ .Values.environment }}.json
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+{{- end }}

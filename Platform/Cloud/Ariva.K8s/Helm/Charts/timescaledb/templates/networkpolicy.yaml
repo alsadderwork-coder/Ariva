@@ -1,0 +1,26 @@
+{{- if .Values.networkPolicy.enabled }}
+---
+#NetworkPolicy: PostgreSQL accepts connections only from pods in the release namespace (the Ariva hosts and the
+#migration job) and from the peers listed in networkPolicy.additionalFrom (CWE-284). Nothing else is allowed in.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: timescaledb
+  labels:
+    app: timescaledb
+    {{- include "ariva-timescaledb.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: timescaledb
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector: {}
+        {{- with .Values.networkPolicy.additionalFrom }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 5432
+{{- end }}

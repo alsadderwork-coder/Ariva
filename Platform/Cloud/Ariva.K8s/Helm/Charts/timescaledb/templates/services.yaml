@@ -1,0 +1,35 @@
+---
+#Service: the address every host uses (Database:Host timescaledb, port 5432).
+apiVersion: v1
+kind: Service
+metadata:
+  name: timescaledb
+  labels:
+    app: timescaledb
+    {{- include "ariva-timescaledb.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: timescaledb
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+#Service: the StatefulSet's governing headless service (stable pod DNS name timescaledb-0.timescaledb-headless).
+apiVersion: v1
+kind: Service
+metadata:
+  name: timescaledb-headless
+  labels:
+    app: timescaledb
+    {{- include "ariva-timescaledb.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: timescaledb
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres

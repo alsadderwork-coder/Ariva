@@ -152,6 +152,17 @@ function check() {
 			}
 		}
 	}
+	// ARV-062: the cluster's TimescaleDB runs the image the developers, the integration tests and CI run, pinned by digest.
+	const databaseValues = path.join(ROOT, 'Platform', 'Cloud', 'Ariva.K8s', 'Helm', 'Charts', 'timescaledb', 'values.yaml');
+	if (fs.existsSync(databaseValues)) {
+		const values = fs.readFileSync(databaseValues, 'utf8');
+		const field = (name) => values.match(new RegExp(`^\\s+${name}:\\s*(\\S+)`, 'm'))?.[1];
+		const compose = fs.readFileSync(path.join(ROOT, 'docker-compose.dev.yml'), 'utf8').match(/image:\s*timescale\/timescaledb-ha:(\S+)/)?.[1];
+		if (field('repository') !== 'timescale/timescaledb-ha' || field('tag') !== compose) {
+			problems.push(`Charts/timescaledb/values.yaml: image ${field('repository')}:${field('tag')} must be timescale/timescaledb-ha:${compose}, the tag of docker-compose.dev.yml`);
+		}
+		if (!/^sha256:[0-9a-f]{64}$/.test(field('digest') ?? '')) problems.push('Charts/timescaledb/values.yaml: image.digest must be a sha256 digest');
+	}
 	if (problems.length) {
 		console.error(`base images: ${problems.length} problem(s) in ${count} FROM lines\n  ${problems.join('\n  ')}`);
 		console.error('Run the base-images workflow (Actions, base-images, Run workflow) to get pinned lines.');

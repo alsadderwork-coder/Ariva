@@ -1,0 +1,23 @@
+{{- /*
+Release guards. Renders nothing; fails the render when a rule is broken.
+- The image is pinned by digest and never "latest" (CWE-494).
+- Passwords come from an existing secret, never from values (CWE-798).
+- The names are plain PostgreSQL identifiers, and the migration login is never the superuser (CWE-269).
+*/ -}}
+{{- if not (regexMatch "^sha256:[0-9a-f]{64}$" (toString .Values.image.digest)) }}
+{{- fail "image.digest must be a sha256 digest; the TimescaleDB image is pinned by tag and digest" }}
+{{- end }}
+{{- if or (empty .Values.image.tag) (eq (toString .Values.image.tag) "latest") }}
+{{- fail "image.tag must be an explicit TimescaleDB tag, not empty or latest" }}
+{{- end }}
+{{- if empty .Values.existingSecret }}
+{{- fail "existingSecret must name a secret with superuser-password and migration-password; passwords never go in values" }}
+{{- end }}
+{{- range $name, $value := dict "database" .Values.database "migrationLogin" .Values.migrationLogin }}
+{{- if not (regexMatch "^[a-z_][a-z0-9_]{0,62}$" (toString $value)) }}
+{{- fail (printf "%s must be a lower case PostgreSQL identifier" $name) }}
+{{- end }}
+{{- end }}
+{{- if has (toString .Values.migrationLogin) (list "postgres" "ariva_migration" "ariva_runtime") }}
+{{- fail "migrationLogin must be a login of its own, not the superuser or one of Ariva's roles" }}
+{{- end }}

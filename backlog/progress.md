@@ -588,3 +588,58 @@ One entry per story, newest last. Format:
   - Second pass PASS.
   - Its non-blocking notes were acted on: the self-test's bad sample now exercises every rule, and `0:root` counts as root.
   - Recorded: the Docker socket is root-equivalent on its host. That is accepted on a disposable Codespace VM; on a workstation it is the developer's own Docker host, and the README says to keep forwarded ports Private. `parseJsonc` strips only whole-line comments, so a trailing comment makes the check throw (it fails closed).
+
+## 2026-10-05 ARV-062 Complete Helm deployment
+- Dependency: the PRD lists ARV-002, whose only open criterion is the first release on the dev cluster by a human. None of ARV-062's own criteria needs a cluster, so the story was built and verified by rendering, schema validation and running the database image as the pod runs it. The first cluster release (ARV-002) remains the real end-to-end check of this chart.
+- TimescaleDB chart (`Charts/timescaledb`), installed by the Helmfile in every environment:
+  - What it deploys: a StatefulSet with one replica and a `data-timescaledb-0` claim (50Gi, kept on delete); the `timescaledb` Service the base settings expect; a headless Service; a NetworkPolicy that admits pods of its own namespace only.
+  - Image: `timescale/timescaledb-ha:pg17-ts2.30`, pinned by digest. `base-images.mjs --check` keeps it on the tag of `docker-compose.dev.yml`, which CI and the integration tests also use.
+  - Pod privileges: runs as the image's `postgres` user (uid 1000) with a read-only root filesystem, every capability dropped, RuntimeDefault seccomp and no service account token. The only writable paths are emptyDirs for `/tmp`, the socket directory and `/dev/shm`.
+  - Authentication: initdb gives peer on the socket and scram-sha-256 on every TCP connection, loopback included. The image's default is trust, which a port-forward would reach.
+  - First start: the init script (env only, through psql `\getenv`) creates the migration login (CREATEROLE, not superuser) and gives it the database. Passwords come from the `timescaledb-credentials` secret.
+  - Release guards refuse: an image without a digest, `latest`, a missing secret, and the superuser or an Ariva role as migration login.
+- Kafka topics job:
+  - `api-main --provision-topics` (new `TopicProvisioning` command) runs as a Helm hook next to the migration job.
+  - It creates missing topics and dead-letter topics, never alters an existing one, refuses plaintext Kafka in k8s-prd as the hosts do, and exits 1 when the broker is still unreachable after five minutes.
+  - With the job on, api-main runs with `Kafka__ProvisionTopics=false`.
+  - `kafkaTopics.adminSecretName` gives the job a principal of its own, so the hosts' principal can lose create rights (recommended in production; empty by default).
+- Helmfile: `timescaledb` (a state value, true in dev, demo, prd and localk8s) is applied first and waited for; `ariva-platform` needs it.
+- Pipelines:
+  - `Release-ariva-k8s-dev.yaml` creates `timescaledb-credentials` from two new variable group secrets. It refuses an undefined (macro text) or short password, and removes its files on exit.
+  - `ci.yml` installs Helmfile 1.1.7 with a sha256 check, so the chart test renders every Helmfile environment in CI.
+- Chart test (30 rules self-tested on fixtures), new rules:
+  - third-party images pinned by digest;
+  - no literal credential in `env`;
+  - a StatefulSet needs a NetworkPolicy and no service account token;
+  - a PostgreSQL container needs peer and scram initdb arguments and no `POSTGRES_HOST_AUTH_METHOD`;
+  - no `CREATE ROLE` without `NOSUPERUSER`;
+  - the topics job implies `Kafka__ProvisionTopics=false`.
+  
+  It also renders the database chart and its guards, and every Helmfile environment, and checks that production without a build number is refused.
+- Tests:
+  - `TopicProvisioningCommandTests` (unit: flag, Kafka off, plaintext in production, unknown protocol, unreachable broker within the deadline).
+  - `TopicProvisioningTests` (integration: every topic created once with partitions, retention and min.insync; a second run succeeds; a hand-made topic is never altered).
+  - `DatabaseChartBootstrapTests` (integration). It reads the digest, initdb arguments and init script from the chart and runs the image like the pod (uid 1000, read-only root, no capabilities). It checks: no password-free TCP from outside or on loopback; a wrong password is refused; the migration login is a non-superuser owner; the real migration runs as it; the runtime login cannot create a table.
+  
+  Red checks: changing the chart to trust fails both the chart test and the integration test.
+- Also verified by hand:
+  - `kubeconform -strict` (Kubernetes 1.30 schemas) on every render;
+  - `api-main --migrate` as the non-superuser owner against the read-only container;
+  - `api-main --provision-topics` end to end against the E2E broker (peak memory about 75 MB; the job's limit is 256Mi).
+- Docs: wiki/04 (status; database options; secrets in 6.2; release order and hook jobs in 6.3; bootstrap in 7.1 and 7.2; the database pod) and `Platform/Cloud/CLAUDE.md`. In docs/security: the CWE-269 row; ASVS V12.3.3, V13.2.2 and V13.3.2.
+- Gates:
+  - backend PASS (unit 2281);
+  - integration 317 passed, 1 pre-existing skip;
+  - e2e 491 passed, 1 skipped (log scan clean);
+  - chart security PASS with Helm 3.19.0 and Helmfile 1.1.7;
+  - base images PASS; docs PASS; security scan 0 errors.
+- Security review (independent reviewer, CWE-269 and the matrix):
+  - First pass FAIL, three fixes: no automated test held the database authentication (now a chart rule and the bootstrap integration test); the pipeline would have initialised the database with the public macro text if a variable was missing (now refused); the docs claimed the hosts' Kafka principal needed no create rights even without a job principal (now qualified).
+  - Second pass PASS.
+  - Recorded, non-blocking:
+    - The database NetworkPolicy admits every pod in the namespace, and there is no egress policy.
+    - The topics job mounts both appsettings secrets but needs only Kafka.
+    - The migration job still mounts a service account token (predates this story).
+    - The digest rule recognises Ariva images by name only.
+    - The database runs without TLS (ARV-082).
+    - wiki/Home.md's dated status table (1 October) still calls the TimescaleDB chart a placeholder.

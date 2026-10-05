@@ -1,0 +1,135 @@
+---
+#StatefulSet: one PostgreSQL 17 with TimescaleDB. Runs as the image's postgres user (uid 1000) with a read-only root
+#filesystem; the data, the socket directory, /tmp and /dev/shm are the only writable paths (CWE-269). Local socket
+#connections use peer authentication and every TCP connection, loopback included, needs a password (scram-sha-256),
+#so a port-forward to the pod gets no password-free access.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: timescaledb
+  labels:
+    app: timescaledb
+    {{- include "ariva-timescaledb.labels" . | nindent 4 }}
+spec:
+  serviceName: timescaledb-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: timescaledb
+  template:
+    metadata:
+      labels:
+        app: timescaledb
+        {{- include "ariva-timescaledb.labels" . | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # A fast shutdown writes a checkpoint; give it time before the kubelet kills the process.
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        # The data volume becomes writable by the postgres user; checked only when the volume root does not match.
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: run
+          emptyDir:
+            sizeLimit: 8Mi
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ .Values.sharedMemorySize | default "512Mi" }}
+        - name: init
+          configMap:
+            name: timescaledb-init
+            defaultMode: 0555
+      containers:
+        - name: timescaledb
+          image: {{ include "ariva-timescaledb.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy | default "IfNotPresent" }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: postgres
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.existingSecret }}
+                  key: superuser-password
+            - name: POSTGRES_DB
+              value: {{ .Values.database | quote }}
+            # Peer authentication on the socket, scram-sha-256 on every TCP connection (initdb's default is trust).
+            - name: POSTGRES_INITDB_ARGS
+              value: "--auth-local=peer --auth-host=scram-sha-256"
+            # timescaledb.telemetry_level off: nothing leaves the site (wiki 04, section 4).
+            - name: TIMESCALEDB_TELEMETRY
+              value: "off"
+            - name: ARIVA_MIGRATION_LOGIN
+              value: {{ .Values.migrationLogin | quote }}
+            - name: ARIVA_MIGRATION_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.existingSecret }}
+                  key: migration-password
+          volumeMounts:
+            - name: data
+              mountPath: /home/postgres/pgdata
+            - name: tmp
+              mountPath: /tmp
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: shm
+              mountPath: /dev/shm
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d/100_ariva_owner.sh
+              subPath: 100_ariva_owner.sh
+              readOnly: true
+          # pg_isready needs no login. The first start initialises the volume; crash recovery after an unclean stop
+          # can take minutes, so the startup probe allows ten.
+          startupProbe:
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-p", "5432"]
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 120
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-p", "5432"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-p", "5432"]
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app: timescaledb
+      spec:
+        accessModes: [{{ .Values.persistence.accessMode | default "ReadWriteOnce" | quote }}]
+        {{- with .Values.persistence.storageClassName }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size | quote }}

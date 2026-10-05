@@ -1388,8 +1388,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 65,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "2026-10-05: all criteria met by rendering, schema validation and running the database image like the pod; the first cluster release remains with ARV-002 (human).",
       "dependsOn": [
         "ARV-002",
         "ARV-006",

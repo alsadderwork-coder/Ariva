@@ -4,19 +4,26 @@
 # The release pipeline passes the namespace, kube context and, for prd, --state-values-set buildNumber=...
 # (see Platform/Cloud/Ariva.Cicd/AzureDevOps/K8s/Release-ariva-k8s-dev.yaml).
 
+# timescaledb: install the Ariva TimescaleDB release (Charts/timescaledb, ARV-062). Set it to false for a site whose
+# PostgreSQL with TimescaleDB is provided another way (an operator with replication, or the customer's own server) and
+# point Database:Host at it; the platform release then has no dependency on it.
 environments:
   dev:
     values:
       - valuesFile: values-k8s-dev.yaml
+        timescaledb: true
   demo:
     values:
       - valuesFile: values-k8s-demo.yaml
+        timescaledb: true
   prd:
     values:
       - valuesFile: values-k8s-prd.yaml
+        timescaledb: true
   localk8s:
     values:
       - valuesFile: values-localk8s.yaml
+        timescaledb: true
 
 helmDefaults:
   kubeContext: default
@@ -25,9 +32,23 @@ helmDefaults:
 
 releases:
 
-  # Ariva platform: api hosts, simulation and web
+  # TimescaleDB (single node, ARV-062). Applied first and waited for: the platform's migration job connects to it.
+  # Needs the timescaledb-credentials secret (superuser-password, migration-password) in the namespace beforehand.
+  - name: timescaledb
+    chart: ./Charts/timescaledb
+    installed: {{ .Values.timescaledb }}
+    wait: true
+    timeout: 900
+    values:
+      - ./Charts/timescaledb/values.yaml
+
+  # Ariva platform: api hosts, simulation and web, with the migration and Kafka topics jobs as hooks
   - name: ariva-platform
     chart: ./Charts/platform
+    {{- if .Values.timescaledb }}
+    needs:
+      - timescaledb
+    {{- end }}
     values:
       - ./Charts/platform/{{ .Values.valuesFile }}
     {{- if .Values | get "buildNumber" "" }}
@@ -35,13 +56,6 @@ releases:
       - name: buildNumber
         value: {{ .Values.buildNumber | quote }}
     {{- end }}
-
-  # TimescaleDB (single node). Flip installed to true once the chart templates are added (ARV-062).
-  - name: timescaledb
-    chart: ./Charts/timescaledb
-    installed: false
-    values:
-      - ./Charts/timescaledb/values.yaml
 
 # Kafka and Redis
 # Ariva does not ship its own Kafka or Redis releases. Either:

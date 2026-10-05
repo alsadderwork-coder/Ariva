@@ -1,4 +1,4 @@
-# Values for the Ariva TimescaleDB release (single node, self managed).
+# Values for the Ariva TimescaleDB release (single node, self managed, ARV-062).
 #
 # Licence note: the timescale/timescaledb-ha image ships TimescaleDB Community Edition under the
 # Tiger Data licence (formerly the Timescale License, TSL). It may be installed and run free of charge
@@ -6,33 +6,56 @@
 # Dalil Tech deploys for a customer. It may not be offered to third parties as a database service.
 # See ADR-0006 in docs/architecture/adr.
 #
-# The chart templates are added by the backlog. Until then the release is marked installed: false in
-# helmfile-k8s.yaml.gotmpl and the commented values below document the intended shape.
+# The hosts reach it as the Service "timescaledb" on port 5432 (Database:Host in appsettings.base.k8s-*.json).
+# High availability (streaming replication, failover) is not part of this chart: use a PostgreSQL operator
+# with a TimescaleDB image, or the customer's managed PostgreSQL, and turn this release off in the Helmfile.
 
-# image:
-#   repository: timescale/timescaledb-ha
-#   tag: pg17                # pin an exact pg17 and TimescaleDB tag when the templates land
-#   pullPolicy: IfNotPresent
+# Pinned by tag and digest (scripts/base-images.mjs keeps docker-compose.dev.yml on the same tag). Change both
+# together; the chart refuses an image without a digest.
+image:
+  repository: timescale/timescaledb-ha
+  tag: pg17-ts2.30
+  digest: sha256:2fcc39a5d4c8a65f58691ef92c7819df5773db72397b2dd8493f114659b519c2
+  pullPolicy: IfNotPresent
 
-# persistence:
-#   enabled: true
-#   storageClassName: ""     # empty uses the cluster default storage class
-#   size: 50Gi               # PVCs can only grow; never lower this below the live capacity
-#   accessMode: ReadWriteOnce
+# The data volume. PVCs can only grow; never lower size below the live capacity. The claim (data-timescaledb-0)
+# is kept when the release is deleted.
+persistence:
+  storageClassName: ""     # empty uses the cluster default storage class
+  size: 50Gi
+  accessMode: ReadWriteOnce
 
-# resources:
-#   requests:
-#     cpu: 500m
-#     memory: 2Gi
-#   limits:
-#     cpu: "2"
-#     memory: 4Gi
+resources:
+  requests:
+    cpu: 500m
+    memory: 2Gi
+  limits:
+    cpu: "2"
+    memory: 4Gi
 
-# postgres:
-#   port: 5432
-#   database: ariva
-#   username: ariva
-#   existingSecret: timescaledb-credentials   # holds the password; never commit it to values
+# Shared memory for parallel queries (an in-memory emptyDir at /dev/shm; counts against the memory limit).
+sharedMemorySize: 512Mi
 
-# timescaledb:
-#   telemetryLevel: "off"    # sets timescaledb.telemetry_level
+# Created on the first start of an empty volume only; changing these later changes nothing in the database.
+# database:        the Ariva database (Database:Name)
+# migrationLogin:  owner of the database, with CREATEROLE but not superuser: the migration job's login
+#                  (Database:Migration:Username), which creates the schema and the runtime login.
+database: ariva
+migrationLogin: ariva
+
+# A secret created before the release (never in values), with two keys:
+#   superuser-password  the "postgres" superuser, for the database administrator only; no Ariva host uses it
+#   migration-password  the migration login; must equal Database:Migration:Password in base-appsettings-secret
+existingSecret: timescaledb-credentials
+
+# Only pods in the release namespace may connect (CWE-284). Add peers, for example a backup job or a metrics
+# exporter in another namespace, as NetworkPolicy "from" entries. Needs a CNI that enforces NetworkPolicy.
+networkPolicy:
+  enabled: true
+  additionalFrom: []
+  # - namespaceSelector:
+  #     matchLabels:
+  #       kubernetes.io/metadata.name: monitoring
+  #   podSelector:
+  #     matchLabels:
+  #       app.kubernetes.io/name: postgres-exporter

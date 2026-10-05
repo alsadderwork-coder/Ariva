@@ -42,6 +42,18 @@ migration:
   backoffLimit: 1
   activeDeadlineSeconds: 900
 
+# Kafka topics Job (ARV-062): api-main --provision-topics as a Helm hook before each upgrade (after the first install).
+# It creates the missing ariva.* topics and their dead-letter topics, never changes an existing one, and fails the
+# release when the broker cannot be reached within activeDeadlineSeconds. While it is on, api-main runs with
+# Kafka:ProvisionTopics false. adminSecretName (keys username and password) gives the job its own SASL principal with
+# create rights on the ariva. prefix, so the hosts' principal can do without them (recommended in production); empty
+# uses the hosts' principal (kafkaSecretName), which then keeps create rights.
+kafkaTopics:
+  job: true
+  adminSecretName: ""
+  backoffLimit: 1
+  activeDeadlineSeconds: 600
+
 # The simulation host (sensor, AODB and AMAN emulators) is deployed unless an environment turns it off.
 simulationEnabled: true
 

@@ -5,8 +5,8 @@ namespace Ariva.Infra.Messaging.Kafka;
 
 /// <summary>
 /// Holds the host's start until the topics its rider consumes exist. The rider subscribes its topic endpoints when the
-/// bus starts, and a topic that does not exist yet (Ariva.Api.Main provisions topics in the background on a fresh
-/// cluster) faults the bus for good: the v8 rider does not subscribe again by itself. Registered before the bus, so the
+/// bus starts, and a topic that does not exist yet (on a fresh cluster the Helm kafka-topics job, or in vm-local
+/// Ariva.Api.Main in the background, creates them) faults the bus for good: the v8 rider does not subscribe again by itself. Registered before the bus, so the
 /// bus starts once the topics are there. After <see cref="ConsumerSettings.StartWaitSeconds"/> it lets the host start
 /// anyway (the readiness check then reports the bus) rather than wait forever.
 /// </summary>

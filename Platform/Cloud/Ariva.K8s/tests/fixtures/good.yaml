@@ -25,7 +25,7 @@ spec:
       securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
       containers:
         - name: app
-          image: registry.example/app:main-20261001.1
+          image: registry.example/web:main-20261001.1
           securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
           volumeMounts: [{ name: tmp, mountPath: /tmp }]
 ---
@@ -50,3 +50,55 @@ metadata:
 spec:
   tls: [{ hosts: [ariva.example], secretName: ariva-tls }]
   rules: [{ host: ariva.example, http: { paths: [{ path: /hubs }] } }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: database }
+spec:
+  template:
+    metadata: { labels: { app: database } }
+    spec:
+      automountServiceAccountToken: false
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, fsGroup: 1000, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: db
+          image: registry.example/postgres:17@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+          env:
+            - { name: POSTGRES_DB, value: ariva }
+            - { name: POSTGRES_PASSWORD, valueFrom: { secretKeyRef: { name: db, key: password } } }
+            - { name: POSTGRES_INITDB_ARGS, value: "--auth-local=peer --auth-host=scram-sha-256" }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: database }
+spec:
+  podSelector: { matchLabels: { app: database } }
+  policyTypes: [Ingress]
+  ingress: [{ from: [{ podSelector: {} }] }]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: api-main-configmap }
+data: { Kafka__ProvisionTopics: "false" }
+---
+apiVersion: batch/v1
+kind: Job
+metadata: { name: kafka-topics }
+spec:
+  template:
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: kafka-topics
+          image: registry.example/api-main:main-20261001.1
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: database-init }
+data:
+  init.sh: |
+    SELECT format('CREATE ROLE %I LOGIN CREATEROLE NOSUPERUSER PASSWORD %L', :'login', :'password') \gexec

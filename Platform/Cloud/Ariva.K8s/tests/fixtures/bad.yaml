@@ -67,3 +67,52 @@ spec:
           image: registry.example/api-integration:main-20261001.1
           securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
           volumeMounts: [{ name: tmp, mountPath: /tmp }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: bad-database }
+spec:
+  template:
+    metadata: { labels: { app: bad-database } }
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: db
+          image: registry.example/postgres:17
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+          env:
+            - { name: POSTGRES_PASSWORD, value: hunter2-in-the-manifest }
+            - { name: POSTGRES_HOST_AUTH_METHOD, value: trust }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: selects-another-app }
+spec:
+  podSelector: { matchLabels: { app: database } }
+  policyTypes: [Ingress]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: api-main-configmap }
+data: { Storage__LocalRoot: /app/data/files }
+---
+apiVersion: batch/v1
+kind: Job
+metadata: { name: kafka-topics }
+spec:
+  template:
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: kafka-topics
+          image: registry.example/api-main:main-20261001.1
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: database-init }
+data:
+  init.sh: |
+    CREATE ROLE ariva LOGIN SUPERUSER;

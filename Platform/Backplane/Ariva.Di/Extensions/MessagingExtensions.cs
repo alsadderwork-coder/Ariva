@@ -23,6 +23,16 @@ namespace Ariva.Di.Extensions;
 /// </summary>
 public static partial class MessagingExtensions
 {
+    /// <summary>CWE-501: in production every event crosses the network authenticated and encrypted, or the host does not start.</summary>
+    internal static void EnsureProductionTransport(KafkaSettings settings, IConfiguration configuration)
+    {
+        if (settings.Enabled && configuration["Application:Environment"] == "k8s-prd" &&
+            !string.Equals(settings.SecurityProtocol, "SaslSsl", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Kafka in k8s-prd must use SecurityProtocol SaslSsl with a SASL mechanism and credentials.");
+        }
+    }
+
     public static IServiceCollection AddArivaMessaging(this IServiceCollection services, IConfiguration configuration, Action<ArivaMessagingBuilder> configure = null)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -39,12 +49,7 @@ public static partial class MessagingExtensions
         services.Replace(ServiceDescriptor.Singleton<IDomainEventOutbox, NHibernateDomainEventOutbox>());
         services.TryAddScoped<IInbox, PostgresInbox>();
 
-        // CWE-501: in production every event crosses the network authenticated and encrypted, or the host does not start.
-        if (settings.Enabled && configuration["Application:Environment"] == "k8s-prd" &&
-            !string.Equals(settings.SecurityProtocol, "SaslSsl", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException("Kafka in k8s-prd must use SecurityProtocol SaslSsl with a SASL mechanism and credentials.");
-        }
+        EnsureProductionTransport(settings, configuration);
 
         if (!settings.Enabled)
         {

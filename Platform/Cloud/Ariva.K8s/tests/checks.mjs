@@ -8,6 +8,24 @@ function podSpecOf(doc) {
 	return doc.spec?.template?.spec;
 }
 
+/** The images Ariva builds (images.yml): tagged by build number. Every other image is pinned by digest (ARV-062, CWE-494). */
+const ARIVA_IMAGES = new Set(['api-main', 'api-ingest', 'api-stream', 'api-cronz', 'api-integration', 'simulation', 'web']);
+
+function imageName(image) {
+	const withoutDigest = String(image).split('@')[0];
+	const lastSlash = withoutDigest.lastIndexOf('/');
+	const colon = withoutDigest.indexOf(':', lastSlash + 1);
+	return withoutDigest.slice(lastSlash + 1, colon === -1 ? undefined : colon);
+}
+
+/** Environment variable names that hold credentials: their values come from secrets, never from the manifest (CWE-798). */
+const SECRET_ENV = /(PASSWORD|PASSWD|SECRET|TOKEN|PRIVATE_?KEY|API_?KEY)/i;
+
+function labelsMatch(selector, labels) {
+	const wanted = Object.entries(selector?.matchLabels ?? {});
+	return wanted.every(([key, value]) => labels?.[key] === value);
+}
+
 function imageTag(image) {
 	const withoutDigest = String(image).split('@')[0];
 	const lastSlash = withoutDigest.lastIndexOf('/');
@@ -75,6 +93,50 @@ export function checkManifests(docs, { environment }) {
 				if (!tag) findings.push(`${cid}: image ${container.image} has no tag`);
 				if (tag === 'latest') findings.push(`${cid}: image tag latest is not allowed`);
 				if (environment === 'k8s-prd' && (tag === 'trunk' || tag === '')) findings.push(`${cid}: production must pin a build number, not ${tag || 'an empty tag'}`);
+				if (!ARIVA_IMAGES.has(imageName(container.image ?? '')) && !/@sha256:[0-9a-f]{64}$/.test(container.image ?? '')) {
+					findings.push(`${cid}: third-party image ${container.image} must be pinned by digest`);
+				}
+				for (const variable of container.env ?? []) {
+					if (SECRET_ENV.test(variable.name ?? '') && variable.value !== undefined && variable.value !== '') {
+						findings.push(`${cid}: ${variable.name} carries a literal value; credentials come from a secret (valueFrom)`);
+					}
+				}
+			}
+			// ARV-062: a stateful workload (the database) only accepts traffic a NetworkPolicy allows.
+			if (doc.kind === 'StatefulSet') {
+				const podLabels = doc.spec?.template?.metadata?.labels ?? {};
+				const guarded = docs.some((policy) => policy?.kind === 'NetworkPolicy' && (policy.spec?.policyTypes ?? ['Ingress']).includes('Ingress') &&
+					Object.keys(policy.spec?.podSelector?.matchLabels ?? {}).length > 0 && labelsMatch(policy.spec.podSelector, podLabels));
+				if (!guarded) findings.push(`${id}: a StatefulSet needs a NetworkPolicy that selects its pods`);
+				if (pod.automountServiceAccountToken !== false) findings.push(`${id}: a StatefulSet does not call the Kubernetes API; set automountServiceAccountToken false`);
+				// A PostgreSQL server (the official entrypoint's variables): initdb's default is trust on the socket and on
+				// loopback, which a port-forward reaches; peer on the socket and scram-sha-256 on every TCP connection instead.
+				for (const container of pod.containers ?? []) {
+					const env = Object.fromEntries((container.env ?? []).map((variable) => [variable.name, variable]));
+					if (!env.POSTGRES_PASSWORD) continue;
+					const initdb = String(env.POSTGRES_INITDB_ARGS?.value ?? '');
+					if (!initdb.includes('--auth-local=peer') || !initdb.includes('--auth-host=scram-sha-256')) {
+						findings.push(`${id} container ${container.name}: PostgreSQL needs POSTGRES_INITDB_ARGS with --auth-local=peer and --auth-host=scram-sha-256 (no password-free login)`);
+					}
+					if (env.POSTGRES_HOST_AUTH_METHOD) findings.push(`${id} container ${container.name}: POSTGRES_HOST_AUTH_METHOD must not be set; every TCP login uses scram-sha-256`);
+				}
+			}
+		}
+
+		// ARV-062: a script that creates a database login never makes it a superuser.
+		if (doc.kind === 'ConfigMap') {
+			for (const [key, value] of Object.entries(doc.data ?? {})) {
+				if (/CREATE ROLE/i.test(String(value)) && !/NOSUPERUSER/.test(String(value))) {
+					findings.push(`${id}: ${key} creates a role without NOSUPERUSER`);
+				}
+			}
+		}
+
+		// ARV-062: with the topics Job, the hosts never create topics, so their Kafka principal needs no create rights.
+		if (doc.kind === 'Job' && doc.metadata?.name === 'kafka-topics') {
+			const mainConfig = docs.find((other) => other?.kind === 'ConfigMap' && other.metadata?.name === 'api-main-configmap');
+			if (mainConfig && mainConfig.data?.Kafka__ProvisionTopics !== 'false') {
+				findings.push(`${id}: with the topics job, api-main-configmap must set Kafka__ProvisionTopics "false"`);
 			}
 		}
 
