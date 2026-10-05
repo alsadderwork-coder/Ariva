@@ -298,6 +298,46 @@ public sealed class AlertEvaluationTests(PostgresFixture fixture) : IAsyncDispos
     }
 
     [Fact]
+    public async Task Tick_Should_WaitForTheLivePartOfAMinute_When_OnlyItsCountsAreStoredYet()
+    {
+        // ARV-064 rehearsal: the stream stores a minute's counts while the minute runs and its queue length and nowcast about
+        // half a minute after it ends. A tick in between took the minute without a nowcast and never looked at it again,
+        // so R-001 missed the visitor wave whenever the evaluator's timer fell in that gap.
+        var admin = await EveningAsync();
+        var first = ReferenceReplay.WallOf(24 * 60);
+        var rule = await RuleAsync(admin, "Live part", ["D-CRW"], first.AddSeconds(5), metric: "Nowcast");
+        await MinutesAsync("D-CRW", first, 0, 0);
+        await using (var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync())))
+        {
+            await connection.OpenAsync(Ct);
+            await using var counts = new NpgsqlCommand("""
+                INSERT INTO queue_minute (zone_key, minute_utc, profile_version, status, entries, exits, waits, updated_on)
+                VALUES ('DMO/D-CRW', @minute, 12, 'Provisional', 9, 4, 0, now())
+                """, connection);
+            counts.Parameters.AddWithValue("minute", first.AddMinutes(2));
+            await counts.ExecuteNonQueryAsync(Ct);
+        }
+
+        (await TickAsync(first.AddMinutes(3).AddSeconds(5))).Failed.Should().Be(0);
+        (await _host.ReadAsync<long>("SELECT count(*) FROM alert WHERE rule_id = @id", rule.Id)).Should().Be(0);
+
+        await using (var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync())))
+        {
+            await connection.OpenAsync(Ct);
+            await using var live = new NpgsqlCommand("""
+                UPDATE queue_minute SET queue_length = 40, length_degraded = false, nowcast_minutes = 8.2, throughput_per_minute = 5
+                WHERE zone_key = 'DMO/D-CRW' AND minute_utc = @minute
+                """, connection);
+            live.Parameters.AddWithValue("minute", first.AddMinutes(2));
+            (await live.ExecuteNonQueryAsync(Ct)).Should().Be(1);
+        }
+
+        (await TickAsync(first.AddMinutes(3).AddSeconds(40))).Failed.Should().Be(0);
+        (await _host.ReadAsync<string>("SELECT to_char(raised_utc AT TIME ZONE 'UTC', 'HH24:MI') || ' ' || raised_value FROM alert WHERE rule_id = @id", rule.Id))
+            .Should().Be("00:02 8.2", "the minute is judged once its nowcast is stored");
+    }
+
+    [Fact]
     public async Task Tick_Should_RecordTheBound_When_AStoredValueIsBeyondWhatAnAlertKeeps()
     {
         var admin = await EveningAsync();

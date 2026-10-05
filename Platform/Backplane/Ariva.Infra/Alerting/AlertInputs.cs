@@ -72,7 +72,12 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
         return [.. devices.Select(d => new AlertTarget(d.ZoneName, d.Code))];
     }
 
-    /// <summary>The latest minute the stream stored for each of the zones (none for a zone without rows).</summary>
+    /// <summary>
+    /// The latest minute whose live part (queue length and nowcast) the stream stored, for each of the zones (none for a
+    /// zone without one). A minute's counts are stored while it runs and its live part about half a minute after it ends;
+    /// a row with counts only is not ready, or the tick would take the minute without its nowcast and never judge it
+    /// (ARV-064). The stream writes every live minute with a queue length, so that column marks the live part.
+    /// </summary>
     public async Task<IReadOnlyDictionary<string, DateTime>> LatestMinutesAsync(string siteCode, IReadOnlyCollection<string> zones, DateTime notAfterUtc, CancellationToken ct)
     {
         if (zones.Count == 0)
@@ -80,7 +85,7 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
         var keys = zones.Select(z => ZoneKeys.For(siteCode, z)).ToList();
         var rows = await Storage.ExecuteSqlAsync<LatestRow>("""
             SELECT zone_key AS "ZoneKey", max(minute_utc) AS "MinuteUtc" FROM queue_minute
-            WHERE zone_key IN (:keys) AND minute_utc <= :notAfter GROUP BY zone_key
+            WHERE zone_key IN (:keys) AND minute_utc <= :notAfter AND queue_length IS NOT NULL GROUP BY zone_key
             """, new Dictionary<string, object> { ["keys"] = keys, ["notAfter"] = notAfterUtc }, ct);
         var prefix = siteCode + "/";
         return rows.Where(r => r.MinuteUtc is not null)
