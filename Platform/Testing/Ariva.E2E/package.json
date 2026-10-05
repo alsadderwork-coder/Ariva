@@ -12,7 +12,7 @@
 	},
 	"devDependencies": {
 		"@axe-core/playwright": "^4.13.0",
-		"@microsoft/signalr": "^8.0.17",
+		"@microsoft/signalr": "^10.0.11",
 		"@playwright/test": "^1.62.1",
 		"@types/node": "^22.18.0",
 		"@types/pg": "^8.23.1",
