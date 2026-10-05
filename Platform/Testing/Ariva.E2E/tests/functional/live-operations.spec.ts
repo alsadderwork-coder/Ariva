@@ -259,3 +259,46 @@ test('a handler station manager has no arrival wave and no other desks; Arabic m
 	allowStatuses(guards, 404);
 	await guards.expectClean();
 });
+
+test('a nowcast from the exit rate alone is marked as an estimate; only doubtful data is shown as degraded (ARV-064)', async ({ page }) => {
+	test.skip(!redisUrl, "the live hub needs the run's Redis (ARIVA_E2E_REDIS_URL)");
+	const guards = await guardPage(page);
+	const redis = createClient({ url: redisUrl });
+	await redis.connect();
+	const keys = [`${instance}live:zone:DMO/D-RES`, `${instance}live:zone:DMO/D-CRW`];
+	try {
+		const minute = new Date(Math.floor(Date.now() / 60_000) * 60_000 - 60_000);
+		// D-RES: the queue is measured, the throughput is the exit rate only (no desk state): an estimate, still coloured.
+		// D-CRW: the queue length comes from degraded readings (a sensor outage): the data itself is in doubt.
+		const estimate = { ...snapshot('D-RES', 30, 12.5, minute), nowcastDegraded: true };
+		const doubtful = { ...snapshot('D-CRW', 4, 2.0, minute), lengthDegraded: true, nowcastDegraded: true };
+		for (const s of [estimate, doubtful]) await redis.set(`${instance}live:zone:${s.zoneKey}`, JSON.stringify(s), { EX: 3600 });
+
+		await signInThroughUi(page, accounts().webBorder);
+		await expect(page.getByTestId('live-state')).toHaveAttribute('data-state', 'connected');
+		const residents = page.locator('[data-testid="zone-row"][data-zone="D-RES"]');
+		await expect(residents).toContainText('Near target');
+		await expect(residents.getByTestId('estimate-marker')).toHaveAttribute('title', /exit rate only/);
+		const crew = page.locator('[data-testid="zone-row"][data-zone="D-CRW"]');
+		await expect(crew).toContainText('Data degraded');
+		await expect(crew.getByTestId('estimate-marker')).toHaveCount(0);
+
+		// Then the desks close: no nowcast, and the status says there is no estimate rather than degraded data.
+		const closed = { ...snapshot('D-RES', 30, null, new Date(minute.getTime() + 60_000)), noService: 'NothingOpen' };
+		await redis.set(`${instance}live:zone:DMO/D-RES`, JSON.stringify(closed), { EX: 3600 });
+		await expect
+			.poll(
+				async () => {
+					await redis.publish(`${instance}live:zones`, JSON.stringify(closed));
+					return residents.textContent();
+				},
+				{ timeout: 20_000, intervals: [500, 1000, 2000] }
+			)
+			.toContain('No estimate');
+		await expect(residents.getByTestId('estimate-marker')).toHaveCount(0);
+		await guards.expectClean();
+	} finally {
+		await redis.del(keys);
+		await redis.quit();
+	}
+});

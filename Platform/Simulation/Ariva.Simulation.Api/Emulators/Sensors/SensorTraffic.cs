@@ -46,6 +46,10 @@ internal static class SensorTraffic
         _ => sensorZone
     };
 
+    /// <summary>Whether a queue zone has an overflow band with a lead sensor (A-VIS, D-VIS and SEC-N).</summary>
+    public static bool HasOverflowBand(string queueZone) =>
+        ScenarioModel.Sensors.Any(s => RoleOf(s) == SensorRole.OverflowLead && string.Equals(QueueZoneOf(s.Zone), queueZone, StringComparison.Ordinal));
+
     /// <summary>The scenario sensor with this id, or null.</summary>
     public static SensorDef Sensor(string id) => ScenarioModel.Sensors.FirstOrDefault(s => string.Equals(s.Id, id, StringComparison.Ordinal));
 
@@ -87,7 +91,12 @@ internal static class SensorTraffic
             var i = minute + ScenarioModel.Pre;
             Passengers(day.CumA[q], day.A[q], i, queueZone, minute, wallOf, entries);
             Passengers(day.CumD[q], day.D[q], i, queueZone, minute, wallOf, exits);
-            occupancy.Add((queueZone, OccupancyAt(day, q, i)));
+            // A queue with an overflow band counts up to its capacity; the band's lead counts the rest, so that Ariva's sum of
+            // the queue zone and its bands is the queue (ARV-064).
+            var inQueue = OccupancyAt(day, q, i);
+            if (HasOverflowBand(queueZone) && ScenarioDay.DefaultCaps.TryGetValue(queueZone, out var capacity))
+                inQueue = Math.Min(inQueue, (int)capacity);
+            occupancy.Add((queueZone, inQueue));
         }
         else if (role == SensorRole.OverflowLead)
         {

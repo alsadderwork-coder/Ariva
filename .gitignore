@@ -54,3 +54,6 @@ deploy/.kubeconfig-path
 
 # Stryker.NET output when run without --output (ARV-069)
 StrykerOutput/
+
+# The local demo (ARV-064): accounts and AppHost settings written by scripts/demo-local.mjs, never committed
+.demo/

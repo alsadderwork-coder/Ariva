@@ -26,6 +26,7 @@ public static class StreamExtensions
         services.TryAddSingleton(TimeProvider.System);
         services.AddSingleton<StreamStore>();
         services.AddSingleton<ZoneGeometrySource>();
+        services.AddSingleton<DeskTermSource>();
         var kafka = configuration.GetSection(KafkaSettings.SectionName).Get<KafkaSettings>() ?? new KafkaSettings();
         if (settings.Enabled && kafka.Enabled)
             services.AddHostedService<QueueStreamWorker>();

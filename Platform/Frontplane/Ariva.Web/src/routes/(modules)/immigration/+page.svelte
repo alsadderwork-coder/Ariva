@@ -2,7 +2,7 @@
 	import { ExternalLink, Radio, ScanLine } from '@lucide/svelte';
 	import { onDestroy, onMount } from 'svelte';
 	import { _, locale } from 'svelte-i18n';
-	import { statusTone, waitStatus } from '$lib/components/pages/live/waits';
+	import { estimateOnly, statusTone, waitStatus } from '$lib/components/pages/live/waits';
 	import SimplePageHeader from '$lib/components/shared/SimplePageHeader.svelte';
 	import StatusBadge, { type StatusTone } from '$lib/components/shared/StatusBadge.svelte';
 	import { LiveConnection, type ZoneSnapshot } from '$lib/core/Live.svelte';
@@ -258,7 +258,14 @@
 									</th>
 									<td class="px-4 py-2 text-end tabular-nums" data-testid="lane-wait">
 										{#if wait.snapshot?.nowcastMinutes != null}
-											<StatusBadge
+											{#if estimateOnly(wait.snapshot)}<span
+													data-testid="estimate-marker"
+													class="me-1 text-muted-foreground"
+													title={$_('liveOperations.estimateHint')}
+													><span aria-hidden="true">≈</span><span class="sr-only"
+														>{$_('liveOperations.estimateHint')}</span
+													></span
+												>{/if}<StatusBadge
 												tone={wait.tone}
 												label={$_('immigration.minutes', {
 													values: { value: numberFormat.format(wait.snapshot.nowcastMinutes) }

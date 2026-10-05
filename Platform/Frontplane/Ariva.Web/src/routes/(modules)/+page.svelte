@@ -13,7 +13,8 @@
 		nearMinutes,
 		overMinutes,
 		statusTone,
-		waitStatus
+		waitStatus,
+		estimateOnly
 	} from '$lib/components/pages/live/waits';
 	import MetricCard from '$lib/components/shared/MetricCard.svelte';
 	import SimplePageHeader from '$lib/components/shared/SimplePageHeader.svelte';
@@ -386,7 +387,14 @@
 									>
 									<td class="px-4 py-2 text-end tabular-nums">
 										{#if snapshot?.nowcastMinutes != null}
-											{numberFormat.format(snapshot.nowcastMinutes)}
+											{#if estimateOnly(snapshot)}<span
+													data-testid="estimate-marker"
+													class="me-1 text-muted-foreground"
+													title={$_('liveOperations.estimateHint')}
+													><span aria-hidden="true">≈</span><span class="sr-only"
+														>{$_('liveOperations.estimateHint')}</span
+													></span
+												>{/if}{numberFormat.format(snapshot.nowcastMinutes)}
 										{:else if snapshot?.noService}
 											<span class="text-xs text-muted-foreground"
 												>{labelOf(

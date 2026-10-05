@@ -1,6 +1,7 @@
 using Ariva.Api.Common.Extensions;
 using Ariva.Api.Common.Security;
 using Ariva.Core.Domain.Enums;
+using Ariva.Api.Ingest.Endpoints;
 using Ariva.Infra.Sensing;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
@@ -53,7 +54,7 @@ public sealed class PushController(SensingIngest ingest, TimeProvider timeProvid
         // A device pushes over the transport it is registered for (ARV-024): one rate limit, one way in.
         if (!string.Equals(device.Transport, nameof(DeviceTransport.HttpsPush), StringComparison.Ordinal))
             return Problem(statusCode: StatusCodes.Status403Forbidden, title: "Forbidden", detail: $"This device is registered for the {device.Transport} transport.");
-        var received = timeProvider.GetUtcNow().UtcDateTime;
+        var received = ReceiptTime.Of(HttpContext) ?? timeProvider.GetUtcNow().UtcDateTime;
         // Checked here rather than with [Consumes]: a mismatch there leaves no endpoint, and the caller would get the
         // fallback 401 instead of being told the body must be JSON.
         if (!Microsoft.Net.Http.Headers.MediaTypeHeaderValue.TryParse(Request.ContentType, out var type) ||

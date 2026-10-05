@@ -267,7 +267,7 @@ Three kinds of replay exist; pick the right one.
 |---|---|---|
 | Recover after a crash, rebalance or Kafka outage | Automatic: consumers resume from committed offsets; idempotent upserts by (zone, bin start, revision) and event-id deduplication make replay safe | Built into the stream design |
 | Recompute a disputed or misconfigured period | Recompute from raw samples in TimescaleDB (not from Kafka) under a named zone profile version; the result is a new revision and the original is kept | Target procedure, implemented in v1 epic SLA and penalty engine (recomputation and revision tooling) |
-| Reproduce a day for tests or a demo | The AODB replay harness and Ariva.Simulation.Api replay recorded feeds and the reference scenario deterministically | Target procedure, implemented in Phase 0 epic Device gateway and simulator |
+| Reproduce a day for tests or a demo | Ariva.Simulation.Api plays the reference scenario through the whole pipeline in real time (section 4.11); recorded customer feeds are not replayed yet | Built for the reference scenario (ARV-064); recorded feeds Target |
 | Evidence for a period, or a regression check of an engine change | Golden replay of the archive (ARV-036): `Ariva.Api.Stream --replay`, below | Built |
 
 Golden replay (ARV-036). Run the Stream image as a one-off job (or the host locally) with the runtime database login, as for the migration job:
@@ -285,6 +285,46 @@ dotnet Ariva.Api.Stream.dll --replay --replay-site=DMO --replay-zone=A-VIS --rep
 - Expect the replay to equal what the stream wrote for the period except where records share a receive time (ordered by kind and id rather than Kafka offsets) and for tracks that cross UTC midnight (the archive's pseudonyms change daily); the zones start empty at `--replay-from`, so start an hour or two before the period of interest.
 
 Do not reset consumer offsets by hand to "replay" a period until the procedure has been verified in Phase 0 epic Queue engine core; Kafka keeps track samples for only a few days, and raw samples in TimescaleDB are the source for anything older.
+
+### 4.11 Scripted demo (ARV-064)
+
+The reference evening at Demo International Airport (DMO, seed 9303) played in real time through the whole pipeline: the simulator's sensors push to Ingest as registered, calibrated devices, AMAN's feed goes through Kafka to Integration and the desk engine, Stream computes the queues, the nowcast (now with the AMAN desk term) and the alert rules, and Main relays both to the screens. Nothing is planted. Three scripted events, each seen by the role that owns it:
+
+| Demo time | What happens | Who sees it | Account (local) |
+|---|---|---|---|
+| 18:05 | A visitor-heavy arrival wave: the arrivals Visitors (A-VIS) nowcast passes 15 minutes and R-001 fires | Border shift supervisor | `demo.border` |
+| 18:20 to 18:30 | Sensor S-17 over the arrivals hall goes silent: R-003 names it, Devices shows it Offline, then it recovers | Border shift supervisor, system administrator | `demo.border`, `demo.admin` |
+| 19:10 | Handler B's check-in island C after a shift change: the 15-minute bin breaches the 15-minute P90 target and R-004 fires once the bin has ended (19:15) | Handler station manager | `demo.handler` |
+
+Two runs:
+
+- Full rehearsal, 17:40 to 19:40 (about two hours): all three events, the bins and the reports. Run it the day before any demo.
+- Short live demo, 17:50 to 18:35 (about 45 minutes): the arrival wave and the sensor outage. Start at 17:50 rather than 17:55: the sensors' first ten minutes are their warm-up (step 3 below), and R-001 should fire on screen, not during the warm-up.
+
+On a laptop (Docker and the .NET SDK, Node 22):
+
+1. Once: `npm ci` in `Platform/Frontplane/Ariva.Web`, then `node scripts/demo-local.mjs prepare`. It writes `.demo/accounts.json` (the four demo accounts with random passwords; the administrator also has a TOTP secret) and `.demo/apphost-environment.json` (git-ignored, owner-only) and prints the AppHost command.
+2. Start Ariva with that command: `dotnet run --project Platform/Cloud/Ariva.AppHost -- "--AppHost:HostEnvironmentFile=<repository>/.demo/apphost-environment.json"`. Wait until the Aspire dashboard (http://localhost:15880) shows every resource Running. The accounts sign in without a second factor in this mode only (vm-local, `Auth:TotpRequired` false); never use these settings on a shared deployment.
+3. `node scripts/demo-local.mjs start` for the full rehearsal, or `node scripts/demo-local.mjs start --at 17:50 --until 18:35` for the short demo. It registers and calibrates the sensors (one counting sensor per queue and overflow band, plus S-17; `--sensors events` keeps only the seven the events need), loads them into the simulator and starts on the next whole minute, up to 14 demo minutes before `--at`, so that the 15-minute bins fall on the wall clock's quarter hours and the sensors settle before the demo proper. It prints the accounts; `node scripts/demo-local.mjs code` gives the administrator's current code.
+4. Open http://localhost:51010 and sign in. Live operations shows every queue; the immigration screen shows desks, lanes and waits; Alerts shows the events as they fire. `node scripts/demo-local.mjs status` shows the demo clock.
+5. `node scripts/demo-local.mjs stop` pauses the simulator and unloads the sensors. The devices stay registered; the next `start` reuses them with new credentials.
+
+What to expect on screen:
+
+- During the first minutes after a start, sensors report but their queues may show "Data degraded" until Ariva has learned each sensor's clock (F19: ten readings). The pre-roll in step 3 covers this.
+- A wait shown with "≈" is an estimate from the exit rate alone (no desk state for that queue, as for check-in, which has no AMAN desks): it keeps its colour. "Data degraded" is kept for doubtful data: a stale zone, or a queue length during a counting sensor's outage. S-17 only reports its health, so its outage raises R-003 without degrading A-VIS.
+- R-003 alerts for every sensor at the start mean the sensors were calibrated long before the simulator started (more than three minutes): run `stop` and `start` again.
+
+As an automated check (the cloud workspace and CI, not a demo): `ARIVA_E2E_DEMO=1 npx playwright test --project=demo` in `Platform/Testing/Ariva.E2E` runs the same setup and asserts each event on screen (`ARIVA_DEMO_START` and `ARIVA_DEMO_END` in demo minutes, 1060 is 17:40); `node scripts/verify.mjs demo` wraps it.
+
+If an event does not show:
+
+| Symptom | Check |
+|---|---|
+| A-VIS shows a wait but no R-001 | The A-VIS row's status: "Data degraded" means its length is not a full sensor reading (the overflow band's sensor S-25 not loaded) or still in warm-up; R-001 does not judge degraded lengths |
+| No queues at all | `node scripts/demo-local.mjs status`: the clock running and the sensors listed; Ingest and Stream healthy in the dashboard |
+| Every desk Unknown on the immigration screen | The AMAN feed: the simulator plays it with the demo clock, so it is Unknown until the clock runs; then section 4.8i |
+| R-004 not by 19:16 | The 19:00 to 19:15 bin is judged once it has ended; the 15-minute bins need the alignment of step 3 (do not use `--no-align` for the rehearsal) |
 
 ## 5. Routine checks
 

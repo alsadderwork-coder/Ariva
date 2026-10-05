@@ -29,6 +29,12 @@ public sealed record ZoneProcessorSettings
     /// <summary>Devices tracked per zone at most.</summary>
     public int MaxDevices { get; init; } = 256;
 
+    /// <summary>
+    /// A desk term (ARV-064) is used for a live minute while its own minute is at most this many minutes older; desk
+    /// minutes close about a minute after the queue's (the desk feed's lateness), so 5 minutes leaves room for a slow read.
+    /// </summary>
+    public int DeskTermFreshMinutes { get; init; } = 5;
+
     public IEnumerable<string> Problems()
     {
         foreach (var p in Engine?.Problems() ?? ["Engine settings are required."])
@@ -47,6 +53,8 @@ public sealed record ZoneProcessorSettings
             yield return "DeviceForgetHours is from 1 to 72 and longer than the silence limit.";
         if (MaxDevices is < 1 or > 4_096)
             yield return "MaxDevices is from 1 to 4,096.";
+        if (DeskTermFreshMinutes is < 1 or > 30)
+            yield return "DeskTermFreshMinutes is from 1 to 30.";
     }
 }
 
@@ -125,6 +133,7 @@ public sealed class ZoneProcessor
     private readonly List<DeviceOutage> _outages = [];
     private DeviceLiveness _liveness;
     private bool _watchDevices = true;
+    private DeskTerm _desks;
 
     public ZoneProcessor(string zoneKey, QueueZoneGeometry geometry, int profileVersion, ZoneProcessorSettings settings = null)
     {
@@ -158,6 +167,15 @@ public sealed class ZoneProcessor
     public ZoneProcessorCounters Counters => new(_batches, _uncommissioned, _wrongZone, _invalid);
 
     /// <summary>Outputs are waiting beyond the bound: checkpoint before offering more.</summary>
+    /// <summary>
+    /// The desk term of the desks serving this queue (ARV-064), from the stream host's desk minutes; null when none is
+    /// known. Not part of the saved state: the host gives it again within seconds of a restart. Replays never set it.
+    /// </summary>
+    public void UseDesks(DeskTerm desks) => _desks = desks;
+
+    /// <summary>The desk term in use, if any.</summary>
+    public DeskTerm Desks => _desks;
+
     public bool Full => _minutes.Count + _binResults.Count + _live.Count + _recomputations.Count + _outages.Count >= _settings.MaxPendingOutputs;
 
     /// <summary>
@@ -333,12 +351,16 @@ public sealed class ZoneProcessor
         var length = step.Length;
         var deviceOut = _liveness.OutDuring(minute);
         var window = _exits.Window(minute.AddMinutes(1), _settings.ExitWindowMinutes);
+        // The desk term joins when the desks serving this queue have closed a minute recently (ARV-064).
+        var desks = _desks is { } d && d.AsOfMinuteUtc >= minute.AddMinutes(-_settings.DeskTermFreshMinutes) ? d : null;
         var nowcast = Nowcast.Compute(new NowcastInput
         {
             QueueLength = length.Count,
+            OpenServers = desks?.OpenServers,
+            CycleMinutes = desks?.CycleMinutes,
             ExitsInWindow = window.Complete ? window.Exits : null,
             ExitWindowMinutes = _settings.ExitWindowMinutes,
-            Degraded = length.Degraded || deviceOut || window.DegradedExits > 0
+            Degraded = length.Degraded || deviceOut || window.DegradedExits > 0 || desks?.Degraded == true
         }, _settings.Nowcast);
         _live.Add(new QueueLiveMinute(ZoneKey, minute, length.Count, length.FromSensors, length.Degraded || deviceOut, nowcast.Minutes, nowcast.Throughput,
             nowcast.NoService, nowcast.Degraded));

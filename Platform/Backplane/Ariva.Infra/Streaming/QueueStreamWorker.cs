@@ -37,6 +37,12 @@ public sealed class StreamSettings
     /// <summary>Bytes of record values held by an instance for the merge; beyond it the earliest is applied (CWE-120).</summary>
     public int MaxMergeBytes { get; init; } = 64 * 1024 * 1024;
 
+    /// <summary>
+    /// How often the desk terms of the nowcast (ARV-064) are read from the desk minutes for the zones held; 0 turns them
+    /// off (deterministic replays and tests: the nowcast then uses the exit rate only).
+    /// </summary>
+    public int DeskTermSeconds { get; init; } = 15;
+
     public IEnumerable<string> Problems()
     {
         if (MaxZones is < 1 or > 100_000)
@@ -49,6 +55,8 @@ public sealed class StreamSettings
             yield return "Stream:MaxMergeRecords is from 100 to 1,000,000.";
         if (MaxMergeBytes is < 1024 * 1024 or > 1024 * 1024 * 1024)
             yield return "Stream:MaxMergeBytes is from 1 MB to 1 GB.";
+        if (DeskTermSeconds is < 0 or > 600)
+            yield return "Stream:DeskTermSeconds is from 0 (off) to 600.";
     }
 }
 
@@ -83,7 +91,8 @@ public sealed class QueueStreamWorker(
     TimeProvider timeProvider,
     ILogger<QueueStreamWorker> logger,
     Ariva.Infra.Live.ILiveSnapshotStore live = null,
-    ZoneProcessorSettings zoneSettings = null) : BackgroundService
+    ZoneProcessorSettings zoneSettings = null,
+    DeskTermSource deskTerms = null) : BackgroundService
 {
     public const string Purpose = "queue-engine";
 
@@ -195,6 +204,8 @@ public sealed class QueueStreamWorker(
                     if (_heldRecords == 0)
                         TickIdleZones();
                 }
+
+                await RefreshDeskTermsAsync(ct);
 
                 if (full || (timeProvider.GetUtcNow() >= next && _positions.Count > 0))
                 {
@@ -672,6 +683,31 @@ public sealed class QueueStreamWorker(
         }
         _geometryCache[key] = (geometry, now.AddMinutes(1));
         return geometry;
+    }
+
+    private DateTime _nextDeskTerms = DateTime.MinValue;
+
+    // The desk terms of the held zones (ARV-064), every DeskTermSeconds. Live data only: a minute's nowcast takes the term
+    // the zone had when the minute closed, so a replay after a restart may give a replayed minute another nowcast than the
+    // first run did (the bins and waits do not depend on it). A failed read keeps the terms the zones have; they age out.
+    private async Task RefreshDeskTermsAsync(CancellationToken ct)
+    {
+        if (deskTerms is null || settings.DeskTermSeconds == 0 || _zones.Count == 0)
+            return;
+        var now = timeProvider.GetUtcNow().UtcDateTime;
+        if (now < _nextDeskTerms)
+            return;
+        _nextDeskTerms = now.AddSeconds(settings.DeskTermSeconds);
+        try
+        {
+            var terms = await deskTerms.LoadAsync([.. _zones.Keys], _zoneSettings.ExitWindowMinutes, ct);
+            foreach (var (key, (zone, _, _)) in _zones)
+                zone.UseDesks(terms.GetValueOrDefault(key));
+        }
+        catch (Exception e) when (!ct.IsCancellationRequested && e is NpgsqlException or TimeoutException or IOException or InvalidOperationException)
+        {
+            logger.LogWarning(e, "Desk terms not read; the zones keep the ones they have");
+        }
     }
 
     // Caught up: zones idle for IdleTickSeconds of the host's clock move their own clock on by the time elapsed.

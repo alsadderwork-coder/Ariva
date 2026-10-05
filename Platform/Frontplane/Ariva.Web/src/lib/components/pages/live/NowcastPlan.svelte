@@ -24,6 +24,7 @@
 		nearTarget: 'fill-status-warning/55 stroke-status-warning-solid',
 		overTarget: 'fill-status-danger/55 stroke-status-danger-solid',
 		degraded: 'fill-status-neutral/60 stroke-status-neutral-foreground',
+		noEstimate: 'fill-status-neutral/45 stroke-status-neutral-foreground',
 		noData: 'fill-status-neutral/30 stroke-status-neutral-foreground'
 	};
 

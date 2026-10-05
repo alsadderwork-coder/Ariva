@@ -3,6 +3,7 @@ using Ariva.Api.Common.Extensions;
 using Ariva.Api.Common.HealthChecks;
 using Ariva.Api.Common.Hosting;
 using Ariva.Api.Common.Filters;
+using Ariva.Api.Ingest.Endpoints;
 using Ariva.Api.Ingest.Mqtt;
 using Ariva.Di;
 using Ariva.Di.Extensions;
@@ -86,6 +87,9 @@ var app = builder.Build();
 
 // AMAN order (UseAppForwardedHeaders, UseErrorHandling, UseRouting, UseRequestTracking, UseAppCors,
 // UseAuthentication, UseSessionContext, UseAuthorization) with the security headers and rate limiting added.
+// First of all: the moment a request arrived is its receipt time (F19), before authentication and reading the body, so a
+// slow first credential check never looks like the device's clock running behind (ARV-064).
+app.UseReceiptTime();
 // Before the forwarded headers: the certificate header is trusted only from a proxy, while the address is still the proxy's.
 app.UseAppClientCertificates(builder.Configuration);
 app.UseAppForwardedHeaders();

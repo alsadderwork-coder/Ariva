@@ -477,6 +477,83 @@ public sealed class ImmigrationIntakeTests(PostgresFixture fixture) : IAsyncDisp
     }
 
     [Fact]
+    public async Task DeskTerms_Should_GiveEachQueueTheDesksOfItsLaneOnItsLevel_When_TheStreamAsks()
+    {
+        await SeedAsync();
+        _host.Clock.Advance(TimeSpan.FromDays(40));
+        var minute = new DateTime(Now.Ticks - Now.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc);
+        // ARV-064: AR-08 to AR-10 serve the arrivals Visitors lane (VIS, level ARR), AR-02 the Citizens lane; DP-08 is a
+        // departures desk of the Visitors lane (another level); AG-1 an e-gate, which is not a desk.
+        var rows = new (string Key, string Lane, int Ago, double Idle, double Serving, double Unknown, int Transactions)[]
+        {
+            ("DMO/IMM/AR-08", "VIS", 2, 0, 60, 0, 3), ("DMO/IMM/AR-08", "VIS", 1, 0, 60, 0, 3),
+            ("DMO/IMM/AR-09", "VIS", 2, 0, 60, 0, 2), ("DMO/IMM/AR-09", "VIS", 1, 10, 50, 0, 2),
+            ("DMO/IMM/AR-10", "VIS", 2, 0, 0, 0, 0), ("DMO/IMM/AR-10", "VIS", 1, 0, 0, 0, 0),
+            ("DMO/IMM/AR-02", "CIT", 1, 0, 0, 60, 0),
+            ("DMO/EMI/DP-08", "VIS", 1, 0, 60, 0, 30),
+            ("DMO/IMM/AG-1", "EG", 1, 0, 60, 0, 30),
+            ("DMO/IMM/AR-08", "VIS", 30, 0, 60, 0, 99)
+        };
+        await using (var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync())))
+        {
+            await connection.OpenAsync(Ct);
+            foreach (var row in rows)
+            {
+                await using var command = new NpgsqlCommand("""
+                    INSERT INTO desk_minute (desk_code, lane, minute_utc, closed_seconds, idle_seconds, serving_seconds, paused_seconds, unknown_seconds, transactions,
+                                             sensor_derived_seconds, present_seconds, degraded, updated_on)
+                    VALUES (@key, @lane, @minute, 0, @idle, @serving, 0, @unknown, @transactions, 0, 0, false, now())
+                    ON CONFLICT (desk_code, minute_utc) DO NOTHING
+                    """, connection);
+                command.Parameters.AddWithValue("key", row.Key);
+                command.Parameters.AddWithValue("lane", row.Lane);
+                command.Parameters.AddWithValue("minute", minute.AddMinutes(-row.Ago));
+                command.Parameters.AddWithValue("idle", row.Idle);
+                command.Parameters.AddWithValue("serving", row.Serving);
+                command.Parameters.AddWithValue("unknown", row.Unknown);
+                command.Parameters.AddWithValue("transactions", row.Transactions);
+                await command.ExecuteNonQueryAsync(Ct);
+            }
+        }
+
+        var source = new Ariva.Infra.Streaming.DeskTermSource(_host.Provider.GetRequiredService<Ariva.Infra.Settings.DatabaseSettings>(), _host.Clock);
+        var terms = await source.LoadAsync(["DMO/A-VIS", "DMO/A-CIT", "DMO/A-EG", "DMO/CI-C", "DMO/NOPE", "bad"], 5, Ct);
+
+        terms.Keys.Should().BeEquivalentTo(["DMO/A-VIS"], "A-CIT's only desk is Unknown, A-EG is served by e-gates, CI-C has no lane");
+        terms["DMO/A-VIS"].Should().Match<Ariva.Core.Queueing.DeskTerm>(t =>
+            t.AsOfMinuteUtc == minute.AddMinutes(-1) && t.Desks == 3 && t.OpenServers == 2 && !t.Degraded);
+        terms["DMO/A-VIS"].CycleMinutes.Should().BeApproximately(240.0 / 60 / 10, 1e-9,
+            "240 open seconds over 10 transactions; the departures desk and the minute half an hour ago are not counted");
+
+        // With AMAN's interval statistics for the lane's desks, c is their transaction-weighted cycle time (F10): 4
+        // transactions at 90 s and 1 at 150 s; the departures desk's and an interval older than the window are left out.
+        var intervals = new (string Desk, int Ago, double Cycle, int Transactions)[] { ("AR-08", 2, 90, 4), ("AR-09", 3, 150, 1), ("DP-08", 2, 600, 10), ("AR-08", 20, 1000, 9) };
+        await using (var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync())))
+        {
+            await connection.OpenAsync(Ct);
+            foreach (var (desk, ago, cycle, transactions) in intervals)
+            {
+                await using var command = new NpgsqlCommand("""
+                    INSERT INTO border_desk_interval (id, site_code, desk_code, desk_id, interval_start_utc, transactions_processed, documents_processed,
+                                                      mean_service_seconds, p90_service_seconds, mean_cycle_seconds, lane_category, feed, source_event_id, received_utc)
+                    SELECT gen_random_uuid(), 'DMO', @desk, d.id, @start, @transactions, @transactions, @cycle * 0.8, @cycle, @cycle, 'VIS', 'aman-kafka', @event, now()
+                      FROM desk d WHERE d.site_code = 'DMO' AND d.code = @desk AND d.deleted_on IS NULL
+                    """, connection);
+                command.Parameters.AddWithValue("desk", desk);
+                command.Parameters.AddWithValue("start", minute.AddMinutes(-ago));
+                command.Parameters.AddWithValue("transactions", transactions);
+                command.Parameters.AddWithValue("cycle", cycle);
+                command.Parameters.AddWithValue("event", "it-desk-term-" + Guid.NewGuid().ToString("N"));
+                (await command.ExecuteNonQueryAsync(Ct)).Should().Be(1, "desk {0} exists in the demo seed", desk);
+            }
+        }
+
+        var withCycles = await source.LoadAsync(["DMO/A-VIS"], 5, Ct);
+        withCycles["DMO/A-VIS"].CycleMinutes.Should().BeApproximately((4 * 90 + 150) / 5.0 / 60, 1e-9);
+        withCycles["DMO/A-VIS"].OpenServers.Should().Be(2);
+    }
+
+    [Fact]
     public async Task DeskStates_Should_ShowEachDesksLatestMinuteAndKeepBorderDesksForBorderRoles_When_Asked()
     {
         await SeedAsync();

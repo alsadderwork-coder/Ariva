@@ -26,18 +26,38 @@ const admin = `${hosts.main}/api/v1/admin`;
 const sensors = `${hosts.simulation}/api/v1/simulation/sensors`;
 const operator = { Authorization: `Bearer ${process.env.ARIVA_E2E_SIMULATION_KEY ?? ''}` };
 
-/** The sensors of the three events and the queues they show, by the scenario's sensor plan (ScenarioModel.cs). */
-const plan = [
+/**
+ * The scenario's counting sensors (ScenarioModel.cs): the lead sensor of each of the 16 queues and of the three overflow
+ * bands, which Ariva adds to their queue, so that every queue on the screens is live; plus S-17, a second sensor over the
+ * arrivals Visitors hall that only reports its health, for the 18:20 outage. Check-in islands C and D report in the Xovis
+ * dialect, the rest in the canonical one. ARIVA_DEMO_SENSORS=events keeps only the sensors of the three events.
+ */
+const everySensor = [
+	{ sensor: 'S-01', zone: 'SEC-N', level: 'DEP', dialect: 'Canonical' },
+	{ sensor: 'S-06', zone: 'SEC-S', level: 'DEP', dialect: 'Canonical' },
+	{ sensor: 'S-11', zone: 'SEC-N', level: 'DEP', dialect: 'Canonical' },
+	{ sensor: 'S-12', zone: 'A-CRW', level: 'ARR', dialect: 'Canonical' },
+	{ sensor: 'S-13', zone: 'A-CIT', level: 'ARR', dialect: 'Canonical' },
 	{ sensor: 'S-15', zone: 'A-VIS', level: 'ARR', dialect: 'Canonical' },
 	{ sensor: 'S-17', zone: 'A-VIS', level: 'ARR', dialect: 'Canonical' },
+	{ sensor: 'S-21', zone: 'A-RES', level: 'ARR', dialect: 'Canonical' },
+	{ sensor: 'S-23', zone: 'A-EG', level: 'ARR', dialect: 'Canonical' },
 	// The A-VIS queue includes its overflow band A-OV: without the band's lead sensor the queue has no full sensor
 	// reading and its length is only the engine's estimate, which R-001 does not judge.
 	{ sensor: 'S-25', zone: 'A-VIS', level: 'ARR', dialect: 'Canonical' },
-	{ sensor: 'S-13', zone: 'A-CIT', level: 'ARR', dialect: 'Canonical' },
-	{ sensor: 'S-21', zone: 'A-RES', level: 'ARR', dialect: 'Canonical' },
+	{ sensor: 'S-27', zone: 'D-CRW', level: 'DEP', dialect: 'Canonical' },
+	{ sensor: 'S-28', zone: 'D-CIT', level: 'DEP', dialect: 'Canonical' },
+	{ sensor: 'S-30', zone: 'D-RES', level: 'DEP', dialect: 'Canonical' },
+	{ sensor: 'S-32', zone: 'D-VIS', level: 'DEP', dialect: 'Canonical' },
+	{ sensor: 'S-37', zone: 'D-EG', level: 'DEP', dialect: 'Canonical' },
+	{ sensor: 'S-39', zone: 'D-VIS', level: 'DEP', dialect: 'Canonical' },
+	{ sensor: 'S-40', zone: 'CI-A', level: 'DEP', dialect: 'Canonical' },
+	{ sensor: 'S-45', zone: 'CI-B', level: 'DEP', dialect: 'Canonical' },
 	{ sensor: 'S-50', zone: 'CI-C', level: 'DEP', dialect: 'Xovis' },
 	{ sensor: 'S-55', zone: 'CI-D', level: 'DEP', dialect: 'Xovis' }
 ] as const;
+const eventSensors = ['S-15', 'S-17', 'S-25', 'S-13', 'S-21', 'S-50', 'S-55'];
+const plan = process.env.ARIVA_DEMO_SENSORS === 'events' ? everySensor.filter((s) => eventSensors.includes(s.sensor)) : everySensor;
 
 const clock = (minute: number) => `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
 
@@ -161,13 +181,15 @@ test.beforeAll(async () => {
 	// Ingest keeps device records for a minute: let it see the calibrations before the first push.
 	await new Promise((resolve) => setTimeout(resolve, 65_000));
 
-	// The 15-minute bins are aligned to the clock: start on a wall minute that puts the demo's quarter hours on the
-	// wall's (17:40 is 10 past a quarter), so the 19:00, 19:15 and 19:30 bins are the scenario's.
-	const offset = (((start % 15) - (new Date().getUTCMinutes() % 15)) + 15) % 15;
-	const wait = offset * 60_000 - (Date.now() % 60_000) + 1_000;
-	if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+	// The 15-minute bins follow the wall clock: start on the next whole minute, a few demo minutes before ARIVA_DEMO_START,
+	// so that the demo's quarter hours fall on the wall's (the 19:00, 19:15 and 19:30 bins are the scenario's). The
+	// sensors are live from the start, so none goes Offline while the run waits, and the minutes before the start absorb
+	// the sensors' first readings while F19 learns their clocks.
+	await new Promise((resolve) => setTimeout(resolve, 60_000 - (Date.now() % 60_000) + 1_000));
+	const wall = new Date().getUTCHours() * 60 + new Date().getUTCMinutes();
+	const playFrom = start - ((((start - wall) % 15) + 15) % 15);
 
-	const started = await call('POST', `${sensors}/start`, { headers: operator, data: { minute: start, speed: 1, untilMinute: end } });
+	const started = await call('POST', `${sensors}/start`, { headers: operator, data: { minute: playFrom, speed: 1, untilMinute: end } });
 	expect(started.status(), await started.text()).toBe(200);
 });
 

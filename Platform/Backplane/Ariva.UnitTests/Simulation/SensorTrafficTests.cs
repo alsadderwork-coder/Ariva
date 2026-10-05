@@ -105,10 +105,17 @@ public sealed class SensorTrafficTests
             static int Number(string track) => int.Parse(track[(track.LastIndexOf('.') + 1)..], System.Globalization.CultureInfo.InvariantCulture);
             var entered = new HashSet<int>();
             int? firstEntry = null, previous = null;
+            var band = ScenarioModel.Sensors.SingleOrDefault(s => SensorTraffic.RoleOf(s) == SensorRole.OverflowLead && SensorTraffic.QueueZoneOf(s.Zone) == lead.Zone);
+            SensorTraffic.HasOverflowBand(lead.Zone).Should().Be(band is not null);
             for (var minute = 0; minute < ScenarioModel.Day; minute++)
             {
                 var push = SensorTraffic.Build(day, lead, EmulatedDialect.Canonical, minute, minute, WallOf, WallOf(minute + 1));
                 var mapped = Map(push, EmulatedDialect.Canonical);
+                // A queue with an overflow band: the lead counts up to the capacity and the band the rest (ARV-064).
+                var overflow = band is null ? 0 : Map(SensorTraffic.Build(day, band, EmulatedDialect.Canonical, minute, minute, WallOf, WallOf(minute + 1)),
+                    EmulatedDialect.Canonical).Occupancy.Single().Count;
+                if (band is not null)
+                    mapped.Occupancy.Single().Count.Should().BeLessThanOrEqualTo((int)ScenarioDay.DefaultCaps[lead.Zone]);
                 var ins = mapped.Crossings.Where(c => c.Direction == CrossingDirection.In).Select(c => Number(c.TrackId)).ToList();
                 var outs = mapped.Crossings.Where(c => c.Direction == CrossingDirection.Out).Select(c => Number(c.TrackId)).ToList();
                 foreach (var n in ins)
@@ -119,9 +126,9 @@ public sealed class SensorTrafficTests
 
                 // Passengers queuing since before midnight entered the previous evening; everyone after entered here, in order.
                 outs.Where(n => n >= firstEntry && !entered.Contains(n)).Should().BeEmpty("an exit is a passenger who entered (FIFO)");
-                var occupancy = mapped.Occupancy.Single().Count;
+                var occupancy = mapped.Occupancy.Single().Count + overflow;
                 if (previous is { } p)
-                    occupancy.Should().Be(p + ins.Count - outs.Count, "{0} at {1}: occupancy is entries minus exits", lead.Zone, ScenarioMath.Clock(minute));
+                    occupancy.Should().Be(p + ins.Count - outs.Count, "{0} at {1}: the queue and its band are entries minus exits", lead.Zone, ScenarioMath.Clock(minute));
                 occupancy.Should().BeGreaterThanOrEqualTo(0);
                 previous = occupancy;
             }
