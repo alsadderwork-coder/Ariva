@@ -2,6 +2,7 @@ using Ariva.Api.Common.Settings;
 using Ariva.Core;
 using Ariva.Core.Domain.Entities;
 using Ariva.Core.Security;
+using Ariva.Di.Extensions;
 using Ariva.Infra.Settings;
 using Ariva.UnitTests.Setup;
 using FluentAssertions;
@@ -61,6 +62,28 @@ public sealed class AuthSettingsTests
         Ariva.Di.Extensions.AccountExtensions.LocalOnlyProblem(AuthSettings.From(plain), plain, host).Should().BeNull("TOTP required and no development accounts are allowed anywhere");
         if (!allowed)
             Ariva.Di.Extensions.AccountExtensions.LocalOnlyProblem(AuthSettings.From(noTotp), noTotp, host).Should().Contain("Auth:TotpRequired false only allowed in vm-local");
+    }
+
+    [Theory]
+    [InlineData("k8s-dev", false)]
+    [InlineData("k8s-prd", false)]
+    [InlineData("vm-local", true)]
+    public void AddArivaAccounts_Should_RefuseSignInWithoutTotp_When_AnyHostRunsOutsideVmLocal(string host, bool starts)
+    {
+        // ARV-064 review: every host checks, not only Main's token issuing (Cronz reads Auth:TotpRequired for report
+        // recipients), and so does the break-glass command, which also calls AddArivaAccounts.
+        var configuration = new ConfigurationBuilder().AddConfiguration(Base(null)).AddInMemoryCollection(new Dictionary<string, string>
+        {
+            ["Application:Environment"] = "vm-local",
+            ["Auth:TotpRequired"] = "false"
+        }).Build();
+
+        var add = () => new Microsoft.Extensions.DependencyInjection.ServiceCollection().AddArivaAccounts(configuration, host);
+
+        if (starts)
+            add.Should().NotThrow();
+        else
+            add.Should().Throw<InvalidOperationException>().WithMessage($"*Auth:TotpRequired false only allowed in vm-local; this host runs as '{host}'*");
     }
 
     [Fact]

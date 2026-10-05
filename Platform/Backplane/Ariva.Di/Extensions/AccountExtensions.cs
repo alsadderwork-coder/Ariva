@@ -17,7 +17,12 @@ namespace Ariva.Di.Extensions;
 /// </summary>
 public static class AccountExtensions
 {
-    /// <summary>Settings, validation keys, password policy, the session check, the stored permission resolver and the site scope; every API host.</summary>
+    /// <summary>
+    /// Settings, validation keys, password policy, the session check, the stored permission resolver and the site scope;
+    /// every API host and the break-glass command. Each of them refuses development accounts and sign-in without TOTP
+    /// outside vm-local (<see cref="LocalOnlyProblem"/>): Ariva.Api.Cronz, for one, reads Auth:TotpRequired when it
+    /// chooses report recipients.
+    /// </summary>
     /// <param name="hostEnvironment">The host's own environment name (<c>IHostEnvironment.EnvironmentName</c>), never a configuration key.</param>
     public static IServiceCollection AddArivaAccounts(this IServiceCollection services, IConfiguration configuration, string hostEnvironment)
     {
@@ -25,6 +30,8 @@ public static class AccountExtensions
         ArgumentNullException.ThrowIfNull(configuration);
 
         var settings = AuthSettings.From(configuration);
+        if (LocalOnlyProblem(settings, configuration, hostEnvironment) is { } problem)
+            throw new InvalidOperationException(problem);
         services.TryAddSingleton(settings);
         services.TryAddSingleton(TimeProvider.System);
         services.TryAddSingleton(_ => TokenKeys.Load(settings.Tokens, requireSigningKey: false));
@@ -95,8 +102,7 @@ public static class AccountExtensions
         // Alerts (ARV-039); their notices come from AddArivaCaching (Redis, or nothing without it).
         services.TryAddScoped<Ariva.Core.Services.Alerting.ISvcAlerts, Ariva.Infra.Services.Alerting.SvcAlerts>();
 
-        if (LocalOnlyProblem(settings, configuration, hostEnvironment) is { } problem)
-            throw new InvalidOperationException(problem);
+        // AddArivaAccounts above has refused development accounts outside vm-local; only Main creates them.
         if (settings.DevelopmentUsers.Count > 0)
             services.AddHostedService<DevelopmentUserSeed>();
 
@@ -105,7 +111,8 @@ public static class AccountExtensions
 
     /// <summary>
     /// Development accounts and sign-in without TOTP are for a developer machine only (CWE-287, CWE-308): both need
-    /// <c>Application:Environment</c> vm-local and the host environment (DOTNET_ENVIRONMENT, which Helm sets) vm-local.
+    /// <c>Application:Environment</c> vm-local and the host environment (<c>ArivaEnvironment.Resolve</c>: the command line,
+    /// DOTNET_ENVIRONMENT, which Helm sets, ASPNETCORE_ENVIRONMENT, then environment.json) vm-local.
     /// Checking both covers a cluster whose mounted settings omit <c>Application:Environment</c> (it then defaults to
     /// vm-local) and a value injected through an environment variable. The host environment is the host's own name,
     /// passed in, not the <c>environment</c> configuration key, which an unprefixed ENVIRONMENT variable could override.
