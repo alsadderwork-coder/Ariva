@@ -1427,8 +1427,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 67,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "2026-10-05: see backlog/progress.md. Verified with the local E2E stack and Ariva.AppHost; no dev cluster or CI run (Actions does not start on this account).",
       "dependsOn": [
         "ARV-055",
         "ARV-057",

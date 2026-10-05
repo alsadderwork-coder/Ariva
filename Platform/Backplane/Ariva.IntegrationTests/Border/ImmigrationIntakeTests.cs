@@ -552,6 +552,20 @@ public sealed class ImmigrationIntakeTests(PostgresFixture fixture) : IAsyncDisp
         var withCycles = await source.LoadAsync(["DMO/A-VIS"], 5, Ct);
         withCycles["DMO/A-VIS"].CycleMinutes.Should().BeApproximately((4 * 90 + 150) / 5.0 / 60, 1e-9);
         withCycles["DMO/A-VIS"].OpenServers.Should().Be(2);
+
+        // The planted rows are 40 days ahead in the class's shared database: left there, they stop the DMO desk feed of
+        // DeskFeed_Should_DriveTheDeskEngine... from writing its minutes whenever this test runs first (xUnit shuffles).
+        await using (var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync())))
+        {
+            await connection.OpenAsync(Ct);
+            await using var clean = new NpgsqlCommand("""
+                DELETE FROM desk_minute WHERE desk_code LIKE 'DMO/%' AND minute_utc BETWEEN @from AND @to;
+                DELETE FROM border_desk_interval WHERE source_event_id LIKE 'it-desk-term-%';
+                """, connection);
+            clean.Parameters.AddWithValue("from", minute.AddMinutes(-30));
+            clean.Parameters.AddWithValue("to", minute);
+            await clean.ExecuteNonQueryAsync(Ct);
+        }
     }
 
     [Fact]
