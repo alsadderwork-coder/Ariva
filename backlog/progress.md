@@ -681,3 +681,42 @@ One entry per story, newest last. Format:
     - URL-scoped triage entries;
     - tests for the guard's route and form branches;
     - the web image serves `/nginx/default.conf` (pre-existing, low risk).
+
+## 2026-10-05 ARV-073 Signed images with SBOM and provenance
+- Summary: `.github/workflows/images.yml`, for every image pushed to GitHub Container Registry. Images are pushed only from a `v*` tag, or when the workflow is run by hand from `main`; any other ref builds and scans without pushing.
+  - The digest is read from the registry and checked.
+  - The image is signed with cosign keyless: GitHub OIDC, a Fulcio certificate naming the repository, workflow, ref and commit, and the Rekor log. cosign 3.0.6 via sigstore/cosign-installer v4.1.2, pinned by SHA.
+  - Its CycloneDX SBOM (Trivy 0.75.0) is attached as a signed attestation.
+  - Both are verified at once against this repository's `images.yml`, on `v*` tags or `main` only, with the GitHub issuer and `--certificate-github-workflow-repository`.
+  - A digests job writes the table for the release notes, with the verify command, to the job summary and the `image-digests` artifact.
+- Docs:
+  - wiki/04 section 6.5:
+    - verification and SBOM extraction;
+    - what keyless signing publishes;
+    - the trust preconditions (tag ruleset, protected `main`);
+    - `oras copy -r` to carry signatures and SBOMs into Dalil Container Registry;
+    - an optional Kyverno `SigstoreBundle` policy in Audit mode, labelled untested.
+  - wiki/18: release notes carry the digests.
+  - wiki/05: flow 24, Sigstore egress for verifiers.
+  - Platform/Cloud/CLAUDE.md; ASVS V15.1.2; ARV-096 (SBOM per release delivered).
+- Verified locally (keyless needs GitHub's OIDC, so not end to end here):
+  - With cosign 3.0.6, Trivy 0.75.0 and a local registry, using a key and no transparency log: sign, a CycloneDX attestation, `verify` and `verify-attestation`, and the documented `jq` SBOM extraction.
+  - `oras copy -r` to another repository keeps the digest, signature and attestation; `cosign copy` does not.
+  - The signer pattern matches `images.yml` on a tag and on `main`, and refuses `ci.yml`, another owner and a feature branch.
+  - The digests script ran on sample files.
+  - The Kyverno policy passes `kubeconform -strict` against Kyverno's schema.
+  - `docker inspect .RepoDigests` was found to return the upstream index digest, hence the registry lookup.
+- Not verified: the first real signed run. It happens on the first `v*` tag, and CI is not running on this account (billing, see earlier). After the first copy to ACR, run the documented `cosign verify` there; ACR serves the native referrers API, whereas the local test used the fallback tags.
+- Decisions for the product owner (docs/product/decisions.md):
+  - **Keyless signing publishes the private repository's name, workflow, refs and commit ids in the public Rekor log** (keep it, or use a Key Vault key);
+  - a ruleset protecting `v*` tags, plus protected `main`, is needed before the first signed release.
+- Gates: workflow YAML parses; docs PASS; security scan 0 errors. No application code changed.
+- Security review (independent reviewer, CWE-494 and the matrix):
+  - First pass FAIL: the documented `cosign copy` loses the evidence; the Kyverno example matched the wrong registry and namespaces and read the legacy format; the tag-trust precondition and the public-log disclosure were missing; the ASVS and ARV-096 statements were off. All fixed.
+  - Second pass PASS. Its wording notes on key-based signing and the summary command were acted on.
+  - Recorded residuals:
+    - `id-token: write` is granted to builds that sign nothing (a separate sign job would narrow it);
+    - a window between push and the digest lookup (needs `packages:write` on a per-run tag);
+    - no SLSA provenance attestation (GitHub artifact attestations for private repositories need Enterprise Cloud);
+    - the Azure DevOps builds stay unsigned (Target);
+    - CWE-494 is not a row of the 14-CWE matrix.

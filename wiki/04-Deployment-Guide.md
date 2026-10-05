@@ -385,6 +385,74 @@ Startup probes allow up to about two minutes per .NET pod (10 seconds initial de
 - The api-main and web-api ingresses allow 21m request bodies for floor plan uploads; the other hosts keep 10m.
 - Cronz runs one replica in every values file; keep it at one unless TickerQ's multi-instance behaviour is confirmed (To confirm).
 
+### 6.5 Verify the images (signatures and SBOM)
+
+Every image the `images` workflow pushes to GitHub Container Registry (on a version tag, or run by hand from `main`) is signed with cosign keyless (ARV-073). GitHub's OIDC token gets a short-lived Fulcio certificate naming the repository, the workflow, the ref and the commit, and the signature is recorded in the Rekor transparency log; that certificate is the image's provenance (no separate SLSA provenance attestation yet). The image's CycloneDX SBOM (Trivy) is attached as a signed attestation. Both are stored in the registry as OCI referrers (cosign 3's Sigstore bundle format), and the workflow verifies both right after pushing. The release notes (wiki 18) list every image by digest.
+
+Trust rests on two repository settings, which the owner keeps and confirms before the first signed release (To confirm): a ruleset that lets only release maintainers create, move or delete `v*` tags, and protection on `main` (pull requests and the CI gate). Without them anyone with write access could tag an unreviewed commit and get a valid signature.
+
+Who may have signed: the `images.yml` workflow of this repository, on a version tag or `main`. Verify with cosign 3, after `docker login ghcr.io` with a token that can read packages (the packages are private):
+
+```bash
+IMAGE=ghcr.io/alsadderwork-coder/ariva-api-main@sha256:<digest from the release notes>
+SIGNER='^https://github\.com/alsadderwork-coder/Ariva/\.github/workflows/images\.yml@refs/(tags/v.+|heads/main)$'
+ISSUER=https://token.actions.githubusercontent.com
+REPO=alsadderwork-coder/Ariva
+
+cosign verify --certificate-identity-regexp "$SIGNER" --certificate-oidc-issuer "$ISSUER" \
+  --certificate-github-workflow-repository "$REPO" "$IMAGE"
+cosign verify-attestation --type cyclonedx --certificate-identity-regexp "$SIGNER" --certificate-oidc-issuer "$ISSUER" \
+  --certificate-github-workflow-repository "$REPO" "$IMAGE" \
+  | head -n1 | jq -r .payload | base64 -d | jq .predicate > sbom.cdx.json   # the verified SBOM
+```
+
+A verification fails for an unsigned image, an image signed by any other workflow, repository or branch, and an image whose digest is not the one signed. Keyless verification needs the public Sigstore trust root and Rekor (wiki 05); an air-gapped site verifies on a connected machine before mirroring (section 12).
+
+What keyless signing publishes. Rekor is a public, permanent log. Each signature adds the Fulcio certificate (repository name, workflow path, tag or branch, commit id, run URL) and the image digest to it, although the repository is private (ADR-0016). The images and SBOMs stay in the private registry. Whether that is acceptable is the owner's decision (docs/product/decisions.md); the alternative is key-based signing with a key in Azure Key Vault (`cosign sign --key azurekms://...`), which still records the public key and the image digest in Rekor by default but no repository identity, and publishes nothing only with a signing config that has no transparency log (verification then needs `--insecure-ignore-tlog` or a private Rekor). Nothing is signed until a version tag is pushed or the workflow is run by hand from `main`.
+
+Images for Dalil Container Registry. The Azure DevOps builds (`Build-k8s-<service>`), which the chart deploys from `dalil.azurecr.io`, are not signed and carry no SBOM. To keep the evidence, copy the signed GitHub images instead of rebuilding them, with their referrers, and verify the copy:
+
+```bash
+oras copy -r ghcr.io/alsadderwork-coder/ariva-api-main@sha256:<digest> dalil.azurecr.io/ariva/api-main:<build number>
+cosign verify --certificate-identity-regexp "$SIGNER" --certificate-oidc-issuer "$ISSUER" \
+  --certificate-github-workflow-repository "$REPO" dalil.azurecr.io/ariva/api-main@sha256:<digest>
+```
+
+The digest stays the same, so the release notes' digests hold for the copy. (`cosign copy` does not carry cosign 3's referrer bundles; ORAS 1.3 does, checked on a local registry.) Signing the Azure DevOps builds themselves needs a key and is a Target procedure.
+
+Enforcing on the cluster (optional, untested). An admission controller can refuse unsigned images and pin each pod to the digest it verified, which the chart cannot do (it takes `buildNumber` tags). An example for Kyverno 1.13 or later, which reads cosign 3's Sigstore bundles with `type: SigstoreBundle`; it checks the signature only (check the SBOM attestation with `cosign verify-attestation` at release time):
+
+```yaml
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: ariva-signed-images
+spec:
+  validationFailureAction: Audit
+  webhookTimeoutSeconds: 30
+  rules:
+    - name: ariva-images-signed
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: ["<namespace>"]
+      verifyImages:
+        - type: SigstoreBundle
+          imageReferences: ["dalil.azurecr.io/ariva/*", "ghcr.io/alsadderwork-coder/ariva-*"]
+          mutateDigest: true
+          required: true
+          attestors:
+            - entries:
+                - keyless:
+                    issuer: https://token.actions.githubusercontent.com
+                    subjectRegExp: '^https://github\.com/alsadderwork-coder/Ariva/\.github/workflows/images\.yml@refs/(tags/v.+|heads/main)$'
+                    additionalExtensions:
+                      githubWorkflowRepository: alsadderwork-coder/Ariva
+```
+
+Replace `<namespace>` with the deployment's namespace (section 6.1). Keep `Audit` until every image in it is signed (the Azure DevOps builds are not, see above), then switch to `Enforce`. The policy passes Kyverno's schema but has not been run against a cluster (To confirm on the customer's cluster); the Sigstore policy-controller (`ClusterImagePolicy`) is an alternative. The policy is not part of the chart: the admission controller is the cluster owner's.
+
 ## 7. First-time bootstrap
 
 ### 7.1 Database

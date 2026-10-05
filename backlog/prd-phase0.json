@@ -1620,8 +1620,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 76,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "2026-10-05: workflow verified by a local dry run; the first real keyless signing happens on the first v* tag. Owner decisions open: public Rekor log for a private repository, v* tag ruleset.",
       "dependsOn": [
         "ARV-062"
       ]
