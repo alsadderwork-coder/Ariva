@@ -367,6 +367,44 @@
       "dependsOn": [
         "ARV-074"
       ]
+    },
+    {
+      "id": "ARV-097",
+      "title": "[ASVS] No outbound usage telemetry from MassTransit",
+      "description": "MassTransit 8.5 reports usage telemetry at startup from Ariva.Api.Main, Ingest, Integration and Stream: versions, OS, the server's time zone and the Kafka rider's topic names, sent to an external endpoint. Nothing disables it. An on-premises or air-gapped border deployment must make no such call (data boundary, egress). Found in the ARV-064 rehearsal logs (2026-10-05). Do before the first install or demo outside Dalil. ASVS 5.0: V13.2, V14.2. Effort S.",
+      "acceptanceCriteria": [
+        "Usage telemetry is disabled in code where MassTransit is registered behind ISvcMessageBus (no environment variable to forget); Ariva.Core still references no MassTransit type",
+        "A unit test over every host's registrations (the HostServicesTests pattern) proves telemetry is off, or a test proves no 'Usage Telemetry' log line is written at startup",
+        "An E2E host log contains no 'Usage Telemetry' or 'Failed to report usage telemetry' line",
+        "wiki/13-Security-Guide.md and docs/security/asvs-l2.md name the control",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 96,
+      "passes": false,
+      "notes": "Gate: before the first install or demo on a network outside Dalil.",
+      "dependsOn": []
+    },
+    {
+      "id": "ARV-098",
+      "title": "[ASVS] Images fail safe without their environment",
+      "description": "ArivaEnvironment.Resolve falls back to environment.json, which every image ships as vm-local, and Application:Environment also defaults to vm-local. A container or pod started without DOTNET_ENVIRONMENT (a hand-run debug pod, a chart override that empties it) therefore runs as vm-local, where development accounts, sign-in without TOTP, SchemaUpdate and the demo seed are allowed. Residual of the ARV-064 security review. ASVS 5.0: V13.1, V15.2.3. Effort S.",
+      "acceptanceCriteria": [
+        "Images ship no vm-local default: environment.json is absent from images or names no development environment, and a host without an environment refuses to start (developer runs get vm-local from launch settings, the AppHost and the E2E configuration)",
+        "Application:Environment has no vm-local default outside a developer machine",
+        "Unit tests: a host with no environment refuses to start; the chart tests prove every workload sets DOTNET_ENVIRONMENT; AppHost, E2E and demo-local still start in vm-local",
+        "wiki/04-Deployment-Guide.md and security/README.md updated (the residual removed)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 97,
+      "passes": false,
+      "notes": "Gate: before the first install outside Dalil.",
+      "dependsOn": []
     }
   ]
 }
