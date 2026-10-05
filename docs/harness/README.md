@@ -5,7 +5,7 @@
 1. Clone Ariva next to AMAN: `git clone https://github.com/alsadderwork-coder/Ariva.git D:\DevOps\Ariva`, with AMAN at `D:\DevOps\Aman` (agents read AMAN as reference through `additionalDirectories`; hooks block writes to it).
 2. Install: .NET 10 SDK, Node 22 or later, Docker Desktop (or Rancher Desktop) for Testcontainers and Compose, Git, the GitHub CLI (`winget install GitHub.cli`, then `gh auth login`), Claude Code, ralph-tui (`npm i -g ralph-tui` or as you installed it for AMAN), and `uv` for the Python-based MCP servers (`winget install astral-sh.uv`).
 3. `npx playwright install chromium` once.
-4. Environment variables: `GITHUB_PERSONAL_ACCESS_TOKEN` for the github MCP server (fine-grained token for `alsadderwork-coder/Ariva` only: Contents, Issues, Pull requests and Actions read and write, Metadata read; no Administration). Optional: `ARIVA_DEV_DATABASE_URI` for the read-only dev database MCP (`node scripts/dev-up.mjs` prints it with the generated password), `CONTEXT7_API_KEY` if you have a Context7 key (add a header in `.mcp.json`).
+4. Environment variables: `GITHUB_PERSONAL_ACCESS_TOKEN` for the github MCP server (fine-grained token for `alsadderwork-coder/Ariva` only: Contents, Issues, Pull requests and Actions read and write, Metadata read; no Administration). Optional: `ARIVA_DEV_DATABASE_URI` for the read-only dev database MCP (`node scripts/dev-up.mjs` prints it with the generated password), `CONTEXT7_API_KEY` if you have a Context7 key (add a header in `.mcp.json`), `SHADCN_MCP_URL` and `SHADCN_PRO_API_KEY` for the shadcn Pro MCP server (sent as a bearer token).
 5. Open the folder in Claude Code; approve the project MCP servers when asked (they are listed in `.claude/settings.json` under `enabledMcpjsonServers`).
 
 ## Dev container (Codespaces and cloud agent sessions, ARV-076)
@@ -41,6 +41,7 @@
 | context7 | HTTP | Library docs (NHibernate, MassTransit, Confluent.Kafka, TickerQ, FusionCache, Otp.NET, Npgsql, Testcontainers, Playwright, ECharts) | Works without a key at lower limits |
 | svelte | HTTP | Svelte 5 and SvelteKit docs, svelte-autofixer | Official, https://mcp.svelte.dev/mcp |
 | shadcn-svelte | HTTP | shadcn-svelte components, Bits UI API, Lucide icons | Community server (Michael-Obele/shadcn-svelte-mcp); the official `shadcn-svelte mcp` command was still a pull request when this was set up |
+| shadcn | HTTP, bearer token | shadcn Pro components, blocks and registry items | URL from `SHADCN_MCP_URL` (placeholder `https://shadcn.invalid/mcp` until the real endpoint is set), key from `SHADCN_PRO_API_KEY`; both optional, the server simply fails to connect without them. Pro items are React-first: port them to shadcn-svelte and Bits UI, never add React to Ariva.Web |
 | playwright | stdio, npx | Drive the running app while writing functional tests | Microsoft |
 | nuget | stdio, dnx (.NET 10 SDK) | Real package versions, vulnerability fixes | Microsoft NuGet MCP server |
 | github | HTTP | Issues, pull requests, Actions runs, Dependabot alerts | GitHub's remote MCP server (https://api.githubcopilot.com/mcp/) with `GITHUB_PERSONAL_ACCESS_TOKEN`; tools require approval (`ask`) |

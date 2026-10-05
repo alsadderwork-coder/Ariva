@@ -74,6 +74,7 @@ cd Platform/Frontplane/Ariva.Web && npm run dev
 | `context7` | Library docs: NHibernate, MassTransit, Confluent.Kafka, FusionCache, TickerQ, Mapster, Otp.NET, Npgsql, Testcontainers, Playwright, ECharts. |
 | `svelte` | Svelte 5 and SvelteKit docs; run `svelte-autofixer` on every `.svelte` file you write. |
 | `shadcn-svelte` | shadcn-svelte components, Bits UI API, Lucide icons (community server). |
+| `shadcn` | shadcn Pro components and blocks (needs `SHADCN_MCP_URL` and `SHADCN_PRO_API_KEY`; placeholder URL until set). Use as design reference and port to shadcn-svelte; never add React. |
 | `nuget` | Real package versions and vulnerability fixes. Never invent a version. |
 | `playwright` | Drive the running app while writing functional tests. |
 | `semgrep` | `security_check` on changed files, in addition to `scripts/security/scan.mjs`. |
