@@ -74,7 +74,7 @@ cd Platform/Frontplane/Ariva.Web && npm run dev
 | `context7` | Library docs: NHibernate, MassTransit, Confluent.Kafka, FusionCache, TickerQ, Mapster, Otp.NET, Npgsql, Testcontainers, Playwright, ECharts. |
 | `svelte` | Svelte 5 and SvelteKit docs; run `svelte-autofixer` on every `.svelte` file you write. |
 | `shadcn-svelte` | shadcn-svelte components, Bits UI API, Lucide icons (community server). |
-| `shadcn` | shadcn Pro components and blocks (shadcn.io; needs `SHADCN_MCP_URL` with the token, kept in `.claude/settings.local.json`, never committed). Use as design reference and port to shadcn-svelte; never add React. |
+| `shadcn-pro` / `shadcn` | shadcn.io Pro: 6,000+ blocks, charts, themes, icons. In cloud sessions and Cowork it is the claude.ai connector `shadcn-pro`; locally the `.mcp.json` entry `shadcn` (needs `SHADCN_MCP_URL` with the token, never committed). Items are React: use them as layout and design reference and port to shadcn-svelte and Bits UI; never run its `shadcn add` command in Ariva.Web, never add React. |
 | `nuget` | Real package versions and vulnerability fixes. Never invent a version. |
 | `playwright` | Drive the running app while writing functional tests. |
 | `semgrep` | `security_check` on changed files, in addition to `scripts/security/scan.mjs`. |
