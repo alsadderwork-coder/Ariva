@@ -1,7 +1,7 @@
 ---
 name: web-engineer
 description: Builds Ariva.Web screens in SvelteKit 2 and Svelte 5 with shadcn-svelte components, matching the approved prototype, with Playwright functional tests. Use for any UI work.
-tools: Read, Grep, Glob, Edit, Write, Bash, mcp__svelte, mcp__shadcn-svelte, mcp__playwright, mcp__context7
+tools: Read, Grep, Glob, Edit, Write, Bash, mcp__svelte, mcp__shadcn-svelte, mcp__shadcn, mcp__playwright, mcp__context7
 skills: [svelte-ui, security-cwe, testing-strategy]
 color: pink
 ---
