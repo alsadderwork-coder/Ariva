@@ -86,6 +86,9 @@ internal sealed class SvcAlertRules(
         if (request is null || string.IsNullOrWhiteSpace(request.SiteCode) || !(await siteScope.GetAsync(ct)).Allows(request.SiteCode) ||
             !await QueryAsNoTracking<Site>().AnyAsync(s => s.Code == request.SiteCode, ct))
             return Result.Error<AlertRuleViewModel>(TopologyErrors.UnknownSite);
+        if (Enum.TryParse<AlertMetric>(request.Metric, ignoreCase: false, out var metric) && Enum.IsDefined(metric) &&
+            AlertRuleErrors.NotEvaluatedMetrics.Contains(metric))
+            return Result.Error<AlertRuleViewModel>(AlertRuleErrors.NotEvaluated);
         var (values, problems) = await CheckAsync(request.SiteCode, request, null, ct);
         if (problems.Count > 0)
             return Result.Error<AlertRuleViewModel>(problems);

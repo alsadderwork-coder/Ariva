@@ -112,6 +112,18 @@ public sealed class AlertRuleServiceTests(PostgresFixture fixture) : IAsyncDispo
             .Should().Contain("\"threshold\":20").And.Contain("\"enabled\":true");
     }
 
+    [Theory]
+    [InlineData("OverflowOccupied")]
+    [InlineData("DesksBelowPlan")]
+    public async Task Create_Should_RefuseAMetricTheEvaluationDoesNotJudgeYet(string metric)
+    {
+        // The stream stores no overflow occupancy and there is no staffing plan: a new rule on these could never fire.
+        var admin = await AdminAsync("it.alert.notevaluated." + metric.ToLowerInvariant());
+        var request = Request("Not evaluated " + metric) with { Metric = metric, Threshold = null };
+        (await _host.AsCallerAsync(admin, s => Rules(s).CreateAsync(request, Ct))).ErrorMessages.Should().Equal(AlertRuleErrors.NotEvaluated);
+        (await _host.ReadAsync<long>("SELECT count(*) FROM alert_rule WHERE name LIKE 'Not evaluated %'")).Should().Be(0);
+    }
+
     [Fact]
     public async Task Rules_Should_StayInTheCallersSites_When_ReadOrWrittenFromAnotherSite()
     {
@@ -167,7 +179,7 @@ public sealed class AlertRuleServiceTests(PostgresFixture fixture) : IAsyncDispo
         (await _host.AsCallerAsync(admin, s => Rules(s).CreateAsync(Request(zones: ["A-VIS-D08"]), Ct))).ErrorMessages.Should().Equal(AlertRuleErrors.UnknownZones);
         (await _host.AsCallerAsync(admin, s => Rules(s).CreateAsync(Request("Overflow watched", zones: ["A-OV"]) with
         {
-            Metric = "OverflowOccupied", Comparator = "IsTrue", Threshold = null, MinQueueLength = null, ClearThreshold = null
+            Metric = "SensorOffline", Comparator = "IsTrue", Threshold = null, MinQueueLength = null, ClearThreshold = null
         }, Ct))).HasErrors.Should().BeFalse("overflow zones can be watched");
         (await _host.ReadAsync<long>("SELECT count(*) FROM alert_rule WHERE scope_zones LIKE '%NOT-A-ZONE%'")).Should().Be(0);
     }

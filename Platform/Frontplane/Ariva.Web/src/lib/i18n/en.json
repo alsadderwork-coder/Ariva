@@ -567,6 +567,7 @@
 		"heartbeat": "A device is offline after {seconds} s without a heartbeat."
 	},
 	"alertRules": {
+		"notEvaluated": "Not evaluated yet",
 		"title": "Alert rules",
 		"description": "The rules that drive every alert, with a preview of when they would have fired",
 		"listTitle": "Rules",
