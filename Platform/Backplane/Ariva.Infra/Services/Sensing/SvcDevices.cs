@@ -330,7 +330,8 @@ internal sealed class SvcDevices(
             : CoverageFootprint.FromVendor(placement.FootprintLengthMetres, placement.FootprintWidthMetres, placement.FootprintRadiusMetres);
 
     private static string Kinds(string transport, string dialect, string clockSource) =>
-        !TryKind<DeviceTransport>(transport, out _) ? DeviceErrors.UnknownTransport
+        !TryKind<DeviceTransport>(transport, out var kind) ? DeviceErrors.UnknownTransport
+        : !DeviceErrors.SupportedTransports.Contains(kind) ? DeviceErrors.UnsupportedTransport
         : !TryKind<DeviceDialect>(dialect, out _) ? DeviceErrors.UnknownDialect
         : !TryKind<ClockSource>(clockSource, out _) ? DeviceErrors.UnknownClockSource
         : null;

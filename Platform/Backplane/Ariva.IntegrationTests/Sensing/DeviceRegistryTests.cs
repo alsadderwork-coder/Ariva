@@ -187,6 +187,27 @@ public sealed class DeviceRegistryTests(PostgresFixture fixture) : IAsyncDisposa
     }
 
     [Fact]
+    public async Task Register_Should_RefuseATransportIngestDoesNotSupport()
+    {
+        // A device on a transport Ingest has no listener for could never send data: refused at registration and on update.
+        var (admin, level) = await SiteAsync("DVT");
+        RegisterDeviceRequest On(string code, string transport) =>
+            new(code, "StereoVision", "PC2SE", transport, "Xovis", "Ntp", new DevicePlacement(level, 20, 16, 5, 0, "Snake A"));
+
+        foreach (var transport in new[] { "RestPull", "WebSocket", "TcpOrUdp", "FileDrop", "OnvifProfileM" })
+        {
+            var refused = await _host.AsCallerAsync(admin, s => Devices(s).RegisterAsync(On("T-" + transport, transport), Ct));
+            refused.ErrorMessages.Should().Equal(DeviceErrors.UnsupportedTransport);
+        }
+
+        var push = await _host.AsCallerAsync(admin, s => Devices(s).RegisterAsync(On("T-1", "HttpsPush"), Ct));
+        push.HasErrors.Should().BeFalse(string.Join(", ", push.ErrorMessages ?? []));
+        var moved = await _host.AsCallerAsync(admin, s => Devices(s).UpdateAsync(push.Data.Device.Id, new UpdateDeviceRequest("PC2SE", "OnvifProfileM", "Xovis", "Ntp"), Ct));
+        moved.ErrorMessages.Should().Equal(DeviceErrors.UnsupportedTransport);
+        (await _host.ReadAsync<long>("SELECT count(*) FROM device WHERE site_code = 'DVT'")).Should().Be(1);
+    }
+
+    [Fact]
     public async Task Register_Should_TakeAShippedMappingForTheDeclarativeDialectOnly()
     {
         var (admin, level) = await SiteAsync("DVM");

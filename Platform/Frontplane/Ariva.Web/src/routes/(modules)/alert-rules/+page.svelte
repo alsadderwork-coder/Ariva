@@ -272,11 +272,21 @@
 										>
 											{rule.enabled ? $_('alertRules.enabled') : $_('alertRules.disabled')}
 										</button>
+										{#if rule.enabled && rules.notEvaluated.has(rule.metric)}
+											<span data-testid="not-evaluated" class="ms-1.5"
+												><StatusBadge tone="warning" label={$_('alertRules.notEvaluated')} /></span
+											>
+										{/if}
 									{:else}
 										<StatusBadge
 											tone={rule.enabled ? 'success' : 'neutral'}
 											label={rule.enabled ? $_('alertRules.enabled') : $_('alertRules.disabled')}
 										/>
+										{#if rule.enabled && rules.notEvaluated.has(rule.metric)}
+											<span data-testid="not-evaluated" class="ms-1.5"
+												><StatusBadge tone="warning" label={$_('alertRules.notEvaluated')} /></span
+											>
+										{/if}
 									{/if}
 								</td>
 								<td class="px-4 py-2">

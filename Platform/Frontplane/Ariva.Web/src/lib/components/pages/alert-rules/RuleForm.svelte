@@ -163,7 +163,9 @@
 			id="rule-metric"
 			label={label('fields.metric')}
 			bind:value={metric}
-			options={rules.metrics.map(option('metrics'))}
+			options={rules.metrics
+				.filter((m) => !rules.notEvaluated.has(m) || m === editing?.metric)
+				.map(option('metrics'))}
 		/>
 		{#if unit !== 'condition'}
 			<SelectField

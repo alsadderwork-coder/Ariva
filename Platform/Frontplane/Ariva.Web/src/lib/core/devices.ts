@@ -15,15 +15,8 @@ export const families = [
 	'ThermalOrTimeOfFlight',
 	'Simulator'
 ] as const;
-export const transports = [
-	'HttpsPush',
-	'Mqtt',
-	'RestPull',
-	'WebSocket',
-	'TcpOrUdp',
-	'FileDrop',
-	'OnvifProfileM'
-] as const;
+/** The transports Ingest takes data from; the server refuses the others (REST pull, WebSocket, TCP or UDP, file drop, ONVIF). */
+export const transports = ['HttpsPush', 'Mqtt'] as const;
 export const dialects = ['Canonical', 'Xovis', 'Declarative'] as const;
 export const clockSources = ['Ntp', 'Ptp'] as const;
 export const calibrationMethods = ['ManualCountTally', 'ManualCountTwoObservers'] as const;

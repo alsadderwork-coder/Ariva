@@ -180,3 +180,13 @@ test('a border supervisor sees the registry with its actions but cannot retire (
 		expect((await call('POST', `${hosts.main}/api/v1/admin/devices/${id}/retire`, { token: fresh })).status()).toBe(403);
 	}
 });
+
+test('the register form offers only the transports Ingest takes data from', async ({ page }) => {
+	// The sensor support model names seven transports; Ingest has HTTPS push and MQTT, and the server refuses the others.
+	await signInThroughUi(page, accounts().webBorder);
+	await page.goto('/devices');
+	await page.getByTestId('register-device').click();
+	const transport = page.getByTestId('register-form').locator('#register-transport');
+	await expect(transport).toBeVisible();
+	expect(await transport.locator('option').evaluateAll((o) => o.map((x) => (x as HTMLOptionElement).value))).toEqual(['HttpsPush', 'Mqtt']);
+});

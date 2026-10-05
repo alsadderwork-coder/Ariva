@@ -13,6 +13,14 @@ public static class DeviceErrors
     public const string NotRemovable = "Only a device that was never calibrated can be removed; retire it instead.";
     public const string UnknownFamily = "Unknown device family.";
     public const string UnknownTransport = "Unknown transport.";
+    public const string UnsupportedTransport = "Ariva does not support this transport yet: register the device with HTTPS push or MQTT.";
+
+    /// <summary>
+    /// The transports Ariva.Api.Ingest takes data from (HTTPS push, ARV-023; MQTT, ARV-024). The others are named by the
+    /// sensor support model for later releases; a device registered with one could never send data, so it is refused.
+    /// </summary>
+    public static readonly IReadOnlySet<Ariva.Core.Domain.Enums.DeviceTransport> SupportedTransports =
+        new HashSet<Ariva.Core.Domain.Enums.DeviceTransport> { Ariva.Core.Domain.Enums.DeviceTransport.HttpsPush, Ariva.Core.Domain.Enums.DeviceTransport.Mqtt };
     public const string UnknownDialect = "Unknown dialect.";
     public const string UnknownClockSource = "Unknown clock source.";
     public const string UnknownMethod = "Unknown calibration method.";
