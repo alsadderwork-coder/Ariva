@@ -18,10 +18,7 @@
     },
     "shadcn": {
       "type": "http",
-      "url": "${SHADCN_MCP_URL:-https://shadcn.invalid/mcp}",
-      "headers": {
-        "Authorization": "Bearer ${SHADCN_PRO_API_KEY:-}"
-      }
+      "url": "${SHADCN_MCP_URL:-https://shadcn.invalid/mcp}"
     },
     "playwright": {
       "command": "npx",
