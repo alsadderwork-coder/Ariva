@@ -14,7 +14,7 @@ RUN --mount=type=cache,id=npm,target=/root/.npm \
 
 # nginx stable line (1.30) on Alpine: 1.28 stopped receiving image rebuilds and its Debian base carried 120+ high or
 # critical OS findings. apk upgrade picks up Alpine security fixes released after the upstream image was built.
-FROM nginx:1.30.5-alpine3.24@sha256:0985e772fb9f729e6fa0980da05fca5d9c468e870eed43071545afa9d2e27d94
+FROM nginx:1.31-alpine3.24@sha256:df221db836e1754089190208cee7eeda94f233197056426eda74a43ab1abeac2
 
 RUN apk upgrade --no-cache
 
