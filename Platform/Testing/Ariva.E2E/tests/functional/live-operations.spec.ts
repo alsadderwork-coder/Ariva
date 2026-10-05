@@ -197,6 +197,35 @@ test('alert text from the server is shown as text: rule and zone names carrying 
 	}
 });
 
+test('a sensor offline alert names its sensor as well as its zone', async ({ page }) => {
+	// ARV-064: R-003 judges each commissioned device, so its alert carries the zone and the device; the panel showed the
+	// zone only, and the supervisor could not tell which sensor to check.
+	const guards = await guardPage(page);
+	const db = database();
+	await db.connect();
+	try {
+		await db.query(
+			`INSERT INTO alert (id, site_code, rule_id, rule_code, rule_name, zone_name, device_code, metric, severity, owner_role, escalate_after_minutes,
+			                    escalate_to_role, escalation_contact, raised_utc, raised_value, state)
+			 SELECT gen_random_uuid(), site_code, id, code, name, 'A-VIS', 'S-17', metric, severity, owner_role, escalate_after_minutes, escalate_to_role,
+			        escalation_contact, date_trunc('minute', now()), 1, 'Raised'
+			 FROM alert_rule WHERE site_code = 'DMO' AND code = 'R-003' AND metric = 'SensorOffline'`
+		);
+		await signInThroughUi(page, accounts().webBorder);
+		const alert = page.locator('[data-testid="alert"][data-rule="R-003"]').filter({ hasText: 'S-17' });
+		await expect(alert).toHaveCount(1);
+		await expect(alert).toContainText('A-VIS · S-17');
+		allowStatuses(guards, 404);
+		await guards.expectClean();
+	} finally {
+		await db.query(
+			`UPDATE alert SET state = 'Resolved', resolution = 'Manual', resolved_utc = now(), resolved_by = 'e2e-cleanup', resolution_note = 'cleanup'
+			 WHERE state <> 'Resolved' AND site_code = 'DMO' AND rule_code = 'R-003' AND device_code = 'S-17'`
+		);
+		await db.end();
+	}
+});
+
 test('desk states and the arrival wave follow the role: border desks for the border supervisor, counters for the duty manager', async ({ page }) => {
 	// What Stream's desk engine writes for one immigration desk and one check-in counter (ARV-049).
 	const db = database();

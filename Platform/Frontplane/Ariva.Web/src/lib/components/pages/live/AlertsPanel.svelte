@@ -94,9 +94,13 @@
 						</span>
 					</div>
 					<p class="text-xs text-muted-foreground">
-						{alert.zoneName ?? alert.deviceCode ?? ''} · {$_('liveOperations.alerts.raised', {
-							values: { time: time(alert.raisedUtc) }
-						})}
+						<!-- A device alert (R-003, sensor offline) names its device as well as its zone (ARV-064). -->
+						{[alert.zoneName, alert.deviceCode].filter(Boolean).join(' · ')} · {$_(
+							'liveOperations.alerts.raised',
+							{
+								values: { time: time(alert.raisedUtc) }
+							}
+						)}
 						{#if alert.acknowledgedUtc}· {$_('liveOperations.alerts.acknowledged', {
 								values: { time: time(alert.acknowledgedUtc) }
 							})}{/if}
