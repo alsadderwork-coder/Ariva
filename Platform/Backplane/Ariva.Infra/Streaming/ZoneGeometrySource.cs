@@ -9,7 +9,8 @@ public sealed record ZoneGeometry(QueueZoneGeometry Geometry, int ProfileVersion
 
 /// <summary>
 /// Reads a queue zone's lines and zones from the site's published zone profile (ARV-017): the queue zone's entry and
-/// exit lines, its overflow bands and their entry lines. A zone that is not in the published profile has no geometry
+/// exit lines, its overflow bands and their entry lines, and the count lines of the queue zone and its bands (ARV-113,
+/// counted per line and minute only). A zone that is not in the published profile has no geometry
 /// (its events are counted and skipped by the stream worker).
 /// </summary>
 public class ZoneGeometrySource(DatabaseSettings database)
@@ -47,6 +48,7 @@ public class ZoneGeometrySource(DatabaseSettings database)
         var entries = new HashSet<string>(StringComparer.Ordinal);
         var exits = new HashSet<string>(StringComparer.Ordinal);
         var overflowEntries = new HashSet<string>(StringComparer.Ordinal);
+        var counts = new HashSet<string>(StringComparer.Ordinal);
         await using var reader = await command.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {
@@ -72,13 +74,16 @@ public class ZoneGeometrySource(DatabaseSettings database)
                         case "OverflowEntry":
                             overflowEntries.Add(name);
                             break;
+                        case "Count":
+                            counts.Add(name);
+                            break;
                     }
 
                     break;
             }
         }
 
-        return found is { } v ? new ZoneGeometry(new QueueZoneGeometry(queueZoneName, entries, exits, overflowEntries, bands), v) : null;
+        return found is { } v ? new ZoneGeometry(new QueueZoneGeometry(queueZoneName, entries, exits, overflowEntries, bands, counts), v) : null;
     }
 
     /// <summary>The queue zones of a version of the site's zone profile (published or retired), or of the published one; in name order.</summary>

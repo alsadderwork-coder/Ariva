@@ -242,6 +242,11 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
                reanchored, rejected, open_people, late_events, profile_version FROM queue_bin ORDER BY zone_key, start_utc, revision
         """;
 
+    private const string LineRows = """
+        SELECT zone_key, line_name, line_role, source, minute_utc, profile_version, crossings_in, crossings_out
+        FROM line_minute ORDER BY zone_key, line_name, source, minute_utc
+        """;
+
     [Fact]
     public async Task Worker_Should_WriteTheSameRows_When_StoppedMidStreamAndRestartedWithItsKafkaOffsetsLost()
     {
@@ -284,6 +289,15 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
         var expectedBins = await RowsAsync(straight, BinRows);
         expectedBins.Should().Contain(r => r.Contains("|Final|Good|", StringComparison.Ordinal));
         (await RowsAsync(restart, BinRows)).Should().Equal(expectedBins);
+        // ARV-113: the line minutes are written in the same checkpoints, and the restart rewrites exactly the same ones.
+        var expectedLines = await RowsAsync(straight, LineRows);
+        expectedLines.Should().HaveCountGreaterThan(300, "two zones, two lines, about 90 minutes");
+        expectedLines.Should().OnlyContain(r => r.Contains("|Ariva|", StringComparison.Ordinal));
+        (await RowsAsync(restart, LineRows)).Should().Equal(expectedLines);
+        (await RowsAsync(straight, """
+            SELECT (SELECT sum(crossings_in) FROM line_minute WHERE zone_key = 'DMO/Q1' AND line_role = 'Entry')
+                 = (SELECT sum(entries) FROM queue_minute WHERE zone_key = 'DMO/Q1' AND minute_utc IN (SELECT minute_utc FROM line_minute WHERE zone_key = 'DMO/Q1'))
+            """)).Should().Equal(["True"], "the entry line counts what the zone counted as entries");
         (await RowsAsync(restart, "SELECT zone_key FROM stream_zone_state ORDER BY zone_key")).Should().Contain(["DMO/Q1", "DMO/Q2"]);
     }
 
@@ -308,6 +322,8 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
         await store.SaveAsync(checkpoint, Ct);
 
         (await RowsAsync(database, MinuteRows)).Should().Equal(first);
+        var lines = await RowsAsync(database, LineRows);
+        lines.Should().HaveCount(outputs.Lines.Count).And.NotBeEmpty("the evening's closed line minutes are written once each");
         first.Should().HaveCount(outputs.Live.Select(l => l.MinuteUtc).Concat(outputs.Minutes.Select(m => m.StartUtc)).Distinct().Count());
         (await store.LoadOffsetsAsync("g", [("t", 0), ("t", 1)], Ct)).Should().Equal(new StreamOffset("t", 0, 42));
         var loaded = await store.LoadStateAsync("DMO/Q1", Ct);
@@ -336,6 +352,40 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
 
         (await RowsAsync(database, "SELECT bucket_utc, entries FROM queue_minute_15m WHERE zone_key = 'DMO/Q1' ORDER BY bucket_utc")).Should().HaveCountGreaterThan(5);
 
+        // ARV-113: every line role and both sources are kept apart under one key; a rewrite changes nothing.
+        var minute = new DateTime(2026, 9, 28, 19, 0, 0, DateTimeKind.Utc);
+        var roles = new ZoneOutputs("DMO/Q1", [], [], [], [], [],
+        [
+            new LineMinute("Q1 entry", QueueLineRole.Entry, minute, 4, 1), new LineMinute("Q1 exit", QueueLineRole.Exit, minute, 0, 3),
+            new LineMinute("Q1 count", QueueLineRole.Count, minute, 2, 2), new LineMinute("Q1-OV entry", QueueLineRole.OverflowEntry, minute, 5, 0),
+            new LineMinute("Q1 entry", QueueLineRole.Entry, minute, 6, 0, LineCountSource.Vendor)
+        ]);
+        var lineCheckpoint = new StreamCheckpoint("g", [roles], [state], [], []);
+        await store.SaveAsync(lineCheckpoint, Ct);
+        await store.SaveAsync(lineCheckpoint, Ct);
+        (await RowsAsync(database, "SELECT line_name, line_role, source, crossings_in, crossings_out, profile_version FROM line_minute WHERE minute_utc = '2026-09-28 19:00:00+00' ORDER BY line_name, source"))
+            .Should().Equal("Q1 count|Count|Ariva|2|2|7", "Q1 entry|Entry|Ariva|4|1|7", "Q1 entry|Entry|Vendor|6|0|7", "Q1 exit|Exit|Ariva|0|3|7", "Q1-OV entry|OverflowEntry|Ariva|5|0|7");
+        await using (var connection = new NpgsqlConnection(postgres.ConnectionString(database)))
+        {
+            await connection.OpenAsync(Ct);
+            for (var attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    await using var refresh = new NpgsqlCommand("CALL refresh_continuous_aggregate('line_minute_15m', NULL, NULL)", connection);
+                    await refresh.ExecuteNonQueryAsync(Ct);
+                    break;
+                }
+                catch (PostgresException e) when (e.SqlState == "55P03" && attempt < 20)
+                {
+                    await Task.Delay(500, Ct);
+                }
+            }
+        }
+
+        (await RowsAsync(database, "SELECT source, crossings_in FROM line_minute_15m WHERE zone_key = 'DMO/Q1' AND line_name = 'Q1 entry' AND bucket_utc = '2026-09-28 19:00:00+00' ORDER BY source"))
+            .Should().Equal("Ariva|4", "Vendor|6");
+
         // ARV-060: every minute with waits keeps its histogram, whose counts add up to its waits (F7), so reports merge hours.
         (await RowsAsync(database, """
             SELECT count(*) FILTER (WHERE waits > 0), count(*) FILTER (WHERE waits > 0 AND wait_buckets IS NOT NULL
@@ -361,6 +411,10 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
     [InlineData("INSERT INTO queue_minute_15m (zone_key, bucket_utc, entries) VALUES ('DMO/Q1', now(), 100000)", "42501")]
     [InlineData("DELETE FROM queue_minute_15m", "42501")]
     [InlineData("DELETE FROM queue_minute", "42501")]
+    [InlineData("DELETE FROM line_minute", "42501")]
+    [InlineData("TRUNCATE line_minute", "42501")]
+    [InlineData("INSERT INTO line_minute_15m (zone_key, line_name, bucket_utc, crossings_in) VALUES ('DMO/Q1', 'Q1 entry', now(), 100000)", "42501")]
+    [InlineData("INSERT INTO line_minute (zone_key, line_name, line_role, source, minute_utc, profile_version, updated_on) VALUES ('DMO/Q1', 'x', 'Entry', 'Sensor', now(), 1, now())", "23514")]
     [InlineData("DELETE FROM queue_bin", "42501")]
     [InlineData("DELETE FROM stream_zone_state", "42501")]
     [InlineData("DELETE FROM stream_offset", "42501")]

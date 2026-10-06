@@ -20,8 +20,9 @@ public sealed record StreamCheckpoint(
     IReadOnlyList<StreamOffset> Offsets);
 
 /// <summary>
-/// Persistence of the stream host (ARV-034, script 0018). A checkpoint is one transaction: rows are written by binary COPY
-/// into staging tables and upserted by key (zone or desk and minute, bin and revision), the zones' snapshots replace
+/// Persistence of the stream host (ARV-034, script 0018; line_minute since ARV-113, script 0037). A checkpoint is one
+/// transaction: rows are written by binary COPY into staging tables and upserted by key (zone or desk and minute, zone,
+/// line, source and minute, bin and revision), the zones' snapshots replace
 /// their previous ones, and the consumer group's next offsets are recorded. Only after it commits does the consumer
 /// commit its Kafka offsets; on assignment it starts from the offsets saved here, so a record is applied to a saved state
 /// exactly once and replaying the records after it rewrites the same rows.
@@ -51,6 +52,9 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
             await WriteLiveAsync(connection, live, Version, now, ct);
         if (bins.Count > 0)
             await WriteBinsAsync(connection, bins, now, ct);
+        var lines = checkpoint.Outputs.SelectMany(o => o.Lines.Select(l => (o.ZoneKey, Line: l))).ToList();
+        if (lines.Count > 0)
+            await WriteLineMinutesAsync(connection, lines, Version, now, ct);
         if (checkpoint.DeskMinutes.Count > 0)
             await WriteDeskMinutesAsync(connection, checkpoint.DeskMinutes, now, ct);
         var outages = checkpoint.Outputs.SelectMany(o => o.Outages).ToList();
@@ -130,6 +134,47 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
             """, connection);
         upsert.Parameters.AddWithValue("now", now);
         await upsert.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <summary>The longest line name a profile allows (Topology names, varchar(200) in line_minute).</summary>
+    private const int MaxLineNameLength = 200;
+
+    // Per-line minute counts (ARV-113). A line minute is written once it is closed and never changes in the engine, so a
+    // replay of the same records after a restart writes the same values again: the upsert by (zone, line, source, minute)
+    // makes the rewrite a no-op in effect (idempotent).
+    private static async Task WriteLineMinutesAsync(NpgsqlConnection connection, List<(string Zone, LineMinute Line)> rows, Func<string, int> version, DateTime now,
+        CancellationToken ct)
+    {
+        await Execute(connection, "CREATE TEMP TABLE stage_line_minute (LIKE line_minute INCLUDING DEFAULTS) ON COMMIT DROP", ct);
+        await using (var copy = await connection.BeginBinaryImportAsync("""
+            COPY stage_line_minute (zone_key, line_name, line_role, source, minute_utc, profile_version, crossings_in, crossings_out, updated_on)
+            FROM STDIN (FORMAT BINARY)
+            """, ct))
+        {
+            foreach (var (zone, l) in rows.Where(r => r.Line.LineName is { Length: > 0 and <= MaxLineNameLength } && r.Line.Role != QueueLineRole.Unknown)
+                         .GroupBy(r => (r.Zone, r.Line.LineName, r.Line.Source, r.Line.MinuteUtc)).Select(g => g.Last()))
+            {
+                await copy.StartRowAsync(ct);
+                await copy.WriteAsync(zone, NpgsqlDbType.Varchar, ct);
+                await copy.WriteAsync(l.LineName, NpgsqlDbType.Varchar, ct);
+                await copy.WriteAsync(l.Role.ToString(), NpgsqlDbType.Varchar, ct);
+                await copy.WriteAsync(l.Source.ToString(), NpgsqlDbType.Varchar, ct);
+                await copy.WriteAsync(Utc(l.MinuteUtc), NpgsqlDbType.TimestampTz, ct);
+                await copy.WriteAsync(version(zone), NpgsqlDbType.Integer, ct);
+                await copy.WriteAsync(l.In, NpgsqlDbType.Bigint, ct);
+                await copy.WriteAsync(l.Out, NpgsqlDbType.Bigint, ct);
+                await copy.WriteAsync(now, NpgsqlDbType.TimestampTz, ct);
+            }
+
+            await copy.CompleteAsync(ct);
+        }
+
+        await Execute(connection, """
+            INSERT INTO line_minute SELECT * FROM stage_line_minute
+            ON CONFLICT (zone_key, line_name, source, minute_utc) DO UPDATE SET line_role = EXCLUDED.line_role,
+                profile_version = EXCLUDED.profile_version, crossings_in = EXCLUDED.crossings_in, crossings_out = EXCLUDED.crossings_out,
+                updated_on = EXCLUDED.updated_on
+            """, ct);
     }
 
     private static async Task WriteLiveAsync(NpgsqlConnection connection, List<QueueLiveMinute> rows, Func<string, int> version, DateTime now, CancellationToken ct)

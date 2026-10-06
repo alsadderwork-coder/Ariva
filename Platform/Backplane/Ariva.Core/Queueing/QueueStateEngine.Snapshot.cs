@@ -77,6 +77,8 @@ public sealed record QueueEngineState
 
     // What happened since the last step (an Offer can process events when the buffer is full).
     public IReadOnlyList<MovementCount> Movements { get; init; } = [];
+    /// <summary>Line crossings since the last step (ARV-113); a snapshot written before has none.</summary>
+    public IReadOnlyList<LineMovement> Lines { get; init; } = [];
     public IReadOnlyList<RealisedWait> Waits { get; init; } = [];
     public IReadOnlyList<EntrantResolution> Resolutions { get; init; } = [];
     public IReadOnlyList<long> Counters { get; init; } = [];
@@ -106,6 +108,7 @@ public sealed partial class QueueStateEngine
         CursorUtc = _cursor,
         ResidualSuspect = _residualSuspect,
         Movements = [.. _movements.OrderBy(m => m.Key).Select(m => new MovementCount(m.Key, m.Value.In, m.Value.Out, m.Value.DegradedIn, m.Value.DegradedOut))],
+        Lines = LineMovements(),
         Waits = [.. _waits],
         Resolutions = [.. _resolutions],
         Counters = [_late, _future, _invalid, _unknown, _duplicates, _reverse, _unmatched, _negative, _bufferFull, _forced, _tooManyDevices],
@@ -133,7 +136,7 @@ public sealed partial class QueueStateEngine
             (state.ResolvedTracks?.Count ?? 0) > s.MaxRememberedTracks || (state.Occupancy?.Count ?? 0) > 1 + geometry.OverflowZones.Count ||
             (state.Handovers?.Count ?? 0) > 2 * s.MaxOpenEntrants + 1024 || (state.Counters?.Count ?? 0) != 11 ||
             (state.LateByMinute?.Count ?? 0) > MaxLateMinutes ||
-            (state.Movements?.Count ?? 0) + (state.Waits?.Count ?? 0) + (state.Resolutions?.Count ?? 0) > s.MaxStepRecords + s.MaxBufferedEvents)
+            (state.Movements?.Count ?? 0) + (state.Lines?.Count ?? 0) + (state.Waits?.Count ?? 0) + (state.Resolutions?.Count ?? 0) > s.MaxStepRecords + s.MaxBufferedEvents)
             throw new InvalidDataException("The queue engine snapshot exceeds the engine's bounds.");
 
         foreach (var (input, ahead, sequence) in state.Buffer ?? [])
@@ -187,6 +190,14 @@ public sealed partial class QueueStateEngine
         engine._residualSuspect = state.ResidualSuspect;
         foreach (var m in (state.Movements ?? []).Where(m => m is not null))
             engine._movements[QueueInputState.Utc(m.MinuteUtc)] = (m.Entries, m.Exits, m.DegradedEntries, m.DegradedExits);
+        foreach (var l in (state.Lines ?? []).Where(l => l is not null))
+        {
+            var role = geometry.RoleOf(l.LineName);
+            if (role == QueueLineRole.Unknown || role != l.Role || l.In < 0 || l.Out < 0)
+                throw new InvalidDataException("The queue engine snapshot counts a line that is not the zone's, or a negative count.");
+            engine._lines[(QueueInputState.Utc(l.MinuteUtc), l.LineName)] = (l.Role, l.In, l.Out);
+        }
+
         engine._waits.AddRange((state.Waits ?? []).Where(w => w is not null).Select(w => w with { EntryUtc = QueueInputState.Utc(w.EntryUtc), ExitUtc = QueueInputState.Utc(w.ExitUtc) }));
         engine._resolutions.AddRange((state.Resolutions ?? []).Where(r => r is not null).Select(r => r with { EntryUtc = QueueInputState.Utc(r.EntryUtc), ResolvedUtc = QueueInputState.Utc(r.ResolvedUtc) }));
         var c = state.Counters;

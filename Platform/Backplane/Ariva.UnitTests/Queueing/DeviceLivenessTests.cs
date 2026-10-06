@@ -195,7 +195,7 @@ public sealed class DeviceLivenessTests
         var device = state.Devices[0];
         foreach (var bad in new[]
                  {
-                     state with { Version = 3 },
+                     state with { Version = ZoneProcessorState.CurrentVersion + 1 },
                      state with { Devices = [device with { DeviceCode = "S/17" }] },
                      state with { Devices = [device with { DeviceCode = new string('S', 17) }] },
                      state with { Devices = [device, device] },

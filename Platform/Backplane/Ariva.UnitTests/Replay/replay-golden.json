@@ -1,5 +1,5 @@
 {
-    "_comment": "ARV-036: the output hash of the golden replay of the reference evening (seed 9303, GoldenReplayTests). Update only after reviewing the change in the engine's outputs, with the human's approval.",
-    "outputHead": "451f62ed547d4806ceb5e2e9587705cc67275442a4883f3b435021605ea11729",
-    "outputs": 2083
+    "_comment": "ARV-036: the output hash of the golden replay of the reference evening (seed 9303, GoldenReplayTests). Update only after reviewing the change in the engine's outputs, with the human's approval. ARV-113 (2026-10-06): 633 line minutes (type line, after each drain's outages) join the chain; every earlier output is unchanged (the previous head 451f62ed547d4806ceb5e2e9587705cc67275442a4883f3b435021605ea11729 over 2083 outputs is reproduced without them). Pending the human's approval.",
+    "outputHead": "8d13749079c0c0ca347dcd8c9e41f6708a7360b7145ad61af32c4d49cf0e0a2c",
+    "outputs": 2716
 }

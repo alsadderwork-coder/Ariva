@@ -45,6 +45,13 @@ public sealed record EntrantResolution(DateTime EntryUtc, DateTime ResolvedUtc, 
 public sealed record MovementCount(DateTime MinuteUtc, long Entries, long Exits, long DegradedEntries, long DegradedExits);
 
 /// <summary>
+/// Crossings of one line in one minute (UTC, aligned) that the engine applied in a step (ARV-113): every crossing of a
+/// line of the zone in each direction, and the in and out counts of interval readings spread as the engine spreads
+/// them, whatever the crossing did to the queue. A delta: later steps may add to the same line and minute.
+/// </summary>
+public sealed record LineMovement(string LineName, QueueLineRole Role, DateTime MinuteUtc, long In, long Out);
+
+/// <summary>
 /// The queue length at the watermark: the sum of the latest occupancy readings of the queue zone and its overflow
 /// bands when all are fresh, otherwise the people the engine holds (entries minus exits since the last anchor).
 /// </summary>
@@ -115,4 +122,8 @@ public sealed record QueueStep(
     int Reanchors,
     int OpenEntrants,
     int BufferedEvents,
-    bool More);
+    bool More)
+{
+    /// <summary>The line crossings applied in this step, per line and minute (ARV-113), in minute and then line name order.</summary>
+    public IReadOnlyList<LineMovement> Lines { get; init; } = [];
+}

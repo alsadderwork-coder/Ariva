@@ -64,6 +64,32 @@ public sealed class GoldenReplayTests
         finals.Where(b => b.StartUtc < ReferenceReplay.To).Should().HaveCount(14, "every bin of the range becomes final");
     }
 
+    [Theory]
+    [InlineData("A-VIS")]
+    [InlineData("CI-C")]
+    public void Replay_Should_CountEveryLineMinuteAsTheZoneMinutes_When_TheEveningIsReplayed(string zone)
+    {
+        var outputs = Of(zone);
+        var minutes = outputs.Minutes.GroupBy(m => m.StartUtc).ToDictionary(g => g.Key, g => g.Last());
+
+        // ARV-113: each line's closed minutes, once each, from Ariva's own counts; the entry line's ins and the exit line's
+        // outs are the zone's entries and exits of the same minute (the reference evening has no duplicate crossings).
+        outputs.Lines.Should().NotBeEmpty();
+        outputs.Lines.Should().OnlyContain(l => l.Source == LineCountSource.Ariva);
+        outputs.Lines.GroupBy(l => (l.LineName, l.MinuteUtc)).Should().OnlyContain(g => g.Count() == 1, "a closed line minute is released once");
+        outputs.Lines.Select(l => (l.LineName, l.Role)).Distinct().Should().BeEquivalentTo([(zone + " entry", QueueLineRole.Entry), (zone + " exit", QueueLineRole.Exit)]);
+        var entries = outputs.Lines.Where(l => l.Role == QueueLineRole.Entry).ToDictionary(l => l.MinuteUtc, l => l.In);
+        var exits = outputs.Lines.Where(l => l.Role == QueueLineRole.Exit).ToDictionary(l => l.MinuteUtc, l => l.Out);
+        foreach (var (start, minute) in minutes)
+        {
+            entries.GetValueOrDefault(start).Should().Be(minute.Entries, $"the entry line's ins at {Clock(start)} are the zone's entries");
+            exits.GetValueOrDefault(start).Should().Be(minute.Exits, $"the exit line's outs at {Clock(start)} are the zone's exits");
+        }
+
+        entries.Values.Sum().Should().Be(minutes.Values.Sum(m => m.Entries)).And.BePositive();
+        exits.Values.Sum().Should().Be(minutes.Values.Sum(m => m.Exits)).And.BePositive();
+    }
+
     [Fact]
     public void Replay_Should_GiveTheGoldenOutputHash_When_RunAgain()
     {

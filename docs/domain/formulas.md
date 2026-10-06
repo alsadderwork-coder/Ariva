@@ -613,6 +613,8 @@ Edge cases: N_manual = 0 makes count accuracy undefined; report absolute error i
 
 Tests: N_system = 96, N_manual = 100 gives 96%. Tracer 8 min, system 8.9 min: tolerance 1 min, pass. Tracer 20 min, system 22.5 min: tolerance 2 min, fail.
 
+Implementation of N_system per line (ARV-113, `Ariva.Core/Queueing/LineCounts`, script 0037): the queue engine counts every crossing of a line of the zone (entry, exit, overflow entry and count lines) in each direction as it applies it, and spreads interval counts over their minutes as it spreads them for the queue; a count line never moves the queue. A line minute is closed, and written to `line_minute` with source `Ariva`, once the watermark has passed its end: an event that arrives late but still ahead of the watermark (inside the lateness allowance) revises the open minute, and an event behind the watermark is late and not applied (F5, F6), so a written line minute never changes except through a recomputation. `line_minute_15m` sums them per 15-minute bin for the comparison with manual counts. Vendor-computed crossings are a separate source (`Vendor`), never added to Ariva's counts; they are stored once Ariva computes crossings from tracks (ADR-0003), because until then the engine's crossings are the ones the devices send.
+
 ## F19. Clock drift
 
 Source: D5. Threshold is an assumption to tune; stability rule Proposed.

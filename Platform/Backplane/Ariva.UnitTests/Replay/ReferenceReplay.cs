@@ -184,7 +184,7 @@ internal static class ReferenceReplay
             var record = root.GetProperty("record").GetRawText();
             T Read<T>() => System.Text.Json.JsonSerializer.Deserialize<T>(record, ReplayLedger.Json)!;
             if (!outputs.TryGetValue(zone, out var list))
-                outputs[zone] = list = [new ZoneOutputs(zone, new List<MinuteResult>(), new List<BinResult>(), new List<QueueLiveMinute>(), new List<RecomputationRequest>(), new List<DeviceOutage>())];
+                outputs[zone] = list = [new ZoneOutputs(zone, new List<MinuteResult>(), new List<BinResult>(), new List<QueueLiveMinute>(), new List<RecomputationRequest>(), new List<DeviceOutage>(), new List<LineMinute>())];
             var o = list[0];
             switch (root.GetProperty("type").GetString())
             {
@@ -193,6 +193,7 @@ internal static class ReferenceReplay
                 case "live": ((List<QueueLiveMinute>)o.Live).Add(Read<QueueLiveMinute>()); break;
                 case "recomputation": ((List<RecomputationRequest>)o.Recomputations).Add(Read<RecomputationRequest>()); break;
                 case "outage": ((List<DeviceOutage>)o.Outages).Add(Read<DeviceOutage>()); break;
+                case "line": ((List<LineMinute>)o.Lines).Add(Read<LineMinute>()); break;
             }
         }
 

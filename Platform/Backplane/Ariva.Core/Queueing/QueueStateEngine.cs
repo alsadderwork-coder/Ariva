@@ -142,6 +142,7 @@ public sealed partial class QueueStateEngine
     private bool _residualSuspect;
 
     private readonly Dictionary<DateTime, (long In, long Out, long DegradedIn, long DegradedOut)> _movements = [];
+    private readonly Dictionary<(DateTime Minute, string Line), (QueueLineRole Role, long In, long Out)> _lines = [];
     private readonly List<RealisedWait> _waits = [];
     private readonly List<EntrantResolution> _resolutions = [];
     private long _late, _future, _invalid, _unknown, _duplicates, _reverse, _unmatched, _negative, _bufferFull, _forced, _tooManyDevices;
@@ -172,7 +173,7 @@ public sealed partial class QueueStateEngine
     /// <summary>Events waiting in the reorder buffer.</summary>
     public int BufferedEvents => _buffer.Count;
 
-    private int Records => _waits.Count + _resolutions.Count + _movements.Count;
+    private int Records => _waits.Count + _resolutions.Count + _movements.Count + _lines.Count;
 
     private static DateTime Plus(DateTime t, TimeSpan d) => t > DateTime.MaxValue - d ? DateTime.MaxValue : t + d;
 
@@ -282,8 +283,12 @@ public sealed partial class QueueStateEngine
                 Duplicates = _duplicates, Reverse = _reverse, UnmatchedExits = _unmatched, NegativeWaits = _negative,
                 BufferFull = _bufferFull, ForcedAdvances = _forced, TooManyDevices = _tooManyDevices
             },
-            _reanchors, _held.Count, _buffer.Count, _more);
+            _reanchors, _held.Count, _buffer.Count, _more)
+        {
+            Lines = LineMovements()
+        };
         _movements.Clear();
+        _lines.Clear();
         _waits.Clear();
         _resolutions.Clear();
         _late = _future = _invalid = _unknown = _duplicates = _reverse = _unmatched = _negative = _bufferFull = _forced = _tooManyDevices = 0;
@@ -355,6 +360,8 @@ public sealed partial class QueueStateEngine
     private void Cross(QueueCrossing c)
     {
         var role = _geometry.RoleOf(c.LineName);
+        if (role != QueueLineRole.Unknown && c.Direction is CrossingDirection.In or CrossingDirection.Out)
+            Tally(c.LineName, role, c.TimeUtc, c.Direction == CrossingDirection.In ? 1 : 0, c.Direction == CrossingDirection.Out ? 1 : 0);
         switch (role, c.Direction)
         {
             case (QueueLineRole.Entry, CrossingDirection.In):
@@ -376,6 +383,8 @@ public sealed partial class QueueStateEngine
             case (QueueLineRole.Exit, CrossingDirection.In):
                 _reverse++;
                 break;
+            case (QueueLineRole.Count, _):
+                break; // counted on its line only (ARV-113)
             default:
                 _unknown++;
                 break;
@@ -407,6 +416,11 @@ public sealed partial class QueueStateEngine
             start = _watermark;
         var span = i.TimeUtc - start;
         DateTime Spread(int k, int n) => start + span * ((k + 0.5) / n);
+        // The line's own counts, spread the same way whatever the counts do to the queue (ARV-113).
+        for (var k = 0; k < i.In; k++)
+            Tally(i.LineName, role, Spread(k, i.In), 1, 0);
+        for (var k = 0; k < i.Out; k++)
+            Tally(i.LineName, role, Spread(k, i.Out), 0, 1);
         if (role == QueueLineRole.Entry)
         {
             for (var k = 0; k < i.In; k++)
@@ -641,6 +655,18 @@ public sealed partial class QueueStateEngine
         while (_resolvedOrder.Count > _settings.MaxRememberedTracks)
             _resolvedTracks.Remove(_resolvedOrder.Dequeue());
     }
+
+    /// <summary>A crossing of one of the zone's lines, counted on its line and minute as applied (ARV-113).</summary>
+    private void Tally(string line, QueueLineRole role, DateTime time, long @in, long @out)
+    {
+        var key = (new DateTime(time.Ticks - time.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc), line);
+        _lines.TryGetValue(key, out var t);
+        _lines[key] = (role, t.In + @in, t.Out + @out);
+    }
+
+    private List<LineMovement> LineMovements() =>
+        [.. _lines.OrderBy(l => l.Key.Minute).ThenBy(l => l.Key.Line, StringComparer.Ordinal)
+            .Select(l => new LineMovement(l.Key.Line, l.Value.Role, l.Key.Minute, l.Value.In, l.Value.Out))];
 
     private void Count(DateTime time, bool entry, bool degraded)
     {

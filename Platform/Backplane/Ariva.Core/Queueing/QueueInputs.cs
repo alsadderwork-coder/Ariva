@@ -5,21 +5,29 @@ namespace Ariva.Core.Queueing;
 /// <summary>
 /// The lines and zones of one queue zone in the published zone profile: where people enter (the queue's entry lines
 /// and the entry lines of the overflow bands that feed it), where they leave, and the zones whose occupancy makes up
-/// the queue length (the queue zone and its overflow bands).
+/// the queue length (the queue zone and its overflow bands). <see cref="CountLines"/> are the count lines of those
+/// zones (ARV-113): their crossings are counted per line and minute, and never move the queue.
 /// </summary>
 public sealed record QueueZoneGeometry(
     string QueueZone,
     IReadOnlySet<string> EntryLines,
     IReadOnlySet<string> ExitLines,
     IReadOnlySet<string> OverflowEntryLines,
-    IReadOnlySet<string> OverflowZones)
+    IReadOnlySet<string> OverflowZones,
+    IReadOnlySet<string> CountLines = null)
 {
+    private static readonly IReadOnlySet<string> NoLines = new HashSet<string>(StringComparer.Ordinal);
+
+    /// <summary>The count lines of the queue zone and its overflow bands (none when not given).</summary>
+    public IReadOnlySet<string> CountLines { get; init; } = CountLines ?? NoLines;
+
     /// <summary>The roles of the queue zone's lines, as the engine reads them.</summary>
     public QueueLineRole RoleOf(string lineName) =>
         lineName is null ? QueueLineRole.Unknown
         : EntryLines.Contains(lineName) ? QueueLineRole.Entry
         : ExitLines.Contains(lineName) ? QueueLineRole.Exit
         : OverflowEntryLines.Contains(lineName) ? QueueLineRole.OverflowEntry
+        : CountLines.Contains(lineName) ? QueueLineRole.Count
         : QueueLineRole.Unknown;
 
     /// <summary>Whether a zone's occupancy counts in the queue length.</summary>
@@ -33,7 +41,10 @@ public enum QueueLineRole
     Unknown,
     Entry,
     Exit,
-    OverflowEntry
+    OverflowEntry,
+
+    /// <summary>A count line (ARV-113): counted per line and minute, never an entry or an exit of the queue.</summary>
+    Count
 }
 
 /// <summary>
