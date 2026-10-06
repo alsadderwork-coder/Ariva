@@ -39,7 +39,7 @@
       ],
       "priority": 2,
       "passes": false,
-      "notes": "2026-10-01: PR #15. All automated criteria pass in CI (chart render tests for four environments, refused renders, Trivy image scans clean after nginx 1.30 Alpine and OS upgrades, package CVEs fixed). Open: criterion 1 needs a release on the dev cluster by a human.",
+      "notes": "2026-10-01: PR #15. All automated criteria pass in CI (chart render tests for four environments, refused renders, Trivy image scans clean after nginx 1.30 Alpine and OS upgrades, package CVEs fixed). Open: criterion 1 needs a release on the dev cluster by a human. 2026-10-06: the owner deferred the dev cluster release to the end of the MVP (backlog/prd-phase1.json ARV-137).",
       "dependsOn": [
         "ARV-001"
       ]
@@ -1453,8 +1453,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 68,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "2026-10-06: closed. Every gate green on main ba45ca9, the 6 fault tests included (Toxiproxy built from its Go module, docs/product/phase0-exit-review.md section 2a).",
       "dependsOn": [
         "ARV-064",
         "ARV-063"

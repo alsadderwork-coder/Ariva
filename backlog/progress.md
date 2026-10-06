@@ -845,3 +845,11 @@ One entry per story, newest last. Format:
   - Since .NET 9 the key ring refreshes in the background: a test that rolls a key waits until the new default is visible.
   - Upgrading an installation that holds data: set `DataProtection:LegacyFormatUntil` before deploying, let the job run, then remove it (wiki/04); without it old TOTP seeds, outbound secrets and refresh cookies become unreadable. Belongs in the release notes.
 
+## 2026-10-06 ARV-065 Phase 0 exit review closed; Phase 0 complete except ARV-002
+- Summary: every gate green on main ba45ca9 (backend 2,382 unit tests; integration 327 passed and 1 skipped, the six Toxiproxy fault tests included; web; e2e 506 passed and 1 skipped; scan.mjs 0 errors on 990 files; docs). ARV-065 passes; Phase 0 stands at 78 of 79. ARV-002's last criterion (a release on the dev cluster by a human) is deferred by the owner to the end of the MVP (prd-phase1.json ARV-137).
+- Fault tests in the cloud session: ghcr.io blobs are blocked, but the Go module proxy is not. Toxiproxy v2.12.0 was built from `github.com/Shopify/toxiproxy/v2@v2.12.0` (`go install .../cmd/server@v2.12.0` and `.../cmd/cli@v2.12.0`, CGO off, verified against the Go checksum database) and packaged locally as `ghcr.io/shopify/toxiproxy:2.12.0` (FROM scratch, `/toxiproxy`, `/toxiproxy-cli`, ENTRYPOINT `/toxiproxy`, CMD `-host=0.0.0.0`). Testcontainers uses the local image when it exists. Not pushed anywhere.
+- Security review: the full-repository verdict stays PASS with conditions (section 4 of the exit review); since then ARV-097, ARV-098 and ARV-080 closed three of them; the five PENDING allowlist approvals remain the owner's.
+- Learnings:
+  - kind cannot run in the cloud session (runc inside a container fails with "can't get final child's PID from pipe"), so a chart release rehearsal needs a real cluster or the owner's laptop.
+  - An AppHost unit test waits forever when Docker is down; after a container restart start dockerd before any gate.
+

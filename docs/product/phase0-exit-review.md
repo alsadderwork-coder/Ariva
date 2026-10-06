@@ -4,7 +4,7 @@ The gate before the pilot (roadmap, Gate 1). Dated 2026-10-06. It records the st
 
 ## 1. Scope delivered
 
-- `backlog/prd-phase0.json`: 77 of 79 stories pass; this story stays open until the six fault tests have run. ARV-002 (container and chart hardening) is the exception: every automated criterion passes, and its last criterion is a release on the dev cluster, which needs a reachable cluster and GitHub Actions minutes (neither available on 2026-10-06).
+- `backlog/prd-phase0.json`: 78 of 79 stories pass; this story closed on 2026-10-06 once the six fault tests ran green (section 2a). ARV-002 (container and chart hardening) is the one open story: every automated criterion passes, and its last criterion is a release on the dev cluster by a human. The owner deferred that release on 2026-10-06 to the end of the MVP (`backlog/prd-phase1.json`, ARV-137).
 - The scripted demo (ARV-064) plays the reference evening at DMO end to end through every host; the runbook is wiki/10, section 4.11.
 
 ## 2. Gates
@@ -21,6 +21,23 @@ Run on 2026-10-06 in the cloud session on `local/exit-review-candidate`: main at
 | `node scripts/verify.mjs docs` | PASS |
 | Visual baselines | 14 of 14 (ARV-064, 2026-10-05) |
 | Demo rehearsal | All three scripted events (ARV-064, 2026-10-05) |
+
+### 2a. Close-out run
+
+Run on 2026-10-06 on `main` at `ba45ca9` (after #59 to #64: ARV-097, ARV-098, ARV-080 and the run script), the state Phase 0 closes with. Local runs of the CI commands.
+
+| Gate | Result |
+|---|---|
+| `node scripts/verify.mjs backend` | PASS: 2,382 unit tests, golden replay unchanged, security gate, chart security, audits |
+| `node scripts/verify.mjs integration` | PASS: 327 passed, 1 skipped, **the 6 Toxiproxy fault tests included** |
+| `node scripts/verify.mjs web` | PASS: svelte-check, lint, build |
+| `node scripts/verify.mjs e2e` | PASS: 506 passed, 1 skipped; host log scan clean (no credentials, no usage telemetry) |
+| `node scripts/security/scan.mjs` | PASS: 990 files, 0 errors, 6 warnings (all allowlisted) |
+| `node scripts/verify.mjs docs` | PASS |
+
+The fault tests need `ghcr.io/shopify/toxiproxy:2.12.0`, whose blobs the cloud session cannot download. The same release was built from its Go module (`github.com/Shopify/toxiproxy/v2@v2.12.0`, checked against the Go checksum database) and packaged locally under that tag as the upstream image is (`scratch`, `/toxiproxy -host=0.0.0.0`); it answers `{"version": "2.12.0"}`. Nothing was pushed. On a machine that reaches ghcr.io the tests pull the published image as before.
+
+Since the first run, the security review's conditions moved: ARV-097 (MassTransit telemetry) and ARV-098 (images fail safe) are done, and ARV-080 (key ring with RSA-OAEP and AES-GCM) is done. Still the owner's: the five `PENDING` allowlist approvals.
 
 ## 3. Coverage
 
