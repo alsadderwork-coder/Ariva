@@ -223,6 +223,20 @@ public sealed class MessagingRegistrationTests
         checks.Should().Contain(c => c.Tags.Contains(Ariva.Api.Common.HealthChecks.HealthEndpoints.ReadyTag), "MassTransit's bus check gates readiness");
     }
 
+    [Fact]
+    public async Task AddArivaMessaging_Should_TurnOffMassTransitUsageTelemetry_When_KafkaIsOn()
+    {
+        // ARV-097: every host registers the bus here, so this is the one place that must keep MassTransit from
+        // reporting versions, the OS, the time zone and the topic names to an endpoint outside the deployment.
+        var services = Services(kafka: true);
+        await using var provider = Microsoft.Extensions.DependencyInjection.ServiceCollectionContainerBuilderExtensions.BuildServiceProvider(services);
+
+        var options = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions
+            .GetRequiredService<Microsoft.Extensions.Options.IOptions<MassTransit.UsageTelemetryOptions>>(provider).Value;
+
+        options.Enabled.Should().BeFalse("an on-premises border deployment makes no call home");
+    }
+
     [Theory]
     [InlineData("k8s-prd", "Plaintext", true)]
     [InlineData("k8s-prd", "Ssl", true)]

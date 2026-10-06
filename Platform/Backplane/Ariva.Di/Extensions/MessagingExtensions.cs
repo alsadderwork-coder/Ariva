@@ -77,6 +77,8 @@ public static partial class MessagingExtensions
             provider.GetRequiredService<TimeProvider>(), provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<KafkaTopicsReady>>()));
         services.AddMassTransit(bus =>
         {
+            // ARV-097: MassTransit otherwise reports versions, the OS, the time zone and the topic names to an external endpoint at startup.
+            bus.DisableUsageTelemetry();
             bus.UsingInMemory((context, memory) => memory.ConfigureEndpoints(context));
             bus.AddRider(rider =>
             {
