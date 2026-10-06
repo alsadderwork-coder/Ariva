@@ -289,22 +289,23 @@ test('a handler station manager reads the rules only; the server refuses a chang
 	await guards.expectClean();
 });
 
-test('a new rule cannot use a metric the evaluation does not judge yet, and R-002 says it is not evaluated', async ({ page }) => {
+test('a new rule cannot use a metric the evaluation does not judge yet, and R-002 is evaluated', async ({ page }) => {
 	const guards = await guardPage(page);
 	await signInThroughUi(page, accounts().webBorder);
 	await openRules(page);
-	// The demo seed's R-002 watches overflow occupancy, which the stream does not store yet: it can never fire.
-	await expect(page.locator('[data-testid="rule-row"][data-code="R-002"]').getByTestId('not-evaluated')).toHaveText('Not evaluated yet');
+	// ARV-115: the stream stores each overflow band's occupancy per minute, so the demo seed's R-002 is judged.
+	await expect(page.locator('[data-testid="rule-row"][data-code="R-002"]')).toBeVisible();
+	await expect(page.locator('[data-testid="rule-row"][data-code="R-002"]').getByTestId('not-evaluated')).toHaveCount(0);
 	await expect(page.locator('[data-testid="rule-row"][data-code="R-001"]').getByTestId('not-evaluated')).toHaveCount(0);
 	await page.getByTestId('add-rule').click();
 	const metrics = await page.locator('#rule-metric option').evaluateAll((o) => o.map((x) => (x as HTMLOptionElement).value));
-	expect(metrics).not.toContain('OverflowOccupied');
+	expect(metrics).toContain('OverflowOccupied');
 	expect(metrics).not.toContain('DesksBelowPlan');
 	expect(metrics).toContain('Nowcast');
-	// The server refuses such a rule too.
+	// The server refuses a rule on a metric it does not judge yet (there is no staffing plan).
 	const token = (await signIn(accounts().webBorder)).accessToken;
 	const first = (await (await call('GET', `${api}?siteCode=DMO`, { token })).json()).data[0];
-	const refused = await call('POST', api, { token, data: { ...first, name: 'Overflow probe', metric: 'OverflowOccupied', threshold: null } });
+	const refused = await call('POST', api, { token, data: { ...first, name: 'Desks probe', metric: 'DesksBelowPlan', threshold: 1 } });
 	expect(refused.status()).toBe(400);
 	allowStatuses(guards, 400);
 	await guards.expectClean();

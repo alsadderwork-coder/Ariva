@@ -175,6 +175,35 @@ public sealed class TopicTests
         await write.Should().ThrowAsync<InvalidOperationException>().WithMessage("*larger than a Kafka message*");
     }
 
+    [Theory]
+    [InlineData(200, true)]
+    [InlineData(201, false)]
+    public async Task Outbox_Should_RefuseTheCommitWithItsReason_When_AKeyIsLongerThanTheOutboxHolds(int length, bool fits)
+    {
+        var outbox = new NHibernateDomainEventOutbox(new EventCatalog([typeof(CatalogProbe).Assembly]), TimeProvider.System);
+        var probe = new CatalogProbe { ZoneId = new string('k', length) };
+
+        var write = () => outbox.WriteAsync(new Ariva.UnitTests.Persistence.FakeStorageProvider(), [probe], TestContext.Current.CancellationToken);
+
+        // outbox_message.message_key is varchar(200): a longer key fails here with the reason, not in the database with 22001.
+        if (fits)
+            await write.Should().ThrowAsync<NotSupportedException>("a 200-character key passes the check and reaches the insert, which the fake storage does not run");
+        else
+            await write.Should().ThrowAsync<InvalidOperationException>().WithMessage("*partition key longer than 200 characters*");
+    }
+
+    [Theory]
+    [InlineData(0, false)]
+    [InlineData(1, true)]
+    [InlineData(200, true)]
+    [InlineData(201, false)]
+    public void FitsMessageKey_Should_CountCharactersAsPostgresDoes_When_Checked(int length, bool fits)
+    {
+        OutboxLimits.FitsMessageKey(new string('k', length)).Should().Be(fits);
+        // A character outside the basic plane is two UTF-16 units but one character to PostgreSQL.
+        OutboxLimits.FitsMessageKey(string.Concat(Enumerable.Repeat("\U0001F6EB", length))).Should().Be(fits);
+    }
+
     [Fact]
     public void Backoff_Should_DoubleUpToFiveMinutes_When_AttemptsGrow()
     {

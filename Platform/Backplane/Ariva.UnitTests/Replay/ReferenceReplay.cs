@@ -37,7 +37,26 @@ internal static class ReferenceReplay
         ("S-50", "CI-C", Guid.Parse("0199a000-0000-7000-8000-000000000050"))
     ];
 
-    private static readonly Lazy<(List<SensingBatch> Batches, List<DeviceHealthReported> Health)> Published = new(Ingest);
+    private static readonly Lazy<(List<SensingBatch> Batches, List<DeviceHealthReported> Health)> Published = new(() => Ingest(ScenarioConfig.Reference() with { Lite = true }, Devices));
+
+    /// <summary>
+    /// The overflow scenario case (ARV-115, <see cref="ScenarioConfig.OverflowEvening"/>): the same evening with the Visitors
+    /// snake holding 60 people, played by S-15 and S-17 (A-VIS) and S-25, the lead sensor of the A-VIS overflow band A-OV.
+    /// </summary>
+    public static readonly IReadOnlyList<string> OverflowZones = ["A-VIS"];
+
+    private static readonly (string Sensor, string Zone, Guid Id)[] OverflowDevices =
+    [
+        ("S-15", "A-VIS", Guid.Parse("0199a000-0000-7000-8000-000000000015")),
+        ("S-17", "A-VIS", Guid.Parse("0199a000-0000-7000-8000-000000000017")),
+        ("S-25", "A-VIS", Guid.Parse("0199a000-0000-7000-8000-000000000025"))
+    ];
+
+    private static readonly Lazy<(List<SensingBatch> Batches, List<DeviceHealthReported> Health)> OverflowPublished =
+        new(() => Ingest(ScenarioConfig.OverflowEvening() with { Lite = true }, OverflowDevices));
+
+    /// <summary>What Ingest published for the overflow scenario case, in push order.</summary>
+    public static (IReadOnlyList<SensingBatch> Batches, IReadOnlyList<DeviceHealthReported> Health) OverflowIngested => OverflowPublished.Value;
 
     public static DateTime WallOf(double minute) => Midnight.AddMinutes(minute);
 
@@ -47,7 +66,7 @@ internal static class ReferenceReplay
     /// </summary>
     public static QueueZoneGeometry GeometryOf(string zone)
     {
-        var band = zone == "A-VIS" ? "A-OV" : zone + "-OV";
+        var band = BandOf(zone);
         return new QueueZoneGeometry(zone,
             new HashSet<string>(StringComparer.Ordinal) { zone + " entry" }, new HashSet<string>(StringComparer.Ordinal) { zone + " exit" },
             new HashSet<string>(StringComparer.Ordinal) { band + " entry" }, new HashSet<string>(StringComparer.Ordinal) { band })
@@ -55,6 +74,9 @@ internal static class ReferenceReplay
             Capacities = new Dictionary<string, int>(StringComparer.Ordinal) { [zone] = Ariva.Infra.Services.Seed.DemoTopologySeed.CapacityOf(zone)!.Value }
         };
     }
+
+    /// <summary>The overflow band of a zone in the demo profile (A-OV for A-VIS; a band named after the zone otherwise).</summary>
+    public static string BandOf(string zone) => zone == "A-VIS" ? "A-OV" : zone + "-OV";
 
     /// <summary>What Ingest published for the evening: the sensing batches and the health reports, in push order.</summary>
     public static (IReadOnlyList<SensingBatch> Batches, IReadOnlyList<DeviceHealthReported> Health) Ingested => Published.Value;
@@ -65,7 +87,11 @@ internal static class ReferenceReplay
 
         public Task<Fluentx.Result<DeviceZoneViewModel>> PublishedZoneAsync(string siteCode, string queueZoneName, CancellationToken ct = default) =>
             Task.FromResult(new Fluentx.Result<DeviceZoneViewModel>(new DeviceZoneViewModel(siteCode, queueZoneName, ProfileVersion, new string('b', 64),
-                [new(Guid.NewGuid(), queueZoneName, "Queue", Guid.NewGuid(), null, null, "10 10,34 10,34 22,10 22", 288)],
+                [
+                    new(Guid.NewGuid(), queueZoneName, "Queue", Guid.NewGuid(), null, null, "10 10,34 10,34 22,10 22", 288),
+                    // ARV-115: the zone's overflow band, so that its lead sensor's readings pass Ingest's name check.
+                    new(Guid.NewGuid(), BandOf(queueZoneName), "Overflow", Guid.NewGuid(), null, null, "6 10,10 10,10 22,6 22", 48)
+                ],
                 [
                     new(Guid.NewGuid(), queueZoneName + " entry", "Entry", null, Guid.NewGuid(), 10, 12, 10, 16, 4),
                     new(Guid.NewGuid(), queueZoneName + " exit", "Exit", null, Guid.NewGuid(), 30, 22, 34, 22, 4)
@@ -83,9 +109,9 @@ internal static class ReferenceReplay
         }
     }
 
-    private static (List<SensingBatch>, List<DeviceHealthReported>) Ingest()
+    private static (List<SensingBatch>, List<DeviceHealthReported>) Ingest(ScenarioConfig config, (string Sensor, string Zone, Guid Id)[] devices)
     {
-        var day = ScenarioDay.Run(ScenarioConfig.Reference() with { Lite = true });
+        var day = ScenarioDay.Run(config);
         var sink = new Sink();
         var cache = new FusionCache(new FusionCacheOptions(), new MemoryCache(new MemoryCacheOptions()));
         var ingest = new SensingIngest(new Gateway(), sink, new DeviceClockStore(), cache, Options.Create(new IngestSettings { MaxEventsPerMessage = 3_000 }),
@@ -93,7 +119,7 @@ internal static class ReferenceReplay
         var package = 0L;
         for (var minute = 1020; minute < 1230; minute++)
         {
-            foreach (var (sensor, zone, id) in Devices)
+            foreach (var (sensor, zone, id) in devices)
             {
                 var received = WallOf(minute + 1);
                 var push = SensorTraffic.Build(day, SensorTraffic.Sensor(sensor), EmulatedDialect.Canonical, minute, ++package, WallOf, received);
@@ -150,23 +176,28 @@ internal static class ReferenceReplay
             health.Where(h => h.QueueZoneName == zone && h.ReceivedUtc >= From && h.ReceivedUtc < To).Select(Archived));
     }
 
-    public static ReplayManifest Manifest(ZoneProcessorSettings settings) =>
-        new(ReplayManifest.CurrentFormat, Site, Zones, From, To, ProfileVersion, "test", ZoneReplay.SettingsHash(settings));
+    public static ReplayManifest Manifest(ZoneProcessorSettings settings, IReadOnlyList<string> zones = null) =>
+        new(ReplayManifest.CurrentFormat, Site, zones ?? Zones, From, To, ProfileVersion, "test", ZoneReplay.SettingsHash(settings));
 
     /// <summary>Replays both zones into a ledger (and an export when given); returns the hashes and every output by zone.</summary>
     public static (ReplayHashes Hashes, Dictionary<string, List<ZoneOutputs>> Outputs) Run(TextWriter export = null, ZoneProcessorSettings settings = null,
-        (IReadOnlyList<SensingBatch> Batches, IReadOnlyList<DeviceHealthReported> Health)? source = null)
+        (IReadOnlyList<SensingBatch> Batches, IReadOnlyList<DeviceHealthReported> Health)? source = null, IReadOnlyList<string> zones = null)
     {
         settings ??= new ZoneProcessorSettings();
+        zones ??= Zones;
         var outputs = new Dictionary<string, List<ZoneOutputs>>(StringComparer.Ordinal);
-        var ledger = new CapturingLedger(Manifest(settings), export, outputs);
-        foreach (var zone in Zones)
+        var ledger = new CapturingLedger(Manifest(settings, zones), export, outputs);
+        foreach (var zone in zones)
             ZoneReplay.Run(ledger.Ledger, ZoneKeys.For(Site, zone), GeometryOf(zone), ProfileVersion, settings, InputsOf(zone, source ?? Ingested), From, To);
         return (ledger.Ledger.End(), outputs);
     }
 
     /// <summary>The evening ingested again from scratch (health reports get new ids).</summary>
-    public static (IReadOnlyList<SensingBatch> Batches, IReadOnlyList<DeviceHealthReported> Health) IngestAgain() => Ingest();
+    public static (IReadOnlyList<SensingBatch> Batches, IReadOnlyList<DeviceHealthReported> Health) IngestAgain() => Ingest(ScenarioConfig.Reference() with { Lite = true }, Devices);
+
+    /// <summary>Replays the overflow scenario case (ARV-115): the Visitors zone with its band reporting.</summary>
+    public static (ReplayHashes Hashes, Dictionary<string, List<ZoneOutputs>> Outputs) RunOverflow(TextWriter export = null, ZoneProcessorSettings settings = null) =>
+        Run(export, settings, OverflowIngested, OverflowZones);
 
     /// <summary>Keeps the outputs the replay writes, by zone, by reading the export back.</summary>
     private sealed class CapturingLedger
@@ -195,7 +226,7 @@ internal static class ReferenceReplay
             var record = root.GetProperty("record").GetRawText();
             T Read<T>() => System.Text.Json.JsonSerializer.Deserialize<T>(record, ReplayLedger.Json)!;
             if (!outputs.TryGetValue(zone, out var list))
-                outputs[zone] = list = [new ZoneOutputs(zone, new List<MinuteResult>(), new List<BinResult>(), new List<QueueLiveMinute>(), new List<RecomputationRequest>(), new List<DeviceOutage>(), new List<LineMinute>(), new List<ZoneHealthBin>())];
+                outputs[zone] = list = [new ZoneOutputs(zone, new List<MinuteResult>(), new List<BinResult>(), new List<QueueLiveMinute>(), new List<RecomputationRequest>(), new List<DeviceOutage>(), new List<LineMinute>(), new List<ZoneHealthBin>(), new List<OverflowMinute>(), new List<OverflowChange>())];
             var o = list[0];
             switch (root.GetProperty("type").GetString())
             {
@@ -206,6 +237,8 @@ internal static class ReferenceReplay
                 case "outage": ((List<DeviceOutage>)o.Outages).Add(Read<DeviceOutage>()); break;
                 case "line": ((List<LineMinute>)o.Lines).Add(Read<LineMinute>()); break;
                 case "health": ((List<ZoneHealthBin>)o.Health).Add(Read<ZoneHealthBin>()); break;
+                case "overflow": ((List<OverflowMinute>)o.Overflow).Add(Read<OverflowMinute>()); break;
+                case "overflow-change": ((List<OverflowChange>)o.OverflowChanges).Add(Read<OverflowChange>()); break;
             }
         }
 

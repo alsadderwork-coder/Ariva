@@ -54,7 +54,9 @@ internal sealed class FixedGeometrySource() : ZoneGeometrySource(null)
     public override Task<ZoneGeometry> LoadAsync(string siteCode, string queueZoneName, CancellationToken ct) =>
         Task.FromResult(queueZoneName.StartsWith('Q')
             ? new ZoneGeometry(new QueueZoneGeometry(queueZoneName, new HashSet<string> { $"{queueZoneName} entry" }, new HashSet<string> { $"{queueZoneName} exit" },
-                new HashSet<string>(), new HashSet<string>())
+                new HashSet<string>(),
+                // ARV-115: Q1 has an overflow band that its sensor reports (QueueStreamTests.Evening with a snake capacity).
+                queueZoneName.StartsWith("Q1", StringComparison.Ordinal) ? new HashSet<string> { $"{queueZoneName} band" } : new HashSet<string>())
             {
                 // ARV-114a: a snake smaller than the evening's busiest minutes, so some minutes are outside it.
                 Capacities = new Dictionary<string, int>(StringComparer.Ordinal) { [queueZoneName] = 20 }
@@ -76,7 +78,9 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
 
     // A deterministic evening: people enter each zone through the minute and leave after a few minutes, and the queue
     // zone reports its occupancy at the end of every minute. One crossing and one occupancy batch per zone and minute.
-    internal static List<SensingBatch> Evening(string zone, int salt)
+    // With a snake capacity (ARV-115) the queue zone reports up to it and its band ("<zone> band") the rest, as the
+    // scenario's sensors do, so the sum is still the people inside.
+    internal static List<SensingBatch> Evening(string zone, int salt, int? snake = null)
     {
         var people = new List<(int Id, DateTime In, DateTime Out)>();
         var id = 0;
@@ -117,7 +121,13 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
 
             if (crossings.Count > 0)
                 batches.Add(Stamp(new VendorLineCrossingBatch { Crossings = crossings }));
-            batches.Add(Stamp(new ZoneOccupancyBatch { Occupancy = [new Sensed<ZoneOccupancy>(new ZoneOccupancy(zone, inside, to.AddSeconds(-1)), to.AddSeconds(-1), SensedFlags.None)] }));
+            var readings = new List<Sensed<ZoneOccupancy>>
+            {
+                new(new ZoneOccupancy(zone, snake is { } cap ? Math.Min(inside, cap) : inside, to.AddSeconds(-1)), to.AddSeconds(-1), SensedFlags.None)
+            };
+            if (snake is { } capacity)
+                readings.Add(new(new ZoneOccupancy($"{zone} band", Math.Max(0, inside - capacity), to.AddSeconds(-1)), to.AddSeconds(-1), SensedFlags.None));
+            batches.Add(Stamp(new ZoneOccupancyBatch { Occupancy = readings }));
         }
 
         return batches;
@@ -147,7 +157,7 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
 
         using var producer = new ProducerBuilder<string, byte[]>(new ProducerConfig { BootstrapServers = kafka.BootstrapServers, EnableIdempotence = true }).Build();
         var ends = new Dictionary<(string, int), long>();
-        foreach (var batch in Evening($"Q1{suffix}", 0).Concat(Evening($"Q2{suffix}", 3)).OrderBy(b => b.ReceivedUtc)
+        foreach (var batch in Evening($"Q1{suffix}", 0, snake: 15).Concat(Evening($"Q2{suffix}", 3)).OrderBy(b => b.ReceivedUtc)
                      .Where(b => b.ReceivedUtc >= Start.AddMinutes(fromMinute) && (toMinute == int.MaxValue || b.ReceivedUtc < Start.AddMinutes(toMinute))))
         {
             var topic = batch is VendorLineCrossingBatch ? KafkaTopics.DeviceVendorLineCrossing : KafkaTopics.DeviceZoneOccupancy;
@@ -254,6 +264,16 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
         FROM line_minute ORDER BY zone_key, line_name, source, minute_utc
         """;
 
+    private const string OverflowRows = """
+        SELECT zone_key, band_name, minute_utc, profile_version, min_occupancy, max_occupancy FROM overflow_minute ORDER BY zone_key, band_name, minute_utc
+        """;
+
+    // The OverflowDetected events in the outbox (ARV-115), in their order per key, without the relay's columns.
+    private const string OverflowEvents = """
+        SELECT id, message_key, message_type, payload::text FROM outbox_message WHERE topic = 'ariva.flow.overflow-detected.v1'
+        ORDER BY message_key, payload->>'minuteUtc', payload->>'state'
+        """;
+
     private const string HealthRows = """
         SELECT zone_key, start_utc, revision, length_minutes, status, profile_version, entries, exits, occupancy_start, occupancy_end, conservation_residual,
                tracks_entered, tracks_exited, tracks_abandoned, tracks_fragmented, tracks_censored, tracks_rejected, tracks_open, track_completion_rate,
@@ -325,6 +345,26 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
                  = (SELECT sum(entries) FROM queue_minute WHERE zone_key = 'DMO/Q1' AND minute_utc IN (SELECT minute_utc FROM line_minute WHERE zone_key = 'DMO/Q1'))
             """)).Should().Equal(["True"], "the entry line counts what the zone counted as entries");
         (await RowsAsync(restart, "SELECT zone_key FROM stream_zone_state ORDER BY zone_key")).Should().Contain(["DMO/Q1", "DMO/Q2"]);
+
+        // ARV-115: Q1's band minutes and the OverflowDetected events are written in the same checkpoints; the restart writes
+        // exactly the same rows and events (the same ids, so none is added twice), and the events alternate per band.
+        var expectedOverflow = await RowsAsync(straight, OverflowRows);
+        expectedOverflow.Count(r => r.StartsWith("DMO/Q1|Q1 band|", StringComparison.Ordinal)).Should().BeGreaterThan(80, "Q1's band reports at the end of every minute");
+        expectedOverflow.Should().OnlyContain(r => r.Contains(" band|", StringComparison.Ordinal), "only Q1 zones have a band");
+        (await RowsAsync(restart, OverflowRows)).Should().Equal(expectedOverflow);
+        var expectedEvents = await RowsAsync(straight, OverflowEvents);
+        expectedEvents.Count(r => r.Contains("|DMO/Q1|OverflowDetected|", StringComparison.Ordinal)).Should().BeGreaterThan(1);
+        (await RowsAsync(restart, OverflowEvents)).Should().Equal(expectedEvents);
+        (await RowsAsync(straight, """
+            SELECT string_agg(payload->>'state', ',' ORDER BY payload->>'minuteUtc') FROM outbox_message
+            WHERE topic = 'ariva.flow.overflow-detected.v1' AND message_key = 'DMO/Q1'
+            """)).Single().Should().MatchRegex("^Occupied(,Emptied,Occupied)*(,Emptied)?$", "each change once: occupied, then emptied, in turn");
+        // Overflow minutes per 15-minute bin (TC-19): the minutes in which the band held anyone.
+        (await RowsAsync(straight, """
+            SELECT (SELECT sum(overflow_minutes) FROM overflow_bin_15m WHERE zone_key = 'DMO/Q1')
+                 = (SELECT count(*) FROM overflow_minute WHERE zone_key = 'DMO/Q1' AND max_occupancy > 0),
+                   (SELECT sum(observed_minutes) FROM overflow_bin_15m WHERE zone_key = 'DMO/Q1') = (SELECT count(*) FROM overflow_minute WHERE zone_key = 'DMO/Q1')
+            """)).Should().Equal(["True|True"]);
     }
 
     [Fact]
@@ -386,6 +426,32 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
         }
 
         (await RowsAsync(database, "SELECT bucket_utc, entries FROM queue_minute_15m WHERE zone_key = 'DMO/Q1' ORDER BY bucket_utc")).Should().HaveCountGreaterThan(5);
+
+        // ARV-115: band minutes and OverflowDetected. A rewrite changes nothing and adds no second event; parts of a minute
+        // released early merge (lowest of the lows, highest of the highs) whatever their order.
+        var bandMinute = new DateTime(2026, 9, 28, 19, 10, 0, DateTimeKind.Utc);
+        var bands = new ZoneOutputs("DMO/Q1", [], [], [], [], [], [], [],
+            [new OverflowMinute("Q1 band", bandMinute, 2, 6), new OverflowMinute("Q1 band", bandMinute.AddMinutes(1), 0, 0)],
+            [new OverflowChange("Q1 band", bandMinute, OverflowChangeKind.Occupied, 6, null), new OverflowChange("Q1 band", bandMinute.AddMinutes(1), OverflowChangeKind.Emptied, 6, bandMinute)]);
+        var bandCheckpoint = new StreamCheckpoint("g", [bands], [state], [], []);
+        await store.SaveAsync(bandCheckpoint, Ct);
+        await store.SaveAsync(bandCheckpoint, Ct);
+        await store.SaveAsync(new StreamCheckpoint("g", [new ZoneOutputs("DMO/Q1", [], [], [], [], [], [], [], [new OverflowMinute("Q1 band", bandMinute, 1, 4), new OverflowMinute("Q1 band", bandMinute, 3, 9)])], [state], [], []), Ct);
+        (await RowsAsync(database, "SELECT to_char(minute_utc AT TIME ZONE 'UTC', 'HH24:MI'), profile_version, min_occupancy, max_occupancy FROM overflow_minute WHERE zone_key = 'DMO/Q1' ORDER BY minute_utc"))
+            .Should().Equal("19:10|7|1|9", "19:11|7|0|0");
+        (await RowsAsync(database, """
+            SELECT message_key, message_type, payload->>'state', payload->>'bandName', payload->>'peakOccupancy', payload->>'zoneProfileVersion', headers->>'ariva-event-type'
+            FROM outbox_message WHERE topic = 'ariva.flow.overflow-detected.v1' ORDER BY payload->>'minuteUtc'
+            """)).Should().Equal("DMO/Q1|OverflowDetected|Occupied|Q1 band|6|7|OverflowDetected", "DMO/Q1|OverflowDetected|Emptied|Q1 band|6|7|OverflowDetected");
+        (await RowsAsync(database, "SELECT count(*) FROM outbox_message WHERE id = @id",
+                new Dictionary<string, object> { ["id"] = Ariva.Core.Domain.Events.OverflowDetected.IdOf("DMO/Q1", "Q1 band", bandMinute, OverflowChangeKind.Occupied, 7) }))
+            .Should().Equal("1");
+        (await RowsAsync(database, "SELECT overflow_minutes, observed_minutes, peak_band_occupancy FROM overflow_bin_15m WHERE zone_key = 'DMO/Q1'"))
+            .Should().Equal("1|2|9");
+        (await RowsAsync(database, """
+            SELECT has_table_privilege('ariva_runtime', 'overflow_bin_15m', 'SELECT'), has_table_privilege('ariva_runtime', 'overflow_bin_15m', 'INSERT'),
+                   has_table_privilege('ariva_runtime', 'overflow_minute', 'DELETE'), has_table_privilege('ariva_runtime', 'overflow_minute', 'INSERT')
+            """)).Should().Equal("True|False|False|True");
 
         // ARV-113: every line role and both sources are kept apart under one key; a rewrite changes nothing.
         var minute = new DateTime(2026, 9, 28, 19, 0, 0, DateTimeKind.Utc);
@@ -461,6 +527,58 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
         await load.Should().ThrowAsync<InvalidDataException>();
     }
 
+    // ARV-115 review: band minutes and changes the tables or the outbox would refuse are dropped before the insert, with
+    // one warning per zone and kind that names the zone key and the count only (never the band name, CWE-117), so the
+    // checkpoint still commits. A refused insert would fail the whole checkpoint (22001 or 23514), which the worker
+    // retries forever. The longest zone key (a 17-character site and a 200-character zone name) does not fit the outbox's
+    // message_key (200): its change is dropped, its minute is still written.
+    [Fact]
+    public async Task Store_Should_DropWhatTheTablesWouldRefuseAndCommit_When_ACheckpointCarriesInvalidOverflowRows()
+    {
+        var database = await DatabaseAsync(TestDatabase.StreamOverflowDrops);
+        var log = new WarningLog();
+        var store = new StreamStore(new DatabaseSettings
+        {
+            Host = postgres.Hostname, Port = postgres.Port, Name = database, Username = postgres.AdminUsername, Password = postgres.AdminPassword
+        }, TimeProvider.System, log);
+        var minute = new DateTime(2026, 9, 28, 19, 10, 0, DateTimeKind.Utc);
+        var longKey = "DMO-TERMINAL-T1AB/" + new string('Q', 200);
+        var overlong = new string('b', 201);
+        var checkpoint = new StreamCheckpoint("g-overflow",
+        [
+            new ZoneOutputs(longKey, [], [], [], [], [], [], [],
+                [new OverflowMinute("Q band", minute, 0, 5)],
+                [new OverflowChange("Q band", minute, OverflowChangeKind.Occupied, 5, null)]),
+            new ZoneOutputs("DMO/Q1", [], [], [], [], [], [], [],
+            [
+                new OverflowMinute("", minute, 0, 1), new OverflowMinute(overlong, minute, 0, 1), new OverflowMinute("Q1 band", minute, 4, 2),
+                new OverflowMinute("Q1 band", minute, -1, 2), new OverflowMinute("Q1 band", minute, 0, CanonicalEventRules.MaxOccupancy + 1)
+            ],
+            [
+                new OverflowChange("", minute, OverflowChangeKind.Occupied, 1, null), new OverflowChange(overlong, minute, OverflowChangeKind.Occupied, 1, null),
+                new OverflowChange("Q1 band", minute, OverflowChangeKind.Occupied, CanonicalEventRules.MaxOccupancy + 1, null)
+            ]),
+            new ZoneOutputs("Q1", [], [], [], [], [], [], [], [], [new OverflowChange("Q1 band", minute, OverflowChangeKind.Unknown, 0, null)]),
+            new ZoneOutputs("/Q1", [], [], [], [], [], [], [], [], [new OverflowChange("Q1 band", minute, OverflowChangeKind.Emptied, 0, null)])
+        ], [], [], [new StreamOffset("t", 0, 42)]);
+
+        await store.SaveAsync(checkpoint, Ct);
+
+        longKey.Length.Should().Be(218).And.BeGreaterThan(Ariva.Infra.Messaging.Outbox.OutboxLimits.MaxMessageKeyLength);
+        (await store.LoadOffsetsAsync("g-overflow", [("t", 0)], Ct)).Should().Equal([new StreamOffset("t", 0, 42)], "the checkpoint committed");
+        (await RowsAsync(database, "SELECT length(zone_key), band_name, min_occupancy, max_occupancy FROM overflow_minute ORDER BY zone_key"))
+            .Should().Equal("218|Q band|0|5");
+        (await RowsAsync(database, "SELECT count(*) FROM outbox_message")).Should().Equal("0");
+        log.Warnings.Should().Equal(
+            "Dropped 5 overflow minutes of zone DMO/Q1: empty or overlong band name, or occupancy out of order or bounds",
+            $"Dropped 1 overflow changes of zone {longKey}: the zone key (as an outbox key) or band name is not valid, or the peak is out of bounds",
+            "Dropped 3 overflow changes of zone DMO/Q1: the zone key (as an outbox key) or band name is not valid, or the peak is out of bounds",
+            "Dropped 1 overflow changes of zone Q1: the zone key (as an outbox key) or band name is not valid, or the peak is out of bounds",
+            "Dropped 1 overflow changes of zone /Q1: the zone key (as an outbox key) or band name is not valid, or the peak is out of bounds");
+        log.Warnings.Should().NotContain(w => w.Contains("Q band", StringComparison.Ordinal) || w.Contains("Q1 band", StringComparison.Ordinal) || w.Contains(overlong, StringComparison.Ordinal),
+            "a warning never carries a band name");
+    }
+
     [Theory]
     [InlineData("INSERT INTO queue_minute_15m (zone_key, bucket_utc, entries) VALUES ('DMO/Q1', now(), 100000)", "42501")]
     [InlineData("DELETE FROM queue_minute_15m", "42501")]
@@ -475,6 +593,13 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
     [InlineData("DELETE FROM stream_zone_state", "42501")]
     [InlineData("DELETE FROM stream_offset", "42501")]
     [InlineData("UPDATE queue_bin SET entries = 0 WHERE status = 'Final'", "23001")]
+    [InlineData("DELETE FROM overflow_minute", "42501")]
+    [InlineData("TRUNCATE overflow_minute", "42501")]
+    [InlineData("INSERT INTO overflow_minute (zone_key, band_name, minute_utc, profile_version, min_occupancy, max_occupancy, updated_on) VALUES ('DMO/Q1', 'Q1 band', now(), 7, 5, 2, now())", "23514")]
+    [InlineData("INSERT INTO overflow_minute (zone_key, band_name, minute_utc, profile_version, min_occupancy, max_occupancy, updated_on) VALUES ('DMO/Q1', 'Q1 band', now(), 7, -1, 2, now())", "23514")]
+    // The bin view aggregates, so nobody can write through it (55000); the runtime role holds SELECT on it only (Store test).
+    [InlineData("INSERT INTO overflow_bin_15m (zone_key, start_utc, overflow_minutes) VALUES ('DMO/Q1', now(), 15)", "55000")]
+    [InlineData("DELETE FROM overflow_bin_15m", "55000")]
     [InlineData("DELETE FROM zone_health_bin", "42501")]
     [InlineData("TRUNCATE zone_health_bin", "42501")]
     [InlineData("UPDATE zone_health_bin SET conservation_residual = 0, occupancy_start = 0, occupancy_end = 0 WHERE status = 'Final'", "23001")]

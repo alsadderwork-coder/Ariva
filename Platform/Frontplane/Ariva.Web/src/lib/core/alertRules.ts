@@ -19,8 +19,11 @@ export const metrics = [
 	'OverflowOccupied',
 	'DesksBelowPlan'
 ] as const;
-/** Metrics the evaluation cannot judge yet: offered only when editing a rule that already uses one (the server refuses new ones). */
-export const notEvaluated: ReadonlySet<string> = new Set(['OverflowOccupied', 'DesksBelowPlan']);
+/**
+ * Metrics the evaluation cannot judge yet: offered only when editing a rule that already uses one (the server refuses new
+ * ones). OverflowOccupied is judged since ARV-115 (the stream stores each overflow band's occupancy per minute).
+ */
+export const notEvaluated: ReadonlySet<string> = new Set(['DesksBelowPlan']);
 export const comparators = ['GreaterThan', 'GreaterOrEqual', 'LessThan', 'LessOrEqual'] as const;
 export const severities = ['Info', 'Warning', 'Critical'] as const;
 /** The roles a rule can belong to or escalate to (RoleCodes); administrators are not an owner of operational alerts. */

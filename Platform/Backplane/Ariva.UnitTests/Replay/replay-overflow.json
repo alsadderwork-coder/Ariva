@@ -1,0 +1,5 @@
+{
+    "_comment": "ARV-115: the output hash of the overflow scenario case (OverflowReplayTests): seed 9303's reference evening with the arrivals Visitors snake holding 60 people (ScenarioConfig.OverflowEvening; scripted events unchanged), A-VIS played by S-15, S-17 and the A-OV band's lead S-25, 17:00 to 20:30. 1,692 outputs, of which 209 band minutes (type overflow) and 4 band changes (type overflow-change: occupied 18:03, emptied 18:32, occupied 19:33, emptied 19:53). Update only after reviewing the change in the engine's outputs, with the human's approval. Approved by the owner (Ahmad Al-Sadder) on 2026-10-06.",
+    "outputHead": "d971a3170539758f5248bfcc01e181e3bfd9ab1aa51dfba638d8908be9948b9a",
+    "outputs": 1692
+}

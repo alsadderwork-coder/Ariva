@@ -93,7 +93,8 @@ public sealed class ReplayLedger
 
     /// <summary>
     /// Every output of a zone's drain, in a fixed order: minutes, bins, live rows, recomputations, outages, line minutes
-    /// (ARV-113), bin health checks (ARV-114a).
+    /// (ARV-113), bin health checks (ARV-114a), overflow band minutes and the band changes they made (ARV-115). A zone
+    /// whose bands never report adds no overflow output, so its chain is as before.
     /// </summary>
     public void Outputs(ZoneOutputs outputs)
     {
@@ -112,6 +113,10 @@ public sealed class ReplayLedger
             Output(outputs.ZoneKey, "line", l);
         foreach (var h in outputs.Health)
             Output(outputs.ZoneKey, "health", h);
+        foreach (var o in outputs.Overflow)
+            Output(outputs.ZoneKey, "overflow", o);
+        foreach (var c in outputs.OverflowChanges)
+            Output(outputs.ZoneKey, "overflow-change", c);
     }
 
     public ReplayHashes End()

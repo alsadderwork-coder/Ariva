@@ -113,15 +113,31 @@ public sealed class AlertRuleServiceTests(PostgresFixture fixture) : IAsyncDispo
     }
 
     [Theory]
-    [InlineData("OverflowOccupied")]
     [InlineData("DesksBelowPlan")]
     public async Task Create_Should_RefuseAMetricTheEvaluationDoesNotJudgeYet(string metric)
     {
-        // The stream stores no overflow occupancy and there is no staffing plan: a new rule on these could never fire.
+        // There is no staffing plan: a new rule on this could never fire.
         var admin = await AdminAsync("it.alert.notevaluated." + metric.ToLowerInvariant());
         var request = Request("Not evaluated " + metric) with { Metric = metric, Threshold = null };
         (await _host.AsCallerAsync(admin, s => Rules(s).CreateAsync(request, Ct))).ErrorMessages.Should().Equal(AlertRuleErrors.NotEvaluated);
         (await _host.ReadAsync<long>("SELECT count(*) FROM alert_rule WHERE name LIKE 'Not evaluated %'")).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Create_Should_AcceptAnOverflowRule_When_TheStreamStoresBandOccupancy()
+    {
+        // ARV-115: the stream stores each overflow band's occupancy per minute, so OverflowOccupied is judged and may be used.
+        var admin = await AdminAsync("it.alert.overflow.admin");
+        var request = Request("Overflow probe") with
+        {
+            Zones = ["A-VIS", "A-OV"], Metric = "OverflowOccupied", Comparator = "IsTrue", Threshold = null, MinQueueLength = null, ClearThreshold = null
+        };
+
+        var created = await _host.AsCallerAsync(admin, s => Rules(s).CreateAsync(request, Ct));
+
+        created.HasErrors.Should().BeFalse(string.Join(", ", created.ErrorMessages ?? []));
+        created.Data.Metric.Should().Be("OverflowOccupied");
+        created.Data.Zones.Should().Equal("A-VIS", "A-OV");
     }
 
     [Fact]

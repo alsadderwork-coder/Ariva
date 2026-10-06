@@ -91,10 +91,10 @@ internal static class SensorTraffic
             var i = minute + ScenarioModel.Pre;
             Passengers(day.CumA[q], day.A[q], i, queueZone, minute, wallOf, entries);
             Passengers(day.CumD[q], day.D[q], i, queueZone, minute, wallOf, exits);
-            // A queue with an overflow band counts up to its capacity; the band's lead counts the rest, so that Ariva's sum of
-            // the queue zone and its bands is the queue (ARV-064).
+            // A queue with an overflow band counts up to its snake capacity (the run's, ARV-115); the band's lead counts the
+            // rest, so that Ariva's sum of the queue zone and its bands is the queue (ARV-064).
             var inQueue = OccupancyAt(day, q, i);
-            if (HasOverflowBand(queueZone) && ScenarioDay.DefaultCaps.TryGetValue(queueZone, out var capacity))
+            if (HasOverflowBand(queueZone) && day.SnakeCapacity(queueZone) is { } capacity)
                 inQueue = Math.Min(inQueue, (int)capacity);
             occupancy.Add((queueZone, inQueue));
         }
@@ -102,7 +102,7 @@ internal static class SensorTraffic
         {
             var q = ScenarioModel.Q(queueZone);
             var occupied = OccupancyAt(day, q, minute + ScenarioModel.Pre);
-            var cap = ScenarioDay.DefaultCaps.TryGetValue(queueZone, out var c) ? (int)c : int.MaxValue;
+            var cap = day.SnakeCapacity(queueZone) is { } c ? (int)c : int.MaxValue;
             occupancy.Add((sensor.Zone, Math.Max(0, occupied - cap)));
         }
 

@@ -120,6 +120,33 @@ public sealed class GoldenReplayArchiveTests(PostgresFixture fixture) : IAsyncDi
     }
 
     [Fact]
+    public async Task Replay_Should_GiveTheOverflowCasesLockedHash_When_ItsArchivedEveningIsReplayed()
+    {
+        // ARV-115: the overflow scenario case (the Visitors band reporting and filling twice), archived as the stream host
+        // archives it and replayed by the runner under the demo seed's v12, gives the in-memory replay's locked hash.
+        await using var host = new AccountsHost(fixture, database: TestDatabase.ReplayOverflow);
+        await host.CreateUserAsync("it.replay.overflow");
+        await host.AsCallerAsync(null, s =>
+            new DemoTopologySeed(s.GetRequiredService<IUnitOfWork>(), s.GetRequiredService<ICurrentUser>(), host.Clock, s.GetRequiredService<AuditTrail>()).RunAsync(Ct));
+        var settings = new DatabaseSettings
+        {
+            Host = fixture.Hostname, Port = fixture.Port, Name = await host.DatabaseAsync(), Username = fixture.AdminUsername, Password = fixture.AdminPassword
+        };
+        var (batches, reports) = ReferenceReplay.OverflowIngested;
+        var sensing = new SensingArchive(settings, Clock);
+        foreach (var chunk in batches.Chunk(200))
+            (await sensing.WriteAsync(chunk, Ct)).Duplicates.Should().Be(0);
+        await new DeviceHealthArchive(settings, Clock).WriteAsync(reports, Ct);
+        var runner = new ReplayRunner(sensing, new DeviceHealthArchive(settings, Clock), new ZoneGeometrySource(settings), new ReplayStore(settings));
+        var locked = JsonDocument.Parse(await File.ReadAllTextAsync(RepositoryPaths.Resolve("Platform/Backplane/Ariva.UnitTests/Replay/replay-overflow.json"), Ct)).RootElement;
+
+        var run = await runner.RunAsync(new ReplayRequest(ReferenceReplay.Site, ["A-VIS"], ReferenceReplay.From, ReferenceReplay.To, 12, "integration-test"), null, Ct);
+
+        run.Hashes.OutputHead.Should().Be(locked.GetProperty("outputHead").GetString(), "the archive's form of the overflow evening replays to the in-memory replay's outputs");
+        run.Hashes.Outputs.Should().Be(locked.GetProperty("outputs").GetInt64());
+    }
+
+    [Fact]
     public async Task Geometry_Should_CarryThePublishedCapacities_When_LoadedForTheStream()
     {
         // ARV-114a: the demo seed's v12 gives each queue zone the scenario's snake capacity and its bands none.

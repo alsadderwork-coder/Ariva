@@ -58,4 +58,18 @@ public sealed record ScenarioConfig
         Seed = seed,
         Allocations = ScenarioModel.SeedAllocations
     };
+
+    /// <summary>The arrivals Visitors snake capacity in <see cref="OverflowEvening"/>: 60 people instead of 190.</summary>
+    public const double OverflowEveningVisitorsCapacity = 60;
+
+    /// <summary>
+    /// A scenario case for overflow bands (ARV-115): the reference day (seed 9303, its scripted events unchanged) with the
+    /// arrivals Visitors snake (A-VIS) holding 60 people instead of 190, so its queue spills into the A-OV band in both
+    /// evening waves (about 18:02 to 18:32 and 19:32 to 19:51), and the band's lead sensor (S-25) reports people there.
+    /// With the default capacities the reference day never fills a band.
+    /// </summary>
+    public static ScenarioConfig OverflowEvening(uint seed = ScenarioModel.DefaultSeed) => Reference(seed) with
+    {
+        Caps = new Dictionary<string, double>(ScenarioDay.DefaultCaps, StringComparer.Ordinal) { ["A-VIS"] = OverflowEveningVisitorsCapacity }
+    };
 }

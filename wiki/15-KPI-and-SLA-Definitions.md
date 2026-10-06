@@ -86,7 +86,7 @@ Service and cycle times (from AMAN `DeskIntervalStats` at AMAN sites, sensors el
 
 ### Overflow minutes
 
-Minutes in a bin during which the overflow band is occupied (occupancy above zero raises `OverflowDetected`). A contract KPI option in the prototype; the exact counting rule (per minute with any occupancy) is To confirm.
+Minutes in a bin during which an overflow band of the queue is occupied (occupancy above zero raises `OverflowDetected`). A contract KPI option in the prototype. Ariva counts a minute when any band of the queue held anyone in it (the highest reading of the minute above zero); a minute without a band reading is not observed. This rule (TC-19) was accepted by the product owner on 2026-10-06 and is implemented since ARV-115: the stream stores each band's occupancy per minute (`overflow_minute`) and the overflow minutes per 15-minute bin (`overflow_bin_15m`). A band whose sensor stays silent beyond the 2-minute freshness window is Unknown (neither occupied nor empty) and adds no minute until it reports again. A contract may still choose another KPI.
 
 ### Abandonment and track completion (F6, F18)
 

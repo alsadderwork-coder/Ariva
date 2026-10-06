@@ -331,6 +331,12 @@ internal sealed partial class ScenarioDay
         return Alerts;
     }
 
+    /// <summary>
+    /// The snake capacity of a queue in this run (the run's <see cref="ScenarioConfig.Caps"/>, else the defaults), or null
+    /// when it has none. The sensor emulator splits a queue with an overflow band at it (ARV-115).
+    /// </summary>
+    internal double? SnakeCapacity(string queue) => queue is not null && _caps.TryGetValue(queue, out var cap) && cap > 0 ? cap : null;
+
     /// <summary>Replaces the snake capacities and recomputes the overflow metric.</summary>
     public void SetCaps(IReadOnlyDictionary<string, double> caps)
     {

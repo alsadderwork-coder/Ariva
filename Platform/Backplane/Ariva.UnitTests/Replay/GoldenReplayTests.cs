@@ -165,6 +165,17 @@ public sealed class GoldenReplayTests
         hashes.Outputs.Should().Be(2716);
     }
 
+    [Fact]
+    public void Replay_Should_KeepItsGoldenHashUnchanged_When_NoBandIsEverOccupied()
+    {
+        // ARV-115: the reference evening's snakes never fill (A-VIS peaks at 145 of 190), and its devices are the queue
+        // leads only, so no band reports: no overflow output joins the chain and the golden hash stays as approved.
+        Of("A-VIS").Overflow.Should().BeEmpty();
+        Of("A-VIS").OverflowChanges.Should().BeEmpty();
+        Of("CI-C").Overflow.Should().BeEmpty();
+        Golden.Value.Export.Should().NotContain("\"type\":\"overflow");
+    }
+
     /// <summary>Reads the health rows of a replay back from its export.</summary>
     private sealed class CapturingTextWriter(List<ZoneHealthBin> health) : TextWriter
     {

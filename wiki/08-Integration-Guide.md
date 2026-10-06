@@ -588,7 +588,7 @@ Every topic Ariva produces or consumes, with AMAN's feed, is described in AsyncA
 | `ariva.flow.zone-crossing.v1` |  |  |  | reserved | 3 days |
 | `ariva.flow.queue-interval.v1` |  |  |  | reserved | 30 days |
 | `ariva.flow.nowcast.v1` |  |  |  | reserved | compacted |
-| `ariva.flow.overflow-detected.v1` |  |  |  | reserved | 14 days |
+| `ariva.flow.overflow-detected.v1` | `OverflowDetected` | &lt;site&gt;/&lt;zone&gt; | api-stream | none yet | 14 days |
 | `ariva.desk.signal.v1` |  |  |  | reserved | 3 days |
 | `ariva.desk.state-changed.v1` |  |  |  | reserved | compacted |
 | `ariva.desk.interval-closed.v1` |  |  |  | reserved | 30 days |

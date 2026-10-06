@@ -1,7 +1,11 @@
 using System.Text.Json;
 using Ariva.Core.Desks;
+using Ariva.Core.Domain.Events;
+using Ariva.Core.Messaging;
 using Ariva.Core.Queueing;
+using Ariva.Core.Sensing;
 using Ariva.Infra.Messaging;
+using Ariva.Infra.Messaging.Outbox;
 using Ariva.Infra.Settings;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -23,7 +27,7 @@ public sealed record StreamCheckpoint(
 
 /// <summary>
 /// Persistence of the stream host (ARV-034, script 0018; line_minute since ARV-113, script 0037; zone_health_bin since
-/// ARV-114a, script 0038). A checkpoint is one
+/// ARV-114a, script 0038; overflow_minute and the OverflowDetected outbox rows since ARV-115, script 0039). A checkpoint is one
 /// transaction: rows are written by binary COPY into staging tables and upserted by key (zone or desk and minute, zone,
 /// line, source and minute, bin and revision), the zones' snapshots replace
 /// their previous ones, and the consumer group's next offsets are recorded. Only after it commits does the consumer
@@ -63,6 +67,12 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
         var lines = checkpoint.Outputs.SelectMany(o => o.Lines.Select(l => (o.ZoneKey, Line: l))).ToList();
         if (lines.Count > 0)
             await WriteLineMinutesAsync(connection, lines, Version, now, ct);
+        var overflow = checkpoint.Outputs.SelectMany(o => o.Overflow.Select(m => (o.ZoneKey, Minute: m))).ToList();
+        if (overflow.Count > 0)
+            await WriteOverflowMinutesAsync(connection, overflow, Version, now, ct);
+        var changes = checkpoint.Outputs.SelectMany(o => o.OverflowChanges.Select(c => (o.ZoneKey, Change: c))).ToList();
+        if (changes.Count > 0)
+            await WriteOverflowEventsAsync(connection, changes, Version, now, ct);
         if (checkpoint.DeskMinutes.Count > 0)
             await WriteDeskMinutesAsync(connection, checkpoint.DeskMinutes, now, ct);
         var outages = checkpoint.Outputs.SelectMany(o => o.Outages).ToList();
@@ -229,6 +239,124 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
                 profile_version = EXCLUDED.profile_version, crossings_in = line_minute.crossings_in + EXCLUDED.crossings_in,
                 crossings_out = line_minute.crossings_out + EXCLUDED.crossings_out, updated_on = EXCLUDED.updated_on
             """, ct);
+    }
+
+    // Each overflow band's minutes (ARV-115, script 0039), keyed by zone, band and minute. A band minute is written once
+    // it is closed and never changes in the engine, so a replay after a restart writes the same values again. A part of a
+    // minute released early (beyond OverflowBands.MaxOpenBandMinutes) merges with what was written: the lowest of the
+    // lows and the highest of the highs, the same row whatever the order or the number of times it is written.
+    private async Task WriteOverflowMinutesAsync(NpgsqlConnection connection, List<(string Zone, OverflowMinute Minute)> rows, Func<string, int> version, DateTime now,
+        CancellationToken ct)
+    {
+        var merged = new Dictionary<(string Zone, string Band, DateTime Minute), (int Min, int Max)>();
+        var order = new List<(string Zone, string Band, DateTime Minute)>();
+        var dropped = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var (zone, m) in rows)
+        {
+            if (m.BandName is not { Length: > 0 and <= MaxLineNameLength } || m.MinOccupancy < 0 || m.MaxOccupancy < m.MinOccupancy ||
+                m.MaxOccupancy > CanonicalEventRules.MaxOccupancy)
+            {
+                dropped[zone] = dropped.GetValueOrDefault(zone) + 1;
+                continue;
+            }
+
+            var key = (zone, m.BandName, Utc(m.MinuteUtc));
+            if (merged.TryGetValue(key, out var held))
+            {
+                merged[key] = (Math.Min(held.Min, m.MinOccupancy), Math.Max(held.Max, m.MaxOccupancy));
+            }
+            else
+            {
+                merged[key] = (m.MinOccupancy, m.MaxOccupancy);
+                order.Add(key);
+            }
+        }
+
+        // Never written (the table refuses them): one warning per zone with the count, never a name from a device (CWE-117).
+        foreach (var (zone, count) in dropped)
+            _logger.LogWarning("Dropped {Count} overflow minutes of zone {Zone}: empty or overlong band name, or occupancy out of order or bounds", count, zone);
+        if (merged.Count == 0)
+            return;
+        await Execute(connection, "CREATE TEMP TABLE stage_overflow_minute (LIKE overflow_minute INCLUDING DEFAULTS) ON COMMIT DROP", ct);
+        await using (var copy = await connection.BeginBinaryImportAsync("""
+            COPY stage_overflow_minute (zone_key, band_name, minute_utc, profile_version, min_occupancy, max_occupancy, updated_on) FROM STDIN (FORMAT BINARY)
+            """, ct))
+        {
+            foreach (var key in order)
+            {
+                var (min, max) = merged[key];
+                await copy.StartRowAsync(ct);
+                await copy.WriteAsync(key.Zone, NpgsqlDbType.Varchar, ct);
+                await copy.WriteAsync(key.Band, NpgsqlDbType.Varchar, ct);
+                await copy.WriteAsync(key.Minute, NpgsqlDbType.TimestampTz, ct);
+                await copy.WriteAsync(version(key.Zone), NpgsqlDbType.Integer, ct);
+                await copy.WriteAsync(min, NpgsqlDbType.Integer, ct);
+                await copy.WriteAsync(max, NpgsqlDbType.Integer, ct);
+                await copy.WriteAsync(now, NpgsqlDbType.TimestampTz, ct);
+            }
+
+            await copy.CompleteAsync(ct);
+        }
+
+        await Execute(connection, """
+            INSERT INTO overflow_minute (zone_key, band_name, minute_utc, profile_version, min_occupancy, max_occupancy, updated_on)
+            SELECT zone_key, band_name, minute_utc, profile_version, min_occupancy, max_occupancy, updated_on FROM stage_overflow_minute
+            ON CONFLICT (zone_key, band_name, minute_utc) DO UPDATE SET profile_version = EXCLUDED.profile_version,
+                min_occupancy = LEAST(overflow_minute.min_occupancy, EXCLUDED.min_occupancy),
+                max_occupancy = GREATEST(overflow_minute.max_occupancy, EXCLUDED.max_occupancy), updated_on = EXCLUDED.updated_on
+            """, ct);
+    }
+
+    // OverflowDetected (ARV-115) goes to the transactional outbox in the checkpoint's transaction, beside the band minute
+    // that decided it (ADR-0018: never published from inside a transaction; the relay produces it after the commit). The
+    // event id is derived from the zone, band, minute, change and profile version, so a checkpoint written again (a replay
+    // of the same records after a restart) adds no second row: ON CONFLICT on the id keeps the first.
+    private async Task WriteOverflowEventsAsync(NpgsqlConnection connection, List<(string Zone, OverflowChange Change)> rows, Func<string, int> version, DateTime now,
+        CancellationToken ct)
+    {
+        var events = new List<OverflowDetected>();
+        var dropped = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var (zone, change) in rows)
+        {
+            // The event's key is the zone key, which outbox_message.message_key must hold (OutboxLimits): a site of up to 17
+            // characters and a zone name of up to 200 can exceed it, and the insert would then fail the whole checkpoint with
+            // 22001, which the worker retries forever. Such a change is dropped instead; the band's minutes are still written.
+            var slash = zone.IndexOf('/', StringComparison.Ordinal);
+            if (slash <= 0 || slash == zone.Length - 1 || !OutboxLimits.FitsMessageKey(zone) || change.BandName is not { Length: > 0 and <= MaxLineNameLength } ||
+                change.PeakOccupancy is < 0 or > CanonicalEventRules.MaxOccupancy)
+            {
+                dropped[zone] = dropped.GetValueOrDefault(zone) + 1;
+                continue;
+            }
+
+            events.Add(OverflowDetected.From(zone, zone[(slash + 1)..], version(zone), change));
+        }
+
+        foreach (var (zone, count) in dropped)
+            _logger.LogWarning("Dropped {Count} overflow changes of zone {Zone}: the zone key (as an outbox key) or band name is not valid, or the peak is out of bounds",
+                count, zone);
+        if (events.Count == 0)
+            return;
+        await using var insert = new NpgsqlCommand("""
+            INSERT INTO outbox_message (id, topic, message_key, message_type, payload, headers, created_on)
+            SELECT e.id, @topic, e.message_key, @type, e.payload, e.headers, @now
+            FROM unnest(@ids, @keys, @payloads, @headers) AS e(id, message_key, payload, headers)
+            ON CONFLICT (id) DO NOTHING
+            """, connection);
+        insert.Parameters.AddWithValue("topic", KafkaTopics.FlowOverflowDetected);
+        insert.Parameters.AddWithValue("type", nameof(OverflowDetected));
+        insert.Parameters.AddWithValue("now", now);
+        insert.Parameters.AddWithValue("ids", events.Select(e => e.Id).ToArray());
+        insert.Parameters.AddWithValue("keys", events.Select(e => e.GetPartitionKey()).ToArray());
+        insert.Parameters.Add(new NpgsqlParameter("payloads", NpgsqlDbType.Array | NpgsqlDbType.Jsonb)
+        {
+            Value = events.Select(e => JsonSerializer.Serialize(e, EventCatalog.Json)).ToArray()
+        });
+        insert.Parameters.Add(new NpgsqlParameter("headers", NpgsqlDbType.Array | NpgsqlDbType.Jsonb)
+        {
+            Value = events.Select(e => JsonSerializer.Serialize(OutboxHeaders.For(e), EventCatalog.Json)).ToArray()
+        });
+        await insert.ExecuteNonQueryAsync(ct);
     }
 
     private static async Task WriteLiveAsync(NpgsqlConnection connection, List<QueueLiveMinute> rows, Func<string, int> version, DateTime now, CancellationToken ct)

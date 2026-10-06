@@ -38,7 +38,7 @@ Page labels: `wiki/NN` is `wiki/NN-*.md`; section numbers are the page's own hea
 | TC-16 | Can the existing signage estate (for example Samsung MagicInfo) show web content? | Passenger display hardware | Survey | [overview](../architecture/overview.md) section 7 (Displays); [wiki/11](../../wiki/11-Administration-Guide.md) section 9 |
 | TC-17 | Which SLA exclusion types does each handler contract allow? | SLA engine rules (v1) | | [glossary](../domain/glossary.md) Exclusion; [formulas](../domain/formulas.md) F17; [wiki/02](../../wiki/02-Business-Flow.md) section D; [wiki/15](../../wiki/15-KPI-and-SLA-Definitions.md) section 5 |
 | TC-18 | Who may run a recomputation of a disputed period? | Dispute process (v1) | | [wiki/02](../../wiki/02-Business-Flow.md) section D |
-| TC-19 | How are overflow minutes counted (per minute with any occupancy)? | Contract KPI option | | [wiki/15](../../wiki/15-KPI-and-SLA-Definitions.md) section 2 (Overflow minutes) |
+| TC-19 | How are overflow minutes counted (per minute with any occupancy)? Ariva implements the rule since ARV-115, accepted by the product owner on 2026-10-06: a minute counts when any band held anyone (highest reading above zero); a minute without a reading is not observed, and a band silent beyond the freshness window is Unknown. Kept here for the client's contract KPI choice | Contract KPI option | | [wiki/15](../../wiki/15-KPI-and-SLA-Definitions.md) section 2 (Overflow minutes); [formulas](../domain/formulas.md) F17; [decisions](decisions.md) ARV-115 |
 
 ## 3. AMAN team and client change control
 

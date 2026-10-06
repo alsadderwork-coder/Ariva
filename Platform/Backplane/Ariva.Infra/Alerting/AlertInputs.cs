@@ -27,8 +27,13 @@ public sealed record AlertTargetSeries(AlertTarget Target, IReadOnlyList<AlertMi
 /// outage still open while the registry has it offline), otherwise 0;</item>
 /// <item><c>PredictedNowcast</c>: <see cref="PredictedWait"/> from the queue minute's length and throughput and the arrival wave over the
 /// lead time (nothing while the length is degraded), for the minute of the projected peak;</item>
-/// <item><c>OverflowOccupied</c> and <c>DesksBelowPlan</c>: nothing yet; the stream does not store an overflow band's occupancy
-/// and there is no staffing plan before ARV-049, so these rules have nothing to judge.</item>
+/// <item><c>OverflowOccupied</c> (ARV-115): per minute, 1 when a watched overflow band held anyone in it (TC-19, decided 2026-10-06:
+/// the band's highest reading in the minute above zero), 0 when the watched bands that reported held no one, nothing for a minute
+/// without a band reading, from <c>overflow_minute</c>. Only bands with a reading in the minute count: a band silent within the
+/// freshness window or Unknown after it (the stream's <c>OverflowDetected</c> Unknown) has no row, so it is neither occupied nor
+/// empty and adds neither a 1 nor a 0; a zone whose only band is Unknown has no value, and the rule keeps its state until a
+/// reading comes. A queue zone's target watches every band of the zone; an overflow zone's target watches that band only;</item>
+/// <item><c>DesksBelowPlan</c>: nothing yet; there is no staffing plan before ARV-049, so these rules have nothing to judge.</item>
 /// </list>
 /// Minutes are those after <c>fromUtc</c> up to and including <c>toUtc</c>. A rule's targets are its zones that are queue or
 /// overflow zones of the site's published profile (or the commissioned devices of those zones).
@@ -106,6 +111,7 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
             AlertMetric.BinP90 => await BinsAsync(siteCode, targets, fromUtc, toUtc, ct),
             AlertMetric.SensorOffline => await OutagesAsync(siteCode, targets, fromUtc, toUtc, ct),
             AlertMetric.PredictedNowcast => await PredictedAsync(siteCode, rule, targets, fromUtc, toUtc, ct),
+            AlertMetric.OverflowOccupied => await OverflowAsync(siteCode, targets, fromUtc, toUtc, ct),
             _ => [.. targets.Select(t => new AlertTargetSeries(t, []))]
         };
     }
@@ -237,6 +243,91 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
         return series;
     }
 
+    /// <summary>
+    /// What each zone of an overflow rule watches (ARV-115): a queue zone of the site's published profile watches every band
+    /// of its zone key; an overflow zone watches its own band under its queue zone's key. Zones that are neither are left out.
+    /// </summary>
+    private async Task<Dictionary<string, (string Key, string Band)>> WatchedBandsAsync(string siteCode, IReadOnlyCollection<string> zoneNames, CancellationToken ct)
+    {
+        var watched = new Dictionary<string, (string Key, string Band)>(StringComparer.Ordinal);
+        if (zoneNames.Count == 0)
+            return watched;
+        var zones = await Storage.ExecuteSqlAsync<ZoneRow>("""
+            SELECT z.name AS "Name", z.kind AS "Kind", q.name AS "QueueZone" FROM zone z
+            JOIN zone_profile p ON p.id = z.profile_id
+            LEFT JOIN zone q ON q.id = z.queue_zone_id AND q.profile_id = z.profile_id
+            WHERE p.site_code = :site AND p.status = 'Published' AND z.kind IN ('Queue', 'Overflow') AND z.name IN (:zones)
+            """, new Dictionary<string, object> { ["site"] = siteCode, ["zones"] = zoneNames.Distinct(StringComparer.Ordinal).ToList() }, ct);
+        foreach (var z in zones)
+        {
+            if (z.Kind == nameof(ZoneKind.Queue))
+                watched[z.Name] = (ZoneKeys.For(siteCode, z.Name), null);
+            else if (z.QueueZone is { Length: > 0 } queue)
+                watched[z.Name] = (ZoneKeys.For(siteCode, queue), z.Name);
+        }
+
+        return watched;
+    }
+
+    /// <summary>
+    /// The latest minute with a band reading the stream stored, for each zone of an overflow rule (none for a zone without
+    /// one), at or before <paramref name="notAfterUtc"/>. Every band minute of a minute closes in the same engine step and is
+    /// written in the same checkpoint, so a minute that is there is there for every band that reported in it.
+    /// </summary>
+    public async Task<IReadOnlyDictionary<string, DateTime>> LatestOverflowMinutesAsync(string siteCode, IReadOnlyCollection<string> zones, DateTime notAfterUtc,
+        CancellationToken ct)
+    {
+        var watched = await WatchedBandsAsync(siteCode, zones, ct);
+        var keys = watched.Values.Select(w => w.Key).Distinct(StringComparer.Ordinal).ToList();
+        if (keys.Count == 0)
+            return new Dictionary<string, DateTime>();
+        var rows = await Storage.ExecuteSqlAsync<OverflowRow>("""
+            SELECT zone_key AS "ZoneKey", band_name AS "BandName", max(minute_utc) AS "MinuteUtc", 0 AS "MaxOccupancy" FROM overflow_minute
+            WHERE zone_key IN (:keys) AND minute_utc <= :notAfter GROUP BY zone_key, band_name
+            """, new Dictionary<string, object> { ["keys"] = keys, ["notAfter"] = notAfterUtc }, ct);
+        var latest = new Dictionary<string, DateTime>(StringComparer.Ordinal);
+        foreach (var (zone, (key, band)) in watched)
+        {
+            var mine = rows.Where(r => r.ZoneKey == key && (band is null || r.BandName == band)).Select(r => Utc(r.MinuteUtc)).ToList();
+            if (mine.Count > 0)
+                latest[zone] = mine.Max();
+        }
+
+        return latest;
+    }
+
+    private async Task<IReadOnlyList<AlertTargetSeries>> OverflowAsync(string siteCode, IReadOnlyList<AlertTarget> targets, DateTime fromUtc, DateTime toUtc,
+        CancellationToken ct)
+    {
+        var watched = await WatchedBandsAsync(siteCode, [.. targets.Select(t => t.ZoneName)], ct);
+        var keys = watched.Values.Select(w => w.Key).Distinct(StringComparer.Ordinal).ToList();
+        var rows = keys.Count == 0 ? [] : await Storage.ExecuteSqlAsync<OverflowRow>("""
+            SELECT zone_key AS "ZoneKey", band_name AS "BandName", minute_utc AS "MinuteUtc", max_occupancy AS "MaxOccupancy" FROM overflow_minute
+            WHERE zone_key IN (:keys) AND minute_utc > :from AND minute_utc <= :to
+            ORDER BY zone_key, minute_utc, band_name
+            """, new Dictionary<string, object> { ["keys"] = keys, ["from"] = fromUtc, ["to"] = toUtc }, ct);
+        var byZone = rows.GroupBy(r => r.ZoneKey, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
+        var series = new List<AlertTargetSeries>();
+        foreach (var target in targets)
+        {
+            if (!watched.TryGetValue(target.ZoneName, out var w) || !byZone.TryGetValue(w.Key, out var zoneRows))
+            {
+                series.Add(new AlertTargetSeries(target, []));
+                continue;
+            }
+
+            // One value per minute with a reading of a watched band: 1 when any of them held anyone in it, else 0.
+            var minutes = zoneRows.Where(r => w.Band is null || string.Equals(r.BandName, w.Band, StringComparison.Ordinal))
+                .GroupBy(r => Utc(r.MinuteUtc))
+                .OrderBy(g => g.Key)
+                .Select(g => new AlertMinute(g.Key, g.Any(r => r.MaxOccupancy > 0) ? 1 : 0))
+                .ToList();
+            series.Add(new AlertTargetSeries(target, minutes));
+        }
+
+        return series;
+    }
+
     // The index of the first element after the value.
     private static int UpperBound(DateTime[] sorted, DateTime value)
     {
@@ -290,6 +381,21 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
         public DateTime StartUtc { get; set; }
         public int LengthMinutes { get; set; }
         public double? P90 { get; set; }
+    }
+
+    private sealed class ZoneRow
+    {
+        public string Name { get; set; }
+        public string Kind { get; set; }
+        public string QueueZone { get; set; }
+    }
+
+    private sealed class OverflowRow
+    {
+        public string ZoneKey { get; set; }
+        public string BandName { get; set; }
+        public DateTime MinuteUtc { get; set; }
+        public int MaxOccupancy { get; set; }
     }
 
     private sealed class OutageRow

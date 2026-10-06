@@ -75,7 +75,8 @@ public sealed record QueueLiveMinute(
 
 /// <summary>
 /// What a zone produced since the last drain: rows to persist, what to recompute, device outages that ended, the closed
-/// minutes of each line (ARV-113), and the health checks of each bin result (ARV-114a).
+/// minutes of each line (ARV-113), the health checks of each bin result (ARV-114a), and the closed minutes of each
+/// overflow band with the changes they made (ARV-115).
 /// </summary>
 public sealed record ZoneOutputs(
     string ZoneKey,
@@ -85,7 +86,9 @@ public sealed record ZoneOutputs(
     IReadOnlyList<RecomputationRequest> Recomputations,
     IReadOnlyList<DeviceOutage> Outages = null,
     IReadOnlyList<LineMinute> Lines = null,
-    IReadOnlyList<ZoneHealthBin> Health = null)
+    IReadOnlyList<ZoneHealthBin> Health = null,
+    IReadOnlyList<OverflowMinute> Overflow = null,
+    IReadOnlyList<OverflowChange> OverflowChanges = null)
 {
     public IReadOnlyList<DeviceOutage> Outages { get; init; } = Outages ?? [];
 
@@ -93,7 +96,12 @@ public sealed record ZoneOutputs(
 
     public IReadOnlyList<ZoneHealthBin> Health { get; init; } = Health ?? [];
 
-    public int Count => Minutes.Count + Bins.Count + Live.Count + Recomputations.Count + Outages.Count + Lines.Count + Health.Count;
+    public IReadOnlyList<OverflowMinute> Overflow { get; init; } = Overflow ?? [];
+
+    public IReadOnlyList<OverflowChange> OverflowChanges { get; init; } = OverflowChanges ?? [];
+
+    public int Count => Minutes.Count + Bins.Count + Live.Count + Recomputations.Count + Outages.Count + Lines.Count + Health.Count + Overflow.Count +
+        OverflowChanges.Count;
 }
 
 /// <summary>Counts of what a zone refused, for health.</summary>
@@ -106,9 +114,13 @@ public sealed record ZoneProcessorState
     /// 2 adds device liveness (ARV-036); a version 1 snapshot restores with no devices heard yet. 3 adds the open line
     /// minutes (ARV-113); an earlier snapshot restores with none open. 4 adds the health tallies of the open bins and the
     /// engine's pending health inputs (ARV-114a); an earlier snapshot restores with empty ones, so the bins open at the
-    /// upgrade report the tracks and occupancy seen after it only.
+    /// upgrade report the tracks and occupancy seen after it only. 5 adds the overflow bands' open minutes and states
+    /// (ARV-115); an earlier snapshot restores with none open and every band empty, so a band occupied at the upgrade is
+    /// reported occupied at its next minute with occupancy. 6 adds the Unknown state of a band silent beyond the occupancy
+    /// freshness window (ARV-115, the owner's decision of 2026-10-06); a version 5 snapshot has no such property and
+    /// restores with every band it lists occupied or empty, as before.
     /// </summary>
-    public const int CurrentVersion = 4;
+    public const int CurrentVersion = 6;
 
     public int Version { get; init; } = CurrentVersion;
     public string ZoneKey { get; init; }
@@ -125,6 +137,12 @@ public sealed record ZoneProcessorState
 
     /// <summary>The latest line minute released before the watermark passed it (<see cref="LineCounts.ReleasedEarlyThroughUtc"/>).</summary>
     public DateTime? LinesReleasedEarlyThroughUtc { get; init; }
+
+    /// <summary>The overflow bands' minutes still open (ARV-115).</summary>
+    public IReadOnlyList<OverflowMinuteState> OverflowOpen { get; init; } = [];
+
+    /// <summary>The overflow bands' states (ARV-115): occupied, empty or unknown, as of each band's latest closed minute.</summary>
+    public IReadOnlyList<OverflowBandState> OverflowBands { get; init; } = [];
 }
 
 /// <summary>
@@ -151,7 +169,10 @@ public sealed class ZoneProcessor
     private readonly List<DeviceOutage> _outages = [];
     private readonly List<LineMinute> _lineMinutes = [];
     private readonly List<ZoneHealthBin> _health = [];
+    private readonly List<OverflowMinute> _overflow = [];
+    private readonly List<OverflowChange> _overflowChanges = [];
     private LineCounts _lines = new();
+    private OverflowBands _bands;
     private DeviceLiveness _liveness;
     private bool _watchDevices = true;
     private DeskTerm _desks;
@@ -171,6 +192,7 @@ public sealed class ZoneProcessor
         _bins = new BinAccumulator(geometry.QueueZone, profileVersion, _settings.Bins, geometry);
         _exits = new ExitRate();
         _liveness = NewLiveness(_settings);
+        _bands = new OverflowBands(geometry, _settings.Engine.OccupancyFreshFor);
     }
 
     private static DeviceLiveness NewLiveness(ZoneProcessorSettings settings) =>
@@ -197,7 +219,8 @@ public sealed class ZoneProcessor
     public DeskTerm Desks => _desks;
 
     /// <summary>Outputs are waiting beyond the bound: checkpoint before offering more.</summary>
-    public bool Full => _minutes.Count + _binResults.Count + _live.Count + _recomputations.Count + _outages.Count + _lineMinutes.Count + _health.Count >= _settings.MaxPendingOutputs;
+    public bool Full => _minutes.Count + _binResults.Count + _live.Count + _recomputations.Count + _outages.Count + _lineMinutes.Count + _health.Count +
+        _overflow.Count + _overflowChanges.Count >= _settings.MaxPendingOutputs;
 
     /// <summary>
     /// Offers one batch and steps the zone to its receive time (never backwards; <paramref name="referenceCapUtc"/>
@@ -353,6 +376,9 @@ public sealed class ZoneProcessor
             _health.AddRange(update.Health);
             _recomputations.AddRange(update.Recomputations);
             _lineMinutes.AddRange(_lines.Accept(step));
+            var (bandMinutes, bandChanges) = _bands.Accept(step);
+            _overflow.AddRange(bandMinutes);
+            _overflowChanges.AddRange(bandChanges);
             _exits.Add(step.Movements);
         }
         while (step.More && ++guard < 1_000);
@@ -393,7 +419,8 @@ public sealed class ZoneProcessor
     /// <summary>
     /// Ends a replay (ARV-036): steps to <paramref name="endUtc"/> as usual, reports the device outages still open there
     /// (marked through the end, <see cref="DeviceOutage.Closed"/> false), then stops watching devices and settles the
-    /// engine to <paramref name="settleUtc"/> so the bins before the end become final without inventing outages after it.
+    /// engine to <paramref name="settleUtc"/> so the bins before the end become final without inventing outages after it
+    /// or unknown overflow bands (ARV-115).
     /// </summary>
     public void Finish(DateTime endUtc, DateTime settleUtc)
     {
@@ -402,6 +429,8 @@ public sealed class ZoneProcessor
             Ended(open, markFrom);
 
         _watchDevices = false;
+        // The range's end is not a silent band either (ARV-115): no band becomes Unknown while the zone settles.
+        _bands.StopWatchingSilence();
         if (settleUtc > endUtc)
             Tick(settleUtc);
     }
@@ -409,7 +438,9 @@ public sealed class ZoneProcessor
     /// <summary>The outputs since the last drain, which the host persists with the zone's state in one transaction.</summary>
     public ZoneOutputs Drain()
     {
-        var outputs = new ZoneOutputs(ZoneKey, [.. _minutes], [.. _binResults], [.. _live], [.. _recomputations], [.. _outages], [.. _lineMinutes], [.. _health]);
+        var outputs = Peek();
+        _overflow.Clear();
+        _overflowChanges.Clear();
         _lineMinutes.Clear();
         _health.Clear();
         _minutes.Clear();
@@ -424,7 +455,8 @@ public sealed class ZoneProcessor
     /// The outputs since the last acknowledgement, without removing them: the host writes them with the zone's state and
     /// calls <see cref="Acknowledge"/> only after its transaction committed, so a failed or cancelled write loses nothing.
     /// </summary>
-    public ZoneOutputs Peek() => new(ZoneKey, [.. _minutes], [.. _binResults], [.. _live], [.. _recomputations], [.. _outages], [.. _lineMinutes], [.. _health]);
+    public ZoneOutputs Peek() =>
+        new(ZoneKey, [.. _minutes], [.. _binResults], [.. _live], [.. _recomputations], [.. _outages], [.. _lineMinutes], [.. _health], [.. _overflow], [.. _overflowChanges]);
 
     /// <summary>Removes the outputs a <see cref="Peek"/> returned (the ones before any produced since).</summary>
     public void Acknowledge(ZoneOutputs written)
@@ -437,6 +469,8 @@ public sealed class ZoneProcessor
         _outages.RemoveRange(0, Math.Min(written.Outages.Count, _outages.Count));
         _lineMinutes.RemoveRange(0, Math.Min(written.Lines.Count, _lineMinutes.Count));
         _health.RemoveRange(0, Math.Min(written.Health.Count, _health.Count));
+        _overflow.RemoveRange(0, Math.Min(written.Overflow.Count, _overflow.Count));
+        _overflowChanges.RemoveRange(0, Math.Min(written.OverflowChanges.Count, _overflowChanges.Count));
     }
 
     /// <summary>
@@ -459,7 +493,9 @@ public sealed class ZoneProcessor
             LastLiveMinuteUtc = _lastLive,
             Counters = Counters,
             Lines = _lines.Capture(),
-            LinesReleasedEarlyThroughUtc = _lines.ReleasedEarlyThroughUtc
+            LinesReleasedEarlyThroughUtc = _lines.ReleasedEarlyThroughUtc,
+            OverflowOpen = _bands.CaptureOpen(),
+            OverflowBands = _bands.CaptureBands()
         };
     }
 
@@ -485,6 +521,7 @@ public sealed class ZoneProcessor
             (zone._batches, zone._uncommissioned, zone._wrongZone, zone._invalid) = (c.Batches, c.Uncommissioned, c.WrongZone, c.Invalid);
         zone._liveness.Restore(state.Devices, state.RecentOutages);
         zone._lines = LineCounts.Restore(geometry, state.Lines, state.LinesReleasedEarlyThroughUtc);
+        zone._bands = OverflowBands.Restore(geometry, state.OverflowOpen, state.OverflowBands, zone._settings.Engine.OccupancyFreshFor);
         return zone;
     }
 }

@@ -249,7 +249,8 @@ Evaluation (ARV-038). Ariva.Api.Stream evaluates every enabled rule once a minut
 | `BinP90` | The largest P90 among the zone's 15-minute bins that ended in the last 150 minutes (their latest revision, so a backtest after bins became final can differ from what was judged live) |
 | `SensorOffline` | 1 while the device is in an outage the stream recorded, or offline in the registry since it was last heard; otherwise 0 |
 | `PredictedNowcast` | The highest nowcast projected within the lead time: the queue now, stepped a minute at a time with the arrival-wave projection and what the desks clear at the current throughput. The projection (ARV-047, formulas F14) gives a queue zone the arrivals of the lane categories its desks serve (through the service zones linked to desks in the published profile), shared among the queue zones serving the same lane; a zone serving no lane has nothing to judge, and a backtest finds none (projections are not stored) |
-| `OverflowOccupied`, `DesksBelowPlan` | Nothing yet: the stream does not store an overflow band's occupancy, and there is no staffing plan yet |
+| `OverflowOccupied` | Since ARV-115: 1 for a minute in which an overflow band held anyone (its highest reading above zero), 0 when the bands that reported held no one; a minute without a band reading is skipped. A band whose sensor is silent beyond 2 minutes is Unknown (neither occupied nor empty) and counts in neither until it reports again, so a rule whose only band is Unknown neither raises nor clears. A queue zone watches all its bands; an overflow zone in scope watches that band only. The demo seed's R-002 raises after 3 occupied minutes and clears after 3 empty ones |
+| `DesksBelowPlan` | Nothing yet: there is no staffing plan yet; a new rule on it is refused |
 
 ## 9. Displays
 

@@ -4,6 +4,8 @@ The reference scenario is the prototype's seeded demo day: seed 9303 at the fict
 
 Same seed, same output: the emulators in `Emulators/` (sensors, AODB, AMAN) replay this day deterministically, so demos, tests and documentation share one reproducible day. See ADR-0025 in `docs/architecture/adr/`.
 
+Scenario cases: `ScenarioConfig.OverflowEvening` (ARV-115) is the reference day with the arrivals Visitors snake (A-VIS) holding 60 people instead of 190, so its queue spills into the A-OV overflow band in both evening waves; the scripted events are unchanged. The reference day itself never fills a band. The sensor emulator splits a queue with a band at the run's snake capacity (`ScenarioConfig.Caps`, the defaults otherwise): the queue's lead sensor reports up to it and the band's lead sensor the rest. The golden replay tests use the case through `ReferenceReplay.RunOverflow` (locked in `Platform/Backplane/Ariva.UnitTests/Replay/replay-overflow.json`); the running simulator still plays the reference day.
+
 ## The engine (`Engine/`)
 
 | File | What it holds |
