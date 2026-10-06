@@ -68,6 +68,8 @@ Ariva's integration authentication follows AMAN's flow but adds hashed secrets, 
 | Token signing keys | Separate keys for users and integration clients; devices use per-device credentials stored as hashes, not tokens |
 | TLS keys and certificates | Customer PKI; ingress or controller secrets |
 
+The key ring table (`data_protection_key`) admits only signed keys in Ariva's format (ARV-080), so a key planted there is ignored. A planted revocation is still possible for anyone who can write to the database: values under the revoked keys stop working (users re-enrol their authenticator, outbound secrets must be entered again, everyone signs in again). If that happens, delete the planted `revocation` row and restart the hosts, or restore the database from backup; and treat it as a database compromise.
+
 At rest, secrets stay in Kubernetes secrets or a vault (D5). Enable encryption at rest for Kubernetes secrets on the customer's cluster. Back up the Data Protection key ring and signing keys separately and encrypted (see [Deployment guide](04-Deployment-Guide.md), backup section).
 
 ## 6. TLS
