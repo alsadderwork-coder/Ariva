@@ -62,6 +62,15 @@ public sealed class TrustedKeyRingRepository(IXmlRepository inner, DateTimeOffse
         if (element.Name.LocalName != "key")
             return "not a key or a revocation";
 
+        // Data Protection reads these by their exact, unqualified names; a second or namespaced copy could make the filter
+        // and Data Protection see different dates or descriptors.
+        foreach (var name in (string[])["creationDate", "activationDate", "expirationDate", "descriptor"])
+        {
+            var children = element.Elements().Where(e => e.Name.LocalName == name).ToList();
+            if (children.Count != 1 || children[0].Name != XName.Get(name))
+                return $"it does not have exactly one unqualified {name}";
+        }
+
         // Data Protection stores the master key as one encryptedSecret in place of the masterKey element and, when it
         // reads the key, decrypts that element back into place; a masterKey or value element anywhere else is plain text.
         var secrets = element.Descendants().Where(e => e.Name.LocalName == "encryptedSecret").ToList();
@@ -97,7 +106,8 @@ public sealed class TrustedKeyRingRepository(IXmlRepository inner, DateTimeOffse
     private XElement ExpiredCopy(XElement key)
     {
         var copy = new XElement(key);
-        var expiration = copy.Elements().FirstOrDefault(e => e.Name.LocalName == "expirationDate");
+        // The exact name Data Protection reads (XmlKeyManager: keyElement.Element("expirationDate")).
+        var expiration = copy.Element("expirationDate");
         var now = time.GetUtcNow();
         if (expiration is null)
         {

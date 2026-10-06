@@ -223,6 +223,33 @@ public sealed class KeyRingEncryptionTests
     }
 
     [Fact]
+    public void KeyRing_Should_NeverProtectWithALegacyKey_When_ItHidesItsRealExpiryBehindANamespacedDecoy()
+    {
+        using var certificate = Certificate(3072);
+        var repository = new MemoryRepository();
+        using (var first = Host(repository, DataProtectionCertificates.From(certificate)))
+            Protector(first).Protect("creates the genuine key");
+
+        using var planter = LegacyHost(repository, certificate);
+        Thread.Sleep(20);
+        planter.GetRequiredService<IKeyManager>().CreateNewKey(DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddDays(90));
+        repository.Mutate(elements =>
+        {
+            var planted = elements.Last();
+            planted.Element("expirationDate")!.AddBeforeSelf(new XElement(XName.Get("expirationDate", "urn:decoy"), "2000-01-01T00:00:00Z"));
+        });
+
+        using var host = Host(repository, DataProtectionCertificates.From(certificate), legacyFormatUntil: DateTimeOffset.UtcNow.AddDays(30));
+        var payload = Protector(host).Protect("totp-seed");
+
+        using var reader = LegacyHost(repository, certificate);
+        FluentActions.Invoking(() => Protector(reader).Unprotect(payload)).Should().Throw<CryptographicException>(
+            "a namespaced copy of a date cannot hide the date Data Protection reads");
+        new TrustedKeyRingRepository(new MemoryRepository(), DateTimeOffset.UtcNow.AddDays(30), TimeProvider.System, NullLogger.Instance)
+            .Verdict(repository.GetAllElements().Last()).Should().Contain("exactly one unqualified expirationDate");
+    }
+
+    [Fact]
     public void AddArivaDataProtection_Should_PutTheTrustedFilterInFrontOfPostgres_When_AHostRegistersIt()
     {
         using var certificate = Certificate(3072);
@@ -243,13 +270,16 @@ public sealed class KeyRingEncryptionTests
     {
         var filter = new TrustedKeyRingRepository(new MemoryRepository(), null, TimeProvider.System, NullLogger.Instance);
         XElement Key(string decryptor) => new("key", new XAttribute("id", Guid.NewGuid()),
+            new XElement("creationDate", "2026-10-06T00:00:00Z"), new XElement("activationDate", "2026-10-06T00:00:00Z"),
+            new XElement("expirationDate", "2027-01-04T00:00:00Z"),
             new XElement("descriptor", new XElement("descriptor", new XElement("encryptedSecret", new XAttribute("decryptorType", decryptor)))));
 
         filter.Verdict(Key(typeof(OaepGcmXmlDecryptor).AssemblyQualifiedName!)).Should().BeNull();
         filter.Verdict(Key("Microsoft.AspNetCore.DataProtection.XmlEncryption.EncryptedXmlDecryptor, Microsoft.AspNetCore.DataProtection")).Should().Contain("LegacyFormatUntil");
         filter.Verdict(Key("Evil.Decryptor, Evil")).Should().Contain("does not use");
-        filter.Verdict(new XElement("key", new XElement("descriptor", new XElement("descriptor", new XElement("masterKey", new XElement("value", "AAAA"))))))
-            .Should().Contain("exactly one encrypted secret");
+        var plaintext = Key(typeof(OaepGcmXmlDecryptor).AssemblyQualifiedName!);
+        plaintext.Descendants("encryptedSecret").Single().ReplaceWith(new XElement("masterKey", new XElement("value", "AAAA")));
+        filter.Verdict(plaintext).Should().Contain("exactly one encrypted secret");
         // A decoy: a plain-text master key where Data Protection reads it, and a genuine encrypted secret elsewhere.
         var decoy = Key(typeof(OaepGcmXmlDecryptor).AssemblyQualifiedName!);
         var genuine = decoy.Descendants("encryptedSecret").Single();
