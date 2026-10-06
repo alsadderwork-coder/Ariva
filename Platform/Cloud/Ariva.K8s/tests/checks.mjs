@@ -31,8 +31,9 @@ function dotnetEnvironmentOf(container, docs) {
 	const words = [...(container.command ?? []), ...(container.args ?? [])].map(String);
 	let fromArgs;
 	words.forEach((word, index) => {
-		const match = /^(?:--|\/)environment(?:=(.*))?$/i.exec(word);
-		if (match) fromArgs = match[1] ?? words[index + 1] ?? '';
+		// --environment, /environment (=value or the next word) and the bare environment=value, as AddCommandLine reads them.
+		const match = /^(?:(?:--|\/)environment(?:=(.*))?|environment=(.*))$/i.exec(word);
+		if (match) fromArgs = match[1] ?? match[2] ?? words[index + 1] ?? '';
 	});
 	if (fromArgs !== undefined) return fromArgs;
 
