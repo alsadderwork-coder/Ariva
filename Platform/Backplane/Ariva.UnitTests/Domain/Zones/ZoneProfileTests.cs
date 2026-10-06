@@ -381,6 +381,63 @@ public sealed class ZoneProfileTests
         copy.LaneCategory.Should().BeNull();
     }
 
+    [Theory]
+    [InlineData(1, true)]
+    [InlineData(190, true)]
+    [InlineData(5_000, true)]
+    [InlineData(0, false)]
+    [InlineData(-5, false)]
+    [InlineData(5_001, false)]
+    [InlineData(int.MaxValue, false)]
+    public void SetZoneCapacity_Should_AcceptOneToFiveThousandPeople_When_Set(int capacity, bool valid)
+    {
+        // ARV-114a: the occupancy sanity check of F18 needs the zone's physical capacity.
+        var (profile, _, queue) = Publishable();
+
+        var set = () => profile.SetZoneCapacity(queue, capacity);
+
+        if (valid)
+        {
+            set.Should().NotThrow();
+            queue.PhysicalCapacity.Should().Be(capacity);
+        }
+        else
+        {
+            set.Should().Throw<ArgumentOutOfRangeException>().Which.Message.Should().StartWith("A physical capacity is 1 to 5,000 people.");
+            queue.PhysicalCapacity.Should().BeNull();
+        }
+    }
+
+    [Fact]
+    public void SetZoneCapacity_Should_KeepTheHashAndThePublishedVersion_When_SetOnQueuesAndBands()
+    {
+        var (profile, level, queue) = Publishable();
+        var hash = profile.ComputeGeometryHash();
+        var band = profile.Zones.Single(z => z.Kind == ZoneKind.Overflow);
+        profile.SetZoneCapacity(queue, 190);
+        profile.SetZoneCapacity(band, 60);
+
+        profile.ComputeGeometryHash().Should().Be(hash, "a capacity changes no count or wait, so F22's hash stays ariva-zone-profile-v1");
+        profile.ComputeGeometryHash().Should().Be(ReferenceHash);
+        var service = profile.AddZone("Desk 1", ZoneKind.Service, level, Rect(40, 10, 2, 2), queue);
+        profile.Invoking(p => p.SetZoneCapacity(service, 5)).Should().Throw<InvalidOperationException>("only queue zones and overflow bands hold a queue");
+        profile.RemoveZone(service);
+
+        profile.Publish(12, Levels(level), "admin", Now);
+        profile.GeometryHash.Should().Be(ReferenceHash);
+        profile.Invoking(p => p.SetZoneCapacity(queue, 200)).Should().Throw<InvalidOperationException>("a published version never changes");
+        profile.Invoking(p => p.SetZoneCapacity(queue, null)).Should().Throw<InvalidOperationException>();
+        queue.PhysicalCapacity.Should().Be(190);
+
+        var draft = profile.CreateDraft("v13");
+        var copy = draft.Zones.Single(z => z.Kind == ZoneKind.Queue);
+        copy.PhysicalCapacity.Should().Be(190, "a draft keeps the capacities");
+        draft.Zones.Single(z => z.Kind == ZoneKind.Overflow).PhysicalCapacity.Should().Be(60);
+        draft.SetZoneCapacity(copy, null);
+        copy.PhysicalCapacity.Should().BeNull();
+        queue.PhysicalCapacity.Should().Be(190, "the published version is untouched");
+    }
+
     [Fact]
     public void Retire_Should_OnlyRetireAPublishedVersion_When_Called()
     {

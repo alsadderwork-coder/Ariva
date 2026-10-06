@@ -430,7 +430,10 @@
 		"unsaved": "Save or undo the changes on the plan first: publishing takes the saved draft.",
 		"lane": "Lane",
 		"noLane": "No lane",
-		"laneHint": "The lane category whose queue this is: the immigration screen shows its wait for that lane."
+		"laneHint": "The lane category whose queue this is: the immigration screen shows its wait for that lane.",
+		"capacity": "Physical capacity (people)",
+		"capacityHint": "Optional, 1 to 5,000: the most people the area holds. The stream flags minutes whose occupancy is above it.",
+		"capacityInvalid": "The physical capacity is a whole number from 1 to 5,000, or empty."
 	},
 	"devices": {
 		"title": "Devices",

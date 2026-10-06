@@ -79,6 +79,10 @@ public sealed record QueueEngineState
     public IReadOnlyList<MovementCount> Movements { get; init; } = [];
     /// <summary>Line crossings since the last step (ARV-113); a snapshot written before has none.</summary>
     public IReadOnlyList<LineMovement> Lines { get; init; } = [];
+    /// <summary>Occupancy samples at minute boundaries since the last step (ARV-114a); a snapshot written before has none.</summary>
+    public IReadOnlyList<OccupancySample> OccupancySamples { get; init; } = [];
+    /// <summary>Occupancy readings per zone and minute since the last step (ARV-114a); a snapshot written before has none.</summary>
+    public IReadOnlyList<ZoneReadingMinute> Readings { get; init; } = [];
     public IReadOnlyList<RealisedWait> Waits { get; init; } = [];
     public IReadOnlyList<EntrantResolution> Resolutions { get; init; } = [];
     public IReadOnlyList<long> Counters { get; init; } = [];
@@ -107,8 +111,10 @@ public sealed partial class QueueStateEngine
         WatermarkUtc = _watermark,
         CursorUtc = _cursor,
         ResidualSuspect = _residualSuspect,
-        Movements = [.. _movements.OrderBy(m => m.Key).Select(m => new MovementCount(m.Key, m.Value.In, m.Value.Out, m.Value.DegradedIn, m.Value.DegradedOut))],
+        Movements = Movements(),
         Lines = LineMovements(),
+        OccupancySamples = [.. _samples],
+        Readings = ReadingMinutes(),
         Waits = [.. _waits],
         Resolutions = [.. _resolutions],
         Counters = [_late, _future, _invalid, _unknown, _duplicates, _reverse, _unmatched, _negative, _bufferFull, _forced, _tooManyDevices],
@@ -136,7 +142,8 @@ public sealed partial class QueueStateEngine
             (state.ResolvedTracks?.Count ?? 0) > s.MaxRememberedTracks || (state.Occupancy?.Count ?? 0) > 1 + geometry.OverflowZones.Count ||
             (state.Handovers?.Count ?? 0) > 2 * s.MaxOpenEntrants + 1024 || (state.Counters?.Count ?? 0) != 11 ||
             (state.LateByMinute?.Count ?? 0) > MaxLateMinutes ||
-            (state.Movements?.Count ?? 0) + (state.Lines?.Count ?? 0) + (state.Waits?.Count ?? 0) + (state.Resolutions?.Count ?? 0) > s.MaxStepRecords + s.MaxBufferedEvents)
+            (state.Movements?.Count ?? 0) + (state.Lines?.Count ?? 0) + (state.Waits?.Count ?? 0) + (state.Resolutions?.Count ?? 0) +
+            (state.OccupancySamples?.Count ?? 0) + (state.Readings?.Count ?? 0) > s.MaxStepRecords + s.MaxBufferedEvents)
             throw new InvalidDataException("The queue engine snapshot exceeds the engine's bounds.");
 
         foreach (var (input, ahead, sequence) in state.Buffer ?? [])
@@ -175,8 +182,11 @@ public sealed partial class QueueStateEngine
 
         foreach (var (zone, count, at, degraded) in state.Occupancy ?? [])
         {
-            if (zone is not null)
-                engine._occupancy[zone] = (count, QueueInputState.Utc(at), degraded);
+            if (zone is null)
+                continue;
+            if (count is < 0 or > Sensing.CanonicalEventRules.MaxOccupancy)
+                throw new InvalidDataException("The queue engine snapshot has a zone occupancy out of the canonical bounds.");
+            engine._occupancy[zone] = (count, QueueInputState.Utc(at), degraded);
         }
 
         foreach (var (key, seen, deadline) in state.Handovers ?? [])
@@ -189,7 +199,34 @@ public sealed partial class QueueStateEngine
         engine._cursor = QueueInputState.Utc(state.CursorUtc);
         engine._residualSuspect = state.ResidualSuspect;
         foreach (var m in (state.Movements ?? []).Where(m => m is not null))
-            engine._movements[QueueInputState.Utc(m.MinuteUtc)] = (m.Entries, m.Exits, m.DegradedEntries, m.DegradedExits);
+        {
+            if (m.TrackedEntries < 0 || m.TrackedEntries > m.Entries)
+                throw new InvalidDataException("The queue engine snapshot has more tracked entries than entries in a minute.");
+            engine._movements[QueueInputState.Utc(m.MinuteUtc)] = (m.Entries, m.Exits, m.DegradedEntries, m.DegradedExits, m.TrackedEntries);
+        }
+
+        // Health inputs (ARV-114a), checked as the engine writes them (CWE-501, CWE-120): whole plausible minutes, the
+        // queue's own zones, readings within the canonical bounds, samples within the queue's bound, each minute (and
+        // zone) once.
+        var sampled = new HashSet<DateTime>();
+        foreach (var o in (state.OccupancySamples ?? []).Where(o => o is not null))
+        {
+            var at = QueueInputState.Utc(o.AtUtc);
+            if (!LineCounts.IsMinute(at) || o.Count < 0 || o.Count > geometry.MaxQueueOccupancy)
+                throw new InvalidDataException("The queue engine snapshot has an occupancy sample off a minute boundary or out of bounds.");
+            if (!sampled.Add(at))
+                throw new InvalidDataException("The queue engine snapshot has an occupancy sample of a minute twice.");
+            engine._samples.Add(o with { AtUtc = at });
+        }
+
+        foreach (var r in (state.Readings ?? []).Where(r => r is not null))
+        {
+            var minute = QueueInputState.Utc(r.MinuteUtc);
+            if (!geometry.CountsInQueue(r.ZoneName) || !LineCounts.IsMinute(minute) || r.Min < 0 || r.Min > r.Max || r.Max > Sensing.CanonicalEventRules.MaxOccupancy)
+                throw new InvalidDataException("The queue engine snapshot has an occupancy reading of another zone, off a minute or out of bounds.");
+            if (!engine._readings.TryAdd((minute, r.ZoneName), (r.Min, r.Max)))
+                throw new InvalidDataException("The queue engine snapshot has a zone's readings of a minute twice.");
+        }
         foreach (var l in (state.Lines ?? []).Where(l => l is not null))
         {
             // The same checks as LineCounts.Restore (CWE-501, CWE-120): the zone's line with its role, counts that are not

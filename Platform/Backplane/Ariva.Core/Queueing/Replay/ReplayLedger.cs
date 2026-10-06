@@ -91,7 +91,10 @@ public sealed class ReplayLedger
         _export?.Write(OutputLine(_outputs, zoneKey, type, Hex(_output), json) + "\n");
     }
 
-    /// <summary>Every output of a zone's drain, in a fixed order: minutes, bins, live rows, recomputations, outages, line minutes (ARV-113).</summary>
+    /// <summary>
+    /// Every output of a zone's drain, in a fixed order: minutes, bins, live rows, recomputations, outages, line minutes
+    /// (ARV-113), bin health checks (ARV-114a).
+    /// </summary>
     public void Outputs(ZoneOutputs outputs)
     {
         ArgumentNullException.ThrowIfNull(outputs);
@@ -107,6 +110,8 @@ public sealed class ReplayLedger
             Output(outputs.ZoneKey, "outage", o);
         foreach (var l in outputs.Lines)
             Output(outputs.ZoneKey, "line", l);
+        foreach (var h in outputs.Health)
+            Output(outputs.ZoneKey, "health", h);
     }
 
     public ReplayHashes End()

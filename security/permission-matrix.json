@@ -3204,6 +3204,22 @@
     {
       "host": "main",
       "method": "GET",
+      "route": "/api/v1/sites/{siteCode}/zone-health",
+      "access": "permission",
+      "permissions": [
+        "ViewDataQuality"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
       "route": "/api/v1/report-schedules",
       "access": "permission",
       "permissions": [

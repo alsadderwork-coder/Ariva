@@ -25,7 +25,26 @@ public sealed record HistogramBucketState(int Bucket, long Count);
 public sealed record BinMinuteState(DateTime MinuteUtc, BinTallyState Tally, bool Changed);
 
 /// <summary>An open bin.</summary>
-public sealed record BinState(DateTime StartUtc, BinTallyState Total, IReadOnlyList<BinMinuteState> Minutes, BinQuality Marked, bool Changed, bool ExactOverflowed);
+public sealed record BinState(DateTime StartUtc, BinTallyState Total, IReadOnlyList<BinMinuteState> Minutes, BinQuality Marked, bool Changed, bool ExactOverflowed)
+{
+    /// <summary>The bin's health tallies (ARV-114a); a snapshot written before has none, and the bin's health starts empty.</summary>
+    public BinHealthState Health { get; init; }
+}
+
+/// <summary>A minute of a bin with occupancy readings: checked against a physical capacity, and outside 0 to it (ARV-114a).</summary>
+public sealed record HealthMinuteState(DateTime MinuteUtc, bool Checked, bool Outside);
+
+/// <summary>The health tallies of an open bin (F18, ARV-114a).</summary>
+public sealed record BinHealthState(
+    long TracksEntered,
+    long TracksExited,
+    long TracksAbandoned,
+    long TracksFragmented,
+    long TracksCensored,
+    long TracksRejected,
+    int? OccupancyStart,
+    int? OccupancyEnd,
+    IReadOnlyList<HealthMinuteState> Minutes);
 
 /// <summary>A quality mark still in force.</summary>
 public sealed record BinMarkState(DateTime FromUtc, DateTime ToUtc, BinQuality Quality);
@@ -54,29 +73,37 @@ public sealed partial class BinAccumulator
         ProfileVersion = _profileVersion,
         Open = [.. _open.Select(b => new BinState(b.Key, Of(b.Value.Total),
             [.. b.Value.Minutes.Select(m => new BinMinuteState(m.Key, Of(m.Value), b.Value.ChangedMinutes.Contains(m.Key)))],
-            b.Value.Marked, b.Value.Changed, b.Value.ExactOverflowed))],
+            b.Value.Marked, b.Value.Changed, b.Value.ExactOverflowed) { Health = Of(b.Value.Health) })],
         Marks = [.. _marks.Select(m => new BinMarkState(m.From, m.To, m.Quality))],
         WatermarkUtc = _watermark,
         NextBinUtc = _nextBin,
         FinalHighUtc = _finalHigh
     };
 
+    private static BinHealthState Of(BinHealth h) => new(h.TracksEntered, h.TracksExited, h.TracksAbandoned, h.TracksFragmented, h.TracksCensored,
+        h.TracksRejected, h.OccupancyStart, h.OccupancyEnd, [.. h.Minutes.Select(m => new HealthMinuteState(m.Key, m.Value.Checked, m.Value.Outside))]);
+
     private static BinTallyState Of(Tally t) => new(t.Entries, t.Exits, t.Abandoned, t.Fragmented, t.Censored, t.Reanchored, t.Rejected, t.Resolved,
         t.LateEvents, t.Waits, t.Degraded, [.. t.Exact], [.. t.Histogram.Select(h => new HistogramBucketState(h.Key, h.Value))], t.Sum, t.WithinTarget);
 
-    /// <summary>An accumulator in the captured state, checked against the bounds of <paramref name="settings"/>.</summary>
-    public static BinAccumulator Restore(BinSettings settings, BinAccumulatorState state)
+    /// <summary>
+    /// An accumulator in the captured state, checked against the bounds of <paramref name="settings"/>; <paramref name="geometry"/>
+    /// gives the physical capacities for the health checks, as for a new one.
+    /// </summary>
+    public static BinAccumulator Restore(BinSettings settings, BinAccumulatorState state, QueueZoneGeometry geometry = null)
     {
         ArgumentNullException.ThrowIfNull(state);
         if (state.Version != BinAccumulatorState.CurrentVersion)
             throw new InvalidDataException($"Bin snapshot version {state.Version} is not {BinAccumulatorState.CurrentVersion}.");
-        var accumulator = new BinAccumulator(state.QueueZone, state.ProfileVersion, settings);
+        var accumulator = new BinAccumulator(state.QueueZone, state.ProfileVersion, settings, geometry);
         var s = accumulator._settings;
         var open = state.Open ?? [];
         if (open.Count > s.MaxOpenBins || (state.Marks?.Count ?? 0) > s.MaxMarks ||
             open.Any(b => b is null || b.Total is null || (b.Minutes?.Count ?? 0) > s.BinLength.TotalMinutes))
             throw new InvalidDataException("The bin snapshot exceeds the accumulator's bounds.");
         long exact = 0;
+        // Without geometry the queue has no known overflow bands: one zone at the canonical bound.
+        var maxOccupancy = geometry?.MaxQueueOccupancy ?? Sensing.CanonicalEventRules.MaxOccupancy;
         foreach (var b in open)
         {
             var start = QueueInputState.Utc(b.StartUtc);
@@ -96,6 +123,9 @@ public sealed partial class BinAccumulator
                     bin.ChangedMinutes.Add(minute);
             }
 
+            if (b.Health is { } h)
+                Fill(bin.Health, h, start, s.BinLength, maxOccupancy);
+
             if (exact > 2L * s.MaxExactWaitsPerBin + 2)
                 throw new InvalidDataException("The bin snapshot holds more exact waits than a bin keeps.");
             exact = 0;
@@ -112,6 +142,28 @@ public sealed partial class BinAccumulator
         accumulator._nextBin = state.NextBinUtc is { } next ? QueueInputState.Utc(next) : null;
         accumulator._finalHigh = state.FinalHighUtc is { } high ? QueueInputState.Utc(high) : null;
         return accumulator;
+    }
+
+    /// <summary>
+    /// A bin's health tallies, checked (CWE-501, CWE-120): counts not negative, occupancy from zero to the queue's bound
+    /// (<paramref name="maxOccupancy"/>), each minute once and inside the bin.
+    /// </summary>
+    private static void Fill(BinHealth health, BinHealthState state, DateTime start, TimeSpan length, long maxOccupancy)
+    {
+        long[] counts = [state.TracksEntered, state.TracksExited, state.TracksAbandoned, state.TracksFragmented, state.TracksCensored, state.TracksRejected];
+        if (counts.Any(n => n is < 0 or > SnapshotChecks.MaxCount) || state.OccupancyStart < 0 || state.OccupancyEnd < 0 ||
+            state.OccupancyStart > maxOccupancy || state.OccupancyEnd > maxOccupancy ||
+            (state.Minutes?.Count ?? 0) > length.TotalMinutes)
+            throw new InvalidDataException("The bin snapshot has health tallies out of bounds.");
+        (health.TracksEntered, health.TracksExited, health.TracksAbandoned) = (state.TracksEntered, state.TracksExited, state.TracksAbandoned);
+        (health.TracksFragmented, health.TracksCensored, health.TracksRejected) = (state.TracksFragmented, state.TracksCensored, state.TracksRejected);
+        (health.OccupancyStart, health.OccupancyEnd) = (state.OccupancyStart, state.OccupancyEnd);
+        foreach (var m in state.Minutes ?? [])
+        {
+            var minute = m is null ? default : QueueInputState.Utc(m.MinuteUtc);
+            if (m is null || !LineCounts.IsMinute(minute) || minute < start || minute >= start + length || !health.Minutes.TryAdd(minute, (m.Checked, m.Outside)))
+                throw new InvalidDataException("The bin snapshot has a health minute outside its bin or twice.");
+        }
     }
 
     private static void Fill(Tally t, BinTallyState s, ref long exact)

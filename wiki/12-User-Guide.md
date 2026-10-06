@@ -170,6 +170,10 @@ Editing a draft: Add a zone starts a small square in the middle of the level, Ad
 
 A queue zone can say which lane category it is the queue of (CIT, RES, VIS, CRW, EG; ARV-057): choose it under Lane and save the zone. The immigration screen shows the wait per lane from it. It goes with the published version like the shapes, and does not change the geometry hash. Through the API, a zone change without `laneCategory` keeps the lane and an empty one clears it.
 
+A queue zone or overflow band can have a physical capacity (ARV-114a): type the most people it holds (1 to 5,000) under Physical capacity and save the zone; leave it empty for none. The stream counts the minutes whose occupancy is above it (data quality, below). Like the lane it goes with the published version and does not change the geometry hash. Through the API, `physicalCapacity` absent keeps it, 0 clears it, 1 to 5,000 sets it.
+
+Data quality API (ARV-114a, `DataQuality.View`: border shift supervisors, terminal duty managers and administrators of the site; not handler station managers): `GET api/v1/sites/{siteCode}/zone-health?zone=<queue zone>&from=<UTC>&to=<UTC>` (ISO 8601 ending in Z, at most 31 days) answers the zone's bins whose start lies in the range, the latest revision of each, with the continuous health checks of formulas F18: the conservation residual with the occupancy at the bin's start and end (empty when either is not measured), the tracks that entered and what became of them with the completion rate (empty when none entered), and the minutes with occupancy readings, those checked against a physical capacity and those outside 0 to it. `truncated` is true beyond 3,000 bins. Another site, or a name that is no queue zone of the site, answers 404; a bad range 400. There is no screen yet.
+
 Common tasks (editor): create a draft from the active profile; add or change zones and lines; publish (creates the next version; needs step-up MFA). A newly published zone shows "Not measured: no calibrated sensor" until a calibrated sensor covers it. Details in [Commissioning and calibration](07-Commissioning-and-Calibration.md).
 
 ## Devices

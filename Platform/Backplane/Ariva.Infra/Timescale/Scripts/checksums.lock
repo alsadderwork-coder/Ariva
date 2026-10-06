@@ -37,6 +37,7 @@
     "0034_zone_lane.sql": "53643fe957c2c00551e92445576d87a944bdc142c45773c0ef4178c4ea57c5ee",
     "0035_display.sql": "3fe51a2e0373c189a659ba5b103c923adfc9c5458fc625990d8573d501fc5b4e",
     "0036_report.sql": "7928566c2787aacf1efe33c278d076c1636494ede5638e0d43855c4167bf68a5",
-    "0037_line_minute.sql": "bb8d64df6a885bff1d9b8e2b5aca9928f46bfb76437a97bbb9cc8edbca46ac35"
+    "0037_line_minute.sql": "bb8d64df6a885bff1d9b8e2b5aca9928f46bfb76437a97bbb9cc8edbca46ac35",
+    "0038_zone_health.sql": "b1c3a25277443f1000aacaf5a4bea62797b98435f4bd56718062bbe8127e8e31"
   }
 }

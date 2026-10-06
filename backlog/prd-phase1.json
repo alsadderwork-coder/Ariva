@@ -45,7 +45,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 2,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. Known limit from docs/product/phase0-exit-review.md section 5. Thresholds are Proposed (wiki/07 section 10 lists the alarm triggers); alarms and degraded propagation are ARV-114b.",
       "dependsOn": [
         "ARV-034",

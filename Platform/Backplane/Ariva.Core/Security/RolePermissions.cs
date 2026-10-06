@@ -58,9 +58,16 @@ public static class RolePermissions
         Permissions.EditReportSchedule, Permissions.DeleteReportSchedule
     ];
 
+    /// <summary>
+    /// Data quality (ARV-114a): the zone health checks of F18, for the supervisor and the duty manager who look after the
+    /// site's zones and sensors (they hold ZonesAndDevices and the daily report); zone-level counts only, no desk data, so
+    /// both see every queue zone of their sites, as in the daily report. Handlers do not: they see their own counters only.
+    /// </summary>
+    private static readonly Permission[] DataQuality = [Permissions.ViewDataQuality];
+
     /// <summary>Border shift supervisor: immigration halls, their zones and sensors, the arrival wave, and the alert rules of its sites.</summary>
     public static IReadOnlySet<Permission> BorderShiftSupervisor { get; } = new HashSet<Permission>(
-        [.. TopologyRead, .. ZonesAndDevices, Permissions.ViewLiveQueue, Permissions.ViewArrivalWave, Permissions.ViewArrivalWaveLanes, Permissions.ViewBorderDesks, Permissions.ViewImmigration, .. AlertRulesWrite, .. Alerts, .. Displays, .. Reports]);
+        [.. TopologyRead, .. ZonesAndDevices, Permissions.ViewLiveQueue, Permissions.ViewArrivalWave, Permissions.ViewArrivalWaveLanes, Permissions.ViewBorderDesks, Permissions.ViewImmigration, .. AlertRulesWrite, .. Alerts, .. Displays, .. Reports, .. DataQuality]);
 
     /// <summary>
     /// Terminal duty manager: everything airport-side, including zones, sensors and desk code mappings; the arrival wave as
@@ -71,7 +78,7 @@ public static class RolePermissions
         .. TopologyRead, .. ZonesAndDevices,
         Permissions.ViewDeskCodeMapping, Permissions.SearchDeskCodeMapping,
         Permissions.ViewLiveQueue, Permissions.ViewArrivalWave, Permissions.ViewAirportDesks, Permissions.ViewImmigration, .. AlertRulesWrite, .. Alerts,
-        .. Displays, .. Reports
+        .. Displays, .. Reports, .. DataQuality
     ]);
 
     /// <summary>Handler station manager: its own counters; reads topology and zones, changes none of them.</summary>

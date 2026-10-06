@@ -93,6 +93,8 @@ public static class AccountExtensions
         services.TryAddScoped<Ariva.Infra.Services.Reports.ReportReader>();
         services.TryAddScoped<Ariva.Core.Services.Reports.ISvcReports, Ariva.Infra.Services.Reports.SvcReports>();
         services.TryAddScoped<Ariva.Core.Services.Reports.ISvcReportSchedules, Ariva.Infra.Services.Reports.SvcReportSchedules>();
+        // Data quality (ARV-114a): the stored health checks of the queue zones (F18), read only.
+        services.TryAddScoped<Ariva.Core.Services.Quality.ISvcZoneHealth, Ariva.Infra.Services.Quality.SvcZoneHealth>();
         // ARV-038: the stored minutes rules are judged on, and the arrival wave (ARV-047).
         services.AddArivaArrivalWaveSource(configuration);
         services.TryAddScoped<Ariva.Infra.Alerting.AlertInputs>();

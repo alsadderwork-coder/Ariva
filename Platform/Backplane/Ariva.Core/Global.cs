@@ -197,6 +197,16 @@ public static class Global
 
             #endregion
 
+            #region Data quality (E12)
+
+            /// <summary>
+            /// The continuous health checks of the queue zones of a site (ARV-114a, F18): conservation residual, track completion
+            /// and occupancy against physical capacity per bin. Zone-level counts only, no desk data.
+            /// </summary>
+            public static Permission ViewDataQuality { get; } = new("DataQuality", PermissionAction.View);
+
+            #endregion
+
             private static readonly Lazy<IReadOnlyDictionary<string, Permission>> ByName = new(() =>
                 typeof(Permissions)
                     .GetProperties(BindingFlags.Public | BindingFlags.Static)

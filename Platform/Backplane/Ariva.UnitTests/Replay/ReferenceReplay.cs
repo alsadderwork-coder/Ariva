@@ -41,13 +41,19 @@ internal static class ReferenceReplay
 
     public static DateTime WallOf(double minute) => Midnight.AddMinutes(minute);
 
-    /// <summary>The zone as the demo seed's profile version 12 has it: entry and exit lines and an overflow band with its entry line.</summary>
+    /// <summary>
+    /// The zone as the demo seed's profile version 12 has it: entry and exit lines, an overflow band with its entry line,
+    /// and the queue zone's physical capacity (ARV-114a: A-VIS 190, CI-C 70, the scenario's snake capacities; bands none).
+    /// </summary>
     public static QueueZoneGeometry GeometryOf(string zone)
     {
         var band = zone == "A-VIS" ? "A-OV" : zone + "-OV";
         return new QueueZoneGeometry(zone,
             new HashSet<string>(StringComparer.Ordinal) { zone + " entry" }, new HashSet<string>(StringComparer.Ordinal) { zone + " exit" },
-            new HashSet<string>(StringComparer.Ordinal) { band + " entry" }, new HashSet<string>(StringComparer.Ordinal) { band });
+            new HashSet<string>(StringComparer.Ordinal) { band + " entry" }, new HashSet<string>(StringComparer.Ordinal) { band })
+        {
+            Capacities = new Dictionary<string, int>(StringComparer.Ordinal) { [zone] = Ariva.Infra.Services.Seed.DemoTopologySeed.CapacityOf(zone)!.Value }
+        };
     }
 
     /// <summary>What Ingest published for the evening: the sensing batches and the health reports, in push order.</summary>
@@ -130,13 +136,18 @@ internal static class ReferenceReplay
     public static ArchivedDeviceHealth Archived(DeviceHealthReported r) =>
         new(r.ReceivedUtc, r.SiteCode, r.QueueZoneName, r.DeviceId, r.DeviceCode, r.Id, r.Status?.Online ?? true, r.Commissioned, r.Status?.TimeUtc, r.Clock?.State);
 
-    /// <summary>A zone's inputs in the stream's order, from the evening as the archive holds it.</summary>
+    /// <summary>
+    /// A zone's inputs in the stream's order, from the evening as the archive holds it and as the replay command reads it
+    /// back: sensing rows whose event time and health reports whose receive time lie in [From, To). (ARV-114a: the
+    /// occupancy reading stamped exactly 20:30:00 is outside the range; it changed no output before the health checks
+    /// counted occupancy minutes, so the in-memory and the archived replay now read the same records.)
+    /// </summary>
     public static IReadOnlyList<ReplayInput> InputsOf(string zone, (IReadOnlyList<SensingBatch> Batches, IReadOnlyList<DeviceHealthReported> Health)? source = null)
     {
         var (batches, health) = source ?? Ingested;
         return ReplayInput.InOrder(
-            ArchivedBatch.Group(batches.Where(b => b.QueueZoneName == zone).SelectMany(Rows)),
-            health.Where(h => h.QueueZoneName == zone).Select(Archived));
+            ArchivedBatch.Group(batches.Where(b => b.QueueZoneName == zone).SelectMany(Rows).Where(r => r.TimeUtc >= From && r.TimeUtc < To)),
+            health.Where(h => h.QueueZoneName == zone && h.ReceivedUtc >= From && h.ReceivedUtc < To).Select(Archived));
     }
 
     public static ReplayManifest Manifest(ZoneProcessorSettings settings) =>
@@ -184,7 +195,7 @@ internal static class ReferenceReplay
             var record = root.GetProperty("record").GetRawText();
             T Read<T>() => System.Text.Json.JsonSerializer.Deserialize<T>(record, ReplayLedger.Json)!;
             if (!outputs.TryGetValue(zone, out var list))
-                outputs[zone] = list = [new ZoneOutputs(zone, new List<MinuteResult>(), new List<BinResult>(), new List<QueueLiveMinute>(), new List<RecomputationRequest>(), new List<DeviceOutage>(), new List<LineMinute>())];
+                outputs[zone] = list = [new ZoneOutputs(zone, new List<MinuteResult>(), new List<BinResult>(), new List<QueueLiveMinute>(), new List<RecomputationRequest>(), new List<DeviceOutage>(), new List<LineMinute>(), new List<ZoneHealthBin>())];
             var o = list[0];
             switch (root.GetProperty("type").GetString())
             {
@@ -194,6 +205,7 @@ internal static class ReferenceReplay
                 case "recomputation": ((List<RecomputationRequest>)o.Recomputations).Add(Read<RecomputationRequest>()); break;
                 case "outage": ((List<DeviceOutage>)o.Outages).Add(Read<DeviceOutage>()); break;
                 case "line": ((List<LineMinute>)o.Lines).Add(Read<LineMinute>()); break;
+                case "health": ((List<ZoneHealthBin>)o.Health).Add(Read<ZoneHealthBin>()); break;
             }
         }
 

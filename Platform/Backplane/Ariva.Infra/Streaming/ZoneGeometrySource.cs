@@ -10,8 +10,9 @@ public sealed record ZoneGeometry(QueueZoneGeometry Geometry, int ProfileVersion
 /// <summary>
 /// Reads a queue zone's lines and zones from the site's published zone profile (ARV-017): the queue zone's entry and
 /// exit lines, its overflow bands and their entry lines, and the count lines of the queue zone and its bands (ARV-113,
-/// counted per line and minute only). A zone that is not in the published profile has no geometry
-/// (its events are counted and skipped by the stream worker).
+/// counted per line and minute only), and the physical capacities of the queue zone and its bands (ARV-114a, for the
+/// occupancy sanity check of F18). A zone that is not in the published profile has no geometry (its events are counted
+/// and skipped by the stream worker).
 /// </summary>
 public class ZoneGeometrySource(DatabaseSettings database)
 {
@@ -31,13 +32,15 @@ public class ZoneGeometrySource(DatabaseSettings database)
                 WHERE site_code = @site AND ((@version IS NULL AND status = 'Published') OR (version = @version AND status IN ('Published', 'Retired')))
                 ORDER BY version DESC LIMIT 1
             ), queue AS (
-                SELECT z.id FROM zone z JOIN profile p ON p.id = z.profile_id WHERE z.name = @zone AND z.kind = 'Queue' LIMIT 1
+                SELECT z.id, z.physical_capacity FROM zone z JOIN profile p ON p.id = z.profile_id WHERE z.name = @zone AND z.kind = 'Queue' LIMIT 1
             ), bands AS (
-                SELECT z.id, z.name FROM zone z JOIN profile p ON p.id = z.profile_id WHERE z.kind = 'Overflow' AND z.queue_zone_id = (SELECT id FROM queue)
+                SELECT z.id, z.name, z.physical_capacity FROM zone z JOIN profile p ON p.id = z.profile_id
+                WHERE z.kind = 'Overflow' AND z.queue_zone_id = (SELECT id FROM queue)
             )
-            SELECT 'version' AS what, (SELECT version FROM profile)::text AS name, NULL AS role WHERE EXISTS (SELECT 1 FROM queue)
-            UNION ALL SELECT 'band', b.name, NULL FROM bands b
-            UNION ALL SELECT 'line', l.name, l.role FROM line l JOIN profile p ON p.id = l.profile_id
+            SELECT 'version' AS what, (SELECT version FROM profile)::text AS name, NULL AS role, (SELECT physical_capacity FROM queue) AS capacity
+                WHERE EXISTS (SELECT 1 FROM queue)
+            UNION ALL SELECT 'band', b.name, NULL, b.physical_capacity FROM bands b
+            UNION ALL SELECT 'line', l.name, l.role, NULL::integer FROM line l JOIN profile p ON p.id = l.profile_id
                 WHERE l.zone_id = (SELECT id FROM queue) OR l.zone_id IN (SELECT id FROM bands)
             """, connection);
         command.Parameters.AddWithValue("site", siteCode);
@@ -49,6 +52,14 @@ public class ZoneGeometrySource(DatabaseSettings database)
         var exits = new HashSet<string>(StringComparer.Ordinal);
         var overflowEntries = new HashSet<string>(StringComparer.Ordinal);
         var counts = new HashSet<string>(StringComparer.Ordinal);
+        var capacities = new Dictionary<string, int>(StringComparer.Ordinal);
+        // The table allows 1 to 5,000 only; anything else is not used (CWE-501: read back from storage).
+        void Capacity(string zone, NpgsqlDataReader row)
+        {
+            if (zone is not null && !row.IsDBNull(3) && row.GetInt32(3) is var capacity and >= 1 and <= Ariva.Core.Domain.Entities.Zone.MaxPhysicalCapacity)
+                capacities[zone] = capacity;
+        }
+
         await using var reader = await command.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {
@@ -58,9 +69,11 @@ public class ZoneGeometrySource(DatabaseSettings database)
             {
                 case "version":
                     found = int.Parse(name!, System.Globalization.CultureInfo.InvariantCulture);
+                    Capacity(queueZoneName, reader);
                     break;
                 case "band":
                     bands.Add(name);
+                    Capacity(name, reader);
                     break;
                 default:
                     switch (reader.IsDBNull(2) ? null : reader.GetString(2))
@@ -83,7 +96,7 @@ public class ZoneGeometrySource(DatabaseSettings database)
             }
         }
 
-        return found is { } v ? new ZoneGeometry(new QueueZoneGeometry(queueZoneName, entries, exits, overflowEntries, bands, counts), v) : null;
+        return found is { } v ? new ZoneGeometry(new QueueZoneGeometry(queueZoneName, entries, exits, overflowEntries, bands, counts) { Capacities = capacities }, v) : null;
     }
 
     /// <summary>The queue zones of a version of the site's zone profile (published or retired), or of the published one; in name order.</summary>

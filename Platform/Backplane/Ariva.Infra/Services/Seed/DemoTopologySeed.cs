@@ -38,6 +38,20 @@ internal sealed class DemoTopologySeed(IUnitOfWork unitOfWork, ICurrentUser curr
     public const string SystemUserName = "demo-seed";
     public const int ProfileVersion = 12;
 
+    /// <summary>
+    /// The physical capacity of each queue zone of v12 in people (ARV-114a): the snake capacities of the reference
+    /// scenario (the simulator's ScenarioDay.DefaultCaps), against which the stream checks occupancy (F18). Overflow
+    /// bands have none in the demo.
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, int> Capacities = new Dictionary<string, int>(StringComparer.Ordinal)
+    {
+        ["A-CRW"] = 10, ["A-CIT"] = 40, ["A-RES"] = 40, ["A-VIS"] = 190, ["A-EG"] = 70, ["D-CRW"] = 8, ["D-CIT"] = 30, ["D-RES"] = 30,
+        ["D-VIS"] = 140, ["D-EG"] = 50, ["SEC-N"] = 90, ["SEC-S"] = 90, ["CI-A"] = 70, ["CI-B"] = 70, ["CI-C"] = 70, ["CI-D"] = 70
+    };
+
+    /// <summary>The physical capacity v12 gives a zone, or null.</summary>
+    public static int? CapacityOf(string zoneName) => zoneName is not null && Capacities.TryGetValue(zoneName, out var capacity) ? capacity : null;
+
     /// <summary>The prototype draws in units of 0.1 m.</summary>
     private const double Metres = 0.1;
 
@@ -217,6 +231,7 @@ internal sealed class DemoTopologySeed(IUnitOfWork unitOfWork, ICurrentUser curr
             var zone = profile.AddZone(name, ZoneKind.Queue, level, Rect(x, y, w, h));
             profile.AddLine($"{name} entry", LineRole.Entry, level, P(entry.Item1, entry.Item2), P(entry.Item3, entry.Item4), zone);
             profile.AddLine($"{name} exit", LineRole.Exit, level, P(exit.Item1, exit.Item2), P(exit.Item3, exit.Item4), zone);
+            profile.SetZoneCapacity(zone, CapacityOf(name));
             queues[name] = zone;
             return zone;
         }

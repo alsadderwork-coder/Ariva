@@ -17,7 +17,8 @@ public sealed record ZoneProfileSummaryViewModel(
     int ZoneCount,
     int LineCount);
 
-public sealed record ZoneViewModel(Guid Id, string Name, string Kind, Guid LevelId, Guid? QueueZoneId, Guid? DeskId, string Polygon, double AreaSquareMetres, string LaneCategory = null);
+public sealed record ZoneViewModel(Guid Id, string Name, string Kind, Guid LevelId, Guid? QueueZoneId, Guid? DeskId, string Polygon, double AreaSquareMetres, string LaneCategory = null,
+    int? PhysicalCapacity = null);
 
 public sealed record LineViewModel(Guid Id, string Name, string Role, Guid? ZoneId, Guid LevelId, double StartX, double StartY, double EndX, double EndY, double LengthMetres);
 

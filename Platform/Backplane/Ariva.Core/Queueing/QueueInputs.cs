@@ -21,6 +21,18 @@ public sealed record QueueZoneGeometry(
     /// <summary>The count lines of the queue zone and its overflow bands (none when not given).</summary>
     public IReadOnlySet<string> CountLines { get; init; } = CountLines ?? NoLines;
 
+    private static readonly IReadOnlyDictionary<string, int> NoCapacities = new Dictionary<string, int>(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The physical capacity in people of the queue zone and of its overflow bands, by zone name, where the published profile
+    /// gives one (ARV-114a, 1 to 5,000); used only by the occupancy sanity check of F18, never by counts or waits.
+    /// </summary>
+    public IReadOnlyDictionary<string, int> Capacities { get; init; } = NoCapacities;
+
+    /// <summary>The physical capacity of one of the queue's zones, or null when the profile gives none.</summary>
+    public int? CapacityOf(string zoneName) =>
+        zoneName is not null && Capacities is not null && CountsInQueue(zoneName) && Capacities.TryGetValue(zoneName, out var capacity) ? capacity : null;
+
     /// <summary>The roles of the queue zone's lines, as the engine reads them.</summary>
     public QueueLineRole RoleOf(string lineName) =>
         lineName is null ? QueueLineRole.Unknown
@@ -29,6 +41,12 @@ public sealed record QueueZoneGeometry(
         : OverflowEntryLines.Contains(lineName) ? QueueLineRole.OverflowEntry
         : CountLines.Contains(lineName) ? QueueLineRole.Count
         : QueueLineRole.Unknown;
+
+    /// <summary>
+    /// The largest queue occupancy the engine can sample: every zone that counts in the queue at the canonical bound
+    /// (CWE-501, CWE-120: a restored sample or bin occupancy above it was never written by the engine).
+    /// </summary>
+    public long MaxQueueOccupancy => (long)Sensing.CanonicalEventRules.MaxOccupancy * (1 + (OverflowZones?.Count ?? 0));
 
     /// <summary>Whether a zone's occupancy counts in the queue length.</summary>
     public bool CountsInQueue(string zoneName) =>

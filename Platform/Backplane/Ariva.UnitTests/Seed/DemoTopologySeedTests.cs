@@ -54,6 +54,20 @@ public sealed class DemoTopologySeedTests
     }
 
     [Fact]
+    public void BuildProfile_Should_GiveEveryQueueTheScenariosSnakeCapacity_When_Built()
+    {
+        // ARV-114a: the stream checks occupancy against these (F18); they are the reference scenario's snake capacities,
+        // which the sensor emulator also caps its readings with, so the two stay equal.
+        var (arrivals, departures) = Levels();
+
+        var profile = DemoTopologySeed.BuildProfile(arrivals, departures);
+
+        profile.Zones.Where(z => z.Kind == ZoneKind.Queue).ToDictionary(z => z.Name, z => z.PhysicalCapacity)
+            .Should().BeEquivalentTo(Ariva.Simulation.Api.Scenarios.Engine.ScenarioDay.DefaultCaps.ToDictionary(c => c.Key, c => (int?)(int)c.Value));
+        profile.Zones.Where(z => z.Kind != ZoneKind.Queue).Should().OnlyContain(z => z.PhysicalCapacity == null);
+    }
+
+    [Fact]
     public void BuildProfile_Should_HashTheSame_When_BuiltTwice()
     {
         var (arrivals, departures) = Levels();

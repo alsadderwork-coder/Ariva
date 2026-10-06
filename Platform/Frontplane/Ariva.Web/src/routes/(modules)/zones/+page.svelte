@@ -37,6 +37,8 @@
 	let lineEdits = $state<Record<string, [Point, Point]>>({});
 	let zoneName = $state('');
 	let zoneLane = $state('');
+	/** The selected zone's physical capacity as typed (ARV-114a); empty for none. */
+	let zoneCapacity = $state<string | number>('');
 	/** Bumped after every saved change, so the publish panel asks for a fresh check. */
 	let revision = $state(0);
 
@@ -86,6 +88,7 @@
 		const zone = next?.kind === 'zone' ? profile?.zones.find((z) => z.id === next.id) : undefined;
 		zoneName = zone?.name ?? '';
 		zoneLane = zone?.laneCategory ?? '';
+		zoneCapacity = zone?.physicalCapacity ?? '';
 	}
 
 	async function loadHistory(prefer?: string): Promise<void> {
@@ -192,11 +195,15 @@
 		if (!zone || !profile) return;
 		const chosen = selected?.kind === 'zone' && selected.id === id;
 		const name = chosen ? zoneName.trim() : zone.name;
+		// An empty capacity clears it (0); the server refuses anything but 0 to 5,000 as well.
+		const physicalCapacity = chosen ? zones.capacityOf(zoneCapacity) : (zone.physicalCapacity ?? 0);
+		if (physicalCapacity === null) return failed($_('zones.capacityInvalid'));
 		const result = await zones.updateZone(profile.profile.id, id, {
 			name,
 			polygon: zones.formatPolygon(pointsOf(zone)),
 			// An empty lane clears it; the server keeps the lane when the field is absent.
-			laneCategory: (chosen ? zoneLane : zone.laneCategory) ?? ''
+			laneCategory: (chosen ? zoneLane : zone.laneCategory) ?? '',
+			physicalCapacity
 		});
 		if (result.hasErrors || !result.data) return failed(result.errorMessages[0] ?? '');
 		delete zoneEdits[id];
@@ -479,17 +486,20 @@
 							{editable}
 							dirty={!!zoneEdits[selectedZone.id] ||
 								zoneName.trim() !== selectedZone.name ||
-								zoneLane !== (selectedZone.laneCategory ?? '')}
+								zoneLane !== (selectedZone.laneCategory ?? '') ||
+								String(zoneCapacity ?? '') !== String(selectedZone.physicalCapacity ?? '')}
 							width={level.widthMetres}
 							depth={level.depthMetres}
 							bind:name={zoneName}
 							bind:lane={zoneLane}
+							bind:capacity={zoneCapacity}
 							onPoints={(points) => (zoneEdits[selectedZone.id] = points)}
 							onSave={() => saveZone(selectedZone.id)}
 							onRevert={() => {
 								delete zoneEdits[selectedZone.id];
 								zoneName = selectedZone.name;
 								zoneLane = selectedZone.laneCategory ?? '';
+								zoneCapacity = selectedZone.physicalCapacity ?? '';
 							}}
 							onDelete={() => deleteZone(selectedZone)}
 						/>

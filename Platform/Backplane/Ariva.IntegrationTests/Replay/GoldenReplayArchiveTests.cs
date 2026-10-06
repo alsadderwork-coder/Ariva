@@ -120,6 +120,22 @@ public sealed class GoldenReplayArchiveTests(PostgresFixture fixture) : IAsyncDi
     }
 
     [Fact]
+    public async Task Geometry_Should_CarryThePublishedCapacities_When_LoadedForTheStream()
+    {
+        // ARV-114a: the demo seed's v12 gives each queue zone the scenario's snake capacity and its bands none.
+        var _ = await ArchivedAsync();
+        var source = new ZoneGeometrySource(_archived);
+
+        var visitors = await source.LoadAsync(ReferenceReplay.Site, "A-VIS", 12, Ct);
+        var islandC = await source.LoadAsync(ReferenceReplay.Site, "CI-C", null, Ct);
+
+        visitors!.Geometry.Capacities.Should().Equal(new Dictionary<string, int> { ["A-VIS"] = 190 });
+        visitors.Geometry.CapacityOf("A-OV").Should().BeNull();
+        islandC!.Geometry.Capacities.Should().Equal(new Dictionary<string, int> { ["CI-C"] = 70 });
+        visitors.Geometry.Should().BeEquivalentTo(ReferenceReplay.GeometryOf("A-VIS"), "the replay's reference geometry is the seed's");
+    }
+
+    [Fact]
     public async Task Replay_Should_RefuseARequest_When_ItNamesAnUnknownVersionOrZone()
     {
         var (runner, _, database) = await ArchivedAsync();

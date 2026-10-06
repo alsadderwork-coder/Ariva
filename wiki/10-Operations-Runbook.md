@@ -125,7 +125,7 @@ SELECT topic, message_key, message_type, attempts, next_attempt_on, last_error
 
 ### 4.5b Queue stream worker (ARV-034)
 
-Ariva.Api.Stream's queue engine worker (group `ariva-stream.queue-engine`) writes `queue_minute`, `queue_bin`, `line_minute` (per-line crossings per minute, ARV-113), the zone snapshots (`stream_zone_state`) and its own positions (`stream_offset`) in one transaction per checkpoint. To check it is keeping up, compare `stream_offset.next_offset` with the end of each sensing topic partition and look at `stream_zone_state.updated_on`.
+Ariva.Api.Stream's queue engine worker (group `ariva-stream.queue-engine`) writes `queue_minute`, `queue_bin`, `line_minute` (per-line crossings per minute, ARV-113), `zone_health_bin` (the F18 health checks of each bin, ARV-114a), the zone snapshots (`stream_zone_state`) and its own positions (`stream_offset`) in one transaction per checkpoint. To check it is keeping up, compare `stream_offset.next_offset` with the end of each sensing topic partition and look at `stream_zone_state.updated_on`.
 
 - After a crash or a redeploy nothing needs doing: the worker restores each zone from its snapshot and replays the records after the saved positions, rewriting the same rows.
 - The positions in `stream_offset` are authoritative. Resetting the Kafka consumer group's offsets has no effect on a partition that has a saved position.

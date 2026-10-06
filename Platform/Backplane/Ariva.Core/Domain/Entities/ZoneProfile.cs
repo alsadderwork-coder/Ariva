@@ -70,7 +70,8 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
         {
             var copy = new Zone(draft, zone.Name, zone.Kind, zone.LevelId, zone.Points, zone.QueueZone is null ? null : map[zone.QueueZone], zone.DeskId)
             {
-                LaneCategory = zone.LaneCategory
+                LaneCategory = zone.LaneCategory,
+                PhysicalCapacity = zone.PhysicalCapacity
             };
             draft.Zones.Add(copy);
             map[zone] = copy;
@@ -159,6 +160,28 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
         if (!LaneCategory.IsValid(laneCategory))
             throw new ArgumentException("A lane category is 2 to 4 capital letters, such as CIT.", nameof(laneCategory));
         own.LaneCategory = laneCategory;
+    }
+
+    /// <summary>
+    /// Sets the physical capacity of a queue zone or overflow band in people (ARV-114a, 1 to <see cref="Zone.MaxPhysicalCapacity"/>),
+    /// or clears it with null. The stream checks the zone's occupancy readings against it (F18 occupancy sanity). Not part
+    /// of the geometry hash (F22 unchanged): it changes no count or wait. A published version keeps its value.
+    /// </summary>
+    public virtual void SetZoneCapacity(Zone zone, int? capacity)
+    {
+        EnsureDraft();
+        var own = Own(zone);
+        if (capacity is null)
+        {
+            own.PhysicalCapacity = null;
+            return;
+        }
+
+        if (own.Kind is not (ZoneKind.Queue or ZoneKind.Overflow))
+            throw new InvalidOperationException("Only a queue zone or an overflow band has a physical capacity.");
+        if (capacity is < 1 or > Zone.MaxPhysicalCapacity)
+            throw new ArgumentOutOfRangeException(nameof(capacity), capacity, "A physical capacity is 1 to 5,000 people.");
+        own.PhysicalCapacity = capacity;
     }
 
     /// <summary>Removes a zone and its lines; refused while other zones hang off it.</summary>
@@ -417,6 +440,12 @@ public class Zone : EntityBase<Zone>
 
     /// <summary>The lane category whose queue this queue zone is (CIT, RES, VIS, CRW, EG ...), or null (ARV-057).</summary>
     public virtual string LaneCategory { get; protected internal set; }
+
+    /// <summary>The largest physical capacity a zone may have, in people.</summary>
+    public const int MaxPhysicalCapacity = 5_000;
+
+    /// <summary>The people a queue zone or overflow band holds at most, or null when not given (ARV-114a, F18 occupancy sanity).</summary>
+    public virtual int? PhysicalCapacity { get; protected internal set; }
 
     /// <summary>Stored vertices: "x y,x y,..." in metres at millimetre precision.</summary>
     [System.ComponentModel.DataAnnotations.MaxLength(PolygonLength)]

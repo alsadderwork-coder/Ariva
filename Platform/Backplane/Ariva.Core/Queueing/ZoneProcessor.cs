@@ -74,8 +74,8 @@ public sealed record QueueLiveMinute(
     bool NowcastDegraded);
 
 /// <summary>
-/// What a zone produced since the last drain: rows to persist, what to recompute, device outages that ended, and the
-/// closed minutes of each line (ARV-113).
+/// What a zone produced since the last drain: rows to persist, what to recompute, device outages that ended, the closed
+/// minutes of each line (ARV-113), and the health checks of each bin result (ARV-114a).
 /// </summary>
 public sealed record ZoneOutputs(
     string ZoneKey,
@@ -84,13 +84,16 @@ public sealed record ZoneOutputs(
     IReadOnlyList<QueueLiveMinute> Live,
     IReadOnlyList<RecomputationRequest> Recomputations,
     IReadOnlyList<DeviceOutage> Outages = null,
-    IReadOnlyList<LineMinute> Lines = null)
+    IReadOnlyList<LineMinute> Lines = null,
+    IReadOnlyList<ZoneHealthBin> Health = null)
 {
     public IReadOnlyList<DeviceOutage> Outages { get; init; } = Outages ?? [];
 
     public IReadOnlyList<LineMinute> Lines { get; init; } = Lines ?? [];
 
-    public int Count => Minutes.Count + Bins.Count + Live.Count + Recomputations.Count + Outages.Count + Lines.Count;
+    public IReadOnlyList<ZoneHealthBin> Health { get; init; } = Health ?? [];
+
+    public int Count => Minutes.Count + Bins.Count + Live.Count + Recomputations.Count + Outages.Count + Lines.Count + Health.Count;
 }
 
 /// <summary>Counts of what a zone refused, for health.</summary>
@@ -101,9 +104,11 @@ public sealed record ZoneProcessorState
 {
     /// <summary>
     /// 2 adds device liveness (ARV-036); a version 1 snapshot restores with no devices heard yet. 3 adds the open line
-    /// minutes (ARV-113); an earlier snapshot restores with none open.
+    /// minutes (ARV-113); an earlier snapshot restores with none open. 4 adds the health tallies of the open bins and the
+    /// engine's pending health inputs (ARV-114a); an earlier snapshot restores with empty ones, so the bins open at the
+    /// upgrade report the tracks and occupancy seen after it only.
     /// </summary>
-    public const int CurrentVersion = 3;
+    public const int CurrentVersion = 4;
 
     public int Version { get; init; } = CurrentVersion;
     public string ZoneKey { get; init; }
@@ -145,6 +150,7 @@ public sealed class ZoneProcessor
     private readonly List<RecomputationRequest> _recomputations = [];
     private readonly List<DeviceOutage> _outages = [];
     private readonly List<LineMinute> _lineMinutes = [];
+    private readonly List<ZoneHealthBin> _health = [];
     private LineCounts _lines = new();
     private DeviceLiveness _liveness;
     private bool _watchDevices = true;
@@ -162,7 +168,7 @@ public sealed class ZoneProcessor
         ProfileVersion = profileVersion;
         _geometry = geometry;
         _engine = new QueueStateEngine(geometry, _settings.Engine);
-        _bins = new BinAccumulator(geometry.QueueZone, profileVersion, _settings.Bins);
+        _bins = new BinAccumulator(geometry.QueueZone, profileVersion, _settings.Bins, geometry);
         _exits = new ExitRate();
         _liveness = NewLiveness(_settings);
     }
@@ -191,7 +197,7 @@ public sealed class ZoneProcessor
     public DeskTerm Desks => _desks;
 
     /// <summary>Outputs are waiting beyond the bound: checkpoint before offering more.</summary>
-    public bool Full => _minutes.Count + _binResults.Count + _live.Count + _recomputations.Count + _outages.Count + _lineMinutes.Count >= _settings.MaxPendingOutputs;
+    public bool Full => _minutes.Count + _binResults.Count + _live.Count + _recomputations.Count + _outages.Count + _lineMinutes.Count + _health.Count >= _settings.MaxPendingOutputs;
 
     /// <summary>
     /// Offers one batch and steps the zone to its receive time (never backwards; <paramref name="referenceCapUtc"/>
@@ -344,6 +350,7 @@ public sealed class ZoneProcessor
             var update = _bins.Accept(step);
             _minutes.AddRange(update.Minutes);
             _binResults.AddRange(update.Bins);
+            _health.AddRange(update.Health);
             _recomputations.AddRange(update.Recomputations);
             _lineMinutes.AddRange(_lines.Accept(step));
             _exits.Add(step.Movements);
@@ -402,8 +409,9 @@ public sealed class ZoneProcessor
     /// <summary>The outputs since the last drain, which the host persists with the zone's state in one transaction.</summary>
     public ZoneOutputs Drain()
     {
-        var outputs = new ZoneOutputs(ZoneKey, [.. _minutes], [.. _binResults], [.. _live], [.. _recomputations], [.. _outages], [.. _lineMinutes]);
+        var outputs = new ZoneOutputs(ZoneKey, [.. _minutes], [.. _binResults], [.. _live], [.. _recomputations], [.. _outages], [.. _lineMinutes], [.. _health]);
         _lineMinutes.Clear();
+        _health.Clear();
         _minutes.Clear();
         _binResults.Clear();
         _live.Clear();
@@ -416,7 +424,7 @@ public sealed class ZoneProcessor
     /// The outputs since the last acknowledgement, without removing them: the host writes them with the zone's state and
     /// calls <see cref="Acknowledge"/> only after its transaction committed, so a failed or cancelled write loses nothing.
     /// </summary>
-    public ZoneOutputs Peek() => new(ZoneKey, [.. _minutes], [.. _binResults], [.. _live], [.. _recomputations], [.. _outages], [.. _lineMinutes]);
+    public ZoneOutputs Peek() => new(ZoneKey, [.. _minutes], [.. _binResults], [.. _live], [.. _recomputations], [.. _outages], [.. _lineMinutes], [.. _health]);
 
     /// <summary>Removes the outputs a <see cref="Peek"/> returned (the ones before any produced since).</summary>
     public void Acknowledge(ZoneOutputs written)
@@ -428,6 +436,7 @@ public sealed class ZoneProcessor
         _recomputations.RemoveRange(0, Math.Min(written.Recomputations.Count, _recomputations.Count));
         _outages.RemoveRange(0, Math.Min(written.Outages.Count, _outages.Count));
         _lineMinutes.RemoveRange(0, Math.Min(written.Lines.Count, _lineMinutes.Count));
+        _health.RemoveRange(0, Math.Min(written.Health.Count, _health.Count));
     }
 
     /// <summary>
@@ -468,7 +477,7 @@ public sealed class ZoneProcessor
             throw new InvalidDataException("The zone snapshot is not valid: " + string.Join(" ", problems.Take(5)));
         var zone = new ZoneProcessor(state.ZoneKey, geometry, state.ProfileVersion, settings);
         zone._engine = QueueStateEngine.Restore(geometry, zone._settings.Engine, state.Engine);
-        zone._bins = BinAccumulator.Restore(zone._settings.Bins, state.Bins);
+        zone._bins = BinAccumulator.Restore(zone._settings.Bins, state.Bins, geometry);
         zone._exits = ExitRate.Restore(state.Exits);
         zone._reference = DateTime.SpecifyKind(state.ReferenceUtc, DateTimeKind.Utc);
         zone._lastLive = state.LastLiveMinuteUtc is { } live ? DateTime.SpecifyKind(live, DateTimeKind.Utc) : null;

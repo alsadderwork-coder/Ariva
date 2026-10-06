@@ -128,6 +128,7 @@ public static class SnapshotChecks
                 Count(m.Exits);
                 Count(m.DegradedEntries);
                 Count(m.DegradedExits);
+                Count(m.TrackedEntries);
             }
         }
 

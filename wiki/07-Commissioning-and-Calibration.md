@@ -95,6 +95,7 @@ Also define in the profile:
 
 - Desks (immigration desk, e-gate, check-in counter, security lane) and lanes (a set of desks serving lane categories from one queue).
 - Lane categories per site (reference codes: `CRW`, `CIT`, `RES`, `VIS`, `EG`).
+- The physical capacity of each queue zone and overflow band (optional, 1 to 5,000 people; ARV-114a): the most people the area holds, from the stanchion plan or the fire limit. The stream checks occupancy against it (section 8). It goes with the published version and is not part of the geometry hash.
 - For e-gates, which manual lane receives rejects (site rule; reference: the visitors lane).
 - At AMAN sites, desk code mappings from AMAN desk and gate codes to Ariva desks. An unknown AMAN code is never guessed: the message is parked, the administrator is alerted, and the desk counts as `Unknown` until mapped.
 - Staff exclusions: tracks originating behind the desk line or from staff doors are excluded from waits.
@@ -153,7 +154,15 @@ Acceptance thresholds (proposals to agree contractually, not industry standards)
 
 Worked examples: a tracer who waited 8 minutes against a system value of 8.9 minutes passes (tolerance 1 minute); a tracer who waited 20 minutes against 22.5 minutes fails (tolerance 2 minutes).
 
-Continuous health checks run alongside: conservation residual `(entries - exits) - change in occupancy` should be 0; occupancy must stay between 0 and the zone's physical capacity.
+Continuous health checks run alongside (ARV-114a, formulas F18), computed by the stream per queue zone and 15-minute bin and stored with the bin:
+
+| Check | Computation | Expected |
+|---|---|---|
+| Conservation residual | `(entries - exits) - (Occ(end) - Occ(start))`, Occ the queue's sensor occupancy at the bin's start and end (queue zone plus the overflow bands heard so far) | 0; empty when the occupancy is not measured at both ends |
+| Track completion | Tracks that exited / tracks that entered in the bin; abandoned, fragmented, censored, rejected and still-open tracks listed apart | At least 90 percent (Proposed); empty when no track entered |
+| Occupancy sanity | Minutes whose readings were below 0 or above the zone's physical capacity, out of the minutes with readings (and those checked against a capacity) | 0 |
+
+Read them per zone with `GET api/v1/sites/{siteCode}/zone-health?zone=A-VIS&from=2026-09-28T17:00:00Z&to=2026-09-28T20:30:00Z` (permission `DataQuality.View`: border shift supervisors, terminal duty managers and administrators of the site; UTC times ending in Z, at most 31 days). A non-zero residual means the counts and the occupancy disagree (a missed line, a band without a sensor, an occupancy sensor counting beyond its zone); a falling completion rate means tracks are lost (fragmentation biases waits low); minutes above capacity mean the occupancy sensor sees more than the area holds (or the capacity is wrong). The thresholds are Proposed and alarms on them come with ARV-114b; until then check them during the burn-in and the validation campaign.
 
 The validation report records the profile version, the device calibration records, the raw comparison data and the results per criterion. Manual count capture uses the observer tablet form (Phase 1 epic Validation tooling).
 

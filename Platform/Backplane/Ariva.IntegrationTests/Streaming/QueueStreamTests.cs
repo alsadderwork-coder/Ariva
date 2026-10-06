@@ -54,7 +54,11 @@ internal sealed class FixedGeometrySource() : ZoneGeometrySource(null)
     public override Task<ZoneGeometry> LoadAsync(string siteCode, string queueZoneName, CancellationToken ct) =>
         Task.FromResult(queueZoneName.StartsWith('Q')
             ? new ZoneGeometry(new QueueZoneGeometry(queueZoneName, new HashSet<string> { $"{queueZoneName} entry" }, new HashSet<string> { $"{queueZoneName} exit" },
-                new HashSet<string>(), new HashSet<string>()), 7)
+                new HashSet<string>(), new HashSet<string>())
+            {
+                // ARV-114a: a snake smaller than the evening's busiest minutes, so some minutes are outside it.
+                Capacities = new Dictionary<string, int>(StringComparer.Ordinal) { [queueZoneName] = 20 }
+            }, 7)
             : null);
 }
 
@@ -217,13 +221,16 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
         (await CaughtUpAsync(database, group, ends)).Should().BeTrue("the worker should have applied every record within {0} seconds", seconds);
     }
 
-    private async Task<List<string>> RowsAsync(string database, string sql)
+    /// <summary>The rows of a literal query, values bound as <paramref name="parameters"/> (never interpolated, CWE-89).</summary>
+    private async Task<List<string>> RowsAsync(string database, string sql, IReadOnlyDictionary<string, object> parameters = null)
     {
         await using var connection = new NpgsqlConnection(postgres.ConnectionString(database));
         await connection.OpenAsync(Ct);
 #pragma warning disable CA2100 // every caller passes a literal
         await using var command = new NpgsqlCommand(sql, connection);
 #pragma warning restore CA2100
+        foreach (var (name, value) in parameters ?? new Dictionary<string, object>())
+            command.Parameters.AddWithValue(name, value);
         var rows = new List<string>();
         await using var reader = await command.ExecuteReaderAsync(Ct);
         while (await reader.ReadAsync(Ct))
@@ -245,6 +252,13 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
     private const string LineRows = """
         SELECT zone_key, line_name, line_role, source, minute_utc, profile_version, crossings_in, crossings_out
         FROM line_minute ORDER BY zone_key, line_name, source, minute_utc
+        """;
+
+    private const string HealthRows = """
+        SELECT zone_key, start_utc, revision, length_minutes, status, profile_version, entries, exits, occupancy_start, occupancy_end, conservation_residual,
+               tracks_entered, tracks_exited, tracks_abandoned, tracks_fragmented, tracks_censored, tracks_rejected, tracks_open, track_completion_rate,
+               occupancy_minutes, capacity_minutes, minutes_outside_capacity
+        FROM zone_health_bin ORDER BY zone_key, start_utc, revision
         """;
 
     [Fact]
@@ -294,6 +308,18 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
         expectedLines.Should().HaveCountGreaterThan(300, "two zones, two lines, about 90 minutes");
         expectedLines.Should().OnlyContain(r => r.Contains("|Ariva|", StringComparison.Ordinal));
         (await RowsAsync(restart, LineRows)).Should().Equal(expectedLines);
+        // ARV-114a: the health of every bin is written with it, and the restart rewrites exactly the same rows. The
+        // evening's occupancy is its entries minus its exits, so every bin with the occupancy at both ends (17:15 to
+        // 18:15, five per zone: the first starts before the first reading, the last ends after the last) conserves
+        // people; some minutes are above the snake's 20.
+        var expectedHealth = await RowsAsync(straight, HealthRows);
+        expectedHealth.Should().HaveCount(expectedBins.Count, "one health row per bin and revision");
+        (await RowsAsync(restart, HealthRows)).Should().Equal(expectedHealth);
+        (await RowsAsync(straight, """
+            SELECT count(*) FILTER (WHERE conservation_residual IS NOT NULL) = 10, count(*) FILTER (WHERE conservation_residual <> 0),
+                   sum(minutes_outside_capacity) > 0, bool_and(track_completion_rate = 1) FILTER (WHERE status = 'Final' AND tracks_entered > 0)
+            FROM zone_health_bin WHERE zone_key IN ('DMO/Q1', 'DMO/Q2')
+            """)).Should().Equal(["True|0|True|True"]);
         (await RowsAsync(straight, """
             SELECT (SELECT sum(crossings_in) FROM line_minute WHERE zone_key = 'DMO/Q1' AND line_role = 'Entry')
                  = (SELECT sum(entries) FROM queue_minute WHERE zone_key = 'DMO/Q1' AND minute_utc IN (SELECT minute_utc FROM line_minute WHERE zone_key = 'DMO/Q1'))
@@ -325,6 +351,14 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
         (await RowsAsync(database, MinuteRows)).Should().Equal(first);
         var lines = await RowsAsync(database, LineRows);
         lines.Should().HaveCount(outputs.Lines.Count).And.NotBeEmpty("the evening's closed line minutes are written once each");
+        // ARV-114a: one health row per bin and revision, the last of the checkpoint, rewritten to the same values.
+        var health = await RowsAsync(database, HealthRows);
+        health.Should().HaveCount(outputs.Health.Select(h => (h.StartUtc, h.Revision)).Distinct().Count()).And.NotBeEmpty();
+        health.Should().HaveCount((await RowsAsync(database, BinRows)).Count);
+        var finalBin = outputs.Health.Last(h => h.Status == BinStatus.Final);
+        (await RowsAsync(database, "SELECT entries, exits, status FROM zone_health_bin WHERE start_utc = @start",
+                new Dictionary<string, object> { ["start"] = DateTime.SpecifyKind(finalBin.StartUtc, DateTimeKind.Utc) }))
+            .Should().Equal($"{finalBin.Entries}|{finalBin.Exits}|Final");
         first.Should().HaveCount(outputs.Live.Select(l => l.MinuteUtc).Concat(outputs.Minutes.Select(m => m.StartUtc)).Distinct().Count());
         (await store.LoadOffsetsAsync("g", [("t", 0), ("t", 1)], Ct)).Should().Equal(new StreamOffset("t", 0, 42));
         var loaded = await store.LoadStateAsync("DMO/Q1", Ct);
@@ -441,6 +475,11 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
     [InlineData("DELETE FROM stream_zone_state", "42501")]
     [InlineData("DELETE FROM stream_offset", "42501")]
     [InlineData("UPDATE queue_bin SET entries = 0 WHERE status = 'Final'", "23001")]
+    [InlineData("DELETE FROM zone_health_bin", "42501")]
+    [InlineData("TRUNCATE zone_health_bin", "42501")]
+    [InlineData("UPDATE zone_health_bin SET conservation_residual = 0, occupancy_start = 0, occupancy_end = 0 WHERE status = 'Final'", "23001")]
+    [InlineData("INSERT INTO zone_health_bin (zone_key, start_utc, revision, length_minutes, status, profile_version, entries, exits, conservation_residual, tracks_entered, tracks_exited, tracks_abandoned, tracks_fragmented, tracks_censored, tracks_rejected, tracks_open, occupancy_minutes, capacity_minutes, minutes_outside_capacity, updated_on) VALUES ('DMO/Q1', '2030-01-01', 1, 15, 'Provisional', 7, 1, 1, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, now())", "23514")]
+    [InlineData("INSERT INTO zone_health_bin (zone_key, start_utc, revision, length_minutes, status, profile_version, entries, exits, tracks_entered, tracks_exited, tracks_abandoned, tracks_fragmented, tracks_censored, tracks_rejected, tracks_open, occupancy_minutes, capacity_minutes, minutes_outside_capacity, updated_on) VALUES ('DMO/Q1', '2030-01-01', 1, 15, 'Provisional', 7, 1, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 3, now())", "23514")]
     public async Task RuntimeRole_Should_NotForgeOrDeleteResults_When_ItTries(string statement, string sqlState)
     {
         var database = await StoreDatabaseAsync();

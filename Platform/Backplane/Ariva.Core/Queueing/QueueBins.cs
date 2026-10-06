@@ -84,7 +84,11 @@ public sealed record BinUpdate(
     IReadOnlyList<MinuteResult> Minutes,
     IReadOnlyList<BinResult> Bins,
     IReadOnlyList<RecomputationRequest> Recomputations,
-    IReadOnlyList<(DateTime FromUtc, DateTime ToUtc)> Gaps);
+    IReadOnlyList<(DateTime FromUtc, DateTime ToUtc)> Gaps)
+{
+    /// <summary>The health checks of each bin in <see cref="Bins"/>, in the same order (F18, ARV-114a).</summary>
+    public IReadOnlyList<ZoneHealthBin> Health { get; init; } = [];
+}
 
 /// <summary>Settings of bin attribution (F6, F7).</summary>
 public sealed record BinSettings
@@ -153,9 +157,22 @@ public sealed partial class BinAccumulator
         public long WithinTarget;
     }
 
+    /// <summary>The health tallies of a bin (F18, ARV-114a): its tracks, the occupancy at its boundaries, its occupancy minutes.</summary>
+    private sealed class BinHealth
+    {
+        public long TracksEntered, TracksExited, TracksAbandoned, TracksFragmented, TracksCensored, TracksRejected;
+        public int? OccupancyStart, OccupancyEnd;
+        public readonly SortedDictionary<DateTime, (bool Checked, bool Outside)> Minutes = [];
+
+        public TrackOutcomes Tracks => new(TracksEntered, TracksExited, TracksAbandoned, TracksFragmented, TracksCensored, TracksRejected);
+
+        public OccupancyMinutes Occupancy => new(Minutes.Count, Minutes.Values.Count(m => m.Checked), Minutes.Values.Count(m => m.Outside));
+    }
+
     private sealed class Bin
     {
         public Tally Total { get; } = new();
+        public BinHealth Health { get; } = new();
         public SortedDictionary<DateTime, Tally> Minutes { get; } = [];
         public BinQuality Marked { get; set; }
         public bool Changed { get; set; }
@@ -165,6 +182,7 @@ public sealed partial class BinAccumulator
 
     private readonly string _zone;
     private readonly int _profileVersion;
+    private readonly QueueZoneGeometry _geometry;
     private readonly BinSettings _settings;
     private readonly SortedDictionary<DateTime, Bin> _open = [];
     private readonly List<(DateTime From, DateTime To, BinQuality Quality)> _marks = [];
@@ -172,7 +190,8 @@ public sealed partial class BinAccumulator
     private DateTime? _nextBin;
     private DateTime? _finalHigh;
 
-    public BinAccumulator(string queueZone, int zoneProfileVersion, BinSettings settings = null)
+    /// <param name="geometry">The queue's zones and their physical capacities, for the occupancy sanity check (F18); none checked when null.</param>
+    public BinAccumulator(string queueZone, int zoneProfileVersion, BinSettings settings = null, QueueZoneGeometry geometry = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(queueZone);
         _settings = settings ?? new BinSettings();
@@ -181,6 +200,7 @@ public sealed partial class BinAccumulator
             throw new ArgumentException(string.Join(" ", problems), nameof(settings));
         _zone = queueZone;
         _profileVersion = zoneProfileVersion;
+        _geometry = geometry;
     }
 
     /// <summary>Bins still open (provisional).</summary>
@@ -263,6 +283,7 @@ public sealed partial class BinAccumulator
             minute.Entries += movement.Entries;
             bin.Total.Exits += movement.Exits;
             minute.Exits += movement.Exits;
+            bin.Health.TracksEntered += movement.TrackedEntries;
             if (movement.DegradedEntries + movement.DegradedExits > 0)
                 bin.Total.Degraded = true;
             Touch(bin, MinuteOf(movement.MinuteUtc));
@@ -275,6 +296,8 @@ public sealed partial class BinAccumulator
                 continue;
             AddWait(bin, minute, wait.Wait);
             bin.Total.Resolved++;
+            if (wait.Method == WaitMethod.Track)
+                bin.Health.TracksExited++;
             if (wait.Degraded)
                 bin.Total.Degraded = true;
             Touch(bin, MinuteOf(wait.EntryUtc));
@@ -307,6 +330,8 @@ public sealed partial class BinAccumulator
             }
 
             bin.Total.Resolved++;
+            if (resolution.Tracked)
+                CountTrack(bin.Health, resolution.Outcome);
             Touch(bin, MinuteOf(resolution.EntryUtc));
         }
 
@@ -332,7 +357,13 @@ public sealed partial class BinAccumulator
             _nextBin = latest + _settings.BinLength;
         }
 
+        // Health inputs (ARV-114a) go to bins that exist by now, never creating one: the watermark has reached them, so
+        // only a bin already final or skipped as a gap is missing, and neither changes. They never mark a bin changed, so
+        // they add no result of their own; the next result of the bin carries them.
+        Observe(step);
+
         var bins = new List<BinResult>();
+        var health = new List<ZoneHealthBin>();
         var minutes = new List<MinuteResult>();
         foreach (var (start, bin) in _open.ToList())
         {
@@ -345,6 +376,7 @@ public sealed partial class BinAccumulator
             var status = final ? BinStatus.Final : BinStatus.Provisional;
             var result = Result(start, bin, status, Math.Max(0, open), forced && open > 0);
             bins.Add(result);
+            health.Add(HealthChecks.Of(result, bin.Health.Tracks, bin.Health.OccupancyStart, bin.Health.OccupancyEnd, bin.Health.Occupancy));
             var minuteKeys = final ? bin.Minutes.Keys.ToList() : bin.ChangedMinutes.Order().ToList();
             foreach (var minute in minuteKeys)
             {
@@ -365,7 +397,54 @@ public sealed partial class BinAccumulator
             }
         }
 
-        return new BinUpdate(minutes, bins, Runs(recomputations), gaps);
+        return new BinUpdate(minutes, bins, Runs(recomputations), gaps) { Health = health };
+    }
+
+    private static void CountTrack(BinHealth health, EntrantOutcome outcome)
+    {
+        switch (outcome)
+        {
+            case EntrantOutcome.Abandoned:
+                health.TracksAbandoned++;
+                break;
+            case EntrantOutcome.Censored:
+                health.TracksCensored++;
+                break;
+            case EntrantOutcome.Rejected:
+                health.TracksRejected++;
+                break;
+            default:
+                // A lost track, or one dropped when the queue was observed empty (the engine calls both fragmented).
+                health.TracksFragmented++;
+                break;
+        }
+    }
+
+    /// <summary>
+    /// The occupancy at bin boundaries (the start of one bin is the end of the one before) and the occupancy readings per
+    /// minute, checked against the physical capacity of their zone (F18, ARV-114a).
+    /// </summary>
+    private void Observe(QueueStep step)
+    {
+        foreach (var sample in step.Occupancy ?? [])
+        {
+            if (sample is null || BinOf(sample.AtUtc) != sample.AtUtc)
+                continue;
+            if (_open.TryGetValue(sample.AtUtc, out var starting))
+                starting.Health.OccupancyStart = sample.Count;
+            if (sample.AtUtc - DateTime.MinValue >= _settings.BinLength && _open.TryGetValue(sample.AtUtc - _settings.BinLength, out var ending))
+                ending.Health.OccupancyEnd = sample.Count;
+        }
+
+        foreach (var reading in step.Readings ?? [])
+        {
+            if (reading is null || !_open.TryGetValue(BinOf(reading.MinuteUtc), out var bin))
+                continue;
+            var minute = MinuteOf(reading.MinuteUtc);
+            var capacity = _geometry?.CapacityOf(reading.ZoneName);
+            bin.Health.Minutes.TryGetValue(minute, out var seen);
+            bin.Health.Minutes[minute] = (seen.Checked || capacity is not null, seen.Outside || HealthChecks.OutsideCapacity(reading.Min, reading.Max, capacity));
+        }
     }
 
     /// <summary>One request per run of contiguous bins with the same reason, never one span over unrelated bins.</summary>

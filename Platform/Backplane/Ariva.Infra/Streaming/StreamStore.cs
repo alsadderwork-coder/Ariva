@@ -22,7 +22,8 @@ public sealed record StreamCheckpoint(
     IReadOnlyList<StreamOffset> Offsets);
 
 /// <summary>
-/// Persistence of the stream host (ARV-034, script 0018; line_minute since ARV-113, script 0037). A checkpoint is one
+/// Persistence of the stream host (ARV-034, script 0018; line_minute since ARV-113, script 0037; zone_health_bin since
+/// ARV-114a, script 0038). A checkpoint is one
 /// transaction: rows are written by binary COPY into staging tables and upserted by key (zone or desk and minute, zone,
 /// line, source and minute, bin and revision), the zones' snapshots replace
 /// their previous ones, and the consumer group's next offsets are recorded. Only after it commits does the consumer
@@ -56,6 +57,9 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
             await WriteLiveAsync(connection, live, Version, now, ct);
         if (bins.Count > 0)
             await WriteBinsAsync(connection, bins, now, ct);
+        var health = checkpoint.Outputs.SelectMany(o => o.Health.Select(h => (o.ZoneKey, Health: h))).ToList();
+        if (health.Count > 0)
+            await WriteHealthAsync(connection, health, now, ct);
         var lines = checkpoint.Outputs.SelectMany(o => o.Lines.Select(l => (o.ZoneKey, Line: l))).ToList();
         if (lines.Count > 0)
             await WriteLineMinutesAsync(connection, lines, Version, now, ct);
@@ -326,6 +330,61 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
             """, ct);
     }
 
+    // The health checks of each bin (ARV-114a, F18), one row per bin and revision as for queue_bin: the last result of a
+    // bin in this checkpoint wins, and a Final row is written once and never rewritten (the trigger of 0038 refuses it).
+    private static async Task WriteHealthAsync(NpgsqlConnection connection, List<(string Zone, ZoneHealthBin Health)> rows, DateTime now, CancellationToken ct)
+    {
+        await Execute(connection, "CREATE TEMP TABLE stage_zone_health_bin (LIKE zone_health_bin INCLUDING DEFAULTS) ON COMMIT DROP", ct);
+        await using (var copy = await connection.BeginBinaryImportAsync("""
+            COPY stage_zone_health_bin (zone_key, start_utc, revision, length_minutes, status, profile_version, entries, exits, occupancy_start,
+                occupancy_end, conservation_residual, tracks_entered, tracks_exited, tracks_abandoned, tracks_fragmented, tracks_censored,
+                tracks_rejected, tracks_open, track_completion_rate, occupancy_minutes, capacity_minutes, minutes_outside_capacity, updated_on)
+            FROM STDIN (FORMAT BINARY)
+            """, ct))
+        {
+            foreach (var (zone, h) in rows.GroupBy(r => (r.Zone, Utc(r.Health.StartUtc), r.Health.Revision)).Select(g => g.Last()))
+            {
+                await copy.StartRowAsync(ct);
+                await copy.WriteAsync(zone, NpgsqlDbType.Varchar, ct);
+                await copy.WriteAsync(Utc(h.StartUtc), NpgsqlDbType.TimestampTz, ct);
+                await copy.WriteAsync(h.Revision, NpgsqlDbType.Integer, ct);
+                await copy.WriteAsync((int)h.Length.TotalMinutes, NpgsqlDbType.Integer, ct);
+                await copy.WriteAsync(h.Status.ToString(), NpgsqlDbType.Varchar, ct);
+                await copy.WriteAsync(h.ZoneProfileVersion, NpgsqlDbType.Integer, ct);
+                await copy.WriteAsync(h.Entries, NpgsqlDbType.Bigint, ct);
+                await copy.WriteAsync(h.Exits, NpgsqlDbType.Bigint, ct);
+                await NullableInt(copy, h.OccupancyStart, ct);
+                await NullableInt(copy, h.OccupancyEnd, ct);
+                if (h.ConservationResidual is { } residual)
+                    await copy.WriteAsync(residual, NpgsqlDbType.Bigint, ct);
+                else
+                    await copy.WriteNullAsync(ct);
+                foreach (var count in new[] { h.TracksEntered, h.TracksExited, h.TracksAbandoned, h.TracksFragmented, h.TracksCensored, h.TracksRejected, h.TracksOpen })
+                    await copy.WriteAsync(count, NpgsqlDbType.Bigint, ct);
+                await Nullable(copy, h.TrackCompletionRate, ct);
+                await copy.WriteAsync(h.OccupancyMinutes, NpgsqlDbType.Integer, ct);
+                await copy.WriteAsync(h.CapacityMinutes, NpgsqlDbType.Integer, ct);
+                await copy.WriteAsync(h.MinutesOutsideCapacity, NpgsqlDbType.Integer, ct);
+                await copy.WriteAsync(now, NpgsqlDbType.TimestampTz, ct);
+            }
+
+            await copy.CompleteAsync(ct);
+        }
+
+        await Execute(connection, """
+            INSERT INTO zone_health_bin SELECT * FROM stage_zone_health_bin
+            ON CONFLICT (zone_key, start_utc, revision) DO UPDATE SET length_minutes = EXCLUDED.length_minutes, status = EXCLUDED.status,
+                profile_version = EXCLUDED.profile_version, entries = EXCLUDED.entries, exits = EXCLUDED.exits,
+                occupancy_start = EXCLUDED.occupancy_start, occupancy_end = EXCLUDED.occupancy_end, conservation_residual = EXCLUDED.conservation_residual,
+                tracks_entered = EXCLUDED.tracks_entered, tracks_exited = EXCLUDED.tracks_exited, tracks_abandoned = EXCLUDED.tracks_abandoned,
+                tracks_fragmented = EXCLUDED.tracks_fragmented, tracks_censored = EXCLUDED.tracks_censored, tracks_rejected = EXCLUDED.tracks_rejected,
+                tracks_open = EXCLUDED.tracks_open, track_completion_rate = EXCLUDED.track_completion_rate,
+                occupancy_minutes = EXCLUDED.occupancy_minutes, capacity_minutes = EXCLUDED.capacity_minutes,
+                minutes_outside_capacity = EXCLUDED.minutes_outside_capacity, updated_on = EXCLUDED.updated_on
+            WHERE zone_health_bin.status <> 'Final'
+            """, ct);
+    }
+
     internal static async Task WriteDeskMinutesAsync(NpgsqlConnection connection, IReadOnlyList<DeskMinute> rows, DateTime now, CancellationToken ct)
     {
         await Execute(connection, "CREATE TEMP TABLE stage_desk_minute (LIKE desk_minute INCLUDING DEFAULTS) ON COMMIT DROP", ct);
@@ -471,6 +530,9 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
 #pragma warning restore CA2100
         await command.ExecuteNonQueryAsync(ct);
     }
+
+    private static Task NullableInt(NpgsqlBinaryImporter copy, int? value, CancellationToken ct) =>
+        value is { } v ? copy.WriteAsync(v, NpgsqlDbType.Integer, ct) : copy.WriteNullAsync(ct);
 
     private static Task Nullable(NpgsqlBinaryImporter copy, double? value, CancellationToken ct) =>
         value is { } v && double.IsFinite(v) ? copy.WriteAsync(v, NpgsqlDbType.Double, ct) : copy.WriteNullAsync(ct);
