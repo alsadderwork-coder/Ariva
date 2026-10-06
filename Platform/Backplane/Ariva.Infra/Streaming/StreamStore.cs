@@ -148,7 +148,8 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
     // replaces the row, a no-op in effect (idempotent). The exception is a minute released early, when a zone held more
     // open line minutes than LineCounts allows: its parts come as Additive rows and are added to the row (merged first
     // when one checkpoint holds several), so no count is lost. Outputs and the zone's snapshot commit together, so after
-    // a restart each part is produced and added once.
+    // a restart each part is produced and added once; the exception is a commit that succeeds on the server but reports an
+    // error and is retried by the same process, which adds an additive part twice (reachable only after an early release).
     private async Task WriteLineMinutesAsync(NpgsqlConnection connection, List<(string Zone, LineMinute Line)> rows, Func<string, int> version, DateTime now,
         CancellationToken ct)
     {

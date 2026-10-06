@@ -57,7 +57,7 @@ public sealed class LineCounts
     /// <summary>The latest minute released before the watermark passed it, while the watermark has not passed it yet.</summary>
     public DateTime? ReleasedEarlyThroughUtc { get; private set; }
 
-    /// <summary>Line minutes released early since this instance started (for health; not in the snapshot).</summary>
+    /// <summary>Line minutes released early since this instance started (not in the snapshot; read by tests, not yet surfaced in zone health).</summary>
     public long ReleasedEarly { get; private set; }
 
     /// <summary>Adds a step's line movements and returns the line minutes the step closed, in minute and then line name order.</summary>

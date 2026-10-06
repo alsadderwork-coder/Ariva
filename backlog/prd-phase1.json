@@ -20,8 +20,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 1,
-      "passes": false,
-      "notes": "Size S. No site decision needed. Feeds ARV-104e (count accuracy) and ARV-119 (weekly report).",
+      "passes": true,
+      "notes": "Size S. No site decision needed. Feeds ARV-104e (count accuracy) and ARV-119 (weekly report). 2026-10-06 owner decisions: the new golden replay hash is approved (the replay now hashes closed line minutes); the Vendor source is deferred until Ariva computes crossings from tracks (ADR-0003), because today the vendor topic is the engine's only crossing input and storing it again would duplicate it, not cross-check it. Schema already accepts source 'Vendor'.",
       "dependsOn": [
         "ARV-034",
         "ARV-036"
