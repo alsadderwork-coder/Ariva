@@ -402,7 +402,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 97,
-      "passes": false,
+      "passes": true,
       "notes": "Gate: before the first install outside Dalil.",
       "dependsOn": []
     }
