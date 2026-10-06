@@ -4,12 +4,23 @@ The gate before the pilot (roadmap, Gate 1). Dated 2026-10-06. It records the st
 
 ## 1. Scope delivered
 
-- `backlog/prd-phase0.json`: 78 of 79 stories pass once this one does. ARV-002 (container and chart hardening) is the exception: every automated criterion passes, and its last criterion is a release on the dev cluster, which needs a reachable cluster and GitHub Actions minutes (neither available on 2026-10-06).
+- `backlog/prd-phase0.json`: 77 of 79 stories pass; this story stays open until the six fault tests have run. ARV-002 (container and chart hardening) is the exception: every automated criterion passes, and its last criterion is a release on the dev cluster, which needs a reachable cluster and GitHub Actions minutes (neither available on 2026-10-06).
 - The scripted demo (ARV-064) plays the reference evening at DMO end to end through every host; the runbook is wiki/10, section 4.11.
 
 ## 2. Gates
 
-GATES_PLACEHOLDER
+Run on 2026-10-06 in the cloud session on `local/exit-review-candidate`: main at `5138e2c` plus the three open pull requests (#56 shadcn setup, #57 backlog follow-ups, #58 dropdown fixes) and this story's documents, which is main once they merge. GitHub Actions does not start on this account, so these are local runs of the CI commands.
+
+| Gate | Result |
+|---|---|
+| `node scripts/verify.mjs backend` | PASS: build with analyzers, 2,324 unit tests, golden replay unchanged, security gate, base images, chart security, NuGet and npm audits |
+| `node scripts/verify.mjs integration` | 316 passed, 1 skipped; the 6 Toxiproxy fault tests (`Faults/*`) could not run, because their image (`ghcr.io/shopify/toxiproxy:2.12.0`) is downloaded from `pkg-containers.githubusercontent.com`, which the cloud session's network policy blocks. **Open: run them where that host is reachable.** |
+| `node scripts/verify.mjs web` | PASS: svelte-check, lint, build |
+| `node scripts/verify.mjs e2e` | PASS: 506 passed, 1 skipped (API end-to-end and Playwright functional, with TimescaleDB, Kafka and Redis) |
+| `node scripts/security/scan.mjs` | PASS: 982 files, 0 errors, 6 warnings (all allowlisted); `--self-test` 42 rules fire, 0 false positives, all 14 CWEs covered |
+| `node scripts/verify.mjs docs` | PASS |
+| Visual baselines | 14 of 14 (ARV-064, 2026-10-05) |
+| Demo rehearsal | All three scripted events (ARV-064, 2026-10-05) |
 
 ## 3. Coverage
 
@@ -43,11 +54,42 @@ To reproduce: `dotnet test Platform/Backplane/Ariva.UnitTests --collect:"XPlat C
 
 ## 4. Security review
 
-SECURITY_PLACEHOLDER
+Independent security reviewer, full repository (not a diff), all 14 CWEs: **PASS with conditions.** No CWE has an exploitable gap in code; no secrets are committed (`.mcp.json` holds only `${...}` placeholders); no officer, traveller or document identifier appears in code, SQL or the web app.
+
+| CWE | Status |
+|---|---|
+| 78, 77 Command injection | No process execution in production code (`ForbiddenDependencyTests`) |
+| 94 Code injection | No eval or dynamic scripting; hash-mode CSP |
+| 918 SSRF | `OutboundTransport` checks every resolved address before dialling, no redirects or proxy (`OutboundTests`, `outbound-endpoints.spec.ts`) |
+| 862 Missing authorization | Default deny; every endpoint listed (`EndpointInventoryTests`, `PermissionMatrixTests`) |
+| 863 Incorrect authorization | `[SiteScoped]` and `ISiteScope` on site-bound data; hub joins re-check site and role (`SiteScopeTests`) |
+| 306 Missing authentication | Anonymous routes allowlisted; step-up MFA for critical actions (`step-up.spec.ts`) |
+| 287 Improper authentication | PBKDF2, constant-time comparisons, TOTP replay guard for users; the integration API's per-request TOTP can be replayed (ARV-088, Phase 1) |
+| 501 Trust boundary | `EntityBindingTests`; device transports and alert metrics the system cannot serve are refused (#58) |
+| 269 Privilege management | Role assignment rules (`AdministrationTests`); one shared database role (ARV-083, Phase 1) |
+| 384 Session fixation | Refresh rotation with family revocation, HttpOnly SameSite=Strict cookie (`sessions.spec.ts`) |
+| 89 SQL injection | Constant SQL with bound parameters; sorts through allowlists |
+| 120 Buffer overflow | No unsafe code; body, depth and size limits |
+| 79 XSS | No `{@html}`, `innerHTML` or `eval`; strict CSP; XSS probes in 10 functional specs |
+
+Conditions (see section 5): ARV-097 and the five `PENDING` allowlist approvals before the pilot contract; ARV-098, ARV-085 with ARV-087, and ARV-082 before go-live.
 
 ## 5. Open items carried into Phase 1
 
-OPEN_PLACEHOLDER
+Before the pilot contract:
+
+- **ARV-097**: MassTransit sends usage telemetry (versions, the server's time zone, Kafka topic names) to an external endpoint from four hosts. Reviewer: High.
+- **Five `approvedBy: PENDING` entries in `security/allowlist.json`**: the anonymous sign-in, refresh and auth routes, the mock AMAN sign-in, and the two reviewed SSRF exceptions in the outbound connector. Only the owner may approve them (CLAUDE.md, non-negotiable 1).
+- **The six fault-injection tests** must run green where the Toxiproxy image is reachable (a developer machine, or the cloud environment with `pkg-containers.githubusercontent.com` allowed).
+
+Before go-live:
+
+- **ARV-098**: an image started without DOTNET_ENVIRONMENT falls back to vm-local (development keys, sign-in without TOTP, SchemaUpdate, the demo seed). Reviewer: High.
+- **ARV-085 and ARV-087**: the TickerQ dashboard and the health probes are reachable through the public ingress; no NetworkPolicies.
+- **ARV-082**: no TLS to PostgreSQL, Redis or between pods in k8s-prd.
+- **ARV-002**: the release on the dev cluster (its last criterion), once a cluster and Actions minutes are available.
+
+Phase 1: the other ASVS gap stories (ARV-080, 083, 084, 086, 088 to 096); ASVS 5.0 Level 2 stands at 10 Gap and 73 Partly rows (`docs/security/asvs-l2.md`). Product: the Phase 1 candidates in `backlog/phase1-candidates.md`, including ARV-099 (the shadcn-svelte component layer). Known product limits: overflow occupancy and desks-below-plan are not evaluated yet (R-002 shows "Not evaluated yet"); five of seven sensor transports are not built.
 
 ## 6. Questions for the pilot contract
 
