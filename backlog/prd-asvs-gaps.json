@@ -383,7 +383,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 96,
-      "passes": false,
+      "passes": true,
       "notes": "Gate: before the first install or demo on a network outside Dalil.",
       "dependsOn": []
     },
