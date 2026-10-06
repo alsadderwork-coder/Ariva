@@ -45,17 +45,18 @@ public sealed class MessagingLayeringTests
     public void AddMassTransit_Should_BeCalledOnlyByAddArivaMessaging_When_AnyProductionCodeRegistersABus()
     {
         // ARV-097: AddArivaMessaging turns MassTransit's usage telemetry off (MessagingRegistrationTests); a bus
-        // registered anywhere else would report to MassTransit's endpoint again.
-        var backplane = Path.Combine(RepositoryPaths.Root, "Platform", "Backplane");
-        var callers = Directory.EnumerateFiles(backplane, "*.cs", SearchOption.AllDirectories)
-            .Where(file => !file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal) &&
-                           !file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal) &&
-                           !Path.GetRelativePath(backplane, file).Split(Path.DirectorySeparatorChar)[0].EndsWith("Tests", StringComparison.Ordinal))
-            .Where(file => File.ReadAllText(file).Contains(".AddMassTransit(", StringComparison.Ordinal))
-            .Select(file => Path.GetRelativePath(backplane, file).Replace(Path.DirectorySeparatorChar, '/'))
+        // registered anywhere else, including a second bus (AddMassTransit<TBus>), would report to MassTransit again.
+        var platform = Path.Combine(RepositoryPaths.Root, "Platform");
+        var call = new System.Text.RegularExpressions.Regex(@"\bAddMassTransit(?!TestHarness)\s*[<(]");
+        var callers = Directory.EnumerateFiles(platform, "*.cs", SearchOption.AllDirectories)
+            .Select(file => Path.GetRelativePath(platform, file).Replace(Path.DirectorySeparatorChar, '/'))
+            .Where(file => !file.Contains("/bin/", StringComparison.Ordinal) && !file.Contains("/obj/", StringComparison.Ordinal) &&
+                           !file.Contains("/node_modules/", StringComparison.Ordinal) &&
+                           !file.Split('/')[1].EndsWith("Tests", StringComparison.Ordinal))
+            .Where(file => call.IsMatch(File.ReadAllText(Path.Combine(platform, file))))
             .ToList();
 
-        callers.Should().Equal(["Ariva.Di/Extensions/MessagingExtensions.cs"], "every host gets its bus, with usage telemetry off, from AddArivaMessaging");
+        callers.Should().Equal(["Backplane/Ariva.Di/Extensions/MessagingExtensions.cs"], "every host gets its bus, with usage telemetry off, from AddArivaMessaging");
     }
 
     [Fact]

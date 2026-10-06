@@ -11,7 +11,7 @@ For Dalil engineers, DevOps, and the customer's security reviewers. It summarise
 | Least data | No images, no biometrics, no officer or passenger identity; AMAN sends aggregates only; only lane-level aggregates leave a border deployment |
 | Separate principals | Users and integration clients have separate signing keys and token audiences; devices have a scheme of their own (a per-device credential, never a token), accepted only on device endpoints and nowhere else |
 | Integrity | Zone profiles and contracts are immutable versions; the runtime database role cannot change raw hypertables; evidence packs are sealed with SHA-256; a golden replay of the archive hash-chains its inputs and outputs and is recorded append-only in `replay_run` (time, login and a chain link set by the database), so a change to an exported replay is detected; the archive and that record are as trustworthy as the runtime database login (ARV-036); everything is audited |
-| On premises, in country | Every deployment runs in the customer's environment; no telemetry leaves without consent. Library telemetry is off in code: MassTransit's usage report (versions, OS, time zone, topic names) is disabled where every host registers the bus, and the E2E log scan fails a run that reports it (ARV-097) |
+| On premises, in country | Every deployment runs in the customer's environment; no telemetry leaves without consent. Library telemetry is off in code: MassTransit's usage report (versions, OS, time zone, topic names) is disabled where every host registers the bus, a host refuses to start if `MASSTRANSIT_USAGE_TELEMETRY` turns it back on, and the E2E log scan fails a run that reports it (ARV-097) |
 
 ## 2. Control summary (14 CWEs)
 
