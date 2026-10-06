@@ -21,6 +21,9 @@ public sealed record SecretReprotectionRun(int Checked, int Reprotected, int Fai
 /// </summary>
 internal sealed class SecretReprotection(IUnitOfWork unitOfWork, IDataProtectionProvider dataProtection, ILogger<SecretReprotection> logger) : SvcDb(unitOfWork)
 {
+    /// <summary>Test seam: runs after a value was read and re-protected, before its compare-and-swap UPDATE.</summary>
+    internal Func<Guid, Task> BeforeWrite { get; set; }
+
     public async Task<SecretReprotectionRun> RunAsync(CancellationToken ct = default)
     {
         int seen = 0, rewritten = 0, failed = 0;
@@ -76,7 +79,10 @@ internal sealed class SecretReprotection(IUnitOfWork unitOfWork, IDataProtection
                 if (!requiresMigration)
                     continue;
 
-                var replaced = await update(row, WebEncoders.Base64UrlEncode(protector.Protect(plaintext)));
+                var reprotected = WebEncoders.Base64UrlEncode(protector.Protect(plaintext));
+                if (BeforeWrite is not null)
+                    await BeforeWrite(row.Id);
+                var replaced = await update(row, reprotected);
                 rewritten += replaced.Count;
             }
             catch (Exception e) when (e is CryptographicException or FormatException)

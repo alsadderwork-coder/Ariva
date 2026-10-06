@@ -10,7 +10,7 @@
       "acceptanceCriteria": [
         "A custom IXmlEncryptor and IXmlDecryptor wrap new keys with RSA-OAEP-SHA256 and AES-256-GCM; existing keys stay readable for migration; a test fails on rsa-1_5 or CBC in a written key",
         "A Data Protection certificate under RSA 3072 (or an EC key under P-256) is refused at startup",
-        "Stored hashes and protected values carry their algorithm; a job re-protects TOTP seeds and outbound secrets under the current key",
+        "Protected values carry their algorithm (the Data Protection key id and its descriptor); a job re-protects TOTP seeds and outbound secrets under the current key (credential hash labels moved to ARV-080a)",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "node scripts/security/scan.mjs passes with 0 errors",
         "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
@@ -19,9 +19,29 @@
       ],
       "priority": 100,
       "passes": false,
-      "notes": "",
+      "notes": "Split 2026-10-06: algorithm labels on the credential hashes (refresh tokens, recovery codes, device and display credentials) went to ARV-080a, so this story stays one reviewable change.",
       "dependsOn": [
         "ARV-074"
+      ]
+    },
+    {
+      "id": "ARV-080a",
+      "title": "[ASVS] Credential hashes carry their algorithm",
+      "description": "Refresh token, recovery code, device and display credential hashes are stored as unprefixed lower-case hex SHA-256 and looked up by equality, so nothing in code says which algorithm made them or refuses an unknown one. Give them one CredentialHash helper with an algorithm label (or an enforced rule that an unprefixed 64-character value is SHA-256 and anything else carries a recognised prefix), used by all four. Split from ARV-080. ASVS 5.0: V11.2.2. Effort S.",
+      "acceptanceCriteria": [
+        "One CredentialHash helper formats and recognises the stored form for refresh tokens, recovery codes, device and display credentials; an unknown algorithm label is refused, with a unit test",
+        "Existing rows stay valid without a migration, or a versioned script migrates them; a test proves an existing hash still matches",
+        "docs/security/asvs-l2.md V11.2.2 updated with its new status and evidence",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 101,
+      "passes": false,
+      "notes": "Split from ARV-080 on 2026-10-06 (security review).",
+      "dependsOn": [
+        "ARV-080"
       ]
     },
     {

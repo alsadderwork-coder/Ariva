@@ -12,6 +12,8 @@ using Microsoft.AspNetCore.DataProtection.KeyManagement;
 using Microsoft.AspNetCore.DataProtection.Repositories;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
+using Ariva.Core.Services;
 using Npgsql;
 
 namespace Ariva.IntegrationTests.Security;
@@ -35,12 +37,8 @@ public sealed class SecretReprotectionTests(PostgresFixture fixture)
         var underOldKey = protector.Protect(Seed);
         await SetSeedAsync(connection, userId, underOldKey);
 
-        var keys = host.Provider.GetRequiredService<IKeyManager>();
-        // The default key is the most recently activated one: activate the new key after the first (within the clock skew).
-        keys.CreateNewKey(DateTimeOffset.UtcNow.AddSeconds(1), DateTimeOffset.UtcNow.AddDays(90));
-        // The key ring refreshes in the background: wait until the new key is the default one.
-        for (var attempt = 0; attempt < 100 && !Unprotected(protector, underOldKey).RequiresMigration; attempt++)
-            await Task.Delay(TimeSpan.FromMilliseconds(200), TestContext.Current.CancellationToken);
+        // The default key is the most recently activated one: activate the new key after the first.
+        await RollKeyAsync(host, protector, underOldKey);
         var round = host.Provider.GetRequiredService<SecretReprotectionRound>();
 
         var first = await round.RunAsync(TestContext.Current.CancellationToken);
@@ -68,22 +66,195 @@ public sealed class SecretReprotectionTests(PostgresFixture fixture)
 
         run.Failed.Should().BeGreaterThanOrEqualTo(1);
         (await SeedAsync(connection, userId)).Should().Be(Unreadable);
+        _logs.Entries.Should().Contain(e => e.Contains(userId.ToString(), StringComparison.Ordinal), "the row that could not be read is named");
+        _logs.Entries.Should().NotContain(e => e.Contains(Unreadable, StringComparison.Ordinal), "a stored secret never reaches a log (CWE-532)");
     }
+
+    private readonly CapturedLogs _logs = new();
 
     private AccountsHost Host() =>
         new(fixture, database: TestDatabase.SecretReprotection, configure: services =>
         {
-            // The hosts' Data Protection (OAEP and GCM key ring) with an in-memory repository, instead of the ephemeral one.
+            // The hosts' Data Protection (signed OAEP and GCM key ring) with an in-memory repository, instead of the
+            // ephemeral one.
             services.RemoveAll<IDataProtectionProvider>();
             services.AddArivaDataProtection(new DatabaseSettings(), DataProtectionCertificates.From(Certificate()));
             var repository = new MemoryRepository();
             services.Configure<KeyManagementOptions>(options => options.XmlRepository = repository);
+            services.AddSingleton<ILoggerProvider>(_logs);
         });
+
+    /// <summary>Makes a new key the default and waits until the background key ring refresh has picked it up.</summary>
+    private static async Task RollKeyAsync(AccountsHost host, IPersistedDataProtector protector, string underOldKey)
+    {
+        host.Provider.GetRequiredService<IKeyManager>().CreateNewKey(DateTimeOffset.UtcNow.AddSeconds(1), DateTimeOffset.UtcNow.AddDays(90));
+        for (var attempt = 0; attempt < 100 && !Unprotected(protector, underOldKey).RequiresMigration; attempt++)
+            await Task.Delay(TimeSpan.FromMilliseconds(200), TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task Round_Should_ReprotectClientSeedsAndOutboundSecrets_When_TheKeyHasRolled()
+    {
+        const string Secret = "{\"ApiKey\":\"partner-key\"}";
+        await using var host = Host();
+        await host.CreateUserAsync("reprotect.tables");
+        var connection = fixture.ConnectionString(await host.DatabaseAsync());
+        var provider = host.Provider.GetRequiredService<IDataProtectionProvider>();
+        var seeds = (IPersistedDataProtector)provider.CreateProtector(Ariva.Infra.Integration.IntegrationCredentials.SeedProtectionPurpose);
+        var outbound = (IPersistedDataProtector)provider.CreateProtector(Ariva.Infra.Integration.OutboundSecrets.Purpose);
+        var seed = seeds.Protect(Seed);
+        var secret = outbound.Protect(Secret);
+        var clientId = Guid.CreateVersion7();
+        var endpointId = Guid.CreateVersion7();
+        await ExecuteAsync(connection,
+            """
+            INSERT INTO integration_client (id, client_id, name, kind, status, scope_names, site_codes, allowed_networks, require_totp_per_request,
+                secret_algorithm, secret_iterations, secret_salt, secret_hash, secret_changed_utc, totp_secret_protected, totp_changed_utc,
+                tokens_valid_from_utc, token_version)
+            VALUES (@id, 'ic_abcdefghijklmnopqrstuvwxyz', 'Reprotect client', 'Other', 'Active', 'queues:read', 'AMM', '10.0.0.0/8', false,
+                'pbkdf2-sha256', 600000, 'salt', 'hash', now(), @value, now(), now(), 0)
+            """, clientId, seed);
+        await ExecuteAsync(connection,
+            """
+            INSERT INTO outbound_endpoint (id, code, name, purpose, status, site_codes, base_url, allowed_networks, auth_kind, header_name,
+                totp_per_request, timeout_seconds, retry_count, breaker_failures, break_seconds, poll_seconds, secret_protected,
+                has_client_certificate, secret_changed_utc, client_version)
+            VALUES (@id, 'reprotect-partner', 'Reprotect partner', 'Generic', 'Active', 'AMM', 'https://partner.example/', '10.0.0.0/8', 'ApiKeyHeader', 'X-Api-Key',
+                false, 10, 0, 5, 30, 0, @value, false, now(), 0)
+            """, endpointId, secret);
+
+        await RollKeyAsync(host, seeds, seed);
+        var run = await host.Provider.GetRequiredService<SecretReprotectionRound>().RunAsync(TestContext.Current.CancellationToken);
+
+        var newSeed = await ScalarAsync(connection, "SELECT totp_secret_protected FROM integration_client WHERE id = @id", clientId);
+        var newSecret = await ScalarAsync(connection, "SELECT secret_protected FROM outbound_endpoint WHERE id = @id", endpointId);
+        run.Reprotected.Should().BeGreaterThanOrEqualTo(2);
+        newSeed.Should().NotBe(seed);
+        seeds.Unprotect(newSeed).Should().Be(Seed);
+        Unprotected(seeds, newSeed).RequiresMigration.Should().BeFalse();
+        newSecret.Should().NotBe(secret);
+        outbound.Unprotect(newSecret).Should().Be(Secret);
+    }
+
+    [Fact]
+    public async Task Round_Should_KeepTheNewValue_When_ASecretChangesWhileItIsReprotected()
+    {
+        await using var host = Host();
+        var userId = await host.CreateUserAsync("reprotect.race");
+        var connection = fixture.ConnectionString(await host.DatabaseAsync());
+        var protector = (IPersistedDataProtector)host.Provider.GetRequiredService<IDataProtectionProvider>().CreateProtector(Totp.DataProtectionPurpose);
+        var underOldKey = protector.Protect(Seed);
+        await SetSeedAsync(connection, userId, underOldKey);
+        await RollKeyAsync(host, protector, underOldKey);
+        var reEnrolled = protector.Protect("NEWSEEDNEWSEED22");
+
+        await using var scope = host.Provider.CreateAsyncScope();
+        var reprotection = scope.ServiceProvider.GetRequiredService<SecretReprotection>();
+        // The user re-enrols between the round's read and its write (committed on another connection).
+        reprotection.BeforeWrite = async id =>
+        {
+            if (id == userId)
+                await SetSeedAsync(connection, userId, reEnrolled);
+        };
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        await reprotection.RunAsync(TestContext.Current.CancellationToken);
+        await unitOfWork.EndAsync(TestContext.Current.CancellationToken);
+
+        (await SeedAsync(connection, userId)).Should().Be(reEnrolled, "the compare-and-swap UPDATE never overwrites a value that changed");
+    }
+
+    [Fact]
+    public async Task Round_Should_LeaveAValueAlone_When_ItsKeyIsRevoked()
+    {
+        await using var host = Host();
+        var userId = await host.CreateUserAsync("reprotect.revoked");
+        var connection = fixture.ConnectionString(await host.DatabaseAsync());
+        var protector = (IPersistedDataProtector)host.Provider.GetRequiredService<IDataProtectionProvider>().CreateProtector(Totp.DataProtectionPurpose);
+        var underOldKey = protector.Protect(Seed);
+        await SetSeedAsync(connection, userId, underOldKey);
+        var keys = host.Provider.GetRequiredService<IKeyManager>();
+        var oldKey = keys.GetAllKeys().Single();
+        await RollKeyAsync(host, protector, underOldKey);
+        keys.RevokeKey(oldKey.KeyId, "ARV-080 test: compromised");
+        for (var attempt = 0; attempt < 100 && !Revoked(protector, underOldKey); attempt++)
+            await Task.Delay(TimeSpan.FromMilliseconds(200), TestContext.Current.CancellationToken);
+
+        var run = await host.Provider.GetRequiredService<SecretReprotectionRound>().RunAsync(TestContext.Current.CancellationToken);
+
+        run.Failed.Should().BeGreaterThanOrEqualTo(1);
+        (await SeedAsync(connection, userId)).Should().Be(underOldKey, "a secret under a revoked key is re-enrolled, not carried over to a new key");
+    }
 
     private static (string Plaintext, bool RequiresMigration) Unprotected(IPersistedDataProtector protector, string value)
     {
         var bytes = protector.DangerousUnprotect(Microsoft.AspNetCore.WebUtilities.WebEncoders.Base64UrlDecode(value), false, out var requiresMigration, out _);
         return (System.Text.Encoding.UTF8.GetString(bytes), requiresMigration);
+    }
+
+    private static bool Revoked(IPersistedDataProtector protector, string value)
+    {
+        try
+        {
+            protector.DangerousUnprotect(Microsoft.AspNetCore.WebUtilities.WebEncoders.Base64UrlDecode(value), false, out _, out _);
+            return false;
+        }
+        catch (CryptographicException)
+        {
+            return true;
+        }
+    }
+
+    private static async Task ExecuteAsync(string connectionString, [System.Diagnostics.CodeAnalysis.ConstantExpected] string sql, Guid id, string value)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+#pragma warning disable CA2100 // test helper: every caller passes a literal (ConstantExpected, CA1857 is an error)
+        await using var command = new NpgsqlCommand(sql, connection);
+#pragma warning restore CA2100
+        command.Parameters.AddWithValue("id", id);
+        command.Parameters.AddWithValue("value", value);
+        (await command.ExecuteNonQueryAsync(TestContext.Current.CancellationToken)).Should().Be(1);
+    }
+
+    private static async Task<string> ScalarAsync(string connectionString, [System.Diagnostics.CodeAnalysis.ConstantExpected] string sql, Guid id)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+#pragma warning disable CA2100 // test helper: every caller passes a literal (ConstantExpected, CA1857 is an error)
+        await using var command = new NpgsqlCommand(sql, connection);
+#pragma warning restore CA2100
+        command.Parameters.AddWithValue("id", id);
+        return (string)await command.ExecuteScalarAsync(TestContext.Current.CancellationToken);
+    }
+
+    private sealed class CapturedLogs : ILoggerProvider, ILogger
+    {
+        private readonly List<string> _entries = [];
+
+        public IReadOnlyList<string> Entries
+        {
+            get
+            {
+                lock (_entries)
+                    return [.. _entries];
+            }
+        }
+
+        public ILogger CreateLogger(string categoryName) => this;
+
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception, Func<TState, Exception, string> formatter)
+        {
+            lock (_entries)
+                _entries.Add(formatter(state, exception) + " " + exception);
+        }
+
+        public void Dispose()
+        {
+        }
     }
 
     private static async Task SetSeedAsync(string connectionString, Guid userId, string value)

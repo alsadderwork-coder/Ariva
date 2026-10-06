@@ -89,7 +89,7 @@ Before go-live:
 - **ARV-082**: no TLS to PostgreSQL, Redis or between pods in k8s-prd.
 - **ARV-002**: the release on the dev cluster (its last criterion), once a cluster and Actions minutes are available.
 
-Phase 1: the other ASVS gap stories (ARV-083, 084, 086, 088 to 096; ARV-080 is done); ASVS 5.0 Level 2 stands at 9 Gap and 68 Partly rows after ARV-080 (`docs/security/asvs-l2.md`). Product: the Phase 1 candidates in `backlog/phase1-candidates.md`, including ARV-099 (the shadcn-svelte component layer). Known product limits: overflow occupancy and desks-below-plan are not evaluated yet (R-002 shows "Not evaluated yet"); five of seven sensor transports are not built.
+Phase 1: the other ASVS gap stories (ARV-080a, 083, 084, 086, 088 to 096; ARV-080 is done); ASVS 5.0 Level 2 stands at 9 Gap and 69 Partly rows after ARV-080 (`docs/security/asvs-l2.md`). Product: the Phase 1 candidates in `backlog/phase1-candidates.md`, including ARV-099 (the shadcn-svelte component layer). Known product limits: overflow occupancy and desks-below-plan are not evaluated yet (R-002 shows "Not evaluated yet"); five of seven sensor transports are not built.
 
 ## 6. Questions for the pilot contract
 

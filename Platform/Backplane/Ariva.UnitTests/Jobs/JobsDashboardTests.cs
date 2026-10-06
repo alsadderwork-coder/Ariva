@@ -67,7 +67,9 @@ public sealed class JobsDashboardTests
 
         using var answer = await client.SendAsync(Get("/tickerq/api/cron-tickers", Key), ct);
         answer.StatusCode.Should().Be(HttpStatusCode.OK);
-        (await answer.Content.ReadAsStringAsync(ct)).Should().Contain(ReportJobs.Deliveries).And.Contain("0 */5 * * * *");
+        var tickers = await answer.Content.ReadAsStringAsync(ct);
+        tickers.Should().Contain(ReportJobs.Deliveries).And.Contain("0 */5 * * * *");
+        tickers.Should().Contain(SecretJobs.Reprotect).And.Contain("0 40 2 * * *", "the key ring's stored secrets are re-protected daily (ARV-080)");
 
         // A keyed request returns the hub ticket: HttpOnly, Secure, SameSite=Strict, only for the hub's path, never the key.
         var setCookie = answer.Headers.GetValues("Set-Cookie").Single(c => c.StartsWith(JobsDashboardGuard.TicketCookie + "=", StringComparison.Ordinal));
