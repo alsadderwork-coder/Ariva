@@ -161,7 +161,9 @@ public sealed class KeyRingEncryptionTests
             Protector(first).Protect("creates the genuine key");
 
         using var attacker = PlaintextKeyWriter(repository);
-        attacker.GetRequiredService<IKeyManager>().CreateNewKey(DateTimeOffset.UtcNow.AddSeconds(-1), DateTimeOffset.UtcNow.AddDays(90));
+        // Activated after the genuine key, so it would be the default key if it were trusted.
+        Thread.Sleep(20);
+        attacker.GetRequiredService<IKeyManager>().CreateNewKey(DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddDays(90));
         repository.GetAllElements().Should().Contain(e => e.ToString().Contains("<value>"), "the fixture plants a plaintext key");
 
         using var host = Host(repository, DataProtectionCertificates.From(certificate));
@@ -173,16 +175,87 @@ public sealed class KeyRingEncryptionTests
     }
 
     [Fact]
+    public void KeyRing_Should_IgnoreAPlantedKey_When_ItHidesAGenuineEncryptedSecretAsADecoy()
+    {
+        using var certificate = Certificate(3072);
+        var repository = new MemoryRepository();
+        using (var first = Host(repository, DataProtectionCertificates.From(certificate)))
+            Protector(first).Protect("creates the genuine key");
+        var genuine = repository.GetAllElements().Single().Descendants().Single(e => e.Name.LocalName == "encryptedSecret");
+
+        // A plain-text key with a later activation, carrying a genuine signed encrypted secret copied from the real row.
+        using var attacker = PlaintextKeyWriter(repository);
+        // Activated after the genuine key, so it would be the default key if it were trusted.
+        Thread.Sleep(20);
+        attacker.GetRequiredService<IKeyManager>().CreateNewKey(DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddDays(90));
+        repository.Mutate(elements =>
+        {
+            var planted = elements.Single(e => e.ToString().Contains("<value>"));
+            planted.Descendants().Single(e => e.Name.LocalName == "masterKey").Parent!.Add(new XElement("decoy", new XElement(genuine)));
+        });
+
+        using var host = Host(repository, DataProtectionCertificates.From(certificate));
+        var payload = Protector(host).Protect("totp-seed");
+
+        FluentActions.Invoking(() => Protector(attacker).Unprotect(payload)).Should().Throw<CryptographicException>(
+            "a decoy encrypted secret does not make a plain-text master key trusted");
+    }
+
+    [Fact]
+    public void KeyRing_Should_NeverProtectWithALegacyKey_When_OneIsPlantedDuringTheMigrationWindow()
+    {
+        using var certificate = Certificate(3072);
+        var repository = new MemoryRepository();
+        using (var first = Host(repository, DataProtectionCertificates.From(certificate)))
+            Protector(first).Protect("creates the genuine key");
+
+        // Anyone with the public certificate can write the older format; this one activates after the genuine key.
+        using var planter = LegacyHost(repository, certificate);
+        Thread.Sleep(20);
+        planter.GetRequiredService<IKeyManager>().CreateNewKey(DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddDays(90));
+
+        using var host = Host(repository, DataProtectionCertificates.From(certificate), legacyFormatUntil: DateTimeOffset.UtcNow.AddDays(30));
+        var payload = Protector(host).Protect("totp-seed");
+
+        using var reader = LegacyHost(repository, certificate);
+        FluentActions.Invoking(() => Protector(reader).Unprotect(payload)).Should().Throw<CryptographicException>(
+            "a legacy key is admitted only to decrypt, as an expired copy, so it never becomes the default key");
+    }
+
+    [Fact]
+    public void AddArivaDataProtection_Should_PutTheTrustedFilterInFrontOfPostgres_When_AHostRegistersIt()
+    {
+        using var certificate = Certificate(3072);
+        var until = new DateTimeOffset(2027, 1, 6, 0, 0, 0, TimeSpan.Zero);
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddArivaDataProtection(new DatabaseSettings(), DataProtectionCertificates.From(certificate), until);
+        using var provider = services.BuildServiceProvider();
+
+        var options = provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<KeyManagementOptions>>().Value;
+
+        options.XmlRepository.Should().BeOfType<TrustedKeyRingRepository>().Which.LegacyFormatUntil.Should().Be(until);
+        options.XmlEncryptor.Should().BeOfType<OaepGcmXmlEncryptor>();
+    }
+
+    [Fact]
     public void Verdict_Should_AdmitOnlyArivaKeys_When_TheRingIsRead()
     {
         var filter = new TrustedKeyRingRepository(new MemoryRepository(), null, TimeProvider.System, NullLogger.Instance);
         XElement Key(string decryptor) => new("key", new XAttribute("id", Guid.NewGuid()),
-            new XElement("descriptor", new XElement("masterKey", new XElement("encryptedSecret", new XAttribute("decryptorType", decryptor)))));
+            new XElement("descriptor", new XElement("descriptor", new XElement("encryptedSecret", new XAttribute("decryptorType", decryptor)))));
 
         filter.Verdict(Key(typeof(OaepGcmXmlDecryptor).AssemblyQualifiedName!)).Should().BeNull();
         filter.Verdict(Key("Microsoft.AspNetCore.DataProtection.XmlEncryption.EncryptedXmlDecryptor, Microsoft.AspNetCore.DataProtection")).Should().Contain("LegacyFormatUntil");
         filter.Verdict(Key("Evil.Decryptor, Evil")).Should().Contain("does not use");
-        filter.Verdict(new XElement("key", new XElement("descriptor", new XElement("masterKey", new XElement("value", "AAAA"))))).Should().Contain("not encrypted");
+        filter.Verdict(new XElement("key", new XElement("descriptor", new XElement("descriptor", new XElement("masterKey", new XElement("value", "AAAA"))))))
+            .Should().Contain("exactly one encrypted secret");
+        // A decoy: a plain-text master key where Data Protection reads it, and a genuine encrypted secret elsewhere.
+        var decoy = Key(typeof(OaepGcmXmlDecryptor).AssemblyQualifiedName!);
+        var genuine = decoy.Descendants("encryptedSecret").Single();
+        genuine.Remove();
+        decoy.Element("descriptor")!.Element("descriptor")!.Add(new XElement("masterKey", new XElement("value", "AAAA")), new XElement("decoy", genuine));
+        filter.Verdict(decoy).Should().NotBeNull("Data Protection would read the plain-text master key and ignore the decoy");
         filter.Verdict(new XElement("revocation")).Should().BeNull("a revocation can at worst force a new key");
         filter.Verdict(new XElement("something")).Should().NotBeNull();
     }
@@ -333,6 +406,13 @@ public sealed class KeyRingEncryptionTests
         {
             lock (_elements)
                 _elements.Add(new XElement(element));
+        }
+
+        /// <summary>Changes the stored rows in place, as a database writer could.</summary>
+        public void Mutate(Action<List<XElement>> change)
+        {
+            lock (_elements)
+                change(_elements);
         }
     }
 
