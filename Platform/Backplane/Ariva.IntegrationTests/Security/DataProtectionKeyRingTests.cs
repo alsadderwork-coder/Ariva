@@ -44,7 +44,8 @@ public sealed class DataProtectionKeyRingTests(PostgresFixture fixture)
         stored.Should().NotBeEmpty();
         stored.Should().AllSatisfy(xml =>
         {
-            xml.Should().Contain("EncryptedData", "keys are encrypted with the certificate before they are stored");
+            xml.Should().Contain(OaepGcmXml.Algorithm, "keys are wrapped with RSA-OAEP and AES-GCM before they are stored (ARV-080)");
+            xml.Should().NotContain("rsa-1_5").And.NotContain("aes256-cbc");
             xml.Should().NotContain("<value>", "no plaintext master key may reach the table");
         });
     }
@@ -78,7 +79,7 @@ public sealed class DataProtectionKeyRingTests(PostgresFixture fixture)
 
     private static X509Certificate2 CreateCertificate(string subject)
     {
-        using var rsa = RSA.Create(2048);
+        using var rsa = RSA.Create(DataProtectionCertificates.MinimumRsaKeyBits);
         var request = new CertificateRequest(subject, rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         using var created = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(30));
         // Round trip through PKCS#12 so the private key is usable on every platform, as a mounted PEM pair would be.

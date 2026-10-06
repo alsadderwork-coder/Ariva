@@ -64,7 +64,7 @@ Ariva's integration authentication follows AMAN's flow but adds hashed secrets, 
 | Database, Kafka, Redis, SMTP credentials | `appsettings.*.<env>.json` written into Kubernetes secrets by the release pipeline from a secret variable group (or by the customer's process); never in the repository |
 | Registry credentials | `dalilacr-secret`, rendered from pipeline variables |
 | Integration client secrets | Stored only as PBKDF2 hashes |
-| TOTP seeds, outbound endpoint secrets | Encrypted with the Data Protection key ring |
+| TOTP seeds, outbound endpoint secrets | Encrypted with the Data Protection key ring (AES-256-GCM for keys since ARV-080; the ring itself wrapped with RSA-OAEP-SHA256 and AES-256-GCM under an RSA 3072 certificate) and re-protected under the current key by the daily `SecretReprotection` job |
 | Token signing keys | Separate keys for users and integration clients; devices use per-device credentials stored as hashes, not tokens |
 | TLS keys and certificates | Customer PKI; ingress or controller secrets |
 

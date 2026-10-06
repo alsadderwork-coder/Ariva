@@ -59,8 +59,34 @@ public sealed class DataProtectionCertificates
         return new DataProtectionCertificates(current, all);
     }
 
-    public static DataProtectionCertificates From(X509Certificate2 current, params X509Certificate2[] previous) =>
-        new(current, [current, .. previous]);
+    public static DataProtectionCertificates From(X509Certificate2 current, params X509Certificate2[] previous)
+    {
+        ArgumentNullException.ThrowIfNull(current);
+        RequireStrong(current);
+        foreach (var certificate in previous)
+            RequireStrong(certificate);
+        return new(current, [current, .. previous]);
+    }
+
+    /// <summary>The smallest RSA key that may protect the key ring (ASVS V11.2.3: at least 128 bits of security).</summary>
+    public const int MinimumRsaKeyBits = 3072;
+
+    /// <summary>
+    /// ARV-080: the key ring is wrapped with RSA-OAEP (<see cref="OaepGcmXmlEncryptor"/>), so the certificate must hold an
+    /// RSA key of at least <see cref="MinimumRsaKeyBits"/> bits. An EC or other key cannot wrap with OAEP and is refused
+    /// too, whatever its size. Checked for previous certificates as well: a weak one would still unlock every old key.
+    /// </summary>
+    public static void RequireStrong(X509Certificate2 certificate)
+    {
+        ArgumentNullException.ThrowIfNull(certificate);
+        using var rsa = certificate.GetRSAPublicKey();
+        if (rsa is null)
+            throw new InvalidOperationException(
+                $"The Data Protection certificate {certificate.Subject} has no RSA key; the key ring needs RSA {MinimumRsaKeyBits} or larger.");
+        if (rsa.KeySize < MinimumRsaKeyBits)
+            throw new InvalidOperationException(
+                $"The Data Protection certificate {certificate.Subject} has an RSA {rsa.KeySize} key; the key ring needs RSA {MinimumRsaKeyBits} or larger.");
+    }
 
     private static X509Certificate2 FromPem(string certificatePath, string keyPath)
     {
@@ -70,6 +96,7 @@ public sealed class DataProtectionCertificates
         var certificate = X509Certificate2.CreateFromPemFile(certificatePath, keyPath);
         if (!certificate.HasPrivateKey)
             throw new InvalidOperationException($"The Data Protection certificate {certificate.Subject} has no private key.");
+        RequireStrong(certificate);
         return certificate;
     }
 
