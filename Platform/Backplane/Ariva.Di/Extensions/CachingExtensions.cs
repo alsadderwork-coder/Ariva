@@ -26,7 +26,7 @@ public static class CachingExtensions
         ArgumentNullException.ThrowIfNull(configuration);
 
         var redis = RedisSettings.From(configuration);
-        var environment = configuration["Application:Environment"] ?? "vm-local";
+        var environment = configuration["Application:Environment"] ?? "unset";
         var minutes = int.TryParse(configuration["Cache:FusionCacheInMinutes"], out var configured) && configured > 0 ? configured : 5;
 
         var builder = services

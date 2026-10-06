@@ -116,3 +116,16 @@ metadata: { name: database-init }
 data:
   init.sh: |
     CREATE ROLE ariva LOGIN SUPERUSER;
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: no-environment }
+spec:
+  template:
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: app
+          image: registry.example/api-stream:main-20261001.1
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]

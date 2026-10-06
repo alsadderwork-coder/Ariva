@@ -13,14 +13,8 @@ using Ariva.Simulation.Api.Security;
 // Same layering as the Backplane hosts: base, base per environment, service, service per environment,
 // then environment variables and command line arguments. The environment comes from --environment,
 // DOTNET_ENVIRONMENT or ASPNETCORE_ENVIRONMENT, then environment.json, and is also the host environment name.
-var environment = new ConfigurationBuilder().AddCommandLine(args).Build()[HostDefaults.EnvironmentKey]
-                  ?? Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT")
-                  ?? Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT")
-                  ?? new ConfigurationBuilder()
-                      .SetBasePath(AppContext.BaseDirectory)
-                      .AddJsonFile("environment.json", optional: true, reloadOnChange: false)
-                      .Build()["Environment"]
-                  ?? "vm-local";
+// ARV-098: no default and no unknown name (SimulationEnvironment).
+var environment = SimulationEnvironment.Resolve(args, AppContext.BaseDirectory);
 
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 {

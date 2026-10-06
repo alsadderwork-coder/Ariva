@@ -72,7 +72,7 @@ Independent security reviewer, full repository (not a diff), all 14 CWEs: **PASS
 | 120 Buffer overflow | No unsafe code; body, depth and size limits |
 | 79 XSS | No `{@html}`, `innerHTML` or `eval`; strict CSP; XSS probes in 10 functional specs |
 
-Conditions (see section 5): the five `PENDING` allowlist approvals before the pilot contract (ARV-097, the other condition, is done); ARV-098, ARV-085 with ARV-087, and ARV-082 before go-live.
+Conditions (see section 5): the five `PENDING` allowlist approvals before the pilot contract (ARV-097, the other condition, is done); ARV-085 with ARV-087, and ARV-082 before go-live (ARV-098 is done).
 
 ## 5. Open items carried into Phase 1
 
@@ -84,7 +84,7 @@ Before the pilot contract:
 
 Before go-live:
 
-- **ARV-098**: an image started without DOTNET_ENVIRONMENT falls back to vm-local (development keys, sign-in without TOTP, SchemaUpdate, the demo seed). Reviewer: High.
+- **ARV-098** (done, 2026-10-06): an image started without DOTNET_ENVIRONMENT fell back to vm-local (development keys, sign-in without TOTP, SchemaUpdate, the demo seed). Images now ship no `environment.json`, a host without a known environment refuses to start, and the chart test checks every .NET workload sets it.
 - **ARV-085 and ARV-087**: the TickerQ dashboard and the health probes are reachable through the public ingress; no NetworkPolicies.
 - **ARV-082**: no TLS to PostgreSQL, Redis or between pods in k8s-prd.
 - **ARV-002**: the release on the dev cluster (its last criterion), once a cluster and Actions minutes are available.

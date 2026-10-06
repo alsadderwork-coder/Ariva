@@ -54,8 +54,10 @@
         <Content Update="appsettings.service.k8s-prd.json">
             <CopyToOutputDirectory>Always</CopyToOutputDirectory>
         </Content>
+        <!-- ARV-098: names vm-local for developer runs only; images are published without it and need DOTNET_ENVIRONMENT. -->
         <Content Update="environment.json">
             <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+            <CopyToPublishDirectory>Never</CopyToPublishDirectory>
         </Content>
         <Compile Remove="Logs\**" />
         <EmbeddedResource Remove="Logs\**" />

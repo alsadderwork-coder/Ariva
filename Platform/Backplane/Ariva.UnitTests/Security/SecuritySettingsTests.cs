@@ -1,7 +1,9 @@
 using Ariva.Api.Common.Hosting;
 using Ariva.Api.Common.Settings;
+using Ariva.UnitTests.Setup;
 using Bogus;
 using FluentAssertions;
+using Microsoft.Extensions.Configuration;
 
 namespace Ariva.UnitTests.Security;
 
@@ -151,6 +153,78 @@ public sealed class SecuritySettingsTests
         {
             folder.Delete(recursive: true);
         }
+    }
+
+    [Fact]
+    public void Resolve_Should_RefuseToStart_When_NothingNamesTheEnvironment()
+    {
+        // ARV-098: an image has no environment file, so a pod without DOTNET_ENVIRONMENT must not run as vm-local.
+        if (Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT") is not null
+            || Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") is not null)
+        {
+            Assert.Skip("An environment variable names the environment on this machine.");
+        }
+
+        var folder = Directory.CreateTempSubdirectory("ariva-env-");
+        try
+        {
+            var resolve = () => ArivaEnvironment.Resolve([], folder.FullName);
+
+            resolve.Should().Throw<InvalidOperationException>().WithMessage("*DOTNET_ENVIRONMENT*");
+        }
+        finally
+        {
+            folder.Delete(recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("--environment=Production")]
+    [InlineData("--environment=prd")]
+    [InlineData("--environment=Development")]
+    public void Resolve_Should_RefuseAnUnknownName_When_ItWouldSelectNoSettings(string argument)
+    {
+        var resolve = () => ArivaEnvironment.Resolve([argument], AppContext.BaseDirectory);
+
+        resolve.Should().Throw<InvalidOperationException>().WithMessage("*Unknown Ariva environment*");
+    }
+
+    [Theory]
+    [InlineData("--environment=K8S-PRD", ArivaEnvironment.K8sPrd)]
+    [InlineData("--environment= vm-local ", ArivaEnvironment.VmLocal)]
+    public void Resolve_Should_ReturnTheCanonicalName_When_CaseOrSpacesDiffer(string argument, string expected)
+    {
+        ArivaEnvironment.Resolve([argument], AppContext.BaseDirectory).Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData("Platform/Backplane/Ariva.Api.Main/Ariva.Api.Main.csproj")]
+    [InlineData("Platform/Backplane/Ariva.Api.Ingest/Ariva.Api.Ingest.csproj")]
+    [InlineData("Platform/Backplane/Ariva.Api.Stream/Ariva.Api.Stream.csproj")]
+    [InlineData("Platform/Backplane/Ariva.Api.Cronz/Ariva.Api.Cronz.csproj")]
+    [InlineData("Platform/Backplane/Ariva.Api.Integration/Ariva.Api.Integration.csproj")]
+    [InlineData("Platform/Simulation/Ariva.Simulation.Api/Ariva.Simulation.Api.csproj")]
+    public void EnvironmentFile_Should_StayOutOfThePublishedImage_When_AHostIsPublished(string project)
+    {
+        // ARV-098: environment.json names vm-local for developer runs (build output); images are published from the
+        // publish output, which must not carry it.
+        var document = System.Xml.Linq.XDocument.Load(Path.Combine(RepositoryPaths.Root, project));
+        var item = document.Descendants("Content").Single(c => (string)c.Attribute("Update") == ArivaEnvironment.FileName);
+
+        ((string)item.Element("CopyToPublishDirectory")).Should().Be("Never");
+        ((string)item.Element("CopyToOutputDirectory")).Should().Be("Always", "developer runs and the E2E suite still read it from the build output");
+    }
+
+    [Fact]
+    public void BaseSettings_Should_NameNoEnvironment_When_TheEnvironmentFileDoesNot()
+    {
+        // ARV-098: Application:Environment comes only from appsettings.base.<environment>.json, never from a default.
+        var common = Path.Combine(RepositoryPaths.Root, "Platform", "Backplane", "Ariva.Api.Common");
+        static string Named(string file) => new ConfigurationBuilder().AddJsonFile(file).Build()["Application:Environment"];
+
+        Named(Path.Combine(common, "appsettings.base.json")).Should().BeNull();
+        foreach (var environment in ArivaEnvironment.Known)
+            Named(Path.Combine(common, $"appsettings.base.{environment}.json")).Should().Be(environment);
     }
 
     #endregion

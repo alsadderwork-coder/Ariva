@@ -116,7 +116,7 @@ Each .NET host loads, in this order (later wins):
 4. `appsettings.service.<env>.json`
 5. Environment variables (for example `Database__Password`), then command-line arguments
 
-The environment comes from `DOTNET_ENVIRONMENT` (set by each host's ConfigMap from the `environment` value), or from `environment.json` when the variable is not set. Environments: `vm-local`, `k8s-dev`, `k8s-demo`, `k8s-prd`.
+The environment comes from `DOTNET_ENVIRONMENT` (set by each host's ConfigMap, or the Job's env, from the `environment` value). Environments: `vm-local`, `k8s-dev`, `k8s-demo`, `k8s-prd`. There is no default (ARV-098): images are published without `environment.json`, so a container started without `DOTNET_ENVIRONMENT`, or with a name outside that list, stops at once with "No Ariva environment is set" or "Unknown Ariva environment" instead of running as `vm-local`. Set the variable when you start an image by hand (`docker run -e DOTNET_ENVIRONMENT=k8s-dev ...`, `kubectl run --env=DOTNET_ENVIRONMENT=k8s-dev ...`). A developer machine still gets `vm-local` from `environment.json` in the build output (`dotnet run`, the E2E suite and the AppHost). The chart test (`Ariva.K8s/tests/chart-security.mjs`) fails a render in which an Ariva .NET container lacks the release's `DOTNET_ENVIRONMENT`.
 
 In Kubernetes the two environment files are not taken from the image. The release writes them into secrets, and the chart mounts them over the image's copies:
 

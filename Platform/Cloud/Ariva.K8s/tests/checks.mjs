@@ -18,6 +18,21 @@ function imageName(image) {
 	return withoutDigest.slice(lastSlash + 1, colon === -1 ? undefined : colon);
 }
 
+/** The Ariva images that run a .NET host: each resolves its environment from DOTNET_ENVIRONMENT (ARV-098). */
+const DOTNET_IMAGES = new Set([...ARIVA_IMAGES].filter((name) => name !== 'web'));
+
+/** DOTNET_ENVIRONMENT as the container sees it: its own env wins over a ConfigMap it loads with envFrom. */
+function dotnetEnvironmentOf(container, docs) {
+	const own = (container.env ?? []).find((variable) => variable.name === 'DOTNET_ENVIRONMENT');
+	if (own) return own.value;
+	for (const source of container.envFrom ?? []) {
+		const name = source.configMapRef?.name;
+		const map = docs.find((doc) => doc?.kind === 'ConfigMap' && doc.metadata?.name === name);
+		if (map?.data?.DOTNET_ENVIRONMENT !== undefined) return map.data.DOTNET_ENVIRONMENT;
+	}
+	return undefined;
+}
+
 /** Environment variable names that hold credentials: their values come from secrets, never from the manifest (CWE-798). */
 const SECRET_ENV = /(PASSWORD|PASSWD|SECRET|TOKEN|PRIVATE_?KEY|API_?KEY)/i;
 
@@ -88,6 +103,11 @@ export function checkManifests(docs, { environment }) {
 				if (sc.readOnlyRootFilesystem !== true) findings.push(`${cid}: readOnlyRootFilesystem must be true`);
 				if (!(container.volumeMounts ?? []).some((mount) => mount.mountPath === '/tmp')) {
 					findings.push(`${cid}: needs a writable /tmp mount (emptyDir) because the root filesystem is read-only`);
+				}
+				// ARV-098: a .NET image ships no environment file, so a host without DOTNET_ENVIRONMENT refuses to start; every
+				// one must get the release's environment, from its own env or from a ConfigMap it loads.
+				if (DOTNET_IMAGES.has(imageName(container.image ?? '')) && dotnetEnvironmentOf(container, docs) !== environment) {
+					findings.push(`${cid}: must set DOTNET_ENVIRONMENT to ${environment} (env or envFrom ConfigMap)`);
 				}
 				const tag = imageTag(container.image ?? '');
 				if (!tag) findings.push(`${cid}: image ${container.image} has no tag`);

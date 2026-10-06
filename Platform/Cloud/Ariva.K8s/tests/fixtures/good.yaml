@@ -13,6 +13,7 @@ spec:
       containers:
         - name: app
           image: registry.example/api-integration:main-20261001.1
+          envFrom: [{ configMapRef: { name: api-main-configmap } }]
           securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
           volumeMounts: [{ name: tmp, mountPath: /tmp }]
 ---
@@ -81,7 +82,7 @@ spec:
 apiVersion: v1
 kind: ConfigMap
 metadata: { name: api-main-configmap }
-data: { Kafka__ProvisionTopics: "false" }
+data: { Kafka__ProvisionTopics: "false", DOTNET_ENVIRONMENT: k8s-prd }
 ---
 apiVersion: batch/v1
 kind: Job
@@ -93,6 +94,7 @@ spec:
       containers:
         - name: kafka-topics
           image: registry.example/api-main:main-20261001.1
+          env: [{ name: DOTNET_ENVIRONMENT, value: k8s-prd }]
           securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
           volumeMounts: [{ name: tmp, mountPath: /tmp }]
 ---

@@ -31,14 +31,21 @@ public static class ArivaEnvironment
 
     #region Resolution
 
+    /// <summary>The environments Ariva knows; any other name is refused, so a typo never selects defaults.</summary>
+    public static IReadOnlyList<string> Known { get; } = [VmLocal, K8sDev, K8sDemo, K8sPrd];
+
     /// <summary>
     /// Returns the environment name, taken in order from the <c>--environment</c> command line argument (also what
-    /// WebApplicationFactory passes in tests), <c>DOTNET_ENVIRONMENT</c>, <c>ASPNETCORE_ENVIRONMENT</c>, the
-    /// <c>Environment</c> key of <see cref="FileName"/>, and finally <see cref="VmLocal"/>.
+    /// WebApplicationFactory passes in tests), <c>DOTNET_ENVIRONMENT</c>, <c>ASPNETCORE_ENVIRONMENT</c> and the
+    /// <c>Environment</c> key of <see cref="FileName"/>. ARV-098: there is no default. The file exists only in build
+    /// output on a developer machine (images are published without it), so a container or pod started without
+    /// <c>DOTNET_ENVIRONMENT</c> refuses to start instead of running as <see cref="VmLocal"/>, where development
+    /// accounts, sign-in without TOTP, SchemaUpdate and the demo seed are allowed.
     /// </summary>
     /// <param name="args">The process command line arguments.</param>
     /// <param name="baseDirectory">The folder that holds <see cref="FileName"/>, normally <see cref="AppContext.BaseDirectory"/>.</param>
-    /// <returns>The environment name.</returns>
+    /// <returns>The environment name, one of <see cref="Known"/>.</returns>
+    /// <exception cref="InvalidOperationException">No environment is named, or the name is not one of <see cref="Known"/>.</exception>
     public static string Resolve(string[] args, string baseDirectory)
     {
         ArgumentNullException.ThrowIfNull(baseDirectory);
@@ -48,22 +55,35 @@ public static class ArivaEnvironment
             .Build()[HostDefaults.EnvironmentKey];
         if (!string.IsNullOrWhiteSpace(fromArguments))
         {
-            return fromArguments.Trim();
+            return Checked(fromArguments, "the --environment argument");
         }
 
         var fromVariables = Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT")
                             ?? Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
         if (!string.IsNullOrWhiteSpace(fromVariables))
         {
-            return fromVariables.Trim();
+            return Checked(fromVariables, "DOTNET_ENVIRONMENT or ASPNETCORE_ENVIRONMENT");
         }
 
         var fromFile = new ConfigurationBuilder()
             .SetBasePath(baseDirectory)
             .AddJsonFile(FileName, optional: true, reloadOnChange: false)
             .Build()["Environment"];
+        if (!string.IsNullOrWhiteSpace(fromFile))
+        {
+            return Checked(fromFile, FileName);
+        }
 
-        return string.IsNullOrWhiteSpace(fromFile) ? VmLocal : fromFile.Trim();
+        throw new InvalidOperationException(
+            $"No Ariva environment is set. Set DOTNET_ENVIRONMENT to one of {string.Join(", ", Known)} (the Helm chart does); " +
+            $"a developer machine gets {VmLocal} from {FileName} in the build output.");
+    }
+
+    private static string Checked(string name, string source)
+    {
+        var known = Known.FirstOrDefault(k => string.Equals(k, name.Trim(), StringComparison.OrdinalIgnoreCase));
+        return known ?? throw new InvalidOperationException(
+            $"Unknown Ariva environment '{name.Trim()}' from {source}: use one of {string.Join(", ", Known)}.");
     }
 
     #endregion
