@@ -25,8 +25,8 @@ public sealed class OutboundSettings
 
     /// <summary>
     /// Why these settings are not allowed, or null. Lab settings need both the host's environment (DOTNET_ENVIRONMENT) and
-    /// Application:Environment to be a lab one: Application:Environment alone defaults to vm-local in the base settings,
-    /// so a cluster pod missing its environment file would otherwise pass.
+    /// Application:Environment to be a lab one, so a value injected on one side alone does not pass (ARV-098 removed the
+    /// vm-local defaults of both).
     /// </summary>
     public string Problem(string hostEnvironment, string applicationEnvironment) =>
         (AllowLoopback || (LabHosts?.Count ?? 0) > 0) &&

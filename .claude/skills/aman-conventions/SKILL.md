@@ -48,7 +48,7 @@ Rich methods only (`profile.Publish(publishedBy, now)`), never property assignme
 FusionCache with Redis backplane and tags per entity. Serilog structured logging with named properties; never log tokens, secrets, TOTP codes or `access_token` query strings.
 
 ## Configuration
-`appsettings.base.json` and `appsettings.base.<env>.json` in Ariva.Api.Common (linked into every host), `appsettings.service.<env>.json` per host, `environment.json`; environments vm-local, k8s-dev, k8s-demo, k8s-prd; `${placeholders}` resolved from secrets.
+`appsettings.base.json` and `appsettings.base.<env>.json` in Ariva.Api.Common (linked into every host), `appsettings.service.<env>.json` per host, `environment.json` (developer build output only; images need `DOTNET_ENVIRONMENT`, ARV-098); environments vm-local, k8s-dev, k8s-demo, k8s-prd; `${placeholders}` resolved from secrets.
 
 ## Tests
 `MethodName_Should_ExpectedResult_When_Condition`; Arrange, Act, Assert; Bogus fakers per request type; xUnit v3, FluentAssertions, Moq.

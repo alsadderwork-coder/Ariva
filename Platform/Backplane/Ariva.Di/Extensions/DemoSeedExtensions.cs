@@ -9,8 +9,8 @@ namespace Ariva.Di.Extensions;
 /// k8s-demo through the Helm value <c>demoSeed</c>). Fictional data must never reach a real deployment (CWE-269), so
 /// the setting is refused unless both the host environment (DOTNET_ENVIRONMENT, which Helm sets) and
 /// <c>Application:Environment</c> are development or demo environments; a production host with it on refuses to start.
-/// Checking both covers a cluster whose mounted settings file omits <c>Application:Environment</c> (it then defaults to
-/// vm-local) and a setting injected through an environment variable.
+/// Checking both covers a value injected through an environment variable on either side (since ARV-098 neither has a
+/// vm-local default: the host refuses to start without a known environment, and the base settings name none).
 /// </summary>
 public static class DemoSeedExtensions
 {

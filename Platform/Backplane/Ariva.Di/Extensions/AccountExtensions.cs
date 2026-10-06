@@ -113,8 +113,8 @@ public static class AccountExtensions
     /// Development accounts and sign-in without TOTP are for a developer machine only (CWE-287, CWE-308): both need
     /// <c>Application:Environment</c> vm-local and the host environment (<c>ArivaEnvironment.Resolve</c>: the command line,
     /// DOTNET_ENVIRONMENT, which Helm sets, ASPNETCORE_ENVIRONMENT, then environment.json) vm-local.
-    /// Checking both covers a cluster whose mounted settings omit <c>Application:Environment</c> (it then defaults to
-    /// vm-local) and a value injected through an environment variable. The host environment is the host's own name,
+    /// Checking both covers a value injected through an environment variable on either side (since ARV-098 neither has a
+    /// vm-local default). The host environment is the host's own name,
     /// passed in, not the <c>environment</c> configuration key, which an unprefixed ENVIRONMENT variable could override.
     /// Null when the settings are allowed, otherwise why not.
     /// </summary>
