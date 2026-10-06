@@ -189,6 +189,30 @@ public sealed class SecuritySettingsTests
         resolve.Should().Throw<InvalidOperationException>().WithMessage("*Unknown Ariva environment*");
     }
 
+    [Fact]
+    public void Resolve_Should_RefuseAnUnknownName_When_TheEnvironmentFileNamesIt()
+    {
+        if (Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT") is not null
+            || Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") is not null)
+        {
+            Assert.Skip("An environment variable names the environment on this machine.");
+        }
+
+        var folder = Directory.CreateTempSubdirectory("ariva-env-");
+        try
+        {
+            File.WriteAllText(Path.Combine(folder.FullName, ArivaEnvironment.FileName), """{ "Environment": "Development" }""");
+
+            var resolve = () => ArivaEnvironment.Resolve([], folder.FullName);
+
+            resolve.Should().Throw<InvalidOperationException>().WithMessage("*Unknown Ariva environment*environment.json*");
+        }
+        finally
+        {
+            folder.Delete(recursive: true);
+        }
+    }
+
     [Theory]
     [InlineData("--environment=K8S-PRD", ArivaEnvironment.K8sPrd)]
     [InlineData("--environment= vm-local ", ArivaEnvironment.VmLocal)]
@@ -213,6 +237,38 @@ public sealed class SecuritySettingsTests
 
         ((string)item.Element("CopyToPublishDirectory")).Should().Be("Never");
         ((string)item.Element("CopyToOutputDirectory")).Should().Be("Always", "developer runs and the E2E suite still read it from the build output");
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("k8s-prd")]
+    [InlineData("VM-LOCAL")]
+    public void EnsureConfigured_Should_Refuse_When_TheSettingsDoNotNameTheHostEnvironment(string configured)
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string> { ["Application:Environment"] = configured })
+            .Build();
+
+        var ensure = () => ArivaEnvironment.EnsureConfigured(configuration, ArivaEnvironment.VmLocal);
+
+        ensure.Should().Throw<InvalidOperationException>().WithMessage("Application:Environment*");
+    }
+
+    [Theory]
+    [InlineData(ArivaHosts.Main)]
+    [InlineData(ArivaHosts.Ingest)]
+    [InlineData(ArivaHosts.Stream)]
+    [InlineData(ArivaHosts.Cronz)]
+    [InlineData(ArivaHosts.Integration)]
+    public async Task Host_Should_RefuseToStart_When_ApplicationEnvironmentDisagreesWithTheHost(string host)
+    {
+        // ARV-098: a replaced appsettings.base.<environment>.json, or a variable, naming another environment.
+        await using var app = ArivaHosts.Create(host, ArivaEnvironment.K8sDev, builder =>
+            builder.UseSetting("Application:Environment", ArivaEnvironment.VmLocal));
+
+        var start = () => app.CreateClient();
+
+        start.Should().Throw<InvalidOperationException>().WithMessage("*must match*");
     }
 
     [Fact]

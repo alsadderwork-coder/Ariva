@@ -39,6 +39,8 @@ builder.Configuration
     .AddJsonFile("appsettings.local.json", optional: true, reloadOnChange: false)
     .AddEnvironmentVariables()
     .AddCommandLine(args);
+// ARV-098: the settings must name this host's own environment, or the host does not start.
+ArivaEnvironment.EnsureConfigured(builder.Configuration, environment);
 
 #endregion
 
