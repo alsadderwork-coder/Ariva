@@ -11,9 +11,15 @@ namespace Ariva.Infra.DataProtection;
 /// Wraps a Data Protection key at rest (ARV-080, ASVS V11.3.1 to V11.3.3): the key XML is encrypted with AES-256-GCM
 /// under a fresh 256-bit key, and that key is wrapped with RSA-OAEP-SHA256 by the current Data Protection certificate.
 /// It replaces the framework's certificate encryptor, which uses RSA PKCS#1 v1.5 and AES-256-CBC without a MAC.
-/// The element names the algorithm and the certificate (SHA-256 thumbprint), and both are authenticated as associated
-/// data, so a database writer can neither alter the key nor swap the algorithm label undetected.
+/// The element names the algorithm and the certificate (SHA-256 thumbprint), both authenticated as associated data, and
+/// carries an RSA-PSS-SHA256 signature made with the certificate's private key over everything else. A database writer
+/// can therefore neither alter or relabel an existing key nor add a key of their own: the public certificate alone can
+/// encrypt but cannot sign, and <see cref="OaepGcmXmlDecryptor"/> refuses an element whose signature does not verify.
 /// </summary>
+/// <remarks>
+/// Stored format: every key records the assembly-qualified name of <see cref="OaepGcmXmlDecryptor"/>. Renaming or moving
+/// that type, or renaming its assembly, makes the stored key ring unreadable (pinned by KeyRingEncryptionTests).
+/// </remarks>
 public sealed class OaepGcmXmlEncryptor(DataProtectionCertificates certificates) : IXmlEncryptor
 {
     public EncryptedXmlInfo Encrypt(XElement plaintextElement)
@@ -54,6 +60,8 @@ public static class OaepGcmXml
         ArgumentNullException.ThrowIfNull(certificate);
         using var rsa = certificate.GetRSAPublicKey()
                         ?? throw new InvalidOperationException("The Data Protection certificate has no RSA key.");
+        using var signer = certificate.GetRSAPrivateKey()
+                           ?? throw new InvalidOperationException("The Data Protection certificate has no RSA private key to sign with.");
 
         var thumbprint = certificate.GetCertHashString(HashAlgorithmName.SHA256);
         var plaintext = Encoding.UTF8.GetBytes(plaintextElement.ToString(SaveOptions.DisableFormatting));
@@ -65,14 +73,17 @@ public static class OaepGcmXml
         {
             using (var aes = new AesGcm(key, TagBytes))
                 aes.Encrypt(nonce, plaintext, ciphertext, tag, AssociatedData(thumbprint));
+            var wrappedKey = rsa.Encrypt(key, RSAEncryptionPadding.OaepSHA256);
 
             return new XElement(Namespace + "encryptedKey",
                 new XAttribute("algorithm", Algorithm),
                 new XAttribute("certificate", thumbprint),
-                new XElement(Namespace + "wrappedKey", Convert.ToBase64String(rsa.Encrypt(key, RSAEncryptionPadding.OaepSHA256))),
+                new XElement(Namespace + "wrappedKey", Convert.ToBase64String(wrappedKey)),
                 new XElement(Namespace + "nonce", Convert.ToBase64String(nonce)),
                 new XElement(Namespace + "tag", Convert.ToBase64String(tag)),
-                new XElement(Namespace + "ciphertext", Convert.ToBase64String(ciphertext)));
+                new XElement(Namespace + "ciphertext", Convert.ToBase64String(ciphertext)),
+                new XElement(Namespace + "signature", Convert.ToBase64String(
+                    signer.SignData(Signed(thumbprint, wrappedKey, nonce, tag, ciphertext), HashAlgorithmName.SHA256, RSASignaturePadding.Pss))));
         }
         finally
         {
@@ -95,11 +106,18 @@ public static class OaepGcmXml
                           ?? throw new CryptographicException($"No Data Protection certificate with SHA-256 thumbprint {thumbprint} is configured.");
         using var rsa = certificate.GetRSAPrivateKey()
                         ?? throw new CryptographicException("The Data Protection certificate has no RSA private key.");
+        using var verifier = certificate.GetRSAPublicKey()
+                             ?? throw new CryptographicException("The Data Protection certificate has no RSA key.");
 
         var nonce = Bytes(encryptedElement, "nonce", NonceBytes);
         var tag = Bytes(encryptedElement, "tag", TagBytes);
         var ciphertext = Bytes(encryptedElement, "ciphertext", expectedLength: null);
-        var key = rsa.Decrypt(Bytes(encryptedElement, "wrappedKey", expectedLength: null), RSAEncryptionPadding.OaepSHA256);
+        var wrappedKey = Bytes(encryptedElement, "wrappedKey", expectedLength: null);
+        // Before anything is decrypted: only the holder of the certificate's private key wrote this element.
+        if (!verifier.VerifyData(Signed(thumbprint, wrappedKey, nonce, tag, ciphertext), Bytes(encryptedElement, "signature", expectedLength: null),
+                HashAlgorithmName.SHA256, RSASignaturePadding.Pss))
+            throw new CryptographicException("The key ring element's signature does not verify.");
+        var key = rsa.Decrypt(wrappedKey, RSAEncryptionPadding.OaepSHA256);
         var plaintext = new byte[ciphertext.Length];
         try
         {
@@ -120,6 +138,21 @@ public static class OaepGcmXml
     /// <summary>Binds the ciphertext to its algorithm label and certificate.</summary>
     private static byte[] AssociatedData(string thumbprint) =>
         Encoding.UTF8.GetBytes($"{Algorithm}|{thumbprint.ToUpperInvariant()}");
+
+    /// <summary>What the signature covers: the associated data and every encrypted part, each prefixed with its length.</summary>
+    private static byte[] Signed(string thumbprint, params byte[][] parts)
+    {
+        using var buffer = new MemoryStream();
+        foreach (var part in (byte[][])[AssociatedData(thumbprint), .. parts])
+        {
+            Span<byte> length = stackalloc byte[4];
+            System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(length, part.Length);
+            buffer.Write(length);
+            buffer.Write(part);
+        }
+
+        return buffer.ToArray();
+    }
 
     private static byte[] Bytes(XElement element, string name, int? expectedLength)
     {

@@ -10,6 +10,8 @@ using Microsoft.AspNetCore.DataProtection.KeyManagement;
 using Microsoft.AspNetCore.DataProtection.Repositories;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+using Ariva.UnitTests.Setup;
 
 namespace Ariva.UnitTests.Security;
 
@@ -55,6 +57,23 @@ public sealed class KeyRingEncryptionTests
         var decrypt = () => OaepGcmXml.Decrypt(encrypted, [certificate]);
 
         decrypt.Should().Throw<CryptographicException>("GCM authenticates the key and the wrapped key decrypts only unaltered");
+    }
+
+    [Fact]
+    public void Decrypt_Should_Refuse_When_TheSignatureIsMissingOrAltered()
+    {
+        using var certificate = Certificate(3072);
+        var unsigned = OaepGcmXml.Encrypt(new XElement("key", "material"), certificate);
+        unsigned.Element(OaepGcmXml.Namespace + "signature")!.Remove();
+        var altered = OaepGcmXml.Encrypt(new XElement("key", "material"), certificate);
+        var signature = altered.Element(OaepGcmXml.Namespace + "signature")!;
+        var bytes = Convert.FromBase64String(signature.Value);
+        bytes[^1] ^= 0x01;
+        signature.Value = Convert.ToBase64String(bytes);
+
+        FluentActions.Invoking(() => OaepGcmXml.Decrypt(unsigned, [certificate])).Should().Throw<CryptographicException>(
+            "an element made with the public certificate alone has no valid signature");
+        FluentActions.Invoking(() => OaepGcmXml.Decrypt(altered, [certificate])).Should().Throw<CryptographicException>().WithMessage("*signature*");
     }
 
     [Fact]
@@ -125,9 +144,69 @@ public sealed class KeyRingEncryptionTests
             legacyPayload = Protector(legacy).Protect("outbound-secret");
         repository.GetAllElements().Single().ToString().Should().Contain("EncryptedData", "the fixture is a key in the old format");
 
-        using var host = Host(repository, DataProtectionCertificates.From(certificate));
+        using var host = Host(repository, DataProtectionCertificates.From(certificate), legacyFormatUntil: DateTimeOffset.UtcNow.AddDays(1));
+        using var closed = Host(repository, DataProtectionCertificates.From(certificate), legacyFormatUntil: null);
 
-        Protector(host).Unprotect(legacyPayload).Should().Be("outbound-secret", "old keys stay readable until they expire");
+        Protector(host).Unprotect(legacyPayload).Should().Be("outbound-secret", "old keys stay readable during the migration window");
+        FluentActions.Invoking(() => Protector(closed).Unprotect(legacyPayload)).Should().Throw<CryptographicException>(
+            "without DataProtection:LegacyFormatUntil the older format, which anyone can write with the public certificate, is refused");
+    }
+
+    [Fact]
+    public void KeyRing_Should_IgnoreAPlantedPlaintextKey_When_ItWouldBecomeTheDefault()
+    {
+        using var certificate = Certificate(3072);
+        var repository = new MemoryRepository();
+        using (var first = Host(repository, DataProtectionCertificates.From(certificate)))
+            Protector(first).Protect("creates the genuine key");
+
+        using var attacker = PlaintextKeyWriter(repository);
+        attacker.GetRequiredService<IKeyManager>().CreateNewKey(DateTimeOffset.UtcNow.AddSeconds(-1), DateTimeOffset.UtcNow.AddDays(90));
+        repository.GetAllElements().Should().Contain(e => e.ToString().Contains("<value>"), "the fixture plants a plaintext key");
+
+        using var host = Host(repository, DataProtectionCertificates.From(certificate));
+        var payload = Protector(host).Protect("totp-seed");
+
+        FluentActions.Invoking(() => Protector(attacker).Unprotect(payload)).Should().Throw<CryptographicException>(
+            "the host never protects with a key someone planted in the table");
+        Protector(host).Unprotect(payload).Should().Be("totp-seed");
+    }
+
+    [Fact]
+    public void Verdict_Should_AdmitOnlyArivaKeys_When_TheRingIsRead()
+    {
+        var filter = new TrustedKeyRingRepository(new MemoryRepository(), null, TimeProvider.System, NullLogger.Instance);
+        XElement Key(string decryptor) => new("key", new XAttribute("id", Guid.NewGuid()),
+            new XElement("descriptor", new XElement("masterKey", new XElement("encryptedSecret", new XAttribute("decryptorType", decryptor)))));
+
+        filter.Verdict(Key(typeof(OaepGcmXmlDecryptor).AssemblyQualifiedName!)).Should().BeNull();
+        filter.Verdict(Key("Microsoft.AspNetCore.DataProtection.XmlEncryption.EncryptedXmlDecryptor, Microsoft.AspNetCore.DataProtection")).Should().Contain("LegacyFormatUntil");
+        filter.Verdict(Key("Evil.Decryptor, Evil")).Should().Contain("does not use");
+        filter.Verdict(new XElement("key", new XElement("descriptor", new XElement("masterKey", new XElement("value", "AAAA"))))).Should().Contain("not encrypted");
+        filter.Verdict(new XElement("revocation")).Should().BeNull("a revocation can at worst force a new key");
+        filter.Verdict(new XElement("something")).Should().NotBeNull();
+    }
+
+    [Fact]
+    public void DecryptorType_Should_KeepItsName_When_KeysAreStoredWithIt()
+    {
+        // Every stored key records this type's name: renaming or moving it would make the key ring unreadable.
+        typeof(OaepGcmXmlDecryptor).FullName.Should().Be("Ariva.Infra.DataProtection.OaepGcmXmlDecryptor");
+        typeof(OaepGcmXmlDecryptor).Assembly.GetName().Name.Should().Be("Ariva.Infra");
+    }
+
+    [Theory]
+    [InlineData("appsettings.base.k8s-dev.json")]
+    [InlineData("appsettings.base.k8s-demo.json")]
+    [InlineData("appsettings.base.k8s-prd.json")]
+    public void ClusterSettings_Should_NotOpenTheLegacyWindow_When_Committed(string file)
+    {
+        // The window is for a migration and is set by the operator with an end date, never shipped open (ARV-080).
+        var configuration = new ConfigurationBuilder()
+            .AddJsonFile(Path.Combine(RepositoryPaths.Root, "Platform", "Backplane", "Ariva.Api.Common", file))
+            .Build();
+
+        configuration["DataProtection:LegacyFormatUntil"].Should().BeNull();
     }
 
     #endregion
@@ -193,12 +272,24 @@ public sealed class KeyRingEncryptionTests
 
     #region Helpers
 
-    private static ServiceProvider Host(MemoryRepository repository, DataProtectionCertificates certificates)
+    private static ServiceProvider Host(MemoryRepository repository, DataProtectionCertificates certificates, DateTimeOffset? legacyFormatUntil = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddArivaDataProtection(new DatabaseSettings(), certificates);
-        // After AddArivaDataProtection, so this repository replaces PostgreSQL and the encryptor stays the hosts' one.
+        services.AddArivaDataProtection(new DatabaseSettings(), certificates, legacyFormatUntil);
+        // After AddArivaDataProtection: this repository replaces PostgreSQL behind the same trusted key filter, and the
+        // encryptor stays the hosts' one.
+        services.Configure<KeyManagementOptions>(options => options.XmlRepository =
+            new TrustedKeyRingRepository(repository, legacyFormatUntil, TimeProvider.System, NullLogger.Instance));
+        return services.BuildServiceProvider();
+    }
+
+    /// <summary>Someone with INSERT on the key table: writes a key whose master key is in plain text.</summary>
+    private static ServiceProvider PlaintextKeyWriter(MemoryRepository repository)
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddDataProtection().SetApplicationName(DataProtectionExtensions.ApplicationName);
         services.Configure<KeyManagementOptions>(options => options.XmlRepository = repository);
         return services.BuildServiceProvider();
     }
