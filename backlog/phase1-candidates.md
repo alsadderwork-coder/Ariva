@@ -2,6 +2,8 @@
 
 Source: [docs/product/competitive-refresh-2026-10.md](../docs/product/competitive-refresh-2026-10.md). Phase 0 stories stay as they are; candidate ids were renumbered on 2026-10-05 (ARV-080 to ARV-092 became ARV-100 to ARV-112, because backlog/prd-asvs-gaps.json uses ARV-080 to ARV-096); these are candidates for the PO to rank at the Phase 1 planning, not commitments. "Covered" means an existing story already delivers the capability; "extend" means a Phase 0 story gets an extra acceptance criterion; "new" is a candidate story.
 
+Adopted on 2026-10-06 into [prd-phase1.json](prd-phase1.json) (the pilot MVP backlog, gap analysis in [docs/plan/phase1-gap-analysis.md](../docs/plan/phase1-gap-analysis.md)): ARV-104 accuracy assurance (as ARV-104a to ARV-104i) and part of ARV-111 (as ARV-111a). The rest stay candidates for v1 and later.
+
 | Capability | Status | Where | Module |
 |---|---|---|---|
 | Border-system fusion (desk sessions, e-gate decisions, document categories with sensed queues) | Covered | ARV-048, ARV-049 (aggregate-only AMAN contracts; officer analytics stay in AMAN) | Border |
