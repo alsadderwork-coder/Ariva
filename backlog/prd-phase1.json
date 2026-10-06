@@ -1,0 +1,988 @@
+{
+  "name": "Ariva Phase 1: pilot MVP",
+  "branchName": "ralph/phase1",
+  "description": "Phase 1 (pilot MVP): the Border module at one AMAN arrivals hall, measured end to end, validated against manual counts, tracers and observer logs, and deployable single-tenant in the border authority's environment. Builds on Phase 0 (backlog/prd-phase0.json) and runs alongside the ASVS gap stories (backlog/prd-asvs-gaps.json, not duplicated here). Priorities 1 to 30 need no site decision and can start before the pilot contract; stories from priority 29 carry 'Blocked on' notes. The dev cluster release (ARV-002's last criterion) is deferred by the owner (2026-10-06) to ARV-137, after every other MVP story; no Kubernetes cluster work is scheduled before it. AMAN-side outbox changes belong to the AMAN repository and are listed as dependencies only. Gate: pilot go-live (ARV-138), then pilot acceptance.",
+  "userStories": [
+    {
+      "id": "ARV-113",
+      "title": "[E12] Per-line minute counts in the stream",
+      "description": "Pilot count accuracy (F18) is judged per line and per 15-minute bin, but the stream stores entries and exits per queue zone only (queue_minute). Write per-line crossing counts per minute so validation and reports can compare each line with manual counts. Epic: Measurement completeness. CWEs to review: CWE-89, CWE-120.",
+      "acceptanceCriteria": [
+        "A new versioned script creates the line_minute hypertable (zone key, line name, line role, minute, profile version, in, out, source) with the retention class of queue_minute; its SHA-256 is added to checksums.lock",
+        "Ariva.Api.Stream writes line_minute by binary COPY in the same checkpoint transaction as queue_minute; an integration test restarts mid-stream and gets identical rows (idempotent upsert)",
+        "Counts come from Ariva's own crossings; vendor line crossings (ariva.device.vendor-line-crossing.v1) are stored as a separate source for cross-check and never mixed into Ariva's counts",
+        "The golden replay covers line_minute; the existing output hash is unchanged or the new golden is recorded in backlog/progress.md with the reason",
+        "Unit tests: crossings on entry, exit, count and overflow entry lines land on their line and minute; late events inside the watermark revise the open minute only",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": "Size S. No site decision needed. Feeds ARV-104e (count accuracy) and ARV-119 (weekly report).",
+      "dependsOn": [
+        "ARV-034",
+        "ARV-036"
+      ]
+    },
+    {
+      "id": "ARV-114a",
+      "title": "[E12] Continuous health checks: conservation, track completion and occupancy sanity",
+      "description": "The F18 continuous checks (conservation residual, track completion rate, occupancy between 0 and the zone's physical capacity) are not computed anywhere. Compute them per zone and 15-minute bin in the stream, store them with the bin, and serve them through an API. Zones get an optional physical capacity in draft profiles. Epic: Measurement completeness. CWEs to review: CWE-501, CWE-120, CWE-863.",
+      "acceptanceCriteria": [
+        "Queue and overflow zones of a draft profile accept an optional physical capacity (1 to 5,000 people); published versions stay immutable; the geometry hash rule (F22) is unchanged or its new version documented",
+        "Pure HealthChecks in Ariva.Core/Queueing compute per zone and bin: conservation residual (F18), track completion rate (tracks exited over tracks entered, with censored and still-open tracks reported apart) and minutes with occupancy outside 0 to capacity; table-driven tests from F18, including bins with no entries",
+        "A versioned script adds a zone_health_bin table (or columns on queue_bin, one row per bin revision) written by the stream with the bin; the golden replay reproduces it",
+        "GET api/v1/sites/{siteCode}/zone-health by zone and range with a new permission DataQuality.View in the role mapping and security/permission-matrix.json; [SiteScoped]; range capped",
+        "E2E: values for the reference evening, permission matrix rows, cross-site request returns 404 without data, oversized range 400",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": "Size M. Known limit from docs/product/phase0-exit-review.md section 5. Thresholds are Proposed (wiki/07 section 10 lists the alarm triggers); alarms and degraded propagation are ARV-114b.",
+      "dependsOn": [
+        "ARV-034",
+        "ARV-017",
+        "ARV-036"
+      ]
+    },
+    {
+      "id": "ARV-115",
+      "title": "[E12] Overflow band occupancy, OverflowDetected and the OverflowOccupied rule",
+      "description": "The engine already sums overflow bands into the queue length (Ariva.Core/Queueing/QueueInputs.cs), but the stream does not store a band's own occupancy, nothing produces ariva.flow.overflow-detected.v1, and the OverflowOccupied metric has no data (Ariva.Infra/Alerting/AlertInputs.cs), so seeded rule R-002 shows 'Not evaluated yet'. Epic: Measurement completeness. CWEs to review: CWE-501, CWE-862.",
+      "acceptanceCriteria": [
+        "The stream records each overflow band's occupancy per minute and overflow minutes per bin (Proposed definition: a minute with any occupancy, TC-19), in a versioned script, written in the checkpoint transaction",
+        "OverflowDetected is produced once when a band becomes occupied and once when it empties, keyed by site and queue zone, described in docs/architecture/asyncapi.yaml (the AsyncAPI test passes)",
+        "AlertInputs supplies OverflowOccupied; R-002 is evaluated live and in backtest, and a test proves backtest equals live on a scenario with an occupied band",
+        "Replays reproduce the overflow rows and events (golden replay updated with the reason if it changes)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": "Size M. Screens show the overflow state in ARV-120. If the reference scenario never occupies a band, add a scenario case to the simulator rather than changing seed 9303's scripted events.",
+      "dependsOn": [
+        "ARV-034",
+        "ARV-038"
+      ]
+    },
+    {
+      "id": "ARV-116",
+      "title": "[E12] Staff and service zone occupancy into the desk engine",
+      "description": "The MVP needs desk state from AMAN and from sensor zones. The stream drops non-queue zones, so Staff and Service zone readings never reach the DeskStateEngine (formulas F10 implementation note). Feed them at their F10 rank so desks without a live AMAN signal still get a state, and so the shadow nowcast (ARV-117) has a sensor-only desk term. Epic: Measurement completeness. CWEs to review: CWE-501, CWE-120.",
+      "acceptanceCriteria": [
+        "Staff and Service zone occupancy readings of the published profile reach the site's desk engine as staff presence and service activity signals, matched to their desk through the profile; AMAN sessions keep their higher rank",
+        "desk_minute records sensor-derived seconds and the Degraded flag as F10 and F11 define; staleness turns silent sensor sources Unknown",
+        "The sensor emulator emits staff and service zone occupancy for the reference evening; a scenario test shows the engine's open desks from sensors alone match the scenario within one desk for at least 95 percent of minutes (Proposed bound, recorded)",
+        "Only counts cross from the zone processor to the desk engine; no track id reaches desk_minute (unit test)",
+        "Buffers stay bounded per desk and per engine under a flood of zone readings (unit test)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": "Size M. Needed for the desk-state agreement criterion where AMAN is late or absent, and for ARV-117.",
+      "dependsOn": [
+        "ARV-049",
+        "ARV-028",
+        "ARV-034"
+      ]
+    },
+    {
+      "id": "ARV-117",
+      "title": "[E12] Sensor-only shadow nowcast for the ground-truth proof",
+      "description": "The pilot's ground-truth proof is the nowcast error with and without AMAN inputs, side by side. The desk term is live only and never replayed (formulas F8), so the comparison cannot be rebuilt later. Compute and store, next to the published nowcast, a shadow nowcast that uses no AMAN input. It is never shown to staff, passengers or rules. Epic: Measurement completeness. CWEs to review: CWE-862, CWE-863.",
+      "acceptanceCriteria": [
+        "A versioned script adds the shadow nowcast and its no-service reason to queue_minute; the stream writes both in the same row as the published nowcast",
+        "The shadow uses Nowcast.Compute without AMAN-derived inputs (AMAN sessions in n_open, AMAN cycle time, AMAN reject rate), with the sensor desk term from ARV-116 or the exit term alone; unit tests on the F8 cases show the two differ only through those inputs",
+        "The shadow value is not in the live snapshot, the hub, displays, alert inputs or reports (unit or architecture test); it is read only by the validation comparison (ARV-104f)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": "Size S. Must run in production from the first day of burn-in, because it cannot be recomputed afterwards.",
+      "dependsOn": [
+        "ARV-116"
+      ]
+    },
+    {
+      "id": "ARV-118",
+      "title": "[E12] Availability ledger per operating minute",
+      "description": "Pilot criterion: availability 99 percent of operating hours. Nothing measures it. Define an available minute (Proposed: every published queue zone of the site has a live snapshot younger than the staleness threshold and a queue_minute row) and record one row per site and minute, with operating hours from a site calendar. Epic: Measurement completeness. CWEs to review: CWE-862, CWE-863, CWE-501.",
+      "acceptanceCriteria": [
+        "Site operating calendar (weekly hours in site local time plus dated exceptions and announced maintenance windows) with API under the site's edit permission, [SiteScoped], audited; maintenance windows count only when recorded before they start",
+        "A Cronz job (single leader, idempotent per site and minute) writes availability_minute with the reasons for an unavailable minute (stale zone, missing minute, stream lag); it reads Redis snapshots and the database only, no HTTP calls to other hosts",
+        "Availability per day, week and date range equals available operating minutes over operating minutes; unit tests with calendar edges, DST-free UTC storage and maintenance windows",
+        "GET availability API with DataQuality.View, site-scoped, E2E with permission and cross-site cases",
+        "docs/product/pilot-to-confirm.md gains a question for the operating-hours definition in the KPI annex (new TC id), and formulas F18 records the Proposed rule",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": "Size M. The definition is a product-owner proposal for the KPI annex; build it now and adjust the rule, not the ledger, if the client defines availability differently.",
+      "dependsOn": [
+        "ARV-035",
+        "ARV-060",
+        "ARV-114a"
+      ]
+    },
+    {
+      "id": "ARV-139a",
+      "title": "[E20] Second seed site modelled on a real airport: AUH Terminal A arrivals (illustrative)",
+      "description": "Owner request 2026-10-06: demo data modelled on a real airport besides the fictional DMO. Abu Dhabi Zayed International (AUH) Terminal A arrivals immigration hall, built only from public information; there is no real plan, and an illustrative sample is accepted. Cited public facts: Terminal A 742,000 m2 built-up area, 45 million passengers a year, 11,000 passengers an hour, 79 aircraft stands at a time, opened November 2023, X-shaped design by KPF (Gulf News, WAM, KPF); arrivals on the lower level with immigration, baggage claim and customs in a straight line, then landside transport (The National, BDC Network); 38 immigration counters and 34 smart gates reported by secondary travel guides (propertyfinder.ae, morafiq.ae, the airport's terminal guides; unverified, marked 'reported'); smart gates for UAE residents and eligible nationals, most first-time visitors at a staffed counter, biometric face and iris corridors since May 2026 (visahq news 2026-05-07). Everything else is an assumption. Epic: Demo data. CWEs to review: CWE-269, CWE-79, CWE-120.",
+      "acceptanceCriteria": [
+        "A second seed topology with site code AUH-TA (valid under the Site code rule): airport AUH, Terminal A, the lower arrivals level, the arrivals immigration checkpoint, 38 manual counters and 34 smart gates (both labelled 'reported'), queue zones with their lanes: citizens and residents with smart gates (CIT, RES, EG), GCC nationals (GCC), visitors and visa on arrival (VIS), crew and diplomatic (CRW, DIP), transfer (TRF, labelled an assumption since transfer flows normally bypass arrivals immigration), overflow bands, service and staff zones, devices with coverage, and a published zone profile",
+        "Every dimension, count, lane split and position that is not a cited public fact is marked as an assumption in the seed source and in its doc page (docs/demo/auh-terminal-a.md, which cites each public fact with its URL)",
+        "The site carries an 'Illustrative, not surveyed' flag set only by the seed; the web shell shows it as a persistent banner on every screen of that site and on its passenger displays; Playwright checks the banner in English and Arabic",
+        "Geometry sits on an illustrative floor plan image loaded through the existing floor plan upload and calibration (ARV-018, ARV-053); the doc page explains how to replace it with a real plan at runtime (a real plan, for example under NDA, is never committed)",
+        "Same guard as the DMO seed: refused outside vm-local, k8s-dev and k8s-demo (DemoSeedExtensions), idempotent, an integration test proves a re-run changes nothing and that both seeds coexist",
+        "No officer, traveller or document identifier and no real AUH staff or system names in the seed (data boundary test)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": "Size M. Owner decisions 2026-10-06: AUH Terminal A (not GYD); no real plan, an illustrative sample from public facts is accepted. Naming a real airport in demo data is for internal demos and pitches to that airport only, with care; the banner stays on. GCC, DIP and TRF are new lane codes (valid under the two to four letter rule); the AMAN lane mapping for them is ARV-130's concern at a real site.",
+      "dependsOn": [
+        "ARV-019",
+        "ARV-018",
+        "ARV-058"
+      ]
+    },
+    {
+      "id": "ARV-139b",
+      "title": "[E20] Reference scenario for the AUH Terminal A demo site",
+      "description": "The simulator plays only the DMO reference evening (seed 9303). Add a scenario for AUH-TA with its own seed so the live screens, displays, alerts and reports move on the second site. Epic: Demo data. CWEs to review: CWE-306, CWE-287.",
+      "acceptanceCriteria": [
+        "The scenario engine takes the site as a parameter; a new AUH-TA scenario with its own default seed (for example 9304) and an arrivals evening built from assumed flight waves (labelled assumptions), lane mix and smart-gate share, plus at least one scripted event per kind (a nowcast breach, a sensor outage, an overflow)",
+        "Same seed gives identical outputs; unit tests reproduce the scripted events; seed 9303 and its golden fingerprints are unchanged",
+        "Sensor, AMAN and AODB emulators can run the AUH-TA scenario as registered devices and clients; control endpoints stay behind the control scope; the simulator still refuses k8s-prd",
+        "Playwright: the AUH-TA live screen shows the scripted breach with the illustrative banner",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": "Size M. Demo value only; not on the pilot critical path. If the scenario engine's parameterisation turns out large, split it off as ARV-139c before the AUH content.",
+      "dependsOn": [
+        "ARV-139a",
+        "ARV-027",
+        "ARV-028",
+        "ARV-029"
+      ]
+    },
+    {
+      "id": "ARV-104a",
+      "title": "[E13] Validation campaign and manual count capture API",
+      "description": "Accuracy assurance (candidate ARV-104), part a. A validation campaign binds a site, one published profile version, the zones and lines in scope and the planned days; observers record manual counts per line and 15-minute bin. A new ValidationObserver role captures only. Epic: Validation tooling. CWEs to review: CWE-862, CWE-863, CWE-501, CWE-89, CWE-269.",
+      "acceptanceCriteria": [
+        "Entities ValidationCampaign (Planned, Running, Closed) and ManualCount with rich methods; counts only for lines of the campaign's profile version and bins inside the campaign; one entry per line, bin and observer; corrections are new revisions with a reason, never edits",
+        "Permissions Validation.View, Validation.Capture and Validation.Manage, and a ValidationObserver role (capture only, own site, no operational screens) in the seeded role mapping and security/permission-matrix.json; closing a campaign is a step-up critical action, audited",
+        "NHibernate mappings and a versioned script; site-scoped queries; search with sort and filter allowlists; strings bounded",
+        "No person identifier beyond the observer's Ariva user id is stored (data boundary); a test proves the schema has no name or document column",
+        "E2E: create, start, capture, correct, close; permission matrix rows; cross-site 404; capture after close 409; SQL injection and XSS payloads 400 or inert; body over the limit 413",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": "Size M. Reuses candidate id ARV-104 (backlog/phase1-candidates.md, accuracy assurance), split a to i. Campaign defaults for sample size per line and tracer count are placeholders until TC-04 is answered in the KPI annex; the build does not wait for it.",
+      "dependsOn": [
+        "ARV-017",
+        "ARV-011",
+        "ARV-012"
+      ]
+    },
+    {
+      "id": "ARV-104b",
+      "title": "[E13] Tracer runs and desk observer log capture API",
+      "description": "Accuracy assurance, part b. Timed tracers (staff who join the queue and record their own join and exit times) and per-minute observer logs of desk state, both bound to a campaign. Epic: Validation tooling. CWEs to review: CWE-862, CWE-863, CWE-501, CWE-120.",
+      "acceptanceCriteria": [
+        "TracerRun: campaign, queue zone, tracer code (campaign-local label matching a fixed pattern such as T-07, never a name), joined and exited times, abandoned flag; the capturing device's clock offset is measured against the server per batch and applied",
+        "DeskObservation: campaign, desk in scope, minute, observed state (Closed, Idle, Serving, Paused); batches per 15 minutes with an Idempotency-Key; duplicates return the stored result",
+        "Same permissions, role and site scope as ARV-104a; times outside the campaign or in the future beyond the tolerance are refused",
+        "E2E: capture, duplicate batch, permission matrix rows, cross-site 404, out-of-range times 400, oversized batch 413",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": "Size M.",
+      "dependsOn": [
+        "ARV-104a"
+      ]
+    },
+    {
+      "id": "ARV-104e",
+      "title": "[E13] F18 comparison engine: count accuracy, wait error, bias and track completion",
+      "description": "Accuracy assurance, part e. A pure engine in Ariva.Core computes the first four pilot criteria from captured ground truth and the stored outputs (line_minute, queue_minute, queue_bin, zone health). Epic: Validation tooling. CWEs to review: none specific beyond the baseline.",
+      "acceptanceCriteria": [
+        "Count accuracy per line and bin (absolute error when the manual count is 0), tracer wait error with the tolerance max(1 min, 10 percent), bias, and track completion per zone, exactly as formulas F18",
+        "Tracer matching rule recorded in formulas F18 as Proposed for product-owner agreement (for example the realised wait from the final cumulative curves at the tracer's join time); the engine implements that rule only",
+        "Degraded and Unknown bins are reported apart with their counts, never silently dropped; every result carries the profile version",
+        "Table-driven tests from F18 (96 of 100 gives 96 percent; tracer 8 against 8.9 passes; 20 against 22.5 fails) plus property tests (accuracy at most 1, bias sign follows the errors)",
+        "The Stryker.NET configuration includes the new namespace and the score stays above the break threshold",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 11,
+      "passes": false,
+      "notes": "Size M. Pure code, no persistence.",
+      "dependsOn": [
+        "ARV-113",
+        "ARV-114a"
+      ]
+    },
+    {
+      "id": "ARV-104f",
+      "title": "[E13] F18 comparison engine: desk-state agreement and nowcast error with and without AMAN",
+      "description": "Accuracy assurance, part f. Adds the desk-state agreement, the nowcast error against later realised wait, and the ground-truth proof (published nowcast against the sensor-only shadow, side by side). Epic: Validation tooling. CWEs to review: none specific beyond the baseline.",
+      "acceptanceCriteria": [
+        "Desk-state agreement: observed minutes whose dominant desk_minute state equals the observed state, over observed minutes; Unknown counts as disagreement (Proposed, recorded in F18)",
+        "Nowcast error: nowcast at minute t against the final realised wait of people who entered at t; median absolute error over minutes with realised wait under 20 minutes; minutes without service or degraded reported apart",
+        "Ground-truth proof: the same error for the published and the shadow nowcast (ARV-117), side by side, with the count of minutes each covers; no target",
+        "Table-driven tests with constructed cases for each metric and edge (no observed minutes, all degraded)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 12,
+      "passes": false,
+      "notes": "Size M.",
+      "dependsOn": [
+        "ARV-104e",
+        "ARV-117"
+      ]
+    },
+    {
+      "id": "ARV-104g",
+      "title": "[E13] Validation report service, API and CSV",
+      "description": "Accuracy assurance, part g. The validation report proves the numbers: per criterion against its target, with the raw comparison data, calibration records, profile version and availability. Frozen at campaign close with a content hash. Epic: Validation tooling. CWEs to review: CWE-862, CWE-863, CWE-79, CWE-120.",
+      "acceptanceCriteria": [
+        "Report per campaign: each pilot criterion against its target (targets per campaign from the KPI annex, defaults from F18), per line and bin, per tracer, per desk, nowcast pairs, availability (ARV-118), calibration records of the devices in scope, profile version and geometry hash",
+        "At campaign close the report is frozen as revision 1 with a SHA-256 content hash; a later recomputation adds a revision with a reason, never edits",
+        "JSON and CSV (formula prefixes neutralised); Validation.View; [SiteScoped]; a request timeout and concurrency limit on generation",
+        "E2E: report for a seeded campaign, CSV injection probe, permission matrix rows, cross-site 404",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 13,
+      "passes": false,
+      "notes": "Size M. Targets are proposals until the pilot contract fixes them (roadmap, pilot acceptance criteria).",
+      "dependsOn": [
+        "ARV-104a",
+        "ARV-104b",
+        "ARV-104f",
+        "ARV-118"
+      ]
+    },
+    {
+      "id": "ARV-104c",
+      "title": "[E13] Observer tablet screens: line tally and tracer timing",
+      "description": "Accuracy assurance, part c. The observer tablet form named in wiki/07 section 8: a large tally counter per line and 15-minute bin, and a tracer join and exit timer. Epic: Validation tooling. CWEs to review: CWE-79, CWE-384, CWE-863.",
+      "acceptanceCriteria": [
+        "/validation/capture for ValidationObserver: choose campaign and line; large In and Out buttons; bin boundaries in site local time; each closed bin is submitted with an Idempotency-Key",
+        "Unsent bins stay in memory with a visible retry banner; nothing is written to web storage; tokens stay in memory as ARV-051 requires",
+        "Tracer screen: tracer code, Join and Exit buttons, server clock offset shown",
+        "Works on touch at 1280x800 and 800x1280, in Arabic (right to left) and English, with keyboard and accessibility checks",
+        "Playwright: tally a bin, drop the connection and retry, a tracer run, role hiding, XSS probes on codes, no CSP violations",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 14,
+      "passes": false,
+      "notes": "Size M. Online capture only; an offline-capable tablet would need an ADR (tokens never in web storage).",
+      "dependsOn": [
+        "ARV-104a",
+        "ARV-104b"
+      ]
+    },
+    {
+      "id": "ARV-104d",
+      "title": "[E13] Observer tablet screen: desk state log",
+      "description": "Accuracy assurance, part d. A grid of the desks in scope by minute where an observer taps the observed state each minute. Epic: Validation tooling. CWEs to review: CWE-79, CWE-863.",
+      "acceptanceCriteria": [
+        "Desks in scope by minute with one-tap states (Closed, Idle, Serving, Paused), the current minute highlighted, batches sent every 15 minutes with an Idempotency-Key and retried from memory",
+        "Playwright: log 15 minutes for four desks, retry after a dropped connection, role hiding, Arabic layout, XSS probes on desk codes",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 15,
+      "passes": false,
+      "notes": "Size S.",
+      "dependsOn": [
+        "ARV-104c"
+      ]
+    },
+    {
+      "id": "ARV-104h",
+      "title": "[E13] Validation campaign and report screens",
+      "description": "Accuracy assurance, part h. Campaign list, creation, capture progress, close with step-up, and the report with pass or fail per criterion and CSV download. Epic: Validation tooling. CWEs to review: CWE-79, CWE-306, CWE-863.",
+      "acceptanceCriteria": [
+        "/validation: campaigns (Validation.View), create and start (Validation.Manage), progress per line (bins captured) and tracers by wait range, close with the step-up dialog",
+        "Report view: each criterion with value, target and verdict, tables per line, tracer and desk, the side-by-side nowcast proof, the content hash, CSV download saved as served",
+        "Playwright per role (observer, border supervisor, administrator), XSS probes on campaign names, visual baseline added",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 16,
+      "passes": false,
+      "notes": "Size M.",
+      "dependsOn": [
+        "ARV-104g",
+        "ARV-104c"
+      ]
+    },
+    {
+      "id": "ARV-104i",
+      "title": "[E13] Simulator ground truth and an automated validation rehearsal",
+      "description": "Accuracy assurance, part i. The simulator knows the true counts, waits and desk states of the reference evening. Let it act as observers through the capture API, with optional injected error, so the whole validation path is rehearsed before any site work. Epic: Validation tooling. CWEs to review: CWE-287, CWE-306.",
+      "acceptanceCriteria": [
+        "Ariva.Simulation.Api submits manual counts, tracer runs and desk observations from the scenario's truth as ValidationObserver accounts, with configurable count error, tracer error and observer slips; control endpoints behind the control scope",
+        "E2E rehearsal on seed 9303: with no injected error every criterion passes; a 6 percent count error fails count accuracy for that line; the S-17 outage bins appear as Degraded in the report",
+        "wiki/07 section 8 gains a rehearsal runbook for the field engineer",
+        "The simulator still refuses to start in k8s-prd",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 17,
+      "passes": false,
+      "notes": "Size M. This is the evidence that the tooling works before a client sees it.",
+      "dependsOn": [
+        "ARV-104g",
+        "ARV-029"
+      ]
+    },
+    {
+      "id": "ARV-114b",
+      "title": "[E12] Health-check alarms and degraded propagation",
+      "description": "Turn the ARV-114a checks into typed alert metrics (no expressions) and into the F11 quality flag, so a conservation or track-completion problem raises an alarm and marks the bin. Epic: Measurement completeness. CWEs to review: CWE-94, CWE-862.",
+      "acceptanceCriteria": [
+        "New alert metrics ConservationResidual, TrackCompletion and OccupancyOutOfRange in the typed rule model, evaluated live and in backtest like the others; backtest equals live on a constructed case",
+        "A bin whose track completion falls below the threshold (Proposed 90 percent) is flagged Degraded per F11; the rule is recorded in formulas F11",
+        "Rule screen offers the new metrics; Playwright creates one and previews it",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 18,
+      "passes": false,
+      "notes": "Size S.",
+      "dependsOn": [
+        "ARV-114a",
+        "ARV-038"
+      ]
+    },
+    {
+      "id": "ARV-121",
+      "title": "[E18] First System administrator bootstrap without a standing password",
+      "description": "Outside vm-local the only administrator an installation can create is the break-glass account (ARV-010c, `--create-break-glass`), which is meant to be sealed offline for emergencies, not used day to day; DevelopmentUserSeed is vm-local only, and wiki/04 section 7.3 (first administrator) is still a target procedure. Add a one-shot bootstrap that leaves no standing default password. Epic: Access and licensing. CWEs to review: CWE-306, CWE-287, CWE-269, CWE-532.",
+      "acceptanceCriteria": [
+        "A one-shot bootstrap mode of Ariva.Api.Main (run as a job like the migration mode) creates the first SystemAdministrator only when no administrator exists, from a one-time setup code supplied as a secret and valid for at most 24 hours",
+        "First sign-in forces a password change and TOTP enrolment; the bootstrap code is consumed on use and refused afterwards; every step audited",
+        "The setup code and temporary password never appear in logs, output or configuration files (log scan test); no default password exists in any appsettings file (test)",
+        "Tests: second run refused, expired code refused, replayed code refused, a pod without the secret does nothing",
+        "An ADR (Status Proposed) records the mechanism for TC-49; the ADR index is updated",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 19,
+      "passes": false,
+      "notes": "Size S. TC-49 is a Dalil internal decision; the story proposes the mechanism and the owner accepts the ADR. No site decision needed.",
+      "dependsOn": [
+        "ARV-011",
+        "ARV-010c"
+      ]
+    },
+    {
+      "id": "ARV-119",
+      "title": "[E14] Weekly report and scheduled delivery",
+      "description": "The MVP needs daily and weekly reports with CSV. Only the daily peaks report exists (ReportTemplate.DailyPeaks). Add a weekly summary on the same pattern. Epic: Reports. CWEs to review: CWE-79, CWE-863, CWE-120.",
+      "acceptanceCriteria": [
+        "ReportTemplate WeeklySummary per site and local week (Monday start, Proposed): per lane and day P50 and P90, peak hours, alert counts with time to acknowledge, device uptime, data quality (health checks, degraded bins), overflow minutes and availability",
+        "JSON and CSV with formula prefixes neutralised; schedules to Ariva accounts only, delivered once per recipient by TickerQ in Cronz",
+        "Request timeout and concurrency limit on on-demand generation",
+        "Integration tests on the reference week built from the simulator; E2E for the API with permission and cross-site cases",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 20,
+      "passes": false,
+      "notes": "Size M. TC-45 (desk utilisation definition) is open; show time in each desk state, which needs no definition.",
+      "dependsOn": [
+        "ARV-060",
+        "ARV-113",
+        "ARV-114a",
+        "ARV-115",
+        "ARV-118"
+      ]
+    },
+    {
+      "id": "ARV-120",
+      "title": "[E14] Weekly report, overflow and data-quality views",
+      "description": "Screens for what ARV-114a, ARV-115 and ARV-119 add: the weekly tab on the reports screen, overflow state on the live and immigration screens, and a data-quality panel. Epic: Reports. CWEs to review: CWE-79, CWE-863.",
+      "acceptanceCriteria": [
+        "Reports screen: Weekly tab with preview and CSV download by permission",
+        "Live and immigration screens: overflow band occupied marker per queue; a data-quality panel per zone (conservation, track completion, occupancy range) for DataQuality.View only",
+        "Devices screen: health-check alarms per zone",
+        "Playwright per role, XSS probes, visual baselines updated through the update flow",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 21,
+      "passes": false,
+      "notes": "Size S. Wiki 12 (user guide) updated with the new panels.",
+      "dependsOn": [
+        "ARV-119",
+        "ARV-115",
+        "ARV-114b"
+      ]
+    },
+    {
+      "id": "ARV-122",
+      "title": "[E15] Site configuration export and import",
+      "description": "Moving a configured site from a staging environment to the pilot's production (or rebuilding after a loss) has no tool. Export a site's configuration as one bundle with a hash manifest and import it into an empty site. Epic: Site onboarding and AMAN. CWEs to review: CWE-501, CWE-120, CWE-863, CWE-306, CWE-79.",
+      "acceptanceCriteria": [
+        "Export: topology, desk code mappings, the published zone profile with its geometry hash, floor plan files, devices without any credential, alert rules and display configurations, with a manifest of SHA-256 hashes",
+        "Import into an empty site only: request models with limits (no entity binding), the profile arrives as a draft to publish with step-up, devices get new credentials shown once, SVG plans pass the ARV-018 sanitiser again",
+        "Export and import are step-up critical actions, audited, [SiteScoped]",
+        "E2E: round trip between two sites gives the same geometry hash; tampered manifest refused; oversized and deeply nested bundles 413 or 400; hostile names inert",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 22,
+      "passes": false,
+      "notes": "Size M. API only; a screen can follow if the field engineer needs one.",
+      "dependsOn": [
+        "ARV-017",
+        "ARV-018",
+        "ARV-021",
+        "ARV-037",
+        "ARV-058"
+      ]
+    },
+    {
+      "id": "ARV-123",
+      "title": "[E15] Bulk import of devices and desk code mappings from CSV",
+      "description": "Commissioning starts from the as-built pack (wiki/07 section 2: import the device list). Add a preview-then-commit CSV import for devices and for AMAN desk and gate code mappings. Epic: Site onboarding and AMAN. CWEs to review: CWE-501, CWE-120, CWE-863, CWE-79.",
+      "acceptanceCriteria": [
+        "Device CSV (code, family, model, transport, mounting height, position, orientation, owning queue zone) and mapping CSV (external system, external code, desk) with streamed parsing, row and size limits, per-row errors",
+        "Preview token bound to file, site and user; commit applies in units with rollback on failure; devices created in Commissioning with credentials shown once on the devices screen",
+        "Registering devices stays a critical action (step-up), audited",
+        "E2E with malformed, oversized and formula-prefixed files; permission and cross-site cases",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 23,
+      "passes": false,
+      "notes": "Size S. Device id convention per site is TC-40 (survey); the import accepts any code that passes the existing pattern.",
+      "dependsOn": [
+        "ARV-021",
+        "ARV-015"
+      ]
+    },
+    {
+      "id": "ARV-128",
+      "title": "[E17] Smoke suite against a deployed environment",
+      "description": "TC-56: the end-to-end suite cannot be pointed at a deployed environment. Add a read-only smoke project for go-live and after each release. Epic: Operations and deployment. CWEs to review: CWE-287, CWE-306.",
+      "acceptanceCriteria": [
+        "A Playwright smoke project targets a base URL given by environment variable, signs in with a dedicated smoke account (read-only permissions, no critical actions), and checks health, sign-in, the live hub, a display player, the ingest device check with a test device credential and a report fetch",
+        "The project refuses to run write, attack or load tests against a non-local target (test)",
+        "Smoke credentials come from environment variables only and are never logged",
+        "Runs green against the local E2E stack and the AppHost; wiki/04 section 8 updated (TC-56 answered as Proposed)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 24,
+      "passes": false,
+      "notes": "Size S. First run against a cluster happens in ARV-137 (owner), not earlier.",
+      "dependsOn": []
+    },
+    {
+      "id": "ARV-124",
+      "title": "[E17] Pilot-profile load test and 24-hour soak",
+      "description": "Work package 12 of the roadmap: load at the D5 site rate (about 15,000 messages a second for 100 sensors) and a long run that proves bounded memory, on the pilot hall profile, locally (no cluster). Epic: Operations and deployment. CWEs to review: CWE-120, CWE-400.",
+      "acceptanceCriteria": [
+        "A load harness scenario for the pilot hall profile (Proposed: up to 20 desks, e-gates, 30 T3 sensors, AMAN feed, 50 dashboards, 10 displays) and a burst at 15,000 messages a second",
+        "A 24-hour soak at accelerated simulator speed: stream state, desk engine buffers, outbox, Redis and process memory do not grow beyond their bounds; results and measured catch-up after a 30-minute stream outage recorded in wiki/05 sizing notes, labelled as lab measurements",
+        "Rate and body limits hold (429 and 413, never 5xx) under load",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 25,
+      "passes": false,
+      "notes": "Size M. TC-33 (node sizes on site hardware) is answered later from these numbers and the site survey.",
+      "dependsOn": [
+        "ARV-071",
+        "ARV-113",
+        "ARV-115",
+        "ARV-116"
+      ]
+    },
+    {
+      "id": "ARV-125",
+      "title": "[E17] System monitoring alerts and dashboards in the chart",
+      "description": "Alerts on the system itself (not on queues): nothing ships today. Add alert rules and dashboards to the Helm chart with default thresholds that TC-36 tunes per site. Rendering tests only; no cluster work. Epic: Operations and deployment. CWEs to review: CWE-269, CWE-532.",
+      "acceptanceCriteria": [
+        "Alert rules for host down, readiness failing, stream consumer lag, outbox backlog, dead-letter growth, Kafka and database unavailable, disk, certificate expiry, AMAN feed stale and share of devices offline, with thresholds as Helm values and defaults from wiki/10 section 2",
+        "Dashboards as JSON in the chart for the OpenTelemetry backend the overview names; every metric they use exists (unit test over the registered meters)",
+        "Chart tests render the rules and dashboards for every environment; no rule queries a label holding a secret or a person identifier",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 26,
+      "passes": false,
+      "notes": "Size M. Monitoring stack and alert routing at the site depend on TC-32 and TC-36; defaults ship now.",
+      "dependsOn": [
+        "ARV-062"
+      ]
+    },
+    {
+      "id": "ARV-126",
+      "title": "[E17] Backup and restore with a tested restore",
+      "description": "The pilot needs a recovery procedure (TC-34, TC-26, TC-50, TC-51). Write it as operations tooling outside the hosts, and prove a restore works. Epic: Operations and deployment. CWEs to review: CWE-269, CWE-532, CWE-78.",
+      "acceptanceCriteria": [
+        "Procedure and tooling under scripts/ops (not in any host) for PostgreSQL with TimescaleDB, the Data Protection key ring and file storage, plus the republish of compacted topics from the database after a Kafka loss",
+        "An integration test restores a backup into a fresh TimescaleDB container; the hosts start, verify schema_version, decrypt a TOTP seed and an outbound secret, and serve the restored site",
+        "Backups contain no plaintext secret; the restore runs with the migration role, the runtime role stays DML only",
+        "wiki/04 section 10 and section 11 updated, with recovery objectives marked Proposed until TC-34 is answered",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 27,
+      "passes": false,
+      "notes": "Size M. Process execution stays out of production code (ForbiddenDependencyTests); if the scanner flags the ops tooling, propose an allowlist entry for the owner, never approve it.",
+      "dependsOn": [
+        "ARV-006",
+        "ARV-080"
+      ]
+    },
+    {
+      "id": "ARV-127",
+      "title": "[E17] Basic offline install bundle",
+      "description": "The MVP capability table promises a basic offline install for a border authority's own environment (wiki/04 section 12 is a target procedure). Build the bundle and its verification; no cluster work. Epic: Operations and deployment. CWEs to review: CWE-494, CWE-269.",
+      "acceptanceCriteria": [
+        "A release script builds a bundle: packaged chart and helmfile, image archives by digest, SBOMs, signatures and attestations, the web build, and a checksum manifest",
+        "A verify script checks every hash and signature on a connected machine before the bundle is carried in; a tampered archive fails",
+        "A CI dry run produces the manifest without pushing anything; wiki/04 section 12 describes the basic procedure as implemented",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 28,
+      "passes": false,
+      "notes": "Size M. TC-52 (web build per site or runtime configuration) affects the web part; ship runtime configuration as Proposed.",
+      "dependsOn": [
+        "ARV-073",
+        "ARV-062"
+      ]
+    },
+    {
+      "id": "ARV-111a",
+      "title": "[E17] Data inventory and retention settings for the pilot DPIA",
+      "description": "Candidate ARV-111 (privacy compliance pack), the part the pilot needs: a data inventory the DPIA can cite, and retention that follows the contract's answers instead of fixed script values. Jurisdiction mapping stays with counsel (TC-70 to TC-75). Epic: Operations and deployment. CWEs to review: CWE-269, CWE-89.",
+      "acceptanceCriteria": [
+        "docs/privacy/data-inventory.md lists every table and hypertable with category, whether it holds personal data, retention and owner; a unit test fails when a script adds a table the inventory lacks",
+        "Hypertable retention is a migration-job parameter per environment (raw sensing default 90 days until TC-62 is answered); the runtime role stays DDL-less (test)",
+        "A Cronz retention job deletes relational rows past their configured periods (alert emails, integration call records, report deliveries) with defaults marked Proposed (TC-65 to TC-68); tests",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 29,
+      "passes": false,
+      "notes": "Size M. Reuses candidate id ARV-111 (part a). The jurisdiction mapping (part b) is counsel's work, not a story here.",
+      "dependsOn": [
+        "ARV-006",
+        "ARV-060"
+      ]
+    },
+    {
+      "id": "ARV-129",
+      "title": "[E12] Desk plan per lane and the DesksBelowPlan rule",
+      "description": "DesksBelowPlan has no data: there is no staffing plan (AlertInputs.cs). Staffing recommendations are v1; the MVP can take a plan entered by the supervisor. Epic: Measurement completeness. CWEs to review: CWE-862, CWE-863, CWE-501, CWE-120.",
+      "acceptanceCriteria": [
+        "DeskPlan per site, lane and 15-minute interval of the local week, versioned, entered or imported from CSV by a new permission DeskPlan.Edit, audited, [SiteScoped]",
+        "AlertInputs supplies DesksBelowPlan from LaneDesks n_open against the plan; backtest equals live on a constructed case",
+        "Immigration screen shows plan against open desks for border roles only; Playwright per role",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 30,
+      "passes": false,
+      "notes": "Size M. Conditional: product owner decides whether the pilot needs it (known limit in the exit review). If ruled out, mark passes true with the note 'Not in MVP: decided by <owner> on <date>' so the gate is not held.",
+      "dependsOn": [
+        "ARV-116",
+        "ARV-038",
+        "ARV-057"
+      ]
+    },
+    {
+      "id": "ARV-130",
+      "title": "[E15] AMAN site code and lane category mapping",
+      "description": "Ariva assumes AMAN site codes equal Ariva site codes and that AMAN's lane categories use Ariva's codes. Add explicit mappings so the client's AMAN records reach the right site and lane, parking unknown codes as for desks. Epic: Site onboarding and AMAN. CWEs to review: CWE-501, CWE-863.",
+      "acceptanceCriteria": [
+        "Configured mapping of AMAN site code to Ariva site (identity by default) and of AMAN lane category codes to Ariva lane categories, administered with step-up and audited",
+        "An unknown site or lane code is never guessed: the record is parked, the administrator alerted, and lane demand for it counts as unknown",
+        "Pact (ARV-068) examples and the strict reader updated; E2E with the AMAN emulator using foreign codes",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 31,
+      "passes": false,
+      "notes": "Size S. Blocked on: TC-20 (AMAN site codes) and TC-21 (AMAN lane category code list). If both answers are 'same codes', reduce to a test and a documented decision.",
+      "dependsOn": [
+        "ARV-048",
+        "ARV-015"
+      ]
+    },
+    {
+      "id": "ARV-131",
+      "title": "[E15] Onboard the client's AMAN feed",
+      "description": "Phase 0 consumes the AMAN feed from the emulator. Connect to the client's AMAN: Kafka listener, TLS and credentials, or the pull connector against AMAN's real Integration API paging; verify the contracts against AMAN's build. Epic: Site onboarding and AMAN. CWEs to review: CWE-287, CWE-918, CWE-501.",
+      "acceptanceCriteria": [
+        "Consumer settings for the client's AMAN Kafka (TLS with a pinned CA, SASL credentials from secrets, port) or the pull connector's paging aligned to AMAN's real API, whichever the site uses",
+        "AMAN runs the Pact provider verification (wiki/08) against the release candidate of its outbox change; the result is recorded in backlog/progress.md",
+        "A conformance test replays a recorded capture from the client's AMAN test environment through the strict reader with zero refusals other than expected ones",
+        "No identifier beyond the aggregate contracts reaches Ariva (data-boundary test on the capture)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 32,
+      "passes": false,
+      "notes": "Size M. Blocked on: the AMAN-side outbox change (AMAN repository, not this backlog) built and deployed to the client's AMAN test environment; TC-22 (AMAN paging), TC-24 (AMAN Kafka port and TLS), TC-25 (shared Kafka and its chart). TC-23 (topic retention) sets the replay window and can follow.",
+      "dependsOn": [
+        "ARV-130",
+        "ARV-050",
+        "ARV-068"
+      ]
+    },
+    {
+      "id": "ARV-132",
+      "title": "[E16] Pilot sensor family certification kit from a real capture",
+      "description": "The Xovis dialect and the Ouster Detect mapping were built from documentation and inferred formats ('verify' labels in docs/architecture/sensor-adapters.md). Certify the family chosen for the pilot hall from a real capture. Epic: Sensors. CWEs to review: CWE-501, CWE-120.",
+      "acceptanceCriteria": [
+        "Recorded live captures of the chosen family (single and multi-sensor where used) become conformance fixtures; units, axes, frame, counter names, success codes and retry ids confirmed and the 'verify' labels for that family resolved with sources",
+        "The certified firmware range is recorded; a payload from outside it is flagged on the device",
+        "Property tests (ARV-070) extended with the captured shapes; the replay of a capture through Ingest and Stream gives plausible counts against the capture's own counters",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 33,
+      "passes": false,
+      "notes": "Size M. Blocked on: the family decision from the site survey (and TC-71 if the hall is in Angola, stereo against LiDAR), then TC-38 (Xovis real capture and details) or TC-39 (Ouster Detect recorded payload). A capture from the vendor or the lab can unblock it before site hardware arrives.",
+      "dependsOn": [
+        "ARV-023",
+        "ARV-024",
+        "ARV-070"
+      ]
+    },
+    {
+      "id": "ARV-133",
+      "title": "[E16] Pilot family transport and device health completion",
+      "description": "Two of seven transports exist (HTTPS push, MQTT). Build only what the chosen family needs at the pilot hall: for Xovis, the MQTT payload confirmation and REST pull for configuration and health through registered addresses; the device id convention. Epic: Sensors. CWEs to review: CWE-918, CWE-287, CWE-501, CWE-120.",
+      "acceptanceCriteria": [
+        "The transport the site design needs, and only that one, with per-device credentials, TLS, limits and conformance tests; REST pull, if built, calls registered device addresses only through the outbound transport's resolved-address check, with no redirects",
+        "Device health from the family (heartbeat, frame rate, clock offset) reaches ariva.device.health.v1 at the documented cadence",
+        "Device code convention for the site (TC-40) enforced by validation",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 34,
+      "passes": false,
+      "notes": "Size M. Blocked on: site survey network design, TC-37 (Xovis MQTT payload and broker), TC-40 (device id convention). Conditional: if HTTPS push already covers data and health for the chosen family, close with a recorded decision.",
+      "dependsOn": [
+        "ARV-132",
+        "ARV-045"
+      ]
+    },
+    {
+      "id": "ARV-136",
+      "title": "[E15] Pilot site settings and a start-up check for unconfirmed values",
+      "description": "Several go-live values are 'To confirm' per site: e-gate reject lane, default lane mix, arrival-wave threshold, local time zone, nowcast staleness, engine parameters, partitions. Put the answers into the pilot's environment settings and refuse to start k8s-prd while a placeholder remains. Epic: Site onboarding and AMAN. CWEs to review: CWE-501.",
+      "acceptanceCriteria": [
+        "The pilot's values for TC-01, TC-02, TC-03, TC-08, TC-09, TC-44 and TC-47 live in the k8s-prd service settings and the site values file, with their source recorded",
+        "A k8s-prd host refuses to start when a setting still holds a 'To confirm' placeholder or a reference default flagged as such (unit test per host)",
+        "docs/product/pilot-to-confirm.md and the source pages updated for each answered item",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 35,
+      "passes": false,
+      "notes": "Size S. Blocked on: TC-01, TC-02, TC-03, TC-08, TC-09, TC-44, TC-47 (border authority and Dalil answers). The start-up check itself can be built earlier with the placeholders.",
+      "dependsOn": [
+        "ARV-098"
+      ]
+    },
+    {
+      "id": "ARV-134a",
+      "title": "[E18] Site identity provider sign-in (OIDC), account linking",
+      "description": "Conditional on TC-30: if the border authority uses its own OIDC provider, sign in through it (authorization code with PKCE) and link to Ariva accounts, which keep roles, sites and audit. Epic: Access and licensing. CWEs to review: CWE-287, CWE-384, CWE-306, CWE-918.",
+      "acceptanceCriteria": [
+        "Authorization code flow with PKCE in Ariva.Api.Main; issuer, audience, nonce and state validated; the provider's endpoints are registered outbound endpoints (SSRF controls); a new Ariva session (new sid, refresh rotation) per sign-in",
+        "An IdP subject links to one pre-created Ariva account only; no account is created from claims; roles never come from the token",
+        "E2E against a test provider container: success, wrong issuer, replayed state, unknown subject, disabled account",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 36,
+      "passes": false,
+      "notes": "Size M. Blocked on: TC-30 (own OIDC or Ariva sign-in) and TC-06 (MFA policy). Conditional: if the site keeps Ariva sign-in, close with a recorded decision. Needs an ADR (Proposed) before code.",
+      "dependsOn": [
+        "ARV-010b",
+        "ARV-045"
+      ]
+    },
+    {
+      "id": "ARV-134b",
+      "title": "[E18] Step-up and MFA through the site identity provider",
+      "description": "Conditional on TC-30, part b: critical actions need a recent MFA. With an external provider, accept its MFA evidence (amr and auth_time) or keep Ariva's TOTP step-up, per the policy TC-06 sets. Epic: Access and licensing. CWEs to review: CWE-306, CWE-287.",
+      "acceptanceCriteria": [
+        "Step-up through the provider (max_age and acr or amr checks) or Ariva TOTP, chosen by configuration; a critical action without fresh MFA answers 401 mfa_required as today",
+        "E2E for both modes, including a token without MFA evidence",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 37,
+      "passes": false,
+      "notes": "Size M. Blocked on: TC-30 and TC-06. Conditional like ARV-134a.",
+      "dependsOn": [
+        "ARV-134a",
+        "ARV-010d"
+      ]
+    },
+    {
+      "id": "ARV-135",
+      "title": "[E18] Signed licence file and module flags (basic)",
+      "description": "The capability table lists basic module licensing in the MVP (ADR-0002). Load a signed licence file offline, check its signature, site and expiry, and enable the Border module. Epic: Access and licensing. CWEs to review: CWE-287, CWE-501, CWE-306.",
+      "acceptanceCriteria": [
+        "A licence file signed by a Dalil key (public key built in) names customer, site codes, modules and validity; verified at start-up and on reload; a tampered, expired or foreign-site file is refused with a clear status",
+        "Module flags gate the Airport Operations screens and APIs (absent in the MVP) while the Border module runs; expiry has a grace period and alerts administrators",
+        "Loading a licence is a step-up critical action, audited; the status shows on the administration screen",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 38,
+      "passes": false,
+      "notes": "Size M. Blocked on: TC-42 (which module licenses the SLA engine) and TC-43 (how the licence file is loaded and renewed). Conditional: the owner may defer licensing to v1 for a single pilot; record the decision and close.",
+      "dependsOn": [
+        "ARV-011"
+      ]
+    },
+    {
+      "id": "ARV-137",
+      "title": "[E19] Dev cluster release (ARV-002 last criterion), done by the owner",
+      "description": "Owner decision 2026-10-06: ARV-002's remaining criterion, the release on the dev Kubernetes cluster verified by a human, is deferred until every other MVP story is done. This is the first cluster work in the plan. Epic: Pilot gate. CWEs to review: CWE-269, CWE-79.",
+      "acceptanceCriteria": [
+        "Docker builds of every image succeed and each container starts under the chart security context on the dev cluster, verified by the owner and recorded in backlog/progress.md (ARV-002 criterion 1)",
+        "ARV-002 is set to passes true in backlog/prd-phase0.json with the date and the owner's name",
+        "The smoke suite (ARV-128) passes against the dev cluster",
+        "The dynamic scan (ARV-063) runs against the dev deployment; high findings triaged in backlog/progress.md",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 39,
+      "passes": false,
+      "notes": "Done by the owner (agents never change clusters). Needs a reachable dev cluster and GitHub Actions minutes. Depends on every other MVP story in this file; conditional stories ruled out are closed with a recorded decision first.",
+      "dependsOn": [
+        "ARV-002",
+        "ARV-113",
+        "ARV-114a",
+        "ARV-114b",
+        "ARV-115",
+        "ARV-116",
+        "ARV-117",
+        "ARV-118",
+        "ARV-104a",
+        "ARV-104b",
+        "ARV-104c",
+        "ARV-104d",
+        "ARV-104e",
+        "ARV-104f",
+        "ARV-104g",
+        "ARV-104h",
+        "ARV-104i",
+        "ARV-119",
+        "ARV-120",
+        "ARV-121",
+        "ARV-122",
+        "ARV-123",
+        "ARV-124",
+        "ARV-125",
+        "ARV-126",
+        "ARV-127",
+        "ARV-128",
+        "ARV-111a",
+        "ARV-129",
+        "ARV-130",
+        "ARV-131",
+        "ARV-132",
+        "ARV-133",
+        "ARV-134a",
+        "ARV-134b",
+        "ARV-135",
+        "ARV-136",
+        "ARV-139a",
+        "ARV-139b"
+      ]
+    },
+    {
+      "id": "ARV-138",
+      "title": "[E19] Pilot go-live gate",
+      "description": "The gate before the pilot site goes live and the validation campaign starts: every MVP story done, the go-live security stories done, the validation tooling rehearsed, and the open Phase 0 items closed. Epic: Pilot gate. CWEs to review: all.",
+      "acceptanceCriteria": [
+        "ARV-137 passes (dev cluster release, ARV-002 closed) and ARV-065 passes (the six Toxiproxy fault tests run green where the image is reachable)",
+        "Go-live security stories pass: ARV-082 (encrypted backend connections), ARV-083 (per-service identities), ARV-085 (network policies, private probes), ARV-087 (Cronz dashboard behind sign-in and MFA); docs/security/asvs-l2.md updated",
+        "The five approvedBy PENDING entries in security/allowlist.json are approved or removed by the owner (never by an agent)",
+        "Validation rehearsal (ARV-104i) green on the current main; the campaign plan with sample sizes and tracer count agreed in the KPI annex (TC-04)",
+        "Every pilot-to-confirm item marked Go-live is answered or explicitly accepted as a known limit by the owner, and the source pages updated",
+        "The client's penetration test has no open high or critical finding (human); the MassTransit v8 decision (ADR-0018: v9 licence or Confluent swap) is recorded",
+        "All gates green: node scripts/verify.mjs backend, integration, web, e2e and docs; node scripts/security/scan.mjs passes with 0 errors",
+        "Full-repository security review PASS recorded in backlog/progress.md",
+        "Owner sign-off recorded in docs/product (a go-live review page following docs/product/phase0-exit-review.md)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size S for the agent part; most criteria are human. The site installation, smoke run on the pilot cluster and burn-in follow this gate and are done by the owner and the field engineer.",
+      "dependsOn": [
+        "ARV-137",
+        "ARV-065",
+        "ARV-082",
+        "ARV-083",
+        "ARV-085",
+        "ARV-087",
+        "ARV-104g",
+        "ARV-104h",
+        "ARV-104i"
+      ]
+    }
+  ]
+}
