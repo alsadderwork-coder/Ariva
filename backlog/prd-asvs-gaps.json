@@ -18,7 +18,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 100,
-      "passes": false,
+      "passes": true,
       "notes": "Split 2026-10-06: algorithm labels on the credential hashes (refresh tokens, recovery codes, device and display credentials) went to ARV-080a, so this story stays one reviewable change.",
       "dependsOn": [
         "ARV-074"
