@@ -72,13 +72,13 @@ Independent security reviewer, full repository (not a diff), all 14 CWEs: **PASS
 | 120 Buffer overflow | No unsafe code; body, depth and size limits |
 | 79 XSS | No `{@html}`, `innerHTML` or `eval`; strict CSP; XSS probes in 10 functional specs |
 
-Conditions (see section 5): ARV-097 and the five `PENDING` allowlist approvals before the pilot contract; ARV-098, ARV-085 with ARV-087, and ARV-082 before go-live.
+Conditions (see section 5): the five `PENDING` allowlist approvals before the pilot contract (ARV-097, the other condition, is done); ARV-098, ARV-085 with ARV-087, and ARV-082 before go-live.
 
 ## 5. Open items carried into Phase 1
 
 Before the pilot contract:
 
-- **ARV-097**: MassTransit sends usage telemetry (versions, the server's time zone, Kafka topic names) to an external endpoint from four hosts. Reviewer: High.
+- **ARV-097** (done, 2026-10-06): MassTransit sent usage telemetry (versions, the server's time zone, Kafka topic names) to an external endpoint from four hosts. It is now off in code, a host refuses to start if `MASSTRANSIT_USAGE_TELEMETRY` turns it back on, and the E2E log scan checks for it.
 - **Five `approvedBy: PENDING` entries in `security/allowlist.json`**: the anonymous sign-in, refresh and auth routes, the mock AMAN sign-in, and the two reviewed SSRF exceptions in the outbound connector. Only the owner may approve them (CLAUDE.md, non-negotiable 1).
 - **The six fault-injection tests** must run green where the Toxiproxy image is reachable (a developer machine, or the cloud environment with `pkg-containers.githubusercontent.com` allowed).
 

@@ -804,3 +804,14 @@ One entry per story, newest last. Format:
 - Security review (independent reviewer, full repository, 14 CWEs): PASS with conditions. Before the pilot contract: ARV-097 (MassTransit telemetry, High) and the owner's approval of five PENDING allowlist entries. Before go-live: ARV-098 (vm-local fallback, High), ARV-085 with ARV-087 (dashboard and probes on the public ingress, no NetworkPolicies), ARV-082 (backend TLS).
 - Open: ARV-065 stays `passes: false` until the six fault tests run green where the Toxiproxy image is reachable.
 - Learnings: a local branch that cherry-picks the open pull requests onto main lets the exit gates run on the state main will have, without pushing it.
+
+## 2026-10-06 ARV-097 No outbound usage telemetry from MassTransit
+- Summary: MassTransit 8.5 reported versions, the OS, the server's time zone and the Kafka topic names to `usage-tracking.masstransit.io` about five minutes after a host started (Main, Ingest, Integration, Stream). `AddArivaMessaging`, where every host registers the bus, now calls `DisableUsageTelemetry()`, and `EnsureNoUsageTelemetry` refuses to start a host whose `MASSTRANSIT_USAGE_TELEMETRY` is true or non-zero (MassTransit's tracker reads it after the options are built and would turn reporting back on).
+- Tests: `MessagingRegistrationTests` (telemetry off, red without the fix; the variable refused or allowed), `MessagingLayeringTests` (only `MessagingExtensions.cs` registers a MassTransit bus anywhere in `Platform/`, generic form included), and the E2E log scan fails a run whose host logs report usage telemetry (a backstop: the report comes about five minutes after start and only with Kafka).
+- Docs: `docs/security/asvs-l2.md` (V14.2.3, V13.2.4, ARV-097 row), `wiki/13-Security-Guide.md`, `docs/product/phase0-exit-review.md` (item closed).
+- Gates: backend PASS (2,330 unit tests, 14 CWEs, audits); e2e 504 passed and 1 skipped, the log scan clean over 9 minutes of host logs (the run outlasts the report delay). GitHub Actions does not start on this account, so these were local runs.
+- Security review: first pass FAIL (Medium: the environment variable re-enabled reporting; Low: V13.2.4 row, PRD entry), fixed in 8de1aea; second pass PASS. The PRD entry came with #57, so `passes: true` and this entry landed after #57 and #59 merged (PR #60 merged as 963ab41 and 471152c).
+- Learnings:
+  - A library's options can be overridden after they are built: test the behaviour the library ends up with (here the tracker's environment variable), not only the options.
+  - `dotnet test` in this repository runs vstest: arguments after `--` are run settings, so use `--filter "FullyQualifiedName~..."` to run a subset.
+
