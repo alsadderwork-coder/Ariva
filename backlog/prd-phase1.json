@@ -92,7 +92,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 4,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Found in the ARV-115 security review (2026-10-06, Medium for OverflowDetected, fixed there; the same latent overflow remains for ZoneHealthChanged through NHibernate, where the shared OutboxLimits check gives a clear error but the commit still fails).",
       "dependsOn": [
         "ARV-115"

@@ -79,6 +79,24 @@ The reference scenario rehearses this: sensor S-17 over the arrivals hall is off
 - **Checks**: the zone's data-quality reason in the dashboard (once available) or Stream logs; the active profile version and its activation time; desk states for the lane; device clock offsets.
 - **Actions**: fix the input (sensor, feed, mapping, clock). If a profile change caused it, publish a corrected version and recompute the affected period (the original revision is kept).
 
+### 4.2a Queue zone name too long for its key (ARV-114c)
+
+Every event of a queue zone is keyed by its zone key: the site code, a slash and the queue zone's name. Kafka keys and the outbox's `message_key` (script 0011) hold at most 200 characters, counted as PostgreSQL counts them (a character outside the basic plane counts once). Since ARV-114c the zone profile refuses a queue zone name whose key would be longer (at most 196 characters at a three-letter site, 182 at a 17-character one); service, staff and overflow zones share their queue zone's key, so only queue zone names are bound. A profile published before ARV-114c may still hold such a name. None of the seeded profiles does: the demo profile (DMO) has queue zone names of at most 5 characters, which a unit test keeps under the limit.
+
+- **Symptoms**: the warning "Zone ... of ... is not assessed: its key is longer than 200 characters" from `Ariva.Infra.Services.Sensing.SvcDeviceHealth` (once per zone per Api.Main process) and the metric `ariva.zones.not_keyable` rising every sweep; the zone has no row in the device health overview; the stream's warning "Dropped ... overflow changes of zone ..." for the same zone (its `OverflowDetected` events are dropped, its band minutes are still written). Other zones and the device states are not affected: the sweep skips that zone and commits the rest.
+- **Alerting**: such a zone is not counted in `ariva.zones.degraded_now`, so its lost health reporting is silent there. Alert on any increase of `ariva.zones.not_keyable` so the operator who can rename the zone hears of it.
+- **Checks** (read only, safe on production):
+  ```sql
+  -- Queue zones of drafts and published versions whose key would not fit.
+  SELECT p.site_code, p.status, p.version, z.name, length(p.site_code) + 1 + length(z.name) AS key_length
+    FROM zone z JOIN zone_profile p ON p.id = z.profile_id
+   WHERE z.kind = 'Queue' AND p.status IN ('Draft', 'Published') AND length(p.site_code) + 1 + length(z.name) > 200;
+  -- Devices placed on such a zone.
+  SELECT site_code, queue_zone_name, count(*) FROM device
+   WHERE deleted_on IS NULL AND length(site_code) + 1 + length(queue_zone_name) > 200 GROUP BY site_code, queue_zone_name;
+  ```
+- **Actions**: create a draft of the site's profile (it copies the name, and its validation lists the zone with "A queue zone name at site ... is at most N characters"), rename the queue zone to fit, validate and publish (a second factor is needed). Then move each device of the zone to the renamed zone (Administration, Devices, or `PUT /api/v1/admin/devices/{id}/placement`): a move sends the device back to commissioning, so calibrate it again before it counts. Zone health, `ZoneHealthChanged` and `OverflowDetected` resume for the new key; recompute the affected period from the archive (4.10) if its overflow changes are needed.
+
 ### 4.3 Stale AODB feed
 
 - **Symptoms**: stale-feed alarm; no flight messages while flights are due; the arrival-wave strip says it uses last estimates.

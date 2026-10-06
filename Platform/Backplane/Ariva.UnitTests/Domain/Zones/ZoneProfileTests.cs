@@ -159,6 +159,105 @@ public sealed class ZoneProfileTests
 
     #endregion
 
+    #region Zone keys (ARV-114c)
+
+    // Site DMO-T1 has 6 characters: with the slash, a queue zone name of 193 characters makes a key of exactly 200.
+    private const string Site = "DMO-T1";
+
+    /// <summary>A character outside the basic plane: two UTF-16 units, one character to PostgreSQL.</summary>
+    private const string Astral = "\U0001F6EB";
+
+    private static string Name(int asciiCharacters, int astralCharacters = 0) =>
+        string.Concat(Enumerable.Repeat(Astral, astralCharacters)) + new string('q', asciiCharacters);
+
+    [Fact]
+    public void AddZone_Should_AcceptAQueueZone_When_ItsZoneKeyIsExactly200Characters()
+    {
+        var name = Name(193);
+
+        var zone = new ZoneProfile(Site, "Draft").AddZone(name, ZoneKind.Queue, NewLevel(), Rect(1, 1, 4, 4));
+
+        zone.Name.Should().Be(name);
+        Ariva.Core.Sensing.ZoneKeys.For(Site, zone.Name).Should().HaveLength(200);
+        Ariva.Core.Sensing.ZoneKeys.MaxQueueZoneNameLength(Site).Should().Be(193);
+    }
+
+    [Fact]
+    public void AddZone_Should_RefuseAQueueZoneWithoutRepeatingItsName_When_ItsZoneKeyIs201Characters()
+    {
+        var profile = new ZoneProfile(Site, "Draft");
+        var name = Name(194);
+
+        var add = () => profile.AddZone(name, ZoneKind.Queue, NewLevel(), Rect(1, 1, 4, 4));
+
+        add.Should().Throw<ArgumentException>()
+            .Which.Message.Should().StartWith(ZoneProfile.QueueZoneNameTooLong(Site)).And.Contain("at most 193 characters").And.NotContain(name);
+        profile.Zones.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void AddZone_Should_CountCharactersAsPostgresDoes_When_TheNameHasCharactersOutsideTheBasicPlane()
+    {
+        // 7 astral characters and 186 letters: 200 UTF-16 units (the name rule's limit) but 193 characters, a key of 200.
+        var fits = Name(186, astralCharacters: 7);
+        // 6 astral characters and 188 letters: 200 UTF-16 units again, but 194 characters, a key of 201.
+        var over = Name(188, astralCharacters: 6);
+        fits.Length.Should().Be(200);
+        over.Length.Should().Be(200);
+        var profile = new ZoneProfile(Site, "Draft");
+
+        profile.AddZone(fits, ZoneKind.Queue, NewLevel(), Rect(1, 1, 4, 4)).Name.Should().Be(fits);
+        var add = () => profile.AddZone(over, ZoneKind.Queue, NewLevel(), Rect(10, 1, 4, 4));
+
+        add.Should().Throw<ArgumentException>().WithMessage(ZoneProfile.QueueZoneNameTooLong(Site) + "*");
+        Ariva.Core.Messaging.MessageKeys.Fits(Ariva.Core.Sensing.ZoneKeys.For(Site, fits)).Should().BeTrue();
+    }
+
+    [Fact]
+    public void RenameZone_Should_RefuseAQueueZoneNameAndKeepTheOldOne_When_ItsZoneKeyWouldExceed200Characters()
+    {
+        var (profile, _, queue) = Publishable();
+
+        var rename = () => profile.RenameZone(queue, Name(194));
+
+        rename.Should().Throw<ArgumentException>().WithMessage(ZoneProfile.QueueZoneNameTooLong(Site) + "*");
+        queue.Name.Should().Be("Snake A");
+        profile.RenameZone(queue, Name(193));
+        queue.Name.Should().HaveLength(193);
+    }
+
+    [Fact]
+    public void AddZone_Should_AcceptLongOverflowServiceAndStaffNames_When_OnlyTheQueueZoneNameIsInTheKey()
+    {
+        // Hanging zones share their queue zone's key (OverflowDetected carries the band's name in its payload, not its key).
+        var (profile, level, queue) = Publishable();
+
+        foreach (var (kind, x) in new[] { (ZoneKind.Overflow, 40.0), (ZoneKind.Service, 46.0), (ZoneKind.Staff, 52.0) })
+        {
+            var name = $"{kind} " + Name(200 - kind.ToString().Length - 1);
+            var zone = profile.AddZone(name, kind, level, Rect(x, 30, 4, 4), queue);
+            profile.RenameZone(zone, name.Replace('q', 'r'));
+            zone.Name.Should().HaveLength(200);
+        }
+    }
+
+    [Fact]
+    public void Validate_Should_NameAQueueZoneWhoseKeyIsTooLong_When_ADraftCopiesItFromAnEarlierVersion()
+    {
+        // A version published before ARV-114c may hold such a name; its next draft cannot be published until it is renamed.
+        var (profile, level, queue) = Publishable();
+        typeof(Zone).GetProperty(nameof(Zone.Name))!.SetValue(queue, Name(194));
+
+        var problems = profile.Validate(Levels(level));
+
+        problems.Should().ContainSingle().Which.Should().EndWith(ZoneProfile.QueueZoneNameTooLong(Site));
+        profile.Publish(1, Levels(level), "e2e.admin", Now).Should().HaveCount(1);
+        profile.Status.Should().Be(ZoneProfileStatus.Draft);
+    }
+
+    #endregion
+
+
     #region Lines
 
     [Theory]

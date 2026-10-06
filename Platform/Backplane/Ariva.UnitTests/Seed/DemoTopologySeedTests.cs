@@ -68,6 +68,19 @@ public sealed class DemoTopologySeedTests
     }
 
     [Fact]
+    public void BuildProfile_Should_GiveEveryQueueZoneAKeyThatFitsAMessageKey_When_Built()
+    {
+        // ARV-114c: every event of a zone is keyed <site>/<queue zone name>, which the outbox's message_key holds (200
+        // characters). The seeded profile is built through AddZone, which refuses a longer key; this keeps the margin visible.
+        var (arrivals, departures) = Levels();
+
+        var profile = DemoTopologySeed.BuildProfile(arrivals, departures);
+
+        profile.Zones.Where(z => z.Kind == ZoneKind.Queue).Should().OnlyContain(z => Ariva.Core.Sensing.ZoneKeys.Fits(profile.SiteCode, z.Name));
+        profile.Zones.Max(z => Ariva.Core.Sensing.ZoneKeys.For(profile.SiteCode, z.Name).Length).Should().BeLessThan(Ariva.Core.Messaging.MessageKeys.MaxLength);
+    }
+
+    [Fact]
     public void BuildProfile_Should_HashTheSame_When_BuiltTwice()
     {
         var (arrivals, departures) = Levels();

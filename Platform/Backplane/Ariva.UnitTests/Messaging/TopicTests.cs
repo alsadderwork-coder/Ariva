@@ -1,5 +1,6 @@
 using Ariva.Core.Domain.Components;
 using Ariva.Core.Messaging;
+using Ariva.Core.Sensing;
 using Ariva.Infra.Messaging;
 using Ariva.Infra.Messaging.Kafka;
 using Ariva.Infra.Messaging.Outbox;
@@ -202,6 +203,41 @@ public sealed class TopicTests
         OutboxLimits.FitsMessageKey(new string('k', length)).Should().Be(fits);
         // A character outside the basic plane is two UTF-16 units but one character to PostgreSQL.
         OutboxLimits.FitsMessageKey(string.Concat(Enumerable.Repeat("\U0001F6EB", length))).Should().Be(fits);
+    }
+
+    [Fact]
+    public void OutboxLimits_Should_FollowTheCoreMessageKeyLimit_When_Compared()
+    {
+        // ARV-114c: one key limit for Kafka keys, the outbox and the zone profile's rule; the column is varchar(200) (script 0011).
+        OutboxLimits.MaxMessageKeyLength.Should().Be(Ariva.Core.Messaging.MessageKeys.MaxLength).And.Be(200);
+        foreach (var key in new[] { "", "k", new string('k', 200), new string('k', 201), string.Concat(Enumerable.Repeat("\U0001F6EB", 200)), "DMO/" + new string('q', 197) })
+            OutboxLimits.FitsMessageKey(key).Should().Be(Ariva.Core.Messaging.MessageKeys.Fits(key));
+    }
+
+    [Fact]
+    public void MessageKeysFits_Should_CountALoneSurrogateAsOneCharacter_When_TheKeyHoldsOne()
+    {
+        // A lone surrogate is read as one replacement character, so the count is never lower than PostgreSQL's.
+        Ariva.Core.Messaging.MessageKeys.Fits("\uD800").Should().BeTrue();
+        Ariva.Core.Messaging.MessageKeys.Fits(new string('\uD800', 200)).Should().BeTrue();
+        Ariva.Core.Messaging.MessageKeys.Fits(new string('\uD800', 201)).Should().BeFalse();
+        Ariva.Core.Messaging.MessageKeys.Fits(new string('\uDC00', 201)).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("DMO", 196, true)]
+    [InlineData("DMO", 197, false)]
+    [InlineData("AUH-T1", 193, true)]
+    [InlineData("AUH-T1", 194, false)]
+    [InlineData("ABCDEFGH-ABCDEFGH", 182, true)]
+    [InlineData("ABCDEFGH-ABCDEFGH", 183, false)]
+    public void ZoneKeysFits_Should_AllowTheSiteCodeTheSlashAndTheNameUpTo200Characters_When_Checked(string site, int nameLength, bool fits)
+    {
+        ZoneKeys.Fits(site, new string('q', nameLength)).Should().Be(fits);
+        (nameLength <= ZoneKeys.MaxQueueZoneNameLength(site)).Should().Be(fits);
+        ZoneKeys.Fits(site, string.Concat(Enumerable.Repeat("\U0001F6EB", nameLength))).Should().Be(fits, "a character outside the basic plane counts once");
+        ZoneKeys.Fits(site, null).Should().BeFalse();
+        ZoneKeys.Fits(null, "Snake A").Should().BeFalse();
     }
 
     [Fact]

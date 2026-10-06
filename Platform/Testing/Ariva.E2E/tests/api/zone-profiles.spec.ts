@@ -96,6 +96,38 @@ test('a draft is edited, validated and published as version 1 only with a recent
 	const markup = await call('POST', `${api}/${firstId}/zones`, { token: withSecondFactor, data: { name: '<script>alert(1)</script>', kind: 'Queue', levelId, polygon: '50 10,60 10,60 20' } });
 	expect([201, 400], 'markup is refused or stored as inert text').toContain(markup.status());
 	if (markup.status() === 201) await call('DELETE', `${api}/${firstId}/zones/${(await markup.json()).id}`, { token: withSecondFactor });
+	// ARV-114c: a queue zone's events are keyed by the site code, a slash and the zone name, which together hold 200
+	// characters (as PostgreSQL counts them: a character outside the basic plane counts once). At E2E2 a queue zone name
+	// is at most 195 characters, below the 200 of the name rule; a longer one is refused with 400 and never repeated back.
+	const plane = '\u{1F6EB}';
+	for (const name of ['K'.repeat(195), plane.repeat(5) + 'K'.repeat(190)]) {
+		const longest = await call('POST', `${api}/${firstId}/zones`, { token: withSecondFactor, data: { name, kind: 'Queue', levelId, polygon: '50 10,60 10,60 20' } });
+		expect(longest.status(), `${[...name].length} characters: ${await longest.text()}`).toBe(201);
+		expect((await call('DELETE', `${api}/${firstId}/zones/${(await longest.json()).id}`, { token: withSecondFactor })).status()).toBe(204);
+	}
+	const overlongNames = [
+		'Overlong' + 'Z'.repeat(188),
+		'Overlong' + 'Z'.repeat(192),
+		plane.repeat(4) + 'Overlong' + 'Z'.repeat(184),
+		'<img src=x onerror=alert(1)>' + 'Z'.repeat(168),
+		"' OR '1'='1" + 'Z'.repeat(185)
+	];
+	for (const name of overlongNames) {
+		const refusedName = await call('POST', `${api}/${firstId}/zones`, { token: withSecondFactor, data: { name, kind: 'Queue', levelId, polygon: '50 10,60 10,60 20' } });
+		const body = await refusedName.text();
+		expect(refusedName.status(), `${[...name].length} characters: ${body}`).toBe(400);
+		// Markup or quotes may be refused by an earlier rule; a plain name meets this one.
+		if (/^[\p{L}\u{1F6EB}]+$/u.test(name)) expect(body).toContain('at most 195 characters');
+		for (const fragment of ['Overlong', 'ZZZZ', 'onerror', "'1'='1", plane]) expect(body).not.toContain(fragment);
+	}
+	const renamed = await call('PUT', `${api}/${firstId}/zones/${queueId}`, {
+		token: withSecondFactor,
+		data: { name: 'Overlong' + 'Z'.repeat(188), polygon: '10 10,34 10,34 22,10 22' }
+	});
+	expect(renamed.status(), 'a rename is held to the same rule').toBe(400);
+	expect(await renamed.text()).not.toContain('Overlong');
+	const kept = await (await call('GET', `${api}/${firstId}`, { token: withSecondFactor })).json();
+	expect(kept.zones.find((z: any) => z.id === queueId).name, 'the refused rename changed nothing').toBe('Snake A');
 
 	const problems = await (await call('GET', `${api}/${firstId}/validation`, { token: withSecondFactor })).json();
 	expect(problems.publishable).toBe(false);
