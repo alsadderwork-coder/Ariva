@@ -33,6 +33,22 @@ public static partial class MessagingExtensions
         }
     }
 
+    /// <summary>
+    /// ARV-097: MassTransit's usage tracker reads <c>MASSTRANSIT_USAGE_TELEMETRY</c> when it is built and lets "true" or
+    /// "1" turn reporting back on despite <c>DisableUsageTelemetry</c>, so a host with that setting does not start.
+    /// </summary>
+    internal static void EnsureNoUsageTelemetry(IConfiguration configuration)
+    {
+        foreach (var value in new[] { configuration[UsageTelemetryVariable], Environment.GetEnvironmentVariable(UsageTelemetryVariable) })
+        {
+            var on = value?.Trim();
+            if ((bool.TryParse(on, out var flag) && flag) || (int.TryParse(on, out var number) && number != 0))
+                throw new InvalidOperationException($"{UsageTelemetryVariable} must not turn on MassTransit usage telemetry: Ariva makes no call outside the deployment.");
+        }
+    }
+
+    internal const string UsageTelemetryVariable = "MASSTRANSIT_USAGE_TELEMETRY";
+
     public static IServiceCollection AddArivaMessaging(this IServiceCollection services, IConfiguration configuration, Action<ArivaMessagingBuilder> configure = null)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -50,6 +66,7 @@ public static partial class MessagingExtensions
         services.TryAddScoped<IInbox, PostgresInbox>();
 
         EnsureProductionTransport(settings, configuration);
+        EnsureNoUsageTelemetry(configuration);
 
         if (!settings.Enabled)
         {

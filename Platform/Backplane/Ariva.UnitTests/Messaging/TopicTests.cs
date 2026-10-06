@@ -238,6 +238,29 @@ public sealed class MessagingRegistrationTests
     }
 
     [Theory]
+    [InlineData("true", true)]
+    [InlineData("True", true)]
+    [InlineData("1", true)]
+    [InlineData("false", false)]
+    [InlineData("0", false)]
+    public void AddArivaMessaging_Should_RefuseToStart_When_TheEnvironmentTurnsUsageTelemetryBackOn(string value, bool refused)
+    {
+        // ARV-097: MassTransit's tracker reads this variable after the options are built and would report anyway.
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
+        {
+            ["Kafka:Enabled"] = "true",
+            ["MASSTRANSIT_USAGE_TELEMETRY"] = value
+        }).Build();
+
+        var add = () => Ariva.Di.Extensions.MessagingExtensions.AddArivaMessaging(new ServiceCollection(), configuration);
+
+        if (refused)
+            add.Should().Throw<InvalidOperationException>().WithMessage("*MASSTRANSIT_USAGE_TELEMETRY*");
+        else
+            add.Should().NotThrow();
+    }
+
+    [Theory]
     [InlineData("k8s-prd", "Plaintext", true)]
     [InlineData("k8s-prd", "Ssl", true)]
     [InlineData("k8s-prd", "SaslSsl", false)]
