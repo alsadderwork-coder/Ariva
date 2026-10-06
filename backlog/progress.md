@@ -796,3 +796,11 @@ One entry per story, newest last. Format:
   - Images should fail safe: `environment.json` should not default to vm-local.
   - Dependabot: cookie 0.6 via SvelteKit 2 (fixed only in SvelteKit 3; not shipped by adapter-static) and esbuild 0.19 via svelte-i18n 4.0.1 (latest; development only). Owner to accept or override.
   - Ariva.Web has no shadcn-svelte component layer (bits-ui is never imported); see the frontend review of 2026-10-05.
+
+## 2026-10-06 ARV-065 Phase 0 exit review (open: six fault tests)
+- Summary: `docs/product/phase0-exit-review.md` records the gate before the pilot: gates, coverage, the full-repository security review and the items carried into Phase 1. `docs/product/pilot-to-confirm.md` turns the 153 "To confirm" markers in docs and wiki into 77 questions for the pilot contract, grouped by who answers them (9 block the contract, 13 the site survey, 30 go-live).
+- Gates, on main plus the three open pull requests (#56, #57, #58): backend PASS (2,324 unit tests), web PASS, e2e 506 passed and 1 skipped, CWE scan 0 errors on 982 files and its self-test PASS, docs PASS; integration 316 passed and 1 skipped, with the 6 Toxiproxy fault tests not runnable in the cloud session (ghcr.io blobs blocked).
+- Coverage (unit and integration, merged by line): 82.8% of 36,424 lines; Core 91.0%, Infra 87.5%, simulator 92.6%; hosts low because the E2E suite runs them as separate processes.
+- Security review (independent reviewer, full repository, 14 CWEs): PASS with conditions. Before the pilot contract: ARV-097 (MassTransit telemetry, High) and the owner's approval of five PENDING allowlist entries. Before go-live: ARV-098 (vm-local fallback, High), ARV-085 with ARV-087 (dashboard and probes on the public ingress, no NetworkPolicies), ARV-082 (backend TLS).
+- Open: ARV-065 stays `passes: false` until the six fault tests run green where the Toxiproxy image is reachable.
+- Learnings: a local branch that cherry-picks the open pull requests onto main lets the exit gates run on the state main will have, without pushing it.
