@@ -73,11 +73,9 @@ public sealed class OpenApiTests
     [Fact]
     public async Task Host_Should_RefuseToStart_When_TheApplicationSettingSaysProduction()
     {
-        await using var app = ArivaHosts.Create(ArivaHosts.Main, configure: builder =>
-        {
-            builder.UseSetting(OpenApiExtensions.SectionKey, "true");
-            builder.UseSetting("Application:Environment", Ariva.Api.Common.Hosting.ArivaEnvironment.K8sPrd);
-        });
+        // ARV-098: Application:Environment must equal the host's environment, so production is set on both.
+        await using var app = ArivaHosts.Create(ArivaHosts.Main, Ariva.Api.Common.Hosting.ArivaEnvironment.K8sPrd, builder =>
+            builder.UseSetting(OpenApiExtensions.SectionKey, "true"));
 
         var start = () => app.CreateClient();
 

@@ -21,16 +21,36 @@ function imageName(image) {
 /** The Ariva images that run a .NET host: each resolves its environment from DOTNET_ENVIRONMENT (ARV-098). */
 const DOTNET_IMAGES = new Set([...ARIVA_IMAGES].filter((name) => name !== 'web'));
 
-/** DOTNET_ENVIRONMENT as the container sees it: its own env wins over a ConfigMap it loads with envFrom. */
+/**
+ * The environment a .NET Ariva host in this container resolves (ArivaEnvironment.Resolve): an --environment argument
+ * wins over everything, then DOTNET_ENVIRONMENT as the kubelet builds it (explicit env over envFrom; the last
+ * definition of a name wins in each). Returns a string, undefined when nothing names it, or null when the value comes
+ * from somewhere the check cannot read (a Secret or a valueFrom), which counts as wrong.
+ */
 function dotnetEnvironmentOf(container, docs) {
-	const own = (container.env ?? []).find((variable) => variable.name === 'DOTNET_ENVIRONMENT');
-	if (own) return own.value;
+	const words = [...(container.command ?? []), ...(container.args ?? [])].map(String);
+	let fromArgs;
+	words.forEach((word, index) => {
+		const match = /^(?:--|\/)environment(?:=(.*))?$/i.exec(word);
+		if (match) fromArgs = match[1] ?? words[index + 1] ?? '';
+	});
+	if (fromArgs !== undefined) return fromArgs;
+
+	const own = (container.env ?? []).findLast((variable) => variable.name === 'DOTNET_ENVIRONMENT');
+	if (own) return own.valueFrom ? null : own.value;
+
+	let fromSources;
 	for (const source of container.envFrom ?? []) {
+		if (source.prefix) continue;
+		if (source.secretRef) {
+			fromSources = null;
+			continue;
+		}
 		const name = source.configMapRef?.name;
 		const map = docs.find((doc) => doc?.kind === 'ConfigMap' && doc.metadata?.name === name);
-		if (map?.data?.DOTNET_ENVIRONMENT !== undefined) return map.data.DOTNET_ENVIRONMENT;
+		if (map?.data?.DOTNET_ENVIRONMENT !== undefined) fromSources = map.data.DOTNET_ENVIRONMENT;
 	}
-	return undefined;
+	return fromSources;
 }
 
 /** Environment variable names that hold credentials: their values come from secrets, never from the manifest (CWE-798). */
@@ -105,9 +125,10 @@ export function checkManifests(docs, { environment }) {
 					findings.push(`${cid}: needs a writable /tmp mount (emptyDir) because the root filesystem is read-only`);
 				}
 				// ARV-098: a .NET image ships no environment file, so a host without DOTNET_ENVIRONMENT refuses to start; every
-				// one must get the release's environment, from its own env or from a ConfigMap it loads.
+				// one must resolve the release's environment, from its own env or a ConfigMap it loads, and no --environment
+				// argument or Secret may override it.
 				if (DOTNET_IMAGES.has(imageName(container.image ?? '')) && dotnetEnvironmentOf(container, docs) !== environment) {
-					findings.push(`${cid}: must set DOTNET_ENVIRONMENT to ${environment} (env or envFrom ConfigMap)`);
+					findings.push(`${cid}: must set DOTNET_ENVIRONMENT to ${environment} (env or envFrom ConfigMap, no --environment argument)`);
 				}
 				const tag = imageTag(container.image ?? '');
 				if (!tag) findings.push(`${cid}: image ${container.image} has no tag`);

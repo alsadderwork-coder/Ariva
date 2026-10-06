@@ -47,7 +47,7 @@ public sealed class AuthSettingsTests
     [InlineData(null, null, false)]
     public void LocalOnly_Should_AllowDevelopmentAccountsAndNoTotp_When_BothEnvironmentsAreVmLocal(string application, string host, bool allowed)
     {
-        // ARV-064: a cluster whose settings omit Application:Environment (it defaults to vm-local) is still refused by its
+        // ARV-064: a cluster whose settings say vm-local (refused at startup since ARV-098) is still refused by its
         // host environment, which Helm sets; an Auth__TotpRequired=false variable on a cluster refuses to start. A host
         // that does not say which environment it runs in is refused too.
         IConfiguration Settings(params (string Key, string Value)[] extra) => new ConfigurationBuilder()

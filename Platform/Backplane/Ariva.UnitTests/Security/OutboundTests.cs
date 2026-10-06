@@ -626,7 +626,7 @@ public sealed class OutboundTests
         }).Build();
 
     [Theory]
-    [InlineData("k8s-prd", "vm-local", "a cluster host whose environment file is missing (Application:Environment defaults to vm-local)")]
+    [InlineData("k8s-prd", "vm-local", "a cluster host whose Application:Environment says vm-local (refused at startup since ARV-098; the guard still refuses it)")]
     [InlineData("vm-local", "k8s-prd", "a cluster's application environment")]
     [InlineData("k8s-dev", "k8s-dev", "the dev cluster")]
     public void Settings_Should_RefuseLabSettings_When_EitherEnvironmentIsNotALab(string host, string application, string why)

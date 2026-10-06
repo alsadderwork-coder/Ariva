@@ -74,7 +74,7 @@ public sealed class DemoTopologySeedTests
 
     [Theory]
     [InlineData("k8s-prd", "k8s-prd")]
-    [InlineData("k8s-prd", null)] // a prd settings file without Application:Environment, which then defaults to vm-local
+    [InlineData("k8s-prd", null)] // a prd settings file without Application:Environment (refused at startup since ARV-098; the guard still refuses it)
     [InlineData("k8s-prd", "vm-local")]
     [InlineData("k8s-demo", "k8s-prd")]
     [InlineData("Production", "vm-local")]

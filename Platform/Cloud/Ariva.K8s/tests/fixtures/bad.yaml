@@ -129,3 +129,57 @@ spec:
           image: registry.example/api-stream:main-20261001.1
           securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
           volumeMounts: [{ name: tmp, mountPath: /tmp }]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: env-prd }
+data: { DOTNET_ENVIRONMENT: k8s-prd }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: env-local }
+data: { DOTNET_ENVIRONMENT: vm-local }
+---
+apiVersion: batch/v1
+kind: Job
+metadata: { name: argument-overrides }
+spec:
+  template:
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: app
+          image: registry.example/api-main:main-20261001.1
+          args: ["--environment=vm-local"]
+          env: [{ name: DOTNET_ENVIRONMENT, value: k8s-prd }]
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: later-config-map-overrides }
+spec:
+  template:
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: app
+          image: registry.example/api-ingest:main-20261001.1
+          envFrom: [{ configMapRef: { name: env-prd } }, { configMapRef: { name: env-local } }]
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: wrong-environment }
+spec:
+  template:
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: app
+          image: registry.example/api-cronz:main-20261001.1
+          env: [{ name: DOTNET_ENVIRONMENT, value: k8s-dev }]
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+

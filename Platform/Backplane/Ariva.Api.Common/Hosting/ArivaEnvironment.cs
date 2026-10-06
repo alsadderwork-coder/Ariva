@@ -86,6 +86,28 @@ public static class ArivaEnvironment
             $"Unknown Ariva environment '{name.Trim()}' from {source}: use one of {string.Join(", ", Known)}.");
     }
 
+    /// <summary>
+    /// ARV-098: <c>Application:Environment</c> must name the host's own environment. It comes only from
+    /// <c>appsettings.base.&lt;environment&gt;.json</c>, which a release may replace from an operator secret; a file
+    /// without it, or naming another environment, would leave the guards that key on it (the production Kafka transport,
+    /// the local-only settings) judging the wrong environment, so the host refuses to start.
+    /// </summary>
+    /// <param name="configuration">The host's layered configuration.</param>
+    /// <param name="hostEnvironment">The environment <see cref="Resolve"/> returned.</param>
+    /// <exception cref="InvalidOperationException">The setting is missing or names another environment.</exception>
+    public static void EnsureConfigured(IConfiguration configuration, string hostEnvironment)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        var configured = configuration["Application:Environment"];
+        if (!string.Equals(configured, hostEnvironment, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(configured)
+                ? $"Application:Environment is not set; appsettings.base.{hostEnvironment}.json must set it to {hostEnvironment}."
+                : $"Application:Environment is '{configured}' but this host runs as '{hostEnvironment}'; they must match.");
+        }
+    }
+
     #endregion
 
     #region Checks
