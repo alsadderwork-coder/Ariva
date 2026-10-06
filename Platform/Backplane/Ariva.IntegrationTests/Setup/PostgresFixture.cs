@@ -84,6 +84,7 @@ public sealed class PostgresFixture : IAsyncLifetime
             TestDatabase.Border => "CREATE DATABASE it_border",
             TestDatabase.Displays => "CREATE DATABASE it_displays",
             TestDatabase.Reports => "CREATE DATABASE it_reports",
+            TestDatabase.SecretReprotection => "CREATE DATABASE it_secret_reprotection",
             _ => throw new ArgumentOutOfRangeException(nameof(database))
         };
         var name = sql["CREATE DATABASE ".Length..];
@@ -189,7 +190,8 @@ public enum TestDatabase
     Outbound,
     Border,
     Displays,
-    Reports
+    Reports,
+    SecretReprotection
 }
 
 [CollectionDefinition(Name)]
