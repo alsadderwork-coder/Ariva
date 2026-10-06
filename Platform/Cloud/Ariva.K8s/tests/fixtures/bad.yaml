@@ -182,4 +182,18 @@ spec:
           env: [{ name: DOTNET_ENVIRONMENT, value: k8s-dev }]
           securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
           volumeMounts: [{ name: tmp, mountPath: /tmp }]
-
+---
+apiVersion: batch/v1
+kind: Job
+metadata: { name: bare-argument-overrides }
+spec:
+  template:
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: app
+          image: registry.example/api-main:main-20261001.1
+          args: ["environment=vm-local"]
+          env: [{ name: DOTNET_ENVIRONMENT, value: k8s-prd }]
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
