@@ -15,6 +15,10 @@ const patterns: { name: string; re: RegExp }[] = [
 	{ name: 'integration client secret', re: /\bics_[A-Za-z0-9_-]{43}\b/ }
 ];
 
+// ARV-097: MassTransit logs what it reports to its usage telemetry endpoint, or that the report failed. Either line
+// means a host tried to call out of the deployment.
+const telemetry = /Usage Telemetry|Failed to report usage telemetry/;
+
 /**
  * Where a finding came from, without the value: the line's logger and message template (Serilog's JSON lines), so a
  * leak seen only in CI (where the host logs are not uploaded, since they may hold the secret) can be traced.
@@ -99,6 +103,7 @@ export default async function globalTeardown() {
 	const all = [...labelled, ...secrets.filter(Boolean).map((value) => ({ label: 'a configured secret', value }))];
 	const values = all.map((entry) => entry.value).filter(Boolean);
 	const findings: string[] = [];
+	const callsHome: string[] = [];
 	let lines = 0;
 	for (const file of files) {
 		const content = fs.readFileSync(path.join(directory, file), 'utf8');
@@ -111,11 +116,15 @@ export default async function globalTeardown() {
 			for (const { name, re } of patterns) {
 				if (re.test(line)) findings.push(`${file}:${index + 1} contains a ${name}${origin(line, values)}`);
 			}
+			if (telemetry.test(line)) callsHome.push(`${file}:${index + 1}${origin(line, values)}`);
 		});
 	}
 
 	if (findings.length > 0) {
 		throw new Error(`log scan: credentials reached the host logs (CWE-532):\n${findings.slice(0, 50).join('\n')}`);
 	}
-	console.log(`log scan: ${files.length} host logs, ${lines} lines, no credentials.`);
+	if (callsHome.length > 0) {
+		throw new Error(`log scan: a host reported MassTransit usage telemetry (ARV-097):\n${callsHome.slice(0, 50).join('\n')}`);
+	}
+	console.log(`log scan: ${files.length} host logs, ${lines} lines, no credentials, no usage telemetry.`);
 }
