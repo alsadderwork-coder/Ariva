@@ -375,7 +375,7 @@ Found and fixed during the mapping: the session, role, site and live zone join c
 
 | Story | Title | Requirements | Effort | Status |
 |---|---|---|---|---|
-| ARV-080 | Data Protection key ring with RSA-OAEP and AES-GCM, and crypto agility | V11.3.1, V11.3.2, V11.3.3, V11.2.3 | M | Open |
+| ARV-080 | Data Protection key ring with RSA-OAEP and AES-GCM, and crypto agility | V11.3.1, V11.3.2, V11.3.3, V11.2.3 | M | Done |
 | ARV-080a | Credential hashes carry their algorithm (split from ARV-080) | V11.2.2 | S | Open |
 | ARV-081 | No fail-safe on security decision caches | V16.5.3 | S | Done |
 | ARV-082 | Encrypted backend connections in production | V12.3.1, V12.3.3, V12.3.4 | M | Open |
