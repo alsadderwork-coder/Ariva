@@ -17,8 +17,18 @@ public enum LineCountSource
 /// role in the zone profile. Closed means the engine's watermark has passed the minute's end, so the counts never
 /// change afterwards (events behind the watermark are late and not applied, F6); a recomputation over the archive
 /// is the only route to other numbers. F18 compares these per line and 15-minute bin with manual counts.
+/// <see cref="Additive"/> marks a part of a minute released before the watermark passed it (the open bound was reached,
+/// see <see cref="LineCounts"/>): its counts add to what was written for the same line and minute, so no count is lost.
 /// </summary>
-public sealed record LineMinute(string LineName, QueueLineRole Role, DateTime MinuteUtc, long In, long Out, LineCountSource Source = LineCountSource.Ariva);
+public sealed record LineMinute(string LineName, QueueLineRole Role, DateTime MinuteUtc, long In, long Out, LineCountSource Source = LineCountSource.Ariva)
+{
+    /// <summary>
+    /// The counts are a part of the line minute, added to any written before (an early release); otherwise they are the
+    /// whole minute and replace what a replay wrote. Hashed by the replay only when set, so ordinary runs hash as before.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Additive { get; init; }
+}
 
 /// <summary>A line's counts in a minute still open (the watermark has not passed its end), as a snapshot holds them.</summary>
 public sealed record LineMinuteState(string LineName, QueueLineRole Role, DateTime MinuteUtc, long In, long Out);
@@ -28,8 +38,11 @@ public sealed record LineMinuteState(string LineName, QueueLineRole Role, DateTi
 /// happened in, and a minute is released as a <see cref="LineMinute"/> once the watermark has passed its end. Events
 /// that arrive late but inside the lateness allowance are still ahead of the watermark, so they revise the open minute;
 /// events behind it are not applied, so a released minute never changes. Pure and bounded: the engine applies events
-/// only from its watermark on, so the open minutes are the few the latest step touched; at most
-/// <see cref="MaxOpenLineMinutes"/> are held, beyond it the earliest is released (CWE-120).
+/// only up to its watermark, so the open minutes are the lines of the watermark's own minute; at most
+/// <see cref="MaxOpenLineMinutes"/> are held (CWE-120). Beyond the bound the earliest is released early, before the
+/// watermark has passed it, and later steps may still add to it: every minute up to the latest one released early
+/// (<see cref="ReleasedEarlyThroughUtc"/>, kept in the snapshot) is then released as <see cref="LineMinute.Additive"/>
+/// parts that the store adds together, until the watermark passes it. No count is lost and the bound holds.
 /// </summary>
 public sealed class LineCounts
 {
@@ -40,6 +53,12 @@ public sealed class LineCounts
 
     /// <summary>Line minutes still open.</summary>
     public int Open => _open.Count;
+
+    /// <summary>The latest minute released before the watermark passed it, while the watermark has not passed it yet.</summary>
+    public DateTime? ReleasedEarlyThroughUtc { get; private set; }
+
+    /// <summary>Line minutes released early since this instance started (for health; not in the snapshot).</summary>
+    public long ReleasedEarly { get; private set; }
 
     /// <summary>Adds a step's line movements and returns the line minutes the step closed, in minute and then line name order.</summary>
     public IReadOnlyList<LineMinute> Accept(QueueStep step)
@@ -59,12 +78,25 @@ public sealed class LineCounts
         while (_open.Count > 0)
         {
             var (key, value) = _open.First();
-            if (key.Minute.AddMinutes(1).AddTicks(-1) > step.WatermarkUtc && _open.Count <= MaxOpenLineMinutes)
+            var early = !Passed(key.Minute, step.WatermarkUtc);
+            if (early && _open.Count <= MaxOpenLineMinutes)
                 break;
             _open.Remove(key);
-            closed.Add(new LineMinute(key.Line, value.Role, key.Minute, value.In, value.Out));
+            if (early)
+            {
+                ReleasedEarly++;
+                if (ReleasedEarlyThroughUtc is not { } through || key.Minute > through)
+                    ReleasedEarlyThroughUtc = key.Minute;
+            }
+
+            // A minute at or before the latest early release may have a part written already: this part adds to it.
+            var additive = ReleasedEarlyThroughUtc is { } mark && key.Minute <= mark;
+            closed.Add(new LineMinute(key.Line, value.Role, key.Minute, value.In, value.Out) { Additive = additive });
         }
 
+        // Once the watermark has passed the latest early release, nothing can add to those minutes any more.
+        if (ReleasedEarlyThroughUtc is { } last && Passed(last, step.WatermarkUtc))
+            ReleasedEarlyThroughUtc = null;
         return closed;
     }
 
@@ -74,9 +106,10 @@ public sealed class LineCounts
 
     /// <summary>
     /// The counts of a snapshot, checked (CWE-501, CWE-120): at most <see cref="MaxOpenLineMinutes"/> entries, each a line
-    /// of <paramref name="geometry"/> with its role there, an aligned UTC minute and counts that are not negative.
+    /// of <paramref name="geometry"/> with its role there, an aligned UTC minute and counts that are not negative; the
+    /// latest early release (<paramref name="releasedEarlyThroughUtc"/>), when given, is an aligned plausible minute.
     /// </summary>
-    public static LineCounts Restore(QueueZoneGeometry geometry, IReadOnlyList<LineMinuteState> state)
+    public static LineCounts Restore(QueueZoneGeometry geometry, IReadOnlyList<LineMinuteState> state, DateTime? releasedEarlyThroughUtc = null)
     {
         ArgumentNullException.ThrowIfNull(geometry);
         var counts = new LineCounts();
@@ -87,14 +120,27 @@ public sealed class LineCounts
             if (l is null || l.LineName is null || geometry.RoleOf(l.LineName) is var role && (role == QueueLineRole.Unknown || role != l.Role))
                 throw new InvalidDataException("The zone snapshot counts a line that is not the zone's.");
             var minute = DateTime.SpecifyKind(l.MinuteUtc, DateTimeKind.Utc);
-            if (l.In < 0 || l.Out < 0 || minute.Ticks % TimeSpan.TicksPerMinute != 0 || !ZoneProcessor.Plausible(minute))
+            if (l.In < 0 || l.Out < 0 || !IsMinute(minute))
                 throw new InvalidDataException("The zone snapshot has a line minute with a negative count or an unaligned time.");
             if (!counts._open.TryAdd((minute, l.LineName), (l.Role, l.In, l.Out)))
                 throw new InvalidDataException("The zone snapshot holds a line minute twice.");
         }
 
+        if (releasedEarlyThroughUtc is { } through)
+        {
+            through = DateTime.SpecifyKind(through, DateTimeKind.Utc);
+            if (!IsMinute(through))
+                throw new InvalidDataException("The zone snapshot has an unaligned early release time.");
+            counts.ReleasedEarlyThroughUtc = through;
+        }
+
         return counts;
     }
+
+    /// <summary>Whether a time is a whole UTC minute the stream can hold (aligned and plausible; CWE-501).</summary>
+    public static bool IsMinute(DateTime minuteUtc) => minuteUtc.Ticks % TimeSpan.TicksPerMinute == 0 && ZoneProcessor.Plausible(minuteUtc);
+
+    private static bool Passed(DateTime minute, DateTime watermarkUtc) => minute.AddMinutes(1).AddTicks(-1) <= watermarkUtc;
 
     private sealed class KeyOrder : IComparer<(DateTime Minute, string Line)>
     {

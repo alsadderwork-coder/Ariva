@@ -117,6 +117,9 @@ public sealed record ZoneProcessorState
     public IReadOnlyList<DeviceLivenessState> Devices { get; init; } = [];
     public IReadOnlyList<RecentOutageState> RecentOutages { get; init; } = [];
     public IReadOnlyList<LineMinuteState> Lines { get; init; } = [];
+
+    /// <summary>The latest line minute released before the watermark passed it (<see cref="LineCounts.ReleasedEarlyThroughUtc"/>).</summary>
+    public DateTime? LinesReleasedEarlyThroughUtc { get; init; }
 }
 
 /// <summary>
@@ -446,7 +449,8 @@ public sealed class ZoneProcessor
             ReferenceUtc = _reference,
             LastLiveMinuteUtc = _lastLive,
             Counters = Counters,
-            Lines = _lines.Capture()
+            Lines = _lines.Capture(),
+            LinesReleasedEarlyThroughUtc = _lines.ReleasedEarlyThroughUtc
         };
     }
 
@@ -471,7 +475,7 @@ public sealed class ZoneProcessor
         if (state.Counters is { } c)
             (zone._batches, zone._uncommissioned, zone._wrongZone, zone._invalid) = (c.Batches, c.Uncommissioned, c.WrongZone, c.Invalid);
         zone._liveness.Restore(state.Devices, state.RecentOutages);
-        zone._lines = LineCounts.Restore(geometry, state.Lines);
+        zone._lines = LineCounts.Restore(geometry, state.Lines, state.LinesReleasedEarlyThroughUtc);
         return zone;
     }
 }

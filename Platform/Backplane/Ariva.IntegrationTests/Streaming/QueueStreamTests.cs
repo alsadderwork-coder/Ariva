@@ -305,10 +305,11 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
     public async Task Store_Should_UpsertIdempotentlyAndRefuseAHugeState_When_ACheckpointIsWrittenTwice()
     {
         var database = await DatabaseAsync(TestDatabase.StreamStore);
+        var log = new WarningLog();
         var store = new StreamStore(new DatabaseSettings
         {
             Host = postgres.Hostname, Port = postgres.Port, Name = database, Username = postgres.AdminUsername, Password = postgres.AdminPassword
-        }, TimeProvider.System);
+        }, TimeProvider.System, log);
         var geometry = new QueueZoneGeometry("Q1", new HashSet<string> { "Q1 entry" }, new HashSet<string> { "Q1 exit" }, new HashSet<string>(), new HashSet<string>());
         var zone = new ZoneProcessor("DMO/Q1", geometry, 7);
         foreach (var batch in Evening("Q1", 0))
@@ -386,6 +387,25 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
         (await RowsAsync(database, "SELECT source, crossings_in FROM line_minute_15m WHERE zone_key = 'DMO/Q1' AND line_name = 'Q1 entry' AND bucket_utc = '2026-09-28 19:00:00+00' ORDER BY source"))
             .Should().Equal("Ariva|4", "Vendor|6");
 
+        // A minute released early (the zone held more open line minutes than the bound) comes in additive parts: parts in
+        // one checkpoint are merged, parts in later checkpoints add to the written row, and nothing is lost; a whole minute
+        // in the same checkpoint still replaces.
+        var early = new DateTime(2026, 9, 28, 19, 1, 0, DateTimeKind.Utc);
+        await store.SaveAsync(new StreamCheckpoint("g", [new ZoneOutputs("DMO/Q1", [], [], [], [], [],
+        [
+            new LineMinute("Q1 entry", QueueLineRole.Entry, early, 2, 1) { Additive = true },
+            new LineMinute("Q1 entry", QueueLineRole.Entry, early, 3, 0) { Additive = true },
+            new LineMinute("Q1 exit", QueueLineRole.Exit, early, 0, 1) { Additive = true },
+            new LineMinute("Q1 exit", QueueLineRole.Exit, early, 0, 4),
+            new LineMinute("", QueueLineRole.Entry, early, 9, 9) { Additive = true },
+            new LineMinute(new string('x', 201), QueueLineRole.Entry, early, 9, 9)
+        ])], [state], [], []), Ct);
+        await store.SaveAsync(new StreamCheckpoint("g", [new ZoneOutputs("DMO/Q1", [], [], [], [], [],
+            [new LineMinute("Q1 entry", QueueLineRole.Entry, early, 1, 2) { Additive = true }])], [state], [], []), Ct);
+        (await RowsAsync(database, "SELECT line_name, crossings_in, crossings_out FROM line_minute WHERE minute_utc = '2026-09-28 19:01:00+00' ORDER BY line_name"))
+            .Should().Equal("Q1 entry|6|3", "Q1 exit|0|4");
+        log.Warnings.Should().Equal("Dropped 2 line minutes of zone DMO/Q1: empty or overlong line name, or unknown role");
+
         // ARV-060: every minute with waits keeps its histogram, whose counts add up to its waits (F7), so reports merge hours.
         (await RowsAsync(database, """
             SELECT count(*) FILTER (WHERE waits > 0), count(*) FILTER (WHERE waits > 0 AND wait_buckets IS NOT NULL
@@ -414,6 +434,8 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
     [InlineData("DELETE FROM line_minute", "42501")]
     [InlineData("TRUNCATE line_minute", "42501")]
     [InlineData("INSERT INTO line_minute_15m (zone_key, line_name, bucket_utc, crossings_in) VALUES ('DMO/Q1', 'Q1 entry', now(), 100000)", "42501")]
+    [InlineData("UPDATE line_minute_15m SET crossings_in = 100000", "42501")]
+    [InlineData("DELETE FROM line_minute_15m", "42501")]
     [InlineData("INSERT INTO line_minute (zone_key, line_name, line_role, source, minute_utc, profile_version, updated_on) VALUES ('DMO/Q1', 'x', 'Entry', 'Sensor', now(), 1, now())", "23514")]
     [InlineData("DELETE FROM queue_bin", "42501")]
     [InlineData("DELETE FROM stream_zone_state", "42501")]
@@ -549,5 +571,22 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
         await host.StopAsync(Ct);
         keys.Should().Contain(["DMO/Q9", "DMO/elsewhere"]);
         healthKeys.Should().Equal(["DMO/Q9"], "the report keyed by device id is skipped, not dead-lettered");
+    }
+
+    /// <summary>Collects the warnings a store logs (ARV-113: dropped line minutes name the zone key and the count only).</summary>
+    private sealed class WarningLog : Microsoft.Extensions.Logging.ILogger<StreamStore>
+    {
+        public List<string> Warnings { get; } = [];
+
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+
+        public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId, TState state, Exception exception,
+            Func<TState, Exception, string> formatter)
+        {
+            if (logLevel == Microsoft.Extensions.Logging.LogLevel.Warning)
+                Warnings.Add(formatter(state, exception));
+        }
     }
 }

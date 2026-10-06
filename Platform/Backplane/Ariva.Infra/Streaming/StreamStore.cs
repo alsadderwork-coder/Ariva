@@ -3,6 +3,8 @@ using Ariva.Core.Desks;
 using Ariva.Core.Queueing;
 using Ariva.Infra.Messaging;
 using Ariva.Infra.Settings;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
 using NpgsqlTypes;
 
@@ -27,8 +29,10 @@ public sealed record StreamCheckpoint(
 /// commit its Kafka offsets; on assignment it starts from the offsets saved here, so a record is applied to a saved state
 /// exactly once and replaying the records after it rewrites the same rows.
 /// </summary>
-public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProvider)
+public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProvider, ILogger<StreamStore> logger = null)
 {
+    private readonly ILogger _logger = logger ?? (ILogger)NullLogger.Instance;
+
     /// <summary>A zone snapshot larger than this is refused (CWE-120): a corrupt or hostile state is not loaded.</summary>
     public const int MaxStateBytes = 64 * 1024 * 1024;
 
@@ -141,39 +145,84 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
 
     // Per-line minute counts (ARV-113). A line minute is written once it is closed and never changes in the engine, so a
     // replay of the same records after a restart writes the same values again: the upsert by (zone, line, source, minute)
-    // makes the rewrite a no-op in effect (idempotent).
-    private static async Task WriteLineMinutesAsync(NpgsqlConnection connection, List<(string Zone, LineMinute Line)> rows, Func<string, int> version, DateTime now,
+    // replaces the row, a no-op in effect (idempotent). The exception is a minute released early, when a zone held more
+    // open line minutes than LineCounts allows: its parts come as Additive rows and are added to the row (merged first
+    // when one checkpoint holds several), so no count is lost. Outputs and the zone's snapshot commit together, so after
+    // a restart each part is produced and added once.
+    private async Task WriteLineMinutesAsync(NpgsqlConnection connection, List<(string Zone, LineMinute Line)> rows, Func<string, int> version, DateTime now,
         CancellationToken ct)
     {
-        await Execute(connection, "CREATE TEMP TABLE stage_line_minute (LIKE line_minute INCLUDING DEFAULTS) ON COMMIT DROP", ct);
+        var merged = new Dictionary<(string Zone, string Line, LineCountSource Source, DateTime Minute), (LineMinute Line, bool Additive)>();
+        var order = new List<(string Zone, string Line, LineCountSource Source, DateTime Minute)>();
+        var dropped = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var (zone, l) in rows)
+        {
+            if (l.LineName is not { Length: > 0 and <= MaxLineNameLength } || l.Role == QueueLineRole.Unknown)
+            {
+                dropped[zone] = dropped.GetValueOrDefault(zone) + 1;
+                continue;
+            }
+
+            var key = (zone, l.LineName, l.Source, Utc(l.MinuteUtc));
+            if (!merged.TryGetValue(key, out var held))
+            {
+                merged[key] = (l, l.Additive);
+                order.Add(key);
+            }
+            else if (!l.Additive)
+                merged[key] = (l, false); // the whole minute replaces what came before it
+            else
+                merged[key] = (held.Line with { Role = l.Role, In = checked(held.Line.In + l.In), Out = checked(held.Line.Out + l.Out) }, held.Additive);
+        }
+
+        // Never written (the table refuses them): one warning per zone with the count; the zone key is the only value
+        // logged, never a line name from a device (CWE-117).
+        foreach (var (zone, count) in dropped)
+            _logger.LogWarning("Dropped {Count} line minutes of zone {Zone}: empty or overlong line name, or unknown role", count, zone);
+        if (merged.Count == 0)
+            return;
+        await Execute(connection, """
+            CREATE TEMP TABLE stage_line_minute (LIKE line_minute INCLUDING DEFAULTS, additive boolean NOT NULL DEFAULT false) ON COMMIT DROP
+            """, ct);
         await using (var copy = await connection.BeginBinaryImportAsync("""
-            COPY stage_line_minute (zone_key, line_name, line_role, source, minute_utc, profile_version, crossings_in, crossings_out, updated_on)
+            COPY stage_line_minute (zone_key, line_name, line_role, source, minute_utc, profile_version, crossings_in, crossings_out, updated_on, additive)
             FROM STDIN (FORMAT BINARY)
             """, ct))
         {
-            foreach (var (zone, l) in rows.Where(r => r.Line.LineName is { Length: > 0 and <= MaxLineNameLength } && r.Line.Role != QueueLineRole.Unknown)
-                         .GroupBy(r => (r.Zone, r.Line.LineName, r.Line.Source, r.Line.MinuteUtc)).Select(g => g.Last()))
+            foreach (var key in order)
             {
+                var (l, additive) = merged[key];
                 await copy.StartRowAsync(ct);
-                await copy.WriteAsync(zone, NpgsqlDbType.Varchar, ct);
+                await copy.WriteAsync(key.Zone, NpgsqlDbType.Varchar, ct);
                 await copy.WriteAsync(l.LineName, NpgsqlDbType.Varchar, ct);
                 await copy.WriteAsync(l.Role.ToString(), NpgsqlDbType.Varchar, ct);
                 await copy.WriteAsync(l.Source.ToString(), NpgsqlDbType.Varchar, ct);
-                await copy.WriteAsync(Utc(l.MinuteUtc), NpgsqlDbType.TimestampTz, ct);
-                await copy.WriteAsync(version(zone), NpgsqlDbType.Integer, ct);
+                await copy.WriteAsync(key.Minute, NpgsqlDbType.TimestampTz, ct);
+                await copy.WriteAsync(version(key.Zone), NpgsqlDbType.Integer, ct);
                 await copy.WriteAsync(l.In, NpgsqlDbType.Bigint, ct);
                 await copy.WriteAsync(l.Out, NpgsqlDbType.Bigint, ct);
                 await copy.WriteAsync(now, NpgsqlDbType.TimestampTz, ct);
+                await copy.WriteAsync(additive, NpgsqlDbType.Boolean, ct);
             }
 
             await copy.CompleteAsync(ct);
         }
 
         await Execute(connection, """
-            INSERT INTO line_minute SELECT * FROM stage_line_minute
+            INSERT INTO line_minute (zone_key, line_name, line_role, source, minute_utc, profile_version, crossings_in, crossings_out, updated_on)
+            SELECT zone_key, line_name, line_role, source, minute_utc, profile_version, crossings_in, crossings_out, updated_on
+            FROM stage_line_minute WHERE NOT additive
             ON CONFLICT (zone_key, line_name, source, minute_utc) DO UPDATE SET line_role = EXCLUDED.line_role,
                 profile_version = EXCLUDED.profile_version, crossings_in = EXCLUDED.crossings_in, crossings_out = EXCLUDED.crossings_out,
                 updated_on = EXCLUDED.updated_on
+            """, ct);
+        await Execute(connection, """
+            INSERT INTO line_minute (zone_key, line_name, line_role, source, minute_utc, profile_version, crossings_in, crossings_out, updated_on)
+            SELECT zone_key, line_name, line_role, source, minute_utc, profile_version, crossings_in, crossings_out, updated_on
+            FROM stage_line_minute WHERE additive
+            ON CONFLICT (zone_key, line_name, source, minute_utc) DO UPDATE SET line_role = EXCLUDED.line_role,
+                profile_version = EXCLUDED.profile_version, crossings_in = line_minute.crossings_in + EXCLUDED.crossings_in,
+                crossings_out = line_minute.crossings_out + EXCLUDED.crossings_out, updated_on = EXCLUDED.updated_on
             """, ct);
     }
 

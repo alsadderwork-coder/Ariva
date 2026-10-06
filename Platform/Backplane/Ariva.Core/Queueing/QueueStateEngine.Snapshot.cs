@@ -192,10 +192,14 @@ public sealed partial class QueueStateEngine
             engine._movements[QueueInputState.Utc(m.MinuteUtc)] = (m.Entries, m.Exits, m.DegradedEntries, m.DegradedExits);
         foreach (var l in (state.Lines ?? []).Where(l => l is not null))
         {
+            // The same checks as LineCounts.Restore (CWE-501, CWE-120): the zone's line with its role, counts that are not
+            // negative, an aligned plausible UTC minute, and each line minute once.
             var role = geometry.RoleOf(l.LineName);
-            if (role == QueueLineRole.Unknown || role != l.Role || l.In < 0 || l.Out < 0)
-                throw new InvalidDataException("The queue engine snapshot counts a line that is not the zone's, or a negative count.");
-            engine._lines[(QueueInputState.Utc(l.MinuteUtc), l.LineName)] = (l.Role, l.In, l.Out);
+            var minute = QueueInputState.Utc(l.MinuteUtc);
+            if (role == QueueLineRole.Unknown || role != l.Role || l.In < 0 || l.Out < 0 || !LineCounts.IsMinute(minute))
+                throw new InvalidDataException("The queue engine snapshot counts a line that is not the zone's, a negative count or an unaligned minute.");
+            if (!engine._lines.TryAdd((minute, l.LineName), (l.Role, l.In, l.Out)))
+                throw new InvalidDataException("The queue engine snapshot counts a line minute twice.");
         }
 
         engine._waits.AddRange((state.Waits ?? []).Where(w => w is not null).Select(w => w with { EntryUtc = QueueInputState.Utc(w.EntryUtc), ExitUtc = QueueInputState.Utc(w.ExitUtc) }));

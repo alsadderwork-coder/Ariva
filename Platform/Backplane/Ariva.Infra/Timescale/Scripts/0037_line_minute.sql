@@ -6,6 +6,8 @@
 --                     zone profile version that counted them. Written by Ariva.Api.Stream in the checkpoint transaction
 --                     of queue_minute (binary COPY into a staging table, then an upsert by key), once the engine's
 --                     watermark has passed the minute, so a replay after a restart rewrites the same rows (idempotent).
+--                     Only if more line minutes are open than the engine's bound is a minute released early, and its
+--                     later parts are added to the row rather than replacing it (no count is lost).
 --                     source 'Ariva' is what Ariva's queue engine counted; 'Vendor' is kept apart for crossings a vendor
 --                     computed on its own lines, a cross-check that is never added to Ariva's counts.
 --   line_minute_15m   the continuous aggregate of line_minute per 15 minutes, the bins F18 compares with manual counts

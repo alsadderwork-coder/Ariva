@@ -205,4 +205,98 @@ public sealed class LineCountsTests
 
         restore.Should().Throw<InvalidDataException>();
     }
+
+    public static TheoryData<string, LineMovement[]> HostileEngineLines()
+    {
+        var good = new LineMovement("A-VIS entry", QueueLineRole.Entry, At(0), 1, 0);
+        return new()
+        {
+            { "unaligned minute", [good with { MinuteUtc = At(0.5) }] },
+            { "DateTime.MinValue", [good with { MinuteUtc = DateTime.MinValue }] },
+            { "DateTime.MaxValue", [good with { MinuteUtc = DateTime.MaxValue }] },
+            { "negative In", [good with { In = -1 }] },
+            { "negative Out", [good with { Out = -1 }] },
+            { "wrong role", [good with { Role = QueueLineRole.Exit }] },
+            { "no line name", [good with { LineName = null }] },
+            { "twice", [good, good] }
+        };
+    }
+
+    [Theory]
+    [MemberData(nameof(HostileEngineLines))]
+    public void Restore_Should_Refuse_When_TheEngineSnapshotHoldsHostileLineMovements(string because, LineMovement[] lines)
+    {
+        var engine = new QueueStateEngine(Geometry, Thirty);
+        var good = engine.Capture() with { Lines = [new LineMovement("A-VIS entry", QueueLineRole.Entry, At(0), 1, 0)] };
+        QueueStateEngine.Restore(Geometry, Thirty, good).Capture().Lines.Should().Equal(good.Lines);
+
+        var restore = () => QueueStateEngine.Restore(Geometry, Thirty, good with { Lines = lines });
+
+        restore.Should().Throw<InvalidDataException>(because);
+    }
+
+    /// <summary>A step at <paramref name="watermark"/> carrying <paramref name="lines"/> (LineCounts reads nothing else).</summary>
+    private static QueueStep Step(DateTime watermark, params LineMovement[] lines) =>
+        new QueueStateEngine(Geometry, Thirty).Advance(T0) with { WatermarkUtc = watermark, Lines = lines };
+
+    [Fact]
+    public void Accept_Should_StayWithinTheBoundAndAddEveryPart_When_MoreLineMinutesThanTheBoundAreOpen()
+    {
+        const int beyond = 5;
+        var counts = new LineCounts();
+        var ahead = Enumerable.Range(1, LineCounts.MaxOpenLineMinutes + beyond)
+            .Select(i => new LineMovement("A-VIS entry", QueueLineRole.Entry, At(i), 1, 0)).ToArray();
+
+        // More open minutes than the bound: the earliest are released early, as parts that add to a written row.
+        var first = counts.Accept(Step(At(0), ahead));
+        counts.Open.Should().Be(LineCounts.MaxOpenLineMinutes);
+        first.Should().Equal(Enumerable.Range(1, beyond)
+            .Select(i => new LineMinute("A-VIS entry", QueueLineRole.Entry, At(i), 1, 0) { Additive = true }));
+        counts.ReleasedEarly.Should().Be(beyond);
+        counts.ReleasedEarlyThroughUtc.Should().Be(At(beyond));
+
+        // A restart keeps the mark, so the minute released early still adds after it.
+        var restored = LineCounts.Restore(Geometry, counts.Capture(), counts.ReleasedEarlyThroughUtc);
+
+        // The watermark has not passed minute 1: a later step adds to it, and the new part adds to the written one.
+        foreach (var c in new[] { counts, restored })
+        {
+            var second = c.Accept(Step(At(0), new LineMovement("A-VIS entry", QueueLineRole.Entry, At(1), 2, 1)));
+            c.Open.Should().BeLessThanOrEqualTo(LineCounts.MaxOpenLineMinutes);
+            second.Should().Equal(new LineMinute("A-VIS entry", QueueLineRole.Entry, At(1), 2, 1) { Additive = true });
+            first.Concat(second).Where(l => l.MinuteUtc == At(1)).Sum(l => l.In).Should().Be(3, "no count of minute 1 is lost");
+
+            // Past the mark, minutes are whole again (they replace), and once the watermark passes the mark it is cleared.
+            var third = c.Accept(Step(At(beyond + 3)));
+            third.Should().Equal(
+                new LineMinute("A-VIS entry", QueueLineRole.Entry, At(beyond + 1), 1, 0),
+                new LineMinute("A-VIS entry", QueueLineRole.Entry, At(beyond + 2), 1, 0));
+            third.Should().OnlyContain(l => !l.Additive);
+            c.ReleasedEarlyThroughUtc.Should().BeNull();
+        }
+    }
+
+    [Fact]
+    public void Accept_Should_ReleaseTheRestOfAnEarlyMinuteAsParts_When_OtherLinesOfThatMinuteCloseLater()
+    {
+        var counts = LineCounts.Restore(Geometry,
+            [new LineMinuteState("A-VIS exit", QueueLineRole.Exit, At(3), 4, 0)], releasedEarlyThroughUtc: At(3));
+
+        var closed = counts.Accept(Step(At(4)));
+
+        closed.Should().Equal(new LineMinute("A-VIS exit", QueueLineRole.Exit, At(3), 4, 0) { Additive = true });
+        counts.ReleasedEarlyThroughUtc.Should().BeNull();
+    }
+
+    [Fact]
+    public void Restore_Should_Refuse_When_TheEarlyReleaseMarkIsNotAMinute()
+    {
+        foreach (var mark in new[] { At(0.5), DateTime.MinValue, DateTime.MaxValue })
+        {
+            var restore = () => LineCounts.Restore(Geometry, [], mark);
+            restore.Should().Throw<InvalidDataException>();
+        }
+
+        LineCounts.Restore(Geometry, [], At(2)).ReleasedEarlyThroughUtc.Should().Be(At(2));
+    }
 }
