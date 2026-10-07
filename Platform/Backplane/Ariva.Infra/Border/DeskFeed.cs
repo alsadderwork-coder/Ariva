@@ -27,6 +27,12 @@ public sealed record DeskFeedSettings
 
     public int MaxRead { get; init; } = 20_000;
 
+    /// <summary>
+    /// T1 for a desk without a live login source, in seconds (ARV-116, Proposed 60, pending the owner): a desk staffed by its
+    /// staff zone alone is Paused once the zone has been empty this long; with an AMAN session T1 stays 3 minutes.
+    /// </summary>
+    public int SensorPauseSeconds { get; init; } = 60;
+
     public IEnumerable<string> Problems()
     {
         if (PollSeconds is < 1 or > 300)
@@ -35,14 +41,25 @@ public sealed record DeskFeedSettings
             yield return $"{SectionName}:LatenessSeconds is 0 to 900.";
         if (MaxRead is < 100 or > 200_000)
             yield return $"{SectionName}:MaxRead is 100 to 200,000.";
+        if (SensorPauseSeconds is < 10 or > 180)
+            yield return $"{SectionName}:SensorPauseSeconds is 10 to 180 (at most T1, 3 minutes).";
     }
 
-    /// <summary>The desk engine's settings for AMAN desks: the reference values with this feed's lateness.</summary>
-    public DeskStateSettings Engine => new() { Lateness = TimeSpan.FromSeconds(LatenessSeconds), MaxLate = TimeSpan.FromMinutes(15) };
+    /// <summary>The desk engine's settings: the reference values with this feed's lateness and the sensor T1 (ARV-116).</summary>
+    public DeskStateSettings Engine => new()
+    {
+        Lateness = TimeSpan.FromSeconds(LatenessSeconds),
+        MaxLate = TimeSpan.FromMinutes(15),
+        SensorPauseAfter = TimeSpan.FromSeconds(SensorPauseSeconds)
+    };
 }
 
-/// <summary>What the desk feed keeps per site between reads (<c>desk_feed_state</c>, script 0031).</summary>
-public sealed record DeskFeedState(int Version, DeskEngineState Engine, AmanFeedCursor Cursor, DateTime? HeartbeatUtc)
+/// <summary>
+/// What the desk feed keeps per site between reads (<c>desk_feed_state</c>, script 0031): the engine, the read position in
+/// AMAN's records, the feed heartbeat and (ARV-116) the read position in the staff and service zone readings, absent in a
+/// state saved before, which then starts at the time of the read.
+/// </summary>
+public sealed record DeskFeedState(int Version, DeskEngineState Engine, AmanFeedCursor Cursor, DateTime? HeartbeatUtc, AmanFeedCursor ZoneCursor = null)
 {
     public const int CurrentVersion = 1;
 }
@@ -52,8 +69,13 @@ public sealed record DeskFeedState(int Version, DeskEngineState Engine, AmanFeed
 /// (ARV-048, read by receipt time from <see cref="AmanFeedCursor"/>) become desk state signals at their F10 rank
 /// (<see cref="AmanDeskFeed"/>) for the site's <see cref="DeskStateEngine"/> (one per site, AMAN desks with a session and
 /// transaction source each), whose closed minutes are written to <c>desk_minute</c>; AMAN's e-gate intervals become
-/// <c>egate_minute</c> rows. Each site is one transaction holding a per-site advisory lock (class 49), so replicas share
-/// the sites and none is read twice; the engine's snapshot, the read position and the heartbeat are saved with the rows.
+/// <c>egate_minute</c> rows. Since ARV-116 the site's staff and service zones join: a desk that a staff or service zone
+/// of the published zone profile names has that source too (F10 ranks 3 and 4, below AMAN's), a desk with such zones and
+/// no AMAN code is in the engine with them alone (so it gets a state without AMAN), and a site with such zones and no
+/// AMAN desks is read too; the readings the stream wrote to <c>desk_zone_reading</c> (counts only) are read by the time
+/// they were written, with the same overlap and memory as AMAN's records, and offered as <see cref="DeskZoneReading"/>.
+/// Each site is one transaction holding a per-site advisory lock (class 49), so replicas share the sites and none is read
+/// twice; the engine's snapshot, the read position and the heartbeat are saved with the rows.
 /// Keys are site, checkpoint and desk code (<see cref="AmanDeskFeed.Key"/>). Parameterised SQL only.
 /// </summary>
 public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvider, DeskFeedSettings settings, ILogger<DeskFeed> logger)
@@ -64,15 +86,7 @@ public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvide
     /// <summary>Reads every site's new records once; returns the sites read.</summary>
     public async Task<int> TickAsync(CancellationToken ct)
     {
-        IReadOnlyList<string> sites;
-        await using (var connection = await OpenAsync(ct))
-        {
-            sites = await ReadAsync(connection, null, """
-                SELECT DISTINCT m.site_code FROM desk_code_mapping m JOIN desk d ON d.id = m.desk_id AND d.site_code = m.site_code
-                 WHERE m.system = 'Aman' AND m.deleted_on IS NULL AND d.deleted_on IS NULL ORDER BY m.site_code
-                """, [], r => r.GetString(0), ct);
-        }
-
+        var sites = await SitesAsync(ct);
         var read = 0;
         foreach (var site in sites)
         {
@@ -96,6 +110,24 @@ public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvide
         return read;
     }
 
+    /// <summary>
+    /// The sites the feed reads: those with AMAN desk code mappings, and (ARV-116) those whose published zone profile has a
+    /// staff or service zone naming a desk that is not an e-gate.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> SitesAsync(CancellationToken ct)
+    {
+        await using var connection = await OpenAsync(ct);
+        return await ReadAsync(connection, null, """
+            SELECT m.site_code FROM desk_code_mapping m JOIN desk d ON d.id = m.desk_id AND d.site_code = m.site_code
+             WHERE m.system = 'Aman' AND m.deleted_on IS NULL AND d.deleted_on IS NULL
+            UNION
+            SELECT p.site_code FROM zone_profile p JOIN zone z ON z.profile_id = p.id
+              JOIN desk d ON d.id = z.desk_id AND d.site_code = p.site_code AND d.deleted_on IS NULL AND d.kind <> 'EGate'
+             WHERE p.status = 'Published' AND z.kind IN ('Staff', 'Service')
+            ORDER BY 1
+            """, [], r => r.GetString(0), ct);
+    }
+
     /// <summary>Reads one site's new records into its engine and minutes; false when another replica holds the site.</summary>
     public async Task<bool> SiteAsync(string siteCode, CancellationToken ct)
     {
@@ -108,21 +140,40 @@ public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvide
         if (!locked[0])
             return false;
 
+        // The site's AMAN desks and gates, and (ARV-116) the desks a staff or service zone of the published profile names,
+        // with the zone roles they have; e-gates have no staff or service zone.
         var desks = await ReadAsync(connection, transaction, """
-            SELECT c.code, d.code, COALESCE(d.lane_category_codes, ''), d.kind
-              FROM desk_code_mapping m
-              JOIN desk d ON d.id = m.desk_id AND d.site_code = m.site_code AND d.deleted_on IS NULL AND d.kind IN ('Desk', 'EGate')
+            WITH profile AS (
+                SELECT id FROM zone_profile WHERE site_code = @site AND status = 'Published' ORDER BY version DESC LIMIT 1
+            ), zones AS (
+                SELECT z.desk_id, bool_or(z.kind = 'Staff') AS staff, bool_or(z.kind = 'Service') AS service
+                  FROM zone z JOIN profile p ON p.id = z.profile_id
+                 WHERE z.kind IN ('Staff', 'Service') AND z.desk_id IS NOT NULL AND z.queue_zone_id IS NOT NULL
+                 GROUP BY z.desk_id
+            ), aman AS (
+                SELECT DISTINCT m.desk_id FROM desk_code_mapping m WHERE m.site_code = @site AND m.system = 'Aman' AND m.deleted_on IS NULL
+            )
+            SELECT c.code, d.code, COALESCE(d.lane_category_codes, ''), d.kind, a.desk_id IS NOT NULL,
+                   d.kind <> 'EGate' AND COALESCE(zn.staff, false), d.kind <> 'EGate' AND COALESCE(zn.service, false)
+              FROM desk d
               JOIN checkpoint c ON c.id = d.checkpoint_id
-             WHERE m.site_code = @site AND m.system = 'Aman' AND m.deleted_on IS NULL
+              LEFT JOIN aman a ON a.desk_id = d.id
+              LEFT JOIN zones zn ON zn.desk_id = d.id
+             WHERE d.site_code = @site AND d.deleted_on IS NULL
+               AND ((a.desk_id IS NOT NULL AND d.kind IN ('Desk', 'EGate')) OR (zn.desk_id IS NOT NULL AND d.kind <> 'EGate'))
              ORDER BY c.code, d.code
-            """, [site.Clone()], r => (Key: AmanDeskFeed.Key(siteCode, r.GetString(0), r.GetString(1)), Lane: Lane(r.GetString(2)), Desk: r.GetString(3) == "Desk"), ct);
+            """, [site.Clone()], r => (Key: AmanDeskFeed.Key(siteCode, r.GetString(0), r.GetString(1)), Lane: Lane(r.GetString(2)), Kind: r.GetString(3),
+                Aman: r.GetBoolean(4), Staff: r.GetBoolean(5), Service: r.GetBoolean(6)), ct);
         // Checkpoint codes are unique per level, so two desks can share a key: both are left out (and logged) rather than merged.
         var shared = desks.GroupBy(d => d.Key, StringComparer.Ordinal).Where(g => g.Count() > 1).Select(g => g.Key).ToHashSet(StringComparer.Ordinal);
         if (shared.Count > 0)
             logger.LogWarning("Desk feed of site {Site}: {Count} desk keys are shared by desks of checkpoints with the same code on different levels; they are left out",
                 siteCode, shared.Count);
-        var profiles = desks.Where(d => d.Desk && !shared.Contains(d.Key))
-            .Select(d => new DeskProfile(d.Key, d.Lane, HasTransactions: true, HasSession: true, HasStaffZone: false, HasServiceZone: false)).ToList();
+        // AMAN desks have AMAN's sources and their zones; a desk with zones and no AMAN code has its zones alone (ARV-116). A key
+        // longer than the desk tables hold is left out (the engine refuses it).
+        var profiles = desks.Where(d => !shared.Contains(d.Key) && DeskKeys.Fits(d.Key) && ((d.Aman && d.Kind == "Desk") || (!d.Aman && (d.Staff || d.Service))))
+            .Select(d => new DeskProfile(d.Key, d.Lane, HasTransactions: d.Aman, HasSession: d.Aman, HasStaffZone: d.Staff, HasServiceZone: d.Service)).ToList();
+        var amanDesks = profiles.Where(p => p.HasSession).Select(p => p.DeskCode).ToList();
 
         var saved = await ReadAsync(connection, transaction,
             "SELECT CASE WHEN octet_length(state::text) <= @max THEN state::text END FROM desk_feed_state WHERE site_code = @site FOR UPDATE",
@@ -170,9 +221,31 @@ public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvide
                 r.IsDBNull(10) ? 0 : r.GetDouble(10)), ct);
 
         var (fresh, next) = cursor.Take(records, 2 * settings.MaxRead);
-        var step = AmanDeskFeed.Step(fresh, profiles.Select(p => p.DeskCode).ToList(), state?.HeartbeatUtc, now);
+        var step = AmanDeskFeed.Step(fresh, amanDesks, state?.HeartbeatUtc, now);
         foreach (var signal in step.Signals)
             engine.Offer(signal, now);
+
+        // The staff and service zone readings the stream wrote since the last read (ARV-116). Values come back from storage
+        // and are checked again (CWE-501): the role by its exact name; the engine refuses a desk it does not hold, a role
+        // the desk has no zone for, and a count above its bound. Readings older than a day are not read (the engine refuses
+        // anything 15 minutes behind its watermark).
+        var zoneCursor = state?.ZoneCursor ?? AmanFeedCursor.Start(now);
+        var readings = await ReadAsync(connection, transaction, """
+            SELECT id, written_utc, desk_code, source, reading_utc, occupancy, degraded FROM desk_zone_reading
+             WHERE site_code = @site AND written_utc >= @from AND reading_utc >= @oldest AND id <> ALL(@taken)
+             ORDER BY written_utc, id
+             LIMIT @limit
+            """, [site.Clone(), new NpgsqlParameter("from", NpgsqlDbType.TimestampTz) { Value = zoneCursor.ReadFromUtc },
+                new NpgsqlParameter("oldest", NpgsqlDbType.TimestampTz) { Value = now.AddDays(-1) },
+                new NpgsqlParameter("taken", NpgsqlDbType.Array | NpgsqlDbType.Uuid) { Value = zoneCursor.TakenIds }, new NpgsqlParameter("limit", settings.MaxRead)],
+            r => new DeskZoneRow(r.GetGuid(0), Utc(r.GetDateTime(1)), r.GetString(2), r.GetString(3), Utc(r.GetDateTime(4)), r.GetInt16(5), r.GetBoolean(6)), ct);
+        var (freshReadings, nextZones) = zoneCursor.Take(readings, z => z.Id, z => z.WrittenUtc, 2 * settings.MaxRead);
+        foreach (var reading in freshReadings)
+        {
+            if (reading.Signal() is { } signal)
+                engine.Offer(signal, now);
+        }
+
         var minutes = new List<DeskMinute>();
         for (var i = 0; i < 100; i++)
         {
@@ -187,7 +260,7 @@ public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvide
         if (step.EgateMinutes.Count > 0)
             await WriteEgateMinutesAsync(connection, transaction, step.EgateMinutes, now, ct);
 
-        var json = JsonSerializer.Serialize(new DeskFeedState(DeskFeedState.CurrentVersion, engine.Capture(), next, step.HeartbeatUtc), EventCatalog.Json);
+        var json = JsonSerializer.Serialize(new DeskFeedState(DeskFeedState.CurrentVersion, engine.Capture(), next, step.HeartbeatUtc, nextZones), EventCatalog.Json);
         if (json.Length > MaxStateBytes / 4)
         {
             // A state this large (the cursor or the engine's buffers far beyond any airport) is not kept: the desks start
@@ -195,7 +268,8 @@ public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvide
             // taken twice, and the next read stays bounded.
             logger.LogWarning("The desk feed state of site {Site} is too large to keep; its desks start again from now", siteCode);
             json = JsonSerializer.Serialize(new DeskFeedState(DeskFeedState.CurrentVersion, new DeskStateEngine(profiles, Floor(now), engineSettings).Capture(),
-                new AmanFeedCursor(next.PositionUtc, [.. next.Taken.Where(t => t.ReceivedUtc == next.PositionUtc)], next.PositionUtc), step.HeartbeatUtc), EventCatalog.Json);
+                new AmanFeedCursor(next.PositionUtc, [.. next.Taken.Where(t => t.ReceivedUtc == next.PositionUtc)], next.PositionUtc), step.HeartbeatUtc,
+                new AmanFeedCursor(nextZones.PositionUtc, [.. nextZones.Taken.Where(t => t.ReceivedUtc == nextZones.PositionUtc)], nextZones.PositionUtc)), EventCatalog.Json);
         }
 
         await using (var upsert = new NpgsqlCommand("""
@@ -210,9 +284,9 @@ public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvide
         }
 
         await transaction.CommitAsync(ct);
-        if (fresh.Count > 0)
-            logger.LogDebug("Desk feed of site {Site}: {Records} records, {Minutes} desk minutes, {Gates} e-gate minutes", siteCode, fresh.Count, minutes.Count,
-                step.EgateMinutes.Count);
+        if (fresh.Count > 0 || freshReadings.Count > 0)
+            logger.LogDebug("Desk feed of site {Site}: {Records} records, {Readings} zone readings, {Minutes} desk minutes, {Gates} e-gate minutes", siteCode, fresh.Count,
+                freshReadings.Count, minutes.Count, step.EgateMinutes.Count);
         return true;
     }
 
@@ -282,6 +356,18 @@ public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvide
     private static DateTime Floor(DateTime value) => new(value.Ticks - value.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc);
 
     private static DateTime Utc(DateTime value) => DateTime.SpecifyKind(value, DateTimeKind.Utc);
+}
+
+/// <summary>A stored staff or service zone reading as the desk feed reads it (ARV-116, <c>desk_zone_reading</c>): counts only.</summary>
+internal sealed record DeskZoneRow(Guid Id, DateTime WrittenUtc, string DeskKey, string Source, DateTime TimeUtc, int Count, bool Degraded)
+{
+    /// <summary>The engine's signal, or null for a role that is not a staff or service zone (only the exact names are taken).</summary>
+    public DeskZoneReading Signal() => Source switch
+    {
+        nameof(DeskSource.StaffZone) => new DeskZoneReading(DeskKey, TimeUtc, DeskSource.StaffZone, Count, Degraded),
+        nameof(DeskSource.ServiceZone) => new DeskZoneReading(DeskKey, TimeUtc, DeskSource.ServiceZone, Count, Degraded),
+        _ => null
+    };
 }
 
 /// <summary>Runs the desk feed every <see cref="DeskFeedSettings.PollSeconds"/> in Ariva.Api.Stream (ARV-049).</summary>

@@ -119,7 +119,7 @@ public static class AmanDeskFeed
     }
 
     /// <summary>The desk or gate key in the stream's minute tables: site, checkpoint and desk code (unique while the desk lives).</summary>
-    public static string Key(string siteCode, string checkpointCode, string deskCode) => $"{siteCode}/{checkpointCode}/{deskCode}";
+    public static string Key(string siteCode, string checkpointCode, string deskCode) => DeskKeys.For(siteCode, checkpointCode, deskCode);
 
     private static DateTime Floor(DateTime value) => new(value.Ticks - value.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc);
 }
@@ -148,14 +148,24 @@ public sealed record AmanFeedCursor(DateTime PositionUtc, IReadOnlyList<AmanTake
     /// The records not taken yet, in the order received, and the cursor after them; <paramref name="maxTaken"/> bounds
     /// what is remembered.
     /// </summary>
-    public (IReadOnlyList<AmanFeedRecord> Fresh, AmanFeedCursor Next) Take(IReadOnlyList<AmanFeedRecord> read, int maxTaken = 50_000)
+    public (IReadOnlyList<AmanFeedRecord> Fresh, AmanFeedCursor Next) Take(IReadOnlyList<AmanFeedRecord> read, int maxTaken = 50_000) =>
+        Take(read, r => r.Id, r => r.ReceivedUtc, maxTaken);
+
+    /// <summary>
+    /// The same for any stored rows read by the time Ariva wrote them, given each row's id and that time (ARV-116: the
+    /// staff and service zone readings the stream writes to <c>desk_zone_reading</c>).
+    /// </summary>
+    public (IReadOnlyList<T> Fresh, AmanFeedCursor Next) Take<T>(IReadOnlyList<T> read, Func<T, Guid> id, Func<T, DateTime> received, int maxTaken = 50_000)
+        where T : class
     {
         ArgumentNullException.ThrowIfNull(read);
+        ArgumentNullException.ThrowIfNull(id);
+        ArgumentNullException.ThrowIfNull(received);
         var taken = new HashSet<Guid>((Taken ?? []).Select(t => t.Id));
-        var fresh = read.Where(r => r is not null && taken.Add(r.Id)).OrderBy(r => r.ReceivedUtc).ThenBy(r => r.Id).ToList();
-        var position = fresh.Count == 0 ? PositionUtc : new DateTime(Math.Max(PositionUtc.Ticks, fresh.Max(r => r.ReceivedUtc).Ticks), DateTimeKind.Utc);
+        var fresh = read.Where(r => r is not null && taken.Add(id(r))).OrderBy(received).ThenBy(id).ToList();
+        var position = fresh.Count == 0 ? PositionUtc : new DateTime(Math.Max(PositionUtc.Ticks, fresh.Max(r => received(r)).Ticks), DateTimeKind.Utc);
         var keepFrom = position - Overlap;
-        var kept = (Taken ?? []).Concat(fresh.Select(r => new AmanTakenRecord(r.Id, r.ReceivedUtc)))
+        var kept = (Taken ?? []).Concat(fresh.Select(r => new AmanTakenRecord(id(r), received(r))))
             .Where(t => t.ReceivedUtc >= keepFrom && (Floor is null || t.ReceivedUtc >= Floor))
             .OrderBy(t => t.ReceivedUtc)
             .ToList();

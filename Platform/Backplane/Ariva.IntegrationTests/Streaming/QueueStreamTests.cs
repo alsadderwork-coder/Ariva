@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Ariva.Core.Desks;
 using Ariva.Core.Domain.Enums;
 using Ariva.Core.Messaging;
 using Ariva.Core.Queueing;
@@ -59,7 +60,15 @@ internal sealed class FixedGeometrySource() : ZoneGeometrySource(null)
                 queueZoneName.StartsWith("Q1", StringComparison.Ordinal) ? new HashSet<string> { $"{queueZoneName} band" } : new HashSet<string>())
             {
                 // ARV-114a: a snake smaller than the evening's busiest minutes, so some minutes are outside it.
-                Capacities = new Dictionary<string, int>(StringComparer.Ordinal) { [queueZoneName] = 20 }
+                Capacities = new Dictionary<string, int>(StringComparer.Ordinal) { [queueZoneName] = 20 },
+                // ARV-116: Q1 zones have a desk with a staff and a service zone.
+                DeskZones = queueZoneName.StartsWith("Q1", StringComparison.Ordinal)
+                    ? new Dictionary<string, DeskZoneLink>(StringComparer.Ordinal)
+                    {
+                        [$"{queueZoneName} staff"] = new($"DMO/IMM/{queueZoneName}-D1", DeskSource.StaffZone),
+                        [$"{queueZoneName} service"] = new($"DMO/IMM/{queueZoneName}-D1", DeskSource.ServiceZone)
+                    }
+                    : new Dictionary<string, DeskZoneLink>(StringComparer.Ordinal)
             }, 7)
             : null);
 }
@@ -80,7 +89,7 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
     // zone reports its occupancy at the end of every minute. One crossing and one occupancy batch per zone and minute.
     // With a snake capacity (ARV-115) the queue zone reports up to it and its band ("<zone> band") the rest, as the
     // scenario's sensors do, so the sum is still the people inside.
-    internal static List<SensingBatch> Evening(string zone, int salt, int? snake = null)
+    internal static List<SensingBatch> Evening(string zone, int salt, int? snake = null, bool desks = false)
     {
         var people = new List<(int Id, DateTime In, DateTime Out)>();
         var id = 0;
@@ -127,6 +136,14 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
             };
             if (snake is { } capacity)
                 readings.Add(new(new ZoneOccupancy($"{zone} band", Math.Max(0, inside - capacity), to.AddSeconds(-1)), to.AddSeconds(-1), SensedFlags.None));
+            // ARV-116: the zone's desk is staffed for seven minutes, then not for seven, and serves every other three; its
+            // zones are read at the minute's start (a minute old when they arrive, so behind the queue's watermark).
+            if (desks)
+            {
+                var staffed = m / 7 % 2 == 0;
+                readings.Add(new(new ZoneOccupancy($"{zone} staff", staffed ? 1 : 0, from), from, SensedFlags.None));
+                readings.Add(new(new ZoneOccupancy($"{zone} service", staffed && m / 3 % 2 == 0 ? 1 : 0, from), from, SensedFlags.None));
+            }
             batches.Add(Stamp(new ZoneOccupancyBatch { Occupancy = readings }));
         }
 
@@ -157,7 +174,7 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
 
         using var producer = new ProducerBuilder<string, byte[]>(new ProducerConfig { BootstrapServers = kafka.BootstrapServers, EnableIdempotence = true }).Build();
         var ends = new Dictionary<(string, int), long>();
-        foreach (var batch in Evening($"Q1{suffix}", 0, snake: 15).Concat(Evening($"Q2{suffix}", 3)).OrderBy(b => b.ReceivedUtc)
+        foreach (var batch in Evening($"Q1{suffix}", 0, snake: 15, desks: true).Concat(Evening($"Q2{suffix}", 3)).OrderBy(b => b.ReceivedUtc)
                      .Where(b => b.ReceivedUtc >= Start.AddMinutes(fromMinute) && (toMinute == int.MaxValue || b.ReceivedUtc < Start.AddMinutes(toMinute))))
         {
             var topic = batch is VendorLineCrossingBatch ? KafkaTopics.DeviceVendorLineCrossing : KafkaTopics.DeviceZoneOccupancy;
@@ -264,6 +281,12 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
         FROM line_minute ORDER BY zone_key, line_name, source, minute_utc
         """;
 
+    // The desks' zone readings (ARV-116), without the row id and the time it was written.
+    private const string DeskRows = """
+        SELECT site_code, desk_code, source, reading_utc, occupancy, degraded, zone_key, profile_version FROM desk_zone_reading
+        WHERE zone_key IN ('DMO/Q1', 'DMO/Q2') ORDER BY desk_code, source, reading_utc
+        """;
+
     private const string OverflowRows = """
         SELECT zone_key, band_name, minute_utc, profile_version, min_occupancy, max_occupancy FROM overflow_minute ORDER BY zone_key, band_name, minute_utc
         """;
@@ -288,6 +311,10 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
         await ProduceAsync("", toMinute: 47);
         var straight = await DatabaseAsync(TestDatabase.StreamStraight);
         var restart = await DatabaseAsync(TestDatabase.StreamRestart);
+        // The evening is dated 2026-09-28: without this, desk_zone_reading's 7-day retention job (ARV-116) could drop its
+        // readings between the two runs.
+        foreach (var database in new[] { straight, restart })
+            await RowsAsync(database, "SELECT remove_retention_policy('desk_zone_reading')");
         using (var host = Host(restart, "it-restart"))
         {
             await host.StartAsync(Ct);
@@ -345,6 +372,16 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
                  = (SELECT sum(entries) FROM queue_minute WHERE zone_key = 'DMO/Q1' AND minute_utc IN (SELECT minute_utc FROM line_minute WHERE zone_key = 'DMO/Q1'))
             """)).Should().Equal(["True"], "the entry line counts what the zone counted as entries");
         (await RowsAsync(restart, "SELECT zone_key FROM stream_zone_state ORDER BY zone_key")).Should().Contain(["DMO/Q1", "DMO/Q2"]);
+
+        // ARV-116: Q1's desk zone readings are written in the same checkpoints (counts only), each once: the restart writes
+        // exactly the same readings, and the queue's rows above are those of a queue without desk zones (Q2 has none).
+        var expectedDesks = await RowsAsync(straight, DeskRows);
+        expectedDesks.Should().HaveCount(200, "Q1's desk has a staff and a service reading in each of the 100 minutes");
+        expectedDesks.Should().OnlyContain(r => r.StartsWith("DMO|DMO/IMM/Q1-D1|", StringComparison.Ordinal) && r.EndsWith("|False|DMO/Q1|7", StringComparison.Ordinal));
+        (await RowsAsync(restart, DeskRows)).Should().Equal(expectedDesks);
+        (await RowsAsync(straight, "SELECT count(*) FROM desk_zone_reading WHERE zone_key = 'DMO/Q1' AND source = 'StaffZone' AND occupancy = 1")).Should().Equal(["51"],
+            "staffed in minutes 0 to 6, 14 to 20 and so on to 84 to 90, and 98 and 99");
+        (await RowsAsync(straight, "SELECT count(DISTINCT id) = count(*), bool_and(written_utc IS NOT NULL) FROM desk_zone_reading")).Should().Equal("True|True");
 
         // ARV-115: Q1's band minutes and the OverflowDetected events are written in the same checkpoints; the restart writes
         // exactly the same rows and events (the same ids, so none is added twice), and the events alternate per band.
@@ -533,6 +570,56 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
     // retries forever. The longest zone key (a 17-character site and a 200-character zone name) does not fit the outbox's
     // message_key (200): its change is dropped, its minute is still written.
     [Fact]
+    public async Task Store_Should_KeepTheFirstDeskReadingAndDropWhatTheTableWouldRefuse_When_ACheckpointCarriesDeskReadings()
+    {
+        // ARV-116: a reading is written once (a repeated checkpoint keeps the row and the id the desk feed may have taken);
+        // a reading the table would refuse is dropped with one warning per zone that names no desk, and the checkpoint commits.
+        var database = await DatabaseAsync(TestDatabase.StreamDeskReadings);
+        var log = new WarningLog();
+        var store = new StreamStore(new DatabaseSettings
+        {
+            Host = postgres.Hostname, Port = postgres.Port, Name = database, Username = postgres.AdminUsername, Password = postgres.AdminPassword
+        }, TimeProvider.System, log);
+        // Dated now: the table's 7-day retention job drops older chunks as soon as it first runs.
+        var at = DateTime.UtcNow.AddMinutes(-5);
+        at = new DateTime(at.Ticks - at.Ticks % TimeSpan.TicksPerSecond, DateTimeKind.Utc);
+        ZoneOutputs Readings(string zone, params DeskZoneSample[] samples) => new(zone, [], [], [], [], [], [], [], [], [], samples);
+        var good = Readings("DMO/Q1", new DeskZoneSample("DMO/IMM/D1", DeskSource.StaffZone, at, 1, false), new DeskZoneSample("DMO/IMM/D1", DeskSource.ServiceZone, at, 0, true),
+            new DeskZoneSample("DMO/IMM/D1", DeskSource.StaffZone, at, 0, false));
+        var state = new ZoneProcessor("DMO/Q1", new QueueZoneGeometry("Q1", new HashSet<string> { "Q1 entry" }, new HashSet<string> { "Q1 exit" },
+            new HashSet<string>(), new HashSet<string>()), 7).Capture();
+
+        await store.SaveAsync(new StreamCheckpoint("g-desks", [good], [state], [], [new StreamOffset("t", 0, 1)]), Ct);
+        var first = await RowsAsync(database, "SELECT id, desk_code, source, occupancy, degraded, profile_version FROM desk_zone_reading ORDER BY source");
+        await store.SaveAsync(new StreamCheckpoint("g-desks", [good with { DeskReadings = [new DeskZoneSample("DMO/IMM/D1", DeskSource.StaffZone, at, 0, true)] }], [state], [],
+            [new StreamOffset("t", 0, 2)]), Ct);
+
+        first.Should().HaveCount(2).And.Contain(r => r.EndsWith("|DMO/IMM/D1|StaffZone|1|False|7", StringComparison.Ordinal), "the first reading of a key in a checkpoint is kept");
+        (await RowsAsync(database, "SELECT id, desk_code, source, occupancy, degraded, profile_version FROM desk_zone_reading ORDER BY source")).Should().Equal(first,
+            "a repeated checkpoint adds nothing and changes nothing");
+
+        var overlong = "DMO/IMM/" + new string('D', 57);
+        await store.SaveAsync(new StreamCheckpoint("g-desks",
+        [
+            Readings("DMO/Q1", new DeskZoneSample("XS2/IMM/V1", DeskSource.StaffZone, at, 1, false), new DeskZoneSample(overlong, DeskSource.StaffZone, at, 1, false),
+                new DeskZoneSample("DMO/", DeskSource.StaffZone, at, 1, false), new DeskZoneSample("DMO/IMM/D1", DeskSource.Session, at.AddSeconds(1), 1, false),
+                new DeskZoneSample("DMO/IMM/D1", DeskSource.StaffZone, at.AddSeconds(1), 51, false), new DeskZoneSample("DMO/IMM/D1", DeskSource.StaffZone, at.AddSeconds(1), -1, false)),
+            Readings("Q1", new DeskZoneSample("Q1/IMM/D1", DeskSource.StaffZone, at, 1, false)),
+            Readings("DMO/Q2", new DeskZoneSample("DMO/IMM/D2", DeskSource.ServiceZone, at, 1, false))
+        ], [], [], [new StreamOffset("t", 0, 3)]), Ct);
+
+        overlong.Length.Should().Be(65);
+        (await store.LoadOffsetsAsync("g-desks", [("t", 0)], Ct)).Should().Equal([new StreamOffset("t", 0, 3)], "the checkpoint committed");
+        (await RowsAsync(database, "SELECT desk_code, source, occupancy FROM desk_zone_reading ORDER BY desk_code, source")).Should().Equal(
+            "DMO/IMM/D1|ServiceZone|0", "DMO/IMM/D1|StaffZone|1", "DMO/IMM/D2|ServiceZone|1");
+        log.Warnings.Should().Equal(
+            "Dropped 6 desk zone readings of zone DMO/Q1: a desk key not of the zone's site or too long, or a role or count out of bounds",
+            "Dropped 1 desk zone readings of zone Q1: a desk key not of the zone's site or too long, or a role or count out of bounds");
+        (await RowsAsync(database, "SELECT has_table_privilege('ariva_runtime', 'desk_zone_reading', 'INSERT'), has_table_privilege('ariva_runtime', 'desk_zone_reading', 'SELECT')"))
+            .Should().Equal("True|True");
+    }
+
+    [Fact]
     public async Task Store_Should_DropWhatTheTablesWouldRefuseAndCommit_When_ACheckpointCarriesInvalidOverflowRows()
     {
         var database = await DatabaseAsync(TestDatabase.StreamOverflowDrops);
@@ -600,6 +687,12 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
     // The bin view aggregates, so nobody can write through it (55000); the runtime role holds SELECT on it only (Store test).
     [InlineData("INSERT INTO overflow_bin_15m (zone_key, start_utc, overflow_minutes) VALUES ('DMO/Q1', now(), 15)", "55000")]
     [InlineData("DELETE FROM overflow_bin_15m", "55000")]
+    [InlineData("UPDATE desk_zone_reading SET occupancy = 0", "42501")]
+    [InlineData("DELETE FROM desk_zone_reading", "42501")]
+    [InlineData("TRUNCATE desk_zone_reading", "42501")]
+    [InlineData("INSERT INTO desk_zone_reading (id, site_code, desk_code, source, reading_utc, occupancy, degraded, zone_key, profile_version, written_utc) VALUES (gen_random_uuid(), 'DMO', 'DMO/IMM/X', 'StaffZone', now(), 51, false, 'DMO/Q1', 7, now())", "23514")]
+    [InlineData("INSERT INTO desk_zone_reading (id, site_code, desk_code, source, reading_utc, occupancy, degraded, zone_key, profile_version, written_utc) VALUES (gen_random_uuid(), 'DMO', 'XS2/IMM/V1', 'StaffZone', now(), 1, false, 'DMO/Q1', 7, now())", "23514")]
+    [InlineData("INSERT INTO desk_zone_reading (id, site_code, desk_code, source, reading_utc, occupancy, degraded, zone_key, profile_version, written_utc) VALUES (gen_random_uuid(), 'DMO', 'DMO/IMM/X', 'Session', now(), 1, false, 'DMO/Q1', 7, now())", "23514")]
     [InlineData("DELETE FROM zone_health_bin", "42501")]
     [InlineData("TRUNCATE zone_health_bin", "42501")]
     [InlineData("UPDATE zone_health_bin SET conservation_residual = 0, occupancy_start = 0, occupancy_end = 0 WHERE status = 'Final'", "23001")]

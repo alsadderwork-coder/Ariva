@@ -55,6 +55,43 @@ internal static class ReferenceReplay
     private static readonly Lazy<(List<SensingBatch> Batches, List<DeviceHealthReported> Health)> OverflowPublished =
         new(() => Ingest(ScenarioConfig.OverflowEvening() with { Lite = true }, OverflowDevices));
 
+    /// <summary>
+    /// The desk zone case (ARV-116): the reference evening (seed 9303, scripted events unchanged) with the Visitors hall's
+    /// S-18 to S-20 reporting the staff and service zones of desks AR-08 to AR-22 (five each), next to S-15 and S-17, under
+    /// a profile whose A-VIS has those zones, each naming its desk.
+    /// </summary>
+    private static readonly (string Sensor, string Zone, Guid Id)[] DeskDevices =
+    [
+        ("S-15", "A-VIS", Guid.Parse("0199a000-0000-7000-8000-000000000015")),
+        ("S-17", "A-VIS", Guid.Parse("0199a000-0000-7000-8000-000000000017")),
+        ("S-18", "A-VIS", Guid.Parse("0199a000-0000-7000-8000-000000000018")),
+        ("S-19", "A-VIS", Guid.Parse("0199a000-0000-7000-8000-000000000019")),
+        ("S-20", "A-VIS", Guid.Parse("0199a000-0000-7000-8000-000000000020"))
+    ];
+
+    private static readonly Lazy<(List<SensingBatch> Batches, List<DeviceHealthReported> Health)> DeskPublished =
+        new(() => Ingest(ScenarioConfig.Reference() with { Lite = true }, DeskDevices, deskZones: true));
+
+    /// <summary>What Ingest published for the desk zone case, in push order.</summary>
+    public static (IReadOnlyList<SensingBatch> Batches, IReadOnlyList<DeviceHealthReported> Health) DeskIngested => DeskPublished.Value;
+
+    /// <summary>The Visitors desks with staff and service zones in the desk zone case (AR-08 to AR-22).</summary>
+    public static IReadOnlyList<string> VisitorDesks => ScenarioModel.Queues[ScenarioModel.Q("A-VIS")].Servers;
+
+    /// <summary>A desk's key as the stream and the desk feed build it (arrival immigration is checkpoint IMM in the demo).</summary>
+    public static string DeskKeyOf(string desk) => Ariva.Core.Desks.DeskKeys.For(Site, "IMM", desk);
+
+    /// <summary>The Visitors zone of the desk zone case: <see cref="GeometryOf"/> with its desks' staff and service zones.</summary>
+    public static QueueZoneGeometry DeskGeometryOf(string zone) => GeometryOf(zone) with
+    {
+        DeskZones = VisitorDesks.SelectMany(d => new[]
+            {
+                (Zone: SensorTraffic.StaffZoneOf(d), Link: new Ariva.Core.Desks.DeskZoneLink(DeskKeyOf(d), Ariva.Core.Desks.DeskSource.StaffZone)),
+                (Zone: SensorTraffic.ServiceZoneOf(d), Link: new Ariva.Core.Desks.DeskZoneLink(DeskKeyOf(d), Ariva.Core.Desks.DeskSource.ServiceZone))
+            })
+            .ToDictionary(z => z.Zone, z => z.Link, StringComparer.Ordinal)
+    };
+
     /// <summary>What Ingest published for the overflow scenario case, in push order.</summary>
     public static (IReadOnlyList<SensingBatch> Batches, IReadOnlyList<DeviceHealthReported> Health) OverflowIngested => OverflowPublished.Value;
 
@@ -81,7 +118,7 @@ internal static class ReferenceReplay
     /// <summary>What Ingest published for the evening: the sensing batches and the health reports, in push order.</summary>
     public static (IReadOnlyList<SensingBatch> Batches, IReadOnlyList<DeviceHealthReported> Health) Ingested => Published.Value;
 
-    private sealed class Gateway : ISvcDeviceGateway
+    private sealed class Gateway(bool deskZones = false) : ISvcDeviceGateway
     {
         public Task<DeviceCredentialRecord> FindByPrefixAsync(string prefix, CancellationToken ct = default) => Task.FromResult<DeviceCredentialRecord>(null);
 
@@ -90,7 +127,15 @@ internal static class ReferenceReplay
                 [
                     new(Guid.NewGuid(), queueZoneName, "Queue", Guid.NewGuid(), null, null, "10 10,34 10,34 22,10 22", 288),
                     // ARV-115: the zone's overflow band, so that its lead sensor's readings pass Ingest's name check.
-                    new(Guid.NewGuid(), BandOf(queueZoneName), "Overflow", Guid.NewGuid(), null, null, "6 10,10 10,10 22,6 22", 48)
+                    new(Guid.NewGuid(), BandOf(queueZoneName), "Overflow", Guid.NewGuid(), null, null, "6 10,10 10,10 22,6 22", 48),
+                    // ARV-116: the Visitors desks' staff and service zones, each naming its desk.
+                    .. deskZones && queueZoneName == "A-VIS"
+                        ? VisitorDesks.SelectMany(d => new ZoneViewModel[]
+                        {
+                            new(Guid.NewGuid(), SensorTraffic.StaffZoneOf(d), "Staff", Guid.NewGuid(), null, Guid.NewGuid(), "34 10,35 10,35 11,34 11", 1),
+                            new(Guid.NewGuid(), SensorTraffic.ServiceZoneOf(d), "Service", Guid.NewGuid(), null, Guid.NewGuid(), "35 10,36 10,36 11,35 11", 1)
+                        })
+                        : Enumerable.Empty<ZoneViewModel>()
                 ],
                 [
                     new(Guid.NewGuid(), queueZoneName + " entry", "Entry", null, Guid.NewGuid(), 10, 12, 10, 16, 4),
@@ -109,12 +154,12 @@ internal static class ReferenceReplay
         }
     }
 
-    private static (List<SensingBatch>, List<DeviceHealthReported>) Ingest(ScenarioConfig config, (string Sensor, string Zone, Guid Id)[] devices)
+    private static (List<SensingBatch>, List<DeviceHealthReported>) Ingest(ScenarioConfig config, (string Sensor, string Zone, Guid Id)[] devices, bool deskZones = false)
     {
         var day = ScenarioDay.Run(config);
         var sink = new Sink();
         var cache = new FusionCache(new FusionCacheOptions(), new MemoryCache(new MemoryCacheOptions()));
-        var ingest = new SensingIngest(new Gateway(), sink, new DeviceClockStore(), cache, Options.Create(new IngestSettings { MaxEventsPerMessage = 3_000 }),
+        var ingest = new SensingIngest(new Gateway(deskZones), sink, new DeviceClockStore(), cache, Options.Create(new IngestSettings { MaxEventsPerMessage = 3_000 }),
             Ariva.Infra.Sensing.Declarative.DeclarativeMappingCatalog.Embedded);
         var package = 0L;
         for (var minute = 1020; minute < 1230; minute++)
@@ -195,6 +240,20 @@ internal static class ReferenceReplay
     /// <summary>The evening ingested again from scratch (health reports get new ids).</summary>
     public static (IReadOnlyList<SensingBatch> Batches, IReadOnlyList<DeviceHealthReported> Health) IngestAgain() => Ingest(ScenarioConfig.Reference() with { Lite = true }, Devices);
 
+    /// <summary>
+    /// Replays the desk zone case (ARV-116): the Visitors zone with S-18 to S-20 reporting its desks' zones, under the
+    /// geometry with those zones (<paramref name="deskGeometry"/>) or without them (the readings then go nowhere).
+    /// </summary>
+    public static (ReplayHashes Hashes, Dictionary<string, List<ZoneOutputs>> Outputs) RunDesks(bool deskGeometry = true, TextWriter export = null)
+    {
+        var settings = new ZoneProcessorSettings();
+        var outputs = new Dictionary<string, List<ZoneOutputs>>(StringComparer.Ordinal);
+        var ledger = new CapturingLedger(Manifest(settings, OverflowZones), export, outputs);
+        ZoneReplay.Run(ledger.Ledger, ZoneKeys.For(Site, "A-VIS"), deskGeometry ? DeskGeometryOf("A-VIS") : GeometryOf("A-VIS"), ProfileVersion, settings,
+            InputsOf("A-VIS", DeskIngested), From, To);
+        return (ledger.Ledger.End(), outputs);
+    }
+
     /// <summary>Replays the overflow scenario case (ARV-115): the Visitors zone with its band reporting.</summary>
     public static (ReplayHashes Hashes, Dictionary<string, List<ZoneOutputs>> Outputs) RunOverflow(TextWriter export = null, ZoneProcessorSettings settings = null) =>
         Run(export, settings, OverflowIngested, OverflowZones);
@@ -226,7 +285,7 @@ internal static class ReferenceReplay
             var record = root.GetProperty("record").GetRawText();
             T Read<T>() => System.Text.Json.JsonSerializer.Deserialize<T>(record, ReplayLedger.Json)!;
             if (!outputs.TryGetValue(zone, out var list))
-                outputs[zone] = list = [new ZoneOutputs(zone, new List<MinuteResult>(), new List<BinResult>(), new List<QueueLiveMinute>(), new List<RecomputationRequest>(), new List<DeviceOutage>(), new List<LineMinute>(), new List<ZoneHealthBin>(), new List<OverflowMinute>(), new List<OverflowChange>())];
+                outputs[zone] = list = [new ZoneOutputs(zone, new List<MinuteResult>(), new List<BinResult>(), new List<QueueLiveMinute>(), new List<RecomputationRequest>(), new List<DeviceOutage>(), new List<LineMinute>(), new List<ZoneHealthBin>(), new List<OverflowMinute>(), new List<OverflowChange>(), new List<Ariva.Core.Desks.DeskZoneSample>())];
             var o = list[0];
             switch (root.GetProperty("type").GetString())
             {
@@ -239,6 +298,7 @@ internal static class ReferenceReplay
                 case "health": ((List<ZoneHealthBin>)o.Health).Add(Read<ZoneHealthBin>()); break;
                 case "overflow": ((List<OverflowMinute>)o.Overflow).Add(Read<OverflowMinute>()); break;
                 case "overflow-change": ((List<OverflowChange>)o.OverflowChanges).Add(Read<OverflowChange>()); break;
+                case "desk-reading": ((List<Ariva.Core.Desks.DeskZoneSample>)o.DeskReadings).Add(Read<Ariva.Core.Desks.DeskZoneSample>()); break;
             }
         }
 

@@ -27,7 +27,7 @@ namespace Ariva.IntegrationTests.Border;
 /// and the runtime role cannot change or delete a record.
 /// </summary>
 [Collection(PostgresCollection.Name)]
-public sealed class ImmigrationIntakeTests(PostgresFixture fixture) : IAsyncDisposable
+public sealed partial class ImmigrationIntakeTests(PostgresFixture fixture) : IAsyncDisposable
 {
     private static readonly SemaphoreSlim Gate = new(1, 1);
     private static bool _seeded;
@@ -420,7 +420,9 @@ public sealed class ImmigrationIntakeTests(PostgresFixture fixture) : IAsyncDisp
         var dmo = await RowsAsync("SELECT desk_code, sum(transactions) FROM desk_minute WHERE desk_code LIKE 'DMO/%' AND minute_utc >= @from AND minute_utc < @to GROUP BY desk_code",
             r => (r.GetString(0), r.GetInt64(1)), t0, t0.AddMinutes(18));
         dmo["DMO/IMM/AR-09"].Should().BeGreaterThanOrEqualTo(50, "DMO's interval reached DMO's desk (other tests feed DMO too)");
-        (await _host.ReadAsync<long>("SELECT count(*) FROM desk_minute WHERE desk_code NOT LIKE 'DMO/%' AND desk_code NOT LIKE 'XS2/%'")).Should().Be(0);
+        // XS3 and XS4 are the desk zone sites of DeskFeed_Should_GiveDesksAStateFromTheirZones (ARV-116), which may run first.
+        (await _host.ReadAsync<long>("SELECT count(*) FROM desk_minute WHERE NOT (desk_code LIKE 'DMO/%' OR desk_code LIKE 'XS2/%' OR desk_code LIKE 'XS3/%' OR desk_code LIKE 'XS4/%')"))
+            .Should().Be(0);
 
 
         // Another replica holding the site: this one skips it.

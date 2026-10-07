@@ -79,8 +79,8 @@ Zones are polygons in floor coordinates, each with one role:
 |---|---|
 | Queue | Where people wait, bounded by entry and exit lines. Owns the process: its overflow, service and staff zones hang off it |
 | Overflow | Area outside the snake where the queue spills over; has its own entry line; overflow time counts as wait; occupancy above zero raises `OverflowDetected` |
-| Service | In front of a desk; occupancy is a weak serving signal |
-| Staff | Behind a desk; occupancy proves someone is present |
+| Service | In front of a desk; occupancy is a weak serving signal. Name the desk (the zone's desk) for its readings to reach the desk's state |
+| Staff | Behind a desk; occupancy proves someone is present. Name the desk for its readings to reach the desk's state |
 
 | Line role | Meaning |
 |---|---|

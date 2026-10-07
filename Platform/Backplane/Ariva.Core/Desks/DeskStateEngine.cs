@@ -399,7 +399,7 @@ public sealed partial class DeskStateEngine
                 var continuing = !staffWasStale && m.StaffCount == 0 && m.StaffEmptySince is not null;
                 var left = z.Count == 0 && (continuing ? m.StaffLeft : !staffWasStale && m.StaffCount > 0);
                 var emptySince = z.Count > 0 ? null : continuing ? m.StaffEmptySince : t;
-                m = m with { StaffCount = z.Count, StaffReadAt = t, StaffEmptySince = emptySince, StaffLeft = left };
+                m = m with { StaffCount = z.Count, StaffReadAt = t, StaffEmptySince = emptySince, StaffLeft = left, StaffDegraded = z.Degraded };
                 break;
             case DeskZoneReading z:
                 if (m.ServiceReadAt is { } vr && vr > t)
@@ -408,7 +408,7 @@ public sealed partial class DeskStateEngine
                     break;
                 }
 
-                m = m with { ServiceCount = z.Count, ServiceReadAt = t };
+                m = m with { ServiceCount = z.Count, ServiceReadAt = t, ServiceDegraded = z.Degraded };
                 break;
         }
 

@@ -1,3 +1,4 @@
+using Ariva.Core.Desks;
 using Ariva.Core.Sensing;
 
 namespace Ariva.Core.Queueing;
@@ -75,8 +76,9 @@ public sealed record QueueLiveMinute(
 
 /// <summary>
 /// What a zone produced since the last drain: rows to persist, what to recompute, device outages that ended, the closed
-/// minutes of each line (ARV-113), the health checks of each bin result (ARV-114a), and the closed minutes of each
-/// overflow band with the changes they made (ARV-115).
+/// minutes of each line (ARV-113), the health checks of each bin result (ARV-114a), the closed minutes of each
+/// overflow band with the changes they made (ARV-115), and the readings of the desks' staff and service zones for the
+/// desk engine (ARV-116: counts only).
 /// </summary>
 public sealed record ZoneOutputs(
     string ZoneKey,
@@ -88,7 +90,8 @@ public sealed record ZoneOutputs(
     IReadOnlyList<LineMinute> Lines = null,
     IReadOnlyList<ZoneHealthBin> Health = null,
     IReadOnlyList<OverflowMinute> Overflow = null,
-    IReadOnlyList<OverflowChange> OverflowChanges = null)
+    IReadOnlyList<OverflowChange> OverflowChanges = null,
+    IReadOnlyList<DeskZoneSample> DeskReadings = null)
 {
     public IReadOnlyList<DeviceOutage> Outages { get; init; } = Outages ?? [];
 
@@ -100,12 +103,17 @@ public sealed record ZoneOutputs(
 
     public IReadOnlyList<OverflowChange> OverflowChanges { get; init; } = OverflowChanges ?? [];
 
+    public IReadOnlyList<DeskZoneSample> DeskReadings { get; init; } = DeskReadings ?? [];
+
     public int Count => Minutes.Count + Bins.Count + Live.Count + Recomputations.Count + Outages.Count + Lines.Count + Health.Count + Overflow.Count +
-        OverflowChanges.Count;
+        OverflowChanges.Count + DeskReadings.Count;
 }
 
-/// <summary>Counts of what a zone refused, for health.</summary>
-public sealed record ZoneProcessorCounters(long Batches, long Uncommissioned, long WrongZone, long Invalid);
+/// <summary>
+/// Counts of what a zone refused, for health. <see cref="OtherZones"/> (ARV-116): occupancy readings of a zone that is
+/// neither the queue's nor a staff or service zone linked to a desk, kept from the queue engine.
+/// </summary>
+public sealed record ZoneProcessorCounters(long Batches, long Uncommissioned, long WrongZone, long Invalid, long OtherZones = 0);
 
 /// <summary>Everything a <see cref="ZoneProcessor"/> holds between checkpoints (outputs drained).</summary>
 public sealed record ZoneProcessorState
@@ -118,9 +126,10 @@ public sealed record ZoneProcessorState
     /// (ARV-115); an earlier snapshot restores with none open and every band empty, so a band occupied at the upgrade is
     /// reported occupied at its next minute with occupancy. 6 adds the Unknown state of a band silent beyond the occupancy
     /// freshness window (ARV-115, the owner's decision of 2026-10-06); a version 5 snapshot has no such property and
-    /// restores with every band it lists occupied or empty, as before.
+    /// restores with every band it lists occupied or empty, as before. 7 adds the latest reading passed on per desk zone
+    /// (ARV-116); an earlier snapshot restores with none, so each desk zone's next reading passes.
     /// </summary>
-    public const int CurrentVersion = 6;
+    public const int CurrentVersion = 7;
 
     public int Version { get; init; } = CurrentVersion;
     public string ZoneKey { get; init; }
@@ -143,6 +152,9 @@ public sealed record ZoneProcessorState
 
     /// <summary>The overflow bands' states (ARV-115): occupied, empty or unknown, as of each band's latest closed minute.</summary>
     public IReadOnlyList<OverflowBandState> OverflowBands { get; init; } = [];
+
+    /// <summary>The latest reading passed on to the desk engine per staff and service zone (ARV-116).</summary>
+    public IReadOnlyList<DeskZoneMemoState> DeskZones { get; init; } = [];
 }
 
 /// <summary>
@@ -161,7 +173,7 @@ public sealed class ZoneProcessor
     private ExitRate _exits;
     private DateTime _reference = DateTime.MinValue;
     private DateTime? _lastLive;
-    private long _batches, _uncommissioned, _wrongZone, _invalid;
+    private long _batches, _uncommissioned, _wrongZone, _invalid, _otherZones;
     private readonly List<MinuteResult> _minutes = [];
     private readonly List<BinResult> _binResults = [];
     private readonly List<QueueLiveMinute> _live = [];
@@ -171,6 +183,8 @@ public sealed class ZoneProcessor
     private readonly List<ZoneHealthBin> _health = [];
     private readonly List<OverflowMinute> _overflow = [];
     private readonly List<OverflowChange> _overflowChanges = [];
+    private readonly List<DeskZoneSample> _deskReadings = [];
+    private DeskZoneReadings _deskZones;
     private LineCounts _lines = new();
     private OverflowBands _bands;
     private DeviceLiveness _liveness;
@@ -193,6 +207,7 @@ public sealed class ZoneProcessor
         _exits = new ExitRate();
         _liveness = NewLiveness(_settings);
         _bands = new OverflowBands(geometry, _settings.Engine.OccupancyFreshFor);
+        _deskZones = new DeskZoneReadings(geometry.DeskZones);
     }
 
     private static DeviceLiveness NewLiveness(ZoneProcessorSettings settings) =>
@@ -207,7 +222,10 @@ public sealed class ZoneProcessor
 
     public DateTime WatermarkUtc => _engine.WatermarkUtc;
 
-    public ZoneProcessorCounters Counters => new(_batches, _uncommissioned, _wrongZone, _invalid);
+    public ZoneProcessorCounters Counters => new(_batches, _uncommissioned, _wrongZone, _invalid, _otherZones);
+
+    /// <summary>What happened to the desk zones' readings (ARV-116), for health; not part of the saved state.</summary>
+    public DeskZoneReadingCounters DeskZoneCounters => _deskZones.Counters;
 
     /// <summary>
     /// The desk term of the desks serving this queue (ARV-064), from the stream host's desk minutes; null when none is
@@ -220,7 +238,7 @@ public sealed class ZoneProcessor
 
     /// <summary>Outputs are waiting beyond the bound: checkpoint before offering more.</summary>
     public bool Full => _minutes.Count + _binResults.Count + _live.Count + _recomputations.Count + _outages.Count + _lineMinutes.Count + _health.Count +
-        _overflow.Count + _overflowChanges.Count >= _settings.MaxPendingOutputs;
+        _overflow.Count + _overflowChanges.Count + _deskReadings.Count >= _settings.MaxPendingOutputs;
 
     /// <summary>
     /// Offers one batch and steps the zone to its receive time (never backwards; <paramref name="referenceCapUtc"/>
@@ -308,7 +326,34 @@ public sealed class ZoneProcessor
                 break;
             case ZoneOccupancyBatch o:
                 foreach (var e in (o.Occupancy ?? []).Take(MaxEventsPerBatch))
-                    yield return !Valid(e, e?.Event) ? null : new QueueOccupancy(e.Event.ZoneName, e.Event.Count, e.TimeUtc, Degraded(e.Flags));
+                {
+                    if (!Valid(e, e?.Event))
+                    {
+                        yield return null;
+                        continue;
+                    }
+
+                    // ARV-116: a staff or service zone that names its desk is a desk signal (F10 rank 3 or 4), never part of the
+                    // queue; only its count, time and flag cross to the desk engine.
+                    if (_deskZones.Links(e.Event.ZoneName))
+                    {
+                        if (_deskZones.Accept(e.Event.ZoneName, e.Event.Count, e.TimeUtc, Degraded(e.Flags)) is { } sample)
+                            _deskReadings.Add(sample);
+                        continue;
+                    }
+
+                    // Any other zone (a staff or service zone without a desk, or one the profile's links leave out) never moves
+                    // the queue: it is counted here rather than buffered by the engine, where a late one would count as a
+                    // late event of the queue's bins.
+                    if (!_geometry.CountsInQueue(e.Event.ZoneName))
+                    {
+                        _otherZones++;
+                        continue;
+                    }
+
+                    yield return new QueueOccupancy(e.Event.ZoneName, e.Event.Count, e.TimeUtc, Degraded(e.Flags));
+                }
+
                 break;
             case IntervalCountBatch i:
                 foreach (var e in (i.Intervals ?? []).Take(MaxEventsPerBatch))
@@ -441,6 +486,7 @@ public sealed class ZoneProcessor
         var outputs = Peek();
         _overflow.Clear();
         _overflowChanges.Clear();
+        _deskReadings.Clear();
         _lineMinutes.Clear();
         _health.Clear();
         _minutes.Clear();
@@ -456,7 +502,8 @@ public sealed class ZoneProcessor
     /// calls <see cref="Acknowledge"/> only after its transaction committed, so a failed or cancelled write loses nothing.
     /// </summary>
     public ZoneOutputs Peek() =>
-        new(ZoneKey, [.. _minutes], [.. _binResults], [.. _live], [.. _recomputations], [.. _outages], [.. _lineMinutes], [.. _health], [.. _overflow], [.. _overflowChanges]);
+        new(ZoneKey, [.. _minutes], [.. _binResults], [.. _live], [.. _recomputations], [.. _outages], [.. _lineMinutes], [.. _health], [.. _overflow], [.. _overflowChanges],
+            [.. _deskReadings]);
 
     /// <summary>Removes the outputs a <see cref="Peek"/> returned (the ones before any produced since).</summary>
     public void Acknowledge(ZoneOutputs written)
@@ -471,6 +518,7 @@ public sealed class ZoneProcessor
         _health.RemoveRange(0, Math.Min(written.Health.Count, _health.Count));
         _overflow.RemoveRange(0, Math.Min(written.Overflow.Count, _overflow.Count));
         _overflowChanges.RemoveRange(0, Math.Min(written.OverflowChanges.Count, _overflowChanges.Count));
+        _deskReadings.RemoveRange(0, Math.Min(written.DeskReadings.Count, _deskReadings.Count));
     }
 
     /// <summary>
@@ -495,7 +543,8 @@ public sealed class ZoneProcessor
             Lines = _lines.Capture(),
             LinesReleasedEarlyThroughUtc = _lines.ReleasedEarlyThroughUtc,
             OverflowOpen = _bands.CaptureOpen(),
-            OverflowBands = _bands.CaptureBands()
+            OverflowBands = _bands.CaptureBands(),
+            DeskZones = _deskZones.Capture()
         };
     }
 
@@ -518,10 +567,12 @@ public sealed class ZoneProcessor
         zone._reference = DateTime.SpecifyKind(state.ReferenceUtc, DateTimeKind.Utc);
         zone._lastLive = state.LastLiveMinuteUtc is { } live ? DateTime.SpecifyKind(live, DateTimeKind.Utc) : null;
         if (state.Counters is { } c)
-            (zone._batches, zone._uncommissioned, zone._wrongZone, zone._invalid) = (c.Batches, c.Uncommissioned, c.WrongZone, c.Invalid);
+            (zone._batches, zone._uncommissioned, zone._wrongZone, zone._invalid, zone._otherZones) = (c.Batches, c.Uncommissioned, c.WrongZone, c.Invalid,
+                Math.Max(0, c.OtherZones));
         zone._liveness.Restore(state.Devices, state.RecentOutages);
         zone._lines = LineCounts.Restore(geometry, state.Lines, state.LinesReleasedEarlyThroughUtc);
         zone._bands = OverflowBands.Restore(geometry, state.OverflowOpen, state.OverflowBands, zone._settings.Engine.OccupancyFreshFor);
+        zone._deskZones = DeskZoneReadings.Restore(geometry.DeskZones, state.DeskZones, notAfterUtc);
         return zone;
     }
 }

@@ -4,7 +4,7 @@ Plays the simulated day (`Scenarios/`) to Ariva.Api.Ingest as device traffic (AR
 
 | File | What it holds |
 |---|---|
-| `SensorTraffic.cs` | One push per sensor and demo minute: canonical crossings, occupancy and status, or a Xovis firmware 5 logics push; deterministic for a seed |
+| `SensorTraffic.cs` | One push per sensor and demo minute: canonical crossings, occupancy and status, or a Xovis firmware 5 logics push; deterministic for a seed. S-18 to S-20 report the Visitors desks' staff and service zones (ARV-116), which need a profile with zones `<desk> staff` and `<desk> service` |
 | `SensorEmulator.cs` | The demo clock (start, pause, speed, jump, stop minute) and the background player that pushes each completed minute, in order |
 | `SensorEmulatorSettings.cs` | `Simulation:Sensors`: Ingest's address, transport, speed limit, devices; validated at start |
 | `SensorEmulatorExtensions.cs` | Registration: settings, the Ingest HTTP client (no redirects, no cookies) and the hosted player |

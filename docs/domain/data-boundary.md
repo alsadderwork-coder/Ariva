@@ -112,6 +112,7 @@ Rules (Proposed):
 | device_health | Dispute window (evidence for sensor-outage exclusions) | Proposed |
 | `aman.feed` Kafka topics | Medium class; AMAN owns the topic configuration | D5; values To confirm |
 | Ariva Kafka topics | Short, medium, long or compacted classes (see the overview) | D5; values Proposed |
+| Desk staff and service zone readings (`desk_zone_reading`: desk key, zone role, time, count, flag; no identities). Desk-level border data: stays in the border deployment and no API reads it; only the desk feed turns it into desk states (ARV-116) | 7 days, dropped by TimescaleDB retention | Proposed, To confirm |
 | queue_intervals, desk_intervals, forecast_values, border_lane_kpis | Indefinite | D5 |
 | Hourly and daily report aggregates | Indefinite | D5 |
 | Report schedules and deliveries (schedule, local day, recipient account, status; ARV-060). Report emails carry lane aggregates, alerts and device uptime only, to Ariva accounts allowed the site. The recipient picker lists the user names and display names of the accounts allowed the site that hold a report role, all-sites administrators included, to whoever may manage that site's schedules | To confirm; Proposed: 400 days for delivery rows, schedules until deleted (audited) | Proposed |

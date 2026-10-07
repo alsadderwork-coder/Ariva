@@ -29,6 +29,14 @@ public sealed record QueueZoneGeometry(
     /// </summary>
     public IReadOnlyDictionary<string, int> Capacities { get; init; } = NoCapacities;
 
+    private static readonly IReadOnlyDictionary<string, Desks.DeskZoneLink> NoDeskZones = new Dictionary<string, Desks.DeskZoneLink>(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The staff and service zones hanging off the queue zone that name their desk in the published profile, by zone name
+    /// (ARV-116): their occupancy readings go to the desk engine as counts, never to the queue (none when not given).
+    /// </summary>
+    public IReadOnlyDictionary<string, Desks.DeskZoneLink> DeskZones { get; init; } = NoDeskZones;
+
     /// <summary>The physical capacity of one of the queue's zones, or null when the profile gives none.</summary>
     public int? CapacityOf(string zoneName) =>
         zoneName is not null && Capacities is not null && CountsInQueue(zoneName) && Capacities.TryGetValue(zoneName, out var capacity) ? capacity : null;

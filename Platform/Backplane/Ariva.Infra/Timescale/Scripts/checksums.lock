@@ -39,6 +39,7 @@
     "0036_report.sql": "7928566c2787aacf1efe33c278d076c1636494ede5638e0d43855c4167bf68a5",
     "0037_line_minute.sql": "bb8d64df6a885bff1d9b8e2b5aca9928f46bfb76437a97bbb9cc8edbca46ac35",
     "0038_zone_health.sql": "b1c3a25277443f1000aacaf5a4bea62797b98435f4bd56718062bbe8127e8e31",
-    "0039_overflow_minute.sql": "4cb65ba8c39acf6bda350b962dc0e07e577acc87f972cb65bbe64ba5bfc64829"
+    "0039_overflow_minute.sql": "4cb65ba8c39acf6bda350b962dc0e07e577acc87f972cb65bbe64ba5bfc64829",
+    "0040_desk_zone_reading.sql": "246ab5abf425cc0407763b9b7517b401865e57f5db38b996eac5743d5a44944a"
   }
 }

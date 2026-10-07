@@ -27,7 +27,8 @@ public sealed record StreamCheckpoint(
 
 /// <summary>
 /// Persistence of the stream host (ARV-034, script 0018; line_minute since ARV-113, script 0037; zone_health_bin since
-/// ARV-114a, script 0038; overflow_minute and the OverflowDetected outbox rows since ARV-115, script 0039). A checkpoint is one
+/// ARV-114a, script 0038; overflow_minute and the OverflowDetected outbox rows since ARV-115, script 0039; the desks' staff
+/// and service zone readings in desk_zone_reading since ARV-116, script 0040). A checkpoint is one
 /// transaction: rows are written by binary COPY into staging tables and upserted by key (zone or desk and minute, zone,
 /// line, source and minute, bin and revision), the zones' snapshots replace
 /// their previous ones, and the consumer group's next offsets are recorded. Only after it commits does the consumer
@@ -73,6 +74,9 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
         var changes = checkpoint.Outputs.SelectMany(o => o.OverflowChanges.Select(c => (o.ZoneKey, Change: c))).ToList();
         if (changes.Count > 0)
             await WriteOverflowEventsAsync(connection, changes, Version, now, ct);
+        var deskReadings = checkpoint.Outputs.SelectMany(o => o.DeskReadings.Select(d => (o.ZoneKey, Reading: d))).ToList();
+        if (deskReadings.Count > 0)
+            await WriteDeskZoneReadingsAsync(connection, deskReadings, Version, now, ct);
         if (checkpoint.DeskMinutes.Count > 0)
             await WriteDeskMinutesAsync(connection, checkpoint.DeskMinutes, now, ct);
         var outages = checkpoint.Outputs.SelectMany(o => o.Outages).ToList();
@@ -101,6 +105,74 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
         upsert.Parameters.AddWithValue("closed", rows.Select(o => o.Closed).ToArray());
         upsert.Parameters.AddWithValue("now", rows.Select(_ => now).ToArray());
         await upsert.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <summary>The longest site code (<c>site.code</c>, varchar(17)).</summary>
+    private const int MaxSiteCodeLength = 17;
+
+    // The desks' staff and service zone readings (ARV-116): counts only, keyed by desk, role and reading time, so a replay
+    // after a restart offers the same rows again and the insert keeps the first (ON CONFLICT DO NOTHING: the row and the
+    // id the desk feed may already have taken stay as they were). A row the table would refuse (a desk key not of the
+    // zone's site or too long, a role or count out of bounds) is dropped with one warning per zone, never a key from a
+    // device in the log (CWE-117); the checkpoint commits.
+    private async Task WriteDeskZoneReadingsAsync(NpgsqlConnection connection, List<(string Zone, DeskZoneSample Reading)> rows, Func<string, int> version,
+        DateTime now, CancellationToken ct)
+    {
+        var kept = new Dictionary<(string Desk, DeskSource Source, DateTime Time), (string Zone, string Site, DeskZoneSample Reading)>();
+        var order = new List<(string Desk, DeskSource Source, DateTime Time)>();
+        var dropped = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var (zone, r) in rows)
+        {
+            var slash = zone?.IndexOf('/', StringComparison.Ordinal) ?? -1;
+            var site = slash > 0 ? zone[..slash] : null;
+            if (site is not { Length: <= MaxSiteCodeLength } || zone.Length > 220 || r is null || !DeskKeys.Fits(r.DeskKey) ||
+                !r.DeskKey.StartsWith(site + "/", StringComparison.Ordinal) || r.DeskKey.Length <= site.Length + 1 ||
+                r.Source is not (DeskSource.StaffZone or DeskSource.ServiceZone) || r.Count is < 0 or > DeskZoneReadings.MaxCount)
+            {
+                dropped[zone ?? string.Empty] = dropped.GetValueOrDefault(zone ?? string.Empty) + 1;
+                continue;
+            }
+
+            var key = (r.DeskKey, r.Source, Utc(r.TimeUtc));
+            if (kept.TryAdd(key, (zone, site, r)))
+                order.Add(key);
+        }
+
+        foreach (var (zone, count) in dropped)
+            _logger.LogWarning("Dropped {Count} desk zone readings of zone {Zone}: a desk key not of the zone's site or too long, or a role or count out of bounds",
+                count, zone);
+        if (kept.Count == 0)
+            return;
+        await Execute(connection, "CREATE TEMP TABLE stage_desk_zone_reading (LIKE desk_zone_reading INCLUDING DEFAULTS) ON COMMIT DROP", ct);
+        await using (var copy = await connection.BeginBinaryImportAsync("""
+            COPY stage_desk_zone_reading (id, site_code, desk_code, source, reading_utc, occupancy, degraded, zone_key, profile_version, written_utc)
+            FROM STDIN (FORMAT BINARY)
+            """, ct))
+        {
+            foreach (var key in order)
+            {
+                var (zone, site, r) = kept[key];
+                await copy.StartRowAsync(ct);
+                await copy.WriteAsync(Guid.CreateVersion7(now), NpgsqlDbType.Uuid, ct);
+                await copy.WriteAsync(site, NpgsqlDbType.Varchar, ct);
+                await copy.WriteAsync(key.Desk, NpgsqlDbType.Varchar, ct);
+                await copy.WriteAsync(key.Source.ToString(), NpgsqlDbType.Varchar, ct);
+                await copy.WriteAsync(key.Time, NpgsqlDbType.TimestampTz, ct);
+                await copy.WriteAsync((short)r.Count, NpgsqlDbType.Smallint, ct);
+                await copy.WriteAsync(r.Degraded, NpgsqlDbType.Boolean, ct);
+                await copy.WriteAsync(zone, NpgsqlDbType.Varchar, ct);
+                await copy.WriteAsync(version(zone), NpgsqlDbType.Integer, ct);
+                await copy.WriteAsync(now, NpgsqlDbType.TimestampTz, ct);
+            }
+
+            await copy.CompleteAsync(ct);
+        }
+
+        await Execute(connection, """
+            INSERT INTO desk_zone_reading (id, site_code, desk_code, source, reading_utc, occupancy, degraded, zone_key, profile_version, written_utc)
+            SELECT id, site_code, desk_code, source, reading_utc, occupancy, degraded, zone_key, profile_version, written_utc FROM stage_desk_zone_reading
+            ON CONFLICT (desk_code, source, reading_utc) DO NOTHING
+            """, ct);
     }
 
     private static async Task WriteMinutesAsync(NpgsqlConnection connection, List<(string Zone, MinuteResult Minute)> rows, Func<string, int> version, DateTime now, CancellationToken ct)

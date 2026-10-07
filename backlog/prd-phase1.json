@@ -115,7 +115,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 5,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. Needed for the desk-state agreement criterion where AMAN is late or absent, and for ARV-117.",
       "dependsOn": [
         "ARV-049",
@@ -191,7 +191,7 @@
       ],
       "priority": 8,
       "passes": false,
-      "notes": "Size M. Owner decisions 2026-10-06: AUH Terminal A (not GYD); no real plan, an illustrative sample from public facts is accepted. Naming a real airport in demo data is for internal demos and pitches to that airport only, with care; the banner stays on. GCC, DIP and TRF are new lane codes (valid under the two to four letter rule); the AMAN lane mapping for them is ARV-130's concern at a real site.",
+      "notes": "Size M. Owner decisions 2026-10-06: AUH Terminal A (not GYD); no real plan, an illustrative sample from public facts is accepted. Naming a real airport in demo data is for internal demos and pitches to that airport only, with care; the banner stays on. GCC, DIP and TRF are new lane codes (valid under the two to four letter rule); the AMAN lane mapping for them is ARV-130's concern at a real site. 2026-10-07: the owner placed the desk staff and service zones (ARV-116) in this seed rather than the DMO demo, so the run script shows sensor-derived desks.",
       "dependsOn": [
         "ARV-019",
         "ARV-018",

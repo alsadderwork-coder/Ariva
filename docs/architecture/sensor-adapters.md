@@ -174,6 +174,7 @@ In Kubernetes, `mqtt.enabled` adds the port, mounts `mqtt.tlsSecretName` and add
 
 - The first sensor of a queue zone counts it: per-passenger crossings of `<zone> entry` (In) and `<zone> exit` (Out), with one track id per passenger from entry to exit, and the zone's occupancy at the end of each minute (canonical); or one-minute interval counts on the two line logics and a balance logic for the zone (Xovis).
 - The first sensor of an overflow band (A-OV, D-OV, SEC-OV) reports the band's occupancy beyond the snake capacity, as part of the queue zone it feeds.
+- S-18, S-19 and S-20 (the fourth to sixth sensors over the arrivals Visitors hall, ARV-116) report the staff and service zones of the Visitors desks AR-08 to AR-22, five desks each: `<desk> staff` holds 1 while the scenario has the desk serving or idle, `<desk> service` holds 1 while serving, both 0 while paused, closed or out of service, read at the minute's start (the state holds through the scenario minute); a desk the scenario marks unknown is not reported. Ingest takes them only under a profile with those zones (the demo's v12 has none, so the demo does not register these sensors); the stream passes them to the desk engine (formulas F10, ARV-116).
 - Every other sensor sends a sign of life each minute (a canonical status, or a Xovis envelope without logics).
 - A sensor offline in the scenario (S-17 from 18:20 to 18:30) sends nothing.
 

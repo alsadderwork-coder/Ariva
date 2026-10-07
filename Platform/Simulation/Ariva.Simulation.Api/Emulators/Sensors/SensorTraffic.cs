@@ -14,14 +14,16 @@ public enum EmulatedDialect
 
 /// <summary>
 /// What a sensor sends. The first sensor of a queue zone counts the zone (per-passenger crossings of its entry and exit
-/// lines and its occupancy); the first sensor of an overflow band reports the band's occupancy; every other sensor
-/// only reports that it is alive.
+/// lines and its occupancy); the first sensor of an overflow band reports the band's occupancy; the fourth to sixth
+/// sensors over the arrivals Visitors hall (S-18 to S-20) report the staff and service zones of five Visitors desks each
+/// (ARV-116); every other sensor only reports that it is alive.
 /// </summary>
 public enum SensorRole
 {
     QueueLead,
     OverflowLead,
-    Heartbeat
+    Heartbeat,
+    DeskZones
 }
 
 /// <summary>One push for one sensor and one demo minute: the Ingest path, the JSON body and how many events Ingest should accept.</summary>
@@ -53,11 +55,35 @@ internal static class SensorTraffic
     /// <summary>The scenario sensor with this id, or null.</summary>
     public static SensorDef Sensor(string id) => ScenarioModel.Sensors.FirstOrDefault(s => string.Equals(s.Id, id, StringComparison.Ordinal));
 
+    /// <summary>The queue whose desks have staff and service zone sensors (ARV-116): arrivals Visitors, desks AR-08 to AR-22.</summary>
+    public const string DeskZoneQueue = "A-VIS";
+
+    /// <summary>The first sensor slot of <see cref="DeskZoneQueue"/> that watches desks; each such sensor watches <see cref="DesksPerSensor"/> desks.</summary>
+    private const int FirstDeskSlot = 3;
+
+    public const int DesksPerSensor = 5;
+
+    /// <summary>The staff zone behind a desk (F10 rank 3), as a zone profile with desk zones names it.</summary>
+    public static string StaffZoneOf(string desk) => desk + " staff";
+
+    /// <summary>The service zone in front of a desk (F10 rank 4), as a zone profile with desk zones names it.</summary>
+    public static string ServiceZoneOf(string desk) => desk + " service";
+
+    /// <summary>The desks whose staff and service zones a sensor reports (empty for any other role).</summary>
+    public static IReadOnlyList<string> DesksOf(SensorDef sensor)
+    {
+        ArgumentNullException.ThrowIfNull(sensor);
+        if (!string.Equals(sensor.Zone, DeskZoneQueue, StringComparison.Ordinal) || sensor.Slot < FirstDeskSlot)
+            return [];
+        var servers = ScenarioModel.Queues[ScenarioModel.Q(DeskZoneQueue)].Servers;
+        return [.. servers.Skip((sensor.Slot - FirstDeskSlot) * DesksPerSensor).Take(DesksPerSensor)];
+    }
+
     public static SensorRole RoleOf(SensorDef sensor)
     {
         ArgumentNullException.ThrowIfNull(sensor);
         if (sensor.Slot != 0)
-            return SensorRole.Heartbeat;
+            return DesksOf(sensor).Count > 0 ? SensorRole.DeskZones : SensorRole.Heartbeat;
         return ScenarioModel.QueueIndex.ContainsKey(sensor.Zone) ? SensorRole.QueueLead : SensorRole.OverflowLead;
     }
 
@@ -105,10 +131,27 @@ internal static class SensorTraffic
             var cap = day.SnakeCapacity(queueZone) is { } c ? (int)c : int.MaxValue;
             occupancy.Add((sensor.Zone, Math.Max(0, occupied - cap)));
         }
+        else if (role == SensorRole.DeskZones)
+        {
+            // ARV-116: each watched desk's staff zone holds the officer while the desk is serving or idle, and its service
+            // zone a passenger while serving; a paused, closed or out-of-service desk has both empty. A desk the scenario
+            // marks unknown is not reported (its zones read nothing, as an occluded zone would), so its sources go stale.
+            var desks = DesksOf(sensor);
+            foreach (var server in day.ServerStates(ScenarioModel.Q(queueZone), minute).Where(s => desks.Contains(s.Id)))
+            {
+                if (server.State == "unknown")
+                    continue;
+                occupancy.Add((StaffZoneOf(server.Id), server.State is "serving" or "idle" ? 1 : 0));
+                occupancy.Add((ServiceZoneOf(server.Id), server.State == "serving" ? 1 : 0));
+            }
+        }
 
+        // A desk's state holds through its scenario minute, so its zones are read at the minute's start (sent with the
+        // minute, a minute later); the queue and band counts are the minute's end.
+        var occupancyAt = role == SensorRole.DeskZones ? from : to;
         return dialect == EmulatedDialect.Xovis
             ? Xovis(sensor, role, queueZone, path, packageId, from, to, entries.Count, exits.Count, occupancy, sentUtc)
-            : Canonical(sensor, role, queueZone, path, packageId, entries, exits, occupancy, to, sentUtc);
+            : Canonical(sensor, role, queueZone, path, packageId, entries, exits, occupancy, occupancyAt, to, sentUtc);
     }
 
     /// <summary>People in the queue at the end of minute index <paramref name="i"/>: whole entries minus whole exits.</summary>
@@ -133,7 +176,7 @@ internal static class SensorTraffic
 
     private static SensorPush Canonical(SensorDef sensor, SensorRole role, string queueZone, string path, long packageId,
         List<(string Track, DateTime Time)> entries, List<(string Track, DateTime Time)> exits, List<(string Zone, int Count)> occupancy,
-        DateTime minuteEnd, DateTime sentUtc)
+        DateTime occupancyAt, DateTime minuteEnd, DateTime sentUtc)
     {
         using var buffer = new MemoryStream();
         using (var w = new Utf8JsonWriter(buffer))
@@ -159,7 +202,7 @@ internal static class SensorTraffic
                     w.WriteStartObject();
                     w.WriteString("zoneName", zone);
                     w.WriteNumber("count", count);
-                    w.WriteString("timeUtc", Time(minuteEnd));
+                    w.WriteString("timeUtc", Time(occupancyAt));
                     w.WriteEndObject();
                 }
 

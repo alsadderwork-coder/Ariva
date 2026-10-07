@@ -42,6 +42,7 @@ From a border deployment to an airport deployment, additionally never: track ids
 | Device health | Dispute window (evidence for sensor-outage exclusions) | Proposed |
 | `aman.feed` Kafka topics | Medium class; AMAN owns the configuration | D5; values To confirm |
 | Ariva Kafka topics | Short, medium, long or compacted classes (3, 14, 30 days) | D5; values Proposed |
+| Desk staff and service zone readings (`desk_zone_reading`: desk key, zone role, time, count, flag; no identities). Desk-level border data: stays in the border deployment and no API reads it; only the desk feed turns it into desk states (ARV-116) | 7 days, dropped by TimescaleDB retention | Proposed, To confirm |
 | Queue intervals, desk intervals, forecasts, border lane KPIs | Indefinite (aggregates) | D5 |
 | Hourly and daily report aggregates | Indefinite | D5 |
 | Report schedules and deliveries (schedule, local day, recipient account, status; ARV-060). Report emails carry lane aggregates, alerts and device uptime only, to Ariva accounts allowed the site | To confirm; Proposed: 400 days for delivery rows, schedules until deleted (audited) | Proposed |
