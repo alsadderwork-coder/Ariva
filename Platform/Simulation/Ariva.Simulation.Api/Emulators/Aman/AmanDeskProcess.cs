@@ -63,7 +63,7 @@ internal static class AmanDeskProcess
         var table = Days.GetValue(day, d => new Lazy<Dictionary<(int, int), Dictionary<int, DeskIntervalFigures>>>(() => Build(d), LazyThreadSafetyMode.ExecutionAndPublication)).Value;
         return table.TryGetValue((q, k), out var desk) && desk.TryGetValue(minute, out var figures) ? figures : DeskIntervalFigures.Empty;
     }
-
+    /// <summary>The family size of a transaction from its uniform draw <paramref name="unit"/> in [0, 1): 1, 2 or 3 people (80, 15 and 5 percent), mean 1.25.</summary>
     /// <summary>The family size of transaction <paramref name="n"/> at a desk: 1, 2 or 3 people, mean 1.25.</summary>
     internal static int FamilySize(double unit) => unit < 0.80 ? 1 : unit < 0.95 ? 2 : 3;
 
