@@ -149,6 +149,8 @@
       "title": "[E12] Sensor-only desk engine per site for the shadow nowcast",
       "description": "Owner decision 2026-10-07 (ARV-117): while AMAN's session is live the desk engine takes AMAN's rank, so desk_minute records no sensor-derived open time for a desk with an AMAN code, and at a site where every desk has one (AUH) the shadow nowcast is the exit term alone whenever AMAN is live. Add a second desk engine per site, fed only by the desks' staff and service zones (never AMAN sessions, statistics or transactions), so that desk_minute (or a parallel shadow desk table) records sensor-only open seconds even while AMAN is live. The shadow nowcast's desk term reads it, so at all-AMAN sites the pilot's ground-truth proof compares AMAN's desk term against the sensor desk term, not against the exit rate. Never shown to staff, passengers or rules. Epic: Measurement completeness. CWEs to review: CWE-862, CWE-863, CWE-501, CWE-120.",
       "acceptanceCriteria": [
+        "The shadow nowcast moves out of queue_minute into its own table (for example queue_minute_shadow, keyed like queue_minute), written in the same checkpoint transaction as the published row; the runtime role gets INSERT and UPDATE (and SELECT only on the key columns the upsert needs, if any) but no SELECT on the shadow values, proven by an integration test that a runtime-role SELECT fails with 42501; the 0041 columns are dropped by a new versioned script after their data is copied; ARV-104f reads it through its own role",
+        "With the database enforcing the rule, the ARV-117 source-scan tests over queue_minute are retired or narrowed to the new table, and docs/security/asvs-l2.md V8.1.2 evidence says the field-level rule is now enforced by privileges",
         "A sensor-only desk engine per site runs beside the published one in the desk feed of Ariva.Api.Stream, fed only by staff and service zone readings; a test shows that no AMAN session, statistic or transaction changes its output (CWE-501: every reading validated against its contract before use)",
         "Its sensor-only open seconds per desk and minute are written in the same checkpoint transaction as the published desk minutes, either as columns of desk_minute or in a parallel shadow desk table from a versioned script (checks, runtime role without DELETE or TRUNCATE, SHA-256 in checksums.lock)",
         "Bounded (CWE-120): desks per site, open desk minutes and readings held per engine are capped, with a counted warning that names the site and the count only; the engine's state is part of the desk feed snapshot, validated on restore (an invalid or oversized snapshot is refused and rebuilt by replay)",
@@ -163,7 +165,7 @@
       ],
       "priority": 7,
       "passes": false,
-      "notes": "Must land before burn-in at a site where every desk has an AMAN code (owner decision 2026-10-07)",
+      "notes": "Must land before burn-in at a site where every desk has an AMAN code (owner decision 2026-10-07) Owner decision 2026-10-07: move the shadow into its own table the runtime login cannot read (same transaction instead of same row), so the database enforces the no-read rule.",
       "dependsOn": [
         "ARV-117"
       ]
