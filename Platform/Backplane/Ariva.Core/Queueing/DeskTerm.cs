@@ -15,11 +15,27 @@ public sealed record DeskTerm(DateTime AsOfMinuteUtc, int OpenServers, double? C
 }
 
 /// <summary>
+/// One desk's minute as the sensor-only desk engine wrote it (ARV-117a, <c>desk_sensor_minute</c>): its open (Idle or
+/// Serving) and Unknown seconds and its F11 flag from the staff and service zones alone, whatever AMAN said. For the
+/// shadow nowcast's desk term only (<see cref="DeskTerms.SensorOnly"/>).
+/// </summary>
+public sealed record DeskSensorSample(double OpenSeconds, double UnknownSeconds, bool Degraded)
+{
+    /// <summary>The open seconds as a number of seconds of the minute (0 when not a finite number).</summary>
+    public double Open => double.IsFinite(OpenSeconds) ? Math.Clamp(OpenSeconds, 0, 60) : 0;
+
+    /// <summary>Whether the minute flags the term, as a published minute does: flagged, Unknown for half of it, or not a number.</summary>
+    public bool Unknown => Degraded || !double.IsFinite(OpenSeconds) || !double.IsFinite(UnknownSeconds) || UnknownSeconds >= 30;
+}
+
+/// <summary>
 /// One desk's closed minute as the desk state engine wrote it (<c>desk_minute</c>, F10). <see cref="SensorDerivedSeconds"/>
 /// (ARV-116) is the part of its Idle and Serving time whose state came from its staff and service zones alone.
+/// <see cref="Sensor"/> (ARV-117a) is the same desk and minute from the sensor-only desk engine, null for a desk without
+/// staff or service zones or a minute written before that engine ran.
 /// </summary>
 public sealed record DeskMinuteSample(string DeskKey, DateTime MinuteUtc, double IdleSeconds, double ServingSeconds, double UnknownSeconds, int Transactions, bool Degraded,
-    double SensorDerivedSeconds = 0)
+    double SensorDerivedSeconds = 0, DeskSensorSample Sensor = null)
 {
     /// <summary>tau (F9): the seconds the desk was open for throughput.</summary>
     public double OpenSeconds => Math.Max(0, IdleSeconds) + Math.Max(0, ServingSeconds);
@@ -83,10 +99,15 @@ public static class DeskTerms
 
     /// <summary>
     /// The sensor-only desk term of the shadow nowcast (ARV-117, F8): the term <see cref="Compute"/> gives with no AMAN
-    /// input. n_open counts the desks open for at least half of the term's minute by their staff and service zones alone
-    /// (sensor-derived, F10 rows 6 and 7); a desk open only through AMAN (a session, a recent transaction) is not seen by
-    /// the sensors, so it is treated as an Unknown desk is: it flags the term, and with no desk open from the sensors there
-    /// is no term (n_open is not known, which is not "nothing open"). c is null: AMAN's interval statistics and the
+    /// input. n_open counts the desks open for at least half of the term's minute by their staff and service zones alone.
+    /// Since ARV-117a a desk with zones has its minute from the sensor-only desk engine (<see cref="DeskMinuteSample.Sensor"/>),
+    /// which never sees AMAN: open when the zones made it Idle or Serving for half the minute, flagging the term when its
+    /// minute is flagged or half Unknown, whatever AMAN said (so at a site where every desk has an AMAN code, n_open comes from the
+    /// zones while AMAN is live). A desk without that minute (no zones, or a minute written before ARV-117a) falls back to
+    /// the published minute's sensor-derived seconds (F10 rows 6 and 7, ARV-117): a desk open only through AMAN (a
+    /// session, a recent transaction) is not seen by the sensors, so it is treated as an Unknown desk is. An Unknown desk
+    /// flags the term, and with no desk open from the sensors and any Unknown there is no term (n_open is not known,
+    /// which is not "nothing open"). c is null: AMAN's interval statistics and the
     /// transactions the desk minutes count both come from AMAN, and the sensors give no service starts, so the nowcast
     /// falls back as F8 does without a cycle time (the exit term alone, or no service when nothing is open; Proposed,
     /// docs/product/decisions.md). Where every open desk minute is sensor-derived and no AMAN statistics exist (a site
@@ -105,10 +126,12 @@ public static class DeskTerms
         var asOf = usable.Max(m => m.MinuteUtc);
         var latest = usable.GroupBy(m => m.DeskKey, StringComparer.Ordinal).Select(g => System.Linq.Enumerable.MaxBy(g, m => m.MinuteUtc)).ToList();
         var current = latest.Where(m => m.MinuteUtc == asOf).ToList();
-        var open = current.Count(m => m.SensorOpenSeconds >= HalfMinuteSeconds);
-        // A desk open through AMAN only is a desk the sensors cannot see: Unknown to the shadow.
-        var unseen = current.Any(m => m.OpenSeconds >= HalfMinuteSeconds && m.SensorOpenSeconds < HalfMinuteSeconds);
-        var unknown = unseen || current.Any(m => m.Degraded || m.UnknownSeconds >= HalfMinuteSeconds);
+        // ARV-117a: the sensor-only engine's minute when there is one (AMAN never reaches it); otherwise ARV-117's reading
+        // of the published minute, where a desk open through AMAN only is a desk the sensors cannot see: Unknown to the shadow.
+        var open = current.Count(m => m.Sensor is { } s ? s.Open >= HalfMinuteSeconds : m.SensorOpenSeconds >= HalfMinuteSeconds);
+        var unknown = current.Any(m => m.Sensor is { } s
+            ? s.Unknown
+            : (m.OpenSeconds >= HalfMinuteSeconds && m.SensorOpenSeconds < HalfMinuteSeconds) || m.Degraded || m.UnknownSeconds >= HalfMinuteSeconds);
         var degraded = current.Count < latest.Count || unknown;
         if (open == 0 && unknown)
             return null;

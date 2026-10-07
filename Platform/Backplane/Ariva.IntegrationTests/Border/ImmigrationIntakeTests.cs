@@ -420,8 +420,9 @@ public sealed partial class ImmigrationIntakeTests(PostgresFixture fixture) : IA
         var dmo = await RowsAsync("SELECT desk_code, sum(transactions) FROM desk_minute WHERE desk_code LIKE 'DMO/%' AND minute_utc >= @from AND minute_utc < @to GROUP BY desk_code",
             r => (r.GetString(0), r.GetInt64(1)), t0, t0.AddMinutes(18));
         dmo["DMO/IMM/AR-09"].Should().BeGreaterThanOrEqualTo(50, "DMO's interval reached DMO's desk (other tests feed DMO too)");
-        // XS3 and XS4 are the desk zone sites of DeskFeed_Should_GiveDesksAStateFromTheirZones (ARV-116), which may run first.
-        (await _host.ReadAsync<long>("SELECT count(*) FROM desk_minute WHERE NOT (desk_code LIKE 'DMO/%' OR desk_code LIKE 'XS2/%' OR desk_code LIKE 'XS3/%' OR desk_code LIKE 'XS4/%')"))
+        // XS3 and XS4 are the desk zone sites of DeskFeed_Should_GiveDesksAStateFromTheirZones (ARV-116), and XS5 the site of
+        // DeskFeed_Should_WriteExactlyTheSensorMinutesTheCapLeaves (ARV-117a), which may run first.
+        (await _host.ReadAsync<long>("SELECT count(*) FROM desk_minute WHERE NOT (desk_code LIKE 'DMO/%' OR desk_code LIKE 'XS2/%' OR desk_code LIKE 'XS3/%' OR desk_code LIKE 'XS4/%' OR desk_code LIKE 'XS5/%')"))
             .Should().Be(0);
 
 
@@ -573,6 +574,25 @@ public sealed partial class ImmigrationIntakeTests(PostgresFixture fixture) : IA
         withSensors.OpenServers.Should().Be(2, "the published term is unchanged");
         withSensors.CycleMinutes.Should().BeApproximately((4 * 90 + 150) / 5.0 / 60, 1e-9);
 
+        // ARV-117a: the sensor-only desk engine's minutes (desk_sensor_minute) replace that reading for the desks they cover,
+        // whatever AMAN said: AR-08's zones show it open, AR-09's (open through AMAN) show it closed; AR-10 has no sensor
+        // minute and stays on ARV-117's reading (closed). n_open from the zones is 1, and the term is not flagged.
+        await using (var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync())))
+        {
+            await connection.OpenAsync(Ct);
+            await using var sensorMinutes = new NpgsqlCommand("""
+                INSERT INTO desk_sensor_minute (desk_code, minute_utc, closed_seconds, idle_seconds, serving_seconds, paused_seconds, unknown_seconds, degraded, updated_on)
+                VALUES ('DMO/IMM/AR-08', @minute, 0, 20, 40, 0, 0, false, now()), ('DMO/IMM/AR-09', @minute, 60, 0, 0, 0, 0, false, now())
+                """, connection);
+            sensorMinutes.Parameters.AddWithValue("minute", minute.AddMinutes(-1));
+            (await sensorMinutes.ExecuteNonQueryAsync(Ct)).Should().Be(2);
+        }
+
+        var fromZones = (await source.LoadAsync(["DMO/A-VIS"], 5, Ct))["DMO/A-VIS"];
+        fromZones.SensorOnly.Should().Be(new Ariva.Core.Queueing.DeskTerm(minute.AddMinutes(-1), 1, null, false, 3));
+        fromZones.OpenServers.Should().Be(2, "the published term is unchanged by the sensor-only minutes");
+        fromZones.CycleMinutes.Should().BeApproximately((4 * 90 + 150) / 5.0 / 60, 1e-9);
+
         // The planted rows are 40 days ahead in the class's shared database: left there, they stop the DMO desk feed of
         // DeskFeed_Should_DriveTheDeskEngine... from writing its minutes whenever this test runs first (xUnit shuffles).
         await using (var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync())))
@@ -580,6 +600,7 @@ public sealed partial class ImmigrationIntakeTests(PostgresFixture fixture) : IA
             await connection.OpenAsync(Ct);
             await using var clean = new NpgsqlCommand("""
                 DELETE FROM desk_minute WHERE desk_code LIKE 'DMO/%' AND minute_utc BETWEEN @from AND @to;
+                DELETE FROM desk_sensor_minute WHERE desk_code LIKE 'DMO/%' AND minute_utc BETWEEN @from AND @to;
                 DELETE FROM border_desk_interval WHERE source_event_id LIKE 'it-desk-term-%';
                 """, connection);
             clean.Parameters.AddWithValue("from", minute.AddMinutes(-30));

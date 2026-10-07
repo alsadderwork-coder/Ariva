@@ -75,8 +75,8 @@ public sealed record QueueLiveMinute(
     bool NowcastDegraded)
 {
     /// <summary>
-    /// The shadow nowcast without AMAN inputs (ARV-117), written to the same <c>queue_minute</c> row and read only by the
-    /// validation comparison. Never serialised: not in the live snapshot or the replay ledger (a replay has no desk term,
+    /// The shadow nowcast without AMAN inputs (ARV-117), written in the same checkpoint as this minute's
+    /// <c>queue_minute</c> row, to <c>queue_minute_shadow</c> (ARV-117a), and read only by the validation comparison. Never serialised: not in the live snapshot or the replay ledger (a replay has no desk term,
     /// so its shadow is the published nowcast in every minute).
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore]
@@ -465,7 +465,7 @@ public sealed class ZoneProcessor
             Degraded = length.Degraded || deviceOut || window.DegradedExits > 0
         }, desks);
         var nowcast = Nowcast.Compute(published, _settings.Nowcast);
-        // ARV-117: the shadow nowcast without AMAN inputs, in the same row, for the validation comparison only.
+        // ARV-117: the shadow nowcast without AMAN inputs, beside the published one, for the validation comparison only.
         _live.Add(new QueueLiveMinute(ZoneKey, minute, length.Count, length.FromSensors, length.Degraded || deviceOut, nowcast.Minutes, nowcast.Throughput,
             nowcast.NoService, nowcast.Degraded) { Shadow = ShadowNowcast.From(Nowcast.Compute(shadow, _settings.Nowcast)) });
         _liveness.Published(minute);

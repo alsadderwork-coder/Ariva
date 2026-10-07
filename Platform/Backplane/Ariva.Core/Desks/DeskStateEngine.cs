@@ -62,6 +62,7 @@ public sealed partial class DeskStateEngine
     private readonly Dictionary<string, Desk> _desks = new(StringComparer.Ordinal);
     private readonly List<Desk> _order = [];
     private DateTime _watermark;
+    private int _stepLimit;
     private long _sequence;
     private int _buffered;
     private long _accepted, _late, _superseded, _future, _invalid, _unknownDesk, _bufferFull, _tooLate, _skippedMinutes;
@@ -186,10 +187,20 @@ public sealed partial class DeskStateEngine
     /// the transitions and the minutes closed. When the step reaches <see cref="DeskStateSettings.MaxStepRecords"/> it
     /// ends early with <see cref="DeskStep.More"/>; call again to continue.
     /// </summary>
-    public DeskStep Advance(DateTime referenceUtc)
+    public DeskStep Advance(DateTime referenceUtc) => Advance(referenceUtc, _settings.MaxStepRecords);
+
+    /// <summary>
+    /// As <see cref="Advance(DateTime)"/>, with a step of at most <paramref name="maxRecords"/> records (transitions and
+    /// minutes together, never more than <see cref="DeskStateSettings.MaxStepRecords"/>), so that a caller with its own
+    /// budget (the desk feed's minutes per read, CWE-120) takes exactly what the budget leaves; the rest follows on the
+    /// next call (<see cref="DeskStep.More"/>).
+    /// </summary>
+    public DeskStep Advance(DateTime referenceUtc, int maxRecords)
     {
         if (referenceUtc.Kind != DateTimeKind.Utc)
             throw new ArgumentException("The reference time is UTC.", nameof(referenceUtc));
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxRecords, 1);
+        _stepLimit = Math.Min(maxRecords, _settings.MaxStepRecords);
         var target = Minus(referenceUtc, _settings.Lateness);
         if (target > _watermark)
             _watermark = target;
@@ -263,7 +274,7 @@ public sealed partial class DeskStateEngine
             var signal = item.Signal;
             if (signal.TimeUtc > desk.Cursor && !Move(desk, signal.TimeUtc, transitions, minutes))
                 return false;
-            if (transitions.Count + minutes.Count >= _settings.MaxStepRecords)
+            if (transitions.Count + minutes.Count >= _stepLimit)
                 return false;
 
             // Every signal of the same moment is applied before the state is read, so that no zero-length state shows.
@@ -291,7 +302,7 @@ public sealed partial class DeskStateEngine
     {
         while (desk.Cursor < to)
         {
-            if (transitions.Count + minutes.Count >= _settings.MaxStepRecords)
+            if (transitions.Count + minutes.Count >= _stepLimit)
                 return false;
             Refresh(desk, transitions);
             var floor = Floor(desk.Cursor);

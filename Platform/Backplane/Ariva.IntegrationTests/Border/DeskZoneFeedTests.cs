@@ -3,6 +3,7 @@ using Ariva.Core.Border;
 using Ariva.Core.Desks;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Npgsql;
 using NpgsqlTypes;
 
@@ -154,6 +155,51 @@ public sealed partial class ImmigrationIntakeTests
         minutes.Keys.Should().NotContain(k => k.StartsWith("XS3/IMM/G1@", StringComparison.Ordinal) || k.StartsWith("XS3/IMM/N1@", StringComparison.Ordinal),
             "an e-gate's zone is no desk source, and a desk with no zone and no AMAN code is not in the engine");
 
+        // ARV-117a: the sensor-only desk engine beside it, fed the same zone readings and nothing from AMAN. A1, which AMAN
+        // reports logged out (Closed above), is Serving from its staff and service zones; S1 is as in the published engine;
+        // nothing is Degraded while the zones live (AMAN is no source of this engine), and both turn Unknown once silent.
+        const string SensorRows = """
+            SELECT desk_code || '@' || extract(epoch FROM minute_utc - @from)::int / 60,
+                   concat_ws('|', closed_seconds, idle_seconds, serving_seconds, paused_seconds, unknown_seconds, degraded, updated_on)
+              FROM desk_sensor_minute WHERE desk_code LIKE 'XS3/%' AND minute_utc >= @from AND minute_utc < @to
+            """;
+        var sensor = await RowsAsync(SensorRows, r => (r.GetString(0), r.GetString(1)), t0, t0.AddMinutes(15));
+        string Sensor(string desk, int m) => sensor[$"XS3/IMM/{desk}@{m}"][..sensor[$"XS3/IMM/{desk}@{m}"].LastIndexOf('|')];
+        for (var m = 0; m < 10; m++)
+        {
+            Sensor("A1", m).Should().Be("0|0|60|0|0|f", "A1 from its zones alone in minute {0}, whatever AMAN reports", m);
+            Sensor("S1", m).Should().Be(m < 3 ? "0|0|60|0|0|f" : "0|60|0|0|0|f", "S1 in minute {0}", m);
+        }
+
+        for (var m = 11; m < 15; m++)
+        {
+            Sensor("A1", m).Should().Be("0|0|0|0|60|t", "A1 silent in minute {0}", m);
+            Sensor("S1", m).Should().Be("0|0|0|0|60|t", "S1 silent in minute {0}", m);
+        }
+
+        sensor.Keys.Should().NotContain(k => k.StartsWith("XS3/IMM/G1@", StringComparison.Ordinal) || k.StartsWith("XS3/IMM/N1@", StringComparison.Ordinal),
+            "an e-gate's zone and a desk without zones are not in the sensor-only engine");
+        var saved = await RowsAsync("""
+            SELECT site_code, (SELECT string_agg(d->>'deskCode', ',' ORDER BY d->>'deskCode') FROM jsonb_array_elements(state->'sensorEngine'->'desks') d)
+              FROM desk_feed_state WHERE site_code = 'XS3' AND updated_on BETWEEN @from AND @to
+            """, r => (r.GetString(0), r.GetString(1)), t0, t0.AddMinutes(30));
+        saved.Should().Equal(new Dictionary<string, string> { ["XS3"] = "XS3/IMM/A1,XS3/IMM/S1" }, "the sensor-only engine is part of the desk feed's snapshot");
+
+        // A snapshot that holds AMAN memory is refused and the engine rebuilt by replaying the stored readings of the last
+        // 15 minutes: every minute it covers is written again (a new updated_on) with the same values.
+        await ExecuteAsMigrationAsync("""
+            UPDATE desk_feed_state SET state = jsonb_set(state, '{sensorEngine,desks,0,memory,session}', '"Opened"') WHERE site_code = 'XS3'
+            """);
+        _host.Clock.Advance(t0.AddMinutes(18) - Now);
+        (await feed.SiteAsync("XS3", Ct)).Should().BeTrue();
+        var rebuilt = await RowsAsync(SensorRows, r => (r.GetString(0), r.GetString(1)), t0, t0.AddMinutes(15));
+        foreach (var (key, row) in sensor.Where(r => r.Key.EndsWith("@3", StringComparison.Ordinal) || r.Key.EndsWith("@9", StringComparison.Ordinal) ||
+                                                 r.Key.EndsWith("@12", StringComparison.Ordinal)))
+        {
+            rebuilt[key][..rebuilt[key].LastIndexOf('|')].Should().Be(row[..row.LastIndexOf('|')], "{0} is rebuilt with the same values", key);
+            rebuilt[key].Should().NotBe(row, "{0} is written again by the replay", key);
+        }
+
         // XS4 has no AMAN desk at all: it is one of the sites the feed reads, for its sensor-only counter. (The test reads its
         // own sites only: DMO's and XS2's feed states are shared with the other tests of this database.)
         (await feed.SitesAsync(Ct)).Should().Contain(["DMO", "XS2", "XS3", "XS4"]);
@@ -167,5 +213,140 @@ public sealed partial class ImmigrationIntakeTests
               FROM desk_minute WHERE desk_code LIKE 'XS4/%' AND minute_utc >= @from AND minute_utc < @to
             """, r => (r.GetString(0), r.GetString(1)), t0.AddMinutes(20), t0.AddMinutes(22));
         counter.Should().Contain("XS4/CI/C01@0", "UNASSIGNED|60|60").And.Contain("XS4/CI/C01@1", "UNASSIGNED|60|60");
+        // Its sensor-only engine gives the same (a site without AMAN: the shadow's desk term is the published one).
+        var counterSensor = await RowsAsync("""
+            SELECT desk_code || '@' || extract(epoch FROM minute_utc - @from)::int / 60, concat_ws('|', idle_seconds, serving_seconds, unknown_seconds, degraded)
+              FROM desk_sensor_minute WHERE desk_code LIKE 'XS4/%' AND minute_utc >= @from AND minute_utc < @to
+            """, r => (r.GetString(0), r.GetString(1)), t0.AddMinutes(20), t0.AddMinutes(22));
+        counterSensor.Should().Contain("XS4/CI/C01@0", "60|0|0|f").And.Contain("XS4/CI/C01@1", "60|0|0|f");
+    }
+
+    /// <summary>Site XS5: three sensor-only desks (no AMAN code) with staff zones, a published profile (once).</summary>
+    private Task SensorCapSiteAsync() => ExecuteAsMigrationAsync("""
+        DO $cap$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM zone_profile WHERE id = 'a117a000-0000-0000-0000-000000000020') THEN
+                RETURN;
+            END IF;
+            INSERT INTO site (id, code, name) VALUES (gen_random_uuid(), 'XS5', 'Sensor-only cap probe');
+            INSERT INTO terminal (id, airport_id, code, name, site_code)
+                 SELECT 'a117a000-0000-0000-0000-000000000001', id, 'XT5', 'Probe terminal 5', 'XS5' FROM airport WHERE iata_code = 'DMO' AND deleted_on IS NULL;
+            INSERT INTO level (id, terminal_id, site_code, code, name, floor_number, width_metres, depth_metres) VALUES
+                ('a117a000-0000-0000-0000-000000000002', 'a117a000-0000-0000-0000-000000000001', 'XS5', 'L0', 'Arrivals', 0, 100, 100);
+            INSERT INTO checkpoint (id, level_id, site_code, code, name, kind) VALUES
+                ('a117a000-0000-0000-0000-000000000003', 'a117a000-0000-0000-0000-000000000002', 'XS5', 'IMM', 'Immigration', 'Immigration');
+            INSERT INTO desk (id, checkpoint_id, site_code, code, name, kind, lane_category_codes) VALUES
+                ('a117a000-0000-0000-0000-000000000011', 'a117a000-0000-0000-0000-000000000003', 'XS5', 'D1', 'Desk 1', 'Desk', 'VIS'),
+                ('a117a000-0000-0000-0000-000000000012', 'a117a000-0000-0000-0000-000000000003', 'XS5', 'D2', 'Desk 2', 'Desk', 'VIS'),
+                ('a117a000-0000-0000-0000-000000000013', 'a117a000-0000-0000-0000-000000000003', 'XS5', 'D3', 'Desk 3', 'Desk', 'VIS');
+            INSERT INTO zone_profile (id, site_code, name, status) VALUES ('a117a000-0000-0000-0000-000000000020', 'XS5', 'Cap probe', 'Draft');
+            INSERT INTO zone (id, profile_id, name, kind, level_id, queue_zone_id, desk_id, polygon) VALUES
+                ('a117a000-0000-0000-0000-000000000021', 'a117a000-0000-0000-0000-000000000020', 'Q5', 'Queue', 'a117a000-0000-0000-0000-000000000002', NULL, NULL, 'probe');
+            INSERT INTO zone (id, profile_id, name, kind, level_id, queue_zone_id, desk_id, polygon) VALUES
+                (gen_random_uuid(), 'a117a000-0000-0000-0000-000000000020', 'D1 staff', 'Staff', 'a117a000-0000-0000-0000-000000000002', 'a117a000-0000-0000-0000-000000000021', 'a117a000-0000-0000-0000-000000000011', 'probe'),
+                (gen_random_uuid(), 'a117a000-0000-0000-0000-000000000020', 'D2 staff', 'Staff', 'a117a000-0000-0000-0000-000000000002', 'a117a000-0000-0000-0000-000000000021', 'a117a000-0000-0000-0000-000000000012', 'probe'),
+                (gen_random_uuid(), 'a117a000-0000-0000-0000-000000000020', 'D3 staff', 'Staff', 'a117a000-0000-0000-0000-000000000002', 'a117a000-0000-0000-0000-000000000021', 'a117a000-0000-0000-0000-000000000013', 'probe');
+            UPDATE zone_profile SET status = 'Published', version = 1, geometry_hash = repeat('d', 64), published_on = now()
+             WHERE id = 'a117a000-0000-0000-0000-000000000020';
+        END
+        $cap$;
+        """);
+
+    // ARV-117a security review (CWE-120): a catch-up beyond the sensor-only minutes cap writes exactly what the cap leaves
+    // in one read, warns with the site and the count only, and the remaining minutes follow on the next read with none
+    // missing. The sensor-only warnings (readings refused, minutes over the cap, a refused snapshot) name the site and a
+    // count only: no desk key and no exception text. A snapshot whose open state is not sensor-derived is refused.
+    [Fact]
+    public async Task DeskFeed_Should_WriteExactlyTheSensorMinutesTheCapLeaves_When_ItCatchesUpAndLogTheSiteAndACountOnly()
+    {
+        await SeedAsync();
+        _host.Clock.Advance(TimeSpan.FromDays(3));
+        await SensorCapSiteAsync();
+        var log = new CapturingLogger();
+        var feed = new Ariva.Infra.Border.DeskFeed(_host.Provider.GetRequiredService<Ariva.Infra.Settings.DatabaseSettings>(), _host.Clock,
+            new Ariva.Infra.Border.DeskFeedSettings { MaxSensorMinutesPerRead = 100 }, log);
+        var t0 = new DateTime(Now.Ticks - Now.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc).AddMinutes(1);
+        _host.Clock.Advance(t0.AddSeconds(5) - Now);
+        (await feed.SiteAsync("XS5", Ct)).Should().BeTrue("the engines start now; the sensor-only one is rebuilt from no stored readings");
+        const string Rows = """
+            SELECT desk_code || '@' || extract(epoch FROM minute_utc - @from)::int / 60, updated_on::text
+              FROM desk_sensor_minute WHERE desk_code LIKE 'XS5/%' AND minute_utc >= @from AND minute_utc < @to
+            """;
+        var first = await RowsAsync(Rows, r => (r.GetString(0), r.GetString(1)), t0.AddHours(-1), t0.AddHours(3));
+        first.Count.Should().BeInRange(1, 100, "the first read is within the cap");
+        log.Entries.Should().NotContain(e => e.Message.Contains("minutes in one read", StringComparison.Ordinal));
+
+        // A reading for a desk the site does not have (refused, counted), then an hour of catch-up: 3 desks x 60 minutes.
+        await WriteReadingsAsync(Now, ("XS5", "XS5/IMM/ZZ", DeskSource.StaffZone, t0, 1));
+        _host.Clock.Advance(TimeSpan.FromHours(1));
+        (await feed.SiteAsync("XS5", Ct)).Should().BeTrue();
+        var second = await RowsAsync(Rows, r => (r.GetString(0), r.GetString(1)), t0.AddHours(-1), t0.AddHours(3));
+        (second.Count - first.Count).Should().Be(100, "one read writes exactly the minutes the cap leaves, never a whole step beyond it");
+        log.Entries.Should().ContainSingle(e => e.Message == "Sensor-only desk engine of site XS5: 100 minutes in one read; the rest follow on the next read");
+        log.Entries.Should().ContainSingle(e => e.Message == "Sensor-only desk engine of site XS5: 1 zone readings refused (bounds or validation)");
+
+        // The rest on the next read (the clock barely moves): no minute is missing for any desk, and no new cap warning.
+        _host.Clock.Advance(TimeSpan.FromSeconds(1));
+        (await feed.SiteAsync("XS5", Ct)).Should().BeTrue();
+        var third = await RowsAsync(Rows, r => (r.GetString(0), r.GetString(1)), t0.AddHours(-1), t0.AddHours(3));
+        (third.Count - second.Count).Should().BeInRange(1, 100);
+        log.Entries.Count(e => e.Message.Contains("minutes in one read", StringComparison.Ordinal)).Should().Be(1);
+        // Minute numbers count from the query's @from, an hour before t0.
+        var last = (int)((Now.AddSeconds(-90) - t0.AddHours(-1)).Ticks / TimeSpan.TicksPerMinute) - 1;
+        foreach (var desk in new[] { "D1", "D2", "D3" })
+        {
+            var minutes = third.Keys.Where(k => k.StartsWith($"XS5/IMM/{desk}@", StringComparison.Ordinal))
+                .Select(k => int.Parse(k[(k.IndexOf('@', StringComparison.Ordinal) + 1)..], System.Globalization.CultureInfo.InvariantCulture)).Order().ToList();
+            minutes.Should().Equal(Enumerable.Range(minutes[0], last - minutes[0] + 1), "every minute of {0} up to the watermark is written, once", desk);
+        }
+
+        // A snapshot whose desk is open without being sensor-derived (only AMAN could make it so) is refused and rebuilt.
+        await ExecuteAsMigrationAsync("""
+            UPDATE desk_feed_state SET state = jsonb_set(state, '{sensorEngine,desks,0,current}',
+                '{"status":"Serving","sensorDerived":false,"presentNotProcessing":false,"degraded":false}') WHERE site_code = 'XS5'
+            """);
+        _host.Clock.Advance(TimeSpan.FromMinutes(1));
+        (await feed.SiteAsync("XS5", Ct)).Should().BeTrue();
+        log.Entries.Should().ContainSingle(e => e.Message == "The sensor-only desk state of site XS5 is not valid; it is rebuilt from the stored zone readings");
+
+        // Every sensor-only log line names the site and a count only: no exception, no desk key, no other value.
+        var sensorOnly = log.Entries.Where(e => e.Message.StartsWith("Sensor-only desk engine of site", StringComparison.Ordinal) ||
+                                                e.Message.StartsWith("The sensor-only desk state of site", StringComparison.Ordinal)).ToList();
+        sensorOnly.Should().HaveCountGreaterThanOrEqualTo(4);
+        sensorOnly.Should().AllSatisfy(e =>
+        {
+            e.Exception.Should().BeNull();
+            e.Message.Should().NotContain("XS5/");
+            e.Values.Keys.Should().BeSubsetOf(["Site", "Count", "{OriginalFormat}"]);
+            e.Values["Site"].Should().Be("XS5");
+        });
+    }
+
+    private sealed record LogEntry(LogLevel Level, string Message, Exception Exception, IReadOnlyDictionary<string, object> Values);
+
+    // Keeps every entry with its structured values, to prove what a log line carries.
+    private sealed class CapturingLogger : ILogger<Ariva.Infra.Border.DeskFeed>
+    {
+        private readonly List<LogEntry> _entries = [];
+
+        public IReadOnlyList<LogEntry> Entries
+        {
+            get
+            {
+                lock (_entries)
+                    return [.. _entries];
+            }
+        }
+
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception, Func<TState, Exception, string> formatter)
+        {
+            var values = state is IReadOnlyList<KeyValuePair<string, object>> pairs ? pairs.ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal) : [];
+            lock (_entries)
+                _entries.Add(new LogEntry(logLevel, formatter(state, exception), exception, values));
+        }
     }
 }

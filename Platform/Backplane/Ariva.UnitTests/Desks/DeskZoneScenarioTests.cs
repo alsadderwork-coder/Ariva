@@ -80,6 +80,88 @@ public sealed class DeskZoneScenarioTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public void SensorOnlyEngine_Should_MatchTheScenarioFromTheZones_When_AmanIsLiveForEveryDesk()
+    {
+        // ARV-117a on the reference evening: every Visitors desk (AR-08 to AR-22) has an AMAN code, and AMAN reports the
+        // scenario's staffing as sessions with a heartbeat each minute (live all evening), while S-18 to S-20 report the
+        // desks' staff and service zones. As the desk feed does, the published engine takes both (AMAN's rank wins), the
+        // sensor-only engine the zone readings alone.
+        var day = Day.Value;
+        var q = ScenarioModel.Q("A-VIS");
+        var keys = ReferenceReplay.VisitorDesks.ToDictionary(d => d, ReferenceReplay.DeskKeyOf, StringComparer.Ordinal);
+        var desks = keys.Values.Select(k => new DeskProfile(k, "VIS", HasTransactions: false, HasSession: true, HasStaffZone: true, HasServiceZone: true)).ToList();
+        var published = new DeskStateEngine(desks, ReferenceReplay.From, FeedSettings);
+        var sensorOnly = SensorOnlyDeskEngine.Start(desks, ReferenceReplay.From, new Ariva.Infra.Border.DeskFeedSettings().SensorEngine);
+        List<DeskMinute> publishedMinutes = [], sensorMinutes = [];
+        var byArrival = Readings.Select(r => (Arrival: r.TimeUtc.AddMinutes(1), Reading: r)).OrderBy(r => r.Arrival).ToList();
+        var last = new Dictionary<string, DeskSessionSignal>(StringComparer.Ordinal);
+        var next = 0;
+        for (var now = ReferenceReplay.From; now <= ReferenceReplay.To.AddMinutes(5); now = now.AddSeconds(15))
+        {
+            if (now.Second == 0 && now < ReferenceReplay.To)
+            {
+                // AMAN's minute: a session change when a desk opens, closes or pauses, a heartbeat otherwise (F10 rank 2).
+                var minute = (int)(now - ReferenceReplay.WallOf(0)).TotalMinutes;
+                foreach (var server in day.ServerStates(q, minute).Where(s => s.State != "unknown"))
+                {
+                    var session = server.State switch { "closed" or "oos" => DeskSessionSignal.Closed, "paused" => DeskSessionSignal.Paused, _ => DeskSessionSignal.Opened };
+                    DeskSignal signal = last.TryGetValue(server.Id, out var previous) && previous == session
+                        ? new DeskHeartbeat(keys[server.Id], now, DeskSource.Session)
+                        : new DeskSessionChangedSignal(keys[server.Id], now, session);
+                    published.Offer(signal, now);
+                    sensorOnly.Offer(signal, now);
+                    last[server.Id] = session;
+                }
+            }
+
+            while (next < byArrival.Count && byArrival[next].Arrival <= now)
+            {
+                var reading = byArrival[next++].Reading.ToSignal();
+                published.Offer(reading, now);
+                sensorOnly.Offer(reading, now);
+            }
+
+            publishedMinutes.AddRange(published.Advance(now).Minutes);
+            sensorMinutes.AddRange(sensorOnly.Advance(now).Minutes);
+        }
+
+        // The sensor-only engine's minutes are exactly those of an engine that never heard of AMAN (ARV-116's).
+        sensorOnly.Refused.Should().BeGreaterThan(0, "every AMAN session and heartbeat offered to it was refused");
+        sensorMinutes.Should().Equal(SensorOnlyMinutes(Readings));
+
+        int compared = 0, within = 0, exact = 0, worst = 0, sensorDerivedPublished = 0, openPublished = 0;
+        var sensorOpen = sensorMinutes.GroupBy(m => m.MinuteUtc).ToDictionary(g => g.Key, g => g.Count(m => m.Open >= TimeSpan.FromSeconds(30)));
+        var publishedByMinute = publishedMinutes.GroupBy(m => m.MinuteUtc).ToDictionary(g => g.Key, g => g.ToList());
+        for (var minute = 1021; minute < 1230; minute++)
+        {
+            var at = ReferenceReplay.WallOf(minute);
+            var scenario = day.ServerStates(q, minute).Count(s => s.State is "serving" or "idle");
+            var difference = Math.Abs(sensorOpen[at] - scenario);
+            compared++;
+            within += difference <= 1 ? 1 : 0;
+            exact += difference == 0 ? 1 : 0;
+            worst = Math.Max(worst, difference);
+            openPublished += publishedByMinute[at].Count(m => m.Open >= TimeSpan.FromSeconds(30));
+            sensorDerivedPublished += publishedByMinute[at].Count(m => m.SensorDerived >= TimeSpan.FromSeconds(30));
+
+            // The shadow's desk term from both engines' minutes, as DeskTermSource joins them: n_open from the zones.
+            var samples = publishedByMinute[at].Join(sensorMinutes.Where(m => m.MinuteUtc == at), m => m.DeskCode, m => m.DeskCode, (p, s) =>
+                new Ariva.Core.Queueing.DeskMinuteSample(p.DeskCode, at, p.Idle.TotalSeconds, p.Serving.TotalSeconds, p.Unknown.TotalSeconds, p.Transactions, p.Degraded,
+                    p.SensorDerived.TotalSeconds, new Ariva.Core.Queueing.DeskSensorSample(s.Open.TotalSeconds, s.Unknown.TotalSeconds, s.Degraded))).ToList();
+            var term = Ariva.Core.Queueing.DeskTerms.Compute(samples, 5, at);
+            term.OpenServers.Should().Be(publishedByMinute[at].Count(m => m.Open >= TimeSpan.FromSeconds(30)), "the published n_open is AMAN's at {0}", ScenarioMath.Clock(minute));
+            if (term.SensorOnly is { } shadow)
+                shadow.OpenServers.Should().Be(sensorOpen[at], "the shadow's n_open is the zones' at {0}", ScenarioMath.Clock(minute));
+        }
+
+        output.WriteLine($"AMAN live for every desk: sensor-only open desks within one desk {within} of {compared} minutes ({(double)within / compared:P1}), " +
+                         $"exact {exact} ({(double)exact / compared:P1}), largest difference {worst}; the published engine's sensor-derived open desk minutes " +
+                         $"{sensorDerivedPublished} of {openPublished} open desk minutes");
+        ((double)within / compared).Should().BeGreaterThanOrEqualTo(RequiredShare);
+        sensorDerivedPublished.Should().Be(0, "with AMAN live the published engine records no sensor-derived time for an AMAN desk (the gap ARV-117a closes)");
+    }
+
+    [Fact]
     public void Engine_Should_TurnTheDesksOfASilentSensorUnknownAndDegraded_When_ItsReadingsStop()
     {
         // The reference evening marks no Visitors desk unknown, so the test silences S-19 (desks AR-13 to AR-17) from 18:30

@@ -1,10 +1,11 @@
 namespace Ariva.Core.Queueing;
 
 /// <summary>
-/// The shadow nowcast of a queue minute (ARV-117): the F8 nowcast computed without any AMAN input, stored beside the
-/// published one in <c>queue_minute</c> for the pilot's ground-truth proof (the validation comparison, ARV-104f). It is
-/// never shown to staff or passengers, never an alert input and never in a report or the live snapshot: it is written by
-/// the stream and read only by that comparison. <see cref="Minutes"/> is null with a <see cref="NoService"/> reason, as
+/// The shadow nowcast of a queue minute (ARV-117): the F8 nowcast computed without any AMAN input, stored in
+/// <c>queue_minute_shadow</c> (ARV-117a, in the same checkpoint transaction as the published row) for the pilot's
+/// ground-truth proof (the validation comparison, ARV-104f). It is never shown to staff or passengers, never an alert
+/// input and never in a report or the live snapshot: it is written by the stream, which cannot read it back (the runtime
+/// role has no SELECT on its values), and read only by that comparison. <see cref="Minutes"/> is null with a <see cref="NoService"/> reason, as
 /// for the published nowcast.
 /// </summary>
 public sealed record ShadowNowcast(double? Minutes, NoServiceReason? NoService, bool Degraded)

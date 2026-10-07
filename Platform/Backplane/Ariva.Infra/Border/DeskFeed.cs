@@ -33,6 +33,12 @@ public sealed record DeskFeedSettings
     /// </summary>
     public int SensorPauseSeconds { get; init; } = 60;
 
+    /// <summary>
+    /// The sensor-only desk engine's minutes written per read at most (ARV-117a, CWE-120; Proposed 120,000, also the
+    /// maximum): an exact bound, the rest follow on the next read.
+    /// </summary>
+    public int MaxSensorMinutesPerRead { get; init; } = DeskFeed.MaxSensorMinutesPerRead;
+
     public IEnumerable<string> Problems()
     {
         if (PollSeconds is < 1 or > 300)
@@ -43,6 +49,8 @@ public sealed record DeskFeedSettings
             yield return $"{SectionName}:MaxRead is 100 to 200,000.";
         if (SensorPauseSeconds is < 10 or > 180)
             yield return $"{SectionName}:SensorPauseSeconds is 10 to 180 (at most T1, 3 minutes).";
+        if (MaxSensorMinutesPerRead is < 100 or > DeskFeed.MaxSensorMinutesPerRead)
+            yield return $"{SectionName}:MaxSensorMinutesPerRead is 100 to 120,000.";
     }
 
     /// <summary>The desk engine's settings: the reference values with this feed's lateness and the sensor T1 (ARV-116).</summary>
@@ -52,14 +60,23 @@ public sealed record DeskFeedSettings
         MaxLate = TimeSpan.FromMinutes(15),
         SensorPauseAfter = TimeSpan.FromSeconds(SensorPauseSeconds)
     };
+
+    /// <summary>
+    /// The sensor-only desk engine's settings (ARV-117a): the published engine's, with at most
+    /// <see cref="SensorOnlyDeskEngine.MaxDesks"/> desks, so the zones alone give the same states the published engine gives a
+    /// desk without AMAN.
+    /// </summary>
+    public DeskStateSettings SensorEngine => SensorOnlyDeskEngine.Bounded(Engine);
 }
 
 /// <summary>
 /// What the desk feed keeps per site between reads (<c>desk_feed_state</c>, script 0031): the engine, the read position in
-/// AMAN's records, the feed heartbeat and (ARV-116) the read position in the staff and service zone readings, absent in a
-/// state saved before, which then starts at the time of the read.
+/// AMAN's records, the feed heartbeat, (ARV-116) the read position in the staff and service zone readings, absent in a
+/// state saved before, which then starts at the time of the read, and (ARV-117a) the sensor-only desk engine, absent in a
+/// state saved before (or refused on restore), which is then rebuilt by replaying the stored zone readings.
 /// </summary>
-public sealed record DeskFeedState(int Version, DeskEngineState Engine, AmanFeedCursor Cursor, DateTime? HeartbeatUtc, AmanFeedCursor ZoneCursor = null)
+public sealed record DeskFeedState(int Version, DeskEngineState Engine, AmanFeedCursor Cursor, DateTime? HeartbeatUtc, AmanFeedCursor ZoneCursor = null,
+    DeskEngineState SensorEngine = null)
 {
     public const int CurrentVersion = 1;
 }
@@ -74,14 +91,30 @@ public sealed record DeskFeedState(int Version, DeskEngineState Engine, AmanFeed
 /// no AMAN code is in the engine with them alone (so it gets a state without AMAN), and a site with such zones and no
 /// AMAN desks is read too; the readings the stream wrote to <c>desk_zone_reading</c> (counts only) are read by the time
 /// they were written, with the same overlap and memory as AMAN's records, and offered as <see cref="DeskZoneReading"/>.
+/// Since ARV-117a a second, sensor-only desk engine per site (<see cref="SensorOnlyDeskEngine"/>) runs beside the published
+/// one: the desks with staff or service zones, with those zones as their only sources, fed the same zone readings and
+/// nothing from AMAN; its closed minutes go to <c>desk_sensor_minute</c> (script 0044) for the shadow nowcast's desk term.
 /// Each site is one transaction holding a per-site advisory lock (class 49), so replicas share the sites and none is read
-/// twice; the engine's snapshot, the read position and the heartbeat are saved with the rows.
+/// twice; both engines' snapshots, the read positions and the heartbeat are saved with the rows.
 /// Keys are site, checkpoint and desk code (<see cref="AmanDeskFeed.Key"/>). Parameterised SQL only.
 /// </summary>
 public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvider, DeskFeedSettings settings, ILogger<DeskFeed> logger)
 {
     /// <summary>A saved state larger than this is refused (CWE-120).</summary>
     public const int MaxStateBytes = 64 * 1024 * 1024;
+
+    /// <summary>
+    /// How far back the sensor-only engine is rebuilt from the stored zone readings when its snapshot is absent or
+    /// refused (ARV-117a): the engine's own limit for late readings (<see cref="DeskStateSettings.MaxLate"/>), long enough
+    /// for T2 (10 minutes) to be known again.
+    /// </summary>
+    public static readonly TimeSpan SensorRebuild = TimeSpan.FromMinutes(15);
+
+    /// <summary>
+    /// The sensor-only engine's minutes written per read at most (CWE-120), the default and the maximum of
+    /// <see cref="DeskFeedSettings.MaxSensorMinutesPerRead"/>; the rest follow on the next read.
+    /// </summary>
+    public const int MaxSensorMinutesPerRead = 120_000;
 
     /// <summary>Reads every site's new records once; returns the sites read.</summary>
     public async Task<int> TickAsync(CancellationToken ct)
@@ -194,6 +227,30 @@ public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvide
             state = null;
         }
 
+        // ARV-117a: the sensor-only engine of the site's desks with zones, from its snapshot when valid, otherwise rebuilt
+        // from the stored readings (a state saved before, a refused or oversized snapshot, a refused published state).
+        var zoneCursor = state?.ZoneCursor ?? AmanFeedCursor.Start(now);
+        var sensorSettings = settings.SensorEngine;
+        SensorOnlyDeskEngine sensor = null;
+        var sensorMinutes = new List<DeskMinute>();
+        if (state?.SensorEngine is { } savedSensor)
+        {
+            try
+            {
+                sensor = SensorOnlyDeskEngine.Restore(profiles, sensorSettings, savedSensor);
+            }
+            catch (InvalidDataException)
+            {
+                // The exception text may name a desk; the warning names the site only.
+                logger.LogWarning("The sensor-only desk state of site {Site} is not valid; it is rebuilt from the stored zone readings", siteCode);
+            }
+        }
+
+        sensor ??= await RebuildSensorAsync(connection, transaction, siteCode, profiles, sensorSettings, zoneCursor, now, sensorMinutes, ct);
+        if (sensor.LeftOut > 0)
+            logger.LogWarning("Sensor-only desk engine of site {Site}: {Count} desks with zones beyond its cap are left out", siteCode, sensor.LeftOut);
+        var sensorRefusedBefore = Refused(sensor.Counters);
+
         var cursor = state?.Cursor ?? AmanFeedCursor.Start(now);
         var records = await ReadAsync(connection, transaction, """
             SELECT 'S', b.id, b.received_utc, c.code, d.code, b.occurred_utc, b.state, 0, 0, 0, 0
@@ -229,7 +286,6 @@ public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvide
         // and are checked again (CWE-501): the role by its exact name; the engine refuses a desk it does not hold, a role
         // the desk has no zone for, and a count above its bound. Readings older than a day are not read (the engine refuses
         // anything 15 minutes behind its watermark).
-        var zoneCursor = state?.ZoneCursor ?? AmanFeedCursor.Start(now);
         var readings = await ReadAsync(connection, transaction, """
             SELECT id, written_utc, desk_code, source, reading_utc, occupancy, degraded FROM desk_zone_reading
              WHERE site_code = @site AND written_utc >= @from AND reading_utc >= @oldest AND id <> ALL(@taken)
@@ -243,7 +299,11 @@ public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvide
         foreach (var reading in freshReadings)
         {
             if (reading.Signal() is { } signal)
+            {
                 engine.Offer(signal, now);
+                // The same reading, and nothing else, to the sensor-only engine (ARV-117a; it refuses any other signal).
+                sensor.Offer(signal, now);
+            }
         }
 
         var minutes = new List<DeskMinute>();
@@ -255,17 +315,26 @@ public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvide
                 break;
         }
 
+        AdvanceSensor(sensor, now, sensorMinutes, siteCode);
+        var sensorRefused = Refused(sensor.Counters) - sensorRefusedBefore;
+        if (sensorRefused > 0)
+            logger.LogWarning("Sensor-only desk engine of site {Site}: {Count} zone readings refused (bounds or validation)", siteCode, sensorRefused);
+
         if (minutes.Count > 0)
             await StreamStore.WriteDeskMinutesAsync(connection, minutes, now, ct);
+        // In the same transaction as the published desk minutes (ARV-117a).
+        if (sensorMinutes.Count > 0)
+            await StreamStore.WriteDeskSensorMinutesAsync(connection, sensorMinutes, now, ct);
         if (step.EgateMinutes.Count > 0)
             await WriteEgateMinutesAsync(connection, transaction, step.EgateMinutes, now, ct);
 
-        var json = JsonSerializer.Serialize(new DeskFeedState(DeskFeedState.CurrentVersion, engine.Capture(), next, step.HeartbeatUtc, nextZones), EventCatalog.Json);
+        var json = JsonSerializer.Serialize(new DeskFeedState(DeskFeedState.CurrentVersion, engine.Capture(), next, step.HeartbeatUtc, nextZones, sensor.Capture()),
+            EventCatalog.Json);
         if (json.Length > MaxStateBytes / 4)
         {
             // A state this large (the cursor or the engine's buffers far beyond any airport) is not kept: the desks start
             // again from now at the read position reached (logged), keeping the records taken at that very instant so none is
-            // taken twice, and the next read stays bounded.
+            // taken twice, and the next read stays bounded; the sensor-only engine is not kept and is rebuilt by replay then.
             logger.LogWarning("The desk feed state of site {Site} is too large to keep; its desks start again from now", siteCode);
             json = JsonSerializer.Serialize(new DeskFeedState(DeskFeedState.CurrentVersion, new DeskStateEngine(profiles, Floor(now), engineSettings).Capture(),
                 new AmanFeedCursor(next.PositionUtc, [.. next.Taken.Where(t => t.ReceivedUtc == next.PositionUtc)], next.PositionUtc), step.HeartbeatUtc,
@@ -285,9 +354,75 @@ public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvide
 
         await transaction.CommitAsync(ct);
         if (fresh.Count > 0 || freshReadings.Count > 0)
-            logger.LogDebug("Desk feed of site {Site}: {Records} records, {Readings} zone readings, {Minutes} desk minutes, {Gates} e-gate minutes", siteCode, fresh.Count,
-                freshReadings.Count, minutes.Count, step.EgateMinutes.Count);
+            logger.LogDebug("Desk feed of site {Site}: {Records} records, {Readings} zone readings, {Minutes} desk minutes, {Sensor} sensor-only desk minutes, {Gates} e-gate minutes",
+                siteCode, fresh.Count, freshReadings.Count, minutes.Count, sensorMinutes.Count, step.EgateMinutes.Count);
         return true;
+    }
+
+    // The readings an engine refused for its bounds or as invalid (CWE-120, CWE-501), for the counted warning.
+    private static long Refused(DeskEngineCounters c) => c.BufferFull + c.TooLate + c.Future + c.Invalid + c.UnknownDesk;
+
+    // Moves the sensor-only engine to the clock with at most MaxSensorMinutesPerRead minutes in the read, counting those a
+    // rebuild already closed: each step takes only what the cap leaves, so the bound is exact (the rest follow next read).
+    private void AdvanceSensor(SensorOnlyDeskEngine sensor, DateTime now, List<DeskMinute> minutes, string siteCode)
+    {
+        var cap = settings.MaxSensorMinutesPerRead;
+        for (var i = 0; i < 100; i++)
+        {
+            var room = cap - minutes.Count;
+            if (room <= 0)
+                break;
+            var advanced = sensor.Advance(now, room);
+            minutes.AddRange(advanced.Minutes);
+            if (!advanced.More)
+                return;
+        }
+
+        // The site and a count only (no desk key and no exception text).
+        logger.LogWarning("Sensor-only desk engine of site {Site}: {Count} minutes in one read; the rest follow on the next read", siteCode, minutes.Count);
+    }
+
+    /// <summary>
+    /// A sensor-only engine rebuilt by replaying the site's stored zone readings of the last <see cref="SensorRebuild"/>
+    /// (ARV-117a): every reading the zone cursor has already passed (the rest are this read's fresh readings), in reading
+    /// time, a minute at a time, so the engine holds at most a minute of readings per desk; the minutes it closes are
+    /// returned for writing (an upsert, so a minute written before is replaced by the same zones' result). At most
+    /// <see cref="DeskFeedSettings.MaxRead"/> readings, the latest ones. Values come back from storage and are checked
+    /// again (CWE-501): the role by its exact name, and the engine refuses what it would refuse live.
+    /// </summary>
+    private async Task<SensorOnlyDeskEngine> RebuildSensorAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, string siteCode,
+        IReadOnlyList<DeskProfile> profiles, DeskStateSettings sensorSettings, AmanFeedCursor zoneCursor, DateTime now, List<DeskMinute> minutes, CancellationToken ct)
+    {
+        var start = Floor(now - SensorRebuild);
+        var sensor = SensorOnlyDeskEngine.Start(profiles, start, sensorSettings);
+        var stored = await ReadAsync(connection, transaction, """
+            SELECT id, written_utc, desk_code, source, reading_utc, occupancy, degraded FROM desk_zone_reading
+             WHERE site_code = @site AND reading_utc >= @start AND reading_utc <= @now AND (written_utc < @from OR id = ANY(@taken))
+             ORDER BY reading_utc DESC, id DESC
+             LIMIT @limit
+            """, [new NpgsqlParameter("site", siteCode), new NpgsqlParameter("start", NpgsqlDbType.TimestampTz) { Value = start },
+                new NpgsqlParameter("now", NpgsqlDbType.TimestampTz) { Value = now },
+                new NpgsqlParameter("from", NpgsqlDbType.TimestampTz) { Value = zoneCursor.ReadFromUtc },
+                new NpgsqlParameter("taken", NpgsqlDbType.Array | NpgsqlDbType.Uuid) { Value = zoneCursor.TakenIds }, new NpgsqlParameter("limit", settings.MaxRead)],
+            r => new DeskZoneRow(r.GetGuid(0), Utc(r.GetDateTime(1)), r.GetString(2), r.GetString(3), Utc(r.GetDateTime(4)), r.GetInt16(5), r.GetBoolean(6)), ct);
+        stored.Reverse();
+        var boundary = start.AddMinutes(1);
+        foreach (var row in stored)
+        {
+            // Within the minutes-per-read cap too (a low configured cap): once it is reached the replay stops advancing, the
+            // readings are still offered, and the rest follow on the next read.
+            while (row.TimeUtc >= boundary && boundary <= now && settings.MaxSensorMinutesPerRead - minutes.Count > 0)
+            {
+                minutes.AddRange(sensor.Advance(boundary + sensorSettings.Lateness, settings.MaxSensorMinutesPerRead - minutes.Count).Minutes);
+                boundary = boundary.AddMinutes(1);
+            }
+
+            if (row.Signal() is { } signal)
+                sensor.Offer(signal, now);
+        }
+
+        logger.LogInformation("Sensor-only desk engine of site {Site} rebuilt from {Count} stored zone readings", siteCode, stored.Count);
+        return sensor;
     }
 
     private DeskFeedState Load(string json)

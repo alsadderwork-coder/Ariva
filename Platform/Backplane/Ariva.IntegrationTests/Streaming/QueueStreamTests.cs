@@ -267,9 +267,13 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
 
     private const string MinuteRows = """
         SELECT zone_key, minute_utc, profile_version, status, entries, exits, waits, mean_wait_minutes, p50_wait_minutes, p90_wait_minutes, p95_wait_minutes,
-               share_within_target, queue_length, length_from_sensors, length_degraded, nowcast_minutes, throughput_per_minute, no_service, nowcast_degraded,
-               shadow_nowcast_minutes, shadow_no_service, shadow_nowcast_degraded
+               share_within_target, queue_length, length_from_sensors, length_degraded, nowcast_minutes, throughput_per_minute, no_service, nowcast_degraded
         FROM queue_minute ORDER BY zone_key, minute_utc
+        """;
+
+    // The shadow nowcasts (ARV-117a, script 0043), read with the test's administrator login (the runtime role cannot).
+    private const string ShadowRows = """
+        SELECT zone_key, minute_utc, nowcast_minutes, no_service, nowcast_degraded FROM queue_minute_shadow ORDER BY zone_key, minute_utc
         """;
 
     private const string BinRows = """
@@ -348,6 +352,11 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
         expectedMinutes.Should().HaveCountGreaterThan(150, "two zones over 100 minutes");
         expectedMinutes.Should().Contain(r => r.Contains("|Final|", StringComparison.Ordinal));
         (await RowsAsync(restart, MinuteRows)).Should().Equal(expectedMinutes);
+        // ARV-117a: the shadow nowcasts are written in the same checkpoints, to their own table, and the restart rewrites
+        // exactly the same rows.
+        var expectedShadows = await RowsAsync(straight, ShadowRows);
+        expectedShadows.Should().HaveCountGreaterThan(150);
+        (await RowsAsync(restart, ShadowRows)).Should().Equal(expectedShadows);
         var expectedBins = await RowsAsync(straight, BinRows);
         expectedBins.Should().Contain(r => r.Contains("|Final|Good|", StringComparison.Ordinal));
         (await RowsAsync(restart, BinRows)).Should().Equal(expectedBins);
@@ -373,12 +382,13 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
                  = (SELECT sum(entries) FROM queue_minute WHERE zone_key = 'DMO/Q1' AND minute_utc IN (SELECT minute_utc FROM line_minute WHERE zone_key = 'DMO/Q1'))
             """)).Should().Equal(["True"], "the entry line counts what the zone counted as entries");
         (await RowsAsync(restart, "SELECT zone_key FROM stream_zone_state ORDER BY zone_key")).Should().Contain(["DMO/Q1", "DMO/Q2"]);
-        // ARV-117: every live minute has its shadow nowcast in the same row; without a desk term (the evening's desks have no
-        // recent minutes) it is the published nowcast.
+        // ARV-117: every live minute has its shadow nowcast (ARV-117a: in queue_minute_shadow, same key); without a desk term
+        // (the evening's desks have no recent minutes) it is the published nowcast.
         (await RowsAsync(straight, """
-            SELECT count(*) > 0, count(*) FILTER (WHERE shadow_nowcast_degraded IS NOT NULL AND shadow_nowcast_minutes IS NOT DISTINCT FROM nowcast_minutes
-                                                  AND shadow_no_service IS NOT DISTINCT FROM no_service AND shadow_nowcast_degraded = nowcast_degraded) = count(*)
-            FROM queue_minute WHERE zone_key IN ('DMO/Q1', 'DMO/Q2') AND queue_length IS NOT NULL
+            SELECT count(*) > 0, count(*) FILTER (WHERE s.zone_key IS NOT NULL AND s.nowcast_minutes IS NOT DISTINCT FROM q.nowcast_minutes
+                                                  AND s.no_service IS NOT DISTINCT FROM q.no_service AND s.nowcast_degraded = q.nowcast_degraded) = count(*)
+            FROM queue_minute q LEFT JOIN queue_minute_shadow s ON s.zone_key = q.zone_key AND s.minute_utc = q.minute_utc
+            WHERE q.zone_key IN ('DMO/Q1', 'DMO/Q2') AND q.queue_length IS NOT NULL
             """)).Should().Equal(["True|True"]);
 
         // ARV-116: Q1's desk zone readings are written in the same checkpoints (counts only), each once: the restart writes
@@ -578,11 +588,11 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
     // retries forever. The longest zone key (a 17-character site and a 200-character zone name) does not fit the outbox's
     // message_key (200): its change is dropped, its minute is still written.
     [Fact]
-    public async Task Store_Should_WriteTheShadowNowcastInThePublishedRow_When_ALiveMinuteCarriesIt()
+    public async Task Store_Should_WriteTheShadowNowcastInItsOwnTable_When_ALiveMinuteCarriesIt()
     {
-        // ARV-117: the shadow nowcast without AMAN inputs goes to the same queue_minute row as the published nowcast, in the
-        // same checkpoint; a later checkpoint of the minute replaces both, and the table refuses a shadow that has a number
-        // and a no-service reason at once, or an unknown reason.
+        // ARV-117a: the shadow nowcast without AMAN inputs goes to queue_minute_shadow, keyed like queue_minute, in the same
+        // checkpoint as the published row; a later checkpoint of the minute replaces both, and the table refuses a shadow
+        // that has a number and a no-service reason at once, neither, a negative number or an unknown reason.
         var database = await DatabaseAsync(TestDatabase.StreamShadow);
         var store = new StreamStore(new DatabaseSettings
         {
@@ -593,8 +603,9 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
             new HashSet<string>(), new HashSet<string>()), 7).Capture();
         ZoneOutputs Live(params QueueLiveMinute[] rows) => new("DMO/Q1", [], [], rows, []);
         const string Row = """
-            SELECT minute_utc, nowcast_minutes, no_service, nowcast_degraded, shadow_nowcast_minutes, shadow_no_service, shadow_nowcast_degraded
-            FROM queue_minute WHERE zone_key = 'DMO/Q1' ORDER BY minute_utc
+            SELECT q.minute_utc, q.nowcast_minutes, q.no_service, q.nowcast_degraded, s.nowcast_minutes, s.no_service, s.nowcast_degraded
+            FROM queue_minute q LEFT JOIN queue_minute_shadow s ON s.zone_key = q.zone_key AND s.minute_utc = q.minute_utc
+            WHERE q.zone_key = 'DMO/Q1' ORDER BY q.minute_utc
             """;
 
         await store.SaveAsync(new StreamCheckpoint("g-shadow", [Live(
@@ -609,6 +620,7 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
             "09/28/2026 18:06:00|15.5|null|False|null|NoThroughputData|True",
             "09/28/2026 18:07:00|null|NothingOpen|False|null|null|null",
             "09/28/2026 18:08:00|15.5|null|False|null|null|null");
+        (await RowsAsync(database, "SELECT count(*) FROM queue_minute_shadow")).Should().Equal(["2"], "a minute without a shadow has no row");
 
         await store.SaveAsync(new StreamCheckpoint("g-shadow", [Live(
             new QueueLiveMinute("DMO/Q1", minute, 62, true, false, 15.5, 4.0, null, false) { Shadow = new ShadowNowcast(null, NoServiceReason.NothingOpen, false) })],
@@ -617,70 +629,335 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
 
         foreach (var forged in new[]
                  {
-                     "UPDATE queue_minute SET shadow_nowcast_minutes = 3, shadow_no_service = 'NothingOpen' WHERE zone_key = 'DMO/Q1'",
-                     "UPDATE queue_minute SET shadow_no_service = 'Bogus', shadow_nowcast_minutes = NULL WHERE zone_key = 'DMO/Q1'",
-                     "UPDATE queue_minute SET shadow_nowcast_minutes = -1, shadow_no_service = NULL WHERE zone_key = 'DMO/Q1'",
-                     // A shadow without its F11 flag (ARV-117 review): a number or a reason always carries it.
-                     "UPDATE queue_minute SET shadow_nowcast_minutes = 3, shadow_no_service = NULL, shadow_nowcast_degraded = NULL WHERE zone_key = 'DMO/Q1'",
-                     "UPDATE queue_minute SET shadow_nowcast_minutes = NULL, shadow_no_service = 'NothingOpen', shadow_nowcast_degraded = NULL WHERE zone_key = 'DMO/Q1'",
-                     // A flag without a shadow (ARV-117 second review): the flag stands only beside a number or a reason.
-                     "UPDATE queue_minute SET shadow_nowcast_minutes = NULL, shadow_no_service = NULL, shadow_nowcast_degraded = true WHERE zone_key = 'DMO/Q1'"
+                     "UPDATE queue_minute_shadow SET nowcast_minutes = 3, no_service = 'NothingOpen' WHERE zone_key = 'DMO/Q1'",
+                     "UPDATE queue_minute_shadow SET no_service = 'Bogus', nowcast_minutes = NULL WHERE zone_key = 'DMO/Q1'",
+                     "UPDATE queue_minute_shadow SET nowcast_minutes = -1, no_service = NULL WHERE zone_key = 'DMO/Q1'",
+                     "UPDATE queue_minute_shadow SET nowcast_minutes = NULL, no_service = NULL WHERE zone_key = 'DMO/Q1'"
                  })
         {
             var act = () => RowsAsync(database, forged);
-            (await act.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be("23514", "a check of script 0041 refuses: {0}", forged);
+            (await act.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be("23514", "a check of script 0043 refuses: {0}", forged);
         }
+
+        var flagless = () => RowsAsync(database, "UPDATE queue_minute_shadow SET nowcast_degraded = NULL WHERE zone_key = 'DMO/Q1'");
+        (await flagless.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be("23502", "a shadow always carries its F11 flag");
+        // Script 0043 copied 0041's rows and dropped its columns and checks.
+        (await RowsAsync(database, """
+            SELECT count(*) FROM information_schema.columns WHERE table_name = 'queue_minute' AND column_name LIKE 'shadow%'
+            UNION ALL SELECT count(*) FROM pg_constraint WHERE conrelid = 'queue_minute'::regclass AND conname LIKE '%shadow%'
+            """)).Should().Equal("0", "0");
     }
 
-    // ARV-117 reviews (CWE-862, CWE-863): the shadow columns of queue_minute have no read path in the database either.
-    // A view, materialized view or continuous aggregate records its dependencies in pg_depend through its rewrite rule,
-    // and a SQL-standard function body through pg_proc; a whole-row reference (row_to_json(q), SELECT q, jsonb_agg(q))
-    // records only refobjsubid 0, so no filter on the shadow columns can see it (second review). Every dependent of
-    // queue_minute or of one of its chunks, at any refobjsubid, is therefore listed and compared with an exact allowlist:
-    // a new dependent must change this test on purpose (and, if it reads the shadow, bring ARV-104f's authorization).
-    // Timescale's internal views of a continuous aggregate have generated names (_partial_view_N, _direct_view_N): they
-    // are named through the continuous aggregate catalog, so the list stays stable. Rules are covered by the rewrite
-    // arm too (hypertables refuse them today). Reads from code are checked by ShadowNowcastExposureTests in Ariva.UnitTests.
-    private const string QueueMinuteDependents = """
+    // ARV-117a (CWE-862, CWE-863), the owner's decision of 2026-10-07: the database enforces the no-read rule. A runtime
+    // login (as ariva_ensure_runtime_login creates it for the hosts) writes and rewrites the shadow through the stream
+    // store, and every read of a shadow value fails with 42501: a column, a wildcard, a whole row, a filter or an
+    // assignment over a value, RETURNING, COPY, and a chunk read directly. Only the key columns are readable (the
+    // upsert's conflict target needs them). The read role for the validation comparison reads it.
+    [Fact]
+    public async Task RuntimeLogin_Should_WriteButNeverReadTheShadow_When_TheStreamStoreUpserts()
+    {
+        var database = await DatabaseAsync(TestDatabase.StreamShadowRuntime);
+        const string login = "it_runtime_shadow";
+        var password = "rt-" + Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(12));
+        await using (var admin = new NpgsqlConnection(postgres.ConnectionString(database)))
+        {
+            await admin.OpenAsync(Ct);
+            await using var ensure = new NpgsqlCommand("SELECT ariva_ensure_runtime_login(@login, @password)", admin);
+            ensure.Parameters.AddWithValue("login", login);
+            ensure.Parameters.AddWithValue("password", password);
+            await ensure.ExecuteNonQueryAsync(Ct);
+        }
+
+        var store = new StreamStore(new DatabaseSettings { Host = postgres.Hostname, Port = postgres.Port, Name = database, Username = login, Password = password },
+            TimeProvider.System, new WarningLog());
+        var minute = new DateTime(2026, 9, 28, 18, 5, 0, DateTimeKind.Utc);
+        var state = new ZoneProcessor("DMO/Q1", new QueueZoneGeometry("Q1", new HashSet<string> { "Q1 entry" }, new HashSet<string> { "Q1 exit" },
+            new HashSet<string>(), new HashSet<string>()), 7).Capture();
+        ZoneOutputs Live(params QueueLiveMinute[] rows) => new("DMO/Q1", [], [], rows, []);
+
+        // Insert, then a later checkpoint of the same minutes (the ON CONFLICT path) and a minute in another chunk.
+        await store.SaveAsync(new StreamCheckpoint("g-rt", [Live(
+            new QueueLiveMinute("DMO/Q1", minute, 61, true, false, 15.25, 4.0, null, false) { Shadow = new ShadowNowcast(17.5, null, true) },
+            new QueueLiveMinute("DMO/Q1", minute.AddMinutes(1), 61, true, false, 15.5, 4.0, null, false) { Shadow = new ShadowNowcast(9.5, null, false) })],
+            [state], [], [new StreamOffset("t", 0, 1)]), Ct);
+        await store.SaveAsync(new StreamCheckpoint("g-rt", [Live(
+            new QueueLiveMinute("DMO/Q1", minute, 62, true, false, 15.5, 4.0, null, false) { Shadow = new ShadowNowcast(null, NoServiceReason.NothingOpen, false) },
+            new QueueLiveMinute("DMO/Q1", minute.AddMinutes(1), 62, true, false, 15.5, 4.0, null, false) { Shadow = new ShadowNowcast(8.25, null, true) },
+            new QueueLiveMinute("DMO/Q1", minute.AddDays(30), 62, true, false, 15.5, 4.0, null, false) { Shadow = new ShadowNowcast(1.5, null, true) })],
+            [state], [], [new StreamOffset("t", 0, 2)]), Ct);
+        await store.SaveAsync(new StreamCheckpoint("g-rt", [Live(
+            new QueueLiveMinute("DMO/Q1", minute.AddDays(30), 62, true, false, 15.5, 4.0, null, false) { Shadow = new ShadowNowcast(2.5, null, false) })],
+            [state], [], [new StreamOffset("t", 0, 3)]), Ct);
+        (await RowsAsync(database, ShadowRows)).Should().Equal(
+            "DMO/Q1|09/28/2026 18:05:00|null|NothingOpen|False",
+            "DMO/Q1|09/28/2026 18:06:00|8.25|null|True",
+            "DMO/Q1|10/28/2026 18:05:00|2.5|null|False");
+
+        var chunk = (await RowsAsync(database, "SELECT format('%I.%I', chunk_schema, chunk_name) FROM timescaledb_information.chunks WHERE hypertable_name = 'queue_minute_shadow' ORDER BY range_start LIMIT 1"))[0];
+        await using var runtime = new NpgsqlConnection(postgres.ConnectionString(database, login, password));
+        await runtime.OpenAsync(Ct);
+        async Task<string> RunAsync(string sql)
+        {
+#pragma warning disable CA2100 // the statements are this test's literals and the chunk name read from the catalog
+            await using var command = new NpgsqlCommand(sql, runtime);
+#pragma warning restore CA2100
+            await using var reader = await command.ExecuteReaderAsync(Ct);
+            var rows = new List<string>();
+            while (await reader.ReadAsync(Ct))
+                rows.Add(string.Join("|", Enumerable.Range(0, reader.FieldCount).Select(k => reader.IsDBNull(k) ? "null" : Convert.ToString(reader.GetValue(k), System.Globalization.CultureInfo.InvariantCulture))));
+            return string.Join(";", rows);
+        }
+
+        foreach (var read in new[]
+                 {
+                     "SELECT nowcast_minutes FROM queue_minute_shadow",
+                     "SELECT no_service FROM queue_minute_shadow",
+                     "SELECT nowcast_degraded FROM queue_minute_shadow",
+                     "SELECT updated_on FROM queue_minute_shadow",
+                     "SELECT * FROM queue_minute_shadow",
+                     "TABLE queue_minute_shadow",
+                     "SELECT row_to_json(s) FROM queue_minute_shadow s",
+                     "SELECT s FROM queue_minute_shadow s",
+                     "SELECT zone_key FROM queue_minute_shadow WHERE nowcast_minutes > 5",
+                     "SELECT zone_key FROM queue_minute_shadow ORDER BY no_service",
+                     "UPDATE queue_minute_shadow SET nowcast_minutes = nowcast_minutes + 1 WHERE zone_key = 'DMO/Q1'",
+                     "UPDATE queue_minute_shadow SET nowcast_degraded = true WHERE zone_key = 'DMO/Q1' RETURNING nowcast_minutes",
+                     "INSERT INTO queue_minute_shadow (zone_key, minute_utc, nowcast_minutes, nowcast_degraded, updated_on) VALUES ('DMO/Q1', '2026-09-28T18:05:00Z', 1, true, now()) ON CONFLICT (zone_key, minute_utc) DO UPDATE SET nowcast_minutes = EXCLUDED.nowcast_minutes",
+                     "INSERT INTO queue_minute_shadow (zone_key, minute_utc, nowcast_minutes, nowcast_degraded, updated_on) VALUES ('DMO/Q9', now(), 1, true, now()) RETURNING *",
+                     "COPY queue_minute_shadow TO STDOUT",
+                     "COPY (SELECT nowcast_minutes FROM queue_minute_shadow) TO STDOUT",
+                     $"SELECT nowcast_minutes FROM {chunk}",
+                     $"SELECT * FROM {chunk}",
+                     "DELETE FROM queue_minute_shadow WHERE zone_key = 'DMO/Q1'",
+                     "TRUNCATE queue_minute_shadow",
+                     "UPDATE queue_minute_shadow SET zone_key = 'DMO/Q2' WHERE zone_key = 'DMO/Q1'"
+                 })
+        {
+            var act = () => RunAsync(read);
+            (await act.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be("42501", "the runtime login cannot: {0}", read);
+        }
+
+        // The key columns only: what the upsert's conflict target needs, no shadow value.
+        (await RunAsync("SELECT count(*), min(zone_key) FROM queue_minute_shadow")).Should().Be("3|DMO/Q1");
+        (await RunAsync("SELECT has_column_privilege('queue_minute_shadow', 'nowcast_minutes', 'SELECT'), has_table_privilege('queue_minute_shadow', 'SELECT'), " +
+                        "has_table_privilege('queue_minute_shadow', 'INSERT'), has_column_privilege('queue_minute_shadow', 'nowcast_minutes', 'UPDATE'), " +
+                        "has_column_privilege('queue_minute_shadow', 'zone_key', 'UPDATE'), pg_has_role('ariva_validation_reader', 'MEMBER')"))
+            .Should().Be("False|False|True|True|False|False");
+
+        // The validation comparison's read role (ARV-104f grants it to its own login) reads every value.
+        await using var reader = new NpgsqlConnection(postgres.ConnectionString(database));
+        await reader.OpenAsync(Ct);
+        await using (var role = new NpgsqlCommand("SET ROLE ariva_validation_reader", reader))
+            await role.ExecuteNonQueryAsync(Ct);
+        await using var count = new NpgsqlCommand("SELECT count(*) FILTER (WHERE nowcast_degraded IS NOT NULL) FROM queue_minute_shadow", reader);
+        (await count.ExecuteScalarAsync(Ct)).Should().Be(3L);
+        await using var other = new NpgsqlCommand("SELECT count(*) FROM queue_minute", reader);
+        var denied = () => other.ExecuteScalarAsync(Ct);
+        (await denied.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be("42501", "the read role reads the shadow only");
+    }
+
+    // ARV-117a security review: script 0043 on a database that has 0041's shadows. Scripts up to 0042, then queue_minute rows
+    // with a shadow number, with a shadow reason (in another chunk) and with no shadow, then 0043: exactly the two shadows are
+    // copied with their values, flags and updated_on, the minute without a shadow has no row, every queue_minute row stays,
+    // and no shadow_* column or check is left on queue_minute. The remaining scripts then apply on top.
+    [Fact]
+    public async Task Script0043_Should_CopyEveryShadowOf0041AndDropItsColumns_When_QueueMinuteHoldsShadows()
+    {
+        var database = await postgres.CreateDatabaseAsync(TestDatabase.StreamShadowCopy);
+        var scripts = SqlScriptCatalog.Embedded();
+        var runner = new SqlScriptRunner(postgres.ConnectionString(database), NullLogger<SqlScriptRunner>.Instance);
+        await runner.ApplyAsync([.. scripts.Where(s => s.Number <= 42)], Ct);
+        await RowsAsync(database, """
+            INSERT INTO queue_minute (zone_key, minute_utc, profile_version, nowcast_minutes, no_service, nowcast_degraded, updated_on,
+                                      shadow_nowcast_minutes, shadow_no_service, shadow_nowcast_degraded) VALUES
+                ('DMO/Q1', '2026-09-28T18:05:00Z', 7, 15.25, NULL, false, '2026-09-28T18:05:41.123456Z', 17.375, NULL, true),
+                ('DMO/Q1', '2026-09-28T18:06:00Z', 7, 15.5, NULL, false, '2026-09-28T18:06:42.654321Z', NULL, NULL, NULL),
+                ('DMO/Q2', '2026-10-28T18:05:00Z', 7, NULL, 'NothingOpen', false, '2026-10-28T18:05:43.000001Z', NULL, 'NoThroughputData', false)
+            """);
+
+        (await runner.ApplyAsync([.. scripts.Where(s => s.Number <= 43)], Ct)).Should().Equal("0043_queue_minute_shadow.sql");
+
+        const string Copied = """
+            SELECT zone_key, to_char(minute_utc AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI'), nowcast_minutes, no_service, nowcast_degraded,
+                   to_char(updated_on AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US')
+            FROM queue_minute_shadow ORDER BY zone_key, minute_utc
+            """;
+        (await RowsAsync(database, Copied)).Should().Equal(
+            "DMO/Q1|2026-09-28T18:05|17.375|null|True|2026-09-28T18:05:41.123456",
+            "DMO/Q2|2026-10-28T18:05|null|NoThroughputData|False|2026-10-28T18:05:43.000001");
+        (await RowsAsync(database, """
+            SELECT count(*) FROM queue_minute_shadow s JOIN queue_minute q USING (zone_key, minute_utc) WHERE s.updated_on = q.updated_on
+            UNION ALL SELECT count(*) FROM queue_minute
+            UNION ALL SELECT count(*) FROM queue_minute_shadow WHERE minute_utc = '2026-09-28T18:06:00Z'
+            UNION ALL SELECT count(*) FROM information_schema.columns WHERE table_name = 'queue_minute' AND column_name LIKE 'shadow%'
+            UNION ALL SELECT count(*) FROM pg_constraint WHERE conrelid = 'queue_minute'::regclass AND conname LIKE '%shadow%'
+            """)).Should().Equal(["2", "3", "0", "0", "0"],
+            "updated_on as the source rows, every queue_minute row kept, no row for the minute without a shadow, no shadow column or check left");
+
+        (await runner.ApplyAsync(scripts, Ct)).Should().NotBeEmpty("the later scripts apply on top");
+    }
+
+    // ARV-117a security review (CWE-269): the validation comparison's read role has no attribute and no privilege beyond
+    // reading the shadow. Checked in the catalogs (pg_roles, pg_auth_members, the ACLs of relations, columns, schemas, the
+    // database, functions and default privileges) and in information_schema.role_table_grants.
+    [Fact]
+    public async Task ValidationReader_Should_HoldNothingButSelectOnTheShadow_When_TheMigrationsHaveRun()
+    {
+        var database = await StoreDatabaseAsync();
+        (await RowsAsync(database, """
+            SELECT rolcanlogin, rolsuper, rolcreaterole, rolcreatedb, rolbypassrls, rolreplication FROM pg_roles WHERE rolname = 'ariva_validation_reader'
+            """)).Should().Equal(["False|False|False|False|False|False"], "NOLOGIN, no superuser, createrole, createdb, bypassrls or replication");
+        (await RowsAsync(database, """
+            SELECT count(*) FROM pg_auth_members WHERE member = 'ariva_validation_reader'::regrole
+            """)).Should().Equal(["0"], "a member of no other role");
+        (await RowsAsync(database, """
+            SELECT DISTINCT privilege_type,
+                   CASE WHEN format('%I.%I', table_schema, table_name)::regclass = 'queue_minute_shadow'::regclass
+                          OR format('%I.%I', table_schema, table_name)::regclass IN (SELECT inhrelid FROM pg_inherits WHERE inhparent = 'queue_minute_shadow'::regclass)
+                        THEN 'queue_minute_shadow' ELSE table_schema || '.' || table_name END
+            FROM information_schema.role_table_grants WHERE grantee = 'ariva_validation_reader'
+            """)).Should().Equal(["SELECT|queue_minute_shadow"], "SELECT on the shadow (and its chunks) and no other table privilege");
+        (await RowsAsync(database, """
+            SELECT 'relation ' || CASE WHEN c.oid = 'queue_minute_shadow'::regclass OR c.oid IN (SELECT inhrelid FROM pg_inherits WHERE inhparent = 'queue_minute_shadow'::regclass)
+                                       THEN 'queue_minute_shadow' ELSE c.oid::regclass::text END || ' ' || a.privilege_type AS grant_
+              FROM pg_class c, aclexplode(c.relacl) a WHERE a.grantee = 'ariva_validation_reader'::regrole
+            UNION SELECT 'column ' || t.attrelid::regclass::text || '.' || t.attname || ' ' || a.privilege_type FROM pg_attribute t, aclexplode(t.attacl) a WHERE a.grantee = 'ariva_validation_reader'::regrole
+            UNION SELECT 'schema ' || n.nspname || ' ' || a.privilege_type FROM pg_namespace n, aclexplode(n.nspacl) a WHERE a.grantee = 'ariva_validation_reader'::regrole
+            UNION SELECT 'database ' || d.datname || ' ' || a.privilege_type FROM pg_database d, aclexplode(d.datacl) a WHERE a.grantee = 'ariva_validation_reader'::regrole
+            UNION SELECT 'function ' || p.oid::regprocedure::text || ' ' || a.privilege_type FROM pg_proc p, aclexplode(p.proacl) a WHERE a.grantee = 'ariva_validation_reader'::regrole
+            UNION SELECT 'default ' || x.defaclobjtype::text || ' ' || a.privilege_type FROM pg_default_acl x, aclexplode(x.defaclacl) a WHERE a.grantee = 'ariva_validation_reader'::regrole
+            ORDER BY 1
+            """)).Should().Equal(["relation queue_minute_shadow SELECT", "schema public USAGE"], "SELECT on the shadow and USAGE on schema public, nothing else");
+        (await RowsAsync(database, """
+            SELECT has_table_privilege('ariva_validation_reader', 'queue_minute', 'SELECT'), has_schema_privilege('ariva_validation_reader', 'public', 'CREATE'),
+                   has_table_privilege('ariva_validation_reader', 'queue_minute_shadow', 'INSERT, UPDATE, DELETE, TRUNCATE')
+            """)).Should().Equal(["False|False|False"]);
+    }
+
+    // ARV-117a security review (CWE-862, CWE-863), accepted residual (docs/product/decisions.md): a runtime session can learn
+    // one bit per minute, whether the shadow holds a number or a reason, with an UPDATE by key that trips
+    // ck_queue_minute_shadow_one (23514) and is rolled back. Pinned here: the probe yields 23514 exactly when the other one is
+    // held, and neither the message nor the row detail (asked for with Include Error Detail) carries the number, the
+    // reason or the flag; the probe that succeeds is rolled back and changes nothing.
+    [Fact]
+    public async Task RuntimeLogin_Should_LearnOnlyWhetherANumberIsHeld_When_ItProbesTheShadowCheck()
+    {
+        var database = await postgres.CreateDatabaseAsync(TestDatabase.StreamShadowProbe);
+        await new SqlScriptRunner(postgres.ConnectionString(database), NullLogger<SqlScriptRunner>.Instance).ApplyAsync(SqlScriptCatalog.Embedded(), Ct);
+        const string login = "it_runtime_shadow_probe";
+        var password = "rt-" + Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(12));
+        await using (var admin = new NpgsqlConnection(postgres.ConnectionString(database)))
+        {
+            await admin.OpenAsync(Ct);
+            await using var ensure = new NpgsqlCommand("SELECT ariva_ensure_runtime_login(@login, @password)", admin);
+            ensure.Parameters.AddWithValue("login", login);
+            ensure.Parameters.AddWithValue("password", password);
+            await ensure.ExecuteNonQueryAsync(Ct);
+        }
+
+        await RowsAsync(database, """
+            INSERT INTO queue_minute_shadow (zone_key, minute_utc, nowcast_minutes, no_service, nowcast_degraded, updated_on) VALUES
+                ('DMO/Q1', '2026-09-28T18:05:00Z', 17.375, NULL, true, now()),
+                ('DMO/Q1', '2026-09-28T18:06:00Z', NULL, 'NoThroughputData', true, now())
+            """);
+        var before = await RowsAsync(database, ShadowRows);
+
+        await using var runtime = new NpgsqlConnection(new NpgsqlConnectionStringBuilder(postgres.ConnectionString(database, login, password)) { IncludeErrorDetail = true }.ConnectionString);
+        await runtime.OpenAsync(Ct);
+        async Task<int> ProbeAsync([System.Diagnostics.CodeAnalysis.ConstantExpected] string sql)
+        {
+            await using var transaction = await runtime.BeginTransactionAsync(Ct);
+            try
+            {
+#pragma warning disable CA2100 // the probes are this test's literals
+                await using var command = new NpgsqlCommand(sql, runtime, transaction);
+#pragma warning restore CA2100
+                return await command.ExecuteNonQueryAsync(Ct);
+            }
+            finally
+            {
+                await transaction.RollbackAsync(Ct);
+            }
+        }
+
+        // A number is held: setting a reason trips the check, and nothing of the number, the reason or the flag comes back.
+        var onNumber = () => ProbeAsync("UPDATE queue_minute_shadow SET no_service = 'NothingOpen' WHERE zone_key = 'DMO/Q1' AND minute_utc = '2026-09-28T18:05:00Z'");
+        var numberError = (await onNumber.Should().ThrowAsync<PostgresException>()).Which;
+        numberError.SqlState.Should().Be("23514");
+        numberError.ConstraintName.Should().Be("ck_queue_minute_shadow_one");
+        numberError.Detail.Should().NotBeNull("the server's row detail is asked for, so its content is what is checked");
+        // The row detail lists the key columns and the column the statement set, with the prober's own value only.
+        numberError.Detail.Should().StartWith("Failing row contains (zone_key, minute_utc, no_service) = (DMO/Q1, ").And.EndWith(", NothingOpen).");
+        foreach (var text in new[] { numberError.MessageText, numberError.Detail, numberError.ToString() })
+            text.Should().NotContain("17.375").And.NotContain("17,375").And.NotContain("nowcast_minutes").And.NotContain("nowcast_degraded");
+
+        // A reason is held: the same probe passes (the one bit), is rolled back, and the opposite probe trips the check
+        // without revealing the reason.
+        (await ProbeAsync("UPDATE queue_minute_shadow SET no_service = 'NothingOpen' WHERE zone_key = 'DMO/Q1' AND minute_utc = '2026-09-28T18:06:00Z'")).Should().Be(1);
+        var onReason = () => ProbeAsync("UPDATE queue_minute_shadow SET nowcast_minutes = 1 WHERE zone_key = 'DMO/Q1' AND minute_utc = '2026-09-28T18:06:00Z'");
+        var reasonError = (await onReason.Should().ThrowAsync<PostgresException>()).Which;
+        reasonError.SqlState.Should().Be("23514");
+        reasonError.Detail.Should().StartWith("Failing row contains (zone_key, minute_utc, nowcast_minutes) = (DMO/Q1, ").And.EndWith(", 1).");
+        foreach (var text in new[] { reasonError.MessageText, reasonError.Detail, reasonError.ToString() })
+            text.Should().NotContain("NoThroughputData").And.NotContain("no_service").And.NotContain("nowcast_degraded");
+
+        (await RowsAsync(database, ShadowRows)).Should().Equal(before, "every probe was rolled back");
+    }
+
+    // ARV-117 reviews and ARV-117a (CWE-862, CWE-863): no database object reads the shadow table or the sensor-only desk
+    // minutes. The runtime role cannot create views, functions, triggers or publications (0001), but a migration could,
+    // and an object runs with its owner's rights, so every view, materialized view, continuous aggregate or rule (through
+    // pg_rewrite) and every SQL-standard function (through pg_proc) that depends on either table or one of its chunks, at
+    // any column or the whole row (refobjsubid 0), is listed and compared with an exact allowlist, empty today: a new
+    // dependent must change this test on purpose (and, if it reads the shadow, bring ARV-104f's authorization). Also no
+    // user trigger and no publication over either table (the third ARV-117 review's optional hardening). queue_minute
+    // itself no longer holds the shadow (script 0043 dropped its columns), so it is no longer listed here.
+    private const string ShadowDependents = """
         SELECT label FROM (
-            SELECT DISTINCT CASE
-                    WHEN x.kind = 'function' THEN 'function ' || x.nspname || '.' || x.relname
-                    WHEN p.user_view_name IS NOT NULL THEN p.user_view_schema || '.' || p.user_view_name || ' (continuous aggregate partial view)'
-                    WHEN v.user_view_name IS NOT NULL THEN v.user_view_schema || '.' || v.user_view_name || ' (continuous aggregate direct view)'
-                    ELSE x.nspname || '.' || x.relname
-                END || CASE WHEN x.rulename IS NOT NULL AND x.rulename <> '_RETURN' THEN ' rule ' || x.rulename ELSE '' END AS label
+            SELECT DISTINCT CASE WHEN x.kind = 'function' THEN 'function ' || x.nspname || '.' || x.relname ELSE x.nspname || '.' || x.relname END
+                   || CASE WHEN x.rulename IS NOT NULL AND x.rulename <> '_RETURN' THEN ' rule ' || x.rulename ELSE '' END
+                   || ' on ' || x.target AS label
             FROM (
-                SELECT n.nspname, c.relname, r.rulename, 'rule' AS kind
+                SELECT n.nspname, c.relname, r.rulename, 'rule' AS kind, t.target
                 FROM pg_depend d
                 JOIN pg_rewrite r ON r.oid = d.objid
                 JOIN pg_class c ON c.oid = r.ev_class
                 JOIN pg_namespace n ON n.oid = c.relnamespace
-                WHERE d.classid = 'pg_rewrite'::regclass AND d.refclassid = 'pg_class'::regclass AND d.refobjid IN (
-                    SELECT 'queue_minute'::regclass UNION SELECT inhrelid FROM pg_inherits WHERE inhparent = 'queue_minute'::regclass)
+                JOIN (SELECT 'queue_minute_shadow' AS target, 'queue_minute_shadow'::regclass AS oid
+                      UNION ALL SELECT 'queue_minute_shadow', inhrelid FROM pg_inherits WHERE inhparent = 'queue_minute_shadow'::regclass
+                      UNION ALL SELECT 'desk_sensor_minute', 'desk_sensor_minute'::regclass
+                      UNION ALL SELECT 'desk_sensor_minute', inhrelid FROM pg_inherits WHERE inhparent = 'desk_sensor_minute'::regclass) t ON t.oid = d.refobjid
+                WHERE d.classid = 'pg_rewrite'::regclass AND d.refclassid = 'pg_class'::regclass
                 UNION
-                SELECT n.nspname, p.proname, NULL, 'function'
+                SELECT n.nspname, p.proname, NULL, 'function', t.target
                 FROM pg_depend d
                 JOIN pg_proc p ON p.oid = d.objid
                 JOIN pg_namespace n ON n.oid = p.pronamespace
-                WHERE d.classid = 'pg_proc'::regclass AND d.refclassid = 'pg_class'::regclass AND d.refobjid IN (
-                    SELECT 'queue_minute'::regclass UNION SELECT inhrelid FROM pg_inherits WHERE inhparent = 'queue_minute'::regclass)
+                JOIN (SELECT 'queue_minute_shadow' AS target, 'queue_minute_shadow'::regclass AS oid
+                      UNION ALL SELECT 'queue_minute_shadow', inhrelid FROM pg_inherits WHERE inhparent = 'queue_minute_shadow'::regclass
+                      UNION ALL SELECT 'desk_sensor_minute', 'desk_sensor_minute'::regclass
+                      UNION ALL SELECT 'desk_sensor_minute', inhrelid FROM pg_inherits WHERE inhparent = 'desk_sensor_minute'::regclass) t ON t.oid = d.refobjid
+                WHERE d.classid = 'pg_proc'::regclass AND d.refclassid = 'pg_class'::regclass
+                UNION
+                SELECT n.nspname, g.tgname, NULL, 'trigger', c.relname
+                FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE NOT g.tgisinternal AND g.tgname <> 'ts_insert_blocker' AND c.oid IN ('queue_minute_shadow'::regclass, 'desk_sensor_minute'::regclass)
+                UNION
+                SELECT 'publication', p.pubname, NULL, 'publication', r.prrelid::regclass::text
+                FROM pg_publication_rel r JOIN pg_publication p ON p.oid = r.prpubid
+                WHERE r.prrelid IN ('queue_minute_shadow'::regclass, 'desk_sensor_minute'::regclass)
+                UNION
+                SELECT 'publication', p.pubname, NULL, 'publication', 'every table' FROM pg_publication p WHERE p.puballtables
             ) x
-            LEFT JOIN _timescaledb_catalog.continuous_agg p ON x.kind = 'rule' AND p.partial_view_schema = x.nspname AND p.partial_view_name = x.relname
-            LEFT JOIN _timescaledb_catalog.continuous_agg v ON x.kind = 'rule' AND v.direct_view_schema = x.nspname AND v.direct_view_name = x.relname
         ) s
         ORDER BY label COLLATE "C"
         """;
 
-    // Every dependent of queue_minute after the migrations (captured once on pg17 with TimescaleDB 2.30): the internal views
-    // of queue_minute_15m (script 0018), which read no shadow column (it names its columns; 0041 came later).
-    private static readonly string[] AllowedQueueMinuteDependents =
-    [
-        "public.queue_minute_15m (continuous aggregate direct view)",
-        "public.queue_minute_15m (continuous aggregate partial view)"
-    ];
+    // Every dependent of the two tables after the migrations (pg17, TimescaleDB 2.30): none.
+    private static readonly string[] AllowedShadowDependents = [];
 
     [Fact]
-    public async Task Migrations_Should_LeaveNoViewOverTheShadowColumns_When_Applied()
+    public async Task Migrations_Should_LeaveNoReadPathOverTheShadowOrTheSensorOnlyDeskMinutes_When_Applied()
     {
         var database = await DatabaseAsync(TestDatabase.StreamShadowViews);
         await using var connection = new NpgsqlConnection(postgres.ConnectionString(database));
@@ -688,7 +965,7 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
 
         async Task<List<string>> DependentsAsync(NpgsqlTransaction transaction = null)
         {
-            await using var command = new NpgsqlCommand(QueueMinuteDependents, connection, transaction);
+            await using var command = new NpgsqlCommand(ShadowDependents, connection, transaction);
             var names = new List<string>();
             await using var reader = await command.ExecuteReaderAsync(Ct);
             while (await reader.ReadAsync(Ct))
@@ -696,24 +973,27 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
             return names;
         }
 
-        (await DependentsAsync()).Should().Equal(AllowedQueueMinuteDependents,
-            "every view, materialized view, continuous aggregate, rule or SQL function over queue_minute is allowlisted on purpose");
+        (await DependentsAsync()).Should().Equal(AllowedShadowDependents,
+            "no view, materialized view, continuous aggregate, rule, SQL function, trigger or publication reads the shadow or the sensor-only desk minutes");
 
-        // The check bites, whatever the dependent reads: a wildcard view, a materialized view naming a shadow column, three
-        // whole-row reads (refobjsubid 0), a SQL-standard function and a view over one of the hypertable's chunks are all
-        // caught, then rolled back.
+        // The check bites, whatever the dependent reads: a wildcard view, a materialized view naming a shadow value, whole-row
+        // reads (refobjsubid 0), a SQL-standard function, a view over one of the hypertable's chunks, a trigger and a
+        // publication are all caught, then rolled back.
         await using (var transaction = await connection.BeginTransactionAsync(Ct))
         {
             foreach (var ddl in new[]
                      {
-                         "CREATE VIEW it_shadow_leak AS SELECT * FROM queue_minute",
-                         "CREATE MATERIALIZED VIEW it_shadow_leak_m AS SELECT zone_key, max(shadow_nowcast_minutes) AS m FROM queue_minute GROUP BY zone_key WITH NO DATA",
-                         "CREATE VIEW it_shadow_row_to_json AS SELECT row_to_json(q) AS r FROM queue_minute q",
-                         "CREATE VIEW it_shadow_whole_row AS SELECT q FROM queue_minute q",
-                         "CREATE VIEW it_shadow_jsonb_agg AS SELECT jsonb_agg(q ORDER BY q.minute_utc) AS r FROM queue_minute q",
-                         "CREATE FUNCTION it_shadow_function() RETURNS json LANGUAGE sql STABLE RETURN (SELECT json_agg(q) FROM queue_minute q)",
-                         "INSERT INTO queue_minute (zone_key, minute_utc, profile_version, updated_on) VALUES ('DMO/IT', '2026-09-28T18:05:00Z', 1, now())",
-                         "DO $$ BEGIN EXECUTE format('CREATE VIEW it_shadow_chunk AS SELECT to_jsonb(c) AS r FROM %s c', (SELECT show_chunks('queue_minute') LIMIT 1)); END $$"
+                         "CREATE VIEW it_shadow_leak AS SELECT * FROM queue_minute_shadow",
+                         "CREATE MATERIALIZED VIEW it_shadow_leak_m AS SELECT zone_key, max(nowcast_minutes) AS m FROM queue_minute_shadow GROUP BY zone_key WITH NO DATA",
+                         "CREATE VIEW it_shadow_row_to_json AS SELECT row_to_json(q) AS r FROM queue_minute_shadow q",
+                         "CREATE VIEW it_shadow_whole_row AS SELECT q FROM queue_minute_shadow q",
+                         "CREATE FUNCTION it_shadow_function() RETURNS json LANGUAGE sql STABLE RETURN (SELECT json_agg(q) FROM queue_minute_shadow q)",
+                         "CREATE VIEW it_desk_sensor AS SELECT desk_code, idle_seconds FROM desk_sensor_minute",
+                         "INSERT INTO queue_minute_shadow (zone_key, minute_utc, nowcast_minutes, nowcast_degraded, updated_on) VALUES ('DMO/IT', '2026-09-28T18:05:00Z', 1, true, now())",
+                         "DO $$ BEGIN EXECUTE format('CREATE VIEW it_shadow_chunk AS SELECT to_jsonb(c) AS r FROM %s c', (SELECT show_chunks('queue_minute_shadow') LIMIT 1)); END $$",
+                         "CREATE FUNCTION it_copy() RETURNS trigger LANGUAGE plpgsql AS $f$ BEGIN RETURN NEW; END $f$",
+                         "CREATE TRIGGER it_shadow_trigger AFTER INSERT ON queue_minute_shadow FOR EACH ROW EXECUTE FUNCTION it_copy()",
+                         "CREATE PUBLICATION it_shadow_publication FOR TABLE desk_sensor_minute"
                      })
             {
 #pragma warning disable CA2100 // literal DDL above
@@ -724,13 +1004,14 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
 
             (await DependentsAsync(transaction)).Should().Equal(
             [
-                "function public.it_shadow_function", "public.it_shadow_chunk", "public.it_shadow_jsonb_agg", "public.it_shadow_leak", "public.it_shadow_leak_m",
-                "public.it_shadow_row_to_json", "public.it_shadow_whole_row", .. AllowedQueueMinuteDependents
+                "function public.it_shadow_function on queue_minute_shadow", "public.it_desk_sensor on desk_sensor_minute", "public.it_shadow_chunk on queue_minute_shadow",
+                "public.it_shadow_leak on queue_minute_shadow", "public.it_shadow_leak_m on queue_minute_shadow", "public.it_shadow_row_to_json on queue_minute_shadow",
+                "public.it_shadow_trigger on queue_minute_shadow", "public.it_shadow_whole_row on queue_minute_shadow", "publication.it_shadow_publication on desk_sensor_minute"
             ]);
             await transaction.RollbackAsync(Ct);
         }
 
-        (await DependentsAsync()).Should().Equal(AllowedQueueMinuteDependents);
+        (await DependentsAsync()).Should().Equal(AllowedShadowDependents);
     }
 
     [Fact]
@@ -857,6 +1138,15 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
     [InlineData("INSERT INTO desk_zone_reading (id, site_code, desk_code, source, reading_utc, occupancy, degraded, zone_key, profile_version, written_utc) VALUES (gen_random_uuid(), 'DMO', 'DMO/IMM/X', 'StaffZone', now(), 51, false, 'DMO/Q1', 7, now())", "23514")]
     [InlineData("INSERT INTO desk_zone_reading (id, site_code, desk_code, source, reading_utc, occupancy, degraded, zone_key, profile_version, written_utc) VALUES (gen_random_uuid(), 'DMO', 'XS2/IMM/V1', 'StaffZone', now(), 1, false, 'DMO/Q1', 7, now())", "23514")]
     [InlineData("INSERT INTO desk_zone_reading (id, site_code, desk_code, source, reading_utc, occupancy, degraded, zone_key, profile_version, written_utc) VALUES (gen_random_uuid(), 'DMO', 'DMO/IMM/X', 'Session', now(), 1, false, 'DMO/Q1', 7, now())", "23514")]
+    // ARV-117a: the sensor-only desk minutes (script 0044) and the shadow table (0043).
+    [InlineData("DELETE FROM desk_sensor_minute", "42501")]
+    [InlineData("TRUNCATE desk_sensor_minute", "42501")]
+    [InlineData("INSERT INTO desk_sensor_minute (desk_code, minute_utc, closed_seconds, idle_seconds, serving_seconds, paused_seconds, unknown_seconds, degraded, updated_on) VALUES ('DMO/IMM/X', now(), 0, 61, 0, 0, 0, false, now())", "23514")]
+    [InlineData("INSERT INTO desk_sensor_minute (desk_code, minute_utc, closed_seconds, idle_seconds, serving_seconds, paused_seconds, unknown_seconds, degraded, updated_on) VALUES ('DMO/IMM/X', now(), 30, 30, 30, 0, 0, false, now())", "23514")]
+    [InlineData("INSERT INTO desk_sensor_minute (desk_code, minute_utc, closed_seconds, idle_seconds, serving_seconds, paused_seconds, unknown_seconds, degraded, updated_on) VALUES ('NOSITE', now(), 0, 60, 0, 0, 0, false, now())", "23514")]
+    [InlineData("SELECT nowcast_minutes FROM queue_minute_shadow", "42501")]
+    [InlineData("DELETE FROM queue_minute_shadow", "42501")]
+    [InlineData("TRUNCATE queue_minute_shadow", "42501")]
     [InlineData("DELETE FROM zone_health_bin", "42501")]
     [InlineData("TRUNCATE zone_health_bin", "42501")]
     [InlineData("UPDATE zone_health_bin SET conservation_residual = 0, occupancy_start = 0, occupancy_end = 0 WHERE status = 'Final'", "23001")]

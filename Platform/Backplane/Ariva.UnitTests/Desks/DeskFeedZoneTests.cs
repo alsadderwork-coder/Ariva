@@ -97,4 +97,20 @@ public sealed class DeskFeedZoneTests
         new DeskFeedSettings().Engine.SensorPauseAfter.Should().Be(TimeSpan.FromSeconds(60), "Proposed, pending the owner");
         new DeskFeedSettings().Engine.PauseAfter.Should().Be(TimeSpan.FromMinutes(3), "T1 with a login source is unchanged");
     }
+
+    [Theory]
+    [InlineData(99, false)]
+    [InlineData(100, true)]
+    [InlineData(120_000, true)]
+    [InlineData(120_001, false)]
+    public void Settings_Should_BoundTheSensorMinutesPerRead_When_Configured(int minutes, bool valid)
+    {
+        var problems = new DeskFeedSettings { MaxSensorMinutesPerRead = minutes }.Problems().ToList();
+
+        if (valid)
+            problems.Should().BeEmpty();
+        else
+            problems.Should().ContainSingle().Which.Should().Contain("MaxSensorMinutesPerRead");
+        new DeskFeedSettings().MaxSensorMinutesPerRead.Should().Be(120_000, "the default is the ceiling");
+    }
 }

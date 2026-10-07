@@ -100,6 +100,105 @@ public sealed class ShadowNowcastTests
         bad.Should().Throw<ArgumentOutOfRangeException>();
     }
 
+    #region ARV-117a: the sensor-only desk engine's minutes
+
+    // Six desks with AMAN codes at an all-AMAN site, AMAN live: the published engine has them open through their sessions
+    // (no sensor-derived seconds), and the sensor-only engine has its own minute for each from the zones alone.
+    private static IEnumerable<DeskMinuteSample> AmanDesksWithZones(Func<int, DeskSensorSample> zones, int count = 6, int minutes = 5) =>
+        Enumerable.Range(0, count).SelectMany(d => Enumerable.Range(0, minutes).Select(m =>
+            Minute($"AUH/IMM/D{d:00}", m, sensor: 0, transactions: 2) with { Sensor = zones(d) }));
+
+    [Fact]
+    public void Shadow_Should_TakeNOpenFromTheZones_When_AmanIsLiveAtAnAllAmanSite()
+    {
+        // F8: Q = 29, n_open = 6, c = 1.5 (AMAN's lane cycle time): the published nowcast is 7.5 minutes, 7.89 with 18 exits
+        // in 5 minutes and beta 0.5. The sensor-only engine sees the six desks open from their staff and service zones, so
+        // the shadow's desk term is n_open = 6 from the zones (not "no term" as in ARV-117), with no cycle time: the F8
+        // fallback, the exit term alone (30 / 3.6), flagged. The published nowcast is unchanged by the sensor minutes.
+        var open = AmanDesksWithZones(_ => new DeskSensorSample(60, 0, false)).ToList();
+        var term = DeskTerms.Compute(open, 5, T.AddMinutes(10), laneCycleMinutes: 1.5);
+
+        term.SensorOnly.Should().Be(new DeskTerm(T.AddMinutes(4), 6, null, false, 6), "n_open from the zones while AMAN is live");
+        var (published, shadow) = Both(term);
+        published.Minutes.Should().BeApproximately(7.5, 1e-9);
+        shadow.NoService.Should().Be(NoServiceReason.NoThroughputData, "a desk term without a cycle time and no exit rate measure no throughput");
+        var (blend, exitsOnly) = Both(term, exits: 18);
+        Math.Round(blend.Minutes!.Value, 2).Should().Be(7.89);
+        exitsOnly.Minutes.Should().BeApproximately(30 / 3.6, 1e-9);
+        exitsOnly.Degraded.Should().BeTrue();
+
+        // The published term is exactly the one without sensor minutes (ARV-117's input).
+        var without = DeskTerms.Compute(open.Select(m => m with { Sensor = null }), 5, T.AddMinutes(10), laneCycleMinutes: 1.5);
+        (term with { SensorOnly = null }).Should().Be(without with { SensorOnly = null }, "the sensor-only minutes never reach the published term");
+        without.SensorOnly.Should().BeNull("before ARV-117a the shadow saw no desk at this site while AMAN was live");
+        Both(term, exits: 18).Published.Should().Be(Both(without, exits: 18).Published);
+    }
+
+    [Fact]
+    public void Shadow_Should_FollowTheZonesNotAman_When_TheyDisagree()
+    {
+        // AMAN keeps six desks logged in (published n_open = 6, 7.5 minutes); the zones show only four staffed, then none.
+        var four = DeskTerms.Compute(AmanDesksWithZones(d => new DeskSensorSample(d < 4 ? 60 : 0, 0, false)), 5, T.AddMinutes(10), laneCycleMinutes: 1.5);
+        four.OpenServers.Should().Be(6);
+        four.SensorOnly.Should().Be(new DeskTerm(T.AddMinutes(4), 4, null, false, 6));
+        Both(four).Published.Minutes.Should().BeApproximately(7.5, 1e-9);
+
+        // F8 n_open = 0: the zones show every desk closed, so the shadow has no service while AMAN's nowcast is 7.5.
+        var none = DeskTerms.Compute(AmanDesksWithZones(_ => new DeskSensorSample(0, 0, false)), 5, T.AddMinutes(10), laneCycleMinutes: 1.5);
+        var (published, shadow) = Both(none, exits: 18);
+        Math.Round(published.Minutes!.Value, 2).Should().Be(7.89);
+        shadow.NoService.Should().Be(NoServiceReason.NothingOpen, "every desk closed by its zones is n_open = 0 (F8: no service)");
+    }
+
+    [Fact]
+    public void Shadow_Should_FlagOrDropTheTerm_When_TheSensorMinutesAreUnknownOrDegraded()
+    {
+        // A desk whose zones are silent (Unknown for the minute) or flagged flags the term; with none open from the zones
+        // and one Unknown there is no term, never "nothing open". The published minute's own flag no longer matters for a
+        // desk with a sensor minute.
+        var silent = DeskTerms.Compute(AmanDesksWithZones(d => new DeskSensorSample(d < 3 ? 60 : 0, d == 5 ? 60 : 0, false)), 5, T.AddMinutes(10), 1.5);
+        silent.SensorOnly.Should().Be(new DeskTerm(T.AddMinutes(4), 3, null, true, 6));
+        var flagged = DeskTerms.Compute(AmanDesksWithZones(d => new DeskSensorSample(60, 0, d == 0)), 5, T.AddMinutes(10), 1.5);
+        flagged.SensorOnly.Should().Be(new DeskTerm(T.AddMinutes(4), 6, null, true, 6), "a flagged minute still counts open time, and flags the term");
+        DeskTerms.Compute(AmanDesksWithZones(_ => new DeskSensorSample(0, 60, true)), 5, T.AddMinutes(10), 1.5).SensorOnly
+            .Should().BeNull("no desk open from the zones and every one Unknown: n_open is not known");
+        DeskTerms.Compute(AmanDesksWithZones(_ => new DeskSensorSample(double.NaN, 0, false)), 5, T.AddMinutes(10), 1.5).SensorOnly
+            .Should().BeNull("a sensor minute that is not a number proves nothing");
+        DeskTerms.SensorOnly([Minute("A", 0, degraded: true) with { Sensor = new DeskSensorSample(60, 0, false) }], 5, T.AddMinutes(1))
+            .Should().Be(new DeskTerm(T, 1, null, false, 1), "AMAN's flag on the published minute is AMAN's, not the zones'");
+
+        // A desk without zones (AMAN only) beside desks with sensor minutes keeps ARV-117's rule: open through AMAN only, so
+        // Unknown to the shadow, which flags the term.
+        List<DeskMinuteSample> mixed = [.. AmanDesksWithZones(_ => new DeskSensorSample(60, 0, false), count: 2, minutes: 1), Minute("AUH/IMM/X", 0, sensor: 0)];
+        DeskTerms.SensorOnly(mixed, 5, T.AddMinutes(1)).Should().Be(new DeskTerm(T, 2, null, true, 3));
+    }
+
+    [Fact]
+    public void Shadow_Should_NotMove_When_AmanChangesAndTheSensorMinutesStay()
+    {
+        // 400 random desk sets with sensor-only minutes: AMAN's inputs (its lane cycle time, transactions, open and Unknown
+        // seconds, the published flag and sensor-derived seconds) change at random; the shadow term never moves.
+        var random = new Seeded(1171);
+        for (var k = 0; k < 400; k++)
+        {
+            var desks = random.Next(1, 8);
+            var sensors = Enumerable.Range(0, desks).Select(_ => new DeskSensorSample(random.Next(0, 61), random.Next(3) == 0 ? random.Next(0, 61) : 0, random.Next(5) == 0))
+                .ToList();
+            IEnumerable<DeskMinuteSample> Aman() => Enumerable.Range(0, desks).Select(d =>
+            {
+                var serving = random.Next(0, 61);
+                return new DeskMinuteSample($"D{d}", T, random.Next(0, 61 - serving), serving, random.Next(0, 30), random.Next(0, 9), random.Next(2) == 0,
+                    random.Next(0, 61), sensors[d]);
+            }).ToList();
+
+            var first = DeskTerms.SensorOnly(Aman(), 5, T.AddMinutes(1));
+            for (var again = 0; again < 3; again++)
+                DeskTerms.SensorOnly(Aman(), 5, T.AddMinutes(1)).Should().Be(first, "set {0}: only AMAN's inputs changed", k);
+        }
+    }
+
+    #endregion
+
     [Fact]
     public void Inputs_Should_DifferOnlyInTheDeskTerm_When_BuiltFromOneQueueInput()
     {

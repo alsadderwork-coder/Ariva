@@ -14,8 +14,10 @@ namespace Ariva.Infra.Streaming;
 /// (<c>desk_minute</c>, written by the desk feed under the key site/checkpoint/desk) over the last
 /// <see cref="LookbackMinutes"/> give n_open, and AMAN's interval statistics of the same desks (<c>border_desk_interval</c>)
 /// over the exit window the lane cycle time (F10, <see cref="Ariva.Core.Desks.LaneCycle"/>): together a
-/// <see cref="DeskTerm"/> (<see cref="DeskTerms"/>), with its sensor-only part from the minutes' sensor-derived seconds for
-/// the shadow nowcast (ARV-117, <see cref="DeskTerms.SensorOnly"/>). A zone without a lane, or
+/// <see cref="DeskTerm"/> (<see cref="DeskTerms"/>), with its sensor-only part for the shadow nowcast (ARV-117,
+/// <see cref="DeskTerms.SensorOnly"/>) from the sensor-only desk engine's minutes of the same desks
+/// (<c>desk_sensor_minute</c>, ARV-117a; the only reader of that table besides the validation comparison), or the
+/// minutes' sensor-derived seconds for a desk without one. A zone without a lane, or
 /// whose desks have no recent minute, has none and its nowcast stays on the exit rate. Parameterised SQL only.
 /// </summary>
 public class DeskTermSource(DatabaseSettings database, TimeProvider timeProvider, ILogger<DeskTermSource> logger = null)
@@ -57,13 +59,16 @@ public class DeskTermSource(DatabaseSettings database, TimeProvider timeProvider
                      WHERE q.lane = ANY(string_to_array(COALESCE(d.lane_category_codes, ''), ','))
                 )
                 (SELECT 'minute' AS what, ds.zone, m.desk_code, m.minute_utc, m.idle_seconds::float8, m.serving_seconds::float8,
-                        m.unknown_seconds::float8, m.transactions::int, m.degraded, m.sensor_derived_seconds::float8
+                        m.unknown_seconds::float8, m.transactions::int, m.degraded, m.sensor_derived_seconds::float8,
+                        s.desk_code IS NOT NULL AS sensed, (s.idle_seconds + s.serving_seconds)::float8, s.unknown_seconds::float8, s.degraded
                    FROM desks ds JOIN desk_minute m ON m.desk_code = ds.desk_key
+                   LEFT JOIN desk_sensor_minute s ON s.desk_code = m.desk_code AND s.minute_utc = m.minute_utc
                   WHERE m.minute_utc >= @from AND m.minute_utc <= @to
                   ORDER BY m.minute_utc DESC
                   LIMIT @max)
                 UNION ALL
-                (SELECT 'interval', ds.zone, NULL, i.interval_start_utc, i.mean_cycle_seconds::float8, 0, 0, i.transactions_processed::int, false, 0::float8
+                (SELECT 'interval', ds.zone, NULL, i.interval_start_utc, i.mean_cycle_seconds::float8, 0, 0, i.transactions_processed::int, false, 0::float8,
+                        false, NULL, NULL, NULL
                    FROM desks ds JOIN border_desk_interval i ON i.desk_id = ds.desk_id AND i.site_code = @site
                   WHERE i.interval_start_utc >= @cycleFrom AND i.interval_start_utc <= @to
                   ORDER BY i.interval_start_utc DESC
@@ -87,7 +92,9 @@ public class DeskTermSource(DatabaseSettings database, TimeProvider timeProvider
                         intervals.Add((zone, reader.GetDouble(4), reader.GetInt32(7)));
                     else
                         minutes.Add((zone, new DeskMinuteSample(reader.GetString(2), DateTime.SpecifyKind(reader.GetDateTime(3), DateTimeKind.Utc),
-                            reader.GetDouble(4), reader.GetDouble(5), reader.GetDouble(6), reader.GetInt32(7), reader.GetBoolean(8), reader.GetDouble(9))));
+                            reader.GetDouble(4), reader.GetDouble(5), reader.GetDouble(6), reader.GetInt32(7), reader.GetBoolean(8), reader.GetDouble(9),
+                            // ARV-117a: the sensor-only engine's minute of the same desk, for the shadow's desk term only.
+                            reader.GetBoolean(10) ? new DeskSensorSample(reader.GetDouble(11), reader.GetDouble(12), reader.GetBoolean(13)) : null)));
                 }
             }
 

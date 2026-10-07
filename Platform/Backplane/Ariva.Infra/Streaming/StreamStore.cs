@@ -437,7 +437,7 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
             CREATE TEMP TABLE stage_queue_live (zone_key varchar(220), minute_utc timestamptz, profile_version integer, queue_length integer,
                 length_from_sensors boolean, length_degraded boolean, nowcast_minutes double precision, throughput_per_minute double precision,
                 no_service varchar(20), nowcast_degraded boolean, shadow_nowcast_minutes double precision, shadow_no_service varchar(20),
-                shadow_nowcast_degraded boolean) ON COMMIT DROP
+                shadow_nowcast_degraded boolean, PRIMARY KEY (zone_key, minute_utc)) ON COMMIT DROP
             """, ct);
         await using (var copy = await connection.BeginBinaryImportAsync("COPY stage_queue_live FROM STDIN (FORMAT BINARY)", ct))
         {
@@ -457,14 +457,15 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
                 else
                     await copy.WriteNullAsync(ct);
                 await copy.WriteAsync(l.NowcastDegraded, NpgsqlDbType.Boolean, ct);
-                // ARV-117: the shadow nowcast without AMAN inputs, in the same row (written only; read by the validation comparison).
+                // ARV-117: the shadow nowcast without AMAN inputs, staged with the published row and written to its own table
+                // below (ARV-117a; written only, read by the validation comparison).
                 await Nullable(copy, l.Shadow?.Minutes, ct);
                 if (l.Shadow?.NoService is { } shadowReason)
                     await copy.WriteAsync(shadowReason.ToString(), NpgsqlDbType.Varchar, ct);
                 else
                     await copy.WriteNullAsync(ct);
-                // The flag only with a number or a reason (ck_queue_minute_shadow_flag): a shadow with neither, which
-                // Nowcast.Compute never returns, is written as no shadow rather than refused with the whole checkpoint.
+                // The flag only with a number or a reason: a shadow with neither, which Nowcast.Compute never returns, is
+                // written as no shadow (no row, ck_queue_minute_shadow_one) rather than refused with the whole checkpoint.
                 if (l.Shadow is { } shadow && (shadow.Minutes is not null || shadow.NoService is not null))
                     await copy.WriteAsync(shadow.Degraded, NpgsqlDbType.Boolean, ct);
                 else
@@ -474,18 +475,34 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
             await copy.CompleteAsync(ct);
         }
 
-        await using var upsert = new NpgsqlCommand("""
+        await using (var upsert = new NpgsqlCommand("""
             INSERT INTO queue_minute (zone_key, minute_utc, profile_version, queue_length, length_from_sensors, length_degraded, nowcast_minutes,
-                throughput_per_minute, no_service, nowcast_degraded, shadow_nowcast_minutes, shadow_no_service, shadow_nowcast_degraded, updated_on)
+                throughput_per_minute, no_service, nowcast_degraded, updated_on)
             SELECT zone_key, minute_utc, profile_version, queue_length, length_from_sensors, length_degraded, nowcast_minutes,
-                throughput_per_minute, no_service, nowcast_degraded, shadow_nowcast_minutes, shadow_no_service, shadow_nowcast_degraded, @now FROM stage_queue_live
+                throughput_per_minute, no_service, nowcast_degraded, @now FROM stage_queue_live
             ON CONFLICT (zone_key, minute_utc) DO UPDATE SET queue_length = EXCLUDED.queue_length, length_from_sensors = EXCLUDED.length_from_sensors,
                 length_degraded = EXCLUDED.length_degraded, nowcast_minutes = EXCLUDED.nowcast_minutes, throughput_per_minute = EXCLUDED.throughput_per_minute,
-                no_service = EXCLUDED.no_service, nowcast_degraded = EXCLUDED.nowcast_degraded, shadow_nowcast_minutes = EXCLUDED.shadow_nowcast_minutes,
-                shadow_no_service = EXCLUDED.shadow_no_service, shadow_nowcast_degraded = EXCLUDED.shadow_nowcast_degraded, updated_on = EXCLUDED.updated_on
+                no_service = EXCLUDED.no_service, nowcast_degraded = EXCLUDED.nowcast_degraded, updated_on = EXCLUDED.updated_on
+            """, connection))
+        {
+            upsert.Parameters.AddWithValue("now", now);
+            await upsert.ExecuteNonQueryAsync(ct);
+        }
+
+        // ARV-117a: the shadow nowcast in its own table (script 0043), in the same transaction as the published row. The
+        // runtime role may write it but read only its key columns, so the upsert never reads a value column: a reference
+        // to EXCLUDED.<column> needs SELECT on that column of the table, so a conflicting row takes its new values from
+        // the staging table by key (a correlated subquery over the key columns, indexed by the stage's primary key).
+        await using var shadowUpsert = new NpgsqlCommand("""
+            INSERT INTO queue_minute_shadow (zone_key, minute_utc, nowcast_minutes, no_service, nowcast_degraded, updated_on)
+            SELECT zone_key, minute_utc, shadow_nowcast_minutes, shadow_no_service, shadow_nowcast_degraded, @now FROM stage_queue_live
+             WHERE shadow_nowcast_degraded IS NOT NULL
+            ON CONFLICT (zone_key, minute_utc) DO UPDATE SET (nowcast_minutes, no_service, nowcast_degraded, updated_on) =
+                (SELECT s.shadow_nowcast_minutes, s.shadow_no_service, s.shadow_nowcast_degraded, @now FROM stage_queue_live s
+                  WHERE s.zone_key = queue_minute_shadow.zone_key AND s.minute_utc = queue_minute_shadow.minute_utc)
             """, connection);
-        upsert.Parameters.AddWithValue("now", now);
-        await upsert.ExecuteNonQueryAsync(ct);
+        shadowUpsert.Parameters.AddWithValue("now", now);
+        await shadowUpsert.ExecuteNonQueryAsync(ct);
     }
 
     private static async Task WriteBinsAsync(NpgsqlConnection connection, List<(string Zone, BinResult Bin)> rows, DateTime now, CancellationToken ct)
@@ -631,6 +648,46 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
                 idle_seconds = EXCLUDED.idle_seconds, serving_seconds = EXCLUDED.serving_seconds, paused_seconds = EXCLUDED.paused_seconds,
                 unknown_seconds = EXCLUDED.unknown_seconds, transactions = EXCLUDED.transactions, sensor_derived_seconds = EXCLUDED.sensor_derived_seconds,
                 present_seconds = EXCLUDED.present_seconds, degraded = EXCLUDED.degraded, updated_on = EXCLUDED.updated_on
+            """, ct);
+    }
+
+    /// <summary>
+    /// The sensor-only desk engine's closed minutes (ARV-117a, script 0044), written by the desk feed in the same
+    /// transaction as the published desk minutes: binary COPY into a staging table, then an upsert by desk and minute, so a
+    /// replayed minute rewrites the same row. Seconds in each state from the zones alone and the F11 flag; no transactions.
+    /// </summary>
+    internal static async Task WriteDeskSensorMinutesAsync(NpgsqlConnection connection, IReadOnlyList<DeskMinute> rows, DateTime now, CancellationToken ct)
+    {
+        await Execute(connection, """
+            CREATE TEMP TABLE stage_desk_sensor_minute (desk_code varchar(64), minute_utc timestamptz, closed_seconds double precision,
+                idle_seconds double precision, serving_seconds double precision, paused_seconds double precision, unknown_seconds double precision,
+                degraded boolean, updated_on timestamptz) ON COMMIT DROP
+            """, ct);
+        await using (var copy = await connection.BeginBinaryImportAsync("""
+            COPY stage_desk_sensor_minute (desk_code, minute_utc, closed_seconds, idle_seconds, serving_seconds, paused_seconds, unknown_seconds, degraded, updated_on)
+            FROM STDIN (FORMAT BINARY)
+            """, ct))
+        {
+            foreach (var d in rows.GroupBy(r => (r.DeskCode, r.MinuteUtc)).Select(g => g.Last()))
+            {
+                await copy.StartRowAsync(ct);
+                await copy.WriteAsync(d.DeskCode, NpgsqlDbType.Varchar, ct);
+                await copy.WriteAsync(Utc(d.MinuteUtc), NpgsqlDbType.TimestampTz, ct);
+                foreach (var span in new[] { d.Closed, d.Idle, d.Serving, d.Paused, d.Unknown })
+                    await copy.WriteAsync(Math.Clamp(span.TotalSeconds, 0, 60), NpgsqlDbType.Double, ct);
+                await copy.WriteAsync(d.Degraded, NpgsqlDbType.Boolean, ct);
+                await copy.WriteAsync(now, NpgsqlDbType.TimestampTz, ct);
+            }
+
+            await copy.CompleteAsync(ct);
+        }
+
+        await Execute(connection, """
+            INSERT INTO desk_sensor_minute (desk_code, minute_utc, closed_seconds, idle_seconds, serving_seconds, paused_seconds, unknown_seconds, degraded, updated_on)
+            SELECT desk_code, minute_utc, closed_seconds, idle_seconds, serving_seconds, paused_seconds, unknown_seconds, degraded, updated_on FROM stage_desk_sensor_minute
+            ON CONFLICT (desk_code, minute_utc) DO UPDATE SET closed_seconds = EXCLUDED.closed_seconds, idle_seconds = EXCLUDED.idle_seconds,
+                serving_seconds = EXCLUDED.serving_seconds, paused_seconds = EXCLUDED.paused_seconds, unknown_seconds = EXCLUDED.unknown_seconds,
+                degraded = EXCLUDED.degraded, updated_on = EXCLUDED.updated_on
             """, ct);
     }
 
