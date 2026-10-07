@@ -73,7 +73,9 @@ public sealed class FeedEmulatorTests
             var scenario = Enumerable.Range(1080, 60).Sum(m => Day.D[ScenarioModel.Q("A-" + lane)][m + ScenarioModel.Pre]);
             var reported = minutes.SelectMany(m => m.Desks).Where(d => d.DeskCode.StartsWith("IN", StringComparison.Ordinal) && d.LaneCategory == lane)
                 .Sum(d => d.DocumentsProcessed);
-            reported.Should().BeCloseTo((int)Math.Round(scenario), (uint)Math.Max(6, scenario * 0.08), $"{lane} documents over the hour");
+            // ARV-117c: a desk counts a transaction's family whole when it completes, so the hour's edges carry the families in
+            // progress and the work varies around the mean; the whole day adds up within 4 percent (AmanIntervalScenarioTests).
+            reported.Should().BeCloseTo((int)Math.Round(scenario), (uint)Math.Max(10, scenario * 0.12), $"{lane} documents over the hour");
         }
 
         minutes.SelectMany(m => m.Desks).Should().OnlyContain(d => d.IntervalSeconds == 60 && d.TransactionsProcessed <= d.DocumentsProcessed &&
