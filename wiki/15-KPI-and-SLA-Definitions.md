@@ -146,6 +146,24 @@ Reference contract (prototype, not contractual): P90 per 15-minute bin at most 1
 
 Rules: provisional breaches are shown but never counted; disputes apply to final breached bins only; when a dispute resolves, the evaluation is recomputed as a new revision; every evaluation records the contract version, the zone profile version per bin and the evidence pack hash. Penalty-grade data requires T3 tracks, or T1 counts validated against manual counts for that zone profile version.
 
+### Overflow minutes as a penalty KPI (Proposed)
+
+Proposed on 2026-10-07; each point is To confirm per contract (pilot list TC-78 to TC-82). Full rule: F17.
+
+- **Who is penalised**: the ground handler operating the zone's counters, not the airline. Reports list the flights checking in during each breached bin, so the handler can settle with its airlines.
+- **Which zones**: those the contract names. Immigration, emigration and e-gate zones are never in a penalty contract; they are reported and alerted only.
+- **Attribution**: from the AODB counter allocations overlapping the bin. One handler on the zone's counters: the bin is theirs. Two or more handlers, an unresolved counter code, or no allocation: manual review, never split automatically.
+- **Observation floor**: a bin needs at least the contract's minimum of observed minutes (Proposed 12 of 15). Below it the bin is a sensor outage, excluded and reported, never a clean bin.
+- **Staffed to plan**: a breached bin is excluded when every counter of the agreed staffing plan was open.
+- **A breach** is a 15-minute bin whose overflow minutes exceed the threshold; a long overflow is several breached bins.
+
+| Case | Result |
+|---|---|
+| 9 overflow minutes, 15 observed, threshold 5, one handler | Breach, attributed to that handler |
+| Same, 11 minutes observed, floor 12 | Excluded (sensor outage) |
+| Same, counters of two handlers allocated | Manual review, not counted |
+| Same, every planned counter open | Excluded (staffed to plan) |
+
 ## 5. Exclusions
 
 Types from the prototype; the allowed set is defined per contract (To confirm):
@@ -156,6 +174,7 @@ Types from the prototype; the allowed set is defined per contract (To confirm):
 | `SensorOutage` | A sensor outage over the zone lasted more than 5 minutes in the bin |
 | `ClosedOnAirportInstruction` | Counters were closed on the airport's instruction |
 | `FlightDisruption` | A flight disruption outside the handler's control |
+| `StaffedToPlan` | Every counter of the agreed staffing plan was open (Proposed, overflow minutes) |
 | `UpheldDispute` | The handler's dispute on the bin was upheld |
 
 An exclusion overlaps a bin when it starts before the bin ends and ends after the bin starts. Sensor outage exclusions are evidenced by the device health history, which is kept for the dispute window.
