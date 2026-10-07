@@ -12,14 +12,22 @@ public sealed record DeskTerm(DateTime AsOfMinuteUtc, int OpenServers, double? C
     /// only; null when the sensors say nothing about how many desks are open.
     /// </summary>
     public DeskTerm SensorOnly { get; init; }
+
+    /// <summary>
+    /// On the sensor-only part only (ARV-117b): the lane's sensor-only busy time over the sensor cycle time's window, as
+    /// aggregates (no desk key), from which the stream gives the shadow its cycle time with the queue's exits
+    /// (<see cref="SensorCycle"/>); null when the term was built without the sensor cycle time's settings.
+    /// </summary>
+    public SensorBusyWindow SensorBusy { get; init; }
 }
 
 /// <summary>
 /// One desk's minute as the sensor-only desk engine wrote it (ARV-117a, <c>desk_sensor_minute</c>): its open (Idle or
-/// Serving) and Unknown seconds and its F11 flag from the staff and service zones alone, whatever AMAN said. For the
-/// shadow nowcast's desk term only (<see cref="DeskTerms.SensorOnly"/>).
+/// Serving) and Unknown seconds and its F11 flag from the staff and service zones alone, whatever AMAN said, and
+/// (ARV-117b) its Serving seconds (staff present and the service zone occupied), the busy time of the sensor cycle time.
+/// For the shadow nowcast's desk term only (<see cref="DeskTerms.SensorOnly"/>).
 /// </summary>
-public sealed record DeskSensorSample(double OpenSeconds, double UnknownSeconds, bool Degraded)
+public sealed record DeskSensorSample(double OpenSeconds, double UnknownSeconds, bool Degraded, double ServingSeconds = 0)
 {
     /// <summary>The open seconds as a number of seconds of the minute (0 when not a finite number).</summary>
     public double Open => double.IsFinite(OpenSeconds) ? Math.Clamp(OpenSeconds, 0, 60) : 0;
@@ -58,10 +66,16 @@ public static class DeskTerms
 {
     private const double HalfMinuteSeconds = 30;
 
-    public static DeskTerm Compute(IEnumerable<DeskMinuteSample> minutes, int windowMinutes, DateTime notAfterUtc, double? laneCycleMinutes = null)
+    /// <summary>
+    /// The published term with its sensor-only part; with <paramref name="sensorCycle"/> the sensor-only part also carries
+    /// the busy time of the sensor cycle time's window (ARV-117b, <see cref="DeskTerm.SensorBusy"/>), which the published
+    /// term never reads.
+    /// </summary>
+    public static DeskTerm Compute(IEnumerable<DeskMinuteSample> minutes, int windowMinutes, DateTime notAfterUtc, double? laneCycleMinutes = null,
+        SensorCycleSettings sensorCycle = null)
     {
         var published = Published(minutes, windowMinutes, notAfterUtc, laneCycleMinutes);
-        return published is null ? null : published with { SensorOnly = SensorOnly(minutes, windowMinutes, notAfterUtc) };
+        return published is null ? null : published with { SensorOnly = SensorOnly(minutes, windowMinutes, notAfterUtc, sensorCycle) };
     }
 
     private static DeskTerm Published(IEnumerable<DeskMinuteSample> minutes, int windowMinutes, DateTime notAfterUtc, double? laneCycleMinutes)
@@ -107,13 +121,15 @@ public static class DeskTerms
     /// the published minute's sensor-derived seconds (F10 rows 6 and 7, ARV-117): a desk open only through AMAN (a
     /// session, a recent transaction) is not seen by the sensors, so it is treated as an Unknown desk is. An Unknown desk
     /// flags the term, and with no desk open from the sensors and any Unknown there is no term (n_open is not known,
-    /// which is not "nothing open"). c is null: AMAN's interval statistics and the
-    /// transactions the desk minutes count both come from AMAN, and the sensors give no service starts, so the nowcast
-    /// falls back as F8 does without a cycle time (the exit term alone, or no service when nothing is open; Proposed,
-    /// docs/product/decisions.md). Where every open desk minute is sensor-derived and no AMAN statistics exist (a site
-    /// without AMAN), the sensor-only term equals the published one. Pure.
+    /// which is not "nothing open"). c is null here: AMAN's interval statistics and the transactions the desk minutes count
+    /// both come from AMAN. Since ARV-117b the term carries, with <paramref name="sensorCycle"/>, the lane's sensor-only
+    /// busy time over the window ending at its minute (<see cref="DeskTerm.SensorBusy"/>), and the stream turns it into
+    /// the sensor cycle time with the queue's exits (<see cref="SensorCycle"/>);
+    /// without one the nowcast falls back as F8 does (the exit term alone, or no service when nothing is open). Where every
+    /// open desk minute is sensor-derived and no AMAN statistics exist (a site without AMAN), the sensor-only n_open equals
+    /// the published one. Pure.
     /// </summary>
-    public static DeskTerm SensorOnly(IEnumerable<DeskMinuteSample> minutes, int windowMinutes, DateTime notAfterUtc)
+    public static DeskTerm SensorOnly(IEnumerable<DeskMinuteSample> minutes, int windowMinutes, DateTime notAfterUtc, SensorCycleSettings sensorCycle = null)
     {
         ArgumentNullException.ThrowIfNull(minutes);
         if (windowMinutes is < 1 or > 60)
@@ -135,6 +151,9 @@ public static class DeskTerms
         var degraded = current.Count < latest.Count || unknown;
         if (open == 0 && unknown)
             return null;
-        return new DeskTerm(asOf, open, null, degraded, latest.Count);
+        return new DeskTerm(asOf, open, null, degraded, latest.Count)
+        {
+            SensorBusy = sensorCycle is null ? null : SensorCycle.Window(usable, asOf, sensorCycle)
+        };
     }
 }

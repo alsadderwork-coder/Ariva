@@ -273,7 +273,7 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
 
     // The shadow nowcasts (ARV-117a, script 0043), read with the test's administrator login (the runtime role cannot).
     private const string ShadowRows = """
-        SELECT zone_key, minute_utc, nowcast_minutes, no_service, nowcast_degraded FROM queue_minute_shadow ORDER BY zone_key, minute_utc
+        SELECT zone_key, minute_utc, nowcast_minutes, no_service, nowcast_degraded, sensor_cycle_minutes FROM queue_minute_shadow ORDER BY zone_key, minute_utc
         """;
 
     private const string BinRows = """
@@ -592,7 +592,9 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
     {
         // ARV-117a: the shadow nowcast without AMAN inputs goes to queue_minute_shadow, keyed like queue_minute, in the same
         // checkpoint as the published row; a later checkpoint of the minute replaces both, and the table refuses a shadow
-        // that has a number and a no-service reason at once, neither, a negative number or an unknown reason.
+        // that has a number and a no-service reason at once, neither, a negative number or an unknown reason. ARV-117b:
+        // the sensor cycle time the shadow took is written beside it (script 0045), null when it fell back; a value outside
+        // the column's check is written as none, and the check refuses one written by hand.
         var database = await DatabaseAsync(TestDatabase.StreamShadow);
         var store = new StreamStore(new DatabaseSettings
         {
@@ -603,40 +605,53 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
             new HashSet<string>(), new HashSet<string>()), 7).Capture();
         ZoneOutputs Live(params QueueLiveMinute[] rows) => new("DMO/Q1", [], [], rows, []);
         const string Row = """
-            SELECT q.minute_utc, q.nowcast_minutes, q.no_service, q.nowcast_degraded, s.nowcast_minutes, s.no_service, s.nowcast_degraded
+            SELECT q.minute_utc, q.nowcast_minutes, q.no_service, q.nowcast_degraded, s.nowcast_minutes, s.no_service, s.nowcast_degraded, s.sensor_cycle_minutes
             FROM queue_minute q LEFT JOIN queue_minute_shadow s ON s.zone_key = q.zone_key AND s.minute_utc = q.minute_utc
             WHERE q.zone_key = 'DMO/Q1' ORDER BY q.minute_utc
             """;
 
         await store.SaveAsync(new StreamCheckpoint("g-shadow", [Live(
-            new QueueLiveMinute("DMO/Q1", minute, 61, true, false, 15.25, 4.0, null, false) { Shadow = new ShadowNowcast(17.5, null, true) },
+            new QueueLiveMinute("DMO/Q1", minute, 61, true, false, 15.25, 4.0, null, false) { Shadow = new ShadowNowcast(17.5, null, false, 1.5) },
             new QueueLiveMinute("DMO/Q1", minute.AddMinutes(1), 61, true, false, 15.5, 4.0, null, false) { Shadow = new ShadowNowcast(null, NoServiceReason.NoThroughputData, true) },
             new QueueLiveMinute("DMO/Q1", minute.AddMinutes(2), 61, true, false, null, 0, NoServiceReason.NothingOpen, false),
             // Neither a number nor a reason (Nowcast.Compute never returns it): written as no shadow, never refused.
-            new QueueLiveMinute("DMO/Q1", minute.AddMinutes(3), 61, true, false, 15.5, 4.0, null, false) { Shadow = new ShadowNowcast(null, null, true) })],
+            new QueueLiveMinute("DMO/Q1", minute.AddMinutes(3), 61, true, false, 15.5, 4.0, null, false) { Shadow = new ShadowNowcast(null, null, true, 1.5) },
+            // A cycle time outside the column's check (the formula's bounds never give one): the shadow without it.
+            new QueueLiveMinute("DMO/Q1", minute.AddMinutes(4), 61, true, false, 15.5, 4.0, null, false) { Shadow = new ShadowNowcast(8.5, null, true, 61) },
+            new QueueLiveMinute("DMO/Q1", minute.AddMinutes(5), 61, true, false, 15.5, 4.0, null, false) { Shadow = new ShadowNowcast(8.5, null, true, double.NaN) })],
             [state], [], [new StreamOffset("t", 0, 1)]), Ct);
         (await RowsAsync(database, Row)).Should().Equal(
-            "09/28/2026 18:05:00|15.25|null|False|17.5|null|True",
-            "09/28/2026 18:06:00|15.5|null|False|null|NoThroughputData|True",
-            "09/28/2026 18:07:00|null|NothingOpen|False|null|null|null",
-            "09/28/2026 18:08:00|15.5|null|False|null|null|null");
-        (await RowsAsync(database, "SELECT count(*) FROM queue_minute_shadow")).Should().Equal(["2"], "a minute without a shadow has no row");
+            "09/28/2026 18:05:00|15.25|null|False|17.5|null|False|1.5",
+            "09/28/2026 18:06:00|15.5|null|False|null|NoThroughputData|True|null",
+            "09/28/2026 18:07:00|null|NothingOpen|False|null|null|null|null",
+            "09/28/2026 18:08:00|15.5|null|False|null|null|null|null",
+            "09/28/2026 18:09:00|15.5|null|False|8.5|null|True|null",
+            "09/28/2026 18:10:00|15.5|null|False|8.5|null|True|null");
+        (await RowsAsync(database, "SELECT count(*) FROM queue_minute_shadow")).Should().Equal(["4"], "a minute without a shadow has no row");
 
         await store.SaveAsync(new StreamCheckpoint("g-shadow", [Live(
-            new QueueLiveMinute("DMO/Q1", minute, 62, true, false, 15.5, 4.0, null, false) { Shadow = new ShadowNowcast(null, NoServiceReason.NothingOpen, false) })],
+            new QueueLiveMinute("DMO/Q1", minute, 62, true, false, 15.5, 4.0, null, false) { Shadow = new ShadowNowcast(null, NoServiceReason.NothingOpen, false) },
+            new QueueLiveMinute("DMO/Q1", minute.AddMinutes(1), 62, true, false, 15.5, 4.0, null, false) { Shadow = new ShadowNowcast(7.25, null, false, 1.25) })],
             [state], [], [new StreamOffset("t", 0, 2)]), Ct);
-        (await RowsAsync(database, Row)).First().Should().Be("09/28/2026 18:05:00|15.5|null|False|null|NothingOpen|False", "the minute's later checkpoint replaces both nowcasts");
+        (await RowsAsync(database, Row)).Take(2).Should().Equal(["09/28/2026 18:05:00|15.5|null|False|null|NothingOpen|False|null", "09/28/2026 18:06:00|15.5|null|False|7.25|null|False|1.25"],
+            "the minute's later checkpoint replaces both nowcasts and the sensor cycle time");
 
         foreach (var forged in new[]
                  {
                      "UPDATE queue_minute_shadow SET nowcast_minutes = 3, no_service = 'NothingOpen' WHERE zone_key = 'DMO/Q1'",
                      "UPDATE queue_minute_shadow SET no_service = 'Bogus', nowcast_minutes = NULL WHERE zone_key = 'DMO/Q1'",
                      "UPDATE queue_minute_shadow SET nowcast_minutes = -1, no_service = NULL WHERE zone_key = 'DMO/Q1'",
-                     "UPDATE queue_minute_shadow SET nowcast_minutes = NULL, no_service = NULL WHERE zone_key = 'DMO/Q1'"
+                     "UPDATE queue_minute_shadow SET nowcast_minutes = NULL, no_service = NULL WHERE zone_key = 'DMO/Q1'",
+                     // ARV-117b, script 0045: a cycle time from 0.05 to 60 minutes a passenger, or none.
+                     "UPDATE queue_minute_shadow SET sensor_cycle_minutes = 0.04 WHERE zone_key = 'DMO/Q1'",
+                     "UPDATE queue_minute_shadow SET sensor_cycle_minutes = 60.5 WHERE zone_key = 'DMO/Q1'",
+                     "UPDATE queue_minute_shadow SET sensor_cycle_minutes = -1 WHERE zone_key = 'DMO/Q1'",
+                     "UPDATE queue_minute_shadow SET sensor_cycle_minutes = 'NaN' WHERE zone_key = 'DMO/Q1'",
+                     "UPDATE queue_minute_shadow SET sensor_cycle_minutes = 'Infinity' WHERE zone_key = 'DMO/Q1'"
                  })
         {
             var act = () => RowsAsync(database, forged);
-            (await act.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be("23514", "a check of script 0043 refuses: {0}", forged);
+            (await act.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be("23514", "a check of script 0043 or 0045 refuses: {0}", forged);
         }
 
         var flagless = () => RowsAsync(database, "UPDATE queue_minute_shadow SET nowcast_degraded = NULL WHERE zone_key = 'DMO/Q1'");
@@ -683,15 +698,15 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
         await store.SaveAsync(new StreamCheckpoint("g-rt", [Live(
             new QueueLiveMinute("DMO/Q1", minute, 62, true, false, 15.5, 4.0, null, false) { Shadow = new ShadowNowcast(null, NoServiceReason.NothingOpen, false) },
             new QueueLiveMinute("DMO/Q1", minute.AddMinutes(1), 62, true, false, 15.5, 4.0, null, false) { Shadow = new ShadowNowcast(8.25, null, true) },
-            new QueueLiveMinute("DMO/Q1", minute.AddDays(30), 62, true, false, 15.5, 4.0, null, false) { Shadow = new ShadowNowcast(1.5, null, true) })],
+            new QueueLiveMinute("DMO/Q1", minute.AddDays(30), 62, true, false, 15.5, 4.0, null, false) { Shadow = new ShadowNowcast(1.5, null, true, 1.75) })],
             [state], [], [new StreamOffset("t", 0, 2)]), Ct);
         await store.SaveAsync(new StreamCheckpoint("g-rt", [Live(
-            new QueueLiveMinute("DMO/Q1", minute.AddDays(30), 62, true, false, 15.5, 4.0, null, false) { Shadow = new ShadowNowcast(2.5, null, false) })],
+            new QueueLiveMinute("DMO/Q1", minute.AddDays(30), 62, true, false, 15.5, 4.0, null, false) { Shadow = new ShadowNowcast(2.5, null, false, 1.25) })],
             [state], [], [new StreamOffset("t", 0, 3)]), Ct);
         (await RowsAsync(database, ShadowRows)).Should().Equal(
-            "DMO/Q1|09/28/2026 18:05:00|null|NothingOpen|False",
-            "DMO/Q1|09/28/2026 18:06:00|8.25|null|True",
-            "DMO/Q1|10/28/2026 18:05:00|2.5|null|False");
+            "DMO/Q1|09/28/2026 18:05:00|null|NothingOpen|False|null",
+            "DMO/Q1|09/28/2026 18:06:00|8.25|null|True|null",
+            "DMO/Q1|10/28/2026 18:05:00|2.5|null|False|1.25");
 
         var chunk = (await RowsAsync(database, "SELECT format('%I.%I', chunk_schema, chunk_name) FROM timescaledb_information.chunks WHERE hypertable_name = 'queue_minute_shadow' ORDER BY range_start LIMIT 1"))[0];
         await using var runtime = new NpgsqlConnection(postgres.ConnectionString(database, login, password));
@@ -714,6 +729,14 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
                      "SELECT no_service FROM queue_minute_shadow",
                      "SELECT nowcast_degraded FROM queue_minute_shadow",
                      "SELECT updated_on FROM queue_minute_shadow",
+                     // ARV-117b: the sensor cycle time (script 0045) is a value column like the others.
+                     "SELECT sensor_cycle_minutes FROM queue_minute_shadow",
+                     "SELECT zone_key FROM queue_minute_shadow WHERE sensor_cycle_minutes > 1",
+                     "SELECT zone_key FROM queue_minute_shadow WHERE sensor_cycle_minutes IS NULL",
+                     "SELECT max(sensor_cycle_minutes) FROM queue_minute_shadow",
+                     "UPDATE queue_minute_shadow SET sensor_cycle_minutes = sensor_cycle_minutes * 2 WHERE zone_key = 'DMO/Q1'",
+                     "UPDATE queue_minute_shadow SET sensor_cycle_minutes = 1 WHERE zone_key = 'DMO/Q1' RETURNING sensor_cycle_minutes",
+                     "UPDATE queue_minute_shadow SET nowcast_degraded = true WHERE sensor_cycle_minutes > 1",
                      "SELECT * FROM queue_minute_shadow",
                      "TABLE queue_minute_shadow",
                      "SELECT row_to_json(s) FROM queue_minute_shadow s",
@@ -741,16 +764,17 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
         (await RunAsync("SELECT count(*), min(zone_key) FROM queue_minute_shadow")).Should().Be("3|DMO/Q1");
         (await RunAsync("SELECT has_column_privilege('queue_minute_shadow', 'nowcast_minutes', 'SELECT'), has_table_privilege('queue_minute_shadow', 'SELECT'), " +
                         "has_table_privilege('queue_minute_shadow', 'INSERT'), has_column_privilege('queue_minute_shadow', 'nowcast_minutes', 'UPDATE'), " +
-                        "has_column_privilege('queue_minute_shadow', 'zone_key', 'UPDATE'), pg_has_role('ariva_validation_reader', 'MEMBER')"))
-            .Should().Be("False|False|True|True|False|False");
+                        "has_column_privilege('queue_minute_shadow', 'zone_key', 'UPDATE'), pg_has_role('ariva_validation_reader', 'MEMBER'), " +
+                        "has_column_privilege('queue_minute_shadow', 'sensor_cycle_minutes', 'SELECT'), has_column_privilege('queue_minute_shadow', 'sensor_cycle_minutes', 'UPDATE')"))
+            .Should().Be("False|False|True|True|False|False|False|True");
 
         // The validation comparison's read role (ARV-104f grants it to its own login) reads every value.
         await using var reader = new NpgsqlConnection(postgres.ConnectionString(database));
         await reader.OpenAsync(Ct);
         await using (var role = new NpgsqlCommand("SET ROLE ariva_validation_reader", reader))
             await role.ExecuteNonQueryAsync(Ct);
-        await using var count = new NpgsqlCommand("SELECT count(*) FILTER (WHERE nowcast_degraded IS NOT NULL) FROM queue_minute_shadow", reader);
-        (await count.ExecuteScalarAsync(Ct)).Should().Be(3L);
+        await using var count = new NpgsqlCommand("SELECT count(*) FILTER (WHERE nowcast_degraded IS NOT NULL) + count(sensor_cycle_minutes) FROM queue_minute_shadow", reader);
+        (await count.ExecuteScalarAsync(Ct)).Should().Be(4L, "three shadows, one with a sensor cycle time");
         await using var other = new NpgsqlCommand("SELECT count(*) FROM queue_minute", reader);
         var denied = () => other.ExecuteScalarAsync(Ct);
         (await denied.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be("42501", "the read role reads the shadow only");
@@ -901,6 +925,24 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
         foreach (var text in new[] { reasonError.MessageText, reasonError.Detail, reasonError.ToString() })
             text.Should().NotContain("NoThroughputData").And.NotContain("no_service").And.NotContain("nowcast_degraded");
 
+        // ARV-117b: the sensor cycle time's check (script 0045) names that column alone, so a probe on it learns nothing
+        // about the stored row: a value inside the bounds passes on a number and on a reason alike, one outside fails on both
+        // with the prober's own value only.
+        (await ProbeAsync("UPDATE queue_minute_shadow SET sensor_cycle_minutes = 1.5 WHERE zone_key = 'DMO/Q1' AND minute_utc = '2026-09-28T18:05:00Z'")).Should().Be(1);
+        (await ProbeAsync("UPDATE queue_minute_shadow SET sensor_cycle_minutes = 1.5 WHERE zone_key = 'DMO/Q1' AND minute_utc = '2026-09-28T18:06:00Z'")).Should().Be(1);
+        foreach (var outside in new Func<Task<int>>[]
+                 {
+                     () => ProbeAsync("UPDATE queue_minute_shadow SET sensor_cycle_minutes = 99 WHERE zone_key = 'DMO/Q1' AND minute_utc = '2026-09-28T18:05:00Z'"),
+                     () => ProbeAsync("UPDATE queue_minute_shadow SET sensor_cycle_minutes = 99 WHERE zone_key = 'DMO/Q1' AND minute_utc = '2026-09-28T18:06:00Z'")
+                 })
+        {
+            var cycleError = (await outside.Should().ThrowAsync<PostgresException>()).Which;
+            cycleError.ConstraintName.Should().Be("ck_queue_minute_shadow_cycle");
+            cycleError.Detail.Should().StartWith("Failing row contains (zone_key, minute_utc, sensor_cycle_minutes) = (DMO/Q1, ").And.EndWith(", 99).");
+            foreach (var text in new[] { cycleError.MessageText, cycleError.Detail, cycleError.ToString() })
+                text.Should().NotContain("17.375").And.NotContain("NoThroughputData").And.NotContain("nowcast_minutes").And.NotContain("no_service");
+        }
+
         (await RowsAsync(database, ShadowRows)).Should().Equal(before, "every probe was rolled back");
     }
 
@@ -989,6 +1031,9 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
                          "CREATE VIEW it_shadow_whole_row AS SELECT q FROM queue_minute_shadow q",
                          "CREATE FUNCTION it_shadow_function() RETURNS json LANGUAGE sql STABLE RETURN (SELECT json_agg(q) FROM queue_minute_shadow q)",
                          "CREATE VIEW it_desk_sensor AS SELECT desk_code, idle_seconds FROM desk_sensor_minute",
+                         // ARV-117b: the sensor cycle time (script 0045) alone.
+                         "CREATE VIEW it_shadow_cycle AS SELECT zone_key, sensor_cycle_minutes FROM queue_minute_shadow",
+                         "CREATE FUNCTION it_shadow_cycle_function() RETURNS double precision LANGUAGE sql STABLE RETURN (SELECT avg(sensor_cycle_minutes) FROM queue_minute_shadow)",
                          "INSERT INTO queue_minute_shadow (zone_key, minute_utc, nowcast_minutes, nowcast_degraded, updated_on) VALUES ('DMO/IT', '2026-09-28T18:05:00Z', 1, true, now())",
                          "DO $$ BEGIN EXECUTE format('CREATE VIEW it_shadow_chunk AS SELECT to_jsonb(c) AS r FROM %s c', (SELECT show_chunks('queue_minute_shadow') LIMIT 1)); END $$",
                          "CREATE FUNCTION it_copy() RETURNS trigger LANGUAGE plpgsql AS $f$ BEGIN RETURN NEW; END $f$",
@@ -1004,7 +1049,8 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
 
             (await DependentsAsync(transaction)).Should().Equal(
             [
-                "function public.it_shadow_function on queue_minute_shadow", "public.it_desk_sensor on desk_sensor_minute", "public.it_shadow_chunk on queue_minute_shadow",
+                "function public.it_shadow_cycle_function on queue_minute_shadow", "function public.it_shadow_function on queue_minute_shadow",
+                "public.it_desk_sensor on desk_sensor_minute", "public.it_shadow_chunk on queue_minute_shadow", "public.it_shadow_cycle on queue_minute_shadow",
                 "public.it_shadow_leak on queue_minute_shadow", "public.it_shadow_leak_m on queue_minute_shadow", "public.it_shadow_row_to_json on queue_minute_shadow",
                 "public.it_shadow_trigger on queue_minute_shadow", "public.it_shadow_whole_row on queue_minute_shadow", "publication.it_shadow_publication on desk_sensor_minute"
             ]);

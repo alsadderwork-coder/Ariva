@@ -700,7 +700,7 @@ public sealed class QueueStreamWorker(
         _nextDeskTerms = now.AddSeconds(settings.DeskTermSeconds);
         try
         {
-            var terms = await deskTerms.LoadAsync([.. _zones.Keys], _zoneSettings.ExitWindowMinutes, ct);
+            var terms = await deskTerms.LoadAsync([.. _zones.Keys], _zoneSettings.ExitWindowMinutes, _zoneSettings.SensorCycle, ct);
             foreach (var (key, (zone, _, _)) in _zones)
                 zone.UseDesks(terms.GetValueOrDefault(key));
         }

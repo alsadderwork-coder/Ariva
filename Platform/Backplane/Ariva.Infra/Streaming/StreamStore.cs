@@ -437,7 +437,7 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
             CREATE TEMP TABLE stage_queue_live (zone_key varchar(220), minute_utc timestamptz, profile_version integer, queue_length integer,
                 length_from_sensors boolean, length_degraded boolean, nowcast_minutes double precision, throughput_per_minute double precision,
                 no_service varchar(20), nowcast_degraded boolean, shadow_nowcast_minutes double precision, shadow_no_service varchar(20),
-                shadow_nowcast_degraded boolean, PRIMARY KEY (zone_key, minute_utc)) ON COMMIT DROP
+                shadow_nowcast_degraded boolean, shadow_cycle_minutes double precision, PRIMARY KEY (zone_key, minute_utc)) ON COMMIT DROP
             """, ct);
         await using (var copy = await connection.BeginBinaryImportAsync("COPY stage_queue_live FROM STDIN (FORMAT BINARY)", ct))
         {
@@ -470,6 +470,10 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
                     await copy.WriteAsync(shadow.Degraded, NpgsqlDbType.Boolean, ct);
                 else
                     await copy.WriteNullAsync(ct);
+                // ARV-117b: the sensor cycle time the shadow's desk term took (script 0045), null when it fell back. A value
+                // outside the column's check (which the formula's bounds never give) is written as none rather than refused
+                // with the whole checkpoint.
+                await Nullable(copy, l.Shadow?.CycleMinutes is { } cycle && double.IsFinite(cycle) && cycle is >= 0.05 and <= 60 ? cycle : null, ct);
             }
 
             await copy.CompleteAsync(ct);
@@ -494,11 +498,11 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
         // to EXCLUDED.<column> needs SELECT on that column of the table, so a conflicting row takes its new values from
         // the staging table by key (a correlated subquery over the key columns, indexed by the stage's primary key).
         await using var shadowUpsert = new NpgsqlCommand("""
-            INSERT INTO queue_minute_shadow (zone_key, minute_utc, nowcast_minutes, no_service, nowcast_degraded, updated_on)
-            SELECT zone_key, minute_utc, shadow_nowcast_minutes, shadow_no_service, shadow_nowcast_degraded, @now FROM stage_queue_live
+            INSERT INTO queue_minute_shadow (zone_key, minute_utc, nowcast_minutes, no_service, nowcast_degraded, sensor_cycle_minutes, updated_on)
+            SELECT zone_key, minute_utc, shadow_nowcast_minutes, shadow_no_service, shadow_nowcast_degraded, shadow_cycle_minutes, @now FROM stage_queue_live
              WHERE shadow_nowcast_degraded IS NOT NULL
-            ON CONFLICT (zone_key, minute_utc) DO UPDATE SET (nowcast_minutes, no_service, nowcast_degraded, updated_on) =
-                (SELECT s.shadow_nowcast_minutes, s.shadow_no_service, s.shadow_nowcast_degraded, @now FROM stage_queue_live s
+            ON CONFLICT (zone_key, minute_utc) DO UPDATE SET (nowcast_minutes, no_service, nowcast_degraded, sensor_cycle_minutes, updated_on) =
+                (SELECT s.shadow_nowcast_minutes, s.shadow_no_service, s.shadow_nowcast_degraded, s.shadow_cycle_minutes, @now FROM stage_queue_live s
                   WHERE s.zone_key = queue_minute_shadow.zone_key AND s.minute_utc = queue_minute_shadow.minute_utc)
             """, connection);
         shadowUpsert.Parameters.AddWithValue("now", now);

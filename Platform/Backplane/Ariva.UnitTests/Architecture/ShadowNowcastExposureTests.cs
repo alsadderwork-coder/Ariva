@@ -173,7 +173,7 @@ public sealed class ShadowNowcastExposureTests
         SourcesMatching(table, SourceKinds).Should().Equal(
             ["Backplane/Ariva.Core/Queueing/ShadowNowcast.cs", "Backplane/Ariva.Core/Queueing/ZoneProcessor.cs", "Backplane/Ariva.Infra/Streaming/StreamStore.cs",
                 "Backplane/Ariva.Infra/Timescale/Scripts/0041_shadow_nowcast.sql", "Backplane/Ariva.Infra/Timescale/Scripts/0043_queue_minute_shadow.sql",
-                "Backplane/Ariva.Infra/Timescale/Scripts/0044_desk_sensor_minute.sql"],
+                "Backplane/Ariva.Infra/Timescale/Scripts/0044_desk_sensor_minute.sql", "Backplane/Ariva.Infra/Timescale/Scripts/0045_shadow_sensor_cycle.sql"],
             "only the engine names the shadow and only the stream store writes its table; no service, screen, rule or report reads it");
 
         // The value itself: only the engine that computes it and the store that writes it name it.
@@ -197,12 +197,13 @@ public sealed class ShadowNowcastExposureTests
                 "Backplane/Ariva.Infra/Streaming/StreamStore.cs", "Backplane/Ariva.Infra/Timescale/Scripts/0044_desk_sensor_minute.sql"],
             "only the desk feed (through the store) writes the sensor-only desk minutes and only the stream's desk term reads them");
 
-        // The engine and its samples: the desk feed runs the engine, the desk term and DeskTerms read the samples (the
-        // simulator, which is no Ariva host, has members of its own named Sensor).
+        // The engine and its samples: the desk feed runs the engine, the desk term and DeskTerms read the samples, and
+        // (ARV-117b) the sensor cycle time sums their Serving seconds (the simulator, which is no Ariva host, has members of
+        // its own named Sensor).
         var engine = new Regex(@"\bSensorOnlyDeskEngine\b|\bDeskSensorSample\b|\.Sensor\b", RegexOptions.CultureInvariant, RegexTimeout);
         SourcesMatching(engine, ".cs").Where(f => f.StartsWith("Backplane/", StringComparison.Ordinal)).Should().Equal(
-            ["Backplane/Ariva.Core/Desks/SensorOnlyDeskEngine.cs", "Backplane/Ariva.Core/Queueing/DeskTerm.cs", "Backplane/Ariva.Infra/Border/DeskFeed.cs",
-                "Backplane/Ariva.Infra/Streaming/DeskTermSource.cs"]);
+            ["Backplane/Ariva.Core/Desks/SensorOnlyDeskEngine.cs", "Backplane/Ariva.Core/Queueing/DeskTerm.cs", "Backplane/Ariva.Core/Queueing/SensorCycle.cs",
+                "Backplane/Ariva.Infra/Border/DeskFeed.cs", "Backplane/Ariva.Infra/Streaming/DeskTermSource.cs"]);
     }
 
     /// <summary>Every Ariva type whose fields can hold an instance of <paramref name="held"/>, directly or through other types.</summary>
@@ -261,6 +262,69 @@ public sealed class ShadowNowcastExposureTests
                 .Select(m => $"{t.FullName}.{m.Name}"))
             .Should().BeEmpty("no member of a screen, rule or report type is named after the sensor-only desk values");
     }
+
+    #region ARV-117b: the sensor cycle time
+
+    [Fact]
+    public void SensorCycleValues_Should_StayOnTheStreamsShadowPath_When_TheirHoldersAreReflected()
+    {
+        // ARV-117b (CWE-862, CWE-863): the sensor cycle time is held only in memory for the shadow and in
+        // queue_minute_shadow. Its result is held by no type at all (the zone computes it per minute and hands its value to
+        // the shadow nowcast, whose holders are pinned above); the busy window it is computed from (aggregates, no desk
+        // key) rides on the desk term's sensor-only part, held by the zone processor and the stream's desk term source and
+        // worker. None of them reaches the live snapshot, the hub, displays, alert inputs, reports, view models,
+        // controllers or the AMAN contracts.
+        HoldersOf(typeof(SensorCycleResult)).Select(Owner).Select(t => t.FullName).Distinct().Order(StringComparer.Ordinal)
+            .Should().BeEquivalentTo(["Ariva.Core.Queueing.SensorCycleResult"], "the sensor cycle time's result is never stored in a field");
+        var busy = HoldersOf(typeof(SensorBusyWindow)).Select(Owner).Select(t => t.FullName).Distinct().Order(StringComparer.Ordinal).ToList();
+        busy.Should().BeEquivalentTo(BusyWindowHolders);
+
+        var exposed = Assemblies.SelectMany(TypesOf).Where(t => t.FullName is { } name && (
+            name.StartsWith("Ariva.Infra.Live.", StringComparison.Ordinal) ||
+            name.StartsWith("Ariva.Api.Main.Hubs.", StringComparison.Ordinal) ||
+            name.Contains(".Displays.", StringComparison.Ordinal) ||
+            name.Contains(".Alerting.", StringComparison.Ordinal) ||
+            name.Contains(".Reports.", StringComparison.Ordinal) ||
+            name.Contains(".ViewModels.", StringComparison.Ordinal) ||
+            name.EndsWith("ViewModel", StringComparison.Ordinal) ||
+            name.StartsWith("Ariva.Api.Main.Controllers.", StringComparison.Ordinal) ||
+            name.StartsWith("Ariva.Business.Contracts.", StringComparison.Ordinal))).ToList();
+        exposed.Should().Contain(typeof(Ariva.Infra.Live.LiveZoneSnapshot));
+        exposed.Where(t => busy.Contains(t.FullName)).Should().BeEmpty();
+        exposed.SelectMany(t => t.GetMembers(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
+                .Where(m => m.Name.Contains("SensorCycle", StringComparison.OrdinalIgnoreCase) || m.Name.Contains("SensorBusy", StringComparison.OrdinalIgnoreCase))
+                .Select(m => $"{t.FullName}.{m.Name}"))
+            .Should().BeEmpty("no member of a screen, rule or report type is named after the sensor cycle time");
+    }
+
+    private static readonly string[] BusyWindowHolders =
+    [
+        "Ariva.Core.Queueing.DeskTerm",
+        "Ariva.Core.Queueing.SensorBusyWindow",
+        "Ariva.Core.Queueing.ZoneProcessor",
+        "Ariva.Infra.Streaming.DeskTermSource",
+        "Ariva.Infra.Streaming.QueueStreamWorker"
+    ];
+
+    [Fact]
+    public void Sources_Should_NameTheSensorCycleTimeOnlyOnTheShadowPath_When_Scanned()
+    {
+        // The column (script 0045) is written by the stream store only; the formula, the desk term that carries its busy
+        // window, the zone that computes it, the desk term source and worker that pass its settings, and nothing else.
+        var cycle = new Regex(@"sensor_?cycle|sensor_?busy|shadow_?cycle", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, RegexTimeout);
+
+        SourcesMatching(cycle, SourceKinds).Should().Equal(SensorCycleSources,
+            "only the engine computes the sensor cycle time and only the stream store writes it; no service, screen, rule or report reads it");
+    }
+
+    private static readonly string[] SensorCycleSources =
+    [
+        "Backplane/Ariva.Core/Queueing/DeskTerm.cs", "Backplane/Ariva.Core/Queueing/SensorCycle.cs", "Backplane/Ariva.Core/Queueing/ShadowNowcast.cs",
+        "Backplane/Ariva.Core/Queueing/ZoneProcessor.cs", "Backplane/Ariva.Infra/Streaming/DeskTermSource.cs", "Backplane/Ariva.Infra/Streaming/QueueStreamWorker.cs",
+        "Backplane/Ariva.Infra/Streaming/StreamStore.cs", "Backplane/Ariva.Infra/Timescale/Scripts/0045_shadow_sensor_cycle.sql"
+    ];
+
+    #endregion
 
     #region Script 0043 against the engine
 

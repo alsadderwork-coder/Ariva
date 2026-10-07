@@ -36,6 +36,13 @@ public sealed record ZoneProcessorSettings
     /// </summary>
     public int DeskTermFreshMinutes { get; init; } = 5;
 
+    /// <summary>
+    /// The sensor cycle time of the shadow nowcast (ARV-117b, Proposed values). Not part of the replay's settings hash: a
+    /// replay has no desk term, so these settings change none of its outputs (the shadow is never in the ledger).
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public SensorCycleSettings SensorCycle { get; init; } = new();
+
     public IEnumerable<string> Problems()
     {
         foreach (var p in Engine?.Problems() ?? ["Engine settings are required."])
@@ -56,6 +63,8 @@ public sealed record ZoneProcessorSettings
             yield return "MaxDevices is from 1 to 4,096.";
         if (DeskTermFreshMinutes is < 1 or > 30)
             yield return "DeskTermFreshMinutes is from 1 to 30.";
+        foreach (var p in SensorCycle?.Problems() ?? ["SensorCycle settings are required."])
+            yield return p;
     }
 }
 
@@ -457,17 +466,22 @@ public sealed class ZoneProcessor
         var window = _exits.Window(minute.AddMinutes(1), _settings.ExitWindowMinutes);
         // The desk term joins when the desks serving this queue have closed a minute recently (ARV-064).
         var desks = _desks is { } d && d.AsOfMinuteUtc >= minute.AddMinutes(-_settings.DeskTermFreshMinutes) ? d : null;
-        var (published, shadow) = ShadowNowcasts.Inputs(new NowcastInput
+        // ARV-117b: the queue's exits over the minutes of the sensor-only busy window, for the shadow's cycle time only (a
+        // window beyond the queue's own minutes is not complete, so it gives none).
+        var cycleExits = desks?.SensorOnly?.SensorBusy is { } busy && busy.Minutes is >= 1 and <= 60 && busy.ToMinuteUtc < DateTime.MaxValue.AddMinutes(-1)
+            ? _exits.Window(busy.ToMinuteUtc.AddMinutes(1), busy.Minutes)
+            : null;
+        var (published, shadow, cycle) = ShadowNowcasts.Inputs(new NowcastInput
         {
             QueueLength = length.Count,
             ExitsInWindow = window.Complete ? window.Exits : null,
             ExitWindowMinutes = _settings.ExitWindowMinutes,
             Degraded = length.Degraded || deviceOut || window.DegradedExits > 0
-        }, desks);
+        }, desks, cycleExits, _settings.SensorCycle);
         var nowcast = Nowcast.Compute(published, _settings.Nowcast);
         // ARV-117: the shadow nowcast without AMAN inputs, beside the published one, for the validation comparison only.
         _live.Add(new QueueLiveMinute(ZoneKey, minute, length.Count, length.FromSensors, length.Degraded || deviceOut, nowcast.Minutes, nowcast.Throughput,
-            nowcast.NoService, nowcast.Degraded) { Shadow = ShadowNowcast.From(Nowcast.Compute(shadow, _settings.Nowcast)) });
+            nowcast.NoService, nowcast.Degraded) { Shadow = ShadowNowcast.From(Nowcast.Compute(shadow, _settings.Nowcast), cycle?.CycleMinutes) });
         _liveness.Published(minute);
     }
 
