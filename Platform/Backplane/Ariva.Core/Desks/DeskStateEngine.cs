@@ -434,27 +434,3 @@ public sealed partial class DeskStateEngine
 
     private static DateTime Minus(DateTime t, TimeSpan d) => t < DateTime.MinValue + d ? DateTime.MinValue : t - d;
 }
-
-/// <summary>
-/// The lane cycle time from per-desk interval statistics (F10, Proposed): the transaction-weighted mean of the desks'
-/// mean cycle times, c_lane = sum(cycle seconds x transactions) / sum(transactions) / 60, in minutes. Intervals with
-/// no transactions or a cycle time that is not real (not finite, not positive, or above an hour) are left out.
-/// </summary>
-public static class LaneCycle
-{
-    public static double? Minutes(IEnumerable<(double MeanCycleSeconds, int Transactions)> intervals)
-    {
-        ArgumentNullException.ThrowIfNull(intervals);
-        double weighted = 0;
-        long transactions = 0;
-        foreach (var (cycle, count) in intervals)
-        {
-            if (count <= 0 || !double.IsFinite(cycle) || cycle <= 0 || cycle > 3600)
-                continue;
-            weighted += cycle * count;
-            transactions += count;
-        }
-
-        return transactions > 0 ? weighted / transactions / 60 : null;
-    }
-}

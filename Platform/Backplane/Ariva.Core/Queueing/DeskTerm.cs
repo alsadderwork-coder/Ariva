@@ -1,3 +1,5 @@
+using Ariva.Core.Desks;
+
 namespace Ariva.Core.Queueing;
 
 /// <summary>
@@ -19,6 +21,12 @@ public sealed record DeskTerm(DateTime AsOfMinuteUtc, int OpenServers, double? C
     /// (<see cref="SensorCycle"/>); null when the term was built without the sensor cycle time's settings.
     /// </summary>
     public SensorBusyWindow SensorBusy { get; init; }
+
+    /// <summary>
+    /// On the published term only (ARV-117d): the lane cycle time AMAN's interval statistics gave (F10, per person in
+    /// working time), with the intervals left out and why there is none; null when the term was built without them.
+    /// </summary>
+    public LaneCycleResult LaneCycle { get; init; }
 }
 
 /// <summary>
@@ -56,11 +64,13 @@ public sealed record DeskMinuteSample(string DeskKey, DateTime MinuteUtc, double
 /// Builds a queue's <see cref="DeskTerm"/> from the closed minutes of the desks serving it (ARV-064). The latest minute
 /// any of them has closed is the term's minute: a desk is open there when it was Idle or Serving for at least half of it
 /// (n_open), and Unknown for half of it, or degraded, flags the term; with no desk open and any Unknown there is no term
-/// (n_open is not known, which is not "nothing open"). c is the lane cycle time from the border system's interval
-/// statistics when given (F10, <see cref="Ariva.Core.Desks.LaneCycle"/>); otherwise the open time per transaction over the
-/// last <c>windowMinutes</c> minutes up to that minute, across the desks (when queues are long, desks are serving nearly
-/// all of their open time, so this is the cycle time; with short queues it is longer, which only lowers the desk term).
-/// Pure.
+/// (n_open is not known, which is not "nothing open"). c is the lane cycle time per person in working time from the border
+/// system's interval statistics when any were read for the lane (F10, ARV-117d, <see cref="Ariva.Core.Desks.LaneCycle"/>):
+/// with none usable (no documents, or every interval outside contract V1's bounds) there is no c and the nowcast falls back
+/// as F8 does, and intervals left out flag the term. Only without any interval statistics, the open time per transaction
+/// over the last <c>windowMinutes</c> minutes up to that minute, across the desks (when queues are long, desks are serving
+/// nearly all of their open time, so this is the cycle time; with short queues it is longer, which only lowers the desk
+/// term). Pure.
 /// </summary>
 public static class DeskTerms
 {
@@ -74,11 +84,24 @@ public static class DeskTerms
     public static DeskTerm Compute(IEnumerable<DeskMinuteSample> minutes, int windowMinutes, DateTime notAfterUtc, double? laneCycleMinutes = null,
         SensorCycleSettings sensorCycle = null)
     {
-        var published = Published(minutes, windowMinutes, notAfterUtc, laneCycleMinutes);
+        var published = Published(minutes, windowMinutes, notAfterUtc, laneCycleMinutes, null);
         return published is null ? null : published with { SensorOnly = SensorOnly(minutes, windowMinutes, notAfterUtc, sensorCycle) };
     }
 
-    private static DeskTerm Published(IEnumerable<DeskMinuteSample> minutes, int windowMinutes, DateTime notAfterUtc, double? laneCycleMinutes)
+    /// <summary>
+    /// The published term with the lane cycle time from AMAN's interval statistics (ARV-117d, <see cref="LaneCycle.PerPerson"/>):
+    /// when any interval was read (<paramref name="laneCycle"/> not <see cref="LaneCycleFallback.NoIntervals"/>) c is its
+    /// value or none (never the desk minutes' open time per transaction, which is per transaction and carries idle time),
+    /// and intervals left out flag the term. The sensor-only part is the same as without it.
+    /// </summary>
+    public static DeskTerm Compute(IEnumerable<DeskMinuteSample> minutes, int windowMinutes, DateTime notAfterUtc, LaneCycleResult laneCycle,
+        SensorCycleSettings sensorCycle = null)
+    {
+        var published = Published(minutes, windowMinutes, notAfterUtc, null, laneCycle);
+        return published is null ? null : published with { SensorOnly = SensorOnly(minutes, windowMinutes, notAfterUtc, sensorCycle), LaneCycle = laneCycle };
+    }
+
+    private static DeskTerm Published(IEnumerable<DeskMinuteSample> minutes, int windowMinutes, DateTime notAfterUtc, double? laneCycleMinutes, LaneCycleResult laneCycle)
     {
         ArgumentNullException.ThrowIfNull(minutes);
         if (windowMinutes is < 1 or > 60)
@@ -103,11 +126,22 @@ public static class DeskTerms
         var window = usable.Where(m => m.MinuteUtc > from).ToList();
         var transactions = window.Sum(m => (long)Math.Max(0, m.Transactions));
         var openMinutes = window.Sum(m => m.OpenSeconds) / 60;
-        // The lane cycle time from AMAN's own interval statistics (F10, LaneCycle) when there is one; otherwise open time per
-        // transaction from the desk minutes.
-        double? cycle = laneCycleMinutes is { } lane && double.IsFinite(lane) && lane > 0
-            ? lane
-            : transactions > 0 && openMinutes > 0 ? openMinutes / transactions : null;
+        // ARV-117d: AMAN's interval statistics, when any were read, give c per person in working time or none (F8's fallback);
+        // intervals left out (outside contract V1's bounds) flag the term. Otherwise a lane cycle time given as a number
+        // (F10) when there is one, else open time per transaction from the desk minutes.
+        double? cycle;
+        if (laneCycle is { Missing: not LaneCycleFallback.NoIntervals })
+        {
+            cycle = laneCycle.Minutes is { } perPerson && double.IsFinite(perPerson) && perPerson > 0 ? perPerson : null;
+            degraded |= laneCycle.Flagged;
+        }
+        else
+        {
+            cycle = laneCycleMinutes is { } lane && double.IsFinite(lane) && lane > 0
+                ? lane
+                : transactions > 0 && openMinutes > 0 ? openMinutes / transactions : null;
+        }
+
         return new DeskTerm(asOf, open, cycle, degraded, latest.Count);
     }
 

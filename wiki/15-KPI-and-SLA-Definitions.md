@@ -52,13 +52,14 @@ The predicted wait for someone joining now: `W_now = (Q + 1) / mu`.
 | Symbol | Meaning |
 |---|---|
 | Q | Queue length now (occupancy of the queue zone including the overflow band) |
-| mu | Throughput: a blend of staffed-desk throughput `n_open / c` (desks idle or serving, divided by recent mean cycle time) and the measured exit rate over the last m minutes (Proposed m = 5, blend 0.5) |
+| mu | Throughput: a blend of staffed-desk throughput `n_open / c` (desks idle or serving, divided by c, the recent time per person at a desk) and the measured exit rate over the last m minutes (Proposed m = 5, blend 0.5) |
 
 - Example: 29 queuing, 6 desks open, cycle time 1.5 minutes: mu = 4.0 per minute, nowcast 7.5 minutes, displayed as "5 to 10 min".
 - Fast-track lanes sharing desks use their share of the desks (merge ratio). E-gates use `(gates in service / cycle time) x (1 - reject rate)`.
 - No staffed desk: the nowcast is null ("no service"), never zero or infinite.
 - Displays: 5-minute bands with hysteresis (the band changes only when the nowcast moves 5 minutes from the reference value); "under 5 min" below 5; a widened band when degraded; a neutral message when stale or no service. Never a realised number.
 - Accuracy target for the pilot: median error against the later realised wait within 2 minutes for waits under 20 minutes.
+- Cycle time at AMAN sites (ARV-117d, Proposed; the method accepted by the owner on 2026-10-07, the walk-up gap to re-measure on pilot data): c is the time a desk spends per person, from AMAN's one-minute desk statistics: the officers' mean service time per transaction times the transactions, over the travel documents (people) processed. Before this change Ariva took AMAN's start-to-start cycle per transaction: a family processed together is one transaction, so the throughput read about 20 percent low (1.25 people per transaction on the reference day), and after a quiet spell the time a desk waited for the next passenger counted as service. What operators will see: **published waits at AMAN sites drop**, most after a lull and where families travel together; on the reference evening (Ariva's own simulator, not field data) the published wait's average overstatement fell from 1.85 minutes to 0.31 minutes. Where AMAN's statistics carry no documents the nowcast uses the exit rate alone and is shown as an estimate; statistics outside the contract's bounds are left out and the wait is shown as a band. The walk-up time between one passenger leaving and the next arriving at the desk is no longer in c, so in the field the published wait may read slightly low where that gap is long; the pilot measures it (to confirm with AMAN, [pilot-to-confirm](../docs/product/pilot-to-confirm.md) TC-84). Sites without AMAN are unchanged.
 
 ### Throughput
 
@@ -78,7 +79,7 @@ Share of time a desk is staffed and in use, from the desk state machine (F10). S
 
 Proposed reporting: staffed share = (idle + serving + paused minutes) / interval; serving share = serving minutes / staffed minutes. The exact utilisation definition used in reports is To confirm with the product owner.
 
-Service and cycle times (from AMAN `DeskIntervalStats` at AMAN sites, sensors elsewhere): service time is transaction start to end; cycle time is start to next start and includes the walk-up gap; cycle time sets throughput. AMAN separates approaches (a family of four is one) from documents (four).
+Service and cycle times (from AMAN `DeskIntervalStats` at AMAN sites, sensors elsewhere): service time is transaction start to end; cycle time is start to next start and includes the walk-up gap; cycle time sets throughput. AMAN separates approaches (a family of four is one) from documents (four). The published nowcast at AMAN sites takes the mean service time per document (ARV-117d, Nowcast above), since AMAN's cycle also counts the time a desk waits after a quiet spell.
 
 ### E-gate reject rate (F12)
 

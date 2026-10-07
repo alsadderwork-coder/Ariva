@@ -37,9 +37,9 @@ Topic `aman.feed.desk-interval-stats.v1`, key AMAN desk code. Feeds service and 
 | `SiteCode`, `DeskCode` | string | |
 | `IntervalStartUtc`, `IntervalSeconds` | `DateTimeOffset`, int | One-minute intervals; V1 consumers reject any other length |
 | `TransactionsProcessed` | int | Approaches (a family of four is one transaction) |
-| `DocumentsProcessed` | int | Documents (the same family is four) |
-| `MeanServiceSeconds`, `P90ServiceSeconds` | double | Transaction start to end |
-| `MeanCycleSeconds` | double | Start to next start while open; sets throughput (F8) |
+| `DocumentsProcessed` | int | Documents (the same family is four); since ARV-117d the people the published lane cycle time is per (F10) |
+| `MeanServiceSeconds`, `P90ServiceSeconds` | double | Transaction start to end; since ARV-117d the mean is the working time of the published lane cycle time (F10) |
+| `MeanCycleSeconds` | double | Start to next start while open (it includes a desk's idle time after a lull); since ARV-117d not read by the published nowcast (F8, F10; semantics to confirm, pilot-to-confirm TC-84) |
 | `LaneCategory` | string | AMAN code mapped to an Ariva lane category |
 | `SourceEventId` | string | Idempotent consumption |
 | Deliberately absent | | Traveller, document and officer identifiers |

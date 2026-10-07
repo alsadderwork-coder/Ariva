@@ -14,7 +14,8 @@ namespace Ariva.UnitTests.Simulation;
 /// (<see cref="AmanDeskProcess"/>). Per lane, AMAN's transaction-weighted lane cycle time (F10, <see cref="LaneCycle"/>,
 /// over the 12 minutes the desk term reads) is compared with the scenario's own service time: the people served in the
 /// same minutes weighted by each desk's service time per person, times 1.25 people a transaction for the per-transaction
-/// figure AMAN publishes. Every record stays inside the contract's bounds and carries counts and times only.
+/// figure AMAN publishes; since ARV-117d also the published reading, per person in mean service time. Every record stays
+/// inside the contract's bounds and carries counts and times only.
 /// </summary>
 public sealed class AmanIntervalScenarioTests(ITestOutputHelper output)
 {
@@ -27,7 +28,7 @@ public sealed class AmanIntervalScenarioTests(ITestOutputHelper output)
     private static readonly string[] Lanes = ["VIS", "CIT", "RES", "CRW"];
 
     /// <summary>One minute of a lane: AMAN's lane cycle time per transaction and per person, the busy-time one per person, the scenario's service time per person, and whether every minute of the window ran at capacity.</summary>
-    private sealed record LaneMinute(int Minute, double PerTransaction, double PerPerson, double BusyPerPerson, double Service, bool Busy);
+    private sealed record LaneMinute(int Minute, double PerTransaction, double PerPerson, double BusyPerPerson, double Service, bool Busy, double Published = double.NaN);
 
     private static List<LaneMinute> Lane(string queue, int from, int to)
     {
@@ -61,12 +62,15 @@ public sealed class AmanIntervalScenarioTests(ITestOutputHelper output)
                 }
             }
 
-            if (people < 1 || LaneCycle.Minutes(intervals.Select(f => (f.MeanCycleSeconds, f.Transactions))) is not { } perTransaction)
+            if (people < 1 || LaneCycle.PerTransaction(intervals.Select(f => (f.MeanCycleSeconds, f.Transactions))) is not { } perTransaction)
                 continue;
             // Per person: the same cycle seconds over the documents (people) instead of the transactions.
-            var perPerson = LaneCycle.Minutes(intervals.Select(f => (f.MeanCycleSeconds * f.Transactions / f.Documents, f.Documents))) ?? double.NaN;
-            var busyPerPerson = LaneCycle.Minutes(intervals.Select(f => (f.MeanBusyCycleSeconds * f.Transactions / f.Documents, f.Documents))) ?? double.NaN;
-            result.Add(new LaneMinute(m, perTransaction, perPerson, busyPerPerson, work / people / 60, busy));
+            var perPerson = LaneCycle.PerTransaction(intervals.Select(f => (f.MeanCycleSeconds * f.Transactions / f.Documents, f.Documents))) ?? double.NaN;
+            var busyPerPerson = LaneCycle.PerTransaction(intervals.Select(f => (f.MeanBusyCycleSeconds * f.Transactions / f.Documents, f.Documents))) ?? double.NaN;
+            // ARV-117d: the published reading, per person in mean service time (LaneCycle.PerPerson as the desk term takes it).
+            var published = LaneCycle.PerPerson(intervals.Select(f => new DeskIntervalSample(f.Transactions, f.Documents, f.MeanServiceSeconds, f.P90ServiceSeconds,
+                f.MeanCycleSeconds)), Ariva.Infra.Streaming.DeskTermSource.CycleMethod).Minutes ?? double.NaN;
+            result.Add(new LaneMinute(m, perTransaction, perPerson, busyPerPerson, work / people / 60, busy, published));
         }
 
         return result;
@@ -82,7 +86,7 @@ public sealed class AmanIntervalScenarioTests(ITestOutputHelper output)
     public void LaneCycle_Should_TrackTheScenarioServiceTime_When_TheLaneRunsAtCapacity()
     {
         output.WriteLine("Reference day, seed 9303 (Ariva's own simulator, not field data). Ratios are medians of AMAN's lane cycle time over the scenario's service time.");
-        output.WriteLine("lane: minutes (at capacity) | scenario service min/person | per transaction / (1.25 x service): all, at capacity | per person: all, at capacity | busy time per person: all");
+        output.WriteLine("lane: minutes (at capacity) | scenario service min/person | per transaction / (1.25 x service): all, at capacity | per person: all, at capacity | busy time per person: all | published since ARV-117d: all, at capacity");
         var checkedLanes = 0;
         foreach (var (side, from, to) in new[] { ("A", 1040, 1225), ("D", 0, 1439) })
         {
@@ -94,7 +98,8 @@ public sealed class AmanIntervalScenarioTests(ITestOutputHelper output)
                 var perPerson = Median(atCapacity.Select(l => l.PerPerson / l.Service));
                 output.WriteLine($"{side}-{lane}: {minutes.Count} ({atCapacity.Count}) | {Median(minutes.Select(l => l.Service)):F2} | " +
                                  $"{Median(minutes.Select(l => l.PerTransaction / (FamilySize * l.Service))):F2}, {perTransaction:F2} | " +
-                                 $"{Median(minutes.Select(l => l.PerPerson / l.Service)):F2}, {perPerson:F2} | {Median(minutes.Select(l => l.BusyPerPerson / l.Service)):F2}");
+                                 $"{Median(minutes.Select(l => l.PerPerson / l.Service)):F2}, {perPerson:F2} | {Median(minutes.Select(l => l.BusyPerPerson / l.Service)):F2} | " +
+                                 $"{Median(minutes.Select(l => l.Published / l.Service)):F2}, {Median(atCapacity.Select(l => l.Published / l.Service)):F2}");
                 minutes.Should().NotBeEmpty($"{side}-{lane} serves people in the window");
                 minutes.Should().OnlyContain(l => l.PerTransaction >= l.BusyPerPerson, "a cycle in open time is never shorter than in working time, nor a transaction than a person");
                 if (atCapacity.Count < 10)
@@ -102,6 +107,7 @@ public sealed class AmanIntervalScenarioTests(ITestOutputHelper output)
                 // Proposed: within 10 percent while the lane runs at capacity (no idle time between transaction starts).
                 perTransaction.Should().BeInRange(0.9, 1.1, $"{side}-{lane}'s lane cycle per transaction tracks 1.25 people's service time");
                 perPerson.Should().BeInRange(0.9, 1.1, $"{side}-{lane}'s lane cycle per person tracks the service time");
+                Median(atCapacity.Select(l => l.Published / l.Service)).Should().BeInRange(0.9, 1.1, $"{side}-{lane}'s published lane cycle (ARV-117d) tracks the service time");
                 checkedLanes++;
             }
         }
@@ -120,6 +126,9 @@ public sealed class AmanIntervalScenarioTests(ITestOutputHelper output)
         Median(visitors.Select(l => l.BusyPerPerson / l.Service)).Should().BeInRange(0.9, 1.1);
         Median(crew.Select(l => l.PerPerson / l.Service)).Should().BeGreaterThan(2, "one crew desk mostly idle between a few crews");
         Median(visitors.Select(l => l.PerPerson / l.Service)).Should().BeGreaterThan(1.1, "the Visitors desks idle between the evening's waves");
+        // ARV-117d: the published reading leaves the idle time out, so it tracks the service time over all minutes too.
+        Median(visitors.Select(l => l.Published / l.Service)).Should().BeInRange(0.9, 1.1);
+        Median(crew.Select(l => l.Published / l.Service)).Should().BeInRange(0.8, 1.2, "the idle crew desk's published cycle is its service time, not its idle time");
     }
 
     [Fact]

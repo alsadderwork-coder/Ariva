@@ -36,8 +36,11 @@ public sealed class SensorCycleScenarioTests(ITestOutputHelper output)
     /// <summary>A closed desk minute of both engines with the wall time it closed at (both are written in one transaction).</summary>
     private sealed record Closed(DateTime At, DeskMinuteSample Sample);
 
-    /// <summary>One AMAN interval of a Visitors desk as the desk term reads it, with its documents and (not published) its cycle in working time.</summary>
-    private sealed record Interval(DateTime Start, DateTime Published, double Cycle, int Transactions, int Documents, double BusyCycle);
+    /// <summary>One AMAN interval of a Visitors desk as the desk term reads it, with (not published) its cycle in working time.</summary>
+    private sealed record Interval(DateTime Start, DateTime Published, double Cycle, int Transactions, int Documents, double BusyCycle, double Service, double P90)
+    {
+        public DeskIntervalSample Sample => new(Transactions, Documents, Service, P90, Cycle);
+    }
 
     private static readonly Lazy<(List<Closed> Minutes, List<Interval> Intervals)> Desks = new(BuildDesks);
 
@@ -105,24 +108,29 @@ public sealed class SensorCycleScenarioTests(ITestOutputHelper output)
                          .Where(d => codes.ContainsKey(d.DeskCode)))
             {
                 intervals.Add(new Interval(d.IntervalStartUtc.UtcDateTime, ReferenceReplay.WallOf(m + 1), d.MeanCycleSeconds, d.TransactionsProcessed, d.DocumentsProcessed,
-                    AmanDeskProcess.Of(day, q, codes[d.DeskCode], m).MeanBusyCycleSeconds));
+                    AmanDeskProcess.Of(day, q, codes[d.DeskCode], m).MeanBusyCycleSeconds, d.MeanServiceSeconds, d.P90ServiceSeconds));
             }
         }
 
         return (minutes, intervals);
     }
 
-    /// <summary>The desk term the stream would read at <paramref name="now"/>, as DeskTermSource builds it.</summary>
-    private static DeskTerm TermAt(DateTime now, Func<DeskMinuteSample, DeskMinuteSample> change = null, Func<Interval, (double Seconds, int Weight)> laneCycle = null)
+    /// <summary>
+    /// The desk term the stream would read at <paramref name="now"/>, as DeskTermSource builds it: since ARV-117d the lane
+    /// cycle time per person in working time (<see cref="LaneCycle.PerPerson"/> with the method DeskTermSource uses, or
+    /// <paramref name="method"/>); <paramref name="laneCycle"/> replaces it by a weighted mean of the intervals for the
+    /// comparisons only (the reading before ARV-117d and the unpublished working-time figure), never Ariva's reading.
+    /// </summary>
+    private static DeskTerm TermAt(DateTime now, Func<DeskMinuteSample, DeskMinuteSample> change = null, Func<Interval, (double Seconds, int Weight)> laneCycle = null,
+        LaneCycleMethod method = Ariva.Infra.Streaming.DeskTermSource.CycleMethod)
     {
         var (minutes, intervals) = Desks.Value;
         var samples = minutes.Where(c => c.At <= now && c.Sample.MinuteUtc >= now.AddMinutes(-Ariva.Infra.Streaming.DeskTermSource.LookbackMinutes) && c.Sample.MinuteUtc <= now)
             .Select(c => change is null ? c.Sample : change(c.Sample)).ToList();
-        // As LaneCycle reads AMAN today: each interval's mean cycle weighted by its transactions; the variants are the
-        // owner's comparison only (ARV-117c), never Ariva's reading.
-        var cycle = LaneCycle.Minutes(intervals.Where(i => i.Published <= now && i.Start >= now.AddMinutes(-Settings.ExitWindowMinutes - 2) && i.Start <= now)
-            .Select(laneCycle ?? (i => (i.Cycle, i.Transactions))));
-        return DeskTerms.Compute(samples, Settings.ExitWindowMinutes, now, cycle, Settings.SensorCycle);
+        var window = intervals.Where(i => i.Published <= now && i.Start >= now.AddMinutes(-Settings.ExitWindowMinutes - 2) && i.Start <= now).ToList();
+        return laneCycle is null
+            ? DeskTerms.Compute(samples, Settings.ExitWindowMinutes, now, LaneCycle.PerPerson(window.Select(i => i.Sample), method), Settings.SensorCycle)
+            : DeskTerms.Compute(samples, Settings.ExitWindowMinutes, now, LaneCycle.PerTransaction(window.Select(laneCycle)), Settings.SensorCycle);
     }
 
     /// <summary>
@@ -161,11 +169,18 @@ public sealed class SensorCycleScenarioTests(ITestOutputHelper output)
     private static readonly Lazy<List<QueueLiveMinute>> OpenTimeCycle = new(() => Evening(now => TermAt(now, m =>
         m.Sensor is { } s ? m with { Sensor = s with { ServingSeconds = s.OpenSeconds } } : m)));
 
-    // ARV-117c, for the owner's decision only (Ariva's published term is not changed): the same evening with AMAN's lane
-    // cycle time taken per person (cycle seconds over documents instead of transactions), and per person in the desks'
-    // working time (idle time between a lull's transactions left out, a figure AMAN does not publish).
-    private static readonly Lazy<List<QueueLiveMinute>> PerPerson = new(() => Evening(now => TermAt(now, laneCycle: i =>
+    // ARV-117d: the published term as it read AMAN before (per transaction, idle time included), and the alternatives the
+    // method was chosen from, for the comparison only: per person with the idle time kept, per person in mean service time
+    // (the other proposed method), and per person in the desks' working time (a figure AMAN does not publish).
+    private static readonly Lazy<List<QueueLiveMinute>> PerTransaction = new(() => Evening(now => TermAt(now, laneCycle: i => (i.Cycle, i.Transactions))));
+
+    private static readonly Lazy<List<QueueLiveMinute>> PerPersonIdle = new(() => Evening(now => TermAt(now, laneCycle: i =>
         (i.Documents > 0 ? i.Cycle * i.Transactions / i.Documents : 0, i.Documents))));
+
+    private static readonly Lazy<List<QueueLiveMinute>> PerPersonCappedPlain = new(() => Evening(now => TermAt(now, laneCycle: i =>
+        (i.Documents > 0 ? Math.Min(i.Cycle, Math.Max(i.P90, i.Service)) * i.Transactions / i.Documents : 0, i.Documents))));
+
+    private static readonly Lazy<List<QueueLiveMinute>> PerPersonCapped = new(() => Evening(now => TermAt(now, method: LaneCycleMethod.CycleCappedAtP90)));
 
     private static readonly Lazy<List<QueueLiveMinute>> PerPersonWorking = new(() => Evening(now => TermAt(now, laneCycle: i =>
         (i.Documents > 0 ? i.BusyCycle * i.Transactions / i.Documents : 0, i.Documents))));
@@ -221,12 +236,10 @@ public sealed class SensorCycleScenarioTests(ITestOutputHelper output)
         var with = WithCycle.Value;
         var evening = with.Where(l => l.MinuteUtc >= ReferenceReplay.WallOf(FirstMinute) && l.MinuteUtc <= ReferenceReplay.WallOf(LastMinute)).ToList();
         var used = evening.Count(l => l.Shadow.CycleMinutes is not null);
-        var published = Measure("published (AMAN n_open and lane cycle time)", with, l => l.NowcastMinutes);
+        var published = Measure("published (AMAN n_open and lane cycle time per person in working time, ARV-117d)", with, l => l.NowcastMinutes);
         var shadow = Measure("shadow, zones' n_open over the sensor cycle time (ARV-117b)", with, l => l.Shadow.Minutes);
         var before = Measure("shadow without a cycle time (ARV-117a: exit term alone)", WithoutCycle.Value, l => l.Shadow.Minutes);
         var openTime = Measure("shadow, open desk minutes over exits (rejected)", OpenTimeCycle.Value, l => l.Shadow.Minutes);
-        var perPerson = Measure("published if AMAN's lane cycle time were taken per person (owner's comparison only)", PerPerson.Value, l => l.NowcastMinutes);
-        var perPersonWorking = Measure("published if it were per person in working time (owner's comparison only)", PerPersonWorking.Value, l => l.NowcastMinutes);
         var cycles = evening.Where(l => l.Shadow.CycleMinutes is not null).Select(l => l.Shadow.CycleMinutes!.Value).Order().ToList();
 
         output.WriteLine($"Reference evening 17:20 to 20:25 ({evening.Count} minutes), measured on Ariva's own simulator (seed 9303), not on field data.");
@@ -234,25 +247,15 @@ public sealed class SensorCycleScenarioTests(ITestOutputHelper output)
                          $"the scenario's Visitors service time is {ScenarioModel.Svc["VIS"] / 60:F2} min per desk at speed factor 1.");
         var aman = Enumerable.Range(FirstMinute, LastMinute - FirstMinute + 1).Select(m => TermAt(ReferenceReplay.WallOf(m + 1).AddSeconds(30))?.CycleMinutes)
             .OfType<double>().Order().ToList();
-        output.WriteLine($"AMAN's lane cycle time as the published term reads it (the emulator's interval statistics, per transaction): median {aman[aman.Count / 2]:F2} min, " +
+        output.WriteLine($"AMAN's lane cycle time as the published term reads it (ARV-117d, {Ariva.Infra.Streaming.DeskTermSource.CycleMethod}): median {aman[aman.Count / 2]:F2} min, " +
                          $"from {aman[0]:F2} to {aman[^1]:F2}.");
-        foreach (var (name, read) in new (string, Func<Interval, (double, int)>)[]
-                 {
-                     ("per person", i => (i.Documents > 0 ? i.Cycle * i.Transactions / i.Documents : 0, i.Documents)),
-                     ("per person in working time", i => (i.Documents > 0 ? i.BusyCycle * i.Transactions / i.Documents : 0, i.Documents))
-                 })
-        {
-            var variant = Enumerable.Range(FirstMinute, LastMinute - FirstMinute + 1).Select(m => TermAt(ReferenceReplay.WallOf(m + 1).AddSeconds(30), laneCycle: read)?.CycleMinutes)
-                .OfType<double>().Order().ToList();
-            output.WriteLine($"The same {name}: median {variant[variant.Count / 2]:F2} min, from {variant[0]:F2} to {variant[^1]:F2}.");
-        }
-
-        foreach (var s in new[] { published, shadow, before, openTime, perPerson, perPersonWorking })
+        foreach (var s in new[] { published, shadow, before, openTime })
             output.WriteLine($"{s.Name}: {s.Minutes} minutes with a true wait and a number, mean absolute error {s.Mae:F2} min, bias {s.Bias:+0.00;-0.00} min, {s.NoNumber} without a number");
 
         used.Should().BeGreaterThan(evening.Count / 2, "the sensor cycle time is available most of the evening");
         aman.Distinct().Should().HaveCountGreaterThan(20, "ARV-117c: AMAN's lane cycle time follows the served passengers, not a constant 1.00 min");
-        aman[aman.Count / 2].Should().BeGreaterThan(ScenarioModel.Svc["VIS"] / 60, "per transaction (1.25 people) and with the idle time of the lulls");
+        aman[aman.Count / 2].Should().BeInRange(0.8 * ScenarioModel.Svc["VIS"] / 60, 1.2 * ScenarioModel.Svc["VIS"] / 60,
+            "ARV-117d: per person in working time, near the scenario's service time per person");
         cycles.Should().OnlyContain(c => c >= Settings.SensorCycle.MinimumCycleMinutes && c <= Settings.SensorCycle.MaximumCycleMinutes);
         shadow.Mae.Should().BeLessThanOrEqualTo(before.Mae, "on the simulator the sensor cycle time does not make the shadow worse than the exit term alone");
         openTime.Mae.Should().BeGreaterThan(shadow.Mae, "open time over exits carries the idle time of a short queue");
@@ -264,5 +267,51 @@ public sealed class SensorCycleScenarioTests(ITestOutputHelper output)
         term.CycleMinutes.Should().NotBeNull("AMAN's lane cycle time");
         term.SensorOnly.SensorBusy.Missing.Should().BeNull();
         term.SensorOnly.CycleMinutes.Should().BeNull("the term as read has the busy window, the zone gives it c with its exits");
+    }
+
+    [Fact]
+    public void Published_Should_TakeTheLaneCyclePerPersonInWorkingTime_When_AmanPublishesFamiliesAndLulls()
+    {
+        // ARV-117d on the reference evening: the published nowcast against the scenario's true wait with the lane cycle time
+        // as it is read now, as it was read before, and the alternatives; the shadow and the exit term alone beside them.
+        var with = WithCycle.Value;
+        var rows = new (string Name, List<QueueLiveMinute> Live, Func<Interval, (double, int)> Read, LaneCycleMethod? Method)[]
+        {
+            ("published, per person, mean service time (ARV-117d, built)", with, null, LaneCycleMethod.MeanService),
+            ("published, per person, cycle capped at the interval's P90 service (proposed alternative, not floored)", PerPersonCappedPlain.Value,
+                i => (i.Documents > 0 ? Math.Min(i.Cycle, Math.Max(i.P90, i.Service)) * i.Transactions / i.Documents : 0, i.Documents), null),
+            ("published, per person, cycle capped at P90 and floored at the mean service (LaneCycleMethod.CycleCappedAtP90)", PerPersonCapped.Value, null,
+                LaneCycleMethod.CycleCappedAtP90),
+            ("published before ARV-117d (per transaction, idle time included)", PerTransaction.Value, i => (i.Cycle, i.Transactions), null),
+            ("published per person with the idle time kept (comparison only)", PerPersonIdle.Value, i => (i.Documents > 0 ? i.Cycle * i.Transactions / i.Documents : 0, i.Documents), null),
+            ("published per person in working time (not published by AMAN; comparison only)", PerPersonWorking.Value,
+                i => (i.Documents > 0 ? i.BusyCycle * i.Transactions / i.Documents : 0, i.Documents), null)
+        };
+        var scores = new List<Score>();
+        foreach (var (name, live, read, method) in rows)
+        {
+            var cycle = Enumerable.Range(FirstMinute, LastMinute - FirstMinute + 1)
+                .Select(m => TermAt(ReferenceReplay.WallOf(m + 1).AddSeconds(30), laneCycle: read, method: method ?? LaneCycleMethod.MeanService)?.CycleMinutes)
+                .OfType<double>().Order().ToList();
+            var score = Measure(name, live, l => l.NowcastMinutes);
+            scores.Add(score);
+            output.WriteLine($"{name}: lane cycle time median {cycle[cycle.Count / 2]:F2} min ({cycle[0]:F2} to {cycle[^1]:F2}); {score.Minutes} minutes, " +
+                             $"mean absolute error {score.Mae:F2} min, bias {score.Bias:+0.00;-0.00} min, {score.NoNumber} without a number");
+        }
+
+        var shadow = Measure("shadow with the sensor cycle time (ARV-117b)", with, l => l.Shadow.Minutes);
+        var exits = Measure("shadow without a cycle time (exit term alone)", WithoutCycle.Value, l => l.Shadow.Minutes);
+        foreach (var s in new[] { shadow, exits })
+            output.WriteLine($"{s.Name}: {s.Minutes} minutes, mean absolute error {s.Mae:F2} min, bias {s.Bias:+0.00;-0.00} min, {s.NoNumber} without a number");
+
+        scores[0].Mae.Should().BeLessThan(scores[3].Mae, "per person in working time is closer to the true wait than per transaction with idle time");
+        Math.Abs(scores[0].Bias).Should().BeLessThan(Math.Abs(scores[3].Bias), "the published nowcast no longer overstates the wait as before");
+        scores[0].Mae.Should().BeLessThan(scores[1].Mae, "the plain P90 cap is biased low with one transaction an interval");
+        scores[0].Mae.Should().BeLessThan(1.0);
+
+        // The shadow is unaffected: it reads no AMAN input, so its every value is the same whichever lane cycle time the
+        // published term took; and the change is deterministic.
+        with.Select(l => l.Shadow).Should().Equal(PerTransaction.Value.Select(l => l.Shadow), "the shadow never reads AMAN's lane cycle time");
+        Evening(now => TermAt(now)).Select(l => (l.NowcastMinutes, l.NowcastDegraded)).Should().Equal(with.Select(l => (l.NowcastMinutes, l.NowcastDegraded)), "deterministic");
     }
 }

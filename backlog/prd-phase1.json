@@ -236,7 +236,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 11,
-      "passes": false,
+      "passes": true,
       "notes": "Size S to M. Owner decision 2026-10-07: build before the AUH seed (ARV-139a). Changes the published nowcast at AMAN sites.",
       "dependsOn": [
         "ARV-117c"
