@@ -10,6 +10,7 @@
 	import PublishPanel from '$lib/components/pages/zones/PublishPanel.svelte';
 	import ZoneCanvas, { type Selected } from '$lib/components/pages/zones/ZoneCanvas.svelte';
 	import ZoneDetails from '$lib/components/pages/zones/ZoneDetails.svelte';
+	import IllustrativeBanner from '$lib/components/shared/IllustrativeBanner.svelte';
 	import SimplePageHeader from '$lib/components/shared/SimplePageHeader.svelte';
 	import { auth } from '$lib/core/auth.svelte';
 	import * as topology from '$lib/core/topology';
@@ -337,6 +338,8 @@
 		</div>
 	{/snippet}
 </SimplePageHeader>
+
+<IllustrativeBanner site={siteList.find((s) => s.code === siteCode)} />
 
 <div class="mb-4 flex flex-wrap items-end gap-3">
 	<div class="flex flex-col gap-1">

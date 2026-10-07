@@ -50,7 +50,8 @@ internal sealed class SvcDisplayBoard(IUnitOfWork unitOfWork, ILiveSnapshotStore
                     Math.Max(0, Math.Round((now - snapshot.PublishedUtc.ToUniversalTime()).TotalSeconds, 1))));
         }
 
+        var illustrative = await unitOfWork.StorageProvider.Query<Site>().AnyAsync(s => s.Code == display.SiteCode && s.IsIllustrative, ct);
         return new Result<DisplayBoardViewModel>(new DisplayBoardViewModel(display.Code, display.Name, display.Orientation.ToString(), display.LanguageList,
-            display.BandMinutes, display.HysteresisMinutes, display.StaleSeconds, display.FallbackMap, entries, now));
+            display.BandMinutes, display.HysteresisMinutes, display.StaleSeconds, display.FallbackMap, entries, now, illustrative));
     }
 }

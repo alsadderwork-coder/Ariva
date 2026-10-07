@@ -6,6 +6,7 @@
 	import TreeColumn, { type ColumnItem } from '$lib/components/pages/topology/TreeColumn.svelte';
 	import EntityPanel from '$lib/components/pages/topology/EntityPanel.svelte';
 	import CreateForm from '$lib/components/pages/topology/CreateForm.svelte';
+	import IllustrativeBanner from '$lib/components/shared/IllustrativeBanner.svelte';
 	import SimplePageHeader from '$lib/components/shared/SimplePageHeader.svelte';
 	import { auth } from '$lib/core/auth.svelte';
 	import * as topology from '$lib/core/topology';
@@ -220,6 +221,8 @@
 		</select>
 	{/snippet}
 </SimplePageHeader>
+
+<IllustrativeBanner site={siteList.find((s) => s.code === siteCode)} />
 
 {#if !writes}
 	<p

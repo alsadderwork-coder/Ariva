@@ -226,7 +226,12 @@ export function accounts() {
 		reportBorder: account('e2e.reportborder', ['BorderShiftSupervisor'], false, false, ['DMO']),
 		reportTerminal: account('e2e.reportterminal', ['TerminalDutyManager'], false, false, ['DMO']),
 		// ARV-118: an administrator of one site (E2E3, created by the seed, no airport: UTC) who keeps its operating calendar.
-		calendarAdmin: account('e2e.calendaradmin', ['SystemAdministrator'], false, false, ['E2E3'])
+		calendarAdmin: account('e2e.calendaradmin', ['SystemAdministrator'], false, false, ['E2E3']),
+		// ARV-139a: creates an AUH-TA and a DMO display to read the illustrative flag on their boards (creating needs a second factor).
+		// Every site, so the account seed never creates AUH-TA itself (only the illustrative seed may).
+		illustrativeAdmin: account('e2e.illusadmin', ['SystemAdministrator'], false, true, ['*']),
+		// ARV-139a: the same for the functional suite's passenger display players (its own account: a TOTP code counts once per account).
+		illustrativeWebAdmin: account('e2e.illuswebadmin', ['SystemAdministrator'], false, true, ['*'])
 	} as const;
 }
 

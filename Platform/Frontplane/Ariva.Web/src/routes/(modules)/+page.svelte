@@ -17,6 +17,7 @@
 		estimateOnly
 	} from '$lib/components/pages/live/waits';
 	import MetricCard from '$lib/components/shared/MetricCard.svelte';
+	import IllustrativeBanner from '$lib/components/shared/IllustrativeBanner.svelte';
 	import SimplePageHeader from '$lib/components/shared/SimplePageHeader.svelte';
 	import StatusBadge from '$lib/components/shared/StatusBadge.svelte';
 	import { auth } from '$lib/core/auth.svelte';
@@ -261,6 +262,8 @@
 		{/if}
 	{/snippet}
 </SimplePageHeader>
+
+<IllustrativeBanner site={siteList.find((s) => s.code === siteCode)} />
 
 {#if !canSee}
 	<p

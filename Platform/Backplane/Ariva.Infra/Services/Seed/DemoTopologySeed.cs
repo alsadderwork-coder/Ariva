@@ -9,9 +9,14 @@ namespace Ariva.Infra.Services.Seed;
 /// <summary>What one run of the demo seed created (zero on a re-run), and why zone profile v12 was left out, if it was.</summary>
 public sealed record SeedOutcome(int Created, string ProfileSkipped = null);
 
-/// <summary>One run of the demo topology seed; an interface so the hosted retry loop can be tested on its own.</summary>
+/// <summary>
+/// One run of a demo topology seed (DMO, ARV-019; AUH-TA, ARV-139a); an interface so the hosted retry loop can be tested
+/// on its own. <see cref="Name"/> is the seeded site's code, for the log.
+/// </summary>
 internal interface IDemoTopologySeed
 {
+    string Name { get; }
+
     Task<SeedOutcome> RunAsync(CancellationToken ct);
 }
 
@@ -58,6 +63,8 @@ internal sealed class DemoTopologySeed(IUnitOfWork unitOfWork, ICurrentUser curr
     private const long SeedLock = 0x41524956_00000019;
 
     private static readonly (string Lane, int From, int To)[] BorderDesks = [("CRW", 1, 1), ("CIT", 2, 4), ("RES", 5, 7), ("VIS", 8, 22)];
+
+    public string Name => SiteCode;
 
     private IStorageProvider Storage => unitOfWork.StorageProvider;
 

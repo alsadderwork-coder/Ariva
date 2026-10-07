@@ -1059,5 +1059,11 @@
 			"delete": "Delete",
 			"confirmDelete": "Delete this schedule"
 		}
+	},
+	"site": {
+		"illustrative": {
+			"title": "Illustrative, not surveyed.",
+			"detail": "{site} is modelled on a real airport from public information only; its layout, counts and positions are assumptions, not a survey."
+		}
 	}
 }

@@ -210,7 +210,7 @@ Main settings:
 | `Simulation:Aman:SiteCode`, `Sides`, `RetainMinutes`; `Simulation:Immigration:SiteCode`, `Sides` | `DMO`, `Both`, 180; `DMO`, `Departure` | The border systems' site code, the sides they report and how long the mock AMAN feed API keeps records |
 | `Simulation:Aman:Mock:Clients`, `TokenMinutes`, `AuthPerMinute` | none, 15, 30 | Clients of the mock AMAN Integration API (for Ariva's outbound AMAN connector): `ClientId`, `SecretSha256` (never the secret), `TotpSecret`, `PerRequestTotp` |
 | `Simulation:Aodb:Airport`, `AcrisHeader`, `AcrisKeySha256` | `DMO`, `X-Api-Key`, none | The site airport's IATA code and the API key Ariva's ACRIS pull presents (its SHA-256 only); without a key nothing can pull |
-| `Seed:DemoTopology` (Main) | `true` in vm-local; set by the `demoSeed` Helm value in clusters | Seeds the fictional Demo International Airport (site `DMO`) and its zone profile v12 at startup, idempotently. Api.Main refuses to start with it on unless both `DOTNET_ENVIRONMENT` and `Application:Environment` are `vm-local`, `k8s-dev` or `k8s-demo`. Never set it in production |
+| `Seed:DemoTopology` (Main) | `true` in vm-local; set by the `demoSeed` Helm value in clusters | Seeds the fictional Demo International Airport (site `DMO`) and its zone profile v12 at startup, idempotently, then the illustrative AUH Terminal A arrivals site (`AUH-TA`, ARV-139a, flagged "Illustrative, not surveyed"). Api.Main refuses to start with it on unless both `DOTNET_ENVIRONMENT` and `Application:Environment` are `vm-local`, `k8s-dev` or `k8s-demo`. Never set it in production |
 
 Main Helm values (`Charts/platform/values*.yaml`):
 
@@ -223,7 +223,7 @@ Main Helm values (`Charts/platform/values*.yaml`):
 | `replicas`, `<service>Replicas`, `<service>HpaMin`, `<service>HpaMax` | Replica counts (AMAN key style) |
 | `<service>CpuRequest`, `MemRequest`, `CpuLimit`, `MemLimit` | Resource overrides per service |
 | `simulationEnabled` | Deploys the simulation host; `false` in production |
-| `demoSeed` | Sets `Seed__DemoTopology` on api-main to seed Demo International Airport; `true` in demo only. The chart refuses to render it for k8s-prd |
+| `demoSeed` | Sets `Seed__DemoTopology` on api-main to seed Demo International Airport and the illustrative `AUH-TA`; `true` in demo only. The chart refuses to render it for k8s-prd |
 | `otel.endpoint`, `otel.protocol` | OTLP export target (`grpc` by default) |
 | `imageCredentials.registry`, `username`, `password` | Rendered into `dalilacr-secret` when a password is given |
 | `ingresses` | List of `{ name, comment, subdomain, serviceName, annotations }` |

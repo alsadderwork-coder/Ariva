@@ -43,5 +43,8 @@ public sealed record AuditEntryViewModel(
 /// <summary>A page of results.</summary>
 public sealed record PageViewModel<T>(IReadOnlyList<T> Data, int TotalCount, int PageIndex, int PageSize);
 
-/// <summary>A site (ARV-012).</summary>
-public sealed record SiteViewModel(string Code, string Name, DateTime? CreatedOn);
+/// <summary>
+/// A site (ARV-012). <paramref name="Illustrative"/>: a demo site modelled on a real airport from public information only
+/// ("Illustrative, not surveyed", ARV-139a); read only, set by the demo seeds alone.
+/// </summary>
+public sealed record SiteViewModel(string Code, string Name, DateTime? CreatedOn, bool Illustrative = false);

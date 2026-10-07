@@ -5,7 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace Ariva.Di.Extensions;
 
 /// <summary>
-/// The demo topology seed (ARV-019) for Ariva.Api.Main: on with <c>Seed:DemoTopology</c> (vm-local in appsettings,
+/// The demo topology seeds (DMO, ARV-019; the illustrative AUH-TA, ARV-139a) for Ariva.Api.Main: on with <c>Seed:DemoTopology</c> (vm-local in appsettings,
 /// k8s-demo through the Helm value <c>demoSeed</c>). Fictional data must never reach a real deployment (CWE-269), so
 /// the setting is refused unless both the host environment (DOTNET_ENVIRONMENT, which Helm sets) and
 /// <c>Application:Environment</c> are development or demo environments; a production host with it on refuses to start.
@@ -34,7 +34,9 @@ public static class DemoSeedExtensions
                 $"this host runs as '{hostEnvironment}' with Application:Environment '{applicationEnvironment}'. Turn it off.");
         }
 
+        // In this order: the fictional DMO (ARV-019), then the illustrative AUH Terminal A arrivals (ARV-139a).
         services.AddScoped<IDemoTopologySeed, DemoTopologySeed>();
+        services.AddScoped<IDemoTopologySeed, AuhTerminalASeed>();
         services.AddHostedService<DemoSeedService>();
         return services;
     }

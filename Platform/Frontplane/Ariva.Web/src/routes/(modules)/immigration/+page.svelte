@@ -3,6 +3,7 @@
 	import { onDestroy, onMount } from 'svelte';
 	import { _, locale } from 'svelte-i18n';
 	import { estimateOnly, statusTone, waitStatus } from '$lib/components/pages/live/waits';
+	import IllustrativeBanner from '$lib/components/shared/IllustrativeBanner.svelte';
 	import SimplePageHeader from '$lib/components/shared/SimplePageHeader.svelte';
 	import StatusBadge, { type StatusTone } from '$lib/components/shared/StatusBadge.svelte';
 	import { LiveConnection, type ZoneSnapshot } from '$lib/core/Live.svelte';
@@ -178,6 +179,8 @@
 		</select>
 	{/snippet}
 </SimplePageHeader>
+
+<IllustrativeBanner site={siteList.find((s) => s.code === siteCode)} />
 
 <div class="flex flex-col gap-4">
 	<div class="flex flex-wrap items-center justify-between gap-3">

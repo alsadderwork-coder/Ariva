@@ -71,5 +71,5 @@ internal sealed class SvcSites(IUnitOfWork unitOfWork, ICurrentUser currentUser,
         return await Query<Site>().FirstOrDefaultAsync(s => s.Code == code, ct);
     }
 
-    private static SiteViewModel View(Site site) => new(site.Code, site.Name, site.CreatedOn);
+    private static SiteViewModel View(Site site) => new(site.Code, site.Name, site.CreatedOn, site.IsIllustrative);
 }

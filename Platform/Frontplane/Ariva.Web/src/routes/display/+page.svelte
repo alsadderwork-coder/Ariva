@@ -180,6 +180,25 @@
 				{new Date(lastOk).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
 			</p>
 		</header>
+		{#if board.illustrative === true}
+			<!-- ARV-139a: an illustrative demo site's board says so in English and Arabic, whatever its languages. -->
+			<div
+				role="note"
+				data-testid="board-illustrative"
+				class="flex flex-wrap justify-center gap-x-[2em] gap-y-[0.2em] border-b border-amber-300/40 bg-amber-400/15 px-[3em] py-[0.6em]"
+			>
+				{#each ['en', 'ar'] as language (language)}
+					<p
+						dir={rtl.has(language) ? 'rtl' : 'ltr'}
+						lang={language}
+						class="text-[1.3em] font-semibold text-amber-200"
+						data-testid="board-illustrative-text"
+					>
+						{words(language, 'illustrative')}
+					</p>
+				{/each}
+			</div>
+		{/if}
 		<ul class="flex flex-1 flex-col justify-evenly gap-[1em] px-[3em] py-[2em]">
 			{#each board.entries as entry, index (index)}
 				{@const band = boardStale ? null : bands[index]}

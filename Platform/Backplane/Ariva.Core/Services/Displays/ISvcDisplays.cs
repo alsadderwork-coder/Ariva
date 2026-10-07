@@ -86,7 +86,10 @@ public sealed record DisplayBoardEntryViewModel(
     string NoService,
     double? AgeSeconds);
 
-/// <summary>What a player shows (ARV-058): the display's settings and its entries' latest nowcasts.</summary>
+/// <summary>
+/// What a player shows (ARV-058): the display's settings and its entries' latest nowcasts. <paramref name="Illustrative"/>:
+/// the display's site is an illustrative demo site (ARV-139a), so the player shows the "Illustrative, not surveyed" banner.
+/// </summary>
 public sealed record DisplayBoardViewModel(
     string Code,
     string Name,
@@ -97,7 +100,8 @@ public sealed record DisplayBoardViewModel(
     int StaleSeconds,
     IReadOnlyDictionary<string, string> Fallback,
     IReadOnlyList<DisplayBoardEntryViewModel> Entries,
-    DateTime ServerUtc);
+    DateTime ServerUtc,
+    bool Illustrative = false);
 
 /// <summary>A display player that presented its display's code and credential (ARV-058).</summary>
 public sealed record DisplayPlayer(Guid Id, string Code, string SiteCode, string CredentialPrefix);

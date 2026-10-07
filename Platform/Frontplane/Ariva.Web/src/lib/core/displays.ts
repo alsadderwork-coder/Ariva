@@ -113,6 +113,8 @@ export interface Board {
 	fallback: Record<string, string>;
 	entries: BoardEntry[];
 	serverUtc: string;
+	/** The display's site is an illustrative demo site (ARV-139a): the board shows the "Illustrative, not surveyed" note. */
+	illustrative?: boolean;
 }
 
 /** What the player learns from one board request: the board, or that its credential was refused, or nothing new. */

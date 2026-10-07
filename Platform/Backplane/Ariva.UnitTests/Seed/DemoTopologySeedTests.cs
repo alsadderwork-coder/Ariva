@@ -125,12 +125,14 @@ public sealed class DemoTopologySeedTests
             .Should().Be(registered);
     }
 
-    private sealed class FlakySeed(int failures) : IDemoTopologySeed
+    private sealed class FlakySeed(int failures, string name = "DMO", int created = 7) : IDemoTopologySeed
     {
         public int Calls { get; private set; }
 
+        public string Name => name;
+
         public Task<SeedOutcome> RunAsync(CancellationToken ct) =>
-            ++Calls <= failures ? throw new InvalidOperationException("database starting") : Task.FromResult(new SeedOutcome(7));
+            ++Calls <= failures ? throw new InvalidOperationException("database starting") : Task.FromResult(new SeedOutcome(created));
     }
 
     private sealed class NoUnitOfWork : IUnitOfWork
@@ -169,6 +171,35 @@ public sealed class DemoTopologySeedTests
 
         seed.Calls.Should().Be(3);
         service.Outcome.Should().Be(new SeedOutcome(7));
+    }
+
+    [Fact]
+    public async Task DemoSeedService_Should_RunEverySeedInOrder_When_TheFirstGivesUp()
+    {
+        // ARV-139a: DMO, then AUH-TA, each with its own retries; a seed that gives up does not keep the next from running.
+        var dmo = new FlakySeed(10, "DMO");
+        var auh = new FlakySeed(1, "AUH-TA", created: 300);
+        var services = new ServiceCollection();
+        services.AddSingleton<IDemoTopologySeed>(dmo);
+        services.AddSingleton<IDemoTopologySeed>(auh);
+        services.AddScoped<IUnitOfWork, NoUnitOfWork>();
+        await using var provider = services.BuildServiceProvider();
+        var service = new DemoSeedService(provider.GetRequiredService<IServiceScopeFactory>(), TimeProvider.System,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<DemoSeedService>.Instance, [TimeSpan.Zero, TimeSpan.Zero]);
+
+        await service.StartAsync(CancellationToken.None);
+        await service.ExecuteTask!.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        (dmo.Calls, auh.Calls).Should().Be((3, 2));
+        service.Outcomes.Should().Equal(null, new SeedOutcome(300));
+    }
+
+    [Fact]
+    public void AddArivaDemoSeed_Should_RegisterTheDmoSeedThenTheIllustrativeAuhSeed_When_On()
+    {
+        var seeds = Register("vm-local", "vm-local", on: true).Where(d => d.ServiceType == typeof(IDemoTopologySeed)).Select(d => d.ImplementationType).ToList();
+
+        seeds.Should().Equal(typeof(DemoTopologySeed), typeof(AuhTerminalASeed));
     }
 
     [Fact]

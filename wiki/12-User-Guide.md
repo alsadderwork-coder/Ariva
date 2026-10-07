@@ -35,6 +35,7 @@ While signed in:
 | No service | No staffed desk: the nowcast is undefined and screens show a neutral message, never zero or infinity |
 | Profile version (for example v12) | The zone configuration the number was computed with |
 | Desk states | `Closed` (not staffed), `Idle` (staffed, not serving), `Serving`, `Paused` (staffed but inactive for a while; does not count as open), `Unknown` (all signals silent). E-gates may also show out of service (To confirm) |
+| Banner "Illustrative, not surveyed" | The chosen site is a demo site modelled on a real airport from public information only (ARV-139a, site `AUH-TA` in development and demo): its layout, counts and positions are assumptions, not a survey. Every screen of the site shows the banner, in English and Arabic, and so do its passenger displays; nobody can turn it off |
 
 Words to avoid: "open" for a desk (say idle, serving, paused or closed) and "wait time" without saying nowcast or realised.
 
@@ -189,6 +190,8 @@ Phase 0 (page), MVP (languages and stale handling). A 16:9 full-screen board per
 Delivered in ARV-058. The settings screen is `/displays` (`Display.*`: terminal duty managers airport-side, border shift supervisors for the immigration halls, administrators; handler station managers have none). A display has a code, a name, a location, an orientation, its languages in order (English, Arabic, Portuguese and Swahili have board resource files; Arabic reads right to left), the band width (1 to 30 minutes, 5 by default), the hysteresis (less than the band; the band changes only when the nowcast leaves it by that much), the stale threshold (60 to 1,800 seconds), up to 12 queue zones of the published profile with a label in each language, and the neutral message in each language.
 
 The player is a kiosk browser on the screen (full screen, 1920 by 1080) opened at the address shown once when the display is created or gets a new credential: `/display?code=CODE#key=CREDENTIAL`. The credential sits in the fragment, so it is never sent to a server or logged; the player keeps it for its tab and removes it from the address bar. The player asks for its board every 10 seconds with the credential in the `X-Ariva-Display-Key` header (`GET api/v1/display/board?code=`), never with a user's account; a wrong or replaced credential, or a deleted or disabled display, shows "This display is not set up". Creating a display and issuing a new credential ask for a fresh authenticator code. The board's type shrinks to fit every row on the screen.
+
+A display of an illustrative demo site (ARV-139a) shows "Illustrative, not surveyed: example data" under its title, in English and Arabic, whatever languages it is set to.
 
 Common tasks (terminal duty manager, border shift supervisor): add a display; change its queues, labels or bands; issue a new credential when a player is replaced or its address may have leaked (the old one stops at once); disable or delete it.
 
