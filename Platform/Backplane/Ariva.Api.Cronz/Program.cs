@@ -8,7 +8,7 @@ using Ariva.Di.Extensions;
 using TickerQ.DependencyInjection;
 
 // Ariva.Api.Cronz: scheduled jobs (Jobs/) run by TickerQ: forecasts, SLA evaluation,
-// scheduled reports and data retention.
+// scheduled reports, the availability ledger and data retention.
 // The regions follow AMAN's Program.cs order. Calls named in comments are AMAN extensions that backlog
 // stories port into Ariva.Api.Common; until then this file calls framework APIs, RegisterArivaServices,
 // the security baseline and MapArivaHealthChecks only, so it builds without NuGet packages.
@@ -66,6 +66,8 @@ builder.Services.AddAppSecurityBaseline(builder.Configuration, builder.Environme
 // Jobs (ADR-0020): TickerQ in memory, each job idempotent with its state in PostgreSQL; the dashboard only with a key.
 // The scheduled reports (ARV-060) send through the mail relay, as alert emails do from Ariva.Api.Integration.
 builder.Services.AddArivaReportDeliveries(builder.Configuration);
+// The availability ledger (ARV-118): Redis snapshots and the database only, no call to another host.
+builder.Services.AddArivaAvailabilityLedger(builder.Configuration);
 builder.Services.AddArivaJobs(builder.Configuration);
 
 #endregion

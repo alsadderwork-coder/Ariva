@@ -217,8 +217,12 @@ const hostServers = {
 	}),
 	// ARV-060: TickerQ runs the scheduled reports and mails them through the run's smtp4dev; the dashboard is on with
 	// the run's key so reports.spec.ts can run the delivery job on demand.
+	// ARV-118: the availability ledger reads the run's Redis snapshots; a 30-second grace lets availability.spec.ts see a
+	// minute decided within two runs of the job.
 	'api-cronz': dotnetHost(project('Backplane/Ariva.Api.Cronz'), `${hosts.cronz}/health/readiness`, false, {
 		...smtpEnvironment(),
+		...redisEnvironment(),
+		Availability__GraceSeconds: '30',
 		Cronz__Dashboard__Enabled: 'true',
 		Cronz__Dashboard__KeySha256: crypto.createHash('sha256').update(process.env.ARIVA_E2E_CRONZ_KEY).digest('hex')
 	}),

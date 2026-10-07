@@ -188,7 +188,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 8,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. The definition is a product-owner proposal for the KPI annex; build it now and adjust the rule, not the ledger, if the client defines availability differently.",
       "dependsOn": [
         "ARV-035",

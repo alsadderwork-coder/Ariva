@@ -221,3 +221,15 @@ Retention of evidence packs: at least the contract's dispute and audit periods (
 | Ground-truth proof | Nowcast error with and without AMAN inputs, side by side; no target |
 
 See [Commissioning and calibration](07-Commissioning-and-Calibration.md) for the campaign.
+
+### Availability (F18, ARV-118, Proposed)
+
+Availability = available operating minutes / operating minutes, per local day, per week (Monday to Sunday) and over a range; no value when there are no operating minutes. Proposed pending the owner and the client's KPI annex (TC-83).
+
+- **Operating minute**: inside the site's operating hours (the site operating calendar, [Administration guide](11-Administration-Guide.md) section 2b) and outside an announced maintenance window. A window counts only when it was recorded before it started; a site without a calendar is open around the clock.
+- **Available minute**: every queue zone of the site's published zone profile had a live state younger than 150 seconds that had reached the minute (trailing real time by at most 180 seconds), and its minute is stored.
+- **Not available**: the ledger records why: `StaleZone` (no fresh live state), `MissingMinute` (no stored minute), `StreamLag` (the live state behind), `NoPublishedZones`, and `NotObservedLive` for minutes decided after downtime of the job host (counted as not available: what cannot be proven live is not claimed).
+- **Where**: `GET api/v1/sites/{siteCode}/availability?from=yyyy-MM-dd&to=yyyy-MM-dd` (local dates, at most 92 days; border shift supervisors, terminal duty managers and administrators). Each day, week and the total give the minutes recorded, operating, available, unavailable, unobserved, in maintenance and closed, the minutes per reason and two ratios; the answer repeats the pilot target (0.99).
+- **Two ratios**: `availability` leaves maintenance minutes out of both sides (maintenance is not operating time); `availabilityMaintenanceAsUnavailable` counts them as operating and not available. A site could otherwise raise the first figure by declaring maintenance in advance over hours it expects to be weak, so both are reported side by side. Until the client decides (TC-83), read the pilot result against both; the KPI annex should either cap the maintenance minutes a site may declare per month or use the stricter ratio.
+
+Example: a day open 06:00 to 22:00 (960 operating minutes) with a 60-minute announced maintenance window has 900 operating minutes; 891 available minutes give 0.99, and 891 of 960 (0.928) as the stricter ratio.

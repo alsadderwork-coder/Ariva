@@ -200,7 +200,9 @@ export function accounts() {
 		breakGlassAdmin: account('e2e.bgadmin', ['SystemAdministrator'], false, true, ['*']),
 		// ARV-060: the scheduled report's recipients at the demo airport (their own addresses, so no other suite's mail mixes in).
 		reportBorder: account('e2e.reportborder', ['BorderShiftSupervisor'], false, false, ['DMO']),
-		reportTerminal: account('e2e.reportterminal', ['TerminalDutyManager'], false, false, ['DMO'])
+		reportTerminal: account('e2e.reportterminal', ['TerminalDutyManager'], false, false, ['DMO']),
+		// ARV-118: an administrator of one site (E2E3, created by the seed, no airport: UTC) who keeps its operating calendar.
+		calendarAdmin: account('e2e.calendaradmin', ['SystemAdministrator'], false, false, ['E2E3'])
 	} as const;
 }
 

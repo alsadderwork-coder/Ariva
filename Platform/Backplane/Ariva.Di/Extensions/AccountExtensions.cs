@@ -95,6 +95,9 @@ public static class AccountExtensions
         services.TryAddScoped<Ariva.Core.Services.Reports.ISvcReportSchedules, Ariva.Infra.Services.Reports.SvcReportSchedules>();
         // Data quality (ARV-114a): the stored health checks of the queue zones (F18), read only.
         services.TryAddScoped<Ariva.Core.Services.Quality.ISvcZoneHealth, Ariva.Infra.Services.Quality.SvcZoneHealth>();
+        // Availability (ARV-118): the site operating calendar and the ledger's read; the ledger itself runs in Ariva.Api.Cronz.
+        services.TryAddScoped<Ariva.Core.Services.Quality.ISvcSiteCalendar, Ariva.Infra.Services.Quality.SvcSiteCalendar>();
+        services.TryAddScoped<Ariva.Core.Services.Quality.ISvcAvailability, Ariva.Infra.Services.Quality.SvcAvailability>();
         // ARV-038: the stored minutes rules are judged on, and the arrival wave (ARV-047).
         services.AddArivaArrivalWaveSource(configuration);
         services.TryAddScoped<Ariva.Infra.Alerting.AlertInputs>();

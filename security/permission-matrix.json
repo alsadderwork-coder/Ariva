@@ -3220,6 +3220,155 @@
     {
       "host": "main",
       "method": "GET",
+      "route": "/api/v1/sites/{siteCode}/availability",
+      "access": "permission",
+      "permissions": [
+        "ViewDataQuality"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/admin/sites/{siteCode}/calendar",
+      "access": "permission",
+      "permissions": [
+        "ViewSite"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 404,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "PUT",
+      "route": "/api/v1/admin/sites/{siteCode}/calendar/weeks",
+      "access": "permission",
+      "permissions": [
+        "EditSite"
+      ],
+      "body": {
+        "effectiveFrom": "2099-01-05",
+        "hours": [
+          {
+            "day": "Monday",
+            "opens": "06:00",
+            "closes": "22:00"
+          }
+        ]
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "DELETE",
+      "route": "/api/v1/admin/sites/{siteCode}/calendar/weeks/{id:guid}",
+      "access": "permission",
+      "permissions": [
+        "EditSite"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/sites/{siteCode}/calendar/exceptions",
+      "access": "permission",
+      "permissions": [
+        "EditSite"
+      ],
+      "body": {
+        "date": "2099-01-05",
+        "closed": true,
+        "hours": [],
+        "reason": "Matrix"
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "DELETE",
+      "route": "/api/v1/admin/sites/{siteCode}/calendar/exceptions/{id:guid}",
+      "access": "permission",
+      "permissions": [
+        "EditSite"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/sites/{siteCode}/calendar/maintenance-windows",
+      "access": "permission",
+      "permissions": [
+        "EditSite"
+      ],
+      "body": {
+        "startsUtc": "2099-01-05T01:00:00Z",
+        "endsUtc": "2099-01-05T02:00:00Z",
+        "reason": "Matrix"
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "DELETE",
+      "route": "/api/v1/admin/sites/{siteCode}/calendar/maintenance-windows/{id:guid}",
+      "access": "permission",
+      "permissions": [
+        "EditSite"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
       "route": "/api/v1/report-schedules",
       "access": "permission",
       "permissions": [

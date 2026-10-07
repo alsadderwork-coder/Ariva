@@ -68,6 +68,25 @@ Development and demo deployments start with the fictional Demo International Air
 
 Codes are 1 to 16 upper case letters or digits with single inner hyphens. Deletes are soft (history and zone profiles keep their references), refused while live records exist underneath, and free the code for reuse. Everyone sees only the records of their sites; another site's record answers like one that does not exist. Every change is audited.
 
+## 2b. Site operating calendar (ARV-118)
+
+The operating calendar decides which minutes count in the pilot's availability criterion (99 percent of operating hours; [KPI definitions](15-KPI-and-SLA-Definitions.md) section 8). There is no screen yet (deferred); administrators use the API `api/v1/admin/sites/{siteCode}/calendar`. Every role reads the calendar of its sites (`GET`, the site's view permission); only administrators of the site change it (the site's edit permission). Every change is in the audit log (`SiteCalendar.*`). Times are the site's local time: the IANA zone of the site's airport (UTC for a site without one); the answer names the zone and today's local date.
+
+| Entry | Request | Rules |
+|---|---|---|
+| Weekly hours | `PUT .../calendar/weeks` with `effectiveFrom` (a local date `yyyy-MM-dd` after today, at most 366 days ahead) and `hours`, a list of `{ "day": "Monday", "opens": "06:00", "closes": "22:00" }` | Up to 4 intervals a day, none overlapping (Sunday's overnight interval runs into Monday). A closing time at or before the opening time is on the next day (`18:00` to `02:00`); `00:00` to `24:00` is the whole day; a day without intervals is closed. The version is in force from its day until a later version's day. Setting the same day again replaces the version; `DELETE .../weeks/{id}` removes it |
+| Dated exception | `POST .../calendar/exceptions` with `date`, `closed` (true with no hours, or false with 1 to 4 intervals) and a `reason` (1 to 200 characters) | Replaces the intervals that open on that local day (the overnight part of the previous day still counts). One exception per day; `DELETE .../exceptions/{id}` removes it |
+| Maintenance window | `POST .../calendar/maintenance-windows` with `startsUtc`, `endsUtc` (UTC, whole minutes, ISO 8601 ending in Z) and a `reason` | Starts after now, at most 7 days long and 366 days ahead. Operating minutes inside it count in neither side of the ratio. `DELETE .../maintenance-windows/{id}` cancels it |
+
+Record entries before they take effect: a week or an exception before its local day starts, a maintenance window before it starts (server time). An entry that has taken effect can no longer be changed or removed (409): it is part of the record. Two administrators recording the same day's exception, or a new weekly version of the same day, at the same moment: one succeeds and the other gets 409 (read the calendar and try again). A removed entry disappears from the calendar and stays in the database as deleted, with a `SiteCalendar.WeekRemoved`, `ExceptionRemoved` or `MaintenanceCancelled` audit entry holding what it was. A maintenance window that has already started cannot be recorded, so an unplanned outage stays in the figures; this is the Proposed rule (TC-83). A site without any weekly version in force is open around the clock: every minute counts. A site administrator of one site gets 404 for another site, and an entry of another site through its own site's route answers 404 too.
+
+Example (Dubai, open 06:00 to 22:00 every day from next Monday):
+
+```
+PUT /api/v1/admin/sites/DMO/calendar/weeks
+{ "effectiveFrom": "2026-10-12", "hours": [ { "day": "Monday", "opens": "06:00", "closes": "22:00" }, ... ] }
+```
+
 ## 3. TOTP enrolment and reset
 
 Enrolment:

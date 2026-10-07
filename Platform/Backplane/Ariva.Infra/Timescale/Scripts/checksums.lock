@@ -41,6 +41,7 @@
     "0038_zone_health.sql": "b1c3a25277443f1000aacaf5a4bea62797b98435f4bd56718062bbe8127e8e31",
     "0039_overflow_minute.sql": "4cb65ba8c39acf6bda350b962dc0e07e577acc87f972cb65bbe64ba5bfc64829",
     "0040_desk_zone_reading.sql": "246ab5abf425cc0407763b9b7517b401865e57f5db38b996eac5743d5a44944a",
-    "0041_shadow_nowcast.sql": "00f21ae0fa1c6822cd5355041c528131110ab16e5d6f8b6feeee08101258777f"
+    "0041_shadow_nowcast.sql": "00f21ae0fa1c6822cd5355041c528131110ab16e5d6f8b6feeee08101258777f",
+    "0042_availability.sql": "faaad5c8c98fc307fba7f422a595f0db4142190baa8be8ed304ad83e72100665"
   }
 }

@@ -185,3 +185,32 @@ Authorization: Bearer {{accessToken}}
 ### Retire (DeleteDevice)
 POST {{Ariva.Api.Main_HostAddress}}/api/v1/admin/devices/{{deviceId}}/retire
 Authorization: Bearer {{accessToken}}
+
+### ARV-118: the site operating calendar (ViewSite to read; EditSite to change; entries are recorded before they take effect)
+GET {{Ariva.Api.Main_HostAddress}}/api/v1/admin/sites/DMO/calendar
+Authorization: Bearer {{accessToken}}
+
+### Weekly hours in the site's local time from a future local day (replaces a version of the same day)
+PUT {{Ariva.Api.Main_HostAddress}}/api/v1/admin/sites/DMO/calendar/weeks
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "effectiveFrom": "2026-10-12", "hours": [ { "day": "Monday", "opens": "06:00", "closes": "22:00" }, { "day": "Friday", "opens": "18:00", "closes": "02:00" } ] }
+
+### A dated exception (closed all day, or other hours)
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/admin/sites/DMO/calendar/exceptions
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "date": "2026-12-02", "closed": true, "hours": [], "reason": "National Day" }
+
+### An announced maintenance window (UTC, whole minutes, starting after now)
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/admin/sites/DMO/calendar/maintenance-windows
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "startsUtc": "2026-10-13T01:00:00Z", "endsUtc": "2026-10-13T02:00:00Z", "reason": "Database upgrade" }
+
+### Availability per local day, week and range (DataQuality.View; at most 92 days)
+GET {{Ariva.Api.Main_HostAddress}}/api/v1/sites/DMO/availability?from=2026-10-01&to=2026-10-31
+Authorization: Bearer {{accessToken}}
