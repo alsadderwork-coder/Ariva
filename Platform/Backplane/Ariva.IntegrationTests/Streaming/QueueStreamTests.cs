@@ -267,7 +267,8 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
 
     private const string MinuteRows = """
         SELECT zone_key, minute_utc, profile_version, status, entries, exits, waits, mean_wait_minutes, p50_wait_minutes, p90_wait_minutes, p95_wait_minutes,
-               share_within_target, queue_length, length_from_sensors, length_degraded, nowcast_minutes, throughput_per_minute, no_service, nowcast_degraded
+               share_within_target, queue_length, length_from_sensors, length_degraded, nowcast_minutes, throughput_per_minute, no_service, nowcast_degraded,
+               shadow_nowcast_minutes, shadow_no_service, shadow_nowcast_degraded
         FROM queue_minute ORDER BY zone_key, minute_utc
         """;
 
@@ -372,6 +373,13 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
                  = (SELECT sum(entries) FROM queue_minute WHERE zone_key = 'DMO/Q1' AND minute_utc IN (SELECT minute_utc FROM line_minute WHERE zone_key = 'DMO/Q1'))
             """)).Should().Equal(["True"], "the entry line counts what the zone counted as entries");
         (await RowsAsync(restart, "SELECT zone_key FROM stream_zone_state ORDER BY zone_key")).Should().Contain(["DMO/Q1", "DMO/Q2"]);
+        // ARV-117: every live minute has its shadow nowcast in the same row; without a desk term (the evening's desks have no
+        // recent minutes) it is the published nowcast.
+        (await RowsAsync(straight, """
+            SELECT count(*) > 0, count(*) FILTER (WHERE shadow_nowcast_degraded IS NOT NULL AND shadow_nowcast_minutes IS NOT DISTINCT FROM nowcast_minutes
+                                                  AND shadow_no_service IS NOT DISTINCT FROM no_service AND shadow_nowcast_degraded = nowcast_degraded) = count(*)
+            FROM queue_minute WHERE zone_key IN ('DMO/Q1', 'DMO/Q2') AND queue_length IS NOT NULL
+            """)).Should().Equal(["True|True"]);
 
         // ARV-116: Q1's desk zone readings are written in the same checkpoints (counts only), each once: the restart writes
         // exactly the same readings, and the queue's rows above are those of a queue without desk zones (Q2 has none).
@@ -569,6 +577,162 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
     // checkpoint still commits. A refused insert would fail the whole checkpoint (22001 or 23514), which the worker
     // retries forever. The longest zone key (a 17-character site and a 200-character zone name) does not fit the outbox's
     // message_key (200): its change is dropped, its minute is still written.
+    [Fact]
+    public async Task Store_Should_WriteTheShadowNowcastInThePublishedRow_When_ALiveMinuteCarriesIt()
+    {
+        // ARV-117: the shadow nowcast without AMAN inputs goes to the same queue_minute row as the published nowcast, in the
+        // same checkpoint; a later checkpoint of the minute replaces both, and the table refuses a shadow that has a number
+        // and a no-service reason at once, or an unknown reason.
+        var database = await DatabaseAsync(TestDatabase.StreamShadow);
+        var store = new StreamStore(new DatabaseSettings
+        {
+            Host = postgres.Hostname, Port = postgres.Port, Name = database, Username = postgres.AdminUsername, Password = postgres.AdminPassword
+        }, TimeProvider.System, new WarningLog());
+        var minute = new DateTime(2026, 9, 28, 18, 5, 0, DateTimeKind.Utc);
+        var state = new ZoneProcessor("DMO/Q1", new QueueZoneGeometry("Q1", new HashSet<string> { "Q1 entry" }, new HashSet<string> { "Q1 exit" },
+            new HashSet<string>(), new HashSet<string>()), 7).Capture();
+        ZoneOutputs Live(params QueueLiveMinute[] rows) => new("DMO/Q1", [], [], rows, []);
+        const string Row = """
+            SELECT minute_utc, nowcast_minutes, no_service, nowcast_degraded, shadow_nowcast_minutes, shadow_no_service, shadow_nowcast_degraded
+            FROM queue_minute WHERE zone_key = 'DMO/Q1' ORDER BY minute_utc
+            """;
+
+        await store.SaveAsync(new StreamCheckpoint("g-shadow", [Live(
+            new QueueLiveMinute("DMO/Q1", minute, 61, true, false, 15.25, 4.0, null, false) { Shadow = new ShadowNowcast(17.5, null, true) },
+            new QueueLiveMinute("DMO/Q1", minute.AddMinutes(1), 61, true, false, 15.5, 4.0, null, false) { Shadow = new ShadowNowcast(null, NoServiceReason.NoThroughputData, true) },
+            new QueueLiveMinute("DMO/Q1", minute.AddMinutes(2), 61, true, false, null, 0, NoServiceReason.NothingOpen, false),
+            // Neither a number nor a reason (Nowcast.Compute never returns it): written as no shadow, never refused.
+            new QueueLiveMinute("DMO/Q1", minute.AddMinutes(3), 61, true, false, 15.5, 4.0, null, false) { Shadow = new ShadowNowcast(null, null, true) })],
+            [state], [], [new StreamOffset("t", 0, 1)]), Ct);
+        (await RowsAsync(database, Row)).Should().Equal(
+            "09/28/2026 18:05:00|15.25|null|False|17.5|null|True",
+            "09/28/2026 18:06:00|15.5|null|False|null|NoThroughputData|True",
+            "09/28/2026 18:07:00|null|NothingOpen|False|null|null|null",
+            "09/28/2026 18:08:00|15.5|null|False|null|null|null");
+
+        await store.SaveAsync(new StreamCheckpoint("g-shadow", [Live(
+            new QueueLiveMinute("DMO/Q1", minute, 62, true, false, 15.5, 4.0, null, false) { Shadow = new ShadowNowcast(null, NoServiceReason.NothingOpen, false) })],
+            [state], [], [new StreamOffset("t", 0, 2)]), Ct);
+        (await RowsAsync(database, Row)).First().Should().Be("09/28/2026 18:05:00|15.5|null|False|null|NothingOpen|False", "the minute's later checkpoint replaces both nowcasts");
+
+        foreach (var forged in new[]
+                 {
+                     "UPDATE queue_minute SET shadow_nowcast_minutes = 3, shadow_no_service = 'NothingOpen' WHERE zone_key = 'DMO/Q1'",
+                     "UPDATE queue_minute SET shadow_no_service = 'Bogus', shadow_nowcast_minutes = NULL WHERE zone_key = 'DMO/Q1'",
+                     "UPDATE queue_minute SET shadow_nowcast_minutes = -1, shadow_no_service = NULL WHERE zone_key = 'DMO/Q1'",
+                     // A shadow without its F11 flag (ARV-117 review): a number or a reason always carries it.
+                     "UPDATE queue_minute SET shadow_nowcast_minutes = 3, shadow_no_service = NULL, shadow_nowcast_degraded = NULL WHERE zone_key = 'DMO/Q1'",
+                     "UPDATE queue_minute SET shadow_nowcast_minutes = NULL, shadow_no_service = 'NothingOpen', shadow_nowcast_degraded = NULL WHERE zone_key = 'DMO/Q1'",
+                     // A flag without a shadow (ARV-117 second review): the flag stands only beside a number or a reason.
+                     "UPDATE queue_minute SET shadow_nowcast_minutes = NULL, shadow_no_service = NULL, shadow_nowcast_degraded = true WHERE zone_key = 'DMO/Q1'"
+                 })
+        {
+            var act = () => RowsAsync(database, forged);
+            (await act.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be("23514", "a check of script 0041 refuses: {0}", forged);
+        }
+    }
+
+    // ARV-117 reviews (CWE-862, CWE-863): the shadow columns of queue_minute have no read path in the database either.
+    // A view, materialized view or continuous aggregate records its dependencies in pg_depend through its rewrite rule,
+    // and a SQL-standard function body through pg_proc; a whole-row reference (row_to_json(q), SELECT q, jsonb_agg(q))
+    // records only refobjsubid 0, so no filter on the shadow columns can see it (second review). Every dependent of
+    // queue_minute or of one of its chunks, at any refobjsubid, is therefore listed and compared with an exact allowlist:
+    // a new dependent must change this test on purpose (and, if it reads the shadow, bring ARV-104f's authorization).
+    // Timescale's internal views of a continuous aggregate have generated names (_partial_view_N, _direct_view_N): they
+    // are named through the continuous aggregate catalog, so the list stays stable. Rules are covered by the rewrite
+    // arm too (hypertables refuse them today). Reads from code are checked by ShadowNowcastExposureTests in Ariva.UnitTests.
+    private const string QueueMinuteDependents = """
+        SELECT label FROM (
+            SELECT DISTINCT CASE
+                    WHEN x.kind = 'function' THEN 'function ' || x.nspname || '.' || x.relname
+                    WHEN p.user_view_name IS NOT NULL THEN p.user_view_schema || '.' || p.user_view_name || ' (continuous aggregate partial view)'
+                    WHEN v.user_view_name IS NOT NULL THEN v.user_view_schema || '.' || v.user_view_name || ' (continuous aggregate direct view)'
+                    ELSE x.nspname || '.' || x.relname
+                END || CASE WHEN x.rulename IS NOT NULL AND x.rulename <> '_RETURN' THEN ' rule ' || x.rulename ELSE '' END AS label
+            FROM (
+                SELECT n.nspname, c.relname, r.rulename, 'rule' AS kind
+                FROM pg_depend d
+                JOIN pg_rewrite r ON r.oid = d.objid
+                JOIN pg_class c ON c.oid = r.ev_class
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE d.classid = 'pg_rewrite'::regclass AND d.refclassid = 'pg_class'::regclass AND d.refobjid IN (
+                    SELECT 'queue_minute'::regclass UNION SELECT inhrelid FROM pg_inherits WHERE inhparent = 'queue_minute'::regclass)
+                UNION
+                SELECT n.nspname, p.proname, NULL, 'function'
+                FROM pg_depend d
+                JOIN pg_proc p ON p.oid = d.objid
+                JOIN pg_namespace n ON n.oid = p.pronamespace
+                WHERE d.classid = 'pg_proc'::regclass AND d.refclassid = 'pg_class'::regclass AND d.refobjid IN (
+                    SELECT 'queue_minute'::regclass UNION SELECT inhrelid FROM pg_inherits WHERE inhparent = 'queue_minute'::regclass)
+            ) x
+            LEFT JOIN _timescaledb_catalog.continuous_agg p ON x.kind = 'rule' AND p.partial_view_schema = x.nspname AND p.partial_view_name = x.relname
+            LEFT JOIN _timescaledb_catalog.continuous_agg v ON x.kind = 'rule' AND v.direct_view_schema = x.nspname AND v.direct_view_name = x.relname
+        ) s
+        ORDER BY label COLLATE "C"
+        """;
+
+    // Every dependent of queue_minute after the migrations (captured once on pg17 with TimescaleDB 2.30): the internal views
+    // of queue_minute_15m (script 0018), which read no shadow column (it names its columns; 0041 came later).
+    private static readonly string[] AllowedQueueMinuteDependents =
+    [
+        "public.queue_minute_15m (continuous aggregate direct view)",
+        "public.queue_minute_15m (continuous aggregate partial view)"
+    ];
+
+    [Fact]
+    public async Task Migrations_Should_LeaveNoViewOverTheShadowColumns_When_Applied()
+    {
+        var database = await DatabaseAsync(TestDatabase.StreamShadowViews);
+        await using var connection = new NpgsqlConnection(postgres.ConnectionString(database));
+        await connection.OpenAsync(Ct);
+
+        async Task<List<string>> DependentsAsync(NpgsqlTransaction transaction = null)
+        {
+            await using var command = new NpgsqlCommand(QueueMinuteDependents, connection, transaction);
+            var names = new List<string>();
+            await using var reader = await command.ExecuteReaderAsync(Ct);
+            while (await reader.ReadAsync(Ct))
+                names.Add(reader.GetString(0));
+            return names;
+        }
+
+        (await DependentsAsync()).Should().Equal(AllowedQueueMinuteDependents,
+            "every view, materialized view, continuous aggregate, rule or SQL function over queue_minute is allowlisted on purpose");
+
+        // The check bites, whatever the dependent reads: a wildcard view, a materialized view naming a shadow column, three
+        // whole-row reads (refobjsubid 0), a SQL-standard function and a view over one of the hypertable's chunks are all
+        // caught, then rolled back.
+        await using (var transaction = await connection.BeginTransactionAsync(Ct))
+        {
+            foreach (var ddl in new[]
+                     {
+                         "CREATE VIEW it_shadow_leak AS SELECT * FROM queue_minute",
+                         "CREATE MATERIALIZED VIEW it_shadow_leak_m AS SELECT zone_key, max(shadow_nowcast_minutes) AS m FROM queue_minute GROUP BY zone_key WITH NO DATA",
+                         "CREATE VIEW it_shadow_row_to_json AS SELECT row_to_json(q) AS r FROM queue_minute q",
+                         "CREATE VIEW it_shadow_whole_row AS SELECT q FROM queue_minute q",
+                         "CREATE VIEW it_shadow_jsonb_agg AS SELECT jsonb_agg(q ORDER BY q.minute_utc) AS r FROM queue_minute q",
+                         "CREATE FUNCTION it_shadow_function() RETURNS json LANGUAGE sql STABLE RETURN (SELECT json_agg(q) FROM queue_minute q)",
+                         "INSERT INTO queue_minute (zone_key, minute_utc, profile_version, updated_on) VALUES ('DMO/IT', '2026-09-28T18:05:00Z', 1, now())",
+                         "DO $$ BEGIN EXECUTE format('CREATE VIEW it_shadow_chunk AS SELECT to_jsonb(c) AS r FROM %s c', (SELECT show_chunks('queue_minute') LIMIT 1)); END $$"
+                     })
+            {
+#pragma warning disable CA2100 // literal DDL above
+                await using var create = new NpgsqlCommand(ddl, connection, transaction);
+#pragma warning restore CA2100
+                await create.ExecuteNonQueryAsync(Ct);
+            }
+
+            (await DependentsAsync(transaction)).Should().Equal(
+            [
+                "function public.it_shadow_function", "public.it_shadow_chunk", "public.it_shadow_jsonb_agg", "public.it_shadow_leak", "public.it_shadow_leak_m",
+                "public.it_shadow_row_to_json", "public.it_shadow_whole_row", .. AllowedQueueMinuteDependents
+            ]);
+            await transaction.RollbackAsync(Ct);
+        }
+
+        (await DependentsAsync()).Should().Equal(AllowedQueueMinuteDependents);
+    }
+
     [Fact]
     public async Task Store_Should_KeepTheFirstDeskReadingAndDropWhatTheTableWouldRefuse_When_ACheckpointCarriesDeskReadings()
     {

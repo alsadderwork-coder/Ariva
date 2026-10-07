@@ -436,7 +436,8 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
         await Execute(connection, """
             CREATE TEMP TABLE stage_queue_live (zone_key varchar(220), minute_utc timestamptz, profile_version integer, queue_length integer,
                 length_from_sensors boolean, length_degraded boolean, nowcast_minutes double precision, throughput_per_minute double precision,
-                no_service varchar(20), nowcast_degraded boolean) ON COMMIT DROP
+                no_service varchar(20), nowcast_degraded boolean, shadow_nowcast_minutes double precision, shadow_no_service varchar(20),
+                shadow_nowcast_degraded boolean) ON COMMIT DROP
             """, ct);
         await using (var copy = await connection.BeginBinaryImportAsync("COPY stage_queue_live FROM STDIN (FORMAT BINARY)", ct))
         {
@@ -456,6 +457,18 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
                 else
                     await copy.WriteNullAsync(ct);
                 await copy.WriteAsync(l.NowcastDegraded, NpgsqlDbType.Boolean, ct);
+                // ARV-117: the shadow nowcast without AMAN inputs, in the same row (written only; read by the validation comparison).
+                await Nullable(copy, l.Shadow?.Minutes, ct);
+                if (l.Shadow?.NoService is { } shadowReason)
+                    await copy.WriteAsync(shadowReason.ToString(), NpgsqlDbType.Varchar, ct);
+                else
+                    await copy.WriteNullAsync(ct);
+                // The flag only with a number or a reason (ck_queue_minute_shadow_flag): a shadow with neither, which
+                // Nowcast.Compute never returns, is written as no shadow rather than refused with the whole checkpoint.
+                if (l.Shadow is { } shadow && (shadow.Minutes is not null || shadow.NoService is not null))
+                    await copy.WriteAsync(shadow.Degraded, NpgsqlDbType.Boolean, ct);
+                else
+                    await copy.WriteNullAsync(ct);
             }
 
             await copy.CompleteAsync(ct);
@@ -463,12 +476,13 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
 
         await using var upsert = new NpgsqlCommand("""
             INSERT INTO queue_minute (zone_key, minute_utc, profile_version, queue_length, length_from_sensors, length_degraded, nowcast_minutes,
-                throughput_per_minute, no_service, nowcast_degraded, updated_on)
+                throughput_per_minute, no_service, nowcast_degraded, shadow_nowcast_minutes, shadow_no_service, shadow_nowcast_degraded, updated_on)
             SELECT zone_key, minute_utc, profile_version, queue_length, length_from_sensors, length_degraded, nowcast_minutes,
-                throughput_per_minute, no_service, nowcast_degraded, @now FROM stage_queue_live
+                throughput_per_minute, no_service, nowcast_degraded, shadow_nowcast_minutes, shadow_no_service, shadow_nowcast_degraded, @now FROM stage_queue_live
             ON CONFLICT (zone_key, minute_utc) DO UPDATE SET queue_length = EXCLUDED.queue_length, length_from_sensors = EXCLUDED.length_from_sensors,
                 length_degraded = EXCLUDED.length_degraded, nowcast_minutes = EXCLUDED.nowcast_minutes, throughput_per_minute = EXCLUDED.throughput_per_minute,
-                no_service = EXCLUDED.no_service, nowcast_degraded = EXCLUDED.nowcast_degraded, updated_on = EXCLUDED.updated_on
+                no_service = EXCLUDED.no_service, nowcast_degraded = EXCLUDED.nowcast_degraded, shadow_nowcast_minutes = EXCLUDED.shadow_nowcast_minutes,
+                shadow_no_service = EXCLUDED.shadow_no_service, shadow_nowcast_degraded = EXCLUDED.shadow_nowcast_degraded, updated_on = EXCLUDED.updated_on
             """, connection);
         upsert.Parameters.AddWithValue("now", now);
         await upsert.ExecuteNonQueryAsync(ct);

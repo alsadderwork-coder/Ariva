@@ -87,9 +87,9 @@ Three chains run in parallel after the contract (roadmap) and meet at commission
 | Software, site-bound | ARV-132 (needs a real capture), ARV-133, ARV-130, ARV-131, ARV-136, then ARV-137 and ARV-138 | 2 to 4 developer-weeks once unblocked |
 | Joint | Commissioning 1 to 2, burn-in 2, validation campaign and report 2 to 3 | 5 to 7 |
 
-The software chain without site decisions (priorities 1 to 30) has its own longest path: ARV-113, ARV-114a, ARV-104e, ARV-104f (with ARV-116 and ARV-117 alongside), ARV-104g, ARV-104h, ARV-104i, then the gate. ARV-117 must be live from the first day of burn-in because the shadow nowcast cannot be recomputed later.
+The software chain without site decisions (priorities 1 to 31) has its own longest path: ARV-113, ARV-114a, ARV-104e, ARV-104f (with ARV-116, ARV-117 and ARV-117a alongside), ARV-104g, ARV-104h, ARV-104i, then the gate. ARV-117 must be live from the first day of burn-in because the shadow nowcast cannot be recomputed later; ARV-117a (the sensor-only desk engine, owner decision 2026-10-07) must land before burn-in at a site where every desk has an AMAN code.
 
-Conclusion: if priorities 1 to 30 are built before the contract (the Phase 0 window runs to April 2027 and Phase 0 finished early), software leaves the critical path. The pilot date is then set by the hardware chain (6 to 16 weeks) or AMAN's change control (5 to 13 weeks), plus 5 to 7 weeks of joint work: roughly 11 to 23 weeks from contract to the end of the campaign.
+Conclusion: if priorities 1 to 31 are built before the contract (the Phase 0 window runs to April 2027 and Phase 0 finished early), software leaves the critical path. The pilot date is then set by the hardware chain (6 to 16 weeks) or AMAN's change control (5 to 13 weeks), plus 5 to 7 weeks of joint work: roughly 11 to 23 weeks from contract to the end of the campaign.
 
 ## 6. Effort estimate (an estimate, not a measurement)
 
@@ -97,7 +97,7 @@ Sizing basis: the implementation plan's pace of 3 to 5 stories a week at half-ti
 
 | Group | Stories | Developer-weeks (low to high) |
 |---|---|---|
-| MVP core, no site decision | 8 S and 19 M (priorities 1 to 30 without ARV-129, ARV-139a and ARV-139b) | 6.9 to 13.8 |
+| MVP core, no site decision | 8 S and 19 M (priorities 1 to 31 without ARV-117a, ARV-129, ARV-139a and ARV-139b; ARV-117a, added 2026-10-07, is not yet sized here) | 6.9 to 13.8 |
 | MVP core, site-bound | ARV-130, ARV-136 (S); ARV-131, ARV-132 (M); ARV-138 (S, agent part) | 1.1 to 2.1 |
 | ASVS go-live stories (other file) | ARV-082, ARV-085, ARV-087 (M), ARV-083 (L) | 1.5 to 3.0 |
 | Rework allowance for real sensor and AMAN data | | 1.0 to 3.0 |

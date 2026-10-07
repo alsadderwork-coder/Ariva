@@ -99,7 +99,8 @@ public sealed class OverflowReplayTests
         var replay = Overflow.Value.Outputs;
         written.SelectMany(o => o.Overflow).Should().Equal(replay.Overflow);
         written.SelectMany(o => o.OverflowChanges).Should().Equal(replay.OverflowChanges);
-        written.SelectMany(o => o.Live).Should().Equal(replay.Live, "the queue length still sums the snake and the band");
+        // The ledger's rows carry no shadow nowcast (ARV-117: never serialised); the engine's rows do.
+        written.SelectMany(o => o.Live).Select(l => l with { Shadow = null }).Should().Equal(replay.Live, "the queue length still sums the snake and the band");
     }
 
     [Fact]

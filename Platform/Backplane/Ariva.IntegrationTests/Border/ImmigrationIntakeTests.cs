@@ -555,6 +555,24 @@ public sealed partial class ImmigrationIntakeTests(PostgresFixture fixture) : IA
         withCycles["DMO/A-VIS"].CycleMinutes.Should().BeApproximately((4 * 90 + 150) / 5.0 / 60, 1e-9);
         withCycles["DMO/A-VIS"].OpenServers.Should().Be(2);
 
+        // ARV-117: the sensor-only part for the shadow nowcast. AR-08 and AR-09 are open through AMAN alone (no
+        // sensor-derived seconds): the sensors cannot see them, so there is no sensor-only term. Once AR-09's latest minute
+        // is sensor-derived it counts, AR-08 still flags the term, and there is no cycle time without AMAN.
+        withCycles["DMO/A-VIS"].SensorOnly.Should().BeNull();
+        await using (var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync())))
+        {
+            await connection.OpenAsync(Ct);
+            await using var sensors = new NpgsqlCommand(
+                "UPDATE desk_minute SET sensor_derived_seconds = idle_seconds + serving_seconds WHERE desk_code = 'DMO/IMM/AR-09' AND minute_utc = @minute", connection);
+            sensors.Parameters.AddWithValue("minute", minute.AddMinutes(-1));
+            (await sensors.ExecuteNonQueryAsync(Ct)).Should().Be(1);
+        }
+
+        var withSensors = (await source.LoadAsync(["DMO/A-VIS"], 5, Ct))["DMO/A-VIS"];
+        withSensors.SensorOnly.Should().Be(new Ariva.Core.Queueing.DeskTerm(minute.AddMinutes(-1), 1, null, true, 3));
+        withSensors.OpenServers.Should().Be(2, "the published term is unchanged");
+        withSensors.CycleMinutes.Should().BeApproximately((4 * 90 + 150) / 5.0 / 60, 1e-9);
+
         // The planted rows are 40 days ahead in the class's shared database: left there, they stop the DMO desk feed of
         // DeskFeed_Should_DriveTheDeskEngine... from writing its minutes whenever this test runs first (xUnit shuffles).
         await using (var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync())))

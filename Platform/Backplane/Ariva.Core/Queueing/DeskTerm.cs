@@ -5,13 +5,27 @@ namespace Ariva.Core.Queueing;
 /// time per desk in minutes (null when no transaction was seen in the window). <see cref="Degraded"/> when a desk's state
 /// was Unknown or degraded, or a desk's minutes stopped before the others'.
 /// </summary>
-public sealed record DeskTerm(DateTime AsOfMinuteUtc, int OpenServers, double? CycleMinutes, bool Degraded, int Desks);
+public sealed record DeskTerm(DateTime AsOfMinuteUtc, int OpenServers, double? CycleMinutes, bool Degraded, int Desks)
+{
+    /// <summary>
+    /// The same desks' term without any AMAN input (ARV-117, <see cref="DeskTerms.SensorOnly"/>), for the shadow nowcast
+    /// only; null when the sensors say nothing about how many desks are open.
+    /// </summary>
+    public DeskTerm SensorOnly { get; init; }
+}
 
-/// <summary>One desk's closed minute as the desk state engine wrote it (<c>desk_minute</c>, F10).</summary>
-public sealed record DeskMinuteSample(string DeskKey, DateTime MinuteUtc, double IdleSeconds, double ServingSeconds, double UnknownSeconds, int Transactions, bool Degraded)
+/// <summary>
+/// One desk's closed minute as the desk state engine wrote it (<c>desk_minute</c>, F10). <see cref="SensorDerivedSeconds"/>
+/// (ARV-116) is the part of its Idle and Serving time whose state came from its staff and service zones alone.
+/// </summary>
+public sealed record DeskMinuteSample(string DeskKey, DateTime MinuteUtc, double IdleSeconds, double ServingSeconds, double UnknownSeconds, int Transactions, bool Degraded,
+    double SensorDerivedSeconds = 0)
 {
     /// <summary>tau (F9): the seconds the desk was open for throughput.</summary>
     public double OpenSeconds => Math.Max(0, IdleSeconds) + Math.Max(0, ServingSeconds);
+
+    /// <summary>The open seconds the desk's zones alone proved (never more than <see cref="OpenSeconds"/>).</summary>
+    public double SensorOpenSeconds => double.IsFinite(SensorDerivedSeconds) ? Math.Clamp(SensorDerivedSeconds, 0, OpenSeconds) : 0;
 }
 
 /// <summary>
@@ -29,6 +43,12 @@ public static class DeskTerms
     private const double HalfMinuteSeconds = 30;
 
     public static DeskTerm Compute(IEnumerable<DeskMinuteSample> minutes, int windowMinutes, DateTime notAfterUtc, double? laneCycleMinutes = null)
+    {
+        var published = Published(minutes, windowMinutes, notAfterUtc, laneCycleMinutes);
+        return published is null ? null : published with { SensorOnly = SensorOnly(minutes, windowMinutes, notAfterUtc) };
+    }
+
+    private static DeskTerm Published(IEnumerable<DeskMinuteSample> minutes, int windowMinutes, DateTime notAfterUtc, double? laneCycleMinutes)
     {
         ArgumentNullException.ThrowIfNull(minutes);
         if (windowMinutes is < 1 or > 60)
@@ -59,5 +79,39 @@ public static class DeskTerms
             ? lane
             : transactions > 0 && openMinutes > 0 ? openMinutes / transactions : null;
         return new DeskTerm(asOf, open, cycle, degraded, latest.Count);
+    }
+
+    /// <summary>
+    /// The sensor-only desk term of the shadow nowcast (ARV-117, F8): the term <see cref="Compute"/> gives with no AMAN
+    /// input. n_open counts the desks open for at least half of the term's minute by their staff and service zones alone
+    /// (sensor-derived, F10 rows 6 and 7); a desk open only through AMAN (a session, a recent transaction) is not seen by
+    /// the sensors, so it is treated as an Unknown desk is: it flags the term, and with no desk open from the sensors there
+    /// is no term (n_open is not known, which is not "nothing open"). c is null: AMAN's interval statistics and the
+    /// transactions the desk minutes count both come from AMAN, and the sensors give no service starts, so the nowcast
+    /// falls back as F8 does without a cycle time (the exit term alone, or no service when nothing is open; Proposed,
+    /// docs/product/decisions.md). Where every open desk minute is sensor-derived and no AMAN statistics exist (a site
+    /// without AMAN), the sensor-only term equals the published one. Pure.
+    /// </summary>
+    public static DeskTerm SensorOnly(IEnumerable<DeskMinuteSample> minutes, int windowMinutes, DateTime notAfterUtc)
+    {
+        ArgumentNullException.ThrowIfNull(minutes);
+        if (windowMinutes is < 1 or > 60)
+            throw new ArgumentOutOfRangeException(nameof(windowMinutes), "The window is from 1 to 60 minutes.");
+        var usable = minutes.Where(m => m is not null && m.DeskKey is not null && m.MinuteUtc <= notAfterUtc &&
+                                        double.IsFinite(m.IdleSeconds) && double.IsFinite(m.ServingSeconds) && double.IsFinite(m.UnknownSeconds)).ToList();
+        if (usable.Count == 0)
+            return null;
+
+        var asOf = usable.Max(m => m.MinuteUtc);
+        var latest = usable.GroupBy(m => m.DeskKey, StringComparer.Ordinal).Select(g => System.Linq.Enumerable.MaxBy(g, m => m.MinuteUtc)).ToList();
+        var current = latest.Where(m => m.MinuteUtc == asOf).ToList();
+        var open = current.Count(m => m.SensorOpenSeconds >= HalfMinuteSeconds);
+        // A desk open through AMAN only is a desk the sensors cannot see: Unknown to the shadow.
+        var unseen = current.Any(m => m.OpenSeconds >= HalfMinuteSeconds && m.SensorOpenSeconds < HalfMinuteSeconds);
+        var unknown = unseen || current.Any(m => m.Degraded || m.UnknownSeconds >= HalfMinuteSeconds);
+        var degraded = current.Count < latest.Count || unknown;
+        if (open == 0 && unknown)
+            return null;
+        return new DeskTerm(asOf, open, null, degraded, latest.Count);
     }
 }

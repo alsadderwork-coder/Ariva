@@ -176,6 +176,27 @@ public sealed class GoldenReplayTests
         Golden.Value.Export.Should().NotContain("\"type\":\"overflow");
     }
 
+    [Fact]
+    public void Replay_Should_KeepItsGoldenHashUnchanged_When_TheShadowNowcastIsComputed()
+    {
+        // ARV-117: a replay has no desk term (F8: live only), so every replayed minute's shadow nowcast is the published
+        // nowcast, and the ledger never serialises it: the chain and the golden hash stay as approved.
+        var settings = new ZoneProcessorSettings();
+        foreach (var name in ReferenceReplay.Zones)
+        {
+            var zone = new ZoneProcessor("DMO/" + name, ReferenceReplay.GeometryOf(name), ReferenceReplay.ProfileVersion, settings);
+            foreach (var input in ReferenceReplay.InputsOf(name))
+                zone.Offer(input.ToBatch(), ReferenceReplay.To);
+            zone.Finish(ReferenceReplay.To, ReferenceReplay.To + ZoneReplay.Settle(settings));
+            var live = zone.Drain().Live;
+
+            live.Should().NotBeEmpty().And.OnlyContain(l => l.Shadow == new ShadowNowcast(l.NowcastMinutes, l.NoService, l.NowcastDegraded));
+            live.Select(l => l with { Shadow = null }).Should().Equal(Of(name).Live, "the ledger holds the same live rows, without the shadow");
+        }
+
+        Golden.Value.Export.Should().NotContainEquivalentOf("shadow");
+    }
+
     /// <summary>Reads the health rows of a replay back from its export.</summary>
     private sealed class CapturingTextWriter(List<ZoneHealthBin> health) : TextWriter
     {

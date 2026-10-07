@@ -72,7 +72,16 @@ public sealed record QueueLiveMinute(
     double? NowcastMinutes,
     double? Throughput,
     NoServiceReason? NoService,
-    bool NowcastDegraded);
+    bool NowcastDegraded)
+{
+    /// <summary>
+    /// The shadow nowcast without AMAN inputs (ARV-117), written to the same <c>queue_minute</c> row and read only by the
+    /// validation comparison. Never serialised: not in the live snapshot or the replay ledger (a replay has no desk term,
+    /// so its shadow is the published nowcast in every minute).
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public ShadowNowcast Shadow { get; init; }
+}
 
 /// <summary>
 /// What a zone produced since the last drain: rows to persist, what to recompute, device outages that ended, the closed
@@ -229,7 +238,8 @@ public sealed class ZoneProcessor
 
     /// <summary>
     /// The desk term of the desks serving this queue (ARV-064), from the stream host's desk minutes; null when none is
-    /// known. Not part of the saved state: the host gives it again within seconds of a restart. Replays never set it.
+    /// known. Not part of the saved state: the host gives it again within seconds of a restart. Replays never set it. Its
+    /// <see cref="DeskTerm.SensorOnly"/> part gives the shadow nowcast (ARV-117).
     /// </summary>
     public void UseDesks(DeskTerm desks) => _desks = desks;
 
@@ -447,17 +457,17 @@ public sealed class ZoneProcessor
         var window = _exits.Window(minute.AddMinutes(1), _settings.ExitWindowMinutes);
         // The desk term joins when the desks serving this queue have closed a minute recently (ARV-064).
         var desks = _desks is { } d && d.AsOfMinuteUtc >= minute.AddMinutes(-_settings.DeskTermFreshMinutes) ? d : null;
-        var nowcast = Nowcast.Compute(new NowcastInput
+        var (published, shadow) = ShadowNowcasts.Inputs(new NowcastInput
         {
             QueueLength = length.Count,
-            OpenServers = desks?.OpenServers,
-            CycleMinutes = desks?.CycleMinutes,
             ExitsInWindow = window.Complete ? window.Exits : null,
             ExitWindowMinutes = _settings.ExitWindowMinutes,
-            Degraded = length.Degraded || deviceOut || window.DegradedExits > 0 || desks?.Degraded == true
-        }, _settings.Nowcast);
+            Degraded = length.Degraded || deviceOut || window.DegradedExits > 0
+        }, desks);
+        var nowcast = Nowcast.Compute(published, _settings.Nowcast);
+        // ARV-117: the shadow nowcast without AMAN inputs, in the same row, for the validation comparison only.
         _live.Add(new QueueLiveMinute(ZoneKey, minute, length.Count, length.FromSensors, length.Degraded || deviceOut, nowcast.Minutes, nowcast.Throughput,
-            nowcast.NoService, nowcast.Degraded));
+            nowcast.NoService, nowcast.Degraded) { Shadow = ShadowNowcast.From(Nowcast.Compute(shadow, _settings.Nowcast)) });
         _liveness.Published(minute);
     }
 
