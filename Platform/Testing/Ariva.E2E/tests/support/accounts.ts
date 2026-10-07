@@ -103,6 +103,30 @@ export function totpCode(secretBase32: string, offsetSteps = 0, at = Date.now())
 	return String(binary % 1_000_000).padStart(6, '0');
 }
 
+/**
+ * A code the server has not yet accepted in this run. The server takes a step only once and only after the last one it
+ * took (CWE-287 replay guard), allowing one step of skew; a sign-in repeated within a step (`--repeat-each`) therefore
+ * uses the next step, and waits for the step boundary only when that would be two steps ahead. Playwright starts a
+ * new worker process per test here, so the last step is kept in a file named by a hash of the run seed and the secret
+ * (the secret itself is never written).
+ */
+export async function unusedTotpCode(secretBase32: string): Promise<string> {
+	const name = crypto.createHash('sha256').update(`${process.env.ARIVA_E2E_ACCOUNT_SEED ?? ''}:${secretBase32}`).digest('hex');
+	// Kept in the suite's own output folder (git-ignored), owner-only, never following a planted link.
+	const dir = path.join(here, '..', '..', 'test-results', '.totp');
+	fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+	const file = path.join(dir, name.slice(0, 32));
+	const stored = fs.existsSync(file) && !fs.lstatSync(file).isSymbolicLink() ? Number(fs.readFileSync(file, 'utf8')) : Number.NaN;
+	const now = Math.floor(Date.now() / 1000 / 30);
+	// A stored step more than two steps ahead of the clock is not ours to wait for: ignore it.
+	const last = Number.isInteger(stored) && stored <= now + 2 ? stored : Number.NaN;
+	const step = Number.isFinite(last) ? Math.max(now, last + 1) : now;
+	if (step > now + 1) await new Promise((resolve) => setTimeout(resolve, (step - 1) * 30_000 - Date.now() + 100));
+	if (fs.existsSync(file)) fs.rmSync(file);
+	fs.writeFileSync(file, String(step), { mode: 0o600, flag: 'wx' });
+	return totpCode(secretBase32, 0, step * 30_000);
+}
+
 /** Every account, keyed by purpose. */
 export function accounts() {
 	return {

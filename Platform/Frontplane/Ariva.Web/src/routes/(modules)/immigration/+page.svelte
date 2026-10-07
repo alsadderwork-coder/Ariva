@@ -98,23 +98,25 @@
 			: $_('immigration.seconds', { values: { value: numberFormat.format(value) } });
 	}
 
-	async function load(): Promise<void> {
-		if (!siteCode) return;
-		const result = await operations.immigration(siteCode);
-		if (destroyed) return;
+	/** Reads the site's halls; false when another site was chosen meanwhile (its own load then owns the screen). */
+	async function load(): Promise<boolean> {
+		const site = siteCode;
+		if (!site) return false;
+		const result = await operations.immigration(site);
+		if (destroyed || site !== siteCode) return false;
 		if (result.hasErrors || !result.data) {
 			problem = result.errorMessages.join(' ');
-			return;
+			return true;
 		}
 		problem = '';
 		view = result.data;
+		return true;
 	}
 
 	async function loadSite(): Promise<void> {
 		view = null;
 		snapshots = {};
-		await load();
-		if (destroyed || !view) return;
+		if (!(await load()) || !view) return;
 		watched = new Set(view.halls.flatMap((h) => h.queues.map((q) => q.zoneKey)));
 		await live.watch([...watched], null);
 	}
