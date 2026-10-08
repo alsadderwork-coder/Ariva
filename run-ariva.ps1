@@ -48,7 +48,9 @@ Step 'Checking the tools'
 if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) { Fail 'The .NET SDK is missing: install .NET 10 SDK (winget install Microsoft.DotNet.SDK.10).' }
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) { Fail 'Node.js is missing: install Node 22 or later (winget install OpenJS.NodeJS.LTS).' }
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { Fail 'The docker command is missing: install Rancher Desktop (container engine dockerd) or Docker Desktop.' }
-docker info *> $null
+# Through cmd: Windows PowerShell turns a native command's stderr (Docker's 'No swap limit support' warning) into a
+# terminating error when it is redirected under ErrorActionPreference Stop; only the exit code matters here.
+cmd /c 'docker info >nul 2>&1'
 if ($LASTEXITCODE -ne 0) { Fail 'Docker is not running: start Rancher Desktop (or Docker Desktop) and wait until it is ready, then run this again.' }
 Write-Host "dotnet $(dotnet --version), node $(node --version), docker ready"
 
