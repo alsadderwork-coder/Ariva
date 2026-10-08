@@ -48,6 +48,8 @@ node scripts/verify.mjs web           Ariva.Web check, lint, build
 node scripts/verify.mjs e2e           Playwright API end-to-end and functional tests (starts the hosts)
 node scripts/verify.mjs integration   Testcontainers tests (Docker required)
 node scripts/verify.mjs all           everything except integration
+node scripts/verify.mjs story         the per-story gate: backend and docs, web if changed, scoped or full integration and E2E (--specs, --integration)
+node scripts/verify.mjs checkpoint    the full suite every 5 stories, at phase ends and before go-live; records backlog/checkpoint.json
 node scripts/verify.mjs mutation      Stryker.NET on the engines (about an hour; nothing else may build meanwhile)
 node scripts/security/scan.mjs        CWE gate; --self-test proves every rule fires
 dotnet build Ariva.slnx
@@ -88,7 +90,7 @@ Setup and prerequisites: `docs/harness/README.md`.
 1. Pick the story (`/story <id>` or the id ralph-tui gives you). Read its acceptance criteria and the docs and skills it names.
 2. Plan briefly: files to touch, CWEs involved, tests to write. For domain or contract changes, consult `docs/domain/*` first.
 3. Write tests and code together. Follow the layering; run `dotnet build` early.
-4. Run the gates in the story's acceptance criteria (`node scripts/verify.mjs backend` at minimum; `web` and `e2e` for UI or API stories).
+4. Run `node scripts/verify.mjs story` with the story's E2E specs and integration filter; it widens to the full suites when the change is wide. Run `node scripts/verify.mjs checkpoint` on the committed tree when the story gate says one is due (every 5 stories, at phase ends, before go-live). Cadence and rules: `docs/harness/test-cadence.md`.
 5. Ask the `security-reviewer` subagent to review the diff against `docs/security/cwe-controls.md` and the touched rows of `docs/security/asvs-l2.md`; fix what it finds.
 6. Update docs or wiki pages the change affects. Append what you learned to `backlog/progress.md` (one dated entry: story, what changed, gotchas).
 7. Set `"passes": true` for the story in `backlog/prd-phase0.json` only when every criterion is met. Commit with message `ARV-nnn: <title>`, push the story branch and fast-forward `main` to it (rule 8), or open a pull request that follows `.github/pull_request_template.md` when CI must run first. Under ralph-tui, end with `<promise>COMPLETE</promise>`.

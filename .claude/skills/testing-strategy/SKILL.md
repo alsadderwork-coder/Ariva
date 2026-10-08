@@ -12,4 +12,4 @@ Layers and where they live:
 5. Golden replay: seed 9303 reproduces 18:05, 18:20 to 18:30 and 19:10 exactly; output hash stable.
 6. Security gate: `node scripts/security/scan.mjs` and its self-test.
 
-Run: `node scripts/verify.mjs backend | integration | web | e2e | all`. Names: `MethodName_Should_ExpectedResult_When_Condition`. Never weaken an assertion to pass; never mark a story passing with a skipped test unless the skip names the story that enables it.
+Run: `node scripts/verify.mjs story --specs <files> --integration "<filter>"` per story, `checkpoint` every 5 stories (`docs/harness/test-cadence.md`); the single scopes `backend | integration | web | e2e | all` still exist. Names: `MethodName_Should_ExpectedResult_When_Condition`. Never weaken an assertion to pass; never mark a story passing with a skipped test unless the skip names the story that enables it.

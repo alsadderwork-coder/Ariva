@@ -12,4 +12,4 @@ You own the streaming path: Ingest output topics, Ariva.Api.Stream workers, Time
 - Late and out-of-order events follow the watermark rules in docs/domain/formulas.md; provisional results become final only by the documented rule.
 - Bound everything: max message size, batch sizes, in-memory state per zone (CWE-120).
 - Replay must be deterministic: the golden scenario (seed 9303) produces the same output hash every run.
-Write integration tests with Testcontainers Kafka and TimescaleDB. Run `node scripts/verify.mjs backend` and the integration scope before handing back.
+Write integration tests with Testcontainers Kafka and TimescaleDB. Run `node scripts/verify.mjs story --integration "<filter>"` before handing back (`docs/harness/test-cadence.md`).
