@@ -20,7 +20,7 @@ internal sealed class ReportReader(IUnitOfWork unitOfWork) : SvcDb(unitOfWork)
             SELECT a.time_zone_id AS "Value" FROM terminal t JOIN airport a ON a.id = t.airport_id
             WHERE t.site_code = :site AND t.deleted_on IS NULL AND a.deleted_on IS NULL ORDER BY a.iata_code LIMIT 1
             """, new Dictionary<string, object> { ["site"] = siteCode }, ct);
-        return zones.Count > 0 && TimeZoneInfo.TryFindSystemTimeZoneById(zones[0].Value, out var zone) ? zone : TimeZoneInfo.Utc;
+        return zones.Count > 0 && SiteTimeZones.TryFind(zones[0].Value, out var zone) ? zone : TimeZoneInfo.Utc;
     }
 
     public async Task<bool> SiteExistsAsync(string siteCode, CancellationToken ct) =>

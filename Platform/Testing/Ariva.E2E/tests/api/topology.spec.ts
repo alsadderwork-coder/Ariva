@@ -44,6 +44,12 @@ test('an administrator builds the tree: airport, terminals in two sites, level, 
 	expect((await create('desks', { checkpointId: ids.checkpoint, code: 'EG-01', kind: 'EGate', laneCategories: ['EG'] })).kind).toBe('EGate');
 
 	expect((await call('POST', `${api}/airports`, { token: admin, data: { iataCode: iata, name: 'Again', timeZoneId: 'Asia/Amman' } })).status(), 'duplicate').toBe(409);
+	// Airports store IANA ids only, so the web and every host read the same zone on Linux and Windows alike.
+	for (const zone of ['Arabian Standard Time', 'asia/amman', 'Mars/Olympus', '../../etc/passwd']) {
+		const refused = await call('POST', `${api}/airports`, { token: admin, data: { iataCode: 'ZZQ', name: 'Zone', timeZoneId: zone } });
+		expect(refused.status(), `zone ${zone}`).toBe(400);
+		expect(await refused.text(), 'the answer does not echo the value').not.toContain(zone);
+	}
 	expect((await call('POST', `${api}/desks`, { token: admin, data: { checkpointId: ids.checkpoint, code: 'C01', kind: 'Counter' } })).status(), 'counter at immigration').toBe(400);
 	expect((await call('POST', `${api}/checkpoints`, { token: admin, data: { levelId: ids.level, code: 'X1', name: 'x', kind: '2' } })).status(), 'kind as a number').toBe(400);
 	expect((await call('DELETE', `${api}/checkpoints/${ids.checkpoint}`, { token: admin })).status(), 'checkpoint with desks').toBe(409);

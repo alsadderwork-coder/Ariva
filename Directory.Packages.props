@@ -49,6 +49,8 @@
     <PackageVersion Include="MessagePack" Version="3.1.7" />
     <PackageVersion Include="Polly" Version="8.6.5" />
     <PackageVersion Include="PuppeteerSharp" Version="20.2.5" />
+    <!-- IANA to Windows zone mapping carried in the library: the hosts run with invariant globalization (no ICU) -->
+    <PackageVersion Include="TimeZoneConverter" Version="7.2.0" />
     <!-- System / BCL, .NET 10 -->
     <PackageVersion Include="System.Threading.Channels" Version="10.0.12" />
     <!-- Microsoft.CodeAnalysis -->

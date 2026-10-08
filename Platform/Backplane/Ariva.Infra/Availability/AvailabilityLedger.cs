@@ -272,7 +272,7 @@ public sealed class AvailabilityLedger(DatabaseSettings database, ILiveSnapshotS
             return (TimeZoneInfo.Utc, true);
         }
 
-        if (zoneIds[0] is { } id && TimeZoneInfo.TryFindSystemTimeZoneById(id, out var found))
+        if (zoneIds[0] is { } id && SiteTimeZones.TryFind(id, out var found))
         {
             unresolvedZones.TryRemove(siteCode, out _);
             return (found, true);
