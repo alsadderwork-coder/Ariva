@@ -133,12 +133,12 @@
     },
     {
       "id": "ARV-144",
-      "title": "[E21] Proof of play and the advertising report",
-      "description": "Advertisers pay for airtime: each display records what it played, when and for how long, and the operator exports a proof-of-play report per campaign. Epic: Displays and advertising. CWEs to review: CWE-863, CWE-117, CWE-400.",
+      "title": "[E21] Proof of play recording and figures",
+      "description": "Advertisers pay for airtime: each display records what it played, when and for how long, and the figures per campaign are computed for the advertising report, which moved to ARV-146 with report generation. Epic: Displays and advertising. CWEs to review: CWE-863, CWE-117, CWE-400.",
       "acceptanceCriteria": [
         "Display players report plays (item, start, duration, completed or interrupted) in batches through their authenticated endpoint; the server bounds batch size and rate and refuses plays for items not scheduled on that display",
         "Plays are stored as a time series (versioned script, binary COPY) with retention set by a site setting",
-        "Report per campaign, advertiser, display and day: plays, airtime and share of the scheduled airtime delivered; CSV export (formula injection safe); permission Advertising.Report; [SiteScoped]",
+        "Figures per campaign, advertiser, display and day (plays, airtime, share of the scheduled airtime delivered) from a site-scoped service; the report, its permission (Advertising.Report) and the CSV export are ARV-146",
         "No passenger data of any kind; counts of people near a screen are not collected",
         "Unit, integration and API E2E tests including forged plays and oversized batches",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
@@ -150,7 +150,7 @@
       ],
       "priority": 6,
       "passes": false,
-      "notes": "Size M. Owner request 2026-10-06 (Phase 2).",
+      "notes": "Size M. Owner request 2026-10-06 (Phase 2). Owner decision 2026-10-08: report generation (templates, documents, CSV, schedules and delivery) waits for the integration with the Insight report tool used in AMAN and moves to ARV-146; this story keeps what is not report generation.",
       "dependsOn": [
         "ARV-143"
       ]

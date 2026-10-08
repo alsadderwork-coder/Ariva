@@ -24,7 +24,7 @@ Paths are relative to `Platform/Backplane` unless they start with `Platform/`.
 | 12 | Supervisor dashboard | ARV-055 live operations, ARV-057 immigration | Overflow state and a data-quality panel | ARV-120 |
 | 13 | Alert rules, in-app push, email, acknowledgement | ARV-037 to ARV-040, ARV-056 (`AlertRule.cs`, `0020` to `0023`, live hub alert groups, MailKit outbox) | `DesksBelowPlan` has no data (`OverflowOccupied` has since ARV-115); health-check metrics | ARV-115, ARV-114b, ARV-129 (conditional) |
 | 14 | Passenger display page in the site's languages | ARV-058 (`/display`, four languages, hysteresis, stale fallback) | Site values (staleness TC-09) and a native review of texts (TC-41, human) | ARV-136 |
-| 15 | Daily and weekly reports, CSV | ARV-060, ARV-061 daily report (`ReportTemplate.DailyPeaks` is the only template) | Weekly report | ARV-119, ARV-120 |
+| 15 | Daily and weekly reports, CSV | ARV-060, ARV-061 daily report (`ReportTemplate.DailyPeaks` is the only template) | Weekly figures (ARV-119); report generation through the Insight report tool used in AMAN (owner decision 2026-10-08) | ARV-119, ARV-146 |
 | 16 | Validation tooling: tracer and manual-count form, comparison report | Only `CalibrationMethod.ManualCountTally` on device calibration (ARV-021) | Everything: campaigns, manual counts, tracers, desk observer log, tablet screens, F18 comparison, report | ARV-104a to ARV-104i (candidate ARV-104, accuracy assurance) |
 | 17 | Single-tenant deployment in the border authority's environment | ARV-062 Helm, ARV-073 signed images, ARV-097, ARV-098, ARV-080, ARV-081 | First administrator in production (today only the sealed break-glass account, ARV-010c; `DevelopmentUserSeed` is vm-local only); backup and restore; system monitoring; basic offline bundle; smoke tests against a deployment; go-live security (ARV-082, ARV-083, ARV-085, ARV-087); dev cluster release (ARV-002); basic licensing; site identity provider if required | ARV-121, ARV-126, ARV-125, ARV-127, ARV-128, ARV-137, ARV-135 and ARV-134a, ARV-134b (conditional), ASVS stories in `prd-asvs-gaps.json` |
 | 18 | Authentication, roles, audit (work package 10) | ARV-010a to ARV-012, ARV-059 | Covered; production bootstrap is row 17 | ARV-121 |
@@ -46,7 +46,7 @@ Paths are relative to `Platform/Backplane` unless they start with `Platform/`.
 | Availability (99% of operating hours) | Health probes, stale indicators | A definition of operating hours (new question for the KPI annex) and an availability ledger; system monitoring | ARV-118, ARV-125, ARV-124 |
 | Ground-truth proof (nowcast error with and without AMAN, side by side) | Live desk term from AMAN | A stored sensor-only shadow nowcast (cannot be rebuilt later) and the comparison | ARV-117, ARV-104f, ARV-131 |
 
-The validation report (ARV-104g, screen ARV-104h) puts all eight together, frozen with a content hash at campaign close; ARV-104i rehearses the whole path on the simulator before any site work.
+The validation results (ARV-104g, screen ARV-104h) put all eight together, frozen with a content hash at campaign close, and the downloadable report follows with the Insight report tool (ARV-146); ARV-104i rehearses the whole path on the simulator before any site work.
 
 ## 3. Phase 0 items carried into Phase 1
 

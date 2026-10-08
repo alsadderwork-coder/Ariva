@@ -440,13 +440,13 @@
     },
     {
       "id": "ARV-104g",
-      "title": "[E13] Validation report service, API and CSV",
-      "description": "Accuracy assurance, part g. The validation report proves the numbers: per criterion against its target, with the raw comparison data, calibration records, profile version and availability. Frozen at campaign close with a content hash. Epic: Validation tooling. CWEs to review: CWE-862, CWE-863, CWE-79, CWE-120.",
+      "title": "[E13] Validation results service and API, frozen at campaign close",
+      "description": "Accuracy assurance, part g. The validation results prove the numbers: per criterion against its target, with the raw comparison data, calibration records, profile version and availability. Frozen at campaign close with a content hash. Served as JSON to Ariva's own screen (ARV-104h); the downloadable report (CSV and any document) moved to ARV-146 with report generation. Epic: Validation tooling. CWEs to review: CWE-862, CWE-863, CWE-120.",
       "acceptanceCriteria": [
-        "Report per campaign: each pilot criterion against its target (targets per campaign from the KPI annex, defaults from F18), per line and bin, per tracer, per desk, nowcast pairs, availability (ARV-118), calibration records of the devices in scope, profile version and geometry hash",
-        "At campaign close the report is frozen as revision 1 with a SHA-256 content hash; a later recomputation adds a revision with a reason, never edits",
-        "JSON and CSV (formula prefixes neutralised); Validation.View; [SiteScoped]; a request timeout and concurrency limit on generation",
-        "E2E: report for a seeded campaign, CSV injection probe, permission matrix rows, cross-site 404",
+        "Results per campaign: each pilot criterion against its target (targets per campaign from the KPI annex, defaults from F18), per line and bin, per tracer, per desk, nowcast pairs, availability (ARV-118), calibration records of the devices in scope, profile version and geometry hash",
+        "At campaign close the results are frozen as revision 1 with a SHA-256 content hash; a later recomputation adds a revision with a reason, never edits",
+        "JSON results API; Validation.View; [SiteScoped]; a request timeout and concurrency limit on computation; no CSV or document export (ARV-146)",
+        "E2E: results for a seeded campaign, attack payloads, permission matrix rows, cross-site 404",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "node scripts/verify.mjs integration passes (Testcontainers)",
         "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
@@ -456,7 +456,7 @@
       ],
       "priority": 19,
       "passes": false,
-      "notes": "Size M. Targets are proposals until the pilot contract fixes them (roadmap, pilot acceptance criteria).",
+      "notes": "Size M. Targets are proposals until the pilot contract fixes them (roadmap, pilot acceptance criteria). Owner decision 2026-10-08: report generation (templates, documents, CSV, schedules and delivery) waits for the integration with the Insight report tool used in AMAN and moves to ARV-146; this story keeps what is not report generation.",
       "dependsOn": [
         "ARV-104a",
         "ARV-104b",
@@ -510,11 +510,11 @@
     },
     {
       "id": "ARV-104h",
-      "title": "[E13] Validation campaign and report screens",
-      "description": "Accuracy assurance, part h. Campaign list, creation, capture progress, close with step-up, and the report with pass or fail per criterion and CSV download. Epic: Validation tooling. CWEs to review: CWE-79, CWE-306, CWE-863.",
+      "title": "[E13] Validation campaign and results screens",
+      "description": "Accuracy assurance, part h. Campaign list, creation, capture progress, close with step-up, and the results with pass or fail per criterion. The report download moved to ARV-146 with report generation. Epic: Validation tooling. CWEs to review: CWE-79, CWE-306, CWE-863.",
       "acceptanceCriteria": [
         "/validation: campaigns (Validation.View), create and start (Validation.Manage), progress per line (bins captured) and tracers by wait range, close with the step-up dialog",
-        "Report view: each criterion with value, target and verdict, tables per line, tracer and desk, the side-by-side nowcast proof, the content hash, CSV download saved as served",
+        "Results view: each criterion with value, target and verdict, tables per line, tracer and desk, the side-by-side nowcast proof, the content hash",
         "Playwright per role (observer, border supervisor, administrator), XSS probes on campaign names, visual baseline added",
         "node scripts/verify.mjs web passes (svelte-check, lint, build)",
         "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
@@ -524,7 +524,7 @@
       ],
       "priority": 22,
       "passes": false,
-      "notes": "Size M. From the ARV-104a security review (2026-10-08): campaign names and correction reasons are user text shown to other roles: interpolate as text only and add Playwright XSS probes for both (and for line and zone names); the create form and the counts view tell users not to name people in campaign names or reasons (data boundary); administrators hold View and Manage but not Capture (owner decision 2026-10-08), so the administrator's Playwright pass has no capture control.",
+      "notes": "Size M. From the ARV-104a security review (2026-10-08): campaign names and correction reasons are user text shown to other roles: interpolate as text only and add Playwright XSS probes for both (and for line and zone names); the create form and the counts view tell users not to name people in campaign names or reasons (data boundary); administrators hold View and Manage but not Capture (owner decision 2026-10-08), so the administrator's Playwright pass has no capture control. Owner decision 2026-10-08: report generation (templates, documents, CSV, schedules and delivery) waits for the integration with the Insight report tool used in AMAN and moves to ARV-146; this story keeps what is not report generation.",
       "dependsOn": [
         "ARV-104g",
         "ARV-104c"
@@ -536,7 +536,7 @@
       "description": "Accuracy assurance, part i. The simulator knows the true counts, waits and desk states of the reference evening. Let it act as observers through the capture API, with optional injected error, so the whole validation path is rehearsed before any site work. Epic: Validation tooling. CWEs to review: CWE-287, CWE-306.",
       "acceptanceCriteria": [
         "Ariva.Simulation.Api submits manual counts, tracer runs and desk observations from the scenario's truth as ValidationObserver accounts, with configurable count error, tracer error and observer slips; control endpoints behind the control scope",
-        "E2E rehearsal on seed 9303: with no injected error every criterion passes; a 6 percent count error fails count accuracy for that line; the S-17 outage bins appear as Degraded in the report",
+        "E2E rehearsal on seed 9303: with no injected error every criterion passes; a 6 percent count error fails count accuracy for that line; the S-17 outage bins appear as Degraded in the results",
         "wiki/07 section 8 gains a rehearsal runbook for the field engineer",
         "The simulator still refuses to start in k8s-prd",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
@@ -604,23 +604,22 @@
     },
     {
       "id": "ARV-119",
-      "title": "[E14] Weekly report and scheduled delivery",
-      "description": "The MVP needs daily and weekly reports with CSV. Only the daily peaks report exists (ReportTemplate.DailyPeaks). Add a weekly summary on the same pattern. Epic: Reports. CWEs to review: CWE-79, CWE-863, CWE-120.",
+      "title": "[E14] Weekly summary figures per site and local week",
+      "description": "The MVP needs daily and weekly reports. Only the daily peaks report exists (ReportTemplate.DailyPeaks). This story computes the weekly figures; generating the weekly report (template, JSON and CSV, schedules and delivery) moved to ARV-146 with the Insight report tool integration. Epic: Reports. CWEs to review: CWE-863, CWE-120.",
       "acceptanceCriteria": [
-        "ReportTemplate WeeklySummary per site and local week (Monday start, Proposed): per lane and day P50 and P90, peak hours, alert counts with time to acknowledge, device uptime, data quality (health checks, degraded bins), overflow minutes and availability",
-        "JSON and CSV with formula prefixes neutralised; schedules to Ariva accounts only, delivered once per recipient by TickerQ in Cronz",
-        "Request timeout and concurrency limit on on-demand generation",
-        "Integration tests on the reference week built from the simulator; E2E for the API with permission and cross-site cases",
+        "A weekly summary service per site and local week (Monday start, Proposed): per lane and day P50 and P90, peak hours, alert counts with time to acknowledge, device uptime, data quality (health checks, degraded bins), overflow minutes, availability, and time in each desk state",
+        "The service is site-scoped (ISiteScope) and returns Result<T>; per-desk figures only for border roles (data boundary); the week range and row counts are bounded",
+        "No report template, document, CSV, schedule, delivery or new endpoint in this story (ARV-146); the result type is shaped so ARV-146 can hand it to the report tool",
+        "Unit tests for the aggregation; integration tests on the reference week built from the simulator, including site scope and the border-only figures",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "node scripts/verify.mjs integration passes (Testcontainers)",
-        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
         "node scripts/security/scan.mjs passes with 0 errors",
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 26,
       "passes": false,
-      "notes": "Size M. TC-45 (desk utilisation definition) is open; show time in each desk state, which needs no definition.",
+      "notes": "Size S (M before the split). TC-45 (desk utilisation definition) is open; time in each desk state needs no definition. Owner decision 2026-10-08: report generation (templates, documents, CSV, schedules and delivery) waits for the integration with the Insight report tool used in AMAN and moves to ARV-146; this story keeps what is not report generation.",
       "dependsOn": [
         "ARV-060",
         "ARV-113",
@@ -631,10 +630,9 @@
     },
     {
       "id": "ARV-120",
-      "title": "[E14] Weekly report, overflow and data-quality views",
-      "description": "Screens for what ARV-114a, ARV-115 and ARV-119 add: the weekly tab on the reports screen, overflow state on the live and immigration screens, and a data-quality panel. Epic: Reports. CWEs to review: CWE-79, CWE-863.",
+      "title": "[E14] Overflow and data-quality views",
+      "description": "Screens for what ARV-114a, ARV-114b and ARV-115 add: overflow state on the live and immigration screens, a data-quality panel, and health-check alarms on the devices screen. The weekly tab on the reports screen moved to ARV-146 with report generation. Epic: Reports. CWEs to review: CWE-79, CWE-863.",
       "acceptanceCriteria": [
-        "Reports screen: Weekly tab with preview and CSV download by permission",
         "Live and immigration screens: overflow band occupied marker per queue; a data-quality panel per zone (conservation, track completion, occupancy range) for DataQuality.View only",
         "Devices screen: health-check alarms per zone",
         "Playwright per role, XSS probes, visual baselines updated through the update flow",
@@ -646,9 +644,8 @@
       ],
       "priority": 27,
       "passes": false,
-      "notes": "Size S. Wiki 12 (user guide) updated with the new panels.",
+      "notes": "Size S. Wiki 12 (user guide) updated with the new panels. Owner decision 2026-10-08: report generation (templates, documents, CSV, schedules and delivery) waits for the integration with the Insight report tool used in AMAN and moves to ARV-146; this story keeps what is not report generation.",
       "dependsOn": [
-        "ARV-119",
         "ARV-115",
         "ARV-114b"
       ]
@@ -1040,6 +1037,38 @@
       ]
     },
     {
+      "id": "ARV-146",
+      "title": "[E14] Report generation and delivery through the Insight report tool",
+      "description": "Owner decision 2026-10-08: report documents come from the Insight report tool already used in AMAN (a standalone, published project) instead of being built in Ariva. This story collects every report-generation part split out of other stories: the weekly report (template, JSON and CSV, schedules, delivery, on-demand limits, API) from ARV-119; the weekly tab from ARV-120; the validation report download from ARV-104g and ARV-104h; the advertising proof-of-play report and CSV from ARV-144; and the decision on the existing daily peaks report (ARV-060, ARV-061). Epic: Reports. CWEs to review: CWE-79, CWE-862, CWE-863, CWE-918, CWE-501, CWE-120.",
+      "acceptanceCriteria": [
+        "An ADR (Proposed) on how Ariva hands data to the Insight report tool, written once the owner describes the integration: Ariva supplies prepared figures through a permissioned, site-scoped interface; the tool never connects to Ariva's database (runtime and migration logins stay least privilege, ARV-083); no Ariva assembly references an Aman.* assembly unless the ADR records the owner's exception",
+        "Weekly report from ARV-119's figures per site and local week: JSON and CSV with formula prefixes neutralised, schedules to Ariva accounts only, delivered once per recipient, a request timeout and concurrency limit on on-demand generation",
+        "Validation report download for a frozen revision of ARV-104g's results, carrying its content hash, and the download on the ARV-104h screen saved as served",
+        "Advertising proof-of-play report per campaign, advertiser, display and day from ARV-144's figures, CSV export (formula injection safe), permission Advertising.Report, [SiteScoped]",
+        "Reports screen: weekly tab with preview and download by permission (from ARV-120)",
+        "Data boundary: per-desk border figures appear only in reports generated and delivered inside the border deployment to border roles; a tool instance shared with AMAN or the Airport Operations module never receives them",
+        "Decision recorded on the daily peaks report (ARV-060, ARV-061): stays on Ariva's own pipeline or moves to the tool",
+        "E2E for every report endpoint with permission, cross-site and CSV injection cases; Playwright for the weekly tab and the validation download",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "node scripts/verify.mjs e2e passes, including the new API end-to-end and Playwright functional tests for this story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 45,
+      "passes": false,
+      "notes": "Size L: split into parts once the integration is known. Blocked on: the owner's description of the Insight report tool integration (where it lives, how it is packaged and deployed, how it receives data, how it delivers). Owner decision 2026-10-08.",
+      "dependsOn": [
+        "ARV-119",
+        "ARV-120",
+        "ARV-104g",
+        "ARV-104h",
+        "ARV-144"
+      ]
+    },
+    {
       "id": "ARV-137",
       "title": "[E19] Dev cluster release (ARV-002 last criterion), done by the owner",
       "description": "Owner decision 2026-10-06: ARV-002's remaining criterion, the release on the dev Kubernetes cluster verified by a human, is deferred until every other MVP story is done. This is the first cluster work in the plan. Epic: Pilot gate. CWEs to review: CWE-269, CWE-79.",
@@ -1052,7 +1081,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 45,
+      "priority": 46,
       "passes": false,
       "notes": "Done by the owner (agents never change clusters). Needs a reachable dev cluster and GitHub Actions minutes. Depends on every other MVP story in this file; conditional stories ruled out are closed with a recorded decision first. 2026-10-06: the owner placed Phase 2 (displays and advertising, backlog/prd-phase2.json) before this release.",
       "dependsOn": [
@@ -1103,7 +1132,8 @@
         "ARV-143",
         "ARV-144",
         "ARV-145",
-        "ARV-117d"
+        "ARV-117d",
+        "ARV-146"
       ]
     },
     {
@@ -1121,7 +1151,7 @@
         "Full-repository security review PASS recorded in backlog/progress.md",
         "Owner sign-off recorded in docs/product (a go-live review page following docs/product/phase0-exit-review.md)"
       ],
-      "priority": 46,
+      "priority": 47,
       "passes": false,
       "notes": "Size S for the agent part; most criteria are human. The site installation, smoke run on the pilot cluster and burn-in follow this gate and are done by the owner and the field engineer.",
       "dependsOn": [
