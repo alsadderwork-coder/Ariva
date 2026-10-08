@@ -26,6 +26,8 @@
 //                --base <ref> compare with this commit (default HEAD: the uncommitted story)
 //   checkpoint   the full suite on a committed tree every few stories and at each phase end: backend, docs, web, integration,
 //                visual, e2e and mutation on the engine code changed since the last checkpoint; records backlog/checkpoint.json
+//                --mutation-base <commit>: only while no checkpoint is recorded, the commit of an earlier checkpoint run whose
+//                mutation step passed (the run failed elsewhere); mutation then runs only on engine code changed since it
 // --plan prints what story or checkpoint would run without running it.
 // Writes .verify/last.json with per-step results.
 
@@ -39,7 +41,7 @@ const WEB = path.join(ROOT, 'Platform', 'Frontplane', 'Ariva.Web');
 const E2E = path.join(ROOT, 'Platform', 'Testing', 'Ariva.E2E');
 const IS_WIN = process.platform === 'win32';
 const args = process.argv.slice(2);
-const VALUE_FLAGS = new Set(['--specs', '--integration', '--base']);
+const VALUE_FLAGS = new Set(['--specs', '--integration', '--base', '--mutation-base']);
 const scope = args.find((a, i) => !a.startsWith('--') && !VALUE_FLAGS.has(args[i - 1])) || 'backend';
 const PLAN = args.includes('--plan');
 const results = [];
@@ -209,6 +211,12 @@ function checkpointGate() {
   if (dirty && !PLAN) { results.push({ name: 'checkpoint needs a committed tree (commit or stash first)', ok: false }); return; }
   const last = readCheckpoint();
   const head = git(['rev-parse', 'HEAD']).trim();
+  const mutationBase = flag('--mutation-base');
+  if (mutationBase !== undefined && (last || !SHA.test(mutationBase) || !isAncestor(mutationBase))) {
+    results.push({ name: '--mutation-base needs a commit of this history and no recorded checkpoint', ok: false });
+    return;
+  }
+  const since = last?.commit ?? mutationBase;
   steps.unit();
   steps.security();
   steps.docs();
@@ -216,11 +224,11 @@ function checkpointGate() {
   steps.integration();
   steps.visual(); // before e2e: the visual baselines expect the fresh demo seed
   steps.e2e();
-  if (!last) steps.mutation();
-  else if (engineChangedSince(last.commit)) steps.mutation(isAncestor(last.commit) ? last.commit : undefined);
-  else results.push({ name: 'mutation tests (no engine change since the last checkpoint)', ok: true, skipped: true });
+  if (!since) steps.mutation();
+  else if (engineChangedSince(since)) steps.mutation(isAncestor(since) ? since : undefined);
+  else results.push({ name: `mutation tests (no engine change since ${since.slice(0, 10)})`, ok: true, skipped: true });
   if (PLAN || results.some(r => !r.ok)) return;
-  const record = { commit: head, at: new Date().toISOString().slice(0, 10), stories: last ? storiesSince(last.commit) : undefined,
+  const record = { commit: head, at: new Date().toISOString().slice(0, 10), stories: last ? storiesSince(last.commit) : undefined, mutationBase,
     results: results.map(r => ({ name: r.name, ok: r.ok, skipped: r.skipped || undefined, seconds: r.seconds })) };
   fs.writeFileSync(CHECKPOINT_FILE, JSON.stringify(record, null, 2) + '\n');
   console.log(`\ncheckpoint: recorded ${head.slice(0, 10)} in backlog/checkpoint.json; commit it ("Checkpoint: full suite green")`);

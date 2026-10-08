@@ -39,6 +39,8 @@ Runs on a committed tree (it refuses uncommitted changes) every 5 stories, at th
 3. Visual regression, then E2E in full, on fresh services (the visual baselines expect the demo seed).
 4. Stryker on the engine files changed since the previous checkpoint (`--since:<commit>`); in full when no checkpoint is recorded; skipped when no engine file changed.
 
+While no checkpoint is recorded, `--mutation-base <commit>` names an earlier checkpoint run whose mutation step passed although another step failed: the rerun tests mutation only on engine code changed since that commit, and `checkpoint.json` records the base, so a fix to an unrelated step does not repeat a run of an hour or more.
+
 When everything passes it writes `backlog/checkpoint.json` (commit, date, stories since the previous checkpoint, per-step results), which is committed as "Checkpoint: full suite green". The story gate prints how many stories have passed since the last checkpoint and says when one is due; the next story does not start until it has run.
 
 A checkpoint failure is fixed before the next story starts. Each story is its own commit, so the failing change is one of at most five.
