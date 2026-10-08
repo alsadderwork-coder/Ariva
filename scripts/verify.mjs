@@ -190,16 +190,24 @@ function storyGate() {
   checkpointNote();
 }
 
-// Engine files Stryker mutates (stryker-config.json "mutate" globs, relative to Ariva.Core) changed since a commit.
-function engineChangedSince(commit) {
+// Engine files Stryker mutates (stryker-config.json "mutate" globs, relative to Ariva.Core) changed since a commit and still
+// present, as paths relative to Ariva.Core; null when the commit is not in this history.
+const CORE = 'Platform/Backplane/Ariva.Core/';
+function changedEngineFiles(commit) {
   const config = JSON.parse(fs.readFileSync(path.join(ROOT, 'Platform', 'Backplane', 'Ariva.UnitTests', 'stryker-config.json'), 'utf8'));
-  const globs = (config['stryker-config']?.mutate ?? []).map(g => new RegExp('^Platform/Backplane/Ariva\\.Core/' +
+  const globs = (config['stryker-config']?.mutate ?? []).map(g => new RegExp('^' +
     g.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*\*\//g, '\u0000').replace(/\*/g, '[^/]*').replace(/\u0000/g, '(.*/)?') + '$'));
   try {
-    return git(['diff', '--name-only', commit, 'HEAD']).split('\n').some(f => globs.some(g => g.test(f.trim())));
+    return git(['diff', '--name-only', '--diff-filter=d', commit, 'HEAD']).split('\n').map(f => f.trim())
+      .filter(f => f.startsWith(CORE)).map(f => f.slice(CORE.length)).filter(f => globs.some(g => g.test(f)));
   } catch {
-    return true; // the commit is not in this history: treat every engine file as changed
+    return null;
   }
+}
+
+function engineChangedSince(commit) {
+  const files = changedEngineFiles(commit);
+  return files === null || files.length > 0; // a commit outside this history: treat every engine file as changed
 }
 
 function isAncestor(commit) {
@@ -225,7 +233,7 @@ function checkpointGate() {
   steps.visual(); // before e2e: the visual baselines expect the fresh demo seed
   steps.e2e();
   if (!since) steps.mutation();
-  else if (engineChangedSince(since)) steps.mutation(isAncestor(since) ? since : undefined);
+  else if (engineChangedSince(since)) steps.mutation(isAncestor(since) && changedEngineFiles(since) ? since : undefined);
   else results.push({ name: `mutation tests (no engine change since ${since.slice(0, 10)})`, ok: true, skipped: true });
   if (PLAN || results.some(r => !r.ok)) return;
   const record = { commit: head, at: new Date().toISOString().slice(0, 10), stories: last ? storiesSince(last.commit) : undefined, mutationBase,
@@ -308,13 +316,16 @@ const steps = {
   docs: () => docsCheck(),
   // Scope and thresholds in Platform/Backplane/Ariva.UnitTests/stryker-config.json; exits non-zero below the break threshold.
   // Stryker replaces Ariva.Core.dll in the unit tests' output while it runs: do not build or test in this checkout meanwhile.
-  // With a commit, only the mutants in files changed since it (Stryker's since feature) run: the checkpoint's scoped run.
+  // With a commit, only the engine files changed since it are mutated (--mutate per file, which replaces the configured
+  // list): the checkpoint's scoped run. Stryker's own --since mode ended silently after its coverage capture with the MTP
+  // runner (2026-10-08), so it is not used.
   mutation: (since) => {
     process.env.PACT_DO_NOT_TRACK = 'true'; // the Pact FFI's usage reporting stays off (the pacts skip under Stryker anyway)
     // dotnet-stryker has its own manifest in Ariva.UnitTests/.config (kept apart from aspire.cli for SDK 10.0.4xx).
     run('dotnet tool restore (dotnet-stryker)', 'dotnet', ['tool', 'restore'], path.join(ROOT, 'Platform', 'Backplane', 'Ariva.UnitTests'));
-    run(`mutation tests (Stryker.NET${since ? `, since ${since.slice(0, 10)}` : ''})`, 'dotnet',
-      ['dotnet-stryker', '--output', path.join(ROOT, '.verify', 'stryker'), ...(since ? [`--since:${since}`] : [])],
+    const files = since ? changedEngineFiles(since) : [];
+    run(`mutation tests (Stryker.NET${since ? `, ${files.length} engine files changed since ${since.slice(0, 10)}` : ''})`, 'dotnet',
+      ['dotnet-stryker', '--output', path.join(ROOT, '.verify', 'stryker'), ...files.flatMap(f => ['--mutate', `**/${f}`])],
       path.join(ROOT, 'Platform', 'Backplane', 'Ariva.UnitTests'));
   },
   backend: () => { steps.unit(); steps.security(); },
