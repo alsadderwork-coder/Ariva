@@ -72,6 +72,8 @@ process.env.ARIVA_E2E_MOCK_AMAN_PULL_SEED ||= base32Of(crypto.randomBytes(20));
 process.env.ARIVA_E2E_ACRIS_KEY ||= 'acris-e2e-' + crypto.randomBytes(24).toString('base64url');
 // ARV-060: the TickerQ dashboard of Ariva.Api.Cronz takes this key (the host keeps only its SHA-256).
 process.env.ARIVA_E2E_CRONZ_KEY ||= 'cronz-e2e-' + crypto.randomBytes(24).toString('base64url');
+// ARV-104g1: the validation reader login's password for this run (Ariva.Api.Main only; see validationReaderEnvironment).
+process.env.ARIVA_E2E_VALIDATION_READER_PASSWORD ||= 'reader-e2e-' + crypto.randomBytes(24).toString('base64url');
 
 function base32Of(bytes: Buffer): string {
 	const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
@@ -95,6 +97,19 @@ function base32Of(bytes: Buffer): string {
  */
 function outboundLabEnvironment(): Record<string, string> {
 	return { Integration__Outbound__AllowLoopback: 'true', Integration__Outbound__LabHosts__0: '127.0.0.1' };
+}
+
+/**
+ * ARV-104g1: the validation reader login, the only login that reads the shadow nowcast, given to Ariva.Api.Main alone (it
+ * hosts the validation service), as the chart does in the clusters. Main migrates the run's database at startup (vm-local)
+ * and so creates or updates the login (script 0049); the other hosts never get it, and every host checks at startup that its
+ * runtime login (Database__Username, never a superuser or the owner) can read no value of the shadow nowcast.
+ */
+function validationReaderEnvironment(): Record<string, string> {
+	return {
+		Database__ValidationReader__Username: 'ariva_validation',
+		Database__ValidationReader__Password: process.env.ARIVA_E2E_VALIDATION_READER_PASSWORD!
+	};
 }
 
 function dotnetHost(projectPath: string, healthUrl: string, buildFirst = false, extraEnvironment: Record<string, string> = {}) {
@@ -189,6 +204,7 @@ function smtpEnvironment(): Record<string, string> {
 const hostServers = {
 	'api-main': dotnetHost(project('Backplane/Ariva.Api.Main'), `${hosts.main}/health/readiness`, true, {
 		...(databaseAvailable ? developmentUserEnvironment() : {}),
+		...(databaseAvailable ? validationReaderEnvironment() : {}),
 		...redisEnvironment(),
 		...outboundLabEnvironment(),
 		// ARV-064: Main records device heartbeats from ariva.device.health.v1, so the demo's devices stay Online.

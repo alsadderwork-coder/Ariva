@@ -89,6 +89,8 @@ builder.AddAppServiceDefaults();
 
 // Main consumes device health reports into heartbeats (ARV-025).
 builder.Services.RegisterArivaServices(builder.Configuration, messaging => messaging.ConsumeDeviceHealth());
+// Main runs the validation service (ARV-104g1): the only host allowed the validation reader login outside vm-local.
+builder.Services.AddArivaValidationReaderHost();
 
 // Security baseline (docs/security/cwe-controls.md): default deny (fallback policy, Ariva.Deny answers challenges),
 // ES256 access tokens from Ariva.Api.Main with permissions from stored grants (ARV-010a), input limits, rate limiting,

@@ -454,7 +454,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 19,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. Carry-overs: the ARV-104f security review (backlog/progress.md, ARV-104f entry) and ARV-104g's notes on the shadow read path. ASVS V8.1.2 evidence. The shadow never reaches reports (ARV-146), exports, the live snapshot or the AMAN feed.",
       "dependsOn": [
         "ARV-104f",

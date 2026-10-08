@@ -57,6 +57,54 @@ function dotnetEnvironmentOf(container, docs) {
 /** Environment variable names that hold credentials: their values come from secrets, never from the manifest (CWE-798). */
 const SECRET_ENV = /(PASSWORD|PASSWD|SECRET|TOKEN|PRIVATE_?KEY|API_?KEY)/i;
 
+/**
+ * ARV-104g1 (CWE-269): the validation reader login, the only login that reads the shadow nowcast, reaches api-main (the
+ * validation service) and the database-migration job (which creates it) and no other workload, by name and from its secret.
+ */
+const READER_ENV = /^Database__ValidationReader__/;
+const READER_WORKLOADS = new Set(['Deployment/api-main-deployment', 'Job/database-migration']);
+const isReaderSecret = (name) => /validation-reader/i.test(String(name ?? ''));
+
+/** The workload's references to a secret that looks like the reader's: env, envFrom and volumes. */
+function readerSecretReferences(pod) {
+	const containers = [...(pod.initContainers ?? []), ...(pod.containers ?? [])];
+	return [
+		...containers.flatMap((container) => (container.env ?? []).map((variable) => variable.valueFrom?.secretKeyRef?.name)),
+		...containers.flatMap((container) => (container.envFrom ?? []).map((source) => source.secretRef?.name)),
+		...(pod.volumes ?? []).map((volume) => volume.secret?.secretName),
+		...(pod.volumes ?? []).flatMap((volume) => (volume.projected?.sources ?? []).map((source) => source.secret?.name))
+	].filter(isReaderSecret);
+}
+
+/** Findings for the reader login's variables in one workload (see READER_ENV). */
+function readerLoginFindings(doc, id, pod, environment) {
+	const findings = [];
+	const containers = [...(pod.initContainers ?? []), ...(pod.containers ?? [])];
+	const allowed = READER_WORKLOADS.has(id);
+	if (!allowed && (containers.some((container) => (container.env ?? []).some((variable) => READER_ENV.test(variable.name ?? ''))) || readerSecretReferences(pod).length > 0)) {
+		findings.push(`${id}: only api-main-deployment and the database-migration job may get the validation reader login (ARV-104g1)`);
+	}
+	for (const container of containers) {
+		for (const variable of container.env ?? []) {
+			if (READER_ENV.test(variable.name ?? '') && !variable.valueFrom?.secretKeyRef) {
+				findings.push(`${id} container ${container.name}: ${variable.name}: the validation reader login comes from its secret (secretKeyRef), never a literal`);
+			}
+		}
+	}
+	if (!allowed) return findings;
+	// The main container carries both values from one secret, keys username and password; production never marks it optional.
+	const main = containers.find((container) => DOTNET_IMAGES.has(imageName(container.image ?? ''))) ?? containers[0] ?? {};
+	const ref = (name) => (main.env ?? []).find((variable) => variable.name === name)?.valueFrom?.secretKeyRef;
+	const user = ref('Database__ValidationReader__Username');
+	const password = ref('Database__ValidationReader__Password');
+	if (!user || !password || user.key !== 'username' || password.key !== 'password' || !user.name || user.name !== password.name) {
+		findings.push(`${id}: must get the validation reader login (Database__ValidationReader__Username and Password, keys username and password) from one secret (ARV-104g1)`);
+	} else if (environment === 'k8s-prd' && (user.optional === true || password.optional === true)) {
+		findings.push(`${id}: k8s-prd must not mark the validation reader secret optional (ARV-104g1)`);
+	}
+	return findings;
+}
+
 function labelsMatch(selector, labels) {
 	const wanted = Object.entries(selector?.matchLabels ?? {});
 	return wanted.every(([key, value]) => labels?.[key] === value);
@@ -144,6 +192,7 @@ export function checkManifests(docs, { environment }) {
 					}
 				}
 			}
+			findings.push(...readerLoginFindings(doc, id, pod, environment));
 			// ARV-062: a stateful workload (the database) only accepts traffic a NetworkPolicy allows.
 			if (doc.kind === 'StatefulSet') {
 				const podLabels = doc.spec?.template?.metadata?.labels ?? {};

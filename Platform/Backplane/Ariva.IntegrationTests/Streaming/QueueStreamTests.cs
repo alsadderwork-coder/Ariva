@@ -667,7 +667,8 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
     // login (as ariva_ensure_runtime_login creates it for the hosts) writes and rewrites the shadow through the stream
     // store, and every read of a shadow value fails with 42501: a column, a wildcard, a whole row, a filter or an
     // assignment over a value, RETURNING, COPY, and a chunk read directly. Only the key columns are readable (the
-    // upsert's conflict target needs them). The read role for the validation comparison reads it.
+    // upsert's conflict target needs them). The read role for the validation comparison reads it (ARV-104g1 grants it to the
+    // validation reader login only: ValidationReaderLoginTests).
     [Fact]
     public async Task RuntimeLogin_Should_WriteButNeverReadTheShadow_When_TheStreamStoreUpserts()
     {
@@ -768,7 +769,7 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
                         "has_column_privilege('queue_minute_shadow', 'sensor_cycle_minutes', 'SELECT'), has_column_privilege('queue_minute_shadow', 'sensor_cycle_minutes', 'UPDATE')"))
             .Should().Be("False|False|True|True|False|False|False|True");
 
-        // The validation comparison's read role (ARV-104f grants it to its own login) reads every value.
+        // The validation comparison's read role (ARV-104g1 grants it to the validation reader login) reads every value.
         await using var reader = new NpgsqlConnection(postgres.ConnectionString(database));
         await reader.OpenAsync(Ct);
         await using (var role = new NpgsqlCommand("SET ROLE ariva_validation_reader", reader))
@@ -951,9 +952,15 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
     // and an object runs with its owner's rights, so every view, materialized view, continuous aggregate or rule (through
     // pg_rewrite) and every SQL-standard function (through pg_proc) that depends on either table or one of its chunks, at
     // any column or the whole row (refobjsubid 0), is listed and compared with an exact allowlist, empty today: a new
-    // dependent must change this test on purpose (and, if it reads the shadow, bring ARV-104f's authorization). Also no
+    // dependent must change this test on purpose (and, if it reads the shadow, bring its own authorization). Also no
     // user trigger and no publication over either table (the third ARV-117 review's optional hardening). queue_minute
     // itself no longer holds the shadow (script 0043 dropped its columns), so it is no longer listed here.
+    // ARV-104g1 (changed on purpose): the shadow now has a read path, and it is not a database object: the validation service
+    // reads the table as a client through the validation reader login (script 0049), so the allowlist of dependents stays
+    // empty (a view or function over the table would run with its owner's rights and bypass that login). What the read path
+    // adds is a grantee, so the test now also lists every role of this database's ACLs that may read a value of the table
+    // (table-level or column-level SELECT, its chunks included, the owner and the runtime role's key columns aside) and compares
+    // it with an exact allowlist: ariva_validation_reader alone, which only the reader login holds.
     private const string ShadowDependents = """
         SELECT label FROM (
             SELECT DISTINCT CASE WHEN x.kind = 'function' THEN 'function ' || x.nspname || '.' || x.relname ELSE x.nspname || '.' || x.relname END
@@ -998,8 +1005,31 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
     // Every dependent of the two tables after the migrations (pg17, TimescaleDB 2.30): none.
     private static readonly string[] AllowedShadowDependents = [];
 
+    // ARV-104g1: every grantee (PUBLIC included) that may SELECT a value of queue_minute_shadow, on the table, one of its chunks
+    // or a value column, apart from the owner; the runtime role's SELECT of the two key columns (the upsert's conflict target) is
+    // not a value.
+    private const string ShadowReaders = """
+        SELECT grantee FROM (
+        WITH t AS (
+            SELECT c.oid, c.relacl, c.relowner FROM pg_class c
+             WHERE c.oid = 'queue_minute_shadow'::regclass OR c.oid IN (SELECT inhrelid FROM pg_inherits WHERE inhparent = 'queue_minute_shadow'::regclass)
+        )
+        SELECT DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee)::text END AS grantee
+          FROM t, aclexplode(t.relacl) a
+         WHERE a.privilege_type = 'SELECT' AND a.grantee <> t.relowner
+        UNION
+        SELECT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee)::text END
+          FROM t JOIN pg_attribute att ON att.attrelid = t.oid, aclexplode(att.attacl) a
+         WHERE att.attnum > 0 AND att.attname NOT IN ('zone_key', 'minute_utc') AND a.privilege_type = 'SELECT' AND a.grantee <> t.relowner
+        ) g
+        ORDER BY grantee COLLATE "C"
+        """;
+
+    // The one read path (ARV-104g1): the reader role, granted to the validation reader login only.
+    private static readonly string[] AllowedShadowReaders = ["ariva_validation_reader"];
+
     [Fact]
-    public async Task Migrations_Should_LeaveNoReadPathOverTheShadowOrTheSensorOnlyDeskMinutes_When_Applied()
+    public async Task Migrations_Should_LeaveNoReadPathOverTheShadowOrTheSensorOnlyDeskMinutesButTheReaderRole_When_Applied()
     {
         var database = await DatabaseAsync(TestDatabase.StreamShadowViews);
         await using var connection = new NpgsqlConnection(postgres.ConnectionString(database));
@@ -1015,8 +1045,22 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
             return names;
         }
 
+        async Task<List<string>> ReadersAsync(NpgsqlTransaction transaction = null)
+        {
+            await using var command = new NpgsqlCommand(ShadowReaders, connection, transaction);
+            var names = new List<string>();
+            await using var reader = await command.ExecuteReaderAsync(Ct);
+            while (await reader.ReadAsync(Ct))
+                names.Add(reader.GetString(0));
+            return names;
+        }
+
         (await DependentsAsync()).Should().Equal(AllowedShadowDependents,
             "no view, materialized view, continuous aggregate, rule, SQL function, trigger or publication reads the shadow or the sensor-only desk minutes");
+        (await ReadersAsync()).Should().Equal(AllowedShadowReaders, "only the reader role may read a value of the shadow (ARV-104g1)");
+        await using (var roles = new NpgsqlCommand(
+                         "SELECT pg_has_role('ariva_runtime', 'ariva_validation_reader', 'MEMBER') OR pg_has_role('ariva_migration', 'ariva_validation_reader', 'MEMBER')", connection))
+            (await roles.ExecuteScalarAsync(Ct)).Should().Be(false, "neither the runtime nor the migration role holds the reader role");
 
         // The check bites, whatever the dependent reads: a wildcard view, a materialized view naming a shadow value, whole-row
         // reads (refobjsubid 0), a SQL-standard function, a view over one of the hypertable's chunks, a trigger and a
@@ -1038,7 +1082,13 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
                          "DO $$ BEGIN EXECUTE format('CREATE VIEW it_shadow_chunk AS SELECT to_jsonb(c) AS r FROM %s c', (SELECT show_chunks('queue_minute_shadow') LIMIT 1)); END $$",
                          "CREATE FUNCTION it_copy() RETURNS trigger LANGUAGE plpgsql AS $f$ BEGIN RETURN NEW; END $f$",
                          "CREATE TRIGGER it_shadow_trigger AFTER INSERT ON queue_minute_shadow FOR EACH ROW EXECUTE FUNCTION it_copy()",
-                         "CREATE PUBLICATION it_shadow_publication FOR TABLE desk_sensor_minute"
+                         "CREATE PUBLICATION it_shadow_publication FOR TABLE desk_sensor_minute",
+                         // ARV-104g1: grantees that could read a shadow value: a value column for the runtime role, a new role on the
+                         // table, PUBLIC on a chunk. All caught, then rolled back (the role too).
+                         "GRANT SELECT (nowcast_minutes) ON queue_minute_shadow TO ariva_runtime",
+                         "CREATE ROLE it_shadow_peek NOLOGIN",
+                         "GRANT SELECT ON queue_minute_shadow TO it_shadow_peek",
+                         "DO $$ BEGIN EXECUTE format('GRANT SELECT ON %s TO PUBLIC', (SELECT show_chunks('queue_minute_shadow') LIMIT 1)); END $$"
                      })
             {
 #pragma warning disable CA2100 // literal DDL above
@@ -1054,10 +1104,12 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
                 "public.it_shadow_leak on queue_minute_shadow", "public.it_shadow_leak_m on queue_minute_shadow", "public.it_shadow_row_to_json on queue_minute_shadow",
                 "public.it_shadow_trigger on queue_minute_shadow", "public.it_shadow_whole_row on queue_minute_shadow", "publication.it_shadow_publication on desk_sensor_minute"
             ]);
+            (await ReadersAsync(transaction)).Should().Equal(["PUBLIC", "ariva_runtime", "ariva_validation_reader", "it_shadow_peek"]);
             await transaction.RollbackAsync(Ct);
         }
 
         (await DependentsAsync()).Should().Equal(AllowedShadowDependents);
+        (await ReadersAsync()).Should().Equal(AllowedShadowReaders);
     }
 
     [Fact]

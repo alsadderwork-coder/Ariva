@@ -300,7 +300,7 @@ public sealed class LiveHubTests
 
         RedisLiveSnapshots.Read("{not json").Should().BeNull();
         RedisLiveSnapshots.Read(new string('x', RedisLiveSnapshots.MaxBytes + 1)).Should().BeNull();
-        LiveZoneSnapshot.From(new QueueLiveMinute("DMO/A-VIS", Visitors.MinuteUtc, 61, true, false, 15.4, 4.0, NoServiceReason.NothingOpen, false), Visitors.PublishedUtc)
+        Ariva.Infra.Streaming.LiveMinuteSnapshots.From(new QueueLiveMinute("DMO/A-VIS", Visitors.MinuteUtc, 61, true, false, 15.4, 4.0, NoServiceReason.NothingOpen, false), Visitors.PublishedUtc)
             .NoService.Should().Be("NothingOpen");
     }
 

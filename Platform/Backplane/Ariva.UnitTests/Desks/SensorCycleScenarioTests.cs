@@ -222,8 +222,8 @@ public sealed class SensorCycleScenarioTests(ITestOutputHelper output)
         JsonSerializer.Serialize(with, ReplayLedger.Json).Should().Be(JsonSerializer.Serialize(openTime, ReplayLedger.Json));
         with.Select(l => (l.NowcastMinutes, l.Throughput, l.NoService, l.NowcastDegraded, l.QueueLength, l.LengthDegraded))
             .Should().Equal(without.Select(l => (l.NowcastMinutes, l.Throughput, l.NoService, l.NowcastDegraded, l.QueueLength, l.LengthDegraded)));
-        with.Select(l => Ariva.Infra.Live.LiveZoneSnapshot.From(l, l.MinuteUtc.AddMinutes(1))).Should().BeEquivalentTo(
-            without.Select(l => Ariva.Infra.Live.LiveZoneSnapshot.From(l, l.MinuteUtc.AddMinutes(1))), o => o.WithStrictOrdering(), "the live snapshot (screens, displays, alerts) is unchanged");
+        with.Select(l => Ariva.Infra.Streaming.LiveMinuteSnapshots.From(l, l.MinuteUtc.AddMinutes(1))).Should().BeEquivalentTo(
+            without.Select(l => Ariva.Infra.Streaming.LiveMinuteSnapshots.From(l, l.MinuteUtc.AddMinutes(1))), o => o.WithStrictOrdering(), "the live snapshot (screens, displays, alerts) is unchanged");
 
         // Only the shadow moves, and the same input gives the same shadow every run.
         with.Zip(without).Count(p => p.First.Shadow != p.Second.Shadow).Should().BeGreaterThan(50);

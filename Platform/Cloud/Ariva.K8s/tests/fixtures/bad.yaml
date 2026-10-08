@@ -197,3 +197,57 @@ spec:
           env: [{ name: DOTNET_ENVIRONMENT, value: k8s-prd }]
           securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
           volumeMounts: [{ name: tmp, mountPath: /tmp }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: reader-leak }
+spec:
+  template:
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: app
+          image: registry.example/api-ingest:main-20261001.1
+          env:
+            - { name: DOTNET_ENVIRONMENT, value: k8s-prd }
+            - { name: Database__ValidationReader__Password, valueFrom: { secretKeyRef: { name: ariva-validation-reader, key: password } } }
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+---
+apiVersion: batch/v1
+kind: Job
+metadata: { name: database-migration }
+spec:
+  template:
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: database-migration
+          image: registry.example/api-main:main-20261001.1
+          args: ["--migrate"]
+          env:
+            - { name: DOTNET_ENVIRONMENT, value: k8s-prd }
+            - { name: Database__ValidationReader__Username, value: ariva_validation }
+            - { name: Database__ValidationReader__Password, valueFrom: { secretKeyRef: { name: ariva-validation-reader, key: password } } }
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: api-main-deployment }
+spec:
+  template:
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+        - { name: token-public, secret: { secretName: ariva-token-public } }
+      containers:
+        - name: app
+          image: registry.example/api-main:main-20261001.1
+          env:
+            - { name: DOTNET_ENVIRONMENT, value: k8s-prd }
+            - { name: Database__ValidationReader__Username, valueFrom: { secretKeyRef: { name: ariva-validation-reader, key: username, optional: true } } }
+            - { name: Database__ValidationReader__Password, valueFrom: { secretKeyRef: { name: ariva-validation-reader, key: password, optional: true } } }
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]

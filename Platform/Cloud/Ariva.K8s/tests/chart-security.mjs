@@ -2,8 +2,9 @@
 // and fails when a workload lacks the pod or container security context, a writable /tmp, a pinned image tag (a digest
 // for third-party images), carries a credential in its manifest, a StatefulSet has no NetworkPolicy, or an ingress
 // lacks TLS. It also proves the release guards: production without a build number, the "latest" tag, the demo seed in
-// production (ARV-019), the MQTT transport without its TLS secret (ARV-024), and a database image without a digest,
-// passwords without a secret or the superuser as the migration login (ARV-062) must fail to render.
+// production (ARV-019), the MQTT transport without its TLS secret (ARV-024), a database image without a digest,
+// passwords without a secret or the superuser as the migration login (ARV-062), and the validation reader login without its
+// secret or optional in production (ARV-104g1) must fail to render; the reader login reaches only api-main and the migration job.
 //   node Platform/Cloud/Ariva.K8s/tests/chart-security.mjs              needs helm 3 on PATH (or HELM=path)
 //   node Platform/Cloud/Ariva.K8s/tests/chart-security.mjs --self-test  checks the rules against fixtures, no helm
 // Without helm the test is skipped locally and fails in CI (CI=true).
@@ -33,7 +34,9 @@ function selfTest() {
 		'token signing key', 'integration token signing key', 'integration token key ring', 'needs securityContext.fsGroup', 'token public keys', 'disable the access log', 'audit log off', 'only critical errors', 'its own ingress',
 		'pinned by digest', 'carries a literal value', 'needs a NetworkPolicy', 'automountServiceAccountToken', 'Kafka__ProvisionTopics',
 		'POSTGRES_INITDB_ARGS', 'POSTGRES_HOST_AUTH_METHOD', 'without NOSUPERUSER', 'must set DOTNET_ENVIRONMENT',
-		'Deployment/no-environment', 'Job/argument-overrides', 'Deployment/later-config-map-overrides', 'Deployment/wrong-environment', 'Job/bare-argument-overrides'
+		'Deployment/no-environment', 'Job/argument-overrides', 'Deployment/later-config-map-overrides', 'Deployment/wrong-environment', 'Job/bare-argument-overrides',
+		'may get the validation reader login', 'comes from its secret (secretKeyRef)', 'must get the validation reader login',
+		'must not mark the validation reader secret optional'
 	];
 	const missing = expected.filter((rule) => !bad.some((finding) => finding.includes(rule)));
 	if (good.length || missing.length) {
@@ -95,13 +98,17 @@ for (const env of environments) {
 	}
 	const docs = parse(result.stdout);
 	const findings = checkManifests(docs, { environment: env.environment });
+	// ARV-104g1: the validation reader login reaches exactly api-main and the migration job, in every environment.
+	const readers = docs.filter((doc) => (doc?.spec?.template?.spec?.containers ?? []).some((container) =>
+		(container.env ?? []).some((variable) => variable.name === 'Database__ValidationReader__Password' && variable.valueFrom?.secretKeyRef))).map((doc) => `${doc.kind}/${doc.metadata?.name}`).sort();
+	if (readers.join(',') !== 'Deployment/api-main-deployment,Job/database-migration') findings.push(`the validation reader login reaches ${readers.join(', ') || 'no workload'}, not exactly api-main-deployment and the database-migration job`);
 	const workloads = docs.filter((doc) => doc?.kind === 'Deployment').length;
 	const ingresses = docs.filter((doc) => doc?.kind === 'Ingress').length;
 	if (findings.length) {
 		failed = true;
 		console.error(`FAIL ${env.file}:\n  ${findings.join('\n  ')}`);
 	} else {
-		console.log(`PASS ${env.file}: ${workloads} deployments, ${ingresses} ingresses`);
+		console.log(`PASS ${env.file}: ${workloads} deployments, ${ingresses} ingresses, validation reader login in api-main and the migration job only`);
 	}
 }
 
@@ -143,7 +150,11 @@ for (const [label, file, sets] of [
 	['production with trunk', 'values-k8s-prd.yaml', ['buildNumber=trunk']],
 	['the latest tag', 'values-k8s-dev.yaml', ['buildNumber=latest']],
 	['production with the demo seed', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1', 'demoSeed=true']],
-	['MQTT without its TLS secret', 'values-k8s-dev.yaml', ['mqtt.enabled=true', 'mqtt.tlsSecretName=']]
+	['MQTT without its TLS secret', 'values-k8s-dev.yaml', ['mqtt.enabled=true', 'mqtt.tlsSecretName=']],
+	// ARV-104g1: the validation reader login's secret is named, and required in production.
+	['the validation reader login without a secret name', 'values-k8s-dev.yaml', ['validationReader.secretName=']],
+	['a validation reader secret name that is not a Kubernetes name', 'values-k8s-dev.yaml', ['validationReader.secretName=Reader_Secret']],
+	['production with an optional validation reader secret', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1', 'validationReader.optional=true']]
 ]) {
 	const result = render(file, sets);
 	if (result.status === 0) {

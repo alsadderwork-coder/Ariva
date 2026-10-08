@@ -754,7 +754,7 @@ public sealed class QueueStreamWorker(
         if (live is not null)
         {
             var now = timeProvider.GetUtcNow().UtcDateTime;
-            var latest = outputs.Where(o => o.Live.Count > 0).Select(o => Ariva.Infra.Live.LiveZoneSnapshot.From(System.Linq.Enumerable.MaxBy(o.Live, l => l.MinuteUtc), now)).ToList();
+            var latest = outputs.Where(o => o.Live.Count > 0).Select(o => LiveMinuteSnapshots.From(System.Linq.Enumerable.MaxBy(o.Live, l => l.MinuteUtc), now)).ToList();
             try
             {
                 await live.PublishAsync(latest, ct);

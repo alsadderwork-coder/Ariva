@@ -534,7 +534,7 @@ public sealed class ShadowNowcastTests
         var live = new QueueLiveMinute("DMO/A-VIS", T, 61, true, false, 15.4, 4.0, null, false) { Shadow = new ShadowNowcast(987.654, null, true) };
 
         var ledger = JsonSerializer.Serialize(live, ReplayLedger.Json);
-        var snapshot = JsonSerializer.Serialize(Ariva.Infra.Live.LiveZoneSnapshot.From(live, T), Ariva.Infra.Messaging.EventCatalog.Json);
+        var snapshot = JsonSerializer.Serialize(Ariva.Infra.Streaming.LiveMinuteSnapshots.From(live, T), Ariva.Infra.Messaging.EventCatalog.Json);
         var plain = JsonSerializer.Serialize(live);
 
         foreach (var json in new[] { ledger, snapshot, plain })

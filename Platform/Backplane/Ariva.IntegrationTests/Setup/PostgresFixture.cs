@@ -100,6 +100,10 @@ public sealed class PostgresFixture : IAsyncLifetime
             TestDatabase.SecretReprotection => "CREATE DATABASE it_secret_reprotection",
             TestDatabase.Availability => "CREATE DATABASE it_availability",
             TestDatabase.Validation => "CREATE DATABASE it_validation",
+            TestDatabase.ValidationReader => "CREATE DATABASE it_validation_reader",
+            TestDatabase.ValidationReaderRefusals => "CREATE DATABASE it_validation_reader_refusals",
+            TestDatabase.ValidationReaderGuard => "CREATE DATABASE it_validation_reader_guard",
+            TestDatabase.ValidationReaderOther => "CREATE DATABASE it_validation_reader_other",
             _ => throw new ArgumentOutOfRangeException(nameof(database))
         };
         var name = sql["CREATE DATABASE ".Length..];
@@ -221,7 +225,11 @@ public enum TestDatabase
     Reports,
     SecretReprotection,
     Availability,
-    Validation
+    Validation,
+    ValidationReader,
+    ValidationReaderRefusals,
+    ValidationReaderGuard,
+    ValidationReaderOther
 }
 
 [CollectionDefinition(Name)]

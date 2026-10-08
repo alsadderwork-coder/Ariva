@@ -28,6 +28,7 @@ public sealed class AppHostModelTests
             "--Parameters:database-owner-password=owner-password-for-tests",
             "--Parameters:database-runtime-password=runtime-password-for-tests",
             "--Parameters:database-readonly-password=readonly-password-for-tests",
+            "--Parameters:database-validation-reader-password=validation-reader-password-for-tests",
             "--Parameters:redis-password=redis-password-for-tests",
             $"--Parameters:simulation-operator-key={SimulatorKey}",
             "--AppHost:Web=false",
@@ -72,6 +73,12 @@ public sealed class AppHostModelTests
         main["Redis__Enabled"].Should().Be("true");
         main["Redis__ConnectionString"].Should().Contain("password=redis-password-for-tests");
         main["Email__Smtp__Security"].Should().Be("None");
+
+        // ARV-104g1: the validation reader login reaches api-main (the validation service) and no other host.
+        main["Database__ValidationReader__Username"].Should().Be("ariva_validation");
+        main["Database__ValidationReader__Password"].Should().Be("validation-reader-password-for-tests");
+        foreach (var project in projects.Where(p => p.Name != "api-main"))
+            (await VariablesAsync(project)).Keys.Should().NotContain(k => k.StartsWith("Database__ValidationReader__", StringComparison.Ordinal), project.Name);
     }
 
     [Fact]

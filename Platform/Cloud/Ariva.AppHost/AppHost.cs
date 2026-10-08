@@ -17,6 +17,8 @@ static GenerateParameterDefault Password() => new() { MinLength = 32, Special = 
 var ownerPassword = builder.AddParameter("database-owner-password", Password(), secret: true, persist: true);
 var runtimePassword = builder.AddParameter("database-runtime-password", Password(), secret: true, persist: true);
 var readonlyPassword = builder.AddParameter("database-readonly-password", Password(), secret: true, persist: true);
+// ARV-104g1: the validation reader login, the only login that reads the shadow nowcast; api-main alone gets it.
+var validationReaderPassword = builder.AddParameter("database-validation-reader-password", Password(), secret: true, persist: true);
 var redisPassword = builder.AddParameter("redis-password", Password(), secret: true, persist: true);
 // The simulator's operator key (Bearer, read and control scopes): shown in the dashboard's parameters; the simulator
 // keeps only its SHA-256, as in every environment (ARV-027).
@@ -59,7 +61,9 @@ var database = timescale.Resource.PrimaryEndpoint;
 var broker = kafka.Resource.PrimaryEndpoint;
 var mail = smtp.GetEndpoint("smtp");
 
-IResourceBuilder<ProjectResource> Host<TProject>(string name) where TProject : IProjectMetadata, new()
+// validationService: the host of the validation service (api-main), the only one given the validation reader login (ARV-104g1);
+// it migrates first and creates the login (script 0049). The other hosts never see it.
+IResourceBuilder<ProjectResource> Host<TProject>(string name, bool validationService = false) where TProject : IProjectMetadata, new()
 {
     var host = Ariva(builder.AddProject<TProject>(name))
         .WithEnvironment("Database__Host", ReferenceExpression.Create($"{database.Property(EndpointProperty.Host)}"))
@@ -84,6 +88,12 @@ IResourceBuilder<ProjectResource> Host<TProject>(string name) where TProject : I
         .WithEnvironment("Email__Smtp__AllowInsecure", "true")
         // Ready means the host's own dependencies answer (HealthExtensions), not just that it listens.
         .WithHttpHealthCheck("/health/readiness");
+    if (validationService)
+    {
+        host.WithEnvironment("Database__ValidationReader__Username", "ariva_validation")
+            .WithEnvironment("Database__ValidationReader__Password", validationReaderPassword);
+    }
+
     return Overrides(host, name);
 }
 
@@ -111,7 +121,7 @@ IResourceBuilder<T> Overrides<T>(IResourceBuilder<T> resource, string name) wher
 }
 
 // Main migrates the schema at startup in vm-local; the others start once it is ready, so only one host migrates.
-var main = Host<Projects.Ariva_Api_Main>("api-main").WaitFor(timescale).WaitFor(kafka).WaitFor(redis).WaitFor(smtp);
+var main = Host<Projects.Ariva_Api_Main>("api-main", validationService: true).WaitFor(timescale).WaitFor(kafka).WaitFor(redis).WaitFor(smtp);
 var ingest = Host<Projects.Ariva_Api_Ingest>("api-ingest").WaitFor(main);
 if (settings.Stream)
     Host<Projects.Ariva_Api_Stream>("api-stream").WaitFor(main);
