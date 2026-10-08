@@ -178,7 +178,7 @@ public sealed record AlertRuleValues(
     /// <summary>Metrics that are true or false, compared with <see cref="AlertComparator.IsTrue"/> and no threshold.</summary>
     public static bool IsCondition(AlertMetric metric) => metric is AlertMetric.OverflowOccupied or AlertMetric.SensorOffline;
 
-    private static bool IsRole(string code) => RoleCodes.All.Any(r => string.Equals(r, code, StringComparison.Ordinal));
+    private static bool IsRole(string code) => RoleCodes.AlertRoles.Any(r => string.Equals(r, code, StringComparison.Ordinal));
 
     public IReadOnlyList<string> Problems()
     {

@@ -1,6 +1,9 @@
 namespace Ariva.Core.Security;
 
-/// <summary>What a permission allows on its entity. Every entity gets the five CRUD-style actions (ARV-009).</summary>
+/// <summary>
+/// What a permission allows on its entity. Every entity gets the five CRUD-style actions (ARV-009), except the few
+/// process entities with actions of their own (PermissionModelTests lists them).
+/// </summary>
 public enum PermissionAction
 {
     View,
@@ -10,7 +13,13 @@ public enum PermissionAction
     Delete,
 
     /// <summary>Makes a draft version the active one (zone profiles); critical, needs step-up MFA (ADR-0026).</summary>
-    Publish
+    Publish,
+
+    /// <summary>Records ground truth (ARV-104a): manual counts for a running validation campaign, and their corrections.</summary>
+    Capture,
+
+    /// <summary>Runs a process (ARV-104a): creates, starts and closes validation campaigns; closing is critical (step-up MFA).</summary>
+    Manage
 }
 
 /// <summary>

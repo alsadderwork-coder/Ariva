@@ -98,6 +98,9 @@ public static class AccountExtensions
         // Availability (ARV-118): the site operating calendar and the ledger's read; the ledger itself runs in Ariva.Api.Cronz.
         services.TryAddScoped<Ariva.Core.Services.Quality.ISvcSiteCalendar, Ariva.Infra.Services.Quality.SvcSiteCalendar>();
         services.TryAddScoped<Ariva.Core.Services.Quality.ISvcAvailability, Ariva.Infra.Services.Quality.SvcAvailability>();
+        // Validation campaigns and manual count capture (ARV-104a): Ariva.Api.Main only.
+        services.TryAddScoped<Ariva.Core.Services.Validation.ISvcValidationCampaigns, Ariva.Infra.Services.Validation.SvcValidationCampaigns>();
+        services.TryAddScoped<Ariva.Core.Services.Validation.ISvcValidationCapture, Ariva.Infra.Services.Validation.SvcValidationCapture>();
         // ARV-038: the stored minutes rules are judged on, and the arrival wave (ARV-047).
         services.AddArivaArrivalWaveSource(configuration);
         services.TryAddScoped<Ariva.Infra.Alerting.AlertInputs>();

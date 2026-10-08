@@ -4,7 +4,8 @@
     "BorderShiftSupervisor",
     "TerminalDutyManager",
     "HandlerStationManager",
-    "SystemAdministrator"
+    "SystemAdministrator",
+    "ValidationObserver"
   ],
   "routeValues": {
     "guid": "0199a000-0000-7000-8000-00000000a1a1",
@@ -26,7 +27,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 200,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 200
       }
     },
     {
@@ -39,7 +41,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 200,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 200
       }
     },
     {
@@ -52,7 +55,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 200,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 200
       }
     },
     {
@@ -65,7 +69,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 200,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 200
       }
     },
     {
@@ -78,7 +83,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 200,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 200
       }
     },
     {
@@ -91,7 +97,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 200,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 200
       }
     },
     {
@@ -104,7 +111,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 200,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 200
       }
     },
     {
@@ -117,7 +125,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 200,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 200
       }
     },
     {
@@ -130,7 +139,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 200,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 200
       }
     },
     {
@@ -143,7 +153,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 200,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 200
       }
     },
     {
@@ -156,7 +167,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 200,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 200
       }
     },
     {
@@ -169,7 +181,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 200,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 200
       }
     },
     {
@@ -182,7 +195,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 200,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 200
       }
     },
     {
@@ -195,7 +209,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 200,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 200
       }
     },
     {
@@ -208,7 +223,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 200,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 200
       }
     },
     {
@@ -221,7 +237,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 200,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 200
       }
     },
     {
@@ -234,7 +251,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 200,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 200
       }
     },
     {
@@ -247,7 +265,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 200,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 200
       }
     },
     {
@@ -260,7 +279,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -276,7 +296,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -289,7 +310,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -302,7 +324,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -315,7 +338,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -328,7 +352,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -341,7 +366,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -354,7 +380,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -368,7 +395,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -381,7 +409,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -397,7 +426,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -413,7 +443,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -429,7 +460,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -442,7 +474,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -455,7 +488,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -471,7 +505,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -485,7 +520,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -503,7 +539,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -516,7 +553,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -529,7 +567,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -542,7 +581,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -558,7 +598,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 403
       }
     },
     {
@@ -575,7 +616,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -588,7 +630,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 403
+        "SystemAdministrator": 403,
+        "ValidationObserver": 403
       }
     },
     {
@@ -605,7 +648,8 @@
         "BorderShiftSupervisor": 400,
         "TerminalDutyManager": 400,
         "HandlerStationManager": 400,
-        "SystemAdministrator": 400
+        "SystemAdministrator": 400,
+        "ValidationObserver": 400
       }
     },
     {
@@ -618,7 +662,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 200,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 200
       }
     },
     {
@@ -631,7 +676,8 @@
         "BorderShiftSupervisor": 204,
         "TerminalDutyManager": 204,
         "HandlerStationManager": 204,
-        "SystemAdministrator": 204
+        "SystemAdministrator": 204,
+        "ValidationObserver": 204
       }
     },
     {
@@ -644,7 +690,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 200,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 200
       }
     },
     {
@@ -660,7 +707,8 @@
         "BorderShiftSupervisor": 400,
         "TerminalDutyManager": 400,
         "HandlerStationManager": 400,
-        "SystemAdministrator": 400
+        "SystemAdministrator": 400,
+        "ValidationObserver": 400
       }
     },
     {
@@ -676,7 +724,8 @@
         "BorderShiftSupervisor": 400,
         "TerminalDutyManager": 400,
         "HandlerStationManager": 400,
-        "SystemAdministrator": 400
+        "SystemAdministrator": 400,
+        "ValidationObserver": 400
       }
     },
     {
@@ -692,7 +741,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -708,7 +758,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 403
       }
     },
     {
@@ -730,7 +781,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
       }
     },
     {
@@ -746,7 +798,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -765,7 +818,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -781,7 +835,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
       }
     },
     {
@@ -797,7 +852,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
       }
     },
     {
@@ -813,7 +869,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
       }
     },
     {
@@ -829,7 +886,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
       }
     },
     {
@@ -845,7 +903,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 200,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 403
       }
     },
     {
@@ -861,7 +920,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 404,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -877,7 +937,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -893,7 +954,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 404,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -909,7 +971,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 404,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -925,7 +988,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -941,7 +1005,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 403
       }
     },
     {
@@ -957,7 +1022,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 403
       }
     },
     {
@@ -973,7 +1039,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -989,7 +1056,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 200,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1010,7 +1078,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 400
+        "SystemAdministrator": 400,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1026,7 +1095,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 404,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1046,7 +1116,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1062,7 +1133,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1078,7 +1150,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 200,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1098,7 +1171,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 400
+        "SystemAdministrator": 400,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1114,7 +1188,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 404,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1133,7 +1208,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1149,7 +1225,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1165,7 +1242,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 200,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1188,7 +1266,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 400
+        "SystemAdministrator": 400,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1204,7 +1283,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 404,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1226,7 +1306,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1242,7 +1323,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1258,7 +1340,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 200,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1278,7 +1361,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 400
+        "SystemAdministrator": 400,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1294,7 +1378,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 404,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1313,7 +1398,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1329,7 +1415,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1345,7 +1432,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 200,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1364,7 +1452,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 400
+        "SystemAdministrator": 400,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1380,7 +1469,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 404,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1399,7 +1489,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1415,7 +1506,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1438,7 +1530,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 400
+        "SystemAdministrator": 400,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1454,7 +1547,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1474,7 +1568,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 400
+        "SystemAdministrator": 400,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1490,7 +1585,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1509,7 +1605,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1525,7 +1622,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1541,7 +1639,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 404,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1557,7 +1656,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 404,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1573,7 +1673,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 400
+        "SystemAdministrator": 400,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1594,7 +1695,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1610,7 +1712,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1630,7 +1733,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 400
+        "SystemAdministrator": 400,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1649,7 +1753,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1671,7 +1776,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1687,7 +1793,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1703,7 +1810,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1719,7 +1827,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1735,7 +1844,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 404,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1751,7 +1861,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 404,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1771,7 +1882,8 @@
         "BorderShiftSupervisor": 400,
         "TerminalDutyManager": 400,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 400
+        "SystemAdministrator": 400,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1790,7 +1902,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1812,7 +1925,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1832,7 +1946,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1848,7 +1963,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1873,7 +1989,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1889,7 +2006,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1905,7 +2023,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 404,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1924,7 +2043,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1940,7 +2060,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1956,7 +2077,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1972,7 +2094,8 @@
         "BorderShiftSupervisor": 400,
         "TerminalDutyManager": 400,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 400
+        "SystemAdministrator": 400,
+        "ValidationObserver": 403
       }
     },
     {
@@ -1988,7 +2111,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2004,7 +2128,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2020,7 +2145,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2052,7 +2178,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2074,7 +2201,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2098,7 +2226,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2114,7 +2243,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2130,7 +2260,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2146,7 +2277,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2168,7 +2300,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2184,7 +2317,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2200,7 +2334,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2222,7 +2357,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2235,7 +2371,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -2248,7 +2385,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -2262,7 +2400,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -2276,7 +2415,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -2290,7 +2430,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -2306,7 +2447,8 @@
         "BorderShiftSupervisor": 405,
         "TerminalDutyManager": 405,
         "HandlerStationManager": 405,
-        "SystemAdministrator": 405
+        "SystemAdministrator": 405,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2322,7 +2464,8 @@
         "BorderShiftSupervisor": 405,
         "TerminalDutyManager": 405,
         "HandlerStationManager": 405,
-        "SystemAdministrator": 405
+        "SystemAdministrator": 405,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2338,7 +2481,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 200,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2369,7 +2513,8 @@
         "BorderShiftSupervisor": 400,
         "TerminalDutyManager": 400,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 400
+        "SystemAdministrator": 400,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2404,7 +2549,8 @@
         "BorderShiftSupervisor": 400,
         "TerminalDutyManager": 400,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 400
+        "SystemAdministrator": 400,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2420,7 +2566,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 404,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2451,7 +2598,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2467,7 +2615,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2483,7 +2632,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 200,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2499,7 +2649,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 404,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2518,7 +2669,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 404,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2537,7 +2689,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 404,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2556,7 +2709,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 404,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2572,7 +2726,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2588,7 +2743,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2614,7 +2770,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2641,7 +2798,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2657,7 +2815,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2673,7 +2832,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2689,7 +2849,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2705,7 +2866,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2721,7 +2883,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2739,7 +2902,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -2752,7 +2916,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -2765,7 +2930,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -2778,7 +2944,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -2791,7 +2958,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -2804,7 +2972,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -2817,7 +2986,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -2830,7 +3000,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -2843,7 +3014,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -2856,7 +3028,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -2869,7 +3042,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     },
     {
@@ -2885,7 +3059,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2901,7 +3076,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2936,7 +3112,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2966,7 +3143,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
       }
     },
     {
@@ -2985,7 +3163,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
       }
     },
     {
@@ -3001,7 +3180,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
       }
     },
     {
@@ -3017,7 +3197,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
       }
     },
     {
@@ -3033,7 +3214,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -3049,7 +3231,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -3065,7 +3248,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 403
       }
     },
     {
@@ -3105,7 +3289,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
       }
     },
     {
@@ -3121,7 +3306,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -3161,7 +3347,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -3177,7 +3364,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
       }
     },
     {
@@ -3193,7 +3381,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -3209,7 +3398,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -3225,7 +3415,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -3241,7 +3432,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -3257,7 +3449,200 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/sites/{siteCode}/validation/campaigns",
+      "access": "permission",
+      "permissions": [
+        "ViewValidation"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/sites/{siteCode}/validation/campaigns",
+      "access": "permission",
+      "permissions": [
+        "ManageValidation"
+      ],
+      "body": {
+        "name": "Matrix",
+        "profileVersion": 1,
+        "zoneIds": [
+          "0199a000-0000-7000-8000-00000000a1a1"
+        ],
+        "lineIds": [],
+        "days": [
+          "2099-01-05"
+        ]
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/sites/{siteCode}/validation/campaigns/{id:guid}",
+      "access": "permission",
+      "permissions": [
+        "ViewValidation"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/sites/{siteCode}/validation/campaigns/{id:guid}/start",
+      "access": "permission",
+      "permissions": [
+        "ManageValidation"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/sites/{siteCode}/validation/campaigns/{id:guid}/close",
+      "access": "permission",
+      "permissions": [
+        "ManageValidation"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/sites/{siteCode}/validation/campaigns/{id:guid}/counts",
+      "access": "permission",
+      "permissions": [
+        "ViewValidation"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/sites/{siteCode}/validation/capture/campaigns",
+      "access": "permission",
+      "permissions": [
+        "CaptureValidation"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 403,
+        "ValidationObserver": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/sites/{siteCode}/validation/capture/campaigns/{id:guid}/counts",
+      "access": "permission",
+      "permissions": [
+        "CaptureValidation"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 403,
+        "ValidationObserver": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/sites/{siteCode}/validation/capture/campaigns/{id:guid}/counts",
+      "access": "permission",
+      "permissions": [
+        "CaptureValidation"
+      ],
+      "body": {
+        "lineId": "0199a000-0000-7000-8000-00000000a1a1",
+        "binStartUtc": "2026-10-08T06:00:00Z",
+        "crossingsIn": 1,
+        "crossingsOut": 0
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 403,
+        "ValidationObserver": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/sites/{siteCode}/validation/capture/campaigns/{id:guid}/counts/{countId:guid}/corrections",
+      "access": "permission",
+      "permissions": [
+        "CaptureValidation"
+      ],
+      "body": {
+        "crossingsIn": 1,
+        "crossingsOut": 0,
+        "reason": "Matrix"
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 403,
+        "ValidationObserver": 404
       }
     },
     {
@@ -3273,7 +3658,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 404,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -3299,7 +3685,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -3315,7 +3702,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -3337,7 +3725,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -3353,7 +3742,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -3374,7 +3764,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -3390,7 +3781,8 @@
         "BorderShiftSupervisor": 403,
         "TerminalDutyManager": 403,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -3406,7 +3798,8 @@
         "BorderShiftSupervisor": 200,
         "TerminalDutyManager": 200,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 200
+        "SystemAdministrator": 200,
+        "ValidationObserver": 403
       }
     },
     {
@@ -3423,7 +3816,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -3439,7 +3833,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -3465,7 +3860,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -3491,7 +3887,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -3507,7 +3904,8 @@
         "BorderShiftSupervisor": 404,
         "TerminalDutyManager": 404,
         "HandlerStationManager": 403,
-        "SystemAdministrator": 404
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
       }
     },
     {
@@ -3520,7 +3918,8 @@
         "BorderShiftSupervisor": 401,
         "TerminalDutyManager": 401,
         "HandlerStationManager": 401,
-        "SystemAdministrator": 401
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
       }
     }
   ]

@@ -22,6 +22,7 @@ Critical functions (step-up MFA required):
 | Create, change or rotate an integration client | System administrator |
 | Create or change an outbound endpoint | System administrator |
 | Grant or revoke roles, create users, reset a password or TOTP | System administrator (a second approving administrator for System administrator grants is a Phase 1 candidate) |
+| Close a validation campaign (ARV-104a) | Border shift supervisor, Terminal duty manager or System administrator of the site |
 
 ## 2. Users and roles
 
@@ -29,20 +30,21 @@ Critical functions (step-up MFA required):
 |---|---|
 | Display name | Free text |
 | Organisation | Border authority, airport operator, a handler (for example Handler B), or a security contractor |
-| Role | Only roles valid for that organisation and deployment: Border shift supervisor in a border deployment; Terminal duty manager and Handler station manager in an airport deployment; System administrator in either |
+| Role | Only roles valid for that organisation and deployment: Border shift supervisor in a border deployment; Terminal duty manager and Handler station manager in an airport deployment; System administrator in either; Validation observer in either, for the people who count during a validation campaign (section 2c) |
 | Deployment | Derived and enforced: a border deployment user cannot hold an airport role, and the reverse |
 | Sign-in method | Ariva's own sign-in: PBKDF2 password hashing, TOTP for every account and step-up for critical actions (ADR-0026, security guide section 3). Sign-in through the customer's identity provider (OIDC, D5's option) is not built |
 | Expiry | Optional end date for temporary accounts |
 
 Role grant rules:
 
-- Grants only through the role assignment service: the granter's own role must rank at least as high as the role (System administrator above the three operational roles), nobody changes their own roles, and the last active System administrator keeps the role.
+- Grants only through the role assignment service: the granter's own role must rank at least as high as the role (System administrator above the three operational roles and the validation observer), nobody changes their own roles, and the last active System administrator keeps the role.
 - Every grant and revoke needs step-up MFA and is audited; a revoke ends the user's sessions.
-- Role codes (`BorderShiftSupervisor`, `TerminalDutyManager`, `HandlerStationManager`, `SystemAdministrator`) never change once shipped.
+- Role codes (`BorderShiftSupervisor`, `TerminalDutyManager`, `HandlerStationManager`, `SystemAdministrator`, `ValidationObserver`) never change once shipped.
+- A validation observer (ARV-104a) holds one permission, `Validation.Capture`: it records manual counts for the running validation campaigns of its sites and corrects its own counts, and nothing else (no operational screen, topology, report or campaign management). Give the account the campaign's site only: Ariva refuses every site for an account whose only role is Validation observer, when you create it, change its sites, grant the role or revoke its other role (400). An account that also holds another role follows that role. The person who plans or starts a campaign never counts for it, even with the observer role as well (403). Observers may be border officers seconded to the campaign: Ariva stores only their account id with each count, and the account itself holds the name you give it, so use a neutral user name and display name (for example `obs.amm.07`) where the data boundary requires it.
 
 What each role sees and creates is in [Product overview](01-Product-Overview.md) (Roles). The authorisation matrix (`security/permission-matrix.json`, role by endpoint by expected status) is the reference; it drives the authorisation tests.
 
-Phase 0 API (ARV-011), under `api/v1/admin`: `users` (search with text, role and disabled filters and an allowlisted sort; view; create; update display name and email; `reset-password`; `reset-totp`; `roles/{role}` PUT to grant and DELETE to revoke; `unlock`; `disable`; `enable`), `roles` (the four roles, their rank and permissions) and `audit-entries` (search and view). Sites (ARV-012): `api/v1/admin/sites` creates and renames sites (codes never change, sites are never deleted) and `users/{id}/sites` sets a user's access to every site or a list (critical, only within your own sites; narrowing ends the user's sessions). Everyone reads only their sites through `api/v1/sites`. An administrator limited to some sites manages only accounts inside them and cannot create sites; the break-glass account and the administrators that existed before site scoping reach every site. A new account and a password reset get a temporary password of four groups of five characters, shown once; the user must change it at the next sign-in. Accounts are disabled, never deleted. The break-glass account does not appear here.
+Phase 0 API (ARV-011), under `api/v1/admin`: `users` (search with text, role and disabled filters and an allowlisted sort; view; create; update display name and email; `reset-password`; `reset-totp`; `roles/{role}` PUT to grant and DELETE to revoke; `unlock`; `disable`; `enable`), `roles` (the five roles, their rank and permissions) and `audit-entries` (search and view). Sites (ARV-012): `api/v1/admin/sites` creates and renames sites (codes never change, sites are never deleted) and `users/{id}/sites` sets a user's access to every site or a list (critical, only within your own sites; narrowing ends the user's sessions). Everyone reads only their sites through `api/v1/sites`. An administrator limited to some sites manages only accounts inside them and cannot create sites; the break-glass account and the administrators that existed before site scoping reach every site. A new account and a password reset get a temporary password of four groups of five characters, shown once; the user must change it at the next sign-in. Accounts are disabled, never deleted. The break-glass account does not appear here.
 
 Sessions: access tokens last 15 minutes; a new session id is minted at every sign-in; refresh tokens rotate on every use, are stored hashed, and reuse of an old refresh token revokes the whole family. The refresh cookie is HttpOnly, Secure, SameSite Strict.
 
@@ -88,6 +90,29 @@ Example (Dubai, open 06:00 to 22:00 every day from next Monday):
 PUT /api/v1/admin/sites/DMO/calendar/weeks
 { "effectiveFrom": "2026-10-12", "hours": [ { "day": "Monday", "opens": "06:00", "closes": "22:00" }, ... ] }
 ```
+
+## 2c. Validation campaigns (ARV-104a)
+
+A validation campaign proves a site's numbers before anyone relies on them ([Commissioning and calibration](07-Commissioning-and-Calibration.md) section 8; formulas F18). There is no screen yet: the observer tablet is ARV-104c and ARV-104d, the campaign and report screens ARV-104h. Until then use the API under `api/v1/sites/{siteCode}/validation`.
+
+| Who | Permission | Roles holding it |
+|---|---|---|
+| Reads campaigns and every observer's counts | `Validation.View` | Border shift supervisor, Terminal duty manager, System administrator |
+| Plans, starts and closes campaigns (closing needs a second factor within 15 minutes) | `Validation.Manage` | Border shift supervisor, Terminal duty manager, System administrator |
+| Records and corrects their own counts | `Validation.Capture` | Validation observer only |
+
+Managers and administrators do not capture (separation of duties, decided by the owner on 2026-10-08): the ground truth stays independent of whoever configures the system or runs the campaign. If a manager or an administrator must count (a paper sheet, for instance), give that account the Validation observer role as well; it still never counts for a campaign it planned or started (403). Handler station managers hold none of the three.
+
+| Step | Request | Rules |
+|---|---|---|
+| Plan | `POST .../validation/campaigns` with `name` (1 to 200 characters), `profileVersion` (the site's published zone profile version you reviewed), `zoneIds` (1 to 50 queue zones of that version), `lineIds` (up to 200 lines of those zones or of their overflow bands), `days` (1 to 31 local dates `yyyy-MM-dd` in the site's time zone, from 31 days back to 366 ahead) and optional `targetBinsPerLine` (1 to 2,976) and `targetTracerRuns` (0 to 1,000) | A newer published version answers 409 (read the profile again). A target left empty takes its placeholder (20 bins per line, 30 tracer runs) until the pilot's KPI annex answers TC-04; the campaign shows `placeholder: true`. A count line standing alone (on no zone) is counted by no queue zone and cannot be in scope |
+| Start | `POST .../campaigns/{id}/start` | Planned only, and only while its profile version is still the published one (409 otherwise) |
+| Capture | `POST .../validation/capture/campaigns/{id}/counts` with `lineId`, `binStartUtc` (UTC on the quarter hour, ending in Z), `crossingsIn` and `crossingsOut` (0 to 10,000); optional `Idempotency-Key` header | The campaign runs, the line is in scope, the bin starts on a planned local day, has ended (a minute of clock tolerance) and ended before the profile version was retired. One count per line, bin and observer (a second is 409; two observers may count the same line and bin). Resending with the same key returns the stored count (200); the same key with another count is 409. A key belongs to the observer who sent it: another observer's identical key makes that observer's own count (201). The account that planned or started the campaign is refused (403) |
+| Correct | `POST .../capture/campaigns/{id}/counts/{countId}/corrections` with the crossings and a `reason` (1 to 200 characters) | Only your own latest revision (409 for an older one, 404 for another observer's); it becomes the next revision, the corrected one stays. Audited (`ManualCount.Corrected`) |
+| Read | `GET .../campaigns` (text, status, an allowlisted sort, pages of at most 500), `GET .../campaigns/{id}` (scope, targets, the version's state, bins captured per line), `GET .../campaigns/{id}/counts` (current revisions, or `currentOnly=false` for every revision; by line, observer and bin range); observers `GET .../capture/campaigns` (the running campaigns with their lines and the site's time zone) and `GET .../capture/campaigns/{id}/counts` (their own) | A site you cannot see, a campaign of another site and another observer's count answer 404 |
+| Close | `POST .../campaigns/{id}/close` | Critical (a second factor within 15 minutes, otherwise 401 `mfa_required`); from Planned or Running; nothing is captured or corrected afterwards (409). Audited with plan and start (`ValidationCampaign.*`) |
+
+A campaign, its scope and its counts are evidence: nothing is deleted, a closed campaign never changes, and the database refuses an edited count or a count in a campaign that is not running even from a hand-written statement. If a new zone profile version is published during a campaign, counts of bins that ended before it stay valid and later bins are refused; plan a new campaign over the new version (re-validate after any layout change, F18).
 
 ## 3. TOTP enrolment and reset
 

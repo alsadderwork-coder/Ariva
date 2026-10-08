@@ -166,6 +166,15 @@ Read them per zone with `GET api/v1/sites/{siteCode}/zone-health?zone=A-VIS&from
 
 The validation report records the profile version, the device calibration records, the raw comparison data and the results per criterion. Manual count capture uses the observer tablet form (Phase 1 epic Validation tooling).
 
+Running a campaign in Ariva (ARV-104a; the API is in [Administration guide](11-Administration-Guide.md) section 2c, the tablet and campaign screens follow in ARV-104c, ARV-104d and ARV-104h):
+
+1. Publish the zone profile version you are validating, then plan the campaign over it: the queue zones and the lines to count (entry, exit, overflow entry and count lines of those zones and their bands; a count line on no zone cannot be compared), the local days, and the sample size per line and tracer count from the KPI annex. Until TC-04 is answered, leave the targets empty: Ariva records the placeholders (20 bins per line, 30 tracer runs) and marks them as such.
+2. Give each observer an account with the Validation observer role and the site only (Ariva refuses every site for an observer-only account); observers see the running campaigns of their site and nothing else. Neither administrators nor the person who plans or starts the campaign count for it: the ground truth stays independent of whoever configures the system or runs the campaign.
+3. Start the campaign. Observers record one count per line and 15-minute bin (local bins on the quarter hour, sent in UTC once the bin has ended), with the people crossing in and out. A wrong count is corrected with a reason: the correction is a new revision and the first stays on record. Two observers may count the same line and bin.
+4. Close the campaign (step-up MFA). Nothing is captured or corrected afterwards; the report (ARV-104g) is computed from the stored counts.
+
+If a new profile version is published mid-campaign, bins that ended before it keep their counts and later bins are refused: plan a new campaign over the new version.
+
 ## 9. Go Online
 
 1. Publish the validated profile version and activate it.

@@ -361,7 +361,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 15,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. Reuses candidate id ARV-104 (backlog/phase1-candidates.md, accuracy assurance), split a to i. Campaign defaults for sample size per line and tracer count are placeholders until TC-04 is answered in the KPI annex; the build does not wait for it.",
       "dependsOn": [
         "ARV-017",
@@ -482,7 +482,7 @@
       ],
       "priority": 20,
       "passes": false,
-      "notes": "Size M. Online capture only; an offline-capable tablet would need an ADR (tokens never in web storage).",
+      "notes": "Size M. Online capture only; an offline-capable tablet would need an ADR (tokens never in web storage). From the ARV-104a security review (2026-10-08): generate each Idempotency-Key as a random UUID per bin submission (crypto.randomUUID, kept in memory with the unsent bin and reused only for its own retries; never derived from the user, line or time, since a key is unique per observer); the correction form tells observers not to name people in the reason (counts carry no person beyond the observer's account id, data boundary); Playwright XSS probes on line names, campaign names and correction reasons; the campaign's creator or starter gets 403 on capture (owner decision 2026-10-08) and the screen shows that as a plain message.",
       "dependsOn": [
         "ARV-104a",
         "ARV-104b"
@@ -524,7 +524,7 @@
       ],
       "priority": 22,
       "passes": false,
-      "notes": "Size M.",
+      "notes": "Size M. From the ARV-104a security review (2026-10-08): campaign names and correction reasons are user text shown to other roles: interpolate as text only and add Playwright XSS probes for both (and for line and zone names); the create form and the counts view tell users not to name people in campaign names or reasons (data boundary); administrators hold View and Manage but not Capture (owner decision 2026-10-08), so the administrator's Playwright pass has no capture control.",
       "dependsOn": [
         "ARV-104g",
         "ARV-104c"

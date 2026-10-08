@@ -84,7 +84,11 @@ public sealed class AlertRuleTests
         { "long clear", Nowcast() with { ClearAfterMinutes = 121 } },
         { "unknown owner role", Nowcast() with { OwnerRole = "Root" } },
         { "owner role in other case", Nowcast() with { OwnerRole = "bordershiftsupervisor" } },
+        // ARV-104a (CWE-269, CWE-863): the validation observer holds no alert permission, so it never owns an alert rule nor is
+        // escalated to; alert_rule (script 0020) accepts the four alert roles only.
+        { "validation observer as owner", Nowcast() with { OwnerRole = RoleCodes.ValidationObserver } },
         { "unknown escalation role", Nowcast() with { EscalateToRole = "Everyone" } },
+        { "validation observer as escalation role", Nowcast() with { EscalateToRole = RoleCodes.ValidationObserver } },
         { "escalation without minutes", Nowcast() with { EscalateAfterMinutes = null } },
         { "escalation beyond a day", Nowcast() with { EscalateAfterMinutes = 1441 } },
         { "contact with a newline", Nowcast() with { EscalationContact = "Duty\nofficer" } },
@@ -98,6 +102,22 @@ public sealed class AlertRuleTests
         values.Problems().Should().NotBeEmpty(why);
         var create = () => new Core.Domain.Entities.AlertRule("DMO", 1, values);
         create.Should().Throw<ArgumentException>(why);
+    }
+
+    [Theory]
+    [InlineData(RoleCodes.BorderShiftSupervisor)]
+    [InlineData(RoleCodes.TerminalDutyManager)]
+    [InlineData(RoleCodes.HandlerStationManager)]
+    [InlineData(RoleCodes.SystemAdministrator)]
+    public void Rule_Should_AcceptTheRole_When_ItIsOneOfTheFourAlertRoles(string role)
+    {
+        // ARV-104a: the alert roles are exactly the four that alert_rule accepts (script 0020); the validation observer is not one.
+        RoleCodes.AlertRoles.Should().BeEquivalentTo(
+            [RoleCodes.BorderShiftSupervisor, RoleCodes.TerminalDutyManager, RoleCodes.HandlerStationManager, RoleCodes.SystemAdministrator]);
+        RoleCodes.AlertRoles.Should().NotContain(RoleCodes.ValidationObserver);
+
+        (Nowcast() with { OwnerRole = role }).Problems().Should().BeEmpty();
+        (Nowcast() with { EscalateToRole = role }).Problems().Should().BeEmpty();
     }
 
     [Theory]

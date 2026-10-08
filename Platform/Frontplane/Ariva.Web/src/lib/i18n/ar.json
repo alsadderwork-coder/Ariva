@@ -221,7 +221,8 @@
 				"BorderShiftSupervisor": "مشرف وردية الحدود",
 				"TerminalDutyManager": "مدير مناوبة المبنى",
 				"HandlerStationManager": "مدير محطة المناولة",
-				"SystemAdministrator": "مسؤول النظام"
+				"SystemAdministrator": "مسؤول النظام",
+				"ValidationObserver": "مراقب التحقق"
 			},
 			"signOutFailed": "تعذّر على أريفا إنهاء جلستك على الخادم. سجّل الخروج مجدداً عند عودة الشبكة، أو أغلق المتصفح."
 		},
@@ -875,7 +876,8 @@
 			"BorderShiftSupervisor": "مشرف مناوبة الحدود",
 			"TerminalDutyManager": "مدير مناوبة المبنى",
 			"HandlerStationManager": "مدير محطة المناولة",
-			"SystemAdministrator": "مسؤول النظام"
+			"SystemAdministrator": "مسؤول النظام",
+			"ValidationObserver": "مراقب التحقق"
 		},
 		"status": {
 			"active": "نشط",

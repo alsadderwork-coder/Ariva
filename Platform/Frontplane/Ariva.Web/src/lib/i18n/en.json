@@ -221,7 +221,8 @@
 				"BorderShiftSupervisor": "Border shift supervisor",
 				"TerminalDutyManager": "Terminal duty manager",
 				"HandlerStationManager": "Handler station manager",
-				"SystemAdministrator": "System administrator"
+				"SystemAdministrator": "System administrator",
+				"ValidationObserver": "Validation observer"
 			},
 			"signOutFailed": "Ariva could not end your session on the server. Sign out again when the network is back, or close the browser."
 		},
@@ -875,7 +876,8 @@
 			"BorderShiftSupervisor": "Border shift supervisor",
 			"TerminalDutyManager": "Terminal duty manager",
 			"HandlerStationManager": "Handler station manager",
-			"SystemAdministrator": "System administrator"
+			"SystemAdministrator": "System administrator",
+			"ValidationObserver": "Validation observer"
 		},
 		"status": {
 			"active": "Active",

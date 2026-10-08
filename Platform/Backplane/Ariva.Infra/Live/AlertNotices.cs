@@ -45,7 +45,7 @@ public sealed record AlertNotice(
     /// </summary>
     public IReadOnlyList<string> Audience() =>
         OwnerRole is null
-            ? RoleCodes.All
+            ? RoleCodes.AlertRoles
             : [.. new[] { OwnerRole, Escalated ? EscalateToRole : null, RoleCodes.SystemAdministrator }.Where(r => r is not null).Distinct(StringComparer.Ordinal)];
 
     /// <summary>Whether a notice read back from Redis is plausible enough to send to a screen (CWE-501).</summary>
@@ -58,7 +58,7 @@ public sealed record AlertNotice(
 
     private static bool Text(string value, int max) => !string.IsNullOrWhiteSpace(value) && value.Length <= max && DisplayText.IsClean(value);
 
-    private static bool Role(string role) => role is null || Enumerable.Contains(RoleCodes.All, role, StringComparer.Ordinal);
+    private static bool Role(string role) => role is null || Enumerable.Contains(RoleCodes.AlertRoles, role, StringComparer.Ordinal);
 
     private static bool Named<T>(string value) where T : struct, Enum => value is not null && Enumerable.Contains(Enum.GetNames<T>(), value, StringComparer.Ordinal);
 }

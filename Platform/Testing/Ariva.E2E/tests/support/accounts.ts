@@ -33,7 +33,7 @@ export const lockoutSeconds = 5;
 /** Failed sign-ins that lock an account (Auth:Lockout:Threshold, ADR-0026). */
 export const lockoutThreshold = 10;
 
-export type RoleCode = 'BorderShiftSupervisor' | 'TerminalDutyManager' | 'HandlerStationManager' | 'SystemAdministrator';
+export type RoleCode = 'BorderShiftSupervisor' | 'TerminalDutyManager' | 'HandlerStationManager' | 'SystemAdministrator' | 'ValidationObserver';
 
 export interface Account {
 	userName: string;
@@ -134,6 +134,8 @@ export function accounts() {
 		TerminalDutyManager: account('e2e.terminal', ['TerminalDutyManager'], false, false, ['E2E2']),
 		HandlerStationManager: account('e2e.handler', ['HandlerStationManager'], false, false, ['E2E1', 'E2E2']),
 		SystemAdministrator: account('e2e.admin', ['SystemAdministrator'], false, false, ['*']),
+		// ARV-104a: the validation observer of the permission matrix and of validation.spec.ts, at the validation site E2EV.
+		ValidationObserver: account('e2e.observer', ['ValidationObserver'], false, false, ['E2EV']),
 		pending: account('e2e.pending', [], true),
 		changer: account('e2e.changer', [], true),
 		lockout: account('e2e.lockout', []),
@@ -231,7 +233,16 @@ export function accounts() {
 		// Every site, so the account seed never creates AUH-TA itself (only the illustrative seed may).
 		illustrativeAdmin: account('e2e.illusadmin', ['SystemAdministrator'], false, true, ['*']),
 		// ARV-139a: the same for the functional suite's passenger display players (its own account: a TOTP code counts once per account).
-		illustrativeWebAdmin: account('e2e.illuswebadmin', ['SystemAdministrator'], false, true, ['*'])
+		illustrativeWebAdmin: account('e2e.illuswebadmin', ['SystemAdministrator'], false, true, ['*']),
+		// ARV-104a: validation campaigns at E2EV. The manager drafts and publishes the site's zone profile and closes campaigns
+		// (both need a second factor); the lead plans and starts them with a password only (closing answers 401 for its second
+		// factor); a second observer of the site, and an observer of E2E1 for the cross-site answers.
+		validationManager: account('e2e.valmanager', ['BorderShiftSupervisor'], false, true, ['E2EV']),
+		validationLead: account('e2e.vallead', ['TerminalDutyManager'], false, false, ['E2EV']),
+		validationObserver2: account('e2e.observer2', ['ValidationObserver'], false, false, ['E2EV']),
+		validationObserverElsewhere: account('e2e.observerx', ['ValidationObserver'], false, false, ['E2E1']),
+		// A duty manager who is also an observer (owner decision 2026-10-08): it never counts for a campaign it created or started.
+		validationDual: account('e2e.valdual', ['TerminalDutyManager', 'ValidationObserver'], false, false, ['E2EV'])
 	} as const;
 }
 

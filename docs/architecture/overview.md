@@ -202,6 +202,7 @@ Relational tables (NHibernate), grouped by context:
 | Service Levels and Contracts | contracts, kpi_definitions, exclusions, evaluations, penalty_notices, disputes, evidence_packs (metadata and SHA-256 content hash) | Indefinite, audited |
 | Alerting | alert_rules, alerts, escalation_policies, on_call_rosters, alert_escalation_state | Indefinite |
 | Tenancy and Access | tenants, organisations, roles, data_scope_policies, licences | Indefinite, audited |
+| Validation (ARV-104a, script 0047) | validation_campaign (site, one published profile version and its geometry hash, local days, targets; Planned, Running, Closed), validation_campaign_zone and validation_campaign_line (the scope, keyed to the version), manual_count (per line, 15-minute bin and observer, revisions with a reason; append-only, the observer an Ariva user id) | Indefinite, audited (pilot acceptance evidence) |
 | Platform | audit_log, outbox, stream_checkpoints, schema_version | Audit indefinite; others operational |
 
 Hypertables and continuous aggregates (versioned SQL):
