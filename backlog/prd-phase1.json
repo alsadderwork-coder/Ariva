@@ -501,7 +501,7 @@
       ],
       "priority": 21,
       "passes": false,
-      "notes": "Size M. Carry-overs: ARV-104g's notes from the ARV-104e and ARV-104f security reviews (verdict sample rule, exclusion levers, scale, observer-level results, targets authorised and audited). Decisions points (1) to (13) of ARV-104e and ARV-104f stay Proposed until the owner answers.",
+      "notes": "Size M. Carry-overs: ARV-104g's notes from the ARV-104e and ARV-104f security reviews (verdict sample rule, exclusion levers, scale, observer-level results, targets authorised and audited). Decisions points (1) to (13) of ARV-104e and ARV-104f stay Proposed until the owner answers. From the ARV-104g1 security review (2026-10-08, L7): SvcValidationResults.ReadShadowAsync holds up to 1,000,000 rows (about 100 MB) before its row-bound refusal, and four oversized reads on the pool of 4 hold about 400 MB while a fifth throws NpgsqlException after the connect timeout: count through a LIMITed subquery before reading or stream the rows into the engine, and map pool exhaustion to a Result.",
       "dependsOn": [
         "ARV-104g1",
         "ARV-104a",
