@@ -42,7 +42,7 @@ dotnet test Platform/Backplane/Ariva.UnitTests/Ariva.UnitTests.csproj
 
 Agents write many tests; mutation testing checks that they would catch a real fault. Stryker.NET changes the engine code one small fault at a time (a `<` for a `<=`, a `+` for a `-`, a removed statement) and runs the unit tests that exercise it; a mutant the tests do not notice "survives".
 
-- Scope (`Platform/Backplane/Ariva.UnitTests/stryker-config.json`): in Ariva.Core, `Queueing/QueueStateEngine.cs`, `QueueBins.cs`, `ZoneProcessor.cs`, `WaitStatistics.cs` (realised wait attribution), `Nowcast.cs`, `Border/EgateCoupling.cs` and `Flights/ArrivalWave.cs`; Stryker records which unit tests cover each mutant and runs only those against it. Snapshot persistence and guard clauses are left out.
+- Scope (`Platform/Backplane/Ariva.UnitTests/stryker-config.json`): in Ariva.Core, `Queueing/QueueStateEngine.cs`, `QueueBins.cs`, `ZoneProcessor.cs`, `WaitStatistics.cs` (realised wait attribution), `Nowcast.cs`, `Border/EgateCoupling.cs`, `Flights/ArrivalWave.cs` and, since ARV-104e, the F18 comparison engine `Validation/Comparison/*.cs`; Stryker records which unit tests cover each mutant and runs only those against it. Snapshot persistence and guard clauses are left out. A story that adds an engine can run Stryker on its own files only: from `Platform/Backplane/Ariva.UnitTests`, `dotnet tool run dotnet-stryker -- --mutate "**/Validation/Comparison/*.cs" --output <folder>` (the command line's `--mutate` replaces the configuration's list; everything else, thresholds included, comes from `stryker-config.json`).
 - Thresholds: the run fails below 70 percent of mutants killed; 80 is the target. Surviving mutants are triaged in `backlog/progress.md`: a missing test is added, an equivalent mutant (a change no input can observe) is recorded as such.
 - When: weekly (Saturday night) and on demand (Actions, mutation, Run workflow); the HTML and JSON reports are the `mutation-report` artifact. Locally: `node scripts/verify.mjs mutation` (about an hour on two cores; the report goes to `.verify/stryker`). Stryker replaces Ariva.Core in the unit tests' output while it runs, so nothing else should build or test in that checkout meanwhile.
 - Runner: Stryker's Microsoft Testing Platform runner (`test-runner: mtp`; the unit test executable has `UseMicrosoftTestingPlatformRunner`, while `dotnet test` still runs through VSTest). Under VSTest Stryker could neither activate mutants nor capture coverage in the xUnit v3 test process, so every mutant "survived". The AMAN pact tests skip themselves in a Stryker run: the Pact FFI aborts Stryker's test server, and they test no engine.
@@ -133,6 +133,8 @@ Details in [Security guide](13-Security-Guide.md).
 | `docs` | Markdown text rules: no em or en dash characters, no double hyphens in prose |
 | `backend` | `unit` plus `security` (the default) |
 | `all` | Everything except integration (add `--with-integration`) |
+| `story` | The per-story gate: `backend` and `docs` always, `web` when the web app changed, integration filtered by `--integration` and E2E for `--specs` plus a smoke set (health, auth, security baseline, permission matrix, shell); both in full when the change is wide or adds a Timescale script ([test cadence](../docs/harness/test-cadence.md)) |
+| `checkpoint` | The full suite on a committed tree every 5 stories, at each phase end and before go-live: backend, docs, web, integration, visual, E2E, and Stryker on the engine code changed since the previous checkpoint; records `backlog/checkpoint.json` |
 
 The script is cross-platform (Windows, Linux, CI) and has no dependencies beyond Node.
 
@@ -151,4 +153,4 @@ Planned additions: the repository scan and dependency audits in PR validation, t
 
 ## 10. Definition of done for a story
 
-A story is done when its acceptance criteria pass, the tests for every control it touches pass, `node scripts/verify.mjs security` passes, and the security reviewer has signed off its checklist (see `../docs/security/cwe-controls.md`).
+A story is done when its acceptance criteria pass, `node scripts/verify.mjs story` passes (which includes `security`), the tests for every control it touches pass, and the security reviewer has signed off its checklist (see `../docs/security/cwe-controls.md`). The full suite runs at the next checkpoint ([test cadence](../docs/harness/test-cadence.md)); a checkpoint failure is fixed before the next story starts.

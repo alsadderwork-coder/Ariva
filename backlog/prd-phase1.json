@@ -408,7 +408,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 17,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. Pure code, no persistence. From the ARV-104b security review (2026-10-08), recommended: flag tracer batches whose measured clock offset differs from the same observer's median offset by more than a few seconds (a stale clock reading or a device whose time was changed mid-campaign); report each observer's offset spread (minimum, median, maximum); and report the wait error's sensitivity to a plus or minus shift of the offsets (for example plus or minus 2 seconds), so a reader sees how much the clock correction matters. Owner decisions 2026-10-08 (Proposed for the KPI annex): abandoned tracer runs are left out of the wait error and the bias and reported separately with their count; tracer runs are never corrected.",
       "dependsOn": [
         "ARV-113",
@@ -456,7 +456,7 @@
       ],
       "priority": 19,
       "passes": false,
-      "notes": "Size M. Targets are proposals until the pilot contract fixes them (roadmap, pilot acceptance criteria). Owner decision 2026-10-08: report generation (templates, documents, CSV, schedules and delivery) waits for the integration with the Insight report tool used in AMAN and moves to ARV-146; this story keeps what is not report generation.",
+      "notes": "Size M. Targets are proposals until the pilot contract fixes them (roadmap, pilot acceptance criteria). Owner decision 2026-10-08: report generation (templates, documents, CSV, schedules and delivery) waits for the integration with the Insight report tool used in AMAN and moves to ARV-146; this story keeps what is not report generation. From the ARV-104e security review (2026-10-08), required here: the campaign verdict per criterion needs the campaign's targets of Good judged items (target_bins_per_line, target_tracer_runs), otherwise no data, and shows the excluded share (the engine's per-line and per-zone verdicts are not acceptance verdicts on their own); observer-level results (ObserverId per run, batch and offset spread) go only to Validation.View or Validation.Manage holders of the campaign's site, an observer sees its own at most, and never to AMAN or across the border-to-airport feed (add a data-boundary row for comparison results); every stored read is filtered by site (ISiteScope, zone_key prefix) and counts and runs by campaign_id before the engine sees them (CWE-863); read only the queue minutes the matching rule needs (a 50-zone, 31-day campaign exceeds the engine's 1,000,000-row bound) and run the comparison single-flight (peak memory near 1 GB at the bounds); read line_minute or refresh line_minute_15m over the campaign's range (the aggregate refreshes only the last 3 days, script 0037); authorise and audit who sets a campaign's targets (any target in (0, 1] is accepted by the engine); record ASVS V15.1.3, V15.2.2 and V14.1.1 evidence when the results are served. From the ARV-104e re-checks: compare with ComparisonScope.Of(campaign) over the campaign's full scope and filter the results by zone afterwards (a subset scope drops whole batches that span zones); treat a nonzero LeftOut.QualityIntervals as needing review (an interval wholly before 2000, without a zone, or whose zone name does not match is only counted, and fails open); the finality difference between the join minute and its neighbour is decisions point (13), Proposed.",
       "dependsOn": [
         "ARV-104a",
         "ARV-104b",

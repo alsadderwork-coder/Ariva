@@ -26,7 +26,9 @@ The smoke set is `health`, `auth`, `security-baseline` and `permission-matrix` (
 
 A change is wide when it reaches every host, every screen or the whole pipeline (the `WIDE` list in `scripts/verify.mjs`): `Ariva.Api.Common`, `Ariva.ServiceDefaults`, `Ariva.Di`, `Ariva.Api.Stream`; `Ariva.Core` `Security`, `Messaging`, `Queueing`, `Global.cs`, `RoleCodes.cs`; `Ariva.Infra` `NHibernate`, `Messaging`, `Streaming`, `Security`, `DataProtection`, `Caching`; the simulator; the web app's `src/lib/core`, hooks and build configuration; the E2E configuration and `tests/support`; the solution and central package files.
 
-The security-reviewer still reviews every story. After its fixes, only the tests the fixes touch run again; a second review runs only for a High finding or a fix that changes authorization.
+The security-reviewer still reviews every story. After its fixes, only the tests the fixes touch run again. A FAIL verdict is closed by a focused re-check of the fixes (the story's criteria need a PASS); a full second review runs only for a High finding or a fix that changes authorization.
+
+A full E2E run (a wide story or a checkpoint) needs fresh services: the suite assumes an empty database, and data left by earlier runs fails tests that create fixed names (seen 2026-10-08: seven failures, all "already exists" and duplicate rows, gone on fresh services). With `CI=true` set, a missing `helm` turns the chart security step into a failure; without it the step self-tests its rules and skips the render.
 
 ## Checkpoint: `node scripts/verify.mjs checkpoint`
 
