@@ -3,16 +3,21 @@ using Ariva.Core.Domain.Enums;
 namespace Ariva.Core.Validation.Comparison;
 
 /// <summary>
-/// How a compared item (a line's bin and direction, a tracer run, a zone's bin) stands against the stored outputs (ARV-104e,
-/// F18, F11). Only <see cref="Good"/> items enter a criterion's value; every other one is reported apart with its count, never
-/// dropped. The order is the precedence: when several apply, the later one wins.
+/// How a compared item (a line's bin and direction, a tracer run, a zone's bin, a nowcast minute, an observed desk minute)
+/// stands against the stored outputs (ARV-104e, ARV-104f, F18, F11). Only <see cref="Good"/> items enter a criterion's value,
+/// except in the desk-state agreement, whose Degraded and Unknown minutes count (Unknown as disagreement, F18); every other
+/// one is reported apart with its count, never dropped. The order is the precedence: when several apply, the later one wins.
 /// </summary>
 public enum ComparisonStanding
 {
     /// <summary>Final, Good quality, the campaign's profile version, covered by stored results: compared.</summary>
     Good,
 
-    /// <summary>A tracer whose entry minute is final and Good but holds no realised wait: the system has no wait to compare.</summary>
+    /// <summary>
+    /// A tracer whose entry minute is final and Good but holds no realised wait: the system has no wait to compare. For a
+    /// nowcast minute (ARV-104f): the next minute, whose entrants' realised wait the nowcast is compared with, holds none
+    /// (nobody entered then, or no row was stored for it).
+    /// </summary>
     NoSystemWait,
 
     /// <summary>A stored result or a quality interval over the item's time is Degraded (a device outage, a corrected clock).</summary>
@@ -239,7 +244,16 @@ public enum UnusableKeyKind
     /// A quality interval of the zone that cannot be placed (a time not UTC, an end not after its start, an undefined quality):
     /// one key per zone, at <see cref="ComparisonData.EarliestUtc"/>, since the zone is Unknown over the whole comparison.
     /// </summary>
-    QualityInterval
+    QualityInterval,
+
+    /// <summary>An observer's desk state (ARV-104f): desk, minute and observer. The desk minute is not judged.</summary>
+    DeskObservation,
+
+    /// <summary>A desk's stored minute (ARV-104f): desk and minute. Its observed minute counts as Unknown, so as disagreement.</summary>
+    DeskMinute,
+
+    /// <summary>A shadow nowcast (ARV-104f): zone and minute. The minute's shadow reading is Unknown.</summary>
+    ShadowMinute
 }
 
 /// <summary>Why a key is unusable.</summary>
@@ -257,20 +271,31 @@ public enum UnusableKeyReason
 
 /// <summary>
 /// A key whose deciding rows cannot be used (ARV-104e security review, CWE-501): the highest revision of a manual count, a
-/// queue bin or a zone health bin, or the rows of a queue minute or of a line's Ariva crossings in a bin under the campaign's
-/// version, are refused or conflicting. No earlier revision takes its place: a queue bin or health bin counts as not stored
-/// (Unknown), a queue minute as not usable (a tracer who joined in it is Unknown; as a neighbour it is absent), a line's
-/// crossings as not known (the item Unknown, without N_system), and the line and bin of a manual count is not judged. A zone
-/// with a quality interval that cannot be placed is Unknown throughout. The line name is null for a zone's key; the observer
-/// (an Ariva user id, never a name) is set for a manual count only; the time is always UTC.
+/// queue bin, a zone health bin or an observer's desk state, or the rows of a queue minute, a shadow nowcast, a desk minute or
+/// a line's Ariva crossings in a bin under the campaign's version, are refused or conflicting. No earlier revision takes its
+/// place: a queue bin or health bin counts as not stored (Unknown), a queue minute as not usable (a tracer who joined in it is
+/// Unknown; as a neighbour it is absent; its nowcast minute is Unknown), a line's crossings as not known (the item Unknown,
+/// without N_system), the line and bin of a manual count and the desk minute of a desk state are not judged, a desk minute's
+/// stored state is Unknown (so disagreement) and a shadow reading is Unknown. A zone with a quality interval that cannot be
+/// placed is Unknown throughout. The line name is null for a zone's key; the zone is null for a desk's key, which names the
+/// desk by <see cref="DeskId"/>; the observer (an Ariva user id, never a name) is set for a manual count and a desk state
+/// only; the time is always UTC. Keys of desk states and desk minutes are desk-level border data (ARV-104g: border roles of
+/// the campaign's site only).
 /// </summary>
-public sealed record UnusableKey(UnusableKeyKind Kind, string QueueZone, string LineName, DateTime StartUtc, Guid? ObserverId, UnusableKeyReason Reason);
+public sealed record UnusableKey(
+    UnusableKeyKind Kind,
+    string QueueZone,
+    string LineName,
+    DateTime StartUtc,
+    Guid? ObserverId,
+    UnusableKeyReason Reason,
+    Guid? DeskId = null);
 
 /// <summary>
 /// Input rows the engine left out per kind (not a number, negative, not UTC, inverted, out of scope or outside the planned days,
-/// refused or conflicting at a key's deciding revision, or a manual count of a line and bin that is not judged), never used,
-/// always counted (rows as read, never a list's own count), and the keys made unusable, in order of kind, zone, line, time and
-/// observer. Equal when every count and every key is.
+/// refused or conflicting at a key's deciding revision, or a manual count of a line and bin, or a desk state of a desk minute,
+/// that is not judged), never used, always counted (rows as read, never a list's own count), and the keys made unusable, in
+/// order of kind, zone, line, desk, time and observer. Equal when every count and every key is.
 /// </summary>
 public sealed record LeftOutInputs(int ManualCounts, int TracerRuns, int LineBins, int QueueMinutes, int QueueBins, int HealthBins, int QualityIntervals)
 {
@@ -285,22 +310,47 @@ public sealed record LeftOutInputs(int ManualCounts, int TracerRuns, int LineBin
         init => _unusableKeys = value is null ? [] : [.. value];
     }
 
-    public int Total => ManualCounts + TracerRuns + LineBins + QueueMinutes + QueueBins + HealthBins + QualityIntervals;
+    /// <summary>Desk states left out (ARV-104f).</summary>
+    public int DeskObservations { get; init; }
+
+    /// <summary>Desk minutes left out (ARV-104f).</summary>
+    public int DeskMinutes { get; init; }
+
+    /// <summary>Shadow nowcasts left out (ARV-104f).</summary>
+    public int ShadowMinutes { get; init; }
+
+    public int Total => ManualCounts + TracerRuns + LineBins + QueueMinutes + QueueBins + HealthBins + QualityIntervals + DeskObservations + DeskMinutes + ShadowMinutes;
 
     public bool Equals(LeftOutInputs other) =>
         other is not null && ManualCounts == other.ManualCounts && TracerRuns == other.TracerRuns && LineBins == other.LineBins &&
         QueueMinutes == other.QueueMinutes && QueueBins == other.QueueBins && HealthBins == other.HealthBins && QualityIntervals == other.QualityIntervals &&
+        DeskObservations == other.DeskObservations && DeskMinutes == other.DeskMinutes && ShadowMinutes == other.ShadowMinutes &&
         UnusableKeys.SequenceEqual(other.UnusableKeys);
 
     public override int GetHashCode() =>
-        HashCode.Combine(ManualCounts, TracerRuns, LineBins, QueueMinutes, QueueBins, HealthBins, QualityIntervals, UnusableKeys.Count);
+        HashCode.Combine(HashCode.Combine(ManualCounts, TracerRuns, LineBins, QueueMinutes, QueueBins, HealthBins, QualityIntervals),
+            DeskObservations, DeskMinutes, ShadowMinutes, UnusableKeys.Count);
 }
 
 /// <summary>
-/// The comparison of a campaign (ARV-104e, F18): count accuracy per line and bin and per line, tracer runs, tracer summaries
-/// per zone and over all zones, track completion per zone, the observers' clock offsets and the inputs left out. Every result
-/// carries the profile version, and every list is read-only. With a <see cref="Problem"/> nothing was compared: every list is
-/// empty and <see cref="TracerOverall"/> is null.
+/// The comparison of a campaign (ARV-104e, ARV-104f, F18): count accuracy per line and bin and per line, tracer runs, tracer
+/// summaries per zone and over all zones, track completion per zone, the observers' clock offsets, the desk-state agreement
+/// per observed desk minute, per desk and over every desk, the nowcast error per minute, per zone and over every zone with the
+/// published and the shadow nowcast side by side (the ground-truth proof), and the inputs left out. Every result carries the
+/// profile version, and every list is read-only. With a <see cref="Problem"/> nothing was compared: every list is empty and
+/// <see cref="TracerOverall"/>, <see cref="DeskOverall"/> and <see cref="NowcastOverall"/> are null.
+/// <para>
+/// Data boundary (what ARV-104g must restrict when it serves these): nothing here names a person; observers appear only as
+/// pseudonymous Ariva user ids (tracer runs, batches, offsets and unusable keys of counts and desk states). The desk-state
+/// results (<see cref="DeskMinutes"/>, <see cref="Desks"/>, <see cref="DeskOverall"/>) and the unusable keys of kinds
+/// <see cref="UnusableKeyKind.DeskObservation"/> and <see cref="UnusableKeyKind.DeskMinute"/> are border per-desk data (a desk
+/// code and a minute can be joined with AMAN's records to find an officer): only callers who see border desks of the
+/// campaign's site (<c>BorderDesks.View</c>, the rule of <c>BorderDeskAccess</c>), never airport roles, never the
+/// border-to-airport feed, AMAN or any export to an airport deployment. The shadow nowcast's figures (every
+/// <see cref="NowcastReading"/> of the shadow, <see cref="NowcastZoneErrors.Shadow"/> and <see cref="NowcastZoneErrors.Both"/>)
+/// are validation data read through <c>ariva_validation_reader</c>: only in the validation results, to <c>Validation.View</c>
+/// holders of the site, never on a screen, display, alert, report, the live snapshot, the feed or AMAN.
+/// </para>
 /// </summary>
 public sealed record ComparisonResult(
     int ProfileVersion,
@@ -313,4 +363,10 @@ public sealed record ComparisonResult(
     IReadOnlyList<ZoneTrackCompletion> TrackCompletion,
     IReadOnlyList<ObserverOffsetSpread> Observers,
     IReadOnlyList<BatchOffset> Batches,
+    IReadOnlyList<DeskMinuteAgreement> DeskMinutes,
+    IReadOnlyList<DeskAgreementSummary> Desks,
+    DeskAgreementSummary DeskOverall,
+    IReadOnlyList<NowcastMinuteError> NowcastMinutes,
+    IReadOnlyList<NowcastZoneErrors> NowcastZones,
+    NowcastZoneErrors NowcastOverall,
     LeftOutInputs LeftOut);

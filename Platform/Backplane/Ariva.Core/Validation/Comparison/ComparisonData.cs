@@ -4,17 +4,19 @@ using Ariva.Core.Queueing;
 namespace Ariva.Core.Validation.Comparison;
 
 /// <summary>
-/// The comparison engine's inputs once checked and indexed (ARV-104e). Rows are read key by key, as their tables key them, and a
-/// key is placed by its instant alone (ticks, as DateTime equality and timestamptz compare them). A row whose key cannot be
-/// placed (null, a time not on its minute or bin or outside the years 2000 to 2999, a zone or line outside the scope, a count's
-/// bin outside the planned days) is left out and counted per kind (<see cref="LeftOut"/>). Of the rows of one key, the highest
-/// revision decides before any value is checked (security review, CWE-501): when any row of it holds a value that cannot be (a
-/// time that is not UTC, a count below 0 or above the bounds, a wait that is not a number) or its rows disagree, the key is
-/// unusable, reported in <see cref="LeftOutInputs.UnusableKeys"/>, and no earlier revision takes its place. Tracer runs are
-/// grouped by run, join and batch before any is checked, and a batch with a run that cannot be is not used at all. A quality
-/// interval is clamped to the years 2000 to 2999; one that cannot be placed makes its zone Unknown throughout. Bounded (CWE-120,
-/// CWE-400): every list is counted as it is read, never by its own <c>Count</c>, and beyond <see cref="MaxRows"/> rows of a kind,
-/// or the scope's limits, nothing is compared. Pure: no I/O, no clock.
+/// The comparison engine's inputs once checked and indexed (ARV-104e, ARV-104f). Rows are read key by key, as their tables key
+/// them, and a key is placed by its instant alone (ticks, as DateTime equality and timestamptz compare them). A row whose key
+/// cannot be placed (null, a time not on its minute or bin or outside the years 2000 to 2999, a zone, line or desk outside the
+/// scope, a count's bin or a desk state's minute outside the planned days) is left out and counted per kind
+/// (<see cref="LeftOut"/>). Of the rows of one key, the highest revision decides before any value is checked (security
+/// review, CWE-501): when any row of it holds a value that cannot be (a time that is not UTC, a count below 0 or above the
+/// bounds, a wait or nowcast that is not a number, a state or reason that is not one, a desk minute holding more than a
+/// minute) or its rows disagree, the key is unusable, reported in <see cref="LeftOutInputs.UnusableKeys"/>, and no earlier
+/// revision takes its place. Tracer runs are grouped by run, join and batch before any is checked, and a batch with a run that
+/// cannot be is not used at all. A quality interval is clamped to the years 2000 to 2999; one that cannot be placed makes its
+/// zone Unknown throughout. Bounded (CWE-120, CWE-400): every list is counted as it is read, never by its own <c>Count</c>,
+/// and beyond <see cref="MaxRows"/> rows of a kind, or the scope's limits (100 desks among them), nothing is compared. Pure:
+/// no I/O, no clock.
 /// </summary>
 internal sealed class ComparisonData
 {
@@ -46,6 +48,12 @@ internal sealed class ComparisonData
     /// <summary>The instant every row and window must lie before (the year 3000).</summary>
     public static readonly DateTime LatestUtc = new(3000, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 
+    /// <summary>The least sensor cycle time a shadow nowcast may carry (script 0045's check), minutes.</summary>
+    public const double MinSensorCycleMinutes = 0.05;
+
+    /// <summary>The largest sensor cycle time a shadow nowcast may carry (script 0045's check), minutes.</summary>
+    public const double MaxSensorCycleMinutes = 60;
+
     #endregion
 
     #region Fields
@@ -62,6 +70,12 @@ internal sealed class ComparisonData
     // Zones with a quality interval that cannot be placed: every stored result of the zone is Unknown.
     private readonly HashSet<string> _unplaced = new(StringComparer.Ordinal);
     private readonly List<UnusableKey> _unusable = [];
+    // ARV-104f: desk minutes and shadow nowcasts by their tables' keys, and the keys whose rows cannot be used.
+    private readonly Dictionary<(string Checkpoint, string Desk, DateTime Minute), DeskMinuteRow> _deskMinutes = [];
+    private readonly HashSet<(string Checkpoint, string Desk, DateTime Minute)> _unusableDeskMinutes = [];
+    private readonly Dictionary<(string Zone, DateTime Minute), ShadowMinuteRow> _shadows = [];
+    private readonly HashSet<(string Zone, DateTime Minute)> _unusableShadows = [];
+    private readonly Dictionary<(string Checkpoint, string Desk), ScopeDesk> _deskByCodes;
 
     #endregion
 
@@ -73,8 +87,11 @@ internal sealed class ComparisonData
         Settings = settings;
         Zones = [.. scope.Zones.OrderBy(z => z.Name, StringComparer.Ordinal)];
         Lines = [.. scope.Lines.OrderBy(l => l.QueueZone, StringComparer.Ordinal).ThenBy(l => l.Name, StringComparer.Ordinal)];
+        Desks = [.. scope.Desks.OrderBy(d => d.CheckpointCode, StringComparer.Ordinal).ThenBy(d => d.DeskCode, StringComparer.Ordinal)];
         ZoneById = scope.Zones.ToDictionary(z => z.ZoneId);
         LineById = scope.Lines.ToDictionary(l => l.LineId);
+        DeskById = scope.Desks.ToDictionary(d => d.DeskId);
+        _deskByCodes = scope.Desks.ToDictionary(d => (d.CheckpointCode, d.DeskCode));
         ZoneNames = scope.Zones.Select(z => z.Name).ToHashSet(StringComparer.Ordinal);
         LineNames = scope.Lines.Select(l => (l.QueueZone, l.Name)).ToHashSet();
         WindowBins = windowBins;
@@ -94,8 +111,12 @@ internal sealed class ComparisonData
     /// <summary>The lines in scope by queue zone and name (ordinal).</summary>
     public IReadOnlyList<ScopeLine> Lines { get; }
 
+    /// <summary>The border desks in scope by checkpoint and desk code (ordinal).</summary>
+    public IReadOnlyList<ScopeDesk> Desks { get; }
+
     public IReadOnlyDictionary<Guid, ScopeZone> ZoneById { get; }
     public IReadOnlyDictionary<Guid, ScopeLine> LineById { get; }
+    public IReadOnlyDictionary<Guid, ScopeDesk> DeskById { get; }
     private HashSet<string> ZoneNames { get; }
     private HashSet<(string Zone, string Line)> LineNames { get; }
 
@@ -110,6 +131,15 @@ internal sealed class ComparisonData
 
     /// <summary>The usable tracer runs.</summary>
     public IReadOnlyList<TracerRunRow> Runs { get; private set; } = [];
+
+    /// <summary>
+    /// The highest revision of each desk, minute and observer's state, for the desk minutes whose every observer's state can be
+    /// used (ARV-104f).
+    /// </summary>
+    public IReadOnlyList<DeskObservationRow> DeskObservations { get; private set; } = [];
+
+    /// <summary>Per desk, the observed minutes not judged because an observer's state of them is unusable (<see cref="UnusableKeyKind.DeskObservation"/>).</summary>
+    public IReadOnlyDictionary<Guid, int> UnusableObservationMinutes { get; private set; } = new Dictionary<Guid, int>();
 
     public LeftOutInputs LeftOut { get; private set; } = LeftOutInputs.None;
 
@@ -134,20 +164,30 @@ internal sealed class ComparisonData
         var queueBins = Bounded(input.QueueBins, MaxRows);
         var health = Bounded(input.HealthBins, MaxRows);
         var intervals = Bounded(input.QualityIntervals, MaxRows);
+        var observations = Bounded(input.DeskObservations, MaxRows);
+        var deskMinutes = Bounded(input.DeskMinutes, MaxRows);
+        var shadows = Bounded(input.ShadowMinutes, MaxRows);
         var windowBins = WindowBinsOf(scope.Windows);
         if (counts is null || runs is null || lineBins is null || minutes is null || queueBins is null || health is null || intervals is null ||
-            windowBins is null)
+            observations is null || deskMinutes is null || shadows is null || windowBins is null)
         {
             problem = ComparisonProblem.InputTooLarge;
             return null;
         }
 
         var data = new ComparisonData(scope, settings, windowBins);
-        data.LeftOut = new LeftOutInputs(data.TakeCounts(counts), data.TakeRuns(runs), data.TakeLineBins(lineBins), data.TakeMinutes(minutes),
-            data.TakeBins(queueBins), data.TakeHealth(health), data.TakeIntervals(intervals))
+        var leftOut = new LeftOutInputs(data.TakeCounts(counts), data.TakeRuns(runs), data.TakeLineBins(lineBins), data.TakeMinutes(minutes),
+            data.TakeBins(queueBins), data.TakeHealth(health), data.TakeIntervals(intervals));
+        var leftOutObservations = data.TakeDeskObservations(observations);
+        var leftOutDeskMinutes = data.TakeDeskMinutes(deskMinutes);
+        var leftOutShadows = data.TakeShadows(shadows);
+        data.LeftOut = leftOut with
         {
+            DeskObservations = leftOutObservations,
+            DeskMinutes = leftOutDeskMinutes,
+            ShadowMinutes = leftOutShadows,
             UnusableKeys = data._unusable.OrderBy(k => k.Kind).ThenBy(k => k.QueueZone, StringComparer.Ordinal).ThenBy(k => k.LineName, StringComparer.Ordinal)
-                .ThenBy(k => k.StartUtc).ThenBy(k => k.ObserverId).ToList()
+                .ThenBy(k => k.DeskId).ThenBy(k => k.StartUtc).ThenBy(k => k.ObserverId).ToList()
         };
         return data;
     }
@@ -161,17 +201,25 @@ internal sealed class ComparisonData
         var zones = Bounded(scope.Zones, ValidationCampaign.MaxZones);
         var lines = Bounded(scope.Lines, ValidationCampaign.MaxLines);
         var windows = Bounded(scope.Windows, MaxWindows);
-        if (zones is null || lines is null || windows is null)
+        // A null list of desks is none (a campaign planned without desks).
+        var desks = Bounded(scope.Desks, ValidationCampaign.MaxDesks);
+        if (zones is null || lines is null || windows is null || desks is null)
         {
             problem = ComparisonProblem.InputTooLarge;
             return null;
         }
 
-        if (!IsValid(zones, lines, windows))
+        if (!IsValid(zones, lines, windows) || !AreDesks(desks))
             return null;
         problem = null;
-        return scope with { Zones = zones, Lines = lines, Windows = windows };
+        return scope with { Zones = zones, Lines = lines, Windows = windows, Desks = desks };
     }
+
+    /// <summary>Desks with an id and both codes, none twice by id or by codes (a desk_minute key names one desk).</summary>
+    private static bool AreDesks(List<ScopeDesk> desks) =>
+        desks.All(d => d is not null && d.DeskId != Guid.Empty && !string.IsNullOrEmpty(d.CheckpointCode) && !string.IsNullOrEmpty(d.DeskCode)) &&
+        desks.Select(d => d.DeskId).Distinct().Count() == desks.Count &&
+        desks.Select(d => (d.CheckpointCode, d.DeskCode)).Distinct().Count() == desks.Count;
 
     private static bool IsValid(List<ScopeZone> zones, List<ScopeLine> lines, List<UtcWindow> windows)
     {
@@ -348,7 +396,104 @@ internal sealed class ComparisonData
 
     private static bool IsMinute(QueueMinuteRow r) =>
         IsUtc(r.MinuteUtc) && r.ProfileVersion >= 0 && (r.Status is null || Enum.IsDefined(r.Status.Value)) && IsCount(r.Waits) && (r.Waits == 0) == (r.MeanWaitMinutes is null) &&
-        (r.MeanWaitMinutes is null || (double.IsFinite(r.MeanWaitMinutes.Value) && r.MeanWaitMinutes >= 0 && r.MeanWaitMinutes <= MaxWaitMinutes));
+        (r.MeanWaitMinutes is null || (double.IsFinite(r.MeanWaitMinutes.Value) && r.MeanWaitMinutes >= 0 && r.MeanWaitMinutes <= MaxWaitMinutes)) &&
+        (r.NowcastDegraded is null ? r.NowcastMinutes is null && r.NoService is null : IsNowcast(r.NowcastMinutes, r.NoService));
+
+    /// <summary>
+    /// A nowcast as <see cref="Nowcast.Compute"/> gives one (ARV-104f): exactly one of a number (finite, at least 0) and a
+    /// reason (a <see cref="NoServiceReason"/> name, exactly). No upper bound: a published nowcast of hours is a real error of
+    /// Ariva's and must count as one, never be refused out of the comparison; its error's size is capped at
+    /// <see cref="NowcastErrors.MaxErrorMinutes"/>, so a value near <see cref="double.MaxValue"/> still fails and the statistics
+    /// stay finite (security review of ARV-104f).
+    /// </summary>
+    private static bool IsNowcast(double? minutes, string noService) =>
+        minutes is { } m ? noService is null && double.IsFinite(m) && m >= 0 : NowcastErrors.ReasonOf(noService) is not null;
+
+    private int TakeShadows(List<ShadowMinuteRow> rows)
+    {
+        // Keyed like queue_minute: zone and minute, nothing else places the row.
+        var keyed = rows.Where(r => r is not null && ZoneNames.Contains(r.QueueZone) && IsMinuteTicks(r.MinuteUtc)).ToList();
+        var leftOut = rows.Count - keyed.Count;
+        foreach (var key in keyed.GroupBy(r => (r.QueueZone, r.MinuteUtc)))
+        {
+            var (row, reason) = Decide(key, _ => 0, IsShadow, ref leftOut);
+            if (row is not null)
+            {
+                _shadows[key.Key] = row;
+                continue;
+            }
+
+            _unusableShadows.Add(key.Key);
+            _unusable.Add(new UnusableKey(UnusableKeyKind.ShadowMinute, key.Key.QueueZone, null, AsUtc(key.Key.MinuteUtc), null, reason));
+        }
+
+        return leftOut;
+    }
+
+    /// <summary>As script 0043 and 0045 check it: a nowcast (<see cref="IsNowcast"/>) and a sensor cycle time of 0.05 to 60 minutes or none.</summary>
+    private static bool IsShadow(ShadowMinuteRow r) =>
+        IsUtc(r.MinuteUtc) && IsNowcast(r.NowcastMinutes, r.NoService) &&
+        (r.SensorCycleMinutes is not { } c || (double.IsFinite(c) && c >= MinSensorCycleMinutes && c <= MaxSensorCycleMinutes));
+
+    private int TakeDeskObservations(List<DeskObservationRow> rows)
+    {
+        // As captured (ARV-104b): a whole minute of a desk in scope on a planned day. The observer and the revision do not place
+        // the row: a row of the desk minute without an observer id is a refused key of its own, so it spoils the desk minute
+        // instead of being dropped before the others are judged (ARV-104e second re-check), and of an observer's rows the highest
+        // revision decides, one outside 1 to 100 being a value refused there (never dropped before the grouping).
+        var keyed = rows.Where(r => r is not null && DeskById.ContainsKey(r.DeskId) && IsMinuteTicks(r.MinuteUtc) && IsPlanned(r.MinuteUtc)).ToList();
+        var leftOut = rows.Count - keyed.Count;
+        var latest = new List<DeskObservationRow>();
+        var unusable = new HashSet<(Guid Desk, DateTime Minute)>();
+        foreach (var key in keyed.GroupBy(r => (r.DeskId, r.MinuteUtc, r.ObserverId)))
+        {
+            var (row, reason) = Decide(key, r => r.Revision, IsDeskObservation, ref leftOut);
+            if (row is not null)
+            {
+                latest.Add(row);
+                continue;
+            }
+
+            unusable.Add((key.Key.DeskId, key.Key.MinuteUtc));
+            _unusable.Add(new UnusableKey(UnusableKeyKind.DeskObservation, null, null, AsUtc(key.Key.MinuteUtc), key.Key.ObserverId, reason, key.Key.DeskId));
+        }
+
+        // A desk minute with an observer's unusable state is not judged: the observed state would silently lose that observer,
+        // so the other observers' states of it are left out with it (and counted), as for manual counts.
+        DeskObservations = [.. latest.Where(r => !unusable.Contains((r.DeskId, r.MinuteUtc)))];
+        UnusableObservationMinutes = unusable.GroupBy(m => m.Desk).ToDictionary(g => g.Key, g => g.Count());
+        return leftOut + latest.Count - DeskObservations.Count;
+    }
+
+    private static bool IsDeskObservation(DeskObservationRow r) =>
+        r.ObserverId != Guid.Empty && IsUtc(r.MinuteUtc) && r.Revision is >= 1 and <= DeskObservation.MaxRevisions && Enum.IsDefined(r.State);
+
+    private int TakeDeskMinutes(List<DeskMinuteRow> rows)
+    {
+        // desk_minute's key: the desk (site/checkpoint/desk, here its codes) and the minute.
+        var keyed = rows.Where(r => r is not null && r.CheckpointCode is not null && r.DeskCode is not null && _deskByCodes.ContainsKey((r.CheckpointCode, r.DeskCode)) &&
+                                    IsMinuteTicks(r.MinuteUtc)).ToList();
+        var leftOut = rows.Count - keyed.Count;
+        foreach (var key in keyed.GroupBy(r => (r.CheckpointCode, r.DeskCode, r.MinuteUtc)))
+        {
+            var (row, reason) = Decide(key, _ => 0, IsDeskMinute, ref leftOut);
+            if (row is not null)
+            {
+                _deskMinutes[key.Key] = row;
+                continue;
+            }
+
+            _unusableDeskMinutes.Add(key.Key);
+            _unusable.Add(new UnusableKey(UnusableKeyKind.DeskMinute, null, null, AsUtc(key.Key.MinuteUtc), null, reason,
+                _deskByCodes[(key.Key.CheckpointCode, key.Key.DeskCode)].DeskId));
+        }
+
+        return leftOut;
+    }
+
+    /// <summary>As script 0018 checks it (each state 0 to 60 seconds) and a minute holds (at most 60 seconds in all).</summary>
+    private static bool IsDeskMinute(DeskMinuteRow r) =>
+        IsUtc(r.MinuteUtc) && DeskStateAgreement.Dominant(r.ClosedSeconds, r.IdleSeconds, r.ServingSeconds, r.PausedSeconds, r.UnknownSeconds) is not null;
 
     private int TakeBins(List<QueueBinRow> rows)
     {
@@ -442,6 +587,9 @@ internal sealed class ComparisonData
 
     /// <summary>The start of a 15-minute bin on the quarter hour within the plausible times, by its ticks alone (a key's place).</summary>
     private static bool IsBinTicks(DateTime value) => IsInRange(value) && value.Ticks % BinLength.Ticks == 0;
+
+    /// <summary>The start of a whole minute within the plausible times, by its ticks alone (a key's place).</summary>
+    private static bool IsMinuteTicks(DateTime value) => IsInRange(value) && value.Ticks % TimeSpan.TicksPerMinute == 0;
 
     /// <summary>Whether a time says it is UTC: a value of a row, checked with its other values once the key is placed.</summary>
     private static bool IsUtc(DateTime value) => value.Kind == DateTimeKind.Utc;
@@ -564,6 +712,33 @@ internal sealed class ComparisonData
 
     /// <summary>A line's crossings in a bin under the campaign's version (0 when none were stored) and what else holds the bin.</summary>
     public LineBinState LineBinAt(string zone, string line, DateTime bin) => _lineBins.GetValueOrDefault((zone, line, bin));
+
+    /// <summary>A desk's stored minute; null when none was stored or its rows are unusable (<see cref="IsUnusableDeskMinute"/>).</summary>
+    public DeskMinuteRow DeskMinuteAt(ScopeDesk desk, DateTime minute) => _deskMinutes.GetValueOrDefault((desk.CheckpointCode, desk.DeskCode, minute));
+
+    /// <summary>Whether a desk's minute was stored but its rows are refused or conflicting.</summary>
+    public bool IsUnusableDeskMinute(ScopeDesk desk, DateTime minute) => _unusableDeskMinutes.Contains((desk.CheckpointCode, desk.DeskCode, minute));
+
+    /// <summary>A zone's stored shadow nowcast of a minute; null when none was stored or its rows are unusable (<see cref="IsUnusableShadow"/>).</summary>
+    public ShadowMinuteRow ShadowAt(string zone, DateTime minute) => _shadows.GetValueOrDefault((zone, minute));
+
+    /// <summary>Whether a zone's shadow nowcast of a minute was stored but its rows are refused or conflicting.</summary>
+    public bool IsUnusableShadow(string zone, DateTime minute) => _unusableShadows.Contains((zone, minute));
+
+    /// <summary>
+    /// The minutes of the planned days whose nowcast is compared (ARV-104f), by zone (ordinal) and minute, in UTC: every stored
+    /// queue minute with a live part, and, failing closed, every queue minute whose rows cannot be used (whether it held a
+    /// nowcast cannot be told) and every minute with a stored shadow nowcast, usable or not.
+    /// </summary>
+    public IReadOnlyList<(string Zone, DateTime Minute)> NowcastKeys()
+    {
+        var keys = new HashSet<(string Zone, DateTime Minute)>();
+        keys.UnionWith(_minutes.Where(m => m.Value.NowcastDegraded is not null).Select(m => m.Key));
+        keys.UnionWith(_unusableMinutes);
+        keys.UnionWith(_shadows.Keys);
+        keys.UnionWith(_unusableShadows);
+        return [.. keys.Where(k => IsPlanned(k.Minute)).Select(k => (k.Zone, AsUtc(k.Minute))).OrderBy(k => k.Zone, StringComparer.Ordinal).ThenBy(k => k.Item2)];
+    }
 
     /// <summary>
     /// How the stored results of a zone stand over [<paramref name="fromUtc"/>, <paramref name="toUtc"/>): every 15-minute bin

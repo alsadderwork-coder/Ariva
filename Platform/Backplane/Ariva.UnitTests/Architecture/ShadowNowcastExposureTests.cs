@@ -9,18 +9,48 @@ namespace Ariva.UnitTests.Architecture;
 
 /// <summary>
 /// ARV-117 and ARV-117a (CWE-862, CWE-863): the shadow nowcast without AMAN inputs is written by the stream and read only
-/// by the validation comparison (ARV-104f, not built yet). Since ARV-117a it has its own table, <c>queue_minute_shadow</c>
+/// by the validation comparison. Since ARV-117a it has its own table, <c>queue_minute_shadow</c>
 /// (script 0043), whose value columns the runtime role cannot read: the database enforces the rule (proven on PostgreSQL by
 /// QueueStreamTests in Ariva.IntegrationTests, with the exact list of the table's dependents), so the ARV-117 scans of
 /// wildcard and whole-row reads of queue_minute are retired. What stays here: no type outside the stream's write path can
 /// hold the shadow (field graph over every Ariva assembly), the live snapshot, the hub, displays, alert inputs, reports
 /// and view models have no shadow member, and only the stream store names the shadow table. The sensor-only desk minutes
 /// (<c>desk_sensor_minute</c>, script 0044) stay readable by the runtime role, because the stream's desk term reads them;
-/// the same kind of checks keep every other reader out. A read path added later must change these tests on purpose, with
-/// its own authorization.
+/// the same kind of checks keep every other reader out.
+/// <para>
+/// ARV-104f (changed on purpose): the comparison engine (<see cref="ComparisonNamespace"/>, pure Ariva.Core code with no I/O)
+/// compares the shadow it is given as plain rows (<see cref="Ariva.Core.Validation.Comparison.ShadowMinuteRow"/>) with the
+/// realised wait, so its members, and its files listed below, may name the shadow and the sensor cycle time; it never names
+/// the table and reads nothing, and its shadow rows are held by no type outside it. The read path that will feed it (ARV-104g:
+/// the <c>ariva_validation_reader</c> login, a permissioned and site-scoped service) must change these tests on purpose
+/// again, with its own authorization and the dependents test of QueueStreamTests.
+/// </para>
 /// </summary>
 public sealed class ShadowNowcastExposureTests
 {
+    /// <summary>The F18 comparison engine (ARV-104e, ARV-104f): pure code that is handed the shadow rows by its caller.</summary>
+    private const string ComparisonNamespace = "Ariva.Core.Validation.Comparison";
+
+    /// <summary>The comparison engine's files that name the shadow's value (ARV-104f).</summary>
+    private static readonly string[] ComparisonShadowSources =
+    [
+        "Backplane/Ariva.Core/Validation/Comparison/ComparisonResults.cs", "Backplane/Ariva.Core/Validation/Comparison/NowcastErrors.cs"
+    ];
+
+    /// <summary>The comparison engine's files that name the sensor cycle time the shadow took (ARV-104f).</summary>
+    private static readonly string[] ComparisonCycleSources =
+    [
+        "Backplane/Ariva.Core/Validation/Comparison/ComparisonData.cs", "Backplane/Ariva.Core/Validation/Comparison/ComparisonInputs.cs",
+        "Backplane/Ariva.Core/Validation/Comparison/NowcastErrors.cs", "Backplane/Ariva.Core/Validation/Comparison/NowcastResults.cs"
+    ];
+
+    /// <summary>
+    /// A type of the comparison engine: declared in Ariva.Core and in exactly the engine's namespace (no sub-namespace, no other
+    /// assembly that reuses the name; narrowed after the security review of ARV-104f).
+    /// </summary>
+    private static bool IsComparisonEngine(Type type) =>
+        type is not null && type.Assembly == typeof(Ariva.Core._IAssemblyMark).Assembly && string.Equals(type.Namespace, ComparisonNamespace, StringComparison.Ordinal);
+
     private static readonly Assembly[] Assemblies =
     [
         typeof(Ariva.Core._IAssemblyMark).Assembly,
@@ -133,12 +163,41 @@ public sealed class ShadowNowcastExposureTests
             .ToHashSet(StringComparer.Ordinal);
         var named = Assemblies.SelectMany(TypesOf)
             .SelectMany(t => t.GetMembers(all).Where(m => m.Name.Contains("Shadow", StringComparison.OrdinalIgnoreCase))
-                .Select(m => (Owner: Owner(t).FullName, Member: $"{t.FullName}.{m.Name}")))
+                .Select(m => (Owner: Owner(t).FullName, OwnerType: Owner(t), Member: $"{t.FullName}.{m.Name}")))
             .ToList();
 
         named.Should().Contain(n => n.Member == "Ariva.Core.Queueing.QueueLiveMinute.Shadow", "the reflection sees the write path's own member");
-        named.Where(n => !allowed.Contains(n.Owner)).Select(n => n.Member).Should().BeEmpty(
-            "only the engine, its outputs and the stream's checkpoint, worker and store have members named after the shadow");
+        named.Should().Contain(n => n.Member == "Ariva.Core.Validation.Comparison.NowcastZoneErrors.Shadow", "the reflection sees the comparison's own member");
+        named.Where(n => !allowed.Contains(n.Owner) && !IsComparisonEngine(n.OwnerType)).Select(n => n.Member).Should().BeEmpty(
+            "only the engine, its outputs, the stream's checkpoint, worker and store, and the comparison engine (ARV-104f) have members named after the shadow");
+    }
+
+    [Fact]
+    public void ShadowRows_Should_StayInTheComparisonEngine_When_TheirHoldersAreReflected()
+    {
+        // ARV-104f: the comparison engine is handed the stored shadow as rows; until ARV-104g's read path, no type outside the
+        // engine may hold them (or the results that carry the shadow's figures), so nothing else can show, alert on or report them.
+        // Every type that carries the stored shadow or the figures computed from it (the reading, the minute, the statistics,
+        // the summaries, the paired errors, the per-reason counts and the result).
+        string[] carriers =
+        [
+            "ShadowMinuteRow", "NowcastReading", "NowcastMinuteError", "NowcastErrorStats", "NoServiceCount", "NowcastErrorSummary", "NowcastPairedErrors",
+            "NowcastZoneErrors", "ComparisonResult"
+        ];
+        var core = typeof(Ariva.Core._IAssemblyMark).Assembly;
+        foreach (var carrier in carriers)
+        {
+            var type = core.GetType($"{ComparisonNamespace}.{carrier}", throwOnError: true)!;
+            IsComparisonEngine(type).Should().BeTrue();
+            HoldersOf(type).Select(Owner).Where(t => !IsComparisonEngine(t)).Select(t => t.FullName).Should().BeEmpty(
+                $"only the comparison engine holds {type.Name} until the read path of ARV-104g");
+        }
+
+        // The narrowed check itself: a sub-namespace, another namespace or another assembly is not the engine.
+        IsComparisonEngine(typeof(Ariva.Core.Validation.Comparison.ComparisonResult)).Should().BeTrue();
+        IsComparisonEngine(typeof(Ariva.Core.Queueing.ShadowNowcast)).Should().BeFalse();
+        IsComparisonEngine(typeof(ShadowNowcastExposureTests)).Should().BeFalse();
+        IsComparisonEngine(typeof(Ariva.Infra.Streaming.StreamStore)).Should().BeFalse();
     }
 
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromSeconds(1);
@@ -176,11 +235,13 @@ public sealed class ShadowNowcastExposureTests
                 "Backplane/Ariva.Infra/Timescale/Scripts/0044_desk_sensor_minute.sql", "Backplane/Ariva.Infra/Timescale/Scripts/0045_shadow_sensor_cycle.sql"],
             "only the engine names the shadow and only the stream store writes its table; no service, screen, rule or report reads it");
 
-        // The value itself: only the engine that computes it and the store that writes it name it.
+        // The value itself: only the engine that computes it, the store that writes it and (ARV-104f) the comparison engine's
+        // files that compare it name it.
         // \bShadow\s*: catches property patterns ({ Shadow: var s }) and named arguments that reach it without a member access.
         var value = new Regex(@"\bShadowNowcasts?\b|\.Shadow\b|\bShadow\s*:", RegexOptions.CultureInvariant, RegexTimeout);
         SourcesMatching(value, ".cs").Should().Equal(
-            ["Backplane/Ariva.Core/Queueing/ShadowNowcast.cs", "Backplane/Ariva.Core/Queueing/ZoneProcessor.cs", "Backplane/Ariva.Infra/Streaming/StreamStore.cs"]);
+            ["Backplane/Ariva.Core/Queueing/ShadowNowcast.cs", "Backplane/Ariva.Core/Queueing/ZoneProcessor.cs", .. ComparisonShadowSources,
+                "Backplane/Ariva.Infra/Streaming/StreamStore.cs"]);
     }
 
     [Fact]
@@ -314,14 +375,15 @@ public sealed class ShadowNowcastExposureTests
         var cycle = new Regex(@"sensor_?cycle|sensor_?busy|shadow_?cycle", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, RegexTimeout);
 
         SourcesMatching(cycle, SourceKinds).Should().Equal(SensorCycleSources,
-            "only the engine computes the sensor cycle time and only the stream store writes it; no service, screen, rule or report reads it");
+            "only the engine computes the sensor cycle time, only the stream store writes it and only the comparison engine (ARV-104f) compares it; no service, screen, rule or report reads it");
     }
 
     private static readonly string[] SensorCycleSources =
     [
         "Backplane/Ariva.Core/Queueing/DeskTerm.cs", "Backplane/Ariva.Core/Queueing/SensorCycle.cs", "Backplane/Ariva.Core/Queueing/ShadowNowcast.cs",
-        "Backplane/Ariva.Core/Queueing/ZoneProcessor.cs", "Backplane/Ariva.Infra/Streaming/DeskTermSource.cs", "Backplane/Ariva.Infra/Streaming/QueueStreamWorker.cs",
-        "Backplane/Ariva.Infra/Streaming/StreamStore.cs", "Backplane/Ariva.Infra/Timescale/Scripts/0045_shadow_sensor_cycle.sql"
+        "Backplane/Ariva.Core/Queueing/ZoneProcessor.cs", .. ComparisonCycleSources, "Backplane/Ariva.Infra/Streaming/DeskTermSource.cs",
+        "Backplane/Ariva.Infra/Streaming/QueueStreamWorker.cs", "Backplane/Ariva.Infra/Streaming/StreamStore.cs",
+        "Backplane/Ariva.Infra/Timescale/Scripts/0045_shadow_sensor_cycle.sql"
     ];
 
     #endregion

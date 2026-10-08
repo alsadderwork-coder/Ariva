@@ -112,6 +112,64 @@ public sealed class ComparisonPropertyTests
     }
 
     [Fact]
+    public void F18_DeskAgreement_Should_StayWithinZeroAndOneAndRise_When_AMinuteMoreAgrees()
+    {
+        // ARV-104f: agreeing over judged minutes is a share, and one more agreeing minute of the same judged ones never lowers it.
+        Gen.Select(Gen.Int[1, 100_000], Gen.Double[0, 1]).Sample((judged, share) =>
+        {
+            var agreeing = (int)Math.Floor(judged * share);
+            var agreement = DeskStateAgreement.Agreement(agreeing, judged).GetValueOrDefault(double.NaN);
+            agreement.Should().BeInRange(0, 1);
+            if (agreeing < judged)
+                DeskStateAgreement.Agreement(agreeing + 1, judged).GetValueOrDefault(double.NaN).Should().BeGreaterThan(agreement);
+            DeskStateAgreement.Agreement(agreeing, 0).Should().BeNull();
+        }, iter: Iter);
+    }
+
+    [Fact]
+    public void F18_Dominant_Should_BeAStateWithTheMostSecondsAndUnknownOnEveryTie_When_AMinuteIsSplit()
+    {
+        // ARV-104f: whatever the split of a minute (unaccounted seconds counting as Unknown), the dominant state holds at least as
+        // many seconds as any other, and when Unknown holds as many as the most, the dominant state is Unknown.
+        Gen.Select(Gen.Double[0, 1].Array[5], Gen.Double[0, 1]).Sample((weights, filled) =>
+        {
+            var total = weights.Sum();
+            var seconds = weights.Select(w => total > 0 ? Math.Floor(w / total * 60 * filled * 1000) / 1000 : 0).ToArray();
+            var dominant = DeskStateAgreement.Dominant(seconds[0], seconds[1], seconds[2], seconds[3], seconds[4]);
+            dominant.Should().NotBeNull();
+            var unknown = seconds[4] + Math.Max(0, 60 - seconds.Sum());
+            var byStatus = new Dictionary<Ariva.Core.Desks.DeskStatus, double>
+            {
+                [Ariva.Core.Desks.DeskStatus.Closed] = seconds[0], [Ariva.Core.Desks.DeskStatus.Idle] = seconds[1], [Ariva.Core.Desks.DeskStatus.Serving] = seconds[2],
+                [Ariva.Core.Desks.DeskStatus.Paused] = seconds[3], [Ariva.Core.Desks.DeskStatus.Unknown] = unknown
+            };
+            var most = byStatus.Values.Max();
+            byStatus[dominant.GetValueOrDefault()].Should().BeGreaterThanOrEqualTo(most - 1e-9);
+            if (unknown >= most - 1e-9)
+                dominant.Should().Be(Ariva.Core.Desks.DeskStatus.Unknown);
+        }, iter: Iter);
+    }
+
+    [Fact]
+    public void F18_NowcastMedian_Should_NeverBeNegativeStayWithinTheErrorsAndNeverFall_When_AnErrorGrows()
+    {
+        // ARV-104f: the median absolute error is never negative, lies within the smallest and largest absolute error, and raising
+        // one error's size never lowers it (the criterion is monotone in every error).
+        Gen.Select(Gen.Double[-240, 240].Array[1, 60], Gen.Int[0, 59], Gen.Double[0, 30]).Sample((errors, at, more) =>
+        {
+            var absolute = errors.Select(Math.Abs).ToArray();
+            var median = NowcastErrors.Median(absolute).GetValueOrDefault(double.NaN);
+            median.Should().BeGreaterThanOrEqualTo(0).And.BeInRange(absolute.Min(), absolute.Max());
+            var stats = NowcastErrors.Stats(errors);
+            stats.MedianAbsoluteErrorMinutes.GetValueOrDefault(double.NaN).Should().Be(median);
+            stats.MeanAbsoluteErrorMinutes.GetValueOrDefault(double.NaN).Should().BeGreaterThanOrEqualTo(Math.Abs(stats.MeanErrorMinutes.GetValueOrDefault()) - 1e-9);
+            var raised = absolute.ToArray();
+            raised[at % raised.Length] += more;
+            NowcastErrors.Median(raised).GetValueOrDefault(double.NaN).Should().BeGreaterThanOrEqualTo(median);
+        }, iter: Iter);
+    }
+
+    [Fact]
     public void F18_Comparison_Should_NotDependOnTheOrderOfItsInputs_And_KeepItsBoundsAndSigns()
     {
         // The campaign and the shuffles are drawn from values CsCheck generates (System.Random is refused by CA5394), so a
@@ -129,15 +187,44 @@ public sealed class ComparisonPropertyTests
                 QueueBins = draws.Shuffled(input.QueueBins),
                 HealthBins = draws.Shuffled(input.HealthBins),
                 QualityIntervals = draws.Shuffled(input.QualityIntervals),
-                Scope = input.Scope with { Zones = draws.Shuffled(input.Scope.Zones), Lines = draws.Shuffled(input.Scope.Lines) }
+                DeskObservations = draws.Shuffled(input.DeskObservations),
+                DeskMinutes = draws.Shuffled(input.DeskMinutes),
+                ShadowMinutes = draws.Shuffled(input.ShadowMinutes),
+                Scope = input.Scope with { Zones = draws.Shuffled(input.Scope.Zones), Lines = draws.Shuffled(input.Scope.Lines), Desks = draws.Shuffled(input.Scope.Desks) }
             };
 
             var result = ValidationComparison.Compare(input);
             JsonSerializer.Serialize(ValidationComparison.Compare(shuffled)).Should().Be(JsonSerializer.Serialize(result));
 
             foreach (var share in result.CountBins.Select(i => i.Accuracy).Concat(result.Lines.Select(l => l.PooledAccuracy))
-                         .Concat(result.TrackCompletion.Select(z => z.Good.Rate)).Where(v => v is not null))
+                         .Concat(result.TrackCompletion.Select(z => z.Good.Rate))
+                         .Concat(result.Desks.Append(result.DeskOverall).SelectMany(d => new[] { d.Check.Value, d.ThroughputAgreement }))
+                         .Where(v => v is not null))
                 share.GetValueOrDefault().Should().BeInRange(0, 1);
+
+            // ARV-104f: the desk tallies add up, Unknown never agrees, and every nowcast median is a size (never negative).
+            foreach (var desk in result.Desks.Append(result.DeskOverall))
+            {
+                desk.Judged.Should().Be(desk.Minutes - desk.ObserversDisagree);
+                desk.Excluded.Should().Be(desk.ObserversDisagree + desk.UnusableObservations);
+                desk.Standings.Total.Should().Be(desk.Judged);
+                desk.Confusion.Sum(c => c.Minutes).Should().Be(desk.Judged);
+                desk.Agreeing.Should().BeLessThanOrEqualTo(desk.Judged - desk.Standings.Unknown);
+            }
+
+            result.DeskMinutes.Where(m => m.SystemState == Ariva.Core.Desks.DeskStatus.Unknown).Should().OnlyContain(m => m.Agrees != true);
+            foreach (var zone in result.NowcastZones.Append(result.NowcastOverall))
+            {
+                foreach (var summary in new[] { zone.Published, zone.Shadow })
+                {
+                    summary.Excluded.Should().Be(summary.Minutes - summary.Judged.Minutes - summary.AtOrAboveCut.Minutes);
+                    summary.Standings.Total.Should().Be(summary.Minutes);
+                    foreach (var stats in new[] { summary.Judged, summary.AtOrAboveCut, summary.Flagged, summary.Degraded })
+                        stats.MedianAbsoluteErrorMinutes.GetValueOrDefault().Should().BeGreaterThanOrEqualTo(0);
+                }
+
+                zone.Both.Minutes.Should().BeLessThanOrEqualTo(Math.Min(zone.Published.Judged.Minutes, zone.Shadow.Judged.Minutes));
+            }
             foreach (var zone in result.TracerZones.Append(result.TracerOverall))
             {
                 var compared = result.Tracers.Where(t => (zone.QueueZone is null || t.QueueZone == zone.QueueZone) && !t.Abandoned && t.Standing == ComparisonStanding.Good).ToList();
@@ -157,6 +244,9 @@ public sealed class ComparisonPropertyTests
             left.QueueBins.Should().BeInRange(0, input.QueueBins.Count);
             left.HealthBins.Should().BeInRange(0, input.HealthBins.Count);
             left.QualityIntervals.Should().BeInRange(0, input.QualityIntervals.Count);
+            left.DeskObservations.Should().BeInRange(0, input.DeskObservations.Count);
+            left.DeskMinutes.Should().BeInRange(0, input.DeskMinutes.Count);
+            left.ShadowMinutes.Should().BeInRange(0, input.ShadowMinutes.Count);
             left.UnusableKeys.Should().OnlyHaveUniqueItems();
         }, iter: Fuzz.Iterations);
     }
@@ -174,6 +264,8 @@ public sealed class ComparisonPropertyTests
             var bin = new DateTime(2026, 10, 8, 18, 0, 0, DateTimeKind.Utc).AddMinutes(15 * draws.Next(4));
             var line = input.Scope.Lines[draws.Next(input.Scope.Lines.Count)];
             var observer = Guid.Parse("00000000-0000-7000-8000-000000000901");
+            var desk = input.Scope.Desks[draws.Next(input.Scope.Desks.Count)];
+            var minute = bin.AddMinutes(draws.Next(15));
             var result = ValidationComparison.Compare(input with
             {
                 QueueBins = [.. input.QueueBins, new QueueBinRow(zone, bin, TimeSpan.FromMinutes(15), 9, BinStatus.Final, BinQuality.Good, 7, 10, 11)],
@@ -182,12 +274,17 @@ public sealed class ComparisonPropertyTests
                     .. input.HealthBins, new ZoneHealthBin(zone, bin, TimeSpan.FromMinutes(15), 9, BinStatus.Final, 7, 0, 0, null, null, null, 10, 11, 0, 0, 0, 0, 0, null,
                         0, 0, 0)
                 ],
-                ManualCounts = [.. input.ManualCounts, new ManualCountRow(line.LineId, bin, observer, 9, -1, 0)]
+                ManualCounts = [.. input.ManualCounts, new ManualCountRow(line.LineId, bin, observer, 9, -1, 0)],
+                // ARV-104f: a refused highest revision of an observer's desk state leaves that desk minute unjudged.
+                DeskObservations = [.. input.DeskObservations, new DeskObservationRow(desk.DeskId, minute, observer, 9, (ObservedDeskState)9)]
             });
 
             result.LeftOut.UnusableKeys.Should().Contain(new UnusableKey(UnusableKeyKind.QueueBin, zone, null, bin, null, UnusableKeyReason.Refused))
                 .And.Contain(new UnusableKey(UnusableKeyKind.HealthBin, zone, null, bin, null, UnusableKeyReason.Refused))
-                .And.Contain(new UnusableKey(UnusableKeyKind.ManualCount, line.QueueZone, line.Name, bin, observer, UnusableKeyReason.Refused));
+                .And.Contain(new UnusableKey(UnusableKeyKind.ManualCount, line.QueueZone, line.Name, bin, observer, UnusableKeyReason.Refused))
+                .And.Contain(new UnusableKey(UnusableKeyKind.DeskObservation, null, null, minute, observer, UnusableKeyReason.Refused, desk.DeskId));
+            result.DeskMinutes.Should().NotContain(m => m.DeskId == desk.DeskId && m.MinuteUtc == minute);
+            result.NowcastMinutes.Should().NotContain(m => m.QueueZone == zone && m.MinuteUtc >= bin && m.MinuteUtc < bin.AddMinutes(15) && m.Standing == ComparisonStanding.Good);
             result.CountBins.Should().NotContain(i => i.LineId == line.LineId && i.BinStartUtc == bin);
             result.CountBins.Should().NotContain(i => i.QueueZone == zone && i.BinStartUtc == bin && i.Standing == ComparisonStanding.Good);
             result.Tracers.Should().NotContain(t => t.QueueZone == zone && t.JoinedUtc < bin.AddMinutes(15) && t.ExitedUtc > bin && t.Standing == ComparisonStanding.Good);
@@ -296,8 +393,50 @@ public sealed class ComparisonPropertyTests
             foreach (var minute in Enumerable.Range(0, 120).Select(i => start.AddMinutes(i)).Where(_ => random.Next(5) > 0))
             {
                 var waits = random.Next(0, 4) == 0 ? 0 : random.Next(1, 30);
+                // ARV-104f: most minutes carry a live part, a nowcast or a reason, sometimes flagged.
+                var (nowcast, reason, flag) = Live(random);
                 minutes.Add(new QueueMinuteRow(zone.Name, minute, Version(), random.Next(6) == 0 ? BinStatus.Provisional : BinStatus.Final, waits,
-                    waits == 0 ? null : Math.Round(random.NextDouble() * 40, 3)));
+                    waits == 0 ? null : Math.Round(random.NextDouble() * 40, 3), nowcast, reason, flag));
+            }
+        }
+
+        // ARV-104f: shadow nowcasts (some with a sensor cycle time, a few unusable), two desks observed by two observers with
+        // corrections, and their stored minutes (whole or split, some flagged or partly unknown, a few conflicting or refused).
+        var shadows = new List<ShadowMinuteRow>();
+        foreach (var zone in zones)
+        {
+            foreach (var minute in Enumerable.Range(0, 70).Select(i => start.AddMinutes(i)).Where(_ => random.Next(3) > 0))
+            {
+                var (nowcast, reason, flag) = Live(random);
+                shadows.Add(new ShadowMinuteRow(zone.Name, minute, nowcast, reason, flag ?? false,
+                    nowcast is not null && random.Next(2) == 0 ? Math.Round(0.5 + (random.NextDouble() * 3), 3) : null));
+                if (random.Next(25) == 0)
+                    shadows.Add(new ShadowMinuteRow(zone.Name, minute, 1, null, false, 0.01));
+            }
+        }
+
+        var desks = new[] { new ScopeDesk(Guid.Parse("00000000-0000-7000-8000-000000000031"), "IMM", "D01"), new ScopeDesk(Guid.Parse("00000000-0000-7000-8000-000000000032"), "IMM", "D02") };
+        var observations = new List<DeskObservationRow>();
+        var deskMinutes = new List<DeskMinuteRow>();
+        foreach (var desk in desks)
+        {
+            foreach (var minute in Enumerable.Range(0, 60).Select(i => start.AddMinutes(i)))
+            {
+                foreach (var observer in observers.Where(_ => random.Next(3) == 0))
+                {
+                    for (var revision = 1; revision <= random.Next(1, 3); revision++)
+                        observations.Add(new DeskObservationRow(desk.DeskId, minute, observer, revision, random.Next(30) == 0 ? (ObservedDeskState)9 : (ObservedDeskState)random.Next(4)));
+                }
+
+                if (random.Next(6) == 0)
+                    continue;
+                var main = random.Next(0, 61);
+                double[] seconds = [0, 0, 0, 0, 0];
+                seconds[random.Next(5)] += main;
+                seconds[random.Next(5)] += random.Next(0, 61 - main);
+                deskMinutes.Add(new DeskMinuteRow(desk.CheckpointCode, desk.DeskCode, minute, seconds[0], seconds[1], seconds[2], seconds[3], seconds[4], random.Next(5) == 0));
+                if (random.Next(20) == 0)
+                    deskMinutes.Add(new DeskMinuteRow(desk.CheckpointCode, desk.DeskCode, minute, 60, 0, 0, 0, random.Next(2), false));
             }
         }
 
@@ -327,15 +466,34 @@ public sealed class ComparisonPropertyTests
 
         return new ComparisonInput
         {
-            Scope = new ComparisonScope(7, zones, lines, [new UtcWindow(start, start.AddHours(1))]),
+            Scope = new ComparisonScope(7, zones, lines, [new UtcWindow(start, start.AddHours(1))]) { Desks = desks },
             ManualCounts = counts,
             TracerRuns = runs,
             LineBins = lineBins,
             QueueMinutes = minutes,
             QueueBins = queueBins,
             HealthBins = health,
-            QualityIntervals = intervals
+            QualityIntervals = intervals,
+            DeskObservations = observations,
+            DeskMinutes = deskMinutes,
+            ShadowMinutes = shadows
         };
+    }
+
+    private static readonly string[] Reasons = Enum.GetNames<NoServiceReason>();
+
+    /// <summary>
+    /// A live part: none (a quarter of the time), else a nowcast or a reason, sometimes flagged; now and then a nowcast near the
+    /// largest double (finite and stored as it is: its error is capped, and the result must still be written as JSON).
+    /// </summary>
+    private static (double? Nowcast, string Reason, bool? Flag) Live(Draws random)
+    {
+        if (random.Next(4) == 0)
+            return (null, null, null);
+        var flag = random.Next(3) == 0;
+        if (random.Next(40) == 0)
+            return (random.Next(2) == 0 ? double.MaxValue : 1e308, null, flag);
+        return random.Next(5) == 0 ? (null, Reasons[random.Next(Reasons.Length)], flag) : (Math.Round(random.NextDouble() * 40, 3), null, flag);
     }
 
     #endregion

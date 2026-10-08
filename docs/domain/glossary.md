@@ -70,6 +70,10 @@ Items marked (Proposed) are naming proposals made in this repository where the s
 | Abandonment | A track that leaves the queue without crossing the exit line; reported as an abandonment rate. | `TrackOutcome.Abandoned` |
 | Fragmentation | A track lost and restarted; biases waits low. Measured by the track completion rate. | `TrackOutcome.Fragmented`, `TrackCompletionRate` |
 | Conservation residual | Entries minus exits minus change in occupancy over an interval; a live estimate of count error. | `ConservationResidual` |
+| Shadow nowcast | The nowcast without AMAN inputs, computed beside the published one every live minute for the ground-truth proof; never shown, alerted on or reported (ARV-117, F8). | `ShadowNowcast`; as a stored row `ShadowMinuteRow` (Proposed) |
+| Dominant desk state | The state a desk spent most of a stored minute in; seconds not accounted for count as Unknown, and Unknown wins any tie (F18). | `DeskStateAgreement.Dominant` (Proposed) |
+| Desk-state agreement | Observed minutes in which the dominant desk state equals the state the observer recorded, over observed minutes; Unknown counts as disagreement (F18). | `DeskStateAgreement`, `DeskMinuteAgreement`, `DeskAgreementSummary` (Proposed) |
+| Nowcast error | A minute's nowcast minus the final mean realised wait of the people who entered in the next minute; judged as the median absolute error under a 20-minute cut (F18). | `NowcastErrors`, `NowcastMinuteError`, `NowcastZoneErrors` (Proposed) |
 | Service time | Per passenger: transaction start to end (AMAN) or service-zone entry to exit (sensors). | `ServiceTime` |
 | Cycle time | Per desk: time between successive service starts, including the walk-up gap. Sets throughput. | `CycleTime` |
 | Approach | One group arriving at a desk together (a family of four is one approach and four documents). | `Approach`; counts `Approaches`, `Documents` |

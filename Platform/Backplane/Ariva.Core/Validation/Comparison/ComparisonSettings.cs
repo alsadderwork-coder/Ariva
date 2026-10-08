@@ -1,8 +1,9 @@
 namespace Ariva.Core.Validation.Comparison;
 
 /// <summary>
-/// Settings of the comparison engine (ARV-104e): the targets of F18 (proposals until the pilot's KPI annex fixes them per
-/// campaign) and the Proposed values of the clock offset checks (docs/product/decisions.md).
+/// Settings of the comparison engine (ARV-104e, ARV-104f): the targets of F18 (proposals until the pilot's KPI annex fixes
+/// them per campaign), the nowcast error's 20-minute cut and the Proposed values of the clock offset checks
+/// (docs/product/decisions.md).
 /// </summary>
 public sealed record ComparisonSettings
 {
@@ -31,6 +32,15 @@ public sealed record ComparisonSettings
     /// <summary>The shift applied to every offset, both ways, for the wait error's sensitivity (Proposed 2 seconds).</summary>
     public TimeSpan SensitivityShift { get; init; } = TimeSpan.FromSeconds(2);
 
+    /// <summary>Desk-state agreement the observed minutes must reach (F18: at least 95 percent of observed minutes).</summary>
+    public double DeskAgreementTarget { get; init; } = 0.95;
+
+    /// <summary>Largest median absolute error of the published nowcast, in minutes (F18: within 2 minutes).</summary>
+    public double NowcastErrorTargetMinutes { get; init; } = 2;
+
+    /// <summary>The nowcast error is judged over minutes whose realised wait is under this, in minutes (F18: 20 minutes).</summary>
+    public double NowcastWaitCutMinutes { get; init; } = 20;
+
     public IEnumerable<string> Problems()
     {
         if (!IsShare(CountAccuracyTarget))
@@ -45,6 +55,12 @@ public sealed record ComparisonSettings
             yield return "OffsetOutlierBound is from 1 ms to 5 minutes.";
         if (SensitivityShift < TimeSpan.FromMilliseconds(1) || SensitivityShift > TimeSpan.FromMinutes(1))
             yield return "SensitivityShift is from 1 ms to 1 minute.";
+        if (!IsShare(DeskAgreementTarget))
+            yield return "DeskAgreementTarget is above 0 and at most 1.";
+        if (!double.IsFinite(NowcastErrorTargetMinutes) || NowcastErrorTargetMinutes is <= 0 or > 60)
+            yield return "NowcastErrorTargetMinutes is above 0 and at most 60.";
+        if (!double.IsFinite(NowcastWaitCutMinutes) || NowcastWaitCutMinutes is <= 0 or > ComparisonData.MaxWaitMinutes)
+            yield return "NowcastWaitCutMinutes is above 0 and at most 1,440.";
     }
 
     private static bool IsShare(double value) => double.IsFinite(value) && value > 0 && value <= 1;

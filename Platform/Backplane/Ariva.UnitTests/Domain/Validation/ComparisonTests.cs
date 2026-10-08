@@ -2392,6 +2392,32 @@ public sealed class ComparisonTests
     }
 
     [Fact]
+    public void Compare_Should_GiveFiniteResultsThatSerialise_When_EveryStoredValueIsAtItsBound()
+    {
+        // Security review of ARV-104f (Low-1, checked for ARV-104e's statistics): every stored value the engine accepts is
+        // bounded (1,000,000 crossings, people or tracks a bin, 10,000 a manual count, a mean wait of a day, a tracer of 3 hours),
+        // so counts, accuracy, errors, bias, sensitivity and completion stay finite and the result is written as JSON, even at
+        // the bounds and with a tracer of a millisecond against a wait of a day.
+        var result = Compare(new ComparisonInput
+        {
+            Scope = Scope(),
+            ManualCounts = [Count(EntryA, At(18, 0), 10_000), Count(EntryA, At(18, 0), 0, observer: O2), Count(ExitA, At(18, 0), 0, 10_000)],
+            LineBins = [LineBin("A-VIS entry", At(18, 0), 1_000_000, 1_000_000), LineBin("A-VIS exit", At(18, 0), 0, 1_000_000)],
+            QueueMinutes = [.. Enumerable.Range(0, 60).Select(m => Minute(At(18, m), m % 2 == 0 ? 1_440 : 0.001, waits: 1_000_000))],
+            QueueBins = [.. Enumerable.Range(0, 12).Select(i => Bin(At(18, 0).AddMinutes(15 * i), entries: 1_000_000, abandoned: 1_000_000))],
+            HealthBins = [.. Enumerable.Range(0, 4).Select(i => Health(At(18, 0).AddMinutes(15 * i), 1_000_000, i % 2 == 0 ? 1_000_000 : 0))],
+            TracerRuns = [Run(1, At(18, 0), At(21, 0)), Run(2, At(18, 2, 30), At(18, 2, 30).AddMilliseconds(1), batch: 2), Run(3, At(18, 4), At(18, 34), abandoned: true, batch: 3)]
+        });
+
+        var json = System.Text.Json.JsonSerializer.Serialize(result);
+        json.Should().NotContain("Infinity").And.NotContain("NaN");
+        result.TracerOverall.Compared.Should().Be(2);
+        double.IsFinite(result.TracerOverall.Bias.GetValueOrDefault(double.NaN)).Should().BeTrue();
+        result.Lines.Where(l => l.PooledAccuracy is not null).Should().OnlyContain(l => l.PooledAccuracy >= 0 && l.PooledAccuracy <= 1);
+        result.TrackCompletion.Single(z => z.QueueZone == Vis).Good.Rate.Should().Be(0.5);
+    }
+
+        [Fact]
     public void WindowsOf_Should_GiveEachLocalDayInUtc_When_DaysAreGivenInAnyOrderOrTwice()
     {
         var dubai = TimeZoneInfo.FindSystemTimeZoneById("Asia/Dubai");

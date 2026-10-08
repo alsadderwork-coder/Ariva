@@ -430,7 +430,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 18,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. ARV-117 review (2026-10-07): the shadow_* columns of queue_minute have no read path and no column-level revoke (the runtime role is shared). This story must bring its own read path with its own authorization: a dedicated read role, or a permissioned and site-scoped endpoint, with authorization tests (E2E permission and cross-site cases), and must change ShadowNowcastExposureTests and the pg_depend integration test on purpose. Lead decision 2026-10-08: ARV-117a since moved the shadow nowcast to its own table (queue_minute_shadow, script 0043) readable only by the ariva_validation_reader role, so this story stays a pure engine like ARV-104e, taking the stored rows as inputs; the read path with its own authorization (the reader role, a permissioned and site-scoped endpoint, E2E permission and cross-site cases, and the deliberate changes to ShadowNowcastExposureTests and the pg_depend integration test) moves to ARV-104g, which reads every campaign row.",
       "dependsOn": [
         "ARV-104e",
