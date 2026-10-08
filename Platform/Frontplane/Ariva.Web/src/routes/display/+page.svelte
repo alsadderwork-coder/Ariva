@@ -176,7 +176,12 @@
 					</h1>
 				{/each}
 			</div>
-			<p class="text-[1.2em] text-white/60 tabular-nums" dir="ltr" data-testid="board-updated">
+			<!-- A fixed box: the font's digits differ in width, and a clock that changes width every minute moves on a public screen. -->
+			<p
+				class="w-[3.4em] shrink-0 text-right text-[1.2em] text-white/60 tabular-nums"
+				dir="ltr"
+				data-testid="board-updated"
+			>
 				{new Date(lastOk).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
 			</p>
 		</header>
