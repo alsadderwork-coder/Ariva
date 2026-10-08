@@ -130,10 +130,13 @@ public sealed partial class PermissionMatrixTests
     [MemberData(nameof(HostsInMatrix))]
     public async Task Send_Should_ReturnMatrixStatus_When_EachCallerCallsEachEndpoint(string host)
     {
-        // Every caller shares one client address in-process; the sign-in limit (10 a minute for login, refresh and
-        // password change together) is tested in RateLimitingAndCorsTests, not here.
+        // Every caller shares one client address in-process, so this host raises two limits for itself only: the sign-in
+        // limit (10 a minute for login, refresh and password change together) and the global limit per address (1,000 a
+        // minute, which Main's rows times the six callers now pass). Their behaviour (429 with Retry-After) is tested in
+        // RateLimitingAndCorsTests, and their production values in AuthSettingsTests.Defaults_Should_MatchAdr0026_When_BaseFileIsRead.
         await using var app = ArivaHosts.Create(host, configure: builder => builder
             .UseSetting("Security:RateLimiting:Auth:PermitLimit", "1000")
+            .UseSetting("Security:RateLimiting:Global:PermitLimit", "10000")
             .ConfigureTestServices(services =>
         {
             TestAuthenticationHandler.Register(services);

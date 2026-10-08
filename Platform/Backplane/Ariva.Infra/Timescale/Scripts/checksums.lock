@@ -47,6 +47,7 @@
     "0044_desk_sensor_minute.sql": "bea4098537db481def0ac767b9efe7e1c3163a3e18c945b68126e7357c22de2e",
     "0045_shadow_sensor_cycle.sql": "1d27ed344e6b509ff28fd4effba104784ead0aea3daa60507fe84a458f326975",
     "0046_site_illustrative.sql": "61226b65ad18f0bc9b1d2e8efd8be7bcf96bf73cac3cd8b1d5ed517ded54dde0",
-    "0047_validation_campaign.sql": "7f9e0d73090496e2cdc0a611a140b221ae70fcb48e499d2e03f1d42acccd2afb"
+    "0047_validation_campaign.sql": "7f9e0d73090496e2cdc0a611a140b221ae70fcb48e499d2e03f1d42acccd2afb",
+    "0048_validation_tracers_desk_observations.sql": "c2d0208cf2b52e3466ee5c0a303719a94472c19ed13952b79df20b5603aec397"
   }
 }

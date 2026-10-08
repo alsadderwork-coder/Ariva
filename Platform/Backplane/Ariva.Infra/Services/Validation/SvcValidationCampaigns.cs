@@ -16,10 +16,11 @@ namespace Ariva.Infra.Services.Validation;
 /// the caller's sites), then the request (<see cref="ValidationRules"/>, today in the site's time zone), then the stored state.
 /// A campaign is planned over the site's published profile version, read with a share lock so a concurrent publish waits;
 /// start and close lock the campaign's row, so they happen one at a time; create, start and close are audited in the same
-/// unit of work. The people named are Ariva user ids only.
+/// unit of work. The people named are Ariva user ids only. Border desks in scope (ARV-104b) are border data: only a caller
+/// who sees border desks puts them in a campaign (403 otherwise) or sees them and their observed minutes in its view.
 /// </summary>
 internal sealed class SvcValidationCampaigns(IUnitOfWork unitOfWork, ICurrentUser currentUser, TimeProvider timeProvider, ISiteScope siteScope, AuditTrail audit,
-    ReportReader reader)
+    ReportReader reader, CallerRoles callerRoles)
     : ValidationServiceBase(unitOfWork, currentUser, timeProvider, siteScope, reader), ISvcValidationCampaigns
 {
     #region Reads
@@ -117,14 +118,21 @@ internal sealed class SvcValidationCampaigns(IUnitOfWork unitOfWork, ICurrentUse
             return Result.Error<ValidationCampaignViewModel>(ValidationErrors.NotPublished);
         if (ValidationCampaign.ScopeProblem(profile, request.ZoneIds, request.LineIds) is { } scope)
             return Result.Error<ValidationCampaignViewModel>(scope);
+        var desks = await DesksAsync(siteCode, request.DeskIds, ct);
+        if (desks is null)
+            return Result.Error<ValidationCampaignViewModel>(ValidationErrors.DesksNeedBorderRole);
+        if (ValidationCampaign.DeskScopeProblem(siteCode, request.DeskIds, desks) is { } deskScope)
+            return Result.Error<ValidationCampaignViewModel>(deskScope);
 
         var campaign = new ValidationCampaign(request.Name, profile, request.ZoneIds, request.LineIds, ValidationRules.Days(request.Days), today,
-            request.TargetBinsPerLine, request.TargetTracerRuns, caller, UtcNow);
+            request.TargetBinsPerLine, request.TargetTracerRuns, caller, UtcNow, desks);
         await SaveAsync(campaign, ct);
         foreach (var scopeZone in campaign.Zones)
             await SaveAsync(scopeZone, ct);
         foreach (var scopeLine in campaign.Lines)
             await SaveAsync(scopeLine, ct);
+        foreach (var scopeDesk in campaign.Desks)
+            await SaveAsync(scopeDesk, ct);
         if (await FlushRefusedAsync(ct) is not null)
             return Result.Error<ValidationCampaignViewModel>(ValidationErrors.NotPublished);
 
@@ -193,27 +201,59 @@ internal sealed class SvcValidationCampaigns(IUnitOfWork unitOfWork, ICurrentUse
         new(c.Id.GetValueOrDefault(), c.SiteCode, c.Name, c.Status.ToString(), c.ProfileVersion, [.. c.Days.Select(ValidationCampaign.FormatDay)], c.Zones.Count,
             c.Lines.Count, c.CreatedUtc, c.StartedUtc, c.ClosedUtc);
 
+    /// <summary>
+    /// The desks a request names (none when it names none), or null when it names some and the caller does not see border
+    /// desks (403). Desks of another site, deleted ones and missing ones are left out here and refused by the scope rule.
+    /// </summary>
+    private async Task<IReadOnlyCollection<Desk>> DesksAsync(string siteCode, IReadOnlyList<Guid> deskIds, CancellationToken ct)
+    {
+        if (deskIds is null || deskIds.Count == 0)
+            return [];
+        if (!(await DeskAccessAsync(callerRoles, ct)).Sees)
+            return null;
+        var ids = deskIds.Select(id => (Guid?)id).ToList();
+        return await Query<Desk>().Where(d => ids.Contains(d.Id) && d.SiteCode == siteCode).ToListAsync(ct);
+    }
+
     private async Task<ValidationCampaignViewModel> ViewAsync(ValidationCampaign c, CancellationToken ct)
     {
         var (profileStatus, retiredOn) = await ProfileStateAsync(c.ProfileId, ct);
         var zone = await TimeZoneAsync(c.SiteCode, ct);
-        var bins = (await ExecuteSqlAsync<LineBins>("""
-                SELECT line_id AS "LineId", count(DISTINCT bin_start_utc) AS "Bins" FROM manual_count WHERE campaign_id = :id GROUP BY line_id
-                """, new Dictionary<string, object> { ["id"] = c.Id.GetValueOrDefault() }, ct))
-            .ToDictionary(b => b.LineId, b => (int)b.Bins);
+        var parameters = new Dictionary<string, object> { ["id"] = c.Id.GetValueOrDefault() };
+        var bins = (await ExecuteSqlAsync<KeyCount>("""
+                SELECT line_id AS "Key", count(DISTINCT bin_start_utc) AS "Count" FROM manual_count WHERE campaign_id = :id GROUP BY line_id
+                """, parameters, ct))
+            .ToDictionary(b => b.Key, b => (int)b.Count);
+        var tracers = (await ExecuteSqlAsync<KeyCount>("""
+                SELECT zone_id AS "Key", count(*) AS "Count" FROM tracer_run WHERE campaign_id = :id GROUP BY zone_id
+                """, parameters, ct))
+            .ToDictionary(t => t.Key, t => (int)t.Count);
+        // Border data: the desks and their observed minutes only for a caller who sees border desks (CWE-863, data boundary).
+        var desksIncluded = (await DeskAccessAsync(callerRoles, ct)).Sees;
+        var minutes = desksIncluded && c.Desks.Count > 0
+            ? (await ExecuteSqlAsync<KeyCount>("""
+                    SELECT desk_id AS "Key", count(DISTINCT minute_utc) AS "Count" FROM desk_observation WHERE campaign_id = :id GROUP BY desk_id
+                    """, parameters, ct))
+                .ToDictionary(m => m.Key, m => (int)m.Count)
+            : [];
         return new ValidationCampaignViewModel(
             c.Id.GetValueOrDefault(), c.SiteCode, c.Name, c.Status.ToString(), c.ProfileId, c.ProfileVersion, c.GeometryHash, profileStatus.ToString(), retiredOn,
             zone.Id, [.. c.Days.Select(ValidationCampaign.FormatDay)], new ValidationTargetsViewModel(c.TargetBinsPerLine, c.TargetTracerRuns, c.TargetsPlaceholder),
-            [.. c.Zones.OrderBy(z => z.ZoneName, StringComparer.Ordinal).Select(z => new ValidationZoneViewModel(z.ZoneId, z.ZoneName))],
+            [.. c.Zones.OrderBy(z => z.ZoneName, StringComparer.Ordinal).Select(z => new ValidationZoneViewModel(z.ZoneId, z.ZoneName, tracers.GetValueOrDefault(z.ZoneId)))],
             [.. c.Lines.OrderBy(l => l.LineName, StringComparer.Ordinal)
                 .Select(l => new ValidationLineViewModel(l.LineId, l.LineName, l.LineRole.ToString(), l.QueueZoneName, bins.GetValueOrDefault(l.LineId)))],
+            desksIncluded,
+            desksIncluded
+                ? [.. c.Desks.OrderBy(d => d.CheckpointCode, StringComparer.Ordinal).ThenBy(d => d.DeskCode, StringComparer.Ordinal)
+                    .Select(d => new ValidationDeskViewModel(d.DeskId, d.CheckpointCode, d.DeskCode, minutes.GetValueOrDefault(d.DeskId)))]
+                : [],
             c.CreatedById, c.CreatedUtc, c.StartedById, c.StartedUtc, c.ClosedById, c.ClosedUtc);
     }
 
-    private sealed class LineBins
+    private sealed class KeyCount
     {
-        public Guid LineId { get; set; }
-        public long Bins { get; set; }
+        public Guid Key { get; set; }
+        public long Count { get; set; }
     }
 
     #endregion

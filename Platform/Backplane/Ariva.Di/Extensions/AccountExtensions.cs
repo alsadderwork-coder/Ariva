@@ -101,6 +101,9 @@ public static class AccountExtensions
         // Validation campaigns and manual count capture (ARV-104a): Ariva.Api.Main only.
         services.TryAddScoped<Ariva.Core.Services.Validation.ISvcValidationCampaigns, Ariva.Infra.Services.Validation.SvcValidationCampaigns>();
         services.TryAddScoped<Ariva.Core.Services.Validation.ISvcValidationCapture, Ariva.Infra.Services.Validation.SvcValidationCapture>();
+        // Tracer runs and desk observer logs (ARV-104b): Ariva.Api.Main only.
+        services.TryAddScoped<Ariva.Core.Services.Validation.ISvcTracerRuns, Ariva.Infra.Services.Validation.SvcTracerRuns>();
+        services.TryAddScoped<Ariva.Core.Services.Validation.ISvcDeskObservations, Ariva.Infra.Services.Validation.SvcDeskObservations>();
         // ARV-038: the stored minutes rules are judged on, and the arrival wave (ARV-047).
         services.AddArivaArrivalWaveSource(configuration);
         services.TryAddScoped<Ariva.Infra.Alerting.AlertInputs>();

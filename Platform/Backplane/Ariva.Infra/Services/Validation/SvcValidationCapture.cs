@@ -20,10 +20,11 @@ namespace Ariva.Infra.Services.Validation;
 /// caller's own latest count, never an edit, and is audited. An Idempotency-Key belongs to the observer who sent it: the
 /// replay looks among the caller's own counts only, so another observer's identical key is a new request (CWE-863). A count
 /// lands only in a running campaign: the insert trigger re-checks under a share lock, so a count racing a close either
-/// commits before the close or answers 409.
+/// commits before the close or answers 409. The running list names a campaign's border desks only to a caller who may observe
+/// them (<see cref="Ariva.Core.Security.BorderDeskAccess"/>, ARV-104b).
 /// </summary>
 internal sealed class SvcValidationCapture(IUnitOfWork unitOfWork, ICurrentUser currentUser, TimeProvider timeProvider, ISiteScope siteScope, AuditTrail audit,
-    ReportReader reader)
+    ReportReader reader, CallerRoles callerRoles)
     : ValidationServiceBase(unitOfWork, currentUser, timeProvider, siteScope, reader), ISvcValidationCapture
 {
     #region Reads
@@ -38,11 +39,21 @@ internal sealed class SvcValidationCapture(IUnitOfWork unitOfWork, ICurrentUser 
             .Take(ISvcValidationCapture.MaxRunningListed)
             .ToListAsync(ct);
         var zone = await TimeZoneAsync(siteCode, ct);
+        // Border data: the desks to log only for a caller who may observe them (BorderDeskAccess, CWE-863, data boundary); an
+        // account with an airport role and no BorderDesks.View sees none, even with the observer role.
+        var desksIncluded = (await DeskAccessAsync(callerRoles, ct)).Observes;
         return new Result<IReadOnlyList<CaptureCampaignViewModel>>(
         [
             .. running.Select(c => new CaptureCampaignViewModel(c.Id.GetValueOrDefault(), c.SiteCode, c.Name, zone.Id, [.. c.Days.Select(ValidationCampaign.FormatDay)],
                 (int)ValidationCampaign.BinLength.TotalMinutes,
-                [.. c.Lines.OrderBy(l => l.LineName, StringComparer.Ordinal).Select(l => new CaptureLineViewModel(l.LineId, l.LineName, l.LineRole.ToString(), l.QueueZoneName))]))
+                [.. c.Lines.OrderBy(l => l.LineName, StringComparer.Ordinal).Select(l => new CaptureLineViewModel(l.LineId, l.LineName, l.LineRole.ToString(), l.QueueZoneName))],
+                [.. c.Zones.OrderBy(z => z.ZoneName, StringComparer.Ordinal).Select(z => new CaptureZoneViewModel(z.ZoneId, z.ZoneName))],
+                desksIncluded,
+                desksIncluded
+                    ? [.. c.Desks.OrderBy(d => d.CheckpointCode, StringComparer.Ordinal).ThenBy(d => d.DeskCode, StringComparer.Ordinal)
+                        .Select(d => new CaptureDeskViewModel(d.DeskId, d.CheckpointCode, d.DeskCode))]
+                    : [],
+                (int)TracerBatch.MaxClockOffset.TotalSeconds))
         ]);
     }
 

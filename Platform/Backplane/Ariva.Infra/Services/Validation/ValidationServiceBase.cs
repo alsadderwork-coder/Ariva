@@ -11,7 +11,7 @@ using NHibernate.Linq;
 namespace Ariva.Infra.Services.Validation;
 
 /// <summary>
-/// What the validation campaign and capture services share (ARV-104a, script 0047): the site check that comes before
+/// What the validation campaign and capture services share (ARV-104a and ARV-104b, scripts 0047 and 0048): the site check that comes before
 /// anything else (outside the caller's sites, or unknown, answers NotFound, CWE-863, CWE-204), the campaign read within the
 /// site, the site's time zone, the profile version's state, the count searches and the views. Raw SQL only through
 /// parameterised constant statements (CWE-89).
@@ -24,7 +24,7 @@ internal abstract class ValidationServiceBase(IUnitOfWork unitOfWork, ICurrentUs
     /// <summary>PostgreSQL: a unique index refused a row.</summary>
     protected const string UniqueViolation = "23505";
 
-    /// <summary>PostgreSQL: a trigger of script 0047 refused a change (campaign not running, profile not published).</summary>
+    /// <summary>PostgreSQL: a trigger of script 0047 or 0048 refused a change (campaign not running, profile not published).</summary>
     protected const string RestrictViolation = "23001";
 
     #endregion
@@ -69,6 +69,15 @@ internal abstract class ValidationServiceBase(IUnitOfWork unitOfWork, ICurrentUs
 
     /// <summary>The caller's Ariva user id; null for a caller without one (never past the permission check in a host).</summary>
     protected Guid? Caller => CurrentUser.Id is { } id && id != Guid.Empty ? id : null;
+
+    /// <summary>
+    /// The caller's access to desk-level data (<see cref="BorderDeskAccess"/>, from its stored roles as the permission policies
+    /// resolve them): every desk path asks this one rule before it reads a desk or a state (data boundary, ARV-104b, CWE-863).
+    /// Managers' reads and planning need <see cref="BorderDeskAccess.Sees"/>; the observer's capture view, batches,
+    /// corrections and own reads need <see cref="BorderDeskAccess.Observes"/>.
+    /// </summary>
+    protected static async Task<BorderDeskAccess> DeskAccessAsync(Administration.CallerRoles callerRoles, CancellationToken ct) =>
+        BorderDeskAccess.Of(await callerRoles.GetAsync(ct));
 
     #endregion
 

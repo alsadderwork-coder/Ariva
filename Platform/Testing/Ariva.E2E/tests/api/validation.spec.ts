@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { accounts, call, claimsOf, databaseAvailable, login, signIn, unusedTotpCode } from '../support/accounts';
+import { accounts, call, type CallResponse, claimsOf, databaseAvailable, login, signIn, unusedTotpCode } from '../support/accounts';
 import { expectApiSecurityHeaders, expectNoLeak } from '../support/api-assertions';
 import { hosts } from '../support/hosts';
 import { markupFragments, sqlInjectionPayloads, xssPayloads } from '../support/payloads';
@@ -13,6 +13,15 @@ import { markupFragments, sqlInjectionPayloads, xssPayloads } from '../support/p
 // its own site E2EV (Asia/Dubai) with a zone profile it publishes once: two queue zones, an overflow band and their lines. This story has no screen of its own (the observer tablet is ARV-104c and ARV-104d,
 // the campaign screens ARV-104h); functional/validation-observer.spec.ts checks only that the observer role reaches no
 // operational screen.
+//
+// ARV-104b (API only: the tracer and desk screens are ARV-104c and ARV-104d): tracer runs under .../tracer-runs (a batch
+// with the device's clock reading, offset measured and applied, refused beyond 5 minutes) and desk observer logs under
+// .../desk-observations (15-minute batches of per-minute states, corrections as revisions), both with a required
+// Idempotency-Key per observer, the same permissions, role, site scope and separation of duties as manual counts. Desk
+// states are border data: a terminal duty manager (the lead) neither puts desks in scope nor reads their states. The suite
+// adds an immigration checkpoint VIMM with desks VD01 to VD04 and an e-gate, and a check-in checkpoint VCHK with a counter.
+// After the first security review: e2e.valdual (a duty manager who also holds the observer role) sees no desk and gets 403
+// on desk batches, corrections and its own desk reads; absurd device times (year 1, year 9999) are 400, never 500.
 
 test.skip(!databaseAvailable, 'validation needs the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true)');
 test.describe.configure({ mode: 'serial' });
@@ -28,6 +37,15 @@ const dubaiDay = (at: number) => new Intl.DateTimeFormat('en-CA', { timeZone: 'A
 /** The start of the quarter-hour bin that ended `back` bins ago (1 is the last one that has ended). */
 const binStart = (back: number) => new Date(Math.floor(Date.now() / quarter) * quarter - back * quarter).toISOString().replace('.000Z', 'Z');
 
+interface Desks {
+	vd01: string;
+	vd02: string;
+	vd03: string;
+	vd04: string;
+	eGate: string;
+	counter: string;
+}
+
 interface Profile {
 	version: number;
 	queueA: string;
@@ -40,6 +58,7 @@ interface Profile {
 
 let manager: string, lead: string, observer: string, observer2: string, observerElsewhere: string, elsewhere: string, handler: string, administrator: string, dual: string;
 let profile: Profile;
+let desks: Desks;
 
 /** E2EV's published profile, drafted and published by the validation manager the first time (an existing one is reused). */
 async function ensureProfile(): Promise<Profile> {
@@ -100,6 +119,36 @@ async function ensureProfile(): Promise<Profile> {
 	};
 }
 
+/** E2EV's validation desks (ARV-104b), created by the administrator the first time: VIMM with VD01 to VD04 and VEG1, VCHK with VC01. */
+async function ensureDesks(): Promise<Desks> {
+	const list = async (entity: string, query: string) => {
+		const response = await call('GET', `${admin}/${entity}?${query}`, { token: administrator });
+		expect(response.status(), `${entity}: ${await response.text()}`).toBe(200);
+		const body = await response.json();
+		return (body.data ?? body) as any[];
+	};
+	const create = async (entity: string, data: unknown) => {
+		const response = await call('POST', `${admin}/${entity}`, { token: administrator, data });
+		expect(response.status(), `${entity}: ${await response.text()}`).toBe(201);
+		return response.json();
+	};
+	const checkpoints = await list('checkpoints', `siteCode=${site}&pageSize=100`);
+	const level = (await list('levels', `siteCode=${site}&pageSize=10`))[0];
+	const border = checkpoints.find((c) => c.code === 'VIMM') ?? (await create('checkpoints', { levelId: level.id, code: 'VIMM', name: 'Validation immigration', kind: 'Immigration' }));
+	const airportSide = checkpoints.find((c) => c.code === 'VCHK') ?? (await create('checkpoints', { levelId: level.id, code: 'VCHK', name: 'Validation check-in', kind: 'CheckIn' }));
+	const existing = [...(await list('desks', `parentId=${border.id}&pageSize=100`)), ...(await list('desks', `parentId=${airportSide.id}&pageSize=100`))];
+	const desk = async (checkpointId: string, code: string, kind: string, laneCategories: string[]) =>
+		(existing.find((d) => d.code === code) ?? (await create('desks', { checkpointId, code, kind, laneCategories }))).id as string;
+	return {
+		vd01: await desk(border.id, 'VD01', 'Desk', ['CIT']),
+		vd02: await desk(border.id, 'VD02', 'Desk', ['CIT']),
+		vd03: await desk(border.id, 'VD03', 'Desk', ['VIS']),
+		vd04: await desk(border.id, 'VD04', 'Desk', ['VIS']),
+		eGate: await desk(border.id, 'VEG1', 'EGate', ['EG']),
+		counter: await desk(airportSide.id, 'VC01', 'Counter', [])
+	};
+}
+
 /** A campaign request over Q-A and its three lines for yesterday and today (Dubai). */
 function campaignRequest(name: string): Record<string, unknown> {
 	return {
@@ -136,6 +185,7 @@ test.beforeAll(async () => {
 		].map(async (a) => (await signIn(a)).accessToken)
 	);
 	profile = await ensureProfile();
+	desks = await ensureDesks();
 });
 
 test('a campaign is planned, started, counted, corrected and closed with a second factor, and audited', async () => {
@@ -491,4 +541,376 @@ test('a body over the limit is refused with 413', async () => {
 	expect(oversizedCorrection.status()).toBe(413);
 	// Under the limit, a long name is still refused by its own rule (200 characters).
 	expect((await call('POST', campaigns(), { token: lead, data: campaignRequest('n'.repeat(500)) })).status()).toBe(400);
+});
+
+// ARV-104b: tracer runs and desk observer logs.
+
+const iso = (at: number) => new Date(at).toISOString();
+const minute = 60_000;
+
+/** A campaign request with VD01 to VD04 in scope (only a border role may plan it). */
+function deskCampaignRequest(name: string): Record<string, unknown> {
+	return { ...campaignRequest(name), deskIds: [desks.vd01, desks.vd02, desks.vd03, desks.vd04] };
+}
+
+/** A running campaign with desks, planned by the border manager and started by the lead. */
+async function runningWithDesks(name: string): Promise<string> {
+	const created = await call('POST', campaigns(), { token: manager, data: deskCampaignRequest(name) });
+	expect(created.status(), await created.text()).toBe(201);
+	const id = (await created.json()).id as string;
+	expect((await call('POST', `${campaigns()}/${id}/start`, { token: lead })).status()).toBe(200);
+	return id;
+}
+
+/** A tracer batch from a device `aheadMs` ahead of the real clock: runs joined and exited at the device's times. */
+function tracerBatch(aheadMs: number, runs: { code: string; joinedAgo: number; exitedAgo: number; abandoned?: boolean; zoneId?: string }[]) {
+	const now = Date.now();
+	return {
+		deviceClockUtc: iso(now + aheadMs),
+		runs: runs.map((r) => ({
+			zoneId: r.zoneId ?? profile.queueA,
+			tracerCode: r.code,
+			joinedUtc: iso(now + aheadMs - r.joinedAgo),
+			exitedUtc: iso(now + aheadMs - r.exitedAgo),
+			abandoned: r.abandoned ?? false
+		}))
+	};
+}
+
+/** A desk batch for the bin `back` bins ago (1 is the last that ended): per desk, its states by minute index. */
+function deskBatch(back: number, perDesk: [string, [number, string][]][]) {
+	return {
+		binStartUtc: binStart(back),
+		desks: perDesk.map(([deskId, states]) => {
+			const minutes: (string | null)[] = Array.from({ length: 15 }, () => null);
+			for (const [index, state] of states) minutes[index] = state;
+			return { deskId, states: minutes };
+		})
+	};
+}
+
+/** One run T-10 with raw device times as given, from a device `aheadMs` ahead of the real clock. */
+const farRun = (aheadMs: number, joinedUtc: string, exitedUtc: string) => ({
+	deviceClockUtc: iso(Date.now() + aheadMs),
+	runs: [{ zoneId: profile.queueA, tracerCode: 'T-10', joinedUtc, exitedUtc, abandoned: false }]
+});
+
+const sendRuns = (id: string, token: string, data: unknown, key?: string, code = site) =>
+	call('POST', `${capture(code)}/${id}/tracer-runs`, { token, data, headers: key ? { 'Idempotency-Key': key } : undefined });
+const sendDesks = (id: string, token: string, data: unknown, key?: string, code = site) =>
+	call('POST', `${capture(code)}/${id}/desk-observations`, { token, data, headers: key ? { 'Idempotency-Key': key } : undefined });
+
+test('tracer runs are corrected by the device clock offset, resent batches return the stored one, and bad times are refused', async () => {
+	const id = await runningWithDesks(`Tracers ${Date.now()}`);
+	const listed = (await (await call('GET', capture(), { token: observer })).json()).find((c: any) => c.id === id);
+	expect(listed.zones.map((z: any) => z.name)).toEqual(['Q-A']);
+	expect(listed.desks.map((d: any) => d.code)).toEqual(['VD01', 'VD02', 'VD03', 'VD04']);
+	expect(listed.maxClockOffsetSeconds).toBe(300);
+
+	// The device runs 90 s ahead: its times come back corrected by the measured offset (the network delay included).
+	const key = `e2e-tracers-${Date.now()}`;
+	const batch = tracerBatch(90_000, [
+		{ code: 'T-07', joinedAgo: 20 * minute, exitedAgo: 5 * minute },
+		{ code: 'T-08', joinedAgo: 15 * minute, exitedAgo: 9 * minute, abandoned: true }
+	]);
+	const sent = await sendRuns(id, observer, batch, key);
+	expect(sent.status(), await sent.text()).toBe(201);
+	const stored = await sent.json();
+	expect(Math.abs(stored.clockOffsetMs - 90_000), 'offset within a few seconds of 90 s').toBeLessThan(5_000);
+	const t07 = stored.runs.find((r: any) => r.tracerCode === 'T-07');
+	expect(t07).toMatchObject({ zoneName: 'Q-A', abandoned: false, waitSeconds: 900, clockOffsetMs: stored.clockOffsetMs });
+	expect(Date.parse(t07.joinedRawUtc) - Date.parse(t07.joinedUtc)).toBe(stored.clockOffsetMs);
+	expect(stored.runs.find((r: any) => r.tracerCode === 'T-08').abandoned).toBe(true);
+
+	// The same key: the stored batch (200), also with the clock read again; with other runs, 409; without a key, 400.
+	const resent = await sendRuns(id, observer, { ...batch, deviceClockUtc: iso(Date.now() + 90_000) }, key);
+	expect(resent.status()).toBe(200);
+	expect(await resent.json()).toMatchObject({ id: stored.id, clockOffsetMs: stored.clockOffsetMs });
+	expect((await sendRuns(id, observer, tracerBatch(0, [{ code: 'T-09', joinedAgo: 20 * minute, exitedAgo: 10 * minute }]), key)).status()).toBe(409);
+	expect((await sendRuns(id, observer, batch)).status(), 'a batch needs a key').toBe(400);
+	expect((await sendRuns(id, observer, batch, `${key}-again`)).status(), 'the same runs in another batch').toBe(409);
+	// A key belongs to the observer who sent it: another observer's identical key is its own batch.
+	const second = await sendRuns(id, observer2, batch, key);
+	expect(second.status(), await second.text()).toBe(201);
+	expect((await second.json()).observerId).toBe(claimsOf(observer2).sub);
+
+	// Out of range (400, the value never repeated): a device more than 5 minutes off, a join on a day not planned, an exit
+	// in the future, an exit before the join, a run over 3 hours, a zone out of scope.
+	const refused: [string, unknown][] = [
+		['device 6 minutes ahead', tracerBatch(6 * minute, [{ code: 'T-10', joinedAgo: 20 * minute, exitedAgo: 10 * minute }])],
+		['device an hour behind', tracerBatch(-60 * minute, [{ code: 'T-10', joinedAgo: 20 * minute, exitedAgo: 10 * minute }])],
+		['joined three days ago', tracerBatch(0, [{ code: 'T-10', joinedAgo: 3 * 86_400_000, exitedAgo: 3 * 86_400_000 - 10 * minute }])],
+		['exited in the future', tracerBatch(0, [{ code: 'T-10', joinedAgo: 10 * minute, exitedAgo: -5 * minute }])],
+		['exited before joined', tracerBatch(0, [{ code: 'T-10', joinedAgo: 10 * minute, exitedAgo: 11 * minute }])],
+		['over three hours', tracerBatch(0, [{ code: 'T-10', joinedAgo: 200 * minute, exitedAgo: 10 * minute }])],
+		['a zone out of scope', tracerBatch(0, [{ code: 'T-10', joinedAgo: 20 * minute, exitedAgo: 10 * minute, zoneId: profile.queueB }])],
+		// First security review: well-formed but absurd device times overflowed the clock correction (500); refused before it.
+		['a join in year 1 from a device ahead', farRun(2_000, '0001-01-01T00:00:00.000Z', '0001-01-01T01:00:00.000Z')],
+		['an exit in year 9999 from a device behind', farRun(-2_000, '9999-12-31T23:00:00.000Z', '9999-12-31T23:59:59.999Z')]
+	];
+	for (const [what, data] of refused) {
+		const answer = await sendRuns(id, observer, data, `e2e-refused-${Date.now()}`);
+		expect(answer.status(), what).toBe(400);
+		const body = await answer.text();
+		expect(body, what).not.toContain('T-10');
+		expect(body, what).not.toMatch(/\d{4}-\d{2}-\d{2}T/);
+		expect(body, what).not.toContain('9999');
+	}
+
+	// The manager reads both observers' runs; each observer only its own; the campaign shows the runs per zone.
+	const all = await (await call('GET', `${campaigns()}/${id}/tracer-runs?sortBy=joinedUtc`, { token: lead })).json();
+	expect(all.totalCount).toBe(4);
+	const own = await (await call('GET', `${capture()}/${id}/tracer-runs?observerId=${String(claimsOf(observer).sub)}`, { token: observer2 })).json();
+	expect(own.data.every((r: any) => r.observerId === claimsOf(observer2).sub)).toBe(true);
+	expect((await (await call('GET', `${campaigns()}/${id}`, { token: lead })).json()).zones[0].tracerRuns).toBe(4);
+});
+
+test('desk states are logged in 15-minute batches, corrected as revisions, and read by border roles only', async () => {
+	// A duty manager may not put desks in scope (border data, 403); an airport counter or an e-gate is never in scope (400).
+	const refusedPlan = await call('POST', campaigns(), { token: lead, data: deskCampaignRequest('Desks by the lead') });
+	expect(refusedPlan.status()).toBe(403);
+	for (const deskId of [desks.counter, desks.eGate]) {
+		expect((await call('POST', campaigns(), { token: manager, data: { ...campaignRequest('Wrong desk'), deskIds: [desks.vd01, deskId] } })).status()).toBe(400);
+	}
+
+	const id = await runningWithDesks(`Desks ${Date.now()}`);
+	const asManager = await (await call('GET', `${campaigns()}/${id}`, { token: manager })).json();
+	expect(asManager.desksIncluded).toBe(true);
+	expect(asManager.desks.map((d: any) => [d.checkpoint, d.code])).toEqual([['VIMM', 'VD01'], ['VIMM', 'VD02'], ['VIMM', 'VD03'], ['VIMM', 'VD04']]);
+	const asLead = await (await call('GET', `${campaigns()}/${id}`, { token: lead })).json();
+	expect([asLead.desksIncluded, asLead.desks]).toEqual([false, []]);
+
+	// Four desks for the last 15 minutes, then the same batch again (200, the stored one) and the key with another body (409).
+	const key = `e2e-desks-${Date.now()}`;
+	const states = ['Serving', 'Idle', 'Paused', 'Closed'];
+	const batch = deskBatch(1, [desks.vd01, desks.vd02, desks.vd03, desks.vd04].map((deskId, d) => [deskId, Array.from({ length: 15 }, (_, m) => [m, states[(d + m) % 4]] as [number, string])]));
+	const sent = await sendDesks(id, observer, batch, key);
+	expect(sent.status(), await sent.text()).toBe(201);
+	const stored = await sent.json();
+	expect(stored.observations).toHaveLength(60);
+	expect(stored.observations[0]).toMatchObject({ deskCode: 'VD01', checkpoint: 'VIMM', minuteUtc: binStart(1), state: 'Serving', revision: 1, current: true });
+	const resent = await sendDesks(id, observer, batch, key);
+	expect(resent.status()).toBe(200);
+	expect((await resent.json()).id).toBe(stored.id);
+	expect((await sendDesks(id, observer, deskBatch(1, [[desks.vd01, [[0, 'Idle']]]]), key)).status(), 'the key with another batch').toBe(409);
+	expect((await sendDesks(id, observer, deskBatch(1, [[desks.vd01, [[0, 'Idle']]]]), `${key}-again`)).status(), 'a minute already observed').toBe(409);
+	expect((await sendDesks(id, observer, deskBatch(2, [[desks.vd01, [[0, 'Idle']]]]))).status(), 'a batch needs a key').toBe(400);
+	expect((await sendDesks(id, observer2, batch, key)).status(), "another observer's identical key is its own batch").toBe(201);
+
+	// Out of range (400): a day not planned, a minute in the future, a desk out of scope, a state that is not one of four.
+	for (const [what, data] of [
+		['three days ago', { ...deskBatch(1, [[desks.vd01, [[0, 'Idle']]]]), binStartUtc: binStart(3 * 96) }],
+		['a minute in the future', deskBatch(-1, [[desks.vd01, [[0, 'Idle']]]])],
+		['an e-gate', deskBatch(2, [[desks.eGate, [[0, 'Idle']]]])],
+		['Unknown', deskBatch(2, [[desks.vd01, [[0, 'Unknown']]]])]
+	] as [string, unknown][]) {
+		const answer = await sendDesks(id, observer, data, `e2e-out-${Date.now()}`);
+		expect(answer.status(), what).toBe(400);
+		expect(await answer.text(), what).not.toMatch(/\d{4}-\d{2}-\d{2}T/);
+	}
+
+	// A correction is the next revision with a reason; only one's own latest; audited.
+	const first = stored.observations[0];
+	const correct = (observationId: string, token: string, data: unknown, correctionKey?: string) =>
+		call('POST', `${capture()}/${id}/desk-observations/${observationId}/corrections`, { token, data, headers: correctionKey ? { 'Idempotency-Key': correctionKey } : undefined });
+	const corrected = await correct(first.id, observer, { state: 'Idle', reason: 'Tapped the wrong row' }, `${key}-fix`);
+	expect(corrected.status(), await corrected.text()).toBe(201);
+	const revision = await corrected.json();
+	expect(revision).toMatchObject({ revision: 2, state: 'Idle', correctsId: first.id, batchId: null, current: true });
+	expect((await correct(first.id, observer, { state: 'Idle', reason: 'Tapped the wrong row' }, `${key}-fix`)).status(), 'resent').toBe(200);
+	expect((await correct(first.id, observer, { state: 'Closed', reason: 'Again' })).status(), 'not the latest').toBe(409);
+	expect((await correct(revision.id, observer2, { state: 'Closed', reason: 'Not mine' })).status(), "another observer's state").toBe(404);
+	expect((await correct(revision.id, observer, { state: 'Closed' })).status(), 'a correction needs a reason').toBe(400);
+	const audit = await (await call('GET', `${admin}/audit-entries?targetId=${revision.id}`, { token: administrator })).json();
+	expect(audit.data.map((e: any) => e.action)).toEqual(['DeskObservation.Corrected']);
+
+	// Border roles read every observer's states; the duty manager gets none (desk-level data is border data).
+	const border = await (await call('GET', `${campaigns()}/${id}/desk-observations?deskId=${desks.vd01}&observerId=${String(claimsOf(observer).sub)}`, { token: manager })).json();
+	expect([border.desksIncluded, border.totalCount]).toEqual([true, 15]);
+	const history = await (await call('GET', `${campaigns()}/${id}/desk-observations?deskId=${desks.vd01}&currentOnly=false`, { token: administrator })).json();
+	expect([history.desksIncluded, history.totalCount]).toEqual([true, 31]);
+	const airportSide = await call('GET', `${campaigns()}/${id}/desk-observations`, { token: lead });
+	expect(airportSide.status()).toBe(200);
+	expect(await airportSide.json()).toMatchObject({ desksIncluded: false, data: [], totalCount: 0 });
+	const own = await (await call('GET', `${capture()}/${id}/desk-observations?currentOnly=false`, { token: observer2 })).json();
+	expect(own.totalCount).toBe(60);
+
+	// Closed: nothing is captured or corrected any more (409).
+	expect((await call('POST', `${campaigns()}/${id}/close`, { token: manager })).status()).toBe(200);
+	expect((await sendDesks(id, observer, deskBatch(2, [[desks.vd01, [[0, 'Idle']]]]), `e2e-late-${Date.now()}`)).status()).toBe(409);
+	expect((await correct(revision.id, observer, { state: 'Closed', reason: 'Late' })).status()).toBe(409);
+	expect((await sendRuns(id, observer, tracerBatch(0, [{ code: 'T-01', joinedAgo: 20 * minute, exitedAgo: 10 * minute }]), `e2e-late-run-${Date.now()}`)).status()).toBe(409);
+});
+
+test('each role reaches only its tracer and desk endpoints, the campaign creator or starter never captures, and other sites answer 404', async () => {
+	const id = await runningWithDesks(`Ground truth roles ${Date.now()}`);
+	const runBody = tracerBatch(0, [{ code: 'T-01', joinedAgo: 20 * minute, exitedAgo: 10 * minute }]);
+	const deskBody = deskBatch(1, [[desks.vd01, [[0, 'Idle']]]]);
+	const rows = (key: string): [string, string, unknown?, string?][] => [
+		['GET', `${campaigns()}/${id}/tracer-runs`],
+		['GET', `${campaigns()}/${id}/desk-observations`],
+		['GET', `${capture()}/${id}/tracer-runs`],
+		['POST', `${capture()}/${id}/tracer-runs`, runBody, `${key}-run`],
+		['GET', `${capture()}/${id}/desk-observations`],
+		['POST', `${capture()}/${id}/desk-observations`, deskBody, `${key}-desk`],
+		['POST', `${capture()}/${id}/desk-observations/${id}/corrections`, { state: 'Idle', reason: 'x' }]
+	];
+	const statuses = async (token: string, key: string) => {
+		const answers: number[] = [];
+		for (const [method, url, data, rowKey] of rows(key)) answers.push((await call(method, url, { token, data, headers: rowKey ? { 'Idempotency-Key': rowKey } : undefined })).status());
+		return answers;
+	};
+
+	// The handler holds no validation permission; the observer only Capture; the duty manager, the administrator and the
+	// border manager read (the duty manager's desk states are an empty page) and never capture.
+	const stamp = Date.now();
+	expect(await statuses(handler, `h-${stamp}`)).toEqual([403, 403, 403, 403, 403, 403, 403]);
+	expect(await statuses(observer, `o-${stamp}`)).toEqual([403, 403, 200, 201, 200, 201, 404]);
+	expect(await statuses(lead, `l-${stamp}`)).toEqual([200, 200, 403, 403, 403, 403, 403]);
+	expect(await statuses(administrator, `a-${stamp}`)).toEqual([200, 200, 403, 403, 403, 403, 403]);
+	expect(await statuses(manager, `m-${stamp}`)).toEqual([200, 200, 403, 403, 403, 403, 403]);
+
+	// Separation of duties: e2e.valdual (duty manager and observer) starts a border campaign and may not capture for it.
+	const created = await call('POST', campaigns(), { token: manager, data: deskCampaignRequest(`Dual ${stamp}`) });
+	const dualStarted = (await created.json()).id as string;
+	expect((await call('POST', `${campaigns()}/${dualStarted}/start`, { token: dual })).status()).toBe(200);
+	const ownRuns = await sendRuns(dualStarted, dual, runBody, `dual-run-${stamp}`);
+	expect(ownRuns.status(), 'its starter').toBe(403);
+	expect((await ownRuns.json()).detail).toContain('created or started');
+	expect((await sendDesks(dualStarted, dual, deskBody, `dual-desk-${stamp}`)).status(), 'its starter').toBe(403);
+	expect((await sendRuns(id, dual, runBody, `dual-other-${stamp}`)).status(), "another manager's campaign").toBe(201);
+
+	// Another site: through its own route and the campaign's site, every new endpoint answers 404.
+	for (const code of [site, 'E2E1']) {
+		for (const path of ['tracer-runs', 'desk-observations'])
+			expect((await call('GET', `${campaigns(code)}/${id}/${path}`, { token: elsewhere })).status(), `${code} ${path}`).toBe(404);
+		expect((await sendRuns(id, observerElsewhere, runBody, `x-run-${stamp}`, code)).status()).toBe(404);
+		expect((await sendDesks(id, observerElsewhere, deskBody, `x-desk-${stamp}`, code)).status()).toBe(404);
+		expect((await call('GET', `${capture(code)}/${id}/tracer-runs`, { token: observerElsewhere })).status()).toBe(404);
+		expect((await call('GET', `${capture(code)}/${id}/desk-observations`, { token: observerElsewhere })).status()).toBe(404);
+	}
+});
+
+test('an account with an airport role and the observer role sees no desk and gets 403 on every desk path, while a pure observer keeps them', async () => {
+	// First security review of ARV-104b (CWE-863, data boundary): desk codes beside minutes are border data. e2e.valdual
+	// holds Terminal duty manager and Validation observer: the capture list shows it no desk, and a desk batch, a correction
+	// and its own desk read answer 403 (decided before anything is read, so an attack payload changes nothing). The pure
+	// observer, the border's own, sees the desks and logs, corrects and reads back.
+	const id = await runningWithDesks(`Desk boundary ${Date.now()}`);
+	const listedFor = async (token: string) => (await (await call('GET', capture(), { token })).json()).find((c: any) => c.id === id);
+	const asDual = await listedFor(dual);
+	expect(asDual).toMatchObject({ desksIncluded: false, desks: [] });
+	expect(asDual.zones.map((z: any) => z.name), 'the zones stay: tracer runs are zone data').toEqual(['Q-A']);
+	const asObserver = await listedFor(observer);
+	expect(asObserver.desksIncluded).toBe(true);
+	expect(asObserver.desks.map((d: any) => d.code)).toEqual(['VD01', 'VD02', 'VD03', 'VD04']);
+
+	const stamp = Date.now();
+	const logged = await sendDesks(id, observer, deskBatch(1, [[desks.vd01, [[0, 'Serving']]]]), `e2e-pure-${stamp}`);
+	expect(logged.status(), await logged.text()).toBe(201);
+	const correction = `${capture()}/${id}/desk-observations/${(await logged.json()).observations[0].id}/corrections`;
+	const corrected = await call('POST', correction, { token: observer, data: { state: 'Idle', reason: 'Tapped the wrong row' } });
+	expect(corrected.status(), await corrected.text()).toBe(201);
+	const ownRead = await call('GET', `${capture()}/${id}/desk-observations?currentOnly=false`, { token: observer });
+	expect(ownRead.status()).toBe(200);
+	expect((await ownRead.json()).totalCount).toBe(2);
+
+	const refused: [string, CallResponse][] = [
+		['a desk batch', await sendDesks(id, dual, deskBatch(1, [[desks.vd02, [[1, 'Idle']]]]), `e2e-dual-desk-${stamp}`)],
+		['a desk batch with markup', await sendDesks(id, dual, deskBatch(1, [[desks.vd02, [[2, xssPayloads[0]]]]]), `e2e-dual-xss-${stamp}`)],
+		['a correction', await call('POST', correction, { token: dual, data: { state: 'Closed', reason: sqlInjectionPayloads[0] } })],
+		['its own desk read', await call('GET', `${capture()}/${id}/desk-observations?currentOnly=false`, { token: dual })],
+		['its own desk read of another campaign', await call('GET', `${capture()}/0199a000-0000-7000-8000-00000000dead/desk-observations`, { token: dual })]
+	];
+	for (const [what, answer] of refused) {
+		expect(answer.status(), what).toBe(403);
+		const body = await answer.text();
+		expect(JSON.parse(body).detail, what).toContain('border data');
+		for (const fragment of [...markupFragments, "OR '1'='1", 'VD0', 'Serving']) expect(body, what).not.toContain(fragment);
+	}
+	expect((await sendRuns(id, dual, tracerBatch(0, [{ code: 'T-31', joinedAgo: 20 * minute, exitedAgo: 10 * minute }]), `e2e-dual-run-${stamp}`)).status(), 'tracer runs are zone data').toBe(201);
+	expect(await (await call('GET', `${campaigns()}/${id}/desk-observations`, { token: dual })).json(), 'as a duty manager').toMatchObject({ desksIncluded: false, data: [], totalCount: 0 });
+
+	// Only the pure observer's states are stored.
+	const stored = await (await call('GET', `${campaigns()}/${id}/desk-observations?currentOnly=false`, { token: manager })).json();
+	expect(stored.totalCount).toBe(2);
+	expect(stored.data.every((o: any) => o.observerId === claimsOf(observer).sub)).toBe(true);
+
+	// Another site: the dual account answers 404 there before the desk rule (the site comes first).
+	expect((await call('GET', `${capture('E2E1')}/${id}/desk-observations`, { token: dual })).status()).toBe(404);
+});
+
+test('attack payloads in tracer and desk batches are refused with 400 or kept as inert text, and oversized batches get 413', async () => {
+	const id = await runningWithDesks(`Ground truth payloads ${Date.now()}`);
+	const run = { zoneId: profile.queueA, tracerCode: 'T-01', joinedUtc: iso(Date.now() - 20 * minute), exitedUtc: iso(Date.now() - 10 * minute), abandoned: false };
+	const refusedRuns: [string, unknown][] = [
+		['SQL as the tracer code', { deviceClockUtc: iso(Date.now()), runs: [{ ...run, tracerCode: sqlInjectionPayloads[0] }] }],
+		['markup as the tracer code', { deviceClockUtc: iso(Date.now()), runs: [{ ...run, tracerCode: xssPayloads[0] }] }],
+		['a name as the tracer code', { deviceClockUtc: iso(Date.now()), runs: [{ ...run, tracerCode: 'Ahmad' }] }],
+		['SQL as the device clock', { deviceClockUtc: sqlInjectionPayloads[2], runs: [run] }],
+		['markup as a time', { deviceClockUtc: iso(Date.now()), runs: [{ ...run, joinedUtc: xssPayloads[1] }] }],
+		['a zone id that is SQL', { deviceClockUtc: iso(Date.now()), runs: [{ ...run, zoneId: sqlInjectionPayloads[0] }] }],
+		['an abandoned flag that is markup', { deviceClockUtc: iso(Date.now()), runs: [{ ...run, abandoned: xssPayloads[0] }] }],
+		['21 runs', { deviceClockUtc: iso(Date.now()), runs: Array.from({ length: 21 }, (_, i) => ({ ...run, tracerCode: `T-${String(i + 10)}` })) }]
+	];
+	for (const [what, data] of refusedRuns) {
+		const answer = await sendRuns(id, observer, data, `e2e-attack-${Date.now()}`);
+		expect(answer.status(), what).toBe(400);
+		const body = await answer.text();
+		for (const fragment of [...markupFragments, "OR '1'='1", 'DROP TABLE', 'Ahmad']) expect(body, what).not.toContain(fragment);
+	}
+
+	const deskRefusals: [string, unknown][] = [
+		['SQL as a state', deskBatch(1, [[desks.vd01, [[0, sqlInjectionPayloads[0]]]]])],
+		['markup as a state', deskBatch(1, [[desks.vd01, [[0, xssPayloads[2]]]]])],
+		['SQL as the bin', { ...deskBatch(1, [[desks.vd01, [[0, 'Idle']]]]), binStartUtc: sqlInjectionPayloads[1] }],
+		['a desk id that is markup', { binStartUtc: binStart(1), desks: [{ deskId: xssPayloads[0], states: Array(15).fill('Idle') }] }],
+		['16 states', { binStartUtc: binStart(1), desks: [{ deskId: desks.vd01, states: Array(16).fill('Idle') }] }],
+		['21 desks', { binStartUtc: binStart(1), desks: Array.from({ length: 21 }, () => ({ deskId: desks.vd01, states: Array(15).fill('Idle') })) }]
+	];
+	for (const [what, data] of deskRefusals) {
+		const answer = await sendDesks(id, observer, data, `e2e-attack-${Date.now()}`);
+		expect(answer.status(), what).toBe(400);
+		const body = await answer.text();
+		for (const fragment of [...markupFragments, "OR '1'='1", 'DROP TABLE']) expect(body, what).not.toContain(fragment);
+	}
+
+	// Keys that are not keys; query values that are not allowed; markup in a correction's reason stays inert text.
+	for (const key of [sqlInjectionPayloads[0], xssPayloads[2], 'short', 'k'.repeat(65)]) {
+		const answer = await sendRuns(id, observer, { deviceClockUtc: iso(Date.now()), runs: [run] }, key);
+		expect(answer.status(), key).toBe(400);
+		expectNoLeak(await answer.text(), key);
+	}
+	for (const query of [`tracerCode=${encodeURIComponent(sqlInjectionPayloads[0])}`, `sortBy=${encodeURIComponent('joinedUtc; DROP TABLE tracer_run')}`, `zoneId=${encodeURIComponent(xssPayloads[0])}`]) {
+		const answer = await call('GET', `${campaigns()}/${id}/tracer-runs?${query}`, { token: manager });
+		expect(answer.status(), query).toBe(400);
+		for (const fragment of markupFragments) expect(await answer.text(), query).not.toContain(fragment);
+	}
+	for (const query of [`sortBy=${encodeURIComponent(xssPayloads[0])}`, `deskId=${encodeURIComponent(sqlInjectionPayloads[0])}`, `fromDate=${encodeURIComponent(sqlInjectionPayloads[4])}`]) {
+		expect((await call('GET', `${campaigns()}/${id}/desk-observations?${query}`, { token: manager })).status(), query).toBe(400);
+	}
+	const logged = await sendDesks(id, observer, deskBatch(1, [[desks.vd02, [[0, 'Idle']]]]), `e2e-inert-${Date.now()}`);
+	expect(logged.status(), await logged.text()).toBe(201);
+	const reason = `${xssPayloads[1]} ${sqlInjectionPayloads[3]}`;
+	const corrected = await call('POST', `${capture()}/${id}/desk-observations/${(await logged.json()).observations[0].id}/corrections`, {
+		token: observer,
+		data: { state: 'Serving', reason }
+	});
+	expect(corrected.status(), await corrected.text()).toBe(201);
+	expect(corrected.headers()['content-type']).toContain('application/json');
+	expectApiSecurityHeaders(corrected);
+	expect((await corrected.json()).reason).toBe(reason);
+
+	// Bodies over the limit: a tracer or desk batch over 16 KB, a correction over 4 KB.
+	const json = { 'Content-Type': 'application/json', 'Idempotency-Key': `e2e-big-${Date.now()}` };
+	const bigRuns = await call('POST', `${capture()}/${id}/tracer-runs`, { token: observer, raw: ' '.repeat(17 * 1024) + JSON.stringify({ deviceClockUtc: iso(Date.now()), runs: [run] }), headers: json });
+	expect(bigRuns.status()).toBe(413);
+	const bigDesks = await call('POST', `${capture()}/${id}/desk-observations`, { token: observer, raw: ' '.repeat(17 * 1024) + JSON.stringify(deskBatch(2, [[desks.vd01, [[0, 'Idle']]]])), headers: json });
+	expect(bigDesks.status()).toBe(413);
+	const bigCorrection = await call('POST', `${capture()}/${id}/desk-observations/${id}/corrections`, {
+		token: observer,
+		raw: JSON.stringify({ state: 'Idle', reason: 'r'.repeat(5 * 1024) }),
+		headers: { 'Content-Type': 'application/json' }
+	});
+	expect(bigCorrection.status()).toBe(413);
 });

@@ -125,6 +125,14 @@ public sealed class AuthSettingsTests
         limits.Auth.PermitLimit.Should().Be(10);
         limits.Auth.WindowSeconds.Should().Be(60);
         new RateLimitingSettings().Auth.PermitLimit.Should().Be(10, "the code default matches the file");
+        // The global limit per client address (ARV-104b review): 1,000 requests a minute in production. A test that needs more
+        // raises it in its own host only (PermissionMatrixTests), never here.
+        limits.Global.PermitLimit.Should().Be(1_000);
+        limits.Global.WindowSeconds.Should().Be(60);
+        limits.Global.QueueLimit.Should().Be(0, "an excess request is refused (429), never queued");
+        (new RateLimitingSettings().Global.PermitLimit, new RateLimitingSettings().Global.WindowSeconds).Should().Be((1_000, 60), "the code default matches the file");
+        var production = Base("k8s-prd").GetSection(RateLimitingSettings.SectionName).Get<RateLimitingSettings>().Global;
+        (production.PermitLimit, production.WindowSeconds).Should().Be((1_000, 60), "k8s-prd keeps the base file's global limit");
     }
 
     [Theory]

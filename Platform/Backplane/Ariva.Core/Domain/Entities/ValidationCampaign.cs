@@ -13,12 +13,18 @@ namespace Ariva.Core.Domain.Entities;
 /// (a step-up critical action). Planned, Running, Closed; a closed campaign never changes. The only people it names are
 /// Ariva user ids (who created, started and closed it; the observer of each count), never a name (data boundary).
 /// <para>
+/// Since ARV-104b a campaign also holds the timed tracers of its queue zones (<see cref="RecordTracerRuns"/>) and, when border
+/// desks are in its scope (<see cref="Desks"/>, set at planning), the observers' per-minute desk states
+/// (<see cref="ObserveDesks"/>, corrected as new revisions, <see cref="CorrectDeskObservation"/>). A campaign planned before
+/// ARV-104b has no desks and takes no desk observations.
+/// </para>
+/// <para>
 /// The targets (bins per line, tracer runs) are placeholders until the pilot's KPI annex answers TC-04: a campaign created
 /// without them takes <see cref="DefaultTargetBinsPerLine"/> and <see cref="DefaultTargetTracerRuns"/> and says so
 /// (<see cref="TargetsPlaceholder"/>).
 /// </para>
 /// </summary>
-public class ValidationCampaign : EntityBase<ValidationCampaign>, ISiteBound
+public partial class ValidationCampaign : EntityBase<ValidationCampaign>, ISiteBound
 {
     #region Constants
 
@@ -26,6 +32,9 @@ public class ValidationCampaign : EntityBase<ValidationCampaign>, ISiteBound
     public const int MaxZones = 50;
     public const int MaxLines = 200;
     public const int MaxDays = 31;
+
+    /// <summary>Border desks in a campaign's scope, at most (ARV-104b).</summary>
+    public const int MaxDesks = 100;
 
     /// <summary>The earliest planned day, in days before the site's today at creation (counts kept on paper are entered later).</summary>
     public const int DaysBack = 31;
@@ -64,12 +73,14 @@ public class ValidationCampaign : EntityBase<ValidationCampaign>, ISiteBound
 
     /// <summary>
     /// A planned campaign over the published <paramref name="profile"/>, its queue zones <paramref name="zoneIds"/>, the lines
-    /// <paramref name="lineIds"/> of those zones (or of their overflow bands) and the local <paramref name="days"/>; the
-    /// service has checked each rule (<see cref="ScopeProblem"/>, <see cref="AreValidDays"/>, <see cref="AreValidTargets"/>)
+    /// <paramref name="lineIds"/> of those zones (or of their overflow bands), the local <paramref name="days"/> and, since
+    /// ARV-104b, the border <paramref name="desks"/> observers log (none by default); the service has checked each rule
+    /// (<see cref="ScopeProblem"/>, <see cref="AreValidDays"/>, <see cref="AreValidTargets"/>, <see cref="DeskScopeProblem"/>)
     /// and this constructor enforces them again.
     /// </summary>
     public ValidationCampaign(string name, ZoneProfile profile, IReadOnlyCollection<Guid> zoneIds, IReadOnlyCollection<Guid> lineIds,
-        IReadOnlyCollection<DateOnly> days, DateOnly today, int? targetBinsPerLine, int? targetTracerRuns, Guid createdById, DateTime utcNow)
+        IReadOnlyCollection<DateOnly> days, DateOnly today, int? targetBinsPerLine, int? targetTracerRuns, Guid createdById, DateTime utcNow,
+        IReadOnlyCollection<Desk> desks = null)
     {
         ArgumentNullException.ThrowIfNull(profile);
         RequireUtc(utcNow, nameof(utcNow));
@@ -83,6 +94,9 @@ public class ValidationCampaign : EntityBase<ValidationCampaign>, ISiteBound
             throw new ArgumentException(ValidationErrors.InvalidDays, nameof(days));
         if (!AreValidTargets(targetBinsPerLine, targetTracerRuns))
             throw new ArgumentException(ValidationErrors.InvalidTargets, nameof(targetBinsPerLine));
+        desks ??= [];
+        if (DeskScopeProblem(profile.SiteCode, desks.Select(d => d?.Id ?? Guid.Empty).ToList(), desks) is { } deskScope)
+            throw new ArgumentException(deskScope, nameof(desks));
 
         SiteCode = profile.SiteCode;
         Name = DisplayText.Require(name, MaxNameLength, nameof(name));
@@ -101,6 +115,8 @@ public class ValidationCampaign : EntityBase<ValidationCampaign>, ISiteBound
             Zones.Add(new ValidationCampaignZone(this, zone));
         foreach (var line in lineIds.Select(id => profile.Lines.First(l => l.Id == id)).OrderBy(l => l.Name, StringComparer.Ordinal))
             Lines.Add(new ValidationCampaignLine(this, line, OwningQueueZone(line)));
+        foreach (var desk in desks.OrderBy(d => d.Checkpoint.Code, StringComparer.Ordinal).ThenBy(d => d.Code, StringComparer.Ordinal))
+            Desks.Add(new ValidationCampaignDesk(this, desk));
     }
 
     #endregion
@@ -139,6 +155,9 @@ public class ValidationCampaign : EntityBase<ValidationCampaign>, ISiteBound
 
     public virtual IList<ValidationCampaignZone> Zones { get; protected set; } = [];
     public virtual IList<ValidationCampaignLine> Lines { get; protected set; } = [];
+
+    /// <summary>The border desks observers log minute by minute (ARV-104b); none for a campaign planned without them.</summary>
+    public virtual IList<ValidationCampaignDesk> Desks { get; protected set; } = [];
 
     /// <summary>The planned local days in ascending order (none when the stored text is not valid).</summary>
     public virtual IReadOnlyList<DateOnly> Days =>
@@ -358,7 +377,7 @@ public class ValidationCampaign : EntityBase<ValidationCampaign>, ISiteBound
     /// <summary>What the audit log keeps of the campaign: no names of people, only its own name quoted as a JSON string.</summary>
     public virtual string AuditSummary() =>
         string.Create(CultureInfo.InvariantCulture,
-            $"site={SiteCode}; name={System.Text.Json.JsonSerializer.Serialize(Name)}; status={Status}; profileVersion={ProfileVersion}; zones={Zones.Count}; lines={Lines.Count}; days={PlannedDays}; " +
+            $"site={SiteCode}; name={System.Text.Json.JsonSerializer.Serialize(Name)}; status={Status}; profileVersion={ProfileVersion}; zones={Zones.Count}; lines={Lines.Count}; desks={Desks.Count}; days={PlannedDays}; " +
             $"targets={TargetBinsPerLine}/{TargetTracerRuns}{(TargetsPlaceholder ? " (placeholder)" : string.Empty)}");
 
     private static void RequireUtc(DateTime value, string paramName)
@@ -425,4 +444,35 @@ public class ValidationCampaignLine : EntityBase<ValidationCampaignLine>
 
     [MaxLength(200)]
     public virtual string QueueZoneName { get; protected set; }
+}
+
+/// <summary>
+/// A border desk in a campaign's scope (ARV-104b): a staffed immigration or emigration desk of the campaign's site, with its
+/// checkpoint's and its own code copied (the key site/checkpoint/desk of its <c>desk_minute</c> rows, ARV-104f). Desk-level
+/// border data: shown to border roles only.
+/// </summary>
+public class ValidationCampaignDesk : EntityBase<ValidationCampaignDesk>
+{
+    protected ValidationCampaignDesk()
+    {
+    }
+
+    internal ValidationCampaignDesk(ValidationCampaign campaign, Desk desk)
+    {
+        Campaign = campaign;
+        SiteCode = campaign.SiteCode;
+        DeskId = desk.Id.GetValueOrDefault();
+        CheckpointCode = desk.Checkpoint.Code;
+        DeskCode = desk.Code;
+    }
+
+    public virtual ValidationCampaign Campaign { get; protected set; }
+    public virtual string SiteCode { get; protected set; }
+    public virtual Guid DeskId { get; protected set; }
+
+    [MaxLength(16)]
+    public virtual string CheckpointCode { get; protected set; }
+
+    [MaxLength(16)]
+    public virtual string DeskCode { get; protected set; }
 }

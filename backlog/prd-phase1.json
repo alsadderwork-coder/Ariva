@@ -386,7 +386,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 16,
-      "passes": false,
+      "passes": true,
       "notes": "Size M.",
       "dependsOn": [
         "ARV-104a"
@@ -409,7 +409,7 @@
       ],
       "priority": 17,
       "passes": false,
-      "notes": "Size M. Pure code, no persistence.",
+      "notes": "Size M. Pure code, no persistence. From the ARV-104b security review (2026-10-08), recommended: flag tracer batches whose measured clock offset differs from the same observer's median offset by more than a few seconds (a stale clock reading or a device whose time was changed mid-campaign); report each observer's offset spread (minimum, median, maximum); and report the wait error's sensitivity to a plus or minus shift of the offsets (for example plus or minus 2 seconds), so a reader sees how much the clock correction matters. Owner decisions 2026-10-08 (Proposed for the KPI annex): abandoned tracer runs are left out of the wait error and the bias and reported separately with their count; tracer runs are never corrected.",
       "dependsOn": [
         "ARV-113",
         "ARV-114a"
@@ -482,7 +482,7 @@
       ],
       "priority": 20,
       "passes": false,
-      "notes": "Size M. Online capture only; an offline-capable tablet would need an ADR (tokens never in web storage). From the ARV-104a security review (2026-10-08): generate each Idempotency-Key as a random UUID per bin submission (crypto.randomUUID, kept in memory with the unsent bin and reused only for its own retries; never derived from the user, line or time, since a key is unique per observer); the correction form tells observers not to name people in the reason (counts carry no person beyond the observer's account id, data boundary); Playwright XSS probes on line names, campaign names and correction reasons; the campaign's creator or starter gets 403 on capture (owner decision 2026-10-08) and the screen shows that as a plain message.",
+      "notes": "Size M. Online capture only; an offline-capable tablet would need an ADR (tokens never in web storage). From the ARV-104a security review (2026-10-08): generate each Idempotency-Key as a random UUID per bin submission (crypto.randomUUID, kept in memory with the unsent bin and reused only for its own retries; never derived from the user, line or time, since a key is unique per observer); the correction form tells observers not to name people in the reason (counts carry no person beyond the observer's account id, data boundary); Playwright XSS probes on line names, campaign names and correction reasons; the campaign's creator or starter gets 403 on capture (owner decision 2026-10-08) and the screen shows that as a plain message. From ARV-104b (2026-10-08): a tracer batch carries the tablet's own clock reading (deviceClockUtc) read again at every send, retries included, and a required Idempotency-Key (a random UUID per batch, reused only for its retries); show the measured clockOffsetMs from the answer; a tablet more than 5 minutes off gets 400, so prompt to set the time automatically; tracer codes are labels T-01 to T-999 typed from the campaign's roster, never names.",
       "dependsOn": [
         "ARV-104a",
         "ARV-104b"
@@ -503,7 +503,7 @@
       ],
       "priority": 21,
       "passes": false,
-      "notes": "Size S.",
+      "notes": "Size S. From ARV-104b (2026-10-08): one batch per 15-minute UTC bin with exactly 15 states per desk (null for a minute not observed), only minutes that have ended, a required Idempotency-Key (random UUID per batch, kept for its retries); the desks come from GET .../capture/campaigns (desks of the campaign's scope); align the minute grid to Ariva's clock (the HTTP Date header of an answer); corrections through .../desk-observations/{id}/corrections with a reason; XSS probes on desk codes. From the ARV-104b security review (2026-10-08): the correction form warns observers not to name people in the reason (it is kept beside a desk and a minute, which can be joined with AMAN's records; Ariva cannot detect a name in text); show no desk grid when the capture list answers desksIncluded false (an account with an airport role and the observer role), and handle 403 on desk batches, corrections and own desk reads as a plain message.",
       "dependsOn": [
         "ARV-104c"
       ]

@@ -3648,6 +3648,166 @@
     {
       "host": "main",
       "method": "GET",
+      "route": "/api/v1/sites/{siteCode}/validation/campaigns/{id:guid}/tracer-runs",
+      "access": "permission",
+      "permissions": [
+        "ViewValidation"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/sites/{siteCode}/validation/campaigns/{id:guid}/desk-observations",
+      "access": "permission",
+      "permissions": [
+        "ViewValidation"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/sites/{siteCode}/validation/capture/campaigns/{id:guid}/tracer-runs",
+      "access": "permission",
+      "permissions": [
+        "CaptureValidation"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 403,
+        "ValidationObserver": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/sites/{siteCode}/validation/capture/campaigns/{id:guid}/tracer-runs",
+      "access": "permission",
+      "permissions": [
+        "CaptureValidation"
+      ],
+      "body": {
+        "deviceClockUtc": "2026-10-08T06:30:00Z",
+        "runs": [
+          {
+            "zoneId": "0199a000-0000-7000-8000-00000000a1a1",
+            "tracerCode": "T-07",
+            "joinedUtc": "2026-10-08T06:00:00Z",
+            "exitedUtc": "2026-10-08T06:12:30Z",
+            "abandoned": false
+          }
+        ]
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 403,
+        "ValidationObserver": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/sites/{siteCode}/validation/capture/campaigns/{id:guid}/desk-observations",
+      "access": "permission",
+      "permissions": [
+        "CaptureValidation"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 403,
+        "ValidationObserver": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/sites/{siteCode}/validation/capture/campaigns/{id:guid}/desk-observations",
+      "access": "permission",
+      "permissions": [
+        "CaptureValidation"
+      ],
+      "body": {
+        "binStartUtc": "2026-10-08T06:00:00Z",
+        "desks": [
+          {
+            "deskId": "0199a000-0000-7000-8000-00000000a1a1",
+            "states": [
+              "Serving",
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 403,
+        "ValidationObserver": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/sites/{siteCode}/validation/capture/campaigns/{id:guid}/desk-observations/{observationId:guid}/corrections",
+      "access": "permission",
+      "permissions": [
+        "CaptureValidation"
+      ],
+      "body": {
+        "state": "Idle",
+        "reason": "Matrix"
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 403,
+        "ValidationObserver": 404
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
       "route": "/api/v1/admin/sites/{siteCode}/calendar",
       "access": "permission",
       "permissions": [

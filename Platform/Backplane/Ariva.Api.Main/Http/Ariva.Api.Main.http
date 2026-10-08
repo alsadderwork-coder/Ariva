@@ -261,3 +261,35 @@ Content-Type: application/json
 ### One's own counts
 GET {{Ariva.Api.Main_HostAddress}}/api/v1/sites/DMO/validation/capture/campaigns/{{campaignId}}/counts?currentOnly=false
 Authorization: Bearer {{accessToken}}
+
+### ARV-104b: a tracer batch (Validation.Capture). deviceClockUtc is the tablet's own clock when it sends (read again at every
+# retry); Ariva measures the offset and corrects the runs. The Idempotency-Key (a random UUID per batch, kept for its retries) is required.
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/sites/DMO/validation/capture/campaigns/{{campaignId}}/tracer-runs
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+Idempotency-Key: 6a1d0f52-8c3e-4b97-a2f4-1e7c9d3b5a60
+
+{ "deviceClockUtc": "2026-10-12T06:31:02.250Z", "runs": [ { "zoneId": "{{queueZoneId}}", "tracerCode": "T-07", "joinedUtc": "2026-10-12T06:02:10.000Z", "exitedUtc": "2026-10-12T06:19:40.500Z", "abandoned": false } ] }
+
+### Every observer's tracer runs (Validation.View), or one's own under capture/
+GET {{Ariva.Api.Main_HostAddress}}/api/v1/sites/DMO/validation/campaigns/{{campaignId}}/tracer-runs?tracerCode=T-07&sortBy=joinedUtc
+Authorization: Bearer {{accessToken}}
+
+### A 15-minute batch of desk states: per desk in scope exactly 15 states (Closed, Idle, Serving, Paused or null), minutes that have ended
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/sites/DMO/validation/capture/campaigns/{{campaignId}}/desk-observations
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+Idempotency-Key: 2c7e4a19-5d80-4f36-b1e2-8a9f0c6d4b17
+
+{ "binStartUtc": "2026-10-12T06:15:00Z", "desks": [ { "deskId": "{{deskId}}", "states": ["Serving", "Serving", "Idle", "Idle", "Paused", "Paused", "Serving", "Serving", "Serving", "Idle", "Idle", "Closed", "Closed", null, null] } ] }
+
+### Correct one's own latest desk state: a new revision with a reason (audited)
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/sites/DMO/validation/capture/campaigns/{{campaignId}}/desk-observations/{{observationId}}/corrections
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "state": "Idle", "reason": "Tapped the wrong row" }
+
+### Every observer's desk states: border roles only (BorderDesks.View); a duty manager gets desksIncluded false and no rows
+GET {{Ariva.Api.Main_HostAddress}}/api/v1/sites/DMO/validation/campaigns/{{campaignId}}/desk-observations?currentOnly=false&sortBy=minuteUtc
+Authorization: Bearer {{accessToken}}
