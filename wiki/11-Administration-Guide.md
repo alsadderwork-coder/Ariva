@@ -56,7 +56,7 @@ ARV-014 adds `api/v1/admin/airports`, `terminals`, `levels`, `checkpoints` and `
 
 | Entity | Rules |
 |---|---|
-| Airport | IATA code (three letters, never changed), optional ICAO code, name, IANA time zone. Deployment-wide: only an administrator with every site creates, changes or deletes airports; every topology reader can read them |
+| Airport | IATA code (three letters, never changed), optional ICAO code, name, IANA time zone (picked from the list, grouped by region with the current UTC offset; the server checks it). Deployment-wide: only an administrator with every site creates, changes or deletes airports; every topology reader can read them |
 | Terminal | Code unique in the airport; belongs to one site, fixed at creation, which every level, checkpoint and desk under it inherits |
 | Level | Code and floor number unique in the terminal; width and depth in metres (up to 2,000) define the floor coordinate system for zones |
 | Checkpoint | Kind `CheckIn`, `Security`, `Emigration` or `Immigration`, fixed at creation |
