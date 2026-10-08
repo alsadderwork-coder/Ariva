@@ -99,7 +99,8 @@ public sealed record QueueEngineSettings
 /// part of it after the last processed event, so they never reach into minutes already processed. Leaving backwards
 /// over an entry line abandons (the tracked person, or the latest anonymous entrant); entrants not resolved within
 /// T_censor are censored; a tracked person with position samples not seen within the hand-over window is fragmented;
-/// when every zone of the queue reports zero occupancy the FIFO sequence is re-anchored (F5).
+/// when every zone of the queue reports zero occupancy the FIFO sequence is re-anchored (F5), checked once every event of
+/// the reading's instant has been applied, so the order in which the zones' readings of one instant arrive never matters.
 /// </para>
 /// Anonymous crossings of an overflow band's entry line are not counted: without a track the same person crosses the
 /// queue's entry line later, and counting both would double the entries.
@@ -140,6 +141,9 @@ public sealed partial class QueueStateEngine
     private DateTime _cursor = DateTime.MinValue;
     private readonly PriorityQueue<(string Key, DateTime Seen), DateTime> _handovers = new();
     private bool _residualSuspect;
+    // The time of the occupancy reading applied last, until the events of its instant are all applied (never kept past a
+    // ProcessUpTo, so it is not part of the snapshot).
+    private DateTime? _anchorDueUtc;
 
     private readonly Dictionary<DateTime, (long In, long Out, long DegradedIn, long DegradedOut, long TrackedIn)> _movements = [];
     private readonly Dictionary<(DateTime Minute, string Line), (QueueLineRole Role, long In, long Out)> _lines = [];
@@ -314,6 +318,10 @@ public sealed partial class QueueStateEngine
         var sampledThrough = _watermark;
         while (_buffer.TryPeek(out var item, out var key) && key.Time <= target)
         {
+            // Every event of the last reading's instant has been applied: the queue may be observed empty there (F5).
+            if (_anchorDueUtc is { } due && key.Time != due)
+                Reanchor();
+
             // A boundary before this event's time sees every reading up to it, and none after it.
             if (key.Time > sampledThrough)
             {
@@ -328,6 +336,9 @@ public sealed partial class QueueStateEngine
                 var before = key.Time.AddTicks(-1);
                 if (before > _watermark)
                     _watermark = before;
+                // The check is never carried into the next step (it is not part of the snapshot): an instant split by a
+                // full step is checked with the events applied so far, the same way on every run of the same records.
+                Reanchor();
                 return;
             }
 
@@ -340,6 +351,7 @@ public sealed partial class QueueStateEngine
                 _cursor = key.Time;
         }
 
+        Reanchor();
         Expire(target);
         if (target > sampledThrough)
             Sample(sampledThrough, target, inclusive: true);
@@ -649,14 +661,29 @@ public sealed partial class QueueStateEngine
         // The readings of the minute, for the occupancy sanity check of F18 (ARV-114a).
         var readingKey = (new DateTime(o.TimeUtc.Ticks - o.TimeUtc.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc), o.ZoneName);
         _readings[readingKey] = _readings.TryGetValue(readingKey, out var seen) ? (Math.Min(seen.Min, o.Count), Math.Max(seen.Max, o.Count)) : (o.Count, o.Count);
-        if (!AllZonesReport(o.TimeUtc, out var total, out _) || total != 0)
+        // The queue zone and its bands are often read by different devices at the same instant, and their batches arrive
+        // in any order: the check for an empty queue waits until every event of this instant has been applied
+        // (ProcessUpTo), so it never sees one zone's new reading beside another's previous one.
+        _anchorDueUtc = o.TimeUtc;
+    }
+
+    /// <summary>
+    /// F5 re-anchoring, once every event at <see cref="_anchorDueUtc"/> has been applied: when every zone of the queue
+    /// reads zero there, whoever the FIFO sequence still holds from before then is a counting residual.
+    /// </summary>
+    private void Reanchor()
+    {
+        if (_anchorDueUtc is not { } at)
+            return;
+        _anchorDueUtc = null;
+        if (!AllZonesReport(at, out var total, out _) || total != 0)
             return;
 
         // The queue is observed empty: whoever the FIFO sequence still holds from before now is a counting residual (F5).
         var dropped = 0;
-        while (_held.First is { } first && first.Value.EntryUtc <= o.TimeUtc)
+        while (_held.First is { } first && first.Value.EntryUtc <= at)
         {
-            Resolve(first.Value, o.TimeUtc, first.Value.TrackKey is null ? EntrantOutcome.Reanchored : EntrantOutcome.Fragmented);
+            Resolve(first.Value, at, first.Value.TrackKey is null ? EntrantOutcome.Reanchored : EntrantOutcome.Fragmented);
             dropped++;
         }
 

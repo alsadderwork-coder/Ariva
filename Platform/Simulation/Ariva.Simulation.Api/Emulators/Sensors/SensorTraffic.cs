@@ -14,9 +14,10 @@ public enum EmulatedDialect
 
 /// <summary>
 /// What a sensor sends. The first sensor of a queue zone counts the zone (per-passenger crossings of its entry and exit
-/// lines and its occupancy); the first sensor of an overflow band reports the band's occupancy; the fourth to sixth
-/// sensors over the arrivals Visitors hall (S-18 to S-20) report the staff and service zones of five Visitors desks each
-/// (ARV-116); every other sensor only reports that it is alive.
+/// lines and its occupancy); the first sensor of an overflow band reports the band's occupancy; a desk sensor reports the
+/// staff and service zones of its desks (ARV-116: at DMO the fourth to sixth sensors over the arrivals Visitors hall,
+/// S-18 to S-20, five Visitors desks each; at AUH-TA the D- sensors, up to four counters each, ARV-139b); every other
+/// sensor only reports that it is alive. The scenario site fixes each sensor's role (<see cref="SensorDef.Role"/>).
 /// </summary>
 public enum SensorRole
 {
@@ -39,29 +40,30 @@ internal static class SensorTraffic
 {
     private const double Epsilon = 1e-9;
 
-    /// <summary>The queue zone a sensor's device belongs to: its own zone, or the queue an overflow band feeds.</summary>
-    public static string QueueZoneOf(string sensorZone) => sensorZone switch
+    /// <summary>The queue zone a reference (DMO) sensor's device belongs to: its own zone, or the queue an overflow band feeds.</summary>
+    public static string QueueZoneOf(string sensorZone) => sensorZone is null ? null : ScenarioModel.Bands.GetValueOrDefault(sensorZone, sensorZone);
+
+    /// <summary>Whether a queue zone of the reference site (DMO) has an overflow band with a lead sensor (A-VIS, D-VIS and SEC-N).</summary>
+    public static bool HasOverflowBand(string queueZone) => HasOverflowBand(ScenarioSites.Dmo, queueZone);
+
+    /// <summary>Whether a queue zone of a site has an overflow band with a lead sensor (AUH-TA: A-VIS and A-EG).</summary>
+    public static bool HasOverflowBand(ScenarioSite site, string queueZone)
     {
-        "A-OV" => "A-VIS",
-        "D-OV" => "D-VIS",
-        "SEC-OV" => "SEC-N",
-        _ => sensorZone
-    };
+        ArgumentNullException.ThrowIfNull(site);
+        return site.Sensors.Any(s => s.Role == SensorRole.OverflowLead && string.Equals(s.QueueZone, queueZone, StringComparison.Ordinal));
+    }
 
-    /// <summary>Whether a queue zone has an overflow band with a lead sensor (A-VIS, D-VIS and SEC-N).</summary>
-    public static bool HasOverflowBand(string queueZone) =>
-        ScenarioModel.Sensors.Any(s => RoleOf(s) == SensorRole.OverflowLead && string.Equals(QueueZoneOf(s.Zone), queueZone, StringComparison.Ordinal));
+    /// <summary>The reference site's (DMO) sensor with this id, or null.</summary>
+    public static SensorDef Sensor(string id) => ScenarioSites.Dmo.Sensor(id);
 
-    /// <summary>The scenario sensor with this id, or null.</summary>
-    public static SensorDef Sensor(string id) => ScenarioModel.Sensors.FirstOrDefault(s => string.Equals(s.Id, id, StringComparison.Ordinal));
+    /// <summary>A scenario site's sensor with this id, or null (also for a site the simulator does not play).</summary>
+    public static SensorDef Sensor(string site, string id) => ScenarioSites.Find(site)?.Sensor(id);
 
-    /// <summary>The queue whose desks have staff and service zone sensors (ARV-116): arrivals Visitors, desks AR-08 to AR-22.</summary>
-    public const string DeskZoneQueue = "A-VIS";
+    /// <summary>The queue whose desks have staff and service zone sensors at DMO (ARV-116): arrivals Visitors, desks AR-08 to AR-22.</summary>
+    public const string DeskZoneQueue = ScenarioModel.DeskZoneQueue;
 
-    /// <summary>The first sensor slot of <see cref="DeskZoneQueue"/> that watches desks; each such sensor watches <see cref="DesksPerSensor"/> desks.</summary>
-    private const int FirstDeskSlot = 3;
-
-    public const int DesksPerSensor = 5;
+    /// <summary>Desks per desk sensor at DMO (AUH-TA's watch up to four counters).</summary>
+    public const int DesksPerSensor = ScenarioModel.DesksPerSensor;
 
     /// <summary>The staff zone behind a desk (F10 rank 3), as a zone profile with desk zones names it.</summary>
     public static string StaffZoneOf(string desk) => desk + " staff";
@@ -73,18 +75,13 @@ internal static class SensorTraffic
     public static IReadOnlyList<string> DesksOf(SensorDef sensor)
     {
         ArgumentNullException.ThrowIfNull(sensor);
-        if (!string.Equals(sensor.Zone, DeskZoneQueue, StringComparison.Ordinal) || sensor.Slot < FirstDeskSlot)
-            return [];
-        var servers = ScenarioModel.Queues[ScenarioModel.Q(DeskZoneQueue)].Servers;
-        return [.. servers.Skip((sensor.Slot - FirstDeskSlot) * DesksPerSensor).Take(DesksPerSensor)];
+        return sensor.Desks;
     }
 
     public static SensorRole RoleOf(SensorDef sensor)
     {
         ArgumentNullException.ThrowIfNull(sensor);
-        if (sensor.Slot != 0)
-            return DesksOf(sensor).Count > 0 ? SensorRole.DeskZones : SensorRole.Heartbeat;
-        return ScenarioModel.QueueIndex.ContainsKey(sensor.Zone) ? SensorRole.QueueLead : SensorRole.OverflowLead;
+        return sensor.Role;
     }
 
     /// <summary>
@@ -99,11 +96,14 @@ internal static class SensorTraffic
         ArgumentNullException.ThrowIfNull(wallOf);
         if (minute is < 0 or >= ScenarioModel.Day)
             throw new ArgumentOutOfRangeException(nameof(minute));
-        if (ScenarioDay.SensorOffline(sensor.Id, minute))
+        if (!string.Equals(sensor.SiteCode, day.Site.Code, StringComparison.Ordinal))
+            throw new ArgumentException("The sensor belongs to another scenario site than the day.", nameof(sensor));
+        if (day.IsSensorOffline(sensor.Id, minute))
             return null;
 
-        var queueZone = QueueZoneOf(sensor.Zone);
-        var role = RoleOf(sensor);
+        var site = day.Site;
+        var queueZone = sensor.QueueZone;
+        var role = sensor.Role;
         var path = $"api/v1/ingest/zones/{Uri.EscapeDataString(queueZone)}/{(dialect == EmulatedDialect.Xovis ? "xovis" : "events")}";
         var from = wallOf(minute);
         var to = wallOf(minute + 1);
@@ -113,20 +113,20 @@ internal static class SensorTraffic
         var occupancy = new List<(string Zone, int Count)>();
         if (role == SensorRole.QueueLead)
         {
-            var q = ScenarioModel.Q(queueZone);
+            var q = site.Q(queueZone);
             var i = minute + ScenarioModel.Pre;
             Passengers(day.CumA[q], day.A[q], i, queueZone, minute, wallOf, entries);
             Passengers(day.CumD[q], day.D[q], i, queueZone, minute, wallOf, exits);
             // A queue with an overflow band counts up to its snake capacity (the run's, ARV-115); the band's lead counts the
             // rest, so that Ariva's sum of the queue zone and its bands is the queue (ARV-064).
             var inQueue = OccupancyAt(day, q, i);
-            if (HasOverflowBand(queueZone) && day.SnakeCapacity(queueZone) is { } capacity)
+            if (HasOverflowBand(site, queueZone) && day.SnakeCapacity(queueZone) is { } capacity)
                 inQueue = Math.Min(inQueue, (int)capacity);
             occupancy.Add((queueZone, inQueue));
         }
         else if (role == SensorRole.OverflowLead)
         {
-            var q = ScenarioModel.Q(queueZone);
+            var q = site.Q(queueZone);
             var occupied = OccupancyAt(day, q, minute + ScenarioModel.Pre);
             var cap = day.SnakeCapacity(queueZone) is { } c ? (int)c : int.MaxValue;
             occupancy.Add((sensor.Zone, Math.Max(0, occupied - cap)));
@@ -136,8 +136,8 @@ internal static class SensorTraffic
             // ARV-116: each watched desk's staff zone holds the officer while the desk is serving or idle, and its service
             // zone a passenger while serving; a paused, closed or out-of-service desk has both empty. A desk the scenario
             // marks unknown is not reported (its zones read nothing, as an occluded zone would), so its sources go stale.
-            var desks = DesksOf(sensor);
-            foreach (var server in day.ServerStates(ScenarioModel.Q(queueZone), minute).Where(s => desks.Contains(s.Id)))
+            var desks = sensor.Desks;
+            foreach (var server in day.ServerStates(site.Q(queueZone), minute).Where(s => desks.Contains(s.Id)))
             {
                 if (server.State == "unknown")
                     continue;

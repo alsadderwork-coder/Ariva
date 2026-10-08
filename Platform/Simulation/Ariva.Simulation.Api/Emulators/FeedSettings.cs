@@ -181,8 +181,19 @@ public sealed class ImmigrationEmulatorSettings : IValidatableObject
 }
 
 /// <summary>
-/// Simulation:Aodb. The emulated AODB (ARV-029): the site's airport (IATA), the Ariva integration client it pushes AIDX
-/// with (scope flights:write), and the API key Ariva's ACRIS pull presents (its header and SHA-256; never the key).
+/// The emulated AODB of a scenario site other than the reference (ARV-139b, Simulation:Aodb:Sites:{site}): the Ariva
+/// integration client it pushes AIDX with (scope flights:write on that site). Its airport and Ariva site are the scenario
+/// site's (AUH-TA: airport AUH, site AUH-TA); without a client it keeps its ACRIS snapshot and pushes nothing.
+/// </summary>
+public sealed class AodbSiteSettings
+{
+    public IntegrationClientSettings Client { get; set; } = new();
+}
+
+/// <summary>
+/// Simulation:Aodb. The emulated AODB (ARV-029): the reference site's airport (IATA), the Ariva integration client it
+/// pushes AIDX with (scope flights:write), and the API key Ariva's ACRIS pull presents (its header and SHA-256; never the
+/// key); ARV-139b: <see cref="Sites"/> holds the client of each other scenario site's AODB (AUH-TA).
 /// </summary>
 public sealed class AodbEmulatorSettings : IValidatableObject
 {
@@ -193,12 +204,27 @@ public sealed class AodbEmulatorSettings : IValidatableObject
     public string AcrisHeader { get; set; } = "X-Api-Key";
     public string AcrisKeySha256 { get; set; }
 
+    /// <summary>The AODBs of the other scenario sites, by Ariva site code (AUH-TA).</summary>
+    public Dictionary<string, AodbSiteSettings> Sites { get; set; } = new(StringComparer.Ordinal);
+
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
         if (Airport is null || !FeedRules.Airport().IsMatch(Airport))
             yield return new ValidationResult("Simulation:Aodb:Airport is the site airport's IATA code.");
         foreach (var problem in Client?.Problems("Simulation:Aodb:Client") ?? [])
             yield return new ValidationResult(problem);
+        foreach (var (site, aodb) in Sites ?? [])
+        {
+            // A site's code is named only once it is known to be one of the simulator's (never a configured value as such).
+            if (!Scenarios.ScenarioEngine.HasSite(site) || site == Scenarios.ScenarioEngine.ReferenceSite)
+            {
+                yield return new ValidationResult("Simulation:Aodb:Sites holds only scenario sites other than the reference (AUH-TA).");
+                continue;
+            }
+
+            foreach (var problem in aodb?.Client?.Problems($"Simulation:Aodb:Sites:{site}:Client") ?? [])
+                yield return new ValidationResult(problem);
+        }
         if (AcrisHeader is null || !FeedRules.Header().IsMatch(AcrisHeader) ||
             AcrisHeader.ToUpperInvariant() is "AUTHORIZATION" or "COOKIE" or "HOST" or "CONTENT-LENGTH" or "TRANSFER-ENCODING")
             yield return new ValidationResult("Simulation:Aodb:AcrisHeader is a header name other than a transport or credential header.");

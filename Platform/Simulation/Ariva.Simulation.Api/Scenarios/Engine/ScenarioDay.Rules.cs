@@ -87,17 +87,12 @@ internal sealed partial class ScenarioDay
 
     private sealed record Target(int? Q, string Sensor, string Zone);
 
-    private static QueueDef ZoneDef(string zone)
+    private QueueDef ZoneDef(string zone)
     {
         if (QueueIndex.TryGetValue(zone, out var q))
             return Queues[q];
-        return zone switch
-        {
-            "A-OV" => Queues[Q("A-VIS")],
-            "D-OV" => Queues[Q("D-VIS")],
-            "SEC-OV" => Queues[Q("SEC-N")],
-            _ => null
-        };
+        // An overflow band stands for the queue it feeds (DMO: A-OV, D-OV, SEC-OV; AUH-TA: A-VIS-OV, A-EG-OV).
+        return Site.Bands.TryGetValue(zone, out var queue) ? Queues[Q(queue)] : null;
     }
 
     private static string ZoneOwner(QueueDef def)
@@ -132,7 +127,7 @@ internal sealed partial class ScenarioDay
         };
     }
 
-    private static List<Target> RuleTargets(AlertRule rule)
+    private List<Target> RuleTargets(AlertRule rule)
     {
         var scope = rule.Scope ?? [];
         if (rule.Metric == "sensor")
@@ -154,7 +149,7 @@ internal sealed partial class ScenarioDay
                 for (var m = 0; m < Day; m++)
                 {
                     var st = State(q, m);
-                    v[m] = st.Nowcast is null || Degraded(Queues[q].Id, m) is not null ? double.NaN : st.Nowcast.Value;
+                    v[m] = st.Nowcast is null || DegradedAt(Queues[q].Id, m) is not null ? double.NaN : st.Nowcast.Value;
                 }
 
                 break;
@@ -177,7 +172,7 @@ internal sealed partial class ScenarioDay
                 break;
             case "sensor":
                 for (var m = 0; m < Day; m++)
-                    v[m] = SensorOffline(tg.Sensor, m) ? 1 : 0;
+                    v[m] = IsSensorOffline(tg.Sensor, m) ? 1 : 0;
                 break;
             case "p90bin":
                 bins = new int[Day];
@@ -213,7 +208,7 @@ internal sealed partial class ScenarioDay
 
     private static string Round0(double v) => ScenarioMath.Round(v).ToString(CultureInfo.InvariantCulture);
 
-    private static ScenarioAlert MakeAlert(AlertRule rule, Target tg, int m, double v, int[] bins)
+    private ScenarioAlert MakeAlert(AlertRule rule, Target tg, int m, double v, int[] bins)
     {
         var def = tg.Q is not null ? Queues[tg.Q.Value] : ZoneDef(tg.Zone);
         var owner = rule.Owner == "zone" ? ZoneOwner(def) : rule.Owner;
@@ -340,7 +335,7 @@ internal sealed partial class ScenarioDay
     /// <summary>Replaces the snake capacities and recomputes the overflow metric.</summary>
     public void SetCaps(IReadOnlyDictionary<string, double> caps)
     {
-        _caps = caps ?? DefaultCaps;
+        _caps = caps ?? Site.DefaultCaps;
         foreach (var key in _metricCache.Keys.Where(k => k.StartsWith("overflow|", StringComparison.Ordinal)).ToList())
             _metricCache.Remove(key);
     }

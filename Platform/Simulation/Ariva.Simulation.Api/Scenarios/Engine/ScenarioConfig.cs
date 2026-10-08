@@ -32,11 +32,15 @@ public sealed record AlertRule(
     bool Enabled = true);
 
 /// <summary>
-/// What one run of the day takes. Everything is optional: the reference day is the default seed, the morning's
-/// counter allocations, the seeded rules and the default snake capacities.
+/// What one run of the day takes. Everything is optional: the reference day is the reference site (DMO), the default seed,
+/// the morning's counter allocations, the seeded rules and the default snake capacities. ARV-139b: the site is a
+/// parameter; <see cref="AuhTerminalA"/> is the illustrative AUH Terminal A arrivals evening (seed 9304).
 /// </summary>
 public sealed record ScenarioConfig
 {
+    /// <summary>The scenario site (an Ariva site code the simulator models: DMO or AUH-TA).</summary>
+    public string SiteCode { get; init; } = ScenarioModel.SiteCode;
+
     public uint Seed { get; init; } = ScenarioModel.DefaultSeed;
     public IReadOnlyList<AdhocFlight> Flights { get; init; } = [];
     public IReadOnlyList<AcceptedPlan> Accepted { get; init; } = [];
@@ -57,6 +61,27 @@ public sealed record ScenarioConfig
     {
         Seed = seed,
         Allocations = ScenarioModel.SeedAllocations
+    };
+
+    /// <summary>The default seed of the AUH Terminal A arrivals scenario (ARV-139b).</summary>
+    public const uint AuhTerminalADefaultSeed = AuhTerminalAScenarioSite.DefaultSeedValue;
+
+    /// <summary>
+    /// The illustrative AUH Terminal A arrivals evening (ARV-139b): the site AUH-TA with its seed (9304 by default), its
+    /// assumed flight waves and scripted events, its seeded rules and its snake capacities. No counter allocations (no check-in).
+    /// </summary>
+    public static ScenarioConfig AuhTerminalA(uint seed = AuhTerminalADefaultSeed) => new()
+    {
+        SiteCode = AuhTerminalAScenarioSite.SiteCodeValue,
+        Seed = seed
+    };
+
+    /// <summary>The scenario of a site with a seed: the reference day for DMO, <see cref="AuhTerminalA"/> for AUH-TA; null for any other site.</summary>
+    public static ScenarioConfig ForSite(string siteCode, uint seed) => siteCode switch
+    {
+        ScenarioModel.SiteCode => Reference(seed),
+        AuhTerminalAScenarioSite.SiteCodeValue => AuhTerminalA(seed),
+        _ => null
     };
 
     /// <summary>The arrivals Visitors snake capacity in <see cref="OverflowEvening"/>: 60 people instead of 190.</summary>

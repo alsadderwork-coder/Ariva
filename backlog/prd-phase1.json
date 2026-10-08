@@ -313,13 +313,34 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 13,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. Demo value only; not on the pilot critical path. If the scenario engine's parameterisation turns out large, split it off as ARV-139c before the AUH content.",
       "dependsOn": [
         "ARV-139a",
         "ARV-027",
         "ARV-028",
         "ARV-029"
+      ]
+    },
+    {
+      "id": "ARV-114d",
+      "title": "[E12] Queue engine: carry the pending empty-queue check across a full step",
+      "description": "Found in ARV-139b (2026-10-08). The F5 re-anchor now waits until every reading of an instant is applied, but when a full step (MaxStepRecords, default 100,000) ends inside an instant, Reanchor() runs with only part of that instant applied: a band reading 0 ordered before the zone's reading can still drop the people the zone holds (test: 108 Fragmented and 108 duplicate exits of 1,100 at MaxStepRecords 1,000). Rare in practice (a step must end inside one instant's readings), but it undercounts exits when it happens. Carry the pending check in the engine state instead of running it when the step fills. Epic: Measurement completeness. CWEs to review: CWE-501, CWE-120.",
+      "acceptanceCriteria": [
+        "The pending re-anchor instant is part of QueueEngineState (snapshot version bumped; an older snapshot restores with no pending check), validated on restore (an aligned plausible instant not after the watermark) and refused otherwise",
+        "QueueStateEngineTests.Restore_Should_ContinueLikeAContinuousRun_When_AFullStepSplitsTheReadingsOfAnInstant asserts the unsplit result (1,100 waits, no re-anchor, no Fragmented) for the split run, continuous and restored",
+        "Golden replay (seed 9303), the overflow case and the AUH-TA replay are unchanged, or any change is explained and the old and new values recorded for the owner's approval",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/verify.mjs integration passes (Testcontainers)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 14,
+      "passes": false,
+      "notes": "Size S. Found by the ARV-139b determinism investigation; the review judged it bounded and documented, the owner's process treats a pinned wrong result as a defect to fix.",
+      "dependsOn": [
+        "ARV-139b"
       ]
     },
     {
@@ -339,7 +360,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 14,
+      "priority": 15,
       "passes": false,
       "notes": "Size M. Reuses candidate id ARV-104 (backlog/phase1-candidates.md, accuracy assurance), split a to i. Campaign defaults for sample size per line and tracer count are placeholders until TC-04 is answered in the KPI annex; the build does not wait for it.",
       "dependsOn": [
@@ -364,7 +385,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 15,
+      "priority": 16,
       "passes": false,
       "notes": "Size M.",
       "dependsOn": [
@@ -386,7 +407,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 16,
+      "priority": 17,
       "passes": false,
       "notes": "Size M. Pure code, no persistence.",
       "dependsOn": [
@@ -408,7 +429,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 17,
+      "priority": 18,
       "passes": false,
       "notes": "Size M. ARV-117 review (2026-10-07): the shadow_* columns of queue_minute have no read path and no column-level revoke (the runtime role is shared). This story must bring its own read path with its own authorization: a dedicated read role, or a permissioned and site-scoped endpoint, with authorization tests (E2E permission and cross-site cases), and must change ShadowNowcastExposureTests and the pg_depend integration test on purpose.",
       "dependsOn": [
@@ -433,7 +454,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 18,
+      "priority": 19,
       "passes": false,
       "notes": "Size M. Targets are proposals until the pilot contract fixes them (roadmap, pilot acceptance criteria).",
       "dependsOn": [
@@ -459,7 +480,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 19,
+      "priority": 20,
       "passes": false,
       "notes": "Size M. Online capture only; an offline-capable tablet would need an ADR (tokens never in web storage).",
       "dependsOn": [
@@ -480,7 +501,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 20,
+      "priority": 21,
       "passes": false,
       "notes": "Size S.",
       "dependsOn": [
@@ -501,7 +522,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 21,
+      "priority": 22,
       "passes": false,
       "notes": "Size M.",
       "dependsOn": [
@@ -524,7 +545,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 22,
+      "priority": 23,
       "passes": false,
       "notes": "Size M. This is the evidence that the tooling works before a client sees it.",
       "dependsOn": [
@@ -548,7 +569,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 23,
+      "priority": 24,
       "passes": false,
       "notes": "Size S.",
       "dependsOn": [
@@ -573,7 +594,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 24,
+      "priority": 25,
       "passes": false,
       "notes": "Size S. TC-49 is a Dalil internal decision; the story proposes the mechanism and the owner accepts the ADR. No site decision needed.",
       "dependsOn": [
@@ -597,7 +618,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 25,
+      "priority": 26,
       "passes": false,
       "notes": "Size M. TC-45 (desk utilisation definition) is open; show time in each desk state, which needs no definition.",
       "dependsOn": [
@@ -623,7 +644,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 26,
+      "priority": 27,
       "passes": false,
       "notes": "Size S. Wiki 12 (user guide) updated with the new panels.",
       "dependsOn": [
@@ -648,7 +669,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 27,
+      "priority": 28,
       "passes": false,
       "notes": "Size M. API only; a screen can follow if the field engineer needs one.",
       "dependsOn": [
@@ -674,7 +695,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 28,
+      "priority": 29,
       "passes": false,
       "notes": "Size S. Device id convention per site is TC-40 (survey); the import accepts any code that passes the existing pattern.",
       "dependsOn": [
@@ -696,7 +717,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 29,
+      "priority": 30,
       "passes": false,
       "notes": "Size S. First run against a cluster happens in ARV-137 (owner), not earlier.",
       "dependsOn": []
@@ -715,7 +736,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 30,
+      "priority": 31,
       "passes": false,
       "notes": "Size M. TC-33 (node sizes on site hardware) is answered later from these numbers and the site survey.",
       "dependsOn": [
@@ -738,7 +759,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 31,
+      "priority": 32,
       "passes": false,
       "notes": "Size M. Monitoring stack and alert routing at the site depend on TC-32 and TC-36; defaults ship now.",
       "dependsOn": [
@@ -760,7 +781,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 32,
+      "priority": 33,
       "passes": false,
       "notes": "Size M. Process execution stays out of production code (ForbiddenDependencyTests); if the scanner flags the ops tooling, propose an allowlist entry for the owner, never approve it.",
       "dependsOn": [
@@ -781,7 +802,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 33,
+      "priority": 34,
       "passes": false,
       "notes": "Size M. TC-52 (web build per site or runtime configuration) affects the web part; ship runtime configuration as Proposed.",
       "dependsOn": [
@@ -803,7 +824,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 34,
+      "priority": 35,
       "passes": false,
       "notes": "Size M. Reuses candidate id ARV-111 (part a). The jurisdiction mapping (part b) is counsel's work, not a story here.",
       "dependsOn": [
@@ -827,7 +848,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 35,
+      "priority": 36,
       "passes": false,
       "notes": "Size M. Conditional: product owner decides whether the pilot needs it (known limit in the exit review). If ruled out, mark passes true with the note 'Not in MVP: decided by <owner> on <date>' so the gate is not held.",
       "dependsOn": [
@@ -851,7 +872,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 36,
+      "priority": 37,
       "passes": false,
       "notes": "Size S. Blocked on: TC-20 (AMAN site codes) and TC-21 (AMAN lane category code list). If both answers are 'same codes', reduce to a test and a documented decision.",
       "dependsOn": [
@@ -875,7 +896,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 37,
+      "priority": 38,
       "passes": false,
       "notes": "Size M. Blocked on: the AMAN-side outbox change (AMAN repository, not this backlog) built and deployed to the client's AMAN test environment; TC-22 (AMAN paging), TC-24 (AMAN Kafka port and TLS), TC-25 (shared Kafka and its chart). TC-23 (topic retention) sets the replay window and can follow.",
       "dependsOn": [
@@ -898,7 +919,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 38,
+      "priority": 39,
       "passes": false,
       "notes": "Size M. Blocked on: the family decision from the site survey (and TC-71 if the hall is in Angola, stereo against LiDAR), then TC-38 (Xovis real capture and details) or TC-39 (Ouster Detect recorded payload). A capture from the vendor or the lab can unblock it before site hardware arrives.",
       "dependsOn": [
@@ -922,7 +943,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 39,
+      "priority": 40,
       "passes": false,
       "notes": "Size M. Blocked on: site survey network design, TC-37 (Xovis MQTT payload and broker), TC-40 (device id convention). Conditional: if HTTPS push already covers data and health for the chosen family, close with a recorded decision.",
       "dependsOn": [
@@ -943,7 +964,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 40,
+      "priority": 41,
       "passes": false,
       "notes": "Size S. Blocked on: TC-01, TC-02, TC-03, TC-08, TC-09, TC-44, TC-47 (border authority and Dalil answers). The start-up check itself can be built earlier with the placeholders.",
       "dependsOn": [
@@ -966,7 +987,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 41,
+      "priority": 42,
       "passes": false,
       "notes": "Size M. Blocked on: TC-30 (own OIDC or Ariva sign-in) and TC-06 (MFA policy). Conditional: if the site keeps Ariva sign-in, close with a recorded decision. Needs an ADR (Proposed) before code.",
       "dependsOn": [
@@ -988,7 +1009,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 42,
+      "priority": 43,
       "passes": false,
       "notes": "Size M. Blocked on: TC-30 and TC-06. Conditional like ARV-134a.",
       "dependsOn": [
@@ -1011,7 +1032,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 43,
+      "priority": 44,
       "passes": false,
       "notes": "Size M. Blocked on: TC-42 (which module licenses the SLA engine) and TC-43 (how the licence file is loaded and renewed). Conditional: the owner may defer licensing to v1 for a single pilot; record the decision and close.",
       "dependsOn": [
@@ -1031,7 +1052,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 44,
+      "priority": 45,
       "passes": false,
       "notes": "Done by the owner (agents never change clusters). Needs a reachable dev cluster and GitHub Actions minutes. Depends on every other MVP story in this file; conditional stories ruled out are closed with a recorded decision first. 2026-10-06: the owner placed Phase 2 (displays and advertising, backlog/prd-phase2.json) before this release.",
       "dependsOn": [
@@ -1100,7 +1121,7 @@
         "Full-repository security review PASS recorded in backlog/progress.md",
         "Owner sign-off recorded in docs/product (a go-live review page following docs/product/phase0-exit-review.md)"
       ],
-      "priority": 45,
+      "priority": 46,
       "passes": false,
       "notes": "Size S for the agent part; most criteria are human. The site installation, smoke run on the pilot cluster and burn-in follow this gate and are done by the owner and the field engineer.",
       "dependsOn": [

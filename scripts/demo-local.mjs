@@ -1,5 +1,6 @@
-// The scripted demo on a developer machine (ARV-064): the reference evening at Demo International Airport (DMO) played
-// in real time through the whole pipeline started by Ariva.AppHost. Node 22, no packages.
+// The scripted demo on a developer machine (ARV-064, ARV-139b): two evenings played together, in real time, through the
+// whole pipeline started by Ariva.AppHost: the reference evening at the fictional Demo International Airport (DMO, seed
+// 9303) and the illustrative AUH Terminal A arrivals evening (AUH-TA, seed 9304). Node 22, no packages.
 //
 //   node scripts/demo-local.mjs prepare      once: demo accounts and the AppHost settings, in .demo/ (git-ignored)
 //   dotnet run --project Platform/Cloud/Ariva.AppHost -- "--AppHost:HostEnvironmentFile=<repository>/.demo/apphost-environment.json"
@@ -9,9 +10,15 @@
 //   node scripts/demo-local.mjs accounts     the demo accounts again
 //
 // start takes --at 17:40 (demo clock, default 17:40), --until 19:40 (default), --speed 1 (demo minutes per real minute),
-// --sensors all|events (default all: every queue's counting sensor) and --no-align (start exactly at --at rather than up
-// to 14 minutes earlier, which keeps the 15-minute bins on the scenario's and gives the sensors time to settle). Hosts: ARIVA_MAIN_URL (default
+// --sensors all|events (default all: every queue's counting sensor at DMO and every seeded sensor at AUH-TA), --sites
+// both|DMO|AUH-TA (default both) and --no-align (start exactly at --at rather than up to 14 minutes earlier, which keeps
+// the 15-minute bins on the scenario's and gives the sensors time to settle). Hosts: ARIVA_MAIN_URL (default
 // http://localhost:51001) and ARIVA_SIMULATION_URL (http://localhost:51020). Runbook: wiki/10, section 4.11.
+//
+// AUH-TA's sensors come from the illustrative seed (ARV-139a), in Commissioning and without a credential. start issues
+// each the credential it plays with (POST devices/{id}/credential, the administrator's recent second factor) and records
+// its calibration (POST devices/{id}/calibrations), as an installer would; no device authentication is relaxed. It also
+// gives AUH-TA the scenario's three alert rules through the alert rules API, once, while the site has none.
 //
 // Local only: the accounts sign in without a second factor (Auth:TotpRequired false). Ariva.Api.Main refuses to start
 // with that setting, or with development accounts, unless both its host environment and Application:Environment are
@@ -44,7 +51,13 @@ const WEB = process.env.ARIVA_WEB_URL || 'http://localhost:51010';
 
 /** The demo accounts: who sees each scripted event (wiki/15). */
 const PEOPLE = [
-	{ userName: 'demo.admin', roles: ['SystemAdministrator'], sites: ['*'], totp: true, shows: 'administration, devices, everything' },
+	{
+		userName: 'demo.admin',
+		roles: ['SystemAdministrator'],
+		sites: ['*'],
+		totp: true,
+		shows: 'everything; AUH-TA (illustrative): 18:12 A-VIS breach, 18:25 Q-RES-04 offline, 19:13 A-EG-OV overflow'
+	},
 	{ userName: 'demo.border', roles: ['BorderShiftSupervisor'], sites: ['DMO'], totp: false, shows: '18:05 R-001 on A-VIS, 18:20 R-003 for S-17' },
 	{ userName: 'demo.handler', roles: ['HandlerStationManager'], sites: ['DMO'], totp: false, shows: '19:10 R-004 on check-in island C' },
 	{ userName: 'demo.terminal', roles: ['TerminalDutyManager'], sites: ['DMO'], totp: false, shows: 'check-in and security, terminal-wide' }
@@ -61,6 +74,34 @@ const SENSORS = [
 	['S-50', 'CI-C', 'DEP', 'Xovis'], ['S-55', 'CI-D', 'DEP', 'Xovis']
 ].map(([sensor, zone, level, dialect]) => ({ sensor, zone, level, dialect }));
 const EVENT_SENSORS = ['S-13', 'S-15', 'S-17', 'S-21', 'S-25', 'S-50', 'S-55'];
+
+/**
+ * AUH-TA (ARV-139b): every seeded sensor plays (the seed's 84, AuhTerminalALayout.cs); with --sensors events only those of
+ * the three scripted events: the visitors' queue and band leads and desk sensors, the residents' lead and Q-RES-04, the
+ * smart gates' queue and band leads.
+ */
+const AUH_SITE = 'AUH-TA';
+const AUH_EVENT_SENSORS = ['Q-VIS-01', 'O-VIS-01', 'D-VIS-01', 'D-VIS-02', 'D-VIS-03', 'D-VIS-04', 'D-VIS-05', 'Q-RES-01', 'Q-RES-04', 'Q-EG-01', 'O-EG-01'];
+
+/** The AUH-TA scenario's seeded rules (ScenarioSite SeedRules), as Ariva rules: the same shape as DMO's R-001 to R-003. */
+const AUH_QUEUES = ['A-CRW', 'A-DIP', 'A-CIT', 'A-RES', 'A-GCC', 'A-VIS', 'A-TRF', 'A-EG'];
+const AUH_RULES = [
+	{
+		name: 'Nowcast above 15 min', zones: AUH_QUEUES, metric: 'Nowcast', comparator: 'GreaterThan', threshold: 15, minQueueLength: 10, clearThreshold: 12,
+		sustainMinutes: 1, clearAfterMinutes: 1, severity: 'Critical', ownerRole: 'BorderShiftSupervisor', escalateAfterMinutes: 10, escalateToRole: null,
+		escalationContact: 'Border operations duty officer', notifyByEmail: false, enabled: true
+	},
+	{
+		name: 'Overflow band occupied', zones: AUH_QUEUES, metric: 'OverflowOccupied', comparator: 'IsTrue', threshold: null, minQueueLength: null,
+		clearThreshold: null, sustainMinutes: 3, clearAfterMinutes: 3, severity: 'Warning', ownerRole: null, escalateAfterMinutes: 15, escalateToRole: null,
+		escalationContact: null, notifyByEmail: false, enabled: true
+	},
+	{
+		name: 'Sensor offline', zones: [...AUH_QUEUES, 'A-VIS-OV', 'A-EG-OV'], metric: 'SensorOffline', comparator: 'IsTrue', threshold: null,
+		minQueueLength: null, clearThreshold: null, sustainMinutes: 1, clearAfterMinutes: 1, severity: 'Warning', ownerRole: null, escalateAfterMinutes: 15,
+		escalateToRole: null, escalationContact: 'Systems', notifyByEmail: false, enabled: true
+	}
+];
 
 function fail(message) {
 	console.error(`demo-local: ${message}`);
@@ -228,7 +269,9 @@ async function start() {
 	if (!(speed > 0 && speed <= 60)) fail('--speed is above 0 and at most 60.');
 	const which = option('sensors') ?? 'all';
 	if (!['all', 'events'].includes(which)) fail('--sensors is all or events.');
-	const plan = which === 'events' ? SENSORS.filter((s) => EVENT_SENSORS.includes(s.sensor)) : SENSORS;
+	const sites = option('sites') ?? 'both';
+	if (!['both', 'DMO', AUH_SITE].includes(sites)) fail('--sites is both, DMO or AUH-TA.');
+	const plan = sites === AUH_SITE ? [] : which === 'events' ? SENSORS.filter((s) => EVENT_SENSORS.includes(s.sensor)) : SENSORS;
 
 	await waitFor(`${MAIN}/health/readiness`, 'Ariva.Api.Main');
 	await waitFor(`${SIMULATION}/health/readiness`, 'the simulator');
@@ -236,8 +279,8 @@ async function start() {
 	const admin = `${MAIN}/api/v1/admin`;
 
 	const profiles = items((await call('GET', `${admin}/zone-profiles?siteCode=DMO`, { token })).json);
-	if (profiles.length === 0) fail('DMO has no zone profile: the demo seed (Seed:DemoTopology, vm-local) has not run.');
-	const profile = (await call('GET', `${admin}/zone-profiles/${profiles[0].id}`, { token })).json;
+	if (profiles.length === 0 && plan.length > 0) fail('DMO has no zone profile: the demo seed (Seed:DemoTopology, vm-local) has not run.');
+	const profile = plan.length > 0 ? (await call('GET', `${admin}/zone-profiles/${profiles[0].id}`, { token })).json : null;
 	const levels = items((await call('GET', `${admin}/levels?siteCode=DMO`, { token })).json);
 	const levelId = (code) => levels.find((l) => l.code === code)?.id;
 	const centre = (name) => {
@@ -281,7 +324,8 @@ async function start() {
 		}
 		credentials.push({ sensor: device.sensor, dialect: device.dialect, credential });
 	}
-	console.log(`demo-local: ${credentials.length} sensors registered and calibrated.`);
+	console.log(`demo-local: ${credentials.length} DMO sensors registered and calibrated.`);
+	if (sites !== 'DMO') credentials.push(...(await prepareAuh(admin, token, which)));
 
 	const sensors = `${SIMULATION}/api/v1/simulation/sensors`;
 	const key = state.simulationKey;
@@ -304,6 +348,42 @@ async function start() {
 	if (started.status !== 200) fail(`the simulator did not start (${started.status}) ${started.text}`);
 	console.log(`demo-local: playing ${clock(from)} to ${clock(until)} at speed ${speed} (the demo proper from ${clock(at)}). Open ${WEB} and sign in:`);
 	accounts(state);
+}
+
+/**
+ * AUH-TA (ARV-139b): the illustrative seed's own sensors, each issued a credential and calibrated through the devices API
+ * (never a relaxed check: the seed leaves them in Commissioning without a credential), and the scenario's alert rules
+ * while the site has none. Returns the simulator's device entries for site AUH-TA.
+ */
+async function prepareAuh(admin, token, which) {
+	const listed = items((await call('GET', `${admin}/devices?siteCode=${AUH_SITE}&pageSize=200`, { token })).json);
+	if (listed.length === 0) fail('AUH-TA has no sensors: the illustrative seed (Seed:DemoTopology, ARV-139a) has not run. Use --sites DMO to play DMO alone.');
+	const seeded = listed.filter((d) => d.state !== 'Retired' && (which === 'all' || AUH_EVENT_SENSORS.includes(d.code)));
+	const devices = [];
+	for (const device of seeded) {
+		const issued = await call('POST', `${admin}/devices/${device.id}/credential`, { token });
+		if (issued.status !== 200) fail(`${device.code}: credential refused (${issued.status}) ${issued.text}`);
+		if (items((await call('GET', `${admin}/devices/${device.id}/calibrations`, { token })).json).length === 0) {
+			const calibrated = await call('POST', `${admin}/devices/${device.id}/calibrations`, {
+				token,
+				body: { method: 'ManualCountTally', sampleSize: 200, countingAccuracyPercent: 97, waitTimeErrorMinutes: 0.3 }
+			});
+			if (calibrated.status !== 201) fail(`${device.code}: calibration refused (${calibrated.status}) ${calibrated.text}`);
+		}
+		devices.push({ site: AUH_SITE, sensor: device.code, dialect: 'Canonical', credential: issued.json.credential });
+	}
+
+	const rules = items((await call('GET', `${admin}/alert-rules?siteCode=${AUH_SITE}`, { token })).json);
+	if (rules.length === 0) {
+		for (const rule of AUH_RULES) {
+			const created = await call('POST', `${admin}/alert-rules`, { token, body: { siteCode: AUH_SITE, ...rule } });
+			if (created.status !== 201) fail(`AUH-TA rule "${rule.name}" refused (${created.status}) ${created.text}`);
+		}
+		console.log(`demo-local: AUH-TA alert rules created (${AUH_RULES.length}).`);
+	}
+
+	console.log(`demo-local: ${devices.length} AUH-TA sensors issued a credential and calibrated.`);
+	return devices;
 }
 
 function accounts(state = readState()) {
@@ -351,6 +431,8 @@ switch (command) {
 		break;
 	}
 	default:
-		console.log('usage: node scripts/demo-local.mjs prepare | start [--at 17:40] [--until 19:40] [--speed 1] [--sensors all|events] [--no-align] | status | stop | accounts | code');
+		console.log(
+			'usage: node scripts/demo-local.mjs prepare | start [--at 17:40] [--until 19:40] [--speed 1] [--sensors all|events] [--sites both|DMO|AUH-TA] [--no-align] | status | stop | accounts | code'
+		);
 		process.exit(command ? 1 : 0);
 }

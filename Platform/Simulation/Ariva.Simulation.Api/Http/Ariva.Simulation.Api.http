@@ -41,3 +41,26 @@ Authorization: Bearer {{key}}
 Content-Type: application/json
 
 { "seed": 9303 }
+
+### ARV-139b: the scenario sites (DMO and AUH-TA)
+GET {{Ariva.Simulation.Api_HostAddress}}/api/v1/simulation/scenario/sites
+Authorization: Bearer {{key}}
+
+### AUH-TA: arrivals Visitors at 18:12 (minute 1092), when its nowcast passes 15 minutes
+GET {{Ariva.Simulation.Api_HostAddress}}/api/v1/simulation/scenario/queues/A-VIS?minute=1092&site=AUH-TA
+Authorization: Bearer {{key}}
+
+### AUH-TA: the smart gates at 19:18 (minute 1158), spilling into A-EG-OV
+GET {{Ariva.Simulation.Api_HostAddress}}/api/v1/simulation/scenario/queues/A-EG?minute=1158&site=AUH-TA
+Authorization: Bearer {{key}}
+
+### AUH-TA: alerts of the day
+GET {{Ariva.Simulation.Api_HostAddress}}/api/v1/simulation/scenario/alerts?site=AUH-TA
+Authorization: Bearer {{key}}
+
+### AUH-TA: re-run with its default seed (control scope)
+PUT {{Ariva.Simulation.Api_HostAddress}}/api/v1/simulation/scenario
+Authorization: Bearer {{key}}
+Content-Type: application/json
+
+{ "seed": 9304, "site": "AUH-TA" }

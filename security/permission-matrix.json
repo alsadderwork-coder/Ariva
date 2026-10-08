@@ -12,7 +12,8 @@
     "siteCode": "ZZ9",
     "zone": "MATRIX-ZONE",
     "queue": "A-VIS",
-    "contract": "desk-sessions"
+    "contract": "desk-sessions",
+    "site": "ZZ9"
   },
   "endpoints": [
     {
@@ -281,6 +282,19 @@
     {
       "host": "simulation",
       "method": "GET",
+      "route": "/api/v1/simulation/scenario/sites",
+      "access": "simulation",
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "simulation",
+      "method": "GET",
       "route": "/api/v1/simulation/scenario/queues",
       "access": "simulation",
       "expected": {
@@ -509,6 +523,19 @@
       "host": "simulation",
       "method": "GET",
       "route": "/aodb/acris/flights",
+      "access": "simulation",
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401
+      }
+    },
+    {
+      "host": "simulation",
+      "method": "GET",
+      "route": "/aodb/sites/{site}/acris/flights",
       "access": "simulation",
       "expected": {
         "anonymous": 401,

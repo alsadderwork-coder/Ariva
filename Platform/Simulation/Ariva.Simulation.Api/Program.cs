@@ -77,7 +77,7 @@ builder.Services.AddControllers().AddJsonOptions(options =>
 
 var app = builder.Build();
 
-// Run the reference day now, not on the first request: an invalid Simulation:Seed stops the host at start.
+// Run every scenario site's day now (DMO and AUH-TA, ARV-139b), not on the first request: an invalid seed stops the host at start.
 app.Services.GetRequiredService<Ariva.Simulation.Api.Scenarios.ScenarioEngine>();
 
 #region Middlewares

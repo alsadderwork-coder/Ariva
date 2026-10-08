@@ -1,15 +1,21 @@
 using System.ComponentModel.DataAnnotations;
 using System.Text.RegularExpressions;
+using Ariva.Simulation.Api.Scenarios;
+using Ariva.Simulation.Api.Scenarios.Engine;
 
 namespace Ariva.Simulation.Api.Emulators.Sensors;
 
 /// <summary>
-/// One emulated device: the scenario sensor it plays (S-01 to S-59), the dialect it speaks and the device credential
-/// Ariva issued when the device was registered (ARV-021). The credential is a secret: it comes from the simulation
+/// One emulated device: the scenario site and sensor it plays (ARV-139b: DMO, the default, with S-01 to S-59; AUH-TA
+/// with the seed's sensor codes such as Q-VIS-01), the dialect it speaks and the device credential Ariva issued when the
+/// device was registered or its credential rotated (ARV-021). The credential is a secret: it comes from the simulation
 /// appsettings secret or from the devices endpoint, is held in memory only and is never returned or logged.
 /// </summary>
 public sealed class EmulatedDeviceSettings
 {
+    /// <summary>The scenario site of the sensor (an Ariva site code the simulator plays); DMO when not given.</summary>
+    public string Site { get; set; }
+
     public string Sensor { get; set; }
     public EmulatedDialect Dialect { get; set; } = EmulatedDialect.Canonical;
     public string Credential { get; set; }
@@ -23,7 +29,9 @@ public sealed class EmulatedDeviceSettings
 public sealed partial class SensorEmulatorSettings : IValidatableObject
 {
     public const string Section = "Simulation:Sensors";
-    public const int MaxDevices = 59;
+
+    /// <summary>Every sensor of both scenario sites fits (DMO 59, AUH-TA 84); bounded all the same (CWE-400).</summary>
+    public const int MaxDevices = 150;
 
     /// <summary>Ingest's base address, for example https://ingest.example or http://api-ingest-service.</summary>
     public string IngestUrl { get; set; }
@@ -89,10 +97,14 @@ public sealed partial class SensorEmulatorSettings : IValidatableObject
         for (var i = 0; i < devices.Count; i++)
         {
             var d = devices[i];
-            if (d?.Sensor is null || SensorTraffic.Sensor(d.Sensor) is null)
-                yield return $"Device {i}: the sensor must be one of the scenario's sensors, S-01 to S-59.";
-            else if (!sensors.Add(d.Sensor))
-                yield return $"Device {i}: sensor {d.Sensor} is listed twice.";
+            // CWE-501: the site and sensor are looked up, never echoed unless they are known codes.
+            var site = d?.Site ?? ScenarioEngine.ReferenceSite;
+            if (!ScenarioEngine.HasSite(site))
+                yield return $"Device {i}: the site is a scenario site the simulator plays ({ScenarioSites.Codes}).";
+            else if (d?.Sensor is null || SensorTraffic.Sensor(site, d.Sensor) is null)
+                yield return $"Device {i}: the sensor must be one of the scenario sensors of site {site} (DMO: S-01 to S-59; AUH-TA: the seed's sensor codes).";
+            else if (!sensors.Add(site + "/" + d.Sensor))
+                yield return $"Device {i}: sensor {d.Sensor} of site {site} is listed twice.";
             if (d is not null && !Enum.IsDefined(d.Dialect))
                 yield return $"Device {i}: the dialect is Canonical or Xovis.";
             if (d?.Credential is null || !CredentialPattern().IsMatch(d.Credential))

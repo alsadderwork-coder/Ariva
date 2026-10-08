@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using Ariva.Core.Domain.Enums;
 using Ariva.Core.Queueing;
@@ -233,6 +234,104 @@ public sealed partial class QueueStateEngineTests
 
         step.Reanchors.Should().Be(0, "the overflow band has not reported");
         step.OpenEntrants.Should().Be(2);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Reanchor_Should_SeeEveryReadingOfTheInstant_When_TheZoneAndItsBandArriveInEitherOrder(bool bandFirst)
+    {
+        // The queue is empty at 18:01; two people join; at 18:03 the zone reads 2 and the band 0, from two devices whose
+        // batches arrive in any order. The band's 0 beside the zone's earlier 0 is not an empty queue: nobody is dropped,
+        // and both exits are waits (the AUH-TA and overflow replays depended on the devices' ids before ARV-139b).
+        QueueInput zone = new QueueOccupancy("A-VIS", 2, At(3)), band = new QueueOccupancy("A-OV", 0, At(3));
+        var step = Play(Engine(), 30,
+            new QueueOccupancy("A-VIS", 0, At(1)), new QueueOccupancy("A-OV", 0, At(1)),
+            In(2, "S-15/1"), In(2.5, "S-15/2"),
+            bandFirst ? band : zone, bandFirst ? zone : band,
+            Out(4, "S-15/1"), Out(4.5, "S-15/2"));
+
+        step.Reanchors.Should().Be(0, "the queue holds two people at 18:03");
+        step.Resolutions.Should().BeEmpty();
+        step.Rejections.Duplicates.Should().Be(0);
+        Minutes(step).Should().Equal(2, 2);
+        step.Movements.Sum(m => m.Exits).Should().Be(2, "every exit counts towards the throughput");
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Reanchor_Should_HappenOnce_When_EveryZoneReadsZeroAtTheSameInstantInEitherOrder(bool bandFirst)
+    {
+        QueueInput zone = new QueueOccupancy("A-VIS", 0, At(3)), band = new QueueOccupancy("A-OV", 0, At(3));
+        var step = Play(Engine(), 30, In(0), In(1), bandFirst ? band : zone, bandFirst ? zone : band);
+
+        step.Reanchors.Should().Be(1);
+        step.Resolutions.Should().HaveCount(2).And.OnlyContain(r => r.Outcome == EntrantOutcome.Reanchored && r.ResolvedUtc == At(3));
+        step.OpenEntrants.Should().Be(0);
+    }
+
+    [Fact]
+    public void Restore_Should_ContinueLikeAContinuousRun_When_AFullStepSplitsTheReadingsOfAnInstant()
+    {
+        // ARV-139b review: the F5 check waits for every event of the reading's instant, but it is never carried into the next
+        // step (it is not part of the snapshot). Both zones read 0 at 18:01 and 1,100 tracked people join; at 18:02 the band
+        // reads 0 (ordered first), 1,050 people leave and the zone reads 50. With MaxStepRecords at its floor the step fills
+        // among those exits, after the band's reading and before the zone's, and the engine restored there from its JSON
+        // snapshot continues exactly as the one that ran on.
+        // KNOWN DEFECT, backlog ARV-114d: the split instant still re-anchors on the band's 0 alone (108 Fragmented, 108
+        // duplicates, 992 waits, against 1,100 waits unsplit). The counts below pin today's behaviour so ARV-114d's fix has
+        // to change them on purpose; they are not the intended result.
+        var json = Ariva.Infra.Messaging.EventCatalog.Json;
+        var at = At(2);
+        var inputs = new List<QueueInput> { new QueueOccupancy("A-VIS", 0, At(1)), new QueueOccupancy("A-OV", 0, At(1)) };
+        for (var k = 0; k < 1_100; k++)
+            inputs.Add(In(1 + (k + 1) * 0.0008, "S-15/" + k));
+        inputs.Add(new QueueOccupancy("A-OV", 0, at));
+        for (var k = 0; k < 1_050; k++)
+            inputs.Add(Out(2, "S-15/" + k));
+        inputs.Add(new QueueOccupancy("A-VIS", 50, at));
+        for (var k = 1_050; k < 1_100; k++)
+            inputs.Add(Out(3 + (k - 1_050) * 0.01, "S-15/" + k));
+
+        List<QueueStep> Run(QueueEngineSettings settings, bool restore)
+        {
+            var engine = new QueueStateEngine(Geometry, settings);
+            foreach (var input in inputs)
+                engine.Offer(input, input.TimeUtc);
+            var steps = new List<QueueStep> { engine.Advance(At(10)) };
+            while (steps[^1].More)
+            {
+                if (restore)
+                    engine = QueueStateEngine.Restore(Geometry, settings, JsonSerializer.Deserialize<QueueEngineState>(JsonSerializer.Serialize(engine.Capture(), json), json)!);
+                steps.Add(engine.Advance(At(10)));
+            }
+
+            return steps;
+        }
+
+        var split = new QueueEngineSettings { Lateness = TimeSpan.Zero, MaxStepRecords = 1_000 };
+        var continuous = Run(split, restore: false);
+        var restored = Run(split, restore: true);
+
+        restored.Select(s => JsonSerializer.Serialize(s, json)).Should().Equal(continuous.Select(s => JsonSerializer.Serialize(s, json)));
+        continuous.Should().HaveCount(2);
+        continuous[0].More.Should().BeTrue();
+        continuous[0].WatermarkUtc.Should().Be(at.AddTicks(-1));
+        continuous[0].Readings.Where(r => r.MinuteUtc == at).Select(r => r.ZoneName).Should().Equal(["A-OV"], "the step filled after the band's reading of 18:02");
+        continuous[1].Readings.Where(r => r.MinuteUtc == at).Select(r => r.ZoneName).Should().Equal(["A-VIS"], "and before the zone's");
+
+        // The bound the review accepted, recorded here rather than hidden: the full step checks F5 with the instant's events
+        // applied so far, so the band's 0 beside the zone's previous 0 re-anchors at 18:02 although the zone reads 50 then. The
+        // 108 people still held are fragmented and their exits count as duplicates. A step that is not split sees the whole
+        // instant: no re-anchor and 1,100 waits. It needs a step of MaxStepRecords (100,000 by default) to end inside such an
+        // instant; a fix would carry the pending check in the snapshot instead of running it when the step fills.
+        continuous.Sum(s => s.Reanchors).Should().Be(1);
+        continuous[0].Resolutions.Should().HaveCount(108).And.OnlyContain(r => r.Outcome == EntrantOutcome.Fragmented && r.ResolvedUtc == at);
+        continuous.Sum(s => s.Waits.Count).Should().Be(992);
+        continuous.Sum(s => s.Rejections.Duplicates).Should().Be(108);
+        Run(new QueueEngineSettings { Lateness = TimeSpan.Zero }, restore: false).Should().ContainSingle()
+            .Which.Should().Match<QueueStep>(s => s.Reanchors == 0 && s.Waits.Count == 1_100 && s.Resolutions.Count == 0 && s.Rejections.Duplicates == 0);
     }
 
     [Fact]

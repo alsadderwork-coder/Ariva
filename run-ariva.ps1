@@ -16,7 +16,9 @@
     vm-local on this machine. Never use this on a shared or production environment.
 
 .PARAMETER Demo
-    Also starts the scripted demo evening (node scripts/demo-local.mjs start) once Ariva is up.
+    Also starts the scripted demo evenings (node scripts/demo-local.mjs start) once Ariva is up: the fictional DMO airport
+    (seed 9303) and the illustrative AUH Terminal A arrivals hall AUH-TA (seed 9304) on the same demo clock. The AUH-TA
+    sensors come from its seed; the script issues each a credential and calibrates it through the devices API.
 
 .PARAMETER NoBrowser
     Does not open the browser.
@@ -93,7 +95,7 @@ if (Test-Up $MainHealth) {
 }
 
 if ($Demo) {
-    Step 'Starting the scripted demo evening'
+    Step 'Starting the scripted demo evenings (DMO and AUH-TA)'
     node (Join-Path $Root 'scripts\demo-local.mjs') start
 }
 

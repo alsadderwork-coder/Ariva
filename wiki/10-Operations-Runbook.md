@@ -322,6 +322,16 @@ The reference evening at Demo International Airport (DMO, seed 9303) played in r
 | 18:20 to 18:30 | Sensor S-17 over the arrivals hall goes silent: R-003 names it, Devices shows it Offline, then it recovers | Border shift supervisor, system administrator | `demo.border`, `demo.admin` |
 | 19:10 | Handler B's check-in island C after a shift change: the 15-minute bin breaches the 15-minute P90 target and R-004 fires once the bin has ended (19:15) | Handler station manager | `demo.handler` |
 
+On the same demo clock the simulator plays the illustrative AUH Terminal A arrivals hall (site `AUH-TA`, seed 9304, ARV-139b; every screen of the site shows the banner "Illustrative, not surveyed"). Its scripted events, seen as `demo.admin` with the site chosen AUH-TA (the operational demo accounts stay on DMO):
+
+| Demo time | What happens |
+|---|---|
+| 18:12 | A visitor-heavy long-haul wave lands during the evening shift handover (11 of 17 visitors' counters): the A-VIS nowcast passes 15 minutes (Ariva's live value from 18:12 too) and its R-001 fires; back under target by about 18:35 |
+| 18:25 to 18:35 | Sensor Q-RES-04 over the residents' queue goes silent: its R-003 names it, A-RES shows "Data degraded", Devices shows it Offline, then it recovers at 18:36 |
+| 19:13 to 19:26 | A smart gate fault (SG-05 to SG-34 out of service 18:40 to 19:30) meets a resident-heavy hub wave: A-EG passes 15 minutes from about 19:08 and spills into its band A-EG-OV, whose R-002 fires from about 19:16 |
+
+The scenario's flight waves, lane mix and smart-gate share are assumptions, not the airport's data ([docs/demo/auh-terminal-a.md](../docs/demo/auh-terminal-a.md)). AUH-TA has no AMAN feed, so its waits are estimates from the exit rate and carry the "≈" marker (F8); its counters' states come from their staff and service zones (ARV-116), and those of lanes whose desk sensors are not loaded show Unknown.
+
 Two runs:
 
 - Full rehearsal, 17:40 to 19:40 (about two hours): all three events, the bins and the reports. Run it the day before any demo.
@@ -333,7 +343,7 @@ On Windows, `run-ariva.cmd` in the repository root does steps 1 and 2 in one go:
 
 1. Once: `npm ci` in `Platform/Frontplane/Ariva.Web`, then `node scripts/demo-local.mjs prepare`. It writes `.demo/accounts.json` (the four demo accounts with random passwords; the administrator also has a TOTP secret) and `.demo/apphost-environment.json` (git-ignored, owner-only) and prints the AppHost command.
 2. Start Ariva with that command: `dotnet run --project Platform/Cloud/Ariva.AppHost -- "--AppHost:HostEnvironmentFile=<repository>/.demo/apphost-environment.json"`. Wait until the Aspire dashboard (http://localhost:15880) shows every resource Running. The accounts sign in without a second factor (`Auth:TotpRequired` false): Ariva.Api.Main refuses to start with that setting, or with development accounts, unless both its host environment and `Application:Environment` are vm-local. `.demo/` holds passwords: it is owner-only on Linux and macOS, while Windows ignores those modes, so keep the repository under your own user profile.
-3. `node scripts/demo-local.mjs start` for the full rehearsal, or `node scripts/demo-local.mjs start --at 17:50 --until 18:35` for the short demo. It registers and calibrates the sensors (one counting sensor per queue and overflow band, plus S-17; `--sensors events` keeps only the seven the events need), loads them into the simulator and starts on the next whole minute, up to 14 demo minutes before `--at`, so that the 15-minute bins fall on the wall clock's quarter hours and the sensors settle before the demo proper. It prints the accounts; `node scripts/demo-local.mjs code` gives the administrator's current code.
+3. `node scripts/demo-local.mjs start` for the full rehearsal, or `node scripts/demo-local.mjs start --at 17:50 --until 18:35` for the short demo. It registers and calibrates the DMO sensors (one counting sensor per queue and overflow band, plus S-17; `--sensors events` keeps only the seven the events need); for AUH-TA it issues each of the seed's 84 sensors a credential and records its calibration through the devices API (the seed leaves them in Commissioning without a credential; `--sensors events` keeps the eleven its events need) and gives the site the scenario's three alert rules once; `--sites DMO` or `--sites AUH-TA` plays one site only. It loads every sensor into the simulator and starts on the next whole minute, up to 14 demo minutes before `--at`, so that the 15-minute bins fall on the wall clock's quarter hours and the sensors settle before the demo proper. It prints the accounts; `node scripts/demo-local.mjs code` gives the administrator's current code.
 4. Open http://localhost:51010 and sign in. Live operations shows every queue; the immigration screen shows desks, lanes and waits; Alerts shows the events as they fire. `node scripts/demo-local.mjs status` shows the demo clock.
 5. `node scripts/demo-local.mjs stop` pauses the simulator and unloads the sensors. The devices stay registered; the next `start` reuses them with new credentials.
 
@@ -351,6 +361,7 @@ If an event does not show:
 |---|---|
 | A-VIS shows a wait but no R-001 | The A-VIS row's status: "Data degraded" means its length is not a full sensor reading (the overflow band's sensor S-25 not loaded) or still in warm-up; R-001 does not judge degraded lengths |
 | No queues at all | `node scripts/demo-local.mjs status`: the clock running and the sensors listed; Ingest and Stream healthy in the dashboard |
+| AUH-TA shows no data | `start` says how many AUH-TA sensors it calibrated; none means the illustrative seed has not run (`Seed:DemoTopology`, ARV-139a). The simulator's `GET api/v1/simulation/sensors` lists each device with its site |
 | Every desk Unknown on the immigration screen | The AMAN feed: the simulator plays it with the demo clock, so it is Unknown until the clock runs; then section 4.8i |
 | R-004 not by 19:16 | The 19:00 to 19:15 bin is judged once it has ended; the 15-minute bins need the alignment of step 3 (do not use `--no-align` for the rehearsal) |
 

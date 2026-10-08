@@ -16,7 +16,7 @@ Ariva is an event-driven .NET 10 system on Kafka and PostgreSQL 17 with Timescal
 | Ariva.Api.Cronz | `Platform/Backplane/Ariva.Api.Cronz` | 51004 | 8080 | `api-cronz-service` (80) | TickerQ jobs: escalation timers, SLA evaluation, reports and evidence packs, staffing optimiser (v1), retention and health sweeps; TickerQ dashboard |
 | Ariva.Api.Integration | `Platform/Backplane/Ariva.Api.Integration` | 51005 | 8080 | `api-integration-service` (80) | Integration API v1, AODB adapters (AIDX, ACRIS, SSIM, vendor), AMAN feed translator (border only), notification channels, outbound wait-times API and webhooks, border-to-airport feed |
 | Ariva.Web | `Platform/Frontplane/Ariva.Web` | 51010 (vite dev), 51011 (vite preview) | 3000 (nginx) | `web-service` (80) | Dashboards, live floor plan, zone editor, kiosk display pages |
-| Ariva.Simulation.Api | `Platform/Simulation/Ariva.Simulation.Api` | 51020 | 8080 | `simulation-service` (80) | Sensor, AODB and AMAN emulators; reference scenario seed 9303 at site DMO. Disabled in production values |
+| Ariva.Simulation.Api | `Platform/Simulation/Ariva.Simulation.Api` | 51020 | 8080 | `simulation-service` (80) | Sensor, AODB and AMAN emulators; reference scenario seed 9303 at site DMO and the illustrative AUH-TA arrivals scenario seed 9304 (ARV-139b). Disabled in production values |
 | Forecasting worker (Python) | To confirm | | | | v1: show-up and load-factor models, Monte Carlo waits, backtesting; talks to the rest of Ariva only through Kafka |
 
 Every .NET host answers `/health/startup`, `/health/readiness` and `/health/liveness`; the web image answers `/healthz`. Ports 510xx are distinct from AMAN's 500xx so both can run side by side on a developer machine.
@@ -85,7 +85,7 @@ Invariants:
 | Observability | Serilog plus OpenTelemetry to SigNoz or Loki | ADR-0022 |
 | Search | No OpenSearch in Phase 0 or the MVP | ADR-0023 |
 | Front end | SvelteKit 2, Svelte 5, Tailwind 4, bits-ui, ECharts, svelte-i18n | ADR-0024 |
-| Simulation | Ariva.Simulation.Api with the seeded reference day (seed 9303) | ADR-0025 |
+| Simulation | Ariva.Simulation.Api with the seeded reference day (seed 9303) and the AUH-TA arrivals evening (seed 9304), one day per scenario site | ADR-0025 |
 | Authorisation | AMAN's `Permission` attribute, default-deny fallback policy, integration scopes, device authentication | `../docs/security/cwe-controls.md` |
 
 ## ADR index

@@ -1,9 +1,20 @@
 using System.Collections.Frozen;
+using Ariva.Simulation.Api.Emulators.Sensors;
 
 namespace Ariva.Simulation.Api.Scenarios.Engine;
 
-/// <summary>Passenger mix of a flight: shares of crew, citizens, residents, visitors and transfers.</summary>
-public sealed record PaxMix(double Cit, double Res, double Vis, double Crw, double Trf);
+/// <summary>
+/// Passenger mix of a flight: shares of crew, citizens, residents, visitors and transfers, and (ARV-139b, a site with those
+/// lanes only) diplomats and GCC nationals. At DMO <see cref="Dip"/> and <see cref="Gcc"/> are zero.
+/// </summary>
+public sealed record PaxMix(double Cit, double Res, double Vis, double Crw, double Trf)
+{
+    /// <summary>Share of diplomats (AUH-TA's DIP lane); zero at DMO.</summary>
+    public double Dip { get; init; }
+
+    /// <summary>Share of GCC nationals (AUH-TA's GCC lane); zero at DMO.</summary>
+    public double Gcc { get; init; }
+}
 
 /// <summary>A carrier of the reference airport: its handler, its check-in island and its passenger mix.</summary>
 internal sealed record Carrier(string Code, string Handler, string Island, PaxMix Mix);
@@ -30,8 +41,24 @@ internal sealed record QueueDef(
 /// <summary>A staffing area: the queues one recommendation covers.</summary>
 internal sealed record AreaDef(string Id, string Name, string Unit, IReadOnlyList<string> Queues, string Perm);
 
-/// <summary>A people-counting sensor and the zone it watches.</summary>
-internal sealed record SensorDef(string Id, string Zone, string Type, string Level, int Slot, int Slots);
+/// <summary>
+/// A people-counting sensor and the zone it watches, with what it reports (ARV-139b: fixed by its scenario site): the queue
+/// zone its device belongs to (an overflow band's sensor belongs to the queue the band feeds), its role and, for a desk
+/// sensor, the desks whose staff and service zones it reports.
+/// </summary>
+internal sealed record SensorDef(string Id, string Zone, string Type, string Level, int Slot, int Slots)
+{
+    /// <summary>The scenario site the sensor belongs to.</summary>
+    public string SiteCode { get; init; } = ScenarioModel.SiteCode;
+
+    /// <summary>The queue zone of the sensor's device (Ingest's path): its own zone, or the queue its overflow band feeds.</summary>
+    public string QueueZone { get; init; }
+
+    public SensorRole Role { get; init; }
+
+    /// <summary>The desks whose staff and service zones a desk sensor reports (empty for any other role).</summary>
+    public IReadOnlyList<string> Desks { get; init; } = [];
+}
 
 /// <summary>A sensor outage on the demo day, in clock minutes [From, To).</summary>
 internal sealed record Outage(string Sensor, string Zone, int From, int To);
@@ -76,6 +103,9 @@ internal static class ScenarioModel
 
     /// <summary>The demo date.</summary>
     public const string Date = "2026-09-28";
+
+    /// <summary>The reference site's code (ARV-139b: the scenario engine takes the site; this model is DMO's).</summary>
+    public const string SiteCode = "DMO";
 
     #endregion
 
@@ -217,6 +247,13 @@ internal static class ScenarioModel
 
     #region Sensors
 
+    // Declared before the sensors: static fields initialise in order, and the sensors read it.
+    /// <summary>The overflow bands of the reference airport and the queue each feeds.</summary>
+    public static readonly FrozenDictionary<string, string> Bands = new Dictionary<string, string>
+    {
+        ["A-OV"] = "A-VIS", ["D-OV"] = "D-VIS", ["SEC-OV"] = "SEC-N"
+    }.ToFrozenDictionary(StringComparer.Ordinal);
+
     /// <summary>The 59 sensors of the reference BOQ.</summary>
     public static readonly IReadOnlyList<SensorDef> Sensors = BuildSensors();
 
@@ -248,7 +285,30 @@ internal static class ScenarioModel
         Add("D-CRW", 1, "Stereo", "dep"); Add("D-CIT", 2, "Stereo", "dep"); Add("D-RES", 2, "Stereo", "dep");
         Add("D-VIS", 5, "Stereo", "dep"); Add("D-EG", 2, "Stereo", "dep"); Add("D-OV", 1, "Stereo", "dep");
         Add("CI-A", 5, "LiDAR", "dep"); Add("CI-B", 5, "LiDAR", "dep"); Add("CI-C", 5, "LiDAR", "dep"); Add("CI-D", 5, "LiDAR", "dep");
-        return list;
+        return [.. list.Select(Describe)];
+    }
+
+    /// <summary>The queue whose desks have staff and service zone sensors (ARV-116): arrivals Visitors, desks AR-08 to AR-22.</summary>
+    public const string DeskZoneQueue = "A-VIS";
+
+    /// <summary>The first sensor slot of <see cref="DeskZoneQueue"/> that watches desks; each such sensor watches <see cref="DesksPerSensor"/> desks.</summary>
+    public const int FirstDeskSlot = 3;
+
+    public const int DesksPerSensor = 5;
+
+    /// <summary>
+    /// What a sensor of the reference airport reports: the first sensor of a queue zone counts the zone; the first of an
+    /// overflow band reports the band; the fourth to sixth over the arrivals Visitors hall (S-18 to S-20) report the staff
+    /// and service zones of five Visitors desks each (ARV-116); every other sensor only reports that it is alive.
+    /// </summary>
+    private static SensorDef Describe(SensorDef s)
+    {
+        IReadOnlyList<string> desks = s.Zone == DeskZoneQueue && s.Slot >= FirstDeskSlot
+            ? [.. Queues[Q(DeskZoneQueue)].Servers.Skip((s.Slot - FirstDeskSlot) * DesksPerSensor).Take(DesksPerSensor)]
+            : [];
+        var role = s.Slot != 0 ? desks.Count > 0 ? SensorRole.DeskZones : SensorRole.Heartbeat
+            : QueueIndex.ContainsKey(s.Zone) ? SensorRole.QueueLead : SensorRole.OverflowLead;
+        return s with { QueueZone = Bands.GetValueOrDefault(s.Zone, s.Zone), Role = role, Desks = desks };
     }
 
     #endregion

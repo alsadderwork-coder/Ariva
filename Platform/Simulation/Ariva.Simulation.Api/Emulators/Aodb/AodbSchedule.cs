@@ -31,7 +31,8 @@ public sealed record AodbLeg(
     int ChangedAt);
 
 /// <summary>
-/// The demo day's schedule as an AODB holds it (ARV-029): the scenario's arrivals and departures at the site's airport,
+/// The demo day's schedule as an AODB holds it (ARV-029): the scenario's arrivals and departures at the site's airport
+/// (ARV-139b: AUH-TA has arrivals only),
 /// with the other airport, stand, gate and aircraft fixed per flight code, and the times known at each demo minute. An
 /// arrival's estimated on-block (the scenario's estimate, with its error) is published an hour before the schedule and
 /// its actual on-block when it happens; a departure's estimated off-block is published an hour before and its actual
@@ -40,8 +41,6 @@ public sealed record AodbLeg(
 /// </summary>
 public static class AodbSchedule
 {
-    private static readonly string[] Airports = ["DOH", "DXB", "AMM", "CAI", "IST", "LHR", "BEY", "KWI", "JED", "BAH", "MCT", "CDG"];
-
     private static string AircraftOf(int seats) => seats switch
     {
         <= 180 => "320",
@@ -53,6 +52,9 @@ public static class AodbSchedule
     internal static IReadOnlyList<AodbLeg> At(ScenarioDay day, int minute, Func<int, DateTime> timeOf, string airport)
     {
         ArgumentNullException.ThrowIfNull(day);
+        // The other airports and the terminal are the scenario site's (DMO: T1; AUH-TA: Terminal A).
+        var airports = day.Site.AodbAirports;
+        var terminal = day.Site.AodbTerminal;
         var legs = new List<AodbLeg>();
         foreach (var f in day.Schedule.Arrivals)
         {
@@ -63,8 +65,8 @@ public static class AodbSchedule
             var origin = timeOf(f.Sched - AmanFeed.BlockMinutes(f.Code));
             var estimateKnown = minute >= f.Sched - 60;
             var landed = minute >= f.OnBlock;
-            legs.Add(new AodbLeg(AmanFeed.FlightKey(f.Code, origin, arrival: true), carrier, number, true, Airports[hash % (uint)Airports.Length], airport, origin.Date,
-                timeOf(f.Sched), estimateKnown ? timeOf(f.Eibt) : null, landed ? timeOf(f.OnBlock) : null, "T1",
+            legs.Add(new AodbLeg(AmanFeed.FlightKey(f.Code, origin, arrival: true), carrier, number, true, airports[(int)(hash % (uint)airports.Count)], airport, origin.Date,
+                timeOf(f.Sched), estimateKnown ? timeOf(f.Eibt) : null, landed ? timeOf(f.OnBlock) : null, terminal,
                 "B" + (1 + hash % 40).ToString(CultureInfo.InvariantCulture), "A" + (1 + hash / 7 % 20).ToString(CultureInfo.InvariantCulture), AircraftOf(f.Seats), f.Seats,
                 landed ? f.OnBlock : estimateKnown ? f.Sched - 60 : int.MinValue));
         }
@@ -79,8 +81,8 @@ public static class AodbSchedule
             var estimateKnown = minute >= f.Std - 60;
             var gone = minute >= offBlock;
             var origin = timeOf(f.Std);
-            legs.Add(new AodbLeg(AmanFeed.FlightKey(f.Code, origin, arrival: false), carrier, number, false, airport, Airports[hash % (uint)Airports.Length], origin.Date,
-                origin, estimateKnown ? timeOf(offBlock) : null, gone ? timeOf(offBlock) : null, "T1",
+            legs.Add(new AodbLeg(AmanFeed.FlightKey(f.Code, origin, arrival: false), carrier, number, false, airport, airports[(int)(hash % (uint)airports.Count)], origin.Date,
+                origin, estimateKnown ? timeOf(offBlock) : null, gone ? timeOf(offBlock) : null, terminal,
                 "C" + (1 + hash % 30).ToString(CultureInfo.InvariantCulture), "C" + (1 + hash / 7 % 24).ToString(CultureInfo.InvariantCulture), AircraftOf(f.Seats), f.Seats,
                 gone ? offBlock : estimateKnown ? f.Std - 60 : int.MinValue));
         }
