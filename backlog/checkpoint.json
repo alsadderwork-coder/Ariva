@@ -1,0 +1,96 @@
+{
+  "commit": "61516198e8c8766ae54440ffaf089abf4afc6b7a",
+  "at": "2026-10-08",
+  "mutationBase": "3486fb0",
+  "results": [
+    {
+      "name": "dotnet build",
+      "ok": true,
+      "seconds": 97
+    },
+    {
+      "name": "reference scenario golden up to date",
+      "ok": true,
+      "seconds": 8
+    },
+    {
+      "name": "unit tests",
+      "ok": true,
+      "seconds": 118
+    },
+    {
+      "name": "security scanner self-test",
+      "ok": true,
+      "seconds": 0
+    },
+    {
+      "name": "security scan",
+      "ok": true,
+      "seconds": 1
+    },
+    {
+      "name": "base images pinned",
+      "ok": true,
+      "seconds": 0
+    },
+    {
+      "name": "chart security (pod security context, read-only root, TLS, release guards)",
+      "ok": true,
+      "seconds": 1
+    },
+    {
+      "name": "nuget vulnerability audit",
+      "ok": true,
+      "seconds": 20
+    },
+    {
+      "name": "npm audit (web)",
+      "ok": true,
+      "seconds": 1
+    },
+    {
+      "name": "npm audit (e2e)",
+      "ok": true,
+      "seconds": 0
+    },
+    {
+      "name": "docs text rules",
+      "ok": true
+    },
+    {
+      "name": "web svelte-check",
+      "ok": true,
+      "seconds": 8
+    },
+    {
+      "name": "web lint",
+      "ok": true,
+      "seconds": 6
+    },
+    {
+      "name": "web build",
+      "ok": true,
+      "seconds": 22
+    },
+    {
+      "name": "integration tests",
+      "ok": true,
+      "seconds": 416
+    },
+    {
+      "name": "visual regression (pinned image)",
+      "ok": true,
+      "seconds": 116
+    },
+    {
+      "name": "e2e tests (API and functional)",
+      "ok": true,
+      "seconds": 579
+    },
+    {
+      "name": "mutation tests (no engine change since 3486fb0)",
+      "ok": true,
+      "skipped": true
+    }
+  ]
+}
