@@ -449,7 +449,7 @@ public sealed class OverflowBandsTests
         peeked.Count.Should().Be(drained.Count);
         zone.Peek().Overflow.Should().BeEmpty();
         var state = zone.Capture();
-        state.Version.Should().Be(ZoneProcessorState.CurrentVersion, "version 6 added the band states; 7 the desk zones (ARV-116)");
+        state.Version.Should().Be(ZoneProcessorState.CurrentVersion, "version 6 added the band states; 7 the desk zones (ARV-116); 8 the engine's pending empty-queue check (ARV-114d)");
         state.OverflowBands.Should().Equal(new OverflowBandState("A-OV", true, At(0), 6, At(0)));
     }
 

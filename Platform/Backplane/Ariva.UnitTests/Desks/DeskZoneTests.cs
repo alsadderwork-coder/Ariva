@@ -296,7 +296,7 @@ public sealed class DeskZoneTests
         var actual = first.Drain().DeskReadings.ToList();
         var json = JsonSerializer.Serialize(first.Capture());
         var state = JsonSerializer.Deserialize<ZoneProcessorState>(json);
-        state.Version.Should().Be(7);
+        state.Version.Should().Be(ZoneProcessorState.CurrentVersion, "version 7 added the desk zones (ARV-116); 8 the engine's pending empty-queue check (ARV-114d)");
         var second = ZoneProcessor.Restore("DMO/A-VIS", Geometry(), 12, null, state, At(2_000));
         foreach (var b in batches.Skip(17))
             second.Offer(b, b.ReceivedUtc);

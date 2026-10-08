@@ -291,6 +291,48 @@ public sealed class ZoneProcessorTests
     }
 
     [Fact]
+    public void Restore_Should_CarryThePendingEmptyQueueCheck_When_TheSnapshotIsVersion8_And_RefuseItOtherwise()
+    {
+        // ARV-114d: a full step that ends inside an instant leaves the engine's empty-queue check of that instant pending.
+        // The zone reads 5 at 18:02, then 1,050 people leave at 18:02; a step of 1,000 records fills among those exits.
+        var settings = new ZoneProcessorSettings { Engine = new QueueEngineSettings { Lateness = TimeSpan.Zero, MaxStepRecords = 1_000 } };
+        var at = WallOf(1082);
+        var engine = new QueueStateEngine(Geometry, settings.Engine);
+        var inputs = new List<QueueInput> { new QueueOccupancy("A-VIS", 0, WallOf(1081)) };
+        inputs.AddRange(Enumerable.Range(0, 1_100).Select(k => new QueueCrossing("A-VIS entry", CrossingDirection.In, "S-15/" + k, WallOf(1081 + (k + 1) * 0.0008))));
+        inputs.Add(new QueueOccupancy("A-VIS", 5, at));
+        inputs.AddRange(Enumerable.Range(0, 1_050).Select(k => new QueueCrossing("A-VIS exit", CrossingDirection.Out, "S-15/" + k, at)));
+        foreach (var input in inputs)
+            engine.Offer(input, input.TimeUtc);
+        engine.Advance(WallOf(1090)).More.Should().BeTrue();
+        var state = RoundTrip(new ZoneProcessor(ZoneKey, Geometry, 3, settings).Capture() with { Engine = engine.Capture(), ReferenceUtc = WallOf(1090) });
+        state.Version.Should().Be(ZoneProcessorState.CurrentVersion).And.BeGreaterThanOrEqualTo(ZoneProcessorState.PendingAnchorSinceVersion);
+        var older = ZoneProcessorState.PendingAnchorSinceVersion - 1;
+        state.Engine.PendingAnchorUtc.Should().Be(at);
+        var notAfter = WallOf(1440);
+
+        var zone = ZoneProcessor.Restore(ZoneKey, Geometry, 3, settings, state, notAfter);
+        zone.Capture().Engine.PendingAnchorUtc.Should().Be(at, "the check survives the snapshot");
+        zone.Tick(WallOf(1091));
+        zone.Capture().Engine.PendingAnchorUtc.Should().BeNull("the next step applies the rest of 18:02 and runs it");
+        ZoneProcessor.Restore(ZoneKey, Geometry, 3, settings, state with { Version = older, Engine = state.Engine with { PendingAnchorUtc = null } }, notAfter)
+            .Capture().Engine.PendingAnchorUtc.Should().BeNull("a version 7 snapshot restores with no check pending");
+
+        foreach (var (bad, because) in new[]
+                 {
+                     (state with { Version = older }, "a version 7 snapshot carries no pending check"),
+                     (state with { ReferenceUtc = state.Engine.WatermarkUtc }, "the check is of an event after the zone's clock"),
+                     (state with { ReferenceUtc = DateTime.MinValue }, "a zone that never stepped has no check pending"),
+                     (state with { Engine = state.Engine with { PendingAnchorUtc = at.AddSeconds(1) } }, "the check is not where the full step stopped"),
+                     (state with { ReferenceUtc = notAfter.AddDays(3), Engine = state.Engine with { PendingAnchorUtc = notAfter.AddDays(2) } }, "the check is after the host's clock")
+                 })
+        {
+            var restore = () => ZoneProcessor.Restore(ZoneKey, Geometry, 3, settings, bad, notAfter);
+            restore.Should().Throw<InvalidDataException>(because);
+        }
+    }
+
+    [Fact]
     public void Restore_Should_RefuseASnapshot_When_ItIsForAnotherZoneOrBeyondTheBounds()
     {
         var zone = new ZoneProcessor(ZoneKey, Geometry, 1);

@@ -327,7 +327,7 @@
       "title": "[E12] Queue engine: carry the pending empty-queue check across a full step",
       "description": "Found in ARV-139b (2026-10-08). The F5 re-anchor now waits until every reading of an instant is applied, but when a full step (MaxStepRecords, default 100,000) ends inside an instant, Reanchor() runs with only part of that instant applied: a band reading 0 ordered before the zone's reading can still drop the people the zone holds (test: 108 Fragmented and 108 duplicate exits of 1,100 at MaxStepRecords 1,000). Rare in practice (a step must end inside one instant's readings), but it undercounts exits when it happens. Carry the pending check in the engine state instead of running it when the step fills. Epic: Measurement completeness. CWEs to review: CWE-501, CWE-120.",
       "acceptanceCriteria": [
-        "The pending re-anchor instant is part of QueueEngineState (snapshot version bumped; an older snapshot restores with no pending check), validated on restore (an aligned plausible instant not after the watermark) and refused otherwise",
+        "The pending re-anchor instant is part of QueueEngineState (snapshot version bumped; an older snapshot restores with no pending check), validated on restore (a plausible UTC instant exactly one tick after the watermark, where a full step stops, equal to the last processed event's time, the time of a held occupancy reading of the queue's own zones and of the earliest buffered event) and refused otherwise",
         "QueueStateEngineTests.Restore_Should_ContinueLikeAContinuousRun_When_AFullStepSplitsTheReadingsOfAnInstant asserts the unsplit result (1,100 waits, no re-anchor, no Fragmented) for the split run, continuous and restored",
         "Golden replay (seed 9303), the overflow case and the AUH-TA replay are unchanged, or any change is explained and the old and new values recorded for the owner's approval",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
@@ -337,7 +337,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 14,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Found by the ARV-139b determinism investigation; the review judged it bounded and documented, the owner's process treats a pinned wrong result as a defect to fix.",
       "dependsOn": [
         "ARV-139b"

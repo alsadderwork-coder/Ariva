@@ -68,6 +68,17 @@ public static class SnapshotChecks
         Times(e.EarliestLateUtc);
         if (e.WatermarkUtc > state.ReferenceUtc && state.ReferenceUtc != DateTime.MinValue)
             bad++;
+        // The pending empty-queue check (ARV-114d): only a snapshot of version 8 or later carries one, only for a zone that
+        // has stepped, and at an event it processed (never after its clock). The engine's Restore checks that it is where a
+        // full step stops.
+        if (e.PendingAnchorUtc is { } pending)
+        {
+            if (state.Version < ZoneProcessorState.PendingAnchorSinceVersion)
+                yield return $"A snapshot before version {ZoneProcessorState.PendingAnchorSinceVersion} carries no pending empty-queue check.";
+            Time(pending);
+            if (state.ReferenceUtc == DateTime.MinValue || pending > state.ReferenceUtc)
+                bad++;
+        }
         Count(e.Sequence);
         Count(e.Order);
         Count(e.Reanchors);

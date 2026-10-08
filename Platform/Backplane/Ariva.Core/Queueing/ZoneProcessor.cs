@@ -145,9 +145,14 @@ public sealed record ZoneProcessorState
     /// reported occupied at its next minute with occupancy. 6 adds the Unknown state of a band silent beyond the occupancy
     /// freshness window (ARV-115, the owner's decision of 2026-10-06); a version 5 snapshot has no such property and
     /// restores with every band it lists occupied or empty, as before. 7 adds the latest reading passed on per desk zone
-    /// (ARV-116); an earlier snapshot restores with none, so each desk zone's next reading passes.
+    /// (ARV-116); an earlier snapshot restores with none, so each desk zone's next reading passes. 8 adds the queue
+    /// engine's pending empty-queue check (<see cref="QueueEngineState.PendingAnchorUtc"/>, ARV-114d); an earlier snapshot
+    /// carries none (the engine that wrote it ran the check when a step filled) and is refused if it says otherwise.
     /// </summary>
-    public const int CurrentVersion = 7;
+    public const int CurrentVersion = 8;
+
+    /// <summary>The first version that may carry the queue engine's pending empty-queue check (ARV-114d).</summary>
+    public const int PendingAnchorSinceVersion = 8;
 
     public int Version { get; init; } = CurrentVersion;
     public string ZoneKey { get; init; }

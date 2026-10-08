@@ -75,6 +75,13 @@ public sealed record QueueEngineState
     public DateTime CursorUtc { get; init; }
     public bool ResidualSuspect { get; init; }
 
+    /// <summary>
+    /// The instant of an occupancy reading whose empty-queue check (F5) still waits for the rest of that instant's events,
+    /// because a full step ended inside it (ARV-114d): one tick after <see cref="WatermarkUtc"/>, where the step stopped.
+    /// Null when no check is pending; a snapshot written before has none (that engine ran the check when the step filled).
+    /// </summary>
+    public DateTime? PendingAnchorUtc { get; init; }
+
     // What happened since the last step (an Offer can process events when the buffer is full).
     public IReadOnlyList<MovementCount> Movements { get; init; } = [];
     /// <summary>Line crossings since the last step (ARV-113); a snapshot written before has none.</summary>
@@ -111,6 +118,7 @@ public sealed partial class QueueStateEngine
         WatermarkUtc = _watermark,
         CursorUtc = _cursor,
         ResidualSuspect = _residualSuspect,
+        PendingAnchorUtc = _anchorDueUtc,
         Movements = Movements(),
         Lines = LineMovements(),
         OccupancySamples = [.. _samples],
@@ -198,6 +206,8 @@ public sealed partial class QueueStateEngine
         engine._watermark = QueueInputState.Utc(state.WatermarkUtc);
         engine._cursor = QueueInputState.Utc(state.CursorUtc);
         engine._residualSuspect = state.ResidualSuspect;
+        if (state.PendingAnchorUtc is { } pending)
+            engine._anchorDueUtc = PendingAnchor(engine, QueueInputState.Utc(pending));
         foreach (var m in (state.Movements ?? []).Where(m => m is not null))
         {
             if (m.TrackedEntries < 0 || m.TrackedEntries > m.Entries)
@@ -251,5 +261,23 @@ public sealed partial class QueueStateEngine
         engine._beyondHorizon = state.BeyondHorizon;
         engine._more = state.More;
         return engine;
+    }
+
+    /// <summary>
+    /// A pending empty-queue check from a snapshot (ARV-114d), checked as the engine leaves one (CWE-501): only a full step
+    /// that stopped inside an instant carries it, so it is that instant. It is a plausible UTC time, aligned with where
+    /// the step stopped (exactly one tick after the watermark, never at or before it, where every event of the instant
+    /// was applied and the check has run, nor any later, where none of them was), the time of the last processed event,
+    /// and the time of an occupancy reading of the queue the engine holds (the reading that set it). Anything else is
+    /// refused, so a snapshot cannot make the engine drop people at an instant of its choosing.
+    /// </summary>
+    private static DateTime PendingAnchor(QueueStateEngine engine, DateTime at)
+    {
+        if (!ZoneProcessor.Plausible(at) || at.AddTicks(-1) != engine._watermark || at != engine._cursor ||
+            !engine._occupancy.Any(o => engine._geometry.CountsInQueue(o.Key) && o.Value.AtUtc == at) ||
+            // The event that stopped the step is still buffered, so the earliest buffered event is at the instant.
+            !engine._buffer.TryPeek(out _, out var first) || first.Time != at)
+            throw new InvalidDataException("The queue engine snapshot has a pending empty-queue check where no full step leaves one.");
+        return at;
     }
 }

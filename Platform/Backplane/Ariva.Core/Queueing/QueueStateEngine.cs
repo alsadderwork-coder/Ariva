@@ -100,7 +100,9 @@ public sealed record QueueEngineSettings
 /// over an entry line abandons (the tracked person, or the latest anonymous entrant); entrants not resolved within
 /// T_censor are censored; a tracked person with position samples not seen within the hand-over window is fragmented;
 /// when every zone of the queue reports zero occupancy the FIFO sequence is re-anchored (F5), checked once every event of
-/// the reading's instant has been applied, so the order in which the zones' readings of one instant arrive never matters.
+/// the reading's instant has been applied, so the order in which the zones' readings of one instant arrive never matters;
+/// when a full step ends inside that instant the check stays pending in the engine's state (and its snapshot) until the
+/// rest of the instant has been applied (ARV-114d).
 /// </para>
 /// Anonymous crossings of an overflow band's entry line are not counted: without a track the same person crosses the
 /// queue's entry line later, and counting both would double the entries.
@@ -141,8 +143,9 @@ public sealed partial class QueueStateEngine
     private DateTime _cursor = DateTime.MinValue;
     private readonly PriorityQueue<(string Key, DateTime Seen), DateTime> _handovers = new();
     private bool _residualSuspect;
-    // The time of the occupancy reading applied last, until the events of its instant are all applied (never kept past a
-    // ProcessUpTo, so it is not part of the snapshot).
+    // The time of the occupancy reading applied last, until the events of its instant are all applied. A full step that
+    // ends inside that instant keeps it for the next step (ARV-114d), one tick after the watermark, so it is part of the
+    // snapshot (QueueEngineState.PendingAnchorUtc).
     private DateTime? _anchorDueUtc;
 
     private readonly Dictionary<DateTime, (long In, long Out, long DegradedIn, long DegradedOut, long TrackedIn)> _movements = [];
@@ -336,9 +339,10 @@ public sealed partial class QueueStateEngine
                 var before = key.Time.AddTicks(-1);
                 if (before > _watermark)
                     _watermark = before;
-                // The check is never carried into the next step (it is not part of the snapshot): an instant split by a
-                // full step is checked with the events applied so far, the same way on every run of the same records.
-                Reanchor();
+                // A check still due here is for this event's instant (any earlier one ran above), which the step has
+                // split: it stays pending, one tick after the watermark, and runs in a later step once the rest of the
+                // instant has been applied, exactly as in a step that is not split (ARV-114d). Never run it with part
+                // of an instant applied: a band's 0 beside the zone's previous reading is not an empty queue.
                 return;
             }
 
@@ -663,7 +667,8 @@ public sealed partial class QueueStateEngine
         _readings[readingKey] = _readings.TryGetValue(readingKey, out var seen) ? (Math.Min(seen.Min, o.Count), Math.Max(seen.Max, o.Count)) : (o.Count, o.Count);
         // The queue zone and its bands are often read by different devices at the same instant, and their batches arrive
         // in any order: the check for an empty queue waits until every event of this instant has been applied
-        // (ProcessUpTo), so it never sees one zone's new reading beside another's previous one.
+        // (ProcessUpTo, across steps when a full step splits the instant), so it never sees one zone's new reading beside
+        // another's previous one.
         _anchorDueUtc = o.TimeUtc;
     }
 
