@@ -30,7 +30,7 @@ The security-reviewer still reviews every story. After its fixes, only the tests
 
 A full E2E run (a wide story or a checkpoint) needs fresh services: the suite assumes an empty database, and data left by earlier runs fails tests that create fixed names (seen 2026-10-08: seven failures, all "already exists" and duplicate rows, gone on fresh services). With `CI=true` set, a missing `helm` turns the chart security step into a failure; without it the step self-tests its rules and skips the render.
 
-One integration suite at a time on a machine: the Testcontainers of two runs share the Docker host's memory and disk (seen 2026-10-08 on a 16 GB host: PostgreSQL in crash recovery, 39 failures with 57P03, and later a full disk, "No space left on device"). Before a checkpoint, check the free space; build output of old worktrees and unused images are the first to go.
+One heavy run at a time on a machine: `verify.mjs` scopes that start the hosts, Testcontainers or Stryker (integration, e2e, visual, demo, zap, mutation, all, story, checkpoint) take a lock in the machine's temporary folder (`ariva-verify.lock`) and a second one refuses to start while the holder lives (a stale lock is taken over). It was added after two checkpoints started in one worktree shared the E2E ports and collided in Stryker. One integration suite at a time on a machine: the Testcontainers of two runs share the Docker host's memory and disk (seen 2026-10-08 on a 16 GB host: PostgreSQL in crash recovery, 39 failures with 57P03, and later a full disk, "No space left on device"). Before a checkpoint, check the free space; build output of old worktrees and unused images are the first to go.
 
 ## Checkpoint: `node scripts/verify.mjs checkpoint`
 

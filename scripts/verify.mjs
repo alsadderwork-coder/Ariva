@@ -32,6 +32,7 @@
 // Writes .verify/last.json with per-step results.
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -335,6 +336,36 @@ const steps = {
 };
 
 if (!steps[scope]) { console.error(`Unknown scope ${scope}. Use one of: ${Object.keys(steps).join(', ')}`); process.exit(2); }
+
+// One heavy run per machine (2026-10-08: two checkpoints in one worktree shared the E2E ports and collided in Stryker; two
+// integration suites crashed PostgreSQL and filled the disk). Scopes that start the hosts, Testcontainers or Stryker take a
+// lock in the machine's temporary folder; a second one refuses to start while the holder's process lives.
+const HEAVY = new Set(['integration', 'e2e', 'visual', 'demo', 'zap', 'mutation', 'all', 'story', 'checkpoint']);
+const LOCK = path.join(os.tmpdir(), 'ariva-verify.lock');
+function alive(pid) {
+  try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
+}
+function takeLock() {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      fs.writeFileSync(LOCK, JSON.stringify({ pid: process.pid, scope, root: ROOT, at: new Date().toISOString() }), { flag: 'wx' });
+      process.on('exit', () => { try { if (JSON.parse(fs.readFileSync(LOCK, 'utf8')).pid === process.pid) fs.unlinkSync(LOCK); } catch { /* gone */ } });
+      return true;
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      let holder;
+      try { holder = JSON.parse(fs.readFileSync(LOCK, 'utf8')); } catch { holder = undefined; }
+      if (holder && Number.isInteger(holder.pid) && alive(holder.pid)) {
+        console.error(`Another heavy run holds ${LOCK}: pid ${holder.pid}, scope ${holder.scope}, ${holder.root}, since ${holder.at}. Wait for it to end.`);
+        return false;
+      }
+      try { fs.unlinkSync(LOCK); } catch { /* raced */ } // a stale lock: its process is gone
+    }
+  }
+  return false;
+}
+if (HEAVY.has(scope) && !PLAN && !takeLock()) process.exit(3);
+for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => process.exit(130));
 steps[scope]();
 
 if (!PLAN) {
