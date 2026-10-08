@@ -325,14 +325,16 @@ With the Ariva TimescaleDB chart (section 4), create its credentials before the 
 
 ```bash
 umask 077
-openssl rand -base64 24 > superuser-password
-openssl rand -base64 24 > migration-password
+openssl rand -base64 24 | tr -d '\n' > superuser-password   # no trailing newline: the secret stores the file as it is
+openssl rand -base64 24 | tr -d '\n' > migration-password
 kubectl create secret generic timescaledb-credentials \
   --from-file=superuser-password=./superuser-password \
   --from-file=migration-password=./migration-password \
   --namespace="$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
 rm -f superuser-password migration-password
 ```
+
+A secret created from a file stores the file byte for byte, so a password file that ends with a newline gives the database a password that ends with one, and `Database:Migration:Password` in the appsettings must then carry it too or the migration job cannot sign in. A secret created before 2026-10-08 with `openssl rand -base64 24 > file` holds such a newline: keep the appsettings value identical to the secret, or rotate both. The release pipelines write these secrets with `printf '%s'` and are not affected.
 
 The validation reader login (ARV-104g1) is the only database login that reads the shadow nowcast, for the pilot's ground-truth proof in the validation results. Create its secret before the first release in k8s-prd (required there) and wherever the validation results should show the shadow (optional elsewhere). The name must be a plain lower-case identifier of its own (not `ariva_app`, not the migration login, not an `ariva_` role); the migration job creates the login, so it does not need to exist. Only api-main and the migration job get it:
 
