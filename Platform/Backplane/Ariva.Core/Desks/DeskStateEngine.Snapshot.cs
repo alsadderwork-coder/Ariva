@@ -92,7 +92,9 @@ public sealed partial class DeskStateEngine
         var perDesk = Math.Min(s.MaxBufferedSignalsPerDesk, s.MaxBufferedSignals);
         foreach (var saved in state.Desks ?? [])
         {
-            if (saved?.DeskCode is null || !engine._desks.TryGetValue(saved.DeskCode, out var desk))
+            // The out variable is declared before the condition (ARV-069a): a mutant that short-circuits it still compiles.
+            Desk desk = null;
+            if (saved?.DeskCode is null || !engine._desks.TryGetValue(saved.DeskCode, out desk))
                 continue;
             if ((saved.Pending?.Count ?? 0) > perDesk || saved.Ticks is not { Count: 5 } || saved.Memory is null || saved.Current is null ||
                 saved.Ticks.Any(t => t is < 0 or > TimeSpan.TicksPerMinute) || saved.Ticks.Sum() > TimeSpan.TicksPerMinute ||
@@ -124,7 +126,8 @@ public sealed partial class DeskStateEngine
 
         engine._watermark = watermark;
         engine._sequence = state.Sequence;
-        if (state.Counters is { } c)
+        var c = state.Counters;
+        if (c is not null)
             (engine._accepted, engine._late, engine._superseded, engine._future, engine._invalid, engine._unknownDesk, engine._bufferFull, engine._tooLate, engine._skippedMinutes) =
                 (c.Accepted, c.Late, c.Superseded, c.Future, c.Invalid, c.UnknownDesk, c.BufferFull, c.TooLate, c.SkippedMinutes);
         return engine;

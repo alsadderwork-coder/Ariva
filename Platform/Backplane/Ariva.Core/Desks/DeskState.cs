@@ -398,10 +398,12 @@ public static class DeskRule
     public static DateTime? NextChange(DeskProfile desk, DeskMemory memory, DateTime afterUtc, DeskStateSettings settings)
     {
         DateTime? next = null;
+        // No pattern variables in the conditions (ARV-069a): every mutant of them compiles, so Stryker measures this method.
         void Consider(DateTime? at, TimeSpan plus)
         {
-            if (at is not { } t)
+            if (at is null)
                 return;
+            var t = at.Value;
             var candidate = t > DateTime.MaxValue - plus ? DateTime.MaxValue : t + plus;
             if (candidate > afterUtc && (next is null || candidate < next))
                 next = candidate;
@@ -413,10 +415,11 @@ public static class DeskRule
         Consider(memory.StaffEmptySince, settings.PauseAfter);
         Consider(memory.StaffEmptySince, settings.CloseAfter);
         Consider(memory.LastTransaction, settings.PauseAfter);
-        if (settings.SensorPauseAfter is { } sensorPause)
+        var sensorPause = settings.SensorPauseAfter;
+        if (sensorPause.HasValue)
         {
-            Consider(memory.StaffEmptySince, sensorPause);
-            Consider(memory.LastTransaction, sensorPause);
+            Consider(memory.StaffEmptySince, sensorPause.Value);
+            Consider(memory.LastTransaction, sensorPause.Value);
         }
 
         Consider(memory.LastTransaction, settings.CloseAfter);

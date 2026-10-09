@@ -126,6 +126,67 @@ public sealed class ValidationCampaignTests
         Plan(Published(), bins: 48).TargetsPlaceholder.Should().BeTrue();
     }
 
+    // ARV-069a: the constructor and AuditSummary were in Stryker's safe mode until the first checkpoint; these kill the
+    // mutants that survived once they were measured.
+
+    [Fact]
+    public void Constructor_Should_OrderTheZonesByName_When_GivenInAnotherOrder()
+    {
+        var p = Published();
+
+        var campaign = new ValidationCampaign("Pilot", p.Version, [IdOf(p.SnakeB), IdOf(p.SnakeA)], [], [Today], Today, null, null, Manager, Now);
+
+        campaign.Zones.Select(z => z.ZoneName).Should().Equal("Snake A", "Snake B");
+    }
+
+    public static TheoryData<string, Guid, DateOnly[], int?, DateTime> RefusedPlans => new()
+    {
+        { "an anonymous creator", Guid.Empty, [Today], null, Now },
+        { "no planned day", Manager, [], null, Now },
+        { "a target out of range", Manager, [Today], 0, Now },
+        { "a local time", Manager, [Today], null, DateTime.SpecifyKind(Now, DateTimeKind.Local) }
+    };
+
+    [Theory]
+    [MemberData(nameof(RefusedPlans))]
+    public void Constructor_Should_Refuse_When_AnArgumentBreaksItsRule(string because, Guid createdBy, DateOnly[] days, int? bins, DateTime utcNow)
+    {
+        var p = Published();
+
+        var plan = () => new ValidationCampaign("Pilot", p.Version, [IdOf(p.SnakeA)], [], days, Today, bins, null, createdBy, utcNow);
+
+        plan.Should().Throw<ArgumentException>(because);
+    }
+
+    [Fact]
+    public void AuditSummary_Should_GiveEveryFieldAndThePlaceholderMark_When_TheTargetsArePlaceholders()
+    {
+        Plan(Published()).AuditSummary().Should().Be(
+            "site=DMO; name=\"Pilot week 1\"; status=Planned; profileVersion=7; zones=1; lines=3; desks=0; days=2026-10-07,2026-10-08; targets=20/30 (placeholder)");
+    }
+
+    [Fact]
+    public void AuditSummary_Should_KeepAHostileNameInsideItsQuotes_When_TheNameTriesToAddFields()
+    {
+        // CWE-117: the name is user text in the audit line. A line break is refused when the campaign is created; a quote
+        // and a field separator stay inside the serialised name, so the line keeps its fields.
+        var p = Published();
+        ValidationCampaign Named(string name) => new(name, p.Version, [IdOf(p.SnakeA)], [IdOf(p.EntryA), IdOf(p.ExitA), IdOf(p.OverflowEntry)],
+            [Today, Today.AddDays(-1)], Today, null, null, Manager, Now);
+
+        ((Action)(() => Named("Pilot\nsite=X"))).Should().Throw<ArgumentException>("a line break could start a forged audit line");
+        var line = Named("Pilot\"; status=Closed; site=X").AuditSummary();
+
+        line.Should().StartWith("site=DMO; name=\"Pilot\\u0022; status=Closed; site=X\"; status=Planned; ");
+        line.Should().EndWith("; targets=20/30 (placeholder)");
+    }
+
+    [Fact]
+    public void AuditSummary_Should_GiveTheTargetsUnmarked_When_TheKpiAnnexSetsThem()
+    {
+        Plan(Published(), bins: 48, tracers: 0).AuditSummary().Should().EndWith("; targets=48/0");
+    }
+
     public static TheoryData<string> InvalidScopes => ["no zone", "an overflow band as zone", "a line standing alone", "a line of a zone out of scope", "a repeated zone",
         "a repeated line", "an unknown zone", "an unknown line", "51 zones", "201 lines", "no lists"];
 

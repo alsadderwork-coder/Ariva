@@ -430,15 +430,18 @@ public sealed partial class BinAccumulator
         {
             if (sample is null || BinOf(sample.AtUtc) != sample.AtUtc)
                 continue;
+            // Out variables are declared before their conditions (ARV-069a): a mutant that short-circuits one still compiles.
             if (_open.TryGetValue(sample.AtUtc, out var starting))
                 starting.Health.OccupancyStart = sample.Count;
-            if (sample.AtUtc - DateTime.MinValue >= _settings.BinLength && _open.TryGetValue(sample.AtUtc - _settings.BinLength, out var ending))
+            Bin ending = null;
+            if (sample.AtUtc - DateTime.MinValue >= _settings.BinLength && _open.TryGetValue(sample.AtUtc - _settings.BinLength, out ending))
                 ending.Health.OccupancyEnd = sample.Count;
         }
 
         foreach (var reading in step.Readings ?? [])
         {
-            if (reading is null || !_open.TryGetValue(BinOf(reading.MinuteUtc), out var bin))
+            Bin bin = null;
+            if (reading is null || !_open.TryGetValue(BinOf(reading.MinuteUtc), out bin))
                 continue;
             var minute = MinuteOf(reading.MinuteUtc);
             var capacity = _geometry?.CapacityOf(reading.ZoneName);

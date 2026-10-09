@@ -39,7 +39,7 @@ Runs on a committed tree (it refuses uncommitted changes) every 5 stories, at th
 1. Build, unit tests and security, docs, web.
 2. Integration, full.
 3. Visual regression, then E2E in full, on fresh services (the visual baselines expect the demo seed).
-4. Stryker on the engine files changed since the previous checkpoint (one `--mutate` per changed file, which replaces the configured list); in full when no checkpoint is recorded; skipped when no engine file changed. Stryker's own `--since` mode ended silently after its coverage capture with the MTP runner on 2026-10-08, so it is not used.
+4. Stryker on the engine files changed since the previous checkpoint (one `--mutate` per changed file, which replaces the configured list); in full when no checkpoint is recorded; skipped when no engine file changed. Stryker's own `--since` mode ended silently after its coverage capture with the MTP runner on 2026-10-08, so it is not used. The step fails when Stryker puts any method in safe mode or prints no final score, even if Stryker exits zero (ARV-069a, `scripts/mutation-run.mjs`; the rule that avoids safe mode is in wiki 16).
 
 While no checkpoint is recorded, `--mutation-base <commit>` names an earlier checkpoint run whose mutation step passed although another step failed: the rerun tests mutation only on engine code changed since that commit, and `checkpoint.json` records the base, so a fix to an unrelated step does not repeat a run of an hour or more.
 

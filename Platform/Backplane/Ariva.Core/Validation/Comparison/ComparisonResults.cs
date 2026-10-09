@@ -327,9 +327,14 @@ public sealed record LeftOutInputs(int ManualCounts, int TracerRuns, int LineBin
         DeskObservations == other.DeskObservations && DeskMinutes == other.DeskMinutes && ShadowMinutes == other.ShadowMinutes &&
         UnusableKeys.SequenceEqual(other.UnusableKeys);
 
-    public override int GetHashCode() =>
-        HashCode.Combine(HashCode.Combine(ManualCounts, TracerRuns, LineBins, QueueMinutes, QueueBins, HealthBins, QualityIntervals),
-            DeskObservations, DeskMinutes, ShadowMinutes, UnusableKeys.Count);
+    public override int GetHashCode()
+    {
+        // Typed locals, not a nested call (ARV-069a): under a mutant HashCode.Combine's type arguments could not be inferred
+        // (CS0411) and the method left mutation testing.
+        int counts = HashCode.Combine(ManualCounts, TracerRuns, LineBins, QueueMinutes, QueueBins, HealthBins, QualityIntervals);
+        int keys = UnusableKeys.Count;
+        return HashCode.Combine(counts, DeskObservations, DeskMinutes, ShadowMinutes, keys);
+    }
 }
 
 /// <summary>

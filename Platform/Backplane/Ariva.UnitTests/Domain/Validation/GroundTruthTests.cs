@@ -435,6 +435,19 @@ public sealed class GroundTruthTests
     #region Desk scope
 
     [Fact]
+    public void Constructor_Should_OrderTheDesksByCheckpointThenCode_When_TheyAreAtTwoCheckpoints()
+    {
+        // ARV-069a: the constructor was in Stryker's safe mode; the checkpoint order needs two checkpoints to show.
+        var s = Planted();
+        var e01 = s.D01.Checkpoint.Level.AddCheckpoint("EMI", "Emigration", CheckpointKind.Emigration).AddDesk("E01", null, DeskKind.Desk, ["ALL"]);
+        e01.Id = Guid.CreateVersion7();
+
+        var campaign = Plan(s, s.D01, e01);
+
+        campaign.Desks.Select(d => (d.CheckpointCode, d.DeskCode)).Should().Equal(("EMI", "E01"), ("IMM", "D01"));
+    }
+
+    [Fact]
     public void Constructor_Should_PutStaffedBorderDesksInScope_When_Planned()
     {
         var s = Planted();

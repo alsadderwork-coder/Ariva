@@ -147,7 +147,10 @@ public static class AvailabilityRule
         int stale = 0, lagging = 0;
         foreach (var zone in zones)
         {
-            if (zone.Snapshot is not { } snapshot || nowUtc - snapshot.PublishedUtc > settings.StaleAfter || snapshot.PublishedUtc - nowUtc > MaxAhead ||
+            // Read into a local, not a pattern variable of the condition (ARV-069a): every mutant of the condition compiles.
+            var observed = zone.Snapshot;
+            var snapshot = observed.GetValueOrDefault();
+            if (!observed.HasValue || nowUtc - snapshot.PublishedUtc > settings.StaleAfter || snapshot.PublishedUtc - nowUtc > MaxAhead ||
                 snapshot.MinuteUtc + TimeSpan.FromMinutes(1) - nowUtc > MaxAhead)
             {
                 stale++;

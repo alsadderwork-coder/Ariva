@@ -246,4 +246,56 @@ public sealed class SensorCycleTests
         fallback.Degraded.Should().BeTrue();
         SensorCycle.Apply(null, new SensorCycleResult(1.5, null, false)).Should().BeNull();
     }
+
+    #region ARV-069a
+
+    // Window was in Stryker's safe mode until ARV-069a; these kill the mutants that survived once it was measured.
+    public static TheoryData<string, Func<SensorBusyWindow>, SensorCycleFallback> Fallbacks => new()
+    {
+        { "the window would start before the calendar", () => SensorCycle.Window(Lane(), DateTime.SpecifyKind(DateTime.MinValue.AddMinutes(3), DateTimeKind.Utc), Settings), SensorCycleFallback.IncompleteWindow },
+        { "more desk minutes than the cap", () => SensorCycle.Window(Lane(desks: 11), AsOf, new SensorCycleSettings { MaxDeskMinutes = 100 }), SensorCycleFallback.TooManyMinutes },
+        { "no desk minute", () => SensorCycle.Window([], AsOf, Settings), SensorCycleFallback.NoDeskMinutes },
+        { "a desk without a sensor-only minute", () => SensorCycle.Window([.. Lane(), new DeskMinuteSample("AUH/IMM/X", T.AddMinutes(4), 0, 60, 0, 2, false)], AsOf, Settings), SensorCycleFallback.DesksWithoutSensors },
+        { "a minute without any desk minute", () => SensorCycle.Window(Lane().Where(m => m.MinuteUtc != T.AddMinutes(7)), AsOf, Settings), SensorCycleFallback.IncompleteWindow },
+        { "too much Unknown desk time", () => SensorCycle.Window([.. Lane().Select((m, i) => i < 7 ? Minute(0, i, serving: 30, unknown: 30) : m)], AsOf, Settings), SensorCycleFallback.UnknownDesks }
+    };
+
+    [Theory]
+    [MemberData(nameof(Fallbacks))]
+    public void Window_Should_FlagTheWindow_When_ItFallsBack(string because, Func<SensorBusyWindow> window, SensorCycleFallback fallback)
+    {
+        var result = window();
+
+        result.Missing.Should().Be(fallback, because);
+        result.Degraded.Should().BeTrue(because);
+    }
+
+    [Fact]
+    public void Window_Should_EndWhereTheCalendarAllows_When_TheWindowWouldStartBeforeIt()
+    {
+        var to = DateTime.SpecifyKind(DateTime.MinValue.AddMinutes(3).AddSeconds(20), DateTimeKind.Utc);
+
+        var window = SensorCycle.Window(Lane(), to, Settings);
+
+        window.FromMinuteUtc.Should().Be(DateTime.MinValue.AddMinutes(3));
+        window.ToMinuteUtc.Should().Be(DateTime.MinValue.AddMinutes(3));
+        window.DeskMinutes.Should().Be(0);
+    }
+
+    [Fact]
+    public void Window_Should_CountTheFirstOfADeskMinute_When_ItArrivesTwiceWithOtherValues()
+    {
+        // The second copy of desk D00's first minute says 30 seconds serving: it is left out, not added.
+        var lane = Lane();
+        lane.Add(Minute(0, 0, serving: 30, idle: 30));
+
+        var window = SensorCycle.Window(lane, AsOf, Settings);
+
+        window.DeskMinutes.Should().Be(60);
+        window.ServingSeconds.Should().Be(3_600);
+        window.Missing.Should().BeNull();
+        window.Degraded.Should().BeFalse();
+    }
+
+    #endregion
 }

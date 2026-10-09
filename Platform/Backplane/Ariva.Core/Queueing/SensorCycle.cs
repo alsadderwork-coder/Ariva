@@ -144,7 +144,9 @@ public static class SensorCycle
             if (!seen.Add((m.DeskKey, m.MinuteUtc)))
                 continue;
             desks.Add(m.DeskKey);
-            if (m.Sensor is not { } s)
+            // Read into a local, not a pattern variable of the condition (ARV-069a): a mutant of the condition still compiles.
+            var s = m.Sensor;
+            if (s is null)
             {
                 withoutSensors = true;
                 continue;

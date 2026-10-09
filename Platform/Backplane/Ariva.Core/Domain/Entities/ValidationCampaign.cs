@@ -84,18 +84,23 @@ public partial class ValidationCampaign : EntityBase<ValidationCampaign>, ISiteB
     {
         ArgumentNullException.ThrowIfNull(profile);
         RequireUtc(utcNow, nameof(utcNow));
-        if (profile.Status != ZoneProfileStatus.Published || profile.Version is not { } version || profile.Id is not { } profileId)
+        // No pattern variables in the conditions (ARV-069a): every mutant of them compiles, so Stryker measures this constructor.
+        if (profile.Status != ZoneProfileStatus.Published || profile.Version is null || profile.Id is null)
             throw new InvalidOperationException(ValidationErrors.NotPublished);
+        var version = profile.Version.Value;
+        var profileId = profile.Id.Value;
         if (createdById == Guid.Empty)
             throw new ArgumentException("A campaign is created by an Ariva user.", nameof(createdById));
-        if (ScopeProblem(profile, zoneIds, lineIds) is { } scope)
+        var scope = ScopeProblem(profile, zoneIds, lineIds);
+        if (scope is not null)
             throw new ArgumentException(scope, nameof(lineIds));
         if (!AreValidDays(days, today))
             throw new ArgumentException(ValidationErrors.InvalidDays, nameof(days));
         if (!AreValidTargets(targetBinsPerLine, targetTracerRuns))
             throw new ArgumentException(ValidationErrors.InvalidTargets, nameof(targetBinsPerLine));
         desks ??= [];
-        if (DeskScopeProblem(profile.SiteCode, desks.Select(d => d?.Id ?? Guid.Empty).ToList(), desks) is { } deskScope)
+        var deskScope = DeskScopeProblem(profile.SiteCode, desks.Select(d => d?.Id ?? Guid.Empty).ToList(), desks);
+        if (deskScope is not null)
             throw new ArgumentException(deskScope, nameof(desks));
 
         SiteCode = profile.SiteCode;
@@ -375,10 +380,15 @@ public partial class ValidationCampaign : EntityBase<ValidationCampaign>, ISiteB
         };
 
     /// <summary>What the audit log keeps of the campaign: no names of people, only its own name quoted as a JSON string.</summary>
-    public virtual string AuditSummary() =>
-        string.Create(CultureInfo.InvariantCulture,
-            $"site={SiteCode}; name={System.Text.Json.JsonSerializer.Serialize(Name)}; status={Status}; profileVersion={ProfileVersion}; zones={Zones.Count}; lines={Lines.Count}; desks={Desks.Count}; days={PlannedDays}; " +
-            $"targets={TargetBinsPerLine}/{TargetTracerRuns}{(TargetsPlaceholder ? " (placeholder)" : string.Empty)}");
+    public virtual string AuditSummary()
+    {
+        // One interpolated string as the handler argument (ARV-069a): a mutant of one part of a concatenation is no longer
+        // a handler for string.Create (CS1620), and the method would leave mutation testing.
+        var name = System.Text.Json.JsonSerializer.Serialize(Name);
+        var placeholder = TargetsPlaceholder ? " (placeholder)" : string.Empty;
+        return string.Create(CultureInfo.InvariantCulture,
+            $"site={SiteCode}; name={name}; status={Status}; profileVersion={ProfileVersion}; zones={Zones.Count}; lines={Lines.Count}; desks={Desks.Count}; days={PlannedDays}; targets={TargetBinsPerLine}/{TargetTracerRuns}{placeholder}");
+    }
 
     private static void RequireUtc(DateTime value, string paramName)
     {

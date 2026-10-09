@@ -477,7 +477,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 20,
-      "passes": false,
+      "passes": true,
       "notes": "Size S to M. Found by the lead in the first checkpoint's Stryker log (scratchpad checkpoint-1.log, 'Safe Mode'). The queue engine methods are where the F5 defects of ARV-114d and ARV-139b were, so measuring them matters before the pilot.",
       "dependsOn": [
         "ARV-069"

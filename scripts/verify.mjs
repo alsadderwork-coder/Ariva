@@ -18,7 +18,8 @@
 //   security     scanner self-test + full scan + dependency audits
 //   docs         text rules on Markdown (no em dashes, no double hyphens in prose)
 //   backend      build + unit + security
-//   mutation     Stryker.NET on the pure engines (ARV-069; about an hour on two cores, report in .verify/stryker)
+//   mutation     Stryker.NET on the pure engines (ARV-069; about an hour on two cores, report in .verify/stryker); fails when a
+//                method is in Stryker's safe mode or no score is printed (ARV-069a, scripts/mutation-run.mjs)
 //   all          everything except integration (add --with-integration)
 //   story        the per-story gate (test cadence, docs/harness/test-cadence.md): backend and docs always; web when the
 //                web app changed; integration and E2E scoped to the story, or in full when the change is wide.
@@ -320,13 +321,18 @@ const steps = {
   // With a commit, only the engine files changed since it are mutated (--mutate per file, which replaces the configured
   // list): the checkpoint's scoped run. Stryker's own --since mode ended silently after its coverage capture with the MTP
   // runner (2026-10-08), so it is not used.
+  // ARV-069a: Stryker runs through scripts/mutation-run.mjs, which prints its output, keeps it in .verify/mutation.log and
+  // fails the step when any method went into safe mode (its mutants removed as compile errors, so it is not measured) or no
+  // final score was printed, even when Stryker exits zero.
   mutation: (since) => {
     process.env.PACT_DO_NOT_TRACK = 'true'; // the Pact FFI's usage reporting stays off (the pacts skip under Stryker anyway)
+    run('mutation log check self-test', 'node', ['scripts/mutation-run.mjs', '--self-test']);
     // dotnet-stryker has its own manifest in Ariva.UnitTests/.config (kept apart from aspire.cli for SDK 10.0.4xx).
     run('dotnet tool restore (dotnet-stryker)', 'dotnet', ['tool', 'restore'], path.join(ROOT, 'Platform', 'Backplane', 'Ariva.UnitTests'));
     const files = since ? changedEngineFiles(since) : [];
-    run(`mutation tests (Stryker.NET${since ? `, ${files.length} engine files changed since ${since.slice(0, 10)}` : ''})`, 'dotnet',
-      ['dotnet-stryker', '--output', path.join(ROOT, '.verify', 'stryker'), ...files.flatMap(f => ['--mutate', `**/${f}`])],
+    run(`mutation tests (Stryker.NET${since ? `, ${files.length} engine files changed since ${since.slice(0, 10)}` : ''}; fails on safe mode or no score)`, 'node',
+      [path.join(ROOT, 'scripts', 'mutation-run.mjs'), '--log', path.join(ROOT, '.verify', 'mutation.log'), '--',
+        'dotnet-stryker', '--output', path.join(ROOT, '.verify', 'stryker'), ...files.flatMap(f => ['--mutate', `**/${f}`])],
       path.join(ROOT, 'Platform', 'Backplane', 'Ariva.UnitTests'));
   },
   backend: () => { steps.unit(); steps.security(); },

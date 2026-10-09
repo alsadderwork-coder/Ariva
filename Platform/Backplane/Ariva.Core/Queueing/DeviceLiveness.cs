@@ -110,11 +110,17 @@ internal sealed class DeviceLiveness(TimeSpan silence, TimeSpan forget, int maxD
     {
         foreach (var device in _devices.Values)
         {
-            if (device.OutSince is not { } from || referenceUtc <= from)
+            // Nullable values are read through HasValue and Value, never pattern variables of a condition (ARV-069a), so
+            // every mutant of these conditions compiles.
+            if (device.OutSince is null)
                 continue;
-            if (device.MarkedThrough is { } marked && referenceUtc - marked < every)
+            var from = device.OutSince.Value;
+            if (referenceUtc <= from)
                 continue;
-            var start = device.MarkedThrough is { } through && through > from ? through : from;
+            var marked = device.MarkedThrough;
+            if (marked.HasValue && referenceUtc - marked.Value < every)
+                continue;
+            var start = marked.HasValue && marked.Value > from ? marked.Value : from;
             device.MarkedThrough = referenceUtc;
             yield return (start, referenceUtc);
         }
@@ -160,11 +166,14 @@ internal sealed class DeviceLiveness(TimeSpan silence, TimeSpan forget, int maxD
         var ended = new List<(DeviceOutage, DateTime)>();
         foreach (var (code, device) in _devices)
         {
-            if (device.OutSince is not { } from)
+            // As in MarksDue: no pattern variables in the conditions (ARV-069a).
+            if (device.OutSince is null)
                 continue;
+            var from = device.OutSince.Value;
             if (from < end)
             {
-                ended.Add((new DeviceOutage(zoneKey, code, from, end, false), device.MarkedThrough is { } m && m > from ? m : from));
+                var marked = device.MarkedThrough;
+                ended.Add((new DeviceOutage(zoneKey, code, from, end, false), marked.HasValue && marked.Value > from ? marked.Value : from));
                 Remember(new RecentOutageState(code, from, end));
             }
 

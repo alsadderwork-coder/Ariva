@@ -556,31 +556,26 @@ public sealed partial class QueueStateEngine
 
     private void Exit(DateTime time, string trackKey, bool degraded, bool cumulative)
     {
-        Entrant entrant;
-        WaitMethod method;
-        if (trackKey is not null && _byTrack.TryGetValue(trackKey, out var own))
-        {
-            entrant = own;
-            method = WaitMethod.Track;
-        }
-        else if (trackKey is not null && _resolvedTracks.Contains(trackKey))
+        // The out variable is declared before the condition and the outcome kept in its own statement (ARV-069a): a
+        // mutant that short-circuits the condition still compiles, so Stryker measures this method.
+        Entrant own = null;
+        var tracked = trackKey is not null && _byTrack.TryGetValue(trackKey, out own);
+        if (!tracked && trackKey is not null && _resolvedTracks.Contains(trackKey))
         {
             _duplicates++;
             return;
         }
-        else
-        {
-            entrant = FifoPartner(trackKey);
-            if (entrant is null)
-            {
-                _unmatched++;
-                Count(time, entry: false, degraded);
-                return;
-            }
 
-            method = cumulative || entrant.Method == WaitMethod.Cumulative ? WaitMethod.Cumulative : WaitMethod.Fifo;
+        var entrant = tracked ? own : FifoPartner(trackKey);
+        if (entrant is null)
+        {
+            _unmatched++;
+            Count(time, entry: false, degraded);
+            return;
         }
 
+        var method = tracked ? WaitMethod.Track
+            : cumulative || entrant.Method == WaitMethod.Cumulative ? WaitMethod.Cumulative : WaitMethod.Fifo;
         Forget(entrant, entrant.TrackKey ?? trackKey);
         Count(time, entry: false, degraded);
         if (time < entrant.EntryUtc)
@@ -608,7 +603,8 @@ public sealed partial class QueueStateEngine
         Entrant best = null;
         foreach (var (group, members) in _groups)
         {
-            if (members.First is not { } first || string.Equals(group, device, StringComparison.Ordinal))
+            var first = members.First;
+            if (first is null || string.Equals(group, device, StringComparison.Ordinal))
                 continue;
             if (best is null || first.Value.Order < best.Order)
                 best = first.Value;
@@ -678,15 +674,18 @@ public sealed partial class QueueStateEngine
     /// </summary>
     private void Reanchor()
     {
-        if (_anchorDueUtc is not { } at)
+        // No pattern or out variable declared inside a condition (ARV-069a): every mutant of these conditions compiles.
+        if (_anchorDueUtc is null)
             return;
+        var at = _anchorDueUtc.Value;
         _anchorDueUtc = null;
-        if (!AllZonesReport(at, out var total, out _) || total != 0)
+        var reported = AllZonesReport(at, out var total, out _);
+        if (!reported || total != 0)
             return;
 
         // The queue is observed empty: whoever the FIFO sequence still holds from before now is a counting residual (F5).
         var dropped = 0;
-        while (_held.First is { } first && first.Value.EntryUtc <= at)
+        for (var first = _held.First; first is not null && first.Value.EntryUtc <= at; first = _held.First)
         {
             Resolve(first.Value, at, first.Value.TrackKey is null ? EntrantOutcome.Reanchored : EntrantOutcome.Fragmented);
             dropped++;

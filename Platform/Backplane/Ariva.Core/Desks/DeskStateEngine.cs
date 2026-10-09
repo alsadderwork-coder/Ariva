@@ -125,7 +125,9 @@ public sealed partial class DeskStateEngine
         ArgumentNullException.ThrowIfNull(signal);
         if (referenceUtc.Kind != DateTimeKind.Utc)
             throw new ArgumentException("The reference time is UTC.", nameof(referenceUtc));
-        if (signal.DeskCode is null || !_desks.TryGetValue(signal.DeskCode, out var desk))
+        // The out variable is declared before the condition (ARV-069a): a mutant that short-circuits it still compiles.
+        Desk desk = null;
+        if (signal.DeskCode is null || !_desks.TryGetValue(signal.DeskCode, out desk))
         {
             _unknownDesk++;
             return;
