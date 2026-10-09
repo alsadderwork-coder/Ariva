@@ -89,7 +89,10 @@ public static class ComparisonSlices
         var reach = TracerMinuteReach * TimeSpan.TicksPerMinute;
         foreach (var run in runs)
         {
-            if (run is null || !zones.TryGetValue(run.ZoneId, out var name))
+            // Declared in its own statement, not in the condition (wiki 16: a mutant that short-circuits the condition would
+            // leave it unassigned, and Stryker would drop the whole method in safe mode).
+            string name = null;
+            if (run is null || !zones.TryGetValue(run.ZoneId, out name))
                 continue;
             var ticks = run.JoinedUtc.Ticks;
             if (ticks < ComparisonData.EarliestUtc.Ticks + reach || ticks >= ComparisonData.LatestUtc.Ticks - reach)
