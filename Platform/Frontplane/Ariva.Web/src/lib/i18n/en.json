@@ -1071,7 +1071,7 @@
 	},
 	"validation": {
 		"title": "Validation capture",
-		"description": "Count people crossing a line in 15-minute bins and time tracers for a running validation campaign. Each bin and each run is sent to Ariva as soon as it ends.",
+		"description": "Count people crossing a line in 15-minute bins, time tracers and log desk states minute by minute for a running validation campaign. Each bin, run and desk log is sent to Ariva as soon as it ends.",
 		"site": "Site",
 		"noSites": "Your account has no site. Ask an administrator to give you the site you observe.",
 		"loading": "Loading the running campaigns…",
@@ -1084,30 +1084,33 @@
 			"scope": "{lines, plural, one {# line} other {# lines}}, {zones, plural, one {# queue zone} other {# queue zones}}",
 			"change": "Change campaign",
 			"notToday": "Today ({today}, site local time) is not a planned day of this campaign: Ariva refuses counts and runs outside its planned days.",
-			"clock": "Site local time {time} ({zone})"
+			"clock": "Site local time {time} ({zone})",
+			"desks": "{desks, plural, one {# desk} other {# desks}} to log"
 		},
 		"tabs": {
 			"label": "Capture",
 			"tally": "Line tally",
-			"tracers": "Tracers"
+			"tracers": "Tracers",
+			"desks": "Desk log"
 		},
 		"outbox": {
 			"title": "Not sent yet",
-			"waiting": "{count, plural, one {# count or run is} other {# counts and runs are}} not sent yet. They are kept on this screen only (nothing is stored on the tablet): keep the screen open and send them again once the connection is back.",
+			"waiting": "{count, plural, one {# bin, run or desk log is} other {# bins, runs and desk logs are}} not sent yet. They are kept on this screen only (nothing is stored on the tablet): keep the screen open and send them again once the connection is back.",
 			"sending": "Sending…",
 			"retry": "Send again now",
-			"refused": "Ariva refused this {kind, select, count {bin} other {tracer run}}: {reason}",
+			"refused": "Ariva refused this {kind, select, count {bin} desks {desk log} other {tracer run}}: {reason}",
 			"ownCampaign": "You created or started this campaign, so you cannot count for it: its counts and runs come from other observers. Nothing was recorded.",
 			"clock": "Ariva refused the run because the tablet's clock is more than 5 minutes off. Set the tablet's date and time to automatic (from the network), then time the tracer again; this run cannot be sent.",
 			"discard": "Dismiss",
 			"binLabel": "{line}, bin {bin}",
 			"runLabel": "{code} in {zone}",
 			"offline": "No connection to Ariva; it will be sent again.",
-			"unavailable": "Ariva could not take it now (HTTP {status}); it will be sent again."
+			"unavailable": "Ariva could not take it now (HTTP {status}); it will be sent again.",
+			"deskLabel": "Desk log, bin {bin} ({desks, plural, one {# desk} other {# desks}})"
 		},
 		"leave": {
 			"title": "Unsent work on this screen",
-			"description": "A tally or a tracer run is in progress, or something is not sent yet. Leaving this screen loses it.",
+			"description": "A tally, a tracer run or a desk log is in progress, or something is not sent yet. Leaving this screen loses it.",
 			"stay": "Stay",
 			"leave": "Leave anyway"
 		},
@@ -1210,6 +1213,78 @@
 			"sent": "{code}'s run sent: {wait} in {zone}."
 		},
 		"failed": "Could not load: {reason}",
-		"open": "Open validation capture"
+		"open": "Open validation capture",
+		"desks": {
+			"clockTitle": "Ariva's clock",
+			"clock": "{time}, site local time. The desk log keeps its minutes on Ariva's clock, not the tablet's.",
+			"clockUnknown": "Ariva's clock has not been read on this screen, so the desk log follows the tablet's clock. Set the tablet's date and time to automatic.",
+			"clockLost": "The tablet's clock changed (set by hand or from the network, or the tablet slept), so Ariva's clock is being read again. Until it is, no tap is placed and no bin is sent; the minutes logged before are kept.",
+			"clockImplausible": "The tablet's clock is more than 15 minutes from Ariva's. Set the tablet's date and time to automatic: until the difference is under 15 minutes, the desk log places no tap and sends no bin.",
+			"tabletAhead": "The tablet's clock is {minutes} min {seconds} s ahead of Ariva's. Set the tablet's date and time to automatic; the desk log keeps to Ariva's clock.",
+			"tabletBehind": "The tablet's clock is {minutes} min {seconds} s behind Ariva's. Set the tablet's date and time to automatic; the desk log keeps to Ariva's clock.",
+			"chooseTitle": "Choose the desks you watch",
+			"chooseHint": "Choose up to 20 desks you can see from where you stand. Each minute, tap what each desk is doing: Serving, Idle, Paused or Closed. Each 15-minute bin is sent when it ends.",
+			"chosen": "{count, plural, =0 {No desk chosen} one {# desk chosen} other {# desks chosen}} (at most {max})",
+			"chooseAll": "Choose all",
+			"clear": "Clear",
+			"start": "Start logging",
+			"logging": "Logging {count, plural, one {# desk} other {# desks}}",
+			"bin": "Bin {start} to {end} (Ariva's clock, site local time); sent when it ends, in {left}",
+			"binHeld": "Bin {start} to {end} (Ariva's clock, site local time); sent when it ends",
+			"minutes": "Minutes of this bin",
+			"minuteNow": "{time}, now",
+			"minuteEnded": "{time}, ended",
+			"minuteLater": "{time}, not yet",
+			"minuteSent": "{time}, already sent",
+			"target": "Tap the state each desk shows in minute {start} to {end}.",
+			"held": "Waiting for Ariva's clock: taps are not placed until it is read again.",
+			"earlier": "You are filling in minute {time}, an earlier minute of this bin.",
+			"backToNow": "Back to now",
+			"notLogged": "Not logged yet",
+			"notObserved": "Not observed",
+			"stateOf": "{desk}, minute {time}",
+			"strip": "{desk}, this bin",
+			"legend": "Desk states",
+			"stop": "Stop logging",
+			"stopConfirm": "Stop and send the minutes that have ended",
+			"stopped": "Logging stopped. The minutes before {time} are sent; the minute in progress was not.",
+			"sent": "Desk log for {start} to {end} sent: {count, plural, one {# desk minute} other {# desk minutes}}.",
+			"ownCampaign": "You created or started this campaign, so you cannot log desks for it: its desk logs come from other observers. Nothing was recorded.",
+			"deskRole": "Desk states are border data: Ariva takes no desk log from this account, because it also holds an airport role. Nothing was recorded.",
+			"states": {
+				"Serving": "Serving",
+				"Idle": "Idle",
+				"Paused": "Paused",
+				"Closed": "Closed"
+			},
+			"history": {
+				"title": "Your desk log",
+				"empty": "No desk state recorded yet.",
+				"hint": "Each minute you sent is shown in site local time. Tap a minute to correct it.",
+				"bin": "Bin",
+				"binOption": "{start} to {end}",
+				"caption": "Your desk states from {start} to {end}, site local time",
+				"desk": "Desk",
+				"cellLabel": "Correct {desk} at {time}: {state}, revision {revision}",
+				"corrections": "Corrections in this bin",
+				"columns": {
+					"desk": "Desk",
+					"minute": "Minute",
+					"state": "State",
+					"revision": "Revision",
+					"reason": "Reason"
+				},
+				"forbidden": "Desk states are border data: Ariva does not show them to this account, because it also holds an airport role.",
+				"failed": "Could not load your desk log: {reason}"
+			},
+			"correction": {
+				"title": "Correct {desk} at {time}",
+				"recorded": "Recorded: {state} (revision {revision})",
+				"state": "The state the desk really showed",
+				"reasonHint": "Say what was wrong, for example a tap on the wrong desk. Never name a person: the reason is kept beside the desk and the minute.",
+				"invalid": "Choose the state the desk really showed (not the one recorded) and give a reason of 1 to 200 characters.",
+				"keyReused": "Ariva already holds another correction sent with this form's key, so this one was not saved. Your desk log is shown again: correct the latest revision if it is still wrong."
+			}
+		}
 	}
 }

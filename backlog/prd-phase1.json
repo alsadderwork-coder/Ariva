@@ -572,7 +572,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 24,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. From ARV-104b (2026-10-08): one batch per 15-minute UTC bin with exactly 15 states per desk (null for a minute not observed), only minutes that have ended, a required Idempotency-Key (random UUID per batch, kept for its retries); the desks come from GET .../capture/campaigns (desks of the campaign's scope); align the minute grid to Ariva's clock (the HTTP Date header of an answer); corrections through .../desk-observations/{id}/corrections with a reason; XSS probes on desk codes. From the ARV-104b security review (2026-10-08): the correction form warns observers not to name people in the reason (it is kept beside a desk and a minute, which can be joined with AMAN's records; Ariva cannot detect a name in text); show no desk grid when the capture list answers desksIncluded false (an account with an airport role and the observer role), and handle 403 on desk batches, corrections and own desk reads as a plain message.",
       "dependsOn": [
         "ARV-104c"

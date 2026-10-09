@@ -14,6 +14,19 @@ export interface Result<T> {
 	 * from a request worth sending again (ARV-104c: unsent bins and tracer batches are retried, refusals are not).
 	 */
 	status?: number;
+	/**
+	 * The answer's HTTP Date header (Ariva's clock, to the second) with this device's clock when the request left and
+	 * when the answer came, in milliseconds since the epoch (ARV-104d: the desk log keeps its minutes on Ariva's
+	 * clock). Absent without an answer or without a readable Date header.
+	 */
+	serverClock?: ServerClock;
+}
+
+/** Ariva's clock as an answer's Date header gave it, and this device's clock around the request. */
+export interface ServerClock {
+	dateMs: number;
+	sentMs: number;
+	receivedMs: number;
 }
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -109,6 +122,16 @@ function statusMessage(response: Response): string {
 	return `HTTP ${response.status} ${response.statusText}`.trim();
 }
 
+/** The answer's Date header with the device's clock around the request, or undefined without a readable one. */
+function serverClockOf(
+	response: Response,
+	sentMs: number,
+	receivedMs: number
+): ServerClock | undefined {
+	const dateMs = Date.parse(response.headers.get('date') ?? '');
+	return Number.isFinite(dateMs) ? { dateMs, sentMs, receivedMs } : undefined;
+}
+
 /** The origin a URL resolves to from this page (relative URLs are this page's origin). */
 function originOf(url: string): string | null {
 	try {
@@ -167,6 +190,8 @@ export async function request<T>(
 		!options.anonymous &&
 		originOf(buildUrl(path, options)) === originOf(Endpoints.main.baseUrl || '/');
 	let response: Response | null = null;
+	let sentMs = 0;
+	let receivedMs = 0;
 
 	for (let attempt = 0; attempt < 2; attempt++) {
 		const headers: Record<string, string> = { Accept: 'application/json', ...options.headers };
@@ -187,6 +212,7 @@ export async function request<T>(
 		}
 
 		try {
+			sentMs = Date.now();
 			response = await fetch(buildUrl(path, options), {
 				method,
 				headers,
@@ -194,6 +220,7 @@ export async function request<T>(
 				signal: options.signal,
 				credentials: 'same-origin'
 			});
+			receivedMs = Date.now();
 		} catch (error) {
 			return {
 				...fail<T>(error instanceof Error ? error.message : 'Network request failed'),
@@ -221,19 +248,26 @@ export async function request<T>(
 	const payload = await readPayload(answer, options.responseType);
 
 	const status = answer.status;
+	const serverClock = serverClockOf(answer, sentMs, receivedMs);
 	if (isResult(payload)) {
 		const result = normalise(payload as Result<T>);
 		if (!answer.ok && !result.hasErrors) {
-			return { ...result, hasErrors: true, errorMessages: [statusMessage(answer)], status };
+			return {
+				...result,
+				hasErrors: true,
+				errorMessages: [statusMessage(answer)],
+				status,
+				serverClock
+			};
 		}
-		return { ...result, status };
+		return { ...result, status, serverClock };
 	}
 
 	if (!answer.ok) {
-		return { ...fail<T>(problemMessage(payload) ?? statusMessage(answer)), status };
+		return { ...fail<T>(problemMessage(payload) ?? statusMessage(answer)), status, serverClock };
 	}
 
-	return { ...ok(payload as T), status };
+	return { ...ok(payload as T), status, serverClock };
 }
 
 /** The title and detail of an RFC 9457 problem body, as Ariva wrote them (shown as text, never as markup). */

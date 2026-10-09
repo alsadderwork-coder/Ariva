@@ -1,8 +1,9 @@
 <script lang="ts">
 	import { CircleAlert, CloudOff, RotateCw } from '@lucide/svelte';
 	import { _, locale } from 'svelte-i18n';
-	import { isClockRefusal } from '$lib/core/validation';
+	import { isClockRefusal, isDeskRoleRefusal, isOwnCampaignRefusal } from '$lib/core/validation';
 	import type { CountPayload, RunPayload } from './capture.svelte';
+	import type { DeskPayload } from './desklog.svelte';
 	import { siteClock } from './format';
 	import type { OutboxItem, OutboxView } from './outbox.svelte';
 	import { primaryButton } from './ui';
@@ -10,15 +11,19 @@
 	interface Props {
 		counts: OutboxView<CountPayload>;
 		runs: OutboxView<RunPayload>;
+		/** Desk batches (ARV-104d). */
+		desks: OutboxView<DeskPayload>;
 		timeZone: string;
 		onRetry: () => void;
 	}
 
-	let { counts, runs, timeZone, onRetry }: Props = $props();
+	let { counts, runs, desks, timeZone, onRetry }: Props = $props();
 
-	const unsent = $derived(counts.unsent + runs.unsent);
+	const unsent = $derived(counts.unsent + runs.unsent + desks.unsent);
 	const sending = $derived(
-		counts.items.some((i) => i.state === 'sending') || runs.items.some((i) => i.state === 'sending')
+		[counts.items, runs.items, desks.items].some((items) =>
+			items.some((i: OutboxItem<unknown>) => i.state === 'sending')
+		)
 	);
 
 	function countLabel(item: OutboxItem<CountPayload>): string {
@@ -36,6 +41,15 @@
 		});
 	}
 
+	function deskBatchLabel(item: OutboxItem<DeskPayload>): string {
+		return $_('validation.outbox.deskLabel', {
+			values: {
+				bin: siteClock(item.payload.binStartMs, timeZone, $locale),
+				desks: item.payload.desks.length
+			}
+		});
+	}
+
 	const refusedEntries = $derived([
 		...counts.refused.map((item) => ({
 			item: item as OutboxItem<unknown>,
@@ -48,6 +62,12 @@
 			kind: 'run' as const,
 			label: runLabel(item),
 			discard: () => runs.discard(item.key)
+		})),
+		...desks.refused.map((item) => ({
+			item: item as OutboxItem<unknown>,
+			kind: 'desks' as const,
+			label: deskBatchLabel(item),
+			discard: () => desks.discard(item.key)
 		}))
 	]);
 
@@ -58,8 +78,18 @@
 		return $_('validation.outbox.unavailable', { values: { status: item.status } });
 	}
 
-	function refusal(item: OutboxItem<unknown>, kind: 'count' | 'run'): string {
-		if (item.status === 403) return $_('validation.outbox.ownCampaign');
+	/**
+	 * A refusal in plain words when it is one the tablet recognises by Ariva's text (security review L1 of ARV-104d): desk
+	 * states refused to an account with an airport role, the campaign's own creator or starter, a clock too far off.
+	 * Anything else, another 403 included (a permission taken away during the shift), is shown with Ariva's own text.
+	 */
+	function refusal(item: OutboxItem<unknown>, kind: 'count' | 'run' | 'desks'): string {
+		if (kind === 'desks' && isDeskRoleRefusal(item.status, item.message))
+			return $_('validation.desks.deskRole');
+		if (isOwnCampaignRefusal(item.status, item.message))
+			return $_(
+				kind === 'desks' ? 'validation.desks.ownCampaign' : 'validation.outbox.ownCampaign'
+			);
 		if (isClockRefusal(item.status, item.message)) return $_('validation.outbox.clock');
 		return $_('validation.outbox.refused', { values: { kind, reason: item.message } });
 	}
@@ -85,6 +115,9 @@
 						{/each}
 						{#each runs.items.filter((i) => i.state !== 'refused') as item (item.key)}
 							<li data-testid="unsent-item">{runLabel(item)}: {progress(item)}</li>
+						{/each}
+						{#each desks.items.filter((i) => i.state !== 'refused') as item (item.key)}
+							<li data-testid="unsent-item">{deskBatchLabel(item)}: {progress(item)}</li>
 						{/each}
 					</ul>
 				</div>

@@ -1,5 +1,5 @@
 import AxeBuilder from '@axe-core/playwright';
-import { expect, test, type Page, type Request, type TestInfo } from '@playwright/test';
+import { expect, test, type Page, type Request, type Route, type TestInfo } from '@playwright/test';
 import { accounts, call, claimsOf, login, signIn, unusedTotpCode } from '../support/accounts';
 import { guardPage, type PageGuards } from '../support/browser-guards';
 import { hosts } from '../support/hosts';
@@ -18,6 +18,14 @@ import { allowStatuses, databaseAvailable, fillSignIn, signInThroughUi } from '.
 // The suite works at its own site E2EO (Asia/Dubai), with a zone profile it publishes once, so validation.spec.ts's E2EV
 // is untouched. Bins must have ended on the server's clock before they are sent, so the tally test runs the page on
 // Playwright's clock an hour in the past and moves it forward bin by bin.
+//
+// ARV-104d: the desk state log on the same screen (the Desk log tab). The observer chooses the desks it watches and taps
+// each desk's state every minute (Serving, Idle, Paused, Closed); each 15-minute bin of Ariva's clock goes as one batch
+// once it has ended, with 15 states per desk (null where not observed) and its own random key, kept for its retries.
+// The minutes follow Ariva's clock, read from the Date header of its answers, not the tablet's: the desk tests serve that
+// header from the page's clock with a skew of their choosing (TabletClock). Desk states are border data: a campaign's
+// desks are listed only to an account that may observe them, so an observer who also holds an airport role sees no desk
+// log. Desk codes cannot hold markup (TopologyCodes), so the XSS probes rewrite the answers that carry them.
 
 test.skip(!databaseAvailable, 'validation capture needs the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true)');
 test.describe.configure({ mode: 'serial' });
@@ -53,6 +61,8 @@ interface Profile {
 
 let administrator: string, manager: string, lead: string, observer: string;
 let profile: Profile;
+/** E2EO's border desks OD01 to OD05 at checkpoint OIMM (ARV-104d), by code. */
+let desks: Record<string, string>;
 
 /** E2EO's published zone profile: Q-A with Entry A and Exit A, and a queue zone and a line named with markup. */
 async function ensureProfile(): Promise<Profile> {
@@ -128,6 +138,152 @@ async function runningCampaign(name: string, token = lead): Promise<string> {
 	return id;
 }
 
+// ARV-104d: desks and the tablet's clock.
+
+const minute = 60_000;
+/** The validation API's answers: their Date header is Ariva's clock for the desk log. */
+const validationApi = /\/api\/v1\/sites\/[^/]+\/validation\//;
+/** A desk batch sent by the tablet (not a correction). */
+const deskPost = /\/validation\/capture\/campaigns\/[^/]+\/desk-observations$/;
+const deskCorrections = /\/desk-observations\/[^/]+\/corrections$/;
+/** The observer's own desk states (a GET with a query). */
+const deskReads = /\/validation\/capture\/campaigns\/[^/]+\/desk-observations\?/;
+const deskCodes = ['OD01', 'OD02', 'OD03', 'OD04', 'OD05'];
+const deskStateCycle = ['Serving', 'Idle', 'Paused', 'Closed'] as const;
+/** UTC ISO 8601 without milliseconds, as the tablet sends bin starts and the API answers minutes. */
+const isoMinute = (at: number) => new Date(at).toISOString().replace('.000Z', 'Z');
+
+/** E2EO's border checkpoint OIMM with desks OD01 to OD05, created by the administrator the first time. */
+async function ensureDesks(): Promise<Record<string, string>> {
+	const list = async (entity: string, query: string) => {
+		const response = await call('GET', `${admin}/${entity}?${query}`, { token: administrator });
+		expect(response.status(), `${entity}: ${await response.text()}`).toBe(200);
+		const body = await response.json();
+		return (body.data ?? body) as any[];
+	};
+	const create = async (entity: string, data: unknown) => {
+		const response = await call('POST', `${admin}/${entity}`, { token: administrator, data });
+		expect(response.status(), `${entity}: ${await response.text()}`).toBe(201);
+		return response.json();
+	};
+	const level = (await list('levels', `siteCode=${site}&pageSize=10`))[0];
+	const checkpoints = await list('checkpoints', `siteCode=${site}&pageSize=100`);
+	const border = checkpoints.find((c) => c.code === 'OIMM') ?? (await create('checkpoints', { levelId: level.id, code: 'OIMM', name: 'Tablet immigration', kind: 'Immigration' }));
+	const existing = await list('desks', `parentId=${border.id}&pageSize=100`);
+	const ids: Record<string, string> = {};
+	for (const code of deskCodes)
+		ids[code] = (existing.find((d) => d.code === code) ?? (await create('desks', { checkpointId: border.id, code, kind: 'Desk', laneCategories: ['CIT'] }))).id;
+	return ids;
+}
+
+/** A running campaign with OD01 to OD05 in scope: planned by the border manager (desks are border data), started by the lead. */
+async function deskCampaign(name: string): Promise<string> {
+	const created = await call('POST', campaignsUrl, {
+		token: manager,
+		data: {
+			name,
+			profileVersion: profile.version,
+			zoneIds: [profile.queueA, profile.queueB],
+			lineIds: [profile.entryA, profile.exitA, profile.xssLine],
+			days: [dubaiDay(Date.now() - 86_400_000), dubaiDay(Date.now())],
+			deskIds: deskCodes.map((code) => desks[code])
+		}
+	});
+	expect(created.status(), await created.text()).toBe(201);
+	const id = (await created.json()).id as string;
+	const started = await call('POST', `${campaignsUrl}/${id}/start`, { token: lead });
+	expect(started.status(), await started.text()).toBe(200);
+	return id;
+}
+
+/**
+ * The tablet's clock in the desk tests: Playwright's clock on the page, and Ariva's clock as the Date header of every
+ * validation answer gives it, `skewMs` behind the tablet's. Ariva's real clock runs an hour or so later, so every minute
+ * the page logs has ended on the server. While the page's clock is paused the test moves it (runToAriva), and an answer
+ * waits until a move has finished, so its Date header and the page's clock agree to the second.
+ */
+class TabletClock {
+	#shift = 0;
+	#paused: number | null = null;
+	#busy: Promise<void> = Promise.resolve();
+
+	constructor(
+		private readonly page: Page,
+		private skewMs: number
+	) {}
+
+	/** Ariva's time now, as the answers' Date header gives it. */
+	ariva(): number {
+		return (this.#paused ?? Date.now() + this.#shift) - this.skewMs;
+	}
+
+	/** Installs the page's clock at Ariva's `at` plus the skew; it flows until paused. */
+	async install(at: number): Promise<void> {
+		await this.page.clock.install({ time: at + this.skewMs });
+		this.#shift = at + this.skewMs - Date.now();
+	}
+
+	async pauseAtAriva(at: number): Promise<void> {
+		await this.page.clock.pauseAt(at + this.skewMs);
+		this.#paused = at + this.skewMs;
+	}
+
+	/** Moves the paused clock to Ariva's `at`, firing every timer on the way. */
+	async runToAriva(at: number): Promise<void> {
+		const from = this.#paused;
+		if (from === null) throw new Error('pause the clock first');
+		const target = at + this.skewMs;
+		if (target <= from) return;
+		let done = () => {};
+		this.#busy = new Promise<void>((resolve) => (done = resolve));
+		try {
+			await this.page.clock.runFor(target - from);
+			this.#paused = target;
+		} finally {
+			done();
+		}
+	}
+
+	/**
+	 * The tablet's own clock jumps by `byMs` (set by hand or from the network) while Ariva's runs on: the page's wall clock
+	 * moves, its monotonic clock (performance.now) does not.
+	 */
+	async jumpTablet(byMs: number): Promise<void> {
+		if (this.#paused === null) throw new Error('pause the clock first');
+		await this.page.clock.setSystemTime(this.#paused + byMs);
+		this.#paused += byMs;
+		this.skewMs += byMs;
+	}
+
+	/** Lets the page's clock flow again (from where it was paused). */
+	async resume(): Promise<void> {
+		await this.page.clock.resume();
+		this.#shift = (this.#paused ?? Date.now() + this.#shift) - Date.now();
+		this.#paused = null;
+	}
+
+	/** Answers a request from Ariva with its Date header on this clock, the JSON body changed by `change` if given. */
+	async answer(route: Route, change?: (body: any) => unknown): Promise<void> {
+		await this.#busy;
+		const response = await route.fetch();
+		const headers: Record<string, string> = { ...response.headers(), date: new Date(this.ariva()).toUTCString() };
+		delete headers['content-encoding'];
+		delete headers['content-length'];
+		if (!change) return route.fulfill({ response, headers });
+		return route.fulfill({ response, headers, body: JSON.stringify(change(await response.json())) });
+	}
+
+	/** Every validation answer carries this clock's Date header. */
+	async serveDates(): Promise<void> {
+		await this.page.route(validationApi, (route) => this.answer(route));
+	}
+}
+
+/** A desk card of the running log, by its code at OIMM. */
+const deskCard = (page: Page, code: string) => page.locator(`[data-testid="desk-card"][data-desk="OIMM ${code}"]`);
+const tapState = (page: Page, code: string, state: string) => deskCard(page, code).locator(`[data-testid="desk-state"][data-state="${state}"]`).click();
+const currentMinute = (page: Page) => page.locator('[data-testid="desk-minute"][aria-current="time"]');
+
 /** Opens the capture screen and chooses the campaign by its name. */
 async function openCampaign(page: Page, name: string): Promise<void> {
 	await page.goto('/validation/capture');
@@ -193,6 +349,7 @@ test.beforeAll(async () => {
 		[accounts().SystemAdministrator, accounts().webValidationLead, accounts().webObserver].map(async (a) => (await signIn(a)).accessToken)
 	);
 	profile = await ensureProfile();
+	desks = await ensureDesks();
 });
 
 test('an observer tallies a line per bin; each ended bin is sent with its own key, and a lost answer is retried without counting twice', async ({ page }, testInfo) => {
@@ -681,6 +838,613 @@ test('campaign, zone and line names render as text', async ({ page }) => {
 	await guards.expectClean();
 });
 
+// ARV-104d: the desk state log.
+
+test("an observer logs four desks minute by minute on Ariva's clock; each bin is sent once it has ended, and a lost answer is sent again with the same key", async ({
+	page
+}, testInfo) => {
+	test.setTimeout(240_000);
+	const name = `Tablet desks ${Date.now()}`;
+	const campaign = await deskCampaign(name);
+	const guards = await guardPage(page);
+	await signInThroughUi(page, accounts().webObserver);
+
+	// Ariva's bin an hour back; the tablet's own clock runs 2.5 minutes ahead of Ariva's (the Date header of its answers).
+	const bin = Math.floor(Date.now() / quarter) * quarter - 4 * quarter;
+	const tablet = new TabletClock(page, 150_000);
+	await tablet.install(bin - 2 * minute);
+	await tablet.serveDates();
+	const posts: { key: string | null; body: any }[] = [];
+	page.on('request', (request: Request) => {
+		if (request.method() === 'POST' && deskPost.test(request.url()))
+			posts.push({ key: request.headers()['idempotency-key'] ?? null, body: request.postDataJSON() });
+	});
+	const storage = () => page.evaluate(() => JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage } }));
+
+	await page.goto('/validation/capture');
+	const option = page.getByTestId('campaign-option').filter({ hasText: name });
+	await expect(option.getByTestId('campaign-desks')).toHaveText('5 desks to log');
+	await option.click();
+	await page.getByTestId('capture-tab-desks').click();
+	await expect(page.getByTestId('desk-option')).toHaveCount(5);
+	await expect(page.getByTestId('desk-option-code')).toHaveText(deskCodes);
+	await expect(page.getByTestId('desk-history-empty')).toBeVisible();
+	const storedBefore = await storage();
+	for (const code of deskCodes.slice(0, 4)) await page.getByTestId('desk-option').filter({ hasText: code }).click();
+	await expect(page.getByTestId('desks-chosen')).toHaveText('4 desks chosen (at most 20)');
+
+	await tablet.pauseAtAriva(bin + 20_000);
+	await page.getByTestId('start-desks').click();
+	await expect(page.getByTestId('desk-log-title')).toHaveText('Logging 4 desks');
+	await expect(page.getByTestId('desk-bin')).toContainText(`Bin ${dubaiClock(bin)} to ${dubaiClock(bin + quarter)}`);
+	// The minutes follow Ariva's clock: minute 0 of Ariva's bin is now, though the tablet's own clock reads 2.5 minutes later.
+	await expect(page.getByTestId('ariva-clock-off')).toContainText(/The tablet's clock is 2 min (29|30|31) s ahead of Ariva's/);
+	await expect(page.getByTestId('ariva-clock-time')).toContainText(new RegExp(`${dubaiClock(bin)}:(19|20)`));
+	await expect(page.getByTestId('desk-target')).toHaveText(`Tap the state each desk shows in minute ${dubaiClock(bin)} to ${dubaiClock(bin + minute)}.`);
+	await expect(currentMinute(page)).toHaveAttribute('data-minute', '0');
+	await expect(page.locator('[data-testid="desk-minute"][data-minute="1"]')).toBeDisabled();
+
+	// Fifteen minutes, four desks, one tap each; OD04 is not watched in minutes 5 and 6 (not observed, sent as null).
+	const table: (string | null)[][] = [0, 1, 2, 3].map((d) =>
+		Array.from({ length: 15 }, (_, m) => (d === 3 && (m === 5 || m === 6) ? null : deskStateCycle[(d + m) % 4]))
+	);
+	for (let m = 0; m < 15; m++) {
+		await expect(currentMinute(page)).toHaveAttribute('data-minute', String(m));
+		for (let d = 0; d < 4; d++) {
+			const state = table[d][m];
+			if (state) await tapState(page, deskCodes[d], state);
+		}
+		await expect(deskCard(page, 'OD01').locator('[data-testid="desk-state"][aria-pressed="true"]')).toHaveAttribute('data-state', table[0][m]!);
+		if (m === 9) {
+			// A wrong tap of an earlier minute is put right before the bin goes: OD02 was Closed in minute 8, not Serving.
+			await page.locator('[data-testid="desk-minute"][data-minute="8"]').click();
+			await expect(page.getByTestId('desk-earlier')).toContainText(`You are filling in minute ${dubaiClock(bin + 8 * minute)}`);
+			await tapState(page, 'OD02', 'Closed');
+			table[1][8] = 'Closed';
+			await page.getByTestId('desk-back-to-now').click();
+			await expect(page.getByTestId('desk-earlier')).toHaveCount(0);
+			await expect(deskCard(page, 'OD02').getByTestId('desk-strip-minute').nth(8)).toHaveAttribute('data-state', 'Closed');
+		}
+		// The tablet's own clock passed its quarter hour at Ariva's 12.5 minutes: nothing goes before Ariva's bin has ended.
+		if (m === 13) expect(posts, "nothing is sent before the bin ends on Ariva's clock").toEqual([]);
+		if (m < 14) await tablet.runToAriva(bin + (m + 1) * minute + 20_000);
+	}
+	await expect(deskCard(page, 'OD04').getByTestId('desk-strip-minute').nth(5)).toHaveAttribute('data-state', '');
+	await keep(page, testInfo, 'desks-logging');
+
+	await tablet.runToAriva(bin + quarter + 2_000);
+	await expect(page.getByTestId('desk-history-row')).toHaveCount(4);
+	await expect(page.getByTestId('desk-history-desk')).toHaveText(deskCodes.slice(0, 4).map((code) => `OIMM ${code}`));
+	expect(posts).toHaveLength(1);
+	expect(posts[0].key).toMatch(uuid);
+	expect(posts[0].body).toEqual({
+		binStartUtc: isoMinute(bin),
+		desks: deskCodes.slice(0, 4).map((code, d) => ({ deskId: desks[code], states: table[d] }))
+	});
+	// The next bin runs on: the minute in progress is minute 0 again.
+	await expect(currentMinute(page)).toHaveAttribute('data-minute', '0');
+	await expect(page.getByTestId('desk-bin')).toContainText(`Bin ${dubaiClock(bin + quarter)} to ${dubaiClock(bin + 2 * quarter)}`);
+
+	// Ariva holds the 58 minutes observed, once each; the grid shows them, OD02's minute 8 as corrected before sending.
+	const stored = async () =>
+		((await (await call('GET', `${captureUrl}/${campaign}/desk-observations?currentOnly=false&pageSize=500`, { token: observer })).json()).data as any[]).map(
+			(o) => `${o.deskCode} ${o.minuteUtc} ${o.state} ${o.revision}`
+		);
+	const first = await stored();
+	expect(first).toHaveLength(58);
+	expect(first).toContain(`OD02 ${isoMinute(bin + 8 * minute)} Closed 1`);
+	expect(first.filter((o) => o.startsWith('OD04'))).toHaveLength(13);
+	await expect(
+		page.getByTestId('desk-history-row').filter({ hasText: 'OD02' }).locator('[data-testid="desk-history-cell"][data-minute="8"]')
+	).toHaveAttribute('data-state', 'Closed');
+	await keep(page, testInfo, 'desks-sent');
+
+	// The next bin's answer is lost after Ariva recorded it: the batch waits behind the banner.
+	await page.route(deskPost, async (route) => {
+		if (route.request().method() !== 'POST') return route.fallback();
+		await route.fetch();
+		await route.abort('connectionreset');
+	});
+	await tapState(page, 'OD01', 'Serving');
+	await tablet.runToAriva(bin + quarter + minute + 20_000);
+	await tapState(page, 'OD01', 'Idle');
+	await tablet.runToAriva(bin + 2 * quarter + 2_000);
+	await expect(page.getByTestId('unsent-item')).toHaveCount(1);
+	await expect(page.getByTestId('unsent-item')).toContainText(`Desk log, bin ${dubaiClock(bin + quarter)} (1 desk)`);
+	await expect(page.getByTestId('unsent-item')).toContainText('No connection to Ariva');
+	// Nothing is kept on the tablet itself, and the campaign stays while the batch is unsent.
+	expect(await storage()).toBe(storedBefore);
+	expect(await storage()).not.toContain(posts[1].key);
+	await expect(page.getByTestId('change-campaign')).toBeDisabled();
+	await keep(page, testInfo, 'desks-unsent');
+
+	// The connection is back: the retry timer (10 s) sends it again on its own, with the same key and the same body.
+	await page.unroute(deskPost);
+	await tablet.runToAriva(bin + 2 * quarter + 13_000);
+	await expect(page.getByTestId('unsent-banner')).toHaveCount(0);
+	expect(posts.length).toBeGreaterThanOrEqual(3);
+	expect(posts[1].key).toMatch(uuid);
+	expect(posts[1].key).not.toBe(posts[0].key);
+	expect(posts[1].body).toEqual({
+		binStartUtc: isoMinute(bin + quarter),
+		desks: [{ deskId: desks.OD01, states: ['Serving', 'Idle', ...Array.from({ length: 13 }, () => null)] }]
+	});
+	for (const post of posts.slice(2)) {
+		expect(post.key).toBe(posts[1].key);
+		expect(post.body).toEqual(posts[1].body);
+	}
+	const second = await stored();
+	expect(second).toHaveLength(60);
+	expect(second.filter((o) => o.includes(isoMinute(bin + quarter)))).toEqual([`OD01 ${isoMinute(bin + quarter)} Serving 1`]);
+
+	// Stopping sends the minutes that have ended; none of this bin was observed, so nothing more goes.
+	const sent = posts.length;
+	await page.getByTestId('stop-desks').click();
+	await page.getByTestId('confirm-stop-desks').click();
+	await expect(page.getByTestId('desks-stopped')).toContainText(`The minutes before ${dubaiClock(bin + 2 * quarter)} are sent`);
+	await expect(page.getByTestId('start-desks')).toBeEnabled();
+	expect(posts).toHaveLength(sent);
+	await expect(page.getByTestId('change-campaign')).toBeEnabled();
+
+	allowCutRequests(guards);
+	await guards.expectClean();
+});
+
+test('a desk correction whose answer is lost is frozen and sent again as it is; a key used for another correction is refused in plain words', async ({ page }) => {
+	const name = `Tablet desk correction ${Date.now()}`;
+	const campaign = await deskCampaign(name);
+	// OD01 in the last bin that has ended, logged by the observer before the screen opens.
+	const bin = Math.floor(Date.now() / quarter) * quarter - quarter;
+	const logged = await call('POST', `${captureUrl}/${campaign}/desk-observations`, {
+		token: observer,
+		headers: { 'Idempotency-Key': `e2e-desk-${Date.now()}` },
+		data: { binStartUtc: isoMinute(bin), desks: [{ deskId: desks.OD01, states: ['Serving', 'Serving', 'Idle', ...Array.from({ length: 12 }, () => null)] }] }
+	});
+	expect(logged.status(), await logged.text()).toBe(201);
+	const revisions = async () =>
+		((await (await call('GET', `${captureUrl}/${campaign}/desk-observations?currentOnly=false&pageSize=500`, { token: observer })).json()).data as any[])
+			.filter((o) => o.minuteUtc === isoMinute(bin + minute))
+			.map((o) => [o.revision, o.state, o.reason])
+			.sort((a, b) => a[0] - b[0]);
+
+	const guards = await guardPage(page);
+	await signInThroughUi(page, accounts().webObserver);
+	const sent: { key: string | null; body: any }[] = [];
+	page.on('request', (request: Request) => {
+		if (request.method() === 'POST' && deskCorrections.test(request.url()))
+			sent.push({ key: request.headers()['idempotency-key'] ?? null, body: request.postDataJSON() });
+	});
+	await openCampaign(page, name);
+	await page.getByTestId('capture-tab-desks').click();
+	await expect(page.getByTestId('desk-history-row')).toHaveCount(1);
+	const cell = (m: number) => page.getByTestId('desk-history-row').filter({ hasText: 'OD01' }).locator(`[data-testid="desk-history-cell"][data-minute="${m}"]`);
+	await expect(cell(1)).toHaveAttribute('data-state', 'Serving');
+	await expect(page.getByTestId('desk-history-cell')).toHaveCount(3);
+
+	// The answer is lost after Ariva recorded the correction.
+	await page.route(deskCorrections, async (route) => {
+		await route.fetch();
+		await route.abort('connectionreset');
+	});
+	await cell(1).click();
+	const form = page.getByTestId('desk-correction-form');
+	await expect(form).toContainText('Never name a person');
+	await expect(page.getByTestId('desk-correction-recorded')).toHaveText('Recorded: Serving (revision 1)');
+	const reason = `${xssPayloads[4]} tapped the wrong desk`;
+	await form.getByText('Idle', { exact: true }).click();
+	await page.getByTestId('desk-correction-reason').fill(reason);
+	await page.getByTestId('desk-correction-save').click();
+	await expect(page.getByTestId('desk-correction-problem')).toContainText('may or may not be saved');
+	// Frozen: the body that went with the key cannot change; the ways on are Send again (as it is) and Cancel.
+	await expect(page.getByTestId('desk-correction-reason')).not.toBeEditable();
+	for (const radio of await page.getByTestId('desk-correction-state').all()) await expect(radio).toBeDisabled();
+	await expect(page.getByTestId('desk-correction-save')).toHaveText('Send again');
+	await page.unroute(deskCorrections);
+	await page.getByTestId('desk-correction-save').click();
+	await expect(form).toHaveCount(0);
+	await expect(cell(1)).toHaveAttribute('data-state', 'Idle');
+	await expect(page.getByTestId('desk-correction-row-reason')).toHaveText([reason]);
+	await expectNothingInjected(page);
+	expect(sent).toHaveLength(2);
+	expect(sent[0].key).toMatch(uuid);
+	expect(sent[1].key, 'Send again keeps the key').toBe(sent[0].key);
+	expect(sent[1].body, 'and the body').toEqual(sent[0].body);
+	expect(sent[0].body).toEqual({ state: 'Idle', reason });
+	expect(await revisions(), 'recorded once').toEqual([
+		[1, 'Serving', null],
+		[2, 'Idle', reason]
+	]);
+
+	// Another correction goes out with the form's key first: Ariva refuses the form's own body (409) and the screen says so.
+	let raced = 0;
+	await page.route(deskCorrections, async (route) => {
+		const other = await call('POST', `${hosts.main}${new URL(route.request().url()).pathname}`, {
+			token: observer,
+			headers: { 'Idempotency-Key': route.request().headers()['idempotency-key'] ?? '' },
+			data: { state: 'Paused', reason: 'Checked against the desk sheet' }
+		});
+		raced = other.status();
+		await route.continue();
+	});
+	await cell(1).click();
+	await form.getByText('Serving', { exact: true }).click();
+	await page.getByTestId('desk-correction-reason').fill('Desk reopened');
+	await page.getByTestId('desk-correction-save').click();
+	await expect(page.getByTestId('desk-correction-notice')).toHaveText(
+		"Ariva already holds another correction sent with this form's key, so this one was not saved. Your desk log is shown again: correct the latest revision if it is still wrong."
+	);
+	expect(raced).toBe(201);
+	await expect(form).toHaveCount(0);
+	await expect(cell(1)).toHaveAttribute('data-state', 'Paused');
+	expect(await revisions()).toEqual([
+		[1, 'Serving', null],
+		[2, 'Idle', reason],
+		[3, 'Paused', 'Checked against the desk sheet']
+	]);
+
+	allowCutRequests(guards);
+	allowStatuses(guards, 409);
+	await guards.expectClean();
+});
+
+test('signing out drops the unsent desk logs: nothing is sent afterwards, and nothing under the next account on the tablet', async ({ page }) => {
+	test.setTimeout(150_000);
+	const name = `Tablet desk sign-out ${Date.now()}`;
+	const campaign = await deskCampaign(name);
+	const guards = await guardPage(page);
+	await signInThroughUi(page, accounts().webObserver);
+	const bin = Math.floor(Date.now() / quarter) * quarter - 4 * quarter;
+	const tablet = new TabletClock(page, 0);
+	await tablet.install(bin - minute);
+	await tablet.serveDates();
+	const posts: unknown[] = [];
+	page.on('request', (request: Request) => {
+		if (request.method() !== 'POST' || !deskPost.test(request.url())) return;
+		const token = (request.headers()['authorization'] ?? '').replace(/^Bearer /, '');
+		posts.push(token ? claimsOf(token).sub : null);
+	});
+	await openCampaign(page, name);
+	const storage = () => page.evaluate(() => JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage } }));
+	const storedBefore = await storage();
+	await page.getByTestId('capture-tab-desks').click();
+	await page.getByTestId('desk-option').filter({ hasText: 'OD01' }).click();
+	await tablet.pauseAtAriva(bin + 10_000);
+	await page.getByTestId('start-desks').click();
+
+	// No desk log reaches Ariva: every send is cut, and the one held below is answered only once the next account is in.
+	let holdNext = false;
+	let release = () => {};
+	const released = new Promise<void>((resolve) => (release = resolve));
+	let heldSeen = () => {};
+	const held = new Promise<void>((resolve) => (heldSeen = resolve));
+	await page.route(deskPost, async (route) => {
+		if (route.request().method() !== 'POST') return route.fallback();
+		if (holdNext) {
+			holdNext = false;
+			heldSeen();
+			await released;
+			// A success, as if Ariva had recorded the batch: an old send loop would then go on to the next batch.
+			return route
+				.fulfill({
+					status: 201,
+					contentType: 'application/json',
+					body: JSON.stringify({ id: '00000000-0000-4000-8000-000000000002', observations: [] })
+				})
+				.catch(() => {});
+		}
+		return route.abort('connectionreset');
+	});
+	await tapState(page, 'OD01', 'Serving');
+	await tablet.runToAriva(bin + quarter + 2_000);
+	await tapState(page, 'OD01', 'Idle');
+	await tablet.runToAriva(bin + 2 * quarter + 2_000);
+	await expect(page.getByTestId('unsent-item')).toHaveCount(2);
+
+	// A retry is out when the observer signs out; the next observer signs in on the same screen before it is answered.
+	await tablet.resume();
+	holdNext = true;
+	await page.getByTestId('retry-unsent').click();
+	await held;
+	const sentBefore = posts.length;
+	const observerA = claimsOf(observer).sub;
+	expect(posts.every((subject) => subject === observerA)).toBe(true);
+	await page.getByTestId('sign-out').click();
+	await expect(page).toHaveURL(/\/login/);
+	await fillSignIn(page, accounts().webObserver2);
+	await expect(page.getByRole('heading', { level: 1 })).toHaveText(homeHeading.en);
+	await expect(page.getByTestId('user-card')).toContainText('e2e.webobserver2');
+	release();
+
+	// Nothing more leaves, at once or on the retry timer (up to 5 minutes), and the next observer stays signed in.
+	await page.clock.runFor(6 * 60_000);
+	await page.waitForTimeout(1_000);
+	expect(posts, 'no desk log is sent after the sign-out').toHaveLength(sentBefore);
+	expect(posts.every((subject) => subject === observerA), 'no desk log under the next account').toBe(true);
+	await expect(page.getByTestId('user-card')).toContainText('e2e.webobserver2');
+
+	// The next observer's tablet starts empty, and nothing was written to web storage.
+	await page.getByTestId('app-sidebar').getByRole('link', { name: 'Validation capture', exact: true }).click();
+	await page.getByTestId('campaign-option').filter({ hasText: name }).click();
+	await page.getByTestId('capture-tab-desks').click();
+	await expect(page.getByTestId('desk-history-empty')).toBeVisible();
+	await expect(page.getByTestId('unsent-banner')).toHaveCount(0);
+	await expect(page.getByTestId('desk-card')).toHaveCount(0);
+	expect(await storage()).toBe(storedBefore);
+	expect(posts).toHaveLength(sentBefore);
+
+	// Ariva holds no desk state of either observer for the campaign.
+	const nextObserver = (await signIn(accounts().webObserver2)).accessToken;
+	for (const token of [observer, nextObserver]) {
+		const states = await (await call('GET', `${captureUrl}/${campaign}/desk-observations?pageSize=100`, { token })).json();
+		expect(states.data).toEqual([]);
+	}
+	allowCutRequests(guards);
+	await guards.expectClean();
+});
+
+test('an observer who also holds an airport role sees no desk log: the server lists no desk and the tablet asks for no desk state', async ({ page }) => {
+	const name = `Tablet desks hidden ${Date.now()}`;
+	await deskCampaign(name);
+	const guards = await guardPage(page);
+	const deskCalls: string[] = [];
+	page.on('request', (request: Request) => {
+		if (/desk-observations/.test(request.url())) deskCalls.push(request.url());
+	});
+	await signInThroughUi(page, accounts().webValidationDual);
+	const listed = page.waitForResponse((r) => /\/validation\/capture\/campaigns$/.test(new URL(r.url()).pathname) && r.request().method() === 'GET');
+	await page.goto('/validation/capture');
+	const answer = (await (await listed).json()) as any[];
+	expect(answer.find((c) => c.name === name)).toMatchObject({ desksIncluded: false, desks: [] });
+	const option = page.getByTestId('campaign-option').filter({ hasText: name });
+	await expect(option).toBeVisible();
+	await expect(option.getByTestId('campaign-desks')).toHaveCount(0);
+	await option.click();
+	await expect(page.getByTestId('chosen-campaign')).toHaveText(name);
+	await expect(page.getByTestId('capture-tab-tracers')).toBeVisible();
+	await expect(page.getByTestId('capture-tab-desks')).toHaveCount(0);
+	await expect(page.locator('#capture-panel-desks')).toHaveCount(0);
+	await expect(page.getByTestId('desk-option')).toHaveCount(0);
+	// The arrow keys move between the two tabs there are.
+	await page.getByTestId('capture-tab-tracers').focus();
+	await page.keyboard.press('ArrowRight');
+	await expect(page.getByTestId('capture-tab-tally')).toBeFocused();
+	expect(deskCalls).toEqual([]);
+	await guards.expectClean();
+});
+
+test('desk codes and correction reasons render as text, and a 403 on desk logs, reads and corrections is a plain message', async ({ page }) => {
+	test.setTimeout(150_000);
+	const name = `Tablet desk markup ${Date.now()}`;
+	const campaign = await deskCampaign(name);
+	const guards = await guardPage(page);
+	await signInThroughUi(page, accounts().webObserver);
+	const bin = Math.floor(Date.now() / quarter) * quarter - 4 * quarter;
+	const tablet = new TabletClock(page, 0);
+	await tablet.install(bin - minute);
+	await tablet.serveDates();
+
+	// Desk and checkpoint codes are upper case letters, digits and hyphens, so Ariva cannot store markup in them; the
+	// answers that carry them are rewritten here, as a future code rule or a tampered answer could.
+	const checkpointXss = xssPayloads[2];
+	const codeXss = (i: number) => `${xssPayloads[1]}${i}`;
+	await page.route(/\/validation\/capture\/campaigns$/, (route) =>
+		route.request().method() !== 'GET'
+			? route.fallback()
+			: tablet.answer(route, (list: any[]) =>
+					list.map((c) => (c.name === name ? { ...c, desks: c.desks.map((d: any, i: number) => ({ ...d, checkpoint: checkpointXss, code: codeXss(i) })) } : c))
+				)
+	);
+	/** A 403 as the validation API writes it, or without detail as a refused permission is answered (status code pages). */
+	const forbidden = (detail?: string) => ({
+		status: 403,
+		contentType: 'application/problem+json',
+		body: JSON.stringify(
+			detail
+				? { type: 'https://tools.ietf.org/html/rfc9110#section-15.5.4', title: 'Not allowed', status: 403, detail }
+				: { type: 'https://tools.ietf.org/html/rfc9110#section-15.5.4', title: 'Forbidden', status: 403 }
+		)
+	});
+	const deskRole = 'Desk states are border data: an account with an airport role logs and reads them only if it also sees border desks.';
+	const ownCampaign = 'You created or started this campaign; its counts come from other observers.';
+
+	// The observer's own desk states are refused (403): a plain message, no grid.
+	await page.route(deskReads, (route) => route.fulfill(forbidden(deskRole)));
+	await openCampaign(page, name);
+	await page.getByTestId('capture-tab-desks').click();
+	await expect(page.getByTestId('desk-history-problem')).toHaveText(
+		'Desk states are border data: Ariva does not show them to this account, because it also holds an airport role.'
+	);
+	await expect(page.getByTestId('desk-option-code')).toHaveText([0, 1, 2, 3, 4].map(codeXss));
+	await expect(page.getByTestId('desk-option').first()).toContainText(checkpointXss);
+	await page.getByTestId('desk-option').first().click();
+	await tablet.pauseAtAriva(bin + 10_000);
+	await page.getByTestId('start-desks').click();
+	await expect(page.getByTestId('desk-card-code')).toHaveText([codeXss(0)]);
+	await expect(page.getByTestId('desk-card')).toContainText(checkpointXss);
+	await expectNothingInjected(page);
+
+	// A desk batch refused for the account's roles, then for the campaign's own creator: plain messages, nothing retried.
+	let refusal: string | undefined = deskRole;
+	const refusedPosts: string[] = [];
+	await page.route(deskPost, (route) => {
+		if (route.request().method() !== 'POST') return route.fallback();
+		refusedPosts.push(route.request().headers()['idempotency-key'] ?? '');
+		return route.fulfill(forbidden(refusal));
+	});
+	const logOneMinute = async (state: string) => {
+		await page.getByTestId('desk-state').filter({ hasText: state }).click();
+		await tablet.runToAriva(tablet.ariva() + minute);
+		await page.getByTestId('stop-desks').click();
+		await page.getByTestId('confirm-stop-desks').click();
+	};
+	await logOneMinute('Serving');
+	await expect(page.getByTestId('refused-item')).toContainText(
+		'Desk states are border data: Ariva takes no desk log from this account, because it also holds an airport role. Nothing was recorded.'
+	);
+	await expect(page.getByTestId('refused-item')).toContainText(`Desk log, bin ${dubaiClock(bin)} (1 desk)`);
+	await expect(page.getByTestId('unsent-banner')).toHaveCount(0);
+	await page.getByTestId('discard-refused').click();
+	refusal = ownCampaign;
+	await page.getByTestId('start-desks').click();
+	// The minute already sent stays closed; the log goes on from the next one.
+	await expect(page.locator('[data-testid="desk-minute"][data-minute="0"]')).toBeDisabled();
+	await logOneMinute('Idle');
+	await expect(page.getByTestId('refused-item')).toContainText(
+		'You created or started this campaign, so you cannot log desks for it: its desk logs come from other observers. Nothing was recorded.'
+	);
+	await page.getByTestId('discard-refused').click();
+	// Any other 403 (here a permission taken away during the shift) is not labelled as either: it shows Ariva's own text.
+	refusal = undefined;
+	await page.getByTestId('start-desks').click();
+	await logOneMinute('Paused');
+	await expect(page.getByTestId('refused-item')).toContainText('Ariva refused this desk log: Forbidden');
+	await expect(page.getByTestId('refused-item')).not.toContainText('You created or started');
+	await expect(page.getByTestId('refused-item')).not.toContainText('border data');
+	await page.getByTestId('discard-refused').click();
+	await tablet.runToAriva(tablet.ariva() + 6 * minute);
+	expect(refusedPosts, 'a refusal is final: never sent again').toHaveLength(3);
+	expect(new Set(refusedPosts).size).toBe(3);
+
+	// The observer's states as Ariva would answer them, with markup in the codes and in a correction's reason.
+	const reason = `${xssPayloads[0]} ${xssPayloads[5]}`;
+	const observation = {
+		id: '00000000-0000-4000-8000-0000000000d1',
+		campaignId: campaign,
+		batchId: null,
+		deskId: desks.OD01,
+		checkpoint: checkpointXss,
+		deskCode: codeXss(0),
+		minuteUtc: isoMinute(bin + 2 * minute),
+		observerId: String(claimsOf(observer).sub),
+		revision: 2,
+		current: true,
+		state: 'Paused',
+		reason,
+		correctsId: '00000000-0000-4000-8000-0000000000d0',
+		recordedUtc: new Date(bin + 3 * minute).toISOString()
+	};
+	await page.unroute(deskPost);
+	await page.unroute(deskReads);
+	await page.route(deskReads, (route) =>
+		route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: [observation], totalCount: 1, pageIndex: 1, pageSize: 500 }) })
+	);
+	await page.getByTestId('change-campaign').click();
+	await page.getByTestId('campaign-option').filter({ hasText: name }).click();
+	await page.getByTestId('capture-tab-desks').click();
+	await expect(page.getByTestId('desk-history-desk')).toHaveText([`${checkpointXss} ${codeXss(0)}`]);
+	await expect(page.getByTestId('desk-correction-row-reason')).toHaveText([reason]);
+	await expectNothingInjected(page);
+
+	// A correction refused for the account's roles (403): a plain message in the form.
+	await page.route(deskCorrections, (route) => route.fulfill(forbidden(deskRole)));
+	await page.getByTestId('desk-history-cell').click();
+	await expect(page.getByTestId('desk-correction-form')).toContainText(`Correct ${checkpointXss} ${codeXss(0)}`);
+	await page.getByTestId('desk-correction-form').getByText('Serving', { exact: true }).click();
+	await page.getByTestId('desk-correction-reason').fill(`${xssPayloads[3]} wrong desk`);
+	await page.getByTestId('desk-correction-save').click();
+	await expect(page.getByTestId('desk-correction-problem')).toHaveText(
+		'Desk states are border data: Ariva takes no desk log from this account, because it also holds an airport role. Nothing was recorded.'
+	);
+	// An unrecognised 403 on the correction: Ariva's own text, not the campaign creator's message.
+	await page.unroute(deskCorrections);
+	await page.route(deskCorrections, (route) => route.fulfill(forbidden()));
+	await page.getByTestId('desk-correction-save').click();
+	await expect(page.getByTestId('desk-correction-problem')).toHaveText('The correction was not saved: Forbidden');
+	await expectNothingInjected(page);
+
+	allowStatuses(guards, 403);
+	await guards.expectClean();
+});
+
+test("the desk log never places a minute without Ariva's clock: a tablet more than 15 minutes off waits, and after its clock jumps offline nothing is placed until Ariva answers again", async ({
+	page
+}) => {
+	test.setTimeout(150_000);
+	const name = `Tablet desk clock ${Date.now()}`;
+	const campaign = await deskCampaign(name);
+	const guards = await guardPage(page);
+	await signInThroughUi(page, accounts().webObserver);
+	const bin = Math.floor(Date.now() / quarter) * quarter - 4 * quarter;
+	// The tablet's clock starts 20 minutes ahead of Ariva's: a reading beyond 15 minutes is not used (security review L4).
+	const tablet = new TabletClock(page, 20 * minute);
+	await tablet.install(bin - 2 * minute);
+	await tablet.serveDates();
+	const posts: any[] = [];
+	page.on('request', (request: Request) => {
+		if (request.method() === 'POST' && deskPost.test(request.url())) posts.push(request.postDataJSON());
+	});
+	await openCampaign(page, name);
+	await page.getByTestId('capture-tab-desks').click();
+	await expect(page.getByTestId('ariva-clock-held')).toHaveText(
+		"The tablet's clock is more than 15 minutes from Ariva's. Set the tablet's date and time to automatic: until the difference is under 15 minutes, the desk log places no tap and sends no bin."
+	);
+	await expect(page.getByTestId('ariva-clock-time')).toHaveCount(0);
+	await page.getByTestId('desk-option').filter({ hasText: 'OD01' }).click();
+	await expect(page.getByTestId('start-desks')).toBeDisabled();
+
+	// The tablet's time is set right (its clock jumps 20 minutes back): Ariva's clock is read again at the next tick and
+	// the log may start. (The test's answers wait until a clock move has finished, so moves around a reading stay short:
+	// a reading whose round trip looks longer than 10 seconds is rightly discarded.)
+	await tablet.pauseAtAriva(bin + 10_000);
+	await tablet.jumpTablet(-20 * minute);
+	await tablet.runToAriva(bin + 11_000);
+	await expect(page.getByTestId('ariva-clock-held')).toHaveCount(0);
+	await tablet.runToAriva(bin + 20_000);
+	await expect(page.getByTestId('ariva-clock-off')).toHaveCount(0);
+	await page.getByTestId('start-desks').click();
+	await expect(page.getByTestId('desk-target')).toHaveText(`Tap the state each desk shows in minute ${dubaiClock(bin)} to ${dubaiClock(bin + minute)}.`);
+	await tapState(page, 'OD01', 'Serving');
+
+	// Offline, the tablet's clock jumps 2.5 minutes back (set by hand): the old offset would now place taps 2.5 minutes
+	// early, so Ariva's clock is lost and nothing is placed until it is read again (security review L2).
+	const offline = (route: Route) => route.abort('internetdisconnected');
+	await page.route(validationApi, offline);
+	await tablet.jumpTablet(-150_000);
+	await tablet.runToAriva(bin + minute + 30_000);
+	await expect(page.getByTestId('ariva-clock-held')).toHaveText(
+		"The tablet's clock changed (set by hand or from the network, or the tablet slept), so Ariva's clock is being read again. Until it is, no tap is placed and no bin is sent; the minutes logged before are kept."
+	);
+	await expect(page.getByTestId('desk-held')).toBeVisible();
+	await expect(page.getByTestId('desk-target')).toHaveCount(0);
+	await expect(page.getByTestId('desk-bin')).toHaveText(`Bin ${dubaiClock(bin)} to ${dubaiClock(bin + quarter)} (Ariva's clock, site local time); sent when it ends`);
+	for (const button of await deskCard(page, 'OD01').getByTestId('desk-state').all()) await expect(button).toBeDisabled();
+	for (const button of await page.getByTestId('desk-minute').all()) await expect(button).toBeDisabled();
+	const strip = () => deskCard(page, 'OD01').getByTestId('desk-strip-minute').evaluateAll((cells) => cells.map((c) => c.getAttribute('data-state')));
+	expect(await strip()).toEqual(['Serving', ...Array.from({ length: 14 }, () => '')]);
+
+	// Still offline past the end of Ariva's bin: the bin is not closed on a guess, and nothing is sent.
+	await tablet.runToAriva(bin + quarter + 30_000);
+	expect(posts, 'no bin is sent while Ariva\'s clock is unknown').toEqual([]);
+	await expect(page.getByTestId('desk-held')).toBeVisible();
+	expect(await strip()).toEqual(['Serving', ...Array.from({ length: 14 }, () => '')]);
+
+	// The connection is back: Ariva's clock is read again (the tablet now 2.5 minutes behind it), the bin goes with the one
+	// minute logged before the jump, and the log goes on in Ariva's current minute.
+	await page.unroute(validationApi, offline);
+	// A second at a time, until the next reading (at most 10 seconds away) has come back.
+	await expect(async () => {
+		await tablet.runToAriva(tablet.ariva() + 1_000);
+		await expect(page.getByTestId('ariva-clock-held')).toHaveCount(0, { timeout: 500 });
+	}).toPass({ timeout: 30_000 });
+	await expect(page.getByTestId('ariva-clock-off')).toContainText(/The tablet's clock is 2 min (29|30|31) s behind Ariva's/);
+	await tablet.runToAriva(tablet.ariva() + 2_000);
+	await expect.poll(() => posts.length).toBe(1);
+	expect(posts[0]).toEqual({ binStartUtc: isoMinute(bin), desks: [{ deskId: desks.OD01, states: ['Serving', ...Array.from({ length: 14 }, () => null)] }] });
+	await expect(page.getByTestId('desk-target')).toHaveText(
+		`Tap the state each desk shows in minute ${dubaiClock(bin + quarter)} to ${dubaiClock(bin + quarter + minute)}.`
+	);
+	await tapState(page, 'OD01', 'Idle');
+	expect(await strip()).toEqual(['Idle', ...Array.from({ length: 14 }, () => '')]);
+	const stored = ((await (await call('GET', `${captureUrl}/${campaign}/desk-observations?pageSize=100`, { token: observer })).json()).data as any[]).map(
+		(o) => `${o.deskCode} ${o.minuteUtc} ${o.state}`
+	);
+	expect(stored).toEqual([`OD01 ${isoMinute(bin)} Serving`]);
+	await expect(page.getByTestId('unsent-banner')).toHaveCount(0);
+
+	allowCutRequests(guards);
+	await guards.expectClean();
+});
+
 for (const viewport of [
 	{ width: 1280, height: 800, name: 'landscape' },
 	{ width: 800, height: 1280, name: 'portrait' }
@@ -762,6 +1526,90 @@ for (const viewport of [
 			await page.getByTestId('stop-counting').tap();
 			await page.getByTestId('confirm-stop-counting').tap();
 			await expect(page.getByTestId('line-option')).toHaveCount(3);
+			await guards.expectClean();
+		});
+
+		test(`the desk log works on touch in English and Arabic (${viewport.width}x${viewport.height})`, async ({ page }, testInfo) => {
+			const name = `Tablet desk layout ${viewport.name} ${Date.now()}`;
+			const shot = async (file: string) => {
+				const target = testInfo.outputPath(`${file}.png`);
+				await page.screenshot({ path: target, fullPage: true });
+				return target;
+			};
+			await deskCampaign(name);
+			const guards = await guardPage(page);
+			await signInThroughUi(page, accounts().webObserver);
+			await page.goto('/validation/capture');
+			await page.getByTestId('campaign-option').filter({ hasText: name }).tap();
+			await page.getByTestId('capture-tab-desks').tap();
+			for (const box of await Promise.all((await page.getByTestId('desk-option').all()).map((o) => o.boundingBox())))
+				expect(box!.height, 'desk choice').toBeGreaterThanOrEqual(44);
+			await page.getByTestId('choose-all-desks').tap();
+			await expect(page.getByTestId('desks-chosen')).toHaveText('5 desks chosen (at most 20)');
+			await page.getByTestId('start-desks').tap();
+			await expect(page.getByTestId('desk-card')).toHaveCount(5);
+			const serving = deskCard(page, 'OD01').locator('[data-testid="desk-state"][data-state="Serving"]');
+			await serving.tap();
+			await expect(serving).toHaveAttribute('aria-pressed', 'true');
+			await expect(deskCard(page, 'OD01').getByTestId('desk-card-state')).toHaveText('Serving');
+
+			// Large targets: the four states of a desk and the minutes of the bin; nothing wider than the screen.
+			for (const button of await deskCard(page, 'OD01').getByTestId('desk-state').all()) {
+				const box = (await button.boundingBox())!;
+				expect(box.height, 'state button height').toBeGreaterThanOrEqual(56);
+				expect(box.width, 'state button width').toBeGreaterThanOrEqual(64);
+			}
+			for (const button of await page.getByTestId('desk-minute').all()) {
+				const box = (await button.boundingBox())!;
+				expect(box.height, 'minute button height').toBeGreaterThanOrEqual(44);
+				expect(box.width, 'minute button width').toBeGreaterThanOrEqual(32);
+			}
+			expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+			await expectInsideViewport(page);
+			await expectAxeClean(page);
+			await page.getByTestId('theme-toggle').click();
+			await expect(page.locator('html')).toHaveClass(/\bdark\b/);
+			await expectAxeClean(page);
+			await page.getByTestId('theme-toggle').click();
+			await expect(page.locator('html')).not.toHaveClass(/\bdark\b/);
+			await testInfo.attach(`desks-${viewport.name}-en`, { path: await shot(`desks-${viewport.name}-en`) });
+
+			// Keyboard: Enter on a state records it; the arrow keys move between the three tabs.
+			const idle = deskCard(page, 'OD02').locator('[data-testid="desk-state"][data-state="Idle"]');
+			await idle.focus();
+			await page.keyboard.press('Enter');
+			await expect(idle).toHaveAttribute('aria-pressed', 'true');
+			await page.getByTestId('capture-tab-desks').focus();
+			await page.keyboard.press('ArrowRight');
+			await expect(page.getByTestId('capture-tab-tally')).toBeFocused();
+			await page.keyboard.press('ArrowLeft');
+			await expect(page.getByTestId('capture-tab-desks')).toBeFocused();
+			await expect(page.getByTestId('capture-tab-desks')).toHaveAttribute('aria-selected', 'true');
+
+			await page.getByTestId('language-toggle').click();
+			await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
+			await expect(page.getByTestId('capture-tab-desks')).toHaveText('سجل المكاتب');
+			await expect(serving).toContainText('يخدم');
+			await expect(page.getByTestId('desk-log-title')).toHaveText('تسجيل 5 مكاتب');
+			const minute0 = (await page.locator('[data-testid="desk-minute"][data-minute="0"]').boundingBox())!;
+			const minute1 = (await page.locator('[data-testid="desk-minute"][data-minute="1"]').boundingBox())!;
+			expect(minute0.x, 'the first minute is on the start side, the right in Arabic').toBeGreaterThan(minute1.x);
+			const first = (await serving.boundingBox())!;
+			const last = (await deskCard(page, 'OD01').locator('[data-testid="desk-state"][data-state="Closed"]').boundingBox())!;
+			expect(first.x, 'Serving comes first, on the right in Arabic').toBeGreaterThan(last.x);
+			// In Arabic the arrow keys follow the reading order: the left arrow goes on to the next tab.
+			await page.getByTestId('capture-tab-desks').focus();
+			await page.keyboard.press('ArrowLeft');
+			await expect(page.getByTestId('capture-tab-tally')).toBeFocused();
+			await page.getByTestId('capture-tab-desks').tap();
+			expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+			await expectInsideViewport(page);
+			await expectAxeClean(page);
+			await testInfo.attach(`desks-${viewport.name}-ar`, { path: await shot(`desks-${viewport.name}-ar`) });
+
+			await page.getByTestId('stop-desks').tap();
+			await page.getByTestId('confirm-stop-desks').tap();
+			await expect(page.getByTestId('desk-option')).toHaveCount(5);
 			await guards.expectClean();
 		});
 	});

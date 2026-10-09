@@ -1,13 +1,17 @@
 import { Api, fail, type Result } from './Api';
 
 /**
- * The observer's side of a validation campaign (ARV-104a, ARV-104b) as the observer tablet uses it (ARV-104c): the
- * running campaigns of a site, a line count per 15-minute bin, a correction of one's own count, and tracer batches with
- * the tablet's own clock reading. Everything is under Validation.Capture and checked by the server: a site the caller
- * cannot see answers 404, the campaign's creator or starter 403, a campaign that is not running 409.
+ * The observer's side of a validation campaign (ARV-104a, ARV-104b) as the observer tablet uses it (ARV-104c, ARV-104d):
+ * the running campaigns of a site, a line count per 15-minute bin, a correction of one's own count, tracer batches with
+ * the tablet's own clock reading, and desk state batches with their corrections. Everything is under Validation.Capture
+ * and checked by the server: a site the caller cannot see answers 404, the campaign's creator or starter 403, a campaign
+ * that is not running 409.
  *
- * Data boundary: tracers are labels (T-07), never names; observers are Ariva user ids. Campaign, line and zone names and
- * correction reasons are user text shown to others: the screens render them as text only (CWE-79).
+ * Data boundary: tracers are labels (T-07), never names; observers are Ariva user ids. Desk states are border data: the
+ * server lists a campaign's desks only to an account that may observe them (desksIncluded) and answers 403 to desk
+ * batches, corrections and reads from any other; the tablet shows no desk log without them. Campaign, line, zone,
+ * checkpoint and desk names and codes and correction reasons are text from the server: the screens render them as text
+ * only (CWE-79).
  */
 
 const site = /^[A-Z0-9]{2,8}(-[A-Z0-9]{1,8})?$/;
@@ -123,6 +127,54 @@ export interface TracerBatch {
 	runs: TracerRun[];
 }
 
+/** A desk's state in one minute, as the observer saw it (ObservedDeskState). */
+export type DeskState = 'Serving' | 'Idle' | 'Paused' | 'Closed';
+
+/** The four states in the order the tablet offers them (as the live desk panel lists them). */
+export const deskStates: readonly DeskState[] = ['Serving', 'Idle', 'Paused', 'Closed'];
+
+/** One desk batch holds at most 20 desks (DeskObservationBatch.MaxDesks). */
+export const maxDesksPerBatch = 20;
+
+/** Each desk of a batch has exactly 15 states, one per minute of the bin (DeskObservationBatch.MinutesPerBin). */
+export const minutesPerBin = 15;
+
+export const minuteMs = 60_000;
+
+/** A desk's 15 minutes in a batch: null where the minute was not observed. */
+export interface DeskMinutes {
+	deskId: string;
+	states: (DeskState | null)[];
+}
+
+/** A recorded desk state for one minute (DeskObservationViewModel). Border data. */
+export interface DeskObservation {
+	id: string;
+	campaignId: string;
+	batchId: string | null;
+	deskId: string;
+	checkpoint: string | null;
+	deskCode: string | null;
+	minuteUtc: string;
+	observerId: string;
+	revision: number;
+	current: boolean;
+	state: DeskState;
+	reason: string | null;
+	correctsId: string | null;
+	recordedUtc: string;
+}
+
+/** A recorded desk batch (DeskObservationBatchViewModel). */
+export interface DeskBatch {
+	id: string;
+	campaignId: string;
+	observerId: string;
+	binStartUtc: string;
+	receivedUtc: string;
+	observations: DeskObservation[];
+}
+
 /** A fresh Idempotency-Key: a random UUID, never derived from the user, the line or the time (it is unique per observer). */
 export function newKey(): string {
 	if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
@@ -171,12 +223,28 @@ export function isRetryable(result: Result<unknown>): boolean {
 }
 
 /**
- * Fragments of the server's refusal texts the tablet recognises (ValidationErrors.ClockOffsetTooLarge and
- * ValidationErrors.KeyReused in Ariva.Core). The API sends no error code for them, so ValidationErrorTextTests in
- * Ariva.UnitTests reads these two literals from this file and fails when the C# constants stop containing them.
+ * Fragments of the server's refusal texts the tablet recognises (ValidationErrors.ClockOffsetTooLarge,
+ * ValidationErrors.KeyReused, ValidationErrors.DeskObservationsNeedBorderRole and ValidationErrors.OwnCampaign in
+ * Ariva.Core). The API sends no error code for them, so ValidationErrorTextTests in Ariva.UnitTests reads these literals
+ * from this file and fails when the C# constants stop containing them. Any other refusal is shown with Ariva's own text.
  */
 export const clockRefusalText = "clock differs from the server's by more than";
 export const keyReusedText = 'Idempotency-Key was already used for another request';
+export const deskRoleText = 'Desk states are border data';
+export const ownCampaignText = 'You created or started this campaign';
+
+/** The server's refusal of desk states to an account that holds an airport role without seeing border desks (403). */
+export function isDeskRoleRefusal(status: number | undefined, message: string): boolean {
+	return status === 403 && message.includes(deskRoleText);
+}
+
+/**
+ * The server's refusal of the campaign's own creator or starter (403). A 403 that is neither this nor the desk role
+ * refusal (a permission taken away during the shift, for example) is shown with the server's text.
+ */
+export function isOwnCampaignRefusal(status: number | undefined, message: string): boolean {
+	return status === 403 && message.includes(ownCampaignText);
+}
 
 /** The server's refusal of a tablet whose clock is more than 5 minutes off. */
 export function isClockRefusal(status: number | undefined, message: string): boolean {
@@ -285,4 +353,95 @@ export function captureRuns(
 		{ deviceClockUtc: utc(Date.now()), runs },
 		{ headers: { 'Idempotency-Key': key }, signal: timeout(), asSubject }
 	);
+}
+
+/** The longest round trip whose answer still tells Ariva's clock (a slow answer may have waited on the way back). */
+export const maxClockRoundTripMs = 10_000;
+
+/**
+ * The largest difference between Ariva's clock and the tablet's the desk log accepts (15 minutes, a whole bin): a reading
+ * beyond it (a tablet hours off, or a Date header that is not Ariva's own, from a cache) leaves Ariva's clock unknown.
+ */
+export const maxArivaOffsetMs = 15 * 60_000;
+
+/**
+ * Ariva's clock minus this device's, in milliseconds, from an answer's Date header (ARV-104d), or null when the answer
+ * has none or took too long. The header is Ariva's clock to the second when the answer was written, so the estimate is
+ * the header's middle of that second against the device's clock when the answer came: within about a second, which is
+ * plenty for a minute grid.
+ */
+export function arivaOffsetMs(result: Result<unknown>): number | null {
+	const clock = result.serverClock;
+	if (!clock) return null;
+	const roundTrip = clock.receivedMs - clock.sentMs;
+	if (roundTrip < 0 || roundTrip > maxClockRoundTripMs) return null;
+	return clock.dateMs + 500 - clock.receivedMs;
+}
+
+/**
+ * The caller's own desk states of a campaign (current revisions), latest minute first: at most 500, which holds the
+ * last bins the observer may want to correct. Bound to the observer's account like every desk call.
+ */
+export function ownDeskObservations(
+	siteCode: string,
+	campaignId: string,
+	asSubject: string
+): Promise<Result<Page<DeskObservation>>> {
+	const path = campaignPath(siteCode, campaignId);
+	if (!path) return Promise.resolve(fail('Invalid request.'));
+	return Api.get<Page<DeskObservation>>(`${path}/desk-observations`, {
+		query: { sortBy: 'minuteUtc', sortDescending: true, pageSize: 500 },
+		signal: timeout(),
+		asSubject
+	});
+}
+
+/**
+ * One 15-minute bin of desk states (UTC on the quarter hour; minutes that have ended only), at most 20 desks with
+ * exactly 15 states each, sent with its Idempotency-Key (kept for its retries). Anything else is refused here, before it
+ * is sent.
+ */
+export function captureDesks(
+	siteCode: string,
+	campaignId: string,
+	body: { binStartUtc: string; desks: DeskMinutes[] },
+	key: string,
+	asSubject: string
+): Promise<Result<DeskBatch>> {
+	const path = campaignPath(siteCode, campaignId);
+	const valid =
+		body.desks.length >= 1 &&
+		body.desks.length <= maxDesksPerBatch &&
+		body.desks.every(
+			(d) =>
+				guid.test(d.deskId) &&
+				d.states.length === minutesPerBin &&
+				d.states.every((s) => s === null || deskStates.includes(s))
+		) &&
+		body.desks.some((d) => d.states.some((s) => s !== null));
+	if (!path || !valid) return Promise.resolve(fail('Invalid request.'));
+	return Api.post<DeskBatch>(`${path}/desk-observations`, body, {
+		headers: { 'Idempotency-Key': key },
+		signal: timeout(),
+		asSubject
+	});
+}
+
+/** A correction of one's own latest desk state: the next revision with the corrected state and a reason. */
+export function correctDesk(
+	siteCode: string,
+	campaignId: string,
+	observationId: string,
+	body: { state: DeskState; reason: string },
+	key: string,
+	asSubject: string
+): Promise<Result<DeskObservation>> {
+	const path = campaignPath(siteCode, campaignId);
+	if (!path || !guid.test(observationId) || !deskStates.includes(body.state))
+		return Promise.resolve(fail('Invalid request.'));
+	return Api.post<DeskObservation>(`${path}/desk-observations/${observationId}/corrections`, body, {
+		headers: { 'Idempotency-Key': key },
+		signal: timeout(),
+		asSubject
+	});
 }

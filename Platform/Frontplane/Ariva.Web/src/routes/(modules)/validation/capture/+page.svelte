@@ -5,6 +5,7 @@
 	import { _, locale } from 'svelte-i18n';
 	import { toast } from 'svelte-sonner';
 	import SimplePageHeader from '$lib/components/shared/SimplePageHeader.svelte';
+	import DeskPanel from '$lib/components/pages/validation/DeskPanel.svelte';
 	import OutboxBanner from '$lib/components/pages/validation/OutboxBanner.svelte';
 	import TallyPanel from '$lib/components/pages/validation/TallyPanel.svelte';
 	import TracerPanel from '$lib/components/pages/validation/TracerPanel.svelte';
@@ -14,33 +15,52 @@
 		type CountPayload,
 		type RunPayload
 	} from '$lib/components/pages/validation/capture.svelte';
+	import {
+		ArivaClock,
+		DeskLog,
+		type DeskPayload
+	} from '$lib/components/pages/validation/desklog.svelte';
 	import { duration, siteClock, siteClockSeconds } from '$lib/components/pages/validation/format';
 	import { Outbox } from '$lib/components/pages/validation/outbox.svelte';
 	import { primaryButton, secondaryButton } from '$lib/components/pages/validation/ui';
+	import type { Result } from '$lib/core/Api';
 	import { auth } from '$lib/core/auth.svelte';
 	import * as topology from '$lib/core/topology';
 	import {
 		binMs,
 		binStartUtc,
 		captureCount,
+		captureDesks,
 		captureRuns,
+		isDeskRoleRefusal,
 		localDate,
 		ownCounts,
+		ownDeskObservations,
 		ownRuns,
 		running,
 		type CaptureCampaign,
+		type CaptureDesk,
 		type CaptureLine,
+		type DeskBatch,
+		type DeskObservation,
 		type ManualCount,
 		type TracerBatch,
 		type TracerRun
 	} from '$lib/core/validation';
 
-	// The observer tablet (ARV-104c, wiki 07 section 8): a line tally per 15-minute bin and a tracer timer for one
-	// running campaign. Only Validation.Capture holders (the Validation observer role) use it; the server checks every
-	// call. Unsent bins and runs stay in memory with their Idempotency-Keys; nothing goes to web storage.
+	// The observer tablet (ARV-104c, ARV-104d, wiki 07 section 8): a line tally per 15-minute bin, a tracer timer and a
+	// desk state log for one running campaign. Only Validation.Capture holders (the Validation observer role) use it; the
+	// server checks every call. Unsent bins, runs and desk batches stay in memory with their Idempotency-Keys; nothing
+	// goes to web storage. The desk log is shown only when the server lists the campaign's desks to this account
+	// (desksIncluded): desk states are border data.
 
 	type CountItem = CountPayload & { siteCode: string; campaignId: string };
 	type RunItem = RunPayload & { siteCode: string; campaignId: string };
+	type DeskItem = DeskPayload & { siteCode: string; campaignId: string };
+	type Tab = 'tally' | 'tracers' | 'desks';
+
+	/** A difference between the tablet's clock and the time passed (monotonic) beyond this is a clock jump or a sleep. */
+	const clockJumpMs = 5_000;
 
 	const canCapture = $derived(auth.can('Validation.Capture'));
 
@@ -50,11 +70,13 @@
 	let campaign = $state<CaptureCampaign | null>(null);
 	let loading = $state(false);
 	let problem = $state('');
-	let tab = $state<'tally' | 'tracers'>('tally');
+	let tab = $state<Tab>('tally');
 	let now = $state(Date.now());
 	let history = $state<ManualCount[]>([]);
 	let recorded = $state<TracerRun[]>([]);
 	let offset = $state<{ ms: number; at: number } | null>(null);
+	let deskRecords = $state<DeskObservation[]>([]);
+	let deskProblem = $state('');
 	/** A navigation held back because something on the screen is not sent (the observer decides). */
 	let heldNavigation = $state<URL | null>(null);
 	let leaving = false;
@@ -64,6 +86,13 @@
 	/** The account this screen captures for; its queued items go only under its token (security review M1). */
 	const owner = untrack(() => auth.subject);
 	const currentOwner = (): string | null => (auth.subject === owner ? owner : null);
+
+	/** Ariva's clock from the Date header of its answers: the desk log's minutes follow it (ARV-104d). */
+	const clock = new ArivaClock();
+	function timed<T>(result: Result<T>): Result<T> {
+		clock.observe(result);
+		return result;
+	}
 
 	const counts = new Outbox<CountItem, ManualCount>(
 		currentOwner,
@@ -79,7 +108,7 @@
 				},
 				key,
 				itemOwner
-			),
+			).then(timed),
 		(item, count) => {
 			const zone = campaign?.timeZoneId ?? 'UTC';
 			toast.success(
@@ -99,7 +128,7 @@
 	const runs = new Outbox<RunItem, TracerBatch>(
 		currentOwner,
 		(item, key, itemOwner) =>
-			captureRuns(item.siteCode, item.campaignId, [item.run], key, itemOwner),
+			captureRuns(item.siteCode, item.campaignId, [item.run], key, itemOwner).then(timed),
 		(item, batch) => {
 			offset = { ms: batch.clockOffsetMs, at: Date.parse(batch.receivedUtc) };
 			const stored = batch.runs[0];
@@ -116,17 +145,63 @@
 		}
 	);
 
+	const desks = new Outbox<DeskItem, DeskBatch>(
+		currentOwner,
+		(item, key, itemOwner) =>
+			captureDesks(
+				item.siteCode,
+				item.campaignId,
+				{
+					binStartUtc: binStartUtc(item.binStartMs),
+					desks: item.desks.map((desk) => ({ deskId: desk.deskId, states: [...desk.states] }))
+				},
+				key,
+				itemOwner
+			).then(timed),
+		(item, batch) => {
+			const zone = campaign?.timeZoneId ?? 'UTC';
+			toast.success(
+				$_('validation.desks.sent', {
+					values: {
+						start: siteClock(item.binStartMs, zone, $locale),
+						end: siteClock(item.binStartMs + binMs, zone, $locale),
+						count: batch.observations.length
+					}
+				})
+			);
+			if (campaign?.id === item.campaignId) void loadDeskRecords();
+		}
+	);
+
 	const tally = new Tally((payload) => {
 		if (campaign) counts.add({ ...payload, siteCode: campaign.siteCode, campaignId: campaign.id });
 	});
 
 	const tracers = new Tracers();
 
-	const busy = $derived(
-		tally.counting || tracers.active.length > 0 || counts.unsent > 0 || runs.unsent > 0
+	const deskLog = new DeskLog((payload) => {
+		if (campaign) desks.add({ ...payload, siteCode: campaign.siteCode, campaignId: campaign.id });
+	});
+
+	/** The desk log exists only for a campaign whose desks the server lists to this account (border data). */
+	const hasDesks = $derived(
+		campaign !== null && campaign.desksIncluded && campaign.desks.length > 0
 	);
-	/** The campaign stays while anything of it is on the screen: a tally, a tracer, an unsent or a refused item. */
-	const canChange = $derived(!busy && counts.refused.length === 0 && runs.refused.length === 0);
+	const tabs = $derived<Tab[]>(hasDesks ? ['tally', 'tracers', 'desks'] : ['tally', 'tracers']);
+	const arivaNow = $derived(clock.at(now));
+
+	const busy = $derived(
+		tally.counting ||
+			tracers.active.length > 0 ||
+			deskLog.logging ||
+			counts.unsent > 0 ||
+			runs.unsent > 0 ||
+			desks.unsent > 0
+	);
+	/** The campaign stays while anything of it is on the screen: a tally, a tracer, a desk log, an unsent or a refused item. */
+	const canChange = $derived(
+		!busy && counts.refused.length === 0 && runs.refused.length === 0 && desks.refused.length === 0
+	);
 	const today = $derived(campaign ? localDate(now, campaign.timeZoneId) : '');
 	const notToday = $derived(campaign !== null && !campaign.days.includes(today));
 
@@ -145,7 +220,7 @@
 	async function loadCampaigns(): Promise<void> {
 		if (!siteCode) return;
 		loading = true;
-		const result = await running(siteCode);
+		const result = timed(await running(siteCode));
 		if (destroyed) return;
 		loading = false;
 		if (result.hasErrors) {
@@ -173,12 +248,33 @@
 		recorded = result.data?.data ?? [];
 	}
 
+	/** The observer's own desk states (border data: only for a campaign whose desks the server listed). */
+	async function loadDeskRecords(): Promise<void> {
+		const chosen = campaign;
+		if (!chosen || !chosen.desksIncluded || chosen.desks.length === 0 || owner === null) return;
+		const result = timed(await ownDeskObservations(chosen.siteCode, chosen.id, owner));
+		if (destroyed || campaign?.id !== chosen.id) return;
+		if (result.hasErrors) {
+			const message = result.errorMessages.join(' ');
+			deskProblem = isDeskRoleRefusal(result.status, message)
+				? $_('validation.desks.history.forbidden')
+				: $_('validation.desks.history.failed', { values: { reason: message } });
+			deskRecords = [];
+			return;
+		}
+		deskProblem = '';
+		deskRecords = result.data?.data ?? [];
+	}
+
 	function choose(next: CaptureCampaign): void {
 		campaign = next;
 		tab = 'tally';
 		history = [];
 		recorded = [];
+		deskRecords = [];
+		deskProblem = '';
 		void loadRecorded();
+		void loadDeskRecords();
 	}
 
 	function changeCampaign(): void {
@@ -198,9 +294,51 @@
 		void loadHistory();
 	}
 
+	/**
+	 * Reads Ariva's clock again (the running list is the lightest answer): at once after the tablet's own clock jumped
+	 * (set by hand or from the network, or the tablet slept: the last reading no longer holds, and a reading still on its
+	 * way spans the jump, so its answer is discarded or already on the new clock), then one request at a time and at most
+	 * every 10 seconds while Ariva's clock is lost or implausible and the desk log waits for a new reading.
+	 */
+	let remeasuredAt = -Infinity;
+	let remeasuring = false;
+	async function remeasure(now = false): Promise<void> {
+		const mono = performance.now();
+		if (!campaign || (!now && (remeasuring || mono - remeasuredAt < 10_000))) return;
+		remeasuredAt = mono;
+		remeasuring = true;
+		try {
+			timed(await running(campaign.siteCode));
+		} finally {
+			remeasuring = false;
+		}
+	}
+
 	function retry(): void {
 		void counts.flush();
 		void runs.flush();
+		void desks.flush();
+	}
+
+	function startDesks(chosen: CaptureDesk[]): void {
+		deskLog.start(chosen, clock.at(Date.now()));
+	}
+
+	function deskCorrected(observation: DeskObservation): void {
+		toast.success(
+			$_('validation.correction.saved', { values: { revision: observation.revision } })
+		);
+		void loadDeskRecords();
+	}
+
+	/** Arrow keys move from the focused tab to the next or previous one, in reading order (right goes back in Arabic). */
+	function moveTab(event: KeyboardEvent, from: Tab): void {
+		if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+		event.preventDefault();
+		const forward = (event.key === 'ArrowRight') !== (document.documentElement.dir === 'rtl');
+		const index = tabs.indexOf(from);
+		tab = tabs[(index + (forward ? 1 : tabs.length - 1)) % tabs.length];
+		document.getElementById(`capture-tab-${tab}`)?.focus();
 	}
 
 	function finished(payload: RunPayload): void {
@@ -229,15 +367,38 @@
 	}
 
 	onMount(() => {
+		let lastWall = Date.now();
+		let lastMono = performance.now();
 		timer = setInterval(() => {
-			now = Date.now();
+			const wall = Date.now();
+			const mono = performance.now();
+			// The tablet's clock moved apart from the time that passed: the offset to Ariva's clock no longer holds. The desk
+			// log then waits (no tap placed, no bin closed) until Ariva's clock is read again; it never goes on with the old
+			// offset, which would place minutes off by the size of the jump (security review L2).
+			const jumped = Math.abs(wall - lastWall - (mono - lastMono)) > clockJumpMs;
+			lastWall = wall;
+			lastMono = mono;
+			now = wall;
 			tally.tick(now);
+			if (jumped) clock.invalidate();
+			if (jumped || clock.held) {
+				void remeasure(jumped);
+				return;
+			}
+			deskLog.tick(clock.at(now));
 		}, 1000);
+		const visible = () => {
+			if (document.visibilityState === 'visible') void remeasure();
+		};
+		document.addEventListener('visibilitychange', visible);
 		const online = () => retry();
 		window.addEventListener('online', online);
 		// Without the capture permission the screen says so and asks the server for nothing.
 		if (canCapture) void loadSites().then(loadCampaigns);
-		return () => window.removeEventListener('online', online);
+		return () => {
+			window.removeEventListener('online', online);
+			document.removeEventListener('visibilitychange', visible);
+		};
 	});
 
 	// A sign-out, an ended session or another account (another tab): nothing queued here is sent any more.
@@ -245,6 +406,7 @@
 		if (auth.subject !== owner) {
 			counts.close();
 			runs.close();
+			desks.close();
 		}
 	});
 
@@ -253,6 +415,7 @@
 		if (timer) clearInterval(timer);
 		counts.close();
 		runs.close();
+		desks.close();
 	});
 </script>
 
@@ -326,7 +489,7 @@
 	{/if}
 
 	{#if campaign}
-		<OutboxBanner {counts} {runs} timeZone={campaign.timeZoneId} onRetry={retry} />
+		<OutboxBanner {counts} {runs} {desks} timeZone={campaign.timeZoneId} onRetry={retry} />
 	{/if}
 
 	{#if !campaign}
@@ -379,6 +542,11 @@
 										values: { lines: option.lines.length, zones: option.zones.length }
 									})}
 								</span>
+								{#if option.desksIncluded && option.desks.length > 0}
+									<span class="text-sm text-secondary-foreground" data-testid="campaign-desks">
+										{$_('validation.campaigns.desks', { values: { desks: option.desks.length } })}
+									</span>
+								{/if}
 								<span class="text-sm text-secondary-foreground tabular-nums">
 									{$_('validation.campaigns.days', { values: { days: option.days.join(', ') } })}
 								</span>
@@ -432,7 +600,7 @@
 		{/if}
 
 		<div role="tablist" aria-label={$_('validation.tabs.label')} class="mb-4 flex gap-1 border-b">
-			{#each [['tally', 'validation.tabs.tally'], ['tracers', 'validation.tabs.tracers']] as [id, key] (id)}
+			{#each tabs as id (id)}
 				<button
 					type="button"
 					role="tab"
@@ -441,20 +609,14 @@
 					aria-controls="capture-panel-{id}"
 					tabindex={tab === id ? 0 : -1}
 					data-testid="capture-tab-{id}"
-					onclick={() => (tab = id as 'tally' | 'tracers')}
-					onkeydown={(event) => {
-						if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
-							event.preventDefault();
-							tab = tab === 'tally' ? 'tracers' : 'tally';
-							document.getElementById(`capture-tab-${tab}`)?.focus();
-						}
-					}}
+					onclick={() => (tab = id)}
+					onkeydown={(event) => moveTab(event, id)}
 					class="-mb-px min-h-12 border-b-2 px-4 text-base font-medium focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none {tab ===
 					id
 						? 'border-primary text-foreground'
 						: 'border-transparent text-muted-foreground hover:text-foreground'}"
 				>
-					{$_(key)}
+					{$_(`validation.tabs.${id}`)}
 				</button>
 			{/each}
 		</div>
@@ -484,5 +646,25 @@
 		>
 			<TracerPanel {campaign} {tracers} {now} {recorded} {offset} onFinished={finished} />
 		</div>
+		{#if hasDesks}
+			<div
+				role="tabpanel"
+				id="capture-panel-desks"
+				aria-labelledby="capture-tab-desks"
+				hidden={tab !== 'desks'}
+			>
+				<DeskPanel
+					{campaign}
+					log={deskLog}
+					{clock}
+					{arivaNow}
+					records={deskRecords}
+					recordsProblem={deskProblem}
+					onStart={startDesks}
+					onCorrected={deskCorrected}
+					onReload={() => void loadDeskRecords()}
+				/>
+			</div>
+		{/if}
 	{/if}
 {/if}

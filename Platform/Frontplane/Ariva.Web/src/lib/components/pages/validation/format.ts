@@ -45,6 +45,23 @@ export function siteDayClock(
 	}).format(new Date(ms));
 }
 
+/** The minute of the hour ("07") in the site's time zone, for the desk log's minute columns (ARV-104d). */
+export function siteMinute(ms: number, timeZone: string): string {
+	const parts = new Intl.DateTimeFormat('en-GB', {
+		timeZone,
+		hour: '2-digit',
+		minute: '2-digit',
+		hourCycle: 'h23'
+	}).formatToParts(new Date(ms));
+	return (parts.find((part) => part.type === 'minute')?.value ?? '').padStart(2, '0');
+}
+
+/** A clock difference as "2 min 30 s" style parts: whole minutes and the remaining seconds, without a sign. */
+export function offsetParts(ms: number): { minutes: number; seconds: number } {
+	const total = Math.round(Math.abs(ms) / 1000);
+	return { minutes: Math.floor(total / 60), seconds: total % 60 };
+}
+
 /** A duration as "m:ss", or "h:mm:ss" from an hour. */
 export function duration(ms: number): string {
 	const total = Math.max(0, Math.floor(ms / 1000));
