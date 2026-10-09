@@ -50,7 +50,7 @@ node scripts/verify.mjs integration   Testcontainers tests (Docker required)
 node scripts/verify.mjs all           everything except integration
 node scripts/verify.mjs story         the per-story gate: backend and docs, web if changed, scoped or full integration and E2E (--specs, --integration)
 node scripts/verify.mjs checkpoint    the full suite every 5 stories, at phase ends and before go-live; records backlog/checkpoint.json
-node scripts/verify.mjs mutation      Stryker.NET on the engines (about an hour; nothing else may build meanwhile)
+node scripts/verify.mjs mutation      Stryker.NET on the engines (one to three hours; in its own worktree, so other work continues)
 node scripts/security/scan.mjs        CWE gate; --self-test proves every rule fires
 dotnet build Ariva.slnx
 dotnet run --project Platform/Backplane/Ariva.Api.Main

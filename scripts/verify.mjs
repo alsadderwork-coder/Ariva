@@ -18,8 +18,9 @@
 //   security     scanner self-test + full scan + dependency audits
 //   docs         text rules on Markdown (no em dashes, no double hyphens in prose)
 //   backend      build + unit + security
-//   mutation     Stryker.NET on the pure engines (ARV-069; about an hour on two cores, report in .verify/stryker); fails when a
-//                method is in Stryker's safe mode or no score is printed (ARV-069a, scripts/mutation-run.mjs)
+//   mutation     Stryker.NET on the pure engines (ARV-069; one to three hours, mostly the queue engine; report in .verify/stryker);
+//                fails when a method is in Stryker's safe mode or no score is printed (ARV-069a, scripts/mutation-run.mjs). Runs in
+//                its own worktree of HEAD under its own lock, so builds and story gates may run in this checkout meanwhile
 //   all          everything except integration (add --with-integration)
 //   story        the per-story gate (test cadence, docs/harness/test-cadence.md): backend and docs always; web when the
 //                web app changed; integration and E2E scoped to the story, or in full when the change is wide.
@@ -47,6 +48,12 @@ const VALUE_FLAGS = new Set(['--specs', '--integration', '--base', '--mutation-b
 const scope = args.find((a, i) => !a.startsWith('--') && !VALUE_FLAGS.has(args[i - 1])) || 'backend';
 const PLAN = args.includes('--plan');
 const results = [];
+
+// Telemetry off for every child process (2026-10-09): the Microsoft Testing Platform reports usage from every test host it
+// starts, the network proxy refuses it, and Stryker, which starts hosts all the time, took 80 minutes for its initial test
+// run instead of about 15; with this set it took 16. Values already set by the caller win.
+for (const [name, value] of Object.entries({ DOTNET_CLI_TELEMETRY_OPTOUT: '1', TESTINGPLATFORM_TELEMETRY_OPTOUT: '1', PACT_DO_NOT_TRACK: 'true' }))
+  process.env[name] ??= value;
 
 function flag(name) {
   const i = args.indexOf(name);
@@ -195,12 +202,12 @@ function storyGate() {
 // Engine files Stryker mutates (stryker-config.json "mutate" globs, relative to Ariva.Core) changed since a commit and still
 // present, as paths relative to Ariva.Core; null when the commit is not in this history.
 const CORE = 'Platform/Backplane/Ariva.Core/';
-function changedEngineFiles(commit) {
+function changedEngineFiles(commit, to = 'HEAD') {
   const config = JSON.parse(fs.readFileSync(path.join(ROOT, 'Platform', 'Backplane', 'Ariva.UnitTests', 'stryker-config.json'), 'utf8'));
   const globs = (config['stryker-config']?.mutate ?? []).map(g => new RegExp('^' +
     g.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*\*\//g, '\u0000').replace(/\*/g, '[^/]*').replace(/\u0000/g, '(.*/)?') + '$'));
   try {
-    return git(['diff', '--name-only', '--diff-filter=d', commit, 'HEAD']).split('\n').map(f => f.trim())
+    return git(['diff', '--name-only', '--diff-filter=d', commit, to]).split('\n').map(f => f.trim())
       .filter(f => f.startsWith(CORE)).map(f => f.slice(CORE.length)).filter(f => globs.some(g => g.test(f)));
   } catch {
     return null;
@@ -234,8 +241,11 @@ function checkpointGate() {
   steps.integration();
   steps.visual(); // before e2e: the visual baselines expect the fresh demo seed
   steps.e2e();
-  if (!since) steps.mutation();
-  else if (engineChangedSince(since)) steps.mutation(isAncestor(since) && changedEngineFiles(since) ? since : undefined);
+  // Mutation runs in its own worktree of this checkpoint's commit under its own lock, so the machine lock is released first:
+  // story gates may use this checkout and the services while Stryker works (owner decision 2026-10-09).
+  releaseLock(LOCK);
+  if (!since) steps.mutation(undefined, head);
+  else if (engineChangedSince(since)) steps.mutation(isAncestor(since) && changedEngineFiles(since, head) ? since : undefined, head);
   else results.push({ name: `mutation tests (no engine change since ${since.slice(0, 10)})`, ok: true, skipped: true });
   if (PLAN || results.some(r => !r.ok)) return;
   const record = { commit: head, at: new Date().toISOString().slice(0, 10), stories: last ? storiesSince(last.commit) : undefined, mutationBase,
@@ -319,23 +329,38 @@ const steps = {
   },
   docs: () => docsCheck(),
   // Scope and thresholds in Platform/Backplane/Ariva.UnitTests/stryker-config.json; exits non-zero below the break threshold.
-  // Stryker replaces Ariva.Core.dll in the unit tests' output while it runs: do not build or test in this checkout meanwhile.
+  // Stryker replaces Ariva.Core.dll in the unit tests' output while it runs, so it runs in its own worktree of the commit
+  // (default HEAD; uncommitted changes are not mutated), never in this checkout, under its own lock (one mutation run per
+  // machine); the worktree is removed afterwards. The report and log stay in this checkout's .verify folder.
   // With a commit, only the engine files changed since it are mutated (--mutate per file, which replaces the configured
   // list): the checkpoint's scoped run. Stryker's own --since mode ended silently after its coverage capture with the MTP
-  // runner (2026-10-08), so it is not used.
+  // runner (2026-10-08), so it is not used. One test session fewer than the machine's cores (at least two), so a story gate
+  // still has a core.
   // ARV-069a: Stryker runs through scripts/mutation-run.mjs, which prints its output, keeps it in .verify/mutation.log and
   // fails the step when any method went into safe mode (its mutants removed as compile errors, so it is not measured) or no
   // final score was printed, even when Stryker exits zero.
-  mutation: (since) => {
-    process.env.PACT_DO_NOT_TRACK = 'true'; // the Pact FFI's usage reporting stays off (the pacts skip under Stryker anyway)
+  mutation: (since, commit) => {
     run('mutation log check self-test', 'node', ['scripts/mutation-run.mjs', '--self-test']);
-    // dotnet-stryker has its own manifest in Ariva.UnitTests/.config (kept apart from aspire.cli for SDK 10.0.4xx).
-    run('dotnet tool restore (dotnet-stryker)', 'dotnet', ['tool', 'restore'], path.join(ROOT, 'Platform', 'Backplane', 'Ariva.UnitTests'));
-    const files = since ? changedEngineFiles(since) : [];
-    run(`mutation tests (Stryker.NET${since ? `, ${files.length} engine files changed since ${since.slice(0, 10)}` : ''}; fails on safe mode or no score)`, 'node',
-      [path.join(ROOT, 'scripts', 'mutation-run.mjs'), '--log', path.join(ROOT, '.verify', 'mutation.log'), '--',
-        'dotnet-stryker', '--output', path.join(ROOT, '.verify', 'stryker'), ...files.flatMap(f => ['--mutate', `**/${f}`])],
-      path.join(ROOT, 'Platform', 'Backplane', 'Ariva.UnitTests'));
+    if (!PLAN && !takeLock(MUTATION_LOCK, 'mutation')) {
+      results.push({ name: 'mutation tests (another mutation run holds its lock)', ok: false });
+      return;
+    }
+    const rev = commit ?? git(['rev-parse', 'HEAD']).trim();
+    const files = since ? changedEngineFiles(since, rev) : [];
+    const tests = path.join(MUTATION_TREE, 'Platform', 'Backplane', 'Ariva.UnitTests');
+    const sessions = String(Math.max(2, os.cpus().length - 1));
+    try {
+      if (!PLAN) addMutationTree(rev);
+      // dotnet-stryker has its own manifest in Ariva.UnitTests/.config (kept apart from aspire.cli for SDK 10.0.4xx).
+      run('dotnet tool restore (dotnet-stryker)', 'dotnet', ['tool', 'restore'], tests);
+      run(`mutation tests (Stryker.NET in a worktree of ${rev.slice(0, 10)}${since ? `, ${files.length} engine files changed since ${since.slice(0, 10)}` : ''}; fails on safe mode or no score)`, 'node',
+        [path.join(ROOT, 'scripts', 'mutation-run.mjs'), '--log', path.join(ROOT, '.verify', 'mutation.log'), '--',
+          'dotnet-stryker', '--concurrency', sessions, '--output', path.join(ROOT, '.verify', 'stryker'), ...files.flatMap(f => ['--mutate', `**/${f}`])],
+        tests);
+    } finally {
+      if (!PLAN) removeMutationTree();
+      releaseLock(MUTATION_LOCK);
+    }
   },
   backend: () => { steps.unit(); steps.security(); },
   all: () => { steps.unit(); steps.web(); steps.security(); steps.docs(); steps.e2e(); if (args.includes('--with-integration')) steps.integration(); },
@@ -346,31 +371,48 @@ const steps = {
 if (!steps[scope]) { console.error(`Unknown scope ${scope}. Use one of: ${Object.keys(steps).join(', ')}`); process.exit(2); }
 
 // One heavy run per machine (2026-10-08: two checkpoints in one worktree shared the E2E ports and collided in Stryker; two
-// integration suites crashed PostgreSQL and filled the disk). Scopes that start the hosts, Testcontainers or Stryker take a
-// lock in the machine's temporary folder; a second one refuses to start while the holder's process lives.
-const HEAVY = new Set(['integration', 'e2e', 'visual', 'demo', 'zap', 'mutation', 'all', 'story', 'checkpoint']);
+// integration suites crashed PostgreSQL and filled the disk). Scopes that start the hosts or Testcontainers take a lock in
+// the machine's temporary folder; a second one refuses to start while the holder's process lives. Stryker has its own lock
+// and its own worktree (2026-10-09), so a mutation run and one heavy run may share the machine.
+const HEAVY = new Set(['integration', 'e2e', 'visual', 'demo', 'zap', 'all', 'story', 'checkpoint']);
 const LOCK = path.join(os.tmpdir(), 'ariva-verify.lock');
+const MUTATION_LOCK = path.join(os.tmpdir(), 'ariva-mutation.lock');
+const MUTATION_TREE = path.join(os.tmpdir(), 'ariva-mutation-tree');
 function alive(pid) {
   try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
 }
-function takeLock() {
+function releaseLock(file) {
+  try { if (JSON.parse(fs.readFileSync(file, 'utf8')).pid === process.pid) fs.unlinkSync(file); } catch { /* gone */ }
+}
+function takeLock(file = LOCK, holderScope = scope) {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      fs.writeFileSync(LOCK, JSON.stringify({ pid: process.pid, scope, root: ROOT, at: new Date().toISOString() }), { flag: 'wx' });
-      process.on('exit', () => { try { if (JSON.parse(fs.readFileSync(LOCK, 'utf8')).pid === process.pid) fs.unlinkSync(LOCK); } catch { /* gone */ } });
+      fs.writeFileSync(file, JSON.stringify({ pid: process.pid, scope: holderScope, root: ROOT, at: new Date().toISOString() }), { flag: 'wx' });
+      process.on('exit', () => releaseLock(file));
       return true;
     } catch (e) {
       if (e.code !== 'EEXIST') throw e;
       let holder;
-      try { holder = JSON.parse(fs.readFileSync(LOCK, 'utf8')); } catch { holder = undefined; }
+      try { holder = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { holder = undefined; }
       if (holder && Number.isInteger(holder.pid) && alive(holder.pid)) {
-        console.error(`Another heavy run holds ${LOCK}: pid ${holder.pid}, scope ${holder.scope}, ${holder.root}, since ${holder.at}. Wait for it to end.`);
+        console.error(`Another run holds ${file}: pid ${holder.pid}, scope ${holder.scope}, ${holder.root}, since ${holder.at}. Wait for it to end.`);
         return false;
       }
-      try { fs.unlinkSync(LOCK); } catch { /* raced */ } // a stale lock: its process is gone
+      try { fs.unlinkSync(file); } catch { /* raced */ } // a stale lock: its process is gone
     }
   }
   return false;
+}
+// The mutation worktree: a detached checkout of one commit, replaced if an earlier run left one behind (only the holder of
+// the mutation lock gets here), and removed with its build output afterwards (it needs about 2 GB while it lives).
+function addMutationTree(rev) {
+  removeMutationTree();
+  execFileSync('git', ['worktree', 'add', '--detach', MUTATION_TREE, rev], { cwd: ROOT, stdio: 'inherit' });
+}
+function removeMutationTree() {
+  spawnSync('git', ['worktree', 'remove', '--force', MUTATION_TREE], { cwd: ROOT, stdio: 'ignore' });
+  fs.rmSync(MUTATION_TREE, { recursive: true, force: true });
+  spawnSync('git', ['worktree', 'prune'], { cwd: ROOT, stdio: 'ignore' });
 }
 if (HEAVY.has(scope) && !PLAN && !takeLock()) process.exit(3);
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => process.exit(130));
