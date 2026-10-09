@@ -15,12 +15,10 @@
 		type CountPayload,
 		type RunPayload
 	} from '$lib/components/pages/validation/capture.svelte';
-	import {
-		ArivaClock,
-		DeskLog,
-		type DeskPayload
-	} from '$lib/components/pages/validation/desklog.svelte';
-	import { duration, siteClock, siteClockSeconds } from '$lib/components/pages/validation/format';
+	import ArivaClockCard from '$lib/components/pages/validation/ArivaClockCard.svelte';
+	import { ArivaClock } from '$lib/components/pages/validation/arivaClock.svelte';
+	import { DeskLog, type DeskPayload } from '$lib/components/pages/validation/desklog.svelte';
+	import { duration, siteClock } from '$lib/components/pages/validation/format';
 	import { Outbox } from '$lib/components/pages/validation/outbox.svelte';
 	import { primaryButton, secondaryButton } from '$lib/components/pages/validation/ui';
 	import type { Result } from '$lib/core/Api';
@@ -48,19 +46,17 @@
 		type TracerRun
 	} from '$lib/core/validation';
 
-	// The observer tablet (ARV-104c, ARV-104d, wiki 07 section 8): a line tally per 15-minute bin, a tracer timer and a
-	// desk state log for one running campaign. Only Validation.Capture holders (the Validation observer role) use it; the
-	// server checks every call. Unsent bins, runs and desk batches stay in memory with their Idempotency-Keys; nothing
-	// goes to web storage. The desk log is shown only when the server lists the campaign's desks to this account
-	// (desksIncluded): desk states are border data.
+	// The observer tablet (ARV-104c, ARV-104d, ARV-104c1, wiki 07 section 8): a line tally per 15-minute bin, a tracer
+	// timer and a desk state log for one running campaign. The tally's bins and the desk log's minutes follow Ariva's
+	// clock (one rule for the tablet, owner decision 2026-10-09); tracer runs keep the tablet's clock, corrected by the
+	// server. Only Validation.Capture holders (the Validation observer role) use it; the server checks every call. Unsent
+	// bins, runs and desk batches stay in memory with their Idempotency-Keys; nothing goes to web storage. The desk log is
+	// shown only when the server lists the campaign's desks to this account (desksIncluded): desk states are border data.
 
 	type CountItem = CountPayload & { siteCode: string; campaignId: string };
 	type RunItem = RunPayload & { siteCode: string; campaignId: string };
 	type DeskItem = DeskPayload & { siteCode: string; campaignId: string };
 	type Tab = 'tally' | 'tracers' | 'desks';
-
-	/** A difference between the tablet's clock and the time passed (monotonic) beyond this is a clock jump or a sleep. */
-	const clockJumpMs = 5_000;
 
 	const canCapture = $derived(auth.can('Validation.Capture'));
 
@@ -87,10 +83,21 @@
 	const owner = untrack(() => auth.subject);
 	const currentOwner = (): string | null => (auth.subject === owner ? owner : null);
 
-	/** Ariva's clock from the Date header of its answers: the desk log's minutes follow it (ARV-104d). */
-	const clock = new ArivaClock();
+	/**
+	 * Ariva's clock from the Date header of its answers: the tally's bins and the desk log's minutes follow it. When the
+	 * tablet's own clock jumps (set by hand or from the network, or the tablet slept), the offset no longer holds: the
+	 * tally and the desk log then wait (nothing placed, no bin closed) until Ariva's clock is read again, never going on
+	 * with the old offset, which would place counts and minutes off by the size of the jump (ARV-104d security review L2,
+	 * ARV-104c1). The tally's bin in progress could not be counted meanwhile, so it becomes a part bin.
+	 */
+	const clock = new ArivaClock(() => {
+		tally.interrupt();
+		void remeasure(true);
+	});
 	function timed<T>(result: Result<T>): Result<T> {
-		clock.observe(result);
+		// The first reading after the tally ran on the tablet's own clock (no readable Date header before) moved the tally's
+		// time by more than 5 seconds: the bin in progress began on the tablet's clock, so it becomes a part bin.
+		if (clock.observe(result)) tally.interrupt();
 		return result;
 	}
 
@@ -202,7 +209,7 @@
 	const canChange = $derived(
 		!busy && counts.refused.length === 0 && runs.refused.length === 0 && desks.refused.length === 0
 	);
-	const today = $derived(campaign ? localDate(now, campaign.timeZoneId) : '');
+	const today = $derived(campaign ? localDate(arivaNow, campaign.timeZoneId) : '');
 	const notToday = $derived(campaign !== null && !campaign.days.includes(today));
 
 	async function loadSites(): Promise<void> {
@@ -284,8 +291,11 @@
 	}
 
 	function startLine(line: CaptureLine): void {
+		// No bin is placed without Ariva's clock (lost after a jump of the tablet's clock, or implausible).
+		const at = clock.now();
+		if (at === null) return;
 		history = [];
-		tally.start(line, Date.now());
+		tally.start(line, at);
 		void loadHistory();
 	}
 
@@ -298,19 +308,24 @@
 	 * Reads Ariva's clock again (the running list is the lightest answer): at once after the tablet's own clock jumped
 	 * (set by hand or from the network, or the tablet slept: the last reading no longer holds, and a reading still on its
 	 * way spans the jump, so its answer is discarded or already on the new clock), then one request at a time and at most
-	 * every 10 seconds while Ariva's clock is lost or implausible and the desk log waits for a new reading.
+	 * every 10 seconds while Ariva's clock is lost or implausible and the tally and the desk log wait for a new reading.
+	 * While it has never been read (the tally and the desk log follow the tablet's clock), it is asked for every 10
+	 * seconds too, doubling to a minute, so a slow first answer does not leave a whole bin on the tablet's clock.
 	 */
 	let remeasuredAt = -Infinity;
 	let remeasuring = false;
+	let unreadWaitMs = 10_000;
 	async function remeasure(now = false): Promise<void> {
 		const mono = performance.now();
-		if (!campaign || (!now && (remeasuring || mono - remeasuredAt < 10_000))) return;
+		const wait = clock.state === 'unmeasured' ? unreadWaitMs : 10_000;
+		if (!campaign || (!now && (remeasuring || mono - remeasuredAt < wait))) return;
 		remeasuredAt = mono;
 		remeasuring = true;
 		try {
 			timed(await running(campaign.siteCode));
 		} finally {
 			remeasuring = false;
+			if (clock.state === 'unmeasured') unreadWaitMs = Math.min(unreadWaitMs * 2, 60_000);
 		}
 	}
 
@@ -321,7 +336,8 @@
 	}
 
 	function startDesks(chosen: CaptureDesk[]): void {
-		deskLog.start(chosen, clock.at(Date.now()));
+		const at = clock.now();
+		if (at !== null) deskLog.start(chosen, at);
 	}
 
 	function deskCorrected(observation: DeskObservation): void {
@@ -367,25 +383,19 @@
 	}
 
 	onMount(() => {
-		let lastWall = Date.now();
-		let lastMono = performance.now();
 		timer = setInterval(() => {
-			const wall = Date.now();
-			const mono = performance.now();
-			// The tablet's clock moved apart from the time that passed: the offset to Ariva's clock no longer holds. The desk
-			// log then waits (no tap placed, no bin closed) until Ariva's clock is read again; it never goes on with the old
-			// offset, which would place minutes off by the size of the jump (security review L2).
-			const jumped = Math.abs(wall - lastWall - (mono - lastMono)) > clockJumpMs;
-			lastWall = wall;
-			lastMono = mono;
-			now = wall;
-			tally.tick(now);
-			if (jumped) clock.invalidate();
-			if (jumped || clock.held) {
-				void remeasure(jumped);
+			now = Date.now();
+			// Ariva's time, or null while the tally and the desk log wait for Ariva's clock (a jump of the tablet's clock
+			// found here or by a tap has already started a new reading; this asks again at most every 10 seconds).
+			const ariva = clock.now();
+			if (ariva === null) {
+				tally.interrupt();
+				void remeasure();
 				return;
 			}
-			deskLog.tick(clock.at(now));
+			if (clock.state === 'unmeasured') void remeasure();
+			tally.tick(ariva);
+			deskLog.tick(ariva);
 		}, 1000);
 		const visible = () => {
 			if (document.visibilityState === 'visible') void remeasure();
@@ -569,14 +579,6 @@
 				>
 					{campaign.name}
 				</h2>
-				<p class="text-sm text-secondary-foreground tabular-nums" data-testid="site-clock">
-					{$_('validation.campaigns.clock', {
-						values: {
-							time: siteClockSeconds(now, campaign.timeZoneId, $locale),
-							zone: campaign.timeZoneId
-						}
-					})}
-				</p>
 			</div>
 			<button
 				type="button"
@@ -588,6 +590,8 @@
 				{$_('validation.campaigns.change')}
 			</button>
 		</section>
+
+		<ArivaClockCard {clock} {arivaNow} timeZone={campaign.timeZoneId} />
 
 		{#if notToday}
 			<p
@@ -631,7 +635,8 @@
 			<TallyPanel
 				{campaign}
 				{tally}
-				{now}
+				arivaClock={clock}
+				now={arivaNow}
 				{history}
 				onStart={startLine}
 				onCorrected={corrected}

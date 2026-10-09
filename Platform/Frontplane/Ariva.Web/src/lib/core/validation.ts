@@ -272,10 +272,15 @@ function campaignPath(siteCode: string, campaignId: string): string | null {
 	return root && guid.test(campaignId) ? `${root}/${campaignId}` : null;
 }
 
-/** The running campaigns of a site the observer may count for. */
+/**
+ * The running campaigns of a site the observer may count for. Also the tablet's read of Ariva's clock (its Date header),
+ * so it gives up after 30 seconds like a send: a hung read never blocks the next one.
+ */
 export function running(siteCode: string): Promise<Result<CaptureCampaign[]>> {
 	const path = base(siteCode);
-	return path ? Api.get<CaptureCampaign[]>(path) : Promise.resolve(fail('Invalid site code.'));
+	return path
+		? Api.get<CaptureCampaign[]>(path, { signal: timeout() })
+		: Promise.resolve(fail('Invalid site code.'));
 }
 
 /** The caller's own counts of a campaign (current revisions), newest bin first, optionally for one line. */

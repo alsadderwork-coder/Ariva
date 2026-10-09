@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Check, Clock, Square } from '@lucide/svelte';
+	import { Check, Square } from '@lucide/svelte';
 	import { _, locale } from 'svelte-i18n';
 	import StatusBadge from '$lib/components/shared/StatusBadge.svelte';
 	import { cn } from '$lib/utils';
@@ -15,9 +15,10 @@
 		type DeskState
 	} from '$lib/core/validation';
 	import DeskHistory from './DeskHistory.svelte';
-	import { deskLabel, type ArivaClock, type DeskLog } from './desklog.svelte';
+	import type { ArivaClock } from './arivaClock.svelte';
+	import { deskLabel, type DeskLog } from './desklog.svelte';
 	import { deskStateIcon, deskStateTone } from './deskStates';
-	import { duration, offsetParts, siteClock, siteClockSeconds, siteMinute } from './format';
+	import { duration, siteClock, siteMinute } from './format';
 	import { primaryButton, secondaryButton } from './ui';
 
 	interface Props {
@@ -54,8 +55,6 @@
 	const clockText = (ms: number) => siteClock(ms, zone, $locale);
 	const stateName = (state: DeskState) => $_(`validation.desks.states.${state}`);
 	const minutes = Array.from({ length: minutesPerBin }, (_, minute) => minute);
-	const offset = $derived(clock.offsetMs);
-	const offsetLarge = $derived(offset !== null && Math.abs(offset) > minuteMs);
 	/** Ariva's clock is being read again (the tablet's clock jumped) or its reading is implausible: nothing is placed. */
 	const held = $derived(clock.held);
 	const chosenDesks = $derived(campaign.desks.filter((desk) => chosen.includes(desk.id)));
@@ -71,8 +70,10 @@
 	}
 
 	function tap(deskId: string, state: DeskState): void {
-		if (clock.held) return;
-		log.set(deskId, state, clock.at(Date.now()));
+		// Ariva's time, checked for a jump of the tablet's clock first; null while the log waits: nothing is placed.
+		const at = clock.now();
+		if (at === null) return;
+		log.set(deskId, state, at);
 	}
 
 	function minuteLabel(minute: number): string {
@@ -85,50 +86,6 @@
 </script>
 
 <div class="flex flex-col gap-4">
-	<section
-		aria-labelledby="ariva-clock-title"
-		data-testid="ariva-clock"
-		class="flex items-start gap-3 rounded-xl border bg-card p-5"
-	>
-		<Clock class="mt-0.5 size-5 shrink-0 text-primary" aria-hidden="true" />
-		<div class="min-w-0">
-			<h2 id="ariva-clock-title" class="text-base font-semibold">
-				{$_('validation.desks.clockTitle')}
-			</h2>
-			{#if !held}
-				<p class="text-sm tabular-nums" data-testid="ariva-clock-time">
-					{$_('validation.desks.clock', {
-						values: { time: siteClockSeconds(arivaNow, zone, $locale) }
-					})}
-				</p>
-			{/if}
-			{#if clock.state === 'lost' || clock.state === 'implausible'}
-				<p
-					role="alert"
-					class="mt-1 text-sm font-medium text-status-warning-foreground"
-					data-testid="ariva-clock-held"
-				>
-					{$_(
-						clock.state === 'lost'
-							? 'validation.desks.clockLost'
-							: 'validation.desks.clockImplausible'
-					)}
-				</p>
-			{:else if offset === null}
-				<p class="mt-1 text-sm text-status-warning-foreground" data-testid="ariva-clock-unknown">
-					{$_('validation.desks.clockUnknown')}
-				</p>
-			{:else if offsetLarge}
-				{@const parts = offsetParts(offset)}
-				<p class="mt-1 text-sm text-status-warning-foreground" data-testid="ariva-clock-off">
-					{$_(offset > 0 ? 'validation.desks.tabletBehind' : 'validation.desks.tabletAhead', {
-						values: parts
-					})}
-				</p>
-			{/if}
-		</div>
-	</section>
-
 	{#if !log.logging}
 		<section aria-labelledby="choose-desks" class="rounded-xl border bg-card p-5">
 			<h2 id="choose-desks" class="text-xl font-semibold">{$_('validation.desks.chooseTitle')}</h2>
@@ -234,7 +191,7 @@
 							type="button"
 							data-testid="confirm-stop-desks"
 							onclick={() => {
-								log.stop(clock.held ? null : clock.at(Date.now()));
+								log.stop(clock.now());
 								stopping = false;
 							}}
 							class="inline-flex min-h-12 items-center gap-2 rounded-lg border border-status-danger-border bg-status-danger px-4 text-base font-medium text-status-danger-foreground hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"

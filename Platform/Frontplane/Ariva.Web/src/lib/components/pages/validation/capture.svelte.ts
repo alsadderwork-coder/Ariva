@@ -11,13 +11,18 @@ import {
 
 /**
  * The observer tablet's two captures (ARV-104c), held by the capture page so they keep running while the observer
- * switches between the line tally and the tracers. Times are the tablet's own clock; tracer batches carry the clock
- * reading so the server measures the offset and corrects the runs, and bins are the server's UTC quarter hours.
+ * switches between the line tally and the tracers. The tally's times are Ariva's clock (ArivaClock, ARV-104c1, owner
+ * decision 2026-10-09), so its bins are Ariva's UTC quarter hours whatever the tablet's own clock says; tracer runs keep
+ * the tablet's own clock, and their batches carry its reading so the server measures the offset and corrects the runs.
  */
 
 /** A bin counts only when the tally ran from its start (this late at most) to its end. */
 const startGraceMs = 5_000;
-/** A pause between clock ticks longer than this (the tablet slept, the tab was in the background) makes the bin a part bin. */
+/**
+ * A pause between clock ticks longer than this (the tablet slept, the tab was in the background, or the tally waited for
+ * Ariva's clock), or a step back of Ariva's time by more than this (a first reading of Ariva's clock after the tally ran
+ * on the tablet's own), makes the bin a part bin.
+ */
 const gapMs = 30_000;
 
 /** A closed bin to send: the line, the bin and the crossings tallied. */
@@ -70,10 +75,21 @@ export class Tally {
 		this.line = null;
 	}
 
-	/** Called every second and before every tap: closes the bin once its end has passed and starts the next one. */
+	/**
+	 * The tally could not count for a while (it waited for Ariva's clock after the tablet's own clock jumped, or the
+	 * reading was implausible): the bin in progress is incomplete and becomes a part bin, never sent.
+	 */
+	interrupt(): void {
+		if (this.line) this.partial = true;
+	}
+
+	/**
+	 * Called every second and before every tap, with Ariva's time (never while the tally waits for Ariva's clock): closes
+	 * the bin once its end has passed and starts the next one.
+	 */
 	tick(now: number): void {
 		if (!this.line) return;
-		const paused = now - this.#lastTick > gapMs;
+		const paused = Math.abs(now - this.#lastTick) > gapMs;
 		this.#lastTick = now;
 		if (now < this.binStart + binMs) {
 			if (paused) this.partial = true;

@@ -1,9 +1,6 @@
-import type { Result } from '$lib/core/Api';
 import {
-	arivaOffsetMs,
 	binMs,
 	binOf,
-	maxArivaOffsetMs,
 	minuteMs,
 	minutesPerBin,
 	type CaptureDesk,
@@ -13,53 +10,9 @@ import {
 /**
  * The observer tablet's desk log (ARV-104d, wiki 07 section 8): the observer chooses the desks it watches and taps each
  * desk's state every minute; each 15-minute bin of Ariva's clock is queued as one batch once it has ended, with exactly
- * 15 states per desk (null for a minute not observed). Minutes follow Ariva's clock (the Date header of its answers),
- * not the tablet's, so a tablet a minute off still logs the minute Ariva compares.
+ * 15 states per desk (null for a minute not observed). Minutes follow Ariva's clock (ArivaClock in arivaClock.svelte.ts,
+ * the Date header of its answers), not the tablet's, so a tablet a minute off still logs the minute Ariva compares.
  */
-
-/**
- * Where the tablet stands with Ariva's clock: never read (no answer carried a readable Date header, as when the web app
- * and Ariva.Api.Main are not on one origin: the log follows the tablet's clock, with a warning), known, lost (the
- * tablet's own clock jumped since it was read: the log waits until Ariva answers again) or implausible (the reading is
- * more than 15 minutes from the tablet's clock: the log waits until a reading within that comes).
- */
-export type ClockState = 'unmeasured' | 'known' | 'lost' | 'implausible';
-
-/** Ariva's clock as the tablet knows it: the offset from the last answer that told it. */
-export class ArivaClock {
-	offsetMs = $state<number | null>(null);
-	state = $state<ClockState>('unmeasured');
-
-	/** Reads Ariva's clock from an answer's Date header, when it has one and came quickly. */
-	observe(result: Result<unknown>): void {
-		const offset = arivaOffsetMs(result);
-		if (offset === null) return;
-		if (Math.abs(offset) > maxArivaOffsetMs) {
-			this.offsetMs = null;
-			this.state = 'implausible';
-			return;
-		}
-		this.offsetMs = offset;
-		this.state = 'known';
-	}
-
-	/** The tablet's own clock jumped (set by hand or from the network, or the tablet slept): the last reading no longer holds. */
-	invalidate(): void {
-		if (this.state !== 'known') return;
-		this.offsetMs = null;
-		this.state = 'lost';
-	}
-
-	/** True while the desk log must wait for Ariva's clock: no tap is placed and no bin closes meanwhile. */
-	get held(): boolean {
-		return this.state === 'lost' || this.state === 'implausible';
-	}
-
-	/** Ariva's time for a reading of the tablet's clock (the tablet's own when Ariva's clock was never read). */
-	at(deviceMs: number): number {
-		return deviceMs + (this.offsetMs ?? 0);
-	}
-}
 
 /** A desk batch to send: one bin of Ariva's clock and, per desk with at least one minute observed, its 15 states. */
 export interface DeskPayload {

@@ -8,6 +8,7 @@
 		type ManualCount
 	} from '$lib/core/validation';
 	import CorrectionForm from './CorrectionForm.svelte';
+	import type { ArivaClock } from './arivaClock.svelte';
 	import type { Tally } from './capture.svelte';
 	import { duration, siteClock, siteDayClock } from './format';
 	import { secondaryButton } from './ui';
@@ -15,6 +16,9 @@
 	interface Props {
 		campaign: CaptureCampaign;
 		tally: Tally;
+		/** Ariva's clock: the tally's bins follow it, and nothing is counted while it is lost or implausible (ARV-104c1). */
+		arivaClock: ArivaClock;
+		/** Ariva's time now (the tablet's clock corrected by the measured offset), updated every second. */
 		now: number;
 		/** The observer's own counts of the line being counted, newest bin first. */
 		history: ManualCount[];
@@ -24,7 +28,8 @@
 		onReload: () => void;
 	}
 
-	let { campaign, tally, now, history, onStart, onCorrected, onReload }: Props = $props();
+	let { campaign, tally, arivaClock, now, history, onStart, onCorrected, onReload }: Props =
+		$props();
 
 	let stopping = $state(false);
 	let correcting = $state<string | null>(null);
@@ -42,8 +47,18 @@
 		return text === key ? role : text;
 	}
 
+	/** Ariva's clock is being read again (the tablet's clock jumped) or its reading is implausible: nothing is counted. */
+	const held = $derived(arivaClock.held);
+
 	function tap(direction: 'in' | 'out', step: 1 | -1): void {
-		tally.tap(direction, step, Date.now());
+		// Ariva's time, checked for a jump of the tablet's clock first; null while the tally waits: nothing is counted, and
+		// the bin in progress, which missed this crossing, is a part bin.
+		const at = arivaClock.now();
+		if (at === null) {
+			tally.interrupt();
+			return;
+		}
+		tally.tap(direction, step, at);
 	}
 </script>
 
@@ -59,8 +74,9 @@
 					<button
 						type="button"
 						data-testid="line-option"
+						disabled={held}
 						onclick={() => onStart(line)}
-						class="flex min-h-20 w-full flex-col items-start justify-center gap-1 rounded-xl border bg-surface-2 p-4 text-start hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+						class="flex min-h-20 w-full flex-col items-start justify-center gap-1 rounded-xl border bg-surface-2 p-4 text-start hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60"
 					>
 						<span class="text-lg font-semibold break-all">{line.name}</span>
 						<span class="text-sm text-secondary-foreground">
@@ -123,12 +139,24 @@
 			<p data-testid="tally-bin" class="text-2xl font-semibold tabular-nums">
 				{binText(tally.binStart)}
 			</p>
-			<p class="text-sm text-secondary-foreground tabular-nums" data-testid="tally-left">
-				{$_('validation.tally.binHint', {
-					values: { left: duration(tally.binStart + binMs - now) }
-				})}
-			</p>
+			{#if !held}
+				<p class="text-sm text-secondary-foreground tabular-nums" data-testid="tally-left">
+					{$_('validation.tally.binHint', {
+						values: { left: duration(tally.binStart + binMs - now) }
+					})}
+				</p>
+			{/if}
 		</div>
+
+		{#if held}
+			<p
+				role="status"
+				data-testid="tally-held"
+				class="mt-3 rounded-lg border border-status-warning-border bg-status-warning p-3 text-base font-medium text-status-warning-foreground"
+			>
+				{$_('validation.tally.held')}
+			</p>
+		{/if}
 
 		{#if tally.partial}
 			<p
@@ -153,8 +181,9 @@
 								values: { count: pad.count }
 							}
 						)}
+						disabled={held}
 						onclick={() => tap(pad.dir, 1)}
-						class="flex h-48 touch-manipulation flex-col items-center justify-center gap-2 rounded-2xl select-none focus-visible:ring-4 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none active:scale-[0.98] md:h-60 {pad.dir ===
+						class="flex h-48 touch-manipulation flex-col items-center justify-center gap-2 rounded-2xl select-none focus-visible:ring-4 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:outline-none active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60 md:h-60 {pad.dir ===
 						'in'
 							? 'bg-button-primary text-primary-foreground dark:text-white'
 							: 'bg-sidebar-primary text-sidebar-primary-foreground'}"
@@ -171,7 +200,7 @@
 					<button
 						type="button"
 						data-testid="undo-{pad.dir}"
-						disabled={pad.count === 0}
+						disabled={held || pad.count === 0}
 						onclick={() => tap(pad.dir, -1)}
 						class={secondaryButton}
 					>

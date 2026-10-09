@@ -16,8 +16,10 @@ import { allowStatuses, databaseAvailable, fillSignIn, signInThroughUi } from '.
 // reasons are user text rendered as text only; tracer codes are labels, never names.
 //
 // The suite works at its own site E2EO (Asia/Dubai), with a zone profile it publishes once, so validation.spec.ts's E2EV
-// is untouched. Bins must have ended on the server's clock before they are sent, so the tally test runs the page on
-// Playwright's clock an hour in the past and moves it forward bin by bin.
+// is untouched. Bins must have ended on the server's clock before they are sent, so the tally tests run the page on
+// Playwright's clock an hour in the past and move it forward bin by bin. Since ARV-104c1 the tally's bins follow Ariva's
+// clock (the Date header of its answers) like the desk log's minutes, so those tests serve that header from the page's
+// clock too (TabletClock, below).
 //
 // ARV-104d: the desk state log on the same screen (the Desk log tab). The observer chooses the desks it watches and taps
 // each desk's state every minute (Serving, Idle, Paused, Closed); each 15-minute bin of Ariva's clock goes as one batch
@@ -150,6 +152,11 @@ const deskCorrections = /\/desk-observations\/[^/]+\/corrections$/;
 const deskReads = /\/validation\/capture\/campaigns\/[^/]+\/desk-observations\?/;
 const deskCodes = ['OD01', 'OD02', 'OD03', 'OD04', 'OD05'];
 const deskStateCycle = ['Serving', 'Idle', 'Paused', 'Closed'] as const;
+/** What the tablet says while it waits for Ariva's clock (ARV-104d, ARV-104c1: the tally and the desk log alike). */
+const clockLostText =
+	"The tablet's clock changed (set by hand or from the network, or the tablet slept), so Ariva's clock is being read again. Until it is, nothing is counted or logged and no bin is closed; the desk minutes logged before are kept, and the line bin being counted will not be sent.";
+const clockImplausibleText =
+	"The tablet's clock is more than 15 minutes from Ariva's. Set the tablet's date and time to automatic: until the difference is under 15 minutes, nothing is counted or logged and no bin is closed.";
 /** UTC ISO 8601 without milliseconds, as the tablet sends bin starts and the API answers minutes. */
 const isoMinute = (at: number) => new Date(at).toISOString().replace('.000Z', 'Z');
 
@@ -334,12 +341,6 @@ async function keep(page: Page, testInfo: TestInfo, name: string): Promise<void>
 	await testInfo.attach(name, { path: target });
 }
 
-/** Moves the page's clock to `target` (page time), firing every timer on the way. */
-async function runPageClockTo(page: Page, target: number): Promise<void> {
-	const pageNow = await page.evaluate(() => Date.now());
-	if (target > pageNow) await page.clock.runFor(target - pageNow);
-}
-
 test.beforeAll(async () => {
 	const { userName, password, totpSecret } = accounts().webValidationManager;
 	const signedIn = await login(userName, password, undefined, undefined, { code: await unusedTotpCode(totpSecret!) });
@@ -359,9 +360,13 @@ test('an observer tallies a line per bin; each ended bin is sent with its own ke
 	await signInThroughUi(page, accounts().webObserver);
 	await expect(page.getByTestId('app-sidebar').getByRole('link', { name: 'Validation capture', exact: true })).toBeVisible();
 
-	// The page runs an hour behind: the bins it closes have ended on the server's clock too, on a planned day.
+	// The page runs an hour behind, so the bins it closes have ended on the server's clock too, on a planned day; and the
+	// tablet's own clock runs 2.5 minutes ahead of Ariva's (the Date header of its answers): the bins are Ariva's quarter
+	// hours, not the tablet's (ARV-104c1).
 	const first = Math.floor(Date.now() / quarter) * quarter - 4 * quarter;
-	await page.clock.install({ time: first - 90_000 });
+	const tablet = new TabletClock(page, 150_000);
+	await tablet.install(first - 90_000);
+	await tablet.serveDates();
 	const posts: { key: string | null; body: any }[] = [];
 	page.on('request', (request: Request) => {
 		if (request.method() === 'POST' && /\/validation\/capture\/campaigns\/[^/]+\/counts$/.test(request.url()))
@@ -376,7 +381,8 @@ test('an observer tallies a line per bin; each ended bin is sent with its own ke
 	// Counting started inside a bin: that part bin is shown as such and never sent.
 	await expect(page.getByTestId('part-bin')).toBeVisible();
 	await page.getByTestId('tally-in').click();
-	await runPageClockTo(page, first + 2_000);
+	await tablet.pauseAtAriva(first - 30_000);
+	await tablet.runToAriva(first + 2_000);
 	await expect(page.getByTestId('skipped-bin')).toContainText(`The bin from ${dubaiClock(first - quarter)} was a part bin and was not sent.`);
 	await expect(page.getByTestId('part-bin')).toHaveCount(0);
 	await expect(page.getByTestId('tally-bin')).toHaveText(`Bin ${dubaiClock(first)} to ${dubaiClock(first + quarter)}`);
@@ -388,7 +394,13 @@ test('an observer tallies a line per bin; each ended bin is sent with its own ke
 	await page.getByTestId('tally-out').click();
 	await expect(page.getByTestId('tally-in-count')).toHaveText('3');
 	await expect(page.getByTestId('tally-out-count')).toHaveText('1');
-	await runPageClockTo(page, first + quarter + 2_000);
+	await expect(page.getByTestId('ariva-clock-off')).toContainText(/The tablet's clock is 2 min (29|30|31) s ahead of Ariva's/);
+	// The tablet's own quarter hour passes at Ariva's 12.5 minutes: the bin goes on and nothing is sent until Ariva's ends.
+	await tablet.runToAriva(first + quarter - 150_000 + 10_000);
+	expect(posts, "nothing is sent at the tablet's own quarter hour").toEqual([]);
+	await expect(page.getByTestId('tally-bin')).toHaveText(`Bin ${dubaiClock(first)} to ${dubaiClock(first + quarter)}`);
+	await expect(page.getByTestId('tally-in-count')).toHaveText('3');
+	await tablet.runToAriva(first + quarter + 2_000);
 	await expect(page.getByTestId('history-row')).toHaveCount(1);
 	await expect(page.getByTestId('history-in').first()).toHaveText('3');
 	await expect(page.getByTestId('history-out').first()).toHaveText('1');
@@ -404,7 +416,7 @@ test('an observer tallies a line per bin; each ended bin is sent with its own ke
 	});
 	await page.getByTestId('tally-in').click();
 	await page.getByTestId('tally-in').click();
-	await runPageClockTo(page, first + 2 * quarter + 2_000);
+	await tablet.runToAriva(first + 2 * quarter + 2_000);
 	await expect(page.getByTestId('unsent-banner')).toBeVisible();
 	await expect(page.getByTestId('unsent-item')).toHaveCount(1);
 	await expect(page.getByTestId('unsent-item')).toContainText(`Entry A, bin ${dubaiClock(first + quarter)}`);
@@ -417,15 +429,17 @@ test('an observer tallies a line per bin; each ended bin is sent with its own ke
 	// The campaign cannot be changed while one of its bins is unsent (the banner would leave with it).
 	await expect(page.getByTestId('change-campaign')).toBeDisabled();
 
-	// Leaving the screen now would lose the bin: the screen holds the navigation and asks.
+	// Leaving the screen now would lose the bin: the screen holds the navigation and asks. SvelteKit follows a link only
+	// after the next frame (at most 100 ms, on the page's clock), and this test holds that clock paused: run it on a moment.
 	await page.getByTestId('app-sidebar').getByRole('link', { name: 'Account security' }).click();
+	await tablet.runToAriva(tablet.ariva() + 200);
 	await expect(page.getByTestId('leave-warning')).toBeVisible();
 	await page.getByTestId('leave-stay').click();
 	await expect(page).toHaveURL(/\/validation\/capture$/);
 
 	// The connection is back: the retry timer (10 s, doubling) sends the bin again on its own, with the same key.
 	await page.unroute(/\/validation\/capture\/campaigns\/[^/]+\/counts$/);
-	await page.clock.runFor(31_000);
+	await tablet.runToAriva(first + 2 * quarter + 33_000);
 	await expect(page.getByTestId('unsent-banner')).toHaveCount(0);
 	await expect(page.getByTestId('history-row')).toHaveCount(2);
 
@@ -569,7 +583,9 @@ test('signing out drops the unsent bins: nothing is sent afterwards, and nothing
 	const guards = await guardPage(page);
 	await signInThroughUi(page, accounts().webObserver);
 	const first = Math.floor(Date.now() / quarter) * quarter - 4 * quarter;
-	await page.clock.install({ time: first - 90_000 });
+	const tablet = new TabletClock(page, 0);
+	await tablet.install(first - 90_000);
+	await tablet.serveDates();
 	const posts: unknown[] = [];
 	page.on('request', (request: Request) => {
 		if (request.method() !== 'POST' || !countsPost.test(request.url())) return;
@@ -587,7 +603,7 @@ test('signing out drops the unsent bins: nothing is sent afterwards, and nothing
 	let heldSeen = () => {};
 	const held = new Promise<void>((resolve) => (heldSeen = resolve));
 	await page.route(countsPost, async (route) => {
-		if (route.request().method() !== 'POST') return route.continue();
+		if (route.request().method() !== 'POST') return route.fallback();
 		if (holdNext) {
 			holdNext = false;
 			heldSeen();
@@ -600,14 +616,16 @@ test('signing out drops the unsent bins: nothing is sent afterwards, and nothing
 		return route.abort('connectionreset');
 	});
 	await page.getByTestId('line-option').filter({ hasText: 'Entry A' }).click();
-	await runPageClockTo(page, first + 2_000);
+	await tablet.pauseAtAriva(first - 30_000);
+	await tablet.runToAriva(first + 2_000);
 	await page.getByTestId('tally-in').click();
-	await runPageClockTo(page, first + quarter + 2_000);
+	await tablet.runToAriva(first + quarter + 2_000);
 	await page.getByTestId('tally-out').click();
-	await runPageClockTo(page, first + 2 * quarter + 2_000);
+	await tablet.runToAriva(first + 2 * quarter + 2_000);
 	await expect(page.getByTestId('unsent-item')).toHaveCount(2);
 
 	// A retry is out when the observer signs out; the next observer signs in on the same screen before it is answered.
+	await tablet.resume();
 	holdNext = true;
 	await page.getByTestId('retry-unsent').click();
 	await held;
@@ -1375,9 +1393,7 @@ test("the desk log never places a minute without Ariva's clock: a tablet more th
 	});
 	await openCampaign(page, name);
 	await page.getByTestId('capture-tab-desks').click();
-	await expect(page.getByTestId('ariva-clock-held')).toHaveText(
-		"The tablet's clock is more than 15 minutes from Ariva's. Set the tablet's date and time to automatic: until the difference is under 15 minutes, the desk log places no tap and sends no bin."
-	);
+	await expect(page.getByTestId('ariva-clock-held')).toHaveText(clockImplausibleText);
 	await expect(page.getByTestId('ariva-clock-time')).toHaveCount(0);
 	await page.getByTestId('desk-option').filter({ hasText: 'OD01' }).click();
 	await expect(page.getByTestId('start-desks')).toBeDisabled();
@@ -1400,10 +1416,12 @@ test("the desk log never places a minute without Ariva's clock: a tablet more th
 	const offline = (route: Route) => route.abort('internetdisconnected');
 	await page.route(validationApi, offline);
 	await tablet.jumpTablet(-150_000);
+	// A tap in the same second as the jump, before the screen's next tick, finds the jump itself and places nothing
+	// (ARV-104c1: every use of Ariva's clock checks for a jump; the strip below still shows only Serving).
+	await tapState(page, 'OD01', 'Idle');
+	await expect(page.getByTestId('desk-held')).toBeVisible();
 	await tablet.runToAriva(bin + minute + 30_000);
-	await expect(page.getByTestId('ariva-clock-held')).toHaveText(
-		"The tablet's clock changed (set by hand or from the network, or the tablet slept), so Ariva's clock is being read again. Until it is, no tap is placed and no bin is sent; the minutes logged before are kept."
-	);
+	await expect(page.getByTestId('ariva-clock-held')).toHaveText(clockLostText);
 	await expect(page.getByTestId('desk-held')).toBeVisible();
 	await expect(page.getByTestId('desk-target')).toHaveCount(0);
 	await expect(page.getByTestId('desk-bin')).toHaveText(`Bin ${dubaiClock(bin)} to ${dubaiClock(bin + quarter)} (Ariva's clock, site local time); sent when it ends`);
@@ -1412,10 +1430,13 @@ test("the desk log never places a minute without Ariva's clock: a tablet more th
 	const strip = () => deskCard(page, 'OD01').getByTestId('desk-strip-minute').evaluateAll((cells) => cells.map((c) => c.getAttribute('data-state')));
 	expect(await strip()).toEqual(['Serving', ...Array.from({ length: 14 }, () => '')]);
 
-	// Still offline past the end of Ariva's bin: the bin is not closed on a guess, and nothing is sent.
-	await tablet.runToAriva(bin + quarter + 30_000);
+	// Still offline past the end of the bin on the tablet's own clock, now 2.5 minutes behind Ariva's (a log that went on
+	// with the tablet's clock or the old offset would close and send the bin here): the bin is not closed on a guess, and
+	// nothing is sent.
+	await tablet.runToAriva(bin + quarter + 155_000);
 	expect(posts, 'no bin is sent while Ariva\'s clock is unknown').toEqual([]);
 	await expect(page.getByTestId('desk-held')).toBeVisible();
+	await expect(page.getByTestId('desk-bin')).toHaveText(`Bin ${dubaiClock(bin)} to ${dubaiClock(bin + quarter)} (Ariva's clock, site local time); sent when it ends`);
 	expect(await strip()).toEqual(['Serving', ...Array.from({ length: 14 }, () => '')]);
 
 	// The connection is back: Ariva's clock is read again (the tablet now 2.5 minutes behind it), the bin goes with the one
@@ -1430,11 +1451,12 @@ test("the desk log never places a minute without Ariva's clock: a tablet more th
 	await tablet.runToAriva(tablet.ariva() + 2_000);
 	await expect.poll(() => posts.length).toBe(1);
 	expect(posts[0]).toEqual({ binStartUtc: isoMinute(bin), desks: [{ deskId: desks.OD01, states: ['Serving', ...Array.from({ length: 14 }, () => null)] }] });
-	await expect(page.getByTestId('desk-target')).toHaveText(
-		`Tap the state each desk shows in minute ${dubaiClock(bin + quarter)} to ${dubaiClock(bin + quarter + minute)}.`
-	);
+	// Ariva's minute now (the page's reading is half a second ahead of the test's clock, which stands on a whole second).
+	const current = Math.floor(tablet.ariva() / minute) * minute;
+	const index = (current - (bin + quarter)) / minute;
+	await expect(page.getByTestId('desk-target')).toHaveText(`Tap the state each desk shows in minute ${dubaiClock(current)} to ${dubaiClock(current + minute)}.`);
 	await tapState(page, 'OD01', 'Idle');
-	expect(await strip()).toEqual(['Idle', ...Array.from({ length: 14 }, () => '')]);
+	expect(await strip()).toEqual(Array.from({ length: 15 }, (_, m) => (m === index ? 'Idle' : '')));
 	const stored = ((await (await call('GET', `${captureUrl}/${campaign}/desk-observations?pageSize=100`, { token: observer })).json()).data as any[]).map(
 		(o) => `${o.deskCode} ${o.minuteUtc} ${o.state}`
 	);
@@ -1442,6 +1464,240 @@ test("the desk log never places a minute without Ariva's clock: a tablet more th
 	await expect(page.getByTestId('unsent-banner')).toHaveCount(0);
 
 	allowCutRequests(guards);
+	await guards.expectClean();
+});
+
+// ARV-104c1: the line tally on Ariva's clock, with the desk log's holds.
+
+test("the line tally never counts without Ariva's clock: a tablet more than 15 minutes off cannot start, and after its clock jumps offline nothing is counted and the bin is not sent", async ({
+	page
+}) => {
+	test.setTimeout(150_000);
+	const name = `Tablet tally clock ${Date.now()}`;
+	await runningCampaign(name);
+	const guards = await guardPage(page);
+	await signInThroughUi(page, accounts().webObserver);
+	const first = Math.floor(Date.now() / quarter) * quarter - 4 * quarter;
+	// The tablet's clock starts 20 minutes ahead of Ariva's: beyond 15 minutes the reading is not used.
+	const tablet = new TabletClock(page, 20 * minute);
+	await tablet.install(first - 2 * minute);
+	await tablet.serveDates();
+	const posts: any[] = [];
+	page.on('request', (request: Request) => {
+		if (request.method() === 'POST' && countsPost.test(request.url())) posts.push(request.postDataJSON());
+	});
+	await openCampaign(page, name);
+	await expect(page.getByTestId('ariva-clock-held')).toHaveText(clockImplausibleText);
+	await expect(page.getByTestId('ariva-clock-time')).toHaveCount(0);
+	for (const option of await page.getByTestId('line-option').all()) await expect(option).toBeDisabled();
+
+	// The tablet's time is set right (its clock jumps 20 minutes back): Ariva's clock is read again at the next tick.
+	await tablet.pauseAtAriva(first - 20_000);
+	await tablet.jumpTablet(-20 * minute);
+	await tablet.runToAriva(first - 19_000);
+	await expect(page.getByTestId('ariva-clock-held')).toHaveCount(0);
+	await tablet.runToAriva(first - 10_000);
+	await page.getByTestId('line-option').filter({ hasText: 'Entry A' }).click();
+	await expect(page.getByTestId('part-bin')).toBeVisible();
+	await tablet.runToAriva(first + 2_000);
+	await expect(page.getByTestId('part-bin')).toHaveCount(0);
+	await expect(page.getByTestId('tally-bin')).toHaveText(`Bin ${dubaiClock(first)} to ${dubaiClock(first + quarter)}`);
+	await page.getByTestId('tally-in').click();
+	await page.getByTestId('tally-in').click();
+	await expect(page.getByTestId('tally-in-count')).toHaveText('2');
+
+	// Offline, the tablet's clock jumps 2.5 minutes back (set by hand): the old offset would now put counts in the wrong
+	// bin edges, so Ariva's clock is lost, In and Out count nothing, and the bin in progress becomes a part bin.
+	const offline = (route: Route) => route.abort('internetdisconnected');
+	await page.route(validationApi, offline);
+	await tablet.jumpTablet(-150_000);
+	// A tap in the same second as the jump, before the screen's next tick, finds the jump itself and counts nothing.
+	await page.getByTestId('tally-in').click();
+	await expect(page.getByTestId('tally-held')).toBeVisible();
+	await expect(page.getByTestId('tally-in-count')).toHaveText('2');
+	await tablet.runToAriva(first + 5 * minute);
+	await expect(page.getByTestId('ariva-clock-held')).toHaveText(clockLostText);
+	await expect(page.getByTestId('tally-held')).toBeVisible();
+	await expect(page.getByTestId('tally-left')).toHaveCount(0);
+	for (const id of ['tally-in', 'tally-out', 'undo-in', 'undo-out']) await expect(page.getByTestId(id), id).toBeDisabled();
+	await expect(page.getByTestId('tally-in-count')).toHaveText('2');
+	await expect(page.getByTestId('part-bin')).toBeVisible();
+
+	// Still offline past the end of the bin on the tablet's own clock, now 2.5 minutes behind Ariva's (a tally that went
+	// on with the tablet's clock or the old offset would close the bin here): no bin is closed on a guess, the bin shown
+	// and the last bin skipped are as before the jump, and nothing is sent.
+	await tablet.runToAriva(first + quarter + 155_000);
+	expect(posts, "no bin is sent while Ariva's clock is unknown").toEqual([]);
+	await expect(page.getByTestId('tally-bin')).toHaveText(`Bin ${dubaiClock(first)} to ${dubaiClock(first + quarter)}`);
+	await expect(page.getByTestId('skipped-bin')).toContainText(`The bin from ${dubaiClock(first - quarter)} was a part bin and was not sent.`);
+
+	// Back online: Ariva's clock is read again (a second at a time, so each reading answers within its step); the
+	// interrupted bin is not sent, and counting goes on in Ariva's current bin, a part bin too.
+	await page.unroute(validationApi, offline);
+	await expect(async () => {
+		await tablet.runToAriva(tablet.ariva() + 1_000);
+		await expect(page.getByTestId('ariva-clock-held')).toHaveCount(0, { timeout: 500 });
+	}).toPass({ timeout: 30_000 });
+	await expect(page.getByTestId('ariva-clock-off')).toContainText(/The tablet's clock is 2 min (29|30|31) s behind Ariva's/);
+	await tablet.runToAriva(tablet.ariva() + 2_000);
+	await expect(page.getByTestId('skipped-bin')).toContainText(`The bin from ${dubaiClock(first)} was a part bin and was not sent.`);
+	await expect(page.getByTestId('tally-bin')).toHaveText(`Bin ${dubaiClock(first + quarter)} to ${dubaiClock(first + 2 * quarter)}`);
+	await expect(page.getByTestId('tally-in')).toBeEnabled();
+	await expect(page.getByTestId('part-bin')).toBeVisible();
+	expect(posts).toEqual([]);
+	await page.getByTestId('stop-counting').click();
+	await page.getByTestId('confirm-stop-counting').click();
+	await expect(page.getByTestId('line-option')).toHaveCount(3);
+
+	allowCutRequests(guards);
+	await guards.expectClean();
+});
+
+test("a forward jump of the tablet's clock between 5 and 30 seconds near a bin's end holds the tally and the desk log: neither closes its bin early, the counted bin is a part bin, and the desk minutes go at Ariva's bin end", async ({
+	page
+}) => {
+	test.setTimeout(150_000);
+	const name = `Tablet forward jump ${Date.now()}`;
+	await deskCampaign(name);
+	const guards = await guardPage(page);
+	await signInThroughUi(page, accounts().webObserver);
+	const bin = Math.floor(Date.now() / quarter) * quarter - 4 * quarter;
+	const tablet = new TabletClock(page, 0);
+	await tablet.install(bin - 90_000);
+	await tablet.serveDates();
+	const counts: any[] = [];
+	const deskBatches: any[] = [];
+	page.on('request', (request: Request) => {
+		if (request.method() !== 'POST') return;
+		if (countsPost.test(request.url())) counts.push(request.postDataJSON());
+		if (deskPost.test(request.url())) deskBatches.push(request.postDataJSON());
+	});
+	await openCampaign(page, name);
+
+	// A full bin on both: the tally starts just before Ariva's quarter hour, the desk log just after it.
+	await tablet.pauseAtAriva(bin - 20_000);
+	await page.getByTestId('line-option').filter({ hasText: 'Entry A' }).click();
+	await tablet.runToAriva(bin + 2_000);
+	await expect(page.getByTestId('tally-bin')).toHaveText(`Bin ${dubaiClock(bin)} to ${dubaiClock(bin + quarter)}`);
+	await expect(page.getByTestId('part-bin')).toHaveCount(0);
+	await page.getByTestId('tally-in').click();
+	await page.getByTestId('capture-tab-desks').click();
+	await page.getByTestId('desk-option').filter({ hasText: 'OD01' }).click();
+	await page.getByTestId('start-desks').click();
+	await tapState(page, 'OD01', 'Serving');
+	await tablet.runToAriva(bin + quarter - 30_000);
+	await tapState(page, 'OD01', 'Idle');
+
+	// The tablet's clock jumps 20 seconds forward: more than the 5 seconds a jump needs, less than the 30 seconds that make
+	// a pause, so only the jump check sees it. With the old offset both would end their bin 20 seconds early; instead they
+	// wait for Ariva's clock (the reading in flight across the move is discarded), still 5 seconds before its quarter hour.
+	await tablet.jumpTablet(20_000);
+	await tablet.runToAriva(bin + quarter - 5_000);
+	expect(counts, "no count is sent before the end of Ariva's bin").toEqual([]);
+	expect(deskBatches, "no desk batch is sent before the end of Ariva's bin").toEqual([]);
+	await expect(page.getByTestId('desk-bin')).toHaveText(`Bin ${dubaiClock(bin)} to ${dubaiClock(bin + quarter)} (Ariva's clock, site local time); sent when it ends`);
+	await expect(page.getByTestId('desk-held')).toBeVisible();
+
+	// Ariva's clock is read again (a second at a time). At Ariva's quarter hour the desk log sends its two minutes, and the
+	// tally's bin, which missed the wait, is a part bin and is not sent.
+	await expect(async () => {
+		await tablet.runToAriva(tablet.ariva() + 1_000);
+		await expect(page.getByTestId('ariva-clock-held')).toHaveCount(0, { timeout: 500 });
+	}).toPass({ timeout: 30_000 });
+	await tablet.runToAriva(bin + quarter + 2_000);
+	await expect.poll(() => deskBatches.length).toBe(1);
+	expect(deskBatches[0]).toEqual({
+		binStartUtc: isoMinute(bin),
+		desks: [{ deskId: desks.OD01, states: ['Serving', ...Array.from({ length: 13 }, () => null), 'Idle'] }]
+	});
+	await page.getByTestId('capture-tab-tally').click();
+	await expect(page.getByTestId('skipped-bin')).toContainText(`The bin from ${dubaiClock(bin)} was a part bin and was not sent.`);
+	await expect(page.getByTestId('tally-bin')).toHaveText(`Bin ${dubaiClock(bin + quarter)} to ${dubaiClock(bin + 2 * quarter)}`);
+	expect(counts).toEqual([]);
+	await page.getByTestId('stop-counting').click();
+	await page.getByTestId('confirm-stop-counting').click();
+	await expect(page.getByTestId('line-option')).toHaveCount(3);
+
+	await guards.expectClean();
+});
+
+test("without a readable Date header the line tally follows the tablet's clock and says so; a first reading of Ariva's clock more than 5 seconds away makes the bin in progress a part bin", async ({
+	page
+}) => {
+	test.setTimeout(150_000);
+	const name = `Tablet tally no clock ${Date.now()}`;
+	await runningCampaign(name);
+	const guards = await guardPage(page);
+	await signInThroughUi(page, accounts().webObserver);
+	const first = Math.floor(Date.now() / quarter) * quarter - 4 * quarter;
+	// The tablet's clock runs 20 seconds ahead of Ariva's (more than the 5 seconds that make a first reading break the bin,
+	// less than the 30 seconds a pause needs), and at first no answer tells Ariva's clock (as when the web app and Ariva's
+	// API are not on one origin): every Date header is unreadable.
+	const skew = 20_000;
+	const tablet = new TabletClock(page, skew);
+	await tablet.install(first - 90_000);
+	await tablet.serveDates();
+	const noClock = async (route: Route) => {
+		const response = await route.fetch();
+		const headers: Record<string, string> = { ...response.headers(), date: 'unreadable' };
+		delete headers['content-encoding'];
+		delete headers['content-length'];
+		await route.fulfill({ response, headers });
+	};
+	await page.route(validationApi, noClock);
+	const posts: any[] = [];
+	page.on('request', (request: Request) => {
+		if (request.method() === 'POST' && countsPost.test(request.url())) posts.push(request.postDataJSON());
+	});
+	await openCampaign(page, name);
+	await expect(page.getByTestId('ariva-clock-unknown')).toHaveText(
+		"Ariva's clock has not been read on this screen, so line counts and desk logs follow the tablet's clock. Set the tablet's date and time to automatic."
+	);
+	// The time shown is labelled as the tablet's own, and the card does not claim the counts keep to Ariva's clock.
+	await expect(page.getByTestId('ariva-clock-time')).toContainText("site local time (Asia/Dubai), on the tablet's own clock.");
+	await expect(page.getByTestId('ariva-clock-time')).not.toContainText("keep to Ariva's clock");
+
+	// The tally follows the tablet's clock: its bin turns at the tablet's quarter hour, 20 seconds before Ariva's.
+	await tablet.pauseAtAriva(first + quarter - skew - 20_000);
+	await page.getByTestId('line-option').filter({ hasText: 'Entry A' }).click();
+	await expect(page.getByTestId('part-bin')).toBeVisible();
+	await tablet.runToAriva(first + quarter - skew + 2_000);
+	await expect(page.getByTestId('skipped-bin')).toContainText(`The bin from ${dubaiClock(first)} was a part bin and was not sent.`);
+	await expect(page.getByTestId('tally-bin')).toHaveText(`Bin ${dubaiClock(first + quarter)} to ${dubaiClock(first + 2 * quarter)}`);
+	await expect(page.getByTestId('part-bin')).toHaveCount(0);
+	await page.getByTestId('tally-in').click();
+	await page.getByTestId('tally-in').click();
+
+	// The bin is sent at the tablet's quarter hour, Ariva's clock still unread, and the next bin starts whole on the
+	// tablet's clock.
+	await tablet.runToAriva(first + 2 * quarter - skew + 2_000);
+	await expect.poll(() => posts.length).toBe(1);
+	expect(posts[0]).toEqual({ lineId: profile.entryA, binStartUtc: isoMinute(first + quarter), crossingsIn: 2, crossingsOut: 0 });
+	await expect(page.getByTestId('tally-bin')).toHaveText(`Bin ${dubaiClock(first + 2 * quarter)} to ${dubaiClock(first + 3 * quarter)}`);
+	await expect(page.getByTestId('part-bin')).toHaveCount(0);
+	await expect(page.getByTestId('ariva-clock-unknown')).toBeVisible();
+
+	// Ariva's answers become readable. The screen asks for Ariva's clock on its own (every 10 seconds, doubling to a
+	// minute), so the test runs on 5 seconds at a time (each reading answers within its step) until it comes. The first
+	// reading puts the tally's time 20 seconds back: less than a pause, but the bin in progress began on the tablet's
+	// clock, so it becomes a part bin, never sent, and the bins follow Ariva's clock from its end.
+	await page.unroute(validationApi, noClock);
+	await expect(async () => {
+		await tablet.runToAriva(tablet.ariva() + 5_000);
+		await expect(page.getByTestId('ariva-clock-unknown')).toHaveCount(0, { timeout: 500 });
+	}).toPass({ timeout: 60_000 });
+	await expect(page.getByTestId('ariva-clock-time')).toContainText("Line counts and desk logs keep to Ariva's clock, not the tablet's.");
+	await expect(page.getByTestId('part-bin')).toBeVisible();
+	// (A reading answered in the step after it was asked may be a step old, so the run goes 10 seconds past the hour.)
+	await tablet.runToAriva(first + 3 * quarter + 10_000);
+	await expect(page.getByTestId('skipped-bin')).toContainText(`The bin from ${dubaiClock(first + 2 * quarter)} was a part bin and was not sent.`);
+	await expect(page.getByTestId('tally-bin')).toHaveText(`Bin ${dubaiClock(first + 3 * quarter)} to ${dubaiClock(first + 4 * quarter)}`);
+	await expect(page.getByTestId('part-bin')).toHaveCount(0);
+	expect(posts).toHaveLength(1);
+	await page.getByTestId('stop-counting').click();
+	await page.getByTestId('confirm-stop-counting').click();
+	await expect(page.getByTestId('line-option')).toHaveCount(3);
+
 	await guards.expectClean();
 });
 

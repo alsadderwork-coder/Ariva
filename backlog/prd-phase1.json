@@ -615,7 +615,7 @@
         "docs and wiki pages affected by the change are updated (wiki 12 Validation capture, wiki 07 section 8, the decisions entry marked done; node scripts/verify.mjs docs passes)"
       ],
       "priority": 25,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Owner decision 2026-10-09. No API change.",
       "dependsOn": [
         "ARV-104c",
