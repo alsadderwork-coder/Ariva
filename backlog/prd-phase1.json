@@ -551,7 +551,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 23,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. Online capture only; an offline-capable tablet would need an ADR (tokens never in web storage). From the ARV-104a security review (2026-10-08): generate each Idempotency-Key as a random UUID per bin submission (crypto.randomUUID, kept in memory with the unsent bin and reused only for its own retries; never derived from the user, line or time, since a key is unique per observer); the correction form tells observers not to name people in the reason (counts carry no person beyond the observer's account id, data boundary); Playwright XSS probes on line names, campaign names and correction reasons; the campaign's creator or starter gets 403 on capture (owner decision 2026-10-08) and the screen shows that as a plain message. From ARV-104b (2026-10-08): a tracer batch carries the tablet's own clock reading (deviceClockUtc) read again at every send, retries included, and a required Idempotency-Key (a random UUID per batch, reused only for its retries); show the measured clockOffsetMs from the answer; a tablet more than 5 minutes off gets 400, so prompt to set the time automatically; tracer codes are labels T-01 to T-999 typed from the campaign's roster, never names.",
       "dependsOn": [
         "ARV-104a",
@@ -1107,6 +1107,27 @@
       ]
     },
     {
+      "id": "ARV-147",
+      "title": "[E18] Web requests bound to the account that started them",
+      "description": "Follow-up from the ARV-104c security review (2026-10-09, Low). Api.ts recovers a 401 by refreshing the session and sending the request again. A request started by one account that is still in flight when that account signs out and another signs in on the same browser is then sent again under the second account, or its recovery signs the second account out; an MFA step-up can be shown to the second account for the first account's action. ARV-104c closed this for the capture calls only (asSubject). The server still applies the second account's permissions and site scope and audits it, so the exposure is small, but a request must never change hands. Epic: Accounts and sessions. CWEs to review: CWE-384, CWE-863, CWE-501.",
+      "acceptanceCriteria": [
+        "Api.ts request() records auth.subject when a call starts and uses it as the default for asSubject: once a different account or none is signed in, the request is not sent, not sent again after a refresh, and does not trigger the 401 recovery (no refresh, no sessionEnded, no MFA step-up)",
+        "Callers that legitimately run before a subject exists (sign-in, refresh, MFA enrolment) keep working, named explicitly in code",
+        "Playwright: a save on an administration screen held in flight across a sign-out and another account's sign-in in the same page is never sent under the second account, the second account stays signed in and sees no step-up prompt; existing session, MFA and multi-tab tests still pass",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "The story's new Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 48,
+      "passes": false,
+      "notes": "Size S. Low severity; must land before go-live (ARV-138). Raised by the ARV-104c re-review (2026-10-09).",
+      "dependsOn": [
+        "ARV-104c"
+      ]
+    },
+    {
       "id": "ARV-146",
       "title": "[E14] Report generation and delivery through the Insight report tool",
       "description": "Owner decision 2026-10-08: report documents come from the Insight report tool already used in AMAN (a standalone, published project) instead of being built in Ariva. This story collects every report-generation part split out of other stories: the weekly report (template, JSON and CSV, schedules, delivery, on-demand limits, API) from ARV-119; the weekly tab from ARV-120; the validation report download from ARV-104g and ARV-104h; the advertising proof-of-play report and CSV from ARV-144; and the decision on the existing daily peaks report (ARV-060, ARV-061). Epic: Reports. CWEs to review: CWE-79, CWE-862, CWE-863, CWE-918, CWE-501, CWE-120.",
@@ -1127,7 +1148,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 48,
+      "priority": 49,
       "passes": false,
       "notes": "Size L: split into parts once the integration is known. Blocked on: the owner's description of the Insight report tool integration (where it lives, how it is packaged and deployed, how it receives data, how it delivers). Owner decision 2026-10-08.",
       "dependsOn": [
@@ -1151,7 +1172,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
-      "priority": 49,
+      "priority": 50,
       "passes": false,
       "notes": "Done by the owner (agents never change clusters). Needs a reachable dev cluster and GitHub Actions minutes. Depends on every other MVP story in this file; conditional stories ruled out are closed with a recorded decision first. 2026-10-06: the owner placed Phase 2 (displays and advertising, backlog/prd-phase2.json) before this release.",
       "dependsOn": [
@@ -1224,7 +1245,7 @@
         "Full-repository security review PASS recorded in backlog/progress.md",
         "Owner sign-off recorded in docs/product (a go-live review page following docs/product/phase0-exit-review.md)"
       ],
-      "priority": 50,
+      "priority": 51,
       "passes": false,
       "notes": "Size S for the agent part; most criteria are human. The site installation, smoke run on the pilot cluster and burn-in follow this gate and are done by the owner and the field engineer.",
       "dependsOn": [

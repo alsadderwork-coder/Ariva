@@ -8,6 +8,12 @@ export interface Result<T> {
 	warningMessages: string[];
 	infoMessages: string[];
 	data: T | null;
+	/**
+	 * The HTTP status of the answer; 0 when the request was sent and no answer came (a network failure or a timeout),
+	 * absent when nothing was sent (a request refused before it left the browser). A caller can then tell a refusal
+	 * from a request worth sending again (ARV-104c: unsent bins and tracer batches are retried, refusals are not).
+	 */
+	status?: number;
 }
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -25,6 +31,11 @@ export interface RequestOptions {
 	anonymous?: boolean;
 	/** 'blob' reads a successful answer as a Blob (an image); errors are still read as problems. */
 	responseType?: 'json' | 'blob';
+	/**
+	 * The account (token subject) the request belongs to: it is not sent, nor sent again after a refresh, unless that
+	 * account is the one signed in (ARV-104c, queued observer items never leave under another account's token).
+	 */
+	asSubject?: string;
 }
 
 /** Builds a successful result around data. */
@@ -168,6 +179,9 @@ export async function request<T>(
 			headers['Content-Type'] = 'application/json';
 			body = JSON.stringify(options.body);
 		}
+		if (options.asSubject !== undefined && auth.subject !== options.asSubject) {
+			return fail<T>('Refused: the signed-in account changed.');
+		}
 		if (withToken && auth.token) {
 			headers.Authorization = `Bearer ${auth.token}`;
 		}
@@ -181,10 +195,24 @@ export async function request<T>(
 				credentials: 'same-origin'
 			});
 		} catch (error) {
-			return fail<T>(error instanceof Error ? error.message : 'Network request failed');
+			return {
+				...fail<T>(error instanceof Error ? error.message : 'Network request failed'),
+				status: 0
+			};
 		}
 
-		if (!(withToken && response.status === 401 && attempt === 0 && (await recover(response)))) {
+		// A request bound to an account is never recovered (refresh, sign-in, step-up) once another account, or none, is
+		// signed in: the refresh would hand it the new account's token, and an ended-session answer would sign that account out.
+		const sameAccount = options.asSubject === undefined || auth.subject === options.asSubject;
+		if (
+			!(
+				withToken &&
+				response.status === 401 &&
+				attempt === 0 &&
+				sameAccount &&
+				(await recover(response))
+			)
+		) {
 			break;
 		}
 	}
@@ -192,19 +220,20 @@ export async function request<T>(
 	const answer = response!;
 	const payload = await readPayload(answer, options.responseType);
 
+	const status = answer.status;
 	if (isResult(payload)) {
 		const result = normalise(payload as Result<T>);
 		if (!answer.ok && !result.hasErrors) {
-			return { ...result, hasErrors: true, errorMessages: [statusMessage(answer)] };
+			return { ...result, hasErrors: true, errorMessages: [statusMessage(answer)], status };
 		}
-		return result;
+		return { ...result, status };
 	}
 
 	if (!answer.ok) {
-		return fail<T>(problemMessage(payload) ?? statusMessage(answer));
+		return { ...fail<T>(problemMessage(payload) ?? statusMessage(answer)), status };
 	}
 
-	return ok(payload as T);
+	return { ...ok(payload as T), status };
 }
 
 /** The title and detail of an RFC 9457 problem body, as Ariva wrote them (shown as text, never as markup). */

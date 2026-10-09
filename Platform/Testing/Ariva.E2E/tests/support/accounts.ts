@@ -242,7 +242,16 @@ export function accounts() {
 		validationObserver2: account('e2e.observer2', ['ValidationObserver'], false, false, ['E2EV']),
 		validationObserverElsewhere: account('e2e.observerx', ['ValidationObserver'], false, false, ['E2E1']),
 		// A duty manager who is also an observer (owner decision 2026-10-08): it never counts for a campaign it created or started.
-		validationDual: account('e2e.valdual', ['TerminalDutyManager', 'ValidationObserver'], false, false, ['E2EV'])
+		validationDual: account('e2e.valdual', ['TerminalDutyManager', 'ValidationObserver'], false, false, ['E2EV']),
+		// ARV-104c: the observer tablet's functional suite at a site of its own (E2EO), apart from validation.spec.ts's E2EV.
+		// The manager publishes the site's zone profile (a second factor), the lead plans and starts campaigns, the observer
+		// counts and times tracers, and a duty manager who is also an observer starts a campaign and is refused on it (403).
+		webValidationManager: account('e2e.webvalmanager', ['BorderShiftSupervisor'], false, true, ['E2EO']),
+		webValidationLead: account('e2e.webvallead', ['TerminalDutyManager'], false, false, ['E2EO']),
+		webObserver: account('e2e.webobserver', ['ValidationObserver'], false, false, ['E2EO']),
+		// The next observer on the same tablet: signs in after webObserver signed out with bins unsent (security review M1).
+		webObserver2: account('e2e.webobserver2', ['ValidationObserver'], false, false, ['E2EO']),
+		webValidationDual: account('e2e.webvaldual', ['TerminalDutyManager', 'ValidationObserver'], false, false, ['E2EO'])
 	} as const;
 }
 

@@ -19,7 +19,9 @@ const screens = [
 	{ name: 'passenger displays', path: '/displays', signedIn: true },
 	{ name: 'reports', path: '/reports', signedIn: true },
 	// An administrator's screen: the duty manager would see the no-access message.
-	{ name: 'users and access', path: '/users', signedIn: true, account: () => accounts().webAdmin }
+	{ name: 'users and access', path: '/users', signedIn: true, account: () => accounts().webAdmin },
+	// The observer tablet (ARV-104c): the campaign list; validation-capture.spec.ts checks the tally and tracer views.
+	{ name: 'validation capture', path: '/validation/capture', signedIn: true, account: () => accounts().webObserver }
 ];
 /** Opens the screen and waits for its heading (a signed-in screen first takes a token from the refresh cookie). */
 async function open(page: Page, path: string): Promise<void> {

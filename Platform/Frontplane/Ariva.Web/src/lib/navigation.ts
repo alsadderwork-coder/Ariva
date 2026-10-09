@@ -2,6 +2,7 @@ import type { Component } from 'svelte';
 import {
 	Activity,
 	BellRing,
+	ClipboardCheck,
 	Cpu,
 	FileChartColumn,
 	Map,
@@ -68,6 +69,16 @@ export const navItems: readonly NavItem[] = [
 		ready: true,
 		story: 'ARV-058',
 		permission: 'Display.Search'
+	},
+	{
+		// The observer tablet (ARV-104c): only the Validation observer role holds Validation.Capture.
+		id: 'validationCapture',
+		href: '/validation/capture',
+		icon: ClipboardCheck,
+		group: 'operations',
+		ready: true,
+		story: 'ARV-104c',
+		permission: 'Validation.Capture'
 	},
 	{
 		id: 'reports',

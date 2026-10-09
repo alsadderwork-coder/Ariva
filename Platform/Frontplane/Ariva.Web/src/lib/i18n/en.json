@@ -25,7 +25,8 @@
 			"topology": "Topology",
 			"zones": "Zones",
 			"devices": "Devices",
-			"users": "Users and access"
+			"users": "Users and access",
+			"validationCapture": "Validation capture"
 		}
 	},
 	"shell": {
@@ -1067,5 +1068,148 @@
 			"title": "Illustrative, not surveyed.",
 			"detail": "{site} is modelled on a real airport from public information only; its layout, counts and positions are assumptions, not a survey."
 		}
+	},
+	"validation": {
+		"title": "Validation capture",
+		"description": "Count people crossing a line in 15-minute bins and time tracers for a running validation campaign. Each bin and each run is sent to Ariva as soon as it ends.",
+		"site": "Site",
+		"noSites": "Your account has no site. Ask an administrator to give you the site you observe.",
+		"loading": "Loading the running campaigns…",
+		"refresh": "Refresh",
+		"campaigns": {
+			"title": "Running campaigns",
+			"intro": "Choose the campaign you are observing for. Only running campaigns of your site are listed.",
+			"none": "No campaign is running at this site. The campaign manager starts it; then refresh.",
+			"days": "Planned days (site local): {days}",
+			"scope": "{lines, plural, one {# line} other {# lines}}, {zones, plural, one {# queue zone} other {# queue zones}}",
+			"change": "Change campaign",
+			"notToday": "Today ({today}, site local time) is not a planned day of this campaign: Ariva refuses counts and runs outside its planned days.",
+			"clock": "Site local time {time} ({zone})"
+		},
+		"tabs": {
+			"label": "Capture",
+			"tally": "Line tally",
+			"tracers": "Tracers"
+		},
+		"outbox": {
+			"title": "Not sent yet",
+			"waiting": "{count, plural, one {# count or run is} other {# counts and runs are}} not sent yet. They are kept on this screen only (nothing is stored on the tablet): keep the screen open and send them again once the connection is back.",
+			"sending": "Sending…",
+			"retry": "Send again now",
+			"refused": "Ariva refused this {kind, select, count {bin} other {tracer run}}: {reason}",
+			"ownCampaign": "You created or started this campaign, so you cannot count for it: its counts and runs come from other observers. Nothing was recorded.",
+			"clock": "Ariva refused the run because the tablet's clock is more than 5 minutes off. Set the tablet's date and time to automatic (from the network), then time the tracer again; this run cannot be sent.",
+			"discard": "Dismiss",
+			"binLabel": "{line}, bin {bin}",
+			"runLabel": "{code} in {zone}",
+			"offline": "No connection to Ariva; it will be sent again.",
+			"unavailable": "Ariva could not take it now (HTTP {status}); it will be sent again."
+		},
+		"leave": {
+			"title": "Unsent work on this screen",
+			"description": "A tally or a tracer run is in progress, or something is not sent yet. Leaving this screen loses it.",
+			"stay": "Stay",
+			"leave": "Leave anyway"
+		},
+		"tally": {
+			"chooseLine": "Choose the line you count",
+			"chooseLineHint": "Stand where you see the whole line. Tap In for each person crossing into the queue and Out for each person crossing out. A bin is sent when it ends.",
+			"lineRole": "{role} line, {zone}",
+			"start": "Start counting",
+			"counting": "Counting {line}",
+			"bin": "Bin {start} to {end}",
+			"binHint": "Site local time; ends in {left}",
+			"partBin": "Part bin: counting started after {start}, so this bin is not sent. Counts are sent from the {next} bin.",
+			"in": "In",
+			"out": "Out",
+			"inCount": "In, {count} so far",
+			"outCount": "Out, {count} so far",
+			"undoIn": "Undo one In",
+			"undoOut": "Undo one Out",
+			"stop": "Stop counting",
+			"stopConfirm": "Stop and drop this bin",
+			"skippedPart": "The bin from {start} was a part bin and was not sent.",
+			"skippedStopped": "Counting stopped; the bin from {start} was not complete and was not sent.",
+			"sent": "Bin {start} to {end} sent: {in} in, {out} out.",
+			"roles": {
+				"Entry": "Entry",
+				"Exit": "Exit",
+				"OverflowEntry": "Overflow entry",
+				"Count": "Count"
+			}
+		},
+		"history": {
+			"title": "Your counts for this line",
+			"empty": "No count recorded for this line yet.",
+			"caption": "Your counts for {line}, newest bin first, in site local time",
+			"columns": {
+				"bin": "Bin",
+				"in": "In",
+				"out": "Out",
+				"revision": "Revision",
+				"reason": "Reason",
+				"actions": "Actions"
+			},
+			"correct": "Correct",
+			"correctLabel": "Correct the count of bin {bin}"
+		},
+		"correction": {
+			"title": "Correct bin {bin}",
+			"in": "People in",
+			"out": "People out",
+			"reason": "Reason",
+			"reasonHint": "Say what was wrong, for example a missed group. Never name a person.",
+			"save": "Save correction",
+			"cancel": "Cancel",
+			"saved": "Correction saved as revision {revision}.",
+			"invalid": "Enter whole numbers from 0 to 10,000 and a reason of 1 to 200 characters.",
+			"failed": "The correction was not saved: {reason}",
+			"unknown": "Ariva did not answer, so this correction may or may not be saved. Send again sends it as it is (it is never saved twice), or Cancel and check your counts.",
+			"sendAgain": "Send again",
+			"keyReused": "Ariva already holds another correction sent with this form's key, so this one was not saved. Your counts are shown again: correct the latest revision if it is still wrong."
+		},
+		"tracers": {
+			"clockTitle": "Tablet clock",
+			"offset": "{sign}{seconds} s against Ariva's clock, measured at {time}",
+			"notMeasured": "Not measured yet: Ariva measures the tablet's clock with each run sent and corrects the run's times.",
+			"offsetLarge": "The tablet's clock is more than a minute off. Set its date and time to automatic; beyond 5 minutes Ariva refuses the runs.",
+			"joinTitle": "A tracer joins the queue",
+			"code": "Tracer code",
+			"codeHint": "The label on the campaign's roster, T-01 to T-999. Never type a name.",
+			"zone": "Queue zone",
+			"join": "Join",
+			"problems": {
+				"code": "A tracer code is T, a hyphen and 2 or 3 digits (T-01 to T-999); never a name.",
+				"zone": "Choose the queue zone the tracer joins.",
+				"active": "This tracer is already in a queue; record their exit first."
+			},
+			"activeTitle": "In the queue",
+			"activeEmpty": "No tracer is in a queue.",
+			"joinedAt": "Joined at {time}, {zone}",
+			"elapsed": "Waiting {time}",
+			"exit": "Exit",
+			"exitLabel": "{code} exits, served",
+			"abandon": "Left unserved",
+			"abandonLabel": "{code} left without being served",
+			"cancel": "Cancel run",
+			"cancelConfirm": "Drop this run",
+			"tooLong": "Longer than 3 hours: Ariva refuses this run. Cancel it.",
+			"recordedTitle": "Your recorded runs",
+			"recordedEmpty": "No run recorded yet.",
+			"recordedCaption": "Your tracer runs, latest join first, in site local time (Ariva's clock)",
+			"columns": {
+				"code": "Tracer",
+				"zone": "Zone",
+				"joined": "Joined",
+				"wait": "Wait",
+				"outcome": "Outcome",
+				"offset": "Clock offset"
+			},
+			"served": "Served",
+			"abandoned": "Abandoned",
+			"sent": "{code}'s run sent: {wait} in {zone}."
+		},
+		"failed": "Could not load: {reason}",
+		"open": "Open validation capture"
 	}
 }

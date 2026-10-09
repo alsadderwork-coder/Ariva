@@ -271,6 +271,15 @@
 		data-testid="no-live-access"
 	>
 		{$_('liveOperations.noAccess')}
+		{#if auth.can('Validation.Capture')}
+			<!-- The observer's one screen (ARV-104c). -->
+			<a
+				href="/validation/capture"
+				data-testid="go-capture"
+				class="mt-2 block font-medium text-primary underline-offset-4 hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+				>{$_('validation.open')}</a
+			>
+		{/if}
 	</p>
 {:else}
 	<section
