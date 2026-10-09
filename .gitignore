@@ -57,3 +57,7 @@ StrykerOutput/
 
 # The local demo (ARV-064): accounts and AppHost settings written by scripts/demo-local.mjs, never committed
 .demo/
+
+# Client material kept on a developer machine only (for example the Angola design drawings behind the
+# NBJ-BC1 demo site, ARV-139c): never committed.
+/.private/

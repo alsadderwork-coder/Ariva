@@ -323,6 +323,25 @@
       ]
     },
     {
+      "id": "ARV-139c",
+      "title": "[E20] Development-only seed site from client design drawings: NBJ terminal BC1 border control (opt-in)",
+      "description": "Owner request 2026-10-09: a third demo site for local development, built from the 2018 design drawings of terminal BC1 of Dr. António Agostinho Neto International Airport (NBJ), Luanda (sheets ETP-ARQ-008 and ETP-ARQ-010; a third party's confidential drawings, kept by the owner in the git-ignored .private/ folder and never committed or drawn into the product). Read from the drawings: arrivals immigration, 13 double booths (26 desks, owner-confirmed) with 5 e-gate channels at the left end; departures emigration, 13 double booths (26 desks) with 5 e-gate channels at the right end; booth pitch about 3.5 m and 3.7 m against the 15,000 mm grid; no lane segregation (owner). Development only: the owner will remove it from the repository later. Epic: Demo data. CWEs to review: CWE-269, CWE-120, CWE-200.",
+      "acceptanceCriteria": [
+        "A seed site NBJ-BC1 flagged illustrative: airport NBJ (Africa/Luanda), terminal BC1, level ARR (checkpoint IMM, Immigration, desks IM-01 to IM-26 on lane ALL, e-gates EGA-01 to EGA-05 on lane EG) and level DEP (checkpoint EMI, Emigration, desks EM-01 to EM-26, e-gates EGD-01 to EGD-05)",
+        "Per hall a shared queue zone (A-ALL, D-ALL) with entry and exit lines, an overflow band (A-ALL-OV, D-ALL-OV), an e-gates queue (A-EG, D-EG), a staff and a service zone per desk linked to its desk (ARV-116), sensors in commissioning without credentials, Ariva's own schematic SVG per level through the floor plan pipeline, and zone profile version 1 published",
+        "Opt-in: registered only with Seed:NbjSite true on top of Seed:DemoTopology (on in appsettings.service.vm-local.json only); the drawings and anything rendered from them are never committed (.private/ in .gitignore)",
+        "Unit tests: the profile validates over both levels, counts match the drawings, geometry and sensors within bounds, every zone reached by a sensor, schematics pass the floor plan inspection, no person, document or real organisation or system name in the seeded text, opt-in registration",
+        "docs/demo/nbj-bc1.md records what was read from the drawings, every assumption, and the lane gap (no unsegregated lane in the immigration screens, arrival waves or AMAN contract lanes)",
+        "Not in this story: a simulator scenario for NBJ-BC1 (live traffic), check-in and security checkpoints, the health counters as a checkpoint"
+      ],
+      "priority": 13,
+      "passes": false,
+      "notes": "2026-10-09: built in a cloud session on branch story/ARV-139c-nbj from 7c38a3d. Unit tests of the Seed classes pass (48: NBJ, AUH-TA, DMO). Not run there: integration tests against PostgreSQL (no Docker in that session) and the full gates; passes stays false until they run.",
+      "dependsOn": [
+        "ARV-139a"
+      ]
+    },
+    {
       "id": "ARV-114d",
       "title": "[E12] Queue engine: carry the pending empty-queue check across a full step",
       "description": "Found in ARV-139b (2026-10-08). The F5 re-anchor now waits until every reading of an instant is applied, but when a full step (MaxStepRecords, default 100,000) ends inside an instant, Reanchor() runs with only part of that instant applied: a band reading 0 ordered before the zone's reading can still drop the people the zone holds (test: 108 Fragmented and 108 duplicate exits of 1,100 at MaxStepRecords 1,000). Rare in practice (a step must end inside one instant's readings), but it undercounts exits when it happens. Carry the pending check in the engine state instead of running it when the step fills. Epic: Measurement completeness. CWEs to review: CWE-501, CWE-120.",

@@ -16,6 +16,12 @@ public static class DemoSeedExtensions
 {
     public const string SettingName = "Seed:DemoTopology";
 
+    /// <summary>
+    /// Opt-in for the NBJ BC1 site (ARV-139c), on top of <see cref="SettingName"/>: built from a client's design drawings,
+    /// it is for local development only and never on by default in a shared deployment (docs/demo/nbj-bc1.md).
+    /// </summary>
+    public const string NbjSettingName = "Seed:NbjSite";
+
     /// <summary>Where the demo seed may run; everything else, k8s-prd above all, is refused.</summary>
     public static readonly IReadOnlySet<string> AllowedEnvironments =
         new HashSet<string>(["vm-local", "k8s-dev", "k8s-demo"], StringComparer.OrdinalIgnoreCase);
@@ -34,9 +40,12 @@ public static class DemoSeedExtensions
                 $"this host runs as '{hostEnvironment}' with Application:Environment '{applicationEnvironment}'. Turn it off.");
         }
 
-        // In this order: the fictional DMO (ARV-019), then the illustrative AUH Terminal A arrivals (ARV-139a).
+        // In this order: the fictional DMO (ARV-019), then the illustrative AUH Terminal A arrivals (ARV-139a), then,
+        // opt-in only, NBJ terminal BC1 (ARV-139c).
         services.AddScoped<IDemoTopologySeed, DemoTopologySeed>();
         services.AddScoped<IDemoTopologySeed, AuhTerminalASeed>();
+        if (configuration.GetValue<bool>(NbjSettingName))
+            services.AddScoped<IDemoTopologySeed, NbjBc1Seed>();
         services.AddHostedService<DemoSeedService>();
         return services;
     }
