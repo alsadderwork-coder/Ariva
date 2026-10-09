@@ -11,7 +11,8 @@
     "Delete alert rules",
     "Change outbound endpoints",
     "Regenerate recovery codes",
-    "Close a validation campaign"
+    "Close a validation campaign",
+    "Recompute validation results"
   ],
   "criticalPermissions": [
     "CreateUser",
@@ -201,6 +202,12 @@
       "method": "POST",
       "route": "/api/v1/sites/{siteCode}/validation/campaigns/{id:guid}/close",
       "category": "Close a validation campaign"
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/sites/{siteCode}/validation/campaigns/{id:guid}/results/revisions",
+      "category": "Recompute validation results"
     }
   ]
 }

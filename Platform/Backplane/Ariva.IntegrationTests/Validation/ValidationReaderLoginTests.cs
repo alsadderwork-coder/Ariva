@@ -116,7 +116,7 @@ public sealed class ValidationReaderLoginTests(PostgresFixture postgres)
 
     /// <summary>The validation service with only what its shadow read uses (ARV-104g2 gave it the campaign reads and the computation).</summary>
     internal static SvcValidationResults Results(DatabaseSettings database, ValidationReaderSettings reader, int rowLimit = SvcValidationResults.MaxRows) =>
-        new(null, null, TimeProvider.System, null, null, null, null, new ValidationResultsSettings(), null, database, reader) { RowLimit = rowLimit };
+        new(null, null, TimeProvider.System, null, null, null, null, new ValidationResultsSettings(), null, database, reader, null, null) { RowLimit = rowLimit };
 
     [Fact]
     public async Task MigrationJob_Should_CreateAReaderThatReadsTheShadowWhileTheRuntimeLoginCannot_When_TheReaderIsConfigured()

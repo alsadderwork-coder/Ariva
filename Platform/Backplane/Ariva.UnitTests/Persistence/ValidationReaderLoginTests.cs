@@ -205,7 +205,7 @@ public sealed class ValidationReaderLoginTests
 
     /// <summary>The validation service with only what its shadow read uses (ARV-104g2 gave it the campaign reads and the computation).</summary>
     private static Ariva.Infra.Services.Validation.SvcValidationResults Results(DatabaseSettings database, ValidationReaderSettings reader) =>
-        new(null, null, TimeProvider.System, null, null, null, null, new Ariva.Infra.Settings.ValidationResultsSettings(), null, database, reader);
+        new(null, null, TimeProvider.System, null, null, null, null, new Ariva.Infra.Settings.ValidationResultsSettings(), null, database, reader, null, null);
 
     [Fact]
     public async Task ReadShadow_Should_RefuseWithoutConnecting_When_TheLoginIsAbsentOrNotItsOwn()

@@ -9,7 +9,8 @@ using NHibernate.Linq;
 namespace Ariva.Infra.Services.Validation;
 
 /// <summary>
-/// The computation of a campaign's results (ARV-104g2, <see cref="ISvcValidationResults"/>): the site and the campaign are
+/// The computation of a campaign's results (ARV-104g2, <see cref="ISvcValidationResults"/>; served and frozen by
+/// <c>SvcValidationResults.Revisions.cs</c>, ARV-104g): the site and the campaign are
 /// checked against the caller's sites first (ISiteScope; another site's campaign answers NotFound, CWE-863, CWE-204); then one
 /// computation per campaign runs apart from its callers in a scope of its own (<see cref="SingleFlight{T}"/>, a timeout and a
 /// host-wide limit), reading only the campaign's site and the campaign's own rows (the site code and campaign id the caller's
@@ -35,14 +36,10 @@ internal sealed partial class SvcValidationResults
 
     #region Service
 
-    public async Task<Result<ValidationResultsViewModel>> GetAsync(string siteCode, Guid campaignId, CancellationToken ct = default)
-    {
-        if (!await VisibleAsync(siteCode, ct) || await CampaignAsync(siteCode, campaignId, ct) is null)
-            return Result.Error<ValidationResultsViewModel>(ValidationErrors.NotFound);
-        return await flights.RunAsync(campaignId, token => ComputeApartAsync(siteCode, campaignId, token), ct);
-    }
-
-    /// <summary>The computation in a scope of its own (its own unit of work), so no caller's request scope ends under it.</summary>
+    /// <summary>
+    /// The computation in a scope of its own (its own unit of work), so no caller's request scope ends under it. The caller has
+    /// checked the site and the campaign against its own sites (ARV-104g: <see cref="GetAsync"/>, <see cref="RecomputeAsync"/>).
+    /// </summary>
     private async Task<Result<ValidationResultsViewModel>> ComputeApartAsync(string siteCode, Guid campaignId, CancellationToken ct)
     {
         await using var scope = scopes.CreateAsyncScope();
@@ -125,6 +122,10 @@ internal sealed partial class SvcValidationResults
         TimeZoneInfo siteZone, bool sliced, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(campaign);
+        // ARV-104g (M3 of the ARV-104g2 review): a campaign beyond the zone-days a computation may hold in memory is refused before
+        // any row is read (campaigns planned before the bound existed; new ones are refused at planning).
+        if (!ValidationCampaign.IsWithinZoneDays(campaign.Zones.Count, campaign.Days.Count))
+            return Result.Error<Compared>(ValidationResultsErrors.TooManyZoneDays);
         var tooLarge = Result.Error<Compared>(ValidationResultsErrors.TooLarge);
         var site = campaign.SiteCode;
         var scope = ComparisonScope.Of(campaign, siteZone);

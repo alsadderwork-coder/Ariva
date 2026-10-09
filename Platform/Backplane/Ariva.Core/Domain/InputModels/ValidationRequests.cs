@@ -74,3 +74,11 @@ public sealed record DeskMinutesRequest(
 public sealed record CorrectDeskObservationRequest(
     [MaxLength(16)] string State,
     [MaxLength(DeskObservation.MaxReasonLength)] string Reason);
+
+/// <summary>
+/// A recomputation of a closed campaign's frozen results (ARV-104g): why they are computed again (1 to
+/// <see cref="ViewModels.ValidationResultsViewModel.MaxReasonLength"/> characters, stored with the new revision and audited). The
+/// earlier revisions stay as they are; the new one is the next revision.
+/// </summary>
+public sealed record RecomputeValidationResultsRequest(
+    [MaxLength(ViewModels.ValidationResultsViewModel.MaxReasonLength)] string Reason);

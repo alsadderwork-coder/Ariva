@@ -3552,6 +3552,43 @@
     {
       "host": "main",
       "method": "GET",
+      "route": "/api/v1/sites/{siteCode}/validation/campaigns/{id:guid}/results",
+      "access": "permission",
+      "permissions": [
+        "ViewValidation"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/sites/{siteCode}/validation/campaigns/{id:guid}/results/revisions",
+      "access": "permission",
+      "permissions": [
+        "ManageValidation"
+      ],
+      "body": {
+        "reason": "Permission matrix"
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
       "route": "/api/v1/sites/{siteCode}/validation/campaigns/{id:guid}/counts",
       "access": "permission",
       "permissions": [

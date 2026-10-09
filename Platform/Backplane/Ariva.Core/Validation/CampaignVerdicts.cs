@@ -41,7 +41,11 @@ public enum CampaignVerdictReason
     /// <summary>A unit had fewer judged items than the campaign's target count (no data, whatever the items judged showed).</summary>
     TooFewJudged,
 
-    /// <summary>The campaign holds nothing this criterion applies to (no desks, no zone that counts tracks).</summary>
+    /// <summary>
+    /// The campaign holds nothing this criterion applies to: no desks; for track completion, no zone counted tracks (not tracked,
+    /// or every tracker silent), always shown next to the review flag <see cref="CampaignReview.ZonesWithoutTracks"/> (wording of
+    /// the ARV-104g2 re-check, ARV-104g).
+    /// </summary>
     NotInScope,
 
     /// <summary>With <see cref="ExclusionRule.Capped"/>: the excluded share is above the cap (a fail).</summary>

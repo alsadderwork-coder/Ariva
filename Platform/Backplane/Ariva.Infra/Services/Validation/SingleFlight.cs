@@ -8,13 +8,15 @@ namespace Ariva.Infra.Services.Validation;
 /// The computation runs apart from its callers: a caller that stops waiting (its request ends) cancels neither the computation
 /// nor the other callers' wait; only the timeout cancels it, its wait for a turn included, and then every caller gets
 /// <paramref name="timedOut"/> as an error. The flight ends when its computation does, so a later call computes again.
-/// Holds the flights as tasks only, never their results once they end.
+/// Holds the flights as tasks only, never their results once they end. A flight is keyed by an id and a purpose (ARV-104g: the
+/// live results of a campaign, its freeze, its recomputation), so flights of different purposes never share a result, while the
+/// host-wide limit counts them all.
 /// </summary>
 internal sealed class SingleFlight<T>(int maxConcurrent, TimeSpan timeout, TimeProvider timeProvider, string timedOut)
 {
     #region Fields
 
-    private readonly ConcurrentDictionary<Guid, Lazy<Task<Result<T>>>> _flights = new();
+    private readonly ConcurrentDictionary<(Guid Key, string Purpose), Lazy<Task<Result<T>>>> _flights = new();
     private readonly SemaphoreSlim _turns = new(maxConcurrent, maxConcurrent);
 
     #endregion
@@ -32,12 +34,22 @@ internal sealed class SingleFlight<T>(int maxConcurrent, TimeSpan timeout, TimeP
     /// The result of <paramref name="work"/> for <paramref name="key"/>: the flight already under way for it, or a new one.
     /// <paramref name="ct"/> ends only this caller's wait.
     /// </summary>
-    public Task<Result<T>> RunAsync(Guid key, Func<CancellationToken, Task<Result<T>>> work, CancellationToken ct)
+    public Task<Result<T>> RunAsync(Guid key, Func<CancellationToken, Task<Result<T>>> work, CancellationToken ct) => RunAsync(key, string.Empty, work, ct);
+
+    /// <summary>Whether a flight for <paramref name="key"/> and <paramref name="purpose"/> is computing or waiting for a turn now.</summary>
+    public bool IsFlying(Guid key, string purpose) => _flights.ContainsKey((key, purpose ?? string.Empty));
+
+    /// <summary>
+    /// The result of <paramref name="work"/> for <paramref name="key"/> and <paramref name="purpose"/>: the flight already under
+    /// way for both, or a new one. <paramref name="ct"/> ends only this caller's wait.
+    /// </summary>
+    public Task<Result<T>> RunAsync(Guid key, string purpose, Func<CancellationToken, Task<Result<T>>> work, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(work);
+        var id = (key, purpose ?? string.Empty);
         Lazy<Task<Result<T>>> mine = null;
-        mine = new Lazy<Task<Result<T>>>(() => Start(key, work, mine), LazyThreadSafetyMode.ExecutionAndPublication);
-        var flight = _flights.GetOrAdd(key, mine);
+        mine = new Lazy<Task<Result<T>>>(() => Start(id, work, mine), LazyThreadSafetyMode.ExecutionAndPublication);
+        var flight = _flights.GetOrAdd(id, mine);
         try
         {
             return flight.Value.WaitAsync(ct);
@@ -46,12 +58,12 @@ internal sealed class SingleFlight<T>(int maxConcurrent, TimeSpan timeout, TimeP
         {
             // A flight that could not start would stay in the Lazy, its exception cached, and fail the key until a restart (L4 of
             // the ARV-104g2 review): it leaves, so the next call starts afresh.
-            _flights.TryRemove(new KeyValuePair<Guid, Lazy<Task<Result<T>>>>(key, flight));
+            _flights.TryRemove(new KeyValuePair<(Guid Key, string Purpose), Lazy<Task<Result<T>>>>(id, flight));
             throw;
         }
     }
 
-    private Task<Result<T>> Start(Guid key, Func<CancellationToken, Task<Result<T>>> work, Lazy<Task<Result<T>>> flight)
+    private Task<Result<T>> Start((Guid Key, string Purpose) key, Func<CancellationToken, Task<Result<T>>> work, Lazy<Task<Result<T>>> flight)
     {
         // Apart from the caller: no request state (its user, its scope, any AsyncLocal) flows into the computation. When the
         // caller has already suppressed the flow, suppressing it again would throw; nothing flows either way.
@@ -61,7 +73,7 @@ internal sealed class SingleFlight<T>(int maxConcurrent, TimeSpan timeout, TimeP
             return Task.Run(() => FlyAsync(key, work, flight));
     }
 
-    private async Task<Result<T>> FlyAsync(Guid key, Func<CancellationToken, Task<Result<T>>> work, Lazy<Task<Result<T>>> flight)
+    private async Task<Result<T>> FlyAsync((Guid Key, string Purpose) key, Func<CancellationToken, Task<Result<T>>> work, Lazy<Task<Result<T>>> flight)
     {
         using var limit = new CancellationTokenSource(timeout, timeProvider);
         var turn = false;
@@ -79,7 +91,7 @@ internal sealed class SingleFlight<T>(int maxConcurrent, TimeSpan timeout, TimeP
         {
             if (turn)
                 _turns.Release();
-            _flights.TryRemove(new KeyValuePair<Guid, Lazy<Task<Result<T>>>>(key, flight));
+            _flights.TryRemove(new KeyValuePair<(Guid Key, string Purpose), Lazy<Task<Result<T>>>>(key, flight));
         }
     }
 

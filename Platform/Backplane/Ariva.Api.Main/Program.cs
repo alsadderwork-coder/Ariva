@@ -103,6 +103,10 @@ builder.Services.AddArivaOpenApi(builder.Configuration, builder.Environment.Envi
 // Ariva.Api.Main signs users in and issues tokens (ADR-0026); the other hosts only validate them.
 builder.Services.AddArivaTokenIssuing(builder.Configuration, builder.Environment.EnvironmentName);
 
+// Validation results (ARV-104g2 service, ARV-104g endpoints): settings, the host-wide single-flight of computations, the
+// site-scoped service, the background freeze of closed campaigns and the results' request timeout policy.
+builder.Services.AddArivaValidationResults(builder.Configuration);
+
 // Integration clients (ARV-042): administrators register the systems that call the Integration API.
 builder.Services.AddArivaIntegrationClients();
 builder.Services.AddArivaOutboundEndpoints(builder.Configuration, builder.Environment.EnvironmentName);
@@ -154,6 +158,8 @@ app.UseSessionValidation();
 app.UsePendingScope();
 // AMAN: UseSessionContext
 app.UseAuthorization();
+// Request timeouts after routing and authorization: only endpoints with a policy ([RequestTimeout], the validation results) get one.
+app.UseRequestTimeouts();
 
 #endregion
 

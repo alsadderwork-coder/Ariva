@@ -233,8 +233,14 @@ public sealed class ValidationResultsTests(PostgresFixture fixture) : IAsyncDisp
     private Task<T> As<T>(Guid caller, Func<IServiceProvider, Task<T>> work, bool withReader = true) =>
         (withReader ? _runtime : _withoutReader).AsCallerAsync(caller, work);
 
-    private Task<Fluentx.Result<ValidationResultsViewModel>> ResultsAsync(Guid caller, string site, Guid campaign, bool withReader = true) =>
-        As(caller, s => s.GetRequiredService<ISvcValidationResults>().GetAsync(site, campaign, Ct), withReader);
+    /// <summary>The results as served to the caller (ARV-104g: the projection's JSON), read back.</summary>
+    private async Task<Fluentx.Result<ValidationResultsViewModel>> ResultsAsync(Guid caller, string site, Guid campaign, bool withReader = true)
+    {
+        var served = await As(caller, s => s.GetRequiredService<ISvcValidationResults>().GetAsync(site, campaign, null, Ct), withReader);
+        return served.HasErrors
+            ? Fluentx.Result.Error<ValidationResultsViewModel>(served.ErrorMessages)
+            : new Fluentx.Result<ValidationResultsViewModel>(ValidationResultsViewModel.FromJson(served.Data.Utf8.Span));
+    }
 
     /// <summary>
     /// A running campaign over Q-A and Q-B, Entry A and desk D01 on 1 October (targets: 1 bin per line, 2 tracer runs), its
@@ -275,6 +281,79 @@ public sealed class ValidationResultsTests(PostgresFixture fixture) : IAsyncDisp
 
     private static CampaignCriterionVerdict Criterion(ValidationResultsViewModel results, CampaignCriterion criterion) =>
         results.Criteria.Single(c => c.Criterion == criterion);
+
+    /// <summary>The results as served to the caller (ARV-104g), a revision or the latest.</summary>
+    private Task<Fluentx.Result<ValidationResultsJson>> ServedAsync(Guid caller, string site, Guid campaign, int? revision = null) =>
+        As(caller, s => s.GetRequiredService<ISvcValidationResults>().GetAsync(site, campaign, revision, Ct));
+
+    private Task<Fluentx.Result<ValidationResultsJson>> RecomputeAsync(Guid caller, string site, Guid campaign, string reason) =>
+        As(caller, s => s.GetRequiredService<ISvcValidationResults>().RecomputeAsync(site, campaign, new RecomputeValidationResultsRequest(reason), Ct));
+
+    private static ValidationResultsViewModel Read(Fluentx.Result<ValidationResultsJson> served)
+    {
+        served.HasErrors.Should().BeFalse(string.Join(" ", served.ErrorMessages ?? []));
+        return ValidationResultsViewModel.FromJson(served.Data.Utf8.Span);
+    }
+
+    private async Task CloseAsync(Planted p, Guid campaign)
+    {
+        var closed = await As(p.Manager, s => s.GetRequiredService<ISvcValidationCampaigns>().CloseAsync(p.Site, campaign, Ct));
+        closed.HasErrors.Should().BeFalse(string.Join(" ", closed.ErrorMessages ?? []));
+    }
+
+    /// <summary>One row of a query as the admin login (the test's own reads of what the service stored).</summary>
+    private async Task<object[]> RowAsync([System.Diagnostics.CodeAnalysis.ConstantExpected] string sql, params (string Name, object Value)[] parameters)
+    {
+        await using var connection = new NpgsqlConnection(fixture.ConnectionString(await _admin.DatabaseAsync()));
+        await connection.OpenAsync(Ct);
+#pragma warning disable CA2100 // test helper: every caller passes a literal
+        await using var command = new NpgsqlCommand(sql, connection);
+#pragma warning restore CA2100
+        foreach (var (name, value) in parameters)
+            command.Parameters.AddWithValue(name, value);
+        await using var reader = await command.ExecuteReaderAsync(Ct);
+        if (!await reader.ReadAsync(Ct))
+            return null;
+        var row = new object[reader.FieldCount];
+        reader.GetValues(row);
+        return [.. row.Select(v => v is DBNull ? null : v)];
+    }
+
+    /// <summary>A statement as the runtime login, the hosts' own: the SQLSTATE it is refused with, or null.</summary>
+    private async Task<string> AsRuntimeAsync([System.Diagnostics.CodeAnalysis.ConstantExpected] string sql, params (string Name, object Value)[] parameters)
+    {
+        var builder = new NpgsqlConnectionStringBuilder(fixture.ConnectionString(await _admin.DatabaseAsync())) { Username = RuntimeLogin, Password = RuntimePassword, Pooling = false };
+        await using var connection = new NpgsqlConnection(builder.ConnectionString);
+        await connection.OpenAsync(Ct);
+#pragma warning disable CA2100 // test helper: every caller passes a literal
+        await using var command = new NpgsqlCommand(sql, connection);
+#pragma warning restore CA2100
+        foreach (var (name, value) in parameters)
+            command.Parameters.AddWithValue(name, value);
+        try
+        {
+            await command.ExecuteNonQueryAsync(Ct);
+            return null;
+        }
+        catch (PostgresException e)
+        {
+            return e.SqlState;
+        }
+    }
+
+    /// <summary>A statement as the admin login: the SQLSTATE it is refused with, or null.</summary>
+    private async Task<string> RefusedAsync([System.Diagnostics.CodeAnalysis.ConstantExpected] string sql, params (string Name, object Value)[] parameters)
+    {
+        try
+        {
+            await ExecuteAsync(sql, parameters);
+            return null;
+        }
+        catch (PostgresException e)
+        {
+            return e.SqlState;
+        }
+    }
 
     #endregion
 
@@ -332,7 +411,7 @@ public sealed class ValidationResultsTests(PostgresFixture fixture) : IAsyncDisp
         results.Nowcast.CoverageOverall.PlannedMinutes.Should().Be(2880);
 
         // Desks: this campaign's 15 observed minutes only, all agreeing (the rehearsal's Idle minutes are not read).
-        results.Desks.Minutes.Should().HaveCount(15).And.OnlyContain(m => m.Agrees == true && m.MinuteUtc < Utc(6, 15));
+        (results.Desks.Overall.Minutes, results.Desks.Overall.Judged, results.Desks.Overall.Agreeing).Should().Be((15, 15, 15));
         results.Desks.Verdict.Verdict.Should().Be(CriterionVerdict.Pass);
         results.Desks.Verdict.Value.Should().Be(1.0);
 
@@ -399,10 +478,10 @@ public sealed class ValidationResultsTests(PostgresFixture fixture) : IAsyncDisp
         read.HasErrors.Should().BeFalse(string.Join(" ", read.ErrorMessages ?? []));
         var results = read.Data;
         results.Counts.Bins.Should().NotBeEmpty().And.OnlyContain(b => b.Standing != ComparisonStanding.Good, "no stored bin of VRC2 covers them");
-        results.Nowcast.Minutes.Should().BeEmpty();
+        results.Nowcast.Overall.Published.Minutes.Should().Be(0);
         results.Nowcast.Overall.Both.Minutes.Should().Be(0);
         results.Observers.Runs.Should().OnlyContain(r => r.SystemWaitMinutes == null);
-        results.Desks.Minutes.Should().OnlyContain(m => !m.SystemStored);
+        results.Desks.Overall.WithoutSystemMinute.Should().Be(results.Desks.Overall.Judged);
         results.TrackCompletion.Should().OnlyContain(z => z.Good.Bins == 0);
         results.Calibrations.Should().BeEmpty();
         results.Availability.Total.RecordedMinutes.Should().Be(0);
@@ -449,7 +528,8 @@ public sealed class ValidationResultsTests(PostgresFixture fixture) : IAsyncDisp
             SvcValidationResults Limited(int limit) => new(s.GetRequiredService<IUnitOfWork>(), s.GetRequiredService<ICurrentUser>(), TimeProvider.System,
                 s.GetRequiredService<ISiteScope>(), s.GetRequiredService<ReportReader>(), s.GetRequiredService<IServiceScopeFactory>(),
                 s.GetRequiredService<SingleFlight<ValidationResultsViewModel>>(), new ValidationResultsSettings(), null, s.GetRequiredService<DatabaseSettings>(),
-                s.GetRequiredService<ValidationReaderSettings>()) { RowLimit = limit };
+                s.GetRequiredService<ValidationReaderSettings>(), s.GetRequiredService<Ariva.Infra.Services.Administration.CallerRoles>(),
+                s.GetRequiredService<Ariva.Infra.Services.Administration.AuditTrail>()) { RowLimit = limit };
             var entity = await Limited(1_000).CampaignByIdAsync("VRF1", campaign, Ct);
 
             (await Limited(14).DeskObservationsAsync(entity, Ct)).Should().BeNull("a ground-truth read beyond its limit is refused");
@@ -507,4 +587,262 @@ public sealed class ValidationResultsTests(PostgresFixture fixture) : IAsyncDisp
 
         (await ValidationReaderLoginTests.Results(database, reader).ReadShadowAsync("VRE1", ["Q-A"], Utc(0, 0), Utc(23, 0), Ct)).HasErrors.Should().BeFalse();
     }
+
+    #region ARV-104g: frozen at close, served per caller
+
+    [Fact]
+    public async Task Freeze_Should_StoreRevisionOneWithTheHashOfItsBytesAndServeItUnchanged_When_TheCampaignIsClosed()
+    {
+        var p = await PlantSiteAsync("VRG1", "VQI");
+        await PlantOutputsAsync(p, 8.2, 8, 7, "Serving", 9, 0.95, 100, "CAM-G1");
+        var campaign = await CampaignAsync(p, "Frozen", 100, "2026-10-01T06:00:00Z", "Serving");
+
+        // Running: computed when asked, never stored.
+        var live = Read(await ServedAsync(p.Manager, "VRG1", campaign));
+        live.Revision.Should().BeNull();
+        (await RowAsync("SELECT count(*) FROM validation_result_revision WHERE campaign_id = @c", ("c", campaign)))[0].Should().Be(0L);
+
+        await CloseAsync(p, campaign);
+        var first = await ServedAsync(p.Manager, "VRG1", campaign);
+        var frozen = Read(first);
+
+        frozen.Status.Should().Be("Closed");
+        frozen.Revision.Should().Match<ValidationResultsViewModel.RevisionView>(r => r.Number == 1 && r.Revisions == 1 && r.Reason == null);
+        frozen.Revision.ContentSha256.Should().MatchRegex("^[0-9a-f]{64}$").And.Be(first.Data.ContentSha256);
+        first.Data.Revision.Should().Be(1);
+        frozen.Criteria.Should().HaveCount(6);
+        // The hash is of the exact stored bytes: the database computes the same, and the document read back is the same results.
+        var stored = await RowAsync("""
+            SELECT encode(sha256(document), 'hex'), content_sha256, reason, frozen_by_id, document, revision FROM validation_result_revision WHERE campaign_id = @c
+            """, ("c", campaign));
+        ((string)stored[0]).Should().Be(frozen.Revision.ContentSha256);
+        ((string)stored[1]).Should().Be(frozen.Revision.ContentSha256);
+        (stored[2], stored[3], stored[5]).Should().Be((null, null, 1));
+        ValidationResultsViewModel.Hash((byte[])stored[4]).Should().Be(frozen.Revision.ContentSha256);
+        System.Text.Encoding.UTF8.GetString((byte[])stored[4]).Should().Contain("\"revision\":null,\"audience\":null").And.NotContain("Omar");
+
+        // Served from the stored document from now on: the same bytes, not a new computation.
+        var again = await ServedAsync(p.Manager, "VRG1", campaign);
+        again.Data.Utf8.ToArray().Should().Equal(first.Data.Utf8.ToArray());
+        (await ServedAsync(p.Manager, "VRG1", campaign, revision: 1)).Data.Utf8.ToArray().Should().Equal(first.Data.Utf8.ToArray());
+
+        // Audited as the system that froze it, against the revision.
+        var audit = await RowAsync("""
+            SELECT a.action, a.actor_name, a.after_summary FROM audit_entry a JOIN validation_result_revision r ON r.id = a.target_id WHERE r.campaign_id = @c
+            """, ("c", campaign));
+        ((string)audit[0], (string)audit[1]).Should().Be(("ValidationResults.Frozen", "validation-results-freeze"));
+        ((string)audit[2]).Should().Contain($"revision=1; sha256={frozen.Revision.ContentSha256}");
+
+        // Never edited: the runtime login holds no UPDATE, DELETE or TRUNCATE; the owner meets the trigger; a hash of anything else,
+        // a revision skipped, or a later revision without a reason or a person are refused by the table.
+        (await AsRuntimeAsync("UPDATE validation_result_revision SET reason = 'x' WHERE campaign_id = @c", ("c", campaign))).Should().Be("42501");
+        (await AsRuntimeAsync("DELETE FROM validation_result_revision WHERE campaign_id = @c", ("c", campaign))).Should().Be("42501");
+        (await AsRuntimeAsync("TRUNCATE validation_result_revision")).Should().Be("42501");
+        (await RefusedAsync("UPDATE validation_result_revision SET computed_utc = now() WHERE campaign_id = @c", ("c", campaign))).Should().Be("23001");
+        (await RefusedAsync("DELETE FROM validation_result_revision WHERE campaign_id = @c", ("c", campaign))).Should().Be("23001");
+        (await RefusedAsync("""
+            INSERT INTO validation_result_revision (id, campaign_id, site_code, revision, reason, document, content_sha256, computed_utc, frozen_utc, frozen_by_id)
+            VALUES (gen_random_uuid(), @c, 'VRG1', 2, 'x', '\x7b7d', repeat('a', 64), now(), now(), @by)
+            """, ("c", campaign), ("by", p.Manager))).Should().Be("23514", "the hash must be the bytes' own");
+        (await RefusedAsync("""
+            INSERT INTO validation_result_revision (id, campaign_id, site_code, revision, reason, document, content_sha256, computed_utc, frozen_utc, frozen_by_id)
+            VALUES (gen_random_uuid(), @c, 'VRG1', 3, 'x', '\x7b7d', encode(sha256('\x7b7d'), 'hex'), now(), now(), @by)
+            """, ("c", campaign), ("by", p.Manager))).Should().Be("23514", "revision 3 does not follow revision 1");
+        (await RefusedAsync("""
+            INSERT INTO validation_result_revision (id, campaign_id, site_code, revision, reason, document, content_sha256, computed_utc, frozen_utc, frozen_by_id)
+            VALUES (gen_random_uuid(), @c, 'VRG1', 2, NULL, '\x7b7d', encode(sha256('\x7b7d'), 'hex'), now(), now(), NULL)
+            """, ("c", campaign))).Should().Be("23514", "a recomputation has a reason and a person");
+    }
+
+    [Fact]
+    public async Task Recompute_Should_AddTheNextRevisionWithItsReasonAndKeepTheEarlierOne_When_AManagerAsks()
+    {
+        var p = await PlantSiteAsync("VRH1", "VQJ");
+        var other = await PlantSiteAsync("VRH2", "VQK");
+        await PlantOutputsAsync(p, 8.2, 8, 7, "Serving", 9, 0.95, 100, "CAM-H2");
+        var campaign = await CampaignAsync(p, "Recomputed", 100, "2026-10-01T06:00:00Z", "Serving");
+        var running = await CampaignAsync(p, "Still running", 50, "2026-10-01T06:30:00Z", "Serving");
+        await CloseAsync(p, campaign);
+
+        // Not frozen yet: nothing to add a revision to.
+        (await RecomputeAsync(p.Manager, "VRH1", campaign, "Too early")).ErrorMessages.Should().Equal(ValidationResultsErrors.NotFrozen);
+        var first = Read(await ServedAsync(p.Manager, "VRH1", campaign));
+
+        var second = await RecomputeAsync(p.Manager, "VRH1", campaign, "  Late desk corrections  ");
+        var recomputed = Read(second);
+
+        recomputed.Revision.Should().Match<ValidationResultsViewModel.RevisionView>(r => r.Number == 2 && r.Revisions == 2 && r.Reason == "Late desk corrections");
+        recomputed.Revision.ContentSha256.Should().Be(first.Revision.ContentSha256,
+            "the same stored rows computed at the same instant (the test clock) give the same document: the hash is of the content alone");
+        Read(await ServedAsync(p.Manager, "VRH1", campaign)).Revision.Number.Should().Be(2, "the latest revision is served");
+        var earlier = Read(await ServedAsync(p.Manager, "VRH1", campaign, revision: 1));
+        (earlier.Revision.Number, earlier.Revision.Revisions, earlier.Revision.ContentSha256, earlier.ComputedUtc)
+            .Should().Be((1, 2, first.Revision.ContentSha256, first.ComputedUtc), "revision 1 stays exactly as frozen");
+        var row = await RowAsync("SELECT frozen_by_id, reason FROM validation_result_revision WHERE campaign_id = @c AND revision = 2", ("c", campaign));
+        ((Guid)row[0], (string)row[1]).Should().Be((p.Manager, "Late desk corrections"));
+        var audit = await RowAsync("""
+            SELECT a.action, a.actor_id, a.after_summary FROM audit_entry a JOIN validation_result_revision r ON r.id = a.target_id
+             WHERE r.campaign_id = @c AND r.revision = 2
+            """, ("c", campaign));
+        ((string)audit[0], (Guid)audit[1]).Should().Be(("ValidationResults.Recomputed", p.Manager));
+        ((string)audit[2]).Should().Contain("reason=\"Late desk corrections\"");
+
+        // Refused: a reason that is empty or not clean (400), a campaign not closed (409), another site (404), a revision that does
+        // not exist (404) or is out of range (400).
+        (await RecomputeAsync(p.Manager, "VRH1", campaign, " ")).ErrorMessages.Should().Equal(ValidationResultsErrors.InvalidReason);
+        (await RecomputeAsync(p.Manager, "VRH1", campaign, "bell\u0007")).ErrorMessages.Should().Equal(ValidationResultsErrors.InvalidReason);
+        (await RecomputeAsync(p.Manager, "VRH1", campaign, new string('r', 501))).ErrorMessages.Should().Equal(ValidationResultsErrors.InvalidReason);
+        (await RecomputeAsync(p.Manager, "VRH1", running, "Not closed")).ErrorMessages.Should().Equal(ValidationResultsErrors.NotFrozen);
+        (await RecomputeAsync(other.Manager, "VRH1", campaign, "Another site")).ErrorMessages.Should().Equal(ValidationErrors.NotFound);
+        (await RecomputeAsync(other.Manager, "VRH2", campaign, "Another site")).ErrorMessages.Should().Equal(ValidationErrors.NotFound);
+        (await ServedAsync(other.Manager, "VRH1", campaign, revision: 1)).ErrorMessages.Should().Equal(ValidationErrors.NotFound);
+        (await ServedAsync(p.Manager, "VRH1", campaign, revision: 3)).ErrorMessages.Should().Equal(ValidationErrors.NotFound);
+        (await ServedAsync(p.Manager, "VRH1", campaign, revision: 0)).ErrorMessages.Should().Equal(ValidationResultsErrors.InvalidRevision);
+        (await ServedAsync(p.Manager, "VRH1", running, revision: 1)).ErrorMessages.Should().Equal(ValidationErrors.NotFound);
+        (await RowAsync("SELECT count(*) FROM validation_result_revision WHERE campaign_id = @c", ("c", campaign)))[0].Should().Be(2L);
+    }
+
+    [Fact]
+    public async Task Served_Should_FollowTheCallersStoredRoles_When_AnAirportRoleAnObserverAndABorderManagerRead()
+    {
+        var p = await PlantSiteAsync("VRI1", "VQL");
+        await PlantOutputsAsync(p, 8.2, 8, 7, "Serving", 9, 0.95, 100, "CAM-I1");
+        var campaign = await CampaignAsync(p, "Served", 100, "2026-10-01T06:00:00Z", "Serving");
+        await CloseAsync(p, campaign);
+        var host = await RuntimeAsync();
+        var duty = await host.CreateUserAsync($"it.vres.tdm.{Guid.NewGuid():N}"[..32], roles: [RoleCodes.TerminalDutyManager]);
+        await ExecuteAsync("INSERT INTO user_site (id, user_id, site_code) VALUES (gen_random_uuid(), @user, 'VRI1')", ("user", duty));
+
+        var border = Read(await ServedAsync(p.Manager, "VRI1", campaign));
+        var airport = await ServedAsync(duty, "VRI1", campaign);
+        var observer = Read(await ServedAsync(p.Observer, "VRI1", campaign));
+
+        border.Audience.Should().Be(new ValidationResultsViewModel.AudienceView(true, ValidationResultsViewModel.ObserverResults.All, true));
+        border.Desks.Overall.Minutes.Should().Be(15);
+        var asAirport = Read(airport);
+        asAirport.Desks.Should().BeNull("desk-state results are border data, never an airport role's");
+        System.Text.Encoding.UTF8.GetString(airport.Data.Utf8.Span).Should().NotContain("D01").And.NotContain("VRI1/IMM");
+        asAirport.Observers.Runs.Should().HaveCount(2, "a duty manager holds Validation.View: every observer's runs");
+        asAirport.Nowcast.Overall.Both.Should().NotBeNull("Validation.View holders read the proof");
+        asAirport.Revision.ContentSha256.Should().Be(border.Revision.ContentSha256, "one stored document, projected per caller");
+        observer.Audience.Should().Be(new ValidationResultsViewModel.AudienceView(false, ValidationResultsViewModel.ObserverResults.Own, false));
+        observer.Observers.Runs.Should().HaveCount(2).And.OnlyContain(r => r.ObserverId == p.Observer);
+        observer.Nowcast.Overall.Shadow.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Stored_Should_NotBeServed_When_TheDocumentIsNotThisCampaignsResults()
+    {
+        var p = await PlantSiteAsync("VRJ1", "VQM");
+        await PlantOutputsAsync(p, 8.2, 8, 7, "Serving", 9, 0.95, 100, "CAM-J1");
+        var a = await CampaignAsync(p, "Source", 100, "2026-10-01T06:00:00Z", "Serving");
+        var b = await CampaignAsync(p, "Target", 50, "2026-10-01T06:30:00Z", "Serving");
+        await CloseAsync(p, a);
+        await CloseAsync(p, b);
+        Read(await ServedAsync(p.Manager, "VRJ1", a));
+
+        // A hand-written revision of B holding A's document with A's (correct) hash: the database accepts it, the service does not serve it.
+        await ExecuteAsync("""
+            INSERT INTO validation_result_revision (id, campaign_id, site_code, revision, reason, document, content_sha256, computed_utc, frozen_utc, frozen_by_id)
+            SELECT gen_random_uuid(), @b, site_code, 1, NULL, document, content_sha256, computed_utc, frozen_utc, NULL FROM validation_result_revision WHERE campaign_id = @a
+            """, ("a", a), ("b", b));
+
+        (await ServedAsync(p.Manager, "VRJ1", b)).ErrorMessages.Should().Equal(ValidationResultsErrors.Corrupt);
+    }
+
+    [Fact]
+    public async Task Freezer_Should_FreezeEveryClosedCampaignOnce_When_ItPasses()
+    {
+        var p = await PlantSiteAsync("VRK1", "VQN");
+        await PlantOutputsAsync(p, 8.2, 8, 7, "Serving", 9, 0.95, 100, "CAM-K1");
+        var one = await CampaignAsync(p, "First closed", 100, "2026-10-01T06:00:00Z", "Serving");
+        var two = await CampaignAsync(p, "Second closed", 50, "2026-10-01T06:30:00Z", "Serving");
+        var open = await CampaignAsync(p, "Still open", 40, "2026-10-01T06:45:00Z", "Serving");
+        await CloseAsync(p, one);
+        await CloseAsync(p, two);
+        var host = await RuntimeAsync();
+        var freezer = new ValidationResultsFreezer(host.Provider.GetRequiredService<IServiceScopeFactory>(), new ValidationResultsSettings(), TimeProvider.System,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<ValidationResultsFreezer>.Instance);
+
+        (await freezer.PassAsync(Ct)).Should().BeGreaterThanOrEqualTo(2);
+        (await freezer.PassAsync(Ct)).Should().Be(0, "a frozen campaign is never frozen again");
+
+        foreach (var (campaign, revisions) in new[] { (one, 1L), (two, 1L), (open, 0L) })
+            (await RowAsync("SELECT count(*) FROM validation_result_revision WHERE campaign_id = @c", ("c", campaign)))[0].Should().Be(revisions);
+        Read(await ServedAsync(p.Manager, "VRK1", one)).Revision.Number.Should().Be(1, "a read serves what the freeze stored");
+    }
+
+    [Fact]
+    public async Task FreezeDue_Should_ReachANewerCampaign_When_MoreThanAPassOfOlderCampaignsAreWaitingToRetry()
+    {
+        // M3 of the first review: the campaigns the freeze waits to retry are left out before the query's limit, so more of them than
+        // one pass holds never starve a newer campaign.
+        var p = await PlantSiteAsync("VRL1", "VQO");
+        var host = await RuntimeAsync();
+        Task<IReadOnlyList<(Guid Campaign, string Error)>> DueAsync(IReadOnlyCollection<Guid> skip, int limit) =>
+            host.AsCallerAsync(null, s => s.GetRequiredService<SvcValidationResults>().FreezeDueAsync(skip, limit, Ct));
+        await DueAsync([], 100); // what earlier tests left closed and unfrozen
+        var failing = new List<Guid>();
+        for (var i = 0; i < ValidationResultsFreezer.PassSize + 1; i++)
+            failing.Add(await ClosedCampaignAsync(p, $"Failing {i}"));
+        var newer = await ClosedCampaignAsync(p, "Newer");
+
+        var outcomes = await DueAsync(failing, ValidationResultsFreezer.PassSize);
+
+        outcomes.Should().ContainSingle().Which.Should().Be((newer, (string)null));
+        foreach (var campaign in failing.Take(3))
+            (await RowAsync("SELECT count(*) FROM validation_result_revision WHERE campaign_id = @c", ("c", campaign)))[0].Should().Be(0L);
+        (await DueAsync([], 100)).Select(o => o.Campaign).Should().Contain(failing, "the skipped ones are still due once their retry time comes");
+    }
+
+    [Fact]
+    public async Task Freeze_Should_KeepOneRevisionAndAnswerEveryCaller_When_SeveralFreezeTheSameCampaignAtOnce()
+    {
+        // L1 of the first review: freezes outside the shared flight (other replicas) race to insert revision 1; the trigger leaves
+        // a taken number to the unique key, so ON CONFLICT keeps the first and every freeze reads it back (no 23514, no 25P02).
+        var p = await PlantSiteAsync("VRM1", "VQP");
+        await PlantOutputsAsync(p, 8.2, 8, 7, "Serving", 9, 0.95, 100, "CAM-M1");
+        var campaign = await CampaignAsync(p, "Raced", 100, "2026-10-01T06:00:00Z", "Serving");
+        await CloseAsync(p, campaign);
+        var host = await RuntimeAsync();
+
+        async Task<string> FreezeAsync()
+        {
+            await using var scope = host.Provider.CreateAsyncScope();
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            var frozen = await scope.ServiceProvider.GetRequiredService<SvcValidationResults>().FreezeAsync("VRM1", campaign, Ct);
+            frozen.HasErrors.Should().BeFalse(string.Join(" ", frozen.ErrorMessages ?? []));
+            await unitOfWork.EndAsync(Ct);
+            return frozen.Data.Revision.ContentSha256;
+        }
+
+        var raced = await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => Task.Run(FreezeAsync, Ct)));
+
+        raced.Distinct().Should().ContainSingle("every freeze serves the one revision 1 stored");
+        (await RowAsync("SELECT count(*), max(revision) FROM validation_result_revision WHERE campaign_id = @c", ("c", campaign)))
+            .Should().Equal(1L, 1);
+
+        // L3: a read that freezes waits for the flight without a transaction of its own.
+        var other = await CampaignAsync(p, "Read and frozen", 50, "2026-10-01T06:30:00Z", "Serving");
+        await CloseAsync(p, other);
+        var openAfterRead = await As(p.Manager, async s =>
+        {
+            (await s.GetRequiredService<ISvcValidationResults>().GetAsync("VRM1", other, null, Ct)).HasErrors.Should().BeFalse();
+            return s.GetRequiredService<IUnitOfWork>().StorageProvider.IsTransactionActive();
+        });
+        openAfterRead.Should().BeFalse("the request's own unit of work only read");
+    }
+
+    /// <summary>A campaign planned, started and closed with no ground truth (cheap, for the freeze's queue).</summary>
+    private async Task<Guid> ClosedCampaignAsync(Planted p, string name)
+    {
+        var created = await As(p.Manager, s => s.GetRequiredService<ISvcValidationCampaigns>().CreateAsync(p.Site,
+            new CreateValidationCampaignRequest(name, 1, [p.QueueA], [p.EntryA], ["2026-10-01"], 1, 0, null), Ct));
+        created.HasErrors.Should().BeFalse(string.Join(" ", created.ErrorMessages ?? []));
+        (await As(p.Manager, s => s.GetRequiredService<ISvcValidationCampaigns>().StartAsync(p.Site, created.Data.Id, Ct))).HasErrors.Should().BeFalse();
+        await CloseAsync(p, created.Data.Id);
+        return created.Data.Id;
+    }
+
+    #endregion
 }

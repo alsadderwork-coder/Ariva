@@ -33,6 +33,14 @@ public partial class ValidationCampaign : EntityBase<ValidationCampaign>, ISiteB
     public const int MaxLines = 200;
     public const int MaxDays = 31;
 
+    /// <summary>
+    /// Queue zones in scope times planned days, at most (ARV-104g; M3 of the ARV-104g2 security review; Proposed): the results
+    /// keep every compared nowcast minute in memory while they are computed (about 300 bytes each), so a campaign at the zone and
+    /// day bounds (50 times 31: 2.2 million minutes, about 680 MB) would not fit api-main's 1000Mi. 400 zone-days (576,000
+    /// minutes) peak near 200 MB, measured by ValidationResultsMemoryTests; for example 50 zones for 8 days or 12 zones for 31.
+    /// </summary>
+    public const int MaxZoneDays = 400;
+
     /// <summary>Border desks in a campaign's scope, at most (ARV-104b).</summary>
     public const int MaxDesks = 100;
 
@@ -96,6 +104,8 @@ public partial class ValidationCampaign : EntityBase<ValidationCampaign>, ISiteB
             throw new ArgumentException(scope, nameof(lineIds));
         if (!AreValidDays(days, today))
             throw new ArgumentException(ValidationErrors.InvalidDays, nameof(days));
+        if (!IsWithinZoneDays(zoneIds.Count, days.Count))
+            throw new ArgumentException(ValidationErrors.TooManyZoneDays, nameof(days));
         if (!AreValidTargets(targetBinsPerLine, targetTracerRuns))
             throw new ArgumentException(ValidationErrors.InvalidTargets, nameof(targetBinsPerLine));
         desks ??= [];
@@ -349,6 +359,9 @@ public partial class ValidationCampaign : EntityBase<ValidationCampaign>, ISiteB
     public static bool AreValidDays(IReadOnlyCollection<DateOnly> days, DateOnly today) =>
         days is { Count: > 0 and <= MaxDays } && days.Distinct().Count() == days.Count &&
         days.All(day => day >= today.AddDays(-DaysBack) && day <= today.AddDays(DaysAhead));
+
+    /// <summary>At most <see cref="MaxZoneDays"/> queue zones times planned days (ARV-104g): a campaign whose results can be computed.</summary>
+    public static bool IsWithinZoneDays(int zones, int days) => (long)zones * days <= MaxZoneDays;
 
     /// <summary>Each target is empty (its placeholder) or within its bounds.</summary>
     public static bool AreValidTargets(int? binsPerLine, int? tracerRuns) =>

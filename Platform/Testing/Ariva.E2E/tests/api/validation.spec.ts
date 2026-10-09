@@ -914,3 +914,176 @@ test('attack payloads in tracer and desk batches are refused with 400 or kept as
 	});
 	expect(bigCorrection.status()).toBe(413);
 });
+
+// ARV-104g: a campaign's results as JSON under .../campaigns/{id}/results (Validation.View at the campaign's site; the answer is
+// projected per caller from its stored roles: desk-state results to border roles only, observer-level results to View or
+// Manage holders, the shadow's figures to View holders), frozen at the close as revision 1 of a stored document with a SHA-256
+// content hash (script 0050), read again by ?revision=n, and recomputed as the next revision with a reason under
+// .../results/revisions (Validation.Manage with a second factor, audited). The E2E site has no sensors, so the verdicts are
+// no data; the shapes, the serving rules, the freeze and the hash are what these tests prove.
+
+const results = (id: string, code = site, suffix = '') => `${campaigns(code)}/${id}/results${suffix}`;
+const criteriaNames = ['CountAccuracy', 'WaitError', 'WaitBias', 'TrackCompletion', 'NowcastError', 'Availability'];
+
+/** The validation manager signed in again with a second factor now (recomputing is a critical action, 15 minutes). */
+async function managerWithSecondFactor(): Promise<string> {
+	const { userName, password, totpSecret } = accounts().validationManager;
+	const signedIn = await login(userName, password, undefined, undefined, { code: await unusedTotpCode(totpSecret!) });
+	expect(signedIn.status()).toBe(200);
+	return (await signedIn.json()).accessToken;
+}
+
+/** A running campaign with desks and ground truth of two observers: a count, a tracer run each and 15 minutes of VD01. */
+async function campaignWithGroundTruth(name: string): Promise<string> {
+	const id = await runningWithDesks(name);
+	const count = await call('POST', `${capture()}/${id}/counts`, { token: observer, data: { lineId: profile.entryA, binStartUtc: binStart(1), crossingsIn: 12, crossingsOut: 1 } });
+	expect(count.status(), await count.text()).toBe(201);
+	for (const [token, code, joinedAgo] of [[observer, 'T-21', 20], [observer2, 'T-22', 18]] as [string, string, number][]) {
+		const runs = await sendRuns(id, token, tracerBatch(0, [{ code, joinedAgo: joinedAgo * minute, exitedAgo: 6 * minute }]), `e2e-results-${code}-${Date.now()}`);
+		expect(runs.status(), await runs.text()).toBe(201);
+	}
+	const states = Array.from({ length: 15 }, (_, m) => [m, 'Serving'] as [number, string]);
+	const logged = await sendDesks(id, observer, deskBatch(1, [[desks.vd01, states]]), `e2e-results-desks-${Date.now()}`);
+	expect(logged.status(), await logged.text()).toBe(201);
+	return id;
+}
+
+test('campaign results are served per role while running, frozen at the close as revision 1 with a SHA-256 hash, and recomputed as revision 2 with a reason', async () => {
+	const id = await campaignWithGroundTruth(`Results ${Date.now()}`);
+
+	// Running: computed when asked, not frozen; the duty manager (airport side) gets no desk-state result and no desk key.
+	const live = await call('GET', results(id), { token: lead });
+	expect(live.status(), await live.text()).toBe(200);
+	expect(live.headers()['content-type']).toContain('application/json');
+	expectApiSecurityHeaders(live);
+	const running = await live.json();
+	expect(running).toMatchObject({ campaignId: id, siteCode: site, status: 'Running', revision: null, desks: null, audience: { desksIncluded: false, observers: 'All', proofIncluded: true } });
+	expect(running.criteria.map((c: any) => c.criterion)).toEqual(criteriaNames);
+	expect(running.review).toContain('CampaignNotClosed');
+	expect(running.observers.runs.map((r: any) => r.tracerCode).sort()).toEqual(['T-21', 'T-22']);
+	expect(running.nowcast).not.toHaveProperty('minutes');
+	for (const desk of ['VD01', desks.vd01]) expect(await live.text(), 'no desk key for an airport role').not.toContain(desk);
+
+	// Closed: frozen as revision 1, its hash a SHA-256 in lowercase hexadecimal; the border manager sees the desk section.
+	expect((await call('POST', `${campaigns()}/${id}/close`, { token: manager })).status()).toBe(200);
+	const first = await call('GET', results(id), { token: manager });
+	expect(first.status(), await first.text()).toBe(200);
+	const frozen = await first.json();
+	expect(frozen).toMatchObject({ status: 'Closed', revision: { number: 1, revisions: 1, reason: null }, audience: { desksIncluded: true, observers: 'All', proofIncluded: true } });
+	expect(frozen.revision.contentSha256).toMatch(/^[0-9a-f]{64}$/);
+	expect(frozen.desks.verdict.criterion).toBe('DeskStateAgreement');
+	expect(frozen.desks.overall.minutes).toBe(15);
+	expect(frozen.desks).not.toHaveProperty('minutes');
+	expect(frozen.review).not.toContain('CampaignNotClosed');
+
+	// Served from the stored document: the same bytes again, and by revision number; one hash for every reader.
+	expect(await (await call('GET', results(id), { token: manager })).text()).toBe(await first.text());
+	expect(await (await call('GET', results(id, site, '?revision=1'), { token: manager })).text()).toBe(await first.text());
+	const asLead = await call('GET', results(id), { token: lead });
+	expect(asLead.status()).toBe(200);
+	const leadView = await asLead.json();
+	expect([leadView.revision.contentSha256, leadView.desks, leadView.audience.desksIncluded]).toEqual([frozen.revision.contentSha256, null, false]);
+	for (const desk of ['VD01', desks.vd01]) expect(await asLead.text()).not.toContain(desk);
+	const asAdministrator = await (await call('GET', results(id), { token: administrator })).json();
+	expect(asAdministrator.audience.desksIncluded).toBe(true);
+	const asDual = await call('GET', results(id), { token: dual });
+	expect(asDual.status()).toBe(200);
+	expect((await asDual.json()).desks, 'an airport role with the observer role sees no desk').toBeNull();
+
+	// Roles without Validation.View get 403 before anything is read.
+	for (const token of [observer, observer2, handler]) expect((await call('GET', results(id), { token })).status()).toBe(403);
+	expect((await call('GET', results(id))).status()).toBe(401);
+
+	// Revisions: one that does not exist is 404; a number out of range or not a number is 400, never echoed.
+	expect((await call('GET', results(id, site, '?revision=2'), { token: manager })).status()).toBe(404);
+	for (const query of ['?revision=0', '?revision=1001', `?revision=${encodeURIComponent(sqlInjectionPayloads[0])}`, `?revision=${encodeURIComponent(xssPayloads[0])}`]) {
+		const refused = await call('GET', results(id, site, query), { token: manager });
+		expect(refused.status(), query).toBe(400);
+		const body = await refused.text();
+		for (const fragment of [...markupFragments, "OR '1'='1"]) expect(body, query).not.toContain(fragment);
+	}
+
+	// Recomputing is critical: a password-only session is asked for its second factor; roles without Manage get 403.
+	const recompute = (token: string, data: unknown) => call('POST', results(id, site, '/revisions'), { token, data });
+	const withoutSecondFactor = await recompute(lead, { reason: 'Late desk logs' });
+	expect(withoutSecondFactor.status()).toBe(401);
+	expect(withoutSecondFactor.headers()['www-authenticate']).toContain('insufficient_user_authentication');
+	for (const token of [observer, handler]) expect((await recompute(token, { reason: 'Not mine' })).status()).toBe(403);
+	const strong = await managerWithSecondFactor();
+	for (const reason of [' ', '', 'r'.repeat(501), 'bidi \u202e override', null]) expect((await recompute(strong, { reason })).status(), String(reason)).toBe(400);
+	const tooBig = await call('POST', results(id, site, '/revisions'), { token: strong, raw: ' '.repeat(5 * 1024) + JSON.stringify({ reason: 'Big' }), headers: { 'Content-Type': 'application/json' } });
+	expect(tooBig.status()).toBe(413);
+
+	const added = await recompute(strong, { reason: '  Desk logs re-entered from paper  ' });
+	expect(added.status(), await added.text()).toBe(201);
+	expectApiSecurityHeaders(added);
+	const second = await added.json();
+	expect(second.revision).toMatchObject({ number: 2, revisions: 2, reason: 'Desk logs re-entered from paper' });
+	expect((await (await call('GET', results(id), { token: lead })).json()).revision.number).toBe(2);
+	const kept = await (await call('GET', results(id, site, '?revision=1'), { token: manager })).json();
+	expect([kept.revision.number, kept.revision.revisions, kept.revision.contentSha256]).toEqual([1, 2, frozen.revision.contentSha256]);
+
+	// Audited: the freeze as the system, the recomputation as the manager, each against its revision.
+	const audit = async (action: string) =>
+		(await (await call('GET', `${admin}/audit-entries?action=${action}&pageSize=500`, { token: administrator })).json()).data.filter((e: any) =>
+			String(e.afterSummary).includes(`campaign=${id}`));
+	const frozenAudit = await audit('ValidationResults.Frozen');
+	expect(frozenAudit.map((e: any) => [e.actorName, e.targetType])).toEqual([['validation-results-freeze', 'ValidationResultRevision']]);
+	expect(frozenAudit[0].afterSummary).toContain(`sha256=${frozen.revision.contentSha256}`);
+	const recomputedAudit = await audit('ValidationResults.Recomputed');
+	expect(recomputedAudit.map((e: any) => [e.actorId, e.afterSummary.includes('reason="Desk logs re-entered from paper"')])).toEqual([[claimsOf(manager).sub, true]]);
+
+	// A campaign still running has nothing frozen to recompute (409).
+	const open = await plan(`Results open ${Date.now()}`);
+	expect((await call('POST', `${campaigns()}/${open.id}/start`, { token: lead })).status()).toBe(200);
+	expect((await call('POST', results(open.id, site, '/revisions'), { token: strong, data: { reason: 'Too early' } })).status()).toBe(409);
+});
+
+test('campaign results answer 404 across sites, refuse attack payloads and keep markup inert', async () => {
+	const name = `${xssPayloads[0]} Results ${Date.now()}`;
+	const created = await call('POST', campaigns(), { token: lead, data: campaignRequest(name) });
+	expect(created.status(), await created.text()).toBe(201);
+	const id = (await created.json()).id as string;
+	expect((await call('POST', `${campaigns()}/${id}/start`, { token: lead })).status()).toBe(200);
+	expect((await call('POST', `${campaigns()}/${id}/close`, { token: manager })).status()).toBe(200);
+
+	// Markup in the campaign's name is a JSON string value: escaped in the body, the same text once parsed.
+	const served = await call('GET', results(id), { token: lead });
+	expect(served.status(), await served.text()).toBe(200);
+	expect(served.headers()['content-type']).toContain('application/json');
+	expectApiSecurityHeaders(served);
+	const body = await served.text();
+	for (const fragment of markupFragments) expect(body).not.toContain(fragment);
+	expect(JSON.parse(body).campaignName).toBe(name);
+
+	// Another site, or a campaign of another site: 404, never 403, whichever site the route names.
+	for (const code of [site, 'E2E1']) expect((await call('GET', results(id, code), { token: elsewhere })).status(), code).toBe(404);
+	expect((await call('GET', results(id, 'E2E1'), { token: administrator })).status(), 'a campaign of another site').toBe(404);
+	const strong = await managerWithSecondFactor();
+	expect((await call('POST', results(id, 'E2E1', '/revisions'), { token: strong, data: { reason: 'Other site' } })).status()).toBe(404);
+	expect((await call('GET', results('0199a000-0000-7000-8000-00000000a1a1'), { token: lead })).status(), 'an unknown campaign').toBe(404);
+	expect((await call('GET', `${campaigns()}/${encodeURIComponent(sqlInjectionPayloads[0])}/results`, { token: lead })).status(), 'an id that is not a GUID').toBe(404);
+
+	// Site codes that are SQL or markup: refused (4xx) without echo, never a 5xx.
+	for (const payload of [...sqlInjectionPayloads, ...xssPayloads]) {
+		const answer = await call('GET', `${hosts.main}/api/v1/sites/${encodeURIComponent(payload)}/validation/campaigns/${id}/results`, { token: lead });
+		expect(answer.status(), payload).toBeGreaterThanOrEqual(400);
+		expect(answer.status(), payload).toBeLessThan(500);
+		const text = await answer.text();
+		for (const fragment of [...markupFragments, "OR '1'='1"]) expect(text, payload).not.toContain(fragment);
+		expectNoLeak(text, payload);
+	}
+
+	// A recomputation's reason with markup and SQL is kept as inert text; JSON too deep, or not JSON, is refused.
+	const reason = `${xssPayloads[1]} ${sqlInjectionPayloads[2]}`;
+	const recomputed = await call('POST', results(id, site, '/revisions'), { token: strong, data: { reason } });
+	expect(recomputed.status(), await recomputed.text()).toBe(201);
+	expect(recomputed.headers()['content-type']).toContain('application/json');
+	expectApiSecurityHeaders(recomputed);
+	for (const fragment of markupFragments) expect(await recomputed.text()).not.toContain(fragment);
+	expect((await recomputed.json()).revision.reason).toBe(reason);
+	const deep = '{"reason":' + '['.repeat(40) + '"x"' + ']'.repeat(40) + '}';
+	expect((await call('POST', results(id, site, '/revisions'), { token: strong, raw: deep, headers: { 'Content-Type': 'application/json' } })).status()).toBe(400);
+	expect((await call('POST', results(id, site, '/revisions'), { token: strong, raw: 'reason=x', headers: { 'Content-Type': 'application/x-www-form-urlencoded' } })).status()).toBe(415);
+	expect((await (await call('GET', results(id), { token: lead })).json()).revision.revisions, 'only the valid recomputation added a revision').toBe(2);
+});

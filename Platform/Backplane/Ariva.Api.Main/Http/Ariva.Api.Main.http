@@ -293,3 +293,19 @@ Content-Type: application/json
 ### Every observer's desk states: border roles only (BorderDesks.View); a duty manager gets desksIncluded false and no rows
 GET {{Ariva.Api.Main_HostAddress}}/api/v1/sites/DMO/validation/campaigns/{{campaignId}}/desk-observations?currentOnly=false&sortBy=minuteUtc
 Authorization: Bearer {{accessToken}}
+
+### A campaign's results (ARV-104g; Validation.View): the latest frozen revision of a closed campaign, or computed now for one
+### still running; the desks section only for roles that see border desks
+GET {{Ariva.Api.Main_HostAddress}}/api/v1/sites/DMO/validation/campaigns/{{campaignId}}/results
+Authorization: Bearer {{accessToken}}
+
+### An earlier frozen revision (1 is the freeze at the close)
+GET {{Ariva.Api.Main_HostAddress}}/api/v1/sites/DMO/validation/campaigns/{{campaignId}}/results?revision=1
+Authorization: Bearer {{accessToken}}
+
+### Recompute a closed campaign's results as the next revision with a reason (Validation.Manage, a second factor within 15 minutes; audited)
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/sites/DMO/validation/campaigns/{{campaignId}}/results/revisions
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "reason": "Stored results replayed after the sensor clock fix" }

@@ -47,7 +47,9 @@ internal sealed partial class SvcValidationResults(
     ValidationResultsSettings settings,
     ILogger<SvcValidationResults> logger,
     DatabaseSettings database,
-    ValidationReaderSettings reader)
+    ValidationReaderSettings reader,
+    Administration.CallerRoles callerRoles,
+    Administration.AuditTrail audit)
     : ValidationServiceBase(unitOfWork, currentUser, timeProvider, siteScope, reports), ISvcValidationResults
 {
     #region Constants

@@ -47,6 +47,7 @@ public static class ValidationErrors
     public const string InvalidProfileVersion = "The profile version is the number of the site's published zone profile version.";
     public const string InvalidScope = "The scope is 1 to 50 distinct queue zones and at most 200 distinct lines of the profile version; each line belongs to a queue zone in scope or to one of its overflow bands.";
     public const string InvalidDays = "The planned days are 1 to 31 distinct local dates yyyy-MM-dd, from 31 days ago to 366 days ahead in the site's time zone.";
+    public const string TooManyZoneDays = "A campaign covers at most 400 zone-days (queue zones in scope times planned days), so that its results can be computed; plan fewer zones or days.";
     public const string InvalidTargets = "The targets are 1 to 2,976 bins per line and 0 to 1,000 tracer runs, or empty for the placeholder defaults.";
     public const string InvalidCrossings = "Crossings in and out are both given, whole numbers from 0 to 10,000.";
     public const string InvalidBin = "The bin start is a UTC time on a 15-minute boundary, ISO 8601 ending in Z.";

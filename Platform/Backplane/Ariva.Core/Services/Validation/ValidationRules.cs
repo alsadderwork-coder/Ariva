@@ -2,6 +2,7 @@ using System.Globalization;
 using Ariva.Core.Domain.Constants;
 using Ariva.Core.Domain.Enums;
 using Ariva.Core.Domain.InputModels;
+using Ariva.Core.Domain.ViewModels;
 
 namespace Ariva.Core.Services.Validation;
 
@@ -20,6 +21,7 @@ public static class ValidationRules
             .And(r => r.ZoneIds is { Count: >= 1 and <= ValidationCampaign.MaxZones } && r.LineIds is { Count: <= ValidationCampaign.MaxLines } &&
                       !r.ZoneIds.Contains(Guid.Empty) && !r.LineIds.Contains(Guid.Empty), ValidationErrors.InvalidScope)
             .And(r => Days(r.Days) is { } days && ValidationCampaign.AreValidDays(days, today), ValidationErrors.InvalidDays)
+            .And(r => r.ZoneIds is null || r.Days is null || ValidationCampaign.IsWithinZoneDays(r.ZoneIds.Count, r.Days.Count), ValidationErrors.TooManyZoneDays)
             .And(r => ValidationCampaign.AreValidTargets(r.TargetBinsPerLine, r.TargetTracerRuns), ValidationErrors.InvalidTargets)
             .And(r => r.DeskIds is null || (r.DeskIds.Count <= ValidationCampaign.MaxDesks && !r.DeskIds.Contains(Guid.Empty) &&
                                             r.DeskIds.Distinct().Count() == r.DeskIds.Count), ValidationErrors.InvalidDesks);
@@ -167,6 +169,11 @@ public static class ValidationRules
     }
 
     /// <summary>Free text people read: trimmed, at most <paramref name="max"/> characters, clean (DisplayText); empty only when not required.</summary>
+    /// <summary>A recomputation of a closed campaign's results (ARV-104g): a reason of 1 to 500 clean characters.</summary>
+    public static ISpecification<RecomputeValidationResultsRequest> Recompute() =>
+        Fx.Specification<RecomputeValidationResultsRequest>()
+            .And(r => IsText(r.Reason, ValidationResultsViewModel.MaxReasonLength, required: true), ValidationResultsErrors.InvalidReason);
+
     public static bool IsText(string text, int max, bool required) =>
         string.IsNullOrWhiteSpace(text) ? !required && (text is null || text.Length <= max) : text.Trim().Length <= max && DisplayText.IsClean(text.Trim());
 }
