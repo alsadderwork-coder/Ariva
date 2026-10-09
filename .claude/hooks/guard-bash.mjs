@@ -17,7 +17,8 @@ const rules = [
   [/\b(npm\s+publish|dotnet\s+nuget\s+push|docker\s+push)\b/i, 'Publishing artifacts is done by the pipeline.'],
   [/\b(npm\s+install|npm\s+i)\s+(-g|--global)\b/i, 'Global installs change the developer machine; ask the human.'],
   [/(\.\.[\\/]Aman|DevOps[\\/]+Aman)[^\s]*.*(>|\btee\b|sed\s+-i|\bmv\b|\bcp\b|\brm\b|Set-Content|Out-File|Remove-Item)|(>|\btee\b|sed\s+-i|\bmv\b|\bcp\b|\brm\b|Set-Content|Out-File|Remove-Item).*(\.\.[\\/]Aman|DevOps[\\/]+Aman)/i, 'The AMAN repository is read-only reference material for Ariva agents.'],
-  [/\bgit\s+-C\s+\S*Aman\S*\s+(commit|checkout|switch|reset|clean|stash|merge|pull|push)\b/i, 'The AMAN repository is read-only reference material for Ariva agents.']
+  [/\bgit\s+-C\s+\S*Aman\S*\s+(commit|checkout|switch|reset|clean|stash|merge|pull|push)\b/i, 'The AMAN repository is read-only reference material for Ariva agents.'],
+  [/(^|[\s"'=:;,(\/\\])\.private([\/\\\s"';|&)]|$)/i, 'The .private folder holds client material (owner decision 2026-10-09, ARV-139c): agents never read, list, copy or write it.']
 ];
 for (const [re, why] of rules) if (re.test(c)) deny(why);
 
