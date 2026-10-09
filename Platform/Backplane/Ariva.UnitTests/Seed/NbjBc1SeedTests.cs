@@ -1,14 +1,14 @@
+// ARV-139c (CWE-200): the NBJ-BC1 seed is compiled only in Debug builds (Ariva.Infra.csproj), and so are its tests;
+// NbjSiteScopeTests runs in both and proves a Release build carries none of it.
+#if ARIVA_DEV_SEED
 using System.Text;
 using System.Text.RegularExpressions;
 using Ariva.Core.Domain.Components;
 using Ariva.Core.Domain.Entities;
 using Ariva.Core.Domain.Enums;
-using Ariva.Di.Extensions;
 using Ariva.Infra.Services.Seed;
 using Ariva.Infra.Storage;
 using FluentAssertions;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
 using static Ariva.Infra.Services.Seed.NbjBc1Layout;
 
 namespace Ariva.UnitTests.Seed;
@@ -17,8 +17,10 @@ namespace Ariva.UnitTests.Seed;
 /// ARV-139c: the NBJ terminal BC1 seed, from the 2018 design drawings. Its zone profile v1 validates over both levels
 /// as built (per hall a shared queue, an overflow band, an e-gates' queue, a staff and a service zone per desk linked
 /// to its desk), its counts match the drawings (13 double booths, 26 desks and 5 e-gates per row), its geometry and
-/// sensors stay within bounds (CWE-120), every sensor reaches its zone, each schematic passes the floor plan inspection,
-/// nothing in it names a person, a document or a real organisation or system (data boundary), and it is opt-in.
+/// sensors stay within bounds (CWE-120), every sensor reaches its zone, each schematic passes the floor plan inspection
+/// unchanged, and every seeded text is built only from an allowlisted vocabulary (Ariva's own words, the codes ARV-139c
+/// defines, the airport's name and time zone), so nothing else read from the drawings can reach it (CWE-200). The opt-in
+/// and the Release exclusion are in NbjSiteScopeTests.
 /// </summary>
 public sealed partial class NbjBc1SeedTests
 {
@@ -223,7 +225,8 @@ public sealed partial class NbjBc1SeedTests
             var file = FloorPlanFiles.Inspect(bytes);
 
             file.Should().NotBeNull(hall.LevelCode);
-            file!.ContentType.Should().Be("image/svg+xml");
+            file.ContentType.Should().Be("image/svg+xml");
+            file.Bytes.Should().Equal(bytes, "the sanitiser has nothing to drop or rewrite in Ariva's own schematic ({0})", hall.LevelCode);
             (file.WidthPixels * MetresPerPixel).Should().Be(hall.WidthMetres);
             (file.HeightPixels * MetresPerPixel).Should().Be(hall.DepthMetres);
             Encoding.UTF8.GetString(file.Bytes).Should().Contain("Illustrative, not surveyed").And.Contain("2018 design drawings").And.Contain("13 double booths");
@@ -234,14 +237,44 @@ public sealed partial class NbjBc1SeedTests
 
     #endregion
 
-    #region Data boundary
+    #region Data boundary (CWE-200)
 
-    /// <summary>Organisations and systems around the real site that must never appear in the seeded text.</summary>
-    private static readonly string[] RealNames =
-    [
-        "SME", "MININT", "Migração", "Migracao", "Estrangeiros", "SGA", "ENANA", "TAAG", "AVIC", "CAPDI", "Aero-Technology", "AMAN", "Dalil",
-        "SITA", "IDEMIA", "Vision-Box", "Thales", "Dermalog", "Polícia", "Policia", "Police"
-    ];
+    /// <summary>
+    /// Ariva's own words: the generic vocabulary of a border control hall and of Ariva's seeds and schematics. A seeded text
+    /// may use nothing else besides <see cref="StoryCodes"/>, <see cref="StoryPlaceNames"/> and numbers, so no name of an
+    /// organisation, system, person, document or sheet from the drawings can reach the seed without a deliberate change here.
+    /// </summary>
+    private static readonly HashSet<string> ArivaWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "airside", "arrivals", "as", "baggage", "booths", "border", "built", "control", "counter", "counters", "demo", "departure",
+        "departures", "design", "desks", "differ", "double", "drawings", "e", "emigration", "entry", "exit", "floor", "from", "gates",
+        "ground", "hall", "health", "illustrative", "immigration", "international", "lane", "lounge", "may", "no", "not", "one",
+        "overflow", "overhead", "queue", "reclaim", "schematic", "seed", "segregation", "service", "shared", "staff", "stereo",
+        "surveyed", "svg", "terminal", "the", "to", "v1"
+    };
+
+    /// <summary>
+    /// The codes ARV-139c defines: the site and terminal (NBJ-BC1, BC1), the levels (ARR, DEP), the checkpoints (IMM, EMI),
+    /// the lanes (ALL, EG), the desk and e-gate prefixes (IM, EM, EGA, EGD), the halls' letters in zone and sensor codes (A,
+    /// D), the overflow band's suffix (OV) and the sensor kinds (Q, O, G, K).
+    /// </summary>
+    private static readonly HashSet<string> StoryCodes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "NBJ", "BC1", "ARR", "DEP", "IMM", "EMI", "ALL", "EG", "IM", "EM", "EGA", "EGD", "A", "D", "OV", "Q", "O", "G", "K"
+    };
+
+    /// <summary>The airport's name and time zone as the story names them: Dr. António Agostinho Neto International Airport, Luanda, Africa/Luanda.</summary>
+    private static readonly HashSet<string> StoryPlaceNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Dr", "António", "Agostinho", "Neto", "Airport", "Luanda", "Africa"
+    };
+
+    [GeneratedRegex(@"[\p{L}\p{N}]+", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 1000)]
+    private static partial Regex Word();
+
+    /// <summary>A sheet id of the drawings' set (ETP-ARQ-nnn), in any spelling.</summary>
+    [GeneratedRegex(@"ETP\W*ARQ", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase, matchTimeoutMilliseconds: 1000)]
+    private static partial Regex SheetId();
 
     [GeneratedRegex(@"\b[A-Z]{1,2}\d{6,9}\b|[\w.+-]+@[\w-]+\.\w+|\+?\d[\d ]{8,}\d", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 1000)]
     private static partial Regex IdentifierLike();
@@ -249,22 +282,44 @@ public sealed partial class NbjBc1SeedTests
     [GeneratedRegex("<(?:text|title)[^>]*>([^<]*)</", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 1000)]
     private static partial Regex SvgText();
 
+    /// <summary>The words of a text that are neither numbers nor in the allowlisted vocabulary.</summary>
+    private static IEnumerable<string> UnknownWords(string text) =>
+        Word().Matches(text).Select(m => m.Value)
+            .Where(w => !w.All(char.IsAsciiDigit) && !ArivaWords.Contains(w) && !StoryCodes.Contains(w) && !StoryPlaceNames.Contains(w));
+
+    /// <summary>
+    /// Every text the seed writes: the site, airport, terminal, levels, checkpoints, desks and e-gates (codes and names), the
+    /// lanes, the zone profile, zones and lines, the sensors (codes and model), the publisher's name, and the floor plans'
+    /// file names and every label of the schematics.
+    /// </summary>
     private static IEnumerable<string> SeededText()
     {
         var (profile, levels) = Build();
         var now = new DateTime(2026, 10, 9, 12, 0, 0, DateTimeKind.Utc);
+        yield return SiteCode;
         yield return SiteName;
+        yield return AirportIata;
         yield return AirportName;
+        yield return TimeZoneId;
+        yield return TerminalCode;
         yield return TerminalName;
+        yield return SharedLane;
+        yield return LaneCategory.EGateEligible;
+        yield return NbjBc1Seed.SystemUserName;
         yield return profile.Name;
         foreach (var hall in Halls)
         {
+            yield return hall.LevelCode;
             yield return hall.LevelName;
+            yield return hall.CheckpointCode;
             yield return hall.CheckpointName;
+            yield return hall.UpstreamLabel;
+            yield return hall.DownstreamLabel;
             for (var n = 1; n <= DesksPerRow; n++)
                 yield return hall.DeskCode(n);
             for (var n = 1; n <= EGatesPerRow; n++)
                 yield return hall.EGateCode(n);
+            yield return NbjBc1Plan.FileName(hall);
             foreach (Match text in SvgText().Matches(Encoding.UTF8.GetString(NbjBc1Plan.Svg(hall))))
                 yield return text.Groups[1].Value;
         }
@@ -282,38 +337,36 @@ public sealed partial class NbjBc1SeedTests
     }
 
     [Fact]
-    public void Seed_Should_HoldNoPersonDocumentOrRealOrganisationOrSystemName()
+    public void Seed_Should_BuildEveryTextFromTheAllowlistedVocabulary()
+    {
+        var texts = SeededText().ToList();
+
+        texts.Should().HaveCountGreaterThan(300, "every desk, zone, line, sensor and label is checked");
+        texts.SelectMany(t => UnknownWords(t).Select(w => $"'{w}' in '{t[..Math.Min(t.Length, 60)]}'")).Distinct().Should()
+            .BeEmpty("a seeded text uses only Ariva's own words, the codes ARV-139c defines and the airport's name and time zone");
+        texts.Should().NotContain(t => SheetId().IsMatch(t), "no sheet id of the drawings is seeded");
+    }
+
+    [Fact]
+    public void Seed_Should_HoldNoIdentifierOrPersonalDataTerm()
     {
         foreach (var text in SeededText())
         {
             IdentifierLike().IsMatch(text).Should().BeFalse($"'{text[..Math.Min(text.Length, 60)]}' looks like an identifier");
-            RealNames.Should().NotContain(name => Regex.IsMatch(text, $@"\b{Regex.Escape(name)}\b", RegexOptions.IgnoreCase, TimeSpan.FromSeconds(1)),
-                $"'{text[..Math.Min(text.Length, 60)]}'");
             foreach (var fragment in new[] { "officer", "passport", "traveller", "traveler", "badge", "employee" })
                 text.Should().NotContainEquivalentOf(fragment);
         }
     }
 
-    #endregion
-
-    #region Opt-in
-
-    private static IReadOnlyList<Type> Seeds(bool? nbj)
+    [Theory]
+    [InlineData("Sheet ETP-ARQ-000", "a sheet id")]
+    [InlineData("Operated by Example Holdings", "a name outside the vocabulary")]
+    [InlineData("Booth 3 of the Mezzanine", "a word outside the vocabulary")]
+    public void Vocabulary_Should_RefuseText_When_ItHasAWordOutsideTheAllowlist(string text, string reason)
     {
-        var settings = new Dictionary<string, string> { [DemoSeedExtensions.SettingName] = "true", ["Application:Environment"] = "vm-local" };
-        if (nbj is not null)
-            settings[DemoSeedExtensions.NbjSettingName] = nbj.Value ? "true" : "false";
-        var services = new ServiceCollection().AddArivaDemoSeed(new ConfigurationBuilder().AddInMemoryCollection(settings).Build(), "vm-local");
-        return services.Where(d => d.ServiceType == typeof(IDemoTopologySeed)).Select(d => d.ImplementationType).ToList();
-    }
-
-    [Fact]
-    public void DemoSeed_Should_RegisterTheNbjSiteLast_Only_When_OptedIn()
-    {
-        Seeds(nbj: null).Should().Equal(typeof(DemoTopologySeed), typeof(AuhTerminalASeed));
-        Seeds(nbj: false).Should().Equal(typeof(DemoTopologySeed), typeof(AuhTerminalASeed));
-        Seeds(nbj: true).Should().Equal(typeof(DemoTopologySeed), typeof(AuhTerminalASeed), typeof(NbjBc1Seed));
+        UnknownWords(text).Should().NotBeEmpty(reason);
     }
 
     #endregion
 }
+#endif

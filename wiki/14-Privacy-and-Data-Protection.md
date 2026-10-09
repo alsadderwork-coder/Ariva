@@ -96,3 +96,12 @@ Passengers are told that overhead sensors count people anonymously to measure qu
 ## 7. Requests from authorities and individuals
 
 Because Ariva holds no identity, it cannot answer a request about a specific person's movements, and it is designed so that it never could. Requests about officer activity are for AMAN, where officer data is held. Requests about Ariva's own users (accounts, audit entries) are handled by the deployment's administrator under the customer's procedures.
+
+## 8. Material derived from third parties' confidential drawings
+
+Customers, prospects and their designers sometimes share design drawings that carry a copyright and confidentiality notice. Dalil may use the counts and measures read from such drawings to build a development seed site, on these terms:
+
+- The drawings themselves, and anything rendered from them (crops, screenshots, traces), are kept outside the repository, on the product owner's machine only, and are never committed, uploaded or drawn into the product. The seed draws its own schematic from the numbers.
+- What is derived from them is development-only: its code is compiled into Debug builds only, so Release builds and container images never carry it, and it is switched on only on the product owner's machine (a host with it on refuses to start outside a developer machine or in a Release build).
+- No names of organisations, systems, people or drawing sheets appear in the seeded data; a unit test allows only Ariva's own vocabulary, the site's own codes and the airport's public name.
+- Such a site is shown only to the parties the drawings concern, unless they agree otherwise in writing.

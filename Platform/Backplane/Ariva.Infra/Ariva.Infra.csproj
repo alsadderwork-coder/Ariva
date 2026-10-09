@@ -43,4 +43,11 @@
         <ProjectReference Include="..\Ariva.Resources\Ariva.Resources.csproj" />
     </ItemGroup>
 
+    <!-- ARV-139c (CWE-200): the NBJ-BC1 seed is derived from a third party's confidential drawings, so it is compiled only in
+         Debug builds and never ships in a Release build or an image. Ariva.Di, Ariva.UnitTests and Ariva.IntegrationTests
+         define ARIVA_DEV_SEED on the same condition; NbjSiteScopeTests proves a Release Ariva.Infra.dll has no NbjBc1 type. -->
+    <ItemGroup Label="Development-only seed" Condition="'$(Configuration)' != 'Debug'">
+        <Compile Remove="Services\Seed\NbjBc1*.cs" />
+    </ItemGroup>
+
 </Project>

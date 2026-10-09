@@ -29,28 +29,26 @@ public static class NbjBc1Plan
         return ((int)(hall.WidthMetres * PixelsPerMetre), (int)(hall.DepthMetres * PixelsPerMetre));
     }
 
-    /// <summary>The SVG of a hall as UTF-8 bytes; the same bytes on every call.</summary>
+    /// <summary>
+    /// The SVG of a hall as UTF-8 bytes; the same bytes on every call, and already in the form the floor plan sanitiser
+    /// writes (namespace declaration last, a space before "/>"), so the inspection returns them unchanged.
+    /// </summary>
     public static byte[] Svg(Hall hall)
     {
         var (width, height) = Size(hall);
         var svg = new StringBuilder();
-        Append(svg, $"""<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" font-family="sans-serif">""");
+        Append(svg, $"""<svg width="{width}" height="{height}" viewBox="0 0 {width} {height}" font-family="sans-serif" xmlns="http://www.w3.org/2000/svg">""");
         Append(svg, $"<title>Illustrative, not surveyed: NBJ terminal BC1, {SecurityElement.Escape(hall.CheckpointName.ToLowerInvariant())}, schematic from 2018 design drawings</title>");
         Rect(svg, 0, 0, hall.WidthMetres, hall.DepthMetres, "#f7f7f9", "#9aa0a6");
 
-        // Upstream: the health counters (arrivals) or the security lanes' exits (departures).
+        // Upstream: one band across the hall. Arrivals draws the health counters in it; departures leaves it unlabelled and
+        // empty, with no lanes and no count (security checkpoints are out of scope, and their lane count is sensitive).
         Rect(svg, 1, 1.5, hall.WidthMetres - 1, 5, "#eef3f9", "#9aa0a6");
         if (hall.Arrivals)
         {
             for (var n = 0; n < 8; n++)
                 Rect(svg, 10 + (n * 5.2), 2.6, 13 + (n * 5.2), 4, "#ffffff", "#7a869a");
             Text(svg, hall.WidthMetres / 2, 1.3, 26, "Health counters (8)", true);
-        }
-        else
-        {
-            for (var n = 0; n < 12; n++)
-                Rect(svg, 6 + (n * 4.4), 2.4, 7 + (n * 4.4), 5, "#ffffff", "#7a869a");
-            Text(svg, hall.WidthMetres / 2, 1.3, 26, "Security lanes (exits)", true);
         }
 
         // The hall: overflow band and the shared queue, the e-gates' queue.
@@ -98,10 +96,10 @@ public static class NbjBc1Plan
     private static void Append(StringBuilder svg, string text) => svg.Append(text).Append('\n');
 
     private static void Rect(StringBuilder svg, double x0, double y0, double x1, double y1, string fill, string stroke) =>
-        Append(svg, $"""<rect x="{Px(x0)}" y="{Px(y0)}" width="{Px(x1 - x0)}" height="{Px(y1 - y0)}" fill="{fill}" stroke="{stroke}" stroke-width="2"/>""");
+        Append(svg, $"""<rect x="{Px(x0)}" y="{Px(y0)}" width="{Px(x1 - x0)}" height="{Px(y1 - y0)}" fill="{fill}" stroke="{stroke}" stroke-width="2" />""");
 
     private static void Line(StringBuilder svg, double x0, double y0, double x1, double y1) =>
-        Append(svg, $"""<line x1="{Px(x0)}" y1="{Px(y0)}" x2="{Px(x1)}" y2="{Px(y1)}" stroke="#e2e8f0" stroke-width="2"/>""");
+        Append(svg, $"""<line x1="{Px(x0)}" y1="{Px(y0)}" x2="{Px(x1)}" y2="{Px(y1)}" stroke="#e2e8f0" stroke-width="2" />""");
 
     private static void Text(StringBuilder svg, double x, double y, int size, string text, bool centred, bool anchorEnd = false)
     {

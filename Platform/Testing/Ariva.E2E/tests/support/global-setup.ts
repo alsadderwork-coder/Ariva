@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { breakGlassFile, databaseAvailable, integrationSeedsFile } from './accounts';
+import { refuseADatabaseWithTheDevelopmentOnlySite } from './development-site';
 
 // ARV-010c: the break-glass account exists only through the installer command, so the run creates it the way an
 // installer does (Ariva.Api.Main --create-break-glass) once the hosts are up, writing the credential to a git-ignored
@@ -13,6 +14,9 @@ const mainProject = path.resolve(here, '..', '..', '..', '..', 'Backplane', 'Ari
 
 export default async function globalSetup() {
 	if (!databaseAvailable) return;
+	// ARV-139c (CWE-200): a database that holds the development-only site, or that this check cannot match to the hosts',
+	// stops the run before any test (development-site.ts).
+	await refuseADatabaseWithTheDevelopmentOnlySite();
 
 	fs.mkdirSync(path.dirname(breakGlassFile), { recursive: true });
 	// ARV-042: the run's integration client seeds, collected afresh for the log scan.

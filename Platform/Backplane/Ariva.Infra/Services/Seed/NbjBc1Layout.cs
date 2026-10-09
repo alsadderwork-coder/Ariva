@@ -158,16 +158,16 @@ public static class NbjBc1Layout
         "From the health counters", "To baggage reclaim");
 
     /// <summary>
-    /// Departures emigration control (ETP-ARQ-010): the security exits at y 4, the hall from y 6, the overflow band to y 10,
-    /// the shared queue to y 22, the booths beyond; e-gates at the right end. 64 by 34 m modelled; floor 2 is an
-    /// assumption (the drawings' sequence is ground, mezzanine, departures).
+    /// Departures emigration control (ETP-ARQ-010): an unlabelled band upstream (no lanes and no count are drawn: security
+    /// checkpoints are out of scope), the hall from y 6, the overflow band to y 10, the shared queue to y 22, the booths
+    /// beyond; e-gates at the right end. 64 by 34 m modelled; the departures floor number 2 is an assumption.
     /// </summary>
     public static Hall DeparturesHall { get; } = new(
         "D", "DEP", "Departures floor, international departures", 2, 64, 34,
         "EMI", "Departures emigration control", Arrivals: false, "EM-", "EGD-",
         FirstBoothX: 4, BoothPitch: 3.7, BoothWidth: 2.8, EGatesLeft: false,
         OverflowStartY: 6, QueueStartY: 10, QueueEndY: 22,
-        "From the security lanes", "To the airside departure lounge");
+        "Hall entry", "To the airside departure lounge");
 
     public static IReadOnlyList<Hall> Halls { get; } = [ArrivalsHall, DeparturesHall];
 

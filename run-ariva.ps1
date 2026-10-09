@@ -23,14 +23,27 @@
 .PARAMETER NoBrowser
     Does not open the browser.
 
+.PARAMETER NbjSite
+    The product owner's machine only, for this run only (ARV-139c, docs/demo/nbj-bc1.md): also seeds the development-only
+    site built from a third party's confidential drawings. Ariva.AppHost gets it as its own argument (nothing is set in
+    this session) and then refuses the E2E and scripted-demo settings, so the demo accounts go to it as AppHost:AccountsFile
+    (sign-in only) and -Demo is refused. The run uses a separate database volume, ariva-apphost-timescaledb-nbj: it starts
+    from its own database (DMO and AUH-TA are seeded again there), and your usual data in ariva-apphost-timescaledb is
+    neither shown nor changed. The database container keeps that volume after the run (persistent containers outlive the
+    AppHost), so every run of this script, with or without the switch, refuses to start while a container uses it: close
+    the switched run's AppHost window and stop that container (docker stop, the script names it) first. Stop it as well
+    before node scripts/dev-up.mjs or a local E2E run. Never on a shared screen, a Codespace or anyone else's machine.
+
 .EXAMPLE
     .\run-ariva.ps1
     .\run-ariva.ps1 -Demo
+    .\run-ariva.ps1 -NbjSite
 #>
 [CmdletBinding()]
 param(
     [switch] $Demo,
-    [switch] $NoBrowser
+    [switch] $NoBrowser,
+    [switch] $NbjSite
 )
 
 $ErrorActionPreference = 'Stop'
@@ -43,6 +56,10 @@ $Dashboard = 'http://localhost:15880'
 
 function Step([string] $Text) { Write-Host "`n== $Text" -ForegroundColor Cyan }
 function Fail([string] $Text) { Write-Host "`n$Text" -ForegroundColor Red; exit 1 }
+
+# ARV-139c: the development-only site, for this run only; never with the scripted demo.
+$DevelopmentSite = $NbjSite.IsPresent
+if ($DevelopmentSite -and $Demo) { Fail 'The development-only site never runs with the scripted demo: run again without -Demo.' }
 
 #region Tools
 
@@ -80,11 +97,20 @@ function Test-Up([string] $Url) {
     try { (Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 3).StatusCode -eq 200 } catch { $false }
 }
 
+# ARV-139c: no run, with or without the switch, attaches to or starts beside a run with the development-only site. Its
+# database container, on the separate volume, outlives the AppHost and must be stopped first.
+$switchedDatabase = @(cmd /c 'docker ps -q --filter volume=ariva-apphost-timescaledb-nbj 2>nul') | Where-Object { $_ }
+if ($switchedDatabase) { Fail "A run with the development-only site is still up: its database container ($($switchedDatabase -join ', ')) uses the volume ariva-apphost-timescaledb-nbj. Close that run's AppHost window, run docker stop $($switchedDatabase -join ' '), then run this again." }
+
 if (Test-Up $MainHealth) {
+    if ($DevelopmentSite) { Fail 'Ariva is already running, without the development-only site: close the AppHost window, then run this again.' }
     Step 'Ariva is already running'
 } else {
     Step 'Starting Ariva.AppHost in its own window (the first build takes a few minutes)'
-    $command = "Set-Location '$Root'; dotnet run --project Platform/Cloud/Ariva.AppHost -- '--AppHost:HostEnvironmentFile=$AppHostSettings'"
+    # The development-only site reaches the AppHost only as its own argument, and its run takes the demo accounts as
+    # AppHost:AccountsFile (the AppHost refuses it with AppHost:HostEnvironmentFile); every other run is unchanged.
+    $appHostArguments = if ($DevelopmentSite) { "'--AppHost:NbjSite=true' '--AppHost:AccountsFile=$AppHostSettings'" } else { "'--AppHost:HostEnvironmentFile=$AppHostSettings'" }
+    $command = "Set-Location '$Root'; dotnet run --project Platform/Cloud/Ariva.AppHost -- $appHostArguments"
     Start-Process powershell -ArgumentList '-NoExit', '-NoProfile', '-Command', $command | Out-Null
 
     $deadline = (Get-Date).AddMinutes(15)

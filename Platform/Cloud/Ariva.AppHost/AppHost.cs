@@ -7,8 +7,12 @@ using Ariva.AppHost;
 
 var builder = DistributedApplication.CreateBuilder(args);
 var settings = AppHostSettings.From(builder.Configuration);
+// ARV-139c (CWE-200): a run with the development-only site refuses the E2E and scripted-demo combinations, and takes only
+// the demo accounts' sign-in variables (AppHostSettings.EnsureConsistent, ReadAccounts).
+settings.EnsureConsistent();
 var repository = Path.GetFullPath(Path.Combine(builder.AppHostDirectory, "..", "..", ".."));
 var hostEnvironment = settings.ReadHostEnvironment();
+var mainAccounts = settings.ReadAccounts();
 
 #region Secrets
 
@@ -38,10 +42,12 @@ var timescale = builder.AddPostgres("timescaledb", builder.AddParameter("databas
     // The read-only role for the postgres-dev MCP (deploy/local/postgres-init), run once on a new data directory.
     .WithInitFiles(Path.Combine(repository, "deploy", "local", "postgres-init"))
     .WithLifetime(settings.Persistent ? ContainerLifetime.Persistent : ContainerLifetime.Session);
-if (!string.IsNullOrWhiteSpace(settings.DatabaseVolume))
+if (!string.IsNullOrWhiteSpace(settings.DatabaseVolumeForRun))
 {
-    // The HA image keeps its data under /home/postgres/pgdata, not the official image's path.
-    timescale.WithVolume(settings.DatabaseVolume, "/home/postgres/pgdata");
+    // The HA image keeps its data under /home/postgres/pgdata, not the official image's path. A run with the
+    // development-only site mounts the volume's separate twin (ARV-139c): Aspire recreates the persistent container when
+    // its volume changes, so the usual volume, which the scripted demo presents, never holds that site's rows.
+    timescale.WithVolume(settings.DatabaseVolumeForRun, "/home/postgres/pgdata");
 }
 
 var kafka = builder.AddKafka("kafka", settings.KafkaPort);
@@ -94,7 +100,18 @@ IResourceBuilder<ProjectResource> Host<TProject>(string name, bool validationSer
             .WithEnvironment("Database__ValidationReader__Password", validationReaderPassword);
     }
 
-    return Overrides(host, name);
+    Overrides(host, name);
+    if (name == "api-main")
+    {
+        // ARV-139c (CWE-200): after the host variables file, so that nothing but the AppHost's own switch decides. The demo
+        // accounts of a run with the development-only site (sign-in variables only), then the seed setting: false in every
+        // run, whatever the shell or appsettings.local.json says, and true only with run-ariva.ps1's switch.
+        foreach (var (key, value) in mainAccounts)
+            host.WithEnvironment(key, value);
+        host.WithEnvironment("Seed__NbjSite", settings.NbjSite ? "true" : "false");
+    }
+
+    return host;
 }
 
 // What every Ariva process gets, after the variables Aspire adds to a project (later callbacks win).
@@ -108,7 +125,8 @@ static IResourceBuilder<ProjectResource> Ariva(IResourceBuilder<ProjectResource>
     .WithEnvironment("OTEL_DOTNET_EXPERIMENTAL_ASPNETCORE_DISABLE_URL_QUERY_REDACTION", "false")
     .WithEnvironment("OTEL_DOTNET_EXPERIMENTAL_HTTPCLIENT_DISABLE_URL_QUERY_REDACTION", "false");
 
-// The E2E suite's settings for this resource, applied last (AppHost:HostEnvironmentFile).
+// The E2E suite's settings for this resource (AppHost:HostEnvironmentFile), applied after the AppHost's own wiring; only
+// api-main's development-only site variables come later (ARV-139c).
 IResourceBuilder<T> Overrides<T>(IResourceBuilder<T> resource, string name) where T : IResourceWithEnvironment
 {
     if (hostEnvironment.TryGetValue(name, out var variables))

@@ -26,6 +26,11 @@ namespace Ariva.IntegrationTests.Topology;
 /// runtime role cannot set or clear it (CWE-269); the plan is stored through the floor plan pipeline; every counter's
 /// staff and service zones reach the stream's desk links (ARV-116); the sensors are in commissioning without a
 /// credential; and the seed never writes into a site AUH-TA that is not illustrative.
+/// <para>
+/// ARV-139c, in Debug builds only (the NBJ-BC1 seed exists only there, ARIVA_DEV_SEED): the development-only NBJ terminal
+/// BC1 seed under the same rules: once, a re-run writes nothing, the counts of its layout, no account, grant or AMAN code,
+/// sensors in commissioning without a credential, and neither refusal path writes anything.
+/// </para>
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class IllustrativeSeedTests(PostgresFixture fixture) : IAsyncDisposable
@@ -273,4 +278,171 @@ public sealed class IllustrativeSeedTests(PostgresFixture fixture) : IAsyncDispo
         (await host.ReadAsync<long>("SELECT count(*) FROM floor_plan")).Should().Be(0);
         (await host.ReadAsync<bool>("SELECT is_illustrative FROM site WHERE code = 'AUH-TA'")).Should().BeFalse();
     }
+
+#if ARIVA_DEV_SEED
+    #region NBJ terminal BC1 (ARV-139c, development only)
+
+    private static Task<SeedOutcome> NbjAsync(AccountsHost host) => host.AsCallerAsync(null, s =>
+        new NbjBc1Seed(s.GetRequiredService<IUnitOfWork>(), s.GetRequiredService<ICurrentUser>(), host.Clock, s.GetRequiredService<AuditTrail>(),
+            s.GetRequiredService<IFileStorage>()).RunAsync(Ct));
+
+    /// <summary>Who may act: accounts, their roles and site grants, sessions and integration clients (CWE-269).</summary>
+    private async Task<string> AccountsSnapshotAsync() => string.Join("|",
+        await _host.ReadAsync<long>("SELECT count(*) FROM \"user\""),
+        await _host.ReadAsync<long>("SELECT count(*) FROM user_role"),
+        await _host.ReadAsync<long>("SELECT count(*) FROM user_site"),
+        await _host.ReadAsync<long>("SELECT count(*) FROM refresh_token"),
+        await _host.ReadAsync<long>("SELECT count(*) FROM integration_client"));
+
+    private List<string> StoredFiles() => Directory.Exists(_files) ? [.. Directory.EnumerateFiles(_files, "*", SearchOption.AllDirectories)] : [];
+
+    [Fact]
+    public async Task NbjSeed_Should_CreateTheSiteOnceAndChangeNothing_When_RunAgain()
+    {
+        var host = Host(TestDatabase.NbjSeed);
+        await host.CreateUserAsync("it.nbj.reader");
+        var accounts = await AccountsSnapshotAsync();
+        // Two pods starting together: the advisory lock makes one wait, and it then finds everything in place.
+        var together = await Task.WhenAll(NbjAsync(host), NbjAsync(host));
+        var afterFirst = await SnapshotAsync();
+        var again = await NbjAsync(host);
+        var afterSecond = await SnapshotAsync();
+
+        together.Select(o => o.Created).Should().ContainSingle(c => c > 200).And.ContainSingle(c => c == 0);
+        together.Should().OnlyContain(o => o.ProfileSkipped == null);
+        again.Created.Should().Be(0);
+        again.ProfileSkipped.Should().BeNull();
+        afterSecond.Should().Be(afterFirst, "a re-run creates, updates and audits nothing");
+
+        // The topology the story defines, flagged illustrative.
+        (await host.ReadAsync<string>("SELECT code || '=' || is_illustrative FROM site")).Should().Be("NBJ-BC1=true");
+        (await host.ReadAsync<string>("SELECT iata_code || ' ' || time_zone_id FROM airport")).Should().Be("NBJ Africa/Luanda");
+        (await host.ReadAsync<string>("SELECT string_agg(a.iata_code || '/' || t.code || '/' || l.code || '/' || c.code || '/' || c.kind || '/' || t.site_code, ',' ORDER BY l.code) " +
+                                      "FROM checkpoint c JOIN level l ON l.id = c.level_id JOIN terminal t ON t.id = l.terminal_id JOIN airport a ON a.id = t.airport_id"))
+            .Should().Be("NBJ/BC1/ARR/IMM/Immigration/NBJ-BC1,NBJ/BC1/DEP/EMI/Emigration/NBJ-BC1");
+
+        // Desks and e-gates (NbjBc1Layout: 13 double booths, so 26 desks, and 5 e-gates per hall), on lanes ALL and EG.
+        (await host.ReadAsync<string>("SELECT string_agg(c.code || ' ' || d.kind || '=' || d.n, ',' ORDER BY c.code, d.kind) FROM " +
+                                      "(SELECT checkpoint_id, kind, count(*) AS n FROM desk WHERE site_code = 'NBJ-BC1' GROUP BY checkpoint_id, kind) d JOIN checkpoint c ON c.id = d.checkpoint_id"))
+            .Should().Be("EMI Desk=26,EMI EGate=5,IMM Desk=26,IMM EGate=5");
+        (await host.ReadAsync<long>("SELECT count(*) FROM desk WHERE site_code = 'NBJ-BC1' AND kind = 'Desk'")).Should().Be(NbjBc1Layout.Halls.Count * NbjBc1Layout.DesksPerRow);
+        (await host.ReadAsync<long>("SELECT count(*) FROM desk WHERE site_code = 'NBJ-BC1' AND kind = 'EGate'")).Should().Be(NbjBc1Layout.Halls.Count * NbjBc1Layout.EGatesPerRow);
+        (await host.ReadAsync<string>("SELECT string_agg(code, ',' ORDER BY code) FROM desk WHERE site_code = 'NBJ-BC1' AND code IN ('IM-01', 'IM-26', 'EM-01', 'EM-26', 'EGA-01', 'EGA-05', 'EGD-01', 'EGD-05')"))
+            .Should().Be("EGA-01,EGA-05,EGD-01,EGD-05,EM-01,EM-26,IM-01,IM-26");
+        (await host.ReadAsync<string>("SELECT string_agg(DISTINCT lane_category_codes, ',' ORDER BY lane_category_codes) FROM desk WHERE site_code = 'NBJ-BC1'"))
+            .Should().Be("ALL,EG", "no segregation: every desk on ALL, every e-gate on EG");
+        (await host.ReadAsync<long>("SELECT count(*) FROM desk_code_mapping")).Should().Be(0, "no AMAN desk codes");
+
+        // Zone profile v1, published by the seed: per hall a shared queue, an overflow band, an e-gates' queue, and a staff
+        // and a service zone per desk named after it.
+        (await host.ReadAsync<string>("SELECT version || ' ' || status || ' ' || published_by FROM zone_profile WHERE site_code = 'NBJ-BC1'")).Should().Be("1 Published demo-seed");
+        (await host.ReadAsync<string>("SELECT string_agg(z.kind || '=' || z.n, ',' ORDER BY z.kind) FROM (SELECT kind, count(*) AS n FROM zone z " +
+                                      "JOIN zone_profile p ON p.id = z.profile_id WHERE p.site_code = 'NBJ-BC1' GROUP BY kind) z"))
+            .Should().Be("Overflow=2,Queue=4,Service=52,Staff=52");
+        (await host.ReadAsync<string>("SELECT string_agg(z.name, ',' ORDER BY z.name) FROM zone z JOIN zone_profile p ON p.id = z.profile_id " +
+                                      "WHERE p.site_code = 'NBJ-BC1' AND z.kind IN ('Queue', 'Overflow')"))
+            .Should().Be("A-ALL,A-ALL-OV,A-EG,D-ALL,D-ALL-OV,D-EG");
+        (await host.ReadAsync<long>("SELECT count(*) FROM zone z JOIN zone_profile p ON p.id = z.profile_id JOIN desk d ON d.id = z.desk_id " +
+                                    "WHERE p.site_code = 'NBJ-BC1' AND z.name IN (d.code || ' staff', d.code || ' service')")).Should().Be(104, "each named after its desk");
+        (await host.ReadAsync<long>("SELECT count(*) FROM line l JOIN zone_profile p ON p.id = l.profile_id WHERE p.site_code = 'NBJ-BC1'")).Should().Be(10);
+        (await host.ReadAsync<long>("SELECT count(*) FROM outbox_message WHERE message_key = 'NBJ-BC1' AND message_type LIKE '%ZoneProfilePublished%'")).Should().Be(1);
+
+        // The sensors of the layout, in commissioning without a credential.
+        (await host.ReadAsync<long>("SELECT count(*) FROM device WHERE site_code = 'NBJ-BC1'")).Should().Be(NbjBc1Layout.Sensors().Count).And.Be(48);
+        (await host.ReadAsync<long>("SELECT count(*) FROM device WHERE site_code = 'NBJ-BC1' AND (state <> 'Commissioning' OR credential_hash IS NOT NULL)"))
+            .Should().Be(0, "no credential is issued and nothing is calibrated");
+
+        // Topology only (CWE-269): no account, role, site grant, session or integration client.
+        (await host.ReadAsync<long>("SELECT count(*) FROM \"user\" WHERE created_by = 'demo-seed'")).Should().Be(0);
+        (await AccountsSnapshotAsync()).Should().Be(accounts, "the seed creates no account, role, site grant, session or client");
+        (await host.ReadAsync<long>("SELECT count(*) FROM audit_entry WHERE action = 'Seed.IllustrativeTopology'")).Should().Be(1);
+
+        // Ariva's own schematic per level, through the floor plan pipeline: stored unchanged under a generated key.
+        (await host.ReadAsync<string>("SELECT string_agg(l.code || ' ' || f.content_type || ' ' || f.width_pixels || 'x' || f.height_pixels || ' ' || f.metres_per_pixel, ',' ORDER BY l.code) " +
+                                      "FROM floor_plan f JOIN level l ON l.id = f.level_id WHERE f.site_code = 'NBJ-BC1' AND f.deleted_on IS NULL"))
+            .Should().Be("ARR image/svg+xml 1280x800 0.05,DEP image/svg+xml 1280x680 0.05");
+        foreach (var hall in NbjBc1Layout.Halls)
+        {
+            var key = hall.Arrivals
+                ? await host.ReadAsync<string>("SELECT f.storage_key FROM floor_plan f JOIN level l ON l.id = f.level_id WHERE f.site_code = 'NBJ-BC1' AND l.code = 'ARR'")
+                : await host.ReadAsync<string>("SELECT f.storage_key FROM floor_plan f JOIN level l ON l.id = f.level_id WHERE f.site_code = 'NBJ-BC1' AND l.code = 'DEP'");
+            key.Should().MatchRegex("^[0-9a-f]{32}\\.svg$");
+            var stored = await host.AsCallerAsync(null, async s =>
+            {
+                await using var file = await s.GetRequiredService<IFileStorage>().OpenReadAsync(key, Ct);
+                using var copy = new MemoryStream();
+                await file.CopyToAsync(copy, Ct);
+                return copy.ToArray();
+            });
+            stored.Should().Equal(NbjBc1Plan.Svg(hall), "the schematic passes the inspection unchanged ({0})", hall.LevelCode);
+        }
+
+        // The stream links every desk's two zones to its desk (ARV-116): 26 desks per hall, none for the e-gates.
+        var source = new ZoneGeometrySource(new DatabaseSettings
+        {
+            Host = fixture.Hostname, Port = fixture.Port, Name = await host.DatabaseAsync(), Username = fixture.AdminUsername, Password = fixture.AdminPassword
+        });
+        (await source.LoadAsync("NBJ-BC1", "A-ALL", Ct)).Geometry.DeskZones.Should().HaveCount(52);
+        (await source.LoadAsync("NBJ-BC1", "D-ALL", Ct)).Geometry.DeskZones.Should().HaveCount(52);
+        (await source.LoadAsync("NBJ-BC1", "A-EG", Ct)).Geometry.DeskZones.Should().BeEmpty("e-gates have no desk zones");
+    }
+
+    // CWE-269, CWE-863: NBJ terminal BC1 bound to another site stops the seed, and nothing of it remains: the site it saved
+    // before the check is rolled back, nothing else is written or audited, and no plan file is left in storage.
+    [Fact]
+    public async Task NbjSeed_Should_StopWithoutWriting_When_TerminalBc1BelongsToAnotherSite()
+    {
+        var host = Host(TestDatabase.NbjSeedForeignTerminal);
+        var admin = await host.CreateUserAsync("it.nbj.foreign", roles: [RoleCodes.SystemAdministrator], allSites: true);
+        (await host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcSites>().CreateAsync(new CreateSiteRequest("OTH", "Another site"), Ct))).HasErrors.Should().BeFalse();
+        var airport = await host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcTopology>()
+            .CreateAirportAsync(new CreateAirportRequest(NbjBc1Layout.AirportIata, null, "Another deployment's airport", NbjBc1Layout.TimeZoneId), Ct));
+        airport.HasErrors.Should().BeFalse(string.Join(", ", airport.ErrorMessages ?? []));
+        var terminal = await host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcTopology>()
+            .CreateTerminalAsync(new CreateTerminalRequest(airport.Data.Id, NbjBc1Layout.TerminalCode, "Another site's terminal", "OTH"), Ct));
+        terminal.HasErrors.Should().BeFalse(string.Join(", ", terminal.ErrorMessages ?? []));
+        var before = await SnapshotAsync();
+        var accounts = await AccountsSnapshotAsync();
+
+        var act = () => NbjAsync(host);
+
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*belongs to site OTH*");
+        (await SnapshotAsync()).Should().Be(before, "the seed's writes are rolled back: no site, level, desk, zone, profile, plan, sensor or audit entry");
+        (await AccountsSnapshotAsync()).Should().Be(accounts);
+        (await host.ReadAsync<long>("SELECT count(*) FROM site WHERE code = 'NBJ-BC1'")).Should().Be(0, "the site saved before the check is rolled back");
+        (await host.ReadAsync<long>("SELECT count(*) FROM level")).Should().Be(0);
+        (await host.ReadAsync<long>("SELECT count(*) FROM desk")).Should().Be(0);
+        (await host.ReadAsync<long>("SELECT count(*) FROM zone_profile")).Should().Be(0);
+        (await host.ReadAsync<long>("SELECT count(*) FROM floor_plan")).Should().Be(0);
+        (await host.ReadAsync<long>("SELECT count(*) FROM device")).Should().Be(0);
+        (await host.ReadAsync<string>("SELECT t.site_code || '|' || t.name FROM terminal t JOIN airport a ON a.id = t.airport_id WHERE a.iata_code = 'NBJ' AND t.code = 'BC1'"))
+            .Should().Be("OTH|Another site's terminal", "the other site's terminal is untouched");
+        StoredFiles().Should().BeEmpty("no plan file is left in storage");
+    }
+
+    [Fact]
+    public async Task NbjSeed_Should_StopWithoutWriting_When_SiteNbjBc1ExistsAndIsNotIllustrative()
+    {
+        var host = Host(TestDatabase.NbjSeedReal);
+        await host.CreateUserAsync("it.nbj.real");
+        (await host.ReadAsync<int>("""
+            WITH s AS (INSERT INTO site (id, code, name) VALUES ('0199a000-0000-7000-8000-000000139c01', 'NBJ-BC1', 'A real deployment') RETURNING 1)
+            SELECT 1 FROM s
+            """)).Should().Be(1);
+        var before = await SnapshotAsync();
+        var accounts = await AccountsSnapshotAsync();
+
+        var act = () => NbjAsync(host);
+
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*not illustrative*");
+        (await SnapshotAsync()).Should().Be(before, "nothing is written into a real site");
+        (await AccountsSnapshotAsync()).Should().Be(accounts);
+        (await host.ReadAsync<long>("SELECT count(*) FROM airport")).Should().Be(0);
+        (await host.ReadAsync<long>("SELECT count(*) FROM floor_plan")).Should().Be(0);
+        (await host.ReadAsync<string>("SELECT name || '|' || is_illustrative FROM site WHERE code = 'NBJ-BC1'")).Should().Be("A real deployment|false");
+        StoredFiles().Should().BeEmpty("no plan file is written");
+    }
+
+    #endregion
+#endif
 }

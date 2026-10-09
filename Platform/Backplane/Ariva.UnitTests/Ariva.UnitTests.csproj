@@ -11,6 +11,12 @@
         <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
     </PropertyGroup>
 
+    <!-- ARV-139c: the development-only NBJ-BC1 seed and its tests exist in Debug builds only (Ariva.Infra.csproj); a Release
+         run proves its absence instead (NbjSiteScopeTests). -->
+    <PropertyGroup Label="Development-only seed" Condition="'$(Configuration)' == 'Debug'">
+        <DefineConstants>$(DefineConstants);ARIVA_DEV_SEED</DefineConstants>
+    </PropertyGroup>
+
     <ItemGroup>
         <PackageReference Include="AutoFixture" />
         <!-- The Ariva.AppHost model, built in process (ARV-066) -->

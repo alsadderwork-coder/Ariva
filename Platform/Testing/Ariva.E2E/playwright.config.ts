@@ -208,7 +208,11 @@ const hostServers = {
 		...redisEnvironment(),
 		...outboundLabEnvironment(),
 		// ARV-064: Main records device heartbeats from ariva.device.health.v1, so the demo's devices stay Online.
-		...(demo ? kafkaEnvironment() : {})
+		...(demo ? kafkaEnvironment() : {}),
+		// ARV-139c (CWE-200): this run's api-main never seeds the development-only NBJ-BC1 site, even where the owner's shell
+		// or appsettings.local.json turns it on (NbjSiteScopeTests). The pin cannot remove a site an earlier run seeded into
+		// the same database: global setup stops the run on such a database (tests/support/global-setup.ts).
+		Seed__NbjSite: 'false'
 	}),
 	'api-integration': dotnetHost(project('Backplane/Ariva.Api.Integration'), `${hosts.integration}/health/readiness`, false, {
 		...smtpEnvironment(),
