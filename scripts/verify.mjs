@@ -251,7 +251,9 @@ const steps = {
     steps.build();
     // The scenario engine's golden fingerprints must come from the current sim.js (ARV-027); the unit tests check the port against them.
     run('reference scenario golden up to date', 'node', ['scripts/simulation/reference-golden.mjs', '--check']);
-    run('unit tests', 'dotnet', ['test', 'Platform/Backplane/Ariva.UnitTests/Ariva.UnitTests.csproj', '--no-build']);
+    // The TRX names every case that ran, so a total that differs between two runs can be traced to the case.
+    run('unit tests', 'dotnet', ['test', 'Platform/Backplane/Ariva.UnitTests/Ariva.UnitTests.csproj', '--no-build',
+      '--logger', `trx;LogFileName=${path.join(ROOT, '.verify', 'unit-tests.trx')}`]);
   },
   integration: () => run('integration tests', 'dotnet', ['test', 'Platform/Backplane/Ariva.IntegrationTests/Ariva.IntegrationTests.csproj']),
   web: () => {
