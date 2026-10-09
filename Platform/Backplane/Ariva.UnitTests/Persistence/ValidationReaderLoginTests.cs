@@ -203,13 +203,17 @@ public sealed class ValidationReaderLoginTests
         runtime.Should().Throw<InvalidOperationException>().WithMessage("*runtime login*");
     }
 
+    /// <summary>The validation service with only what its shadow read uses (ARV-104g2 gave it the campaign reads and the computation).</summary>
+    private static Ariva.Infra.Services.Validation.SvcValidationResults Results(DatabaseSettings database, ValidationReaderSettings reader) =>
+        new(null, null, TimeProvider.System, null, null, null, null, new Ariva.Infra.Settings.ValidationResultsSettings(), null, database, reader);
+
     [Fact]
     public async Task ReadShadow_Should_RefuseWithoutConnecting_When_TheLoginIsAbsentOrNotItsOwn()
     {
         // The database host does not exist: an answer proves nothing was opened (CWE-269: never with a runtime login).
-        var absent = await new Ariva.Infra.Services.Validation.SvcValidationResults(Database(), new ValidationReaderSettings())
+        var absent = await Results(Database(), new ValidationReaderSettings())
             .ReadShadowAsync("DMO", ["Q1"], new DateTime(2026, 10, 1, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 10, 2, 0, 0, 0, DateTimeKind.Utc), TestContext.Current.CancellationToken);
-        var runtime = await new Ariva.Infra.Services.Validation.SvcValidationResults(Database(), Reader("ariva_app"))
+        var runtime = await Results(Database(), Reader("ariva_app"))
             .ReadShadowAsync("DMO", ["Q1"], new DateTime(2026, 10, 1, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 10, 2, 0, 0, 0, DateTimeKind.Utc), TestContext.Current.CancellationToken);
 
         absent.HasErrors.Should().BeTrue();
@@ -245,7 +249,7 @@ public sealed class ValidationReaderLoginTests
     public async Task ReadShadow_Should_RefuseWithoutConnecting_When_TheReadIsOutOfBounds(string site, string[] zones, DateTime from, DateTime to, string what)
     {
         // CWE-120, CWE-863: one valid site, 1 to 50 distinct zone names whose keys fit, a UTC window of at most 33 days.
-        var result = await new Ariva.Infra.Services.Validation.SvcValidationResults(Database(), Reader()).ReadShadowAsync(site, zones, from, to, TestContext.Current.CancellationToken);
+        var result = await Results(Database(), Reader()).ReadShadowAsync(site, zones, from, to, TestContext.Current.CancellationToken);
 
         result.HasErrors.Should().BeTrue();
         result.ErrorMessages.Should().ContainSingle().Which.Should().Contain(what);

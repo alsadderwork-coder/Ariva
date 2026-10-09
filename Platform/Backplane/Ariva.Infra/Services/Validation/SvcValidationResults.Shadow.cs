@@ -1,6 +1,11 @@
+using Ariva.Core.Domain.ViewModels;
+using Ariva.Core.Security;
 using Ariva.Core.Sensing;
+using Ariva.Core.Services.Validation;
 using Ariva.Core.Validation.Comparison;
+using Ariva.Infra.Services.Reports;
 using Ariva.Infra.Settings;
+using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using NpgsqlTypes;
 
@@ -10,7 +15,8 @@ namespace Ariva.Infra.Services.Validation;
 /// The validation results service: one campaign's stored rows, the F18 comparison over them and the campaign verdicts
 /// (ARV-104g2), served by Ariva.Api.Main to <c>Validation.View</c> holders of the campaign's site (ARV-104g). This part
 /// (ARV-104g1) is the service's one read of the shadow nowcast, and the only code that opens a connection with the validation
-/// reader login.
+/// reader login; the other parts are the campaign's reads through the runtime login (<c>SvcValidationResults.Reads.cs</c>) and
+/// the computation (<c>SvcValidationResults.cs</c>).
 /// <para>
 /// How the service gets that connection without any runtime code path using it: the login is its own settings section
 /// (<see cref="ValidationReaderSettings"/>, Database:ValidationReader), never part of <see cref="DatabaseSettings"/>, from
@@ -23,11 +29,26 @@ namespace Ariva.Infra.Services.Validation;
 /// <para>
 /// Reads are bounded (CWE-120, CWE-400): one site, 1 to <see cref="MaxZones"/> queue zones named exactly (zone keys built with
 /// <see cref="ZoneKeys.For"/>, never a prefix or pattern, CWE-863), a UTC window of at most <see cref="MaxWindowDays"/> days, and
-/// at most <see cref="MaxRows"/> rows, the comparison engine's bound for one kind of row; a larger read is refused, so the
-/// caller reads in slices. Rows are passed on as stored: the F18 engine checks every row again before use (CWE-501, ARV-104f).
+/// at most <see cref="RowLimit"/> rows (the results settings' rows per read, at most the comparison engine's bound for one
+/// kind). The rows are counted through a LIMITed query before any is read (ARV-104g1 review, L7), so a read beyond the bound
+/// is refused without holding its rows, never cut short, and the caller reads in slices (per zone, per contiguous run of
+/// planned days). A pool of four connections all in use, or a connection that cannot be opened, is a result with an error, not
+/// an exception (L7). Rows are passed on as stored: the F18 engine checks every row again before use (CWE-501, ARV-104f).
 /// </para>
 /// </summary>
-internal sealed partial class SvcValidationResults(DatabaseSettings database, ValidationReaderSettings reader)
+internal sealed partial class SvcValidationResults(
+    IUnitOfWork unitOfWork,
+    ICurrentUser currentUser,
+    TimeProvider timeProvider,
+    ISiteScope siteScope,
+    ReportReader reports,
+    IServiceScopeFactory scopes,
+    SingleFlight<ValidationResultsViewModel> flights,
+    ValidationResultsSettings settings,
+    ILogger<SvcValidationResults> logger,
+    DatabaseSettings database,
+    ValidationReaderSettings reader)
+    : ValidationServiceBase(unitOfWork, currentUser, timeProvider, siteScope, reports), ISvcValidationResults
 {
     #region Constants
 
@@ -48,7 +69,16 @@ internal sealed partial class SvcValidationResults(DatabaseSettings database, Va
     private const string InvalidSite = "The site code is not valid.";
     private const string InvalidZones = "Give 1 to 50 distinct queue zone names whose zone keys fit (ARV-114c).";
     private const string InvalidWindow = "Give a UTC window, its start before its end, of at most 33 days.";
-    private const string TooManyRows = "The read would return more shadow minutes than one read may (1,000,000); read per zone or per day.";
+    private const string TooManyRows = "The read would return more shadow minutes than one read may; read per zone or per day.";
+    private const string Unreadable = "The shadow nowcast could not be read through the validation reader login.";
+
+    // The same rows as ReadSql, counted without being read (L7): at most the limit, so the count stops there too.
+    private const string CountSql = """
+        SELECT count(*) FROM (
+            SELECT 1 FROM queue_minute_shadow
+             WHERE zone_key = ANY(@keys) AND minute_utc >= @from AND minute_utc < @to
+             LIMIT @limit) AS bounded
+        """;
 
     // Exact zone keys and a half-open window, in key and minute order (the engine takes them in any order).
     private const string ReadSql = """
@@ -63,8 +93,11 @@ internal sealed partial class SvcValidationResults(DatabaseSettings database, Va
 
     #region Properties
 
-    /// <summary>The most rows one read returns (<see cref="MaxRows"/>; tests lower it to prove the bound).</summary>
-    internal int RowLimit { get; init; } = MaxRows;
+    /// <summary>
+    /// The most rows one read returns: the results settings' rows per read, at most <see cref="MaxRows"/> (tests lower it to
+    /// prove the bound).
+    /// </summary>
+    internal int RowLimit { get; init; } = Math.Min(settings?.MaxRowsPerRead ?? MaxRows, MaxRows);
 
     #endregion
 
@@ -94,27 +127,55 @@ internal sealed partial class SvcValidationResults(DatabaseSettings database, Va
         // Each requested key maps back to the zone name it was built from (exact match only).
         var zonesByKey = queueZones.ToDictionary(z => ZoneKeys.For(siteCode, z), z => z, StringComparer.Ordinal);
         var connectionString = new NpgsqlConnectionStringBuilder(reader.BuildReaderConnectionString(database)) { CommandTimeout = CommandTimeoutSeconds }.ConnectionString;
-        await using var connection = new NpgsqlConnection(connectionString);
-        await connection.OpenAsync(ct);
-        await using var command = new NpgsqlCommand(ReadSql, connection);
-        command.Parameters.Add(new NpgsqlParameter("keys", NpgsqlDbType.Array | NpgsqlDbType.Varchar) { Value = zonesByKey.Keys.ToArray() });
+        try
+        {
+            await using var connection = new NpgsqlConnection(connectionString);
+            await connection.OpenAsync(ct);
+
+            // L7: count first, through a LIMITed query, so a read beyond the bound is refused before any row is held.
+            await using (var count = Command(CountSql, connection, zonesByKey.Keys, fromUtc, toUtc))
+            {
+                if (Convert.ToInt64(await count.ExecuteScalarAsync(ct), System.Globalization.CultureInfo.InvariantCulture) > RowLimit)
+                    return Result.Error<IReadOnlyList<ShadowMinuteRow>>(TooManyRows);
+            }
+
+            var rows = new List<ShadowMinuteRow>();
+            await using var command = Command(ReadSql, connection, zonesByKey.Keys, fromUtc, toUtc);
+            await using var data = await command.ExecuteReaderAsync(ct);
+            while (await data.ReadAsync(ct))
+            {
+                // Rows written between the count and the read: still never more than the bound.
+                if (rows.Count == RowLimit)
+                    return Result.Error<IReadOnlyList<ShadowMinuteRow>>(TooManyRows);
+                if (!zonesByKey.TryGetValue(data.GetString(0), out var zone))
+                    continue;
+                rows.Add(new ShadowMinuteRow(zone, data.GetDateTime(1), data.IsDBNull(2) ? null : data.GetDouble(2), data.IsDBNull(3) ? null : data.GetString(3),
+                    data.GetBoolean(4), data.IsDBNull(5) ? null : data.GetDouble(5)));
+            }
+
+            return new Result<IReadOnlyList<ShadowMinuteRow>>(rows.AsReadOnly());
+        }
+        catch (NpgsqlException e) when (!ct.IsCancellationRequested)
+        {
+            // A boundary (the reader's own pool and login): the pool of four all in use (the connect timeout), a connection that
+            // cannot be opened, or the server refusing the read. The error, never its text, goes back; the log names its kind.
+            var busy = e is not PostgresException;
+            logger?.LogWarning("The validation reader's read failed: {Failure} {SqlState}", busy ? "connection" : "server", (e as PostgresException)?.SqlState);
+            return Result.Error<IReadOnlyList<ShadowMinuteRow>>(busy ? ValidationResultsErrors.Busy : Unreadable);
+        }
+    }
+
+    private NpgsqlCommand Command([System.Diagnostics.CodeAnalysis.ConstantExpected] string sql, NpgsqlConnection connection, IEnumerable<string> keys, DateTime fromUtc,
+        DateTime toUtc)
+    {
+#pragma warning disable CA2100 // the two constant statements of this class; every value is a parameter (CWE-89)
+        var command = new NpgsqlCommand(sql, connection);
+#pragma warning restore CA2100
+        command.Parameters.Add(new NpgsqlParameter("keys", NpgsqlDbType.Array | NpgsqlDbType.Varchar) { Value = keys.ToArray() });
         command.Parameters.AddWithValue("from", fromUtc);
         command.Parameters.AddWithValue("to", toUtc);
         command.Parameters.AddWithValue("limit", RowLimit + 1);
-
-        var rows = new List<ShadowMinuteRow>();
-        await using var data = await command.ExecuteReaderAsync(ct);
-        while (await data.ReadAsync(ct))
-        {
-            if (rows.Count == RowLimit)
-                return Result.Error<IReadOnlyList<ShadowMinuteRow>>(TooManyRows);
-            if (!zonesByKey.TryGetValue(data.GetString(0), out var zone))
-                continue;
-            rows.Add(new ShadowMinuteRow(zone, data.GetDateTime(1), data.IsDBNull(2) ? null : data.GetDouble(2), data.IsDBNull(3) ? null : data.GetString(3),
-                data.GetBoolean(4), data.IsDBNull(5) ? null : data.GetDouble(5)));
-        }
-
-        return new Result<IReadOnlyList<ShadowMinuteRow>>(rows.AsReadOnly());
+        return command;
     }
 
     #endregion

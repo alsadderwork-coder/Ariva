@@ -725,6 +725,16 @@ internal sealed class ComparisonData
     /// <summary>Whether a zone's shadow nowcast of a minute was stored but its rows are refused or conflicting.</summary>
     public bool IsUnusableShadow(string zone, DateTime minute) => _unusableShadows.Contains((zone, minute));
 
+    /// <summary>Every whole UTC minute that starts inside a planned day's window, ascending (ARV-104g2: the nowcast's coverage).</summary>
+    public IEnumerable<DateTime> PlannedMinutes()
+    {
+        foreach (var (from, to) in _planned)
+        {
+            for (var m = (from.Ticks + TimeSpan.TicksPerMinute - 1) / TimeSpan.TicksPerMinute * TimeSpan.TicksPerMinute; m < to.Ticks; m += TimeSpan.TicksPerMinute)
+                yield return new DateTime(m, DateTimeKind.Utc);
+        }
+    }
+
     /// <summary>
     /// The minutes of the planned days whose nowcast is compared (ARV-104f), by zone (ordinal) and minute, in UTC: every stored
     /// queue minute with a live part, and, failing closed, every queue minute whose rows cannot be used (whether it held a

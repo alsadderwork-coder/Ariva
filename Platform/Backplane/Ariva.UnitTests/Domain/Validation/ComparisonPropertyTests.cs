@@ -292,6 +292,30 @@ public sealed class ComparisonPropertyTests
         }, iter: Fuzz.Iterations);
     }
 
+    [Fact]
+    public void F18_ComparisonInSlices_Should_EqualTheWholeComparison_When_TheCampaignIsWithinTheBounds()
+    {
+        // ARV-104g2: the base over the full scope with only the tracers' queue minutes, one slice per zone with its minutes and
+        // shadow nowcasts, pooled: value for value the whole comparison (serialised, so every list, number and key is compared),
+        // and each zone's nowcast coverage as the whole input gives it. The generated campaign has tracer batches spanning both
+        // zones, unusable rows of every kind, quality intervals and nowcasts near the largest double. A sensitivity shift of up
+        // to a minute is drawn too, so the tracers' reach of two minutes either side is exercised at its edge.
+        Gen.UInt.Array[1_024].Sample(values =>
+        {
+            var draws = new Draws(values);
+            var input = Campaign(draws);
+            var settings = new ComparisonSettings { SensitivityShift = TimeSpan.FromMilliseconds(draws.Next(1, 60_001)) };
+
+            var whole = ValidationComparison.Compare(input, settings);
+            var (sliced, coverage) = ComparisonSlices.CompareSliced(input, settings);
+
+            whole.Problem.Should().BeNull();
+            JsonSerializer.Serialize(sliced).Should().Be(JsonSerializer.Serialize(whole));
+            JsonSerializer.Serialize(coverage).Should().Be(JsonSerializer.Serialize(ComparisonSlices.Coverage(input, settings)));
+            coverage.Select(c => c.QueueZone).Should().Equal("A-CIT", Zone);
+        }, iter: Fuzz.Iterations);
+    }
+
     #region Generated campaign
 
     private const string Zone = "A-VIS";

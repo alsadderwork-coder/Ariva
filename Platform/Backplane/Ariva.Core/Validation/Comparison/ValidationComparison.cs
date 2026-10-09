@@ -27,9 +27,16 @@ public static class ValidationComparison
             throw new ArgumentException(string.Join(" ", problems), nameof(settings));
 
         var data = ComparisonData.Take(input, settings, out var problem);
-        if (data is null)
-            return new ComparisonResult(input.Scope?.ProfileVersion ?? 0, problem, [], [], [], [], null, [], [], [], [], [], null, [], [], null, LeftOutInputs.None);
+        return data is null ? Nothing(input.Scope?.ProfileVersion ?? 0, problem) : Compare(data);
+    }
 
+    /// <summary>The result of a comparison that compared nothing: every list empty, the overall summaries null.</summary>
+    internal static ComparisonResult Nothing(int profileVersion, ComparisonProblem? problem) =>
+        new(profileVersion, problem, [], [], [], [], null, [], [], [], [], [], null, [], [], null, LeftOutInputs.None);
+
+    /// <summary>The comparison of inputs already checked and indexed (<see cref="ComparisonData.Take"/>).</summary>
+    internal static ComparisonResult Compare(ComparisonData data)
+    {
         var (countBins, lines) = CountAccuracy.Compare(data);
         var (observers, batches) = ClockOffsets.Compare(data);
         var tracers = TracerWaits.Compare(data, batches.Where(b => b.Outlier).Select(b => b.BatchId).ToHashSet());

@@ -104,6 +104,7 @@ public sealed class PostgresFixture : IAsyncLifetime
             TestDatabase.ValidationReaderRefusals => "CREATE DATABASE it_validation_reader_refusals",
             TestDatabase.ValidationReaderGuard => "CREATE DATABASE it_validation_reader_guard",
             TestDatabase.ValidationReaderOther => "CREATE DATABASE it_validation_reader_other",
+            TestDatabase.ValidationResults => "CREATE DATABASE it_validation_results",
             _ => throw new ArgumentOutOfRangeException(nameof(database))
         };
         var name = sql["CREATE DATABASE ".Length..];
@@ -229,7 +230,8 @@ public enum TestDatabase
     ValidationReader,
     ValidationReaderRefusals,
     ValidationReaderGuard,
-    ValidationReaderOther
+    ValidationReaderOther,
+    ValidationResults
 }
 
 [CollectionDefinition(Name)]

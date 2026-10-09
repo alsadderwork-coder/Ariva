@@ -83,6 +83,20 @@ public static class NowcastErrors
         return new NowcastErrorStats(list.Count, Median(list.Select(Math.Abs)), list.Sum(Math.Abs) / list.Count, list.Sum() / list.Count);
     }
 
+    /// <summary>
+    /// The median absolute error of the published nowcast over its judged minutes (Good, a number, the realised wait under the
+    /// cut) with <paramref name="beyondTarget"/> more minutes counted as errors of <see cref="MaxErrorMinutes"/>: the campaign
+    /// verdict's strict rule for minutes without a number while people waited under the cut (ARV-104g2, the no-service lever of
+    /// the ARV-104f review). Null with neither.
+    /// </summary>
+    public static double? MedianWithMissing(IEnumerable<NowcastMinuteError> minutes, int beyondTarget)
+    {
+        ArgumentNullException.ThrowIfNull(minutes);
+        var errors = minutes.Where(m => m is not null && IsJudged(m, m.Published)).Select(m => m.Published.ErrorMinutes.GetValueOrDefault())
+            .Where(double.IsFinite).Select(e => Math.Abs(Capped(e)));
+        return Median(errors.Concat(Enumerable.Repeat(MaxErrorMinutes, Math.Max(0, beyondTarget))));
+    }
+
     private static bool IsWait(double minutes) => double.IsFinite(minutes) && minutes >= 0;
 
     private static double Capped(double errorMinutes) => Math.Clamp(errorMinutes, -MaxErrorMinutes, MaxErrorMinutes);
@@ -153,14 +167,45 @@ public static class NowcastErrors
         return row.MeanWaitMinutes is { } mean ? (mean, row.Waits, ComparisonStanding.Good) : (null, 0, ComparisonStanding.NoSystemWait);
     }
 
+    /// <summary>
+    /// The published nowcast's coverage of a zone (ARV-104g2): every minute starting in the planned days, those whose next
+    /// minute holds a final realised wait of the campaign's version (the minutes the criterion could judge, <see cref="RealisedAfter"/>),
+    /// and of those the minutes whose own usable row published a number, a no-service reason, or nothing at all.
+    /// </summary>
+    internal static NowcastCoverage Coverage(ComparisonData data, string zone)
+    {
+        int planned = 0, withWait = 0, published = 0, noService = 0;
+        foreach (var minute in data.PlannedMinutes())
+        {
+            planned++;
+            if (RealisedAfter(data, zone, minute) is not { Minutes: not null, Standing: ComparisonStanding.Good })
+                continue;
+            withWait++;
+            var row = data.MinuteAt(zone, minute);
+            if (row is { NowcastDegraded: not null, NowcastMinutes: not null })
+                published++;
+            else if (row is { NowcastDegraded: not null, NoService: not null })
+                noService++;
+        }
+
+        return new NowcastCoverage(zone, planned, withWait, published, noService, withWait - published - noService,
+            withWait > 0 ? published / (double)withWait : null);
+    }
+
     private static NowcastReading Unusable() => new(ComparisonStanding.Unknown, null, null, null, null, null);
 
     private static NowcastReading Reading(ComparisonStanding standing, double? nowcast, string noService, bool flagged, double? cycle, double? realised) =>
         new(standing, nowcast, ReasonOf(noService), flagged, cycle, nowcast is { } n && realised is { } r ? Error(n, r) : null);
 
-    private static NowcastZoneErrors Summarise(ComparisonData data, string zone, List<NowcastMinuteError> items)
+    private static NowcastZoneErrors Summarise(ComparisonData data, string zone, List<NowcastMinuteError> items) => Summarise(data.Version, data.Settings, zone, items);
+
+    /// <summary>
+    /// The errors of a zone's nowcast minutes, or of every zone's (<paramref name="zone"/> null), in the order given: the same
+    /// summary <see cref="Compare"/> makes, so a comparison run per zone pools into the overall one it would have given
+    /// (ARV-104g2, <see cref="ComparisonSlices.Pool"/>).
+    /// </summary>
+    internal static NowcastZoneErrors Summarise(int version, ComparisonSettings settings, string zone, List<NowcastMinuteError> items)
     {
-        var settings = data.Settings;
         var published = Summary(items, i => i.Published, shadow: false);
         var shadow = Summary(items, i => i.Shadow, shadow: true);
         var both = items.Where(i => IsJudged(i, i.Published) && IsJudged(i, i.Shadow)).ToList();
@@ -170,7 +215,7 @@ public static class NowcastErrors
         var verdict = median is { } m
             ? IsWithinTarget(m, settings.NowcastErrorTargetMinutes) ? CriterionVerdict.Pass : CriterionVerdict.Fail
             : CriterionVerdict.NoData;
-        return new NowcastZoneErrors(data.Version, zone, published, shadow, paired, new CriterionCheck(median, settings.NowcastErrorTargetMinutes, verdict));
+        return new NowcastZoneErrors(version, zone, published, shadow, paired, new CriterionCheck(median, settings.NowcastErrorTargetMinutes, verdict));
     }
 
     /// <summary>A reading the criterion judges: Good, with a number and an error, the realised wait under the cut.</summary>

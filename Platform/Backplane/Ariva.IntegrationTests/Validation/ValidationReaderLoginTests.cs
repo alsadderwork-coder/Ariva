@@ -114,6 +114,10 @@ public sealed class ValidationReaderLoginTests(PostgresFixture postgres)
         await command.ExecuteNonQueryAsync(Ct);
     }
 
+    /// <summary>The validation service with only what its shadow read uses (ARV-104g2 gave it the campaign reads and the computation).</summary>
+    internal static SvcValidationResults Results(DatabaseSettings database, ValidationReaderSettings reader, int rowLimit = SvcValidationResults.MaxRows) =>
+        new(null, null, TimeProvider.System, null, null, null, null, new ValidationResultsSettings(), null, database, reader) { RowLimit = rowLimit };
+
     [Fact]
     public async Task MigrationJob_Should_CreateAReaderThatReadsTheShadowWhileTheRuntimeLoginCannot_When_TheReaderIsConfigured()
     {
@@ -141,7 +145,7 @@ public sealed class ValidationReaderLoginTests(PostgresFixture postgres)
 
         // The validation service's read, through the reader login: exact keys of the site, the half-open window.
         var settings = DatabaseSettings.FromConfiguration(Configuration(database, runtime, runtimePassword));
-        var service = new SvcValidationResults(settings, new ValidationReaderSettings { Username = reader, Password = readerPassword });
+        var service = Results(settings, new ValidationReaderSettings { Username = reader, Password = readerPassword });
         var read = await service.ReadShadowAsync("DMO", ["Q1", "Q2"], new DateTime(2026, 10, 1, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 10, 10, 0, 0, 0, DateTimeKind.Utc), Ct);
         read.HasErrors.Should().BeFalse(string.Join(" ", read.ErrorMessages ?? []));
         read.Data.Should().Equal(
@@ -151,14 +155,14 @@ public sealed class ValidationReaderLoginTests(PostgresFixture postgres)
         read.Data.Should().OnlyContain(r => r.MinuteUtc.Kind == DateTimeKind.Utc);
 
         // CWE-120: beyond the row limit the read is refused, never cut short.
-        var limited = await new SvcValidationResults(settings, new ValidationReaderSettings { Username = reader, Password = readerPassword }) { RowLimit = 2 }
+        var limited = await Results(settings, new ValidationReaderSettings { Username = reader, Password = readerPassword }, rowLimit: 2)
             .ReadShadowAsync("DMO", ["Q1", "Q2"], new DateTime(2026, 10, 1, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 10, 10, 0, 0, 0, DateTimeKind.Utc), Ct);
         limited.ErrorMessages.Should().ContainSingle().Which.Should().Contain("read per zone or per day");
 
         // The runtime login still cannot read a shadow value, and given as the reader it is refused before any connection.
         (await RefusedAsync(asRuntime, "SELECT nowcast_minutes FROM queue_minute_shadow")).Should().Be(PostgresErrorCodes.InsufficientPrivilege);
         (await RefusedAsync(asRuntime, "SELECT * FROM queue_minute_shadow")).Should().Be(PostgresErrorCodes.InsufficientPrivilege);
-        var asRuntimeReader = await new SvcValidationResults(settings, new ValidationReaderSettings { Username = runtime, Password = Secret("other-") })
+        var asRuntimeReader = await Results(settings, new ValidationReaderSettings { Username = runtime, Password = Secret("other-") })
             .ReadShadowAsync("DMO", ["Q1"], new DateTime(2026, 10, 1, 0, 0, 0, DateTimeKind.Utc), new DateTime(2026, 10, 2, 0, 0, 0, DateTimeKind.Utc), Ct);
         asRuntimeReader.ErrorMessages.Should().ContainSingle().Which.Should().Contain("misconfigured");
 

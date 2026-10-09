@@ -54,6 +54,9 @@ public sealed class AccountsHost : IAsyncDisposable
 
     public ServiceProvider Provider => _provider ?? throw new InvalidOperationException("Call CreateUserAsync first.");
 
+    /// <summary>Whether the host's services are built (its first account was created).</summary>
+    public bool ProviderReady => _provider is not null;
+
     #region Setup
 
     public async Task<string> DatabaseAsync()
