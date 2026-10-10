@@ -93,6 +93,17 @@ public static class AccountExtensions
         services.TryAddScoped<Ariva.Infra.Services.Reports.ReportReader>();
         services.TryAddScoped<Ariva.Core.Services.Reports.ISvcReports, Ariva.Infra.Services.Reports.SvcReports>();
         services.TryAddScoped<Ariva.Core.Services.Reports.ISvcReportSchedules, Ariva.Infra.Services.Reports.SvcReportSchedules>();
+        // Data quality (ARV-114a): the stored health checks of the queue zones (F18), read only.
+        services.TryAddScoped<Ariva.Core.Services.Quality.ISvcZoneHealth, Ariva.Infra.Services.Quality.SvcZoneHealth>();
+        // Availability (ARV-118): the site operating calendar and the ledger's read; the ledger itself runs in Ariva.Api.Cronz.
+        services.TryAddScoped<Ariva.Core.Services.Quality.ISvcSiteCalendar, Ariva.Infra.Services.Quality.SvcSiteCalendar>();
+        services.TryAddScoped<Ariva.Core.Services.Quality.ISvcAvailability, Ariva.Infra.Services.Quality.SvcAvailability>();
+        // Validation campaigns and manual count capture (ARV-104a): Ariva.Api.Main only.
+        services.TryAddScoped<Ariva.Core.Services.Validation.ISvcValidationCampaigns, Ariva.Infra.Services.Validation.SvcValidationCampaigns>();
+        services.TryAddScoped<Ariva.Core.Services.Validation.ISvcValidationCapture, Ariva.Infra.Services.Validation.SvcValidationCapture>();
+        // Tracer runs and desk observer logs (ARV-104b): Ariva.Api.Main only.
+        services.TryAddScoped<Ariva.Core.Services.Validation.ISvcTracerRuns, Ariva.Infra.Services.Validation.SvcTracerRuns>();
+        services.TryAddScoped<Ariva.Core.Services.Validation.ISvcDeskObservations, Ariva.Infra.Services.Validation.SvcDeskObservations>();
         // ARV-038: the stored minutes rules are judged on, and the arrival wave (ARV-047).
         services.AddArivaArrivalWaveSource(configuration);
         services.TryAddScoped<Ariva.Infra.Alerting.AlertInputs>();

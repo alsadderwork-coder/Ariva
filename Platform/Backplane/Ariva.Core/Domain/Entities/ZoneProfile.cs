@@ -3,6 +3,8 @@ using System.Security.Cryptography;
 using System.Text;
 using Ariva.Core.Domain.Components;
 using Ariva.Core.Domain.Enums;
+using Ariva.Core.Messaging;
+using Ariva.Core.Sensing;
 
 namespace Ariva.Core.Domain.Entities;
 
@@ -70,7 +72,8 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
         {
             var copy = new Zone(draft, zone.Name, zone.Kind, zone.LevelId, zone.Points, zone.QueueZone is null ? null : map[zone.QueueZone], zone.DeskId)
             {
-                LaneCategory = zone.LaneCategory
+                LaneCategory = zone.LaneCategory,
+                PhysicalCapacity = zone.PhysicalCapacity
             };
             draft.Zones.Add(copy);
             map[zone] = copy;
@@ -106,6 +109,7 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
         var trimmed = TopologyCodes.RequireName(name, nameof(name));
         if (Zones.Any(z => string.Equals(z.Name, trimmed, StringComparison.OrdinalIgnoreCase)))
             throw new InvalidOperationException($"Zone {trimmed} already exists here.");
+        RequireKeyable(kind, trimmed, nameof(name));
         CheckLink(kind, queueZone, level.Id.GetValueOrDefault());
         if (deskId is not null && kind is not (ZoneKind.Service or ZoneKind.Staff))
             throw new InvalidOperationException("Only service and staff zones name a desk.");
@@ -136,6 +140,7 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
         var trimmed = TopologyCodes.RequireName(name, nameof(name));
         if (Zones.Any(z => z != own && string.Equals(z.Name, trimmed, StringComparison.OrdinalIgnoreCase)))
             throw new InvalidOperationException($"Zone {trimmed} already exists here.");
+        RequireKeyable(own.Kind, trimmed, nameof(name));
         own.Rename(trimmed);
     }
 
@@ -159,6 +164,28 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
         if (!LaneCategory.IsValid(laneCategory))
             throw new ArgumentException("A lane category is 2 to 4 capital letters, such as CIT.", nameof(laneCategory));
         own.LaneCategory = laneCategory;
+    }
+
+    /// <summary>
+    /// Sets the physical capacity of a queue zone or overflow band in people (ARV-114a, 1 to <see cref="Zone.MaxPhysicalCapacity"/>),
+    /// or clears it with null. The stream checks the zone's occupancy readings against it (F18 occupancy sanity). Not part
+    /// of the geometry hash (F22 unchanged): it changes no count or wait. A published version keeps its value.
+    /// </summary>
+    public virtual void SetZoneCapacity(Zone zone, int? capacity)
+    {
+        EnsureDraft();
+        var own = Own(zone);
+        if (capacity is null)
+        {
+            own.PhysicalCapacity = null;
+            return;
+        }
+
+        if (own.Kind is not (ZoneKind.Queue or ZoneKind.Overflow))
+            throw new InvalidOperationException("Only a queue zone or an overflow band has a physical capacity.");
+        if (capacity is < 1 or > Zone.MaxPhysicalCapacity)
+            throw new ArgumentOutOfRangeException(nameof(capacity), capacity, "A physical capacity is 1 to 5,000 people.");
+        own.PhysicalCapacity = capacity;
     }
 
     /// <summary>Removes a zone and its lines; refused while other zones hang off it.</summary>
@@ -274,6 +301,9 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
 
             if (zone.Kind != ZoneKind.Queue && (zone.QueueZone is null || !Zones.Contains(zone.QueueZone)))
                 problems.Add($"Zone {zone.Name}: it must hang off a queue zone.");
+            // A draft copied from a version published before ARV-114c may hold such a name; it is renamed before publishing.
+            if (zone.Kind == ZoneKind.Queue && !ZoneKeys.Fits(SiteCode, zone.Name))
+                problems.Add($"Zone {zone.Name}: {QueueZoneNameTooLong(SiteCode)}");
         }
 
         foreach (var line in Lines.Where(l => l.Zone is null).OrderBy(l => l.Name, StringComparer.Ordinal))
@@ -360,6 +390,24 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
             throw new InvalidOperationException("A published or retired zone profile never changes; create a draft from it.");
     }
 
+    /// <summary>
+    /// Why a queue zone name is refused at <paramref name="siteCode"/> (ARV-114c). The name itself is not repeated: the
+    /// request that sent it is answered without reflecting it.
+    /// </summary>
+    public static string QueueZoneNameTooLong(string siteCode) =>
+        $"A queue zone name at site {siteCode} is at most {ZoneKeys.MaxQueueZoneNameLength(siteCode)} characters: its events are keyed by the site code, a slash and the zone name, which together hold at most {MessageKeys.MaxLength} characters.";
+
+    /// <summary>
+    /// A queue zone's name is part of the key of every event of the zone (<see cref="ZoneKeys"/>), which a Kafka key and the
+    /// outbox's <c>message_key</c> must hold (<see cref="MessageKeys"/>); service, staff and overflow zones share their queue
+    /// zone's key, so their names are bound by the name rule only (ARV-114c).
+    /// </summary>
+    private void RequireKeyable(ZoneKind kind, string name, string paramName)
+    {
+        if (kind == ZoneKind.Queue && !ZoneKeys.Fits(SiteCode, name))
+            throw new ArgumentException(QueueZoneNameTooLong(SiteCode), paramName);
+    }
+
     private Zone Own(Zone zone) =>
         zone is not null && Zones.Contains(zone) ? zone : throw new InvalidOperationException("The zone is not in this profile.");
 
@@ -417,6 +465,12 @@ public class Zone : EntityBase<Zone>
 
     /// <summary>The lane category whose queue this queue zone is (CIT, RES, VIS, CRW, EG ...), or null (ARV-057).</summary>
     public virtual string LaneCategory { get; protected internal set; }
+
+    /// <summary>The largest physical capacity a zone may have, in people.</summary>
+    public const int MaxPhysicalCapacity = 5_000;
+
+    /// <summary>The people a queue zone or overflow band holds at most, or null when not given (ARV-114a, F18 occupancy sanity).</summary>
+    public virtual int? PhysicalCapacity { get; protected internal set; }
 
     /// <summary>Stored vertices: "x y,x y,..." in metres at millimetre precision.</summary>
     [System.ComponentModel.DataAnnotations.MaxLength(PolygonLength)]

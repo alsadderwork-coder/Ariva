@@ -1,5 +1,5 @@
 {
-    "_comment": "ARV-036: the output hash of the golden replay of the reference evening (seed 9303, GoldenReplayTests). Update only after reviewing the change in the engine's outputs, with the human's approval.",
-    "outputHead": "451f62ed547d4806ceb5e2e9587705cc67275442a4883f3b435021605ea11729",
-    "outputs": 2083
+    "_comment": "ARV-036: the output hash of the golden replay of the reference evening (seed 9303, GoldenReplayTests). Update only after reviewing the change in the engine's outputs, with the human's approval. ARV-113 (2026-10-06, approved): 633 line minutes (type line) joined the chain (previous head 451f62ed547d4806ceb5e2e9587705cc67275442a4883f3b435021605ea11729 over 2083 outputs). ARV-114a (2026-10-06): 486 bin health rows (type health, one with every bin result, after each drain's line minutes) join the chain; every earlier output is unchanged (Replay_Should_KeepEveryEarlierOutput_When_TheHealthRowsAreLeftOut reproduces the ARV-113 head 8d13749079c0c0ca347dcd8c9e41f6708a7360b7145ad61af32c4d49cf0e0a2c over 2716 outputs without them), and the in-memory replay now reads the evening's records in [From, To) as the archive does. Pending the human's approval.",
+    "outputHead": "3cce63edfb17660f53a3fb7eead6c8ae92b20c491135b406a7df8cb032199a6f",
+    "outputs": 3202
 }

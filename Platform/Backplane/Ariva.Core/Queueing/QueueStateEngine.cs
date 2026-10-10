@@ -99,7 +99,10 @@ public sealed record QueueEngineSettings
 /// part of it after the last processed event, so they never reach into minutes already processed. Leaving backwards
 /// over an entry line abandons (the tracked person, or the latest anonymous entrant); entrants not resolved within
 /// T_censor are censored; a tracked person with position samples not seen within the hand-over window is fragmented;
-/// when every zone of the queue reports zero occupancy the FIFO sequence is re-anchored (F5).
+/// when every zone of the queue reports zero occupancy the FIFO sequence is re-anchored (F5), checked once every event of
+/// the reading's instant has been applied, so the order in which the zones' readings of one instant arrive never matters;
+/// when a full step ends inside that instant the check stays pending in the engine's state (and its snapshot) until the
+/// rest of the instant has been applied (ARV-114d).
 /// </para>
 /// Anonymous crossings of an overflow band's entry line are not counted: without a track the same person crosses the
 /// queue's entry line later, and counting both would double the entries.
@@ -140,8 +143,15 @@ public sealed partial class QueueStateEngine
     private DateTime _cursor = DateTime.MinValue;
     private readonly PriorityQueue<(string Key, DateTime Seen), DateTime> _handovers = new();
     private bool _residualSuspect;
+    // The time of the occupancy reading applied last, until the events of its instant are all applied. A full step that
+    // ends inside that instant keeps it for the next step (ARV-114d), one tick after the watermark, so it is part of the
+    // snapshot (QueueEngineState.PendingAnchorUtc).
+    private DateTime? _anchorDueUtc;
 
-    private readonly Dictionary<DateTime, (long In, long Out, long DegradedIn, long DegradedOut)> _movements = [];
+    private readonly Dictionary<DateTime, (long In, long Out, long DegradedIn, long DegradedOut, long TrackedIn)> _movements = [];
+    private readonly Dictionary<(DateTime Minute, string Line), (QueueLineRole Role, long In, long Out)> _lines = [];
+    private readonly List<OccupancySample> _samples = [];
+    private readonly Dictionary<(DateTime Minute, string Zone), (int Min, int Max)> _readings = [];
     private readonly List<RealisedWait> _waits = [];
     private readonly List<EntrantResolution> _resolutions = [];
     private long _late, _future, _invalid, _unknown, _duplicates, _reverse, _unmatched, _negative, _bufferFull, _forced, _tooManyDevices;
@@ -172,7 +182,7 @@ public sealed partial class QueueStateEngine
     /// <summary>Events waiting in the reorder buffer.</summary>
     public int BufferedEvents => _buffer.Count;
 
-    private int Records => _waits.Count + _resolutions.Count + _movements.Count;
+    private int Records => _waits.Count + _resolutions.Count + _movements.Count + _lines.Count + _samples.Count + _readings.Count;
 
     private static DateTime Plus(DateTime t, TimeSpan d) => t > DateTime.MaxValue - d ? DateTime.MaxValue : t + d;
 
@@ -274,7 +284,7 @@ public sealed partial class QueueStateEngine
             ProcessUpTo(target);
 
         var step = new QueueStep(_geometry.QueueZone, _watermark,
-            [.. _movements.OrderBy(m => m.Key).Select(m => new MovementCount(m.Key, m.Value.In, m.Value.Out, m.Value.DegradedIn, m.Value.DegradedOut))],
+            Movements(),
             [.. _waits], [.. _resolutions], Length(),
             new QueueRejections
             {
@@ -282,8 +292,16 @@ public sealed partial class QueueStateEngine
                 Duplicates = _duplicates, Reverse = _reverse, UnmatchedExits = _unmatched, NegativeWaits = _negative,
                 BufferFull = _bufferFull, ForcedAdvances = _forced, TooManyDevices = _tooManyDevices
             },
-            _reanchors, _held.Count, _buffer.Count, _more);
+            _reanchors, _held.Count, _buffer.Count, _more)
+        {
+            Lines = LineMovements(),
+            Occupancy = [.. _samples],
+            Readings = ReadingMinutes()
+        };
         _movements.Clear();
+        _lines.Clear();
+        _samples.Clear();
+        _readings.Clear();
         _waits.Clear();
         _resolutions.Clear();
         _late = _future = _invalid = _unknown = _duplicates = _reverse = _unmatched = _negative = _bufferFull = _forced = _tooManyDevices = 0;
@@ -299,8 +317,21 @@ public sealed partial class QueueStateEngine
 
     private void ProcessUpTo(DateTime target)
     {
+        // Every minute boundary at or before the watermark has been sampled (ARV-114a); this run samples the ones after it.
+        var sampledThrough = _watermark;
         while (_buffer.TryPeek(out var item, out var key) && key.Time <= target)
         {
+            // Every event of the last reading's instant has been applied: the queue may be observed empty there (F5).
+            if (_anchorDueUtc is { } due && key.Time != due)
+                Reanchor();
+
+            // A boundary before this event's time sees every reading up to it, and none after it.
+            if (key.Time > sampledThrough)
+            {
+                Sample(sampledThrough, key.Time, inclusive: false);
+                sampledThrough = key.Time.AddTicks(-1);
+            }
+
             if (Records >= _settings.MaxStepRecords)
             {
                 // The step is full: stop just before the unprocessed events, so none of them can become late.
@@ -308,6 +339,10 @@ public sealed partial class QueueStateEngine
                 var before = key.Time.AddTicks(-1);
                 if (before > _watermark)
                     _watermark = before;
+                // A check still due here is for this event's instant (any earlier one ran above), which the step has
+                // split: it stays pending, one tick after the watermark, and runs in a later step once the rest of the
+                // instant has been applied, exactly as in a step that is not split (ARV-114d). Never run it with part
+                // of an instant applied: a band's 0 beside the zone's previous reading is not an empty queue.
                 return;
             }
 
@@ -320,10 +355,52 @@ public sealed partial class QueueStateEngine
                 _cursor = key.Time;
         }
 
+        Reanchor();
         Expire(target);
+        if (target > sampledThrough)
+            Sample(sampledThrough, target, inclusive: true);
         if (target > _watermark)
             _watermark = target;
     }
+
+    /// <summary>
+    /// The queue's sensor occupancy at the minute boundaries after <paramref name="after"/> and before (or at, when
+    /// <paramref name="inclusive"/>) <paramref name="upTo"/> (ARV-114a, F18 conservation). A boundary has a sample when the
+    /// queue zone and every overflow band heard so far have a reading at or before it and fresh there (within the
+    /// occupancy freshness, as for the queue length); a band never heard counts as empty. Only the boundaries between the
+    /// newest of those readings and the freshness of the oldest qualify, so a jump of the watermark over hours costs at
+    /// most an hour of boundaries.
+    /// </summary>
+    private void Sample(DateTime after, DateTime upTo, bool inclusive)
+    {
+        if (!_occupancy.TryGetValue(_geometry.QueueZone, out var queue))
+            return;
+        var (oldest, newest, total) = (queue.AtUtc, queue.AtUtc, 0L);
+        foreach (var (zone, reading) in _occupancy)
+        {
+            if (!_geometry.CountsInQueue(zone))
+                continue;
+            oldest = reading.AtUtc < oldest ? reading.AtUtc : oldest;
+            newest = reading.AtUtc > newest ? reading.AtUtc : newest;
+            total += reading.Count;
+        }
+
+        var first = NextBoundary(after);
+        var seen = newest.Ticks % TimeSpan.TicksPerMinute == 0 ? newest : NextBoundary(newest);
+        if (seen > first)
+            first = seen;
+        var last = Plus(oldest, _settings.OccupancyFreshFor);
+        if (upTo < last)
+            last = upTo;
+        for (var b = first; b <= last && (inclusive || b < upTo) && b < LatestBoundary; b = b.AddMinutes(1))
+            _samples.Add(new OccupancySample(b, (int)Math.Min(total, int.MaxValue)));
+    }
+
+    private static readonly DateTime LatestBoundary = DateTime.MaxValue.AddMinutes(-2);
+
+    /// <summary>The first whole minute after <paramref name="t"/>.</summary>
+    private static DateTime NextBoundary(DateTime t) =>
+        t >= LatestBoundary ? LatestBoundary : new DateTime(t.Ticks - t.Ticks % TimeSpan.TicksPerMinute + TimeSpan.TicksPerMinute, DateTimeKind.Utc);
 
     private void Apply(QueueInput input)
     {
@@ -355,6 +432,8 @@ public sealed partial class QueueStateEngine
     private void Cross(QueueCrossing c)
     {
         var role = _geometry.RoleOf(c.LineName);
+        if (role != QueueLineRole.Unknown && c.Direction is CrossingDirection.In or CrossingDirection.Out)
+            Tally(c.LineName, role, c.TimeUtc, c.Direction == CrossingDirection.In ? 1 : 0, c.Direction == CrossingDirection.Out ? 1 : 0);
         switch (role, c.Direction)
         {
             case (QueueLineRole.Entry, CrossingDirection.In):
@@ -376,6 +455,8 @@ public sealed partial class QueueStateEngine
             case (QueueLineRole.Exit, CrossingDirection.In):
                 _reverse++;
                 break;
+            case (QueueLineRole.Count, _):
+                break; // counted on its line only (ARV-113)
             default:
                 _unknown++;
                 break;
@@ -407,6 +488,11 @@ public sealed partial class QueueStateEngine
             start = _watermark;
         var span = i.TimeUtc - start;
         DateTime Spread(int k, int n) => start + span * ((k + 0.5) / n);
+        // The line's own counts, spread the same way whatever the counts do to the queue (ARV-113).
+        for (var k = 0; k < i.In; k++)
+            Tally(i.LineName, role, Spread(k, i.In), 1, 0);
+        for (var k = 0; k < i.Out; k++)
+            Tally(i.LineName, role, Spread(k, i.Out), 0, 1);
         if (role == QueueLineRole.Entry)
         {
             for (var k = 0; k < i.In; k++)
@@ -465,42 +551,37 @@ public sealed partial class QueueStateEngine
             _byTrack[trackKey] = entrant;
         if (degraded)
             _degradedHeld++;
-        Count(time, entry: true, degraded);
+        Count(time, entry: true, degraded, tracked: trackKey is not null);
     }
 
     private void Exit(DateTime time, string trackKey, bool degraded, bool cumulative)
     {
-        Entrant entrant;
-        WaitMethod method;
-        if (trackKey is not null && _byTrack.TryGetValue(trackKey, out var own))
-        {
-            entrant = own;
-            method = WaitMethod.Track;
-        }
-        else if (trackKey is not null && _resolvedTracks.Contains(trackKey))
+        // The out variable is declared before the condition and the outcome kept in its own statement (ARV-069a): a
+        // mutant that short-circuits the condition still compiles, so Stryker measures this method.
+        Entrant own = null;
+        var tracked = trackKey is not null && _byTrack.TryGetValue(trackKey, out own);
+        if (!tracked && trackKey is not null && _resolvedTracks.Contains(trackKey))
         {
             _duplicates++;
             return;
         }
-        else
-        {
-            entrant = FifoPartner(trackKey);
-            if (entrant is null)
-            {
-                _unmatched++;
-                Count(time, entry: false, degraded);
-                return;
-            }
 
-            method = cumulative || entrant.Method == WaitMethod.Cumulative ? WaitMethod.Cumulative : WaitMethod.Fifo;
+        var entrant = tracked ? own : FifoPartner(trackKey);
+        if (entrant is null)
+        {
+            _unmatched++;
+            Count(time, entry: false, degraded);
+            return;
         }
 
+        var method = tracked ? WaitMethod.Track
+            : cumulative || entrant.Method == WaitMethod.Cumulative ? WaitMethod.Cumulative : WaitMethod.Fifo;
         Forget(entrant, entrant.TrackKey ?? trackKey);
         Count(time, entry: false, degraded);
         if (time < entrant.EntryUtc)
         {
             _negative++;
-            _resolutions.Add(new EntrantResolution(entrant.EntryUtc, entrant.EntryUtc, EntrantOutcome.Rejected, entrant.TrackKey ?? trackKey));
+            _resolutions.Add(new EntrantResolution(entrant.EntryUtc, entrant.EntryUtc, EntrantOutcome.Rejected, entrant.TrackKey ?? trackKey) { Tracked = entrant.TrackKey is not null });
             return;
         }
 
@@ -522,7 +603,8 @@ public sealed partial class QueueStateEngine
         Entrant best = null;
         foreach (var (group, members) in _groups)
         {
-            if (members.First is not { } first || string.Equals(group, device, StringComparison.Ordinal))
+            var first = members.First;
+            if (first is null || string.Equals(group, device, StringComparison.Ordinal))
                 continue;
             if (best is null || first.Value.Order < best.Order)
                 best = first.Value;
@@ -576,14 +658,36 @@ public sealed partial class QueueStateEngine
         }
 
         _occupancy[o.ZoneName] = (o.Count, o.TimeUtc, o.Degraded);
-        if (!AllZonesReport(o.TimeUtc, out var total, out _) || total != 0)
+        // The readings of the minute, for the occupancy sanity check of F18 (ARV-114a).
+        var readingKey = (new DateTime(o.TimeUtc.Ticks - o.TimeUtc.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc), o.ZoneName);
+        _readings[readingKey] = _readings.TryGetValue(readingKey, out var seen) ? (Math.Min(seen.Min, o.Count), Math.Max(seen.Max, o.Count)) : (o.Count, o.Count);
+        // The queue zone and its bands are often read by different devices at the same instant, and their batches arrive
+        // in any order: the check for an empty queue waits until every event of this instant has been applied
+        // (ProcessUpTo, across steps when a full step splits the instant), so it never sees one zone's new reading beside
+        // another's previous one.
+        _anchorDueUtc = o.TimeUtc;
+    }
+
+    /// <summary>
+    /// F5 re-anchoring, once every event at <see cref="_anchorDueUtc"/> has been applied: when every zone of the queue
+    /// reads zero there, whoever the FIFO sequence still holds from before then is a counting residual.
+    /// </summary>
+    private void Reanchor()
+    {
+        // No pattern or out variable declared inside a condition (ARV-069a): every mutant of these conditions compiles.
+        if (_anchorDueUtc is null)
+            return;
+        var at = _anchorDueUtc.Value;
+        _anchorDueUtc = null;
+        var reported = AllZonesReport(at, out var total, out _);
+        if (!reported || total != 0)
             return;
 
         // The queue is observed empty: whoever the FIFO sequence still holds from before now is a counting residual (F5).
         var dropped = 0;
-        while (_held.First is { } first && first.Value.EntryUtc <= o.TimeUtc)
+        for (var first = _held.First; first is not null && first.Value.EntryUtc <= at; first = _held.First)
         {
-            Resolve(first.Value, o.TimeUtc, first.Value.TrackKey is null ? EntrantOutcome.Reanchored : EntrantOutcome.Fragmented);
+            Resolve(first.Value, at, first.Value.TrackKey is null ? EntrantOutcome.Reanchored : EntrantOutcome.Fragmented);
             dropped++;
         }
 
@@ -620,7 +724,7 @@ public sealed partial class QueueStateEngine
     private void Resolve(Entrant entrant, DateTime time, EntrantOutcome outcome)
     {
         Forget(entrant, entrant.TrackKey);
-        _resolutions.Add(new EntrantResolution(entrant.EntryUtc, time > entrant.EntryUtc ? time : entrant.EntryUtc, outcome, entrant.TrackKey));
+        _resolutions.Add(new EntrantResolution(entrant.EntryUtc, time > entrant.EntryUtc ? time : entrant.EntryUtc, outcome, entrant.TrackKey) { Tracked = entrant.TrackKey is not null });
     }
 
     private void Forget(Entrant entrant, string trackKey)
@@ -642,14 +746,33 @@ public sealed partial class QueueStateEngine
             _resolvedTracks.Remove(_resolvedOrder.Dequeue());
     }
 
-    private void Count(DateTime time, bool entry, bool degraded)
+    /// <summary>A crossing of one of the zone's lines, counted on its line and minute as applied (ARV-113).</summary>
+    private void Tally(string line, QueueLineRole role, DateTime time, long @in, long @out)
+    {
+        var key = (new DateTime(time.Ticks - time.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc), line);
+        _lines.TryGetValue(key, out var t);
+        _lines[key] = (role, t.In + @in, t.Out + @out);
+    }
+
+    private List<LineMovement> LineMovements() =>
+        [.. _lines.OrderBy(l => l.Key.Minute).ThenBy(l => l.Key.Line, StringComparer.Ordinal)
+            .Select(l => new LineMovement(l.Key.Line, l.Value.Role, l.Key.Minute, l.Value.In, l.Value.Out))];
+
+    private void Count(DateTime time, bool entry, bool degraded, bool tracked = false)
     {
         var minute = new DateTime(time.Ticks - time.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc);
         _movements.TryGetValue(minute, out var m);
         _movements[minute] = entry
-            ? (m.In + 1, m.Out, m.DegradedIn + (degraded ? 1 : 0), m.DegradedOut)
-            : (m.In, m.Out + 1, m.DegradedIn, m.DegradedOut + (degraded ? 1 : 0));
+            ? (m.In + 1, m.Out, m.DegradedIn + (degraded ? 1 : 0), m.DegradedOut, m.TrackedIn + (tracked ? 1 : 0))
+            : (m.In, m.Out + 1, m.DegradedIn, m.DegradedOut + (degraded ? 1 : 0), m.TrackedIn);
     }
+
+    private List<MovementCount> Movements() =>
+        [.. _movements.OrderBy(m => m.Key).Select(m => new MovementCount(m.Key, m.Value.In, m.Value.Out, m.Value.DegradedIn, m.Value.DegradedOut) { TrackedEntries = m.Value.TrackedIn })];
+
+    private List<ZoneReadingMinute> ReadingMinutes() =>
+        [.. _readings.OrderBy(r => r.Key.Minute).ThenBy(r => r.Key.Zone, StringComparer.Ordinal)
+            .Select(r => new ZoneReadingMinute(r.Key.Zone, r.Key.Minute, r.Value.Min, r.Value.Max))];
 
     #endregion
 

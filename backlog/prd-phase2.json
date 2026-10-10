@@ -1,0 +1,159 @@
+{
+  "name": "Ariva Phase 2: displays and advertising",
+  "branchName": "story/mvp-phase1",
+  "description": "Phase 2 (owner request 2026-10-06): split-screen passenger displays where one region always shows the queue and instructions and the other shows instructions or, where the site allows it, advertisements; instruction slides, an advertisement media library with safe uploads and two-person approval, playlists and scheduling, and proof of play. Built after the Phase 1 MVP stories and before the dev cluster release (backlog/prd-phase1.json ARV-137), on the same branch and pull request as the MVP (owner request: one pull request). Advertising is a per-site setting, off by default, because many border authorities do not allow it in immigration halls.",
+  "userStories": [
+    {
+      "id": "ARV-140",
+      "title": "[E21] Display layouts: split screen with the queue always first",
+      "description": "Passenger displays today show one full-screen queue view (ARV-058). A display can now use a split layout: region A always shows the queue (waits, bands, stale fallback) with instructions, region B shows instructions or, where allowed, advertisements. Layouts are configured per display. Epic: Displays and advertising. CWEs to review: CWE-79, CWE-306, CWE-863.",
+      "acceptanceCriteria": [
+        "A display has a layout: Full (today's view) or Split, with orientation (landscape left and right, portrait top and bottom), the queue region's share (between 50% and 75% of the screen) and region B's content mode (Instructions or Advertising); the default stays Full, so existing displays are unchanged",
+        "The queue region is never hidden, overlapped or shrunk below its share by region B; stale and degraded states (bands, fallback text) behave as in ARV-058 inside the region; region B failing to load never affects region A",
+        "Right to left layouts mirror correctly in Arabic; text stays readable at 1920x1080 and 1080x1920",
+        "Layout changes reach a running display through its existing refresh path without a restart, and are audited",
+        "Playwright: each layout and orientation at 1920x1080 and 1080x1920 in English and Arabic, region B failing, stale queue data; visual baselines for the split layouts",
+        "Permission: layout changes need the existing display configuration permission; [SiteScoped]; E2E authorization rows",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": "Size M. Owner request 2026-10-06 (Phase 2). Region B is Instructions by default; Advertising needs ARV-145.",
+      "dependsOn": [
+        "ARV-058"
+      ]
+    },
+    {
+      "id": "ARV-141",
+      "title": "[E21] Instruction slides for region B and the queue region",
+      "description": "Managed instruction content: short multilingual slides (for example 'Have your passport open at the photo page', 'E-gates for UAE residents and GCC nationals', 'Remove hats and glasses') with a built-in icon set, assigned per site, zone or display and rotated in region B or shown under the queue. Epic: Displays and advertising. CWEs to review: CWE-79, CWE-863.",
+      "acceptanceCriteria": [
+        "Instruction slides have a title and body per language (Arabic, English, Portuguese, Swahili, and the site's languages), an icon from a built-in set (no uploaded markup), a display duration (5 to 60 s) and a scope (site, zone or display)",
+        "Text is plain text rendered by interpolation only (no HTML, no Markdown rendering to HTML); lengths capped; control characters refused",
+        "Region B rotates the slides that apply to the display in order; the queue region can pin one slide under the waits",
+        "Admin screen to create, order, preview (in each language, left to right and right to left) and retire slides; permission Display.Content.Manage; [SiteScoped]",
+        "Seed: a starter set of arrivals instructions for DMO and AUH-TA (if ARV-139a is done)",
+        "Unit, API end-to-end (authorization, XSS probes in every text field) and Playwright tests",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": "Size M. Owner request 2026-10-06 (Phase 2).",
+      "dependsOn": [
+        "ARV-140"
+      ]
+    },
+    {
+      "id": "ARV-145",
+      "title": "[E21] Advertising policy per site, off by default",
+      "description": "Many border authorities do not allow commercial advertising in arrivals and immigration halls. Advertising is a site setting decided by the operator of the hall, off by default, and a licensed module flag (ARV-135 when it exists). With it off, region B can only show instructions, and the advertising screens and APIs refuse to act for that site. Epic: Displays and advertising. CWEs to review: CWE-862, CWE-863, CWE-269.",
+      "acceptanceCriteria": [
+        "Site setting AdvertisingAllowed (default false), changed only by a SystemAdministrator with step-up MFA, audited with who, when and the reason",
+        "With it false: a display cannot be set to region B Advertising, advertising APIs answer 403 for that site (or 404 where the site is outside the caller's scope), and running displays fall back to instructions within one refresh",
+        "Optional zone exclusions: advertising can be allowed for the site but excluded for chosen zones (for example the immigration hall) even when allowed elsewhere",
+        "E2E: policy off and on, zone exclusion, permission matrix rows",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": "Size S. Owner request 2026-10-06 (Phase 2). Blocked on owner: who decides for a border authority's hall (the authority or the airport operator) per site; the default stays off.",
+      "dependsOn": [
+        "ARV-140"
+      ]
+    },
+    {
+      "id": "ARV-142",
+      "title": "[E21] Advertisement media library with safe uploads and approval",
+      "description": "Upload and manage advertisement media (images and short videos) through IFileStorage, typed by their bytes and size-capped, with a two-person approval before anything can play. Epic: Displays and advertising. CWEs to review: CWE-434, CWE-79, CWE-22, CWE-863, CWE-400.",
+      "acceptanceCriteria": [
+        "Accepted types by content, not extension: PNG, JPEG and WebP images (re-encoded on upload to strip metadata and active content), MP4 (H.264) and WebM videos up to a configured length and size; SVG, HTML, PDF and anything else refused",
+        "Stored under generated keys only (IFileStorage, never a path from the request), size capped on the endpoint and in the read, the upload rate limit policy applies (ARV-018 pattern)",
+        "Each item has an advertiser name, a campaign, a start and end date, and a status Draft, Approved, Retired; only Approved items within their dates can play; approval needs Advertising.Approve and a different person from the uploader; every change audited",
+        "New permissions Advertising.Manage and Advertising.Approve in the role mapping and security/permission-matrix.json; [SiteScoped]; refused while the site's advertising policy is off (ARV-145)",
+        "Displays fetch media through an authenticated display endpoint (device credentials, ARV-058), never a public URL; the CSP adds media-src self only",
+        "E2E: upload attacks (polyglot, oversize, wrong type, path tricks), approval by the uploader refused, cross-site 404, display fetch without credentials 401",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": "Size M. Owner request 2026-10-06 (Phase 2). Shares upload safety with ARV-092 (malware scanning); if ARV-092 is done first, media goes through its scanner too.",
+      "dependsOn": [
+        "ARV-145"
+      ]
+    },
+    {
+      "id": "ARV-143",
+      "title": "[E21] Playlists and scheduling for region B",
+      "description": "Approved advertisements and instruction slides are arranged into playlists with time windows (for example peak arrival banks), item durations and share of airtime, assigned to displays or display groups, with instructions as the fallback whenever nothing is scheduled. Epic: Displays and advertising. CWEs to review: CWE-863, CWE-400.",
+      "acceptanceCriteria": [
+        "A playlist has items (advertisement or instruction slide), each with a duration (5 to 60 s, videos play to their length up to a cap), an order and an optional weight; a schedule assigns playlists to displays or groups by day of week and time window in the site's time zone, stored in UTC",
+        "Rule: when the zone's queue is above a configured wait band (for example Long), region B can switch to instructions only (operator choice per display), so passengers see guidance when it matters most",
+        "Instructions are the fallback whenever no playlist applies, an item fails to load, or advertising is turned off",
+        "Display players receive the resolved playlist through their refresh path and keep a bounded local cache (count and bytes) so playback continues through a short network loss",
+        "Admin screens to build playlists and schedules with a timeline preview; permission Advertising.Manage; [SiteScoped]",
+        "Unit tests for schedule resolution (overlaps, time zone and daylight saving where the site has it, empty schedule), API E2E and Playwright tests",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": "Size M. Owner request 2026-10-06 (Phase 2).",
+      "dependsOn": [
+        "ARV-141",
+        "ARV-142"
+      ]
+    },
+    {
+      "id": "ARV-144",
+      "title": "[E21] Proof of play recording and figures",
+      "description": "Advertisers pay for airtime: each display records what it played, when and for how long, and the figures per campaign are computed for the advertising report, which moved to ARV-146 with report generation. Epic: Displays and advertising. CWEs to review: CWE-863, CWE-117, CWE-400.",
+      "acceptanceCriteria": [
+        "Display players report plays (item, start, duration, completed or interrupted) in batches through their authenticated endpoint; the server bounds batch size and rate and refuses plays for items not scheduled on that display",
+        "Plays are stored as a time series (versioned script, binary COPY) with retention set by a site setting",
+        "Figures per campaign, advertiser, display and day (plays, airtime, share of the scheduled airtime delivered) from a site-scoped service; the report, its permission (Advertising.Report) and the CSV export are ARV-146",
+        "No passenger data of any kind; counts of people near a screen are not collected",
+        "Unit, integration and API E2E tests including forged plays and oversized batches",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": "Size M. Owner request 2026-10-06 (Phase 2). Owner decision 2026-10-08: report generation (templates, documents, CSV, schedules and delivery) waits for the integration with the Insight report tool used in AMAN and moves to ARV-146; this story keeps what is not report generation.",
+      "dependsOn": [
+        "ARV-143"
+      ]
+    }
+  ]
+}

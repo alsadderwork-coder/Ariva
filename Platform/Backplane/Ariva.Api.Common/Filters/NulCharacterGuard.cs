@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
+using Microsoft.AspNetCore.Mvc.Formatters;
 
 namespace Ariva.Api.Common.Filters;
 
@@ -64,17 +65,23 @@ public sealed class NulCharacterFilter : IAsyncActionFilter, IOrderedFilter
 
 /// <summary>
 /// Reads JSON strings like the default converter, but refuses one that holds a NUL character (ARV-063): the request
-/// model is then invalid and the controller answers 400 before any service runs.
+/// model is then invalid and the controller answers 400 before any service runs. The NUL refusal is an
+/// <see cref="InputFormatterException"/>, the framework's mark of a message safe to return (its text is fixed), so it
+/// survives <c>AllowInputFormatterExceptionMessages</c> false (ARV-104b), which turns every other JSON reader message, the
+/// wrong token type here included, into the fixed "The input was not valid.".
 /// </summary>
 public sealed class NulRejectingStringConverter : JsonConverter<string>
 {
+    /// <summary>The answer to a NUL character in a JSON string.</summary>
+    public const string NulMessage = "A string must not contain a NUL character.";
+
     public override string Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
         if (reader.TokenType != JsonTokenType.String)
             throw new JsonException($"Expected a string, got {reader.TokenType}.");
         var value = reader.GetString();
         if (value is not null && value.Contains('\0', StringComparison.Ordinal))
-            throw new JsonException("A string must not contain a NUL character.");
+            throw new InputFormatterException(NulMessage);
         return value;
     }
 

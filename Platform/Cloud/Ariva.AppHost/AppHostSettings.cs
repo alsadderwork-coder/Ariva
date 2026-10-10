@@ -40,6 +40,79 @@ public sealed partial class AppHostSettings
     /// </summary>
     public string HostEnvironmentFile { get; init; }
 
+    #region The development-only site (ARV-139c)
+
+    /// <summary>The AppHost's own key for the development-only site of the owner's machine (run-ariva.ps1's switch).</summary>
+    public const string DevelopmentSiteKey = "AppHost:NbjSite";
+
+    /// <summary>The suffix of the database volume of a run with the development-only site, so the usual volume never holds its rows.</summary>
+    public const string DevelopmentSiteVolumeSuffix = "-nbj";
+
+    /// <summary>
+    /// The development-only site for this run (CWE-200): read from this section only (the argument run-ariva.ps1's switch
+    /// passes), never from a Seed variable the AppHost inherits; api-main gets the seed setting from it and nothing else.
+    /// </summary>
+    public bool NbjSite { get; init; }
+
+    /// <summary>
+    /// The demo accounts of a run with the development-only site: the file demo-local.mjs prepares (.demo), of which only
+    /// api-main's sign-in variables are applied (<see cref="ReadAccounts"/>). Refused in every other run, which takes the
+    /// demo accounts from <see cref="HostEnvironmentFile"/>.
+    /// </summary>
+    public string AccountsFile { get; init; }
+
+    private bool DevelopmentSite => NbjSite;
+
+    /// <summary>The database volume of this run: the usual one, or its separate twin when the development-only site is on.</summary>
+    public string DatabaseVolumeForRun => DevelopmentSite && !string.IsNullOrWhiteSpace(DatabaseVolume)
+        ? DatabaseVolume + DevelopmentSiteVolumeSuffix
+        : DatabaseVolume;
+
+    /// <summary>
+    /// Refuses what a run with the development-only site must never be combined with: the host variables file (the E2E
+    /// suite's through e2e-apphost, the scripted demo's), which could point a host elsewhere; a run that keeps no data
+    /// (the E2E switches); and a run without a database volume, whose data would stay in the shared container.
+    /// </summary>
+    public void EnsureConsistent()
+    {
+        if (!DevelopmentSite)
+        {
+            if (!string.IsNullOrWhiteSpace(AccountsFile))
+                throw new InvalidOperationException($"AppHost:AccountsFile is only for a run with {DevelopmentSiteKey}; other runs take the demo accounts from AppHost:HostEnvironmentFile.");
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(HostEnvironmentFile))
+            throw new InvalidOperationException($"{DevelopmentSiteKey} is refused with AppHost:HostEnvironmentFile (the E2E suite's and the scripted demo's settings); give the demo accounts as AppHost:AccountsFile.");
+        if (!Persistent)
+            throw new InvalidOperationException($"{DevelopmentSiteKey} is refused with AppHost:Persistent false (an E2E run).");
+        if (string.IsNullOrWhiteSpace(DatabaseVolume))
+            throw new InvalidOperationException($"{DevelopmentSiteKey} needs a database volume: its run uses the volume's separate twin ({DevelopmentSiteVolumeSuffix}), never the usual one.");
+    }
+
+    /// <summary>
+    /// The sign-in variables for api-main from <see cref="AccountsFile"/>: Auth__TotpRequired and Auth__DevelopmentUsers__n__*
+    /// only. Any other variable for api-main is refused; other resources' sections (the scripted demo's simulator key) are
+    /// not applied, so the scripted demo cannot drive a run with the development-only site.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> ReadAccounts()
+    {
+        if (string.IsNullOrWhiteSpace(AccountsFile))
+            return new Dictionary<string, string>();
+        var parsed = JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, string>>>(File.ReadAllText(AccountsFile))
+                     ?? throw new InvalidOperationException("AppHost:AccountsFile is empty.");
+        if (!parsed.TryGetValue("api-main", out var variables) || variables is null)
+            throw new InvalidOperationException("AppHost:AccountsFile has no api-main accounts.");
+        foreach (var name in variables.Keys.Where(name => !AccountVariable().IsMatch(name)))
+            throw new InvalidOperationException($"AppHost:AccountsFile: {name} for api-main is refused (only Auth__TotpRequired and Auth__DevelopmentUsers__n__* are applied).");
+        return variables;
+    }
+
+    [GeneratedRegex(@"^Auth__(TotpRequired|DevelopmentUsers__\d{1,2}__(UserName|Password|Temporary|TotpSecret|Roles__\d{1,2}|Sites__\d{1,2}))$", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 1000)]
+    private static partial Regex AccountVariable();
+
+    #endregion
+
     public static AppHostSettings From(IConfiguration configuration) =>
         configuration.GetSection(SectionName).Get<AppHostSettings>() ?? new AppHostSettings();
 

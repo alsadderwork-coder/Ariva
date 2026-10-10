@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using Ariva.Core.Domain.Enums;
 using Ariva.Core.Queueing;
@@ -233,6 +234,207 @@ public sealed partial class QueueStateEngineTests
 
         step.Reanchors.Should().Be(0, "the overflow band has not reported");
         step.OpenEntrants.Should().Be(2);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Reanchor_Should_SeeEveryReadingOfTheInstant_When_TheZoneAndItsBandArriveInEitherOrder(bool bandFirst)
+    {
+        // The queue is empty at 18:01; two people join; at 18:03 the zone reads 2 and the band 0, from two devices whose
+        // batches arrive in any order. The band's 0 beside the zone's earlier 0 is not an empty queue: nobody is dropped,
+        // and both exits are waits (the AUH-TA and overflow replays depended on the devices' ids before ARV-139b).
+        QueueInput zone = new QueueOccupancy("A-VIS", 2, At(3)), band = new QueueOccupancy("A-OV", 0, At(3));
+        var step = Play(Engine(), 30,
+            new QueueOccupancy("A-VIS", 0, At(1)), new QueueOccupancy("A-OV", 0, At(1)),
+            In(2, "S-15/1"), In(2.5, "S-15/2"),
+            bandFirst ? band : zone, bandFirst ? zone : band,
+            Out(4, "S-15/1"), Out(4.5, "S-15/2"));
+
+        step.Reanchors.Should().Be(0, "the queue holds two people at 18:03");
+        step.Resolutions.Should().BeEmpty();
+        step.Rejections.Duplicates.Should().Be(0);
+        Minutes(step).Should().Equal(2, 2);
+        step.Movements.Sum(m => m.Exits).Should().Be(2, "every exit counts towards the throughput");
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Reanchor_Should_HappenOnce_When_EveryZoneReadsZeroAtTheSameInstantInEitherOrder(bool bandFirst)
+    {
+        QueueInput zone = new QueueOccupancy("A-VIS", 0, At(3)), band = new QueueOccupancy("A-OV", 0, At(3));
+        var step = Play(Engine(), 30, In(0), In(1), bandFirst ? band : zone, bandFirst ? zone : band);
+
+        step.Reanchors.Should().Be(1);
+        step.Resolutions.Should().HaveCount(2).And.OnlyContain(r => r.Outcome == EntrantOutcome.Reanchored && r.ResolvedUtc == At(3));
+        step.OpenEntrants.Should().Be(0);
+    }
+
+    /// <summary>
+    /// Both zones read 0 at 18:01 and 1,100 tracked people join; at 18:02 the band reads 0 (ordered first), 1,050 people
+    /// leave and the zone reads <paramref name="zoneAtSplit"/>; the last 50 leave from 18:03. With MaxStepRecords at its
+    /// floor a step fills among the exits of 18:02, after the band's reading and before the zone's.
+    /// </summary>
+    private static List<QueueInput> SplitInstant(int zoneAtSplit)
+    {
+        var inputs = new List<QueueInput> { new QueueOccupancy("A-VIS", 0, At(1)), new QueueOccupancy("A-OV", 0, At(1)) };
+        for (var k = 0; k < 1_100; k++)
+            inputs.Add(In(1 + (k + 1) * 0.0008, "S-15/" + k));
+        inputs.Add(new QueueOccupancy("A-OV", 0, At(2)));
+        for (var k = 0; k < 1_050; k++)
+            inputs.Add(Out(2, "S-15/" + k));
+        inputs.Add(new QueueOccupancy("A-VIS", zoneAtSplit, At(2)));
+        for (var k = 1_050; k < 1_100; k++)
+            inputs.Add(Out(3 + (k - 1_050) * 0.01, "S-15/" + k));
+        return inputs;
+    }
+
+    private static readonly QueueEngineSettings SplitSettings = new() { Lateness = TimeSpan.Zero, MaxStepRecords = 1_000 };
+
+    /// <summary>
+    /// Plays <paramref name="inputs"/> to 18:10, step after step while a step is full; with <paramref name="restore"/> the
+    /// engine is restored from its JSON snapshot before each further step. <paramref name="pending"/> collects the pending
+    /// empty-queue check each full step leaves in the snapshot.
+    /// </summary>
+    private static List<QueueStep> RunSteps(IEnumerable<QueueInput> inputs, QueueEngineSettings settings, bool restore, List<DateTime?> pending = null)
+    {
+        var json = Ariva.Infra.Messaging.EventCatalog.Json;
+        var engine = new QueueStateEngine(Geometry, settings);
+        foreach (var input in inputs)
+            engine.Offer(input, input.TimeUtc);
+        var steps = new List<QueueStep> { engine.Advance(At(10)) };
+        while (steps[^1].More)
+        {
+            var state = JsonSerializer.Deserialize<QueueEngineState>(JsonSerializer.Serialize(engine.Capture(), json), json)!;
+            pending?.Add(state.PendingAnchorUtc);
+            if (restore)
+                engine = QueueStateEngine.Restore(Geometry, settings, state);
+            steps.Add(engine.Advance(At(10)));
+        }
+
+        pending?.Add(engine.Capture().PendingAnchorUtc);
+        return steps;
+    }
+
+    private static string StepJson(QueueStep step) => JsonSerializer.Serialize(step, Ariva.Infra.Messaging.EventCatalog.Json);
+
+    [Fact]
+    public void Restore_Should_ContinueLikeAContinuousRun_When_AFullStepSplitsTheReadingsOfAnInstant()
+    {
+        // ARV-114d: the F5 check of 18:02 waits for every event of that instant, also when a full step ends inside it: the
+        // check is carried in the engine's state (and its snapshot) and runs in the next step once the zone's reading of
+        // 18:02 has been applied. The zone reads 50 then, so the band's 0 beside the zone's previous 0 is not an empty
+        // queue: the split run, continuous or restored there, gives what a step that is not split gives (nobody
+        // re-anchored or fragmented, no duplicate exit, 1,100 waits).
+        var at = At(2);
+        var inputs = SplitInstant(zoneAtSplit: 50);
+        var pending = new List<DateTime?>();
+        var continuous = RunSteps(inputs, SplitSettings, restore: false);
+        var restored = RunSteps(inputs, SplitSettings, restore: true, pending);
+        var unsplit = RunSteps(inputs, new QueueEngineSettings { Lateness = TimeSpan.Zero }, restore: false);
+
+        restored.Select(StepJson).Should().Equal(continuous.Select(StepJson));
+        continuous.Should().HaveCount(2);
+        continuous[0].More.Should().BeTrue();
+        continuous[0].WatermarkUtc.Should().Be(at.AddTicks(-1));
+        continuous[0].Readings.Where(r => r.MinuteUtc == at).Select(r => r.ZoneName).Should().Equal(["A-OV"], "the step filled after the band's reading of 18:02");
+        continuous[1].Readings.Where(r => r.MinuteUtc == at).Select(r => r.ZoneName).Should().Equal(["A-VIS"], "and before the zone's");
+        pending.Should().Equal([at, null], "the full step leaves the check of 18:02 pending in its snapshot, and the next step runs it");
+
+        unsplit.Should().ContainSingle().Which.Should().Match<QueueStep>(s => s.Reanchors == 0 && s.Waits.Count == 1_100 && s.Resolutions.Count == 0 && s.Rejections.Duplicates == 0);
+        foreach (var run in new[] { continuous, restored })
+        {
+            run.Sum(s => s.Reanchors).Should().Be(0, "the zone holds 50 people at 18:02");
+            run.SelectMany(s => s.Resolutions).Should().BeEmpty("nobody is fragmented by a band's 0 alone");
+            run.Sum(s => s.Rejections.Duplicates).Should().Be(0, "every exit pairs with its own track");
+            run.SelectMany(s => s.Waits).Should().Equal(unsplit[0].Waits, "the split run gives the unsplit run's 1,100 waits");
+        }
+    }
+
+    [Fact]
+    public void Reanchor_Should_RunInTheNextStep_When_AFullStepSplitsAnInstantWhereEveryZoneReadsZero()
+    {
+        // The same split, but the zone reads 0 at 18:02 too: the queue is observed empty there, so the check carried across
+        // the full step re-anchors once, in the next step, after the rest of the instant (the 50 people still held are
+        // fragmented at 18:02 and their later exits are duplicates), exactly as an unsplit step does.
+        var at = At(2);
+        var inputs = SplitInstant(zoneAtSplit: 0);
+        var continuous = RunSteps(inputs, SplitSettings, restore: false);
+        var restored = RunSteps(inputs, SplitSettings, restore: true);
+        var unsplit = RunSteps(inputs, new QueueEngineSettings { Lateness = TimeSpan.Zero }, restore: false).Single();
+
+        restored.Select(StepJson).Should().Equal(continuous.Select(StepJson));
+        continuous.Should().HaveCount(2);
+        continuous[0].Reanchors.Should().Be(0, "the check waits for the zone's reading of 18:02");
+        continuous[0].Resolutions.Should().BeEmpty();
+        continuous[1].Reanchors.Should().Be(1);
+        continuous[1].Resolutions.Should().HaveCount(50).And.OnlyContain(r => r.Outcome == EntrantOutcome.Fragmented && r.ResolvedUtc == at);
+        continuous.SelectMany(s => s.Resolutions).Should().Equal(unsplit.Resolutions);
+        continuous.SelectMany(s => s.Waits).Should().Equal(unsplit.Waits).And.HaveCount(1_050);
+        continuous.Sum(s => s.Rejections.Duplicates).Should().Be(unsplit.Rejections.Duplicates).And.Be(50);
+    }
+
+    /// <summary>The snapshot a full step leaves inside the instant of 18:02, with its pending check.</summary>
+    private static QueueEngineState SplitSnapshot()
+    {
+        var engine = new QueueStateEngine(Geometry, SplitSettings);
+        foreach (var input in SplitInstant(zoneAtSplit: 50))
+            engine.Offer(input, input.TimeUtc);
+        engine.Advance(At(10)).More.Should().BeTrue();
+        var json = Ariva.Infra.Messaging.EventCatalog.Json;
+        return JsonSerializer.Deserialize<QueueEngineState>(JsonSerializer.Serialize(engine.Capture(), json), json)!;
+    }
+
+    private static readonly DateTime Far = new(9500, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+    private static readonly DateTime Early = new(1990, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+    public static TheoryData<string, Func<QueueEngineState, QueueEngineState>> HostilePendingChecks => new()
+    {
+        { "a check at the watermark, whose instant was applied whole", s => s with { PendingAnchorUtc = s.WatermarkUtc } },
+        { "a check before the watermark", s => s with { PendingAnchorUtc = s.WatermarkUtc.AddMinutes(-1) } },
+        { "a check two ticks after the watermark", s => s with { PendingAnchorUtc = s.WatermarkUtc.AddTicks(2) } },
+        { "a check a minute after the watermark", s => s with { PendingAnchorUtc = s.WatermarkUtc.AddMinutes(1) } },
+        { "a check that is not the last processed event's time", s => s with { CursorUtc = s.CursorUtc.AddSeconds(1) } },
+        { "a check with no reading of its instant held", s => s with { Occupancy = [.. s.Occupancy.Select(o => o with { AtUtc = At(1) })] } },
+        { "a check whose only reading of its instant is of another zone",
+            s => s with { Occupancy = [new QueueOccupancyState("A-VIS", 0, At(1), false), new QueueOccupancyState("Elsewhere", 0, At(2), false)] } },
+        { "a check far in the future, aligned with everything else",
+            s => s with { WatermarkUtc = Far.AddTicks(-1), CursorUtc = Far, PendingAnchorUtc = Far, Occupancy = [.. s.Occupancy.Select(o => o with { AtUtc = Far })] } },
+        { "a check before the year 2000, aligned with everything else",
+            s => s with { WatermarkUtc = Early.AddTicks(-1), CursorUtc = Early, PendingAnchorUtc = Early, Occupancy = [.. s.Occupancy.Select(o => o with { AtUtc = Early })] } },
+        { "a check at the start of the calendar", s => s with { WatermarkUtc = DateTime.MinValue, CursorUtc = DateTime.MinValue.AddTicks(1), PendingAnchorUtc = DateTime.MinValue.AddTicks(1) } },
+        { "a check at the end of the calendar", s => s with { WatermarkUtc = DateTime.MaxValue, PendingAnchorUtc = DateTime.MaxValue } },
+        { "a check whose instant has no buffered event left",
+            s => s with { Buffer = [.. s.Buffer.Where(b => b.Input.TimeUtc != s.PendingAnchorUtc)] } }
+    };
+
+    [Theory]
+    [MemberData(nameof(HostilePendingChecks))]
+    public void Restore_Should_RefuseAPendingCheck_When_NoFullStepLeavesItThere(string because, Func<QueueEngineState, QueueEngineState> tamper)
+    {
+        var state = SplitSnapshot();
+        QueueStateEngine.Restore(Geometry, SplitSettings, state).Capture().PendingAnchorUtc.Should().Be(At(2), "the untouched snapshot restores with its check");
+
+        var restore = () => QueueStateEngine.Restore(Geometry, SplitSettings, tamper(state));
+
+        restore.Should().Throw<InvalidDataException>(because);
+    }
+
+    [Fact]
+    public void Restore_Should_RunNoPendingCheck_When_TheSnapshotWasWrittenBeforeItCarriedOne()
+    {
+        // A snapshot written before ARV-114d has no PendingAnchorUtc: it restores with no check pending (the engine that
+        // wrote it had run the check when the step filled). The rest of the instant still sets its own check here.
+        var state = SplitSnapshot();
+        var json = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(state, Ariva.Infra.Messaging.EventCatalog.Json))!.AsObject();
+        json.Remove("pendingAnchorUtc").Should().BeTrue("a snapshot written now names the property");
+        var older = json.Deserialize<QueueEngineState>(Ariva.Infra.Messaging.EventCatalog.Json)!;
+
+        older.PendingAnchorUtc.Should().BeNull();
+        var engine = QueueStateEngine.Restore(Geometry, SplitSettings, older);
+        engine.Capture().PendingAnchorUtc.Should().BeNull();
+        engine.Advance(At(10)).Reanchors.Should().Be(0);
     }
 
     [Fact]

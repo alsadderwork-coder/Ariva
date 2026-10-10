@@ -56,6 +56,8 @@ spec:
           env:
             - name: DOTNET_ENVIRONMENT
               value: {{ .Values.environment | quote }}
+            # The validation reader login (ARV-104g1): the job creates or updates it (script 0049)
+            {{- include "ariva-platform.validationReaderEnv" . | nindent 12 }}
           volumeMounts:
             - name: tmp
               mountPath: /tmp

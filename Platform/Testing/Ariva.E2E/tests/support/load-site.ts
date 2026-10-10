@@ -1,5 +1,5 @@
 import { expect } from '@playwright/test';
-import { type Account, call, login, totpCode } from './accounts';
+import { type Account, call, login, unusedTotpCode } from './accounts';
 import { hosts } from './hosts';
 
 // ARV-071: a site of its own for a load run (api/load.spec.ts) or for the screen watched under load
@@ -21,7 +21,7 @@ export interface LoadSite {
 
 export async function provisionLoadSite(admin: Account, prefix: string, zone = 'Load Zone'): Promise<LoadSite> {
 	const base = `${hosts.main}/api/v1/admin`;
-	const signIn = await login(admin.userName, admin.password, undefined, undefined, { code: totpCode(admin.totpSecret!) });
+	const signIn = await login(admin.userName, admin.password, undefined, undefined, { code: await unusedTotpCode(admin.totpSecret!) });
 	expect(signIn.status(), 'administrator sign-in').toBe(200);
 	const token = (await signIn.json()).accessToken as string;
 	const create = async (resource: string, data: unknown) => {

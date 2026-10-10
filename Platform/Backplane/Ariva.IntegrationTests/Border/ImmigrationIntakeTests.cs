@@ -27,7 +27,7 @@ namespace Ariva.IntegrationTests.Border;
 /// and the runtime role cannot change or delete a record.
 /// </summary>
 [Collection(PostgresCollection.Name)]
-public sealed class ImmigrationIntakeTests(PostgresFixture fixture) : IAsyncDisposable
+public sealed partial class ImmigrationIntakeTests(PostgresFixture fixture) : IAsyncDisposable
 {
     private static readonly SemaphoreSlim Gate = new(1, 1);
     private static bool _seeded;
@@ -420,7 +420,10 @@ public sealed class ImmigrationIntakeTests(PostgresFixture fixture) : IAsyncDisp
         var dmo = await RowsAsync("SELECT desk_code, sum(transactions) FROM desk_minute WHERE desk_code LIKE 'DMO/%' AND minute_utc >= @from AND minute_utc < @to GROUP BY desk_code",
             r => (r.GetString(0), r.GetInt64(1)), t0, t0.AddMinutes(18));
         dmo["DMO/IMM/AR-09"].Should().BeGreaterThanOrEqualTo(50, "DMO's interval reached DMO's desk (other tests feed DMO too)");
-        (await _host.ReadAsync<long>("SELECT count(*) FROM desk_minute WHERE desk_code NOT LIKE 'DMO/%' AND desk_code NOT LIKE 'XS2/%'")).Should().Be(0);
+        // XS3 and XS4 are the desk zone sites of DeskFeed_Should_GiveDesksAStateFromTheirZones (ARV-116), and XS5 the site of
+        // DeskFeed_Should_WriteExactlyTheSensorMinutesTheCapLeaves (ARV-117a), which may run first.
+        (await _host.ReadAsync<long>("SELECT count(*) FROM desk_minute WHERE NOT (desk_code LIKE 'DMO/%' OR desk_code LIKE 'XS2/%' OR desk_code LIKE 'XS3/%' OR desk_code LIKE 'XS4/%' OR desk_code LIKE 'XS5/%')"))
+            .Should().Be(0);
 
 
         // Another replica holding the site: this one skips it.
@@ -483,88 +486,368 @@ public sealed class ImmigrationIntakeTests(PostgresFixture fixture) : IAsyncDisp
         await SeedAsync();
         _host.Clock.Advance(TimeSpan.FromDays(40));
         var minute = new DateTime(Now.Ticks - Now.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc);
-        // ARV-064: AR-08 to AR-10 serve the arrivals Visitors lane (VIS, level ARR), AR-02 the Citizens lane; DP-08 is a
-        // departures desk of the Visitors lane (another level); AG-1 an e-gate, which is not a desk.
-        var rows = new (string Key, string Lane, int Ago, double Idle, double Serving, double Unknown, int Transactions)[]
+        try
         {
-            ("DMO/IMM/AR-08", "VIS", 2, 0, 60, 0, 3), ("DMO/IMM/AR-08", "VIS", 1, 0, 60, 0, 3),
-            ("DMO/IMM/AR-09", "VIS", 2, 0, 60, 0, 2), ("DMO/IMM/AR-09", "VIS", 1, 10, 50, 0, 2),
-            ("DMO/IMM/AR-10", "VIS", 2, 0, 0, 0, 0), ("DMO/IMM/AR-10", "VIS", 1, 0, 0, 0, 0),
-            ("DMO/IMM/AR-02", "CIT", 1, 0, 0, 60, 0),
-            ("DMO/EMI/DP-08", "VIS", 1, 0, 60, 0, 30),
-            ("DMO/IMM/AG-1", "EG", 1, 0, 60, 0, 30),
-            ("DMO/IMM/AR-08", "VIS", 30, 0, 60, 0, 99)
-        };
-        await using (var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync())))
-        {
-            await connection.OpenAsync(Ct);
-            foreach (var row in rows)
+            // ARV-064: AR-08 to AR-10 serve the arrivals Visitors lane (VIS, level ARR), AR-02 the Citizens lane; DP-08 is a
+            // departures desk of the Visitors lane (another level); AG-1 an e-gate, which is not a desk.
+            var rows = new (string Key, string Lane, int Ago, double Idle, double Serving, double Unknown, int Transactions)[]
             {
-                await using var command = new NpgsqlCommand("""
+                ("DMO/IMM/AR-08", "VIS", 2, 0, 60, 0, 3), ("DMO/IMM/AR-08", "VIS", 1, 0, 60, 0, 3),
+                ("DMO/IMM/AR-09", "VIS", 2, 0, 60, 0, 2), ("DMO/IMM/AR-09", "VIS", 1, 10, 50, 0, 2),
+                ("DMO/IMM/AR-10", "VIS", 2, 0, 0, 0, 0), ("DMO/IMM/AR-10", "VIS", 1, 0, 0, 0, 0),
+                ("DMO/IMM/AR-02", "CIT", 1, 0, 0, 60, 0),
+                ("DMO/EMI/DP-08", "VIS", 1, 0, 60, 0, 30),
+                ("DMO/IMM/AG-1", "EG", 1, 0, 60, 0, 30),
+                ("DMO/IMM/AR-08", "VIS", 30, 0, 60, 0, 99)
+            };
+            await using (var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync())))
+            {
+                await connection.OpenAsync(Ct);
+                foreach (var row in rows)
+                {
+                    await using var command = new NpgsqlCommand("""
+                        INSERT INTO desk_minute (desk_code, lane, minute_utc, closed_seconds, idle_seconds, serving_seconds, paused_seconds, unknown_seconds, transactions,
+                                                 sensor_derived_seconds, present_seconds, degraded, updated_on)
+                        VALUES (@key, @lane, @minute, 0, @idle, @serving, 0, @unknown, @transactions, 0, 0, false, now())
+                        ON CONFLICT (desk_code, minute_utc) DO NOTHING
+                        """, connection);
+                    command.Parameters.AddWithValue("key", row.Key);
+                    command.Parameters.AddWithValue("lane", row.Lane);
+                    command.Parameters.AddWithValue("minute", minute.AddMinutes(-row.Ago));
+                    command.Parameters.AddWithValue("idle", row.Idle);
+                    command.Parameters.AddWithValue("serving", row.Serving);
+                    command.Parameters.AddWithValue("unknown", row.Unknown);
+                    command.Parameters.AddWithValue("transactions", row.Transactions);
+                    await command.ExecuteNonQueryAsync(Ct);
+                }
+            }
+
+            var source = new Ariva.Infra.Streaming.DeskTermSource(_host.Provider.GetRequiredService<Ariva.Infra.Settings.DatabaseSettings>(), _host.Clock);
+            var terms = await source.LoadAsync(["DMO/A-VIS", "DMO/A-CIT", "DMO/A-EG", "DMO/CI-C", "DMO/NOPE", "bad"], 5, Ct);
+
+            terms.Keys.Should().BeEquivalentTo(["DMO/A-VIS"], "A-CIT's only desk is Unknown, A-EG is served by e-gates, CI-C has no lane");
+            terms["DMO/A-VIS"].Should().Match<Ariva.Core.Queueing.DeskTerm>(t =>
+                t.AsOfMinuteUtc == minute.AddMinutes(-1) && t.Desks == 3 && t.OpenServers == 2 && !t.Degraded);
+            terms["DMO/A-VIS"].CycleMinutes.Should().BeApproximately(240.0 / 60 / 10, 1e-9,
+                "240 open seconds over 10 transactions; the departures desk and the minute half an hour ago are not counted");
+
+            // With AMAN's interval statistics for the lane's desks, c is their lane cycle time per person in working time (F10,
+            // ARV-117d): AR-08's 4 approaches of 5 people at 80 s service, AR-09's one traveller at 100 s after a lull (a 1,290 s
+            // cycle, idle time left out): (4 x 80 + 100) / 6 s a person; the departures desk's and an interval older than the
+            // window are left out. ARV-064 read 4 x 90 + 1,290 over 5 transactions, 5.5 min.
+            var intervals = new (string Desk, int Ago, double Cycle, int Transactions, int Documents, double Service)[]
+            {
+                ("AR-08", 2, 90, 4, 5, 80), ("AR-09", 3, 1290, 1, 1, 100), ("DP-08", 2, 600, 10, 10, 500), ("AR-08", 20, 1000, 9, 9, 900)
+            };
+            await using (var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync())))
+            {
+                await connection.OpenAsync(Ct);
+                foreach (var (desk, ago, cycle, transactions, documents, service) in intervals)
+                {
+                    await using var command = new NpgsqlCommand("""
+                        INSERT INTO border_desk_interval (id, site_code, desk_code, desk_id, interval_start_utc, transactions_processed, documents_processed,
+                                                          mean_service_seconds, p90_service_seconds, mean_cycle_seconds, lane_category, feed, source_event_id, received_utc)
+                        SELECT gen_random_uuid(), 'DMO', @desk, d.id, @start, @transactions, @documents, @service, @service * 1.5, @cycle, 'VIS', 'aman-kafka', @event, now()
+                          FROM desk d WHERE d.site_code = 'DMO' AND d.code = @desk AND d.deleted_on IS NULL
+                        """, connection);
+                    command.Parameters.AddWithValue("desk", desk);
+                    command.Parameters.AddWithValue("start", minute.AddMinutes(-ago));
+                    command.Parameters.AddWithValue("transactions", transactions);
+                    command.Parameters.AddWithValue("documents", documents);
+                    command.Parameters.AddWithValue("service", service);
+                    command.Parameters.AddWithValue("cycle", cycle);
+                    command.Parameters.AddWithValue("event", "it-desk-term-" + Guid.NewGuid().ToString("N"));
+                    (await command.ExecuteNonQueryAsync(Ct)).Should().Be(1, "desk {0} exists in the demo seed", desk);
+                }
+            }
+
+            const double laneCycle = (4 * 80 + 100) / 6.0 / 60;
+            var withCycles = await source.LoadAsync(["DMO/A-VIS"], 5, Ct);
+            withCycles["DMO/A-VIS"].CycleMinutes.Should().BeApproximately(laneCycle, 1e-9);
+            withCycles["DMO/A-VIS"].OpenServers.Should().Be(2);
+            withCycles["DMO/A-VIS"].Degraded.Should().BeFalse();
+            withCycles["DMO/A-VIS"].LaneCycle.Should().BeEquivalentTo(new { Intervals = 2, Refused = 0, Documents = 6L });
+
+            // CWE-501 (ARV-117d): an AMAN interval read back outside contract V1's bounds (the column's check dropped here to
+            // plant a NaN service time, and restored) is left out, counted and logged with the site and the count only; c comes
+            // from the rest and the published term is flagged.
+            var intervalLog = new TermLog();
+            var intervalSource = new Ariva.Infra.Streaming.DeskTermSource(_host.Provider.GetRequiredService<Ariva.Infra.Settings.DatabaseSettings>(), _host.Clock, intervalLog);
+            await using (var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync())))
+            {
+                await connection.OpenAsync(Ct);
+                await using var plant = new NpgsqlCommand("""
+                    ALTER TABLE border_desk_interval DROP CONSTRAINT border_desk_interval_mean_service_seconds_check;
+                    UPDATE border_desk_interval SET mean_service_seconds = 'NaN' WHERE desk_code = 'AR-08' AND site_code = 'DMO' AND interval_start_utc = @start
+                       AND source_event_id LIKE 'it-desk-term-%';
+                    """, connection);
+                plant.Parameters.AddWithValue("start", minute.AddMinutes(-2));
+                await plant.ExecuteNonQueryAsync(Ct);
+            }
+
+            try
+            {
+                var plantedInterval = (await intervalSource.LoadAsync(["DMO/A-VIS"], 5, Ct))["DMO/A-VIS"];
+                intervalSource.RefusedIntervals.Should().Be(1);
+                plantedInterval.CycleMinutes.Should().BeApproximately(100.0 / 60, 1e-9, "AR-09's interval alone");
+                plantedInterval.Degraded.Should().BeTrue("an interval left out flags the published term");
+                plantedInterval.SensorOnly.Should().BeNull("the sensor-only part does not read AMAN's intervals");
+                intervalLog.Entries.Should().ContainSingle().Which.Should().Match<TermLogEntry>(e =>
+                    e.Values.Count == 3 && Equals(e.Values["Site"], "DMO") && Equals(e.Values["Count"], 1) && !e.Message.Contains("AR-08", StringComparison.Ordinal) &&
+                    !e.Message.Contains("NaN", StringComparison.Ordinal));
+
+                // A desk listed under two lanes (AR-08 made a Citizens desk as well, here) flags both lanes' terms with its
+                // refused interval, which is still one row left out: counted and logged once.
+                await using var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync()));
+                await connection.OpenAsync(Ct);
+                await using (var twoLanes = new NpgsqlCommand(
+                    "UPDATE desk SET lane_category_codes = 'VIS,CIT' WHERE site_code = 'DMO' AND code = 'AR-08' AND kind = 'Desk' AND lane_category_codes = 'VIS'", connection))
+                    (await twoLanes.ExecuteNonQueryAsync(Ct)).Should().Be(1, "AR-08 is a Visitors desk in the demo seed");
+                var twoLaneLog = new TermLog();
+                var twoLaneSource = new Ariva.Infra.Streaming.DeskTermSource(_host.Provider.GetRequiredService<Ariva.Infra.Settings.DatabaseSettings>(), _host.Clock, twoLaneLog);
+                var twoLaneTerms = await twoLaneSource.LoadAsync(["DMO/A-VIS", "DMO/A-CIT"], 5, Ct);
+                twoLaneTerms.Keys.Should().BeEquivalentTo(["DMO/A-VIS", "DMO/A-CIT"], "AR-08 is open in both lanes now");
+                twoLaneTerms.Values.Should().OnlyContain(t => t.Degraded, "the refused interval is read in both lanes");
+                twoLaneSource.RefusedIntervals.Should().Be(1, "one interval row was left out, whatever the lanes that read it");
+                twoLaneLog.Entries.Should().ContainSingle().Which.Values["Count"].Should().Be(1);
+
+                await using var restore = new NpgsqlCommand(
+                    "UPDATE border_desk_interval SET mean_service_seconds = 80 WHERE mean_service_seconds = 'NaN' AND source_event_id LIKE 'it-desk-term-%'", connection);
+                (await restore.ExecuteNonQueryAsync(Ct)).Should().Be(1, "the planted interval gets its service time back");
+            }
+            finally
+            {
+                // Whatever the assertions did: no planted row is left (it would fail the restored check), and the column's check
+                // from script 0030 is back, so the class's shared database is as the scripts made it.
+                await RestoreIntervalCheckAsync(fixture.ConnectionString(await _host.DatabaseAsync()));
+            }
+
+            (await intervalSource.LoadAsync(["DMO/A-VIS"], 5, Ct))["DMO/A-VIS"].Should().Be(withCycles["DMO/A-VIS"], "restored");
+
+            // ARV-117: the sensor-only part for the shadow nowcast. AR-08 and AR-09 are open through AMAN alone (no
+            // sensor-derived seconds): the sensors cannot see them, so there is no sensor-only term. Once AR-09's latest minute
+            // is sensor-derived it counts, AR-08 still flags the term, and there is no cycle time without AMAN.
+            withCycles["DMO/A-VIS"].SensorOnly.Should().BeNull();
+            await using (var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync())))
+            {
+                await connection.OpenAsync(Ct);
+                await using var sensors = new NpgsqlCommand(
+                    "UPDATE desk_minute SET sensor_derived_seconds = idle_seconds + serving_seconds WHERE desk_code = 'DMO/IMM/AR-09' AND minute_utc = @minute", connection);
+                sensors.Parameters.AddWithValue("minute", minute.AddMinutes(-1));
+                (await sensors.ExecuteNonQueryAsync(Ct)).Should().Be(1);
+            }
+
+            var withSensors = (await source.LoadAsync(["DMO/A-VIS"], 5, Ct))["DMO/A-VIS"];
+            (withSensors.SensorOnly with { SensorBusy = null }).Should().Be(new Ariva.Core.Queueing.DeskTerm(minute.AddMinutes(-1), 1, null, true, 3));
+            withSensors.SensorOnly.SensorBusy.Missing.Should().Be(Ariva.Core.Queueing.SensorCycleFallback.DesksWithoutSensors,
+                "ARV-117b: no sensor-only minute yet, so no busy time for the sensor cycle time");
+            withSensors.OpenServers.Should().Be(2, "the published term is unchanged");
+            withSensors.CycleMinutes.Should().BeApproximately(laneCycle, 1e-9);
+
+            // ARV-117a: the sensor-only desk engine's minutes (desk_sensor_minute) replace that reading for the desks they cover,
+            // whatever AMAN said: AR-08's zones show it open, AR-09's (open through AMAN) show it closed; AR-10 has no sensor
+            // minute and stays on ARV-117's reading (closed). n_open from the zones is 1, and the term is not flagged.
+            await using (var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync())))
+            {
+                await connection.OpenAsync(Ct);
+                await using var sensorMinutes = new NpgsqlCommand("""
+                    INSERT INTO desk_sensor_minute (desk_code, minute_utc, closed_seconds, idle_seconds, serving_seconds, paused_seconds, unknown_seconds, degraded, updated_on)
+                    VALUES ('DMO/IMM/AR-08', @minute, 0, 20, 40, 0, 0, false, now()), ('DMO/IMM/AR-09', @minute, 60, 0, 0, 0, 0, false, now())
+                    """, connection);
+                sensorMinutes.Parameters.AddWithValue("minute", minute.AddMinutes(-1));
+                (await sensorMinutes.ExecuteNonQueryAsync(Ct)).Should().Be(2);
+            }
+
+            var fromZones = (await source.LoadAsync(["DMO/A-VIS"], 5, Ct))["DMO/A-VIS"];
+            (fromZones.SensorOnly with { SensorBusy = null }).Should().Be(new Ariva.Core.Queueing.DeskTerm(minute.AddMinutes(-1), 1, null, false, 3));
+            fromZones.OpenServers.Should().Be(2, "the published term is unchanged by the sensor-only minutes");
+            fromZones.CycleMinutes.Should().BeApproximately(laneCycle, 1e-9);
+
+            // ARV-117b: the sensor cycle time's busy window. With sensor-only minutes for the three Visitors desks over the ten
+            // minutes ending at the term's minute (AR-08 serving, AR-09 serving half of each minute, AR-10 closed), the term's
+            // sensor-only part carries their Serving seconds, 600 + 300, over 30 desk minutes, not flagged; the published term
+            // does not move.
+            await using (var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync())))
+            {
+                await connection.OpenAsync(Ct);
+                await using var window = new NpgsqlCommand("""
                     INSERT INTO desk_minute (desk_code, lane, minute_utc, closed_seconds, idle_seconds, serving_seconds, paused_seconds, unknown_seconds, transactions,
                                              sensor_derived_seconds, present_seconds, degraded, updated_on)
-                    VALUES (@key, @lane, @minute, 0, @idle, @serving, 0, @unknown, @transactions, 0, 0, false, now())
-                    ON CONFLICT (desk_code, minute_utc) DO NOTHING
+                    SELECT d.code, 'VIS', @minute - make_interval(mins => k), 0, 0, 60, 0, 0, 1, 0, 0, false, now()
+                      FROM unnest(ARRAY['DMO/IMM/AR-08', 'DMO/IMM/AR-09', 'DMO/IMM/AR-10']) AS d(code), generate_series(1, 10) AS k
+                    ON CONFLICT (desk_code, minute_utc) DO NOTHING;
+                    DELETE FROM desk_sensor_minute WHERE desk_code LIKE 'DMO/IMM/AR-%' AND minute_utc BETWEEN @minute - interval '30 minutes' AND @minute;
+                    INSERT INTO desk_sensor_minute (desk_code, minute_utc, closed_seconds, idle_seconds, serving_seconds, paused_seconds, unknown_seconds, degraded, updated_on)
+                    SELECT d.code, @minute - make_interval(mins => k), d.closed, d.idle, d.serving, 0, 0, false, now()
+                      FROM (VALUES ('DMO/IMM/AR-08', 0.0, 0.0, 60.0), ('DMO/IMM/AR-09', 0.0, 30.0, 30.0), ('DMO/IMM/AR-10', 60.0, 0.0, 0.0)) AS d(code, closed, idle, serving),
+                           generate_series(1, 10) AS k;
                     """, connection);
-                command.Parameters.AddWithValue("key", row.Key);
-                command.Parameters.AddWithValue("lane", row.Lane);
-                command.Parameters.AddWithValue("minute", minute.AddMinutes(-row.Ago));
-                command.Parameters.AddWithValue("idle", row.Idle);
-                command.Parameters.AddWithValue("serving", row.Serving);
-                command.Parameters.AddWithValue("unknown", row.Unknown);
-                command.Parameters.AddWithValue("transactions", row.Transactions);
-                await command.ExecuteNonQueryAsync(Ct);
+                window.Parameters.AddWithValue("minute", minute);
+                await window.ExecuteNonQueryAsync(Ct);
             }
-        }
 
-        var source = new Ariva.Infra.Streaming.DeskTermSource(_host.Provider.GetRequiredService<Ariva.Infra.Settings.DatabaseSettings>(), _host.Clock);
-        var terms = await source.LoadAsync(["DMO/A-VIS", "DMO/A-CIT", "DMO/A-EG", "DMO/CI-C", "DMO/NOPE", "bad"], 5, Ct);
+            var busy = (await source.LoadAsync(["DMO/A-VIS"], 5, Ct))["DMO/A-VIS"];
+            busy.SensorOnly.SensorBusy.Should().Be(new Ariva.Core.Queueing.SensorBusyWindow(minute.AddMinutes(-10), minute.AddMinutes(-1), 900, 30, 0, 0, false, null));
+            busy.SensorOnly.OpenServers.Should().Be(2, "AR-08 and AR-09 open from their zones");
+            busy.SensorOnly.CycleMinutes.Should().BeNull("the zone gives the shadow its c with the queue's exits");
+            (busy with { SensorOnly = null }).Should().Be(fromZones with { SensorOnly = null }, "the published term is unchanged by the busy window");
+            Ariva.Core.Queueing.SensorCycle.Compute(busy.SensorOnly.SensorBusy, new Ariva.Core.Queueing.ExitWindow(10, 10, 10, 0)).CycleMinutes
+                .Should().BeApproximately(1.5, 1e-9, "15 Serving desk minutes over 10 exits");
 
-        terms.Keys.Should().BeEquivalentTo(["DMO/A-VIS"], "A-CIT's only desk is Unknown, A-EG is served by e-gates, CI-C has no lane");
-        terms["DMO/A-VIS"].Should().Match<Ariva.Core.Queueing.DeskTerm>(t =>
-            t.AsOfMinuteUtc == minute.AddMinutes(-1) && t.Desks == 3 && t.OpenServers == 2 && !t.Degraded);
-        terms["DMO/A-VIS"].CycleMinutes.Should().BeApproximately(240.0 / 60 / 10, 1e-9,
-            "240 open seconds over 10 transactions; the departures desk and the minute half an hour ago are not counted");
-
-        // With AMAN's interval statistics for the lane's desks, c is their transaction-weighted cycle time (F10): 4
-        // transactions at 90 s and 1 at 150 s; the departures desk's and an interval older than the window are left out.
-        var intervals = new (string Desk, int Ago, double Cycle, int Transactions)[] { ("AR-08", 2, 90, 4), ("AR-09", 3, 150, 1), ("DP-08", 2, 600, 10), ("AR-08", 20, 1000, 9) };
-        await using (var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync())))
-        {
-            await connection.OpenAsync(Ct);
-            foreach (var (desk, ago, cycle, transactions) in intervals)
+            // CWE-501: a sensor-only minute read back outside script 0044's bounds (the checks dropped here to plant one, and
+            // restored) is left out, counted, and logged with the site and the count only; the window counts it as Unknown.
+            var log = new TermLog();
+            var checkedSource = new Ariva.Infra.Streaming.DeskTermSource(_host.Provider.GetRequiredService<Ariva.Infra.Settings.DatabaseSettings>(), _host.Clock, log);
+            await using (var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync())))
             {
-                await using var command = new NpgsqlCommand("""
-                    INSERT INTO border_desk_interval (id, site_code, desk_code, desk_id, interval_start_utc, transactions_processed, documents_processed,
-                                                      mean_service_seconds, p90_service_seconds, mean_cycle_seconds, lane_category, feed, source_event_id, received_utc)
-                    SELECT gen_random_uuid(), 'DMO', @desk, d.id, @start, @transactions, @transactions, @cycle * 0.8, @cycle, @cycle, 'VIS', 'aman-kafka', @event, now()
-                      FROM desk d WHERE d.site_code = 'DMO' AND d.code = @desk AND d.deleted_on IS NULL
+                await connection.OpenAsync(Ct);
+                await using var plant = new NpgsqlCommand("""
+                    ALTER TABLE desk_sensor_minute DROP CONSTRAINT ck_desk_sensor_minute_total;
+                    ALTER TABLE desk_sensor_minute DROP CONSTRAINT desk_sensor_minute_serving_seconds_check;
+                    UPDATE desk_sensor_minute SET serving_seconds = 75 WHERE desk_code = 'DMO/IMM/AR-08' AND minute_utc = @minute - interval '5 minutes';
                     """, connection);
-                command.Parameters.AddWithValue("desk", desk);
-                command.Parameters.AddWithValue("start", minute.AddMinutes(-ago));
-                command.Parameters.AddWithValue("transactions", transactions);
-                command.Parameters.AddWithValue("cycle", cycle);
-                command.Parameters.AddWithValue("event", "it-desk-term-" + Guid.NewGuid().ToString("N"));
-                (await command.ExecuteNonQueryAsync(Ct)).Should().Be(1, "desk {0} exists in the demo seed", desk);
+                plant.Parameters.AddWithValue("minute", minute);
+                await plant.ExecuteNonQueryAsync(Ct);
             }
+
+            var refused = (await checkedSource.LoadAsync(["DMO/A-VIS"], 5, Ct))["DMO/A-VIS"];
+            checkedSource.RefusedSensorMinutes.Should().Be(1);
+            refused.SensorOnly.SensorBusy.Missing.Should().Be(Ariva.Core.Queueing.SensorCycleFallback.DesksWithoutSensors,
+                "the refused minute leaves AR-08 without a sensor-only minute there");
+            (refused with { SensorOnly = null }).Should().Be(fromZones with { SensorOnly = null });
+            log.Entries.Should().ContainSingle().Which.Should().Match<TermLogEntry>(e =>
+                e.Values.Count == 3 && Equals(e.Values["Site"], "DMO") && Equals(e.Values["Count"], 1) && !e.Message.Contains("AR-08", StringComparison.Ordinal));
+            // CWE-120: a lane whose cycle window holds more sensor-only desk minutes than the cap gets no busy time, with a
+            // warning that names the site and the count only. All fifteen Visitors desks over the ten minutes are 150 desk
+            // minutes, over a cap of 100.
+            await using (var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync())))
+            {
+                await connection.OpenAsync(Ct);
+                await using var all = new NpgsqlCommand("""
+                    INSERT INTO desk_minute (desk_code, lane, minute_utc, closed_seconds, idle_seconds, serving_seconds, paused_seconds, unknown_seconds, transactions,
+                                             sensor_derived_seconds, present_seconds, degraded, updated_on)
+                    SELECT 'DMO/IMM/AR-' || lpad(n::text, 2, '0'), 'VIS', @minute - make_interval(mins => k), 0, 0, 60, 0, 0, 1, 0, 0, false, now()
+                      FROM generate_series(8, 22) AS n, generate_series(1, 10) AS k
+                    ON CONFLICT (desk_code, minute_utc) DO NOTHING;
+                    INSERT INTO desk_sensor_minute (desk_code, minute_utc, closed_seconds, idle_seconds, serving_seconds, paused_seconds, unknown_seconds, degraded, updated_on)
+                    SELECT 'DMO/IMM/AR-' || lpad(n::text, 2, '0'), @minute - make_interval(mins => k), 0, 0, 60, 0, 0, false, now()
+                      FROM generate_series(8, 22) AS n, generate_series(1, 10) AS k
+                    ON CONFLICT (desk_code, minute_utc) DO NOTHING;
+                    """, connection);
+                all.Parameters.AddWithValue("minute", minute);
+                await all.ExecuteNonQueryAsync(Ct);
+            }
+
+            var capLog = new TermLog();
+            var capSource = new Ariva.Infra.Streaming.DeskTermSource(_host.Provider.GetRequiredService<Ariva.Infra.Settings.DatabaseSettings>(), _host.Clock, capLog);
+            var capped = (await capSource.LoadAsync(["DMO/A-VIS"], 5, new Ariva.Core.Queueing.SensorCycleSettings { MaxDeskMinutes = 100 }, Ct))["DMO/A-VIS"];
+            capped.SensorOnly.SensorBusy.Missing.Should().Be(Ariva.Core.Queueing.SensorCycleFallback.TooManyMinutes);
+            capSource.CappedSensorWindows.Should().Be(1);
+            capLog.Entries.Should().ContainSingle(e => e.Message.Contains("cap", StringComparison.Ordinal)).Which.Should().Match<TermLogEntry>(e =>
+                e.Values.Count == 3 && Equals(e.Values["Site"], "DMO") && Equals(e.Values["Count"], 1) && !e.Message.Contains("AR-", StringComparison.Ordinal) &&
+                !e.Message.Contains("A-VIS", StringComparison.Ordinal));
+            (await capSource.LoadAsync(["DMO/A-VIS"], 5, Ct))["DMO/A-VIS"].SensorOnly.SensorBusy.Missing.Should().NotBe(Ariva.Core.Queueing.SensorCycleFallback.TooManyMinutes,
+                "150 desk minutes are within the Proposed cap of 4,000");
+
+            await RestoreSensorChecksAsync(fixture.ConnectionString(await _host.DatabaseAsync()));
         }
-
-        var withCycles = await source.LoadAsync(["DMO/A-VIS"], 5, Ct);
-        withCycles["DMO/A-VIS"].CycleMinutes.Should().BeApproximately((4 * 90 + 150) / 5.0 / 60, 1e-9);
-        withCycles["DMO/A-VIS"].OpenServers.Should().Be(2);
-
-        // The planted rows are 40 days ahead in the class's shared database: left there, they stop the DMO desk feed of
-        // DeskFeed_Should_DriveTheDeskEngine... from writing its minutes whenever this test runs first (xUnit shuffles).
-        await using (var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync())))
+        finally
         {
-            await connection.OpenAsync(Ct);
+            // Whatever the assertions did, the checks dropped above are back (each only when missing) and the planted rows
+            // are gone. The rows are 40 days ahead in the class's shared database: left there, they stop the DMO desk feed of
+            // DeskFeed_Should_DriveTheDeskEngine... from writing its minutes whenever this test runs first (xUnit shuffles).
+            var connectionString = fixture.ConnectionString(await _host.DatabaseAsync());
+            await RestoreIntervalCheckAsync(connectionString);
+            await RestoreSensorChecksAsync(connectionString);
+            await using var connection = new NpgsqlConnection(connectionString);
+            await connection.OpenAsync(CancellationToken.None);
             await using var clean = new NpgsqlCommand("""
                 DELETE FROM desk_minute WHERE desk_code LIKE 'DMO/%' AND minute_utc BETWEEN @from AND @to;
+                DELETE FROM desk_sensor_minute WHERE desk_code LIKE 'DMO/%' AND minute_utc BETWEEN @from AND @to;
                 DELETE FROM border_desk_interval WHERE source_event_id LIKE 'it-desk-term-%';
                 """, connection);
             clean.Parameters.AddWithValue("from", minute.AddMinutes(-30));
             clean.Parameters.AddWithValue("to", minute);
-            await clean.ExecuteNonQueryAsync(Ct);
+            await clean.ExecuteNonQueryAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// Undoes the NaN plant of the desk terms test (ARV-117d), as admin: AR-08 is a Visitors desk only again, the planted
+    /// interval row is deleted, then script 0030's check on mean_service_seconds is added back when pg_constraint lacks it.
+    /// Idempotent; runs even when the test was cancelled.
+    /// </summary>
+    private static async Task RestoreIntervalCheckAsync(string connectionString)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(CancellationToken.None);
+        await using var restore = new NpgsqlCommand("""
+            UPDATE desk SET lane_category_codes = 'VIS' WHERE site_code = 'DMO' AND code = 'AR-08' AND kind = 'Desk' AND lane_category_codes = 'VIS,CIT';
+            DELETE FROM border_desk_interval WHERE source_event_id LIKE 'it-desk-term-%' AND mean_service_seconds = 'NaN';
+            DO $$
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                                WHERE conname = 'border_desk_interval_mean_service_seconds_check' AND conrelid = 'border_desk_interval'::regclass) THEN
+                    ALTER TABLE border_desk_interval ADD CONSTRAINT border_desk_interval_mean_service_seconds_check CHECK (mean_service_seconds BETWEEN 0 AND 3600);
+                END IF;
+            END $$;
+            """, connection);
+        await restore.ExecuteNonQueryAsync(CancellationToken.None);
+    }
+
+    /// <summary>
+    /// Undoes the sensor-only minute plant of the desk terms test (ARV-117b), as admin: the planted minute is deleted, then
+    /// script 0044's two checks are added back each when pg_constraint lacks it. Idempotent; runs even when the test was
+    /// cancelled.
+    /// </summary>
+    private static async Task RestoreSensorChecksAsync(string connectionString)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(CancellationToken.None);
+        await using var restore = new NpgsqlCommand("""
+            DELETE FROM desk_sensor_minute WHERE serving_seconds > 60;
+            DO $$
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                                WHERE conname = 'desk_sensor_minute_serving_seconds_check' AND conrelid = 'desk_sensor_minute'::regclass) THEN
+                    ALTER TABLE desk_sensor_minute ADD CONSTRAINT desk_sensor_minute_serving_seconds_check CHECK (serving_seconds BETWEEN 0 AND 60);
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                                WHERE conname = 'ck_desk_sensor_minute_total' AND conrelid = 'desk_sensor_minute'::regclass) THEN
+                    ALTER TABLE desk_sensor_minute ADD CONSTRAINT ck_desk_sensor_minute_total
+                        CHECK (closed_seconds + idle_seconds + serving_seconds + paused_seconds + unknown_seconds <= 60.001);
+                END IF;
+            END $$;
+            """, connection);
+        await restore.ExecuteNonQueryAsync(CancellationToken.None);
+    }
+
+    private sealed record TermLogEntry(Microsoft.Extensions.Logging.LogLevel Level, string Message, IReadOnlyDictionary<string, object> Values);
+
+    // Keeps the desk term source's warnings with their structured values, to prove what a log line carries.
+    private sealed class TermLog : Microsoft.Extensions.Logging.ILogger<Ariva.Infra.Streaming.DeskTermSource>
+    {
+        private readonly List<TermLogEntry> _entries = [];
+
+        public IReadOnlyList<TermLogEntry> Entries
+        {
+            get
+            {
+                lock (_entries)
+                    return [.. _entries];
+            }
+        }
+
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+
+        public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId, TState state, Exception exception,
+            Func<TState, Exception, string> formatter)
+        {
+            var values = state is IReadOnlyList<KeyValuePair<string, object>> pairs ? pairs.ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal) : [];
+            lock (_entries)
+                _entries.Add(new TermLogEntry(logLevel, formatter(state, exception), values));
         }
     }
 

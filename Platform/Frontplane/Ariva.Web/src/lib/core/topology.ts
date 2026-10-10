@@ -15,6 +15,8 @@ export interface Page<T> {
 export interface Site {
 	code: string;
 	name: string;
+	/** "Illustrative, not surveyed" (ARV-139a): set by the server's demo seed only; the screens show a banner. */
+	illustrative?: boolean;
 }
 
 export interface Airport {

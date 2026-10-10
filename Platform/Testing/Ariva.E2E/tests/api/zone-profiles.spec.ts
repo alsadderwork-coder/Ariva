@@ -64,9 +64,70 @@ test('a draft is edited, validated and published as version 1 only with a recent
 		});
 		expect(lane.status(), laneCategory).toBe(400);
 	}
+	// ARV-114a: a physical capacity is a whole number of people from 1 to 5,000 (0 or none: no capacity).
+	for (const physicalCapacity of [-1, 5001, 1.5, 1e12, 'many', '<img src=x onerror=alert(1)>']) {
+		const capacity = await call('POST', `${api}/${firstId}/zones`, {
+			token: withSecondFactor,
+			data: { name: 'Sized', kind: 'Queue', levelId, polygon: '50 10,60 10,60 20', physicalCapacity }
+		});
+		expect(capacity.status(), String(physicalCapacity)).toBe(400);
+		expect(await capacity.text()).not.toContain('onerror');
+	}
+	// ARV-114a: only a queue zone or an overflow band has a physical capacity; on a service zone the domain rule is a
+	// client error (never a 500), on adding and on editing.
+	const serviceSized = await call('POST', `${api}/${firstId}/zones`, {
+		token: withSecondFactor,
+		data: { name: 'Desk front', kind: 'Service', levelId, queueZoneId: queueId, polygon: '50 10,60 10,60 20', physicalCapacity: 10 }
+	});
+	expect([400, 409], await serviceSized.text()).toContain(serviceSized.status());
+	expect(await serviceSized.text()).toContain('physical capacity');
+	const service = await call('POST', `${api}/${firstId}/zones`, {
+		token: withSecondFactor,
+		data: { name: 'Desk front', kind: 'Service', levelId, queueZoneId: queueId, polygon: '50 10,60 10,60 20' }
+	});
+	expect(service.status(), await service.text()).toBe(201);
+	const serviceId = (await service.json()).id;
+	const serviceEdited = await call('PUT', `${api}/${firstId}/zones/${serviceId}`, {
+		token: withSecondFactor,
+		data: { name: 'Desk front', polygon: '50 10,60 10,60 20', physicalCapacity: 10 }
+	});
+	expect([400, 409], await serviceEdited.text()).toContain(serviceEdited.status());
+	expect((await call('DELETE', `${api}/${firstId}/zones/${serviceId}`, { token: withSecondFactor })).status()).toBe(204);
 	const markup = await call('POST', `${api}/${firstId}/zones`, { token: withSecondFactor, data: { name: '<script>alert(1)</script>', kind: 'Queue', levelId, polygon: '50 10,60 10,60 20' } });
 	expect([201, 400], 'markup is refused or stored as inert text').toContain(markup.status());
 	if (markup.status() === 201) await call('DELETE', `${api}/${firstId}/zones/${(await markup.json()).id}`, { token: withSecondFactor });
+	// ARV-114c: a queue zone's events are keyed by the site code, a slash and the zone name, which together hold 200
+	// characters (as PostgreSQL counts them: a character outside the basic plane counts once). At E2E2 a queue zone name
+	// is at most 195 characters, below the 200 of the name rule; a longer one is refused with 400 and never repeated back.
+	const plane = '\u{1F6EB}';
+	for (const name of ['K'.repeat(195), plane.repeat(5) + 'K'.repeat(190)]) {
+		const longest = await call('POST', `${api}/${firstId}/zones`, { token: withSecondFactor, data: { name, kind: 'Queue', levelId, polygon: '50 10,60 10,60 20' } });
+		expect(longest.status(), `${[...name].length} characters: ${await longest.text()}`).toBe(201);
+		expect((await call('DELETE', `${api}/${firstId}/zones/${(await longest.json()).id}`, { token: withSecondFactor })).status()).toBe(204);
+	}
+	const overlongNames = [
+		'Overlong' + 'Z'.repeat(188),
+		'Overlong' + 'Z'.repeat(192),
+		plane.repeat(4) + 'Overlong' + 'Z'.repeat(184),
+		'<img src=x onerror=alert(1)>' + 'Z'.repeat(168),
+		"' OR '1'='1" + 'Z'.repeat(185)
+	];
+	for (const name of overlongNames) {
+		const refusedName = await call('POST', `${api}/${firstId}/zones`, { token: withSecondFactor, data: { name, kind: 'Queue', levelId, polygon: '50 10,60 10,60 20' } });
+		const body = await refusedName.text();
+		expect(refusedName.status(), `${[...name].length} characters: ${body}`).toBe(400);
+		// Markup or quotes may be refused by an earlier rule; a plain name meets this one.
+		if (/^[\p{L}\u{1F6EB}]+$/u.test(name)) expect(body).toContain('at most 195 characters');
+		for (const fragment of ['Overlong', 'ZZZZ', 'onerror', "'1'='1", plane]) expect(body).not.toContain(fragment);
+	}
+	const renamed = await call('PUT', `${api}/${firstId}/zones/${queueId}`, {
+		token: withSecondFactor,
+		data: { name: 'Overlong' + 'Z'.repeat(188), polygon: '10 10,34 10,34 22,10 22' }
+	});
+	expect(renamed.status(), 'a rename is held to the same rule').toBe(400);
+	expect(await renamed.text()).not.toContain('Overlong');
+	const kept = await (await call('GET', `${api}/${firstId}`, { token: withSecondFactor })).json();
+	expect(kept.zones.find((z: any) => z.id === queueId).name, 'the refused rename changed nothing').toBe('Snake A');
 
 	const problems = await (await call('GET', `${api}/${firstId}/validation`, { token: withSecondFactor })).json();
 	expect(problems.publishable).toBe(false);
@@ -80,6 +141,14 @@ test('a draft is edited, validated and published as version 1 only with a recent
 	const reviewed = await (await call('GET', `${api}/${firstId}/validation`, { token: withSecondFactor })).json();
 	expect(reviewed.publishable).toBe(true);
 	const geometryHash = reviewed.geometryHash as string;
+	// ARV-114a: the snake holds 120 people; a capacity is no geometry, so the reviewed hash stays (F22).
+	const sized = await call('PUT', `${api}/${firstId}/zones/${queueId}`, {
+		token: withSecondFactor,
+		data: { name: 'Snake A', polygon: '10 10,34 10,34 22,10 22', physicalCapacity: 120 }
+	});
+	expect(sized.status(), await sized.text()).toBe(200);
+	expect((await sized.json()).physicalCapacity).toBe(120);
+	expect((await (await call('GET', `${api}/${firstId}/validation`, { token: withSecondFactor })).json()).geometryHash).toBe(geometryHash);
 
 	const refused = await call('POST', `${api}/${firstId}/publish`, { token: passwordOnly, data: { geometryHash } });
 	expect(refused.status(), 'publish without a recent second factor').toBe(401);
@@ -99,6 +168,10 @@ test('a published version never changes; the next draft copies it and retires it
 	expect((await call('PUT', `${api}/${firstId}`, { token: withSecondFactor, data: { name: 'Renamed' } })).status(), 'rename published').toBe(409);
 	expect((await call('POST', `${api}/${firstId}/zones`, { token: withSecondFactor, data: { name: 'Late', kind: 'Queue', levelId, polygon: '50 10,60 10,60 20' } })).status(), 'add to published').toBe(409);
 	expect((await call('DELETE', `${api}/${firstId}/zones/${queueId}`, { token: withSecondFactor })).status(), 'remove from published').toBe(409);
+	expect(
+		(await call('PUT', `${api}/${firstId}/zones/${queueId}`, { token: withSecondFactor, data: { name: 'Snake A', polygon: '10 10,34 10,34 22,10 22', physicalCapacity: 9 } })).status(),
+		'a capacity of a published version'
+	).toBe(409);
 	expect((await call('POST', `${api}/${firstId}/publish`, { token: withSecondFactor, data: { geometryHash: '0'.repeat(64) } })).status(), 'publish twice').toBe(409);
 
 	const next = await call('POST', `${api}/drafts`, { token: withSecondFactor, data: { siteCode: 'E2E2' } });
@@ -107,8 +180,13 @@ test('a published version never changes; the next draft copies it and retires it
 	expect(draft.zones).toHaveLength(1);
 	expect(draft.lines).toHaveLength(2);
 	const snake = draft.zones[0];
+	expect(snake.physicalCapacity, 'the draft copies the capacity').toBe(120);
+	const cleared = await call('PUT', `${api}/${draft.profile.id}/zones/${snake.id}`, { token: withSecondFactor, data: { name: 'Snake A', polygon: '10 10,34 10,34 22,10 22', physicalCapacity: 0 } });
+	expect((await cleared.json()).physicalCapacity, '0 clears it').toBeNull();
+	await call('PUT', `${api}/${draft.profile.id}/zones/${snake.id}`, { token: withSecondFactor, data: { name: 'Snake A', polygon: '10 10,34 10,34 22,10 22', physicalCapacity: 150 } });
 	const moved = await call('PUT', `${api}/${draft.profile.id}/zones/${snake.id}`, { token: withSecondFactor, data: { name: 'Snake A', polygon: '10 10,34 10,36 16,34 22,10 22' } });
 	expect(moved.status(), await moved.text()).toBe(200);
+	expect((await moved.json()).physicalCapacity, 'an absent capacity keeps it').toBe(150);
 	const nextHash = (await (await call('GET', `${api}/${draft.profile.id}/validation`, { token: withSecondFactor })).json()).geometryHash;
 	const v2 = await (await call('POST', `${api}/${draft.profile.id}/publish`, { token: withSecondFactor, data: { geometryHash: nextHash } })).json();
 	expect(v2.version).toBe(draft.profile.basedOnVersion + 1);

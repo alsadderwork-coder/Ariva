@@ -319,8 +319,10 @@ function listFiles(dir, acc = []) {
 
 function changedFiles() {
   try {
-    const out = execFileSync('git', ['status', '--porcelain'], { cwd: ROOT, encoding: 'utf8' });
-    return out.split(/\r?\n/).filter(Boolean).map(l => l.slice(3).trim().replace(/^"|"$/g, ''))
+    // Every untracked file, not just its new folder (a folder entry is not a file and would be dropped); a rename
+    // ("old -> new") is scanned under its new path.
+    const out = execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: ROOT, encoding: 'utf8' });
+    return out.split(/\r?\n/).filter(Boolean).map(l => l.slice(3).trim().split(' -> ').pop().replace(/^"|"$/g, ''))
       .map(f => path.join(ROOT, f)).filter(f => fs.existsSync(f) && fs.statSync(f).isFile() && langOf(f));
   } catch { return listFiles(ROOT); }
 }

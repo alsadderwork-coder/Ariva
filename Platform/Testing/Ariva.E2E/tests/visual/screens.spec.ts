@@ -6,8 +6,8 @@ import { hosts } from '../support/hosts';
 import { databaseAvailable, signInThroughUi } from '../support/web-auth';
 
 // ARV-075: visual regression baselines for the key screens (live operations, immigration, the displays screen and a
-// passenger display) in English and Arabic, light and dark, so an unintended change of layout or design tokens (Aman
-// design system parity) fails the run. Rendered only by the pinned Playwright image (scripts/visual-browser.mjs); run on
+// passenger display, and since ARV-104h a validation campaign) in English and Arabic, light and dark, so an unintended change
+// of layout or design tokens (Aman design system parity) fails the run. Rendered only by the pinned Playwright image (scripts/visual-browser.mjs); run on
 // its own and first, on the fresh demo seed. The live values are planted (fixed numbers in Redis, as Ariva.Api.Stream
 // writes them) and what moves with the clock (times, the arrival wave, charts) is masked.
 
@@ -107,6 +107,38 @@ async function createDisplay(): Promise<string> {
 	return `/display?code=${code}#key=${encodeURIComponent(display.credential)}`;
 }
 
+const campaignName = 'Arrivals hall A, pilot week 1';
+let campaignId = '';
+
+/**
+ * ARV-104h: a planned validation campaign at the demo airport over its published zone profile (two queue zones and their
+ * lines, today, placeholder targets), planned once and found again by name on a later run, so the screen is the same every
+ * time. Its dates and times are in time elements, which the clock masks cover.
+ */
+async function plantCampaign(): Promise<string> {
+	const { userName, password } = accounts().webBorder;
+	const signedIn = await login(userName, password);
+	expect(signedIn.status()).toBe(200);
+	const token = (await signedIn.json()).accessToken;
+	const campaigns = `${hosts.main}/api/v1/sites/DMO/validation/campaigns`;
+	const found = await (await call('GET', `${campaigns}?text=${encodeURIComponent(campaignName)}`, { token })).json();
+	const existing = found.data.find((c: { name: string }) => c.name === campaignName);
+	if (existing) return existing.id;
+	const profiles = await (await call('GET', `${hosts.main}/api/v1/admin/zone-profiles?siteCode=DMO`, { token })).json();
+	const published = profiles.find((p: { status: string }) => p.status === 'Published');
+	const view = await (await call('GET', `${hosts.main}/api/v1/admin/zone-profiles/${published.id}`, { token })).json();
+	const zones = view.zones.filter((z: { kind: string; name: string }) => z.kind === 'Queue' && ['A-RES', 'A-VIS'].includes(z.name));
+	const zoneIds = zones.map((z: { id: string }) => z.id);
+	const lineIds = view.lines.filter((l: { zoneId: string | null }) => l.zoneId !== null && zoneIds.includes(l.zoneId)).map((l: { id: string }) => l.id);
+	const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Dubai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+	const created = await call('POST', campaigns, {
+		token,
+		data: { name: campaignName, profileVersion: published.version, zoneIds, lineIds, days: [today], targetBinsPerLine: null, targetTracerRuns: null }
+	});
+	expect(created.status(), await created.text()).toBe(201);
+	return (await created.json()).id;
+}
+
 /** Everything that moves with the clock, whatever the screen. */
 function clockMasks(page: Page): Locator[] {
 	return [page.locator('time'), page.getByTestId('board-updated'), page.getByTestId('environment-chip')];
@@ -177,6 +209,24 @@ for (const variant of variants) {
 			await expect(page).toHaveScreenshot(`immigration-${variant.name}.png`, {
 				// Desks and e-gates follow AMAN's records, which the simulator keeps sending; the lanes' waits are the planted snapshots.
 				mask: [...clockMasks(page), page.getByTestId('desk-grid'), page.getByTestId('egates')]
+			});
+		});
+
+		test(`validation campaign, ${variant.name}`, async ({ page }) => {
+			campaignId ||= await plantCampaign();
+			await signInThroughUi(page, accounts().webBorder);
+			await language(page, variant.arabic);
+			// Through the sidebar and the list, so the language chosen stays (a full load would start in English again).
+			await page.locator('a[href="/validation"]').first().click();
+			await page.locator(`[data-testid="campaign-row"] a[href*="campaign=${campaignId}"]`).click();
+			await expect(page.getByTestId('campaign-name')).toHaveText(campaignName);
+			await expect(page.getByTestId('progress-tracers')).toBeVisible();
+			await settle(page);
+			// The planned day and time change their width as their digits do: one fixed text for all of them (masked too).
+			await page.locator('main time').evaluateAll((times) => times.forEach((time) => (time.textContent = '00:00')));
+			await expect(page).toHaveScreenshot(`validation-campaign-${variant.name}.png`, {
+				// The demo profile's geometry hash differs with every fresh seed.
+				mask: [...clockMasks(page), page.getByTestId('campaign-geometry')]
 			});
 		});
 

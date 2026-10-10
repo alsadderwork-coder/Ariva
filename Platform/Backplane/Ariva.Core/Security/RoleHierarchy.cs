@@ -3,7 +3,8 @@ namespace Ariva.Core.Security;
 /// <summary>
 /// Role ranks for grants (ARV-011, CWE-269): an administrator can grant or revoke a role only when one of its own roles
 /// ranks at least as high, and never on its own account. The operational roles share one rank; SystemAdministrator
-/// outranks them. Custom roles are a Phase 1 candidate; the four fixed roles keep the escalation surface small.
+/// outranks them. The validation observer (ARV-104a) ranks with the operational roles. Custom roles are a Phase 1
+/// candidate; the five fixed roles keep the escalation surface small.
 /// </summary>
 public static class RoleHierarchy
 {
@@ -12,6 +13,7 @@ public static class RoleHierarchy
         [RoleCodes.BorderShiftSupervisor] = 1,
         [RoleCodes.TerminalDutyManager] = 1,
         [RoleCodes.HandlerStationManager] = 1,
+        [RoleCodes.ValidationObserver] = 1,
         [RoleCodes.SystemAdministrator] = 2
     };
 

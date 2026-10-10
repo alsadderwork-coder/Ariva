@@ -9,14 +9,26 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace Ariva.Simulation.Api.Controllers;
 
-/// <summary>The feed emulators: AMAN, the mock immigration system, the AODB, and the demo minutes dropped because a feed fell behind the clock.</summary>
-public sealed record FeedEmulatorsStatus(ImmigrationFeedStatus Aman, ImmigrationFeedStatus Immigration, AodbStatus Aodb, long ClockMinutesDropped);
+/// <summary>
+/// The feed emulators: AMAN, the mock immigration system, the reference site's AODB, and the demo minutes dropped because
+/// a feed fell behind the clock; ARV-139b: <see cref="AodbSites"/>, the AODBs of the other scenario sites (AUH-TA).
+/// </summary>
+public sealed record FeedEmulatorsStatus(ImmigrationFeedStatus Aman, ImmigrationFeedStatus Immigration, AodbStatus Aodb, long ClockMinutesDropped)
+{
+    public IReadOnlyList<AodbStatus> AodbSites { get; init; } = [];
+}
 
 /// <summary>Plays one demo minute (0 to 1439) on the feed emulators now.</summary>
 public sealed record PlayMinuteRequest(int? Minute);
 
-/// <summary>The Ariva integration clients of the emulated systems; a missing one is left as it is.</summary>
-public sealed record FeedClientsRequest(IntegrationClientSettings Aman, IntegrationClientSettings Immigration, IntegrationClientSettings Aodb);
+/// <summary>
+/// The Ariva integration clients of the emulated systems; a missing one is left as it is. <see cref="AodbSites"/> holds
+/// the AODB client of other scenario sites by site code (ARV-139b: AUH-TA).
+/// </summary>
+public sealed record FeedClientsRequest(IntegrationClientSettings Aman, IntegrationClientSettings Immigration, IntegrationClientSettings Aodb)
+{
+    public IReadOnlyDictionary<string, IntegrationClientSettings> AodbSites { get; init; }
+}
 
 /// <summary>One AMAN code and the Ariva desk or e-gate it stands for at the demo airport.</summary>
 public sealed record AmanCodeMapping(string AmanCode, string ArivaCode);
@@ -30,14 +42,17 @@ public sealed record AmanCodeMapping(string AmanCode, string ArivaCode);
 [ApiController]
 [Route("api/v1/simulation/feeds")]
 [Authorize(Policy = SimulationScopes.ReadPolicy)]
-public sealed class FeedEmulatorController(BorderFeeds border, AodbEmulator aodb, FeedClients clients, IEnumerable<IDemoMinuteSink> sinks, TimeProvider time,
+public sealed class FeedEmulatorController(BorderFeeds border, AodbEmulators aodbs, FeedClients clients, IEnumerable<IDemoMinuteSink> sinks, TimeProvider time,
     Emulators.Sensors.SensorEmulator clock, ILogger<FeedEmulatorController> logger) : ControllerBase
 {
     private string Operator => User.Identity?.Name ?? "unknown";
 
     [HttpGet]
     [ProducesResponseType<FeedEmulatorsStatus>(StatusCodes.Status200OK)]
-    public FeedEmulatorsStatus Get() => new(border.Aman.Status(), border.Immigration.Status(), aodb.Status(), clock.FeedMinutesDropped);
+    public FeedEmulatorsStatus Get() => new(border.Aman.Status(), border.Immigration.Status(), aodbs.Reference.Status(), clock.FeedMinutesDropped)
+    {
+        AodbSites = [.. aodbs.Sites.Select(a => a.Status())]
+    };
 
     /// <summary>AMAN's desk and e-gate codes and the Ariva codes they stand for, to set up Ariva's AMAN desk code mappings.</summary>
     [HttpGet("aman-codes")]
@@ -68,8 +83,13 @@ public sealed class FeedEmulatorController(BorderFeeds border, AodbEmulator aodb
     {
         if (request is null)
             return Problem(statusCode: StatusCodes.Status400BadRequest, title: "The body is missing.");
+        var sites = request.AodbSites ?? new Dictionary<string, IntegrationClientSettings>();
+        // CWE-501: a site is named in a message only once it is one of the simulator's other scenario sites.
+        if (sites.Count > clients.AodbSites.Count || sites.Keys.Any(site => site is null || !clients.AodbSites.ContainsKey(site)))
+            return Problem(statusCode: StatusCodes.Status400BadRequest, title: "aodbSites holds only scenario sites other than the reference (AUH-TA).");
         var problems = (request.Aman?.Problems("aman") ?? []).Concat(request.Immigration?.Problems("immigration") ?? [])
-            .Concat(request.Aodb?.Problems("aodb") ?? []).ToList();
+            .Concat(request.Aodb?.Problems("aodb") ?? [])
+            .Concat(sites.Where(p => p.Value is not null).SelectMany(p => p.Value.Problems("aodbSites." + p.Key))).ToList();
         if (problems.Count > 0)
             return Problem(statusCode: StatusCodes.Status400BadRequest, title: string.Join(" ", problems));
         if (request.Aman is not null)
@@ -78,8 +98,10 @@ public sealed class FeedEmulatorController(BorderFeeds border, AodbEmulator aodb
             clients.Immigration.Use(request.Immigration);
         if (request.Aodb is not null)
             clients.Aodb.Use(request.Aodb);
-        logger.LogInformation("Feed emulator clients replaced by {Operator}: AMAN {Aman}, immigration {Immigration}, AODB {Aodb}", Operator,
-            request.Aman is not null, request.Immigration is not null, request.Aodb is not null);
+        foreach (var (site, credentials) in sites.Where(p => p.Value is not null))
+            clients.AodbSites[site].Use(credentials);
+        logger.LogInformation("Feed emulator clients replaced by {Operator}: AMAN {Aman}, immigration {Immigration}, AODB {Aodb}, site AODBs {Sites}", Operator,
+            request.Aman is not null, request.Immigration is not null, request.Aodb is not null, string.Join(",", sites.Where(p => p.Value is not null).Select(p => p.Key)));
         return Ok(Get());
     }
 }

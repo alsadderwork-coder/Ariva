@@ -14,17 +14,17 @@ Paths are relative to `Platform/Backplane` unless they start with `Platform/`.
 | 2 | Simulator | ARV-027 to ARV-029 (`Platform/Simulation/Ariva.Simulation.Api`), seed 9303, golden replay ARV-036 | Ground truth for a validation rehearsal; staff and service zone readings | ARV-104i, ARV-116 |
 | 3 | Zone and line editor with versioned profiles | ARV-016, ARV-017, ARV-018, ARV-053 (`ZoneProfile.cs`, `FloorPlan.cs` with scale and origin, `/zones`); device orientation transform exists | Zone physical capacity (for the occupancy check); moving a configured site between environments | ARV-114a, ARV-122 |
 | 4 | Realised wait and nowcast | ARV-030 to ARV-032, ARV-034 (`Ariva.Core/Queueing`, `0018_stream_output.sql`), desk term (ARV-064) | Nothing for the scope item; the ground-truth proof needs a stored sensor-only nowcast because the desk term is live only and never replayed (F8) | ARV-117 |
-| 5 | Overflow detection | The engine sums overflow bands into the queue length (`Ariva.Core/Queueing/QueueInputs.cs`); topic constant `FlowOverflowDetected` | No stored band occupancy, no producer for the topic, `OverflowOccupied` returns nothing (`Ariva.Infra/Alerting/AlertInputs.cs`), so seeded R-002 shows "Not evaluated yet" | ARV-115, ARV-120 |
+| 5 | Overflow detection | The engine sums overflow bands into the queue length (`Ariva.Core/Queueing/QueueInputs.cs`); topic constant `FlowOverflowDetected` | No stored band occupancy, no producer for the topic, `OverflowOccupied` returns nothing (`Ariva.Infra/Alerting/AlertInputs.cs`), so seeded R-002 shows "Not evaluated yet". Built in ARV-115 (`overflow_minute`, `OverflowDetected` through the outbox, R-002 evaluated); screens remain for ARV-120 | ARV-115, ARV-120 |
 | 6 | Data-quality flags | F11 in the stream: `DeviceLiveness`, `zone_outage`, `queue_bin.quality`, degraded bands on displays | None | (done) |
 | 7 | Conservation and track-completion checks | Bin counters exist (`queue_bin`: entries, exits, abandoned, fragmented, censored) | No conservation residual, track completion rate or occupancy sanity anywhere in the code; no alarms | ARV-114a, ARV-114b, ARV-120 |
 | 8 | Bin revisions | `queue_bin` keeps revisions; degraded final bins ask for recomputation (ARV-031, ARV-036) | A user-triggered recomputation under a corrected profile (wiki/07 section 6) is not built; it belongs to disputes (v1), not the MVP | (v1) |
 | 9 | Desk state from AMAN aggregate contracts | ARV-033, ARV-048 to ARV-050, ARV-068 Pact (`Ariva.Core/Desks`, `0030_border_feed.sql`, `0031_desk_feed.sql`, `0032_aman_pull.sql`) | A real AMAN feed (AMAN-side outbox change, not in this repository); site and lane code mapping when AMAN codes differ | ARV-130, ARV-131 (blocked) |
-| 10 | Desk state from sensor zones | `ZoneKind.Staff` and `ZoneKind.Service` exist in profiles; F10 ranks defined | The stream drops non-queue zones, so staff and service readings never reach the desk engine (F10 implementation note) | ARV-116 |
+| 10 | Desk state from sensor zones | `ZoneKind.Staff` and `ZoneKind.Service` exist in profiles; F10 ranks defined | The stream drops non-queue zones, so staff and service readings never reach the desk engine (F10 implementation note). Built in ARV-116 (`desk_zone_reading`, the desk feed's sensor desks; agreement and the sensor T1 pending the owner) | ARV-116 |
 | 11 | Basic e-gate utilisation and reject rates | ARV-049 `egate_minute`, ARV-057 immigration screen | None | (done) |
 | 12 | Supervisor dashboard | ARV-055 live operations, ARV-057 immigration | Overflow state and a data-quality panel | ARV-120 |
-| 13 | Alert rules, in-app push, email, acknowledgement | ARV-037 to ARV-040, ARV-056 (`AlertRule.cs`, `0020` to `0023`, live hub alert groups, MailKit outbox) | `OverflowOccupied` and `DesksBelowPlan` have no data; health-check metrics | ARV-115, ARV-114b, ARV-129 (conditional) |
+| 13 | Alert rules, in-app push, email, acknowledgement | ARV-037 to ARV-040, ARV-056 (`AlertRule.cs`, `0020` to `0023`, live hub alert groups, MailKit outbox) | `DesksBelowPlan` has no data (`OverflowOccupied` has since ARV-115); health-check metrics | ARV-115, ARV-114b, ARV-129 (conditional) |
 | 14 | Passenger display page in the site's languages | ARV-058 (`/display`, four languages, hysteresis, stale fallback) | Site values (staleness TC-09) and a native review of texts (TC-41, human) | ARV-136 |
-| 15 | Daily and weekly reports, CSV | ARV-060, ARV-061 daily report (`ReportTemplate.DailyPeaks` is the only template) | Weekly report | ARV-119, ARV-120 |
+| 15 | Daily and weekly reports, CSV | ARV-060, ARV-061 daily report (`ReportTemplate.DailyPeaks` is the only template) | Weekly figures (ARV-119); report generation through the Insight report tool used in AMAN (owner decision 2026-10-08) | ARV-119, ARV-146 |
 | 16 | Validation tooling: tracer and manual-count form, comparison report | Only `CalibrationMethod.ManualCountTally` on device calibration (ARV-021) | Everything: campaigns, manual counts, tracers, desk observer log, tablet screens, F18 comparison, report | ARV-104a to ARV-104i (candidate ARV-104, accuracy assurance) |
 | 17 | Single-tenant deployment in the border authority's environment | ARV-062 Helm, ARV-073 signed images, ARV-097, ARV-098, ARV-080, ARV-081 | First administrator in production (today only the sealed break-glass account, ARV-010c; `DevelopmentUserSeed` is vm-local only); backup and restore; system monitoring; basic offline bundle; smoke tests against a deployment; go-live security (ARV-082, ARV-083, ARV-085, ARV-087); dev cluster release (ARV-002); basic licensing; site identity provider if required | ARV-121, ARV-126, ARV-125, ARV-127, ARV-128, ARV-137, ARV-135 and ARV-134a, ARV-134b (conditional), ASVS stories in `prd-asvs-gaps.json` |
 | 18 | Authentication, roles, audit (work package 10) | ARV-010a to ARV-012, ARV-059 | Covered; production bootstrap is row 17 | ARV-121 |
@@ -46,7 +46,7 @@ Paths are relative to `Platform/Backplane` unless they start with `Platform/`.
 | Availability (99% of operating hours) | Health probes, stale indicators | A definition of operating hours (new question for the KPI annex) and an availability ledger; system monitoring | ARV-118, ARV-125, ARV-124 |
 | Ground-truth proof (nowcast error with and without AMAN, side by side) | Live desk term from AMAN | A stored sensor-only shadow nowcast (cannot be rebuilt later) and the comparison | ARV-117, ARV-104f, ARV-131 |
 
-The validation report (ARV-104g, screen ARV-104h) puts all eight together, frozen with a content hash at campaign close; ARV-104i rehearses the whole path on the simulator before any site work.
+The validation results (ARV-104g, screen ARV-104h) put all eight together, frozen with a content hash at campaign close, and the downloadable report follows with the Insight report tool (ARV-146); ARV-104i rehearses the whole path on the simulator before any site work.
 
 ## 3. Phase 0 items carried into Phase 1
 
@@ -87,9 +87,9 @@ Three chains run in parallel after the contract (roadmap) and meet at commission
 | Software, site-bound | ARV-132 (needs a real capture), ARV-133, ARV-130, ARV-131, ARV-136, then ARV-137 and ARV-138 | 2 to 4 developer-weeks once unblocked |
 | Joint | Commissioning 1 to 2, burn-in 2, validation campaign and report 2 to 3 | 5 to 7 |
 
-The software chain without site decisions (priorities 1 to 30) has its own longest path: ARV-113, ARV-114a, ARV-104e, ARV-104f (with ARV-116 and ARV-117 alongside), ARV-104g, ARV-104h, ARV-104i, then the gate. ARV-117 must be live from the first day of burn-in because the shadow nowcast cannot be recomputed later.
+The software chain without site decisions (priorities 1 to 31) has its own longest path: ARV-113, ARV-114a, ARV-104e, ARV-104f (with ARV-116, ARV-117 and ARV-117a alongside), ARV-104g, ARV-104h, ARV-104i, then the gate. ARV-117 must be live from the first day of burn-in because the shadow nowcast cannot be recomputed later; ARV-117a (the sensor-only desk engine, owner decision 2026-10-07) must land before burn-in at a site where every desk has an AMAN code.
 
-Conclusion: if priorities 1 to 30 are built before the contract (the Phase 0 window runs to April 2027 and Phase 0 finished early), software leaves the critical path. The pilot date is then set by the hardware chain (6 to 16 weeks) or AMAN's change control (5 to 13 weeks), plus 5 to 7 weeks of joint work: roughly 11 to 23 weeks from contract to the end of the campaign.
+Conclusion: if priorities 1 to 31 are built before the contract (the Phase 0 window runs to April 2027 and Phase 0 finished early), software leaves the critical path. The pilot date is then set by the hardware chain (6 to 16 weeks) or AMAN's change control (5 to 13 weeks), plus 5 to 7 weeks of joint work: roughly 11 to 23 weeks from contract to the end of the campaign.
 
 ## 6. Effort estimate (an estimate, not a measurement)
 
@@ -97,7 +97,7 @@ Sizing basis: the implementation plan's pace of 3 to 5 stories a week at half-ti
 
 | Group | Stories | Developer-weeks (low to high) |
 |---|---|---|
-| MVP core, no site decision | 8 S and 19 M (priorities 1 to 30 without ARV-129, ARV-139a and ARV-139b) | 6.9 to 13.8 |
+| MVP core, no site decision | 8 S and 19 M (priorities 1 to 31 without ARV-117a, ARV-129, ARV-139a and ARV-139b; ARV-117a, added 2026-10-07, is not yet sized here) | 6.9 to 13.8 |
 | MVP core, site-bound | ARV-130, ARV-136 (S); ARV-131, ARV-132 (M); ARV-138 (S, agent part) | 1.1 to 2.1 |
 | ASVS go-live stories (other file) | ARV-082, ARV-085, ARV-087 (M), ARV-083 (L) | 1.5 to 3.0 |
 | Rework allowance for real sensor and AMAN data | | 1.0 to 3.0 |

@@ -3,6 +3,7 @@
 	import { toast } from 'svelte-sonner';
 	import FormField from '$lib/components/shared/FormField.svelte';
 	import SelectField from '$lib/components/shared/SelectField.svelte';
+	import TimeZoneField from '$lib/components/shared/TimeZoneField.svelte';
 	import * as topology from '$lib/core/topology';
 	import {
 		allowedDeskKinds,
@@ -67,7 +68,7 @@
 					iataCode: iataCode.trim().toUpperCase(),
 					icaoCode: icaoCode.trim().toUpperCase() || null,
 					name: name.trim(),
-					timeZoneId: timeZoneId.trim()
+					timeZoneId
 				};
 			case 'terminal':
 				return { airportId: parentId, code: code.trim(), name: name.trim(), siteCode };
@@ -157,12 +158,11 @@
 			required
 			maxlength={200}
 		/>
-		<FormField
+		<TimeZoneField
 			id="new-airport-zone"
 			label={$_('topology.fields.timeZoneId')}
 			bind:value={timeZoneId}
 			required
-			maxlength={64}
 		/>
 	{:else if entity === 'range'}
 		<div class="grid grid-cols-2 gap-2">

@@ -567,6 +567,7 @@ foreach (var (description, message) in producedSamples)
 - Run it with `PACT_DO_NOT_TRACK=true` in the process environment: the Pact FFI otherwise reports usage to Pact's analytics (Ariva sets it in `Ariva.UnitTests.runsettings` and `ci.yml`, and its pact tests refuse to run without it).
 - Verify with samples that cover each case: open, paused and closed desks, an e-gate with rejects and one without (an empty map), several lane mixes.
 - Ariva runs this same harness against the simulator's AMAN in every build (`AmanFeedPactTests`), together with broken messages that must fail it (a wrong enum spelling, a time without an offset or with Arabic-Indic digits, a count as text, another interval length, a missing member, an unknown reject category) and messages Pact accepts that the shape check refuses (an added identifier, a code as a number, an id as a boolean); every sample that passes is also read by Ariva's strict reader.
+- Dispose the verifier only when PactNet's messaging thread cannot be between two requests. PactNet 5.0.1 serves the messages from a thread of its own that loops on `while (server.IsListening) server.GetContext()` and catches only `HttpListenerException`; disposing the verifier just after that thread has logged a message as sent can make `GetContext` throw `InvalidOperationException` or `ObjectDisposedException` there, which ends the whole process (a test run aborts with "Test host process crashed" and no failed test). The thread also writes to the configured outputters. `AmanFeedPactTests` uses an outputter that locks every write and holds that thread in its "Successfully simulated message" line until the verifier is disposed; a harness that runs many verifications in one process should do the same.
 - A change to a V1 contract changes the pact in the same pull request; AMAN verifies the new pact before either side releases. Until a Pact Broker is agreed with AMAN, the pact travels as the CI artifact or from the repository's build.
 
 ### All Kafka topics (AsyncAPI)
@@ -588,7 +589,7 @@ Every topic Ariva produces or consumes, with AMAN's feed, is described in AsyncA
 | `ariva.flow.zone-crossing.v1` |  |  |  | reserved | 3 days |
 | `ariva.flow.queue-interval.v1` |  |  |  | reserved | 30 days |
 | `ariva.flow.nowcast.v1` |  |  |  | reserved | compacted |
-| `ariva.flow.overflow-detected.v1` |  |  |  | reserved | 14 days |
+| `ariva.flow.overflow-detected.v1` | `OverflowDetected` | &lt;site&gt;/&lt;zone&gt; | api-stream | none yet | 14 days |
 | `ariva.desk.signal.v1` |  |  |  | reserved | 3 days |
 | `ariva.desk.state-changed.v1` |  |  |  | reserved | compacted |
 | `ariva.desk.interval-closed.v1` |  |  |  | reserved | 30 days |
@@ -657,10 +658,11 @@ A missing or wrong `X-TOTP-Code` on a data call, for a client whose policy needs
 - A mock AODB (ARV-029): AIDX 22.1 notifications pushed to Ariva with its own integration client (every leg when a run starts, then the legs whose estimate or block time changed), and an ACRIS flight API (`aodb/acris/flights`, API key, `If-Modified-Since`) for Ariva's ACRIS pull.
 - A mock AMAN (ARV-029): desk sessions, desk and e-gate intervals and inbound lane demand from the reference day, with AMAN's own desk and e-gate codes, on the `aman.feed.*.v1` Kafka topics and through the immigration REST endpoints with its own TOTP client; and a mock AMAN Integration API (`aman/api/v1/auth`, `aman/api/v1/feed/{contract}`) so Ariva's outbound `TotpClientCredentials` handler is exercised.
 - A mock immigration system (ARV-029) that sends the same contracts through the generic REST endpoints with its own client (departure immigration by default).
+- Validation observers (ARV-104i): from the scenario's truth, manual counts, tracer runs and desk logs sent through Ariva.Api.Main's capture API as Validation observer accounts (the normal sign-in, a TOTP code for an account with an authenticator), with optional injected error, to rehearse a validation campaign before any site work (`api/v1/simulation/validation`; the runbook is in [Commissioning and calibration](07-Commissioning-and-Calibration.md) section 8).
 
 `api/v1/simulation/feeds` shows the emulators' status, lists AMAN's codes with the Ariva desks they stand for, plays one minute at once and loads the integration clients Ariva issued (operator key). `Platform/Simulation/Ariva.Simulation.Api/Emulators/README.md` describes what each sends.
 
-The reference scenario is the seeded day at the fictional Demo International Airport (site code `DMO`, seed 9303). Dalil issues test clients on the dev or demo environment (`https://api-integration-dev-ariva.dalilhub.tech`, simulator at `https://simulation-dev-ariva.dalilhub.tech`). Ariva's end-to-end tests (`Platform/Testing/Ariva.E2E`) cover the token exchange, TOTP replay rejection, scope and site enforcement, idempotency and every endpoint above; use them as the reference behaviour.
+The reference scenario is the seeded day at the fictional Demo International Airport (site code `DMO`, seed 9303). The simulator also plays the illustrative AUH Terminal A arrivals evening (site `AUH-TA`, seed 9304, ARV-139b) on the same clock: its emulated AODB publishes airport `AUH`, terminal `A`, to site `AUH-TA` with a client of its own (`aodbSites` in `PUT api/v1/simulation/feeds/clients`, ACRIS at `aodb/sites/AUH-TA/acris/flights`), and AMAN does not play it (the site has no AMAN codes; its counters are sensor-derived). Dalil issues test clients on the dev or demo environment (`https://api-integration-dev-ariva.dalilhub.tech`, simulator at `https://simulation-dev-ariva.dalilhub.tech`). Ariva's end-to-end tests (`Platform/Testing/Ariva.E2E`) cover the token exchange, TOTP replay rejection, scope and site enforcement, idempotency and every endpoint above; use them as the reference behaviour.
 
 ## 14. Certification checklist for a new integration
 

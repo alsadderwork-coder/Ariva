@@ -34,6 +34,12 @@ fileStorage:
   accessMode: ReadWriteMany
 imagePullPolicy: IfNotPresent
 simulationEnabled: false
+
+# Validation reader login (ARV-104g1; values.yaml): required in production, so the pilot's ground-truth proof always has its
+# reader; create the secret (keys username and password) before the release (wiki/04, section 6.2).
+validationReader:
+  secretName: ariva-validation-reader
+  optional: false
 apiMainHpaMin: 2
 apiMainHpaMax: 4
 apiIngestHpaMin: 2

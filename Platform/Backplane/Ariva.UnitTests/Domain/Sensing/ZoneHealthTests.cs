@@ -102,4 +102,26 @@ public sealed class ZoneHealthTests
         measured.Should().Contain([("ariva.devices.heartbeat_lost", 1L), ("ariva.devices.recovered", 1L), ("ariva.zones.degraded", 1L),
             ("ariva.devices.offline", 2L), ("ariva.devices.degraded", 1L), ("ariva.zones.degraded_now", 1L)]);
     }
+
+    [Fact]
+    public void ZoneNotKeyable_Should_CountEverySkipAndSayFirstOncePerZone_When_ASweepMeetsTheZoneAgain()
+    {
+        // ARV-114c: the sweep skips a zone whose key cannot be written every 15 seconds; the warning comes once per zone.
+        using var metrics = new DeviceHealthMetrics();
+        var counted = 0L;
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, l) =>
+        {
+            if (instrument.Meter.Name == DeviceHealthMetrics.MeterName && instrument.Name == "ariva.zones.not_keyable")
+                l.EnableMeasurementEvents(instrument);
+        };
+        listener.SetMeasurementEventCallback<long>((_, value, _, _) => counted += value);
+        listener.Start();
+
+        metrics.ZoneNotKeyable("DMO", "DMO/long").Should().BeTrue();
+        metrics.ZoneNotKeyable("DMO", "DMO/long").Should().BeFalse();
+        metrics.ZoneNotKeyable("DMO", "DMO/other").Should().BeTrue();
+
+        counted.Should().Be(3);
+    }
 }

@@ -45,6 +45,19 @@ migration:
   backoffLimit: 1
   activeDeadlineSeconds: 900
 
+# Validation reader login (ARV-104g1): the only database login that reads the shadow nowcast (a member of
+# ariva_validation_reader and nothing else, created and updated by the migration job, script 0049). Its name and password
+# come from the secret secretName (keys username and password), created out of band per environment like the appsettings
+# secrets (wiki/04, section 6.2), and reach only api-main, which hosts the validation service, and the database-migration
+# job, as Database__ValidationReader__Username and Password (the chart test fails if another workload gets them).
+# optional true lets a release run without the secret: no login then reads the shadow nowcast and the validation results
+# show no shadow figures. k8s-prd sets it false (the chart refuses true there). Without the secret, a production upgrade
+# fails at the migration job (a pre-upgrade hook) before any pod changes; on a first install the job runs after the objects
+# (post-install) and also fails, and the new api-main pods wait in CreateContainerConfigError until the secret exists.
+validationReader:
+  secretName: ariva-validation-reader
+  optional: true
+
 # Kafka topics Job (ARV-062): api-main --provision-topics as a Helm hook before each upgrade (after the first install).
 # It creates the missing ariva.* topics and their dead-letter topics, never changes an existing one, and fails the
 # release when the broker cannot be reached within activeDeadlineSeconds. While it is on, api-main runs with

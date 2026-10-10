@@ -176,10 +176,34 @@
 					</h1>
 				{/each}
 			</div>
-			<p class="text-[1.2em] text-white/60 tabular-nums" dir="ltr" data-testid="board-updated">
+			<!-- A fixed box: the font's digits differ in width, and a clock that changes width every minute moves on a public screen. -->
+			<p
+				class="w-[3.4em] shrink-0 text-right text-[1.2em] text-white/60 tabular-nums"
+				dir="ltr"
+				data-testid="board-updated"
+			>
 				{new Date(lastOk).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
 			</p>
 		</header>
+		{#if board.illustrative === true}
+			<!-- ARV-139a: an illustrative demo site's board says so in English and Arabic, whatever its languages. -->
+			<div
+				role="note"
+				data-testid="board-illustrative"
+				class="flex flex-wrap justify-center gap-x-[2em] gap-y-[0.2em] border-b border-amber-300/40 bg-amber-400/15 px-[3em] py-[0.6em]"
+			>
+				{#each ['en', 'ar'] as language (language)}
+					<p
+						dir={rtl.has(language) ? 'rtl' : 'ltr'}
+						lang={language}
+						class="text-[1.3em] font-semibold text-amber-200"
+						data-testid="board-illustrative-text"
+					>
+						{words(language, 'illustrative')}
+					</p>
+				{/each}
+			</div>
+		{/if}
 		<ul class="flex flex-1 flex-col justify-evenly gap-[1em] px-[3em] py-[2em]">
 			{#each board.entries as entry, index (index)}
 				{@const band = boardStale ? null : bands[index]}

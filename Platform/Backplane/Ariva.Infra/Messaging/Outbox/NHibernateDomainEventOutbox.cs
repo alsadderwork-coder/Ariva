@@ -28,6 +28,11 @@ internal sealed class NHibernateDomainEventOutbox(EventCatalog catalog, TimeProv
             // Kafka refuses values over 1 MB; such a row would hold its key back forever, so the commit fails now instead.
             if (System.Text.Encoding.UTF8.GetByteCount(payload) > KafkaSettings.MaxMessageBytes - MessageHeadroom)
                 throw new InvalidOperationException($"{type.Name} {message.Id} is larger than a Kafka message may be; split it or send a reference.");
+            // outbox_message.message_key holds 200 characters: a longer key would fail the commit with 22001, so it fails here
+            // with the reason instead (OutboxLimits). The key is not logged: it is made of names from configuration.
+            if (!OutboxLimits.FitsMessageKey(key))
+                throw new InvalidOperationException(
+                    $"{type.Name} {message.Id} has a partition key longer than {OutboxLimits.MaxMessageKeyLength} characters; the outbox cannot hold it.");
 
             await storage.ExecuteSqlAsync<InsertedRow>(
                 """

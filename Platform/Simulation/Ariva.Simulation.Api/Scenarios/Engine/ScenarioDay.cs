@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using static Ariva.Simulation.Api.Scenarios.Engine.ScenarioModel;
 
 namespace Ariva.Simulation.Api.Scenarios.Engine;
@@ -9,10 +10,31 @@ internal sealed record ServerData(string Id, double Factor, byte[] Pause, byte[]
 /// One simulated day: a fluid per-minute backlog recursion per queue, next = max(0, backlog + arrivals - capacity),
 /// over N minutes from 18:00 the previous evening. Realised waits come from cumulative arrival and departure curves
 /// (FIFO). A port of the prototype's sim.js <c>run</c>; the same seed gives the same numbers, bit for bit.
+/// ARV-139b: the site is a parameter (<see cref="ScenarioConfig.SiteCode"/>, <see cref="ScenarioSite"/>): its queues,
+/// lanes, sensors, flights and scripted evening; the reference site DMO keeps its outputs bit for bit.
 /// Not thread safe (bins cache as they finalise, like the reference): <see cref="ScenarioEngine"/> serialises access.
 /// </summary>
 internal sealed partial class ScenarioDay
 {
+    #region Site
+
+    /// <summary>The scenario site this day simulates.</summary>
+    public ScenarioSite Site { get; }
+
+    private IReadOnlyList<QueueDef> Queues => Site.Queues;
+    private FrozenDictionary<string, int> QueueIndex => Site.QueueIndex;
+    private int NQ => Site.NQ;
+    private int Q(string id) => Site.Q(id);
+    private IReadOnlyList<SensorDef> Sensors => Site.Sensors;
+    private IReadOnlyList<Outage> Outages => Site.Outages;
+    private int[] ArrivalQueues => Site.ArrivalQueues;
+    private IReadOnlyList<string> Lanes => Site.Lanes;
+    private FrozenDictionary<string, AreaDef> Areas => Site.Areas;
+    private FrozenDictionary<string, double> RecTarget => Site.RecTarget;
+    private double EgateReject => Site.EgateReject;
+
+    #endregion
+
     #region State
 
     public uint Seed { get; }
@@ -55,11 +77,12 @@ internal sealed partial class ScenarioDay
 
     private ScenarioDay(ScenarioConfig cfg)
     {
+        Site = ScenarioSites.Find(cfg.SiteCode) ?? throw new ArgumentException("The scenario site is " + ScenarioSites.Codes + ".", nameof(cfg));
         var seed = cfg.Seed;
         Seed = seed;
-        Schedule = ScenarioSchedule.Build(seed);
+        Schedule = Site.BuildSchedule(seed);
         Roster = BuildRoster(Schedule);
-        Schedule.AddAdhoc(seed, cfg.Flights);
+        Schedule.AddAdhoc(seed, cfg.Flights, Site);
         Accepted = NormaliseAccepted(cfg.Accepted);
         _overrides = NormaliseOverrides(cfg.Overrides);
         Alloc = NormaliseAllocations(cfg.Allocations);
@@ -194,15 +217,15 @@ internal sealed partial class ScenarioDay
             MeanWait[q] = mw;
         }
 
-        _caps = cfg.Caps ?? DefaultCaps;
+        _caps = cfg.Caps ?? Site.DefaultCaps;
         if (!cfg.Lite)
-            SetRules(cfg.Rules ?? SeedRules);
+            SetRules(cfg.Rules ?? Site.SeedRules);
     }
 
     /// <summary>Runs one day.</summary>
     public static ScenarioDay Run(ScenarioConfig cfg) => new(cfg ?? ScenarioConfig.Reference());
 
-    private static double RejectRate(uint seed, int side, int i) => EgateReject * (0.6 + 0.8 * ScenarioMath.H3(seed ^ 0xe6a7eu, side, i));
+    private double RejectRate(uint seed, int side, int i) => EgateReject * (0.6 + 0.8 * ScenarioMath.H3(seed ^ 0xe6a7eu, side, i));
 
     /// <summary>Clock time at which the cumulative departures reach <paramref name="p"/> people (infinity if never).</summary>
     public static double ExitTimeIn(double[] cd, double[] d, double p)
@@ -223,7 +246,7 @@ internal sealed partial class ScenarioDay
         return lo + (dd > 1e-12 ? (p - cd[lo]) / dd : 0);
     }
 
-    internal static double[][] Zeros(int len)
+    internal double[][] Zeros(int len)
     {
         var o = new double[NQ][];
         for (var q = 0; q < NQ; q++)
@@ -242,13 +265,10 @@ internal sealed partial class ScenarioDay
         DayAhead
     }
 
-    private static double[] LaneSplitArr(double pax, PaxMix mix)
-    {
-        const double e = EgateShare;
-        return [pax * mix.Crw, pax * mix.Cit * (1 - e), pax * mix.Res * (1 - e), pax * mix.Vis, pax * (mix.Cit + mix.Res) * e];
-    }
+    /// <summary>A flight's arriving passengers by arrival lane, in the site's lane order (DMO: the reference's split).</summary>
+    private double[] LaneSplitArr(double pax, PaxMix mix) => Site.SplitArrivals(pax, mix);
 
-    private static void AddArr(double[][] ext, int off, int len, int seats, double ob, double load, double walk, PaxMix mix)
+    private void AddArr(double[][] ext, int off, int len, int seats, double ob, double load, double walk, PaxMix mix)
     {
         var lanes = LaneSplitArr(seats * load, mix);
         for (var cp = -1; cp <= 1; cp++)
@@ -261,13 +281,13 @@ internal sealed partial class ScenarioDay
                 var j = start + k;
                 if (j < 0 || j >= len)
                     continue;
-                for (var x = 0; x < 5; x++)
+                for (var x = 0; x < ArrivalQueues.Length; x++)
                     ext[ArrivalQueues[x]][j] += lanes[x] * W12[k];
             }
         }
     }
 
-    private static void AddDep(double[][] ext, int off, int len, DepartureFlight f, double load, double shift)
+    private void AddDep(double[][] ext, int off, int len, DepartureFlight f, double load, double shift)
     {
         var pax = f.Seats * load;
         var m = f.Mix;
@@ -300,9 +320,10 @@ internal sealed partial class ScenarioDay
     /// (estimated on-block, standard walk) or day-ahead (schedule and booked load). With <paramref name="pert"/>,
     /// one Monte Carlo draw from the state known at <paramref name="now"/>.
     /// </summary>
-    internal static double[][] BuildExt(ScenarioSchedule s, ExtMode mode, int off, int len, Mulberry32 pert, int now)
+    internal double[][] BuildExt(ScenarioSchedule s, ExtMode mode, int off, int len, Mulberry32 pert, int now)
     {
         var ext = Zeros(len);
+        var walkStd = Site.StandardWalk;
         foreach (var f in s.Arrivals)
         {
             double ob, load, walk;
@@ -313,10 +334,10 @@ internal sealed partial class ScenarioDay
                     ob = f.OnBlock; load = f.Load; walk = f.Walk; mix = f.Mix;
                     break;
                 case ExtMode.Expected:
-                    ob = f.Eibt; load = f.Load; walk = 11; mix = f.Mix;
+                    ob = f.Eibt; load = f.Load; walk = walkStd; mix = f.Mix;
                     break;
                 default:
-                    ob = f.Sched; load = f.Booked; walk = 11; mix = BaseMix;
+                    ob = f.Sched; load = f.Booked; walk = walkStd; mix = Site.BaseMix;
                     break;
             }
 
@@ -328,12 +349,12 @@ internal sealed partial class ScenarioDay
                     ob = f.OnBlock;
                     walk = f.OnBlock + f.Walk <= now
                         ? f.Walk
-                        : Math.Max(now - f.OnBlock + 1, ScenarioMath.Clamp(11 + ScenarioMath.Round((pert.Next() * 2 - 1) * 3), 8, 15));
+                        : Math.Max(now - f.OnBlock + 1, ScenarioMath.Clamp(walkStd + ScenarioMath.Round((pert.Next() * 2 - 1) * 3), walkStd - 3, walkStd + 4));
                 }
                 else
                 {
                     ob = Math.Max(now + 1, f.Eibt + ScenarioMath.Round((pert.Next() * 2 - 1) * McOnBlock));
-                    walk = ScenarioMath.Clamp(11 + ScenarioMath.Round((pert.Next() * 2 - 1) * 3), 8, 15);
+                    walk = ScenarioMath.Clamp(walkStd + ScenarioMath.Round((pert.Next() * 2 - 1) * 3), walkStd - 3, walkStd + 4);
                 }
 
                 load = f.Load * (1 + (pert.Next() * 2 - 1) * McLoad);
@@ -373,37 +394,43 @@ internal sealed partial class ScenarioDay
     #region Roster and plan
 
     /// <summary>The day-ahead roster: servers per queue per 15-minute block, from the schedule only.</summary>
-    private static short[][] BuildRoster(ScenarioSchedule s)
+    private short[][] BuildRoster(ScenarioSchedule s)
     {
         var ext = BuildExt(s, ExtMode.DayAhead, 0, N, null, 0);
         var dem = ext.Select(a => (double[])a.Clone()).ToArray();
-        int secN = Q("SEC-N"), secS = Q("SEC-S");
-        int ciA = Q("CI-A"), ciB = Q("CI-B"), ciC = Q("CI-C"), ciD = Q("CI-D");
-        for (var i = 0; i < N; i++)
+        if (Site.HasDepartures)
         {
-            var j = i + 8;
-            if (j < N)
+            int secN = Q("SEC-N"), secS = Q("SEC-S");
+            int ciA = Q("CI-A"), ciB = Q("CI-B"), ciC = Q("CI-C"), ciD = Q("CI-D");
+            for (var i = 0; i < N; i++)
             {
-                dem[secN][j] += ext[ciA][i] + ext[ciB][i];
-                dem[secS][j] += ext[ciC][i] + ext[ciD][i];
+                var j = i + 8;
+                if (j < N)
+                {
+                    dem[secN][j] += ext[ciA][i] + ext[ciB][i];
+                    dem[secS][j] += ext[ciC][i] + ext[ciD][i];
+                }
+            }
+
+            for (var i = 0; i < N; i++)
+            {
+                var tot = dem[secN][i] + dem[secS][i];
+                var j2 = i + 6;
+                if (j2 >= N)
+                    continue;
+                foreach (var ln in Lanes)
+                    dem[Q("D-" + ln)][j2] += tot * Site.EgShareDep[ln];
             }
         }
 
-        for (var i = 0; i < N; i++)
-        {
-            var tot = dem[secN][i] + dem[secS][i];
-            var j2 = i + 6;
-            if (j2 >= N)
-                continue;
-            foreach (var ln in Lanes)
-                dem[Q("D-" + ln)][j2] += tot * EgShareDep[ln];
-        }
-
-        int aVis = Q("A-VIS"), aEg = Q("A-EG"), dVis = Q("D-VIS"), dEg = Q("D-EG");
+        // Reject coupling: rejected e-gate attempts join the manual visitors' lane of the same side.
+        int aVis = Q("A-VIS"), aEg = Q("A-EG");
+        int dVis = Site.HasDepartures ? Q("D-VIS") : -1, dEg = Site.HasDepartures ? Q("D-EG") : -1;
         for (var i = 1; i < N; i++)
         {
             dem[aVis][i] += EgateReject * dem[aEg][i - 1];
-            dem[dVis][i] += EgateReject * dem[dEg][i - 1];
+            if (dVis >= 0)
+                dem[dVis][i] += EgateReject * dem[dEg][i - 1];
         }
 
         var roster = new short[NQ][];
@@ -441,7 +468,7 @@ internal sealed partial class ScenarioDay
                     n = Math.Ceiling(n - 0.05);
 
                 if (def.Group == "imm")
-                    n = Math.Max(n, def.Lane == "VIS" ? 2 : 1);
+                    n = Math.Max(n, Site.MinimumServers(def));
                 else if (def.Group == "egate")
                     n = max;
                 else if (def.Group == "sec")
@@ -456,7 +483,7 @@ internal sealed partial class ScenarioDay
             roster[q] = r;
         }
 
-        foreach (var o in ScriptRoster)
+        foreach (var o in Site.ScriptRoster)
             for (var m = o.From; m < o.To; m += 15)
                 roster[Q(o.Queue)][m / 15] = (short)o.Count;
         return roster;
@@ -468,13 +495,13 @@ internal sealed partial class ScenarioDay
 
     internal sealed record NormalisedAllocation(int From, int To, IReadOnlyList<int> Ks, string Code, string Id);
 
-    private static List<NormalisedOverride> NormaliseOverrides(IReadOnlyList<RosterOverride> list) =>
+    private List<NormalisedOverride> NormaliseOverrides(IReadOnlyList<RosterOverride> list) =>
         (list ?? [])
         .Where(o => o is not null && o.Queue is not null && QueueIndex.ContainsKey(o.Queue) && o.To > o.From)
         .Select(o => new NormalisedOverride(Q(o.Queue), o.From, o.To, Math.Max(0, o.Count)))
         .ToList();
 
-    private static List<NormalisedAccepted> NormaliseAccepted(IReadOnlyList<AcceptedPlan> list) =>
+    private List<NormalisedAccepted> NormaliseAccepted(IReadOnlyList<AcceptedPlan> list) =>
         (list ?? [])
         .Where(a => a?.Counts is not null)
         .Select(a => new NormalisedAccepted(a.Area, a.From, a.Until,
@@ -483,12 +510,13 @@ internal sealed partial class ScenarioDay
         .ToList();
 
     /// <summary>Counter allocations per check-in queue: the allocated counters open during their window.</summary>
-    private static Dictionary<int, List<NormalisedAllocation>> NormaliseAllocations(IReadOnlyList<CounterAllocation> list)
+    private Dictionary<int, List<NormalisedAllocation>> NormaliseAllocations(IReadOnlyList<CounterAllocation> list)
     {
         var o = new Dictionary<int, List<NormalisedAllocation>>();
         foreach (var a in list ?? [])
         {
-            if (a is null || a.Island is not ("A" or "B" or "C" or "D"))
+            // Check-in islands A to D exist at the reference site only.
+            if (a is null || a.Island is not ("A" or "B" or "C" or "D") || !QueueIndex.ContainsKey("CI-" + a.Island))
                 continue;
             var q = Q("CI-" + a.Island);
             var ks = new List<int>();
@@ -568,7 +596,7 @@ internal sealed partial class ScenarioDay
 
     #region Servers
 
-    private static IReadOnlyList<ServerData>[] BuildServerData(uint seed)
+    private IReadOnlyList<ServerData>[] BuildServerData(uint seed)
     {
         var o = new IReadOnlyList<ServerData>[NQ];
         for (var q = 0; q < NQ; q++)
@@ -612,10 +640,16 @@ internal sealed partial class ScenarioDay
                     }
                 }
 
-                var oos = sid == EgateOutOfService.Gate;
-                if (oos)
-                    for (var m = EgateOutOfService.From; m < EgateOutOfService.To; m++)
+                var oos = false;
+                foreach (var window in Site.OutOfService)
+                {
+                    if (window.Server != sid)
+                        continue;
+                    oos = true;
+                    for (var m = window.From; m < window.To; m++)
                         pause[m + Pre] = 1;
+                }
+
                 var factor = def.Group == "egate" ? 1
                     : def.Group == "sec" ? 0.94 + ScenarioMath.H3(seed ^ 0x55aau, key, 1) * 0.12
                     : 0.88 + ScenarioMath.H3(seed ^ 0x55aau, key, 1) * 0.3;
@@ -629,7 +663,7 @@ internal sealed partial class ScenarioDay
     }
 
     /// <summary>The network step: people reaching a queue from upstream queues (rejected e-gates, check-in, security).</summary>
-    internal static double InflowAt(int q, int j, double[][] d, double rejA, double rejD)
+    internal double InflowAt(int q, int j, double[][] d, double rejA, double rejD)
     {
         var def = Queues[q];
         if (def.Area == "arr")
@@ -637,7 +671,7 @@ internal sealed partial class ScenarioDay
         if (def.Area == "dep")
         {
             var sec = j >= 2 ? d[Q("SEC-N")][j - 2] + d[Q("SEC-S")][j - 2] : 0;
-            var v = sec * EgShareDep[def.Lane];
+            var v = sec * Site.EgShareDep[def.Lane];
             if (def.Lane == "VIS" && j >= 1)
                 v += rejD * d[Q("D-EG")][j - 1];
             return v;

@@ -11,6 +11,8 @@
     <ItemGroup>
         <!-- Result<T>, Fx.Specification, PagedData and Search<TCriteria> come from Fluentx, as in AMAN (ARV-004) -->
         <PackageReference Include="Fluentx" />
+        <!-- Airport IANA zones resolve on Windows too without ICU (SiteTimeZones) -->
+        <PackageReference Include="TimeZoneConverter" />
     </ItemGroup>
 
     <ItemGroup>

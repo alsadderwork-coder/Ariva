@@ -33,7 +33,7 @@ export const lockoutSeconds = 5;
 /** Failed sign-ins that lock an account (Auth:Lockout:Threshold, ADR-0026). */
 export const lockoutThreshold = 10;
 
-export type RoleCode = 'BorderShiftSupervisor' | 'TerminalDutyManager' | 'HandlerStationManager' | 'SystemAdministrator';
+export type RoleCode = 'BorderShiftSupervisor' | 'TerminalDutyManager' | 'HandlerStationManager' | 'SystemAdministrator' | 'ValidationObserver';
 
 export interface Account {
 	userName: string;
@@ -103,6 +103,30 @@ export function totpCode(secretBase32: string, offsetSteps = 0, at = Date.now())
 	return String(binary % 1_000_000).padStart(6, '0');
 }
 
+/**
+ * A code the server has not yet accepted in this run. The server takes a step only once and only after the last one it
+ * took (CWE-287 replay guard), allowing one step of skew; a sign-in repeated within a step (`--repeat-each`) therefore
+ * uses the next step, and waits for the step boundary only when that would be two steps ahead. Playwright starts a
+ * new worker process per test here, so the last step is kept in a file named by a hash of the run seed and the secret
+ * (the secret itself is never written).
+ */
+export async function unusedTotpCode(secretBase32: string): Promise<string> {
+	const name = crypto.createHash('sha256').update(`${process.env.ARIVA_E2E_ACCOUNT_SEED ?? ''}:${secretBase32}`).digest('hex');
+	// Kept in the suite's own output folder (git-ignored), owner-only, never following a planted link.
+	const dir = path.join(here, '..', '..', 'test-results', '.totp');
+	fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+	const file = path.join(dir, name.slice(0, 32));
+	const stored = fs.existsSync(file) && !fs.lstatSync(file).isSymbolicLink() ? Number(fs.readFileSync(file, 'utf8')) : Number.NaN;
+	const now = Math.floor(Date.now() / 1000 / 30);
+	// A stored step more than two steps ahead of the clock is not ours to wait for: ignore it.
+	const last = Number.isInteger(stored) && stored <= now + 2 ? stored : Number.NaN;
+	const step = Number.isFinite(last) ? Math.max(now, last + 1) : now;
+	if (step > now + 1) await new Promise((resolve) => setTimeout(resolve, (step - 1) * 30_000 - Date.now() + 100));
+	if (fs.existsSync(file)) fs.rmSync(file);
+	fs.writeFileSync(file, String(step), { mode: 0o600, flag: 'wx' });
+	return totpCode(secretBase32, 0, step * 30_000);
+}
+
 /** Every account, keyed by purpose. */
 export function accounts() {
 	return {
@@ -110,6 +134,8 @@ export function accounts() {
 		TerminalDutyManager: account('e2e.terminal', ['TerminalDutyManager'], false, false, ['E2E2']),
 		HandlerStationManager: account('e2e.handler', ['HandlerStationManager'], false, false, ['E2E1', 'E2E2']),
 		SystemAdministrator: account('e2e.admin', ['SystemAdministrator'], false, false, ['*']),
+		// ARV-104a: the validation observer of the permission matrix and of validation.spec.ts, at the validation site E2EV.
+		ValidationObserver: account('e2e.observer', ['ValidationObserver'], false, false, ['E2EV']),
 		pending: account('e2e.pending', [], true),
 		changer: account('e2e.changer', [], true),
 		lockout: account('e2e.lockout', []),
@@ -200,7 +226,46 @@ export function accounts() {
 		breakGlassAdmin: account('e2e.bgadmin', ['SystemAdministrator'], false, true, ['*']),
 		// ARV-060: the scheduled report's recipients at the demo airport (their own addresses, so no other suite's mail mixes in).
 		reportBorder: account('e2e.reportborder', ['BorderShiftSupervisor'], false, false, ['DMO']),
-		reportTerminal: account('e2e.reportterminal', ['TerminalDutyManager'], false, false, ['DMO'])
+		reportTerminal: account('e2e.reportterminal', ['TerminalDutyManager'], false, false, ['DMO']),
+		// ARV-118: an administrator of one site (E2E3, created by the seed, no airport: UTC) who keeps its operating calendar.
+		calendarAdmin: account('e2e.calendaradmin', ['SystemAdministrator'], false, false, ['E2E3']),
+		// ARV-139a: creates an AUH-TA and a DMO display to read the illustrative flag on their boards (creating needs a second factor).
+		// Every site, so the account seed never creates AUH-TA itself (only the illustrative seed may).
+		illustrativeAdmin: account('e2e.illusadmin', ['SystemAdministrator'], false, true, ['*']),
+		// ARV-139a: the same for the functional suite's passenger display players (its own account: a TOTP code counts once per account).
+		illustrativeWebAdmin: account('e2e.illuswebadmin', ['SystemAdministrator'], false, true, ['*']),
+		// ARV-104a: validation campaigns at E2EV. The manager drafts and publishes the site's zone profile and closes campaigns
+		// (both need a second factor); the lead plans and starts them with a password only (closing answers 401 for its second
+		// factor); a second observer of the site, and an observer of E2E1 for the cross-site answers.
+		validationManager: account('e2e.valmanager', ['BorderShiftSupervisor'], false, true, ['E2EV']),
+		validationLead: account('e2e.vallead', ['TerminalDutyManager'], false, false, ['E2EV']),
+		validationObserver2: account('e2e.observer2', ['ValidationObserver'], false, false, ['E2EV']),
+		validationObserverElsewhere: account('e2e.observerx', ['ValidationObserver'], false, false, ['E2E1']),
+		// A duty manager who is also an observer (owner decision 2026-10-08): it never counts for a campaign it created or started.
+		validationDual: account('e2e.valdual', ['TerminalDutyManager', 'ValidationObserver'], false, false, ['E2EV']),
+		// ARV-104c: the observer tablet's functional suite at a site of its own (E2EO), apart from validation.spec.ts's E2EV.
+		// The manager publishes the site's zone profile (a second factor), the lead plans and starts campaigns, the observer
+		// counts and times tracers, and a duty manager who is also an observer starts a campaign and is refused on it (403).
+		webValidationManager: account('e2e.webvalmanager', ['BorderShiftSupervisor'], false, true, ['E2EO']),
+		webValidationLead: account('e2e.webvallead', ['TerminalDutyManager'], false, false, ['E2EO']),
+		webObserver: account('e2e.webobserver', ['ValidationObserver'], false, false, ['E2EO']),
+		// The next observer on the same tablet: signs in after webObserver signed out with bins unsent (security review M1).
+		webObserver2: account('e2e.webobserver2', ['ValidationObserver'], false, false, ['E2EO']),
+		webValidationDual: account('e2e.webvaldual', ['TerminalDutyManager', 'ValidationObserver'], false, false, ['E2EO']),
+		// ARV-104h: the campaign screens' functional suite at a site of its own (E2EW). The border shift supervisor plans,
+		// starts and closes campaigns (a second factor: closing is critical), the duty manager reads them without desks, and the
+		// observer sends the ground truth through the API.
+		webCampaignSupervisor: account('e2e.webcampsup', ['BorderShiftSupervisor'], false, true, ['E2EW']),
+		webCampaignDuty: account('e2e.webcampduty', ['TerminalDutyManager'], false, false, ['E2EW']),
+		webCampaignObserver: account('e2e.webcampobs', ['ValidationObserver'], false, false, ['E2EW']),
+		// ARV-104i: the simulator's validation rehearsal at a site of its own (E2ER). The border shift supervisor publishes the
+		// profile and plans, starts and closes campaigns (a second factor); the simulator signs in as the two observers through
+		// the normal sign-in (the first with its authenticator, so a TOTP code goes with its password); a border shift supervisor
+		// who also holds the observer role starts a campaign and is refused on it when the simulator signs in as it.
+		rehearsalManager: account('e2e.rehmanager', ['BorderShiftSupervisor'], false, true, ['E2ER']),
+		rehearsalObserver1: account('e2e.rehobs1', ['ValidationObserver'], false, true, ['E2ER']),
+		rehearsalObserver2: account('e2e.rehobs2', ['ValidationObserver'], false, false, ['E2ER']),
+		rehearsalDual: account('e2e.rehdual', ['BorderShiftSupervisor', 'ValidationObserver'], false, false, ['E2ER'])
 	} as const;
 }
 

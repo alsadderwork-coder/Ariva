@@ -58,6 +58,16 @@ public static class RateLimitingExtensions
     /// <summary>Named policy for AIDX messages (ARV-044): like <see cref="IntegrationBatchPolicy"/>, for bodies of up to 5 MB.</summary>
     public const string IntegrationAidxPolicy = "integration-aidx";
 
+    /// <summary>
+    /// Named policy for the validation results (ARV-104g): a concurrency limit per host process, applied before authentication.
+    /// A request may wait for a computation (one at a time per host, up to the results' request timeout), so only a few run at
+    /// once and a few more wait for a turn (callers may wait, oldest first); the rest get 429 with Retry-After (CWE-400, CWE-770).
+    /// </summary>
+    public const string ValidationResultsPolicy = "validation-results";
+
+    /// <summary>The Retry-After of a 429 from a concurrency policy, whose lease names no time (uploads, batches, backtests, validation results).</summary>
+    public const int ConcurrencyRetryAfterSeconds = 10;
+
     private const string UnknownClient = "unknown";
 
 
@@ -82,7 +92,8 @@ public static class RateLimitingExtensions
             .AddOptions<RateLimitingSettings>()
             .Bind(configuration.GetSection(RateLimitingSettings.SectionName))
             .Validate(settings => settings.Global.IsValid && settings.Auth.IsValid && settings.Device.IsValid && settings.IntegrationAuth.IsValid &&
-                                settings.IntegrationBatch.IsValid && settings.IntegrationAidx.IsValid && settings.IntegrationClient.IsValid,
+                                settings.IntegrationBatch.IsValid && settings.IntegrationAidx.IsValid && settings.IntegrationClient.IsValid &&
+                                settings.ValidationResults.IsValid,
                 $"{RateLimitingSettings.SectionName} limits need a positive PermitLimit and WindowSeconds and a QueueLimit of zero or more.")
             .ValidateOnStart();
 
@@ -125,6 +136,13 @@ public static class RateLimitingExtensions
                         QueueLimit = limits.IntegrationAidx.QueueLimit,
                         QueueProcessingOrder = QueueProcessingOrder.OldestFirst
                     }));
+                options.AddPolicy(ValidationResultsPolicy, _ =>
+                    RateLimitPartition.GetConcurrencyLimiter(ValidationResultsPolicy, _ => new ConcurrencyLimiterOptions
+                    {
+                        PermitLimit = limits.ValidationResults.PermitLimit,
+                        QueueLimit = limits.ValidationResults.QueueLimit,
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst
+                    }));
                 options.AddPolicy(BacktestPolicy, _ =>
                     RateLimitPartition.GetConcurrencyLimiter(BacktestPolicy, _ => new ConcurrencyLimiterOptions
                     {
@@ -134,11 +152,13 @@ public static class RateLimitingExtensions
                     }));
                 options.OnRejected = (context, _) =>
                 {
-                    if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))
-                    {
-                        context.HttpContext.Response.Headers.RetryAfter =
-                            ((int)Math.Ceiling(retryAfter.TotalSeconds)).ToString(CultureInfo.InvariantCulture);
-                    }
+                    // A window limiter's lease says when the window reopens; a concurrency limiter's lease carries no such
+                    // metadata (a permit frees when a request ends), so its 429 says to retry after a fixed delay instead
+                    // (first security review of ARV-104g, M1: the validation-results 429 had no Retry-After).
+                    var seconds = context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter)
+                        ? (int)Math.Ceiling(retryAfter.TotalSeconds)
+                        : ConcurrencyRetryAfterSeconds;
+                    context.HttpContext.Response.Headers.RetryAfter = seconds.ToString(CultureInfo.InvariantCulture);
 
                     return ValueTask.CompletedTask;
                 };

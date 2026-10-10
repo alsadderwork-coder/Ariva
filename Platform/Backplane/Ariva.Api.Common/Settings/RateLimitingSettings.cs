@@ -45,6 +45,12 @@ public sealed class RateLimitingSettings
     /// validated so no one can spend another client's allowance. Default 120 a minute.
     /// </summary>
     public FixedWindowSettings IntegrationClient { get; set; } = new() { PermitLimit = 120, WindowSeconds = 60 };
+
+    /// <summary>
+    /// The <c>validation-results</c> policy (ARV-104g): requests for validation results handled at once per host process, and how
+    /// many may wait for a turn; the rest get 429. Default 4 at once and 8 waiting.
+    /// </summary>
+    public ConcurrencySettings ValidationResults { get; set; } = new() { PermitLimit = 4, QueueLimit = 8 };
 }
 
 /// <summary>A concurrency limiter: <see cref="PermitLimit"/> requests at once and <see cref="QueueLimit"/> waiting.</summary>

@@ -73,3 +73,23 @@ Usage: {{ include "ariva-platform.image" (list . "api-main") }}
 {{- printf "%s/%s:%s" $root.Values.imageRepository $service (toString $root.Values.buildNumber) | quote -}}
 {{- end -}}
 {{- end }}
+
+{{/*
+The validation reader login (ARV-104g1): name and password from the secret validationReader.secretName (keys username and
+password), for api-main (the validation service) and the database-migration job (which creates the login) only; the chart
+test fails if another workload gets them. optional follows validationReader.optional (false in k8s-prd, validate.yaml).
+*/}}
+{{- define "ariva-platform.validationReaderEnv" -}}
+- name: Database__ValidationReader__Username
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.validationReader.secretName | quote }}
+      key: username
+      optional: {{ .Values.validationReader.optional }}
+- name: Database__ValidationReader__Password
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.validationReader.secretName | quote }}
+      key: password
+      optional: {{ .Values.validationReader.optional }}
+{{- end }}

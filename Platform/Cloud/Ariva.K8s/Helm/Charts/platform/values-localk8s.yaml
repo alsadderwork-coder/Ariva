@@ -28,6 +28,12 @@ fileStorage:
   size: 2Gi
   accessMode: ReadWriteOnce
 
+# Validation reader login (ARV-104g1; values.yaml): optional here, so a release without the secret still runs (the validation
+# results then show no shadow figures); create the secret (keys username and password) to give api-main the reader.
+validationReader:
+  secretName: ariva-validation-reader
+  optional: true
+
 # Ingress definitions
 ingresses:
   - name: api-main

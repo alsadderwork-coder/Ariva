@@ -163,11 +163,18 @@ public sealed class LiveHubTests
 
         notice.Audience().Should().BeEquivalentTo(RoleCodes.BorderShiftSupervisor, RoleCodes.SystemAdministrator);
         (notice with { Escalated = true }).Audience().Should().BeEquivalentTo(RoleCodes.BorderShiftSupervisor, RoleCodes.TerminalDutyManager, RoleCodes.SystemAdministrator);
-        (notice with { OwnerRole = null }).Audience().Should().BeEquivalentTo(RoleCodes.All, "no owner: every role of the site");
+        // No owner: every alert role of the site, named here so a change to RoleCodes.AlertRoles cannot widen it unnoticed; the
+        // validation observer holds no alert permission and never receives one (ARV-104a, CWE-269, CWE-863).
+        var unowned = (notice with { OwnerRole = null }).Audience();
+        unowned.Should().BeEquivalentTo(
+            [RoleCodes.BorderShiftSupervisor, RoleCodes.TerminalDutyManager, RoleCodes.HandlerStationManager, RoleCodes.SystemAdministrator]);
+        unowned.Should().NotContain(RoleCodes.ValidationObserver);
+        (notice with { Escalated = true }).Audience().Should().NotContain(RoleCodes.ValidationObserver);
         AlertNotice.Plausible(notice).Should().BeTrue();
         foreach (var bad in new[]
                  {
                      notice with { SiteCode = "dmo" }, notice with { RuleName = "x\u202E" }, notice with { OwnerRole = "Root" }, notice with { State = "Raised,Resolved" },
+                     notice with { OwnerRole = RoleCodes.ValidationObserver }, notice with { EscalateToRole = RoleCodes.ValidationObserver },
                      notice with { RaisedValue = double.NaN }, notice with { RaisedValue = 2e9 }, notice with { DeviceCode = "s 17" }, notice with { AlertId = Guid.Empty },
                      notice with { ZoneName = new string('z', 201) }, notice with { RuleCode = "X-1" }
                  })
@@ -293,7 +300,7 @@ public sealed class LiveHubTests
 
         RedisLiveSnapshots.Read("{not json").Should().BeNull();
         RedisLiveSnapshots.Read(new string('x', RedisLiveSnapshots.MaxBytes + 1)).Should().BeNull();
-        LiveZoneSnapshot.From(new QueueLiveMinute("DMO/A-VIS", Visitors.MinuteUtc, 61, true, false, 15.4, 4.0, NoServiceReason.NothingOpen, false), Visitors.PublishedUtc)
+        Ariva.Infra.Streaming.LiveMinuteSnapshots.From(new QueueLiveMinute("DMO/A-VIS", Visitors.MinuteUtc, 61, true, false, 15.4, 4.0, NoServiceReason.NothingOpen, false), Visitors.PublishedUtc)
             .NoService.Should().Be("NothingOpen");
     }
 

@@ -25,6 +25,20 @@ public partial class Site : BaseAuditableEntity<Site>
     public virtual string Code { get; protected set; }
     public virtual string Name { get; protected set; }
 
+    /// <summary>
+    /// "Illustrative, not surveyed" (ARV-139a): a demo site modelled on a real airport from public information only, whose
+    /// geometry, counts and positions are assumptions. The web shell and the site's passenger displays show a banner
+    /// while it is set. Only the demo seeds set it, through <see cref="CreateIllustrative"/> (CWE-269): no request model
+    /// carries it, no method changes it, and the runtime database role cannot update the column (script 0046).
+    /// </summary>
+    public virtual bool IsIllustrative { get; protected set; }
+
+    /// <summary>
+    /// A new site flagged <see cref="IsIllustrative"/>. For the demo seeds only (Ariva.Infra/Services/Seed); a unit test
+    /// fails when any other source calls it.
+    /// </summary>
+    public static Site CreateIllustrative(string code, string name) => new(code, name) { IsIllustrative = true };
+
     public virtual void Rename(string name)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);

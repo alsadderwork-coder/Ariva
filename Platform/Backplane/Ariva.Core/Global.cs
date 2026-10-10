@@ -197,6 +197,35 @@ public static class Global
 
             #endregion
 
+            #region Data quality (E12)
+
+            /// <summary>
+            /// The continuous health checks of the queue zones of a site (ARV-114a, F18): conservation residual, track completion
+            /// and occupancy against physical capacity per bin. Zone-level counts only, no desk data.
+            /// </summary>
+            public static Permission ViewDataQuality { get; } = new("DataQuality", PermissionAction.View);
+
+            #endregion
+
+            #region Validation tooling (E13)
+
+            /// <summary>
+            /// Validation campaigns of a site (ARV-104a, F18): their scope, days, progress and every observer's manual counts.
+            /// Line-level counts only, no desk data and no person beyond the observers' Ariva user ids.
+            /// </summary>
+            public static Permission ViewValidation { get; } = new("Validation", PermissionAction.View);
+
+            /// <summary>
+            /// Ground truth (ARV-104a): the running campaigns of the caller's sites with their lines, and the caller's own manual
+            /// counts, recorded and corrected (a correction is a new revision with a reason). The validation observer's only permission.
+            /// </summary>
+            public static Permission CaptureValidation { get; } = new("Validation", PermissionAction.Capture);
+
+            /// <summary>Creates and starts validation campaigns (ARV-104a); closing one is a critical action (step-up MFA), audited.</summary>
+            public static Permission ManageValidation { get; } = new("Validation", PermissionAction.Manage);
+
+            #endregion
+
             private static readonly Lazy<IReadOnlyDictionary<string, Permission>> ByName = new(() =>
                 typeof(Permissions)
                     .GetProperties(BindingFlags.Public | BindingFlags.Static)

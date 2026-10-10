@@ -56,6 +56,8 @@ public sealed class TopologyTests
     [InlineData("dmo", null, "Asia/Amman")]
     [InlineData("DMO", "ODM", "Asia/Amman")]
     [InlineData("DMO", null, "Mars/Olympus")]
+    [InlineData("DMO", null, "Arabian Standard Time")]
+    [InlineData("DMO", null, "asia/amman")]
     [InlineData("DMO", null, "")]
     public void Airport_Should_Refuse_When_ACodeOrTheTimeZoneIsInvalid(string iata, string icao, string zone)
     {

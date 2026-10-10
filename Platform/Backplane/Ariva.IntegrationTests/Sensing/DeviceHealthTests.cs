@@ -33,8 +33,8 @@ public sealed class DeviceHealthTests(PostgresFixture fixture) : IAsyncDisposabl
     private static string Rect(double x, double y, double w, double h) =>
         string.Create(CultureInfo.InvariantCulture, $"{x} {y},{x + w} {y},{x + w} {y + h},{x} {y + h}");
 
-    /// <summary>A site with a published queue zone "Snake A" and two devices over it, both calibrated and Online.</summary>
-    private async Task<(Guid Admin, Guid First, Guid Second)> SiteAsync(string site)
+    /// <summary>A site with a published queue zone (by default "Snake A") and two devices over it, both calibrated and Online.</summary>
+    private async Task<(Guid Admin, Guid First, Guid Second)> SiteAsync(string site, string zone = "Snake A")
     {
         var admin = await _host.CreateUserAsync($"it.health.{site.ToLowerInvariant()}", roles: [RoleCodes.SystemAdministrator]);
         await _host.ReadAsync<int>("UPDATE \"user\" SET all_sites = true WHERE id = @id RETURNING 1", admin);
@@ -45,7 +45,7 @@ public sealed class DeviceHealthTests(PostgresFixture fixture) : IAsyncDisposabl
         var level = (await _host.AsCallerAsync(admin, s => topology(s).CreateLevelAsync(new CreateLevelRequest(terminal.Data.Id, "L0", "Arrivals", 0, 100, 50), Ct))).Data.Id;
         var profiles = (IServiceProvider s) => s.GetRequiredService<ISvcZoneProfiles>();
         var draft = (await _host.AsCallerAsync(admin, s => profiles(s).CreateDraftAsync(new CreateZoneProfileDraftRequest(site, "Arrivals"), Ct))).Data.Profile.Id;
-        var queue = (await _host.AsCallerAsync(admin, s => profiles(s).AddZoneAsync(draft, new AddZoneRequest("Snake A", "Queue", level, Rect(10, 10, 24, 12)), Ct))).Data.Id;
+        var queue = (await _host.AsCallerAsync(admin, s => profiles(s).AddZoneAsync(draft, new AddZoneRequest(zone, "Queue", level, Rect(10, 10, 24, 12)), Ct))).Data.Id;
         await _host.AsCallerAsync(admin, s => profiles(s).AddLineAsync(draft, new AddLineRequest("Entry A", "Entry", level, 10, 12, 10, 16, queue), Ct));
         await _host.AsCallerAsync(admin, s => profiles(s).AddLineAsync(draft, new AddLineRequest("Exit A", "Exit", level, 30, 22, 34, 22, queue), Ct));
         var hash = (await _host.AsCallerAsync(admin, s => profiles(s).ValidateAsync(draft, Ct))).Data.GeometryHash;
@@ -55,7 +55,7 @@ public sealed class DeviceHealthTests(PostgresFixture fixture) : IAsyncDisposabl
         {
             var devices = (IServiceProvider s) => s.GetRequiredService<ISvcDevices>();
             var registered = await _host.AsCallerAsync(admin, s => devices(s).RegisterAsync(
-                new RegisterDeviceRequest(code, "StereoVision", "PC2SE", "HttpsPush", "Xovis", "Ntp", new DevicePlacement(level, x, 16, 5, 0, "Snake A")), Ct));
+                new RegisterDeviceRequest(code, "StereoVision", "PC2SE", "HttpsPush", "Xovis", "Ntp", new DevicePlacement(level, x, 16, 5, 0, zone)), Ct));
             registered.HasErrors.Should().BeFalse(string.Join(", ", registered.ErrorMessages ?? []));
             var id = registered.Data.Device.Id;
             var passed = await _host.AsCallerAsync(admin, s => devices(s).RecordCalibrationAsync(id, new RecordCalibrationRequest("ManualCountTally", 200, 97, 0.4), Ct));
@@ -217,5 +217,65 @@ public sealed class DeviceHealthTests(PostgresFixture fixture) : IAsyncDisposabl
         await RecordAsync(otherSite);
         (await _host.ReadAsync<DateTime>("SELECT last_seen_on FROM device_heartbeat WHERE device_id = @id", first)).Should().Be(seen,
             "a report with an undefined clock state or another site is dropped");
+    }
+
+    private Task<long> ZoneEventsAsync(string zoneKey) => _host.ReadAsync<long>(
+        "SELECT count(*) FROM outbox_message WHERE topic = 'ariva.device.zone-health.v1' AND message_key = @secret", null, zoneKey);
+
+    [Fact]
+    public async Task ZoneHealthChanged_Should_ReachTheOutbox_When_TheZoneKeyIsTheLongestAllowed()
+    {
+        // ARV-114c: HBF, a slash and a 196-character queue zone name make a key of exactly 200 characters, the most the
+        // zone profile accepts and the most outbox_message.message_key holds.
+        var zone = "Snake " + new string('L', 190);
+        var key = ZoneKeys.For("HBF", zone);
+        key.Should().HaveLength(Ariva.Core.Messaging.MessageKeys.MaxLength);
+        var (_, first, second) = await SiteAsync("HBF", zone);
+        await RecordAsync(Report(first, "HBF"));
+        await RecordAsync(Report(second, "HBF"));
+
+        (await SweepAsync()).Ran.Should().BeTrue();
+        _host.Clock.Advance(TimeSpan.FromSeconds(200));
+        (await SweepAsync()).MarkedOffline.Should().BeGreaterThanOrEqualTo(2, "the sweep covers every site of the shared database");
+
+        (await ZoneEventsAsync(key)).Should().Be(2, "Healthy, then Degraded when both devices went silent");
+        (await _host.ReadAsync<int>("SELECT max(length(message_key)) FROM outbox_message WHERE topic = 'ariva.device.zone-health.v1' AND message_key LIKE 'HBF/%'"))
+            .Should().Be(200);
+        (await _host.ReadAsync<string>("SELECT state FROM zone_health WHERE site_code = 'HBF' AND queue_zone_name = @secret", null, zone)).Should().Be("Degraded");
+    }
+
+    [Fact]
+    public async Task Sweep_Should_CommitTheOtherZonesAndTheDeviceChanges_When_OneZoneKeyIsTooLongForTheOutbox()
+    {
+        // ARV-114c: a zone whose name was stored before the zone profile refused it. The overlong name is written straight
+        // into the device row (the profile would refuse it now): HBG/ and 200 characters make a key of 204.
+        var (_, first, second) = await SiteAsync("HBG");
+        var overlong = new string('X', 200);
+        (await _host.ReadAsync<int>("UPDATE device SET queue_zone_name = @secret WHERE id = @id RETURNING 1", second, overlong)).Should().Be(1);
+        await RecordAsync(Report(first, "HBG"));
+        await RecordAsync(Report(second, "HBG"));
+
+        var sweep = await SweepAsync();
+
+        sweep.Ran.Should().BeTrue("the sweep completes and commits");
+        (await ZoneAsync("HBG")).Should().Be("Healthy", "Snake A, now with one device, is assessed");
+        (await ZoneEventsAsync("HBG/Snake A")).Should().Be(1);
+        (await _host.ReadAsync<long>("SELECT count(*) FROM zone_health WHERE site_code = 'HBG' AND queue_zone_name = @secret", null, overlong))
+            .Should().Be(0, "the overlong zone is skipped, not half written");
+        (await _host.ReadAsync<long>("SELECT count(*) FROM outbox_message WHERE topic = 'ariva.device.zone-health.v1' AND message_key LIKE 'HBG/X%'")).Should().Be(0);
+
+        // Both devices go silent: the sweep marks both Offline (the overlong zone's device too) and Snake A Degraded.
+        _host.Clock.Advance(TimeSpan.FromSeconds(200));
+        (await SweepAsync()).MarkedOffline.Should().BeGreaterThanOrEqualTo(2, "the sweep covers every site of the shared database");
+        (await StateAsync(first)).Should().Be("Offline");
+        (await StateAsync(second)).Should().Be("Offline", "the device change beside the skipped zone commits");
+        (await ZoneAsync("HBG")).Should().Be("Degraded");
+        (await ZoneEventsAsync("HBG/Snake A")).Should().Be(2);
+
+        // A report of the overlong zone's device commits too (the consumer's path), and later sweeps keep going.
+        await RecordAsync(Report(second, "HBG"));
+        (await StateAsync(second)).Should().Be("Online");
+        (await SweepAsync()).Ran.Should().BeTrue();
+        (await _host.ReadAsync<long>("SELECT count(*) FROM outbox_message WHERE message_key LIKE 'HBG/X%'")).Should().Be(0);
     }
 }

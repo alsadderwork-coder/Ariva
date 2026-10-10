@@ -3,7 +3,7 @@
 	import { _ } from 'svelte-i18n';
 	import FormField from '$lib/components/shared/FormField.svelte';
 	import type { Point, Zone } from '$lib/core/zones';
-	import { laneCategories, round } from '$lib/core/zones';
+	import { laneCategories, maxPhysicalCapacity, round } from '$lib/core/zones';
 	import ConfirmButton from '$lib/components/shared/ConfirmButton.svelte';
 
 	interface Props {
@@ -18,6 +18,8 @@
 		name: string;
 		/** The lane whose queue this is (queue zones only, ARV-057); empty for none. */
 		lane: string;
+		/** The physical capacity in people (queue zones and overflow bands, ARV-114a); empty for none. */
+		capacity: string | number;
 		onPoints: (points: Point[]) => void;
 		onSave: () => void | Promise<void>;
 		onRevert: () => void;
@@ -35,6 +37,7 @@
 		depth,
 		name = $bindable(),
 		lane = $bindable(),
+		capacity = $bindable(),
 		onPoints,
 		onSave,
 		onRevert,
@@ -106,6 +109,19 @@
 			</select>
 			<p id="zone-lane-hint" class="text-xs text-muted-foreground">{$_('zones.laneHint')}</p>
 		</div>
+	{/if}
+	{#if zone.kind === 'Queue' || zone.kind === 'Overflow'}
+		<FormField
+			id="zone-capacity"
+			label={$_('zones.capacity')}
+			type="number"
+			bind:value={capacity}
+			min={1}
+			max={maxPhysicalCapacity}
+			step={1}
+			hint={$_('zones.capacityHint')}
+			readonly={!editable}
+		/>
 	{/if}
 	<div class="overflow-x-auto">
 		<table class="w-full text-sm" data-testid="vertex-table">

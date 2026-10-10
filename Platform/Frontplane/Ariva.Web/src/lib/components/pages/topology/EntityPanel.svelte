@@ -4,6 +4,7 @@
 	import { _ } from 'svelte-i18n';
 	import { toast } from 'svelte-sonner';
 	import FormField from '$lib/components/shared/FormField.svelte';
+	import TimeZoneField from '$lib/components/shared/TimeZoneField.svelte';
 	import * as topology from '$lib/core/topology';
 	import type { EntityName } from '$lib/core/topology';
 	import DeskMappings from './DeskMappings.svelte';
@@ -60,7 +61,7 @@
 				return {
 					icaoCode: icaoCode.trim().toUpperCase() || null,
 					name: name.trim(),
-					timeZoneId: timeZoneId.trim()
+					timeZoneId
 				};
 			case 'level':
 				return { name: name.trim(), floorNumber, widthMetres, depthMetres };
@@ -161,13 +162,11 @@
 							uppercase
 							readonly={!canEdit}
 						/>
-						<FormField
+						<TimeZoneField
 							id="edit-zone"
 							label={$_('topology.fields.timeZoneId')}
 							bind:value={timeZoneId}
 							required
-							maxlength={64}
-							readonly={!canEdit}
 						/>
 					</div>
 				{:else if entity === 'level'}

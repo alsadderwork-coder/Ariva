@@ -6,6 +6,11 @@
         <IsTestProject>true</IsTestProject>
     </PropertyGroup>
 
+    <!-- ARV-139c: the development-only NBJ-BC1 seed and its tests exist in Debug builds only (Ariva.Infra.csproj). -->
+    <PropertyGroup Label="Development-only seed" Condition="'$(Configuration)' == 'Debug'">
+        <DefineConstants>$(DefineConstants);ARIVA_DEV_SEED</DefineConstants>
+    </PropertyGroup>
+
     <ItemGroup>
         <PackageReference Include="Apizr" />
         <PackageReference Include="AutoFixture" />

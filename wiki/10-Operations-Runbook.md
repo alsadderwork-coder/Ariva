@@ -79,6 +79,24 @@ The reference scenario rehearses this: sensor S-17 over the arrivals hall is off
 - **Checks**: the zone's data-quality reason in the dashboard (once available) or Stream logs; the active profile version and its activation time; desk states for the lane; device clock offsets.
 - **Actions**: fix the input (sensor, feed, mapping, clock). If a profile change caused it, publish a corrected version and recompute the affected period (the original revision is kept).
 
+### 4.2a Queue zone name too long for its key (ARV-114c)
+
+Every event of a queue zone is keyed by its zone key: the site code, a slash and the queue zone's name. Kafka keys and the outbox's `message_key` (script 0011) hold at most 200 characters, counted as PostgreSQL counts them (a character outside the basic plane counts once). Since ARV-114c the zone profile refuses a queue zone name whose key would be longer (at most 196 characters at a three-letter site, 182 at a 17-character one); service, staff and overflow zones share their queue zone's key, so only queue zone names are bound. A profile published before ARV-114c may still hold such a name. None of the seeded profiles does: the demo profile (DMO) has queue zone names of at most 5 characters, which a unit test keeps under the limit.
+
+- **Symptoms**: the warning "Zone ... of ... is not assessed: its key is longer than 200 characters" from `Ariva.Infra.Services.Sensing.SvcDeviceHealth` (once per zone per Api.Main process) and the metric `ariva.zones.not_keyable` rising every sweep; the zone has no row in the device health overview; the stream's warning "Dropped ... overflow changes of zone ..." for the same zone (its `OverflowDetected` events are dropped, its band minutes are still written). Other zones and the device states are not affected: the sweep skips that zone and commits the rest.
+- **Alerting**: such a zone is not counted in `ariva.zones.degraded_now`, so its lost health reporting is silent there. Alert on any increase of `ariva.zones.not_keyable` so the operator who can rename the zone hears of it.
+- **Checks** (read only, safe on production):
+  ```sql
+  -- Queue zones of drafts and published versions whose key would not fit.
+  SELECT p.site_code, p.status, p.version, z.name, length(p.site_code) + 1 + length(z.name) AS key_length
+    FROM zone z JOIN zone_profile p ON p.id = z.profile_id
+   WHERE z.kind = 'Queue' AND p.status IN ('Draft', 'Published') AND length(p.site_code) + 1 + length(z.name) > 200;
+  -- Devices placed on such a zone.
+  SELECT site_code, queue_zone_name, count(*) FROM device
+   WHERE deleted_on IS NULL AND length(site_code) + 1 + length(queue_zone_name) > 200 GROUP BY site_code, queue_zone_name;
+  ```
+- **Actions**: create a draft of the site's profile (it copies the name, and its validation lists the zone with "A queue zone name at site ... is at most N characters"), rename the queue zone to fit, validate and publish (a second factor is needed). Then move each device of the zone to the renamed zone (Administration, Devices, or `PUT /api/v1/admin/devices/{id}/placement`): a move sends the device back to commissioning, so calibrate it again before it counts. Zone health, `ZoneHealthChanged` and `OverflowDetected` resume for the new key; recompute the affected period from the archive (4.10) if its overflow changes are needed.
+
 ### 4.3 Stale AODB feed
 
 - **Symptoms**: stale-feed alarm; no flight messages while flights are due; the arrival-wave strip says it uses last estimates.
@@ -125,7 +143,7 @@ SELECT topic, message_key, message_type, attempts, next_attempt_on, last_error
 
 ### 4.5b Queue stream worker (ARV-034)
 
-Ariva.Api.Stream's queue engine worker (group `ariva-stream.queue-engine`) writes `queue_minute`, `queue_bin`, the zone snapshots (`stream_zone_state`) and its own positions (`stream_offset`) in one transaction per checkpoint. To check it is keeping up, compare `stream_offset.next_offset` with the end of each sensing topic partition and look at `stream_zone_state.updated_on`.
+Ariva.Api.Stream's queue engine worker (group `ariva-stream.queue-engine`) writes `queue_minute`, `queue_bin`, `line_minute` (per-line crossings per minute, ARV-113), `zone_health_bin` (the F18 health checks of each bin, ARV-114a), `overflow_minute` (each overflow band's occupancy per minute, ARV-115) with its `OverflowDetected` events in `outbox_message`, the zone snapshots (`stream_zone_state`) and its own positions (`stream_offset`) in one transaction per checkpoint. To check it is keeping up, compare `stream_offset.next_offset` with the end of each sensing topic partition and look at `stream_zone_state.updated_on`.
 
 - After a crash or a redeploy nothing needs doing: the worker restores each zone from its snapshot and replays the records after the saved positions, rewriting the same rows.
 - The positions in `stream_offset` are authoritative. Resetting the Kafka consumer group's offsets has no effect on a partition that has a saved position.
@@ -192,7 +210,7 @@ SELECT job_id, hypertable_name, last_run_status, last_successful_finish, next_st
 - **Log lines**: Stream logs "Alert evaluation: n raised, n cleared, n withdrawn, n failed" when a tick changes something, "Alert evaluation of rule {id} failed" with the error when one rule fails (the others go on; it is tried again next tick), and "Alert evaluation tick failed" when a whole tick fails.
 - **Escalation**: an alert still Raised after its rule's escalation minutes is escalated at the next tick (audited as `Alert.Escalated` by `alert-evaluation`); if escalations are late, check that the Stream host is evaluating (the log line above) and that its clock is right.
 - **Screens not told of alerts**: the screen must have joined the site's alerts (`JoinAlerts`), and its user must hold a role responsible for the alert; Main and Stream must share the Redis of 4.8a.
-- **Known limits**: `OverflowOccupied` and `DesksBelowPlan` rules have nothing to judge yet; predicted-nowcast rules read the arrival-wave projection (ARV-047) and have nothing to judge for a queue zone none of whose service zones stands at a desk with lane categories (link the zones to their desks in the zone profile). A new or re-enabled rule starts at the present (use the backtest for the past). After the Stream host was down for more than three hours (`Alerts:Evaluation:MaxCatchUpMinutes`), evaluation continues from the last three hours.
+- **Known limits**: `DesksBelowPlan` rules have nothing to judge yet; `OverflowOccupied` rules (since ARV-115) judge only zones whose overflow band has a commissioned sensor reporting occupancy (a band without one shows nothing, and is not counted as empty; a band whose sensor falls silent for more than 2 minutes becomes Unknown, an `OverflowDetected` with state Unknown, and the rule neither raises nor clears on it until the sensor reports again; check the band's sensor under Devices); predicted-nowcast rules read the arrival-wave projection (ARV-047) and have nothing to judge for a queue zone none of whose service zones stands at a desk with lane categories (link the zones to their desks in the zone profile). A new or re-enabled rule starts at the present (use the backtest for the past). After the Stream host was down for more than three hours (`Alerts:Evaluation:MaxCatchUpMinutes`), evaluation continues from the last three hours.
 - **Actions**: fix the data source; an edit of the rule restarts its counts. Do not delete `alert_rule_state` rows by hand.
 
 ### 4.8c Alert emails not arriving (ARV-040)
@@ -239,6 +257,7 @@ SELECT job_id, hypertable_name, last_run_status, last_successful_finish, next_st
 
 - **Symptoms**: AMAN desks show `Unknown` in `desk_minute` (`unknown_seconds` 60), `egate_minute` has no rows for a site, or Stream logs "Desk feed read failed".
 - **Checks**: Stream's desk feed reads the records the immigration intake stored (4.8h first: no stored records, no desk states). AMAN desks turn `Unknown` two minutes after AMAN's last record of the site (the feed is their heartbeat); a desk AMAN never reports a session for is `Closed`. Only desks with an AMAN desk code mapping take part, keyed site/checkpoint/desk in the minute tables. `desk_feed_state` holds each site's read position and engine (`updated_on` moves every `Border:DeskFeed:PollSeconds` while Stream runs; a stale one means the worker stops or another replica holds the site's lock). Records more than 15 minutes late, or more than 5 minutes ahead of Stream's clock, are not applied (a simulator run faster than real time). A burst larger than `MaxRead` is read over several polls; a record whose intake transaction committed more than two minutes after it was stamped is not read (the overlap), and a record dated ahead of Stream's clock never extends the feed's heartbeat. Two desks whose checkpoints share a code on different levels share a key and are left out (logged): rename one checkpoint.
+- **Staff and service zones (ARV-116)**: a desk whose staff or service zone (in the published profile, naming the desk) has reported takes part too, AMAN or not; the stream writes the readings to `desk_zone_reading` (kept 7 days) and the feed reads them every poll. A desk with zones and no AMAN code turns `Unknown` two minutes after its zones' last reading; an AMAN desk whose zones fall silent stays on AMAN's state, flagged `degraded`. A zone that never reported does not count (a zone drawn without a sensor over it). No readings for a desk: check that the zone names its desk in the published profile (and that the desk is not an e-gate), that the device covering it reports occupancy for that zone name, and `SELECT desk_code, source, max(reading_utc) FROM desk_zone_reading WHERE site_code = '<site>' GROUP BY 1, 2`.
 - **Actions**: restore AMAN's feed or the mapping; restart Stream if `updated_on` is stale. Deleting a site's `desk_feed_state` row (migration role) restarts its desks from now; never edit the minute tables.
 
 ### 4.8j AMAN pull failing (ARV-050)
@@ -246,6 +265,13 @@ SELECT job_id, hypertable_name, last_run_status, last_successful_finish, next_st
 - **Symptoms**: an `AmanFeed` outbound endpoint shows `consecutive_failures` rising, or its `last_status` reports refused or unreadable records; Integration logs "AMAN pull from {endpoint} failed".
 - **Checks**: `AMAN answered 401.` is a refused exchange (client id, secret or TOTP seed wrong, or the host's clock more than 30 s off) or a refused call (the code on each call is wrong: the clock or the seed); "already requested in this TOTP step" means a retry within the step and clears itself; "not its feed envelope", "did not move forward" or "more than 1000 records" mean AMAN's answer is not the feed Ariva expects (check AMAN's version and the feed path); unreadable records are not the V1 contracts (4.8h); a refused or unreachable address is the SSRF control (4.8f, the endpoint's networks). The position per contract is in `aman_pull_cursor`.
 - **Actions**: set the secret again (`PUT {id}/secret`), correct the connection, or ask AMAN to fix its feed. If AMAN restarted its sequence, a position beyond it finds nothing new: register a new endpoint (a new position) and disable the old one.
+
+### 4.8k Availability ledger (ARV-118)
+
+- **What runs**: Ariva.Api.Cronz's TickerQ function `AvailabilityLedger`, every minute at second 30. For each site with a published or retired zone profile it decides every minute whose end is at least `Availability:GraceSeconds` (120) past and writes one `availability_minute` row per site and minute (first decision stands). It reads Redis live snapshots and the database only.
+- **Symptoms**: a site's availability drops, or days show unobserved minutes; Cronz logs "Availability ledger of site {Site} failed" or "caught up {Minutes} minutes from the database alone", or warns once that a site's airport time zone "is not known on this host": that site is skipped (no minutes written, its cursor unmoved) until the airport's IANA zone resolves on the Cronz image (tzdata) or is corrected; the backlog is then filled, as `Unobserved` beyond the live window.
+- **Checks**: the reasons say why: `SELECT state, reasons, count(*) FROM availability_minute WHERE site_code = '<site>' AND minute_utc > now() - INTERVAL '1 hour' GROUP BY 1, 2`. `StaleZone`: no fresh live snapshot (4.8a: Stream publishing, Redis reachable from Cronz); `MissingMinute`: Stream writes no `queue_minute` rows for a zone (4.5b); `StreamLag`: Stream behind real time (4.6); `NoPublishedZones`: the site has no published queue zone; `NotObservedLive`: minutes decided after Cronz was down. `availability_cursor` holds each site's catch-up position; minutes in their live window are written first, then the backlog at most `Availability:MaxMinutesPerRun` (1,440) per run. Each site's pass holds the advisory lock (50, hashtext(site)); a second replica skips a site held by another.
+- **Actions**: fix the cause upstream; the ledger records what happened and is never edited (the runtime role cannot update or delete it). Minutes missed while Cronz was down are recorded as `Unobserved` once it runs again; they cannot be turned into available minutes later. A rule change for the KPI annex is a new rule version (`rule_version`) applied from its release, never a rewrite of past rows. Operating hours and maintenance windows are kept by administrators (wiki 11 section 2b) and must be recorded before they take effect.
 
 ### 4.9 Certificate expiry
 
@@ -296,6 +322,16 @@ The reference evening at Demo International Airport (DMO, seed 9303) played in r
 | 18:20 to 18:30 | Sensor S-17 over the arrivals hall goes silent: R-003 names it, Devices shows it Offline, then it recovers | Border shift supervisor, system administrator | `demo.border`, `demo.admin` |
 | 19:10 | Handler B's check-in island C after a shift change: the 15-minute bin breaches the 15-minute P90 target and R-004 fires once the bin has ended (19:15) | Handler station manager | `demo.handler` |
 
+On the same demo clock the simulator plays the illustrative AUH Terminal A arrivals hall (site `AUH-TA`, seed 9304, ARV-139b; every screen of the site shows the banner "Illustrative, not surveyed"). Its scripted events, seen as `demo.admin` with the site chosen AUH-TA (the operational demo accounts stay on DMO):
+
+| Demo time | What happens |
+|---|---|
+| 18:12 | A visitor-heavy long-haul wave lands during the evening shift handover (11 of 17 visitors' counters): the A-VIS nowcast passes 15 minutes (Ariva's live value from 18:12 too) and its R-001 fires; back under target by about 18:35 |
+| 18:25 to 18:35 | Sensor Q-RES-04 over the residents' queue goes silent: its R-003 names it, A-RES shows "Data degraded", Devices shows it Offline, then it recovers at 18:36 |
+| 19:13 to 19:26 | A smart gate fault (SG-05 to SG-34 out of service 18:40 to 19:30) meets a resident-heavy hub wave: A-EG passes 15 minutes from about 19:08 and spills into its band A-EG-OV, whose R-002 fires from about 19:16 |
+
+The scenario's flight waves, lane mix and smart-gate share are assumptions, not the airport's data ([docs/demo/auh-terminal-a.md](../docs/demo/auh-terminal-a.md)). AUH-TA has no AMAN feed, so its waits are estimates from the exit rate and carry the "≈" marker (F8); its counters' states come from their staff and service zones (ARV-116), and those of lanes whose desk sensors are not loaded show Unknown.
+
 Two runs:
 
 - Full rehearsal, 17:40 to 19:40 (about two hours): all three events, the bins and the reports. Run it the day before any demo.
@@ -307,7 +343,7 @@ On Windows, `run-ariva.cmd` in the repository root does steps 1 and 2 in one go:
 
 1. Once: `npm ci` in `Platform/Frontplane/Ariva.Web`, then `node scripts/demo-local.mjs prepare`. It writes `.demo/accounts.json` (the four demo accounts with random passwords; the administrator also has a TOTP secret) and `.demo/apphost-environment.json` (git-ignored, owner-only) and prints the AppHost command.
 2. Start Ariva with that command: `dotnet run --project Platform/Cloud/Ariva.AppHost -- "--AppHost:HostEnvironmentFile=<repository>/.demo/apphost-environment.json"`. Wait until the Aspire dashboard (http://localhost:15880) shows every resource Running. The accounts sign in without a second factor (`Auth:TotpRequired` false): Ariva.Api.Main refuses to start with that setting, or with development accounts, unless both its host environment and `Application:Environment` are vm-local. `.demo/` holds passwords: it is owner-only on Linux and macOS, while Windows ignores those modes, so keep the repository under your own user profile.
-3. `node scripts/demo-local.mjs start` for the full rehearsal, or `node scripts/demo-local.mjs start --at 17:50 --until 18:35` for the short demo. It registers and calibrates the sensors (one counting sensor per queue and overflow band, plus S-17; `--sensors events` keeps only the seven the events need), loads them into the simulator and starts on the next whole minute, up to 14 demo minutes before `--at`, so that the 15-minute bins fall on the wall clock's quarter hours and the sensors settle before the demo proper. It prints the accounts; `node scripts/demo-local.mjs code` gives the administrator's current code.
+3. `node scripts/demo-local.mjs start` for the full rehearsal, or `node scripts/demo-local.mjs start --at 17:50 --until 18:35` for the short demo. It registers and calibrates the DMO sensors (one counting sensor per queue and overflow band, plus S-17; `--sensors events` keeps only the seven the events need); for AUH-TA it issues each of the seed's 84 sensors a credential and records its calibration through the devices API (the seed leaves them in Commissioning without a credential; `--sensors events` keeps the eleven its events need) and gives the site the scenario's three alert rules once; `--sites DMO` or `--sites AUH-TA` plays one site only. It loads every sensor into the simulator and starts on the next whole minute, up to 14 demo minutes before `--at`, so that the 15-minute bins fall on the wall clock's quarter hours and the sensors settle before the demo proper. It prints the accounts; `node scripts/demo-local.mjs code` gives the administrator's current code.
 4. Open http://localhost:51010 and sign in. Live operations shows every queue; the immigration screen shows desks, lanes and waits; Alerts shows the events as they fire. `node scripts/demo-local.mjs status` shows the demo clock.
 5. `node scripts/demo-local.mjs stop` pauses the simulator and unloads the sensors. The devices stay registered; the next `start` reuses them with new credentials.
 
@@ -325,6 +361,7 @@ If an event does not show:
 |---|---|
 | A-VIS shows a wait but no R-001 | The A-VIS row's status: "Data degraded" means its length is not a full sensor reading (the overflow band's sensor S-25 not loaded) or still in warm-up; R-001 does not judge degraded lengths |
 | No queues at all | `node scripts/demo-local.mjs status`: the clock running and the sensors listed; Ingest and Stream healthy in the dashboard |
+| AUH-TA shows no data | `start` says how many AUH-TA sensors it calibrated; none means the illustrative seed has not run (`Seed:DemoTopology`, ARV-139a). The simulator's `GET api/v1/simulation/sensors` lists each device with its site |
 | Every desk Unknown on the immigration screen | The AMAN feed: the simulator plays it with the demo clock, so it is Unknown until the clock runs; then section 4.8i |
 | R-004 not by 19:16 | The 19:00 to 19:15 bin is judged once it has ended; the 15-minute bins need the alignment of step 3 (do not use `--no-align` for the rehearsal) |
 

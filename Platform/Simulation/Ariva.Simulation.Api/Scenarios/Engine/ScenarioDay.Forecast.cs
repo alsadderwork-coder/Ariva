@@ -241,7 +241,7 @@ internal sealed partial class ScenarioDay
             var back0 = L[q][now + Pre];
             for (var m = now + 1; m < start; m++)
                 back0 = Math.Max(0, back0 + exp.A[q][m + Pre] - CapAgg(q, m, Plan(q, m), 1));
-            var minBase = def.Group == "imm" ? (def.Lane == "VIS" ? 2 : 1) : def.Group == "sec" ? 1 : 0;
+            var minBase = def.Group == "imm" ? Site.MinimumServers(def) : def.Group == "sec" ? 1 : 0;
             var lam = new double[nb];
             var k = new int[nb];
             for (var b = 0; b < nb; b++)
@@ -442,10 +442,10 @@ internal sealed partial class ScenarioDay
             .Select(f =>
             {
                 var lanes = LaneSplitArr(f.Pax, f.Mix);
-                return new ArrivingFlight(f, new Dictionary<string, double>(StringComparer.Ordinal)
-                {
-                    ["CRW"] = lanes[0], ["CIT"] = lanes[1], ["RES"] = lanes[2], ["VIS"] = lanes[3], ["EG"] = lanes[4]
-                }, f.Eibt + 11);
+                var byLane = new Dictionary<string, double>(StringComparer.Ordinal);
+                for (var k = 0; k < Lanes.Count; k++)
+                    byLane[Lanes[k]] = lanes[k];
+                return new ArrivingFlight(f, byLane, f.Eibt + Site.StandardWalk);
             })
             .ToList();
 
@@ -455,7 +455,7 @@ internal sealed partial class ScenarioDay
         var ext = Zeros(len + 6);
         var off = from + Pre;
         foreach (var x in flights)
-            AddArr(ext, off, len + 6, x.Flight.Seats, x.Flight.Eibt, x.Flight.Load, 11, x.Flight.Mix);
+            AddArr(ext, off, len + 6, x.Flight.Seats, x.Flight.Eibt, x.Flight.Load, Site.StandardWalk, x.Flight.Mix);
         var o = new Dictionary<string, double[]>(StringComparer.Ordinal);
         for (var k = 0; k < Lanes.Count; k++)
             o[Lanes[k]] = ext[ArrivalQueues[k]][..len];

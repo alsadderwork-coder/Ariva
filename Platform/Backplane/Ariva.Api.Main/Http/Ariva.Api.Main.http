@@ -185,3 +185,127 @@ Authorization: Bearer {{accessToken}}
 ### Retire (DeleteDevice)
 POST {{Ariva.Api.Main_HostAddress}}/api/v1/admin/devices/{{deviceId}}/retire
 Authorization: Bearer {{accessToken}}
+
+### ARV-118: the site operating calendar (ViewSite to read; EditSite to change; entries are recorded before they take effect)
+GET {{Ariva.Api.Main_HostAddress}}/api/v1/admin/sites/DMO/calendar
+Authorization: Bearer {{accessToken}}
+
+### Weekly hours in the site's local time from a future local day (replaces a version of the same day)
+PUT {{Ariva.Api.Main_HostAddress}}/api/v1/admin/sites/DMO/calendar/weeks
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "effectiveFrom": "2026-10-12", "hours": [ { "day": "Monday", "opens": "06:00", "closes": "22:00" }, { "day": "Friday", "opens": "18:00", "closes": "02:00" } ] }
+
+### A dated exception (closed all day, or other hours)
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/admin/sites/DMO/calendar/exceptions
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "date": "2026-12-02", "closed": true, "hours": [], "reason": "National Day" }
+
+### An announced maintenance window (UTC, whole minutes, starting after now)
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/admin/sites/DMO/calendar/maintenance-windows
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "startsUtc": "2026-10-13T01:00:00Z", "endsUtc": "2026-10-13T02:00:00Z", "reason": "Database upgrade" }
+
+### Availability per local day, week and range (DataQuality.View; at most 92 days)
+GET {{Ariva.Api.Main_HostAddress}}/api/v1/sites/DMO/availability?from=2026-10-01&to=2026-10-31
+Authorization: Bearer {{accessToken}}
+
+### ARV-104a: validation campaigns of a site (Validation.View to read; Validation.Manage to plan, start and close; closing is critical)
+GET {{Ariva.Api.Main_HostAddress}}/api/v1/sites/DMO/validation/campaigns?status=Running&sortBy=firstDay
+Authorization: Bearer {{accessToken}}
+
+### Plan a campaign over the site's published profile version: its queue zones, their lines and local days (targets empty: TC-04 placeholders)
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/sites/DMO/validation/campaigns
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "name": "Pilot week 1", "profileVersion": 12, "zoneIds": [ "{{queueZoneId}}" ], "lineIds": [ "{{entryLineId}}", "{{exitLineId}}" ], "days": [ "2026-10-12", "2026-10-13" ], "targetBinsPerLine": null, "targetTracerRuns": null }
+
+### Start it (while its profile version is still the published one)
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/sites/DMO/validation/campaigns/{{campaignId}}/start
+Authorization: Bearer {{accessToken}}
+
+### Every observer's counts: current revisions (default) or all, by line, observer and bin range (UTC)
+GET {{Ariva.Api.Main_HostAddress}}/api/v1/sites/DMO/validation/campaigns/{{campaignId}}/counts?currentOnly=false&sortBy=binStartUtc
+Authorization: Bearer {{accessToken}}
+
+### Close it (critical: a second factor within 15 minutes; audited)
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/sites/DMO/validation/campaigns/{{campaignId}}/close
+Authorization: Bearer {{accessToken}}
+
+### The observer's side (Validation.Capture): the running campaigns of the site with their lines
+GET {{Ariva.Api.Main_HostAddress}}/api/v1/sites/DMO/validation/capture/campaigns
+Authorization: Bearer {{accessToken}}
+
+### A count of one line for one 15-minute bin (UTC on the quarter hour) by an observer (Validation observer role; never the campaign's creator or starter, 403);
+# Resending with the same Idempotency-Key (a random UUID per submission, the observer's own) returns the stored count
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/sites/DMO/validation/capture/campaigns/{{campaignId}}/counts
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+Idempotency-Key: 0f8b6c1e-3a52-4d7e-9b14-6c2a9e5d7f30
+
+{ "lineId": "{{entryLineId}}", "binStartUtc": "2026-10-12T06:15:00Z", "crossingsIn": 42, "crossingsOut": 3 }
+
+### Correct one's own latest count: a new revision with a reason
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/sites/DMO/validation/capture/campaigns/{{campaignId}}/counts/{{countId}}/corrections
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "crossingsIn": 44, "crossingsOut": 3, "reason": "Two missed at the start of the bin" }
+
+### One's own counts
+GET {{Ariva.Api.Main_HostAddress}}/api/v1/sites/DMO/validation/capture/campaigns/{{campaignId}}/counts?currentOnly=false
+Authorization: Bearer {{accessToken}}
+
+### ARV-104b: a tracer batch (Validation.Capture). deviceClockUtc is the tablet's own clock when it sends (read again at every
+# retry); Ariva measures the offset and corrects the runs. The Idempotency-Key (a random UUID per batch, kept for its retries) is required.
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/sites/DMO/validation/capture/campaigns/{{campaignId}}/tracer-runs
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+Idempotency-Key: 6a1d0f52-8c3e-4b97-a2f4-1e7c9d3b5a60
+
+{ "deviceClockUtc": "2026-10-12T06:31:02.250Z", "runs": [ { "zoneId": "{{queueZoneId}}", "tracerCode": "T-07", "joinedUtc": "2026-10-12T06:02:10.000Z", "exitedUtc": "2026-10-12T06:19:40.500Z", "abandoned": false } ] }
+
+### Every observer's tracer runs (Validation.View), or one's own under capture/
+GET {{Ariva.Api.Main_HostAddress}}/api/v1/sites/DMO/validation/campaigns/{{campaignId}}/tracer-runs?tracerCode=T-07&sortBy=joinedUtc
+Authorization: Bearer {{accessToken}}
+
+### A 15-minute batch of desk states: per desk in scope exactly 15 states (Closed, Idle, Serving, Paused or null), minutes that have ended
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/sites/DMO/validation/capture/campaigns/{{campaignId}}/desk-observations
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+Idempotency-Key: 2c7e4a19-5d80-4f36-b1e2-8a9f0c6d4b17
+
+{ "binStartUtc": "2026-10-12T06:15:00Z", "desks": [ { "deskId": "{{deskId}}", "states": ["Serving", "Serving", "Idle", "Idle", "Paused", "Paused", "Serving", "Serving", "Serving", "Idle", "Idle", "Closed", "Closed", null, null] } ] }
+
+### Correct one's own latest desk state: a new revision with a reason (audited)
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/sites/DMO/validation/capture/campaigns/{{campaignId}}/desk-observations/{{observationId}}/corrections
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "state": "Idle", "reason": "Tapped the wrong row" }
+
+### Every observer's desk states: border roles only (BorderDesks.View); a duty manager gets desksIncluded false and no rows
+GET {{Ariva.Api.Main_HostAddress}}/api/v1/sites/DMO/validation/campaigns/{{campaignId}}/desk-observations?currentOnly=false&sortBy=minuteUtc
+Authorization: Bearer {{accessToken}}
+
+### A campaign's results (ARV-104g; Validation.View): the latest frozen revision of a closed campaign, or computed now for one
+### still running; the desks section only for roles that see border desks
+GET {{Ariva.Api.Main_HostAddress}}/api/v1/sites/DMO/validation/campaigns/{{campaignId}}/results
+Authorization: Bearer {{accessToken}}
+
+### An earlier frozen revision (1 is the freeze at the close)
+GET {{Ariva.Api.Main_HostAddress}}/api/v1/sites/DMO/validation/campaigns/{{campaignId}}/results?revision=1
+Authorization: Bearer {{accessToken}}
+
+### Recompute a closed campaign's results as the next revision with a reason (Validation.Manage, a second factor within 15 minutes; audited)
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/sites/DMO/validation/campaigns/{{campaignId}}/results/revisions
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "reason": "Stored results replayed after the sensor clock fix" }

@@ -17,8 +17,9 @@ namespace Ariva.IntegrationTests.Persistence;
 /// are read from the chart, and the container runs as the pod does: uid 1000, read-only root filesystem, every
 /// capability dropped, writable only where the pod mounts emptyDirs and the data volume. Then: no login works without a
 /// password over TCP, loopback included (a port-forward arrives there); the migration login owns the database with
-/// CREATEROLE and is not a superuser; the real migration (api-main --migrate) runs as that login; and the runtime login
-/// it creates cannot change the schema.
+/// CREATEROLE and is not a superuser; the real migration (api-main --migrate) runs as that login, twice; the runtime login
+/// it creates cannot change the schema; and (ARV-104g1) the validation reader login it creates reads the shadow nowcast and
+/// nothing else, which the runtime login cannot.
 /// </summary>
 public sealed class DatabaseChartBootstrapTests : IAsyncLifetime
 {
@@ -27,6 +28,7 @@ public sealed class DatabaseChartBootstrapTests : IAsyncLifetime
     private static readonly string SuperuserPassword = "su-" + Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(12));
     private static readonly string MigrationPassword = "mig-" + Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(12));
     private static readonly string RuntimePassword = "rt-" + Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(12));
+    private static readonly string ReaderPassword = "vr-" + Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(12));
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
@@ -150,7 +152,10 @@ public sealed class DatabaseChartBootstrapTests : IAsyncLifetime
         TimescaleExtension,
         Telemetry,
         AppliedScripts,
-        CreateTable
+        CreateTable,
+        ShadowRows,
+        QueueMinuteRows,
+        ReaderMemberships
     }
 
     // A switch over string literals keeps every command text constant (CA2100).
@@ -164,6 +169,10 @@ public sealed class DatabaseChartBootstrapTests : IAsyncLifetime
         Query.Telemetry => "SHOW timescaledb.telemetry_level",
         Query.AppliedScripts => "SELECT count(*) FROM schema_version",
         Query.CreateTable => "CREATE TABLE it_not_allowed (id int)",
+        // A value column: the runtime role may count rows by their key columns (the stream's upsert needs them), never read a value.
+        Query.ShadowRows => "SELECT count(nowcast_degraded) FROM queue_minute_shadow",
+        Query.QueueMinuteRows => "SELECT count(*) FROM queue_minute",
+        Query.ReaderMemberships => "SELECT string_agg(g.rolname, ',' ORDER BY g.rolname) FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid WHERE m.member = 'ariva_validation'::regrole",
         _ => throw new ArgumentOutOfRangeException(nameof(query))
     };
 
@@ -208,13 +217,26 @@ public sealed class DatabaseChartBootstrapTests : IAsyncLifetime
             ["Database:Migration:Username"] = MigrationLogin,
             ["Database:Migration:Password"] = MigrationPassword,
             ["Database:Username"] = "ariva_app",
-            ["Database:Password"] = RuntimePassword
+            ["Database:Password"] = RuntimePassword,
+            // ARV-104g1: the validation reader login, created by the same non-superuser owner (it administers the roles it created).
+            ["Database:ValidationReader:Username"] = "ariva_validation",
+            ["Database:ValidationReader:Password"] = ReaderPassword
         }).Build();
         (await DatabaseMigration.RunAsync(configuration, Ct)).Should().Be(0, "the migration runs as the non-superuser owner");
+        (await DatabaseMigration.RunAsync(configuration, Ct)).Should().Be(0, "and again, updating both logins it created");
 
         var runtime = ConnectionString("ariva_app", RuntimePassword);
         (await ScalarAsync<long>(runtime, Query.AppliedScripts)).Should().BeGreaterThan(0);
         var ddl = async () => await ScalarAsync<object>(runtime, Query.CreateTable);
         (await ddl.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be(PostgresErrorCodes.InsufficientPrivilege);
+
+        // The reader reads the shadow nowcast's table and nothing else; the runtime login cannot read it.
+        var reader = ConnectionString("ariva_validation", ReaderPassword);
+        (await ScalarAsync<long>(reader, Query.ShadowRows)).Should().Be(0);
+        var readerElsewhere = async () => await ScalarAsync<long>(reader, Query.QueueMinuteRows);
+        (await readerElsewhere.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be(PostgresErrorCodes.InsufficientPrivilege);
+        var runtimeShadow = async () => await ScalarAsync<long>(runtime, Query.ShadowRows);
+        (await runtimeShadow.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be(PostgresErrorCodes.InsufficientPrivilege);
+        (await ScalarAsync<string>(owner, Query.ReaderMemberships)).Should().Be("ariva_validation_reader");
     }
 }

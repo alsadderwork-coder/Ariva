@@ -102,8 +102,12 @@ public sealed record DeskSessionChangedSignal(string DeskCode, DateTime TimeUtc,
     public override DeskSource Source => DeskSource.Session;
 }
 
-/// <summary>An occupancy reading of the desk's staff zone (rank 3) or service zone (rank 4).</summary>
-public sealed record DeskZoneReading(string DeskCode, DateTime TimeUtc, DeskSource Zone, int Count) : DeskSignal(DeskCode, TimeUtc)
+/// <summary>
+/// An occupancy reading of the desk's staff zone (rank 3) or service zone (rank 4). <see cref="Degraded"/>: the sensing
+/// pipeline flagged the reading (a corrected or unreliable clock, F11), so the state it supports is Degraded while it is
+/// the zone's latest reading (ARV-116).
+/// </summary>
+public sealed record DeskZoneReading(string DeskCode, DateTime TimeUtc, DeskSource Zone, int Count, bool Degraded = false) : DeskSignal(DeskCode, TimeUtc)
 {
     public override DeskSource Source => Zone;
 }
@@ -119,6 +123,16 @@ public sealed record DeskStateSettings
 {
     /// <summary>T1: staffed without activity this long is Paused (example 3 minutes).</summary>
     public TimeSpan PauseAfter { get; init; } = TimeSpan.FromMinutes(3);
+
+    /// <summary>
+    /// T1 for a desk without a live login source (ARV-116, Proposed): staff presence is then the only evidence that the
+    /// desk is staffed, so a staff zone empty this long (with no transaction in that time) makes it Paused, while a sensor
+    /// dropout shorter than this keeps it open. Null: <see cref="PauseAfter"/>, as before. The desk feed sets 60 seconds.
+    /// </summary>
+    public TimeSpan? SensorPauseAfter { get; init; }
+
+    /// <summary>The T1 that applies: <see cref="PauseAfter"/> with a live login source, <see cref="SensorPauseAfter"/> (if set) without.</summary>
+    public TimeSpan PauseAfterFor(bool loginLive) => loginLive ? PauseAfter : SensorPauseAfter ?? PauseAfter;
 
     /// <summary>T2: staffed with the staff zone empty this long is Closed (example 10 minutes).</summary>
     public TimeSpan CloseAfter { get; init; } = TimeSpan.FromMinutes(10);
@@ -166,6 +180,8 @@ public sealed record DeskStateSettings
             yield return "PauseAfter (T1) is above 0 and at most 2 hours.";
         if (CloseAfter <= PauseAfter || CloseAfter > TimeSpan.FromHours(4))
             yield return "CloseAfter (T2) is above PauseAfter (T1) and at most 4 hours.";
+        if (SensorPauseAfter is { } sensorPause && (sensorPause < TimeSpan.FromSeconds(10) || sensorPause > PauseAfter))
+            yield return "SensorPauseAfter is from 10 seconds to PauseAfter (T1).";
         if (StaleAfter < TimeSpan.FromSeconds(10) || StaleAfter > TimeSpan.FromHours(1))
             yield return "StaleAfter is from 10 seconds to 1 hour.";
         if (MaxTransaction < TimeSpan.FromMinutes(1) || MaxTransaction > TimeSpan.FromHours(4))
@@ -264,6 +280,11 @@ public sealed record DeskMemory
 
     public DateTime? ServiceReadAt { get; init; }
 
+    /// <summary>The latest staff and service zone readings were flagged by the sensing pipeline (F11, ARV-116); absent in older snapshots, so false.</summary>
+    public bool StaffDegraded { get; init; }
+
+    public bool ServiceDegraded { get; init; }
+
     public static DeskMemory Empty { get; } = new();
 }
 
@@ -279,12 +300,13 @@ public sealed record DeskEvaluation(DeskStatus Status, bool SensorDerived, bool 
 /// wins: (1) every source stale gives Unknown; (2) a live login source whose latest session is a logout gives Closed;
 /// (3) a transaction in progress gives Serving; (3a, Proposed) a live login source on break gives Paused; (4) staffed
 /// with the staff zone empty for T2 and no transaction in that time gives Closed; (5) staffed with no activity for T1
-/// (the staff zone empty and no transaction, or without a staff zone sensor no transaction since T1 or since login)
+/// (the staff zone empty and no transaction, or without a staff zone sensor no transaction since T1 or since login;
+/// without a live login source T1 is <see cref="DeskStateSettings.SensorPauseAfter"/> when set, ARV-116)
 /// gives Paused, where staffed without a live login source means staff present or within T2 of the staff leaving or of
 /// the last transaction (Proposed); (6) without a live login source, staff present and the service zone occupied gives Serving, flagged
 /// as sensor-derived; (7) staffed gives Idle; (8) a live login source not logged in with staff present gives Closed,
 /// recorded as present and not processing; (9) Closed. A configured source that is stale counts as absent, and the
-/// result is flagged Degraded. Pure.
+/// result is flagged Degraded; a staff or service zone counts as configured only once it has been heard (ARV-116). Pure.
 /// </summary>
 public static class DeskRule
 {
@@ -300,13 +322,19 @@ public static class DeskRule
         var login = Live(desk, memory, DeskSource.Session, atUtc, settings);
         var staff = Live(desk, memory, DeskSource.StaffZone, atUtc, settings);
         var service = Live(desk, memory, DeskSource.ServiceZone, atUtc, settings);
-        var configured = (desk.HasTransactions ? 1 : 0) + (desk.HasSession ? 1 : 0) + (desk.HasStaffZone ? 1 : 0) + (desk.HasServiceZone ? 1 : 0);
+        // A staff or service zone counts as a source once it has been heard (ARV-116, Proposed): a profile may draw zones
+        // that no sensor covers (to link a queue to its desks), and such a zone must not degrade the desk for good; once
+        // heard, a zone that falls silent is stale like any other source.
+        bool Installed(DeskSource zone) => memory.Heard(zone) is { } heard && heard <= atUtc;
+        var configured = (desk.HasTransactions ? 1 : 0) + (desk.HasSession ? 1 : 0) + (desk.HasStaffZone && Installed(DeskSource.StaffZone) ? 1 : 0) +
+                         (desk.HasServiceZone && Installed(DeskSource.ServiceZone) ? 1 : 0);
         var live = (tx ? 1 : 0) + (login ? 1 : 0) + (staff ? 1 : 0) + (service ? 1 : 0);
 
         // Row 1: nothing to go on.
         if (live == 0)
             return new DeskEvaluation(DeskStatus.Unknown, false, false, true);
-        var degraded = live < configured;
+        // A configured source gone stale, or a live zone reading the sensing pipeline flagged (F11), degrades the state.
+        var degraded = live < configured || (staff && memory.StaffDegraded) || (service && memory.ServiceDegraded);
 
         var staffPresent = staff && memory.StaffCount > 0;
 
@@ -339,10 +367,11 @@ public static class DeskRule
             if (emptyFor >= settings.CloseAfter && !Within(lastActivity, atUtc, settings.CloseAfter))
                 return new DeskEvaluation(DeskStatus.Closed, false, false, degraded);
 
-            // Row 5: no activity for T1.
+            // Row 5: no activity for T1 (without a live login source, the shorter sensor T1 when set: ARV-116, Proposed).
+            var pauseAfter = settings.PauseAfterFor(login);
             if (staff
-                    ? emptyFor >= settings.PauseAfter && !Within(lastActivity, atUtc, settings.PauseAfter)
-                    : tx && !Within(lastActivity, atUtc, settings.PauseAfter))
+                    ? emptyFor >= pauseAfter && !Within(lastActivity, atUtc, pauseAfter)
+                    : tx && !Within(lastActivity, atUtc, pauseAfter))
                 return new DeskEvaluation(DeskStatus.Paused, false, false, degraded);
         }
 
@@ -369,10 +398,12 @@ public static class DeskRule
     public static DateTime? NextChange(DeskProfile desk, DeskMemory memory, DateTime afterUtc, DeskStateSettings settings)
     {
         DateTime? next = null;
+        // No pattern variables in the conditions (ARV-069a): every mutant of them compiles, so Stryker measures this method.
         void Consider(DateTime? at, TimeSpan plus)
         {
-            if (at is not { } t)
+            if (at is null)
                 return;
+            var t = at.Value;
             var candidate = t > DateTime.MaxValue - plus ? DateTime.MaxValue : t + plus;
             if (candidate > afterUtc && (next is null || candidate < next))
                 next = candidate;
@@ -384,6 +415,13 @@ public static class DeskRule
         Consider(memory.StaffEmptySince, settings.PauseAfter);
         Consider(memory.StaffEmptySince, settings.CloseAfter);
         Consider(memory.LastTransaction, settings.PauseAfter);
+        var sensorPause = settings.SensorPauseAfter;
+        if (sensorPause.HasValue)
+        {
+            Consider(memory.StaffEmptySince, sensorPause.Value);
+            Consider(memory.LastTransaction, sensorPause.Value);
+        }
+
         Consider(memory.LastTransaction, settings.CloseAfter);
         Consider(memory.SessionSince, settings.PauseAfter);
         Consider(memory.SessionSince, settings.CloseAfter);

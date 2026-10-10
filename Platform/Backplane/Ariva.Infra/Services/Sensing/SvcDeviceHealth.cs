@@ -255,9 +255,23 @@ internal sealed class SvcDeviceHealth(
         return new DeviceHealthSweep(true, marked, changed, totals.Offline, totals.Degraded, totals.Zones);
     }
 
-    /// <summary>Re-assesses one queue zone from its devices under the zone's advisory lock; true when its state changed.</summary>
+    /// <summary>
+    /// Re-assesses one queue zone from its devices under the zone's advisory lock; true when its state changed. A zone
+    /// whose key does not fit a message key (a name stored before ARV-114c refused it) is skipped with one warning per
+    /// process: its ZoneHealthChanged could not be written to the outbox, which would fail this unit of work and with it
+    /// every other zone of the sweep and the device changes beside it.
+    /// </summary>
     private async Task<bool> AssessZoneAsync(string siteCode, string queueZoneName, DateTime now, CancellationToken ct)
     {
+        if (!ZoneKeys.Fits(siteCode, queueZoneName))
+        {
+            if (metrics.ZoneNotKeyable(siteCode, ZoneKeys.For(siteCode, queueZoneName)))
+                logger.LogWarning(
+                    "Zone {Zone} of {Site} is not assessed: its key is longer than {Max} characters, so its health events cannot be written; rename the queue zone (operations runbook, ARV-114c)",
+                    queueZoneName, siteCode, Ariva.Core.Messaging.MessageKeys.MaxLength);
+            return false;
+        }
+
         await FlushAsync(ct);
         await ExecuteCommandAsync<LockRow>("""SELECT 1 AS "Value" FROM (SELECT pg_advisory_xact_lock(25, CASE WHEN hashtext(:key) = 0 THEN 1 ELSE hashtext(:key) END)) l""",
             new Dictionary<string, object> { ["key"] = ZoneKeys.For(siteCode, queueZoneName) }, ct);

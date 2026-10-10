@@ -100,7 +100,7 @@ public class Airport : BaseSoftDeletableEntity<Airport>
     {
         if (icaoCode is not null && !TopologyCodes.IsIcao(icaoCode))
             throw new ArgumentException("An ICAO code is four upper case letters.", nameof(icaoCode));
-        if (string.IsNullOrWhiteSpace(timeZoneId) || !TimeZoneInfo.TryFindSystemTimeZoneById(timeZoneId, out _))
+        if (!SiteTimeZones.IsIana(timeZoneId))
             throw new ArgumentException("Unknown time zone.", nameof(timeZoneId));
         IcaoCode = icaoCode;
         Name = TopologyCodes.RequireName(name, nameof(name));

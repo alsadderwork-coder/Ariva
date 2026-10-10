@@ -23,6 +23,9 @@ public static class PersistenceExtensions
 
         var settings = DatabaseSettings.FromConfiguration(configuration);
         services.AddSingleton(settings);
+        // ARV-104g1: the validation reader login (Database:ValidationReader), apart from the runtime login. Configured in the
+        // clusters for api-main and the migration job only; held by the validation service, the migrator and the guard.
+        services.AddSingleton(ValidationReaderSettings.FromConfiguration(configuration));
         services.TryAddSingleton(TimeProvider.System);
         services.AddSingleton(provider => new NHibernateSessionFactoryProvider(provider.GetRequiredService<DatabaseSettings>()));
 
@@ -38,7 +41,21 @@ public static class PersistenceExtensions
             services.AddHostedService<DevelopmentMigrationService>();
         if (settings.VerifySchemaOnStartup)
             services.AddHostedService<SchemaVersionGate>();
+        // After the two above (hosted services start in order): a host refuses to start when the validation reader login is
+        // misconfigured next to its own, or when its runtime login holds ariva_validation_reader (ARV-104g1, CWE-269).
+        services.AddHostedService<ValidationReaderGuard>();
 
+        return services;
+    }
+
+    /// <summary>
+    /// ARV-104g1 (CWE-863): declares this host the one that runs the validation service (Ariva.Api.Main), the only host the
+    /// start-up guard lets hold the validation reader login (Database:ValidationReader) outside vm-local.
+    /// </summary>
+    public static IServiceCollection AddArivaValidationReaderHost(this IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        services.TryAddSingleton<ValidationReaderHost>();
         return services;
     }
 }

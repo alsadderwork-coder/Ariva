@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
 using Ariva.Core.Sensing;
 using Ariva.Core.Services.Sensing;
@@ -37,7 +38,12 @@ public sealed class DeviceHealthMetrics : IDisposable
     private readonly Counter<long> _lost;
     private readonly Counter<long> _recovered;
     private readonly Counter<long> _zonesDegraded;
+    private readonly Counter<long> _zonesNotKeyable;
+    private readonly ConcurrentDictionary<string, byte> _notKeyable = new(StringComparer.Ordinal);
     private volatile Totals _totals = new(0, 0, 0);
+
+    /// <summary>Zones remembered as warned about; beyond this many (never in practice) each further one warns every time.</summary>
+    internal const int MaxRememberedZones = 1_000;
 
     private sealed record Totals(int Offline, int Degraded, int Zones);
 
@@ -47,6 +53,8 @@ public sealed class DeviceHealthMetrics : IDisposable
         _lost = _meter.CreateCounter<long>("ariva.devices.heartbeat_lost", description: "Commissioned devices marked Offline after missing their heartbeat");
         _recovered = _meter.CreateCounter<long>("ariva.devices.recovered", description: "Offline devices heard from again");
         _zonesDegraded = _meter.CreateCounter<long>("ariva.zones.degraded", description: "Queue zones that became Degraded");
+        _zonesNotKeyable = _meter.CreateCounter<long>("ariva.zones.not_keyable",
+            description: "Queue zone assessments skipped because the zone key is longer than a message key may be (ARV-114c)");
         _meter.CreateObservableGauge("ariva.devices.offline", () => _totals.Offline, description: "Commissioned devices Offline at the last sweep");
         _meter.CreateObservableGauge("ariva.devices.degraded", () => _totals.Degraded, description: "Commissioned devices Degraded at the last sweep");
         _meter.CreateObservableGauge("ariva.zones.degraded_now", () => _totals.Zones, description: "Queue zones Degraded at the last sweep");
@@ -57,6 +65,18 @@ public sealed class DeviceHealthMetrics : IDisposable
     public void Recovered(string site) => _recovered.Add(1, new KeyValuePair<string, object>("site", site));
 
     public void ZoneDegraded(string site) => _zonesDegraded.Add(1, new KeyValuePair<string, object>("site", site));
+
+    /// <summary>
+    /// Counts a zone whose health is not assessed because its key does not fit a message key (ARV-114c); true the first
+    /// time this process sees the zone, so the caller warns once per zone instead of on every sweep.
+    /// </summary>
+    public bool ZoneNotKeyable(string site, string zoneKey)
+    {
+        _zonesNotKeyable.Add(1, new KeyValuePair<string, object>("site", site));
+        if (_notKeyable.ContainsKey(zoneKey))
+            return false;
+        return _notKeyable.Count >= MaxRememberedZones || _notKeyable.TryAdd(zoneKey, 0);
+    }
 
     public void Snapshot(int offline, int degraded, int zones) => _totals = new Totals(offline, degraded, zones);
 

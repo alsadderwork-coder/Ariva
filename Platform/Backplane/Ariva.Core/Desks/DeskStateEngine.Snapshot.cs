@@ -1,7 +1,8 @@
 namespace Ariva.Core.Desks;
 
 /// <summary>A buffered desk signal in a snapshot: a flat record of the signal kinds.</summary>
-public sealed record DeskSignalState(string Kind, string DeskCode, DateTime TimeUtc, DeskSource Source = default, DeskSessionSignal State = default, int Count = 0)
+public sealed record DeskSignalState(string Kind, string DeskCode, DateTime TimeUtc, DeskSource Source = default, DeskSessionSignal State = default, int Count = 0,
+    bool Degraded = false)
 {
     internal static DeskSignalState From(DeskSignal signal) => signal switch
     {
@@ -9,7 +10,7 @@ public sealed record DeskSignalState(string Kind, string DeskCode, DateTime Time
         DeskTransactionEnded s => new("ended", s.DeskCode, s.TimeUtc),
         DeskTransactionsCompleted s => new("completed", s.DeskCode, s.TimeUtc, Count: s.Count),
         DeskSessionChangedSignal s => new("session", s.DeskCode, s.TimeUtc, State: s.State),
-        DeskZoneReading s => new("zone", s.DeskCode, s.TimeUtc, s.Zone, Count: s.Count),
+        DeskZoneReading s => new("zone", s.DeskCode, s.TimeUtc, s.Zone, Count: s.Count, Degraded: s.Degraded),
         DeskHeartbeat s => new("heartbeat", s.DeskCode, s.TimeUtc, s.Of),
         _ => throw new ArgumentException($"Unknown signal {signal?.GetType().Name}.", nameof(signal))
     };
@@ -23,7 +24,7 @@ public sealed record DeskSignalState(string Kind, string DeskCode, DateTime Time
             "ended" => new DeskTransactionEnded(DeskCode, t),
             "completed" => new DeskTransactionsCompleted(DeskCode, t, Count),
             "session" => new DeskSessionChangedSignal(DeskCode, t, State),
-            "zone" => new DeskZoneReading(DeskCode, t, Source, Count),
+            "zone" => new DeskZoneReading(DeskCode, t, Source, Count, Degraded),
             "heartbeat" => new DeskHeartbeat(DeskCode, t, Source),
             _ => throw new InvalidDataException($"Unknown desk signal kind '{Kind}' in a snapshot.")
         };
@@ -91,7 +92,9 @@ public sealed partial class DeskStateEngine
         var perDesk = Math.Min(s.MaxBufferedSignalsPerDesk, s.MaxBufferedSignals);
         foreach (var saved in state.Desks ?? [])
         {
-            if (saved?.DeskCode is null || !engine._desks.TryGetValue(saved.DeskCode, out var desk))
+            // The out variable is declared before the condition (ARV-069a): a mutant that short-circuits it still compiles.
+            Desk desk = null;
+            if (saved?.DeskCode is null || !engine._desks.TryGetValue(saved.DeskCode, out desk))
                 continue;
             if ((saved.Pending?.Count ?? 0) > perDesk || saved.Ticks is not { Count: 5 } || saved.Memory is null || saved.Current is null ||
                 saved.Ticks.Any(t => t is < 0 or > TimeSpan.TicksPerMinute) || saved.Ticks.Sum() > TimeSpan.TicksPerMinute ||
@@ -111,6 +114,9 @@ public sealed partial class DeskStateEngine
                 if (engine._buffered >= s.MaxBufferedSignals)
                     throw new InvalidDataException("The desk snapshot holds more signals than the engine keeps.");
                 var signal = p.Signal.ToSignal();
+                // A buffered signal passes the checks Offer applies (ARV-116: a zone reading of a role the desk has, a count within bounds).
+                if (signal.TimeUtc.Kind != DateTimeKind.Utc || !engine.Valid(signal, desk.Profile))
+                    throw new InvalidDataException($"The snapshot of desk {saved.DeskCode} has a signal the engine would refuse.");
                 desk.Pending.Enqueue((signal, p.Ahead), (signal.TimeUtc.Ticks, p.Sequence));
                 if (p.Ahead)
                     desk.Ahead++;
@@ -120,7 +126,8 @@ public sealed partial class DeskStateEngine
 
         engine._watermark = watermark;
         engine._sequence = state.Sequence;
-        if (state.Counters is { } c)
+        var c = state.Counters;
+        if (c is not null)
             (engine._accepted, engine._late, engine._superseded, engine._future, engine._invalid, engine._unknownDesk, engine._bufferFull, engine._tooLate, engine._skippedMinutes) =
                 (c.Accepted, c.Late, c.Superseded, c.Future, c.Invalid, c.UnknownDesk, c.BufferFull, c.TooLate, c.SkippedMinutes);
         return engine;

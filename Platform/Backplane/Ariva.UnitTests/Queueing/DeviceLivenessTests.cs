@@ -195,7 +195,7 @@ public sealed class DeviceLivenessTests
         var device = state.Devices[0];
         foreach (var bad in new[]
                  {
-                     state with { Version = 3 },
+                     state with { Version = ZoneProcessorState.CurrentVersion + 1 },
                      state with { Devices = [device with { DeviceCode = "S/17" }] },
                      state with { Devices = [device with { DeviceCode = new string('S', 17) }] },
                      state with { Devices = [device, device] },
@@ -276,4 +276,82 @@ public sealed class DeviceLivenessTests
         new ZoneProcessorSettings { MaxDevices = 0 }.Problems().Should().NotBeEmpty();
         new ZoneProcessorSettings().Problems().Should().BeEmpty();
     }
+
+    #region ARV-069a
+
+    // MarksDue and EndAll were in Stryker's safe mode until ARV-069a; these kill the mutants that survived once measured.
+
+    [Fact]
+    public void Replay_Should_DegradeEveryLiveMinuteOfTheOpenOutage_When_TheRangeEndsWhileADeviceIsOut()
+    {
+        var outputs = Play(m => m > 30).Drain();
+
+        // The ended outage is remembered until its minutes are published live, so the last minutes before the end, which
+        // are published as the zone settles, are degraded too.
+        outputs.Live.Where(l => l.MinuteUtc >= Start.AddMinutes(34) && l.MinuteUtc < Start.AddMinutes(40)).Should().NotBeEmpty()
+            .And.OnlyContain(l => l.LengthDegraded);
+        outputs.Recomputations.Should().BeEmpty("every bin of the outage was marked while it was open, so none is asked for again");
+    }
+
+    [Fact]
+    public void Replay_Should_AskForNoRecomputationTwice_When_AnOutageOpenAtTheEndCoversFinalBins()
+    {
+        // S-17 is out from 18:10 to the end at 18:40: the 18:00 and 18:15 bins were final when their marks came, so each is
+        // asked for once while the outage is open; ending the outage marks only from where those marks stopped.
+        var zone = Play(m => m > 10);
+
+        zone.Drain().Recomputations.Select(r => (r.FromUtc, r.ToUtc)).Should().Equal(
+            (Start, Start.AddMinutes(15)), (Start.AddMinutes(15), Start.AddMinutes(30)));
+    }
+
+    [Fact]
+    public void Replay_Should_DegradeTheLastLiveMinute_When_ItIsPublishedAfterTheOutageEnded()
+    {
+        // The outage still open at 18:40 is ended there, before the zone settles; it is remembered until its minutes are
+        // published live, so 18:39, published while the zone settles a minute later, is degraded although no device is
+        // out any more.
+        var zone = new ZoneProcessor(ZoneKey, Geometry, 12);
+        for (var m = 0; m < 40; m++)
+        {
+            zone.Offer(Occupancy("S-15", Start.AddMinutes(m)), DateTime.MaxValue);
+            if (m <= 30)
+                zone.Offer(Status("S-17", Start.AddMinutes(m)), DateTime.MaxValue);
+        }
+
+        zone.Finish(Start.AddMinutes(40), Start.AddMinutes(41));
+
+        zone.Drain().Live.Should().ContainSingle(l => l.MinuteUtc == Start.AddMinutes(39)).Which.LengthDegraded.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Replay_Should_ReportNoOutage_When_ADeviceGoesOfflineInTheLastMinute()
+    {
+        var zone = new ZoneProcessor(ZoneKey, Geometry, 12);
+        for (var m = 0; m <= 40; m++)
+            zone.Offer(Status("S-17", Start.AddMinutes(m)), DateTime.MaxValue);
+        zone.Offer(Status("S-17", Start.AddMinutes(40), online: false), DateTime.MaxValue);
+
+        zone.Finish(Start.AddMinutes(40), Start.AddMinutes(240));
+
+        zone.Drain().Outages.Should().BeEmpty("an outage from the range's last minute has no minute inside the range");
+        zone.Capture().Devices.Should().OnlyContain(d => d.OutSinceUtc == null, "the replay ends every outage");
+    }
+
+    [Fact]
+    public void Zone_Should_MarkTheBinOnTheNextStep_When_ADeviceGoesOfflineOnTheMinuteOfAStep()
+    {
+        // S-17 reports itself offline at 18:05:00 and the zone steps at that instant: nothing of the outage has passed yet,
+        // so nothing is marked, and the next step two minutes later marks the open bin (not five minutes later).
+        var zone = new ZoneProcessor(ZoneKey, Geometry, 12);
+        zone.Offer(Status("S-17", Start), DateTime.MaxValue);
+        zone.Offer(Status("S-17", Start.AddMinutes(5), online: false), DateTime.MaxValue);
+        zone.Tick(Start.AddMinutes(5));
+        zone.Drain();
+
+        zone.Tick(Start.AddMinutes(7));
+
+        zone.Drain().Bins.Where(b => b.StartUtc == Start).Should().NotBeEmpty().And.OnlyContain(b => b.Quality == BinQuality.Degraded);
+    }
+
+    #endregion
 }

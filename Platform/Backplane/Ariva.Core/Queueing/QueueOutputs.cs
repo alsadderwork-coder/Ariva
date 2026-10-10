@@ -39,10 +39,36 @@ public sealed record RealisedWait(DateTime EntryUtc, DateTime ExitUtc, WaitMetho
 }
 
 /// <summary>A person who entered at <see cref="EntryUtc"/> and was resolved at <see cref="ResolvedUtc"/> without a wait.</summary>
-public sealed record EntrantResolution(DateTime EntryUtc, DateTime ResolvedUtc, EntrantOutcome Outcome, string TrackKey);
+public sealed record EntrantResolution(DateTime EntryUtc, DateTime ResolvedUtc, EntrantOutcome Outcome, string TrackKey)
+{
+    /// <summary>The person entered as a track of their own (T3), for the track completion rate of F18 (ARV-114a).</summary>
+    public bool Tracked { get; init; }
+}
 
 /// <summary>Entries and exits counted in one minute (UTC, aligned), with how many of each came from a degraded input.</summary>
-public sealed record MovementCount(DateTime MinuteUtc, long Entries, long Exits, long DegradedEntries, long DegradedExits);
+public sealed record MovementCount(DateTime MinuteUtc, long Entries, long Exits, long DegradedEntries, long DegradedExits)
+{
+    /// <summary>The entries that were tracks of their own (T3), for the track completion rate of F18 (ARV-114a).</summary>
+    public long TrackedEntries { get; init; }
+}
+
+/// <summary>
+/// The occupancy the sensors report for the whole queue at a minute boundary (ARV-114a, F18 conservation): the latest
+/// reading of the queue zone plus the latest readings of the overflow bands heard so far, each at or before
+/// <see cref="AtUtc"/> and fresh there. Only boundaries where every one of them is fresh have a sample; a band never heard
+/// counts as empty, so people standing in a band without a sensor show in the conservation residual.
+/// </summary>
+public sealed record OccupancySample(DateTime AtUtc, int Count);
+
+/// <summary>The lowest and highest occupancy reading of one zone of the queue in one minute (ARV-114a, F18 occupancy sanity).</summary>
+public sealed record ZoneReadingMinute(string ZoneName, DateTime MinuteUtc, int Min, int Max);
+
+/// <summary>
+/// Crossings of one line in one minute (UTC, aligned) that the engine applied in a step (ARV-113): every crossing of a
+/// line of the zone in each direction, and the in and out counts of interval readings spread as the engine spreads
+/// them, whatever the crossing did to the queue. A delta: later steps may add to the same line and minute.
+/// </summary>
+public sealed record LineMovement(string LineName, QueueLineRole Role, DateTime MinuteUtc, long In, long Out);
 
 /// <summary>
 /// The queue length at the watermark: the sum of the latest occupancy readings of the queue zone and its overflow
@@ -115,4 +141,14 @@ public sealed record QueueStep(
     int Reanchors,
     int OpenEntrants,
     int BufferedEvents,
-    bool More);
+    bool More)
+{
+    /// <summary>The line crossings applied in this step, per line and minute (ARV-113), in minute and then line name order.</summary>
+    public IReadOnlyList<LineMovement> Lines { get; init; } = [];
+
+    /// <summary>The queue's sensor occupancy at the minute boundaries this step passed (ARV-114a), in time order.</summary>
+    public IReadOnlyList<OccupancySample> Occupancy { get; init; } = [];
+
+    /// <summary>The occupancy readings applied in this step, per zone and minute (ARV-114a), in minute and then zone order.</summary>
+    public IReadOnlyList<ZoneReadingMinute> Readings { get; init; } = [];
+}

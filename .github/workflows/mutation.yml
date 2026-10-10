@@ -39,13 +39,19 @@ jobs:
       - name: Restore the pinned tool (dotnet-stryker)
         working-directory: Platform/Backplane/Ariva.UnitTests
         run: dotnet tool restore
-      - name: Mutation run (fails below the break threshold)
+      # Through scripts/mutation-run.mjs (ARV-069a): the run also fails when a method is in Stryker's safe mode (its mutants
+      # removed as compile errors, so it is not measured) or no final score was printed.
+      - name: Mutation gate self-test (its checks fire on a safe-mode log and on a log without a score)
+        run: node scripts/mutation-run.mjs --self-test
+      - name: Mutation run (fails below the break threshold, on safe mode or without a score)
         working-directory: Platform/Backplane/Ariva.UnitTests
-        run: dotnet dotnet-stryker --concurrency 4 --output "$GITHUB_WORKSPACE/.verify/stryker"
+        run: node "$GITHUB_WORKSPACE/scripts/mutation-run.mjs" --log "$GITHUB_WORKSPACE/.verify/mutation.log" -- dotnet-stryker --concurrency 4 --output "$GITHUB_WORKSPACE/.verify/stryker"
       - name: Mutation report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: mutation-report
-          path: .verify/stryker/reports/
+          path: |
+            .verify/stryker/reports/
+            .verify/mutation.log
           if-no-files-found: warn

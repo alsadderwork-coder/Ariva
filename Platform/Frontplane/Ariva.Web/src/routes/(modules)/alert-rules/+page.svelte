@@ -5,6 +5,7 @@
 	import { toast } from 'svelte-sonner';
 	import RuleForm from '$lib/components/pages/alert-rules/RuleForm.svelte';
 	import ConfirmButton from '$lib/components/shared/ConfirmButton.svelte';
+	import IllustrativeBanner from '$lib/components/shared/IllustrativeBanner.svelte';
 	import SimplePageHeader from '$lib/components/shared/SimplePageHeader.svelte';
 	import StatusBadge, { type StatusTone } from '$lib/components/shared/StatusBadge.svelte';
 	import * as rules from '$lib/core/alertRules';
@@ -191,6 +192,8 @@
 		{/if}
 	{/snippet}
 </SimplePageHeader>
+
+<IllustrativeBanner site={siteList.find((s) => s.code === siteCode)} />
 
 <div class="flex flex-col gap-4">
 	{#if form}

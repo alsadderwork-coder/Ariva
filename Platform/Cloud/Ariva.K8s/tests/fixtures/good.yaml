@@ -104,3 +104,21 @@ metadata: { name: database-init }
 data:
   init.sh: |
     SELECT format('CREATE ROLE %I LOGIN CREATEROLE NOSUPERUSER PASSWORD %L', :'login', :'password') \gexec
+---
+apiVersion: batch/v1
+kind: Job
+metadata: { name: database-migration }
+spec:
+  template:
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: database-migration
+          image: registry.example/api-main:main-20261001.1
+          args: ["--migrate"]
+          env:
+            - { name: DOTNET_ENVIRONMENT, value: k8s-prd }
+            - { name: Database__ValidationReader__Username, valueFrom: { secretKeyRef: { name: ariva-validation-reader, key: username, optional: false } } }
+            - { name: Database__ValidationReader__Password, valueFrom: { secretKeyRef: { name: ariva-validation-reader, key: password, optional: false } } }
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]

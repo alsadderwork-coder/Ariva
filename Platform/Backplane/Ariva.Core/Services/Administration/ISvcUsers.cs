@@ -21,6 +21,12 @@ public static class AdministrationErrors
     public const string InvalidDisplayName = "The name is at most 200 characters, without control, invisible or broken characters.";
     public const string InvalidEmail = "The email must be one plain address (name@example.org), without a display name, spaces or line breaks.";
 
+    /// <summary>
+    /// ARV-104a (first security review, 2026-10-08): an account whose only role is Validation observer is bound to named sites, so a
+    /// creation, a site change, a grant or a revoke that would leave it with every site is refused (400).
+    /// </summary>
+    public const string ObserverNeedsNamedSites = "An account whose only role is Validation observer is given named sites, never every site.";
+
     /// <summary>Errors that mean "not allowed" (403) rather than "not valid" (400).</summary>
     public static readonly IReadOnlySet<string> Forbidden = new HashSet<string>(StringComparer.Ordinal) { OwnAccount, AboveOwnRole, BeyondOwnSites };
 }

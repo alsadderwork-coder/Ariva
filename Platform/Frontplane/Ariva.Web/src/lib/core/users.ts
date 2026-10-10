@@ -14,12 +14,13 @@ const users = '/api/v1/admin/users';
 const audit = '/api/v1/admin/audit-entries';
 const guid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 
-/** The fixed roles (ARV-011), in the order the server lists them. */
+/** The fixed roles (ARV-011; the validation observer since ARV-104a), in the order the server lists them. */
 export const roleCodes = [
 	'BorderShiftSupervisor',
 	'TerminalDutyManager',
 	'HandlerStationManager',
-	'SystemAdministrator'
+	'SystemAdministrator',
+	'ValidationObserver'
 ] as const;
 export type RoleCode = (typeof roleCodes)[number];
 

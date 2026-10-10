@@ -136,6 +136,8 @@ spec:
                   name: {{ .Values.kafkaSecretName | default "ariva-kafka" }}
                   key: password
                   optional: true
+            # The validation reader login (ARV-104g1): only this host and the migration job get it
+            {{- include "ariva-platform.validationReaderEnv" . | nindent 12 }}
           envFrom:
             - configMapRef:
                 name: api-main-configmap

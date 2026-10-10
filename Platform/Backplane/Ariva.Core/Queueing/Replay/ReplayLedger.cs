@@ -91,7 +91,12 @@ public sealed class ReplayLedger
         _export?.Write(OutputLine(_outputs, zoneKey, type, Hex(_output), json) + "\n");
     }
 
-    /// <summary>Every output of a zone's drain, in a fixed order: minutes, bins, live rows, recomputations, outages.</summary>
+    /// <summary>
+    /// Every output of a zone's drain, in a fixed order: minutes, bins, live rows, recomputations, outages, line minutes
+    /// (ARV-113), bin health checks (ARV-114a), overflow band minutes and the band changes they made (ARV-115), and the
+    /// desks' staff and service zone readings (ARV-116). A zone whose bands never report adds no overflow output, and one
+    /// without desk zones (or whose desk zones never report) no desk reading, so its chain is as before.
+    /// </summary>
     public void Outputs(ZoneOutputs outputs)
     {
         ArgumentNullException.ThrowIfNull(outputs);
@@ -105,6 +110,16 @@ public sealed class ReplayLedger
             Output(outputs.ZoneKey, "recomputation", r);
         foreach (var o in outputs.Outages)
             Output(outputs.ZoneKey, "outage", o);
+        foreach (var l in outputs.Lines)
+            Output(outputs.ZoneKey, "line", l);
+        foreach (var h in outputs.Health)
+            Output(outputs.ZoneKey, "health", h);
+        foreach (var o in outputs.Overflow)
+            Output(outputs.ZoneKey, "overflow", o);
+        foreach (var c in outputs.OverflowChanges)
+            Output(outputs.ZoneKey, "overflow-change", c);
+        foreach (var d in outputs.DeskReadings)
+            Output(outputs.ZoneKey, "desk-reading", d);
     }
 
     public ReplayHashes End()

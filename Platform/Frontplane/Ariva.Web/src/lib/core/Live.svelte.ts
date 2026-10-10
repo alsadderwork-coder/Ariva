@@ -12,6 +12,8 @@ import { Endpoints } from './Endpoints';
  * The live hub client (ARV-035, ARV-055): WebSockets only (the hub refuses the other transports), the access token from
  * memory through accessTokenFactory (refreshed first when it is about to expire), automatic reconnect, and the zone and
  * alert groups joined again after a reconnect. The hub authorises every join against the caller's grants and sites.
+ * Connecting, joining and leaving run one at a time and always towards the latest watch: a screen that changes site
+ * while the first connection is still opening ends on the zones it asked for last, never on an earlier list.
  */
 
 /** A queue zone's latest minute (Ariva.Infra LiveZoneSnapshot). */
@@ -100,8 +102,14 @@ export class LiveConnection {
 	refused = $state<string[]>([]);
 
 	private connection: HubConnection | null = null;
+	/** What the screen asked for last. */
 	private zones: string[] = [];
 	private alertsSite: string | null = null;
+	/** What the current connection has joined (a reconnect is a new connection with no groups). */
+	private joinedZones: string[] = [];
+	private joinedAlerts: string | null = null;
+	/** The connect, join and leave work, one step after another. */
+	private work: Promise<void> = Promise.resolve();
 	/** Once stopped (the screen was left), the connection never opens again. */
 	private stopped = false;
 
@@ -110,15 +118,18 @@ export class LiveConnection {
 		private readonly onAlert: (notice: AlertNotice) => void
 	) {}
 
-	/** Connects (once) and joins the zones and the site's alerts; earlier groups are left. */
-	async watch(zoneKeys: string[], alertsSite: string | null): Promise<void> {
-		if (this.stopped) return;
-		await this.connect();
-		if (this.stopped) return;
-		await this.leaveAll();
+	/**
+	 * Connects (once) and joins the zones and the site's alerts; earlier groups are left. A call made while an earlier
+	 * one is still connecting or joining waits for it, and the last call's zones are the ones joined.
+	 */
+	watch(zoneKeys: string[], alertsSite: string | null): Promise<void> {
+		if (this.stopped) return Promise.resolve();
 		this.zones = [...zoneKeys];
 		this.alertsSite = alertsSite;
-		await this.joinAll();
+		return this.serially(async () => {
+			await this.connect();
+			await this.sync();
+		});
 	}
 
 	async stop(): Promise<void> {
@@ -127,6 +138,8 @@ export class LiveConnection {
 		this.connection = null;
 		this.zones = [];
 		this.alertsSite = null;
+		this.joinedZones = [];
+		this.joinedAlerts = null;
 		await connection?.stop().catch(() => undefined);
 		this.state = 'disconnected';
 	}
@@ -155,7 +168,10 @@ export class LiveConnection {
 		connection.onreconnecting(() => (this.state = 'reconnecting'));
 		connection.onreconnected(() => {
 			this.state = 'connected';
-			void this.joinAll();
+			// The hub knows the reconnected connection under a new id, in no group yet.
+			this.joinedZones = [];
+			this.joinedAlerts = null;
+			void this.serially(() => this.sync());
 		});
 		connection.onclose(() => {
 			if (this.connection === connection) this.state = 'disconnected';
@@ -174,11 +190,29 @@ export class LiveConnection {
 		}
 	}
 
-	private async joinAll(): Promise<void> {
+	/** Runs a step after every earlier one has finished, whether or not it succeeded. */
+	private serially(step: () => Promise<void>): Promise<void> {
+		const run = this.work.then(step);
+		this.work = run.catch(() => undefined);
+		return run;
+	}
+
+	/** Leaves the groups joined so far and joins the ones asked for last. */
+	private async sync(): Promise<void> {
 		const connection = this.connection;
-		if (!connection || connection.state !== HubConnectionState.Connected) return;
+		if (this.stopped || !connection || connection.state !== HubConnectionState.Connected) return;
+		for (const key of this.joinedZones)
+			await connection.invoke('LeaveZone', key).catch(() => undefined);
+		if (this.joinedAlerts)
+			await connection.invoke('LeaveAlerts', this.joinedAlerts).catch(() => undefined);
+
+		// Counted as joined before asking: a join that fails late may have joined the group, and leaving is harmless.
+		const zones = [...this.zones];
+		const alertsSite = this.alertsSite;
+		this.joinedZones = zones;
+		this.joinedAlerts = alertsSite;
 		const refused: string[] = [];
-		for (const key of this.zones) {
+		for (const key of zones) {
 			try {
 				const snapshot = asZoneSnapshot(await connection.invoke<unknown>('JoinZone', key));
 				if (snapshot) this.onZone(snapshot);
@@ -187,15 +221,6 @@ export class LiveConnection {
 			}
 		}
 		this.refused = refused;
-		if (this.alertsSite)
-			await connection.invoke('JoinAlerts', this.alertsSite).catch(() => undefined);
-	}
-
-	private async leaveAll(): Promise<void> {
-		const connection = this.connection;
-		if (!connection || connection.state !== HubConnectionState.Connected) return;
-		for (const key of this.zones) await connection.invoke('LeaveZone', key).catch(() => undefined);
-		if (this.alertsSite)
-			await connection.invoke('LeaveAlerts', this.alertsSite).catch(() => undefined);
+		if (alertsSite) await connection.invoke('JoinAlerts', alertsSite).catch(() => undefined);
 	}
 }

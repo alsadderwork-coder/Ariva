@@ -36,6 +36,20 @@
     "0033_checkpoint_site_code.sql": "0f3c0d9235b2406f4d91d0e1dc9abe49e1c083f3562e327428368e9a93e45c61",
     "0034_zone_lane.sql": "53643fe957c2c00551e92445576d87a944bdc142c45773c0ef4178c4ea57c5ee",
     "0035_display.sql": "3fe51a2e0373c189a659ba5b103c923adfc9c5458fc625990d8573d501fc5b4e",
-    "0036_report.sql": "7928566c2787aacf1efe33c278d076c1636494ede5638e0d43855c4167bf68a5"
+    "0036_report.sql": "7928566c2787aacf1efe33c278d076c1636494ede5638e0d43855c4167bf68a5",
+    "0037_line_minute.sql": "bb8d64df6a885bff1d9b8e2b5aca9928f46bfb76437a97bbb9cc8edbca46ac35",
+    "0038_zone_health.sql": "b1c3a25277443f1000aacaf5a4bea62797b98435f4bd56718062bbe8127e8e31",
+    "0039_overflow_minute.sql": "4cb65ba8c39acf6bda350b962dc0e07e577acc87f972cb65bbe64ba5bfc64829",
+    "0040_desk_zone_reading.sql": "246ab5abf425cc0407763b9b7517b401865e57f5db38b996eac5743d5a44944a",
+    "0041_shadow_nowcast.sql": "00f21ae0fa1c6822cd5355041c528131110ab16e5d6f8b6feeee08101258777f",
+    "0042_availability.sql": "faaad5c8c98fc307fba7f422a595f0db4142190baa8be8ed304ad83e72100665",
+    "0043_queue_minute_shadow.sql": "9cff3b10a2f061853b9c7b6962121227c85061a5ecf66c7e97e1f861d9ca752d",
+    "0044_desk_sensor_minute.sql": "bea4098537db481def0ac767b9efe7e1c3163a3e18c945b68126e7357c22de2e",
+    "0045_shadow_sensor_cycle.sql": "1d27ed344e6b509ff28fd4effba104784ead0aea3daa60507fe84a458f326975",
+    "0046_site_illustrative.sql": "61226b65ad18f0bc9b1d2e8efd8be7bcf96bf73cac3cd8b1d5ed517ded54dde0",
+    "0047_validation_campaign.sql": "7f9e0d73090496e2cdc0a611a140b221ae70fcb48e499d2e03f1d42acccd2afb",
+    "0048_validation_tracers_desk_observations.sql": "c2d0208cf2b52e3466ee5c0a303719a94472c19ed13952b79df20b5603aec397",
+    "0049_validation_reader_login.sql": "bab01b631f662ef780e13d03395a5cd5eb0eb821f3cff104ec75d9510f8f724d",
+    "0050_validation_result_revision.sql": "250880cb3424ef538976a9cfdf3ff61f9431474f369bf6e5f00541268d1e338b"
   }
 }

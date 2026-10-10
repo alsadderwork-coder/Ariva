@@ -41,6 +41,16 @@ if (!fs.existsSync(ENV)) {
 	}
 }
 
+// Values this script draws itself when .env lacks them (added after .env.example's keys): the validation reader login
+// (ARV-104g1), which only the hosts use, never compose.
+const drawn = { ARIVA_DB_VALIDATION_READER_PASSWORD: newPassword };
+const before = readEnv(ENV);
+const missingDrawn = Object.keys(drawn).filter((key) => !before[key]);
+if (missingDrawn.length > 0) {
+	fs.appendFileSync(ENV, `\n${missingDrawn.map((key) => `${key}=${drawn[key]()}`).join('\n')}\n`);
+	console.log(`dev-up: added ${missingDrawn.join(', ')} to .env.`);
+}
+
 const env = readEnv(ENV);
 const settings = {
 	// Hosts connect as the DML-only runtime login; the owner login is used for migrations only (ARV-006). In vm-local
@@ -50,7 +60,11 @@ const settings = {
 		Port: Number(env.ARIVA_DB_PORT || 5433),
 		Username: 'ariva_app',
 		Password: env.ARIVA_DB_APP_PASSWORD,
-		Migration: { Username: 'ariva', Password: env.ARIVA_DB_PASSWORD }
+		Migration: { Username: 'ariva', Password: env.ARIVA_DB_PASSWORD },
+		// ARV-104g1: the validation reader login, the only login that reads the shadow nowcast; the first host to migrate
+		// creates it. On a developer machine every host loads this file (as it loads the migration login, since vm-local hosts
+		// migrate themselves); in the clusters only api-main and the migration job get it.
+		ValidationReader: { Username: 'ariva_validation', Password: env.ARIVA_DB_VALIDATION_READER_PASSWORD }
 	},
 	Kafka: { Enabled: true, BootstrapServers: `localhost:${env.ARIVA_KAFKA_PORT || 19092}`, Topics: { ReplicationFactor: 1, MinInSyncReplicas: 1 } },
 	Redis: { Enabled: true, ConnectionString: `localhost:${env.ARIVA_REDIS_PORT || 16379},password=${env.ARIVA_REDIS_PASSWORD}` },

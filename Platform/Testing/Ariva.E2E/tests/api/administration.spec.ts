@@ -95,5 +95,40 @@ test('search filters by text and role and refuses sort fields outside the allowl
 	expect((await call('GET', `${usersUrl}?sortBy=password_hash`, { token: admin })).status()).toBe(400);
 	expect((await call('GET', `${usersUrl}?pageSize=100000`, { token: admin })).status()).toBe(400);
 	const roles = await call('GET', `${hosts.main}/api/v1/admin/roles`, { token: admin });
-	expect((await roles.json()).map((role: { code: string }) => role.code)).toEqual(['BorderShiftSupervisor', 'TerminalDutyManager', 'HandlerStationManager', 'SystemAdministrator']);
+	expect((await roles.json()).map((role: { code: string }) => role.code)).toEqual(['BorderShiftSupervisor', 'TerminalDutyManager', 'HandlerStationManager', 'SystemAdministrator', 'ValidationObserver']);
+});
+
+test('an account whose only role is the validation observer is never given every site', async () => {
+	// ARV-104a, first security review (2026-10-08): an observer counts at the sites of its campaigns. Creation, a site change, a grant
+	// and a revoke that would leave an account with every site and the observer role alone answer 400 and change nothing.
+	const stamp = Date.now().toString(36);
+	const sites = (id: string, allSites: boolean, siteCodes: string[] = []) => call('PUT', `${usersUrl}/${id}/sites`, { token: admin, data: { allSites, siteCodes } });
+	const role = (method: 'PUT' | 'DELETE', id: string, code: string) => call(method, `${usersUrl}/${id}/roles/${code}`, { token: admin });
+
+	const everywhere = await call('POST', usersUrl, { token: admin, data: { userName: `e2e.obs.all.${stamp}`, roles: ['ValidationObserver'], allSites: true } });
+	expect(everywhere.status(), await everywhere.text()).toBe(400);
+	expect((await everywhere.json()).detail).toContain('never every site');
+	expect((await (await call('GET', `${usersUrl}?text=e2e.obs.all.${stamp}`, { token: admin })).json()).totalCount, 'nothing created').toBe(0);
+
+	const created = await call('POST', usersUrl, { token: admin, data: { userName: `e2e.obs.${stamp}`, roles: ['ValidationObserver'], siteCodes: ['E2E1'] } });
+	expect(created.status(), await created.text()).toBe(201);
+	const observer = (await created.json()).user.id as string;
+	expect((await sites(observer, true)).status(), 'every site for the observer alone').toBe(400);
+	expect((await (await call('GET', `${usersUrl}/${observer}`, { token: admin })).json())).toMatchObject({ allSites: false, sites: ['E2E1'] });
+
+	// With a manager role as well, every site follows that role; dropping the manager role while it has every site is refused.
+	expect((await role('PUT', observer, 'TerminalDutyManager')).status()).toBe(200);
+	expect((await sites(observer, true)).status()).toBe(200);
+	expect((await role('DELETE', observer, 'TerminalDutyManager')).status(), 'the revoke would leave an all-sites observer').toBe(400);
+	expect((await sites(observer, false, ['E2E1'])).status()).toBe(200);
+	const revoked = await role('DELETE', observer, 'TerminalDutyManager');
+	expect(revoked.status()).toBe(200);
+	expect((await revoked.json()).roles).toEqual(['ValidationObserver']);
+
+	// An all-sites account without roles is not made an observer alone.
+	const later = await call('POST', usersUrl, { token: admin, data: { userName: `e2e.obs.later.${stamp}`, allSites: true } });
+	expect(later.status(), await later.text()).toBe(201);
+	const laterId = (await later.json()).user.id as string;
+	expect((await role('PUT', laterId, 'ValidationObserver')).status()).toBe(400);
+	expect((await (await call('GET', `${usersUrl}/${laterId}`, { token: admin })).json()).roles).toEqual([]);
 });

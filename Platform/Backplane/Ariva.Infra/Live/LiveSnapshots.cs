@@ -9,7 +9,8 @@ namespace Ariva.Infra.Live;
 
 /// <summary>
 /// A queue zone's live state as screens see it (ARV-035): the latest minute's queue length and nowcast, written by
-/// Ariva.Api.Stream after each checkpoint and pushed by Ariva.Api.Main's live hub to the zone's group. No identities.
+/// Ariva.Api.Stream after each checkpoint and pushed by Ariva.Api.Main's live hub to the zone's group. No identities, and no
+/// shadow nowcast: the stream builds it from the published values only (<c>LiveMinuteSnapshots</c>).
 /// </summary>
 public sealed record LiveZoneSnapshot(
     string ZoneKey,
@@ -23,12 +24,8 @@ public sealed record LiveZoneSnapshot(
     bool NowcastDegraded,
     DateTime PublishedUtc)
 {
-    public static LiveZoneSnapshot From(QueueLiveMinute live, DateTime publishedUtc)
-    {
-        ArgumentNullException.ThrowIfNull(live);
-        return new LiveZoneSnapshot(live.ZoneKey, live.MinuteUtc, live.QueueLength, live.LengthMeasured, live.LengthDegraded, live.NowcastMinutes,
-            live.Throughput, live.NoService?.ToString(), live.NowcastDegraded, publishedUtc);
-    }
+    // Built by the stream from a live minute's published values (Ariva.Infra.Streaming.LiveMinuteSnapshots, ARV-104g1): no live
+    // type takes the stream's minute, which also carries the shadow nowcast.
 
     /// <summary>The site part of the zone key (<c>&lt;site&gt;/&lt;queue zone name&gt;</c>).</summary>
     public string SiteCode => LiveZones.SiteOf(ZoneKey);

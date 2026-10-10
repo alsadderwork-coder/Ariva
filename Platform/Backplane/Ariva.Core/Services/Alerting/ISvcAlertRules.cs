@@ -7,14 +7,15 @@ namespace Ariva.Core.Services.Alerting;
 /// <summary>The answers of the alert rule service that are not plain validation (ARV-037).</summary>
 public static class AlertRuleErrors
 {
-    public const string NotEvaluated = "Ariva does not evaluate this metric yet (the stream stores no overflow occupancy and there is no staffing plan), so a new rule on it could never fire.";
+    public const string NotEvaluated = "Ariva does not evaluate this metric yet (there is no staffing plan), so a new rule on it could never fire.";
 
     /// <summary>
     /// Metrics a rule can name but the evaluation has nothing to judge for yet (AlertInputs): no new rule may use them, and
-    /// an existing rule on one may keep it (the demo seed's R-002) while it is shown as not evaluated.
+    /// an existing rule on one may keep it while it is shown as not evaluated. OverflowOccupied left the set with ARV-115
+    /// (the stream stores each overflow band's occupancy per minute), so the demo seed's R-002 is evaluated.
     /// </summary>
     public static readonly IReadOnlySet<Ariva.Core.Domain.Enums.AlertMetric> NotEvaluatedMetrics =
-        new HashSet<Ariva.Core.Domain.Enums.AlertMetric> { Ariva.Core.Domain.Enums.AlertMetric.OverflowOccupied, Ariva.Core.Domain.Enums.AlertMetric.DesksBelowPlan };
+        new HashSet<Ariva.Core.Domain.Enums.AlertMetric> { Ariva.Core.Domain.Enums.AlertMetric.DesksBelowPlan };
 
     public const string UnknownZones = "Every zone in scope must be a zone of the site's published zone profile.";
     public const string RoleNotHeld = "Only an administrator can give a rule to, escalate it to, or take it from a role the caller does not hold.";

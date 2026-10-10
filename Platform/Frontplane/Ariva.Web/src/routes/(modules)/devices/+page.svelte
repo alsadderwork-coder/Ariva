@@ -7,6 +7,7 @@
 	import CredentialReveal from '$lib/components/pages/devices/CredentialReveal.svelte';
 	import DevicePanel from '$lib/components/pages/devices/DevicePanel.svelte';
 	import RegisterForm from '$lib/components/pages/devices/RegisterForm.svelte';
+	import IllustrativeBanner from '$lib/components/shared/IllustrativeBanner.svelte';
 	import SimplePageHeader from '$lib/components/shared/SimplePageHeader.svelte';
 	import StatusBadge, { type StatusTone } from '$lib/components/shared/StatusBadge.svelte';
 	import { auth } from '$lib/core/auth.svelte';
@@ -211,6 +212,8 @@
 		{/if}
 	{/snippet}
 </SimplePageHeader>
+
+<IllustrativeBanner site={siteList.find((s) => s.code === siteCode)} />
 
 {#if !auth.can('Device.Create') && !auth.can('Device.Edit')}
 	<p

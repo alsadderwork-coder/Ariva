@@ -323,14 +323,17 @@ public sealed class FeedEmulatorEndpointTests
     {
         await using var app = Host();
         var sinks = app.Services.GetServices<IDemoMinuteSink>().ToList();
-        sinks.Should().HaveCount(3);
+        // AMAN, the mock immigration system, the reference site's AODB and (ARV-139b) the AUH-TA AODB.
+        sinks.Should().HaveCount(4);
         var sensor = app.Services.GetRequiredService<Ariva.Simulation.Api.Emulators.Sensors.SensorEmulator>();
         var aodb = app.Services.GetRequiredService<AodbEmulator>();
+        var auh = app.Services.GetRequiredService<AodbEmulators>().Of("AUH-TA");
 
         sensor.Start(1110, 60, 1112, "test");
         await Task.Delay(TimeSpan.FromSeconds(3), Ct);
 
         aodb.Status().LastMinute.Should().Be(1111, "the sensor clock played 1110 and 1111 and stopped at 1112");
+        auh.Status().Should().Match<AodbStatus>(s => s.LastMinute == 1111 && s.ScenarioSite == "AUH-TA" && s.ArivaSite == "AUH-TA" && s.Airport == "AUH" && s.Legs > 0);
         app.Services.GetRequiredService<BorderFeeds>().Aman.Status().Records.Should().BeGreaterThan(0);
     }
 

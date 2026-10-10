@@ -8,14 +8,34 @@ namespace Ariva.Simulation.Api.Emulators;
 
 /// <summary>
 /// Simulation:Ariva. Where the emulated AODB, AMAN and immigration system reach Ariva's Integration API (ARV-029) and the
-/// Ariva site they write to. Plain HTTP needs <see cref="AllowInsecureTransport"/> and a loopback or in-cluster address,
-/// because client secrets and tokens travel in it (CWE-319).
+/// Ariva site they write to; ARV-104i: where the emulated validation observers reach Ariva.Api.Main (<see cref="MainUrl"/>),
+/// whose normal sign-in and capture API they use. Plain HTTP needs <see cref="AllowInsecureTransport"/> and a loopback or
+/// in-cluster address, because client secrets, passwords and tokens travel in it (CWE-319).
 /// </summary>
-public sealed class ArivaTargetSettings : IValidatableObject
+public sealed partial class ArivaTargetSettings : IValidatableObject
 {
     public const string Section = "Simulation:Ariva";
 
+    /// <summary>The pod's own namespace, from the Kubernetes downward API (the chart's otelEnv sets it in every pod).</summary>
+    public const string NamespaceVariable = "K8S_NAMESPACE_NAME";
+
+    /// <summary>Ariva.Api.Main's service in the chart (templates/api-main.yaml).</summary>
+    public const string MainService = "api-main-service";
+
     public string IntegrationUrl { get; set; }
+
+    /// <summary>
+    /// Ariva.Api.Main, for the validation observers (ARV-104i): configuration only, never taken from a request (CWE-918), and only
+    /// the Ariva.Api.Main of the simulator's own deployment (<see cref="IsOwnDeploymentMain"/>).
+    /// </summary>
+    public string MainUrl { get; set; }
+
+    /// <summary>
+    /// The namespace the simulator runs in (<see cref="NamespaceVariable"/>; null outside a cluster). Not a setting: configuration
+    /// cannot widen <see cref="MainUrl"/>'s rule (tests give it directly).
+    /// </summary>
+    internal string OwnNamespace { get; init; } = Environment.GetEnvironmentVariable(NamespaceVariable);
+
     public bool AllowInsecureTransport { get; set; }
     public int RequestTimeoutSeconds { get; set; } = 10;
 
@@ -24,13 +44,21 @@ public sealed class ArivaTargetSettings : IValidatableObject
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
-        if (!string.IsNullOrEmpty(IntegrationUrl))
+        foreach (var (name, address) in new[] { ("IntegrationUrl", IntegrationUrl), ("MainUrl", MainUrl) })
         {
-            if (!Uri.TryCreate(IntegrationUrl, UriKind.Absolute, out var uri) || uri.Scheme is not ("https" or "http") ||
+            if (string.IsNullOrEmpty(address))
+                continue;
+            if (!Uri.TryCreate(address, UriKind.Absolute, out var uri) || uri.Scheme is not ("https" or "http") ||
                 !string.IsNullOrEmpty(uri.UserInfo) || !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment))
-                yield return new ValidationResult("Simulation:Ariva:IntegrationUrl must be an absolute http or https address without credentials, query or fragment.");
+                yield return new ValidationResult($"Simulation:Ariva:{name} must be an absolute http or https address without credentials, query or fragment.");
             else if (uri.Scheme == "http" && (!AllowInsecureTransport || !SensorEmulatorSettings.IsLocalOrInCluster(uri)))
-                yield return new ValidationResult("Simulation:Ariva:IntegrationUrl may use http only with AllowInsecureTransport and a loopback or in-cluster address.");
+                yield return new ValidationResult($"Simulation:Ariva:{name} may use http only with AllowInsecureTransport and a loopback or in-cluster address.");
+            // ARV-104i: the observers rehearse against the Ariva of the simulator's own deployment only, so a simulator can never
+            // be pointed at another Ariva (a production one above all) and send fabricated ground truth into a real campaign.
+            else if (name == "MainUrl" && !IsOwnDeploymentMain(uri, OwnNamespace))
+                yield return new ValidationResult(
+                    $"Simulation:Ariva:MainUrl is the Ariva.Api.Main of the simulator's own deployment: a loopback address, or the service {MainService} " +
+                    "(alone, or with the simulator's own namespace and .svc or .svc.cluster.local).");
         }
 
         if (RequestTimeoutSeconds is < 1 or > 60)
@@ -38,6 +66,33 @@ public sealed class ArivaTargetSettings : IValidatableObject
         if (SiteCode is null || !FeedRules.Code().IsMatch(SiteCode))
             yield return new ValidationResult("Simulation:Ariva:SiteCode is an Ariva site code.");
     }
+
+    /// <summary>
+    /// Whether an address is the Ariva.Api.Main of the simulator's own deployment (ARV-104i, CWE-918): a loopback address
+    /// (vm-local, the Aspire AppHost, the E2E run), the chart's service name <see cref="MainService"/> alone (resolved in the pod's
+    /// own namespace first by the cluster's DNS search path, where the chart deploys it), or that service with the pod's own
+    /// namespace (<paramref name="ownNamespace"/>, a DNS label) and <c>.svc</c> or <c>.svc.cluster.local</c>. Any other name
+    /// (another service, another namespace, a name the node's search domains could resolve, such as a metadata host) and any IP
+    /// address but loopback are refused. Without a known namespace only loopback and the bare service name are taken.
+    /// </summary>
+    public static bool IsOwnDeploymentMain(Uri uri, string ownNamespace)
+    {
+        ArgumentNullException.ThrowIfNull(uri);
+        if (uri.IsLoopback)
+            return true;
+        if (uri.HostNameType != UriHostNameType.Dns)
+            return false;
+        var host = uri.Host;
+        if (string.Equals(host, MainService, StringComparison.OrdinalIgnoreCase))
+            return true;
+        return ownNamespace is not null && NamespaceLabel().IsMatch(ownNamespace) &&
+               (string.Equals(host, $"{MainService}.{ownNamespace}.svc", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(host, $"{MainService}.{ownNamespace}.svc.cluster.local", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>A Kubernetes namespace name (RFC 1123 label).</summary>
+    [GeneratedRegex("^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\\z", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
+    private static partial Regex NamespaceLabel();
 }
 
 /// <summary>Kafka for the AMAN feed topics (<c>aman.feed.*.v1</c>), as AMAN's own cluster would be reached.</summary>
@@ -181,8 +236,19 @@ public sealed class ImmigrationEmulatorSettings : IValidatableObject
 }
 
 /// <summary>
-/// Simulation:Aodb. The emulated AODB (ARV-029): the site's airport (IATA), the Ariva integration client it pushes AIDX
-/// with (scope flights:write), and the API key Ariva's ACRIS pull presents (its header and SHA-256; never the key).
+/// The emulated AODB of a scenario site other than the reference (ARV-139b, Simulation:Aodb:Sites:{site}): the Ariva
+/// integration client it pushes AIDX with (scope flights:write on that site). Its airport and Ariva site are the scenario
+/// site's (AUH-TA: airport AUH, site AUH-TA); without a client it keeps its ACRIS snapshot and pushes nothing.
+/// </summary>
+public sealed class AodbSiteSettings
+{
+    public IntegrationClientSettings Client { get; set; } = new();
+}
+
+/// <summary>
+/// Simulation:Aodb. The emulated AODB (ARV-029): the reference site's airport (IATA), the Ariva integration client it
+/// pushes AIDX with (scope flights:write), and the API key Ariva's ACRIS pull presents (its header and SHA-256; never the
+/// key); ARV-139b: <see cref="Sites"/> holds the client of each other scenario site's AODB (AUH-TA).
 /// </summary>
 public sealed class AodbEmulatorSettings : IValidatableObject
 {
@@ -193,12 +259,27 @@ public sealed class AodbEmulatorSettings : IValidatableObject
     public string AcrisHeader { get; set; } = "X-Api-Key";
     public string AcrisKeySha256 { get; set; }
 
+    /// <summary>The AODBs of the other scenario sites, by Ariva site code (AUH-TA).</summary>
+    public Dictionary<string, AodbSiteSettings> Sites { get; set; } = new(StringComparer.Ordinal);
+
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
         if (Airport is null || !FeedRules.Airport().IsMatch(Airport))
             yield return new ValidationResult("Simulation:Aodb:Airport is the site airport's IATA code.");
         foreach (var problem in Client?.Problems("Simulation:Aodb:Client") ?? [])
             yield return new ValidationResult(problem);
+        foreach (var (site, aodb) in Sites ?? [])
+        {
+            // A site's code is named only once it is known to be one of the simulator's (never a configured value as such).
+            if (!Scenarios.ScenarioEngine.HasSite(site) || site == Scenarios.ScenarioEngine.ReferenceSite)
+            {
+                yield return new ValidationResult("Simulation:Aodb:Sites holds only scenario sites other than the reference (AUH-TA).");
+                continue;
+            }
+
+            foreach (var problem in aodb?.Client?.Problems($"Simulation:Aodb:Sites:{site}:Client") ?? [])
+                yield return new ValidationResult(problem);
+        }
         if (AcrisHeader is null || !FeedRules.Header().IsMatch(AcrisHeader) ||
             AcrisHeader.ToUpperInvariant() is "AUTHORIZATION" or "COOKIE" or "HOST" or "CONTENT-LENGTH" or "TRANSFER-ENCODING")
             yield return new ValidationResult("Simulation:Aodb:AcrisHeader is a header name other than a transport or credential header.");

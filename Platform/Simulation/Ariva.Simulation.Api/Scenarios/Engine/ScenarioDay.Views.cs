@@ -73,19 +73,33 @@ internal sealed partial class ScenarioDay
         return RateSum[q][Math.Min(Open[q][i], def.Servers.Count)] * (1 - PauseFraction(def.Group));
     }
 
-    /// <summary>The outage degrading a zone at a minute, if any.</summary>
-    public static Outage Degraded(string zone, int m)
+    /// <summary>The outage degrading a zone of this day's site at a minute, if any.</summary>
+    public Outage DegradedAt(string zone, int m) => OutageOf(Site, zone, m);
+
+    /// <summary>Whether a sensor of this day's site is offline at a minute.</summary>
+    public bool IsSensorOffline(string sensor, int m) => SensorOfflineAt(Site, sensor, m);
+
+    /// <summary>The outage degrading a zone of the reference site (DMO) at a minute, if any.</summary>
+    public static Outage Degraded(string zone, int m) => OutageOf(ScenarioSites.Dmo, zone, m);
+
+    /// <summary>Whether a sensor of the reference site (DMO) is offline at a minute.</summary>
+    public static bool SensorOffline(string sensor, int m) => SensorOfflineAt(ScenarioSites.Dmo, sensor, m);
+
+    /// <summary>The outage degrading a zone of a site at a minute, if any.</summary>
+    public static Outage OutageOf(ScenarioSite site, string zone, int m)
     {
-        foreach (var o in Outages)
+        ArgumentNullException.ThrowIfNull(site);
+        foreach (var o in site.Outages)
             if (o.Zone == zone && m >= o.From && m < o.To)
                 return o;
         return null;
     }
 
-    /// <summary>Whether a sensor is offline at a minute.</summary>
-    public static bool SensorOffline(string sensor, int m)
+    /// <summary>Whether a sensor of a site is offline at a minute.</summary>
+    public static bool SensorOfflineAt(ScenarioSite site, string sensor, int m)
     {
-        foreach (var o in Outages)
+        ArgumentNullException.ThrowIfNull(site);
+        foreach (var o in site.Outages)
             if (o.Sensor == sensor && m >= o.From && m < o.To)
                 return true;
         return false;
@@ -99,7 +113,7 @@ internal sealed partial class ScenarioDay
         var rate = Throughput(q, m);
         var active = Open[q][i] - Paused[q][i];
         double? nc = active > 0 && rate > 0.01 ? (len + 1) / rate : null;
-        var dg = Degraded(Queues[q].Id, m);
+        var dg = DegradedAt(Queues[q].Id, m);
         int[] band = null;
         if (dg is not null && nc is not null)
         {

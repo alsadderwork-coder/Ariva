@@ -11,7 +11,8 @@
       "**/Queueing/QueueBins.cs",
       "**/Queueing/ZoneProcessor.cs",
       "**/Border/EgateCoupling.cs",
-      "**/Flights/ArrivalWave.cs"
+      "**/Flights/ArrivalWave.cs",
+      "**/Validation/Comparison/*.cs"
     ],
     "coverage-analysis": "perTest",
     "mutation-level": "Standard",

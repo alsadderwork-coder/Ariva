@@ -17,6 +17,7 @@
 		estimateOnly
 	} from '$lib/components/pages/live/waits';
 	import MetricCard from '$lib/components/shared/MetricCard.svelte';
+	import IllustrativeBanner from '$lib/components/shared/IllustrativeBanner.svelte';
 	import SimplePageHeader from '$lib/components/shared/SimplePageHeader.svelte';
 	import StatusBadge from '$lib/components/shared/StatusBadge.svelte';
 	import { auth } from '$lib/core/auth.svelte';
@@ -99,24 +100,27 @@
 	}
 
 	async function loadAlerts(): Promise<void> {
-		if (!siteCode) return;
-		const result = await operations.openAlerts(siteCode);
-		if (!result.hasErrors) alerts = result.data?.data ?? [];
+		const site = siteCode;
+		if (!site) return;
+		const result = await operations.openAlerts(site);
+		if (site === siteCode && !result.hasErrors) alerts = result.data?.data ?? [];
 	}
 
 	/** Desk states are shown to roles that may see airport or border desks (ARV-055); a handler's own counters come later. */
 	const seesDesks = $derived(auth.can('AirportDesks.View') || auth.can('BorderDesks.View'));
 
 	async function loadDesks(): Promise<void> {
-		if (!siteCode || !seesDesks) return;
-		const result = await operations.deskStates(siteCode);
-		desks = result.hasErrors ? null : result.data;
+		const site = siteCode;
+		if (!site || !seesDesks) return;
+		const result = await operations.deskStates(site);
+		if (site === siteCode) desks = result.hasErrors ? null : result.data;
 	}
 
 	async function loadWave(): Promise<void> {
-		if (!siteCode || !auth.can('ArrivalWave.View')) return;
-		const result = await operations.arrivalWave(siteCode, 60);
-		wave = result.hasErrors ? null : result.data;
+		const site = siteCode;
+		if (!site || !auth.can('ArrivalWave.View')) return;
+		const result = await operations.arrivalWave(site, 60);
+		if (site === siteCode) wave = result.hasErrors ? null : result.data;
 	}
 
 	function dropPlan(): void {
@@ -135,23 +139,34 @@
 		plan = image;
 	}
 
-	/** The site's queue zones from its published zone profile: what the hub streams and the plan shows. */
+	/**
+	 * The site's queue zones from its published zone profile: what the hub streams and the plan shows. Everything is
+	 * read for the site chosen when the load began; once another site is chosen (its own load is then under way), this
+	 * load stops and changes nothing, so a slow first load can never key one site's zones with another site's code or
+	 * point the hub at an earlier list.
+	 */
 	async function loadSite(): Promise<void> {
-		plans = await zonesApi.floorPlans(siteCode);
+		const site = siteCode;
+		const current = () => !destroyed && site === siteCode;
+		const sitePlans = await zonesApi.floorPlans(site);
+		if (!current()) return;
+		plans = sitePlans;
 		snapshots = {};
 		history = {};
 		selectedKey = null;
 		const [levelResult, profiles] = await Promise.all([
-			topology.search<Level>('level', { siteCode }),
-			zonesApi.history(siteCode)
+			topology.search<Level>('level', { siteCode: site }),
+			zonesApi.history(site)
 		]);
-		levels = levelResult.data?.data ?? [];
+		if (!current()) return;
 		const published = (profiles.data ?? []).find((p) => p.status === 'Published');
 		const zones: Zone[] = published ? ((await zonesApi.get(published.id)).data?.zones ?? []) : [];
+		if (!current()) return;
+		levels = levelResult.data?.data ?? [];
 		queueZones = zones
 			.filter((z) => z.kind === 'Queue')
 			.map((z) => ({
-				key: `${siteCode}/${z.name}`,
+				key: `${site}/${z.name}`,
 				name: z.name,
 				levelId: z.levelId,
 				points: zonesApi.parsePolygon(z.polygon) ?? []
@@ -160,12 +175,10 @@
 		for (const zone of queueZones) counts.set(zone.levelId, (counts.get(zone.levelId) ?? 0) + 1);
 		levelId = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? levels[0]?.id ?? '';
 		selectedKey = queueZones[0]?.key ?? null;
-		// The screen may have been left while this loaded: open nothing more.
-		if (destroyed) return;
 		await Promise.all([
 			live.watch(
 				queueZones.map((z) => z.key),
-				auth.can('Alert.View') ? siteCode : null
+				auth.can('Alert.View') ? site : null
 			),
 			loadAlerts(),
 			loadDesks(),
@@ -250,12 +263,23 @@
 	{/snippet}
 </SimplePageHeader>
 
+<IllustrativeBanner site={siteList.find((s) => s.code === siteCode)} />
+
 {#if !canSee}
 	<p
 		class="rounded-xl border bg-card p-4 text-sm text-muted-foreground"
 		data-testid="no-live-access"
 	>
 		{$_('liveOperations.noAccess')}
+		{#if auth.can('Validation.Capture')}
+			<!-- The observer's one screen (ARV-104c). -->
+			<a
+				href="/validation/capture"
+				data-testid="go-capture"
+				class="mt-2 block font-medium text-primary underline-offset-4 hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+				>{$_('validation.open')}</a
+			>
+		{/if}
 	</p>
 {:else}
 	<section

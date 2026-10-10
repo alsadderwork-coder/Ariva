@@ -274,9 +274,14 @@ internal sealed class AlertRuleTick(IUnitOfWork unitOfWork, ICurrentUser current
         }
 
         var byTarget = states.ToDictionary(s => (s.ZoneName, s.DeviceCode));
-        var latest = values.Metric == AlertMetric.SensorOffline
-            ? null
-            : await inputs.LatestMinutesAsync(rule.SiteCode, [.. targets.Select(t => t.ZoneName).Distinct(StringComparer.Ordinal)], ended, ct);
+        var zoneNames = targets.Select(t => t.ZoneName).Distinct(StringComparer.Ordinal).ToList();
+        var latest = values.Metric switch
+        {
+            AlertMetric.SensorOffline => null,
+            // ARV-115: overflow rules run on the bands' own minutes, which an overflow zone has without a queue minute of its own.
+            AlertMetric.OverflowOccupied => await inputs.LatestOverflowMinutesAsync(rule.SiteCode, zoneNames, ended, ct),
+            _ => await inputs.LatestMinutesAsync(rule.SiteCode, zoneNames, ended, ct)
+        };
         var plan = new List<(AlertTarget Target, AlertRuleState State, DateTime From, DateTime To)>();
         foreach (var target in targets)
         {

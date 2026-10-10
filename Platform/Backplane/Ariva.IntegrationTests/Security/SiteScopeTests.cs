@@ -98,6 +98,49 @@ public sealed class SiteScopeTests(PostgresFixture fixture) : IAsyncDisposable
     }
 
     [Fact]
+    public async Task SiteAccess_Should_NeverBeEverySite_When_TheAccountsOnlyRoleIsValidationObserver()
+    {
+        // ARV-104a, first security review (2026-10-08): an observer counts at the sites of its campaigns, so an account whose only role is
+        // Validation observer is bound to named sites. Creation, a site change, a grant and a revoke that would leave such an
+        // account with every site are refused (400); an account that also holds another role follows that role.
+        var admin = await AllSitesAdminAsync("it.obs.admin");
+        await _host.AsCallerAsync(admin, s => Sites(s).CreateAsync(new CreateSiteRequest("ITO", "Integration observers"), Ct));
+        var roles = (IServiceProvider s) => s.GetRequiredService<ISvcRoleAssignment>();
+
+        (await _host.AsCallerAsync(admin, s => Users(s).CreateAsync(new CreateUserRequest("it.obs.every", Roles: [RoleCodes.ValidationObserver], AllSites: true), Ct)))
+            .ErrorMessages.Should().Equal(AdministrationErrors.ObserverNeedsNamedSites);
+        (await _host.ReadAsync<long>("SELECT count(*) FROM \"user\" WHERE user_name = 'it.obs.every'")).Should().Be(0, "nothing is created");
+        var made = await _host.AsCallerAsync(admin, s => Users(s).CreateAsync(new CreateUserRequest("it.obs.named", Roles: [RoleCodes.ValidationObserver], SiteCodes: ["ITO"]), Ct));
+        made.HasErrors.Should().BeFalse(string.Join(", ", made.ErrorMessages ?? []));
+        var observer = made.Data.User.Id;
+
+        (await _host.AsCallerAsync(admin, s => Users(s).SetSitesAsync(observer, new SiteAccessRequest(true, []), Ct)))
+            .ErrorMessages.Should().Equal(AdministrationErrors.ObserverNeedsNamedSites);
+        var access = await AccessOf(observer);
+        access.AllSites.Should().BeFalse("the refused change wrote nothing");
+        access.SiteCodes.Should().BeEquivalentTo(["ITO"]);
+
+        // With a manager role as well, every site follows that role; revoking the manager role would leave an all-sites
+        // observer, so it is refused until the sites are named again.
+        (await _host.AsCallerAsync(admin, s => roles(s).GrantAsync(observer, RoleCodes.TerminalDutyManager, Ct))).HasErrors.Should().BeFalse();
+        (await _host.AsCallerAsync(admin, s => Users(s).SetSitesAsync(observer, new SiteAccessRequest(true, []), Ct))).HasErrors.Should().BeFalse();
+        (await _host.AsCallerAsync(admin, s => roles(s).RevokeAsync(observer, RoleCodes.TerminalDutyManager, Ct)))
+            .ErrorMessages.Should().Equal(AdministrationErrors.ObserverNeedsNamedSites);
+        (await _host.AsCallerAsync(admin, s => Users(s).SetSitesAsync(observer, new SiteAccessRequest(false, ["ITO"]), Ct))).HasErrors.Should().BeFalse();
+        (await _host.AsCallerAsync(admin, s => roles(s).RevokeAsync(observer, RoleCodes.TerminalDutyManager, Ct))).Data.Roles.Should().Equal(RoleCodes.ValidationObserver);
+
+        // An all-sites account without roles cannot be made an observer alone; with another role it can.
+        var later = (await _host.AsCallerAsync(admin, s => Users(s).CreateAsync(new CreateUserRequest("it.obs.later", AllSites: true), Ct))).Data.User.Id;
+        (await _host.AsCallerAsync(admin, s => roles(s).GrantAsync(later, RoleCodes.ValidationObserver, Ct)))
+            .ErrorMessages.Should().Equal(AdministrationErrors.ObserverNeedsNamedSites);
+        var dual = await _host.AsCallerAsync(admin, s => Users(s).CreateAsync(
+            new CreateUserRequest("it.obs.dual", Roles: [RoleCodes.BorderShiftSupervisor, RoleCodes.ValidationObserver], AllSites: true), Ct));
+        dual.HasErrors.Should().BeFalse(string.Join(", ", dual.ErrorMessages ?? []));
+        (await _host.ReadAsync<long>("SELECT count(*) FROM user_role WHERE user_id = @id", later)).Should().Be(0);
+        AdministrationErrors.Forbidden.Should().NotContain(AdministrationErrors.ObserverNeedsNamedSites, "a request the rule refuses is not valid (400), not a privilege refusal");
+    }
+
+    [Fact]
     public async Task SetSites_Should_EndSessionsOnlyWhenAccessNarrows_When_Changed()
     {
         var admin = await AllSitesAdminAsync("it.site.narrower");

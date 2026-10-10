@@ -170,7 +170,7 @@ public sealed class AlertEvaluationTests(PostgresFixture fixture) : IAsyncDispos
         var admin = await EveningAsync();
         var rules = (await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcAlertRules>().SearchAsync(new AlertRuleCriteria { SiteCode = "DMO", Text = "R-002" }, Ct))).Data.Data;
         var r002 = rules.Single();
-        // An open alert of R-002 as an earlier evaluation would have left it (the stream stores no overflow occupancy yet).
+        // An open alert of R-002 as an earlier evaluation would have left it (the reference evening never occupies a band).
         (await _host.ReadAsync<int>("""
             WITH a AS (
                 INSERT INTO alert (id, site_code, rule_id, rule_code, rule_name, zone_name, metric, severity, raised_utc, raised_value, state)

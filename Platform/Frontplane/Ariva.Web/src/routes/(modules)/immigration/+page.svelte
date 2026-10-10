@@ -3,6 +3,7 @@
 	import { onDestroy, onMount } from 'svelte';
 	import { _, locale } from 'svelte-i18n';
 	import { estimateOnly, statusTone, waitStatus } from '$lib/components/pages/live/waits';
+	import IllustrativeBanner from '$lib/components/shared/IllustrativeBanner.svelte';
 	import SimplePageHeader from '$lib/components/shared/SimplePageHeader.svelte';
 	import StatusBadge, { type StatusTone } from '$lib/components/shared/StatusBadge.svelte';
 	import { LiveConnection, type ZoneSnapshot } from '$lib/core/Live.svelte';
@@ -98,23 +99,25 @@
 			: $_('immigration.seconds', { values: { value: numberFormat.format(value) } });
 	}
 
-	async function load(): Promise<void> {
-		if (!siteCode) return;
-		const result = await operations.immigration(siteCode);
-		if (destroyed) return;
+	/** Reads the site's halls; false when another site was chosen meanwhile (its own load then owns the screen). */
+	async function load(): Promise<boolean> {
+		const site = siteCode;
+		if (!site) return false;
+		const result = await operations.immigration(site);
+		if (destroyed || site !== siteCode) return false;
 		if (result.hasErrors || !result.data) {
 			problem = result.errorMessages.join(' ');
-			return;
+			return true;
 		}
 		problem = '';
 		view = result.data;
+		return true;
 	}
 
 	async function loadSite(): Promise<void> {
 		view = null;
 		snapshots = {};
-		await load();
-		if (destroyed || !view) return;
+		if (!(await load()) || !view) return;
 		watched = new Set(view.halls.flatMap((h) => h.queues.map((q) => q.zoneKey)));
 		await live.watch([...watched], null);
 	}
@@ -176,6 +179,8 @@
 		</select>
 	{/snippet}
 </SimplePageHeader>
+
+<IllustrativeBanner site={siteList.find((s) => s.code === siteCode)} />
 
 <div class="flex flex-col gap-4">
 	<div class="flex flex-wrap items-center justify-between gap-3">
