@@ -86,7 +86,7 @@ export default async function globalTeardown() {
 	const secrets: string[] = [];
 	// The simulator's operator key and the mock partners' secrets (ARV-027 to ARV-029) never reach Ariva's host logs either, nor
 	// the validation reader login's password (ARV-104g1), which Ariva.Api.Main passes to the migration's login function.
-	for (const name of ['ARIVA_E2E_SIMULATION_KEY', 'ARIVA_E2E_MOCK_AMAN_SECRET', 'ARIVA_E2E_MOCK_AMAN_SEED', 'ARIVA_E2E_MOCK_AMAN_PULL_SECRET', 'ARIVA_E2E_MOCK_AMAN_PULL_SEED', 'ARIVA_E2E_ACRIS_KEY',
+	for (const name of ['ARIVA_E2E_SIMULATION_KEY', 'ARIVA_E2E_SIMULATION_READ_KEY', 'ARIVA_E2E_MOCK_AMAN_SECRET', 'ARIVA_E2E_MOCK_AMAN_SEED', 'ARIVA_E2E_MOCK_AMAN_PULL_SECRET', 'ARIVA_E2E_MOCK_AMAN_PULL_SEED', 'ARIVA_E2E_ACRIS_KEY',
 		'ARIVA_E2E_VALIDATION_READER_PASSWORD']) {
 		if (process.env[name]) secrets.push(process.env[name]!);
 	}

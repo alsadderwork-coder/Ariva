@@ -66,6 +66,7 @@ public sealed class SensorEmulator : BackgroundService
     private double _speed = 1;
     private int _nextMinute;
     private int? _untilMinute;
+    private DateTime? _playedDayStart;
 
     public SensorEmulator(ScenarioEngine engine, IHttpClientFactory http, IOptionsMonitor<SensorEmulatorSettings> settings, TimeProvider time,
         ILogger<SensorEmulator> logger, IEnumerable<IDemoMinuteSink> sinks = null)
@@ -99,6 +100,19 @@ public sealed class SensorEmulator : BackgroundService
         [.. (devices ?? []).Select(d => new Device(d, SensorTraffic.Sensor(d.Site ?? ScenarioEngine.ReferenceSite, d.Sensor)))];
 
     #region Controls
+
+    /// <summary>
+    /// ARV-104i: the UTC instant of the scenario day's 00:00 on which the last minute played at speed 1 was laid (null when the last
+    /// minute played ran faster, or none was played): a validation rehearsal against the live pipeline lays its truth on it.
+    /// </summary>
+    public DateTime? PlayedDayStartUtc
+    {
+        get
+        {
+            lock (_gate)
+                return _playedDayStart;
+        }
+    }
 
     /// <summary>The demo minute now (fractional), from the anchor and the speed.</summary>
     private double DemoNow(DateTimeOffset now) =>
@@ -291,6 +305,10 @@ public sealed class SensorEmulator : BackgroundService
                 }
 
                 DateTime WallOf(double demoMinute) => (wallAnchor + TimeSpan.FromMinutes((demoMinute - demoAnchor) / speed)).UtcDateTime;
+                // ARV-104i: at speed 1 the pushes lay the day on real time from this instant (its 00:00), which a validation rehearsal
+                // against the live pipeline uses; faster, the day does not follow real time and no rehearsal can match it.
+                lock (_gate)
+                    _playedDayStart = speed == 1 ? WallOf(0) : null;
                 // Every other emulator on the demo clock (AODB, AMAN, immigration) gets the same minute in order, played by its
                 // own pump so that a slow partner (Kafka, Ariva's API) never holds the sensors back.
                 foreach (var sink in _sinks)

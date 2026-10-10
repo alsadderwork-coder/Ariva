@@ -660,7 +660,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 27,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. This is the evidence that the tooling works before a client sees it.",
       "dependsOn": [
         "ARV-104g",

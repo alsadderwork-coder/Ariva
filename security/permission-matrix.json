@@ -526,6 +526,64 @@
     },
     {
       "host": "simulation",
+      "method": "GET",
+      "route": "/api/v1/simulation/validation",
+      "access": "simulation",
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
+      }
+    },
+    {
+      "host": "simulation",
+      "method": "GET",
+      "route": "/api/v1/simulation/validation/truth",
+      "access": "simulation",
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
+      }
+    },
+    {
+      "host": "simulation",
+      "method": "PUT",
+      "route": "/api/v1/simulation/validation/observers",
+      "access": "simulation",
+      "body": {},
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
+      }
+    },
+    {
+      "host": "simulation",
+      "method": "POST",
+      "route": "/api/v1/simulation/validation/rehearsals",
+      "access": "simulation",
+      "body": {},
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
+      }
+    },
+    {
+      "host": "simulation",
       "method": "POST",
       "route": "/aman/api/v1/auth",
       "access": "anonymous",

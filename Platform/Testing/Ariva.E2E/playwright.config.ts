@@ -62,6 +62,9 @@ process.env.ARIVA_E2E_KEY_DIR ||= keyDirectory;
 // One simulator operator key per run (ARV-027, ARV-028): the simulator gets only its SHA-256, the tests the key.
 process.env.ARIVA_E2E_SIMULATION_KEY ||= 'sim-e2e-' + crypto.randomBytes(24).toString('base64url');
 const simulationKeyDigest = crypto.createHash('sha256').update(process.env.ARIVA_E2E_SIMULATION_KEY).digest('hex');
+// ARV-104i: a second operator key with the read scope only, so the control endpoints' 403 is proven end to end.
+process.env.ARIVA_E2E_SIMULATION_READ_KEY ||= 'sim-e2e-read-' + crypto.randomBytes(24).toString('base64url');
+const simulationReadKeyDigest = crypto.createHash('sha256').update(process.env.ARIVA_E2E_SIMULATION_READ_KEY).digest('hex');
 // ARV-029: one client of the mock AMAN Integration API per run; the simulator gets the secret's SHA-256 and the seed.
 process.env.ARIVA_E2E_MOCK_AMAN_SECRET ||= 'aman-e2e-' + crypto.randomBytes(24).toString('base64url');
 process.env.ARIVA_E2E_MOCK_AMAN_SEED ||= base32Of(crypto.randomBytes(20));
@@ -259,12 +262,24 @@ const hostServers = {
 		Simulation__Control__Keys__0__Sha256: simulationKeyDigest,
 		Simulation__Control__Keys__0__Scopes__0: 'read',
 		Simulation__Control__Keys__0__Scopes__1: 'control',
+		Simulation__Control__Keys__1__Name: 'e2e-reader',
+		Simulation__Control__Keys__1__Sha256: simulationReadKeyDigest,
+		Simulation__Control__Keys__1__Scopes__0: 'read',
 		// The sensor emulator pushes to the Ingest under test; plain HTTP only over loopback.
 		Simulation__Sensors__IngestUrl: hosts.ingest,
 		Simulation__Sensors__AllowInsecureTransport: /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/.test(hosts.ingest) ? 'true' : 'false',
 		// ARV-029: the AODB, AMAN and immigration emulators call the Integration host under test.
 		Simulation__Ariva__IntegrationUrl: hosts.integration,
-		Simulation__Ariva__AllowInsecureTransport: /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/.test(hosts.integration) ? 'true' : 'false',
+		// ARV-104i: the validation observers sign in to the Ariva.Api.Main under test and use its capture API (loopback too).
+		Simulation__Ariva__MainUrl: hosts.main,
+		// Five rehearsals a run of validation-rehearsal.spec.ts (more with a retry); the limit itself (10 a minute per key by
+		// default) is tested in ValidationEmulatorEndpointTests.
+		Simulation__Validation__RehearsalsPerMinute: '30',
+		// The control test reads the truth twice per hostile payload with the read key; the limit itself (60 a minute per key by
+		// default) is tested in ValidationEmulatorEndpointTests.
+		Simulation__Validation__TruthReadsPerMinute: '300',
+		Simulation__Ariva__AllowInsecureTransport:
+			[hosts.integration, hosts.main].some((url) => /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/.test(url)) ? 'true' : 'false',
 		Simulation__Aman__Kafka__BootstrapServers: process.env.ARIVA_E2E_KAFKA_BOOTSTRAP ?? '',
 		Simulation__Aman__Mock__Clients__0__ClientId: 'e2e-aman-connector',
 		Simulation__Aman__Mock__Clients__0__SecretSha256: crypto.createHash('sha256').update(process.env.ARIVA_E2E_MOCK_AMAN_SECRET).digest('hex'),

@@ -1,10 +1,11 @@
 using Ariva.ServiceDefaults;
 using Ariva.Simulation.Api.Emulators;
 using Ariva.Simulation.Api.Emulators.Sensors;
+using Ariva.Simulation.Api.Emulators.Validation;
 using Ariva.Simulation.Api.Security;
 
-// Ariva.Simulation.Api: sensor, AODB and AMAN emulators (Emulators/) driven by deterministic scenarios
-// (Scenarios/). This host references Ariva.Business.Contracts only, so it emits AMAN feed messages exactly
+// Ariva.Simulation.Api: sensor, AODB and AMAN emulators and validation observers (Emulators/) driven by deterministic
+// scenarios (Scenarios/). This host references Ariva.Business.Contracts only, so it emits AMAN feed messages exactly
 // as AMAN would. It exposes the health probes used by the Helm chart and the scenario endpoints (ARV-027), which
 // need an operator key (Simulation:Control).
 
@@ -32,6 +33,9 @@ builder.Configuration
     .AddJsonFile("appsettings.local.json", optional: true, reloadOnChange: false)
     .AddEnvironmentVariables()
     .AddCommandLine(args);
+
+// LogFile:Path, as Ariva's hosts honour it: the E2E run's log scan reads the simulator's lines too (CWE-532).
+SimulationLogFile.AddTo(builder.Logging, builder.Configuration);
 
 #endregion
 
@@ -66,12 +70,17 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<Ariva.Simulation.Api.Scenarios.ScenarioEngine>();
 builder.Services.AddFeedEmulators(builder.Configuration);
 builder.Services.AddSensorEmulator(builder.Configuration);
-// Binding errors say what was wrong, not which internal type failed to bind (CWE-209).
-builder.Services.AddControllers().AddJsonOptions(options =>
-{
-    options.AllowInputFormatterExceptionMessages = false;
-    options.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter(allowIntegerValues: false));
-});
+// ARV-104i: the validation observers, who sign in to Ariva.Api.Main as Validation observer accounts and use its capture API.
+builder.Services.AddValidationEmulator(builder.Configuration);
+// Binding errors say what was wrong, not which internal type failed to bind (CWE-209), and never repeat a value or a member
+// name sent (CWE-501, ARV-104i: as Ariva's hosts since ARV-104b).
+builder.Services.AddControllers(SimulationSecurity.ConfigureBinding)
+    .AddJsonOptions(options =>
+    {
+        options.AllowInputFormatterExceptionMessages = false;
+        options.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter(allowIntegerValues: false));
+    })
+    .ConfigureApiBehaviorOptions(options => options.InvalidModelStateResponseFactory = SimulationSecurity.ProblemWithoutBodyPaths);
 
 #endregion
 

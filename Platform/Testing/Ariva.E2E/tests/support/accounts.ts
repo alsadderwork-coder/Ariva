@@ -257,7 +257,15 @@ export function accounts() {
 		// observer sends the ground truth through the API.
 		webCampaignSupervisor: account('e2e.webcampsup', ['BorderShiftSupervisor'], false, true, ['E2EW']),
 		webCampaignDuty: account('e2e.webcampduty', ['TerminalDutyManager'], false, false, ['E2EW']),
-		webCampaignObserver: account('e2e.webcampobs', ['ValidationObserver'], false, false, ['E2EW'])
+		webCampaignObserver: account('e2e.webcampobs', ['ValidationObserver'], false, false, ['E2EW']),
+		// ARV-104i: the simulator's validation rehearsal at a site of its own (E2ER). The border shift supervisor publishes the
+		// profile and plans, starts and closes campaigns (a second factor); the simulator signs in as the two observers through
+		// the normal sign-in (the first with its authenticator, so a TOTP code goes with its password); a border shift supervisor
+		// who also holds the observer role starts a campaign and is refused on it when the simulator signs in as it.
+		rehearsalManager: account('e2e.rehmanager', ['BorderShiftSupervisor'], false, true, ['E2ER']),
+		rehearsalObserver1: account('e2e.rehobs1', ['ValidationObserver'], false, true, ['E2ER']),
+		rehearsalObserver2: account('e2e.rehobs2', ['ValidationObserver'], false, false, ['E2ER']),
+		rehearsalDual: account('e2e.rehdual', ['BorderShiftSupervisor', 'ValidationObserver'], false, false, ['E2ER'])
 	} as const;
 }
 
