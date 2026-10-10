@@ -1,7 +1,7 @@
 // PreToolUse guard for Bash and PowerShell commands.
 // Blocks destructive, shared-environment and supply-chain actions; humans run those.
-import path from 'node:path';
 import { readInput, deny, ask, PROJECT_DIR } from './lib.mjs';
+import { rootSearch } from './root-search.mjs';
 
 const input = await readInput();
 const cmd = String(input?.tool_input?.command || '');
@@ -23,38 +23,12 @@ const rules = [
 ];
 for (const [re, why] of rules) if (re.test(c)) deny(why);
 
-// Recursive searches that start at the repository root (or above it) walk the git-ignored client material folder without
-// naming it (owner decision 2026-10-10, after two such searches): grep -r, find, and rg told to ignore .gitignore. Searches
-// that start inside a project folder, git grep and plain rg (which honours .gitignore) are unaffected.
-{
-  let cwd = path.resolve(String(input?.cwd || PROJECT_DIR));
-  const atOrAboveRoot = target => {
-    const t = path.resolve(cwd, target.replace(/^["']|["']$/g, ''));
-    return t === PROJECT_DIR || PROJECT_DIR.startsWith(t.endsWith(path.sep) ? t : t + path.sep);
-  };
-  const why = 'Recursive searches from the repository root walk the client material folder. Name the project folders to search (Platform, docs, wiki, scripts, backlog, ...) or use the Grep tool, which skips git-ignored folders.';
-  for (const segment of cmd.split(/\|\||&&|[;|\n]/)) {
-    const words = segment.trim().split(/\s+/).filter(Boolean);
-    while (words.length && /^(sudo|nice|time|xargs|-n|\d+|[A-Z_][A-Z0-9_]*=\S*)$/.test(words[0])) words.shift();
-    if (words[0] === 'cd') { cwd = path.resolve(cwd, (words[1] || PROJECT_DIR).replace(/^["']|["']$/g, '')); continue; }
-    const tool = path.basename(words[0] || '');
-    const flags = words.slice(1).filter(w => w.startsWith('-'));
-    const operands = words.slice(1).filter(w => !w.startsWith('-'));
-    if (/^[ef]?grep$/.test(tool) && flags.some(f => /^-[a-zA-Z]*[rR]/.test(f) || f === '--recursive' || f === '--dereference-recursive')) {
-      const patternGiven = flags.some(f => /^-[a-zA-Z]*[ef]$/.test(f) || f.startsWith('--regexp') || f.startsWith('--file'));
-      const targets = patternGiven ? operands : operands.slice(1);
-      if (!targets.length ? atOrAboveRoot('.') : targets.some(atOrAboveRoot)) deny(why);
-    }
-    if (tool === 'find') {
-      const starts = [];
-      for (const w of words.slice(1)) { if (/^[-(!]/.test(w)) break; starts.push(w); }
-      if (!starts.length ? atOrAboveRoot('.') : starts.some(atOrAboveRoot)) deny(why);
-    }
-    if (tool === 'rg' && flags.some(f => /^-u+$/.test(f) || f.startsWith('--no-ignore'))) {
-      if (!operands.slice(1).length ? atOrAboveRoot('.') : operands.slice(1).some(atOrAboveRoot)) deny(why);
-    }
-  }
-}
+// Recursive searches from the repository root (or above it) walk the git-ignored client material folder without naming it
+// (owner decision 2026-10-10): root-search.mjs reads the command as a shell would split it.
+// A parser failure refuses the command rather than skipping the checks below.
+let rootWalk;
+try { rootWalk = rootSearch(cmd, input?.cwd, PROJECT_DIR); } catch (e) { rootWalk = `The root search guard could not read this command (${e?.message}); split it into simpler commands.`; }
+if (rootWalk) deny(rootWalk);
 
 // git push: only story branches, only to origin, never forced, never main or trunk. Humans merge pull requests.
 for (const push of c.matchAll(/\bgit\s+push\b([^;&|]*)/gi)) {

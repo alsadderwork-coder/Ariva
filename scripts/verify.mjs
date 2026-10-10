@@ -2,7 +2,7 @@
 // Ariva quality gates. Cross-platform (Windows, Linux, CI). No dependencies.
 //   node scripts/verify.mjs <scope> [--no-restore]
 // Scopes:
-//   quick        security scan of changed files + docs text checks (used by the Stop hook)
+//   quick        security scan of changed files + root search guard self-test + docs text checks (used by the Stop hook)
 //   build        dotnet build Ariva.slnx (security analyzers run as errors)
 //   unit         build + Ariva.UnitTests (architecture, security and domain tests)
 //   integration  Ariva.IntegrationTests (needs Docker for Testcontainers)
@@ -81,7 +81,8 @@ function docsCheck() {
   const bad = [];
   const walk = d => {
     for (const e of fs.readdirSync(d, { withFileTypes: true })) {
-      if (['node_modules', '.git', 'bin', 'obj', '.svelte-kit', 'build', 'prototype'].includes(e.name)) continue;
+      // The client material folder is never read, not even by a gate (owner decision 2026-10-09, ARV-139c).
+      if (['node_modules', '.git', 'bin', 'obj', '.svelte-kit', 'build', 'prototype', '.private'].includes(e.name)) continue;
       const p = path.join(d, e.name);
       if (e.isDirectory()) walk(p);
       else if (p.endsWith('.md')) {
@@ -255,7 +256,7 @@ function checkpointGate() {
 }
 
 const steps = {
-  quick: () => { run('security scan (changed files)', 'node', ['scripts/security/scan.mjs', '--changed']); docsCheck(); },
+  quick: () => { run('security scan (changed files)', 'node', ['scripts/security/scan.mjs', '--changed']); run('root search guard self-test', 'node', ['.claude/hooks/root-search.test.mjs']); docsCheck(); },
   build: () => run('dotnet build', 'dotnet', ['build', 'Ariva.slnx', '-c', 'Debug', ...(args.includes('--no-restore') ? ['--no-restore'] : [])]),
   unit: () => {
     steps.build();

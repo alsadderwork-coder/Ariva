@@ -10,7 +10,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const SKIP = ['node_modules', '.git', 'bin', 'obj', 'fixtures', 'build', '.svelte-kit'];
+// .private holds client material that nothing lists or reads (owner decision 2026-10-09, ARV-139c).
+const SKIP = ['node_modules', '.git', 'bin', 'obj', 'fixtures', 'build', '.svelte-kit', '.private'];
 
 /**
  * The version line each base image follows, and how to recognise a full version tag of it. A line may have several

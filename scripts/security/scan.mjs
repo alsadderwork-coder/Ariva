@@ -15,7 +15,8 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..', '..');
-const SKIP_DIRS = new Set(['node_modules', 'bin', 'obj', '.git', '.svelte-kit', 'build', 'dist', 'test-results', 'playwright-report', '.verify', 'prototype', 'fixtures']);
+// .private holds client material that nothing reads, not even a gate (owner decision 2026-10-09, ARV-139c).
+const SKIP_DIRS = new Set(['node_modules', 'bin', 'obj', '.git', '.svelte-kit', 'build', 'dist', 'test-results', 'playwright-report', '.verify', 'prototype', 'fixtures', '.private']);
 const EXT_LANG = {
   '.cs': 'cs', '.csproj': 'msbuild', '.props': 'msbuild', '.targets': 'msbuild',
   '.ts': 'js', '.js': 'js', '.mjs': 'js', '.cjs': 'js', '.svelte': 'svelte',
