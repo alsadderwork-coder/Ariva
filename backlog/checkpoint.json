@@ -1,12 +1,12 @@
 {
-  "commit": "61516198e8c8766ae54440ffaf089abf4afc6b7a",
-  "at": "2026-10-08",
-  "mutationBase": "3486fb0",
+  "commit": "c3a81d0d1b2733e6c15f23c0956aef6f0a6a7e29",
+  "at": "2026-10-10",
+  "stories": 6,
   "results": [
     {
       "name": "dotnet build",
       "ok": true,
-      "seconds": 97
+      "seconds": 101
     },
     {
       "name": "reference scenario golden up to date",
@@ -16,7 +16,7 @@
     {
       "name": "unit tests",
       "ok": true,
-      "seconds": 118
+      "seconds": 138
     },
     {
       "name": "security scanner self-test",
@@ -60,7 +60,7 @@
     {
       "name": "web svelte-check",
       "ok": true,
-      "seconds": 8
+      "seconds": 9
     },
     {
       "name": "web lint",
@@ -70,27 +70,37 @@
     {
       "name": "web build",
       "ok": true,
-      "seconds": 22
+      "seconds": 24
     },
     {
       "name": "integration tests",
       "ok": true,
-      "seconds": 416
+      "seconds": 455
     },
     {
       "name": "visual regression (pinned image)",
       "ok": true,
-      "seconds": 116
+      "seconds": 122
     },
     {
       "name": "e2e tests (API and functional)",
       "ok": true,
-      "seconds": 579
+      "seconds": 778
     },
     {
-      "name": "mutation tests (no engine change since 3486fb0)",
+      "name": "mutation log check self-test",
       "ok": true,
-      "skipped": true
+      "seconds": 0
+    },
+    {
+      "name": "dotnet tool restore (dotnet-stryker)",
+      "ok": true,
+      "seconds": 0
+    },
+    {
+      "name": "mutation tests (Stryker.NET in a worktree of c3a81d0d1b, 7 engine files changed since 61516198e8; fails on safe mode or no score)",
+      "ok": true,
+      "seconds": 7008
     }
   ]
 }
