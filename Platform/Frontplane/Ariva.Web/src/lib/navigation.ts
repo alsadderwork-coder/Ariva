@@ -1,6 +1,7 @@
 import type { Component } from 'svelte';
 import {
 	Activity,
+	BadgeCheck,
 	BellRing,
 	ClipboardCheck,
 	Cpu,
@@ -90,6 +91,17 @@ export const navItems: readonly NavItem[] = [
 		permission: 'Report.View'
 	},
 	{
+		// Validation campaigns (ARV-104h): border shift supervisors, terminal duty managers and administrators hold
+		// Validation.View; observers do not (their screen is the capture tablet above).
+		id: 'validationCampaigns',
+		href: '/validation',
+		icon: BadgeCheck,
+		group: 'oversight',
+		ready: true,
+		story: 'ARV-104h',
+		permission: 'Validation.View'
+	},
+	{
 		id: 'topology',
 		href: '/topology',
 		icon: Map,
@@ -140,6 +152,15 @@ export function isActive(href: string, pathname: string): boolean {
 	return pathname === href || pathname.startsWith(`${href}/`);
 }
 
+/**
+ * The item whose screen the path shows: the longest matching href, so "/validation/capture" is the capture tablet and not
+ * the campaigns screen at "/validation" (ARV-104h).
+ */
 export function findNavItem(pathname: string): NavItem | undefined {
-	return navItems.find((item) => isActive(item.href, pathname));
+	let found: NavItem | undefined;
+	for (const item of navItems) {
+		if (isActive(item.href, pathname) && (!found || item.href.length > found.href.length))
+			found = item;
+	}
+	return found;
 }

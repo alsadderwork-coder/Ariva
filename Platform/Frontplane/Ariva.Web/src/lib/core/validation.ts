@@ -450,3 +450,453 @@ export function correctDesk(
 		asSubject
 	});
 }
+
+// The campaign manager's side (ARV-104a, ARV-104b, ARV-104g; screens ARV-104h): the campaigns of a site, planning,
+// starting and closing one, its progress and every observer's counts and tracer runs, and its results. Reading needs
+// Validation.View, planning and starting Validation.Manage, closing Validation.Manage and a second factor within 15
+// minutes (a critical action: Api.ts answers the server's challenge with the step-up dialog). The server decides every
+// call; a site or campaign the caller cannot see answers 404. Desks and desk-state results are border data: the server
+// leaves them out (desksIncluded false, desks null) for a caller who does not see border desks.
+
+/** A campaign's lifecycle (ValidationCampaignStatus). */
+export type CampaignStatus = 'Planned' | 'Running' | 'Closed';
+
+export const campaignStatuses: readonly CampaignStatus[] = ['Planned', 'Running', 'Closed'];
+
+/** The bounds of a campaign the server checks (ValidationCampaign in Ariva.Core); the form checks them first. */
+export const campaignLimits = {
+	name: 200,
+	zones: 50,
+	lines: 200,
+	days: 31,
+	/** Queue zones times planned days: larger campaigns' results cannot be computed (ARV-104g). */
+	zoneDays: 400,
+	desks: 100,
+	daysBack: 31,
+	daysAhead: 366,
+	targetBinsPerLine: 31 * 96,
+	targetTracerRuns: 1_000
+} as const;
+
+/** The placeholder targets Ariva records while TC-04 is not answered (ValidationCampaign.DefaultTarget*). */
+export const placeholderTargets = { binsPerLine: 20, tracerRuns: 30 } as const;
+
+/** A campaign in a list (ValidationCampaignSummaryViewModel). */
+export interface CampaignSummary {
+	id: string;
+	siteCode: string;
+	name: string;
+	status: CampaignStatus;
+	profileVersion: number;
+	days: string[];
+	zones: number;
+	lines: number;
+	createdUtc: string;
+	startedUtc: string | null;
+	closedUtc: string | null;
+}
+
+export interface CampaignTargets {
+	binsPerLine: number;
+	tracerRuns: number;
+	placeholder: boolean;
+}
+
+/** A queue zone in scope with the tracer runs recorded in it (any observer). */
+export interface CampaignZone {
+	id: string;
+	name: string;
+	tracerRuns: number;
+}
+
+/** A line in scope with the 15-minute bins that hold at least one count (any observer). */
+export interface CampaignLine {
+	id: string;
+	name: string;
+	role: string;
+	queueZone: string;
+	binsCaptured: number;
+}
+
+/** A border desk in scope with its observed minutes. Border data: listed only when desksIncluded. */
+export interface CampaignDesk {
+	id: string;
+	checkpoint: string;
+	code: string;
+	minutesObserved: number;
+}
+
+/** A campaign with its scope and progress (ValidationCampaignViewModel). People are Ariva user ids only. */
+export interface Campaign {
+	id: string;
+	siteCode: string;
+	name: string;
+	status: CampaignStatus;
+	profileId: string;
+	profileVersion: number;
+	geometryHash: string;
+	profileStatus: string;
+	profileRetiredUtc: string | null;
+	timeZoneId: string;
+	days: string[];
+	targets: CampaignTargets;
+	zones: CampaignZone[];
+	lines: CampaignLine[];
+	desksIncluded: boolean;
+	desks: CampaignDesk[];
+	createdById: string;
+	createdUtc: string;
+	startedById: string | null;
+	startedUtc: string | null;
+	closedById: string | null;
+	closedUtc: string | null;
+}
+
+/** A campaign to plan (CreateValidationCampaignRequest): ids of the published version reviewed, local days, optional targets. */
+export interface CreateCampaignRequest {
+	name: string;
+	profileVersion: number;
+	zoneIds: string[];
+	lineIds: string[];
+	days: string[];
+	targetBinsPerLine: number | null;
+	targetTracerRuns: number | null;
+	deskIds: string[];
+}
+
+/** A criterion's verdict (CriterionVerdict). */
+export type Verdict = 'NoData' | 'Pass' | 'Fail';
+
+/** The pilot criteria in their order (CampaignCriterion). */
+export type Criterion =
+	| 'CountAccuracy'
+	| 'WaitError'
+	| 'WaitBias'
+	| 'TrackCompletion'
+	| 'DeskStateAgreement'
+	| 'NowcastError'
+	| 'Availability';
+
+export const criteria: readonly Criterion[] = [
+	'CountAccuracy',
+	'WaitError',
+	'WaitBias',
+	'TrackCompletion',
+	'DeskStateAgreement',
+	'NowcastError',
+	'Availability'
+];
+
+export interface CriterionCheck {
+	value: number | null;
+	target: number;
+	verdict: Verdict;
+}
+
+/** One line (count accuracy) or zone (track completion) of a criterion judged per unit. */
+export interface CriterionUnit {
+	queueZone: string | null;
+	lineName: string | null;
+	value: number | null;
+	judged: number;
+	required: number;
+	excluded: number;
+	judgedVerdict: Verdict;
+	verdict: Verdict;
+}
+
+/** A campaign's verdict on one criterion (CampaignCriterionVerdict). */
+export interface CriterionVerdict {
+	criterion: Criterion;
+	verdict: Verdict;
+	reason: string;
+	value: number | null;
+	judgedValue: number | null;
+	target: number;
+	judged: number;
+	required: number;
+	excluded: number;
+	excludedShare: number | null;
+	units: CriterionUnit[];
+}
+
+export interface StandingTally {
+	good: number;
+	noSystemWait: number;
+	degraded: number;
+	unknown: number;
+	provisional: number;
+	otherVersion: number;
+}
+
+/** Count accuracy of one line over the campaign (LineAccuracy). */
+export interface LineAccuracy {
+	queueZone: string;
+	lineId: string;
+	lineName: string;
+	role: string;
+	judged: number;
+	passing: number;
+	judgedBins: number;
+	excludedBins: number;
+	lowestAccuracy: number | null;
+	pooledAccuracy: number | null;
+	bins: StandingTally;
+	check: CriterionCheck;
+}
+
+/** Tracer wait error and bias of one zone, or of every zone (queueZone null), TracerZoneSummary. */
+export interface TracerZoneSummary {
+	queueZone: string | null;
+	runs: number;
+	compared: number;
+	excluded: number;
+	withinTolerance: number;
+	bias: number | null;
+	meanErrorMinutes: number | null;
+	largestAbsoluteErrorMinutes: number | null;
+	abandoned: number;
+	offsetOutliers: number;
+	errorCheck: CriterionCheck;
+	biasCheck: CriterionCheck;
+}
+
+export interface TrackTotals {
+	bins: number;
+	entered: number;
+	exited: number;
+	rate: number | null;
+}
+
+/** Track completion of one queue zone (ZoneTrackCompletion). */
+export interface ZoneTrackCompletion {
+	queueZone: string;
+	bins: StandingTally;
+	excludedBins: number;
+	good: TrackTotals;
+	check: CriterionCheck;
+}
+
+/** Errors of a set of nowcast minutes (NowcastErrorStats), in minutes. */
+export interface NowcastErrorStats {
+	minutes: number;
+	medianAbsoluteErrorMinutes: number | null;
+	meanAbsoluteErrorMinutes: number | null;
+	meanErrorMinutes: number | null;
+}
+
+export interface NowcastErrorSummary {
+	minutes: number;
+	judged: NowcastErrorStats;
+	noServiceUnderCut: number;
+}
+
+/** The nowcast error of a zone, or of every zone, with the ground-truth proof (shadow and both null without the proof). */
+export interface NowcastZoneErrors {
+	queueZone: string | null;
+	published: NowcastErrorSummary | null;
+	shadow: NowcastErrorSummary | null;
+	both: { minutes: number; published: NowcastErrorStats; shadow: NowcastErrorStats } | null;
+	check: CriterionCheck;
+}
+
+/** Desk-state agreement of one border desk, or of every desk (deskId null). Border data. */
+export interface DeskAgreementSummary {
+	deskId: string | null;
+	checkpointCode: string | null;
+	deskCode: string | null;
+	minutes: number;
+	judged: number;
+	agreeing: number;
+	excluded: number;
+	withoutSystemMinute: number;
+	strictAgreement: number | null;
+	check: CriterionCheck;
+}
+
+/** A calibration record of a device in scope (no notes, no person). */
+export interface CalibrationRecord {
+	deviceCode: string;
+	queueZone: string;
+	method: string;
+	sampleSize: number;
+	countingAccuracyPercent: number;
+	waitTimeErrorMinutes: number;
+	thresholdPercent: number;
+	passed: boolean;
+	performedOn: string;
+}
+
+/** A frozen revision of the results: its number, how many there are, the SHA-256 of the stored document. */
+export interface ResultsRevision {
+	number: number;
+	revisions: number;
+	contentSha256: string;
+	frozenUtc: string;
+	reason: string | null;
+}
+
+/**
+ * A campaign's results as the caller may read them (ValidationResultsViewModel, projected per caller by the server):
+ * `desks` is null for a caller who does not see border desks, the shadow's figures are null without the proof, and
+ * `revision` is null for a campaign not closed (computed when asked, never stored).
+ */
+export interface CampaignResults {
+	campaignId: string;
+	siteCode: string;
+	campaignName: string;
+	status: CampaignStatus;
+	profileVersion: number;
+	geometryHash: string;
+	plannedDays: string[];
+	timeZoneId: string;
+	computedUtc: string;
+	problem: string | null;
+	targets: { binsPerLine: number; tracerRuns: number; placeholder: boolean; exclusions: string };
+	criteria: CriterionVerdict[];
+	review: string[];
+	counts: { lines: LineAccuracy[] } | null;
+	tracers: { zones: TracerZoneSummary[]; overall: TracerZoneSummary | null } | null;
+	trackCompletion: ZoneTrackCompletion[];
+	nowcast: {
+		shadowRead: boolean;
+		zones: NowcastZoneErrors[];
+		overall: NowcastZoneErrors | null;
+	} | null;
+	calibrations: CalibrationRecord[];
+	desks: {
+		verdict: CriterionVerdict;
+		desks: DeskAgreementSummary[];
+		overall: DeskAgreementSummary | null;
+	} | null;
+	revision: ResultsRevision | null;
+	audience: { desksIncluded: boolean; observers: string; proofIncluded: boolean } | null;
+}
+
+function manageBase(siteCode: string): string | null {
+	return site.test(siteCode)
+		? `/api/v1/sites/${encodeURIComponent(siteCode)}/validation/campaigns`
+		: null;
+}
+
+function managed(siteCode: string, campaignId: string): string | null {
+	const root = manageBase(siteCode);
+	return root && guid.test(campaignId) ? `${root}/${campaignId}` : null;
+}
+
+/** True for a value that can name a campaign in a path or a link (a GUID). */
+export function isCampaignId(value: string | null | undefined): value is string {
+	return typeof value === 'string' && guid.test(value);
+}
+
+/** True for a value that can name a site in a path or a link. */
+export function isSiteCode(value: string | null | undefined): value is string {
+	return typeof value === 'string' && site.test(value);
+}
+
+/** The campaigns of a site, newest first: text in the name and a status, pages of at most 100. */
+export function searchCampaigns(
+	siteCode: string,
+	query: { text?: string; status?: CampaignStatus | ''; pageIndex?: number } = {}
+): Promise<Result<Page<CampaignSummary>>> {
+	const path = manageBase(siteCode);
+	if (!path) return Promise.resolve(fail('Invalid site code.'));
+	const status = query.status && campaignStatuses.includes(query.status) ? query.status : undefined;
+	return Api.get<Page<CampaignSummary>>(path, {
+		query: {
+			text: query.text?.trim() ? query.text.trim().slice(0, 64) : undefined,
+			status,
+			sortBy: 'createdUtc',
+			sortDescending: true,
+			pageIndex: query.pageIndex ?? 1,
+			pageSize: 100
+		}
+	});
+}
+
+/** A campaign with its scope, targets and progress. */
+export function getCampaign(siteCode: string, campaignId: string): Promise<Result<Campaign>> {
+	const path = managed(siteCode, campaignId);
+	return path ? Api.get<Campaign>(path) : Promise.resolve(fail('Invalid request.'));
+}
+
+/** Plans a campaign over the site's published zone profile version (Planned). */
+export function createCampaign(
+	siteCode: string,
+	body: CreateCampaignRequest
+): Promise<Result<Campaign>> {
+	const path = manageBase(siteCode);
+	const valid =
+		[...body.zoneIds, ...body.lineIds, ...body.deskIds].every((id) => guid.test(id)) &&
+		body.days.every((day) => /^\d{4}-\d{2}-\d{2}$/.test(day));
+	if (!path || !valid) return Promise.resolve(fail('Invalid request.'));
+	return Api.post<Campaign>(path, body);
+}
+
+/** Starts a planned campaign (409 when its profile version is no longer the published one). */
+export function startCampaign(siteCode: string, campaignId: string): Promise<Result<Campaign>> {
+	const path = managed(siteCode, campaignId);
+	return path ? Api.post<Campaign>(`${path}/start`) : Promise.resolve(fail('Invalid request.'));
+}
+
+/**
+ * Closes a planned or running campaign: nothing is captured or corrected afterwards and the results are frozen. A critical
+ * action: without a second factor in the last 15 minutes Ariva answers 401 and Api.ts opens the step-up dialog, then sends
+ * the close once more; a cancelled dialog leaves the campaign as it was (the answer stays 401).
+ */
+export function closeCampaign(siteCode: string, campaignId: string): Promise<Result<Campaign>> {
+	const path = managed(siteCode, campaignId);
+	return path ? Api.post<Campaign>(`${path}/close`) : Promise.resolve(fail('Invalid request.'));
+}
+
+/** Every observer's counts of a campaign, newest bin first: current revisions or every revision, optionally one line. */
+export function campaignCounts(
+	siteCode: string,
+	campaignId: string,
+	query: { lineId?: string; currentOnly: boolean; pageIndex: number }
+): Promise<Result<Page<ManualCount>>> {
+	const path = managed(siteCode, campaignId);
+	if (!path || (query.lineId && !guid.test(query.lineId)))
+		return Promise.resolve(fail('Invalid request.'));
+	return Api.get<Page<ManualCount>>(`${path}/counts`, {
+		query: {
+			lineId: query.lineId || undefined,
+			currentOnly: query.currentOnly,
+			sortBy: 'binStartUtc',
+			sortDescending: true,
+			pageIndex: query.pageIndex,
+			pageSize: 100
+		}
+	});
+}
+
+/** The most tracer runs the progress view reads (20 pages of 500); beyond it the view says it shows the first ones. */
+export const maxProgressRuns = 10_000;
+
+/** Every observer's tracer runs of a campaign, a page of 500 at a time, earliest join first. */
+export function campaignRuns(
+	siteCode: string,
+	campaignId: string,
+	pageIndex: number
+): Promise<Result<Page<TracerRun>>> {
+	const path = managed(siteCode, campaignId);
+	if (!path) return Promise.resolve(fail('Invalid request.'));
+	return Api.get<Page<TracerRun>>(`${path}/tracer-runs`, {
+		query: { sortBy: 'joinedUtc', sortDescending: false, pageIndex, pageSize: 500 }
+	});
+}
+
+/**
+ * The campaign's results as the caller may read them: the latest frozen revision of a closed campaign (or `revision`), a
+ * campaign not closed computed now. The server may answer 429 or 503 with Retry-After while it computes others.
+ */
+export function campaignResults(
+	siteCode: string,
+	campaignId: string,
+	revision?: number
+): Promise<Result<CampaignResults>> {
+	const path = managed(siteCode, campaignId);
+	if (!path || (revision !== undefined && !(Number.isInteger(revision) && revision >= 1)))
+		return Promise.resolve(fail('Invalid request.'));
+	return Api.get<CampaignResults>(`${path}/results`, { query: { revision } });
+}

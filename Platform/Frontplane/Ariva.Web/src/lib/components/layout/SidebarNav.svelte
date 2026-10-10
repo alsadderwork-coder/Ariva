@@ -3,13 +3,15 @@
 	import { _ } from 'svelte-i18n';
 	import { cn } from '$lib/utils';
 	import { auth } from '$lib/core/auth.svelte';
-	import { isActive, navGroups, visibleItems } from '$lib/navigation';
+	import { findNavItem, navGroups, visibleItems } from '$lib/navigation';
 
 	let { collapsed = false, onNavigate }: { collapsed?: boolean; onNavigate?: () => void } =
 		$props();
 
 	// Only the screens the signed-in user's permissions cover (GET /api/auth/me); the server still checks every call.
 	const allowed = $derived(visibleItems((permission) => auth.can(permission)));
+	// One item is current: the most specific one ("/validation/capture" is not also "/validation").
+	const current = $derived(findNavItem(page.url.pathname)?.id);
 </script>
 
 <nav aria-label={$_('navigation.label')} class="flex flex-col">
@@ -27,7 +29,7 @@
 			<ul class={cn('flex flex-col gap-0.5', collapsed && 'items-center')}>
 				{#each items as item (item.id)}
 					{@const Icon = item.icon}
-					{@const active = isActive(item.href, page.url.pathname)}
+					{@const active = item.id === current}
 					{@const label = $_(`navigation.items.${item.id}`)}
 					<li class={cn(!collapsed && 'w-full')}>
 						{#if item.ready}

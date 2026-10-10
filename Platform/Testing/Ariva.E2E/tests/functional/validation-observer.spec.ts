@@ -11,7 +11,7 @@ import { databaseAvailable, signInThroughUi } from '../support/web-auth';
 
 test.skip(!databaseAvailable, 'sign-in needs the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true)');
 
-const modules = ['Live operations', 'Immigration', 'Alert rules', 'Passenger displays', 'Reports', 'Topology', 'Zones', 'Devices', 'Users and access'];
+const modules = ['Live operations', 'Immigration', 'Alert rules', 'Passenger displays', 'Reports', 'Validation campaigns', 'Topology', 'Zones', 'Devices', 'Users and access'];
 
 test('a validation observer signs in to no operational screen, only the capture tablet', async ({ page }) => {
 	const guards = await guardPage(page);
@@ -31,7 +31,7 @@ test('a validation observer signs in to no operational screen, only the capture 
 	await expect(page.getByTestId('user-card')).toContainText('E2EV');
 	expect(apiCalls, 'the home screen asks the API for nothing the role cannot have').toEqual([]);
 
-	for (const path of ['/users', '/reports']) {
+	for (const path of ['/users', '/reports', '/validation']) {
 		await page.goto(path);
 		await expect(page.getByTestId('no-access'), path).toBeVisible();
 	}

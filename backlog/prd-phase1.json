@@ -637,7 +637,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 26,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. From the ARV-104a security review (2026-10-08): campaign names and correction reasons are user text shown to other roles: interpolate as text only and add Playwright XSS probes for both (and for line and zone names); the create form and the counts view tell users not to name people in campaign names or reasons (data boundary); administrators hold View and Manage but not Capture (owner decision 2026-10-08), so the administrator's Playwright pass has no capture control. Owner decision 2026-10-08: report generation (templates, documents, CSV, schedules and delivery) waits for the integration with the Insight report tool used in AMAN and moves to ARV-146; this story keeps what is not report generation.",
       "dependsOn": [
         "ARV-104g",

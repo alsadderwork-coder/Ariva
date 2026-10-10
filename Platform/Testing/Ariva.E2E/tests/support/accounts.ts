@@ -251,7 +251,13 @@ export function accounts() {
 		webObserver: account('e2e.webobserver', ['ValidationObserver'], false, false, ['E2EO']),
 		// The next observer on the same tablet: signs in after webObserver signed out with bins unsent (security review M1).
 		webObserver2: account('e2e.webobserver2', ['ValidationObserver'], false, false, ['E2EO']),
-		webValidationDual: account('e2e.webvaldual', ['TerminalDutyManager', 'ValidationObserver'], false, false, ['E2EO'])
+		webValidationDual: account('e2e.webvaldual', ['TerminalDutyManager', 'ValidationObserver'], false, false, ['E2EO']),
+		// ARV-104h: the campaign screens' functional suite at a site of its own (E2EW). The border shift supervisor plans,
+		// starts and closes campaigns (a second factor: closing is critical), the duty manager reads them without desks, and the
+		// observer sends the ground truth through the API.
+		webCampaignSupervisor: account('e2e.webcampsup', ['BorderShiftSupervisor'], false, true, ['E2EW']),
+		webCampaignDuty: account('e2e.webcampduty', ['TerminalDutyManager'], false, false, ['E2EW']),
+		webCampaignObserver: account('e2e.webcampobs', ['ValidationObserver'], false, false, ['E2EW'])
 	} as const;
 }
 
