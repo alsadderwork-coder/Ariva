@@ -353,10 +353,12 @@ const steps = {
       if (!PLAN) addMutationTree(rev);
       // dotnet-stryker has its own manifest in Ariva.UnitTests/.config (kept apart from aspire.cli for SDK 10.0.4xx).
       run('dotnet tool restore (dotnet-stryker)', 'dotnet', ['tool', 'restore'], tests);
-      run(`mutation tests (Stryker.NET in a worktree of ${rev.slice(0, 10)}${since ? `, ${files.length} engine files changed since ${since.slice(0, 10)}` : ''}; fails on safe mode or no score)`, 'node',
-        [path.join(ROOT, 'scripts', 'mutation-run.mjs'), '--log', path.join(ROOT, '.verify', 'mutation.log'), '--',
-          'dotnet-stryker', '--concurrency', sessions, '--output', path.join(ROOT, '.verify', 'stryker'), ...files.flatMap(f => ['--mutate', `**/${f}`])],
-        tests);
+      // At a lower CPU priority outside Windows: Stryker uses the idle machine fully but yields to a story gate running beside
+      // it (2026-10-10: an integration test timed out at 5 minutes with the load at about 20 while Stryker ran at normal priority).
+      const mutationRun = [path.join(ROOT, 'scripts', 'mutation-run.mjs'), '--log', path.join(ROOT, '.verify', 'mutation.log'), '--',
+        'dotnet-stryker', '--concurrency', sessions, '--output', path.join(ROOT, '.verify', 'stryker'), ...files.flatMap(f => ['--mutate', `**/${f}`])];
+      run(`mutation tests (Stryker.NET in a worktree of ${rev.slice(0, 10)}${since ? `, ${files.length} engine files changed since ${since.slice(0, 10)}` : ''}; fails on safe mode or no score)`,
+        IS_WIN ? 'node' : 'nice', IS_WIN ? mutationRun : ['-n', '10', 'node', ...mutationRun], tests);
     } finally {
       if (!PLAN) removeMutationTree();
       releaseLock(MUTATION_LOCK);
