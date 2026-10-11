@@ -850,10 +850,11 @@
       ],
       "priority": 35,
       "passes": false,
-      "notes": "Size S. TC-49 is a Dalil internal decision; the story proposes the mechanism and the owner accepts the ADR. No site decision needed.",
+      "notes": "Size S. TC-49 is a Dalil internal decision; the story proposes the mechanism and the owner accepts the ADR. No site decision needed. 2026-10-11: owner decision, sign-in unchanged for now; the first administrator comes through the identity provider, so this story waits behind ARV-134a and is re-scoped then (docs/product/decisions.md).",
       "dependsOn": [
         "ARV-011",
-        "ARV-010c"
+        "ARV-010c",
+        "ARV-134a"
       ]
     },
     {
