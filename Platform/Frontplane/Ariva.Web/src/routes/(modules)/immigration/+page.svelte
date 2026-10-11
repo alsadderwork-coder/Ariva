@@ -2,13 +2,16 @@
 	import { ExternalLink, Radio, ScanLine } from '@lucide/svelte';
 	import { onDestroy, onMount } from 'svelte';
 	import { _, locale } from 'svelte-i18n';
+	import DataQualityPanel from '$lib/components/pages/live/DataQualityPanel.svelte';
+	import OverflowMarker from '$lib/components/pages/live/OverflowMarker.svelte';
 	import { estimateOnly, statusTone, waitStatus } from '$lib/components/pages/live/waits';
 	import IllustrativeBanner from '$lib/components/shared/IllustrativeBanner.svelte';
 	import SimplePageHeader from '$lib/components/shared/SimplePageHeader.svelte';
 	import StatusBadge, { type StatusTone } from '$lib/components/shared/StatusBadge.svelte';
+	import { auth } from '$lib/core/auth.svelte';
 	import { LiveConnection, type ZoneSnapshot } from '$lib/core/Live.svelte';
 	import * as operations from '$lib/core/operations';
-	import type { Immigration, ImmigrationHall } from '$lib/core/operations';
+	import type { Immigration, ImmigrationHall, OverflowZone } from '$lib/core/operations';
 	import * as topology from '$lib/core/topology';
 	import type { Site } from '$lib/core/topology';
 	import { cn } from '$lib/utils';
@@ -36,6 +39,11 @@
 	let problem = $state('');
 	let hallKind = $state<'Immigration' | 'Emigration'>('Immigration');
 	let snapshots = $state<Record<string, ZoneSnapshot>>({});
+	/** The queue zones with overflow bands, by zone name (ARV-120). */
+	let overflow = $state<Record<string, OverflowZone>>({});
+	let overflowFresh = $state(6);
+	/** The server refused the overflow read for its bound: no lane is marked, and the lanes table says so. */
+	let overflowRefusedNow = $state(false);
 	let now = $state(Date.now());
 	let destroyed = false;
 	let timers: ReturnType<typeof setInterval>[] = [];
@@ -82,6 +90,31 @@
 		return desksKnown.includes(state) ? $_(`immigration.deskStates.${state}`) : state;
 	}
 
+	/** The overflow state of the lane's queue zones: the marker shows while any of their bands is occupied. */
+	function laneOverflow(code: string): (OverflowZone | undefined)[] {
+		return (hall?.queues ?? []).filter((q) => q.lane === code).map((q) => overflow[q.zone]);
+	}
+
+	/** The hall's lane queues for the data-quality panel, in the lanes' order, each named by its lane. */
+	const qualityZones = $derived(
+		laneCodes.flatMap((code) =>
+			(hall?.queues ?? [])
+				.filter((q) => q.lane === code)
+				.map((q) => ({ name: q.zone, label: `${laneName(code)} (${q.zone})` }))
+		)
+	);
+
+	/** The overflow bands of the site's queue zones (ARV-120); an answer for a site no longer chosen is dropped. */
+	async function loadOverflow(): Promise<void> {
+		const site = siteCode;
+		if (!site) return;
+		const result = await operations.overflowBands(site);
+		if (destroyed || site !== siteCode) return;
+		overflowRefusedNow = operations.overflowRefused(result);
+		overflow = Object.fromEntries((result.data?.zones ?? []).map((zone) => [zone.zone, zone]));
+		if (result.data) overflowFresh = result.data.freshMinutes;
+	}
+
 	/** The lane's wait now: the longest fresh nowcast among its queue zones. */
 	function laneWait(code: string): { snapshot: ZoneSnapshot | undefined; tone: StatusTone } {
 		const fresh = (hall?.queues ?? [])
@@ -117,6 +150,9 @@
 	async function loadSite(): Promise<void> {
 		view = null;
 		snapshots = {};
+		overflow = {};
+		overflowRefusedNow = false;
+		void loadOverflow();
 		if (!(await load()) || !view) return;
 		watched = new Set(view.halls.flatMap((h) => h.queues.map((q) => q.zoneKey)));
 		await live.watch([...watched], null);
@@ -130,7 +166,8 @@
 		if (destroyed) return;
 		timers = [
 			setInterval(() => (now = Date.now()), 10_000),
-			setInterval(() => void load(), 60_000)
+			setInterval(() => void load(), 60_000),
+			setInterval(() => void loadOverflow(), 30_000)
 		];
 	});
 
@@ -234,6 +271,11 @@
 				<p class="text-xs text-muted-foreground">
 					{$_('immigration.lanesDescription', { values: { minutes: view?.windowMinutes ?? 15 } })}
 				</p>
+				{#if overflowRefusedNow}
+					<p class="text-xs text-muted-foreground" data-testid="overflow-refused">
+						{$_('liveOperations.overflow.refused')}
+					</p>
+				{/if}
 			</div>
 			{#if laneCodes.length === 0}
 				<p class="px-4 py-6 text-sm text-muted-foreground">{$_('immigration.noLanes')}</p>
@@ -279,6 +321,11 @@
 										{:else}
 											<span class="text-xs text-muted-foreground">{$_('immigration.noWait')}</span>
 										{/if}
+										<OverflowMarker
+											zones={laneOverflow(code)}
+											freshMinutes={overflowFresh}
+											class="ms-1.5 align-middle"
+										/>
 									</td>
 									<td class="px-4 py-2 text-end tabular-nums"
 										>{wait.snapshot ? numberFormat.format(wait.snapshot.queueLength) : '–'}</td
@@ -299,6 +346,17 @@
 				</div>
 			{/if}
 		</section>
+
+		<!-- ARV-120: the latest health bin of each lane's queue, for DataQuality.View holders only (the server checks it too). -->
+		{#if auth.can('DataQuality.View') && qualityZones.length > 0}
+			<DataQualityPanel
+				{siteCode}
+				zones={qualityZones}
+				bins={1}
+				heading={$_('liveOperations.quality.title')}
+				description={$_('liveOperations.quality.hallDescription')}
+			/>
+		{/if}
 
 		<div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
 			<section

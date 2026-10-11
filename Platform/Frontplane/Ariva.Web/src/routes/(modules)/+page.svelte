@@ -4,8 +4,10 @@
 	import { _, locale } from 'svelte-i18n';
 	import AlertsPanel from '$lib/components/pages/live/AlertsPanel.svelte';
 	import ArrivalStrip from '$lib/components/pages/live/ArrivalStrip.svelte';
+	import DataQualityPanel from '$lib/components/pages/live/DataQualityPanel.svelte';
 	import DeskStatesPanel from '$lib/components/pages/live/DeskStatesPanel.svelte';
 	import NowcastPlan from '$lib/components/pages/live/NowcastPlan.svelte';
+	import OverflowMarker from '$lib/components/pages/live/OverflowMarker.svelte';
 	import WaitChart from '$lib/components/pages/live/WaitChart.svelte';
 	import {
 		knownLabels,
@@ -29,7 +31,7 @@
 		type ZoneSnapshot
 	} from '$lib/core/Live.svelte';
 	import * as operations from '$lib/core/operations';
-	import type { Alert, ArrivalWave, DeskStates } from '$lib/core/operations';
+	import type { Alert, ArrivalWave, DeskStates, OverflowZone } from '$lib/core/operations';
 	import * as topology from '$lib/core/topology';
 	import type { Level, Site } from '$lib/core/topology';
 	import * as zonesApi from '$lib/core/zones';
@@ -54,6 +56,11 @@
 	let alerts = $state<Alert[]>([]);
 	let desks = $state<DeskStates | null>(null);
 	let wave = $state<ArrivalWave | null>(null);
+	/** The queue zones with overflow bands, by zone name (ARV-120); a zone without a band is not in it. */
+	let overflow = $state<Record<string, OverflowZone>>({});
+	let overflowFresh = $state(6);
+	/** The server refused the overflow read for its bound: no queue is marked, and the zones table says so. */
+	let overflowRefusedNow = $state(false);
 	let plan = $state<zonesApi.PlanImage | null>(null);
 	/** The site's floor plans by level (asked once per site). */
 	let plans: Record<string, zonesApi.FloorPlan> = {};
@@ -123,6 +130,17 @@
 		if (site === siteCode) wave = result.hasErrors ? null : result.data;
 	}
 
+	/** The overflow bands of the site's queue zones (ARV-120): a marker per queue while a band is occupied. */
+	async function loadOverflow(): Promise<void> {
+		const site = siteCode;
+		if (!site) return;
+		const result = await operations.overflowBands(site);
+		if (destroyed || site !== siteCode) return;
+		overflowRefusedNow = operations.overflowRefused(result);
+		overflow = Object.fromEntries((result.data?.zones ?? []).map((zone) => [zone.zone, zone]));
+		if (result.data) overflowFresh = result.data.freshMinutes;
+	}
+
 	function dropPlan(): void {
 		if (plan) URL.revokeObjectURL(plan.url);
 		plan = null;
@@ -153,6 +171,8 @@
 		plans = sitePlans;
 		snapshots = {};
 		history = {};
+		overflow = {};
+		overflowRefusedNow = false;
 		selectedKey = null;
 		const [levelResult, profiles] = await Promise.all([
 			topology.search<Level>('level', { siteCode: site }),
@@ -183,6 +203,7 @@
 			loadAlerts(),
 			loadDesks(),
 			loadWave(),
+			loadOverflow(),
 			loadPlan()
 		]);
 	}
@@ -201,7 +222,8 @@
 			setInterval(() => (now = Date.now()), 10_000),
 			setInterval(() => void loadDesks(), 60_000),
 			setInterval(() => void loadWave(), 60_000),
-			setInterval(() => void loadAlerts(), 60_000)
+			setInterval(() => void loadAlerts(), 60_000),
+			setInterval(() => void loadOverflow(), 30_000)
 		];
 	});
 
@@ -361,6 +383,11 @@
 						{$_('liveOperations.zones.title')}
 					</h2>
 					<p class="text-xs text-muted-foreground">{$_('liveOperations.zones.description')}</p>
+					{#if overflowRefusedNow}
+						<p class="text-xs text-muted-foreground" data-testid="overflow-refused">
+							{$_('liveOperations.overflow.refused')}
+						</p>
+					{/if}
 				</div>
 				<div class="overflow-x-auto">
 					<table class="w-full text-sm" data-testid="zones-table">
@@ -435,22 +462,27 @@
 										{/if}
 									</td>
 									<td class="px-4 py-2">
-										{#if live.refused.includes(zone.key)}
-											<StatusBadge tone="neutral" label={$_('liveOperations.refused')} />
-										{:else if !snapshot}
-											<StatusBadge tone="neutral" label={$_('liveOperations.noData')} />
-										{:else if stale}
-											<span
-												title={$_('liveOperations.staleHint', {
-													values: { seconds: staleAfterSeconds }
-												})}><StatusBadge tone="neutral" label={$_('liveOperations.stale')} /></span
-											>
-										{:else}
-											<StatusBadge
-												tone={statusTone[status]}
-												label={$_(`liveOperations.status.${status}`)}
-											/>
-										{/if}
+										<!-- The overflow marker stacks under the status, so the column keeps its width. -->
+										<div class="flex flex-col items-start gap-1">
+											{#if live.refused.includes(zone.key)}
+												<StatusBadge tone="neutral" label={$_('liveOperations.refused')} />
+											{:else if !snapshot}
+												<StatusBadge tone="neutral" label={$_('liveOperations.noData')} />
+											{:else if stale}
+												<span
+													title={$_('liveOperations.staleHint', {
+														values: { seconds: staleAfterSeconds }
+													})}
+													><StatusBadge tone="neutral" label={$_('liveOperations.stale')} /></span
+												>
+											{:else}
+												<StatusBadge
+													tone={statusTone[status]}
+													label={$_(`liveOperations.status.${status}`)}
+												/>
+											{/if}
+											<OverflowMarker zones={[overflow[zone.name]]} freshMinutes={overflowFresh} />
+										</div>
 									</td>
 									<td class="px-4 py-2 tabular-nums">{updated(snapshot)}</td>
 								</tr>
@@ -464,6 +496,16 @@
 				<section class="rounded-xl border bg-card p-4">
 					<WaitChart zone={selected.name} points={history[selected.key] ?? []} />
 				</section>
+				<!-- ARV-120: the selected zone's health checks, for DataQuality.View holders only (the server checks it too). -->
+				{#if auth.can('DataQuality.View')}
+					<DataQualityPanel
+						{siteCode}
+						zones={[{ name: selected.name }]}
+						bins={8}
+						heading={$_('liveOperations.quality.zoneTitle', { values: { zone: selected.name } })}
+						description={$_('liveOperations.quality.description')}
+					/>
+				{/if}
 			{/if}
 		</div>
 

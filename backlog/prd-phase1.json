@@ -898,7 +898,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 37,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Wiki 12 (user guide) updated with the new panels. Owner decision 2026-10-08: report generation (templates, documents, CSV, schedules and delivery) waits for the integration with the Insight report tool used in AMAN and moves to ARV-146; this story keeps what is not report generation.",
       "dependsOn": [
         "ARV-115",

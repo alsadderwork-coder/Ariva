@@ -149,7 +149,48 @@
 			"label": "Predicted hall arrivals per minute"
 		},
 		"noAccess": "Your role has no live operations view. Ask an administrator for a role at your site.",
-		"estimateHint": "Estimate from the exit rate only (desk states not known): a wider margin"
+		"estimateHint": "Estimate from the exit rate only (desk states not known): a wider margin",
+		"overflow": {
+			"inUse": "Overflow in use",
+			"band": "{band}: {people} people at {time}",
+			"hint": "An overflow band of this queue held people in its latest minute with a reading (within the last {minutes} min).",
+			"refused": "Overflow bands are not marked: the site's zone profile has more bands than one answer holds (500)."
+		},
+		"quality": {
+			"title": "Data quality",
+			"zoneTitle": "Data quality: {zone}",
+			"description": "Health checks of each 15-minute bin over the last 2 hours, newest first (formulas F18). Targets: conservation residual 0, track completion at least 90 %, no minute outside the zone's capacity.",
+			"hallDescription": "Health checks of the latest 15-minute bin of each lane's queue (formulas F18). Targets: conservation residual 0, track completion at least 90 %, no minute outside the zone's capacity.",
+			"columns": {
+				"bin": "Bin",
+				"residual": "Conservation residual",
+				"completion": "Track completion",
+				"occupancy": "Occupancy range"
+			},
+			"status": {
+				"Final": "Final",
+				"Provisional": "Provisional"
+			},
+			"residual": {
+				"notMeasured": "Not measured",
+				"value": "{value} people",
+				"hint": "People counted in or out that the occupancy at the bin's two ends does not show"
+			},
+			"completion": {
+				"noTracks": "No tracks",
+				"value": "{percent} ({exited} of {entered})",
+				"soFar": "{percent} so far ({exited} of {entered})"
+			},
+			"occupancy": {
+				"notChecked": "No capacity set",
+				"within": "Within capacity ({checked} min)",
+				"outside": "{minutes} of {checked} min outside"
+			},
+			"none": "No health bins in the last 2 hours",
+			"noBin": "No bin yet",
+			"failed": "The data quality could not be read",
+			"loading": "Loading the data quality…"
+		}
 	},
 	"errors": {
 		"notFound": {
@@ -570,7 +611,17 @@
 		"planLabel": "Floor plan with the queue zones and the devices' coverage",
 		"assumed": "assumed",
 		"zonesHealth": "Queue zone sensing",
-		"heartbeat": "A device is offline after {seconds} s without a heartbeat."
+		"heartbeat": "A device is offline after {seconds} s without a heartbeat.",
+		"healthAlarms": {
+			"title": "Health-check alarms",
+			"description": "Open alarms of the continuous health checks per queue zone: conservation residual, track completion and occupancy range. You see the alarms your role is responsible for.",
+			"none": "No open health-check alarm at this site",
+			"noZone": "Without a zone",
+			"bin": "bin {time}",
+			"raised": "raised {time}",
+			"more": "The site has more open alerts than one page: the newest 500 are read.",
+			"failed": "The alarms could not be read"
+		}
 	},
 	"alertRules": {
 		"notEvaluated": "Not evaluated yet",

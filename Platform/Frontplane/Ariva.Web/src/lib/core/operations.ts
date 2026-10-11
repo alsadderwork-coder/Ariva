@@ -15,6 +15,8 @@ export interface Alert {
 	state: 'Raised' | 'Acknowledged' | 'Escalated' | 'Cleared' | 'Resolved' | string;
 	raisedUtc: string;
 	raisedValue: number;
+	/** The 15-minute bin a health-check alarm judged (ARV-114b); null for the other metrics. */
+	binStartUtc?: string | null;
 	ownerRole: string | null;
 	acknowledgedUtc: string | null;
 	acknowledgedBy: string | null;
@@ -69,8 +71,11 @@ export interface DeskStates {
 const site = /^[A-Z0-9]{2,8}(-[A-Z0-9]{1,8})?$/;
 const guid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 
-export function openAlerts(siteCode: string): Promise<Result<Page<Alert>>> {
-	return Api.get<Page<Alert>>('/api/v1/alerts', { query: { siteCode, open: true, pageSize: 100 } });
+/** The site's open alerts the caller's role is responsible for (the server decides), newest first; at most 500 a page. */
+export function openAlerts(siteCode: string, pageSize = 100): Promise<Result<Page<Alert>>> {
+	return Api.get<Page<Alert>>('/api/v1/alerts', {
+		query: { siteCode, open: true, pageSize: Math.min(Math.max(1, pageSize), 500) }
+	});
 }
 
 export function acknowledge(id: string, note: string): Promise<Result<Alert>> {
@@ -164,4 +169,107 @@ export interface Immigration {
 export function immigration(siteCode: string): Promise<Result<Immigration>> {
 	if (!site.test(siteCode)) return Promise.resolve(fail<Immigration>('Refused: not a site.'));
 	return Api.get<Immigration>(`/api/v1/sites/${siteCode}/immigration`);
+}
+
+/** An overflow band's state (ARV-120): its latest minute with a reading within the server's window, or NotHeard. */
+export interface OverflowBand {
+	band: string;
+	state: 'Occupied' | 'Empty' | 'NotHeard' | string;
+	minuteUtc: string | null;
+	maxOccupancy: number | null;
+}
+
+/** A queue zone with overflow bands: Occupied when any band is (decided by the server). */
+export interface OverflowZone {
+	zone: string;
+	state: 'Occupied' | 'Empty' | 'NotHeard' | string;
+	bands: OverflowBand[];
+}
+
+/**
+ * The overflow bands of a site's queue zones (ARV-120, LiveQueue.View); a queue zone without a band is not listed. A profile
+ * with more bands than one answer holds (500) is refused with 409, never answered in part (`overflowRefused`).
+ */
+export interface OverflowBands {
+	siteCode: string;
+	asOfUtc: string;
+	freshMinutes: number;
+	zones: OverflowZone[];
+}
+
+/** The server refused the overflow read for its bound (409): the screens mark no queue and say why. */
+export function overflowRefused(result: Result<unknown>): boolean {
+	return result.hasErrors && result.status === 409;
+}
+
+export function overflowBands(siteCode: string): Promise<Result<OverflowBands>> {
+	if (!site.test(siteCode)) return Promise.resolve(fail<OverflowBands>('Refused: not a site.'));
+	return Api.get<OverflowBands>(`/api/v1/sites/${siteCode}/overflow-bands`);
+}
+
+/**
+ * One 15-minute bin of a queue zone's continuous health checks (ARV-114a, formulas F18), its latest revision: the
+ * conservation residual (null when either boundary is not measured), the tracks and their completion rate (null when no
+ * track entered), and the minutes checked against the zone's physical capacity.
+ */
+export interface ZoneHealthBin {
+	startUtc: string;
+	lengthMinutes: number;
+	revision: number;
+	status: 'Provisional' | 'Final' | string;
+	zoneProfileVersion: number;
+	entries: number;
+	exits: number;
+	occupancyStart: number | null;
+	occupancyEnd: number | null;
+	conservationResidual: number | null;
+	tracksEntered: number;
+	tracksExited: number;
+	tracksAbandoned: number;
+	tracksFragmented: number;
+	tracksCensored: number;
+	tracksRejected: number;
+	tracksOpen: number;
+	trackCompletionRate: number | null;
+	occupancyMinutes: number;
+	capacityMinutes: number;
+	minutesOutsideCapacity: number;
+}
+
+export interface ZoneHealth {
+	siteCode: string;
+	zone: string;
+	fromUtc: string;
+	toUtc: string;
+	bins: ZoneHealthBin[];
+	truncated: boolean;
+}
+
+/** A queue zone's name as the server takes it: 1 to 200 characters, no surrounding space, no control character. */
+function isZoneName(value: string): boolean {
+	return (
+		value.length > 0 &&
+		value.length <= 200 &&
+		value.trim() === value &&
+		!/[\u0000-\u001f\u007f-\u009f]/.test(value)
+	);
+}
+
+/**
+ * The health bins of a queue zone whose start lies in [from, to) (ARV-114a, DataQuality.View; at most 31 days): the zone
+ * travels as a query value, never in the path.
+ */
+export function zoneHealth(
+	siteCode: string,
+	zone: string,
+	from: Date,
+	to: Date
+): Promise<Result<ZoneHealth>> {
+	if (!site.test(siteCode)) return Promise.resolve(fail<ZoneHealth>('Refused: not a site.'));
+	if (!isZoneName(zone)) return Promise.resolve(fail<ZoneHealth>('Refused: not a zone.'));
+	if (!(from.getTime() < to.getTime()))
+		return Promise.resolve(fail<ZoneHealth>('Refused: not a range.'));
+	return Api.get<ZoneHealth>(`/api/v1/sites/${siteCode}/zone-health`, {
+		query: { zone, from: from.toISOString(), to: to.toISOString() }
+	});
 }

@@ -362,7 +362,7 @@
       ],
       "priority": 115,
       "passes": false,
-      "notes": "",
+      "notes": "ARV-120 (2026-10-11): until handler isolation exists, a handler station manager reads every queue zone of its sites, border lane queues included, through two paths: the live hub's zone snapshots (JoinZone) and the overflow bands read (GET api/v1/sites/{siteCode}/overflow-bands, LiveQueue.View), which gives the same zones as the hub and nothing new. The handler isolation must cover both paths (V8.4.1).",
       "dependsOn": [
         "ARV-074"
       ]

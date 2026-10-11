@@ -33,18 +33,33 @@ async function language(page: Page, arabic: boolean): Promise<void> {
 }
 
 let playerPath = '';
-/** What the run planted, removed afterwards so the suites that follow start from the demo seed. */
-const planted = { keys: [] as string[], displays: [] as { id: string; token: string }[] };
 
-/** Fixed snapshots for every published DMO queue zone: the same numbers on every run, published just now. */
-async function plantSnapshots(): Promise<void> {
-	const db = new pg.Client({
+/** The health bins and band minutes planted for the DMO queue zones (the migration login can delete them; the runtime role cannot). */
+async function clearHealth(db: pg.Client, since: Date): Promise<void> {
+	await db.query(`DELETE FROM zone_health_bin WHERE zone_key LIKE 'DMO/%' AND start_utc >= $1`, [since]);
+	await db.query(`DELETE FROM overflow_minute WHERE zone_key = 'DMO/A-VIS' AND minute_utc >= $1`, [since]);
+}
+/** What the run planted, removed afterwards so the suites that follow start from the demo seed. */
+const planted = { keys: [] as string[], displays: [] as { id: string; token: string }[], healthSince: null as Date | null };
+
+function database(): pg.Client {
+	return new pg.Client({
 		host: process.env.Database__Host || 'localhost',
 		port: Number(process.env.Database__Port || 5432),
 		database: process.env.Database__Name || 'postgres',
 		user: process.env.Database__Migration__Username || 'postgres',
 		password: process.env.Database__Migration__Password
 	});
+}
+
+/**
+ * Fixed snapshots for every published DMO queue zone: the same numbers on every run, published just now. Since ARV-120 also
+ * one final health bin per queue zone (the bin before the current one, fixed values by zone; its time is masked) and an
+ * occupied minute of the arrivals visitors' overflow band (A-OV), as Ariva.Api.Stream writes them, so the data-quality
+ * panels and the overflow marker are on screen.
+ */
+async function plantSnapshots(): Promise<void> {
+	const db = database();
 	await db.connect();
 	const redis = createClient({ url: redisUrl });
 	await redis.connect();
@@ -70,6 +85,25 @@ async function plantSnapshots(): Promise<void> {
 			await redis.set(`${instance}live:zone:${snapshot.zoneKey}`, JSON.stringify(snapshot), { EX: 3600 });
 			planted.keys.push(`${instance}live:zone:${snapshot.zoneKey}`);
 		}
+		const binMs = 15 * 60_000;
+		const bin = new Date(Math.floor(Date.now() / binMs) * binMs - binMs);
+		planted.healthSince = new Date(bin.getTime() - binMs);
+		await clearHealth(db, planted.healthSince);
+		for (const [index, { name }] of (zones.rows as { name: string }[]).entries()) {
+			const exited = 20 - (index % 4);
+			await db.query(
+				`INSERT INTO zone_health_bin (zone_key, start_utc, revision, length_minutes, status, profile_version, entries, exits, occupancy_start, occupancy_end,
+				     conservation_residual, tracks_entered, tracks_exited, tracks_abandoned, tracks_fragmented, tracks_censored, tracks_rejected, tracks_open,
+				     track_completion_rate, occupancy_minutes, capacity_minutes, minutes_outside_capacity, updated_on)
+				 VALUES ($1, $2, 1, 15, 'Final', 12, 20, 20, 8, 8, $3, 20, $4, 0, $5, 0, 0, 0, $6, 15, 15, $7, now())`,
+				[`DMO/${name}`, bin, index % 3, exited, 20 - exited, exited / 20, index % 5 === 2 ? 1 : 0]
+			);
+		}
+		await db.query(
+			`INSERT INTO overflow_minute (zone_key, band_name, minute_utc, profile_version, min_occupancy, max_occupancy, updated_on)
+			 VALUES ('DMO/A-VIS', 'A-OV', $1, 12, 4, 12, now()) ON CONFLICT (zone_key, band_name, minute_utc) DO NOTHING`,
+			[new Date(Math.floor(Date.now() / 60_000) * 60_000 - 2 * 60_000)]
+		);
 	} finally {
 		await redis.quit();
 		await db.end();
@@ -101,7 +135,7 @@ async function createDisplay(): Promise<string> {
 			fallback: { en: 'Please follow the signs', ar: 'يرجى اتباع اللوحات' }
 		}
 	});
-	expect(created.status(), await created.text()).toBe(201);
+	expect(created.status(), created.status() === 201 ? 'the display is created' : await created.text()).toBe(201);
 	const display = await created.json();
 	planted.displays.push({ id: display.display.id, token });
 	return `/display?code=${code}#key=${encodeURIComponent(display.credential)}`;
@@ -135,7 +169,7 @@ async function plantCampaign(): Promise<string> {
 		token,
 		data: { name: campaignName, profileVersion: published.version, zoneIds, lineIds, days: [today], targetBinsPerLine: null, targetTracerRuns: null }
 	});
-	expect(created.status(), await created.text()).toBe(201);
+	expect(created.status(), created.status() === 201 ? 'the campaign is planned' : await created.text()).toBe(201);
 	return (await created.json()).id;
 }
 
@@ -150,6 +184,15 @@ async function settle(page: Page): Promise<void> {
 }
 
 test.afterAll(async () => {
+	if (planted.healthSince) {
+		const db = database();
+		await db.connect();
+		try {
+			await clearHealth(db, planted.healthSince);
+		} finally {
+			await db.end();
+		}
+	}
 	for (const { id, token } of planted.displays) {
 		await call('DELETE', `${hosts.main}/api/v1/admin/displays/${id}`, { token });
 	}
@@ -186,6 +229,8 @@ for (const variant of variants) {
 			await settle(page);
 			// The publication times change the table's column widths as their digits do: one fixed text for all of them.
 			await page.locator('[data-testid="zone-row"] td:last-child').evaluateAll((cells) => cells.forEach((cell) => (cell.textContent = '00:00')));
+			// The data-quality panel's bin times as well (ARV-120): their width follows their digits, and the text after them moves.
+			await page.locator('[data-testid="data-quality"] time').evaluateAll((times) => times.forEach((time) => (time.textContent = '00:00')));
 			await expect(page).toHaveScreenshot(`live-operations-${variant.name}.png`, {
 				// The zones table's last column is each snapshot's publication time.
 				mask: [
@@ -205,7 +250,10 @@ for (const variant of variants) {
 			// Through the sidebar, so the language chosen stays (a full load would start in English again).
 			await page.locator('a[href="/immigration"]').first().click();
 			await expect(page.getByTestId('lanes')).toBeVisible();
+			await expect(page.locator('[data-testid="data-quality"] [data-testid="quality-row"]').first()).toBeVisible();
 			await settle(page);
+			// The data-quality panel's bin times (ARV-120): their width follows their digits, and the text after them moves.
+			await page.locator('[data-testid="data-quality"] time').evaluateAll((times) => times.forEach((time) => (time.textContent = '00:00')));
 			await expect(page).toHaveScreenshot(`immigration-${variant.name}.png`, {
 				// Desks and e-gates follow AMAN's records, which the simulator keeps sending; the lanes' waits are the planted snapshots.
 				mask: [...clockMasks(page), page.getByTestId('desk-grid'), page.getByTestId('egates')]

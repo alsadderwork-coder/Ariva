@@ -6,6 +6,7 @@
 	import CoveragePlan from '$lib/components/pages/devices/CoveragePlan.svelte';
 	import CredentialReveal from '$lib/components/pages/devices/CredentialReveal.svelte';
 	import DevicePanel from '$lib/components/pages/devices/DevicePanel.svelte';
+	import HealthAlarms from '$lib/components/pages/devices/HealthAlarms.svelte';
 	import RegisterForm from '$lib/components/pages/devices/RegisterForm.svelte';
 	import IllustrativeBanner from '$lib/components/shared/IllustrativeBanner.svelte';
 	import SimplePageHeader from '$lib/components/shared/SimplePageHeader.svelte';
@@ -361,6 +362,13 @@
 		{/if}
 	</section>
 </div>
+
+<!-- ARV-120: the open alarms of the continuous health checks per queue zone (the alerts the caller's role is responsible for). -->
+{#if siteCode && auth.can('Alert.Search')}
+	<div class="mt-4">
+		<HealthAlarms {siteCode} />
+	</div>
+{/if}
 
 {#if selected}
 	<div class="mt-4">

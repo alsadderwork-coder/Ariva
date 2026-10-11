@@ -39,6 +39,8 @@ public static class FlightExtensions
         services.TryAddScoped<ISvcArrivalWave, Ariva.Infra.Services.Flights.SvcArrivalWave>();
         // ARV-055: the live screen's desk states, scoped like the arrival wave.
         services.TryAddScoped<Ariva.Core.Services.Live.ISvcDeskStates, Ariva.Infra.Services.Live.SvcDeskStates>();
+        // ARV-120: the overflow bands the live and immigration screens mark, scoped like the desk states.
+        services.TryAddScoped<Ariva.Core.Services.Live.ISvcOverflowBands, Ariva.Infra.Services.Live.SvcOverflowBands>();
         services.TryAddScoped<Ariva.Core.Services.Border.ISvcImmigrationView, Ariva.Infra.Services.Border.SvcImmigrationView>();
         return services;
     }
