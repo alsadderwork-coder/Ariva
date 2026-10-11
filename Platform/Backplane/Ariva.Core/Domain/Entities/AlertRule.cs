@@ -166,17 +166,29 @@ public sealed record AlertRuleValues(
     bool Enabled,
     int? LeadMinutes = null)
 {
-    /// <summary>The largest threshold per unit: minutes for waits, people for queue length, desks for desks below plan.</summary>
+    /// <summary>
+    /// The largest threshold per unit: minutes for waits, people for queue length and the conservation residual, desks
+    /// for desks below plan, percent for track completion, minutes of a bin (at most a day) for occupancy out of range.
+    /// </summary>
     public static double MaxThreshold(AlertMetric metric) => metric switch
     {
         AlertMetric.Nowcast or AlertMetric.BinP90 or AlertMetric.PredictedNowcast => 600,
-        AlertMetric.QueueLength => 100_000,
+        AlertMetric.QueueLength or AlertMetric.ConservationResidual => 100_000,
         AlertMetric.DesksBelowPlan => 1_000,
+        AlertMetric.TrackCompletion => 100,
+        AlertMetric.OccupancyOutOfRange => 1_440,
         _ => 0
     };
 
     /// <summary>Metrics that are true or false, compared with <see cref="AlertComparator.IsTrue"/> and no threshold.</summary>
     public static bool IsCondition(AlertMetric metric) => metric is AlertMetric.OverflowOccupied or AlertMetric.SensorOffline;
+
+    /// <summary>
+    /// The continuous health checks of a queue zone's bins (F18, ARV-114b): judged per queue zone on its stored
+    /// <c>zone_health_bin</c> rows, so a rule on one watches queue zones only.
+    /// </summary>
+    public static bool IsHealthCheck(AlertMetric metric) =>
+        metric is AlertMetric.ConservationResidual or AlertMetric.TrackCompletion or AlertMetric.OccupancyOutOfRange;
 
     private static bool IsRole(string code) => RoleCodes.AlertRoles.Any(r => string.Equals(r, code, StringComparison.Ordinal));
 

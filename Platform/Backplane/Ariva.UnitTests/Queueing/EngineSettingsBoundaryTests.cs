@@ -45,6 +45,8 @@ public sealed class EngineSettingsBoundaryTests
         B(nameof(BinSettings.TargetMinutes), [1e-9, 24.0 * 60], [0.0, 24.0 * 60 + 0.01, double.NaN, double.PositiveInfinity]),
         B(nameof(BinSettings.MinimumPassengers), [1, 10_000], [0, 10_001]),
         B(nameof(BinSettings.CensoredDegradedShare), [0.0, 1.0], [-0.01, 1.01, double.NaN]),
+        // ARV-114b: F11's track completion threshold (0 never degrades).
+        B(nameof(BinSettings.TrackCompletionDegradedBelow), [0.0, 0.9, 1.0], [-0.01, 1.01, double.NaN, double.PositiveInfinity]),
         B(nameof(BinSettings.MaxExactWaitsPerBin), [0, 1_000_000], [-1, 1_000_001], "bin bounds"),
         B(nameof(BinSettings.MaxOpenBins), [1, 10_000], [0, 10_001], "bin bounds"),
         B(nameof(BinSettings.MaxMarks), [1, 10_000], [0, 10_001], "bin bounds"),

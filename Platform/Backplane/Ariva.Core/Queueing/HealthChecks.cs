@@ -28,7 +28,9 @@ public sealed record OccupancyMinutes(int Observed, int Checked, int Outside)
 /// reported apart; null when no track entered;</item>
 /// <item>the minutes whose occupancy readings left 0 to the zone's physical capacity.</item>
 /// </list>
-/// Thresholds and alarms are not applied here (Proposed values, ARV-114b).
+/// The row carries no threshold. Since ARV-114b a final bin whose completion falls below F11's threshold is Degraded in its
+/// <see cref="BinResult"/> (<see cref="BinSettings.TrackCompletionDegradedBelow"/>), and alert rules judge all three checks
+/// (<c>ConservationResidual</c>, <c>TrackCompletion</c>, <c>OccupancyOutOfRange</c>, <c>Ariva.Core.Alerting.HealthAlertSeries</c>).
 /// </summary>
 public sealed record ZoneHealthBin(
     string QueueZone,
@@ -58,6 +60,13 @@ public sealed record ZoneHealthBin(
 public static class HealthChecks
 {
     /// <summary>
+    /// The pilot's track completion target (F18, Proposed 0.90) and F11's threshold below which a final bin is Degraded
+    /// (ARV-114b): the default of both <see cref="BinSettings.TrackCompletionDegradedBelow"/> and the validation comparison's
+    /// target. Neither setting is configured per host, so they are equal; a test pins it.
+    /// </summary>
+    public const double TrackCompletionTarget = 0.90;
+
+    /// <summary>
     /// r = (entries - exits) - (Occ(end) - Occ(start)); 0 when every person counted in or out shows in the occupancy.
     /// Positive: more counted in than the occupancy grew by (people the occupancy misses, or entries counted twice);
     /// negative: the occupancy grew by more than was counted in. Null without the occupancy at both boundaries.
@@ -68,6 +77,13 @@ public static class HealthChecks
     /// <summary>Tracks with outcome Exited over tracks that entered; null when none entered (no rate, never 0 or 1).</summary>
     public static double? TrackCompletionRate(long tracksEntered, long tracksExited) =>
         tracksEntered > 0 ? (double)Math.Min(tracksExited, tracksEntered) / tracksEntered : null;
+
+    /// <summary>
+    /// Whether a bin's track completion falls below <paramref name="threshold"/> (F11, ARV-114b), compared with F18's
+    /// tolerance of 1e-9 (18 of 20 against 0.90 is not below); false without a track that entered, or with a threshold of 0.
+    /// </summary>
+    public static bool TrackCompletionBelow(long tracksEntered, long tracksExited, double threshold) =>
+        TrackCompletionRate(tracksEntered, tracksExited) is { } rate && rate < threshold - 1e-9;
 
     /// <summary>Whether a zone's readings in a minute left 0 to its physical capacity (no capacity: only below 0 counts).</summary>
     public static bool OutsideCapacity(int min, int max, int? capacity) => min < 0 || (capacity is { } c && max > c);

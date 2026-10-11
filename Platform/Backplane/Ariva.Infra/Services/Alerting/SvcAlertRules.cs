@@ -159,6 +159,8 @@ internal sealed class SvcAlertRules(
         var end = AlertInputs.Minute(to);
         var targets = await inputs.TargetsAsync(rule.SiteCode, values, ct);
         var series = await inputs.ReadAsync(rule.SiteCode, values, targets, start, end, ct);
+        if (series is null)
+            return Result.Error<AlertBacktestViewModel>(AlertRuleErrors.BacktestTooLarge);
         var alerts = new List<AlertBacktestAlert>();
         foreach (var target in series)
         {
@@ -203,10 +205,13 @@ internal sealed class SvcAlertRules(
         var known = await Query<Zone>()
             .Where(z => z.Profile.SiteCode == siteCode && z.Profile.Status == ZoneProfileStatus.Published && zones.Contains(z.Name) &&
                         (z.Kind == ZoneKind.Queue || z.Kind == ZoneKind.Overflow))
-            .Select(z => z.Name)
+            .Select(z => new { z.Name, z.Kind })
             .ToListAsync(ct);
-        if (known.Distinct(StringComparer.Ordinal).Count() != zones.Count)
+        if (known.Select(z => z.Name).Distinct(StringComparer.Ordinal).Count() != zones.Count)
             problems.Add(AlertRuleErrors.UnknownZones);
+        // ARV-114b: the health checks are stored per queue zone (an overflow band's readings are part of its queue's checks).
+        else if (AlertRuleValues.IsHealthCheck(values.Metric) && known.Any(z => z.Kind != ZoneKind.Queue))
+            problems.Add(AlertRuleErrors.QueueZonesOnly);
 
         // A role the caller does not hold can be neither given nor taken away: an unchanged role is fine, a changed one
         // must be held before and after. A rule without an owner belongs to every role of the site (Alert.IsFor), so

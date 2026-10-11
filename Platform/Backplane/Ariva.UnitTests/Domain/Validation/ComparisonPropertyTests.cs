@@ -434,18 +434,30 @@ public sealed class ComparisonPropertyTests
         {
             foreach (var bin in Enumerable.Range(0, 8).Select(i => start.AddMinutes(15 * i)))
             {
+                var flagged = false;
                 for (var revision = 1; revision <= random.Next(0, 3); revision++)
                 {
                     var entries = random.Next(0, 200);
-                    queueBins.Add(new QueueBinRow(zone.Name, bin, TimeSpan.FromMinutes(15), revision, random.Next(5) == 0 ? BinStatus.Provisional : BinStatus.Final,
-                        (BinQuality)random.Next(0, 3), Version(), entries, random.Next(0, entries + 1)));
+                    var status = random.Next(5) == 0 ? BinStatus.Provisional : BinStatus.Final;
+                    var quality = (BinQuality)random.Next(0, 3);
+                    // ARV-114b: a final Degraded bin is sometimes Degraded for its own track completion alone.
+                    var completionOnly = status == BinStatus.Final && quality == BinQuality.Degraded && random.Next(2) == 0;
+                    flagged |= completionOnly;
+                    queueBins.Add(new QueueBinRow(zone.Name, bin, TimeSpan.FromMinutes(15), revision, status, quality, Version(), entries, random.Next(0, entries + 1))
+                    {
+                        DegradedByCompletionOnly = completionOnly
+                    });
                 }
 
                 if (random.Next(4) > 0)
                 {
-                    var entered = random.Next(0, 40);
-                    health.Add(new ZoneHealthBin(zone.Name, bin, TimeSpan.FromMinutes(15), 1, random.Next(5) == 0 ? BinStatus.Provisional : BinStatus.Final, Version(),
-                        0, 0, null, null, null, entered, random.Next(0, entered + 1), 0, 0, 0, 0, 0, null, 0, 0, 0));
+                    // Mostly a health row that bears a flag out (final, below 90 percent), sometimes one that does not.
+                    var bearsOut = flagged && random.Next(4) > 0;
+                    var entered = bearsOut ? random.Next(10, 40) : random.Next(0, 40);
+                    var exited = bearsOut ? random.Next(0, entered * 9 / 10) : random.Next(0, entered + 1);
+                    health.Add(new ZoneHealthBin(zone.Name, bin, TimeSpan.FromMinutes(15), 1,
+                        bearsOut || random.Next(5) > 0 ? BinStatus.Final : BinStatus.Provisional, Version(), 0, 0, null, null, null, entered, exited, 0, 0, 0, 0, 0, null,
+                        0, 0, 0));
                 }
             }
 

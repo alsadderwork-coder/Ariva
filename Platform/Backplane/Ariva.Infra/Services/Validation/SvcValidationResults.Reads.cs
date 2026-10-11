@@ -37,7 +37,8 @@ internal sealed partial class SvcValidationResults
 
     private const string QueueBinsSql = """
         SELECT zone_key AS "ZoneKey", start_utc AS "StartUtc", length_minutes AS "LengthMinutes", revision AS "Revision", status AS "Status", quality AS "Quality",
-               profile_version AS "ProfileVersion", entries AS "Entries", abandoned AS "Abandoned"
+               profile_version AS "ProfileVersion", entries AS "Entries", abandoned AS "Abandoned",
+               degraded_by_completion_only AS "DegradedByCompletionOnly"
           FROM queue_bin
          WHERE zone_key IN (:keys) AND start_utc >= :from AND start_utc < :to
          ORDER BY zone_key, start_utc, revision
@@ -206,7 +207,10 @@ internal sealed partial class SvcValidationResults
         return rows.Count > RowLimit
             ? null
             : [.. rows.Where(r => zonesByKey.ContainsKey(r.ZoneKey)).Select(r => new QueueBinRow(zonesByKey[r.ZoneKey], Utc(r.StartUtc), TimeSpan.FromMinutes(r.LengthMinutes),
-                r.Revision, Parse<BinStatus>(r.Status), Parse<BinQuality>(r.Quality), r.ProfileVersion, r.Entries, r.Abandoned))];
+                r.Revision, Parse<BinStatus>(r.Status), Parse<BinQuality>(r.Quality), r.ProfileVersion, r.Entries, r.Abandoned)
+            {
+                DegradedByCompletionOnly = r.DegradedByCompletionOnly
+            })];
     }
 
     /// <summary>The zones' stored health bins (every revision) whose start falls in the window; null beyond the bound.</summary>
@@ -409,6 +413,7 @@ internal sealed partial class SvcValidationResults
         public int ProfileVersion { get; set; }
         public long Entries { get; set; }
         public long Abandoned { get; set; }
+        public bool DegradedByCompletionOnly { get; set; }
     }
 
     [SuppressMessage("Performance", "CA1812", Justification = "Created by NHibernate's result transformer.")]

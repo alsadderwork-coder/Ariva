@@ -56,6 +56,47 @@ async function plantMinutes(): Promise<void> {
 	}
 }
 
+/**
+ * ARV-114b: what Ariva.Api.Stream stores for security south (SEC-S) yesterday 05:00 to 06:00: its queue minutes and four
+ * final health bins, the 05:15 one with 15 of its 20 tracks exited (75 percent), the others at 90 percent or more.
+ */
+async function plantHealth(): Promise<void> {
+	const db = database();
+	await db.connect();
+	try {
+		await clearHealth(db);
+		for (let minute = 0; minute < 60; minute++) {
+			await db.query(
+				`INSERT INTO queue_minute (zone_key, minute_utc, profile_version, status, queue_length, length_from_sensors, length_degraded, nowcast_minutes,
+				                           throughput_per_minute, nowcast_degraded, updated_on)
+				 VALUES ('DMO/SEC-S', $1, 1, 'Final', 12, true, false, 3.2, 4, false, now())`,
+				[new Date(Date.parse(at('05:00')) + minute * 60_000)]
+			);
+		}
+		for (const [start, exited] of [
+			['05:00', 20],
+			['05:15', 15],
+			['05:30', 19],
+			['05:45', 18]
+		] as const) {
+			await db.query(
+				`INSERT INTO zone_health_bin (zone_key, start_utc, revision, length_minutes, status, profile_version, entries, exits, occupancy_start, occupancy_end,
+				     conservation_residual, tracks_entered, tracks_exited, tracks_abandoned, tracks_fragmented, tracks_censored, tracks_rejected, tracks_open,
+				     track_completion_rate, occupancy_minutes, capacity_minutes, minutes_outside_capacity, updated_on)
+				 VALUES ('DMO/SEC-S', $1, 1, 15, 'Final', 1, 20, 20, 10, 10, 0, 20, $2, $3, 0, 0, 0, 0, $4, 15, 15, 0, now())`,
+				[at(start), exited, 20 - exited, exited / 20]
+			);
+		}
+	} finally {
+		await db.end();
+	}
+}
+
+async function clearHealth(db: pg.Client): Promise<void> {
+	await db.query(`DELETE FROM queue_minute WHERE zone_key = 'DMO/SEC-S' AND minute_utc >= $1 AND minute_utc < $2`, [at('05:00'), at('06:00')]);
+	await db.query(`DELETE FROM zone_health_bin WHERE zone_key = 'DMO/SEC-S' AND start_utc >= $1 AND start_utc < $2`, [at('05:00'), at('06:00')]);
+}
+
 // Leaves nothing behind: this run's rules (soft-deleted, as a delete through the API would) and the planted minutes.
 test.afterAll(async () => {
 	const db = database();
@@ -65,6 +106,7 @@ test.afterAll(async () => {
 			`%${run}`
 		]);
 		await db.query(`DELETE FROM queue_minute WHERE zone_key = 'DMO/A-CRW' AND minute_utc >= $1 AND minute_utc < $2`, [at('03:00'), at('03:30')]);
+		await clearHealth(db);
 	} finally {
 		await db.end();
 	}
@@ -202,6 +244,68 @@ test('a supervisor creates a rule, previews its first fire time, and the saved r
 	await guards.expectClean();
 });
 
+test('a supervisor creates a track completion rule on a queue zone, previews it on the stored bins, and the saved rule fires at the same minute', async ({
+	page
+}) => {
+	// ARV-114b: the health checks are typed metrics on the form (no expression); they watch queue zones only.
+	test.setTimeout(90_000);
+	const guards = await guardPage(page);
+	await plantHealth();
+	await signInThroughUi(page, accounts().webBorder);
+	await openRules(page);
+
+	await page.getByTestId('add-rule').click();
+	const form = page.getByTestId('rule-form');
+	const name = `E2E completion ${run}`;
+	await form.getByLabel('Name').fill(name);
+	await expect(form.getByRole('checkbox', { name: 'SEC-OV' }), 'an overflow band is offered for the other metrics').toHaveCount(1);
+	await form.getByLabel('Metric').selectOption('TrackCompletion');
+	await expect(form.getByTestId('health-check-hint')).toContainText('Below 90 percent marks the bin Degraded');
+	await expect(form.getByRole('checkbox', { name: 'SEC-OV' }), 'a health check watches queue zones only').toHaveCount(0);
+	await expect(form.getByRole('checkbox', { name: 'A-OV' })).toHaveCount(0);
+	await form.getByRole('checkbox', { name: 'SEC-S' }).check();
+	await form.getByLabel('Condition').selectOption('LessThan');
+	await form.getByLabel('Threshold (percent)').fill('90');
+	await form.getByLabel('Sustain (minutes)').fill('1');
+	await form.getByLabel('Clear after (minutes)').fill('1');
+
+	// The preview: the 05:15 bin (75 percent) governs from 05:29, the minute its end falls in, until the 05:30 bin (95 percent) does at 05:44.
+	await form.getByLabel('From (UTC)').fill(`${day}T04:50`);
+	await form.getByLabel('To (UTC)').fill(`${day}T06:10`);
+	await form.getByTestId('run-backtest').click();
+	const summary = form.getByTestId('backtest-summary');
+	await expect(summary).toHaveAttribute('data-count', '1');
+	await expect(summary).toContainText(`Would have fired once, first at ${day} 05:29 UTC.`);
+	const alert = form.getByTestId('backtest-alert');
+	await expect(alert).toHaveCount(1);
+	await expect(alert).toContainText('SEC-S');
+	await expect(alert).toContainText(`${day} 05:44 UTC`);
+	await expect(alert.locator('td').last()).toHaveText('75');
+	const previewed = (await summary.getAttribute('data-first'))!;
+
+	await form.getByTestId('save-rule').click();
+	await expect(page.getByText(/^Rule R-\d+ saved\.$/)).toBeVisible();
+	const row = page.getByTestId('rule-row').filter({ hasText: name });
+	await expect(row).toHaveCount(1);
+	await expect(row).toContainText('Track completion < 90 percent for 1 min');
+	await expect(row).toContainText('SEC-S');
+
+	// The server agrees: the typed rule as saved, and its own backtest fires at the previewed minute.
+	const token = (await signIn(accounts().webBorder)).accessToken;
+	const found = await call('GET', `${api}?siteCode=DMO&metric=TrackCompletion&text=${encodeURIComponent(run)}`, { token });
+	expect(found.status(), 'the saved rule is listed by its metric').toBe(200);
+	const saved = (await found.json()).data.find((r: { name: string }) => r.name === name);
+	expect(saved).toMatchObject({ metric: 'TrackCompletion', comparator: 'LessThan', threshold: 90, zones: ['SEC-S'], sustainMinutes: 1, minQueueLength: null });
+	const again = await call('POST', `${api}/backtest`, { token, data: { rule: saved, fromUtc: at('04:50'), toUtc: at('06:10') } });
+	expect(again.status(), again.status() === 200 ? 'the saved rule backtested' : await again.text()).toBe(200);
+	expect(Date.parse((await again.json()).firstRaisedUtc)).toBe(Date.parse(previewed));
+
+	// An overflow zone sent anyway is refused by the server, whatever the form shows.
+	const band = await call('POST', api, { token, data: { ...saved, name: `E2E band ${run}`, zones: ['SEC-N', 'SEC-OV'] } });
+	expect(band.status(), 'a health check on an overflow band').toBe(400);
+	await guards.expectClean();
+});
+
 test('rule names are shown as text: script payloads run nothing (CWE-79)', async ({ page }) => {
 	const guards = await guardPage(page);
 	const token = (await signIn(accounts().webBorder)).accessToken;
@@ -302,6 +406,8 @@ test('a new rule cannot use a metric the evaluation does not judge yet, and R-00
 	expect(metrics).toContain('OverflowOccupied');
 	expect(metrics).not.toContain('DesksBelowPlan');
 	expect(metrics).toContain('Nowcast');
+	// ARV-114b: the health checks are judged, so a new rule may use them.
+	expect(metrics).toEqual(expect.arrayContaining(['ConservationResidual', 'TrackCompletion', 'OccupancyOutOfRange']));
 	// The server refuses a rule on a metric it does not judge yet (there is no staffing plan).
 	const token = (await signIn(accounts().webBorder)).accessToken;
 	const first = (await (await call('GET', `${api}?siteCode=DMO`, { token })).json()).data[0];

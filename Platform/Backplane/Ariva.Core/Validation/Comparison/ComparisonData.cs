@@ -185,6 +185,7 @@ internal sealed class ComparisonData
         var data = new ComparisonData(scope, settings, windowBins);
         var leftOut = new LeftOutInputs(data.TakeCounts(counts), data.TakeRuns(runs), data.TakeLineBins(lineBins), data.TakeMinutes(minutes),
             data.TakeBins(queueBins), data.TakeHealth(health), data.TakeIntervals(intervals));
+        data.ConfirmCompletionFlags();
         var leftOutObservations = data.TakeDeskObservations(observations);
         var leftOutDeskMinutes = data.TakeDeskMinutes(deskMinutes);
         var leftOutDeskLevels = data.TakeDeskLevels(deskLevels);
@@ -593,7 +594,24 @@ internal sealed class ComparisonData
 
     private static bool IsBin(QueueBinRow r) =>
         IsUtc(r.StartUtc) && r.Length == BinLength && Enum.IsDefined(r.Status) && Enum.IsDefined(r.Quality) && r.ProfileVersion >= 0 && IsCount(r.Entries) && r.Abandoned >= 0 &&
-        r.Abandoned <= r.Entries;
+        r.Abandoned <= r.Entries && (!r.DegradedByCompletionOnly || (r.Quality == BinQuality.Degraded && r.Status == BinStatus.Final));
+
+    /// <summary>
+    /// A bin's completion-only flag (ARV-114b) is believed only when the same bin's deciding health row says so too: final,
+    /// with tracks that entered and a completion below F11's threshold (the stream's, the same constant as the target). Otherwise a writer
+    /// went wrong, and the bin is unusable (counted as not stored, never Good; CWE-501).
+    /// </summary>
+    private void ConfirmCompletionFlags()
+    {
+        foreach (var (key, bin) in _bins.Where(b => b.Value.DegradedByCompletionOnly).ToList())
+        {
+            if (_health.TryGetValue(key, out var health) && health.Status == BinStatus.Final && health.TracksEntered > 0 &&
+                HealthChecks.TrackCompletionBelow(health.TracksEntered, health.TracksExited, HealthChecks.TrackCompletionTarget))
+                continue;
+            _bins.Remove(key);
+            _unusable.Add(new UnusableKey(UnusableKeyKind.QueueBin, key.Zone, null, AsUtc(key.Start), null, UnusableKeyReason.Refused));
+        }
+    }
 
     private int TakeHealth(List<ZoneHealthBin> rows)
     {
@@ -857,9 +875,13 @@ internal sealed class ComparisonData
     /// that overlaps it must have a stored bin (Unknown otherwise) of the campaign's version (OtherVersion otherwise), final when
     /// <paramref name="requireFinal"/> (Provisional otherwise), and its quality counts (Degraded, Unknown); so does every quality
     /// interval that overlaps the range, and a zone with an interval that cannot be placed is Unknown throughout. The latest
-    /// standing in <see cref="ComparisonStanding"/>'s order wins.
+    /// standing in <see cref="ComparisonStanding"/>'s order wins. A bin Degraded for its own track completion alone
+    /// (<see cref="QueueBinRow.DegradedByCompletionOnly"/>, F11, ARV-114b) stands Good for every criterion: setting it apart
+    /// would set apart exactly the bins whose tracking failed. With <paramref name="binDegradedCounts"/> false a stored bin's
+    /// own Degraded flag is not counted whatever its cause (its Unknown flag and every interval still are): track completion
+    /// judges every final bin below its target so (fail closed).
     /// </summary>
-    public ComparisonStanding Over(string zone, DateTime fromUtc, DateTime toUtc, bool requireFinal)
+    public ComparisonStanding Over(string zone, DateTime fromUtc, DateTime toUtc, bool requireFinal, bool binDegradedCounts = true)
     {
         var standing = ComparisonStanding.Good;
         for (var start = BinOf(fromUtc); start < toUtc; start += BinLength)
@@ -869,6 +891,8 @@ internal sealed class ComparisonData
                 null => ComparisonStanding.Unknown,
                 { ProfileVersion: var v } when v != Version => ComparisonStanding.OtherVersion,
                 { Status: not BinStatus.Final } when requireFinal => ComparisonStanding.Provisional,
+                { Quality: BinQuality.Degraded } when !binDegradedCounts => ComparisonStanding.Good,
+                { Quality: BinQuality.Degraded, DegradedByCompletionOnly: true } => ComparisonStanding.Good,
                 var bin => Of(bin.Quality)
             });
         }

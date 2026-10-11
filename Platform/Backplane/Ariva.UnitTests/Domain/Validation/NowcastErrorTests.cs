@@ -317,6 +317,31 @@ public sealed class NowcastErrorTests
     }
 
     [Fact]
+    public void Compare_Should_JudgeTheMinutes_When_TheirBinIsDegradedForItsOwnTrackCompletionAlone()
+    {
+        // ARV-114b: F11 marks a final bin Degraded when its track completion is below 90 percent; that flag alone sets no
+        // nowcast minute apart (queue_bin.degraded_by_completion_only), while an outage over the minutes still does.
+        var flagged = Bin(At(18, 0), BinQuality.Degraded) with { DegradedByCompletionOnly = true };
+        var bins = GoodBins().Where(b => !(b.QueueZone == Vis && b.StartUtc == At(18, 0))).Append(flagged).ToList();
+        // The bin's own health row bears the flag out: final, 15 of 20 tracks exited.
+        ZoneHealthBin[] health = [new(Vis, At(18, 0), TimeSpan.FromMinutes(15), 1, BinStatus.Final, Version, 0, 0, null, null, null, 20, 15, 5, 0, 0, 0, 0, 0.75, 0, 0, 0)];
+
+        var result = Compare(new ComparisonInput { Scope = Scope(), QueueMinutes = Basic(), QueueBins = bins, HealthBins = health });
+
+        result.NowcastMinutes.Should().OnlyContain(m => m.Standing == ComparisonStanding.Good);
+        var zone = ZoneOf(result, Vis);
+        zone.Published.Standings.Should().Be(StandingTally.None with { Good = 5 });
+        zone.Check.Should().Be(new CriterionCheck(0.5, 2, CriterionVerdict.Pass), "judged as in Basic: the absolute median 0.5");
+
+        var outage = Compare(new ComparisonInput
+        {
+            Scope = Scope(), QueueMinutes = Basic(), QueueBins = bins, HealthBins = health,
+            QualityIntervals = [new QualityInterval(Vis, At(18, 2), At(18, 3), BinQuality.Degraded)]
+        });
+        outage.NowcastMinutes.Should().Contain(m => m.Standing == ComparisonStanding.Degraded, "an outage still sets its minutes apart");
+    }
+
+    [Fact]
     public void Compare_Should_GiveNoDataInsteadOfDividingByZero_When_NoMinuteHoldsANowcast()
     {
         var result = Compare([Row(At(18, 0), null, 5, live: false)]);

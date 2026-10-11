@@ -14,6 +14,8 @@
 		initial: AlertRuleRequest;
 		/** Queue and overflow zones of the site's published zone profile. */
 		zoneNames: string[];
+		/** The queue zones alone, which a health-check rule watches (ARV-114b). */
+		queueZoneNames: string[];
 		/** Roles the caller may give a rule to (their own; every operational role for an administrator). */
 		roles: string[];
 		/** An administrator may leave a rule without an owner (every role of the site is responsible). */
@@ -23,8 +25,17 @@
 		onCancel: () => void;
 	}
 
-	let { editing, initial, zoneNames, roles, allowNoOwner, canPreview, onSaved, onCancel }: Props =
-		$props();
+	let {
+		editing,
+		initial,
+		zoneNames,
+		queueZoneNames,
+		roles,
+		allowNoOwner,
+		canPreview,
+		onSaved,
+		onCancel
+	}: Props = $props();
 
 	const start = untrack(() => initial);
 	let name = $state(start.name);
@@ -48,6 +59,16 @@
 	let busy = $state(false);
 
 	const unit = $derived(rules.unitOf(metric));
+	const healthCheck = $derived(rules.healthChecks.has(metric));
+	/** The zones the chosen metric can watch: queue zones only for a health check. */
+	const choices = $derived(healthCheck ? queueZoneNames : zoneNames);
+	/**
+	 * The zones the form sends: for a health check without the overflow zones chosen before (the form no longer shows them);
+	 * a zone the profile no longer has is sent as it is, so the server says so rather than the form dropping it.
+	 */
+	const sent = $derived(
+		healthCheck ? zones.filter((z) => !zoneNames.includes(z) || queueZoneNames.includes(z)) : zones
+	);
 	// A saved rule keeps its roles in the choices even when the caller does not hold them (the server decides changes).
 	const roleChoices = $derived([
 		...new Set([...roles, start.ownerRole, start.escalateToRole].filter((r): r is string => !!r))
@@ -76,7 +97,7 @@
 		return {
 			siteCode: start.siteCode,
 			name,
-			zones: [...zones],
+			zones: [...sent],
 			metric,
 			comparator,
 			threshold: number(threshold),
@@ -98,7 +119,7 @@
 	async function submit(event: SubmitEvent): Promise<void> {
 		event.preventDefault();
 		if (busy) return;
-		problems = zones.length ? [] : [label('form.zonesRequired')];
+		problems = sent.length ? [] : [label('form.zonesRequired')];
 		if (problems.length) return;
 		busy = true;
 		const result = editing
@@ -140,11 +161,11 @@
 
 	<fieldset class="flex flex-col gap-1.5">
 		<legend class="text-xs font-medium">{label('fields.zones')}</legend>
-		{#if zoneNames.length === 0}
+		{#if choices.length === 0}
 			<p class="text-xs text-muted-foreground">{label('form.noZones')}</p>
 		{:else}
 			<div class="flex flex-wrap gap-x-4 gap-y-1.5">
-				{#each zoneNames as zone (zone)}
+				{#each choices as zone (zone)}
 					<label class="inline-flex items-center gap-1.5 text-sm">
 						<input
 							type="checkbox"
@@ -196,6 +217,14 @@
 			/>
 		{:else}
 			<p class="self-end text-xs text-muted-foreground sm:col-span-2">{label('hints.condition')}</p>
+		{/if}
+		{#if healthCheck}
+			<p
+				class="self-end text-xs text-muted-foreground sm:col-span-2 lg:col-span-3"
+				data-testid="health-check-hint"
+			>
+				{label(`healthHints.${metric}`)}
+			</p>
 		{/if}
 		{#if metric === 'Nowcast'}
 			<FormField

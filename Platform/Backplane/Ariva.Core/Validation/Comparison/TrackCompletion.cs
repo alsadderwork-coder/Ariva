@@ -9,7 +9,11 @@ namespace Ariva.Core.Validation.Comparison;
 /// Unknown bins (a bin of the planned days without a stored row, or whose latest revision is refused or conflicting, is Unknown)
 /// are reported apart with their tracks; Provisional and OtherVersion bins are counted, and every bin that is not Good is
 /// counted as excluded. Only zones whose sensors track people (T3) have tracks; elsewhere there is no rate (no
-/// data, never 0 or 1). Pure: no I/O, no clock.
+/// data, never 0 or 1). Since ARV-114b a final bin whose own track completion falls below F11's threshold is Degraded, which
+/// would leave exactly the failing bins out of this criterion; so a final bin of the campaign's version whose completion is
+/// below the target is judged here whatever its bin's own Degraded flag says (Proposed): its other causes cannot be told
+/// apart, and as every such bin lies below the target, judging it can only lower the rate (fail closed). Outages, Unknown
+/// bins and other versions still set a bin apart. Pure: no I/O, no clock.
 /// </summary>
 public static class TrackCompletion
 {
@@ -34,13 +38,15 @@ public static class TrackCompletion
             foreach (var bin in data.WindowBins)
             {
                 var health = data.HealthAt(zone.Name, bin);
+                // A final bin below the target is judged even when its bin is Degraded: F11 degrades it for this very rate.
+                var belowTarget = health is { Status: BinStatus.Final } && HealthChecks.TrackCompletionBelow(health.TracksEntered, health.TracksExited, target);
                 var standing = ComparisonData.Worst(health switch
                 {
                     null => ComparisonStanding.Unknown,
                     { ZoneProfileVersion: var v } when v != data.Version => ComparisonStanding.OtherVersion,
                     { Status: not BinStatus.Final } => ComparisonStanding.Provisional,
                     _ => ComparisonStanding.Good
-                }, data.Over(zone.Name, bin, bin + ComparisonData.BinLength, requireFinal: true));
+                }, data.Over(zone.Name, bin, bin + ComparisonData.BinLength, requireFinal: true, binDegradedCounts: !belowTarget));
                 standings.Add(standing);
                 if (!totals.TryGetValue(standing, out var list))
                     continue;

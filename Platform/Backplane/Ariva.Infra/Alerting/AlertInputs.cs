@@ -1,6 +1,7 @@
 using Ariva.Core.Alerting;
 using Ariva.Core.Domain.Entities;
 using Ariva.Core.Domain.Enums;
+using Ariva.Core.Queueing;
 using Ariva.Core.Sensing;
 
 namespace Ariva.Infra.Alerting;
@@ -33,10 +34,15 @@ public sealed record AlertTargetSeries(AlertTarget Target, IReadOnlyList<AlertMi
 /// freshness window or Unknown after it (the stream's <c>OverflowDetected</c> Unknown) has no row, so it is neither occupied nor
 /// empty and adds neither a 1 nor a 0; a zone whose only band is Unknown has no value, and the rule keeps its state until a
 /// reading comes. A queue zone's target watches every band of the zone; an overflow zone's target watches that band only;</item>
-/// <item><c>DesksBelowPlan</c>: nothing yet; there is no staffing plan before ARV-049, so these rules have nothing to judge.</item>
+/// <item><c>DesksBelowPlan</c>: nothing yet; there is no staffing plan before ARV-049, so these rules have nothing to judge;</item>
+/// <item><c>ConservationResidual</c>, <c>TrackCompletion</c> and <c>OccupancyOutOfRange</c> (ARV-114b): per queue minute, the
+/// settled value of the zone's bin that ended last by the minute's end, from the latest revision of its <c>zone_health_bin</c>
+/// row (<see cref="HealthAlertSeries"/>); the live tick takes a zone's minutes only up to the last whose bin is settled
+/// (<see cref="LatestHealthMinutesAsync"/>).</item>
 /// </list>
 /// Minutes are those after <c>fromUtc</c> up to and including <c>toUtc</c>. A rule's targets are its zones that are queue or
-/// overflow zones of the site's published profile (or the commissioned devices of those zones).
+/// overflow zones of the site's published profile (queue zones only for a health-check rule; or the commissioned devices
+/// of those zones).
 /// </summary>
 public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arrivals)
 {
@@ -60,10 +66,13 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
             return [];
         // Only zones of the site's published profile (queue and overflow zones, as a rule is checked when it is saved):
         // a zone that left the profile leaves the rule's targets, and its open alert is resolved.
-        var published = (await Storage.ExecuteSqlAsync<NameRow>("""
-            SELECT z.name AS "Name" FROM zone z JOIN zone_profile p ON p.id = z.profile_id
+        var published = (await Storage.ExecuteSqlAsync<ZoneRow>("""
+            SELECT z.name AS "Name", z.kind AS "Kind" FROM zone z JOIN zone_profile p ON p.id = z.profile_id
             WHERE p.site_code = :site AND p.status = 'Published' AND z.kind IN ('Queue', 'Overflow') AND z.name IN (:zones)
-            """, new Dictionary<string, object> { ["site"] = siteCode, ["zones"] = zones }, ct)).Select(z => z.Name).ToHashSet(StringComparer.Ordinal);
+            """, new Dictionary<string, object> { ["site"] = siteCode, ["zones"] = zones }, ct))
+            // ARV-114b: health checks are stored per queue zone, so a health-check rule watches queue zones only.
+            .Where(z => !AlertRuleValues.IsHealthCheck(rule.Metric) || z.Kind == nameof(ZoneKind.Queue))
+            .Select(z => z.Name).ToHashSet(StringComparer.Ordinal);
         zones = [.. zones.Where(published.Contains)];
         if (zones.Count == 0)
             return [];
@@ -97,7 +106,10 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
             .ToDictionary(r => r.ZoneKey[prefix.Length..], r => Utc(r.MinuteUtc.Value), StringComparer.Ordinal);
     }
 
-    /// <summary>Each target's minutes after <paramref name="fromUtc"/> up to <paramref name="toUtc"/>.</summary>
+    /// <summary>
+    /// Each target's minutes after <paramref name="fromUtc"/> up to <paramref name="toUtc"/>; null when a health-check range
+    /// holds more stored bins than <see cref="MaxHealthRows"/> (refused, never cut short; CWE-120).
+    /// </summary>
     public async Task<IReadOnlyList<AlertTargetSeries>> ReadAsync(string siteCode, AlertRuleValues rule, IReadOnlyList<AlertTarget> targets, DateTime fromUtc,
         DateTime toUtc, CancellationToken ct)
     {
@@ -112,8 +124,135 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
             AlertMetric.SensorOffline => await OutagesAsync(siteCode, targets, fromUtc, toUtc, ct),
             AlertMetric.PredictedNowcast => await PredictedAsync(siteCode, rule, targets, fromUtc, toUtc, ct),
             AlertMetric.OverflowOccupied => await OverflowAsync(siteCode, targets, fromUtc, toUtc, ct),
+            AlertMetric.ConservationResidual or AlertMetric.TrackCompletion or AlertMetric.OccupancyOutOfRange => await HealthAsync(siteCode, rule, targets, fromUtc, toUtc, ct),
             _ => [.. targets.Select(t => new AlertTargetSeries(t, []))]
         };
+    }
+
+    /// <summary>The most health rows one read takes (ARV-114b, CWE-120): beyond it the read is refused (null), never cut short.</summary>
+    public const int DefaultMaxHealthRows = 50_000;
+
+    /// <summary>The bound of <see cref="DefaultMaxHealthRows"/> for this instance (tests set a smaller one).</summary>
+    public int MaxHealthRows { get; init; } = DefaultMaxHealthRows;
+
+    /// <summary>
+    /// The longest bin the stream writes: <see cref="BinSettings"/> is not configured per host or site, so every bin is its
+    /// default length (15 minutes). A minute's bin starts at most two of them before the minute.
+    /// </summary>
+    public static readonly TimeSpan LongestBin = new BinSettings().BinLength;
+
+    /// <summary>
+    /// Groups items whose times lie within <paramref name="span"/> of the group's earliest, in time order, so one read covers
+    /// a group without stretching over the gap to items far before or after it (CWE-120): a zone whose sensors stopped a month
+    /// ago is read in its own small window, never with every other zone over the month between.
+    /// </summary>
+    public static IReadOnlyList<IReadOnlyList<T>> Clusters<T>(IEnumerable<T> items, Func<T, DateTime> at, TimeSpan span)
+    {
+        ArgumentNullException.ThrowIfNull(items);
+        ArgumentNullException.ThrowIfNull(at);
+        var clusters = new List<IReadOnlyList<T>>();
+        List<T> current = null;
+        var first = DateTime.MinValue;
+        foreach (var item in items.OrderBy(at))
+        {
+            var time = at(item);
+            if (current is null || time - first > span)
+            {
+                current = [];
+                clusters.Add(current);
+                first = time;
+            }
+
+            current.Add(item);
+        }
+
+        return clusters;
+    }
+
+    /// <summary>
+    /// The latest revision of each health row of the zones that can govern a minute ending after <paramref name="governFromUtc"/>
+    /// (a bin [s, s + L) governs the minutes ending from s + L to before s + 2L) and that ended by <paramref name="endUpToUtc"/>,
+    /// at most <paramref name="limit"/> rows: null beyond it (refused, never cut short; CWE-120).
+    /// </summary>
+    private async Task<Dictionary<string, List<HealthBinReading>>> HealthRowsAsync(IReadOnlyCollection<string> keys, DateTime governFromUtc, DateTime endUpToUtc,
+        int limit, CancellationToken ct)
+    {
+        if (keys.Count == 0 || endUpToUtc <= governFromUtc - LongestBin - LongestBin)
+            return new Dictionary<string, List<HealthBinReading>>(StringComparer.Ordinal);
+        var rows = await Storage.ExecuteSqlAsync<HealthRow>("""
+            SELECT DISTINCT ON (zone_key, start_utc) zone_key AS "ZoneKey", start_utc AS "StartUtc", length_minutes AS "LengthMinutes", status AS "Status",
+                   conservation_residual AS "ConservationResidual", occupancy_end AS "OccupancyEnd", tracks_entered AS "TracksEntered",
+                   tracks_exited AS "TracksExited", capacity_minutes AS "CapacityMinutes", minutes_outside_capacity AS "MinutesOutsideCapacity"
+            FROM zone_health_bin
+            WHERE zone_key IN (:keys) AND start_utc > :scanFrom AND start_utc < :endUpTo
+              AND start_utc + length_minutes * interval '1 minute' <= :endUpTo
+              AND start_utc + 2 * length_minutes * interval '1 minute' > :governFrom
+            ORDER BY zone_key, start_utc, revision DESC
+            LIMIT :limit
+            """, new Dictionary<string, object>
+        {
+            ["keys"] = keys.ToList(), ["scanFrom"] = governFromUtc - LongestBin - LongestBin, ["endUpTo"] = endUpToUtc, ["governFrom"] = governFromUtc,
+            ["limit"] = limit + 1
+        }, ct);
+        if (rows.Count > limit)
+            return null;
+        return rows.GroupBy(r => r.ZoneKey, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.Select(r => new HealthBinReading(Utc(r.StartUtc), r.LengthMinutes,
+            r.Status == nameof(BinStatus.Final) ? BinStatus.Final : BinStatus.Provisional,
+            r.ConservationResidual, r.OccupancyEnd, r.TracksEntered, r.TracksExited, r.CapacityMinutes, r.MinutesOutsideCapacity)).ToList(), StringComparer.Ordinal);
+    }
+
+    /// <summary>The health-check minutes of the targets; null when the range holds more rows than <see cref="MaxHealthRows"/>.</summary>
+    private async Task<IReadOnlyList<AlertTargetSeries>> HealthAsync(string siteCode, AlertRuleValues rule, IReadOnlyList<AlertTarget> targets, DateTime fromUtc,
+        DateTime toUtc, CancellationToken ct)
+    {
+        var keys = targets.Select(t => ZoneKeys.For(siteCode, t.ZoneName)).Distinct(StringComparer.Ordinal).ToList();
+        // The bins that can govern a minute after fromUtc (whose end falls after fromUtc + 1 minute) and that ended by toUtc's end.
+        var health = await HealthRowsAsync(keys, fromUtc.AddMinutes(1), toUtc.AddMinutes(1), MaxHealthRows, ct);
+        if (health is null)
+            return null;
+        var minutes = await MinuteRowsAsync(siteCode, targets, fromUtc, toUtc, ct);
+        return
+        [
+            .. targets.Select(t =>
+            {
+                var key = ZoneKeys.For(siteCode, t.ZoneName);
+                var zone = minutes.GetValueOrDefault(key) ?? [];
+                return new AlertTargetSeries(t, HealthAlertSeries.Minutes(rule.Metric, zone.Select(r => (Utc(r.MinuteUtc), r.QueueLength)), health.GetValueOrDefault(key) ?? []));
+            })
+        ];
+    }
+
+    /// <summary>
+    /// For a health-check rule (ARV-114b): the latest minute the live tick may take for each zone, the zone's latest live
+    /// minute (<see cref="LatestMinutesAsync"/>) held back before the first minute of a bin that is not settled yet
+    /// (<see cref="HealthAlertSeries.SettledThrough"/>), so the tick never judges a minute without the value a backtest
+    /// would find for it later. Each zone needs only the bins ending within the settle limit before its own latest minute, so
+    /// zones are read in clusters of nearby latest minutes (<see cref="Clusters{T}"/>), every zone in a window of at most twice
+    /// the settle limit and two bins; null when the reads together exceed <see cref="MaxHealthRows"/> (CWE-120).
+    /// </summary>
+    public async Task<IReadOnlyDictionary<string, DateTime>> LatestHealthMinutesAsync(string siteCode, AlertMetric metric, IReadOnlyCollection<string> zones,
+        DateTime notAfterUtc, CancellationToken ct)
+    {
+        var latest = await LatestMinutesAsync(siteCode, zones, notAfterUtc, ct);
+        if (latest.Count == 0)
+            return latest;
+        var health = new Dictionary<string, List<HealthBinReading>>(StringComparer.Ordinal);
+        var read = 0;
+        foreach (var cluster in Clusters(latest, l => l.Value, HealthAlertSeries.SettleLimit))
+        {
+            var rows = await HealthRowsAsync([.. cluster.Select(l => ZoneKeys.For(siteCode, l.Key))], cluster[0].Value.AddMinutes(1) - HealthAlertSeries.SettleLimit,
+                cluster[^1].Value.AddMinutes(1), MaxHealthRows - read, ct);
+            if (rows is null)
+                return null;
+            foreach (var (key, list) in rows)
+            {
+                health[key] = list;
+                read += list.Count;
+            }
+        }
+
+        return latest.ToDictionary(l => l.Key,
+            l => HealthAlertSeries.SettledThrough(metric, l.Value, health.GetValueOrDefault(ZoneKeys.For(siteCode, l.Key)) ?? []), StringComparer.Ordinal);
     }
 
     private async Task<Dictionary<string, List<MinuteRow>>> MinuteRowsAsync(string siteCode, IReadOnlyList<AlertTarget> targets, DateTime fromUtc, DateTime toUtc, CancellationToken ct)
@@ -348,11 +487,6 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
 
     public static DateTime Minute(DateTime value) => new(value.Ticks - (value.Ticks % TimeSpan.TicksPerMinute), DateTimeKind.Utc);
 
-    private sealed class NameRow
-    {
-        public string Name { get; set; }
-    }
-
     private sealed class DeviceRow
     {
         public string ZoneName { get; set; }
@@ -396,6 +530,20 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
         public string BandName { get; set; }
         public DateTime MinuteUtc { get; set; }
         public int MaxOccupancy { get; set; }
+    }
+
+    private sealed class HealthRow
+    {
+        public string ZoneKey { get; set; }
+        public DateTime StartUtc { get; set; }
+        public int LengthMinutes { get; set; }
+        public string Status { get; set; }
+        public long? ConservationResidual { get; set; }
+        public int? OccupancyEnd { get; set; }
+        public long TracksEntered { get; set; }
+        public long TracksExited { get; set; }
+        public int CapacityMinutes { get; set; }
+        public int MinutesOutsideCapacity { get; set; }
     }
 
     private sealed class OutageRow

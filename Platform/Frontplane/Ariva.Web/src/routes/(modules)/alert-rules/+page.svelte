@@ -19,6 +19,8 @@
 	let siteCode = $state('');
 	let list = $state<AlertRule[]>([]);
 	let zoneNames = $state<string[]>([]);
+	/** The queue zones alone: health-check rules watch queue zones only (ARV-114b). */
+	let queueZoneNames = $state<string[]>([]);
 	let loading = $state(true);
 	/** The open form: a new rule (editing null) or a saved one; the key makes a fresh form for each start. */
 	let form = $state<{ key: number; editing: AlertRule | null; initial: AlertRuleRequest } | null>(
@@ -83,6 +85,10 @@
 		const zones = published ? ((await zonesApi.get(published.id)).data?.zones ?? []) : [];
 		zoneNames = zones
 			.filter((z) => z.kind === 'Queue' || z.kind === 'Overflow')
+			.map((z) => z.name)
+			.sort((a, b) => a.localeCompare(b));
+		queueZoneNames = zones
+			.filter((z) => z.kind === 'Queue')
 			.map((z) => z.name)
 			.sort((a, b) => a.localeCompare(b));
 		loading = false;
@@ -202,6 +208,7 @@
 				editing={form.editing}
 				initial={form.initial}
 				{zoneNames}
+				{queueZoneNames}
 				{roles}
 				allowNoOwner={isAdministrator}
 				{canPreview}

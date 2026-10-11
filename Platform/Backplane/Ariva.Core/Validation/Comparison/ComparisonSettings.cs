@@ -19,8 +19,11 @@ public sealed record ComparisonSettings
     /// <summary>Largest magnitude of a zone's bias (F18: within plus or minus 5 percent).</summary>
     public double BiasTarget { get; init; } = 0.05;
 
-    /// <summary>Track completion a zone must reach (F18: at least 90 percent).</summary>
-    public double TrackCompletionTarget { get; init; } = 0.90;
+    /// <summary>
+    /// Track completion a zone must reach (F18: at least 90 percent); the same value as F11's threshold for a Degraded bin
+    /// (<see cref="Ariva.Core.Queueing.HealthChecks.TrackCompletionTarget"/>, ARV-114b), so the two never drift apart.
+    /// </summary>
+    public double TrackCompletionTarget { get; init; } = Ariva.Core.Queueing.HealthChecks.TrackCompletionTarget;
 
     /// <summary>
     /// A batch whose offset differs from its observer's median by more than this is flagged (Proposed 5 seconds: a device set by

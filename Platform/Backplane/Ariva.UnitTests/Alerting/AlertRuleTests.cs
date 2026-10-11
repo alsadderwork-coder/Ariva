@@ -92,8 +92,58 @@ public sealed class AlertRuleTests
         { "escalation without minutes", Nowcast() with { EscalateAfterMinutes = null } },
         { "escalation beyond a day", Nowcast() with { EscalateAfterMinutes = 1441 } },
         { "contact with a newline", Nowcast() with { EscalationContact = "Duty\nofficer" } },
-        { "long contact", Nowcast() with { EscalationContact = new string('c', 101) } }
+        { "long contact", Nowcast() with { EscalationContact = new string('c', 101) } },
+        // ARV-114b: the health checks are numbers in their own units, never conditions, gates or predictions.
+        { "track completion above 100 percent", Health(AlertMetric.TrackCompletion) with { Threshold = 100.5, ClearThreshold = null } },
+        { "track completion clear above 100 percent", Health(AlertMetric.TrackCompletion) with { ClearThreshold = 101 } },
+        { "track completion cleared below its threshold", Health(AlertMetric.TrackCompletion) with { ClearThreshold = 80 } },
+        { "residual beyond 100,000 people", Health(AlertMetric.ConservationResidual) with { Comparator = AlertComparator.GreaterThan, Threshold = 100_001, ClearThreshold = null } },
+        { "negative residual threshold", Health(AlertMetric.ConservationResidual) with { Comparator = AlertComparator.GreaterThan, Threshold = -5, ClearThreshold = null } },
+        { "occupancy minutes beyond a day", Health(AlertMetric.OccupancyOutOfRange) with { Comparator = AlertComparator.GreaterThan, Threshold = 1441, ClearThreshold = null } },
+        { "a health check compared with IsTrue", Health(AlertMetric.OccupancyOutOfRange) with { Comparator = AlertComparator.IsTrue, Threshold = null, ClearThreshold = null } },
+        { "a health check without a threshold", Health(AlertMetric.ConservationResidual) with { Threshold = null, ClearThreshold = null } },
+        { "a minimum queue on a health check", Health(AlertMetric.TrackCompletion) with { MinQueueLength = 10 } },
+        { "a lead time on a health check", Health(AlertMetric.TrackCompletion) with { LeadMinutes = 30 } },
+        { "an undefined metric next to the health checks", Health(AlertMetric.TrackCompletion) with { Metric = (AlertMetric)10 } },
+        { "a NaN completion threshold", Health(AlertMetric.TrackCompletion) with { Threshold = double.NaN, ClearThreshold = null } },
+        { "an infinite residual threshold", Health(AlertMetric.ConservationResidual) with { Comparator = AlertComparator.GreaterThan, Threshold = double.PositiveInfinity, ClearThreshold = null } },
+        { "a negative infinite occupancy threshold", Health(AlertMetric.OccupancyOutOfRange) with { Comparator = AlertComparator.GreaterThan, Threshold = double.NegativeInfinity, ClearThreshold = null } },
+        { "a NaN clear threshold on a health check", Health(AlertMetric.TrackCompletion) with { ClearThreshold = double.NaN } },
+        { "an infinite clear threshold on a health check", Health(AlertMetric.TrackCompletion) with { ClearThreshold = double.PositiveInfinity } },
+        { "a negative infinite clear threshold on a health check", Health(AlertMetric.ConservationResidual) with { Comparator = AlertComparator.GreaterThan, Threshold = 5, ClearThreshold = double.NegativeInfinity } }
     };
+
+    /// <summary>A track completion rule as the story's example: below 90 percent, cleared at 95 (ARV-114b).</summary>
+    private static AlertRuleValues Health(AlertMetric metric) => new("Track completion below 90 percent", ["A-VIS"], metric, AlertComparator.LessThan, 90, null, 95, 1, 1,
+        AlertSeverity.Warning, RoleCodes.BorderShiftSupervisor, null, null, null, false, true);
+
+    [Theory]
+    [InlineData(AlertMetric.ConservationResidual, AlertComparator.GreaterThan, 5.0, 100_000.0)]
+    [InlineData(AlertMetric.TrackCompletion, AlertComparator.LessThan, 90.0, 100.0)]
+    [InlineData(AlertMetric.OccupancyOutOfRange, AlertComparator.GreaterOrEqual, 1.0, 1_440.0)]
+    public void HealthChecks_Should_BeTypedNumbersInTheirUnits_When_ARuleUsesOne(AlertMetric metric, AlertComparator comparator, double threshold, double max)
+    {
+        var values = Health(metric) with { Comparator = comparator, Threshold = threshold, ClearThreshold = null };
+
+        values.Problems().Should().BeEmpty();
+        AlertRuleValues.MaxThreshold(metric).Should().Be(max);
+        AlertRuleValues.IsHealthCheck(metric).Should().BeTrue();
+        AlertRuleValues.IsCondition(metric).Should().BeFalse();
+        (values with { Threshold = max }).Problems().Should().BeEmpty("the unit's bound is allowed");
+        (values with { Threshold = max + 0.001 }).Problems().Should().ContainSingle().Which.Should().Contain($"from 0 to {max}");
+        new Core.Domain.Entities.AlertRule("DMO", 1, values).Values().Should().BeEquivalentTo(values);
+        Enum.GetNames<AlertMetric>().Should().Contain(metric.ToString(), "stored and sent by its exact name");
+    }
+
+    [Fact]
+    public void HealthChecks_Should_BeTheThreeF18Checks_When_EveryMetricIsListed()
+    {
+        Enum.GetValues<AlertMetric>().Where(AlertRuleValues.IsHealthCheck).Should()
+            .Equal(AlertMetric.ConservationResidual, AlertMetric.TrackCompletion, AlertMetric.OccupancyOutOfRange);
+        Enum.GetValues<AlertMetric>().Should().OnlyContain(m => AlertRuleValues.IsCondition(m) || AlertRuleValues.MaxThreshold(m) > 0,
+            "every number metric has a unit and a bound (script 0051 repeats them)");
+        Health(AlertMetric.TrackCompletion).Problems().Should().BeEmpty("below 90 percent, cleared at 95: the clear threshold lies above a rule that fires below");
+    }
 
     [Theory]
     [MemberData(nameof(Refused))]

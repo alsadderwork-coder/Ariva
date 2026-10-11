@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import pg from 'pg';
 import { accounts, call, databaseAvailable, login, signIn, totpCode } from '../support/accounts';
 import { expectNoLeak } from '../support/api-assertions';
 import { hosts } from '../support/hosts';
@@ -213,4 +214,236 @@ test('a backtest returns the count and first fire time, within bounds, for creat
 	const handler = (await signIn(accounts().HandlerStationManager)).accessToken;
 	expect((await call('POST', `${api}/backtest`, { token: handler, data: { rule: rule({ siteCode: 'E2E1' }), fromUtc, toUtc } })).status()).toBe(403);
 	expect((await call('POST', `${api}/backtest`, { data: { rule: rule(), fromUtc, toUtc } })).status()).toBe(401);
+});
+
+// ARV-114b: the continuous health checks of F18 as typed alert metrics (ConservationResidual in people, TrackCompletion in
+// percent, OccupancyOutOfRange in minutes), judged per queue zone on the stored zone_health_bin rows. Ariva.Api.Stream is not
+// part of the E2E run, so the suite plants a security queue's minutes and bins yesterday 05:00 to 06:00 UTC (SEC-N, which no
+// other suite writes): the 05:15 bin's residual is 7 people, 15 of its 20 tracks exited (75 percent) and 2 minutes left its
+// capacity; every other bin is healthy. Each metric's rule fires at 05:29, the last minute of that bin (the minute its end
+// falls in), and clears at 05:44; HealthAlertTests checks the same fold ticked live against the backtest on TimescaleDB.
+
+const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+const morning = (time: string) => `${yesterday}T${time}:00Z`;
+
+function database(): pg.Client {
+	return new pg.Client({
+		host: process.env.Database__Host || 'localhost',
+		port: Number(process.env.Database__Port || 5432),
+		database: process.env.Database__Name || 'postgres',
+		user: process.env.Database__Migration__Username || 'postgres',
+		password: process.env.Database__Migration__Password
+	});
+}
+
+const healthRule = (overrides: Record<string, unknown> = {}) =>
+	rule({
+		name: 'E2E health check',
+		zones: ['SEC-N'],
+		metric: 'TrackCompletion',
+		comparator: 'LessThan',
+		threshold: 90,
+		minQueueLength: null,
+		clearThreshold: null,
+		sustainMinutes: 1,
+		clearAfterMinutes: 1,
+		enabled: false,
+		...overrides
+	});
+
+async function clearHealth(db: pg.Client): Promise<void> {
+	await db.query(`DELETE FROM queue_minute WHERE zone_key = 'DMO/SEC-N' AND minute_utc >= $1 AND minute_utc < $2`, [morning('05:00'), morning('06:00')]);
+	await db.query(`DELETE FROM zone_health_bin WHERE zone_key = 'DMO/SEC-N' AND start_utc >= $1 AND start_utc < $2`, [morning('05:00'), morning('06:00')]);
+}
+
+/** SEC-N's queue minutes and final health bins yesterday 05:00 to 06:00, as the stream stores them (the migration login plants and removes them). */
+async function plantHealth(): Promise<void> {
+	const db = database();
+	await db.connect();
+	try {
+		await clearHealth(db);
+		for (let minute = 0; minute < 60; minute++) {
+			await db.query(
+				`INSERT INTO queue_minute (zone_key, minute_utc, profile_version, status, queue_length, length_from_sensors, length_degraded, nowcast_minutes,
+				                           throughput_per_minute, nowcast_degraded, updated_on)
+				 VALUES ('DMO/SEC-N', $1, 1, 'Final', 12, true, false, 3.2, 4, false, now())`,
+				[new Date(Date.parse(morning('05:00')) + minute * 60_000)]
+			);
+		}
+		for (const [start, residual, exited, outside] of [
+			['05:00', 0, 20, 0],
+			['05:15', 7, 15, 2],
+			['05:30', 0, 20, 0],
+			['05:45', 0, 19, 0]
+		] as const) {
+			await db.query(
+				`INSERT INTO zone_health_bin (zone_key, start_utc, revision, length_minutes, status, profile_version, entries, exits, occupancy_start, occupancy_end,
+				     conservation_residual, tracks_entered, tracks_exited, tracks_abandoned, tracks_fragmented, tracks_censored, tracks_rejected, tracks_open,
+				     track_completion_rate, occupancy_minutes, capacity_minutes, minutes_outside_capacity, updated_on)
+				 VALUES ('DMO/SEC-N', $1, 1, 15, 'Final', 1, 20, 20, 10, $2, $3, 20, $4, $5, 0, 0, 0, 0, $6, 15, 15, $7, now())`,
+				[morning(start), 10 - residual, residual, exited, 20 - exited, exited / 20, outside]
+			);
+		}
+	} finally {
+		await db.end();
+	}
+}
+
+test.describe('health-check metrics (ARV-114b)', () => {
+	test.beforeAll(plantHealth);
+	test.afterAll(async () => {
+		const db = database();
+		await db.connect();
+		try {
+			await clearHealth(db);
+		} finally {
+			await db.end();
+		}
+	});
+
+	test('each health check is a typed number in its unit, created on a queue zone and backtested on the stored bins', async () => {
+		for (const [metric, comparator, threshold, raisedValue] of [
+			['ConservationResidual', 'GreaterThan', 4, 7],
+			['TrackCompletion', 'LessThan', 90, 75],
+			['OccupancyOutOfRange', 'GreaterThan', 0, 2]
+		] as const) {
+			const created = await call('POST', api, { token: administrator, data: healthRule({ name: `E2E ${metric}`, metric, comparator, threshold }) });
+			expect(created.status(), created.status() === 201 ? `${metric} created` : await created.text()).toBe(201);
+			const view = await created.json();
+			try {
+				expect(view).toMatchObject({ metric, comparator, threshold, zones: ['SEC-N'], minQueueLength: null, leadMinutes: null });
+				const read = await call('GET', `${api}/${view.id}`, { token: administrator });
+				expect(read.status(), read.status() === 200 ? `${metric} read back` : await read.text()).toBe(200);
+				expect((await read.json()).metric, 'the metric travels by its exact name').toBe(metric);
+
+				const backtest = await call('POST', `${api}/backtest`, {
+					token: administrator,
+					data: { rule: healthRule({ metric, comparator, threshold }), fromUtc: morning('05:00'), toUtc: morning('06:00') }
+				});
+				expect(backtest.status(), backtest.status() === 200 ? `${metric} backtested` : await backtest.text()).toBe(200);
+				const result = await backtest.json();
+				expect(result, `${metric}: one alert while the 05:15 bin governs`).toMatchObject({ count: 1, targets: 1, targetsWithData: 1, truncated: false });
+				expect(Date.parse(result.firstRaisedUtc)).toBe(Date.parse(morning('05:29')));
+				expect(result.alerts[0]).toMatchObject({ zoneName: 'SEC-N', value: raisedValue });
+				expect(Date.parse(result.alerts[0].clearedUtc), `${metric} clears once the healthy 05:30 bin governs`).toBe(Date.parse(morning('05:44')));
+				expect(Date.parse(result.alerts[0].binStartUtc), 'the alert names the bin it judged').toBe(Date.parse(morning('05:15')));
+			} finally {
+				await call('DELETE', `${api}/${view.id}`, { token: administrator });
+			}
+		}
+	});
+
+	test("unknown metric names, values outside a health check's unit and overflow zones are refused (CWE-94)", async () => {
+		for (const [why, overrides] of [
+			['an unknown metric name', { metric: 'ConservationResiduals' }],
+			['a metric in another case', { metric: 'trackCompletion' }],
+			['a metric with padding', { metric: ' TrackCompletion' }],
+			['health metric names joined', { metric: 'TrackCompletion,OccupancyOutOfRange' }],
+			['a metric as a number', { metric: '8' }],
+			['an expression for a metric', { metric: 'tracks_exited / tracks_entered < 0.9' }],
+			['a template for a metric', { metric: '${7*7}' }],
+			['SQL for a metric', { metric: "TrackCompletion' OR '1'='1" }],
+			['markup for a metric', { metric: '<script>alert(1)</script>' }],
+			['a metric longer than its field', { metric: 'TrackCompletion'.repeat(4) }],
+			['completion above 100 percent', { threshold: 100.5 }],
+			['a negative completion', { threshold: -1 }],
+			['a residual beyond 100,000 people', { metric: 'ConservationResidual', comparator: 'GreaterThan', threshold: 100_001 }],
+			['occupancy minutes beyond a day', { metric: 'OccupancyOutOfRange', comparator: 'GreaterThan', threshold: 1441 }],
+			['IsTrue on a health check', { metric: 'OccupancyOutOfRange', comparator: 'IsTrue', threshold: null }],
+			['a minimum queue on a health check', { minQueueLength: 5 }],
+			['a lead time on a health check', { leadMinutes: 30 }],
+			['a clear threshold on the firing side', { clearThreshold: 80 }],
+			['an overflow zone for a health check', { zones: ['SEC-N', 'SEC-OV'] }],
+			['only an overflow zone for a health check', { zones: ['SEC-OV'] }]
+		] as const) {
+			const response = await call('POST', api, { token: administrator, data: healthRule(overrides) });
+			const body = await response.text();
+			expect(response.status(), response.status() === 400 ? `${why}: refused` : body).toBe(400);
+			expectNoLeak(body, why);
+			if (why.includes('overflow zone')) expect(body.includes('queue zones only'), `${why}: refused for the zone kind`).toBe(true);
+			const backtest = await call('POST', `${api}/backtest`, {
+				token: administrator,
+				data: { rule: healthRule(overrides), fromUtc: morning('05:00'), toUtc: morning('06:00') }
+			});
+			expect(backtest.status(), backtest.status() === 400 ? `${why}: no backtest` : await backtest.text()).toBe(400);
+		}
+	});
+
+	test('every rule endpoint keeps its permission for a health-check rule (CWE-862): anonymous, handlers and other sites are refused', async () => {
+		const created = await call('POST', api, { token: administrator, data: healthRule({ name: 'E2E health authorization' }) });
+		expect(created.status(), created.status() === 201 ? 'created' : await created.text()).toBe(201);
+		const id = (await created.json()).id;
+		try {
+			const range = { fromUtc: morning('05:00'), toUtc: morning('06:00') };
+			// Anonymous: 401 on every endpoint.
+			for (const [method, url, data] of [
+				['GET', api, undefined],
+				['GET', `${api}/${id}`, undefined],
+				['POST', api, healthRule()],
+				['PUT', `${api}/${id}`, healthRule()],
+				['DELETE', `${api}/${id}`, undefined],
+				['POST', `${api}/backtest`, { rule: healthRule(), ...range }]
+			] as const) {
+				expect((await call(method, url, { data })).status(), `anonymous ${method} ${url.replace(hosts.main, '')}`).toBe(401);
+			}
+
+			// A handler station manager of the site reads rules but neither writes nor backtests them.
+			const handler = (await signIn(accounts().dmoHandler)).accessToken;
+			expect((await call('GET', `${api}/${id}`, { token: handler })).status(), 'a handler reads').toBe(200);
+			expect((await call('POST', api, { token: handler, data: healthRule() })).status(), 'a handler creates').toBe(403);
+			expect((await call('PUT', `${api}/${id}`, { token: handler, data: healthRule({ threshold: 50 }) })).status(), 'a handler edits').toBe(403);
+			expect((await call('DELETE', `${api}/${id}`, { token: handler })).status(), 'a handler deletes').toBe(403);
+			expect((await call('POST', `${api}/backtest`, { token: handler, data: { rule: healthRule(), ...range } })).status(), 'a handler backtests').toBe(403);
+
+			// A supervisor of another site (E2E1): the DMO rule does not exist for them, and DMO's bins are not theirs to judge.
+			const elsewhere = (await signIn(accounts().BorderShiftSupervisor)).accessToken;
+			expect((await call('GET', `${api}/${id}`, { token: elsewhere })).status(), 'a DMO health rule from E2E1').toBe(404);
+			expect((await call('PUT', `${api}/${id}`, { token: elsewhere, data: healthRule({ threshold: 50 }) })).status(), 'edit from E2E1').toBe(404);
+			expect((await call('POST', api, { token: elsewhere, data: healthRule() })).status(), 'create at DMO from E2E1').toBe(400);
+			const foreign = await call('POST', `${api}/backtest`, { token: elsewhere, data: { rule: healthRule(), ...range } });
+			expect(foreign.status(), 'backtest of DMO bins from E2E1').toBe(400);
+			expect((await foreign.text()).includes('SEC-N'), 'the refusal says nothing of the bins').toBe(false);
+			const listed = await call('GET', `${api}?siteCode=DMO&metric=TrackCompletion`, { token: elsewhere });
+			expect(listed.status(), 'the search answers').toBe(200);
+			expect((await listed.json()).data, 'no DMO rule is listed for E2E1').toHaveLength(0);
+			// At their own site, DMO's queue zone is not one of E2E1's zones (CWE-863): refused as an unknown zone.
+			const ownSite = await call('POST', api, {
+				token: elsewhere,
+				data: healthRule({ siteCode: 'E2E1', escalateAfterMinutes: null, escalateToRole: null, escalationContact: null })
+			});
+			const ownSiteBody = await ownSite.text();
+			expect(ownSite.status(), ownSite.status() === 400 ? 'SEC-N at E2E1' : ownSiteBody).toBe(400);
+			expect(ownSiteBody.includes('Every zone in scope must be a zone of the site'), 'refused for the zone').toBe(true);
+			// An edit cannot slip an overflow band into a health rule either.
+			const band = await call('PUT', `${api}/${id}`, { token: administrator, data: healthRule({ zones: ['SEC-N', 'SEC-OV'] }) });
+			const bandBody = await band.text();
+			expect(band.status(), band.status() === 400 ? 'SEC-OV added by an edit' : bandBody).toBe(400);
+			expect(bandBody.includes('queue zones only'), 'refused for the zone kind').toBe(true);
+			expect((await (await call('GET', `${api}/${id}`, { token: administrator })).json()).zones, 'the rule keeps its zones').toEqual(['SEC-N']);
+			expect((await call('GET', `${api}/${id}`, { token: administrator })).status(), 'still there').toBe(200);
+		} finally {
+			await call('DELETE', `${api}/${id}`, { token: administrator });
+		}
+	});
+
+	test('a search by metric takes the health checks by their exact names only', async () => {
+		const created = await call('POST', api, {
+			token: administrator,
+			data: healthRule({ name: 'E2E health search', metric: 'OccupancyOutOfRange', comparator: 'GreaterThan', threshold: 0 })
+		});
+		expect(created.status(), created.status() === 201 ? 'created' : await created.text()).toBe(201);
+		const id = (await created.json()).id;
+		try {
+			const found = await call('GET', `${api}?siteCode=DMO&metric=OccupancyOutOfRange&pageSize=500`, { token: administrator });
+			expect(found.status(), 'search by a health metric').toBe(200);
+			expect((await found.json()).data.map((r: { id: string }) => r.id)).toContain(id);
+			for (const metric of ['occupancyoutofrange', 'OccupancyOutOfRange,TrackCompletion', '9', "OccupancyOutOfRange' OR '1'='1"]) {
+				const refused = await call('GET', `${api}?siteCode=DMO&metric=${encodeURIComponent(metric)}`, { token: administrator });
+				expect(refused.status(), `metric filter ${metric}`).toBe(400);
+				expectNoLeak(await refused.text(), metric);
+			}
+		} finally {
+			await call('DELETE', `${api}/${id}`, { token: administrator });
+		}
+	});
 });

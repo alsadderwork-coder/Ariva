@@ -114,7 +114,7 @@ internal sealed partial class SvcValidationResults
     /// <summary>
     /// The campaign's comparison and each zone's nowcast coverage, and whether the shadow nowcast was read. In slices
     /// (<paramref name="sliced"/>): the base over the full scope with only the queue minutes the tracers read, then one zone at a
-    /// time with its minutes and shadow nowcasts (dropped once compared), pooled (<see cref="ComparisonSlices.Pool"/>). Whole: every
+    /// time with its minutes, shadow nowcasts (dropped once compared), bins and health bins, pooled (<see cref="ComparisonSlices.Pool"/>). Whole: every
     /// row read the same way, compared at once (tests prove the two equal on a campaign within the engine's bounds). An error when
     /// a read is beyond its bound or the shadow cannot be read; a shadow without a reader login configured is no shadow at all.
     /// </summary>
@@ -144,7 +144,8 @@ internal sealed partial class SvcValidationResults
         if (counts is null || runs is null || observations is null)
             return tooLarge;
 
-        // Stored outputs other than minutes and bins, one planned day at a time (a read stays within the rows one read may hold).
+        // Stored outputs other than minutes and bins (queue and health bins are read per zone below), one planned day at a time (a
+        // read stays within the rows one read may hold).
         var lineNames = scope.Lines.Select(l => l.Name).Distinct(StringComparer.Ordinal).ToList();
         var lineBins = new List<LineBinCount>();
         var health = new List<Ariva.Core.Queueing.ZoneHealthBin>();
@@ -152,8 +153,7 @@ internal sealed partial class SvcValidationResults
         foreach (var window in scope.Windows)
         {
             var lines = await LineBinsAsync(zonesByKey, lineNames, window, ct);
-            var bins = await HealthBinsAsync(zonesByKey, window, ct);
-            if (lines is null || bins is null || !Within(lineBins, lines) || !Within(health, bins))
+            if (lines is null || !Within(lineBins, lines))
                 return tooLarge;
             foreach (var half in HalfDays(window))
             {
@@ -204,6 +204,20 @@ internal sealed partial class SvcValidationResults
             if (!Within(queueBins, zoneBins))
                 return tooLarge;
 
+            // The zone's health bins with the same margins (ARV-114b): a queue bin's completion-only flag is believed only beside
+            // its own health row, so every bin the comparison may read (a tracer's wait or a nowcast's entrants past the planned
+            // days) needs it. One zone at a time, as for the queue bins, so a read stays within the rows one read may hold.
+            var zoneHealth = new List<Ariva.Core.Queueing.ZoneHealthBin>();
+            foreach (var window in Merged(scope.Windows, BinMarginBefore, BinMarginAfter))
+            {
+                var read = await HealthBinsAsync(zoneKey, window, ct);
+                if (read is null || !Within(zoneHealth, read))
+                    return tooLarge;
+            }
+
+            if (!Within(health, zoneHealth))
+                return tooLarge;
+
             var shadows = new List<ShadowMinuteRow>();
             if (shadowRead)
             {
@@ -225,6 +239,8 @@ internal sealed partial class SvcValidationResults
                     QueueMinutes = minutes,
                     ShadowMinutes = shadows,
                     QueueBins = zoneBins,
+                    // ARV-114b: the zone's health bins, beside which the engine believes its bins' completion-only flags.
+                    HealthBins = zoneHealth,
                     QualityIntervals = [.. intervals.Where(i => i.QueueZone == zone.Name)]
                 };
                 slices.Add(ComparisonSlices.CompareZone(input, Settings));

@@ -184,7 +184,14 @@ public sealed record DeskLevelRow(Guid DeskId, int ProfileVersion, DateTime From
 /// entrants who abandoned. The engine takes each bin's highest revision.
 /// </summary>
 public sealed record QueueBinRow(string QueueZone, DateTime StartUtc, TimeSpan Length, int Revision, BinStatus Status, BinQuality Quality, int ProfileVersion,
-    long Entries, long Abandoned);
+    long Entries, long Abandoned)
+{
+    /// <summary>
+    /// Degraded for its own track completion alone (F11, ARV-114b; <c>queue_bin.degraded_by_completion_only</c>): every
+    /// criterion judges such a bin like a Good one (F18). Only ever true beside a Final, Degraded bin; otherwise the row is refused.
+    /// </summary>
+    public bool DegradedByCompletionOnly { get; init; }
+}
 
 /// <summary>
 /// A period of degraded or unknown data quality of a queue zone (F11): a device outage of zone_outage is

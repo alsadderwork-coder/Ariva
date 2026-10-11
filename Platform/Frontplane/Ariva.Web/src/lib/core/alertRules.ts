@@ -17,8 +17,20 @@ export const metrics = [
 	'QueueLength',
 	'SensorOffline',
 	'OverflowOccupied',
-	'DesksBelowPlan'
+	'DesksBelowPlan',
+	'ConservationResidual',
+	'TrackCompletion',
+	'OccupancyOutOfRange'
 ] as const;
+/**
+ * The continuous health checks of a queue zone's bins (F18, ARV-114b): judged per queue zone, so a rule on one watches
+ * queue zones only (the server refuses overflow zones for them).
+ */
+export const healthChecks: ReadonlySet<string> = new Set([
+	'ConservationResidual',
+	'TrackCompletion',
+	'OccupancyOutOfRange'
+]);
 /**
  * Metrics the evaluation cannot judge yet: offered only when editing a rule that already uses one (the server refuses new
  * ones). OverflowOccupied is judged since ARV-115 (the stream stores each overflow band's occupancy per minute).
@@ -37,7 +49,7 @@ export const operationalRoles = [
 export const roleCodes = [...operationalRoles, 'SystemAdministrator'] as const;
 
 export type Metric = (typeof metrics)[number];
-export type Unit = 'minutes' | 'people' | 'desks' | 'condition';
+export type Unit = 'minutes' | 'people' | 'desks' | 'percent' | 'condition';
 
 /** The limits the server applies (AlertRuleValues), so the form refuses what the server would. */
 export const limits = {
@@ -54,9 +66,12 @@ export const limits = {
 export function unitOf(metric: string): Unit {
 	switch (metric) {
 		case 'QueueLength':
+		case 'ConservationResidual':
 			return 'people';
 		case 'DesksBelowPlan':
 			return 'desks';
+		case 'TrackCompletion':
+			return 'percent';
 		case 'SensorOffline':
 		case 'OverflowOccupied':
 			return 'condition';
@@ -65,7 +80,14 @@ export function unitOf(metric: string): Unit {
 	}
 }
 
+/** The largest threshold the server takes for a metric (AlertRuleValues.MaxThreshold). */
 export function maxThreshold(metric: string): number {
+	switch (metric) {
+		case 'TrackCompletion':
+			return 100;
+		case 'OccupancyOutOfRange':
+			return 1_440;
+	}
 	const unit = unitOf(metric);
 	return unit === 'people' ? 100_000 : unit === 'desks' ? 1_000 : unit === 'minutes' ? 600 : 0;
 }

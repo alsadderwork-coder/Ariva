@@ -153,7 +153,7 @@ public sealed class AlertEvaluation(IServiceScopeFactory scopes, AlertEvaluation
 /// resolves it); a target that left the rule has its open alert resolved and its state dropped.
 /// </summary>
 internal sealed class AlertRuleTick(IUnitOfWork unitOfWork, ICurrentUser currentUser, AlertInputs inputs, AuditTrail audit, IAlertNotices notices,
-    Ariva.Infra.Notifications.AlertEmails emails)
+    Ariva.Infra.Notifications.AlertEmails emails, ILogger<AlertRuleTick> logger)
 {
     /// <summary>The most alerts one tick escalates (the rest at the next).</summary>
     public const int MaxEscalationsPerTick = 500;
@@ -280,8 +280,13 @@ internal sealed class AlertRuleTick(IUnitOfWork unitOfWork, ICurrentUser current
             AlertMetric.SensorOffline => null,
             // ARV-115: overflow rules run on the bands' own minutes, which an overflow zone has without a queue minute of its own.
             AlertMetric.OverflowOccupied => await inputs.LatestOverflowMinutesAsync(rule.SiteCode, zoneNames, ended, ct),
+            // ARV-114b: a health-check rule waits for each zone's latest ended bin to settle, so it judges what a backtest would.
+            AlertMetric.ConservationResidual or AlertMetric.TrackCompletion or AlertMetric.OccupancyOutOfRange =>
+                await inputs.LatestHealthMinutesAsync(rule.SiteCode, values.Metric, zoneNames, ended, ct),
             _ => await inputs.LatestMinutesAsync(rule.SiteCode, zoneNames, ended, ct)
         };
+        if (latest is null && AlertRuleValues.IsHealthCheck(values.Metric))
+            return Skipped(rule, targets.Count, withdrawn, now);
         var plan = new List<(AlertTarget Target, AlertRuleState State, DateTime From, DateTime To)>();
         foreach (var target in targets)
         {
@@ -324,10 +329,20 @@ internal sealed class AlertRuleTick(IUnitOfWork unitOfWork, ICurrentUser current
                 plan.Add((target, state, from, upTo));
         }
 
+        // Targets are read in clusters of nearby windows (each at most the catch-up long), so a target far behind the others
+        // never stretches one read over the months between them for every target (ARV-114b, CWE-120).
+        var seriesByKey = new Dictionary<string, AlertTargetSeries>(StringComparer.Ordinal);
+        foreach (var cluster in AlertInputs.Clusters(plan, p => p.From, TimeSpan.FromMinutes(maxCatchUpMinutes)))
+        {
+            var series = await inputs.ReadAsync(rule.SiteCode, values, [.. cluster.Select(p => p.Target)], cluster.Min(p => p.From), cluster.Max(p => p.To), ct);
+            if (series is null)
+                return Skipped(rule, plan.Count, withdrawn, now);
+            foreach (var read in series)
+                seriesByKey[read.Target.Key] = read;
+        }
+
         if (plan.Count > 0)
         {
-            var series = await inputs.ReadAsync(rule.SiteCode, values, [.. plan.Select(p => p.Target)], plan.Min(p => p.From), plan.Max(p => p.To), ct);
-            var seriesByKey = series.ToDictionary(s => s.Target.Key, StringComparer.Ordinal);
             foreach (var (target, state, from, to) in plan)
             {
                 var minutes = seriesByKey.TryGetValue(target.Key, out var s) ? s.Minutes.Where(m => m.MinuteUtc > from && m.MinuteUtc <= to) : [];
@@ -370,6 +385,20 @@ internal sealed class AlertRuleTick(IUnitOfWork unitOfWork, ICurrentUser current
         Announce(now);
         unitOfWork.PromiseToCommit();
         return new AlertRuleTickResult(plan.Count, raised, cleared, withdrawn);
+    }
+
+    /// <summary>
+    /// A rule whose inputs are beyond their read bound this tick (<see cref="AlertInputs.MaxHealthRows"/>, CWE-120): its
+    /// targets keep their states, so the next tick tries again from the same minutes; what the tick already changed (new
+    /// targets, withdrawn alerts) is kept. One warning names the site and the rule code only.
+    /// </summary>
+    private AlertRuleTickResult Skipped(AlertRule rule, int targets, int withdrawn, DateTime now)
+    {
+        logger.LogWarning("Alert evaluation of site {Site} rule {Rule}: its stored bins exceed the {Max} rows one read takes; the rule is not evaluated this tick",
+            rule.SiteCode, rule.Code, inputs.MaxHealthRows);
+        Announce(now);
+        unitOfWork.PromiseToCommit();
+        return new AlertRuleTickResult(targets, 0, 0, withdrawn);
     }
 
     private sealed class IdRow

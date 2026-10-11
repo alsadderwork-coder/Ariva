@@ -45,8 +45,10 @@ public sealed record SlicedInput(ComparisonInput Base, IReadOnlyList<ComparisonI
 /// sensitivity shift of at most a minute), and no shadow nowcast. Its counts, tracers, offsets, track completion and desks are
 /// the whole comparison's;</item>
 /// <item>one comparison per queue zone (<see cref="ZoneScope"/>: that zone alone, the planned days, no lines, no desks) takes
-/// the zone's queue minutes, shadow nowcasts, queue bins and quality intervals. Its nowcast minutes and its zone summary are
-/// the whole comparison's for that zone, because the nowcast error reads nothing of another zone;</item>
+/// the zone's queue minutes, shadow nowcasts, queue bins, health bins and quality intervals. The health bins are there for the
+/// queue bins' completion-only flag (ARV-114b): the engine believes a flag only beside the bin's own health row, so a slice
+/// without them would set apart, as unusable, exactly the bins whose tracking failed. Its nowcast minutes and its zone summary
+/// are the whole comparison's for that zone, because the nowcast error reads nothing of another zone;</item>
 /// <item><see cref="Pool"/> keeps the base and replaces its nowcast part with the zones' minutes and summaries in zone order,
 /// the overall summary computed again over those minutes in the same order (sums and medians as the whole gives them), and the
 /// left-out queue minutes and shadow nowcasts (counts and unusable keys) with the zones'.</item>
@@ -129,8 +131,9 @@ public static class ComparisonSlices
 
     /// <summary>
     /// A whole input cut as the service reads it (<see cref="SlicedInput"/>): the base and one input per zone. Queue minutes,
-    /// shadow nowcasts, queue bins and quality intervals go to their zone's slice; rows of no zone in scope (and null rows) go
-    /// to the first zone's slice, where they are left out and counted as the whole would. A scope without zones is not sliced.
+    /// shadow nowcasts, queue bins, health bins and quality intervals go to their zone's slice (the health bins stay in the base
+    /// too: track completion is the base's); rows of no zone in scope (and null rows) go to the first zone's slice, where they
+    /// are left out and counted as the whole would. A scope without zones is not sliced.
     /// </summary>
     public static SlicedInput Slice(ComparisonInput whole)
     {
@@ -148,6 +151,7 @@ public static class ComparisonSlices
             QueueMinutes = Of(whole.QueueMinutes, names, first, zone.Name, r => r?.QueueZone),
             ShadowMinutes = Of(whole.ShadowMinutes, names, first, zone.Name, r => r?.QueueZone),
             QueueBins = [.. (whole.QueueBins ?? []).Where(r => r?.QueueZone == zone.Name)],
+            HealthBins = [.. (whole.HealthBins ?? []).Where(r => r?.QueueZone == zone.Name)],
             QualityIntervals = [.. (whole.QualityIntervals ?? []).Where(r => r?.QueueZone == zone.Name)]
         }).ToList();
         var baseInput = whole with { QueueMinutes = ForTracers(whole.QueueMinutes ?? [], tracerMinutes), ShadowMinutes = [] };

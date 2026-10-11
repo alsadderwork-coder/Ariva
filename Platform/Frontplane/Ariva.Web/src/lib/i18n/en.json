@@ -637,10 +637,16 @@
 			"escalation": "Unacknowledged alerts go to the role or contact after this.",
 			"condition": "This metric is true or false: the rule fires while it is true."
 		},
+		"healthHints": {
+			"ConservationResidual": "People counted in or out that the occupancy does not show, in the zone's latest ended 15-minute bin (0 when every person is accounted for). Queue zones only.",
+			"TrackCompletion": "Share of tracked people who entered in the zone's latest final bin and were seen to exit, in percent. Below 90 percent marks the bin Degraded. Queue zones only.",
+			"OccupancyOutOfRange": "Minutes of the zone's latest ended bin with a reading above a zone's physical capacity (set in the zone profile). Queue zones only."
+		},
 		"units": {
 			"minutes": "minutes",
 			"people": "people",
 			"desks": "desks",
+			"percent": "percent",
 			"condition": ""
 		},
 		"metrics": {
@@ -650,7 +656,10 @@
 			"QueueLength": "Queue length",
 			"SensorOffline": "Sensor offline",
 			"OverflowOccupied": "Overflow occupied",
-			"DesksBelowPlan": "Desks below plan"
+			"DesksBelowPlan": "Desks below plan",
+			"ConservationResidual": "Conservation residual",
+			"TrackCompletion": "Track completion",
+			"OccupancyOutOfRange": "Occupancy out of range"
 		},
 		"comparators": {
 			"GreaterThan": "Above",

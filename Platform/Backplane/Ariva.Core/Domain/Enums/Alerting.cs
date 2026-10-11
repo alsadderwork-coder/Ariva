@@ -26,7 +26,26 @@ public enum AlertMetric
     /// minutes: the queue now, stepped with the arrival-wave projection (F14, ARV-047) and what the desks clear at the
     /// current throughput (ARV-038). A predicted breach, not a measurement.
     /// </summary>
-    PredictedNowcast
+    PredictedNowcast,
+
+    /// <summary>
+    /// The size of a queue zone's conservation residual (F18, ARV-114a) in its latest ended bin, in people:
+    /// |(entries - exits) - (Occ(end) - Occ(start))|, judged once the bin's two boundaries are measured (ARV-114b).
+    /// </summary>
+    ConservationResidual,
+
+    /// <summary>
+    /// The track completion of a queue zone's latest ended bin (F18, ARV-114a), in percent: tracks exited over tracks
+    /// entered, judged once the bin is final (every track resolved); the same rate makes the bin Degraded below F11's
+    /// threshold (ARV-114b).
+    /// </summary>
+    TrackCompletion,
+
+    /// <summary>
+    /// The minutes of a queue zone's latest ended bin whose occupancy readings left 0 to the zone's physical capacity
+    /// (F18 occupancy sanity, ARV-114a), in minutes; judged once the bin has ended, for a zone checked against a capacity (ARV-114b).
+    /// </summary>
+    OccupancyOutOfRange
 }
 
 /// <summary>Where an alert is in its life (glossary Alert); ARV-038 raises and resolves, ARV-039 acknowledges and escalates.</summary>

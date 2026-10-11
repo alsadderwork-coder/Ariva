@@ -517,7 +517,7 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
         await using (var copy = await connection.BeginBinaryImportAsync("""
             COPY stage_queue_bin (zone_key, start_utc, revision, length_minutes, status, quality, entries, exits, waits, mean_wait_minutes,
                 p50_wait_minutes, p90_wait_minutes, p95_wait_minutes, share_within_target, abandoned, fragmented, censored, reanchored, rejected,
-                open_people, late_events, profile_version, revision_reason, updated_on) FROM STDIN (FORMAT BINARY)
+                open_people, late_events, profile_version, revision_reason, updated_on, degraded_by_completion_only) FROM STDIN (FORMAT BINARY)
             """, ct))
         {
             foreach (var (zone, b) in rows.GroupBy(r => (r.Zone, r.Bin.StartUtc, r.Bin.Revision)).Select(g => g.Last()))
@@ -546,6 +546,8 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
                 else
                     await copy.WriteAsync(reason, NpgsqlDbType.Varchar, ct);
                 await copy.WriteAsync(now, NpgsqlDbType.TimestampTz, ct);
+                // ARV-114b: Degraded for its own track completion alone (F11), for the validation comparison (F18).
+                await copy.WriteAsync(b.DegradedByCompletionOnly, NpgsqlDbType.Boolean, ct);
             }
 
             await copy.CompleteAsync(ct);
@@ -560,7 +562,8 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
                 p95_wait_minutes = EXCLUDED.p95_wait_minutes, share_within_target = EXCLUDED.share_within_target, abandoned = EXCLUDED.abandoned,
                 fragmented = EXCLUDED.fragmented, censored = EXCLUDED.censored, reanchored = EXCLUDED.reanchored, rejected = EXCLUDED.rejected,
                 open_people = EXCLUDED.open_people, late_events = EXCLUDED.late_events, profile_version = EXCLUDED.profile_version,
-                revision_reason = EXCLUDED.revision_reason, updated_on = EXCLUDED.updated_on
+                revision_reason = EXCLUDED.revision_reason, updated_on = EXCLUDED.updated_on,
+                degraded_by_completion_only = EXCLUDED.degraded_by_completion_only
             WHERE queue_bin.status <> 'Final'
             """, ct);
     }

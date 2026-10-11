@@ -946,7 +946,10 @@ public sealed class ComparisonTests
             [
                 Health(At(18, 0), 20, 18), Health(At(18, 15), 10, 10), Health(At(18, 30), 10, 5, abandoned: 2, fragmented: 2, censored: 1)
             ],
-            QueueBins = [Bin(At(18, 0)), Bin(At(18, 15)), Bin(At(18, 30), BinQuality.Degraded), Bin(At(18, 45))]
+            QueueBins = [Bin(At(18, 0)), Bin(At(18, 15)), Bin(At(18, 30), BinQuality.Degraded), Bin(At(18, 45))],
+            // A sensor outage over the 18:30 bin: since ARV-114b a bin below the target is judged despite its own Degraded flag
+            // (F11 degrades it for that very rate), but an outage still sets it apart.
+            QualityIntervals = [new QualityInterval(Vis, At(18, 31), At(18, 40), BinQuality.Degraded)]
         });
 
         var zone = result.TrackCompletion.Single(z => z.QueueZone == Vis);
@@ -960,6 +963,141 @@ public sealed class ComparisonTests
         zone.Check.Verdict.Should().Be(CriterionVerdict.Pass);
         result.TrackCompletion.Select(z => z.QueueZone).Should().Equal(Cit, Vis);
         result.TrackCompletion.Single(z => z.QueueZone == Cit).Bins.Should().Be(new StandingTally(0, 0, 0, 4, 0, 0));
+    }
+
+    [Fact]
+    public void Compare_Should_JudgeABinBelowTheTarget_When_F11MadeItDegradedForItsOwnTrackCompletion()
+    {
+        // ARV-114b: F11 marks a final bin Degraded when its completion falls below 90 percent. Left out as Degraded, exactly the
+        // failing bins would leave the criterion and it could never fail; so a final bin below the target is judged whatever its
+        // own flag says (its other causes cannot be told apart, and it can only lower the rate), while outages still set bins apart.
+        var result = Compare(new ComparisonInput
+        {
+            Scope = Scope(),
+            HealthBins = [Health(At(18, 0), 20, 18), Health(At(18, 15), 10, 7, abandoned: 3), Health(At(18, 30), 10, 10), Health(At(18, 45), 10, 5)],
+            QueueBins = [Bin(At(18, 0)), Bin(At(18, 15), BinQuality.Degraded), Bin(At(18, 30), BinQuality.Degraded), Bin(At(18, 45), BinQuality.Degraded)],
+            QualityIntervals = [new QualityInterval(Vis, At(18, 50), At(18, 52), BinQuality.Degraded)]
+        });
+
+        var zone = result.TrackCompletion.Single(z => z.QueueZone == Vis);
+        zone.Bins.Should().Be(new StandingTally(2, 0, 2, 0, 0, 0), "18:00 and 18:15 judged; 18:30 (at the target, so Degraded for another cause) and 18:45 (outage) apart");
+        zone.Good.Should().Be(new TrackTotals(2, 30, 25, 3, 0, 0, 25.0 / 30));
+        zone.Degraded.Should().Be(new TrackTotals(2, 20, 15, 0, 0, 0, 0.75));
+        zone.Check.Verdict.Should().Be(CriterionVerdict.Fail, "25 of 30 is below 90 percent; without the 18:15 bin it would have passed at 18 of 20");
+    }
+
+    /// <summary>A bin F11 made Degraded for its own track completion alone (ARV-114b, queue_bin.degraded_by_completion_only).</summary>
+    private static QueueBinRow ByCompletion(DateTime start) => Bin(start, BinQuality.Degraded) with { DegradedByCompletionOnly = true };
+
+    /// <summary>
+    /// ARV-114b security review, the constructible case: a line with ten bins at 99 percent and one at 80 percent, that bin
+    /// with 15 of its 20 tracks exited. Its F11 flag alone must not set it apart, or the line that failed before ARV-114b passes.
+    /// </summary>
+    private static ComparisonInput SelfFlagged(QueueBinRow flagged)
+    {
+        var bins = Enumerable.Range(0, 11).Select(i => At(18, 0).AddMinutes(15 * i)).ToList();
+        return new ComparisonInput
+        {
+            Scope = Scope(new UtcWindow(At(18, 0), At(20, 45))),
+            ManualCounts = [.. bins.Select(b => Count(EntryA, b, 100))],
+            LineBins = [.. bins.Select(b => LineBin("A-VIS entry", b, b == At(18, 30) ? 80 : 99))],
+            QueueBins = [.. bins.Select(b => b == At(18, 30) ? flagged : Bin(b))],
+            HealthBins = [.. bins.Select(b => b == At(18, 30) ? Health(b, 20, 15, abandoned: 5) : Health(b, 200, 200))]
+        };
+    }
+
+    [Fact]
+    public void Compare_Should_JudgeEveryCriterionOnABin_When_F11MadeItDegradedForItsOwnTrackCompletionAlone()
+    {
+        var result = Compare(SelfFlagged(ByCompletion(At(18, 30))));
+
+        var line = result.Lines.Single(l => l.LineId == EntryA);
+        (line.Judged, line.Passing).Should().Be((11, 10));
+        line.Bins.Should().Be(new StandingTally(11, 0, 0, 0, 0, 0), "a bin set apart only by its own completion flag stands Good");
+        line.LowestAccuracy.Should().BeApproximately(0.80, 1e-12);
+        line.Check.Verdict.Should().Be(CriterionVerdict.Fail, "the 80 percent bin is judged, as before ARV-114b");
+        var completion = result.TrackCompletion.Single(z => z.QueueZone == Vis);
+        completion.Good.Should().Be(new TrackTotals(11, 2_020, 2_015, 5, 0, 0, 2_015.0 / 2_020));
+        completion.Check.Verdict.Should().Be(CriterionVerdict.Pass, "pooled track completion still passes");
+    }
+
+    [Fact]
+    public void Compare_Should_SetTheBinApart_When_ItIsDegradedForAnotherCauseOrUnderAnOutage()
+    {
+        // The same bin Degraded for another cause (degraded events, censored entrants, a residual re-anchor): set apart as before.
+        var other = Compare(SelfFlagged(Bin(At(18, 30), BinQuality.Degraded)));
+        var line = other.Lines.Single(l => l.LineId == EntryA);
+        (line.Judged, line.Check.Verdict).Should().Be((10, CriterionVerdict.Pass));
+        line.Bins.Should().Be(new StandingTally(10, 0, 1, 0, 0, 0));
+
+        // Degraded for its completion alone but under a sensor outage: the outage still sets it apart.
+        var outage = Compare(SelfFlagged(ByCompletion(At(18, 30))) with { QualityIntervals = [new QualityInterval(Vis, At(18, 35), At(18, 37), BinQuality.Degraded)] });
+        outage.Lines.Single(l => l.LineId == EntryA).Bins.Should().Be(new StandingTally(10, 0, 1, 0, 0, 0));
+    }
+
+    [Fact]
+    public void Compare_Should_FailTheWaitCriterion_When_AFailingTracerWaitedInABinDegradedForItsOwnCompletion()
+    {
+        var input = new ComparisonInput
+        {
+            Scope = Scope(),
+            TracerRuns = [Run(1, At(18, 5, 30), At(18, 25, 30))],
+            QueueMinutes = [Minute(At(18, 5), 22.5)],
+            QueueBins = [Bin(At(18, 0)), ByCompletion(At(18, 15))],
+            HealthBins = [Health(At(18, 0), 20, 20), Health(At(18, 15), 20, 15, abandoned: 5)]
+        };
+
+        var result = Compare(input);
+
+        var run = Tracer(result, 1);
+        run.Standing.Should().Be(ComparisonStanding.Good, "the 18:15 bin is set apart by nothing but its own completion");
+        (run.ErrorMinutes, run.WithinTolerance).Should().Be(((double?)2.5, (bool?)false));
+        ZoneOf(result, Vis).ErrorCheck.Should().Be(new CriterionCheck(0, 1, CriterionVerdict.Fail));
+        var apart = Compare(input with { QueueBins = [Bin(At(18, 0)), Bin(At(18, 15), BinQuality.Degraded)] });
+        Tracer(apart, 1).Standing.Should().Be(ComparisonStanding.Degraded, "Degraded for another cause, the run is still set apart");
+    }
+
+    [Theory]
+    [InlineData(BinQuality.Good, BinStatus.Final)]
+    [InlineData(BinQuality.Unknown, BinStatus.Final)]
+    [InlineData(BinQuality.Degraded, BinStatus.Provisional)]
+    public void Compare_Should_RefuseTheBin_When_ItsCompletionFlagStandsBesideAnotherQualityOrStatus(BinQuality quality, BinStatus status)
+    {
+        // The flag is only ever true beside a Final, Degraded bin (script 0051's check); anything else is a row that cannot be.
+        var result = Compare(new ComparisonInput
+        {
+            Scope = Scope(new UtcWindow(At(18, 0), At(18, 15))),
+            ManualCounts = [Count(EntryA, At(18, 0), 100)],
+            LineBins = [LineBin("A-VIS entry", At(18, 0), 99)],
+            QueueBins = [Bin(At(18, 0), quality, status) with { DegradedByCompletionOnly = true }]
+        });
+
+        result.LeftOut.UnusableKeys.Should().ContainSingle().Which.Kind.Should().Be(UnusableKeyKind.QueueBin);
+        result.Lines.Single(l => l.LineId == EntryA).Bins.Should().Be(new StandingTally(0, 0, 0, 1, 0, 0), "an unusable bin counts as not stored");
+    }
+
+    [Theory]
+    [InlineData("no health row", 0, 0, BinStatus.Final, false)]
+    [InlineData("a provisional health row", 20, 15, BinStatus.Provisional, true)]
+    [InlineData("a health row without tracks", 0, 0, BinStatus.Final, true)]
+    [InlineData("a health row at the threshold", 20, 18, BinStatus.Final, true)]
+    [InlineData("a health row above the threshold", 20, 20, BinStatus.Final, true)]
+    public void Compare_Should_RefuseTheCompletionFlag_When_TheBinsOwnHealthRowDoesNotBearItOut(string why, long entered, long exited, BinStatus status, bool stored)
+    {
+        // ARV-114b re-check: the flag is believed only when the same bin's deciding health row is final, counted tracks and fell
+        // below F11's threshold; otherwise a writer went wrong, and the bin is unusable (never Good).
+        var result = Compare(new ComparisonInput
+        {
+            Scope = Scope(new UtcWindow(At(18, 0), At(18, 15))),
+            ManualCounts = [Count(EntryA, At(18, 0), 100)],
+            LineBins = [LineBin("A-VIS entry", At(18, 0), 80)],
+            QueueBins = [ByCompletion(At(18, 0))],
+            HealthBins = stored ? [Health(At(18, 0), entered, exited, status, abandoned: entered - exited)] : []
+        });
+
+        result.LeftOut.UnusableKeys.Should().ContainSingle(why).Which.Should().Be(Key(UnusableKeyKind.QueueBin, At(18, 0)));
+        var line = result.Lines.Single(l => l.LineId == EntryA);
+        (line.Judged, line.Bins).Should().Be((0, new StandingTally(0, 0, 0, 1, 0, 0)), why);
     }
 
     [Theory]

@@ -385,4 +385,141 @@ public sealed class HealthChecksTests
     }
 
     #endregion
+
+    #region Degraded by track completion (F11, ARV-114b)
+
+    [Theory]
+    [InlineData(20L, 18L, 0.9, false)]
+    [InlineData(20L, 17L, 0.9, true)]
+    [InlineData(3L, 2L, 0.9, true)]
+    [InlineData(10L, 10L, 1.0, false)]
+    [InlineData(10L, 9L, 1.0, true)]
+    [InlineData(0L, 0L, 0.9, false)]
+    [InlineData(10L, 0L, 0.0, false)]
+    public void TrackCompletionBelow_Should_CompareTheRateWithTheThreshold_When_TracksEntered(long entered, long exited, double threshold, bool below)
+    {
+        // 18 of 20 is exactly the threshold, not below it; no track gives no rate; a threshold of 0 never degrades.
+        HealthChecks.TrackCompletionBelow(entered, exited, threshold).Should().Be(below);
+    }
+
+    /// <summary>
+    /// The 18:00 bin with <paramref name="tracks"/> tracks entering from 18:01, of which the first <paramref name="exiting"/>
+    /// exit at 18:04 and the rest walk back out over the entry line (abandoned); no censored track, no degraded event.
+    /// </summary>
+    private static (BinResult Bin, ZoneHealthBin Health) Completion(int tracks, int exiting, double until = 16, BinSettings settings = null)
+    {
+        var engine = new QueueStateEngine(Geometry(), Settings);
+        var bins = new BinAccumulator("A-VIS", 12, settings ?? new BinSettings(), Geometry());
+        var inputs = new List<QueueInput>();
+        for (var i = 0; i < tracks; i++)
+        {
+            inputs.Add(In(1 + i * 0.01, $"S-15/{i}"));
+            inputs.Add(i < exiting ? Out(4 + i * 0.01, $"S-15/{i}") : new QueueCrossing("A-VIS entry", CrossingDirection.Out, $"S-15/{i}", At(3 + i * 0.01)));
+        }
+
+        var (_, update) = Play(engine, bins, until, [.. inputs]);
+        return (update.Bins.Last(b => b.StartUtc == At(0)), Latest(update.Health, 0));
+    }
+
+    [Fact]
+    public void Accept_Should_MarkAFinalBinDegraded_When_ItsTrackCompletionFallsBelowNinetyPercent()
+    {
+        var (bin, health) = Completion(tracks: 10, exiting: 8);
+
+        bin.Status.Should().Be(BinStatus.Final);
+        health.TrackCompletionRate.Should().Be(0.8);
+        bin.Censored.Should().Be(0, "nothing else degrades it");
+        bin.Quality.Should().Be(BinQuality.Degraded, "F11: a final bin whose track completion is below 90 percent is Degraded (Proposed)");
+        bin.DegradedByCompletionOnly.Should().BeTrue("nothing else degrades it, so the validation comparison still judges it (F18)");
+        JsonSerializer.Serialize(bin, Ariva.Core.Queueing.Replay.ReplayLedger.Json).Should().NotContain("degradedByCompletionOnly",
+            "the reason is not part of the replay's hashed record: the locked heads stay");
+    }
+
+    [Fact]
+    public void Accept_Should_NotCallItCompletionOnly_When_SomethingElseDegradesTheBinToo()
+    {
+        var (_, bins, _, _) = Evening();
+
+        var bin = bins.Last(b => b.StartUtc == At(0));
+        bin.Should().Match<BinResult>(b => b.Status == BinStatus.Final && b.Quality == BinQuality.Degraded && b.Censored == 1,
+            "one of its four entrants was censored (above 5 percent), and only one of its four tracks exited");
+        bin.DegradedByCompletionOnly.Should().BeFalse("its censored entrants degrade it as well, so the comparison sets it apart");
+    }
+
+    [Fact]
+    public void Defaults_Should_UseOneThreshold_When_F11AndTheValidationTargetJudgeTrackCompletion()
+    {
+        // ARV-114b review: the two must not drift apart (neither is configured per host, so their defaults are the settings).
+        new BinSettings().TrackCompletionDegradedBelow.Should().Be(new Ariva.Core.Validation.Comparison.ComparisonSettings().TrackCompletionTarget)
+            .And.Be(HealthChecks.TrackCompletionTarget).And.Be(0.90);
+    }
+
+    [Fact]
+    public void Accept_Should_KeepAFinalBinGood_When_ItsTrackCompletionIsNinetyPercentOrMore()
+    {
+        var (bin, health) = Completion(tracks: 10, exiting: 9);
+
+        health.TrackCompletionRate.Should().Be(0.9);
+        bin.Status.Should().Be(BinStatus.Final);
+        bin.Quality.Should().Be(BinQuality.Good, "exactly at the threshold is not below it");
+        bin.DegradedByCompletionOnly.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Accept_Should_NotJudgeAProvisionalBin_When_ItsTracksAreStillQueuing()
+    {
+        var (bin, health) = Completion(tracks: 10, exiting: 8, until: 3.6);
+
+        bin.Status.Should().Be(BinStatus.Provisional);
+        health.TrackCompletionRate.Should().Be(0, "nobody has exited yet");
+        health.TracksOpen.Should().Be(8);
+        bin.Quality.Should().Be(BinQuality.Good, "tracks still in the queue are not lost: only a final bin's completion is judged");
+        bin.DegradedByCompletionOnly.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Accept_Should_FollowTheThreshold_When_TheSettingChanges()
+    {
+        Completion(10, 8, settings: new BinSettings { TrackCompletionDegradedBelow = 0 }).Bin.Quality.Should().Be(BinQuality.Good, "0 never degrades");
+        Completion(10, 8, settings: new BinSettings { TrackCompletionDegradedBelow = 0.8 }).Bin.Quality.Should().Be(BinQuality.Good, "0.8 is not below 0.8");
+        Completion(10, 9, settings: new BinSettings { TrackCompletionDegradedBelow = 0.95 }).Bin.Quality.Should().Be(BinQuality.Degraded);
+    }
+
+    [Fact]
+    public void Accept_Should_KeepABinWithoutTracksGood_When_NobodyEnteredWithATrack()
+    {
+        var engine = new QueueStateEngine(Geometry(), Settings);
+        var bins = new BinAccumulator("A-VIS", 12, new BinSettings(), Geometry());
+        var (_, update) = Play(engine, bins, 16, In(1), In(2), Out(4), Out(5));
+
+        var bin = update.Bins.Last(b => b.StartUtc == At(0));
+        bin.Status.Should().Be(BinStatus.Final);
+        Latest(update.Health, 0).TrackCompletionRate.Should().BeNull();
+        bin.Quality.Should().Be(BinQuality.Good, "a zone whose sensors do not track people has no rate, and is never Degraded by it");
+    }
+
+    [Fact]
+    public void Restore_Should_JudgeTheSameCompletion_When_TheBinsAreRestoredBeforeTheyAreFinal()
+    {
+        var engine = new QueueStateEngine(Geometry(), Settings);
+        var inputs = new List<QueueInput>();
+        for (var i = 0; i < 10; i++)
+        {
+            inputs.Add(In(1 + i * 0.01, $"S-15/{i}"));
+            inputs.Add(i < 8 ? Out(4 + i * 0.01, $"S-15/{i}") : new QueueCrossing("A-VIS entry", CrossingDirection.Out, $"S-15/{i}", At(3 + i * 0.01)));
+        }
+
+        foreach (var input in inputs)
+            engine.Offer(input, input.TimeUtc);
+        var steps = new[] { engine.Advance(At(3.6)), engine.Advance(At(16)) };
+        var split = new BinAccumulator("A-VIS", 12, new BinSettings(), Geometry());
+        split.Accept(steps[0]);
+        var state = JsonSerializer.Deserialize<BinAccumulatorState>(JsonSerializer.Serialize(split.Capture()))!;
+
+        var after = BinAccumulator.Restore(new BinSettings(), state, Geometry()).Accept(steps[1]);
+
+        after.Bins.Last(b => b.StartUtc == At(0)).Should().Match<BinResult>(b => b.Status == BinStatus.Final && b.Quality == BinQuality.Degraded && b.DegradedByCompletionOnly);
+    }
+
+    #endregion
 }

@@ -18,8 +18,10 @@ public static class AlertRuleErrors
         new HashSet<Ariva.Core.Domain.Enums.AlertMetric> { Ariva.Core.Domain.Enums.AlertMetric.DesksBelowPlan };
 
     public const string UnknownZones = "Every zone in scope must be a zone of the site's published zone profile.";
+    public const string QueueZonesOnly = "ConservationResidual, TrackCompletion and OccupancyOutOfRange are checked per queue zone: choose queue zones only.";
     public const string RoleNotHeld = "Only an administrator can give a rule to, escalate it to, or take it from a role the caller does not hold.";
     public const string BacktestRange = "A backtest covers 1 minute to 24 hours that have ended, in the last 90 days, in UTC (ending in Z).";
+    public const string BacktestTooLarge = "The range holds more stored bins than one backtest reads: choose a shorter range or fewer zones.";
     public const string TooManyRules = "A site has at most 500 alert rules, and its codes end at R-999999.";
 }
 

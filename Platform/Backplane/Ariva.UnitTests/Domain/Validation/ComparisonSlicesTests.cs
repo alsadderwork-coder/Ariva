@@ -87,6 +87,46 @@ public sealed class ComparisonSlicesTests
         Json(coverage).Should().Be(Json(ComparisonSlices.Coverage(input, settings)));
     }
 
+    /// <summary>
+    /// ARV-114b round 4: the campaign with A-VIS's 18:15 bin Degraded for its own track completion alone and its health row (15
+    /// of 20 tracks exited), and A-CIT's 18:30 bin flagged too but without a health row (a writer gone wrong).
+    /// </summary>
+    private static ComparisonInput WithCompletionOnlyBins()
+    {
+        var input = Campaign();
+        ZoneHealthBin Health(string zone, DateTime start, long entered, long exited) =>
+            new(zone, start, TimeSpan.FromMinutes(15), 1, BinStatus.Final, Version, 0, 0, null, null, null, entered, exited, entered - exited, 0, 0, 0, 0,
+                (double)exited / entered, 0, 0, 0);
+        return input with
+        {
+            QueueBins = [.. input.QueueBins.Select(b => (b.QueueZone, b.StartUtc) == (Vis, At(18, 15)) || (b.QueueZone, b.StartUtc) == (Cit, At(18, 30))
+                ? b with { Quality = BinQuality.Degraded, DegradedByCompletionOnly = true }
+                : b)],
+            HealthBins = [Health(Vis, At(18, 0), 20, 20), Health(Vis, At(18, 15), 20, 15), Health(Cit, At(18, 15), 20, 19)]
+        };
+    }
+
+    [Fact]
+    public void CompareSliced_Should_EqualTheWholeComparison_When_ABinIsDegradedForItsOwnTrackCompletion()
+    {
+        var input = WithCompletionOnlyBins();
+        var settings = new ComparisonSettings { SensitivityShift = TimeSpan.FromMinutes(1) };
+
+        var whole = ValidationComparison.Compare(input, settings);
+        var (sliced, coverage) = ComparisonSlices.CompareSliced(input, settings);
+
+        // The whole judges A-VIS's 18:15 minutes (the flag is borne out) and leaves A-CIT's 18:30 bin unusable (it is not).
+        whole.NowcastMinutes.Where(m => m.QueueZone == Vis && m.MinuteUtc >= At(18, 15) && m.MinuteUtc < At(18, 25))
+            .Should().NotBeEmpty().And.OnlyContain(m => m.Standing == ComparisonStanding.Good, "a bin set apart by its own completion alone stands Good");
+        whole.LeftOut.UnusableKeys.Should().ContainSingle(k => k.Kind == UnusableKeyKind.QueueBin).Which.QueueZone.Should().Be(Cit);
+        whole.NowcastMinutes.Where(m => m.QueueZone == Cit && m.MinuteUtc >= At(18, 30) && m.MinuteUtc < At(18, 45))
+            .Should().OnlyContain(m => m.Standing == ComparisonStanding.Unknown);
+        Json(sliced).Should().Be(Json(whole), "every slice holds its zone's health rows, so it believes the same flags as the whole");
+        Json(coverage).Should().Be(Json(ComparisonSlices.Coverage(input, settings)));
+        ComparisonSlices.Slice(input).Zones.Should().OnlyContain(z => z.HealthBins.All(h => h.QueueZone == z.Scope.Zones[0].Name))
+            .And.Contain(z => z.HealthBins.Count == 2);
+    }
+
     [Fact]
     public void Slice_Should_GiveTheBaseOnlyTheTracersMinutesAndNoShadow_When_ItCuts()
     {

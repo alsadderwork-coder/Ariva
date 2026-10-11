@@ -499,6 +499,98 @@ public sealed class ValidationResultsTests(PostgresFixture fixture) : IAsyncDisp
         airport.Data.Desks.Should().BeNull("desk-state results are border data, never an airport role's");
     }
 
+    // ARV-114b re-check: a stored bin Degraded for its own track completion alone (queue_bin.degraded_by_completion_only, borne
+    // out by its health row: 80 of 100 tracks exited) is judged by count accuracy, so Entry A's 80 of the observer's 100 in it
+    // fails the line, as the unit case does; the same bin Degraded for another cause as well (the flag false) is set apart and
+    // the line passes on its other bin.
+    [Fact]
+    public async Task Results_Should_FailCountAccuracy_When_ABinDegradedForItsOwnTrackCompletionCountsBadly()
+    {
+        var p = await PlantSiteAsync("VRP1", "VQX");
+        await PlantOutputsAsync(p, 8.2, 8, 7, "Serving", 9, 0.95, 101, "CAM-P1");
+        await ExecuteAsync("""
+            DELETE FROM zone_health_bin WHERE zone_key = @site || '/Q-A' AND start_utc = @bin;
+            INSERT INTO zone_health_bin (zone_key, start_utc, revision, length_minutes, status, profile_version, entries, exits, tracks_entered, tracks_exited,
+                                         tracks_abandoned, tracks_fragmented, tracks_censored, tracks_rejected, tracks_open, track_completion_rate,
+                                         occupancy_minutes, capacity_minutes, minutes_outside_capacity, updated_on)
+            VALUES (@site || '/Q-A', @bin, 1, 15, 'Final', 1, 100, 100, 100, 80, 20, 0, 0, 0, 0, 0.8, 15, 15, 0, now());
+            UPDATE line_minute SET crossings_in = CASE WHEN minute_utc = @bin THEN 80 ELSE 0 END
+             WHERE zone_key = @site || '/Q-A' AND line_name = 'Entry A' AND minute_utc >= @bin AND minute_utc < @bin + interval '15 minutes';
+            """, ("site", p.Site), ("bin", Utc(6, 15)));
+        // Round 4: the end of the planned day (20:00 UTC, midnight in Dubai) and the bin after it, in the after-margin: Q-A's
+        // minutes 19:45 to 19:59, a Good 19:45 bin and a 20:00 bin Degraded for its own completion alone (15 of 20 tracks), whose
+        // health row lies past the planned day.
+        await ExecuteAsync("""
+            INSERT INTO queue_minute (zone_key, minute_utc, profile_version, status, entries, exits, waits, mean_wait_minutes, nowcast_minutes, nowcast_degraded, updated_on)
+            SELECT @site || '/Q-A', m, 1, 'Final', 10, 10, 10, 8.2, 8, false, now() FROM generate_series(@late, @late + interval '14 minutes', interval '1 minute') AS m;
+            INSERT INTO queue_bin (zone_key, start_utc, revision, length_minutes, status, quality, entries, exits, waits, abandoned, fragmented, censored, reanchored,
+                                   rejected, open_people, late_events, profile_version, updated_on, degraded_by_completion_only)
+            VALUES (@site || '/Q-A', @late, 1, 15, 'Final', 'Good', 150, 150, 150, 0, 0, 0, 0, 0, 0, 0, 1, now(), false),
+                   (@site || '/Q-A', @late + interval '15 minutes', 1, 15, 'Final', 'Degraded', 150, 150, 150, 0, 0, 0, 0, 0, 0, 0, 1, now(), true);
+            INSERT INTO zone_health_bin (zone_key, start_utc, revision, length_minutes, status, profile_version, entries, exits, tracks_entered, tracks_exited,
+                                         tracks_abandoned, tracks_fragmented, tracks_censored, tracks_rejected, tracks_open, track_completion_rate,
+                                         occupancy_minutes, capacity_minutes, minutes_outside_capacity, updated_on)
+            VALUES (@site || '/Q-A', @late, 1, 15, 'Final', 1, 100, 100, 100, 95, 5, 0, 0, 0, 0, 0.95, 15, 15, 0, now()),
+                   (@site || '/Q-A', @late + interval '15 minutes', 1, 15, 'Final', 1, 20, 20, 20, 15, 5, 0, 0, 0, 0, 0.75, 15, 15, 0, now());
+            """, ("site", p.Site), ("late", Utc(19, 45)));
+        var campaign = await CampaignAsync(p, "Completion only", 100, "2026-10-01T06:00:00Z", "Serving");
+        // A tracer who joined Q-A at 19:55 and left at 20:03: its wait runs into the after-margin's flagged bin. Captured at 21:00.
+        _runtime.Clock.Advance(TimeSpan.FromHours(13));
+        try
+        {
+            var late = await As(p.Observer, s => s.GetRequiredService<ISvcTracerRuns>().CaptureAsync(p.Site, campaign, new CaptureTracerRunsRequest("2026-10-01T21:00:00.000Z",
+                [new TracerRunRequest(p.QueueA, "T-09", "2026-10-01T19:55:00.000Z", "2026-10-01T20:03:00.000Z", false)]), "tracers:completiononly:late", Ct));
+            late.HasErrors.Should().BeFalse(string.Join(" ", late.ErrorMessages ?? []));
+        }
+        finally
+        {
+            _runtime.Clock.Advance(TimeSpan.FromHours(-13));
+        }
+
+        async Task<ValidationResultsViewModel> WithBinAsync(bool completionOnly)
+        {
+            await ExecuteAsync("""
+                DELETE FROM queue_bin WHERE zone_key = @site || '/Q-A' AND start_utc = @bin;
+                INSERT INTO queue_bin (zone_key, start_utc, revision, length_minutes, status, quality, entries, exits, waits, abandoned, fragmented, censored, reanchored,
+                                       rejected, open_people, late_events, profile_version, updated_on, degraded_by_completion_only)
+                VALUES (@site || '/Q-A', @bin, 1, 15, 'Final', 'Degraded', 150, 150, 150, 0, 0, 0, 0, 0, 0, 0, 1, now(), @flag);
+                """, ("site", p.Site), ("bin", Utc(6, 15)), ("flag", completionOnly));
+            var read = await ResultsAsync(p.Manager, "VRP1", campaign);
+            read.HasErrors.Should().BeFalse(string.Join(" ", read.ErrorMessages ?? []));
+            return read.Data;
+        }
+
+        var judged = await WithBinAsync(completionOnly: true);
+        (await RowAsync("SELECT degraded_by_completion_only FROM queue_bin WHERE zone_key = 'VRP1/Q-A' AND start_utc = @bin", ("bin", Utc(6, 15))))
+            .Should().Equal(true);
+        var count = Criterion(judged, CampaignCriterion.CountAccuracy);
+        count.Verdict.Should().Be(CriterionVerdict.Fail, "the 06:15 bin is set apart by nothing but its own completion, so it is judged");
+        count.Value.Should().BeApproximately(0.80, 1e-12);
+        judged.Counts.Bins.Should().HaveCount(2).And.ContainSingle(b => b.SystemCount == 80 && b.Standing == ComparisonStanding.Good);
+        judged.LeftOut.Keys.Should().BeEmpty("each flag is borne out by its bin's own health row, the after-margin's 20:00 bin's too");
+        Criterion(judged, CampaignCriterion.TrackCompletion).Verdict.Should().Be(CriterionVerdict.Pass, "pooled, Q-A's 365 of 400 tracks still pass");
+
+        // Round 4: the service compares in slices; each zone slice holds its zone's health rows, so the flagged bins stand Good
+        // there as in the whole, and the two give the same result value for value.
+        var (sliced, whole) = await As(p.Manager, async s =>
+        {
+            var service = s.GetRequiredService<SvcValidationResults>();
+            return (await service.CompareAsync("VRP1", campaign, sliced: true, Ct), await service.CompareAsync("VRP1", campaign, sliced: false, Ct));
+        });
+        sliced.HasErrors.Should().BeFalse(string.Join(" ", sliced.ErrorMessages ?? []));
+        var flaggedMinutes = sliced.Data.Result.NowcastMinutes.Where(m => m.QueueZone == "Q-A" && m.MinuteUtc >= Utc(6, 15) && m.MinuteUtc < Utc(6, 25)).ToList();
+        flaggedMinutes.Should().HaveCount(10).And.OnlyContain(m => m.Standing == ComparisonStanding.Good, "a nowcast minute in the flagged 06:15 bin is judged");
+        sliced.Data.Result.Tracers.Single(t => t.TracerCode == "T-09").Should().Match<TracerComparison>(t => t.Standing == ComparisonStanding.Good && t.WithinTolerance == true,
+            "a tracer whose wait runs into the after-margin's flagged bin is judged: its health row is read with the queue bins' margins");
+        sliced.Data.Result.LeftOut.UnusableKeys.Should().BeEmpty();
+        JsonSerializer.Serialize(sliced.Data.Result).Should().Be(JsonSerializer.Serialize(whole.Data.Result), "sliced equals whole with flagged bins");
+
+        var apart = await WithBinAsync(completionOnly: false);
+        var apartCount = Criterion(apart, CampaignCriterion.CountAccuracy);
+        apartCount.Verdict.Should().Be(CriterionVerdict.Pass, "Degraded for another cause as well, the 06:15 bin is set apart and only 06:00 is judged");
+        apartCount.Value.Should().BeApproximately(0.98, 1e-12);
+    }
+
     [Fact]
     public async Task Results_Should_EqualTheWholeComparison_When_TheCampaignIsComparedInSlices()
     {

@@ -56,10 +56,22 @@ public sealed record BinResult(
     int ZoneProfileVersion,
     string RevisionReason)
 {
-    /// <summary>The values that matter for a revision: everything but the revision, its reason and the late-event count.</summary>
+    /// <summary>
+    /// Degraded for its own track completion alone (F11, ARV-114b): final, completion below the threshold, and Good without
+    /// it. Stored beside the flag (<c>queue_bin.degraded_by_completion_only</c>) so the validation comparison judges such a
+    /// bin like a Good one (F18). Derived by the same code from the same inputs as the hashed quality, it is not itself part of
+    /// the replay's hashed record (it would change every bin's hashed JSON and the locked heads); unit tests check it.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool DegradedByCompletionOnly { get; init; }
+
+    /// <summary>
+    /// The values that matter for a revision: everything but the revision, its reason and the late-event count. The
+    /// completion-only flag matters too (ARV-114b): a recomputation that finds another cause of Degraded must clear it.
+    /// </summary>
     public bool SameValues(BinResult other) =>
         other is not null && QueueZone == other.QueueZone && StartUtc == other.StartUtc && Length == other.Length && Status == other.Status &&
-        Quality == other.Quality && Entries == other.Entries && Exits == other.Exits && Abandoned == other.Abandoned &&
+        Quality == other.Quality && DegradedByCompletionOnly == other.DegradedByCompletionOnly && Entries == other.Entries && Exits == other.Exits && Abandoned == other.Abandoned &&
         Fragmented == other.Fragmented && Censored == other.Censored && Reanchored == other.Reanchored && Rejected == other.Rejected &&
         Open == other.Open && ZoneProfileVersion == other.ZoneProfileVersion && Waits.Waits == other.Waits.Waits &&
         Waits.MeanMinutes == other.Waits.MeanMinutes && Waits.P50Minutes == other.Waits.P50Minutes && Waits.P90Minutes == other.Waits.P90Minutes &&
@@ -108,6 +120,13 @@ public sealed record BinSettings
     /// <summary>Censored above this share of a bin's entries makes it Degraded (F6, Proposed 5 percent).</summary>
     public double CensoredDegradedShare { get; init; } = 0.05;
 
+    /// <summary>
+    /// A final bin whose track completion (F18: tracks exited over tracks that entered) falls below this rate is Degraded
+    /// (F11, ARV-114b, Proposed 0.90, the pilot's track completion target); 0 never degrades. A bin without a track has no rate
+    /// and is never Degraded by it; a provisional bin is not judged (its open tracks are still in the queue, not lost).
+    /// </summary>
+    public double TrackCompletionDegradedBelow { get; init; } = HealthChecks.TrackCompletionTarget;
+
     /// <summary>Exact waits kept per bin, its minutes included; beyond it final percentiles come from the histogram (Degraded).</summary>
     public int MaxExactWaitsPerBin { get; init; } = 50_000;
 
@@ -130,6 +149,8 @@ public sealed record BinSettings
             yield return "MinimumPassengers is from 1 to 10,000.";
         if (!double.IsFinite(CensoredDegradedShare) || CensoredDegradedShare is < 0 or > 1)
             yield return "CensoredDegradedShare is from 0 to 1.";
+        if (!double.IsFinite(TrackCompletionDegradedBelow) || TrackCompletionDegradedBelow is < 0 or > 1)
+            yield return "TrackCompletionDegradedBelow is from 0 to 1.";
         if (MaxExactWaitsPerBin is < 0 or > 1_000_000 || MaxOpenBins is < 1 or > 10_000 || MaxMarks is < 1 or > 10_000)
             yield return "The bin bounds are at most 1,000,000 exact waits, 10,000 open bins and 10,000 marks.";
     }
@@ -140,8 +161,8 @@ public sealed record BinSettings
 /// engine's steps in order: each realised wait and each resolution goes to the bin and minute of its entry, entries and
 /// exits to the minute they happened. A bin is final when the watermark has passed its end (the engine's watermark
 /// already allows for lateness) and every person who entered in it is resolved; its quality is the worst of its inputs
-/// (degraded events, a residual re-anchor or rejected pairs, censored above the share, and outages marked by the
-/// caller as Degraded or Unknown, F11). Final results never change here: late events or late outages for a final bin
+/// (degraded events, a residual re-anchor or rejected pairs, censored above the share, a final bin's track completion
+/// below its threshold (ARV-114b), and outages marked by the caller as Degraded or Unknown, F11). Final results never change here: late events or late outages for a final bin
 /// produce a <see cref="RecomputationRequest"/> instead. Pure: no I/O, no clock. Bounded: open bins, exact waits per
 /// bin and marks; counters are 64-bit.
 /// </summary>
@@ -559,10 +580,16 @@ public sealed partial class BinAccumulator
         if (quality < BinQuality.Degraded &&
             (t.Degraded || forced || (status == BinStatus.Final && bin.ExactOverflowed) || (t.Entries > 0 && t.Censored > _settings.CensoredDegradedShare * t.Entries)))
             quality = BinQuality.Degraded;
+        // ARV-114b (F11): a final bin whose track completion falls below the threshold is Degraded; whether that is its only
+        // cause is kept beside the flag, so the validation comparison can judge such a bin (F18).
+        var byCompletionOnly = quality == BinQuality.Good && status == BinStatus.Final &&
+                               HealthChecks.TrackCompletionBelow(bin.Health.TracksEntered, bin.Health.TracksExited, _settings.TrackCompletionDegradedBelow);
+        if (byCompletionOnly)
+            quality = BinQuality.Degraded;
         var exact = status == BinStatus.Final && !bin.ExactOverflowed;
         var summary = Summary(t, exact, exact ? bin.Minutes.Values.SelectMany(m => m.Exact) : null);
         return new BinResult(_zone, start, _settings.BinLength, 1, status, quality, t.Entries, t.Exits, summary, t.Abandoned, t.Fragmented,
-            t.Censored, t.Reanchored, t.Rejected, open, t.LateEvents, _profileVersion, null);
+            t.Censored, t.Reanchored, t.Rejected, open, t.LateEvents, _profileVersion, null) { DegradedByCompletionOnly = byCompletionOnly };
     }
 }
 
