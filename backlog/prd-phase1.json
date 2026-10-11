@@ -958,6 +958,47 @@
       ]
     },
     {
+      "id": "ARV-153",
+      "title": "[E3] Floor plan file names bounded in code points before storage",
+      "description": "Found in the ARV-122a security review (N5): the floor plan upload (ARV-018) cuts a file name at 200 text elements (SvcFloorPlans.SafeFileName) while original_file_name is varchar(200) in code points (script 0010), so a name such as one letter followed by 300 combining marks passes the check and fails the insert at commit with a 500. The ARV-122a import is not affected (its own check bounds names at 200 code points first). CWEs to review: CWE-120, CWE-79.",
+      "acceptanceCriteria": [
+        "The upload bounds the stored file name at 200 code points (and refuses or cuts it with a fixed rule recorded in decisions.md) before anything is stored; the endpoint never answers 500 for a file name",
+        "Unit tests at 200 and 201 code points, combining marks, surrogate pairs and right-to-left overrides; E2E upload with a name of one letter and 300 combining marks answers 201 or 400, never 500",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 38,
+      "passes": false,
+      "notes": "Size XS. A bug in ARV-018's endpoint; no schema change expected.",
+      "dependsOn": [
+        "ARV-018"
+      ]
+    },
+    {
+      "id": "ARV-154",
+      "title": "[E15] Site configuration import: creates take the site lock so an empty site stays empty",
+      "description": "Found in the ARV-122a security review (N2, accepted residual): the import locks the site row while it checks the site is empty and writes, but the topology, device and display create endpoints do not take that lock, so a record created by hand during an import is not refused by the emptiness check (a code collision is still refused by the unique indexes). Take the site row lock (FOR SHARE) in every create that adds configuration to a site. Epic: Site onboarding and AMAN. CWEs to review: CWE-501, CWE-89.",
+      "acceptanceCriteria": [
+        "Terminal, level, checkpoint, desk, desk code mapping, zone profile draft, floor plan, device, alert rule and display creates take the site row lock in share mode before writing; the import's update lock then excludes them",
+        "Integration test: a create started during an import waits and then either succeeds after the import commits (and the site is no longer empty) or the import answers 409; never both an import and a create into an empty site",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 38,
+      "passes": false,
+      "notes": "Size S. Not a security gap today (no authorisation decision depends on emptiness; the creator already holds the permission); it makes the documented rule exact.",
+      "dependsOn": [
+        "ARV-122b"
+      ]
+    },
+    {
       "id": "ARV-123",
       "title": "[E15] Bulk import of devices and desk code mappings from CSV",
       "description": "Commissioning starts from the as-built pack (wiki/07 section 2: import the device list). Add a preview-then-commit CSV import for devices and for AMAN desk and gate code mappings. Epic: Site onboarding and AMAN. CWEs to review: CWE-501, CWE-120, CWE-863, CWE-79.",
