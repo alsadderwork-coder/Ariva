@@ -426,6 +426,26 @@
       "passes": true,
       "notes": "Gate: before the first install outside Dalil.",
       "dependsOn": []
+    },
+    {
+      "id": "ARV-152",
+      "title": "[ASVS] Secrets never in test reports or artifacts",
+      "description": "From the ARV-104j security review (2026-10-11). Playwright uses an expect's custom message as the step title even when the assertion passes, and the HTML report keeps those titles; `expect(x.status(), await x.text())` therefore copies every answer body into the report. The live rehearsal's sensor registration put 20 device credentials into its report that way (fixed in ARV-104j, with an artifact check on the live-pipeline scopes). The same pattern is in 37 spec files, and CI uploads playwright-report (.github/workflows/ci.yml), so any spec whose successful answer carries a secret (a device credential, a display pairing secret, an integration client secret) leaks it into a CI artifact. Also carried here from the same review: the rehearsal's read-only database access with the runtime login instead of the owner, the observers' roles asserted in the live run, and separation of duties checked on both campaigns. Epic: Security. CWEs to review: CWE-532 (logging), CWE-287, CWE-863. ASVS: V13.3.1.",
+      "acceptanceCriteria": [
+        "A shared E2E helper checks a response's status and puts the answer's body into the message only when the status is wrong; every spec uses it, and a test (or lint rule) fails when a spec passes a response body as an expect message",
+        "The artifact credential check of ARV-104j (`artifactCredentialCheck` in scripts/verify.mjs: plain files, the report's embedded zip and trace zips) also covers integration client secrets (ics_), JWTs and the run's E2E account passwords, runs after every Playwright scope of verify.mjs, and runs in CI before the report is uploaded; CI fails instead of uploading an artifact that holds one",
+        "The live rehearsal's read-only database access uses the runtime login (Database__Username) when it can read zone_outage, availability_minute, queue_bin and queue_minute; otherwise the reason is written in the spec and docs/harness/test-cadence.md",
+        "Before the simulator receives them, the live rehearsal reads the two observer accounts through the admin users API and asserts roles ValidationObserver only and sites DMO only; it checks that the campaign's manager is not among the observers on both campaigns, not only the first",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 117,
+      "passes": false,
+      "notes": "Size S to M. From the ARV-104j security review (required fixes R1 and R2 done in ARV-104j; recommendations 4, 6, 7 and 9 here).",
+      "dependsOn": [
+        "ARV-104j"
+      ]
     }
   ]
 }

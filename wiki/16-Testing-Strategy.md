@@ -131,6 +131,8 @@ Details in [Security guide](13-Security-Guide.md).
 | `e2e` | `Platform/Testing/Ariva.E2E`: `npm ci` if needed, then `npx playwright test` |
 | `security` | Scanner self-test, full scan, NuGet and npm audits |
 | `zap` | The dynamic security scan (ARV-063): `npx playwright test --project=zap` with `ARIVA_E2E_ZAP=1`; reports in `Platform/Testing/Ariva.E2E/zap-reports` |
+| `demo` | The scripted demo (ARV-064): the reference evening in real time through the whole pipeline, Stream included, its three events checked on screen (`--project=demo` with `ARIVA_E2E_DEMO=1`); at phase ends and before go-live |
+| `rehearsal` | The validation rehearsal against the live pipeline (ARV-104j): the reference evening through Ingest, Stream and Cronz, the simulator's observers capturing through the capture API, two campaigns closed with step-up and their frozen results judged from Ariva's own measurements (`--project=rehearsal` with `ARIVA_E2E_REHEARSAL=1`; record `rehearsal-record.json`); at phase ends and before go-live, on fresh services ([test cadence](../docs/harness/test-cadence.md)) |
 | `docs` | Markdown text rules: no em or en dash characters, no double hyphens in prose |
 | `backend` | `unit` plus `security` (the default) |
 | `all` | Everything except integration (add `--with-integration`) |

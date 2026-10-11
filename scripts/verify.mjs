@@ -13,6 +13,11 @@
 //   demo         the scripted demo (ARV-064): the reference evening in real time (about two hours) through the whole
 //                pipeline, Stream included (Docker services and the E2E database environment); ARIVA_DEMO_START and
 //                ARIVA_DEMO_END (demo minutes) shorten it
+//   rehearsal    the validation rehearsal against the live pipeline (ARV-104j): the reference evening through Ingest, Stream
+//                and Cronz in real time, the simulator's observers capturing through the capture API, campaigns closed and
+//                their results frozen (about two hours; fresh services and the E2E database environment); ARIVA_DEMO_START and
+//                ARIVA_DEMO_END (quarter hours, default 1080 and 1170) set the rehearsed window. Runs at phase ends and before
+//                go-live, never in a story gate (docs/harness/test-cadence.md)
 //   zap          dynamic security scan (ARV-063): OWASP ZAP in its pinned image against the E2E stack (Docker and the E2E
 //                database environment; about 10 minutes); reports in Platform/Testing/Ariva.E2E/zap-reports
 //   security     scanner self-test + full scan + dependency audits
@@ -36,6 +41,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -75,6 +81,51 @@ function run(name, cmd, cmdArgs, cwd = ROOT, { optional = false } = {}) {
   results.push({ name, ok: ok || (optional && skipped), skipped: !!skipped, seconds: Math.round((Date.now() - started) / 1000), exit: r.status });
   if (skipped) process.stdout.write(`(${cmd} not found${optional ? ', skipped' : ''})\n`);
   return ok;
+}
+
+// ARV-104j review (CWE-532): the live-pipeline scopes register DMO's sensors, whose answers carry device credentials; none
+// may reach the Playwright report or the test output (an expect's message is a step title even when it passes). Runs after
+// the run, since the HTML reporter writes after global teardown; counts the files, never prints a value.
+function artifactCredentialCheck() {
+  const credential = /(?<![A-Za-z0-9_-])ard[kp]_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/;
+  // The HTML report embeds its data as a base64 zip, and traces are zips: read their entries (central directory, stored
+  // or deflated) so a credential inside them is found too.
+  const zipEntries = buf => {
+    const texts = [];
+    let end = buf.length - 22;
+    while (end >= 0 && buf.readUInt32LE(end) !== 0x06054b50) end--;
+    if (end < 0) return texts;
+    let at = buf.readUInt32LE(end + 16);
+    for (let i = buf.readUInt16LE(end + 10); i > 0 && buf.readUInt32LE(at) === 0x02014b50; i--) {
+      const method = buf.readUInt16LE(at + 10), size = buf.readUInt32LE(at + 20), local = buf.readUInt32LE(at + 42);
+      const start = local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28);
+      const data = buf.subarray(start, start + size);
+      try { texts.push((method === 8 ? zlib.inflateRawSync(data) : data).toString('latin1')); } catch { texts.push(''); }
+      at += 46 + buf.readUInt16LE(at + 28) + buf.readUInt16LE(at + 30) + buf.readUInt16LE(at + 32);
+    }
+    return texts;
+  };
+  const holds = buf => {
+    const text = buf.toString('latin1');
+    if (credential.test(text)) return true;
+    const embedded = [...text.matchAll(/data:application\/zip;base64,([A-Za-z0-9+/=]+)/g)].map(m => Buffer.from(m[1], 'base64'));
+    if (buf.readUInt32LE(0) === 0x04034b50) embedded.push(buf);
+    // A zip that cannot be read is a finding too: what it holds cannot be shown to be clean.
+    return embedded.some(zip => { try { return zipEntries(zip).some(entry => credential.test(entry)); } catch { return true; } });
+  };
+  const holding = [];
+  const walk = d => {
+    if (!fs.existsSync(d)) return;
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.isFile() && fs.statSync(p).size >= 4 && holds(fs.readFileSync(p))) holding.push(path.relative(ROOT, p));
+    }
+  };
+  for (const folder of ['playwright-report', 'test-results']) walk(path.join(E2E, folder));
+  holding.forEach(f => console.log(`CREDENTIAL in ${f}`));
+  results.push({ name: 'no device credential in the test artifacts', ok: holding.length === 0, findings: holding.length });
+  return holding.length === 0;
 }
 
 function docsCheck() {
@@ -305,6 +356,20 @@ const steps = {
     } finally {
       delete process.env.ARIVA_E2E_DEMO;
     }
+    artifactCredentialCheck();
+  },
+  // ARV-104j: the validation rehearsal against the live pipeline, alone and in real time; its record is rehearsal-record.json in
+  // the test's output folder (test-results), attached to the report.
+  rehearsal: () => {
+    if (!fs.existsSync(path.join(WEB, 'node_modules'))) run('web npm ci', 'npm', ['ci'], WEB);
+    if (!fs.existsSync(path.join(E2E, 'node_modules'))) run('e2e npm ci', 'npm', ['ci'], E2E);
+    process.env.ARIVA_E2E_REHEARSAL = '1';
+    try {
+      run('validation rehearsal (live pipeline)', 'npx', ['playwright', 'test', '--project=rehearsal'], E2E);
+    } finally {
+      delete process.env.ARIVA_E2E_REHEARSAL;
+    }
+    artifactCredentialCheck();
   },
   // ARV-063: ZAP API and baseline scans; the run fails on an untriaged High risk finding (security/zap-triage.json).
   zap: () => {
@@ -377,7 +442,7 @@ if (!steps[scope]) { console.error(`Unknown scope ${scope}. Use one of: ${Object
 // integration suites crashed PostgreSQL and filled the disk). Scopes that start the hosts or Testcontainers take a lock in
 // the machine's temporary folder; a second one refuses to start while the holder's process lives. Stryker has its own lock
 // and its own worktree (2026-10-09), so a mutation run and one heavy run may share the machine.
-const HEAVY = new Set(['integration', 'e2e', 'visual', 'demo', 'zap', 'all', 'story', 'checkpoint']);
+const HEAVY = new Set(['integration', 'e2e', 'visual', 'demo', 'rehearsal', 'zap', 'all', 'story', 'checkpoint']);
 const LOCK = path.join(os.tmpdir(), 'ariva-verify.lock');
 const MUTATION_LOCK = path.join(os.tmpdir(), 'ariva-mutation.lock');
 const MUTATION_TREE = path.join(os.tmpdir(), 'ariva-mutation-tree');

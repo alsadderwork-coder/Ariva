@@ -47,6 +47,17 @@ When everything passes it writes `backlog/checkpoint.json` (commit, date, storie
 
 A checkpoint failure is fixed before the next story starts. Each story is its own commit, so the failing change is one of at most five.
 
+## Live pipeline: `node scripts/verify.mjs demo` and `node scripts/verify.mjs rehearsal`
+
+Two scopes play the reference evening (seed 9303 at the demo airport DMO) in real time through the whole pipeline, Ariva.Api.Stream included, which the E2E suite does not start. They run at the end of each phase and before go-live (ARV-138), on fresh services, never in a story gate or a checkpoint: each takes about two hours, holds the machine lock, and has nothing a story could shorten.
+
+| Scope | What it proves | Default run |
+|---|---|---|
+| `demo` (ARV-064) | The three scripted events on the live screens, each for the role that owns it: R-001 at 18:05, S-17 offline at 18:20, R-004 at 19:10 | 17:40 to 19:40 with up to 14 minutes before it, about 2 hours 15 minutes |
+| `rehearsal` (ARV-104j) | Ariva's own measurements against independent ground truth: the simulator's observers capture counts, tracer runs and desk states through the capture API, two campaigns (no error, 6 percent on `A-VIS entry`) are closed with step-up and their results frozen, and every criterion is judged from what Ingest, Stream and Cronz stored. The test writes nothing to the database | the window 18:00 to 19:30, played from 10 to 24 minutes before it to an hour past it, rehearsed 15 minutes after it: about 2 hours 15 minutes with the setup |
+
+`ARIVA_DEMO_START` and `ARIVA_DEMO_END` (demo minutes) shorten either run: for the demo the minutes it plays, for the rehearsal the window it rehearses (quarter hours, 30 to 240 minutes; a window without 18:15 leaves S-17's outage unchecked). The rehearsal writes `rehearsal-record.json` (both campaigns' content hashes, every criterion's value and verdict, the comparison behind them, the outages Stream recorded and the availability ledger's unavailable minutes) to its test output and attaches it to the report; its assertions on the criteria are soft, so one run lists every criterion that misses its target (a window over S-17's outage without it in the truth, and a read of the outages or the ledger that reaches its bound, stop the run at once). After either scope, `artifactCredentialCheck` fails the run if a device or display credential reached the Playwright report or the test output, including the report's embedded zip and trace zips. A criterion that fails there is a finding about Ariva's engines or the harness, recorded and decided by the owner, never a threshold to loosen. The record of the reference run is [the validation rehearsal record](../product/validation-rehearsal-record.md).
+
 ## What this trades
 
 A regression outside a story's own area is found at the next checkpoint, up to four stories later, instead of at once. The wide list sends the changes most likely to cause that through the full suites at the story itself.

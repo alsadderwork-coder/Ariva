@@ -795,11 +795,16 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 33,
-      "passes": false,
-      "notes": "Size M. Owner decision 2026-10-10. Builds on ARV-104i (simulator observers) and ARV-064 (the reference evening through the real pipeline). If a criterion fails against the live pipeline, that is the finding this story exists to surface.",
+      "passes": true,
+      "notes": "Size M. Owner decision 2026-10-10. Builds on ARV-104i (simulator observers) and ARV-064 (the reference evening through the real pipeline). If a criterion fails against the live pipeline, that is the finding this story exists to surface. 2026-10-10: the first live run found F1 to F4 (docs/product/validation-rehearsal-record.md); per the owner, ARV-104j stays uncommitted until ARV-148 to ARV-151 and ARV-149a are done and the rehearsal passes against the live pipeline.",
       "dependsOn": [
         "ARV-104i",
-        "ARV-064"
+        "ARV-064",
+        "ARV-148",
+        "ARV-149",
+        "ARV-150",
+        "ARV-151",
+        "ARV-149a"
       ]
     },
     {

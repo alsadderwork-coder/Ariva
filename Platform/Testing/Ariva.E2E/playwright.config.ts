@@ -41,6 +41,12 @@ const zap = process.env.ARIVA_E2E_ZAP === '1';
 // to Ingest, Ariva.Api.Stream (started only in this mode) computes the queues, snapshots and alerts, and Ariva.Api.Main
 // takes device heartbeats from Kafka. It runs in real time and alone: ARIVA_E2E_DEMO=1 --project=demo.
 const demo = process.env.ARIVA_E2E_DEMO === '1';
+// ARV-104j: the validation rehearsal against the live pipeline (tests/rehearsal) runs on the same hosts as the demo, Stream
+// included: the reference evening plays through Ingest, Stream and Cronz, the simulator's observers capture through the capture
+// API, and the campaigns are closed and their results frozen. In real time and alone: ARIVA_E2E_REHEARSAL=1 --project=rehearsal.
+const rehearsal = process.env.ARIVA_E2E_REHEARSAL === '1';
+/** The whole pipeline (Ariva.Api.Stream started, Main on Kafka): the demo and the rehearsal against it. */
+const livePipeline = demo || rehearsal;
 
 const project = (relative: string) => path.join(repositoryRoot, 'Platform', relative);
 
@@ -211,7 +217,7 @@ const hostServers = {
 		...redisEnvironment(),
 		...outboundLabEnvironment(),
 		// ARV-064: Main records device heartbeats from ariva.device.health.v1, so the demo's devices stay Online.
-		...(demo ? kafkaEnvironment() : {}),
+		...(livePipeline ? kafkaEnvironment() : {}),
 		// ARV-139c (CWE-200): this run's api-main never seeds the development-only NBJ-BC1 site, even where the owner's shell
 		// or appsettings.local.json turns it on (NbjSiteScopeTests). The pin cannot remove a site an earlier run seeded into
 		// the same database: global setup stops the run on such a database (tests/support/global-setup.ts).
@@ -245,11 +251,14 @@ const hostServers = {
 	'api-cronz': dotnetHost(project('Backplane/Ariva.Api.Cronz'), `${hosts.cronz}/health/readiness`, false, {
 		...smtpEnvironment(),
 		...redisEnvironment(),
-		Availability__GraceSeconds: '30',
+		// ARV-104j: the live pipeline writes a minute's live part about two minutes after it ends (one-minute sensor pushes,
+		// Stream's 30-second lateness), so with the whole pipeline the ledger keeps the production grace (120 seconds); 30
+		// seconds would decide every minute before Stream had it (StreamLag and MissingMinute on every minute).
+		...(livePipeline ? {} : { Availability__GraceSeconds: '30' }),
 		Cronz__Dashboard__Enabled: 'true',
 		Cronz__Dashboard__KeySha256: crypto.createHash('sha256').update(process.env.ARIVA_E2E_CRONZ_KEY).digest('hex')
 	}),
-	...(demo
+	...(livePipeline
 		? {
 				'api-stream': dotnetHost(project('Backplane/Ariva.Api.Stream'), `${streamUrl}/health/readiness`, false, {
 					...kafkaEnvironment(),
@@ -358,6 +367,20 @@ export default defineConfig({
 							screenshot: 'on' as const,
 							trace: 'off' as const
 						}
+					}
+				]
+			: []),
+		...(rehearsal
+			? [
+					{
+						name: 'rehearsal',
+						testDir: './tests/rehearsal',
+						fullyParallel: false,
+						retries: 0,
+						// The rehearsed evening in real time (about two hours by default), with the setup, the rehearsals and a margin.
+						timeout: 4 * 60 * 60_000,
+						// API calls only: a trace would carry the sign-ins and the device credentials.
+						use: { trace: 'off' as const }
 					}
 				]
 			: []),

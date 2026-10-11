@@ -265,7 +265,13 @@ export function accounts() {
 		rehearsalManager: account('e2e.rehmanager', ['BorderShiftSupervisor'], false, true, ['E2ER']),
 		rehearsalObserver1: account('e2e.rehobs1', ['ValidationObserver'], false, true, ['E2ER']),
 		rehearsalObserver2: account('e2e.rehobs2', ['ValidationObserver'], false, false, ['E2ER']),
-		rehearsalDual: account('e2e.rehdual', ['BorderShiftSupervisor', 'ValidationObserver'], false, false, ['E2ER'])
+		rehearsalDual: account('e2e.rehdual', ['BorderShiftSupervisor', 'ValidationObserver'], false, false, ['E2ER']),
+		// ARV-104j: the rehearsal against the live pipeline at the demo airport (tests/rehearsal). The border shift supervisor
+		// plans, starts and closes the campaigns (closing needs a second factor); the simulator signs in as the two observers
+		// through the normal sign-in (the first with its authenticator), neither of which plans or starts a campaign.
+		liveRehearsalManager: account('e2e.livemanager', ['BorderShiftSupervisor'], false, true, ['DMO']),
+		liveObserver1: account('e2e.liveobs1', ['ValidationObserver'], false, true, ['DMO']),
+		liveObserver2: account('e2e.liveobs2', ['ValidationObserver'], false, false, ['DMO'])
 	} as const;
 }
 

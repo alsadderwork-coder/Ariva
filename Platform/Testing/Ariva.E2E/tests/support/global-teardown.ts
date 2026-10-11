@@ -12,7 +12,9 @@ const patterns: { name: string; re: RegExp }[] = [
 	{ name: 'JWT', re: /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*/ },
 	{ name: 'access_token value', re: /access_token=(?!\[REDACTED\])[^&\s"\\]+/i },
 	// ARV-042: an integration client secret (ics_ and 43 base64url characters) never reaches a log.
-	{ name: 'integration client secret', re: /\bics_[A-Za-z0-9_-]{43}\b/ }
+	{ name: 'integration client secret', re: /\bics_[A-Za-z0-9_-]{43}\b/ },
+	// ARV-104j review: a device credential (ardk_) or display pairing secret (ardp_) never reaches a log either.
+	{ name: 'device or display credential', re: /(?<![A-Za-z0-9_-])ard[kp]_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/ }
 ];
 
 // ARV-097: MassTransit logs what it reports to its usage telemetry endpoint, or that the report failed. Either line
