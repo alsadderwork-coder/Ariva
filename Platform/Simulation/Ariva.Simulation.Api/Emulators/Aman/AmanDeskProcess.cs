@@ -47,7 +47,7 @@ internal static class AmanDeskProcess
     private const double MaxSeconds = 3_600;
     private const double MaxVariation = 4;
 
-    private static readonly ConditionalWeakTable<ScenarioDay, Lazy<Dictionary<(int Q, int K), Dictionary<int, DeskIntervalFigures>>>> Days = new();
+    private static readonly ConditionalWeakTable<ScenarioDay, Lazy<DayTable>> Days = new();
 
     /// <summary>The immigration queues (arrival and departure, every lane) whose desks AMAN reports.</summary>
     internal static readonly string[] Queues = ["A-CRW", "A-CIT", "A-RES", "A-VIS", "D-CRW", "D-CIT", "D-RES", "D-VIS"];
@@ -60,19 +60,36 @@ internal static class AmanDeskProcess
     public static DeskIntervalFigures Of(ScenarioDay day, int q, int k, int minute)
     {
         ArgumentNullException.ThrowIfNull(day);
-        var table = Days.GetValue(day, d => new Lazy<Dictionary<(int, int), Dictionary<int, DeskIntervalFigures>>>(() => Build(d), LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+        var table = Table(day).Figures;
         return table.TryGetValue((q, k), out var desk) && desk.TryGetValue(minute, out var figures) ? figures : DeskIntervalFigures.Empty;
     }
+
+    /// <summary>
+    /// The seconds desk <paramref name="k"/> of queue <paramref name="q"/> works on transactions in demo minute
+    /// <paramref name="minute"/>: its share of the minute's served people times its seconds per person, at most the minute
+    /// (0 when it does not work). Not published; the simulator's desk truth (<see cref="ScenarioDay.WorkSeconds"/>, ARV-151)
+    /// is tested against it person by person.
+    /// </summary>
+    internal static double WorkedSeconds(ScenarioDay day, int q, int k, int minute)
+    {
+        ArgumentNullException.ThrowIfNull(day);
+        var table = Table(day).Worked;
+        return table.TryGetValue((q, k), out var desk) && desk.TryGetValue(minute, out var seconds) ? seconds : 0;
+    }
+
+    private static DayTable Table(ScenarioDay day) =>
+        Days.GetValue(day, d => new Lazy<DayTable>(() => Build(d), LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+
     /// <summary>The family size of a transaction from its uniform draw <paramref name="unit"/> in [0, 1): 1, 2 or 3 people (80, 15 and 5 percent), mean 1.25.</summary>
-    /// <summary>The family size of transaction <paramref name="n"/> at a desk: 1, 2 or 3 people, mean 1.25.</summary>
     internal static int FamilySize(double unit) => unit < 0.80 ? 1 : unit < 0.95 ? 2 : 3;
 
     /// <summary>A service time variation of mean about 1: 0.5 plus an exponential of mean 0.5, at most <see cref="MaxVariation"/>.</summary>
     internal static double Variation(double unit) => Math.Min(MaxVariation, 0.5 - 0.5 * Math.Log(1 - Math.Min(unit, 0.999_999)));
 
-    private static Dictionary<(int, int), Dictionary<int, DeskIntervalFigures>> Build(ScenarioDay day)
+    private static DayTable Build(ScenarioDay day)
     {
         var result = new Dictionary<(int, int), Dictionary<int, DeskIntervalFigures>>();
+        var worked = new Dictionary<(int, int), Dictionary<int, double>>();
         foreach (var queue in Queues)
         {
             var q = ScenarioModel.Q(queue);
@@ -104,12 +121,22 @@ internal static class AmanDeskProcess
                             result[(q, k)] = minutes = [];
                         minutes[minute] = figures;
                     }
+
+                    if (desk.Worked > 0)
+                    {
+                        if (!worked.TryGetValue((q, k), out var seconds))
+                            worked[(q, k)] = seconds = [];
+                        seconds[minute] = desk.Worked;
+                    }
                 }
             }
         }
 
-        return result;
+        return new DayTable(result, worked);
     }
+
+    /// <summary>A day's published figures and the seconds each desk worked, per (queue, desk) and minute.</summary>
+    private sealed record DayTable(Dictionary<(int, int), Dictionary<int, DeskIntervalFigures>> Figures, Dictionary<(int, int), Dictionary<int, double>> Worked);
 
     #endregion
 
@@ -133,6 +160,9 @@ internal static class AmanDeskProcess
         private double _start;
         private double _serviceSeconds;
 
+        /// <summary>The seconds worked in the latest open minute: the share times the seconds per unit, at most 60.</summary>
+        public double Worked { get; private set; }
+
         /// <summary>A close ends the session: the transaction in progress is dropped and the next has no previous start.</summary>
         public void Close()
         {
@@ -146,6 +176,7 @@ internal static class AmanDeskProcess
             _done.Clear();
             // Seconds per unit of work: the desk's own, or faster when the scenario's capacity noise serves more in the minute.
             var perUnit = share * svc > 60 ? 60 / share : svc;
+            Worked = share * perUnit;
             var remaining = share;
             var offset = 0.0;
             while (remaining > 1e-9)

@@ -184,21 +184,23 @@ internal sealed partial class ScenarioDay
         return null;
     }
 
-    /// <summary>Every server of a queue at a minute.</summary>
+    /// <summary>The seconds of a minute a server must work to count as serving (half the minute, ARV-151).</summary>
+    public const double ServingSeconds = 30;
+
+    /// <summary>
+    /// Every server of a queue at a minute (ARV-151, sim.js <c>day.servers</c>): the people served in the minute are shared
+    /// among the working servers by speed, as the AMAN emulator shares them (<see cref="WorkSeconds"/>); a server is serving
+    /// when it works at least <see cref="ServingSeconds"/> of the minute or people wait, and idle otherwise. Before ARV-151
+    /// the lowest-numbered open servers served and the rest idled, which the AMAN emulator's transactions never showed.
+    /// </summary>
     public List<ServerState> ServerStates(int q, int m)
     {
         var i = m + Pre;
         var def = Queues[q];
         var o = new List<ServerState>();
         var busyAll = L[q][i] > 0.5;
-        var act = new List<int>();
         var open = OpenSet(q, m);
-        for (var k = 0; k < def.Servers.Count; k++)
-            if (open[k] && Servers[q][k].Pause[i] == 0)
-                act.Add(k);
-        var perRate = act.Count != 0 ? C[q][i] / act.Count : 1;
-        var busy = busyAll ? act.Count : Math.Min(act.Count, (int)Math.Ceiling(D[q][i] / Math.Max(perRate, 0.01) - 0.05));
-        var bi = 0;
+        var speed = Speed(q, i, open);
         for (var k = 0; k < def.Servers.Count; k++)
         {
             var sd = Servers[q][k];
@@ -212,15 +214,54 @@ internal sealed partial class ScenarioDay
             else if (sd.Pause[i] != 0)
                 st = "paused";
             else
-            {
-                st = bi < busy ? "serving" : "idle";
-                bi++;
-            }
+                st = busyAll || Work(q, i, open, speed, k) >= ServingSeconds ? "serving" : "idle";
 
             o.Add(new ServerState(def.Servers[k], st, k, def.Svc * sd.Factor));
         }
 
         return o;
+    }
+
+    /// <summary>
+    /// The seconds of minute <paramref name="m"/> that server <paramref name="k"/> works (ARV-151, sim.js <c>day.work</c>):
+    /// the people served in the minute, D, shared among the working servers (open and not paused, or hidden from the
+    /// sensors) by speed, D x (1 / svc_k) / sum of (1 / svc), times its own service time svc_k; 0 for a server not working.
+    /// The AMAN emulator (<c>AmanDeskProcess</c>) gives each desk the same share and works it from the minute's start, so
+    /// a desk is serving here exactly when the emulator's desk works at least half the minute. Every working server works
+    /// the same seconds, D / sum of (1 / svc), up to rounding.
+    /// </summary>
+    public double WorkSeconds(int q, int m, int k)
+    {
+        var i = m + Pre;
+        var open = OpenSet(q, m);
+        return Work(q, i, open, Speed(q, i, open), k);
+    }
+
+    // Whether server k works in minute index i: open, not out of service, and not paused unless hidden from the sensors (the
+    // states serving, idle and unknown, as the AMAN emulator takes them).
+    private bool Working(int q, int i, bool[] open, int k)
+    {
+        var sd = Servers[q][k];
+        return open[k] && !(sd.OutOfService && sd.Pause[i] != 0) && (sd.Unknown[i] != 0 || sd.Pause[i] == 0);
+    }
+
+    // The working servers' speed, the sum of 1 / svc in server order (svc at least a second), as the AMAN emulator sums it.
+    private double Speed(int q, int i, bool[] open)
+    {
+        var def = Queues[q];
+        var speed = 0.0;
+        for (var k = 0; k < def.Servers.Count; k++)
+            if (Working(q, i, open, k))
+                speed += 1 / Math.Max(def.Svc * Servers[q][k].Factor, 1);
+        return speed;
+    }
+
+    private double Work(int q, int i, bool[] open, double speed, int k)
+    {
+        if (!Working(q, i, open, k) || !(speed > 0))
+            return 0;
+        var svc = Math.Max(Queues[q].Svc * Servers[q][k].Factor, 1);
+        return D[q][i] * (1 / svc) / speed * svc;
     }
 
     /// <summary>Per-server aggregates for the 15-minute interval starting at <paramref name="bs"/>, up to now.</summary>

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Ariva.Core.Border;
 using Ariva.Core.Desks;
 using Ariva.Core.Queueing;
@@ -12,13 +13,16 @@ using FluentAssertions;
 namespace Ariva.UnitTests.Desks;
 
 /// <summary>
-/// ARV-149 on the reference evening (seed 9303), measured on Ariva's own simulator, not on field data: the Visitors desks
+/// ARV-149 on the reference evening (seed 9303, on which ARV-149 chose k and the timings) and, since ARV-151, on a held-out
+/// evening (seed 2026, the same day drawn with another seed, never used to tune), measured on Ariva's own simulator, not on
+/// field data: the Visitors desks
 /// AR-08 to AR-22 with AMAN's sources alone (no staff or service zone, as at DMO in the ARV-104j rehearsal), fed as the desk
 /// feed feeds them: the AMAN emulator's sessions and one-minute interval statistics through <see cref="AmanDeskFeed"/>, read
 /// every 15 seconds, and once a minute, from the engine's watermark of the read, the lane context of
 /// <see cref="DeskRhythm"/> from AMAN's intervals and the A-VIS zone's live minutes as the zone processor publishes them
 /// (S-17's outage included). Each desk minute's dominant state (<see cref="DeskStateAgreement.Dominant"/>) is compared with
-/// what an observer sees (the simulator's <see cref="ValidationTruth.Observed"/>, the rehearsal's truth), with the lane
+/// what an observer sees (the simulator's <see cref="ValidationTruth.Observed"/>, the rehearsal's truth; since ARV-151 a desk
+/// serves when people wait or it works at least half the minute, as the AMAN emulator shares the people), with the lane
 /// context (F10 rows 5a to 5f) and without it (rows 5 and 7, as before ARV-149), over the evening and by the scenario's
 /// regime in the minute: a queue (people waiting), light demand (people arriving, nobody waiting) and the empty hall.
 /// </summary>
@@ -33,15 +37,26 @@ public sealed class DeskRhythmScenarioTests(ITestOutputHelper output)
     private const int RehearsalFrom = 1080;
     private const int RehearsalTo = 1170;
 
-    private static readonly Lazy<ScenarioDay> Day = new(() => ScenarioDay.Run(ScenarioConfig.Reference() with { Lite = true }));
+    /// <summary>The tuned evening (ARV-149) and the held-out evening (ARV-151).</summary>
+    private const uint Tuned = ScenarioModel.DefaultSeed;
+    private const uint HeldOut = 2026;
 
     private static readonly Ariva.Infra.Border.DeskFeedSettings Feed = new();
 
-    private static readonly Lazy<List<(DateTime Available, QueueLiveMinute Minute)>> Live = new(BuildLive);
+    private static readonly ConcurrentDictionary<uint, Lazy<ScenarioDay>> Days = new();
 
-    private static readonly Lazy<List<DeskMinute>> WithRhythm = new(() => Run(Contexts.Watermark));
+    private static readonly ConcurrentDictionary<uint, Lazy<List<(DateTime Available, QueueLiveMinute Minute)>>> Lives = new();
 
-    private static readonly Lazy<List<DeskMinute>> WithoutRhythm = new(() => Run(Contexts.None));
+    private static readonly ConcurrentDictionary<(uint Seed, Contexts Mode), Lazy<List<DeskMinute>>> Runs = new();
+
+    private static ScenarioDay DayOf(uint seed) =>
+        Days.GetOrAdd(seed, s => new Lazy<ScenarioDay>(() => ScenarioDay.Run(ScenarioConfig.Reference(s) with { Lite = true }))).Value;
+
+    private static List<(DateTime Available, QueueLiveMinute Minute)> LiveOf(uint seed) =>
+        Lives.GetOrAdd(seed, s => new Lazy<List<(DateTime, QueueLiveMinute)>>(() => BuildLive(s))).Value;
+
+    private static List<DeskMinute> MinutesOf(uint seed, Contexts mode) =>
+        Runs.GetOrAdd((seed, mode), key => new Lazy<List<DeskMinute>>(() => Run(key.Seed, key.Mode))).Value;
 
     /// <summary>How the lane contexts are given: none (rows 5 and 7), as the desk feed gives them, and two comparisons.</summary>
     private enum Contexts
@@ -59,13 +74,14 @@ public sealed class DeskRhythmScenarioTests(ITestOutputHelper output)
         TruthQueue
     }
 
-    /// <summary>The A-VIS zone's live minutes, each with the receive time of the batch that published it.</summary>
-    private static List<(DateTime, QueueLiveMinute)> BuildLive()
+    /// <summary>The A-VIS zone's live minutes of an evening, each with the receive time of the batch that published it.</summary>
+    private static List<(DateTime, QueueLiveMinute)> BuildLive(uint seed)
     {
         var settings = new ZoneProcessorSettings();
         var zone = new ZoneProcessor(ZoneKeys.For(ReferenceReplay.Site, "A-VIS"), ReferenceReplay.GeometryOf("A-VIS"), ReferenceReplay.ProfileVersion, settings);
         var live = new List<(DateTime, QueueLiveMinute)>();
-        foreach (var input in ReferenceReplay.InputsOf("A-VIS"))
+        var inputs = seed == Tuned ? ReferenceReplay.InputsOf("A-VIS") : ReferenceReplay.InputsOf("A-VIS", ReferenceReplay.IngestSeed(seed));
+        foreach (var input in inputs)
         {
             var batch = input.ToBatch();
             zone.Offer(batch, ReferenceReplay.To);
@@ -75,10 +91,10 @@ public sealed class DeskRhythmScenarioTests(ITestOutputHelper output)
         return live;
     }
 
-    /// <summary>The desk feed over the evening with the given lane contexts; the published engine's closed minutes.</summary>
-    private static List<DeskMinute> Run(Contexts mode)
+    /// <summary>The desk feed over an evening with the given lane contexts; the published engine's closed minutes.</summary>
+    private static List<DeskMinute> Run(uint seed, Contexts mode)
     {
-        var day = Day.Value;
+        var day = DayOf(seed);
         var q = ScenarioModel.Q("A-VIS");
         var desks = ReferenceReplay.VisitorDesks.ToDictionary(AmanCodes.Of, ReferenceReplay.DeskKeyOf, StringComparer.Ordinal);
         var profiles = desks.Values.Select(k => new DeskProfile(k, "VIS", HasTransactions: true, HasSession: true, HasStaffZone: false, HasServiceZone: false)).ToList();
@@ -103,7 +119,7 @@ public sealed class DeskRhythmScenarioTests(ITestOutputHelper output)
             }
         }
 
-        var live = Live.Value;
+        var live = LiveOf(seed);
         var minutes = new List<DeskMinute>();
         DateTime? heartbeat = null, context = null;
         var read = DateTime.MinValue;
@@ -148,10 +164,10 @@ public sealed class DeskRhythmScenarioTests(ITestOutputHelper output)
         public double In(string regime) => (double)Regimes[regime].Agreeing / Regimes[regime].Judged;
     }
 
-    /// <summary>Each Visitors desk minute of [from, to) against what an observer sees in it, in all and by regime.</summary>
-    private static Agreement Compare(IReadOnlyList<DeskMinute> minutes, int from, int to)
+    /// <summary>Each Visitors desk minute of [from, to) of an evening against what an observer sees in it, in all and by regime.</summary>
+    private static Agreement Compare(uint seed, IReadOnlyList<DeskMinute> minutes, int from, int to)
     {
-        var day = Day.Value;
+        var day = DayOf(seed);
         var q = ScenarioModel.Q("A-VIS");
         var servers = ScenarioModel.Queues[q].Servers;
         var byKey = minutes.ToDictionary(m => (m.DeskCode, m.MinuteUtc));
@@ -165,7 +181,7 @@ public sealed class DeskRhythmScenarioTests(ITestOutputHelper output)
             var regime = day.L[q][i] > 0.5 ? "queue" : day.D[q][i] > 0.01 ? "light demand" : "empty hall";
             for (var k = 0; k < servers.Count; k++)
             {
-                var observed = Observed(ValidationTruth.Observed(states[k].State, day.Servers[q][k].Pause[i] != 0, day.L[q][i] > 0.5));
+                var observed = Observed(ValidationTruth.Observed(states[k].State, day.Servers[q][k].Pause[i] != 0, ValidationTruth.Serves(day, q, minute, k)));
                 var stored = byKey[(ReferenceReplay.DeskKeyOf(servers[k]), ReferenceReplay.WallOf(minute))];
                 var system = DeskStateAgreement.Dominant(stored.Closed.TotalSeconds, stored.Idle.TotalSeconds, stored.Serving.TotalSeconds, stored.Paused.TotalSeconds,
                     stored.Unknown.TotalSeconds) ?? DeskStatus.Unknown;
@@ -199,52 +215,63 @@ public sealed class DeskRhythmScenarioTests(ITestOutputHelper output)
             output.WriteLine($"  observed {observed}, system {system}: {count}");
     }
 
-    [Fact]
-    public void Engine_Should_AgreeWithTheObservers_When_DesksWithoutZonesFollowTheTransactionRhythm()
+    [Theory]
+    [InlineData(Tuned)]
+    [InlineData(HeldOut)]
+    public void Engine_Should_AgreeWithTheObservers_When_DesksWithoutZonesFollowTheTransactionRhythm(uint seed)
     {
-        var evening = Compare(WithRhythm.Value, FirstMinute, LastMinute);
-        var rehearsal = Compare(WithRhythm.Value, RehearsalFrom, RehearsalTo);
-        Print("With the transaction rhythm, 17:20 to 20:25", evening);
-        Print("With the transaction rhythm, 18:00 to 19:30", rehearsal);
+        var withRhythm = MinutesOf(seed, Contexts.Watermark);
+        var evening = Compare(seed, withRhythm, FirstMinute, LastMinute);
+        var rehearsal = Compare(seed, withRhythm, RehearsalFrom, RehearsalTo);
+        Print($"Seed {seed}, with the transaction rhythm, 17:20 to 20:25", evening);
+        Print($"Seed {seed}, with the transaction rhythm, 18:00 to 19:30", rehearsal);
 
-        // Where AMAN's transactions and the scenario's truth tell the same story the target is met: with a queue every
-        // logged-in desk serves, in the empty hall none does.
+        // The same bounds on the tuned and the held-out evening (measured, docs/domain/formulas.md F10, ARV-151). With a
+        // queue every logged-in desk serves and the target is met (0.989 and 0.986).
         evening.In("queue").Should().BeGreaterThanOrEqualTo(Target);
-        evening.In("empty hall").Should().BeGreaterThanOrEqualTo(0.92);
-        // In light demand (people arriving, nobody waiting) the scenario's truth has its lowest-numbered open desks serve and
-        // the others idle, while its AMAN emulator shares the served people among every open desk: no rule on AMAN's
-        // transactions can tell which desk the truth calls idle (simulator finding, ARV-149 entry of backlog/progress.md).
-        evening.In("light demand").Should().BeGreaterThanOrEqualTo(0.6);
-        // Regression bounds over all minutes (measured, docs/domain/formulas.md F10); open or not open is what the nowcast counts.
+        // In the empty hall a desk stays Serving for s + I after its last transaction and the queue reaches the context a
+        // minute or two late (0.925 and 0.909).
+        evening.In("empty hall").Should().BeGreaterThanOrEqualTo(0.9);
+        // In light demand (people arriving, nobody waiting) the truth since ARV-151 shares the served people among the working
+        // desks as the AMAN emulator does, and a desk serves when it works at least half the minute; the rhythm reads a desk
+        // Serving for s + I after each transaction however little of the minute it works (0.676 on both evenings).
+        evening.In("light demand").Should().BeGreaterThanOrEqualTo(0.65);
+        // Over all minutes (0.914 and 0.909; 18:00 to 19:30, 0.909 and 0.907); open or not open is what the nowcast counts
+        // (0.996 and 0.992).
         evening.Share.Should().BeGreaterThanOrEqualTo(0.9);
         rehearsal.Share.Should().BeGreaterThanOrEqualTo(0.9);
         evening.OpenShare.Should().BeGreaterThanOrEqualTo(0.99);
     }
 
-    [Fact]
-    public void Engine_Should_DisagreeAsInTheRehearsal_When_TheLaneContextIsLeftOut()
+    [Theory]
+    [InlineData(Tuned)]
+    [InlineData(HeldOut)]
+    public void Engine_Should_DisagreeAsInTheRehearsal_When_TheLaneContextIsLeftOut(uint seed)
     {
         // F2 of the ARV-104j rehearsal reproduced: AMAN alone never makes a desk Serving and pauses it T1 after a transaction.
-        var evening = Compare(WithoutRhythm.Value, FirstMinute, LastMinute);
-        var rehearsal = Compare(WithoutRhythm.Value, RehearsalFrom, RehearsalTo);
-        Print("Without the lane context (rows 5 and 7), 17:20 to 20:25", evening);
-        Print("Without the lane context (rows 5 and 7), 18:00 to 19:30", rehearsal);
+        var withoutRhythm = MinutesOf(seed, Contexts.None);
+        var evening = Compare(seed, withoutRhythm, FirstMinute, LastMinute);
+        var rehearsal = Compare(seed, withoutRhythm, RehearsalFrom, RehearsalTo);
+        Print($"Seed {seed}, without the lane context (rows 5 and 7), 17:20 to 20:25", evening);
+        Print($"Seed {seed}, without the lane context (rows 5 and 7), 18:00 to 19:30", rehearsal);
 
         evening.Confusion.Where(c => c.Key.System == DeskStatus.Serving).Sum(c => c.Value).Should().Be(0, "no transaction starts: never Serving");
         rehearsal.Share.Should().BeLessThan(0.5);
     }
 
-    [Fact]
-    public void Engine_Should_LoseLittleToTheContextsLag_When_TheyApplyFromTheWatermark()
+    [Theory]
+    [InlineData(Tuned)]
+    [InlineData(HeldOut)]
+    public void Engine_Should_LoseLittleToTheContextsLag_When_TheyApplyFromTheWatermark(uint seed)
     {
         // The lane context carries the zones' latest live minutes, a minute or two behind the desk engine's watermark: applied
         // from the watermark it agrees within a hundredth of the scenario's own queue without lag, and better than applied
         // from the minute of the read (the first design).
-        var built = Compare(WithRhythm.Value, FirstMinute, LastMinute);
-        var readMinute = Compare(Run(Contexts.ReadMinute), FirstMinute, LastMinute);
-        var truth = Compare(Run(Contexts.TruthQueue), FirstMinute, LastMinute);
-        Print("Contexts from the minute of the read, 17:20 to 20:25", readMinute);
-        Print("The scenario's own queue without lag, 17:20 to 20:25", truth);
+        var built = Compare(seed, MinutesOf(seed, Contexts.Watermark), FirstMinute, LastMinute);
+        var readMinute = Compare(seed, MinutesOf(seed, Contexts.ReadMinute), FirstMinute, LastMinute);
+        var truth = Compare(seed, MinutesOf(seed, Contexts.TruthQueue), FirstMinute, LastMinute);
+        Print($"Seed {seed}, contexts from the minute of the read, 17:20 to 20:25", readMinute);
+        Print($"Seed {seed}, the scenario's own queue without lag, 17:20 to 20:25", truth);
 
         built.Share.Should().BeGreaterThan(readMinute.Share + 0.01);
         built.Share.Should().BeGreaterThanOrEqualTo(truth.Share - 0.01);

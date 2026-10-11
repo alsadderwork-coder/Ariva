@@ -191,20 +191,32 @@ internal sealed class ValidationTruth
         if (minute is < 0 or >= ScenarioModel.Day)
             return null;
         var server = _day.ServerStates(q, minute)[k];
-        return Observed(server.State, _day.Servers[q][k].Pause[minute + ScenarioModel.Pre] != 0, _day.L[q][minute + ScenarioModel.Pre] > 0.5);
+        return Observed(server.State, _day.Servers[q][k].Pause[minute + ScenarioModel.Pre] != 0, Serves(_day, q, minute, k));
+    }
+
+    /// <summary>
+    /// Whether a server serves in a scenario minute by the rule of <see cref="ScenarioDay.ServerStates"/> (ARV-151): people
+    /// wait, or it works at least half the minute (<see cref="ScenarioDay.WorkSeconds"/>). For a server the scenario hides from
+    /// the sensors, whose state is "unknown".
+    /// </summary>
+    public static bool Serves(ScenarioDay day, int q, int minute, int k)
+    {
+        ArgumentNullException.ThrowIfNull(day);
+        return day.L[q][minute + ScenarioModel.Pre] > 0.5 || day.WorkSeconds(q, minute, k) >= ScenarioDay.ServingSeconds;
     }
 
     /// <summary>
     /// A scenario server state as an observer sees it: closed and out of service are Closed; a server the scenario hides from the
-    /// sensors ("unknown") is seen as it is: Paused when it pauses, otherwise Serving while people queue and Idle when none do.
+    /// sensors ("unknown") is seen as it is: Paused when it pauses, otherwise Serving when it serves by the scenario's rule
+    /// (<see cref="Serves"/>, ARV-151: people wait or it works at least half the minute) and Idle when it does not.
     /// </summary>
-    public static ObservedDeskState Observed(string scenarioState, bool pausing, bool peopleQueue) => scenarioState switch
+    public static ObservedDeskState Observed(string scenarioState, bool pausing, bool serves) => scenarioState switch
     {
         "serving" => ObservedDeskState.Serving,
         "idle" => ObservedDeskState.Idle,
         "paused" => ObservedDeskState.Paused,
         "unknown" when pausing => ObservedDeskState.Paused,
-        "unknown" => peopleQueue ? ObservedDeskState.Serving : ObservedDeskState.Idle,
+        "unknown" => serves ? ObservedDeskState.Serving : ObservedDeskState.Idle,
         _ => ObservedDeskState.Closed
     };
 

@@ -109,8 +109,8 @@ public sealed class ValidationEmulatorTests
     [InlineData("unknown", true, true, ObservedDeskState.Paused)]
     [InlineData("unknown", false, true, ObservedDeskState.Serving)]
     [InlineData("unknown", false, false, ObservedDeskState.Idle)]
-    public void Observed_Should_BeWhatAnObserverAtTheDeskSees_When_TheScenarioStateIs(string scenarioState, bool pausing, bool peopleQueue, ObservedDeskState expected) =>
-        ValidationTruth.Observed(scenarioState, pausing, peopleQueue).Should().Be(expected);
+    public void Observed_Should_BeWhatAnObserverAtTheDeskSees_When_TheScenarioStateIs(string scenarioState, bool pausing, bool serves, ObservedDeskState expected) =>
+        ValidationTruth.Observed(scenarioState, pausing, serves).Should().Be(expected);
 
     [Fact]
     public void DeskState_Should_FollowTheScenariosServers_When_ReadMinuteByMinute()
@@ -125,7 +125,7 @@ public sealed class ValidationEmulatorTests
             {
                 var state = truth.DeskState(q, k, At(minute));
                 var i = minute + ScenarioModel.Pre;
-                state.Should().Be(ValidationTruth.Observed(servers[k].State, Day.Value.Servers[q][k].Pause[i] != 0, Day.Value.L[q][i] > 0.5));
+                state.Should().Be(ValidationTruth.Observed(servers[k].State, Day.Value.Servers[q][k].Pause[i] != 0, ValidationTruth.Serves(Day.Value, q, minute, k)));
                 seen.Add(state!.Value);
             }
         }

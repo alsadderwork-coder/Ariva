@@ -241,6 +241,13 @@ internal static class ReferenceReplay
     public static (IReadOnlyList<SensingBatch> Batches, IReadOnlyList<DeviceHealthReported> Health) IngestAgain() => Ingest(ScenarioConfig.Reference() with { Lite = true }, Devices);
 
     /// <summary>
+    /// The same evening of the reference day drawn with another seed (ARV-151: a held-out evening for the desk rhythm test),
+    /// ingested as <see cref="Ingested"/>: S-15, S-17 and S-50 from 17:00 to 20:30, the scripted events unchanged.
+    /// </summary>
+    public static (IReadOnlyList<SensingBatch> Batches, IReadOnlyList<DeviceHealthReported> Health) IngestSeed(uint seed) =>
+        Ingest(ScenarioConfig.Reference(seed) with { Lite = true }, Devices);
+
+    /// <summary>
     /// Replays the desk zone case (ARV-116): the Visitors zone with S-18 to S-20 reporting its desks' zones, under the
     /// geometry with those zones (<paramref name="deskGeometry"/>) or without them (the readings then go nowhere).
     /// </summary>

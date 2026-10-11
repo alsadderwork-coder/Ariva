@@ -681,25 +681,33 @@
       return null;
     };
 
+    /* The servers of a queue at a minute (ARV-151): the people served in the minute are shared among the working servers
+       (open, not paused, and those hidden from the sensors) by speed, as the AMAN emulator shares them, so each works
+       share x svc seconds of the minute; a server is serving when it works at least half the minute or people wait, and
+       idle otherwise. Every working server works the same seconds, so the open servers serve or idle together. */
+    day.work = function (q, m, k) {
+      var i = m + PRE, def = QDEF[q], open = day.openSet(q, m), speed = 0, x, sx, svc;
+      for (x = 0; x < def.servers.length; x++) {
+        sx = day.srv[q][x];
+        if (open[x] && !(sx.oos && sx.pause[i]) && (sx.unknown[i] || !sx.pause[i])) speed += 1 / Math.max(def.svc * sx.factor, 1);
+      }
+      sx = day.srv[q][k];
+      if (!(open[k] && !(sx.oos && sx.pause[i]) && (sx.unknown[i] || !sx.pause[i])) || !(speed > 0)) return 0;
+      svc = Math.max(def.svc * sx.factor, 1);
+      return day.D[q][i] * (1 / svc) / speed * svc;
+    };
     day.servers = function (q, m) {
       var i = m + PRE, def = QDEF[q], out = [];
       var busyAll = day.L[q][i] > 0.5;
-      var act = [], open = day.openSet(q, m);
+      var open = day.openSet(q, m);
       for (var k = 0; k < def.servers.length; k++) {
         var sd = day.srv[q][k];
-        if (open[k] && !sd.pause[i]) act.push(k);
-      }
-      var perRate = act.length ? day.C[q][i] / act.length : 1;
-      var busy = busyAll ? act.length : Math.min(act.length, Math.ceil(day.D[q][i] / Math.max(perRate, 0.01) - 0.05));
-      var bi = 0;
-      for (k = 0; k < def.servers.length; k++) {
-        sd = day.srv[q][k];
         var st;
         if (sd.oos && sd.pause[i]) st = 'oos';
         else if (!open[k]) st = 'closed';
         else if (sd.unknown[i]) st = 'unknown';
         else if (sd.pause[i]) st = 'paused';
-        else { st = bi < busy ? 'serving' : 'idle'; bi++; }
+        else st = busyAll || day.work(q, m, k) >= 30 ? 'serving' : 'idle';
         out.push({ id: def.servers[k], state: st, k: k, svc: def.svc * sd.factor });
       }
       return out;
