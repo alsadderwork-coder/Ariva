@@ -46,6 +46,166 @@ public sealed class AvailabilityRuleTests
         AvailabilityRule.IsLive(Minute, Minute.AddMinutes(6).AddTicks(1), Settings).Should().BeFalse();
     }
 
+    [Fact]
+    public void EarliestLive_Should_BeTheFirstMinuteStillInItsLiveWindow_When_Asked()
+    {
+        // At 10:05:30 the minute 10:00 is live until 10:06:00 and 09:59 ended its live window at 10:05:00.
+        var now = Minute.AddMinutes(5).AddSeconds(30);
+
+        AvailabilityRule.EarliestLive(now, Settings).Should().Be(Minute);
+        AvailabilityRule.IsLive(Minute, now, Settings).Should().BeTrue();
+        AvailabilityRule.IsLive(Minute.AddMinutes(-1), now, Settings).Should().BeFalse();
+        AvailabilityRule.EarliestLive(now, new AvailabilitySettings { GraceSeconds = 60, LiveWindowSeconds = 60 }).Should().Be(Minute.AddMinutes(3));
+    }
+
+    #endregion
+
+    #region Ledger start (ARV-150)
+
+    private static DateTime At(string utc) => DateTime.Parse(utc, null, System.Globalization.DateTimeStyles.AdjustToUniversal);
+
+    [Theory]
+    [InlineData("2026-10-10T06:37:30Z", "2026-10-10T06:38:00Z")]
+    [InlineData("2026-10-10T06:37:00Z", "2026-10-10T06:37:00Z")]
+    [InlineData("2026-10-10T06:37:00.0000001Z", "2026-10-10T06:38:00Z")]
+    [InlineData("2026-10-10T06:36:59.9999999Z", "2026-10-10T06:37:00Z")]
+    public void FirstMinute_Should_BeTheFirstWholeMinuteAtOrAfterThePublication_When_TheProfileIsPublished(string published, string expected)
+    {
+        AvailabilityRule.FirstMinute(At(published)).Should().Be(At(expected));
+    }
+
+    [Fact]
+    public void Start_Should_CountFromTheMinuteOfPublication_When_ASiteIsPublishedMidDay()
+    {
+        var published = At("2026-10-10T12:00:00Z");
+
+        // Seen 30 seconds later: the latest decidable minute is 11:57, before the site existed, so the ledger waits for 12:00.
+        AvailabilityRule.Start(null, published, At("2026-10-10T12:00:30Z"), Settings).Should().Be(published);
+        // 12:03:00: 12:00 is decidable and is the first minute decided, whether or not a pass stored the start before.
+        AvailabilityRule.Start(null, published, At("2026-10-10T12:03:00Z"), Settings).Should().Be(published);
+        AvailabilityRule.Start(published, published, At("2026-10-10T12:03:00Z"), Settings).Should().Be(published);
+    }
+
+    [Fact]
+    public void Start_Should_CountTheMinuteBeforeTheFirstPush_When_ThePublicationFallsInsideAMinute()
+    {
+        // F3 of the ARV-104j rehearsal: DMO's profile published at 06:37:30, the job's first pass at 06:38:30 (latest decidable
+        // 06:35). Rule 1 decided 06:35 to 06:37 as NoPublishedZones; rule 2 starts at 06:38.
+        var start = AvailabilityRule.Start(null, At("2026-10-10T06:37:30Z"), At("2026-10-10T06:38:30Z"), Settings);
+        start.Should().Be(At("2026-10-10T06:38:00Z"));
+
+        // 06:38, before the sensors' first push, has no queue_minute row: it is in the ledger and unavailable.
+        var decided = start.GetValueOrDefault();
+        var now = decided.AddMinutes(1).AddSeconds(150);
+        var decision = AvailabilityRule.Decide(decided, [new ZoneObservation("DMO/A-VIS", false, new SnapshotTimes(decided.AddMinutes(2), now.AddSeconds(-20)))],
+            now, live: true, Settings);
+        decision.State.Should().Be(AvailabilityState.Unavailable);
+        decision.Reasons.Should().Equal(AvailabilityReasons.MissingMinute);
+    }
+
+    [Fact]
+    public void Start_Should_NotRestart_When_TheProfileIsRepublished()
+    {
+        var first = At("2026-10-10T12:00:00Z");
+        var republished = At("2026-10-10T12:30:10Z");
+        var firstPublication = new[] { republished, first }.Min();
+
+        // The ledger has run since 12:00; version 2 at 12:30:10 neither moves the start to 12:31 nor back to 12:00.
+        AvailabilityRule.Start(At("2026-10-10T12:30:00Z"), firstPublication, At("2026-10-10T12:33:30Z"), Settings).Should().Be(At("2026-10-10T12:30:00Z"));
+        // A site seen the first time after the republication: its first publication long past the live window, the latest decidable minute.
+        AvailabilityRule.Start(null, firstPublication, At("2026-10-10T12:33:30Z"), Settings).Should().Be(At("2026-10-10T12:30:00Z"));
+        AvailabilityRule.Start(null, firstPublication, At("2026-10-10T12:33:30Z"), Settings).Should().NotBe(AvailabilityRule.FirstMinute(republished));
+    }
+
+    [Fact]
+    public void Start_Should_BeNull_When_TheSiteWasNeverPublished()
+    {
+        AvailabilityRule.Start(null, null, Now, Settings).Should().BeNull("a site never published has no ledger minute");
+        AvailabilityRule.Start(Minute, null, Now, Settings).Should().BeNull("nor does a stored cursor give it one");
+    }
+
+    [Fact]
+    public void Start_Should_KeepTheStoredCursor_When_OneExists()
+    {
+        // A stored cursor is never moved: one before the publication (written while it was not trusted, or under rule 1) and
+        // one after it both stay.
+        var published = At("2026-10-10T06:37:30Z");
+        var now = At("2026-10-10T06:45:00Z");
+
+        AvailabilityRule.Start(At("2026-10-10T06:35:00Z"), published, now, Settings).Should().Be(At("2026-10-10T06:35:00Z"));
+        AvailabilityRule.Start(At("2026-10-10T06:41:00Z"), published, now, Settings).Should().Be(At("2026-10-10T06:41:00Z"));
+    }
+
+    [Fact]
+    public void Start_Should_GoOnFromTheCursor_When_AFarAheadPublicationBecomesTrusted()
+    {
+        // The publication 12:01:00 was stored far ahead of the job's clock, so the ledger went on from the latest decidable
+        // minute (NoPublishedZones); at 12:00:30 it is 30 s ahead and trusted. The pass goes on from its cursor (11:58), not
+        // from 12:01, so no minute is left unwritten.
+        AvailabilityRule.Start(At("2026-10-10T11:58:00Z"), At("2026-10-10T12:01:00Z"), At("2026-10-10T12:00:30Z"), Settings).Should().Be(At("2026-10-10T11:58:00Z"));
+    }
+
+    [Fact]
+    public void Start_Should_BeTheLatestDecidableMinute_When_TheSiteWasPublishedBeforeTheJobRanForIt()
+    {
+        // At 08:00:30 the earliest live minute is 07:55 and the latest decidable 07:57.
+        var now = At("2026-10-01T08:00:30Z");
+
+        AvailabilityRule.Start(null, At("2026-09-01T00:00:00Z"), now, Settings).Should().Be(At("2026-10-01T07:57:00Z"), "no history before the ledger ran");
+        AvailabilityRule.Start(null, At("2026-10-01T07:54:59Z"), now, Settings).Should().Be(At("2026-10-01T07:55:00Z"), "its first minute is still live");
+        AvailabilityRule.Start(null, At("2026-10-01T07:54:00Z"), now, Settings).Should().Be(At("2026-10-01T07:57:00Z"), "07:54 is past the live window");
+        AvailabilityRule.Start(At("2026-10-01T07:40:00Z"), At("2026-09-01T00:00:00Z"), now, Settings).Should().Be(At("2026-10-01T07:40:00Z"), "a stored cursor is caught up from");
+    }
+
+    [Fact]
+    public void Start_Should_NotWaitForAPublication_When_ItIsAheadOfTheClockBeyondTheTolerance()
+    {
+        var now = At("2026-10-10T12:00:30Z");
+
+        // 60 seconds ahead (two hosts' clocks): trusted, the ledger waits for 12:02.
+        AvailabilityRule.Start(null, now.AddSeconds(60), now, Settings).Should().Be(At("2026-10-10T12:02:00Z"));
+        // A tick beyond: no live publication is stamped there, so it cannot hold the ledger back (CWE-501).
+        AvailabilityRule.Start(null, now.AddSeconds(60).AddTicks(1), now, Settings).Should().Be(At("2026-10-10T11:57:00Z"));
+        AvailabilityRule.Start(At("2026-10-10T11:50:00Z"), At("2027-01-01T00:00:00Z"), now, Settings).Should().Be(At("2026-10-10T11:50:00Z"));
+    }
+
+    [Theory]
+    [InlineData(0L, true)]
+    [InlineData(1L, false)]
+    public void IsPlausiblePublication_Should_TrustAPublicationUpToTheTolerance_When_ItIsAheadOfTheClock(long ticksBeyond, bool plausible)
+    {
+        AvailabilityRule.IsPlausiblePublication(Now.AddSeconds(60).AddTicks(ticksBeyond), Now).Should().Be(plausible);
+        AvailabilityRule.IsPlausiblePublication(Now.AddDays(-30), Now).Should().BeTrue("a publication in the past is plausible");
+    }
+
+    [Fact]
+    public void KeepsStart_Should_BeTrue_When_ASiteIsSeenForTheFirstTimeAtItsFirstMinute()
+    {
+        // Ahead of the latest decidable minute, already decidable, and exactly the earliest live minute (07:55 at 08:00:30).
+        AvailabilityRule.KeepsStart(null, At("2026-10-10T12:00:00Z"), At("2026-10-10T12:00:30Z"), Settings).Should().BeTrue();
+        AvailabilityRule.KeepsStart(null, At("2026-10-01T07:56:00Z"), At("2026-10-01T08:00:30Z"), Settings).Should().BeTrue();
+        AvailabilityRule.KeepsStart(null, At("2026-10-01T07:54:59Z"), At("2026-10-01T08:00:30Z"), Settings).Should().BeTrue();
+    }
+
+    [Fact]
+    public void KeepsStart_Should_BeFalse_When_TheStartIsNotTheFirstMinuteOfAFirstSight()
+    {
+        var now = At("2026-10-10T12:00:30Z");
+
+        AvailabilityRule.KeepsStart(At("2026-10-10T12:00:00Z"), At("2026-10-10T12:00:00Z"), now, Settings).Should().BeFalse("a stored cursor is the start already");
+        AvailabilityRule.KeepsStart(null, At("2026-09-01T00:00:00Z"), now, Settings).Should().BeFalse("published before the job ran for it: the latest decidable minute");
+        AvailabilityRule.KeepsStart(null, At("2026-10-10T11:54:00Z"), now, Settings).Should().BeFalse("its first minute is past the live window");
+        AvailabilityRule.KeepsStart(null, now.AddSeconds(60).AddTicks(1), now, Settings).Should().BeFalse("a publication too far ahead is not trusted");
+        AvailabilityRule.KeepsStart(null, null, now, Settings).Should().BeFalse("never published");
+    }
+
+    [Fact]
+    public void Start_Should_RefuseMissingSettings_When_Called()
+    {
+        FluentActions.Invoking(() => AvailabilityRule.Start(null, null, Now, null)).Should().Throw<ArgumentNullException>();
+        FluentActions.Invoking(() => AvailabilityRule.EarliestLive(Now, null)).Should().Throw<ArgumentNullException>();
+    }
+
     #endregion
 
     #region Live decisions
@@ -206,6 +366,29 @@ public sealed class AvailabilityRuleTests
             .Problems().ToList();
 
         problems.Should().HaveCount(6);
+    }
+
+    [Fact]
+    public void Problems_Should_AcceptEveryBound_When_TheSettingsAreAtTheirLimits()
+    {
+        new AvailabilitySettings { GraceSeconds = 30, LiveWindowSeconds = 60, StaleAfterSeconds = 30, MaxLagSeconds = 30, MaxMinutesPerRun = 10, MaxSitesPerRun = 1 }
+            .Problems().Should().BeEmpty();
+        new AvailabilitySettings { GraceSeconds = 1_800, LiveWindowSeconds = 1_800, StaleAfterSeconds = 3_600, MaxLagSeconds = 3_600, MaxMinutesPerRun = 10_080, MaxSitesPerRun = 10_000 }
+            .Problems().Should().BeEmpty();
+        new AvailabilitySettings { GraceSeconds = 1_801, LiveWindowSeconds = 1_801, StaleAfterSeconds = 3_601, MaxLagSeconds = 3_601, MaxMinutesPerRun = 10_081, MaxSitesPerRun = 10_001 }
+            .Problems().Should().HaveCount(6);
+
+        var below = new AvailabilitySettings { GraceSeconds = 29, LiveWindowSeconds = 59, StaleAfterSeconds = 29, MaxLagSeconds = 29, MaxMinutesPerRun = 9, MaxSitesPerRun = 0 }
+            .Problems().ToList();
+        below.Should().HaveCount(6);
+        foreach (var name in new[] { "GraceSeconds", "LiveWindowSeconds", "StaleAfterSeconds", "MaxLagSeconds", "MaxMinutesPerRun", "MaxSitesPerRun" })
+            below.Should().ContainSingle(p => p.StartsWith("Availability:" + name + " ", StringComparison.Ordinal), name);
+    }
+
+    [Fact]
+    public void All_Should_ListEveryReasonByItsStoredName_When_Read()
+    {
+        AvailabilityReasons.All.Should().Equal("StaleZone", "MissingMinute", "StreamLag", "NoPublishedZones", "NotObservedLive");
     }
 
     #endregion

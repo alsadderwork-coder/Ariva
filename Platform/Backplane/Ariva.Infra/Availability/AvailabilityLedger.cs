@@ -32,9 +32,21 @@ public sealed record AvailabilitySitePass(int Minutes, int Available, int Unavai
 /// Order: minutes still in their live window are decided first, with Redis; the backlog behind the site's cursor (after
 /// the job was down) is then filled from the cursor, at most <see cref="AvailabilitySettings.MaxMinutesPerRun"/> minutes
 /// per pass, from the database alone (<see cref="AvailabilityRule"/>: a missing minute is Unavailable, otherwise
-/// Unobserved; never Available from today's Redis state). A site seen for the first time starts at the latest decidable
-/// minute. Values read back from storage are checked again (CWE-501): calendar JSON that a request could not have
-/// produced is skipped with a warning, and snapshots come through the store's plausibility checks.
+/// Unobserved; never Available from today's Redis state). Values read back from storage are checked again (CWE-501):
+/// calendar JSON that a request could not have produced is skipped with a warning, and snapshots come through the store's
+/// plausibility checks.
+/// </para>
+/// <para>
+/// Start (ARV-150, <see cref="AvailabilityRule.Start"/>): a site's ledger starts at the first whole minute at or after the
+/// first publication of its zone profile (the earliest <c>published_on</c> of its published or retired versions; the 0012
+/// trigger refuses any change to a published or retired version and its deletion, so it can only move earlier, as an
+/// insert can add an earlier version, which never moves a stored start); no minute before it is written, a later version
+/// never moves it, and a site never published writes nothing. A site seen for the first time while its first minute is
+/// still live or ahead stores that start in a pass of its own (<see cref="AvailabilityRule.KeepsStart"/>: stored before
+/// the time zone is resolved, committed with nothing else, the minutes decided from the next run), so neither a missed
+/// run, an unknown time zone nor a pass that fails later can move it; one published before the job ever ran for it starts
+/// at the latest decidable minute (ARV-118). A stored cursor is never moved. A first publication stored more than
+/// <see cref="AvailabilityRule.MaxAhead"/> ahead of this host's clock is not trusted and is warned about once per site.
 /// </para>
 /// </summary>
 public sealed class AvailabilityLedger(DatabaseSettings database, ILiveSnapshotStore snapshots, TimeProvider timeProvider, AvailabilitySettings settings,
@@ -51,6 +63,9 @@ public sealed class AvailabilityLedger(DatabaseSettings database, ILiveSnapshotS
 
     /// <summary>Sites whose unresolved time zone has been logged, so the warning is written once per site (again after it resolves).</summary>
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> unresolvedZones = new(StringComparer.Ordinal);
+
+    /// <summary>Sites whose implausible first publication has been logged, so the warning is written once per site (again after it is trusted).</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> aheadPublications = new(StringComparer.Ordinal);
 
     /// <summary>One run over the sites, in site code order.</summary>
     public async Task<AvailabilityRun> RunAsync(CancellationToken ct = default)
@@ -122,8 +137,7 @@ public sealed class AvailabilityLedger(DatabaseSettings database, ILiveSnapshotS
         ArgumentNullException.ThrowIfNull(siteCode);
         var now = timeProvider.GetUtcNow().UtcDateTime;
         var latest = AvailabilityRule.LatestDecidable(now, settings);
-        // The earliest minute still in its live window at now.
-        var liveStart = AvailabilityRule.FloorMinute(now - TimeSpan.FromMinutes(1) - settings.Grace - settings.LiveWindow) + TimeSpan.FromMinutes(1);
+        var liveStart = AvailabilityRule.EarliestLive(now, settings);
 
         await using var connection = await OpenAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
@@ -132,19 +146,39 @@ public sealed class AvailabilityLedger(DatabaseSettings database, ILiveSnapshotS
         if (!locked[0])
             return null;
 
+        // The ledger starts at the site's first publication (ARV-150): a site never published has no ledger minute.
+        var firstPublished = (await ReadAsync(connection, transaction, """
+            SELECT min(published_on) FROM zone_profile
+             WHERE site_code = @site AND status IN ('Published', 'Retired') AND version IS NOT NULL AND published_on IS NOT NULL
+            """, [site.Clone()], r => r.IsDBNull(0) ? (DateTime?)null : Utc(r.GetDateTime(0)), ct))[0];
+        if (firstPublished is null)
+        {
+            await transaction.RollbackAsync(ct);
+            return new AvailabilitySitePass(0, 0, 0, 0, 0);
+        }
+
+        WarnWhenAhead(siteCode, firstPublished.Value, now);
+        var cursors = await ReadAsync(connection, transaction, "SELECT next_minute_utc FROM availability_cursor WHERE site_code = @site",
+            [site.Clone()], r => Utc(r.GetDateTime(0)), ct);
+        DateTime? stored = cursors.Count > 0 ? cursors[0] : null;
+        var cursor = AvailabilityRule.Start(stored, firstPublished, now, settings) ?? latest;
+        // A site seen for the first time at its first minute: the start is stored before anything else can stop the pass.
+        var keepsStart = AvailabilityRule.KeepsStart(stored, firstPublished, now, settings);
+        if (keepsStart)
+            await SaveCursorAsync(connection, transaction, siteCode, cursor, now, ct);
+
         // The site's local time decides its calendar; an airport time zone this host does not know is never replaced by UTC
-        // (that would classify the minutes against the wrong hours, permanently). The site waits, cursor unmoved.
+        // (that would classify the minutes against the wrong hours, permanently). The site waits: a start stored above is
+        // kept (committed), an existing cursor is unmoved.
         var (zone, resolved) = await TimeZoneAsync(connection, transaction, siteCode, ct);
         if (!resolved)
         {
-            await transaction.RollbackAsync(ct);
+            await transaction.CommitAsync(ct);
             return new AvailabilitySitePass(0, 0, 0, 0, 0, TimeZoneUnresolved: true);
         }
 
-        var cursors = await ReadAsync(connection, transaction, "SELECT next_minute_utc FROM availability_cursor WHERE site_code = @site",
-            [site.Clone()], r => Utc(r.GetDateTime(0)), ct);
-        var cursor = cursors.Count > 0 ? cursors[0] : latest;
-        if (cursor > latest)
+        // The start is committed on its own; the minutes are decided from the next run, so a pass that fails cannot lose it.
+        if (keepsStart || cursor > latest)
         {
             await transaction.CommitAsync(ct);
             return new AvailabilitySitePass(0, 0, 0, 0, 0);
@@ -254,6 +288,23 @@ public sealed class AvailabilityLedger(DatabaseSettings database, ILiveSnapshotS
         }
 
         return (found, false);
+    }
+
+    /// <summary>
+    /// Warns once per site, with the site code only, while its first publication is stored too far ahead of this host's
+    /// clock to be trusted (<see cref="AvailabilityRule.IsPlausiblePublication"/>): the hosts' clocks differ, or the row was
+    /// written outside the zone profile service. The stored time is not logged: it is data from storage.
+    /// </summary>
+    private void WarnWhenAhead(string siteCode, DateTime firstPublishedUtc, DateTime nowUtc)
+    {
+        if (AvailabilityRule.IsPlausiblePublication(firstPublishedUtc, nowUtc))
+        {
+            aheadPublications.TryRemove(siteCode, out _);
+            return;
+        }
+
+        if (aheadPublications.TryAdd(siteCode, 0))
+            logger.LogWarning("Availability ledger of site {Site}: its first zone profile publication is stored more than 60 s ahead of this host's clock and is not trusted; compare the hosts' clocks", siteCode);
     }
 
     /// <summary>

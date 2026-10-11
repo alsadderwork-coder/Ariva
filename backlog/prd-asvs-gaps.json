@@ -98,11 +98,12 @@
         "node scripts/security/scan.mjs passes with 0 errors",
         "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
         "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "The availability ledger job (Ariva.Api.Cronz) runs under its own database login holding INSERT on availability_minute and INSERT and UPDATE on availability_cursor; the runtime login of every other host loses those rights, so a compromised host cannot record minutes ahead of the job or move a site's cursor past minutes (owner decision 2026-10-10, raised by the ARV-150 security review: the risk dates from ARV-118); an integration test as the runtime login shows both refused",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 103,
       "passes": false,
-      "notes": "",
+      "notes": "2026-10-10: owner folded the ARV-118 availability ledger rights into this story (see the criterion).",
       "dependsOn": [
         "ARV-074"
       ]

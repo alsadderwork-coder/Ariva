@@ -12,6 +12,7 @@
       "**/Queueing/ZoneProcessor.cs",
       "**/Border/EgateCoupling.cs",
       "**/Flights/ArrivalWave.cs",
+      "**/Availability/AvailabilityRule.cs",
       "**/Validation/Comparison/*.cs"
     ],
     "coverage-analysis": "perTest",

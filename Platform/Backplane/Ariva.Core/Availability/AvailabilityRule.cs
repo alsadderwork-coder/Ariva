@@ -99,11 +99,22 @@ public sealed record AvailabilityDecision(AvailabilityState State, IReadOnlyList
 /// no longer be proven and the minute is Unobserved, which the ratio counts as not available. Past minutes are never
 /// marked available from current Redis state.
 /// </para>
+/// <para>
+/// The ledger's start (ARV-150, the owner's decision of 2026-10-10 on finding F3 of ARV-104j): a site's ledger starts at
+/// the first whole minute at or after the first publication of its zone profile (<see cref="FirstMinute"/>), so the
+/// minutes before the site existed are never in the denominator; every minute from there counts, the minute before the
+/// sensors' first push included, and a later version of the profile never moves the start (<see cref="Start"/>).
+/// </para>
 /// </summary>
 public static class AvailabilityRule
 {
-    /// <summary>The rule's version, stored with every row: a new rule writes new rows with a new version, never edits old ones.</summary>
-    public const int Version = 1;
+    /// <summary>
+    /// The rule's version, stored with every row: a new rule writes new rows with a new version, never edits old ones.
+    /// Version 1 (ARV-118) started a site seen for the first time at the latest decidable minute, which could precede its
+    /// first publication; version 2 (ARV-150) writes no minute before the first publication, except while a publication stored far ahead is not trusted and from a cursor kept from version 1. A minute is decided the
+    /// same way under both.
+    /// </summary>
+    public const int Version = 2;
 
     /// <summary>
     /// A snapshot published further ahead of the job's clock than this, or describing a minute that ends further ahead than
@@ -127,6 +138,76 @@ public static class AvailabilityRule
     {
         ArgumentNullException.ThrowIfNull(settings);
         return nowUtc <= minuteUtc + TimeSpan.FromMinutes(1) + settings.Grace + settings.LiveWindow;
+    }
+
+    /// <summary>The earliest minute a pass at <paramref name="nowUtc"/> decides live (with Redis); earlier minutes are caught up from the database.</summary>
+    public static DateTime EarliestLive(DateTime nowUtc, AvailabilitySettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        return FloorMinute(nowUtc - TimeSpan.FromMinutes(1) - settings.Grace - settings.LiveWindow) + TimeSpan.FromMinutes(1);
+    }
+
+    /// <summary>
+    /// The first minute of a site's ledger (ARV-150): the first whole minute at or after the first publication of its zone
+    /// profile. A profile published at 06:37:30 starts the ledger at 06:38 (the profile was not in force for all of 06:37,
+    /// and the profile in force at a minute is the one published at or before its start); one published at 06:37:00 starts
+    /// it at 06:37.
+    /// </summary>
+    public static DateTime FirstMinute(DateTime firstPublishedUtc)
+    {
+        var floor = FloorMinute(firstPublishedUtc);
+        return floor == firstPublishedUtc ? floor : floor + TimeSpan.FromMinutes(1);
+    }
+
+    /// <summary>
+    /// True when a stored first publication may be trusted: no more than <see cref="MaxAhead"/> ahead of the job's clock.
+    /// No live publication is stamped further ahead; a stored value that is could otherwise hold a new site's ledger back for
+    /// as long as it stays ahead (CWE-501).
+    /// </summary>
+    public static bool IsPlausiblePublication(DateTime firstPublishedUtc, DateTime nowUtc) => firstPublishedUtc - nowUtc <= MaxAhead;
+
+    /// <summary>
+    /// The minute a site's pass starts from (ARV-150); null when the site has never been published, which has no ledger.
+    /// <list type="bullet">
+    /// <item>A stored cursor is never moved: the pass starts there. A republication changes nothing (the first publication
+    /// stays the earliest), and a ledger that started while its publication was not trusted, or under rule 1, goes on
+    /// without a gap (the minutes before the profile is in force are NoPublishedZones).</item>
+    /// <item>A site seen for the first time starts at its <see cref="FirstMinute"/> when that minute is still live or ahead
+    /// (the job saw the publication while running: nothing between the publication and the first pass is lost;
+    /// <see cref="KeepsStart"/>); a site published before the job ever ran for it (the first minute is past the live
+    /// window) starts at the latest decidable minute, as in ARV-118, so no history before the ledger existed is filled as
+    /// unobserved.</item>
+    /// <item>A first publication that is not plausible (<see cref="IsPlausiblePublication"/>) is ignored: a site seen for the
+    /// first time starts at the latest decidable minute, where the minutes before the profile is in force are recorded as
+    /// NoPublishedZones.</item>
+    /// </list>
+    /// </summary>
+    public static DateTime? Start(DateTime? cursorUtc, DateTime? firstPublishedUtc, DateTime nowUtc, AvailabilitySettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        if (!firstPublishedUtc.HasValue)
+            return null;
+        if (cursorUtc.HasValue)
+            return cursorUtc.Value;
+
+        var latest = LatestDecidable(nowUtc, settings);
+        if (!IsPlausiblePublication(firstPublishedUtc.Value, nowUtc))
+            return latest;
+        var first = FirstMinute(firstPublishedUtc.Value);
+        return first < EarliestLive(nowUtc, settings) ? latest : first;
+    }
+
+    /// <summary>
+    /// True when a pass that found no cursor starts the ledger at the first minute of the publication (<see cref="Start"/>).
+    /// The ledger stores that start on its own, before the site's time zone is resolved and before any minute is decided,
+    /// so neither an unknown time zone nor a pass that fails later can lose it. A site published before the job ran for it,
+    /// or with a publication that is not plausible, starts at the latest decidable minute, which the next pass computes
+    /// again as in ARV-118.
+    /// </summary>
+    public static bool KeepsStart(DateTime? cursorUtc, DateTime? firstPublishedUtc, DateTime nowUtc, AvailabilitySettings settings)
+    {
+        var start = Start(cursorUtc, firstPublishedUtc, nowUtc, settings);
+        return !cursorUtc.HasValue && start.HasValue && start.Value == FirstMinute(firstPublishedUtc.GetValueOrDefault());
     }
 
     public static AvailabilityDecision Decide(DateTime minuteUtc, IReadOnlyCollection<ZoneObservation> zones, DateTime nowUtc, bool live, AvailabilitySettings settings)

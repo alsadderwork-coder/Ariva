@@ -692,6 +692,24 @@
       ]
     },
     {
+      "id": "ARV-150",
+      "title": "[E12] Availability ledger from profile publication",
+      "description": "Owner decision 2026-10-10 (ARV-104j finding F3). The availability ledger of a site starts before its zone profile is published, so minutes when the site did not yet exist count as unavailable (3 NoPublishedZones minutes decided the verdict of a two-hour rehearsal). A site's ledger starts when its zone profile is first published; the minute before the first push still counts. Epic: Operations health. CWEs to review: CWE-501.",
+      "acceptanceCriteria": [
+        "The availability rule (docs/domain/formulas.md and the owner-accepted rule of 2026-10-07) starts a site's ledger at the first publication of its zone profile; earlier minutes are not in the denominator",
+        "Unit and integration tests: a site published mid-day counts from that minute; a later republication does not restart it; a MissingMinute after publication still counts",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "The story's tests pass through node scripts/verify.mjs story (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 30,
+      "passes": true,
+      "notes": "Size S. Owner decision 2026-10-10.",
+      "dependsOn": []
+    },
+    {
       "id": "ARV-104j",
       "title": "[E13] Validation rehearsal against the live pipeline",
       "description": "Owner decision 2026-10-10 (from ARV-104i): the E2E rehearsal of ARV-104i plants Ariva's system outputs from the simulator's truth, because the E2E suite has no Stream host, so CountAccuracy, WaitError, NowcastError, DeskStateAgreement and Availability pass there by construction and prove only the observer path, the capture API and the verdict engine. This story runs the same rehearsal where Ariva measures for itself: the reference evening (seed 9303) through the real Ingest, Stream and Cronz hosts (the demo scope of ARV-064), the simulator's observers capturing through the capture API, and the campaign closed and frozen. It is the evidence a client will ask for: Ariva's own measurements meet the KPI targets against independent ground truth. Epic: Validation tooling. CWEs to review: CWE-287, CWE-306, CWE-863.",

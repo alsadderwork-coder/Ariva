@@ -19,8 +19,10 @@ namespace Ariva.IntegrationTests.Availability;
 /// effect, audited, site-scoped), and the availability ledger the Cronz job writes: one row per site and minute, decided
 /// live from Redis snapshots and queue_minute rows, idempotent under a second run and a second replica, catching up after
 /// downtime from the database alone; the read per local day at a site with daylight saving; the runtime role's
-/// privileges. Each test plants a site of its own (code, airport, terminal, level, published profile with queue zones)
-/// so the ledger's cursor of one test never meets another's.
+/// privileges. ARV-150: a site's ledger starts at the first whole minute of its first publication (a site published
+/// mid-day, a republication that does not restart it, a site never published, a stored publication far ahead of the
+/// clock, a start kept through an unknown time zone, and the runtime login refused by the trigger that anchors it). Each test plants a site of its own (code, airport, terminal, level, published profile with queue zones) so the
+/// ledger's cursor of one test never meets another's.
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class AvailabilityTests(PostgresFixture fixture) : IAsyncDisposable
@@ -72,8 +74,15 @@ public sealed class AvailabilityTests(PostgresFixture fixture) : IAsyncDisposabl
     /// <summary>A site with its airport (time zone), terminal, level and a published profile (version 1) with the given queue zones.</summary>
     private async Task PlantSiteAsync(string site, string iata, string timeZone, DateTime publishedUtc, params string[] zones)
     {
+        await PlantDraftSiteAsync(site, iata, timeZone, zones);
+        await PublishDraftAsync(site, 1, publishedUtc);
+    }
+
+    /// <summary>A site with its airport (time zone), terminal, level and a draft profile with the given queue zones, never published.</summary>
+    private async Task PlantDraftSiteAsync(string site, string iata, string timeZone, params string[] zones)
+    {
         await Host.DatabaseAsync();
-        // The zones go in while the profile is a draft (a published profile's zones never change), then it is published.
+        // The zones go in while the profile is a draft (a published profile's zones never change).
         await ExecuteAsync("""
             WITH s AS (INSERT INTO site (id, code, name) VALUES (gen_random_uuid(), @site, @site) RETURNING code),
                  a AS (INSERT INTO airport (id, iata_code, name, time_zone_id) VALUES (gen_random_uuid(), @iata, @iata, @tz) RETURNING id),
@@ -84,9 +93,30 @@ public sealed class AvailabilityTests(PostgresFixture fixture) : IAsyncDisposabl
             INSERT INTO zone (id, profile_id, name, kind, level_id, polygon)
             SELECT gen_random_uuid(), p.id, z, 'Queue', l.id, '[]'
               FROM zone_profile p, level l, unnest(@zones) AS z WHERE p.site_code = @site AND l.site_code = @site;
-            UPDATE zone_profile SET status = 'Published', version = 1, geometry_hash = repeat('a', 64), published_on = @published, published_by = 'it'
-             WHERE site_code = @site;
-            """, ("site", site), ("iata", iata), ("tz", timeZone), ("published", publishedUtc), ("zones", zones));
+            """, ("site", site), ("iata", iata), ("tz", timeZone), ("zones", zones));
+    }
+
+    /// <summary>Publishes the site's draft as <paramref name="version"/> at <paramref name="publishedUtc"/>, as the zone profile service leaves it.</summary>
+    private Task PublishDraftAsync(string site, int version, DateTime publishedUtc) =>
+        ExecuteAsync("""
+            UPDATE zone_profile SET status = 'Published', version = @version, geometry_hash = repeat('a', 64), published_on = @published, published_by = 'it'
+             WHERE site_code = @site AND status = 'Draft'
+            """, ("site", site), ("version", version), ("published", publishedUtc));
+
+    /// <summary>
+    /// A republication as the zone profile service makes it: the published version retired and a new draft with
+    /// <paramref name="zones"/> published as <paramref name="version"/>, both at <paramref name="publishedUtc"/>.
+    /// </summary>
+    private async Task RepublishAsync(string site, int version, DateTime publishedUtc, params string[] zones)
+    {
+        await ExecuteAsync("""
+            UPDATE zone_profile SET status = 'Retired', retired_on = @at WHERE site_code = @site AND status = 'Published';
+            INSERT INTO zone_profile (id, site_code, name, status) VALUES (gen_random_uuid(), @site, 'Profile', 'Draft');
+            INSERT INTO zone (id, profile_id, name, kind, level_id, polygon)
+            SELECT gen_random_uuid(), p.id, z, 'Queue', l.id, '[]'
+              FROM zone_profile p, level l, unnest(@zones) AS z WHERE p.site_code = @site AND p.status = 'Draft' AND l.site_code = @site;
+            """, ("site", site), ("at", publishedUtc), ("zones", zones));
+        await PublishDraftAsync(site, version, publishedUtc);
     }
 
     /// <summary>queue_minute rows for each zone and minute of [from, to].</summary>
@@ -495,6 +525,225 @@ public sealed class AvailabilityTests(PostgresFixture fixture) : IAsyncDisposabl
         var run = await ledger.RunAsync(Ct);
         run.SitesSkipped.Should().BeGreaterThanOrEqualTo(1);
         run.SitesFailed.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Ledger_Should_StartAtTheFirstWholeMinuteOfThePublication_When_ASiteIsPublishedMidDay()
+    {
+        // ARV-150, F3 of ARV-104j. The host's clock is 08:00:00; the profile is published at 08:00:20, so 08:00 was not wholly
+        // the site's and its ledger starts at 08:01. The sensors' first push brings Q2's minutes from 08:02: Q2 has no 08:01.
+        await PlantSiteAsync("AVPUB", "AVP", "Asia/Dubai", Utc(10, 1, 8, 0).AddSeconds(20), "Q1", "Q2");
+        var snapshots = new FakeSnapshots();
+        var ledger = await LedgerAsync(snapshots);
+        var admin = await Host.CreateUserAsync("it.av.pub." + Guid.NewGuid().ToString("N")[..8], roles: [RoleCodes.SystemAdministrator], allSites: true);
+        await PlantMinutesAsync("AVPUB", "Q1", Utc(10, 1, 8, 1), Utc(10, 1, 8, 10));
+        await PlantMinutesAsync("AVPUB", "Q2", Utc(10, 1, 8, 2), Utc(10, 1, 8, 10));
+
+        // 08:00:30: the latest decidable minute (07:57) is before the site existed. Rule 1 decided it as NoPublishedZones;
+        // now nothing is decided and the start is stored.
+        Host.Clock.Advance(TimeSpan.FromSeconds(30));
+        (await ledger.SiteAsync("AVPUB", Ct)).Minutes.Should().Be(0);
+        (await RowsAsync("AVPUB")).Should().BeEmpty();
+        (await ScalarAsync<DateTime>("SELECT next_minute_utc FROM availability_cursor WHERE site_code = 'AVPUB'")).Should().Be(Utc(10, 1, 8, 1));
+
+        // 08:04:30: 08:01 is decided live. Q2 has no queue minute yet (the minute before the first push): unavailable, and counted.
+        Host.Clock.Advance(TimeSpan.FromMinutes(4));
+        snapshots.Fresh("AVPUB/Q1", Utc(10, 1, 8, 3), Utc(10, 1, 8, 4));
+        snapshots.Fresh("AVPUB/Q2", Utc(10, 1, 8, 3), Utc(10, 1, 8, 4));
+        (await ledger.SiteAsync("AVPUB", Ct)).Unavailable.Should().Be(1);
+        Host.Clock.Advance(TimeSpan.FromMinutes(1));
+        snapshots.Fresh("AVPUB/Q1", Utc(10, 1, 8, 4), Utc(10, 1, 8, 5));
+        snapshots.Fresh("AVPUB/Q2", Utc(10, 1, 8, 4), Utc(10, 1, 8, 5));
+        (await ledger.SiteAsync("AVPUB", Ct)).Available.Should().Be(1);
+
+        (await RowsAsync("AVPUB")).Should().Equal(
+            new Row(Utc(10, 1, 8, 1), "2026-10-01", "Operating", "Unavailable", "MissingMinute", 2, 0, 1, 0),
+            new Row(Utc(10, 1, 8, 2), "2026-10-01", "Operating", "Available", "", 2, 0, 0, 0));
+        (await ScalarAsync<short>("SELECT min(rule_version) FROM availability_minute WHERE site_code = 'AVPUB'")).Should().Be((short)AvailabilityRule.Version);
+        (await ScalarAsync<short>("SELECT max(rule_version) FROM availability_minute WHERE site_code = 'AVPUB'")).Should().Be((short)2);
+
+        // The read: the minutes before the publication are not in the denominator.
+        var total = (await Host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcAvailability>().GetAsync("AVPUB", new AvailabilityCriteria("2026-10-01", "2026-10-01"), Ct)))
+            .Data.Total;
+        (total.RecordedMinutes, total.OperatingMinutes, total.AvailableMinutes, total.MissingMinuteMinutes, total.NoPublishedZonesMinutes).Should().Be((2, 2, 1, 1, 0));
+        total.Availability.Should().Be(0.5);
+    }
+
+    [Fact]
+    public async Task Ledger_Should_KeepItsStart_When_TheProfileIsRepublished()
+    {
+        // Version 1 at 07:56:00 (a whole minute, still live at the first pass); version 2, with a second queue zone, replaces
+        // it at 08:01:40 (version 1 retired at the same instant, as the zone profile service does).
+        await PlantSiteAsync("AVREP", "AVE", "Asia/Dubai", Utc(10, 1, 7, 56), "Q1");
+        var snapshots = new FakeSnapshots();
+        var ledger = await LedgerAsync(snapshots);
+        await PlantMinutesAsync("AVREP", "Q1", Utc(10, 1, 7, 50), Utc(10, 1, 8, 20));
+        await PlantMinutesAsync("AVREP", "Q2", Utc(10, 1, 7, 50), Utc(10, 1, 8, 20));
+
+        async Task PassAsync()
+        {
+            var now = Host.Clock.GetUtcNow().UtcDateTime;
+            foreach (var zone in new[] { "Q1", "Q2" })
+                snapshots.Fresh($"AVREP/{zone}", AvailabilityRule.FloorMinute(now).AddMinutes(-1), now.AddSeconds(-10));
+            await ledger.SiteAsync("AVREP", Ct);
+        }
+
+        // 08:00:30: the job sees the site for the first time while version 1's first minute (07:56) is still live: that start
+        // is stored on its own (the latest decidable minute, 07:57, would have lost 07:56).
+        Host.Clock.Advance(TimeSpan.FromSeconds(30));
+        await PassAsync();
+        (await RowsAsync("AVREP")).Should().BeEmpty();
+        (await ScalarAsync<DateTime>("SELECT next_minute_utc FROM availability_cursor WHERE site_code = 'AVREP'")).Should().Be(Utc(10, 1, 7, 56));
+
+        // One pass a minute to 08:06:30, the republication between the passes of 08:01:30 and 08:02:30.
+        for (var pass = 1; pass <= 6; pass++)
+        {
+            Host.Clock.Advance(TimeSpan.FromMinutes(1));
+            if (pass == 2)
+                await RepublishAsync("AVREP", 2, Utc(10, 1, 8, 1).AddSeconds(40), "Q1", "Q2");
+            await PassAsync();
+            if (pass == 1)
+                (await RowsAsync("AVREP")).Select(r => r.Minute).Should().Equal(Utc(10, 1, 7, 56), Utc(10, 1, 7, 57), Utc(10, 1, 7, 58));
+        }
+
+        var rows = await RowsAsync("AVREP");
+        rows.Select(r => r.Minute).Should().Equal(Enumerable.Range(0, 8).Select(i => Utc(10, 1, 7, 56).AddMinutes(i)), "every minute from the first publication once, none restarted");
+        rows.Should().OnlyContain(r => r.State == "Available");
+        rows.Select(r => r.Expected).Should().Equal(new short[] { 1, 1, 1, 1, 1, 1, 2, 2 }, "version 1 is in force to 08:01, version 2 from 08:02");
+        (await ScalarAsync<DateTime>("SELECT next_minute_utc FROM availability_cursor WHERE site_code = 'AVREP'")).Should().Be(Utc(10, 1, 8, 4));
+    }
+
+    [Fact]
+    public async Task Ledger_Should_WriteNoMinute_When_TheSiteWasNeverPublished()
+    {
+        await PlantDraftSiteAsync("AVNEW", "AVD", "Asia/Dubai", "Q1");
+        var ledger = await LedgerAsync(new FakeSnapshots());
+        Host.Clock.Advance(TimeSpan.FromSeconds(30));
+
+        (await ledger.SitesAsync(Ct)).Should().NotContain("AVNEW");
+        (await ledger.SiteAsync("AVNEW", Ct)).Minutes.Should().Be(0, "a direct pass decides nothing for a site that does not exist yet");
+        (await RowsAsync("AVNEW")).Should().BeEmpty();
+        (await ScalarAsync<long>("SELECT count(*) FROM availability_cursor WHERE site_code = 'AVNEW'")).Should().Be(0);
+
+        // Published at 08:02:00 and seen at 08:02:10, before 08:02 is decidable: the start is stored. The job then misses
+        // its runs until 08:12:10; the ledger still starts at 08:02 (caught up from the database), never earlier.
+        await PublishDraftAsync("AVNEW", 1, Utc(10, 1, 8, 2));
+        Host.Clock.Advance(TimeSpan.FromSeconds(100));
+        (await ledger.SiteAsync("AVNEW", Ct)).Minutes.Should().Be(0);
+        Host.Clock.Advance(TimeSpan.FromMinutes(10));
+        var late = await ledger.SiteAsync("AVNEW", Ct);
+
+        late.Minutes.Should().Be(8, "08:02 to 08:09");
+        late.CaughtUp.Should().Be(5, "08:02 to 08:06 are past their live window");
+        var rows = await RowsAsync("AVNEW");
+        rows[0].Minute.Should().Be(Utc(10, 1, 8, 2));
+        rows.Should().NotContain(r => r.Reasons.Contains("NoPublishedZones"));
+    }
+
+    [Fact]
+    public async Task Ledger_Should_NotWaitForAPublication_When_ItsStoredTimeIsFarAheadOfTheClock()
+    {
+        // A published_on months ahead (no live publication is stamped there) cannot keep the site out of the ledger (CWE-501):
+        // the pass starts at the latest decidable minute, where the profile is not yet in force.
+        await PlantSiteAsync("AVFUT", "AVX", "Asia/Dubai", new DateTime(2027, 1, 1, 0, 0, 0, DateTimeKind.Utc), "Q1");
+        var logger = new WarningLog();
+        var ledger = await LedgerAsync(new FakeSnapshots(), logger: logger);
+        Host.Clock.Advance(TimeSpan.FromSeconds(30));
+
+        (await ledger.SiteAsync("AVFUT", Ct)).Unavailable.Should().Be(1);
+        Host.Clock.Advance(TimeSpan.FromMinutes(1));
+        (await ledger.SiteAsync("AVFUT", Ct)).Unavailable.Should().Be(1, "the ledger goes on from its cursor");
+
+        (await RowsAsync("AVFUT")).Should().Equal(
+            new Row(Utc(10, 1, 7, 57), "2026-10-01", "Operating", "Unavailable", "NoPublishedZones", 0, 0, 0, 0),
+            new Row(Utc(10, 1, 7, 58), "2026-10-01", "Operating", "Unavailable", "NoPublishedZones", 0, 0, 0, 0));
+        // So that "compare the hosts' clocks" (runbook 4.8k) finds something: one warning per site, the site code only.
+        logger.Warnings.Should().ContainSingle("one warning per site, not one per run").Which.Should().Contain("AVFUT").And.Contain("ahead").And.NotContain("2027");
+    }
+
+    [Fact]
+    public async Task Ledger_Should_KeepTheStart_When_TheTimeZoneIsUnknownAtFirstSight()
+    {
+        // Published at 08:02:00 at an airport whose time zone this host does not know, seen at 08:02:10 and skipped until the
+        // zone is corrected at about 08:20. The start is stored before the time zone is resolved, so the minutes from the
+        // publication stay in the denominator (caught up from the database), never only the minutes after the correction.
+        await PlantSiteAsync("AVTZLATE", "AVY", "Mars/Olympus_Mons", Utc(10, 1, 8, 2), "Q1");
+        await PlantMinutesAsync("AVTZLATE", "Q1", Utc(10, 1, 8, 0), Utc(10, 1, 8, 30));
+        var ledger = await LedgerAsync(new FakeSnapshots());
+        Host.Clock.Advance(TimeSpan.FromSeconds(130));
+
+        var first = await ledger.SiteAsync("AVTZLATE", Ct);
+        first.TimeZoneUnresolved.Should().BeTrue();
+        first.Minutes.Should().Be(0);
+        (await ScalarAsync<DateTime>("SELECT next_minute_utc FROM availability_cursor WHERE site_code = 'AVTZLATE'")).Should().Be(Utc(10, 1, 8, 2),
+            "the start is kept although the site is skipped");
+
+        Host.Clock.Advance(TimeSpan.FromMinutes(5));
+        (await ledger.SiteAsync("AVTZLATE", Ct)).TimeZoneUnresolved.Should().BeTrue();
+        (await RowsAsync("AVTZLATE")).Should().BeEmpty("nothing is decided against the wrong local hours");
+        (await ScalarAsync<DateTime>("SELECT next_minute_utc FROM availability_cursor WHERE site_code = 'AVTZLATE'")).Should().Be(Utc(10, 1, 8, 2), "an existing cursor is unmoved");
+
+        // 08:20:10: latest decidable 08:17, live from 08:15. 08:02 to 08:14 are caught up from the database (every queue minute
+        // present: Unobserved), 08:15 to 08:17 decided live (no snapshot: stale).
+        await ExecuteAsync("UPDATE airport SET time_zone_id = 'Asia/Dubai' WHERE iata_code = 'AVY'");
+        Host.Clock.Advance(TimeSpan.FromMinutes(13));
+        var late = await ledger.SiteAsync("AVTZLATE", Ct);
+
+        late.TimeZoneUnresolved.Should().BeFalse();
+        late.Minutes.Should().Be(16);
+        late.CaughtUp.Should().Be(13);
+        var rows = await RowsAsync("AVTZLATE");
+        rows.Select(r => r.Minute).Should().Equal(Enumerable.Range(0, 16).Select(i => Utc(10, 1, 8, 2).AddMinutes(i)));
+        rows.Where(r => r.Minute < Utc(10, 1, 8, 15)).Should().OnlyContain(r => r.State == "Unobserved" && r.Reasons == "NotObservedLive");
+        rows.Where(r => r.Minute >= Utc(10, 1, 8, 15)).Should().OnlyContain(r => r.State == "Unavailable" && r.Reasons == "StaleZone");
+    }
+
+    [Fact]
+    public async Task ZoneProfile_Should_RefuseTheRuntimeLogin_When_ItTriesToMoveALedgersStart()
+    {
+        // The trust anchor of the ledger's start (CWE-501): the earliest published_on of the site's published or retired
+        // versions. The 0012 trigger refuses, with 23001, every statement of the runtime login that could move it later.
+        await PlantSiteAsync("AVANC", "AVJ", "Asia/Dubai", Utc(10, 1, 7, 56), "Q1");
+        await RepublishAsync("AVANC", 2, Utc(10, 1, 7, 58), "Q1");
+        var ledger = await LedgerAsync(new FakeSnapshots());
+        Host.Clock.Advance(TimeSpan.FromSeconds(30));
+        await ledger.SiteAsync("AVANC", Ct);
+        (await ScalarAsync<DateTime>("SELECT next_minute_utc FROM availability_cursor WHERE site_code = 'AVANC'")).Should().Be(Utc(10, 1, 7, 56));
+
+        var password = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16));
+        await ExecuteAsync("SELECT ariva_ensure_runtime_login('it_av_runtime', @password)", ("password", password));
+        await using var runtime = new NpgsqlConnection(fixture.ConnectionString(await Host.DatabaseAsync(), "it_av_runtime", password));
+        await runtime.OpenAsync(Ct);
+        foreach (var sql in new[]
+                 {
+                     "UPDATE zone_profile SET published_on = published_on + INTERVAL '1 hour' WHERE site_code = 'AVANC' AND status = 'Published'",
+                     "UPDATE zone_profile SET published_on = published_on + INTERVAL '1 hour' WHERE site_code = 'AVANC' AND status = 'Retired'",
+                     "DELETE FROM zone_profile WHERE site_code = 'AVANC' AND status = 'Published'",
+                     "DELETE FROM zone_profile WHERE site_code = 'AVANC' AND status = 'Retired'",
+                     "UPDATE zone_profile SET status = 'Draft' WHERE site_code = 'AVANC' AND status = 'Published'",
+                     "UPDATE zone_profile SET status = 'Draft' WHERE site_code = 'AVANC' AND status = 'Retired'"
+                 })
+        {
+#pragma warning disable CA2100 // the statements are literals above
+            await using var command = new NpgsqlCommand(sql, runtime);
+#pragma warning restore CA2100
+            (await FluentActions.Awaiting(() => command.ExecuteNonQueryAsync(Ct)).Should().ThrowAsync<PostgresException>(sql)).Which.SqlState.Should().Be("23001", sql);
+        }
+
+        // What the trigger does not cover: an insert can add an earlier version, so the first publication can only move
+        // earlier, and that never moves a stored start.
+        await using (var insert = new NpgsqlCommand("""
+                         INSERT INTO zone_profile (id, site_code, name, status, version, geometry_hash, published_on, published_by, retired_on)
+                         VALUES (gen_random_uuid(), 'AVANC', 'Earlier', 'Retired', 9, repeat('c', 64), '2026-10-01T07:00:00Z', 'it', '2026-10-01T07:01:00Z')
+                         """, runtime))
+            await insert.ExecuteNonQueryAsync(Ct);
+
+        (await ScalarAsync<DateTime>("SELECT min(published_on) FROM zone_profile WHERE site_code = 'AVANC' AND status IN ('Published', 'Retired')")).Should().Be(Utc(10, 1, 7, 0));
+        (await ScalarAsync<long>("SELECT count(*) FROM zone_profile WHERE site_code = 'AVANC' AND status <> 'Draft' AND published_on IN ('2026-10-01T07:56:00Z', '2026-10-01T07:58:00Z')"))
+            .Should().Be(2, "both versions are as published");
+        Host.Clock.Advance(TimeSpan.FromMinutes(1));
+        await ledger.SiteAsync("AVANC", Ct);
+        (await RowsAsync("AVANC")).Select(r => r.Minute).Should().Equal(Utc(10, 1, 7, 56), Utc(10, 1, 7, 57), Utc(10, 1, 7, 58));
     }
 
     #endregion
