@@ -906,14 +906,15 @@
       ]
     },
     {
-      "id": "ARV-122",
-      "title": "[E15] Site configuration export and import",
-      "description": "Moving a configured site from a staging environment to the pilot's production (or rebuilding after a loss) has no tool. Export a site's configuration as one bundle with a hash manifest and import it into an empty site. Epic: Site onboarding and AMAN. CWEs to review: CWE-501, CWE-120, CWE-863, CWE-306, CWE-79.",
+      "id": "ARV-122a",
+      "title": "[E15] Site configuration export and import: bundle, topology, mappings, zone profile and floor plans",
+      "description": "Moving a configured site from a staging environment to the pilot's production (or rebuilding after a loss) has no tool. Export a site's configuration as one bundle with a hash manifest and import it into an empty site; this part carries the bundle format, the topology, the desk code mappings, the published zone profile and the floor plans (devices, alert rules and displays are ARV-122b). Epic: Site onboarding and AMAN. CWEs to review: CWE-501, CWE-120, CWE-863, CWE-306, CWE-79.",
       "acceptanceCriteria": [
-        "Export: topology, desk code mappings, the published zone profile with its geometry hash, floor plan files, devices without any credential, alert rules and display configurations, with a manifest of SHA-256 hashes",
-        "Import into an empty site only: request models with limits (no entity binding), the profile arrives as a draft to publish with step-up, devices get new credentials shown once, SVG plans pass the ARV-018 sanitiser again",
+        "Export: topology, desk code mappings, the published zone profile with its geometry hash (F22 v1) and its portable geometry hash, floor plan files, with a manifest of SHA-256 hashes; the bundle format lets ARV-122b add its parts without a new format version",
+        "Portable geometry hash (owner decision 2026-10-11): F22 v1 is unchanged; a second hash, computed on request and never stored, names levels and desks by their codes instead of ids, so it survives a move between sites and databases",
+        "Import into an empty site only: request models with limits (no entity binding), the profile arrives as a draft to publish with step-up, SVG plans pass the ARV-018 sanitiser again",
         "Export and import are step-up critical actions, audited, [SiteScoped]",
-        "E2E: round trip between two sites gives the same geometry hash; tampered manifest refused; oversized and deeply nested bundles 413 or 400; hostile names inert",
+        "E2E: round trip between two sites gives the same portable geometry hash; tampered manifest refused; oversized and deeply nested bundles 413 or 400; hostile names inert",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
         "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
@@ -923,13 +924,37 @@
       ],
       "priority": 38,
       "passes": false,
-      "notes": "Size M. API only; a screen can follow if the field engineer needs one.",
+      "notes": "Size M. API only; a screen can follow if the field engineer needs one. Split from ARV-122 on 2026-10-11 (too big for one story: the engineer's survey found seven importers, a new permission, the site lock and the geometry hash question).",
       "dependsOn": [
         "ARV-017",
         "ARV-018",
         "ARV-021",
         "ARV-037",
         "ARV-058"
+      ]
+    },
+    {
+      "id": "ARV-122b",
+      "title": "[E15] Site configuration export and import: devices, alert rules and displays",
+      "description": "Complete the ARV-122a bundle with the parts that carry credentials or point at zones: devices, alert rules and display configurations. Epic: Site onboarding and AMAN. CWEs to review: CWE-501, CWE-120, CWE-863, CWE-306, CWE-79.",
+      "acceptanceCriteria": [
+        "Export adds devices without any credential (no hash, no prefix; calibrations never exported), alert rules and display configurations without any pairing secret or pairing state, each in the ARV-122a manifest",
+        "Import: devices are created in Commissioning with new credentials shown once in the import answer; displays arrive unpaired; a display code already taken in the target database answers 409",
+        "Alert rules and displays are checked against the imported draft profile's zones with the same rules as the existing endpoints (owner decision 2026-10-11); they act only once the draft is published",
+        "An alert rule's escalation contact is never exported (owner decision 2026-10-11): the import answer lists the rules that need one typed again",
+        "E2E: devices in Commissioning with new credentials (format asserted, never printed); no credential or pairing secret in an export; rules and displays round trip; a taken display code 409; hostile names inert",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 38,
+      "passes": false,
+      "notes": "Size S. Split from ARV-122 on 2026-10-11.",
+      "dependsOn": [
+        "ARV-122a"
       ]
     },
     {
@@ -1384,7 +1409,7 @@
         "ARV-119",
         "ARV-120",
         "ARV-121",
-        "ARV-122",
+        "ARV-122b",
         "ARV-123",
         "ARV-124",
         "ARV-125",
