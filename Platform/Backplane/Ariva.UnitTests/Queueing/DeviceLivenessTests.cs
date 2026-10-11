@@ -57,13 +57,14 @@ public sealed class DeviceLivenessTests
     [Fact]
     public void Zone_Should_RecordAnOutage_When_ADeviceIsSilentBeyondTheLimit()
     {
-        // S-17 last heard at 18:10, heard again at 18:21.
+        // S-17 last heard at 18:10, heard again at 18:21 with its push for 18:20 (ARV-148: the outage ends at the start of
+        // the minute that push covers, the push interval before it).
         var outputs = Play(m => m is > 10 and < 21).Drain();
 
-        outputs.Outages.Should().Equal(new DeviceOutage(ZoneKey, "S-17", Start.AddMinutes(10), Start.AddMinutes(21)));
+        outputs.Outages.Should().Equal(new DeviceOutage(ZoneKey, "S-17", Start.AddMinutes(10), Start.AddMinutes(20)));
         var degraded = outputs.Live.Where(l => l.LengthDegraded).Select(l => (int)(l.MinuteUtc - Start).TotalMinutes).ToList();
-        degraded.Should().NotBeEmpty().And.OnlyContain(m => m >= 10 && m < 21, "degraded live only while S-17 is out (once its silence passes the limit)");
-        degraded.Should().Contain(20);
+        degraded.Should().NotBeEmpty().And.OnlyContain(m => m >= 10 && m < 20, "degraded live only while S-17 is out (once its silence passes the limit)");
+        degraded.Should().Contain(19);
         outputs.Live.Where(l => l.LengthDegraded).Should().OnlyContain(l => l.NowcastDegraded || l.NowcastMinutes == null);
         outputs.Bins.Where(b => b.Status == BinStatus.Final && b.StartUtc >= Start && b.StartUtc < Start.AddMinutes(30)).GroupBy(b => b.StartUtc).Select(g => g.Last().Quality)
             .Should().Equal(BinQuality.Degraded, BinQuality.Degraded);
@@ -89,7 +90,7 @@ public sealed class DeviceLivenessTests
         zone.Offer(Status("S-17", Start.AddMinutes(1).AddSeconds(30), online: false), DateTime.MaxValue);
         zone.Offer(Status("S-17", Start.AddMinutes(4)), DateTime.MaxValue);
 
-        zone.Drain().Outages.Should().Equal(new DeviceOutage(ZoneKey, "S-17", Start, Start.AddMinutes(4)));
+        zone.Drain().Outages.Should().Equal([new DeviceOutage(ZoneKey, "S-17", Start, Start.AddMinutes(3))], "the push at 18:04 covers 18:03 (ARV-148)");
     }
 
     [Fact]
@@ -296,20 +297,23 @@ public sealed class DeviceLivenessTests
     [Fact]
     public void Replay_Should_AskForNoRecomputationTwice_When_AnOutageOpenAtTheEndCoversFinalBins()
     {
-        // S-17 is out from 18:10 to the end at 18:40: the 18:00 and 18:15 bins were final when their marks came, so each is
-        // asked for once while the outage is open; ending the outage marks only from where those marks stopped.
-        var zone = Play(m => m > 10);
+        // S-17 is out from 18:10 to the end at 18:40. ARV-148: the open outage is marked at each new receive time through the
+        // minutes known to be out, and a bin is final only up to those minutes, so the 18:00, 18:15 and 18:30 bins carry
+        // their marks before they become final and no recomputation is asked for at all; ending the outage marks only from
+        // where those marks stopped.
+        var outputs = Play(m => m > 10).Drain();
 
-        zone.Drain().Recomputations.Select(r => (r.FromUtc, r.ToUtc)).Should().Equal(
-            (Start, Start.AddMinutes(15)), (Start.AddMinutes(15), Start.AddMinutes(30)));
+        outputs.Recomputations.Should().BeEmpty();
+        outputs.Bins.Where(b => b.Status == BinStatus.Final && b.StartUtc >= Start && b.StartUtc < Start.AddMinutes(45)).Select(b => (b.StartUtc, b.Quality))
+            .Should().Equal((Start, BinQuality.Degraded), (Start.AddMinutes(15), BinQuality.Degraded), (Start.AddMinutes(30), BinQuality.Degraded));
     }
 
     [Fact]
     public void Replay_Should_DegradeTheLastLiveMinute_When_ItIsPublishedAfterTheOutageEnded()
     {
         // The outage still open at 18:40 is ended there, before the zone settles; it is remembered until its minutes are
-        // published live, so 18:39, published while the zone settles a minute later, is degraded although no device is
-        // out any more.
+        // published live, so 18:39, published while the zone settles three minutes later (the zone's clock is the push
+        // interval behind, and the watermark the lateness behind that), is degraded although no device is out any more.
         var zone = new ZoneProcessor(ZoneKey, Geometry, 12);
         for (var m = 0; m < 40; m++)
         {
@@ -318,7 +322,7 @@ public sealed class DeviceLivenessTests
                 zone.Offer(Status("S-17", Start.AddMinutes(m)), DateTime.MaxValue);
         }
 
-        zone.Finish(Start.AddMinutes(40), Start.AddMinutes(41));
+        zone.Finish(Start.AddMinutes(40), Start.AddMinutes(43));
 
         zone.Drain().Live.Should().ContainSingle(l => l.MinuteUtc == Start.AddMinutes(39)).Which.LengthDegraded.Should().BeTrue();
     }
@@ -341,9 +345,13 @@ public sealed class DeviceLivenessTests
     public void Zone_Should_MarkTheBinOnTheNextStep_When_ADeviceGoesOfflineOnTheMinuteOfAStep()
     {
         // S-17 reports itself offline at 18:05:00 and the zone steps at that instant: nothing of the outage has passed yet,
-        // so nothing is marked, and the next step two minutes later marks the open bin (not five minutes later).
+        // so nothing is marked, and the next receive time two minutes later marks the open bin through 18:06 (the minutes
+        // known to be out, ARV-148).
         var zone = new ZoneProcessor(ZoneKey, Geometry, 12);
-        zone.Offer(Status("S-17", Start), DateTime.MaxValue);
+        // A reading starts the zone's clock (ARV-148: a zone without events has no minutes or bins to close).
+        zone.Offer(Occupancy("S-17", Start), DateTime.MaxValue);
+        zone.Offer(Status("S-17", Start.AddMinutes(2)), DateTime.MaxValue);
+        zone.Offer(Status("S-17", Start.AddMinutes(4)), DateTime.MaxValue);
         zone.Offer(Status("S-17", Start.AddMinutes(5), online: false), DateTime.MaxValue);
         zone.Tick(Start.AddMinutes(5));
         zone.Drain();

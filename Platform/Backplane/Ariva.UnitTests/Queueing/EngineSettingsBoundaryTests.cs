@@ -24,6 +24,7 @@ public sealed class EngineSettingsBoundaryTests
     [
         // F5, F6: the queue state engine
         Q(nameof(QueueEngineSettings.Lateness), [TimeSpan.Zero, TimeSpan.FromMinutes(30)], [-Tick, TimeSpan.FromMinutes(30) + Tick]),
+        Q(nameof(QueueEngineSettings.PushInterval), [TimeSpan.Zero, TimeSpan.FromMinutes(10)], [-Tick, TimeSpan.FromMinutes(10) + Tick]),
         Q(nameof(QueueEngineSettings.CensorAfter), [TimeSpan.FromMinutes(1), TimeSpan.FromHours(24)], [TimeSpan.FromMinutes(1) - Tick, TimeSpan.FromHours(24) + Tick]),
         Q(nameof(QueueEngineSettings.HandoverWindow), [TimeSpan.Zero, TimeSpan.FromMinutes(30)], [-Tick, TimeSpan.FromMinutes(30) + Tick]),
         Q(nameof(QueueEngineSettings.MaxAhead), [TimeSpan.Zero, TimeSpan.FromHours(1)], [-Tick, TimeSpan.FromHours(1) + Tick]),
@@ -55,7 +56,8 @@ public sealed class EngineSettingsBoundaryTests
         // The zone processor
         Z(nameof(ZoneProcessorSettings.ExitWindowMinutes), [1, 60], [0, 61]),
         Z(nameof(ZoneProcessorSettings.MaxPendingOutputs), [100, 1_000_000], [99, 1_000_001]),
-        Z(nameof(ZoneProcessorSettings.DeviceSilenceSeconds), [30, 3_600], [29, 3_601]),
+        // ARV-148: longer than the engine's push interval (60 s by default), or a device would be out between its pushes.
+        Z(nameof(ZoneProcessorSettings.DeviceSilenceSeconds), [61, 3_600], [29, 60, 3_601]),
         Z(nameof(ZoneProcessorSettings.DeviceForgetHours), [1, 72], [0, 73]),
         Z(nameof(ZoneProcessorSettings.MaxDevices), [1, 4_096], [0, 4_097]),
         Z(nameof(ZoneProcessorSettings.Engine), [], [null], "Engine settings are required"),
@@ -118,6 +120,21 @@ public sealed class EngineSettingsBoundaryTests
         settings.Problems().Should().HaveCount(3).And.Contain(p => p.Contains("Lateness")).And.Contain(p => p.Contains("MinimumPassengers")).And.Contain(p => p.Contains("Beta"));
         new ZoneProcessorSettings { DeviceForgetHours = 1, DeviceSilenceSeconds = 3_600 }.Problems().Should().ContainSingle()
             .Which.Should().Contain("longer than the silence limit");
+    }
+
+    [Theory]
+    [InlineData(179, true)]
+    [InlineData(180, false)]
+    [InlineData(600, false)]
+    public void ZoneProcessorSettings_Should_RefuseAPushInterval_When_ItIsNotBelowTheSilenceLimit(int pushSeconds, bool valid)
+    {
+        // ARV-148: a device that pushes every 180 seconds or less often would be out between its pushes (the limit is 180).
+        var settings = new ZoneProcessorSettings { Engine = new QueueEngineSettings { PushInterval = TimeSpan.FromSeconds(pushSeconds), Lateness = TimeSpan.FromMinutes(10) } };
+
+        if (valid)
+            settings.Problems().Should().BeEmpty();
+        else
+            settings.Problems().Should().ContainSingle().Which.Should().Contain("DeviceSilenceSeconds").And.Contain("push interval");
     }
 
     [Theory]

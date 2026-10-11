@@ -22,7 +22,8 @@ namespace Ariva.UnitTests.Replay;
 /// pushes of the seeded AUH-TA sensors through Ingest (mappers, clock estimates, health reports) and the stream's zone
 /// engine, replayed from the archive's form. Ariva itself sees the three scripted events: the arrivals Visitors nowcast
 /// passes 15 minutes at 18:12, the minute the scenario's own nowcast (which divides by the staffed counters' rate) does;
-/// Q-RES-04 is out from 18:25 until it is heard again at 18:36 and the residents' zone is degraded meanwhile; the smart
+/// Q-RES-04 is out from 18:25 until 18:35, the minute its push at 18:36 covers (ARV-148), and the residents' zone is
+/// degraded meanwhile; the smart
 /// gates' band A-EG-OV is occupied from 19:13 to 19:26 (the scenario's queue is above its snake at the end of 19:12 to
 /// 19:24). The same records give the same output hash, and so do the same pushes from devices with other ids.
 /// </summary>
@@ -176,10 +177,10 @@ public sealed class AuhTerminalAReplayTests
     {
         var residents = Replayed.Value.Outputs["A-RES"];
 
-        residents.Outages.Should().ContainSingle().Which.Should().Be(new DeviceOutage("AUH-TA/A-RES", "Q-RES-04", WallOf(1105), WallOf(1116)),
-            "Q-RES-04 last reported for 18:24 at 18:25 and next for 18:35 at 18:36");
+        residents.Outages.Should().ContainSingle().Which.Should().Be(new DeviceOutage("AUH-TA/A-RES", "Q-RES-04", WallOf(1105), WallOf(1115)),
+            "Q-RES-04 last reported for 18:24 at 18:25 and next for 18:35 at 18:36: that push covers 18:35, so the outage ends there (ARV-148)");
         var degraded = residents.Live.Where(l => l.LengthDegraded).Select(l => Clock(l.MinuteUtc)).ToList();
-        degraded.Should().NotBeEmpty().And.OnlyContain(m => string.CompareOrdinal(m, "18:25") >= 0 && string.CompareOrdinal(m, "18:35") <= 0);
+        degraded.Should().NotBeEmpty().And.OnlyContain(m => string.CompareOrdinal(m, "18:25") >= 0 && string.CompareOrdinal(m, "18:35") < 0);
         Replayed.Value.Outputs["A-VIS"].Outages.Should().BeEmpty();
         Replayed.Value.Outputs["A-EG"].Outages.Should().BeEmpty();
     }

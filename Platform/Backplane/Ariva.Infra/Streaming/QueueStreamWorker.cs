@@ -43,6 +43,72 @@ public sealed class StreamSettings
     /// </summary>
     public int DeskTermSeconds { get; init; } = 15;
 
+    /// <summary>
+    /// The allowed lateness of every site's queue zones, in seconds (ARV-148, formulas F5): a zone's watermark is its
+    /// latest event time less this, and an event at or behind the watermark is late. At least the push interval, since a
+    /// push carries events up to that old; 90 by default (a one-minute push interval and the 30 seconds allowed before for
+    /// transport and device clocks). A site may set its own in <see cref="Sites"/>.
+    /// </summary>
+    public int LatenessSeconds { get; init; } = 90;
+
+    /// <summary>
+    /// The sensors' push interval, in seconds (ARV-148): a push covers this long before its receive time, so a device's
+    /// outage ends at the start of the minute its first push after it covers, and a zone whose devices send no events moves
+    /// on with Ariva's receive clock less this. 60 by default; 0 makes the zones run on the receive clock.
+    /// </summary>
+    public int PushIntervalSeconds { get; init; } = 60;
+
+    /// <summary>A site's own lateness and push interval, by site code (either may be left out); at most 500 sites.</summary>
+    public Dictionary<string, StreamSiteSettings> Sites { get; init; } = new(StringComparer.Ordinal);
+
+    /// <summary>Sites with settings of their own at most.</summary>
+    public const int MaxSites = 500;
+
+    /// <summary>The lateness and push interval of <paramref name="siteCode"/>: its own where set, the defaults otherwise.</summary>
+    public (int LatenessSeconds, int PushIntervalSeconds) TimingOf(string siteCode)
+    {
+        StreamSiteSettings site = null;
+        if (siteCode is not null && Sites is not null)
+            Sites.TryGetValue(siteCode, out site);
+        return (site?.LatenessSeconds ?? LatenessSeconds, site?.PushIntervalSeconds ?? PushIntervalSeconds);
+    }
+
+    /// <summary>
+    /// The zone settings for a site's queue zones: <paramref name="baseline"/> with the site's lateness and push interval
+    /// (ARV-148), so the live stream and a replay of the site run under the same settings.
+    /// </summary>
+    public ZoneProcessorSettings ZoneSettingsFor(string siteCode, ZoneProcessorSettings baseline)
+    {
+        ArgumentNullException.ThrowIfNull(baseline);
+        var (lateness, push) = TimingOf(siteCode);
+        return baseline with
+        {
+            Engine = (baseline.Engine ?? new QueueEngineSettings()) with { Lateness = TimeSpan.FromSeconds(lateness), PushInterval = TimeSpan.FromSeconds(push) }
+        };
+    }
+
+    /// <summary>
+    /// The problems of the zone settings each site runs under (ARV-148): <paramref name="baseline"/> with the default timing
+    /// and with every valid site's own, checked once at start so that no site's settings refuse a zone in the middle of
+    /// the stream (a push interval at or above the device silence limit, for one). Site keys that are not site codes are
+    /// skipped here (<see cref="Problems"/> reports them).
+    /// </summary>
+    public IEnumerable<string> ZoneSettingsProblems(ZoneProcessorSettings baseline)
+    {
+        ArgumentNullException.ThrowIfNull(baseline);
+        foreach (var problem in ZoneSettingsFor(null, baseline).Problems())
+            yield return $"Stream: {problem}";
+        if (Sites is null || Sites.Count > MaxSites)
+            yield break;
+        foreach (var code in Sites.Keys)
+        {
+            if (!Ariva.Core.Domain.Entities.Site.IsValidCode(code))
+                continue;
+            foreach (var problem in ZoneSettingsFor(code, baseline).Problems())
+                yield return $"Stream:Sites:{code}: {problem}";
+        }
+    }
+
     public IEnumerable<string> Problems()
     {
         if (MaxZones is < 1 or > 100_000)
@@ -57,7 +123,50 @@ public sealed class StreamSettings
             yield return "Stream:MaxMergeBytes is from 1 MB to 1 GB.";
         if (DeskTermSeconds is < 0 or > 600)
             yield return "Stream:DeskTermSeconds is from 0 (off) to 600.";
+        foreach (var problem in TimingProblems("Stream", LatenessSeconds, PushIntervalSeconds))
+            yield return problem;
+        if ((Sites?.Count ?? 0) > MaxSites)
+        {
+            yield return $"Stream:Sites names at most {MaxSites} sites.";
+            yield break;
+        }
+
+        foreach (var (code, site) in Sites ?? [])
+        {
+            // A site code as the topology allows it (CWE-501: configuration is still input to the engine's settings).
+            if (!Ariva.Core.Domain.Entities.Site.IsValidCode(code))
+            {
+                yield return "Stream:Sites has a key that is not a site code (2 to 8 upper case letters or digits, an optional hyphen and 1 to 8 more).";
+                continue;
+            }
+
+            var (lateness, push) = TimingOf(code);
+            foreach (var problem in TimingProblems($"Stream:Sites:{code}", lateness, push))
+                yield return problem;
+        }
     }
+
+    private static IEnumerable<string> TimingProblems(string section, int lateness, int push)
+    {
+        var latenessValid = lateness is >= 0 and <= 1_800;
+        var pushValid = push is >= 0 and <= 600;
+        if (!latenessValid)
+            yield return $"{section}:LatenessSeconds is from 0 to 1,800.";
+        if (!pushValid)
+            yield return $"{section}:PushIntervalSeconds is from 0 to 600.";
+        if (latenessValid && pushValid && lateness < push)
+            yield return $"{section}:LatenessSeconds is at least its PushIntervalSeconds ({push}): a push carries events up to that old.";
+    }
+}
+
+/// <summary>A site's own stream timing (<c>Stream:Sites:&lt;code&gt;</c>, ARV-148); a value left out takes the default.</summary>
+public sealed class StreamSiteSettings
+{
+    /// <summary>The site's allowed lateness, in seconds (at least its push interval).</summary>
+    public int? LatenessSeconds { get; init; }
+
+    /// <summary>The push interval of the site's sensors, in seconds.</summary>
+    public int? PushIntervalSeconds { get; init; }
 }
 
 /// <summary>
@@ -144,7 +253,8 @@ public sealed class QueueStreamWorker(
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var problems = settings.Problems().Concat(_zoneSettings.Problems()).ToList();
+        // ARV-148: every site's zone settings are checked here, before any zone is created with them.
+        var problems = settings.Problems().Concat(_zoneSettings.Problems()).Concat(settings.ZoneSettingsProblems(_zoneSettings)).ToList();
         if (problems.Count > 0)
             throw new InvalidOperationException(string.Join(" ", problems));
         return Task.Factory.StartNew(() => Loop(stoppingToken), stoppingToken, TaskCreationOptions.LongRunning, TaskScheduler.Default).Unwrap();
@@ -641,6 +751,8 @@ public sealed class QueueStreamWorker(
             return null;
         }
 
+        // ARV-148: the zone runs under its site's lateness and push interval (Stream:Sites), as a replay of the site does.
+        var siteSettings = settings.ZoneSettingsFor(batch.SiteCode, _zoneSettings);
         ZoneProcessor zone = null;
         try
         {
@@ -648,7 +760,7 @@ public sealed class QueueStreamWorker(
             if (state is not null && state.ProfileVersion == geometry.ProfileVersion)
             {
                 var notAfter = timeProvider.GetUtcNow().UtcDateTime.AddSeconds(settings.MaxAheadSeconds);
-                zone = ZoneProcessor.Restore(batch.ZoneKey, geometry.Geometry, geometry.ProfileVersion, _zoneSettings, state, notAfter);
+                zone = ZoneProcessor.Restore(batch.ZoneKey, geometry.Geometry, geometry.ProfileVersion, siteSettings, state, notAfter);
             }
             else if (state is not null)
             {
@@ -662,7 +774,7 @@ public sealed class QueueStreamWorker(
             zone = null;
         }
 
-        zone ??= new ZoneProcessor(batch.ZoneKey, geometry.Geometry, geometry.ProfileVersion, _zoneSettings);
+        zone ??= new ZoneProcessor(batch.ZoneKey, geometry.Geometry, geometry.ProfileVersion, siteSettings);
         _zones[batch.ZoneKey] = (zone, partition, timeProvider.GetUtcNow().UtcDateTime);
         return zone;
     }

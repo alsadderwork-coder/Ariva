@@ -10,8 +10,21 @@ namespace Ariva.Core.Queueing;
 /// </summary>
 public sealed record QueueEngineSettings
 {
-    /// <summary>How long events may arrive after their time and still be processed in order (D5 lateness allowance).</summary>
-    public TimeSpan Lateness { get; init; } = TimeSpan.FromSeconds(30);
+    /// <summary>
+    /// How far behind the zone's clock an event may be and still be processed in order (D5 lateness allowance, ARV-148):
+    /// the watermark is the zone's clock less this. At least the sensors' push interval, since a push carries events up to
+    /// that old; by default the one-minute push interval plus the 30 seconds allowed before for transport and clocks.
+    /// Tuned per site (<c>Stream:Sites</c>).
+    /// </summary>
+    public TimeSpan Lateness { get; init; } = TimeSpan.FromSeconds(90);
+
+    /// <summary>
+    /// The sensors' push interval (ARV-148): a push covers this long before its receive time. The zone's clock never falls
+    /// further than this behind Ariva's receive clock, so a zone whose devices send no events still closes its minutes;
+    /// and a device's outage ends at the start of the minute its first push after it covers (F11). Zero makes the zone's
+    /// clock the receive clock (the rule before ARV-148).
+    /// </summary>
+    public TimeSpan PushInterval { get; init; } = TimeSpan.FromSeconds(60);
 
     /// <summary>T_censor: an entrant still unresolved this long after entry is censored (F6, Proposed 120 min).</summary>
     public TimeSpan CensorAfter { get; init; } = TimeSpan.FromMinutes(120);
@@ -54,6 +67,8 @@ public sealed record QueueEngineSettings
     {
         if (Lateness < TimeSpan.Zero || Lateness > TimeSpan.FromMinutes(30))
             yield return "Lateness is from 0 to 30 minutes.";
+        if (PushInterval < TimeSpan.Zero || PushInterval > TimeSpan.FromMinutes(10))
+            yield return "PushInterval is from 0 to 10 minutes.";
         if (CensorAfter < TimeSpan.FromMinutes(1) || CensorAfter > TimeSpan.FromHours(24))
             yield return "CensorAfter is from 1 minute to 24 hours.";
         if (HandoverWindow < TimeSpan.Zero || HandoverWindow > TimeSpan.FromMinutes(30))
@@ -84,11 +99,16 @@ public sealed record QueueEngineSettings
 /// <summary>
 /// The queue state of one queue zone (ARV-030): a pure engine, no I/O, time passed in, bounded state and work.
 /// <para>
-/// Events are offered as they arrive and held in a reorder buffer; <see cref="Advance"/> moves the watermark to the
-/// reference time minus the lateness allowance and processes every held event up to it in event-time order (ties in
-/// arrival order). Events that arrive behind the watermark are late and counted, not applied: the minutes they touch
-/// are already processed, and a recomputation decides (F6 revisions). The watermark never passes the reference time
-/// minus the lateness, whatever the buffer holds.
+/// Events are offered as they arrive and held in a reorder buffer; <see cref="Advance(DateTime)"/> moves the watermark to the
+/// zone's clock minus the lateness allowance and processes every held event up to it in event-time order. The zone's
+/// clock runs on event time (ARV-148): it is the latest time of the events accepted, each counted at most up to the
+/// reference time it arrived with (CWE-501: a device whose clock runs ahead cannot carry the watermark past Ariva's
+/// receive clock and close other devices' minutes early), and once the zone has had its first event the clock never
+/// falls more than the push interval behind the reference time, so a zone whose devices go quiet still moves on. Events of one instant are applied in a fixed order of
+/// their content, then arrival, so the batches and topics that carried them never change the result. Events that
+/// arrive at or behind the watermark are late and counted, not applied: the minutes they touch are already processed,
+/// and a recomputation decides (F6 revisions). The watermark never passes the reference time minus the lateness,
+/// whatever the buffer holds.
 /// </para>
 /// <para>
 /// Entries are inward crossings of an entry line (or of an overflow band's entry line, for a tracked person: overflow
@@ -127,7 +147,7 @@ public sealed partial class QueueStateEngine
 
     private readonly QueueZoneGeometry _geometry;
     private readonly QueueEngineSettings _settings;
-    private readonly PriorityQueue<(QueueInput Input, bool Ahead), (DateTime Time, long Sequence)> _buffer = new();
+    private readonly PriorityQueue<(QueueInput Input, bool Ahead), Due> _buffer = new(DueOrder.Instance);
     private readonly LinkedList<Entrant> _held = new();
     private readonly Dictionary<string, LinkedList<Entrant>> _groups = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Entrant> _byTrack = new(StringComparer.Ordinal);
@@ -140,6 +160,8 @@ public sealed partial class QueueStateEngine
     private int _aheadBuffered;
     private int _degradedHeld;
     private DateTime _watermark = DateTime.MinValue;
+    // The zone's event clock (ARV-148): the latest time of the events accepted, each at most the reference it arrived with.
+    private DateTime _clock = DateTime.MinValue;
     private DateTime _cursor = DateTime.MinValue;
     private readonly PriorityQueue<(string Key, DateTime Seen), DateTime> _handovers = new();
     private bool _residualSuspect;
@@ -176,6 +198,12 @@ public sealed partial class QueueStateEngine
     /// <summary>The watermark: every event at or before it has been processed.</summary>
     public DateTime WatermarkUtc => _watermark;
 
+    /// <summary>
+    /// The zone's event clock (ARV-148): the latest time of the events accepted so far, each counted at most up to the
+    /// reference time it arrived with; <see cref="DateTime.MinValue"/> before the first.
+    /// </summary>
+    public DateTime ClockUtc => _clock;
+
     /// <summary>People held: entered and not yet resolved.</summary>
     public int OpenEntrants => _held.Count;
 
@@ -190,7 +218,8 @@ public sealed partial class QueueStateEngine
 
     /// <summary>
     /// Offers one event. <paramref name="referenceUtc"/> is Ariva's clock when the event arrived; events further ahead
-    /// than <see cref="QueueEngineSettings.MaxAhead"/> are refused, and events behind the watermark are late.
+    /// than <see cref="QueueEngineSettings.MaxAhead"/> are refused, and events at or behind the watermark are late. An
+    /// event held moves the zone's clock to its time, or to <paramref name="referenceUtc"/> when it lies ahead of it.
     /// </summary>
     public void Offer(QueueInput input, DateTime referenceUtc)
     {
@@ -227,7 +256,7 @@ public sealed partial class QueueStateEngine
         {
             // Make room only with events that were due anyway; never move the watermark past what the clock allows.
             _buffer.TryPeek(out _, out var oldest);
-            var due = Minus(referenceUtc, _settings.Lateness);
+            var due = Target(referenceUtc);
             if (oldest.Time <= due && Records < _settings.MaxStepRecords)
             {
                 _forced++;
@@ -247,9 +276,33 @@ public sealed partial class QueueStateEngine
             }
         }
 
-        _buffer.Enqueue((input, ahead), (time, _sequence++));
+        _buffer.Enqueue((input, ahead), new Due(time, InputKey.Of(input), _sequence++));
         if (ahead)
             _aheadBuffered++;
+        // The zone's clock moves with the events it holds, each at most to the time it arrived (CWE-501: a device whose
+        // clock runs ahead never carries the watermark past Ariva's receive clock, ARV-148).
+        var seen = ahead ? referenceUtc : time;
+        if (seen > _clock)
+            _clock = seen;
+    }
+
+    /// <summary>
+    /// Where the watermark may go at <paramref name="referenceUtc"/> (ARV-148): the zone's clock (its latest event time,
+    /// and never more than the push interval behind the reference, nor ahead of it) less the lateness allowance. The
+    /// clock starts with the zone's first event: before it the zone has nothing to close, and whichever record of the
+    /// first receive time comes first cannot move the watermark on its own.
+    /// </summary>
+    private DateTime Target(DateTime referenceUtc)
+    {
+        var clock = _clock;
+        if (clock == DateTime.MinValue)
+            return DateTime.MinValue;
+        var idle = Minus(referenceUtc, _settings.PushInterval);
+        if (idle > clock)
+            clock = idle;
+        if (clock > referenceUtc)
+            clock = referenceUtc;
+        return Minus(clock, _settings.Lateness);
     }
 
     private void Late(DateTime time, DateTime referenceUtc)
@@ -271,15 +324,16 @@ public sealed partial class QueueStateEngine
     }
 
     /// <summary>
-    /// Moves the watermark to <paramref name="referenceUtc"/> minus the lateness allowance (never backwards), processes
-    /// the held events up to it in time order (up to the step's size bound), resolves censored and fragmented entrants,
-    /// and returns what happened since the previous step.
+    /// Moves the watermark to the zone's clock minus the lateness allowance (never backwards; the clock is the latest
+    /// event time held, at least <paramref name="referenceUtc"/> minus the push interval and at most
+    /// <paramref name="referenceUtc"/>), processes the held events up to it in time order (up to the step's size bound),
+    /// resolves censored and fragmented entrants, and returns what happened since the previous step.
     /// </summary>
     public QueueStep Advance(DateTime referenceUtc)
     {
         if (referenceUtc.Kind != DateTimeKind.Utc)
             throw new ArgumentException("The reference time is UTC.", nameof(referenceUtc));
-        var target = Minus(referenceUtc, _settings.Lateness);
+        var target = Target(referenceUtc);
         if (target > _watermark)
             ProcessUpTo(target);
 
@@ -541,7 +595,7 @@ public sealed partial class QueueStateEngine
         }
 
         // Events are applied in time order and spread counts start after the last processed event, so a new entrant is
-        // never earlier than those held; equal times keep arrival order.
+        // never earlier than those held; equal times keep the order of application (content, then arrival: ARV-148).
         if (_held.Last is { } last && last.Value.EntryUtc > time)
             time = last.Value.EntryUtc;
         var entrant = new Entrant(time, trackKey, group, degraded, method, _order++);
@@ -803,6 +857,72 @@ public sealed partial class QueueStateEngine
             return new QueueLength(total, true, degraded, _watermark);
         // No fresh reading for every zone: the people the engine holds, flagged when any came from a degraded event.
         return new QueueLength(_held.Count, false, _residualSuspect || _degradedHeld > 0, _watermark);
+    }
+
+    #endregion
+
+    #region Order
+
+    /// <summary>
+    /// The content of an input that orders the events of one instant (ARV-148): kind (interval readings first, so that a
+    /// reading of the interval's own end, the device's occupancy at it, never narrows its spread to nothing; then
+    /// crossings, occupancy and track samples), then line or zone, direction, track, interval start, counts and flag.
+    /// Two inputs with the same key are the same reading, so their order cannot change a result.
+    /// </summary>
+    private readonly record struct InputKey(int Rank, string Name, int Direction, string Track, long FromTicks, int In, int Out, int Count, bool Degraded)
+    {
+        public static InputKey Of(QueueInput input) => input switch
+        {
+            QueueInterval i => new(0, i.LineName, 0, null, i.FromUtc.Ticks, i.In, i.Out, 0, i.Degraded),
+            QueueCrossing c => new(1, c.LineName, (int)c.Direction, c.TrackKey, 0, 0, 0, 0, c.Degraded),
+            QueueOccupancy o => new(2, o.ZoneName, 0, null, 0, 0, 0, o.Count, o.Degraded),
+            QueueTrackSeen s => new(3, null, 0, s.TrackKey, 0, 0, 0, 0, s.Degraded),
+            _ => new(4, null, 0, null, 0, 0, 0, 0, input.Degraded)
+        };
+
+        public int CompareTo(InputKey other)
+        {
+            var c = Rank.CompareTo(other.Rank);
+            if (c == 0)
+                c = string.CompareOrdinal(Name, other.Name);
+            if (c == 0)
+                c = Direction.CompareTo(other.Direction);
+            if (c == 0)
+                c = string.CompareOrdinal(Track, other.Track);
+            if (c == 0)
+                c = FromTicks.CompareTo(other.FromTicks);
+            if (c == 0)
+                c = In.CompareTo(other.In);
+            if (c == 0)
+                c = Out.CompareTo(other.Out);
+            if (c == 0)
+                c = Count.CompareTo(other.Count);
+            if (c == 0)
+                c = Degraded.CompareTo(other.Degraded);
+            return c;
+        }
+    }
+
+    /// <summary>A held event's place in the reorder buffer: its time, its content and its arrival.</summary>
+    private readonly record struct Due(DateTime Time, InputKey Key, long Sequence);
+
+    /// <summary>
+    /// Event time first, then the content of the event, and arrival last (ARV-148): the events of one instant are applied
+    /// in the same order whichever batches, topics or partitions carried them and in whatever order those arrived.
+    /// </summary>
+    private sealed class DueOrder : IComparer<Due>
+    {
+        public static readonly DueOrder Instance = new();
+
+        public int Compare(Due x, Due y)
+        {
+            var c = x.Time.CompareTo(y.Time);
+            if (c == 0)
+                c = x.Key.CompareTo(y.Key);
+            if (c == 0)
+                c = x.Sequence.CompareTo(y.Sequence);
+            return c;
+        }
     }
 
     #endregion

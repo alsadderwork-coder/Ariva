@@ -9,9 +9,9 @@ namespace Ariva.UnitTests.Replay;
 /// <summary>
 /// ARV-036: the golden replay of the reference evening (seed 9303) from the archive's form of Ingest's output. It
 /// reproduces the scripted events: the arrivals Visitors nowcast passes 15 minutes at 18:05; S-17 is out from 18:20 until
-/// it is heard again at 18:31 and the Visitors zone is degraded meanwhile; Handler B's island C breaches in the 19:00,
-/// 19:15 and 19:30 bins. The same records give the same output hash on every run, the hash is the reviewed golden value,
-/// and the exported replay is tamper-evident.
+/// 18:30, the minute its push at 18:31 covers (ARV-148), and the Visitors zone is degraded meanwhile; Handler B's island C
+/// breaches in the 19:00, 19:15 and 19:30 bins. The zones run on event time (ARV-148). The same records give the same
+/// output hash on every run, the hash is the reviewed golden value, and the exported replay is tamper-evident.
 /// </summary>
 public sealed class GoldenReplayTests
 {
@@ -34,7 +34,9 @@ public sealed class GoldenReplayTests
         var first = live.First(l => l.NowcastMinutes > 15);
 
         Clock(first.MinuteUtc).Should().Be("18:05");
-        live.Should().OnlyContain(l => l.MinuteUtc >= ReferenceReplay.From.AddMinutes(-1) && l.MinuteUtc < ReferenceReplay.To + ZoneReplay.Settle(new ZoneProcessorSettings()));
+        // The zone's first watermark is the first push's latest event (17:01) less the 90-second lateness (ARV-148), so its
+        // first live minute is 16:58.
+        live.Should().OnlyContain(l => l.MinuteUtc >= ReferenceReplay.From.AddMinutes(-2) && l.MinuteUtc < ReferenceReplay.To + ZoneReplay.Settle(new ZoneProcessorSettings()));
     }
 
     [Fact]
@@ -43,15 +45,17 @@ public sealed class GoldenReplayTests
         var visitors = Of("A-VIS");
 
         visitors.Outages.Should().ContainSingle().Which.Should().Be(
-            new DeviceOutage("DMO/A-VIS", "S-17", ReferenceReplay.WallOf(1100), ReferenceReplay.WallOf(1111)),
-            "S-17 last reported for 18:19 at 18:20 and next for 18:30 at 18:31");
+            new DeviceOutage("DMO/A-VIS", "S-17", ReferenceReplay.WallOf(1100), ReferenceReplay.WallOf(1110)),
+            "S-17 last reported for 18:19 at 18:20 and next for 18:30 at 18:31: that push covers 18:30, so the outage ends there (ARV-148)");
         var degraded = visitors.Live.Where(l => l.LengthDegraded).Select(l => Clock(l.MinuteUtc)).ToList();
         degraded.Should().NotBeEmpty();
-        degraded.Should().OnlyContain(m => string.CompareOrdinal(m, "18:20") >= 0 && string.CompareOrdinal(m, "18:30") <= 0,
+        degraded.Should().OnlyContain(m => string.CompareOrdinal(m, "18:20") >= 0 && string.CompareOrdinal(m, "18:30") < 0,
             "the zone is degraded live only while S-17 is out");
-        degraded.Last().Should().Be("18:30");
+        degraded.Last().Should().Be("18:29");
+        // F4 of ARV-104j: the bin after the outage is judged again; only 18:15 holds outage minutes.
         var marked = visitors.Bins.Where(b => b.Status == BinStatus.Final && b.Quality == BinQuality.Degraded).Select(b => Clock(b.StartUtc)).Distinct().ToList();
-        marked.Should().Equal("18:15", "18:30");
+        marked.Should().Equal("18:15");
+        visitors.Bins.Where(b => b.Status == BinStatus.Final && Clock(b.StartUtc) == "18:30").Should().ContainSingle().Which.Quality.Should().Be(BinQuality.Good);
         Of("CI-C").Outages.Should().BeEmpty();
     }
 
@@ -61,7 +65,7 @@ public sealed class GoldenReplayTests
         var finals = Of("CI-C").Bins.Where(b => b.Status == BinStatus.Final).GroupBy(b => b.StartUtc).Select(g => g.Last()).ToList();
 
         finals.Where(b => b.Waits.P90Minutes > 15).Select(b => Clock(b.StartUtc)).Should().Equal("19:00", "19:15", "19:30");
-        finals.Where(b => b.StartUtc < ReferenceReplay.To).Should().HaveCount(14, "every bin of the range becomes final");
+        finals.Where(b => b.StartUtc >= ReferenceReplay.From && b.StartUtc < ReferenceReplay.To).Should().HaveCount(14, "every bin of the range becomes final");
     }
 
     [Theory]
@@ -101,7 +105,9 @@ public sealed class GoldenReplayTests
         outputs.Health.Should().HaveSameCount(outputs.Bins);
         outputs.Health.Zip(outputs.Bins).Should().OnlyContain(p => p.First.StartUtc == p.Second.StartUtc && p.First.Revision == p.Second.Revision &&
             p.First.Status == p.Second.Status && p.First.Entries == p.Second.Entries && p.First.Exits == p.Second.Exits);
-        var finals = outputs.Health.Where(h => h.Status == BinStatus.Final && h.StartUtc < ReferenceReplay.To).GroupBy(h => h.StartUtc).Select(g => g.Last()).ToList();
+        // The bins of the range (the zone's first watermark, 16:59:30, also publishes the empty 16:45 bin before it).
+        var finals = outputs.Health.Where(h => h.Status == BinStatus.Final && h.StartUtc >= ReferenceReplay.From && h.StartUtc < ReferenceReplay.To)
+            .GroupBy(h => h.StartUtc).Select(g => g.Last()).ToList();
         finals.Should().HaveCount(14);
 
         // The emulator's occupancy is always its entries minus its exits and every passenger is a track that exits, so the
@@ -148,8 +154,8 @@ public sealed class GoldenReplayTests
     [Fact]
     public void Replay_Should_KeepEveryEarlierOutput_When_TheHealthRowsAreLeftOut()
     {
-        // ARV-114a appends the health rows to each drain; leaving them out must give back the ARV-113 golden exactly, so no
-        // earlier output changed.
+        // ARV-114a appends the health rows to each drain; leaving them out must give back the golden of every other output
+        // exactly (the ARV-113 head until ARV-148 moved the stream to event time; replay-golden.json records both).
         var without = new ReplayLedger(ReferenceReplay.Manifest(new ZoneProcessorSettings()));
         foreach (var line in Golden.Value.Export.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
@@ -161,8 +167,8 @@ public sealed class GoldenReplayTests
 
         var hashes = without.End();
 
-        hashes.OutputHead.Should().Be("8d13749079c0c0ca347dcd8c9e41f6708a7360b7145ad61af32c4d49cf0e0a2c");
-        hashes.Outputs.Should().Be(2716);
+        hashes.OutputHead.Should().Be("185bb1314cf53d6853fdcbbcadc0da691b865654e2cb9670e20518a1c4970963");
+        hashes.Outputs.Should().Be(3042);
     }
 
     [Fact]

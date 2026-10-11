@@ -30,7 +30,11 @@ public sealed class OverflowBandsTests
         new HashSet<string>(StringComparer.Ordinal) { "A-OV entry", "A-OV2 entry" },
         new HashSet<string>(StringComparer.Ordinal) { "A-OV", "A-OV2" });
 
-    private static readonly QueueEngineSettings Thirty = new() { Lateness = TimeSpan.FromSeconds(30) };
+    // On the receive clock (no push interval, the engine's rule before ARV-148): these cases are about the bands' minutes,
+    // stepped at the times they name; the event-time watermark has its own tests (QueueEngineWatermarkTests).
+    private static readonly QueueEngineSettings Thirty = new() { Lateness = TimeSpan.FromSeconds(30), PushInterval = TimeSpan.Zero };
+
+    private static readonly ZoneProcessorSettings ReceiveClock = new() { Engine = Thirty };
 
     private static QueueOccupancy Reading(string zone, int count, double minute) => new(zone, count, At(minute));
 
@@ -431,7 +435,7 @@ public sealed class OverflowBandsTests
     [Fact]
     public void ZoneProcessor_Should_ReleaseBandMinutesAndChanges_When_ItDrains()
     {
-        var zone = new ZoneProcessor("DMO/A-VIS", Geometry, 12);
+        var zone = new ZoneProcessor("DMO/A-VIS", Geometry, 12, ReceiveClock);
         var batch = new ZoneOccupancyBatch
         {
             Id = Guid.NewGuid(), DeviceId = Guid.NewGuid(), DeviceCode = "S-25", SiteCode = "DMO", QueueZoneName = "A-VIS", Dialect = "canonical",
@@ -449,18 +453,18 @@ public sealed class OverflowBandsTests
         peeked.Count.Should().Be(drained.Count);
         zone.Peek().Overflow.Should().BeEmpty();
         var state = zone.Capture();
-        state.Version.Should().Be(ZoneProcessorState.CurrentVersion, "version 6 added the band states; 7 the desk zones (ARV-116); 8 the engine's pending empty-queue check (ARV-114d)");
+        state.Version.Should().Be(ZoneProcessorState.CurrentVersion, "version 6 added the band states; 7 the desk zones (ARV-116); 8 the engine's pending empty-queue check (ARV-114d); 9 the engine's event clock (ARV-148)");
         state.OverflowBands.Should().Equal(new OverflowBandState("A-OV", true, At(0), 6, At(0)));
     }
 
     [Fact]
     public void ZoneProcessor_Should_RefuseTheSnapshot_When_ItsOverflowStateIsHostile()
     {
-        var zone = new ZoneProcessor("DMO/A-VIS", Geometry, 12);
+        var zone = new ZoneProcessor("DMO/A-VIS", Geometry, 12, ReceiveClock);
         zone.Tick(At(1));
         var hostile = zone.Capture() with { OverflowBands = [new OverflowBandState("Not a band", true, T0, 3, T0)] };
 
-        var restore = () => ZoneProcessor.Restore("DMO/A-VIS", Geometry, 12, new ZoneProcessorSettings(), hostile, At(2));
+        var restore = () => ZoneProcessor.Restore("DMO/A-VIS", Geometry, 12, ReceiveClock, hostile, At(2));
 
         restore.Should().Throw<InvalidDataException>();
     }
@@ -468,7 +472,7 @@ public sealed class OverflowBandsTests
     [Fact]
     public void ZoneProcessor_Should_RestoreAVersion4Snapshot_When_ItHasNoOverflowState()
     {
-        var zone = new ZoneProcessor("DMO/A-VIS", Geometry, 12);
+        var zone = new ZoneProcessor("DMO/A-VIS", Geometry, 12, ReceiveClock);
         zone.Tick(At(1));
         // A version 4 snapshot as the stream stored it before ARV-115: no overflow properties at all.
         var json = JsonSerializer.SerializeToNode(zone.Capture() with { Version = 4 }, EventCatalog.Json)!.AsObject();
@@ -476,7 +480,7 @@ public sealed class OverflowBandsTests
         json.Remove("overflowBands");
         var old = json.Deserialize<ZoneProcessorState>(EventCatalog.Json)!;
 
-        var restored = ZoneProcessor.Restore("DMO/A-VIS", Geometry, 12, new ZoneProcessorSettings(), old, At(2));
+        var restored = ZoneProcessor.Restore("DMO/A-VIS", Geometry, 12, ReceiveClock, old, At(2));
 
         restored.Capture().OverflowBands.Should().BeEmpty("every band starts empty");
     }
@@ -484,7 +488,7 @@ public sealed class OverflowBandsTests
     [Fact]
     public void ZoneProcessor_Should_MakeASilentBandUnknown_When_OnlyTimePasses()
     {
-        var zone = new ZoneProcessor("DMO/A-VIS", Geometry, 12);
+        var zone = new ZoneProcessor("DMO/A-VIS", Geometry, 12, ReceiveClock);
         zone.Offer(new ZoneOccupancyBatch
         {
             Id = Guid.NewGuid(), DeviceId = Guid.NewGuid(), DeviceCode = "S-25", SiteCode = "DMO", QueueZoneName = "A-VIS", Dialect = "canonical",
@@ -506,7 +510,7 @@ public sealed class OverflowBandsTests
     [Fact]
     public void ZoneProcessor_Should_RestoreAVersion5Snapshot_When_ItsBandStatesHaveNoUnknown()
     {
-        var zone = new ZoneProcessor("DMO/A-VIS", Geometry, 12);
+        var zone = new ZoneProcessor("DMO/A-VIS", Geometry, 12, ReceiveClock);
         zone.Offer(new ZoneOccupancyBatch
         {
             Id = Guid.NewGuid(), DeviceId = Guid.NewGuid(), DeviceCode = "S-25", SiteCode = "DMO", QueueZoneName = "A-VIS", Dialect = "canonical",
@@ -521,7 +525,7 @@ public sealed class OverflowBandsTests
             band!.AsObject().Remove("unknown");
         var old = json.Deserialize<ZoneProcessorState>(EventCatalog.Json)!;
 
-        var restored = ZoneProcessor.Restore("DMO/A-VIS", Geometry, 12, new ZoneProcessorSettings(), old, At(3));
+        var restored = ZoneProcessor.Restore("DMO/A-VIS", Geometry, 12, ReceiveClock, old, At(3));
         restored.Tick(At(6));
 
         restored.Capture().Version.Should().Be(ZoneProcessorState.CurrentVersion);
@@ -532,11 +536,11 @@ public sealed class OverflowBandsTests
     [Fact]
     public void ZoneProcessor_Should_RefuseTheSnapshot_When_AnUnknownBandIsOccupied()
     {
-        var zone = new ZoneProcessor("DMO/A-VIS", Geometry, 12);
+        var zone = new ZoneProcessor("DMO/A-VIS", Geometry, 12, ReceiveClock);
         zone.Tick(At(1));
         var hostile = zone.Capture() with { OverflowBands = [new OverflowBandState("A-OV", true, T0, 3, T0, Unknown: true)] };
 
-        var restore = () => ZoneProcessor.Restore("DMO/A-VIS", Geometry, 12, new ZoneProcessorSettings(), hostile, At(2));
+        var restore = () => ZoneProcessor.Restore("DMO/A-VIS", Geometry, 12, ReceiveClock, hostile, At(2));
 
         restore.Should().Throw<InvalidDataException>();
     }
@@ -546,7 +550,7 @@ public sealed class OverflowBandsTests
     [InlineData(10, true)]
     public void ZoneProcessor_Should_ReportOnlySilencesInsideTheRange_When_AReplayFinishes(double endMinute, bool unknown)
     {
-        var zone = new ZoneProcessor("DMO/A-VIS", Geometry, 12);
+        var zone = new ZoneProcessor("DMO/A-VIS", Geometry, 12, ReceiveClock);
         zone.Offer(new ZoneOccupancyBatch
         {
             Id = Guid.NewGuid(), DeviceId = Guid.NewGuid(), DeviceCode = "S-25", SiteCode = "DMO", QueueZoneName = "A-VIS", Dialect = "canonical",

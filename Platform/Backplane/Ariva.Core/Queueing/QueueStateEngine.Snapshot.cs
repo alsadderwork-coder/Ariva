@@ -72,6 +72,14 @@ public sealed record QueueEngineState
     public long Sequence { get; init; }
     public long Order { get; init; }
     public DateTime WatermarkUtc { get; init; }
+
+    /// <summary>
+    /// The zone's event clock (ARV-148, zone snapshot version 9): the latest event time accepted, each at most the reference
+    /// it arrived with. Null in a snapshot written before, which restores with the clock at the latest of its watermark and
+    /// the events it holds (the clock then catches up with the next events, and the watermark never moves back).
+    /// </summary>
+    public DateTime? ClockUtc { get; init; }
+
     public DateTime CursorUtc { get; init; }
     public bool ResidualSuspect { get; init; }
 
@@ -106,7 +114,7 @@ public sealed partial class QueueStateEngine
     public QueueEngineState Capture() => new()
     {
         QueueZone = _geometry.QueueZone,
-        Buffer = [.. _buffer.UnorderedItems.OrderBy(i => i.Priority.Time).ThenBy(i => i.Priority.Sequence)
+        Buffer = [.. _buffer.UnorderedItems.OrderBy(i => i.Priority, DueOrder.Instance)
             .Select(i => new QueueBufferedState(QueueInputState.From(i.Element.Input), i.Element.Ahead, i.Priority.Sequence))],
         Held = [.. _held.Select(e => new QueueEntrantState(e.EntryUtc, e.TrackKey, e.Group, e.Degraded, e.Method, e.Order, e.LastSeenUtc))],
         ResolvedTracks = [.. _resolvedOrder],
@@ -116,6 +124,7 @@ public sealed partial class QueueStateEngine
         Sequence = _sequence,
         Order = _order,
         WatermarkUtc = _watermark,
+        ClockUtc = _clock,
         CursorUtc = _cursor,
         ResidualSuspect = _residualSuspect,
         PendingAnchorUtc = _anchorDueUtc,
@@ -158,7 +167,8 @@ public sealed partial class QueueStateEngine
         {
             if (input is null)
                 throw new InvalidDataException("The queue engine snapshot has an empty input.");
-            engine._buffer.Enqueue((input.ToInput(), ahead), (QueueInputState.Utc(input.TimeUtc), sequence));
+            var restored = input.ToInput();
+            engine._buffer.Enqueue((restored, ahead), new Due(QueueInputState.Utc(input.TimeUtc), InputKey.Of(restored), sequence));
             if (ahead)
                 engine._aheadBuffered++;
         }
@@ -204,6 +214,26 @@ public sealed partial class QueueStateEngine
         engine._sequence = state.Sequence;
         engine._order = state.Order;
         engine._watermark = QueueInputState.Utc(state.WatermarkUtc);
+        // Every held event that was not ahead of its reference moved the clock to its time (CWE-501: a snapshot cannot set the
+        // clock behind what it holds). A snapshot written before ARV-148 has no clock: it starts at the latest of the
+        // watermark and those events, and catches up with the next ones.
+        var held = DateTime.MinValue;
+        foreach (var (input, ahead, _) in state.Buffer ?? [])
+        {
+            var time = QueueInputState.Utc(input.TimeUtc);
+            if (!ahead && time > held)
+                held = time;
+        }
+
+        var before = held > engine._watermark ? held : engine._watermark;
+        engine._clock = state.ClockUtc.HasValue ? QueueInputState.Utc(state.ClockUtc.Value) : before;
+        if (held > engine._clock)
+            throw new InvalidDataException("The queue engine snapshot holds an event after its clock.");
+        // The watermark moves only once an event has set the clock, so a moved watermark with an unset clock is not a state
+        // the engine writes (CWE-501).
+        if (engine._clock == DateTime.MinValue && engine._watermark != DateTime.MinValue)
+            throw new InvalidDataException("The queue engine snapshot has a watermark but no clock.");
+
         engine._cursor = QueueInputState.Utc(state.CursorUtc);
         engine._residualSuspect = state.ResidualSuspect;
         if (state.PendingAnchorUtc is { } pending)

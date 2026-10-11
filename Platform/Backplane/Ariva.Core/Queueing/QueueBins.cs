@@ -257,8 +257,12 @@ public sealed partial class BinAccumulator
         return Runs(recomputations);
     }
 
-    /// <summary>Takes one engine step, in order, and returns what changed.</summary>
-    public BinUpdate Accept(QueueStep step)
+    /// <summary>
+    /// Takes one engine step, in order, and returns what changed. A bin ending after <paramref name="finalThroughUtc"/>
+    /// stays provisional even when the watermark has passed it (ARV-148: the caller's device outages are known only up to
+    /// there, so a bin is never final before every outage mark it may take); null leaves finality to the watermark.
+    /// </summary>
+    public BinUpdate Accept(QueueStep step, DateTime? finalThroughUtc = null)
     {
         ArgumentNullException.ThrowIfNull(step);
         if (!string.Equals(step.QueueZone, _zone, StringComparison.Ordinal))
@@ -368,7 +372,8 @@ public sealed partial class BinAccumulator
         foreach (var (start, bin) in _open.ToList())
         {
             var open = bin.Total.Entries - bin.Total.Resolved;
-            var ended = _watermark >= start + _settings.BinLength;
+            var end = start + _settings.BinLength;
+            var ended = _watermark >= end && (!finalThroughUtc.HasValue || end <= finalThroughUtc.Value);
             var forced = _open.Count > _settings.MaxOpenBins && start == _open.First().Key;
             var final = (ended && open <= 0) || forced;
             if (!bin.Changed && !final)

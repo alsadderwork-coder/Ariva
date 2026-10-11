@@ -25,9 +25,11 @@ public sealed class BinAccumulatorTests
 
     private sealed class Pipeline(TimeSpan? lateness = null, BinSettings settings = null)
     {
+        // On the receive clock (no push interval, the engine's rule before ARV-148): these cases are about bins, stepped at
+        // the times they name; the event-time watermark has its own tests (QueueEngineWatermarkTests).
         public QueueStateEngine Engine { get; } = new(Geometry, new QueueEngineSettings
         {
-            Lateness = lateness ?? TimeSpan.Zero, HandoverWindow = TimeSpan.FromSeconds(30)
+            Lateness = lateness ?? TimeSpan.Zero, HandoverWindow = TimeSpan.FromSeconds(30), PushInterval = TimeSpan.Zero
         });
 
         public BinAccumulator Bins { get; } = new("A-VIS", 12, settings);

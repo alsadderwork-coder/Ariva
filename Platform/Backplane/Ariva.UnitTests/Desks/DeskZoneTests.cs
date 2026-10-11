@@ -222,8 +222,10 @@ public sealed class DeskZoneTests
         zone.Offer(Occupancy(At(70), ("A-VIS", 7, At(60), SensedFlags.None), ("AR-08 staff", 1, At(60), SensedFlags.None),
             ("AR-08 service", 1, At(60), SensedFlags.Corrected)), At(70));
         queueOnly.Offer(Occupancy(At(70), ("A-VIS", 7, At(60), SensedFlags.None)), At(70));
-        zone.Tick(At(95));
-        queueOnly.Tick(At(95));
+        // ARV-148: with no later event the zone's clock is the reference less the push interval, so the 18:01:00 reading
+        // is behind the watermark (the clock less the 90-second lateness) once the reference reaches 18:03:35.
+        zone.Tick(At(215));
+        queueOnly.Tick(At(215));
         var outputs = zone.Drain();
         var expected = queueOnly.Drain();
 

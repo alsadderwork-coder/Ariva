@@ -294,14 +294,17 @@ public sealed class ZoneProcessorTests
     public void Restore_Should_CarryThePendingEmptyQueueCheck_When_TheSnapshotIsVersion8_And_RefuseItOtherwise()
     {
         // ARV-114d: a full step that ends inside an instant leaves the engine's empty-queue check of that instant pending.
-        // The zone reads 5 at 18:02, then 1,050 people leave at 18:02; a step of 1,000 records fills among those exits.
+        // At 18:02, 993 people leave, the zone reads 5 and a track is seen; the engine applies them in that order (ARV-148:
+        // crossings, readings, track samples), so a step of 1,000 records (4 of 18:01, 993 waits, the minute's movement and
+        // exit line, the reading) fills right after the reading, before the rest of the instant.
         var settings = new ZoneProcessorSettings { Engine = new QueueEngineSettings { Lateness = TimeSpan.Zero, MaxStepRecords = 1_000 } };
         var at = WallOf(1082);
         var engine = new QueueStateEngine(Geometry, settings.Engine);
         var inputs = new List<QueueInput> { new QueueOccupancy("A-VIS", 0, WallOf(1081)) };
         inputs.AddRange(Enumerable.Range(0, 1_100).Select(k => new QueueCrossing("A-VIS entry", CrossingDirection.In, "S-15/" + k, WallOf(1081 + (k + 1) * 0.0008))));
+        inputs.Add(new QueueTrackSeen("S-15/1099", at));
         inputs.Add(new QueueOccupancy("A-VIS", 5, at));
-        inputs.AddRange(Enumerable.Range(0, 1_050).Select(k => new QueueCrossing("A-VIS exit", CrossingDirection.Out, "S-15/" + k, at)));
+        inputs.AddRange(Enumerable.Range(0, 993).Select(k => new QueueCrossing("A-VIS exit", CrossingDirection.Out, "S-15/" + k, at)));
         foreach (var input in inputs)
             engine.Offer(input, input.TimeUtc);
         engine.Advance(WallOf(1090)).More.Should().BeTrue();

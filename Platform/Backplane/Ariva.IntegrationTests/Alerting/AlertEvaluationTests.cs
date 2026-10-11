@@ -111,8 +111,8 @@ public sealed class AlertEvaluationTests(PostgresFixture fixture) : IAsyncDispos
         r001.Should().NotBeEmpty();
         r001[0].Zone.Should().Be("A-VIS");
         r001[0].Raised.Should().Be(ReferenceReplay.WallOf(18 * 60 + 5), "R-001 at 18:05, as in the prototype");
-        stored.Should().Contain(a => a.Rule == "R-003" && a.Device == "S-17" && a.Raised == ReferenceReplay.WallOf(1100) && a.Cleared == ReferenceReplay.WallOf(1111),
-            "S-17 was out from 18:20 (last heard) until it was heard again at 18:31");
+        stored.Should().Contain(a => a.Rule == "R-003" && a.Device == "S-17" && a.Raised == ReferenceReplay.WallOf(1100) && a.Cleared == ReferenceReplay.WallOf(1110),
+            "S-17 was out from 18:20 (last heard) until 18:30, the minute its push at 18:31 covers (ARV-148)");
         (await _host.ReadAsync<string>("SELECT state || '|' || coalesce(resolution, '') || '|' || coalesce(resolved_by, '') FROM alert WHERE device_code = 'S-17'"))
             .Should().Be("Resolved|Cleared|alert-evaluation", "auto-resolved by the clear condition");
         (await _host.ReadAsync<long>("SELECT count(*) FROM alert WHERE rule_code = 'R-001' AND zone_name = 'A-VIS' AND rule_name = 'Nowcast above 15 min' AND owner_role = 'BorderShiftSupervisor' AND severity = 'Critical'"))

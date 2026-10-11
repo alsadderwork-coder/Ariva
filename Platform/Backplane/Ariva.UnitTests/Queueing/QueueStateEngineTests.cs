@@ -168,7 +168,9 @@ public sealed partial class QueueStateEngineTests
     {
         var engine = Engine();
         var first = Play(engine, 100, In(0, "t1"), In(5));
-        var second = engine.Advance(At(126));
+        // No event after 18:05: the zone's clock is the reference less the push interval (ARV-148), so an advance to 20:07
+        // censors up to 20:06.
+        var second = engine.Advance(At(127));
 
         first.Resolutions.Should().BeEmpty();
         first.OpenEntrants.Should().Be(2);
@@ -271,22 +273,28 @@ public sealed partial class QueueStateEngineTests
         step.OpenEntrants.Should().Be(0);
     }
 
+    /// <summary>The people who leave at 18:02 in <see cref="SplitInstant"/>, and those still held after it.</summary>
+    private const int LeaveAtSplit = 992, HeldAfterSplit = 1_100 - LeaveAtSplit;
+
     /// <summary>
-    /// Both zones read 0 at 18:01 and 1,100 tracked people join; at 18:02 the band reads 0 (ordered first), 1,050 people
-    /// leave and the zone reads <paramref name="zoneAtSplit"/>; the last 50 leave from 18:03. With MaxStepRecords at its
-    /// floor a step fills among the exits of 18:02, after the band's reading and before the zone's.
+    /// Both zones read 0 at 18:01 and 1,100 tracked people join; at 18:02, 992 people leave, the band reads 0 and the zone
+    /// reads <paramref name="zoneAtSplit"/>; the last 108 leave from 18:03. Events of one instant are applied crossings
+    /// first, then the band's reading, then the zone's (ARV-148: content order, whatever the arrival order), so with
+    /// MaxStepRecords at its floor a step fills exactly after the band's reading of 18:02 and before the zone's (the 5
+    /// records of 18:01, 992 waits, the minute's movement and exit line, then the band's reading: 1,000).
     /// </summary>
     private static List<QueueInput> SplitInstant(int zoneAtSplit)
     {
         var inputs = new List<QueueInput> { new QueueOccupancy("A-VIS", 0, At(1)), new QueueOccupancy("A-OV", 0, At(1)) };
         for (var k = 0; k < 1_100; k++)
             inputs.Add(In(1 + (k + 1) * 0.0008, "S-15/" + k));
-        inputs.Add(new QueueOccupancy("A-OV", 0, At(2)));
-        for (var k = 0; k < 1_050; k++)
-            inputs.Add(Out(2, "S-15/" + k));
+        // Arrival order puts the readings before the exits; the engine applies the exits first all the same.
         inputs.Add(new QueueOccupancy("A-VIS", zoneAtSplit, At(2)));
-        for (var k = 1_050; k < 1_100; k++)
-            inputs.Add(Out(3 + (k - 1_050) * 0.01, "S-15/" + k));
+        inputs.Add(new QueueOccupancy("A-OV", 0, At(2)));
+        for (var k = 0; k < LeaveAtSplit; k++)
+            inputs.Add(Out(2, "S-15/" + k));
+        for (var k = LeaveAtSplit; k < 1_100; k++)
+            inputs.Add(Out(3 + (k - LeaveAtSplit) * 0.01, "S-15/" + k));
         return inputs;
     }
 
@@ -324,11 +332,11 @@ public sealed partial class QueueStateEngineTests
     {
         // ARV-114d: the F5 check of 18:02 waits for every event of that instant, also when a full step ends inside it: the
         // check is carried in the engine's state (and its snapshot) and runs in the next step once the zone's reading of
-        // 18:02 has been applied. The zone reads 50 then, so the band's 0 beside the zone's previous 0 is not an empty
+        // 18:02 has been applied. The zone reads 108 then, so the band's 0 beside the zone's previous 0 is not an empty
         // queue: the split run, continuous or restored there, gives what a step that is not split gives (nobody
         // re-anchored or fragmented, no duplicate exit, 1,100 waits).
         var at = At(2);
-        var inputs = SplitInstant(zoneAtSplit: 50);
+        var inputs = SplitInstant(zoneAtSplit: HeldAfterSplit);
         var pending = new List<DateTime?>();
         var continuous = RunSteps(inputs, SplitSettings, restore: false);
         var restored = RunSteps(inputs, SplitSettings, restore: true, pending);
@@ -345,7 +353,7 @@ public sealed partial class QueueStateEngineTests
         unsplit.Should().ContainSingle().Which.Should().Match<QueueStep>(s => s.Reanchors == 0 && s.Waits.Count == 1_100 && s.Resolutions.Count == 0 && s.Rejections.Duplicates == 0);
         foreach (var run in new[] { continuous, restored })
         {
-            run.Sum(s => s.Reanchors).Should().Be(0, "the zone holds 50 people at 18:02");
+            run.Sum(s => s.Reanchors).Should().Be(0, "the zone holds 108 people at 18:02");
             run.SelectMany(s => s.Resolutions).Should().BeEmpty("nobody is fragmented by a band's 0 alone");
             run.Sum(s => s.Rejections.Duplicates).Should().Be(0, "every exit pairs with its own track");
             run.SelectMany(s => s.Waits).Should().Equal(unsplit[0].Waits, "the split run gives the unsplit run's 1,100 waits");
@@ -356,7 +364,7 @@ public sealed partial class QueueStateEngineTests
     public void Reanchor_Should_RunInTheNextStep_When_AFullStepSplitsAnInstantWhereEveryZoneReadsZero()
     {
         // The same split, but the zone reads 0 at 18:02 too: the queue is observed empty there, so the check carried across
-        // the full step re-anchors once, in the next step, after the rest of the instant (the 50 people still held are
+        // the full step re-anchors once, in the next step, after the rest of the instant (the 108 people still held are
         // fragmented at 18:02 and their later exits are duplicates), exactly as an unsplit step does.
         var at = At(2);
         var inputs = SplitInstant(zoneAtSplit: 0);
@@ -369,17 +377,17 @@ public sealed partial class QueueStateEngineTests
         continuous[0].Reanchors.Should().Be(0, "the check waits for the zone's reading of 18:02");
         continuous[0].Resolutions.Should().BeEmpty();
         continuous[1].Reanchors.Should().Be(1);
-        continuous[1].Resolutions.Should().HaveCount(50).And.OnlyContain(r => r.Outcome == EntrantOutcome.Fragmented && r.ResolvedUtc == at);
+        continuous[1].Resolutions.Should().HaveCount(HeldAfterSplit).And.OnlyContain(r => r.Outcome == EntrantOutcome.Fragmented && r.ResolvedUtc == at);
         continuous.SelectMany(s => s.Resolutions).Should().Equal(unsplit.Resolutions);
-        continuous.SelectMany(s => s.Waits).Should().Equal(unsplit.Waits).And.HaveCount(1_050);
-        continuous.Sum(s => s.Rejections.Duplicates).Should().Be(unsplit.Rejections.Duplicates).And.Be(50);
+        continuous.SelectMany(s => s.Waits).Should().Equal(unsplit.Waits).And.HaveCount(LeaveAtSplit);
+        continuous.Sum(s => s.Rejections.Duplicates).Should().Be(unsplit.Rejections.Duplicates).And.Be(HeldAfterSplit);
     }
 
     /// <summary>The snapshot a full step leaves inside the instant of 18:02, with its pending check.</summary>
     private static QueueEngineState SplitSnapshot()
     {
         var engine = new QueueStateEngine(Geometry, SplitSettings);
-        foreach (var input in SplitInstant(zoneAtSplit: 50))
+        foreach (var input in SplitInstant(zoneAtSplit: HeldAfterSplit))
             engine.Offer(input, input.TimeUtc);
         engine.Advance(At(10)).More.Should().BeTrue();
         var json = Ariva.Infra.Messaging.EventCatalog.Json;
@@ -440,7 +448,8 @@ public sealed partial class QueueStateEngineTests
     [Fact]
     public void Length_Should_ComeFromFreshSensorsOrFromTheHeldCount_When_Asked()
     {
-        var engine = Engine();
+        // On the receive clock (no push interval), so each length is taken at the time asked.
+        var engine = Engine(new QueueEngineSettings { Lateness = TimeSpan.Zero, PushInterval = TimeSpan.Zero });
         var counted = Play(engine, 3, In(0), In(1), In(2));
         var sensed = Play(engine, 5, new QueueOccupancy("A-VIS", 41, At(4)), new QueueOccupancy("A-OV", 6, At(4), Degraded: true));
         var stale = engine.Advance(At(7));
@@ -467,9 +476,13 @@ public sealed partial class QueueStateEngineTests
         engine.Offer(Out(3), At(3));
         var step = engine.Advance(At(4));
 
-        Minutes(step).Should().Equal(0.9, 2);
+        // ARV-148: the watermark is the zone's latest event (18:03) less the lateness, not the reference less it.
+        Minutes(step).Should().Equal(0.9);
         step.Rejections.Late.Should().Be(0);
-        step.WatermarkUtc.Should().Be(At(4) - TimeSpan.FromSeconds(30));
+        step.WatermarkUtc.Should().Be(At(3) - TimeSpan.FromSeconds(30));
+
+        engine.Offer(In(3.6), At(4));
+        Minutes(engine.Advance(At(4))).Should().Equal([2.0], "an event 30 seconds on carries the watermark past the exit at 18:03");
     }
 
     [Fact]
@@ -515,11 +528,12 @@ public sealed partial class QueueStateEngineTests
     public void Watermark_Should_NeverGoBack_When_TheReferenceClockDoes()
     {
         var engine = Engine();
-        engine.Advance(At(10));
+        engine.Offer(In(0), At(0));
+        engine.Advance(At(10)).WatermarkUtc.Should().Be(At(9), "with no later event the zone's clock is the push interval behind the reference");
 
         var step = engine.Advance(At(5));
 
-        step.WatermarkUtc.Should().Be(At(10));
+        step.WatermarkUtc.Should().Be(At(9));
     }
 
     #endregion
@@ -573,7 +587,7 @@ public sealed partial class QueueStateEngineTests
 
         engine.BufferedEvents.Should().Be(10);
         step.Rejections.BufferFull.Should().Be(1);
-        step.WatermarkUtc.Should().Be(At(-9.5), "the watermark never runs ahead of the clock minus the lateness");
+        step.WatermarkUtc.Should().Be(At(-10.5), "the watermark never runs ahead of the zone's clock (18:09:30, the reference less the push interval) minus the lateness");
     }
 
     [Fact]
@@ -604,8 +618,11 @@ public sealed partial class QueueStateEngineTests
 
         step.Rejections.BufferFull.Should().Be(490, "at most a tenth of the buffer holds events ahead of the clock");
         step.Rejections.Late.Should().Be(0);
-        step.Movements.Sum(m => m.Entries).Should().Be(20);
-        step.WatermarkUtc.Should().Be(At(1.5) - TimeSpan.FromSeconds(30));
+        // ARV-148: the flood counts on the zone's clock only up to its reference (18:00), so the clock is the others' latest
+        // event (18:00:57) and the watermark that less the lateness: the ten entries up to it are processed.
+        engine.ClockUtc.Should().Be(At(0.95));
+        step.WatermarkUtc.Should().Be(At(0.95) - TimeSpan.FromSeconds(30));
+        step.Movements.Sum(m => m.Entries).Should().Be(10);
     }
 
     [Fact]
@@ -644,8 +661,10 @@ public sealed partial class QueueStateEngineTests
     [Fact]
     public void Interval_Should_NotReachBehindTheWatermark_When_TheZoneWasQuiet()
     {
+        // A reading starts the zone's clock (ARV-148); with nothing after it the zone moves on quietly to 18:59.
         var engine = Engine();
-        engine.Advance(At(60));
+        engine.Offer(new QueueOccupancy("A-VIS", 0, At(0)), At(0));
+        engine.Advance(At(60)).WatermarkUtc.Should().Be(At(59));
 
         var step = Play(engine, 70, new QueueInterval("A-VIS entry", 2, 0, At(-1300), At(65)));
 

@@ -37,7 +37,9 @@ public sealed class HealthChecksTests
         { Capacities = capacities };
     }
 
-    private static readonly QueueEngineSettings Settings = new() { Lateness = TimeSpan.FromSeconds(30), CensorAfter = TimeSpan.FromMinutes(5) };
+    // On the receive clock (no push interval, the engine's rule before ARV-148): these cases are about the bins' health,
+    // stepped at the times they name; the event-time watermark has its own tests (QueueEngineWatermarkTests).
+    private static readonly QueueEngineSettings Settings = new() { Lateness = TimeSpan.FromSeconds(30), CensorAfter = TimeSpan.FromMinutes(5), PushInterval = TimeSpan.Zero };
 
     private static QueueCrossing In(double minute, string track = null) => new("A-VIS entry", CrossingDirection.In, track, At(minute));
 

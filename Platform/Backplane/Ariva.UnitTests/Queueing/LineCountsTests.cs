@@ -26,7 +26,9 @@ public sealed class LineCountsTests
         new HashSet<string>(StringComparer.Ordinal) { "A-OV" },
         new HashSet<string>(StringComparer.Ordinal) { "A-VIS count" });
 
-    private static readonly QueueEngineSettings Thirty = new() { Lateness = TimeSpan.FromSeconds(30) };
+    // On the receive clock (no push interval, the engine's rule before ARV-148): these cases are about the line minutes,
+    // stepped at the times they name; the event-time watermark has its own tests (QueueEngineWatermarkTests).
+    private static readonly QueueEngineSettings Thirty = new() { Lateness = TimeSpan.FromSeconds(30), PushInterval = TimeSpan.Zero };
 
     private static QueueCrossing Cross(string line, CrossingDirection direction, double minute, string track = null) => new(line, direction, track, At(minute));
 

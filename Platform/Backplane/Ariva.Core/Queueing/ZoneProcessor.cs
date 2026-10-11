@@ -55,8 +55,9 @@ public sealed record ZoneProcessorSettings
             yield return "ExitWindowMinutes is from 1 to 60.";
         if (MaxPendingOutputs is < 100 or > 1_000_000)
             yield return "MaxPendingOutputs is from 100 to 1,000,000.";
-        if (DeviceSilenceSeconds is < 30 or > 3_600)
-            yield return "DeviceSilenceSeconds is from 30 to 3,600.";
+        // ARV-148: a device pushing less often than the silence limit would be out between its pushes.
+        if (DeviceSilenceSeconds is < 30 or > 3_600 || (Engine is not null && Engine.PushInterval >= TimeSpan.FromSeconds(DeviceSilenceSeconds)))
+            yield return "DeviceSilenceSeconds is from 30 to 3,600 and longer than the engine's push interval.";
         if (DeviceForgetHours is < 1 or > 72 || DeviceForgetHours * 3_600 <= DeviceSilenceSeconds)
             yield return "DeviceForgetHours is from 1 to 72 and longer than the silence limit.";
         if (MaxDevices is < 1 or > 4_096)
@@ -147,9 +148,11 @@ public sealed record ZoneProcessorState
     /// restores with every band it lists occupied or empty, as before. 7 adds the latest reading passed on per desk zone
     /// (ARV-116); an earlier snapshot restores with none, so each desk zone's next reading passes. 8 adds the queue
     /// engine's pending empty-queue check (<see cref="QueueEngineState.PendingAnchorUtc"/>, ARV-114d); an earlier snapshot
-    /// carries none (the engine that wrote it ran the check when a step filled) and is refused if it says otherwise.
+    /// carries none (the engine that wrote it ran the check when a step filled) and is refused if it says otherwise. 9 adds
+    /// the queue engine's event clock (<see cref="QueueEngineState.ClockUtc"/>, ARV-148); a snapshot without one restores
+    /// with the clock at the latest of its watermark and its held events, and the clock then catches up with the events.
     /// </summary>
-    public const int CurrentVersion = 8;
+    public const int CurrentVersion = 9;
 
     /// <summary>The first version that may carry the queue engine's pending empty-queue check (ARV-114d).</summary>
     public const int PendingAnchorSinceVersion = 8;
@@ -182,10 +185,15 @@ public sealed record ZoneProcessorState
 
 /// <summary>
 /// One queue zone's stream processing (ARV-034): sensing batches mapped to the queue engine's inputs, the engine stepped
-/// with Ariva's own receive time as the reference clock (so that replaying the same records gives the same results),
-/// its steps attributed to bins (F6, F7), and a live row with the queue length and the nowcast (F8) at the end of each
-/// minute. Every batch is checked again here (CWE-501: Kafka is a trust boundary): the zone must be this zone, the
-/// device commissioned, the counts and names within the canonical bounds. Pure: no I/O and no clock of its own.
+/// on event time (ARV-148: its watermark is the zone's latest event time less the lateness, each event counted at most
+/// up to Ariva's receive time of its own batch, and the zone's clock never more than the push interval behind the latest
+/// receive time), its steps attributed to bins (F6, F7), and a live row with the queue length and the nowcast (F8) at
+/// the end of each minute. Device liveness runs on the receive time (ARV-036): it is observed once for each new receive time, before
+/// any record of it is applied, and a bin becomes final only once every outage minute in it is known (the receive
+/// time less the push interval), so the order of the records of one receive time never changes the bins. Replaying
+/// the same records gives the same results whatever batches and topics carried the events. Every batch is checked
+/// again here (CWE-501: Kafka is a trust boundary): the zone must be this zone, the device commissioned, the counts and
+/// names within the canonical bounds. Pure: no I/O and no clock of its own.
 /// </summary>
 public sealed class ZoneProcessor
 {
@@ -234,7 +242,7 @@ public sealed class ZoneProcessor
     }
 
     private static DeviceLiveness NewLiveness(ZoneProcessorSettings settings) =>
-        new(TimeSpan.FromSeconds(settings.DeviceSilenceSeconds), TimeSpan.FromHours(settings.DeviceForgetHours), settings.MaxDevices);
+        new(TimeSpan.FromSeconds(settings.DeviceSilenceSeconds), TimeSpan.FromHours(settings.DeviceForgetHours), settings.MaxDevices, settings.Engine.PushInterval);
 
     public string ZoneKey { get; }
 
@@ -265,8 +273,9 @@ public sealed class ZoneProcessor
         _overflow.Count + _overflowChanges.Count + _deskReadings.Count >= _settings.MaxPendingOutputs;
 
     /// <summary>
-    /// Offers one batch and steps the zone to its receive time (never backwards; <paramref name="referenceCapUtc"/>
-    /// bounds a receive time that lies ahead of the host's clock).
+    /// Offers one batch and steps the zone: its receive time moves the zone's receive clock (never backwards;
+    /// <paramref name="referenceCapUtc"/> bounds a receive time that lies ahead of the host's clock), and its events the
+    /// zone's event clock (ARV-148). A receive time later than any before is observed for device liveness first.
     /// </summary>
     public void Offer(SensingBatch batch, DateTime referenceCapUtc)
     {
@@ -293,17 +302,26 @@ public sealed class ZoneProcessor
 
         var reference = batch.ReceivedUtc < referenceCapUtc ? batch.ReceivedUtc : referenceCapUtc;
         if (reference > _reference)
+        {
             _reference = reference;
+            // ARV-148: the devices are observed once per receive time, before any record of it says who was heard, so the
+            // order of one receive time's records never decides whether a silence was an outage.
+            WatchDevices();
+        }
+
         // Every batch of a commissioned device says it was heard; a health report may say it is offline (ARV-036).
         if (_liveness.Heard(ZoneKey, batch.DeviceCode, _reference, batch is not DeviceStatusBatch { Online: false }) is { } ended)
             Ended(ended.Outage, ended.MarkFromUtc);
         var unreliable = batch.Clock?.State == ClockState.Unreliable;
+        // ARV-148: each event is offered with its own batch's receive time (capped as above), not the zone's latest one, so
+        // an event moves the zone's clock at most to the time Ingest stamped on the push that carried it. That depends on
+        // the records alone: a batch applied after the host ticked the zone on gives what a replay without ticks gives.
         foreach (var input in Inputs(batch, unreliable))
         {
             if (input is null)
                 _invalid++;
             else
-                _engine.Offer(input, _reference);
+                _engine.Offer(input, reference);
         }
 
         Step();
@@ -321,7 +339,11 @@ public sealed class ZoneProcessor
         if (!Plausible(referenceUtc))
             throw new ArgumentException("The reference time is UTC and plausible.", nameof(referenceUtc));
         if (referenceUtc > _reference)
+        {
             _reference = referenceUtc;
+            WatchDevices();
+        }
+
         Step();
     }
 
@@ -417,29 +439,43 @@ public sealed class ZoneProcessor
         _recomputations.AddRange(_bins.Mark(markFromUtc, outage.ToUtc, BinQuality.Degraded));
     }
 
-    // Before the engine steps, so that bins finalised in this step already carry the marks of the devices out now.
+    // At each new receive time, before its records and before the engine steps: the open outages are marked through the
+    // minutes known to be out (KnownThrough), so a bin becoming final at this receive time already carries them.
     private void WatchDevices()
     {
         if (!_watchDevices || _reference == DateTime.MinValue)
             return;
         foreach (var (outage, markFrom) in _liveness.Observe(ZoneKey, _reference))
             Ended(outage, markFrom);
-        foreach (var (from, to) in _liveness.MarksDue(_reference, MarkEvery))
+        foreach (var (from, to) in _liveness.MarksDue(KnownThrough()))
             _recomputations.AddRange(_bins.Mark(from, to, BinQuality.Degraded));
     }
 
-    private static readonly TimeSpan MarkEvery = TimeSpan.FromMinutes(5);
+    /// <summary>
+    /// The minute up to which every device outage of the zone is known (ARV-148): the start of the minute the push interval
+    /// before the receive clock falls in. A device heard again now ends its outage there at the earliest (F11: the first
+    /// push after it covers that minute), so the minutes before it are out or not for good; a bin is final only up to it.
+    /// </summary>
+    private DateTime KnownThrough()
+    {
+        var push = _settings.Engine.PushInterval;
+        var at = _reference > DateTime.MinValue + push ? _reference - push : DateTime.MinValue;
+        return new DateTime(at.Ticks - at.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc);
+    }
 
     private void Step()
     {
-        WatchDevices();
         var before = _engine.WatermarkUtc;
+        // While the zone watches its devices, a bin is final only once every outage minute in it is known. With a lateness of
+        // at least the push interval (the stream requires it) the watermark never passes a bin's end before that anyway;
+        // the rule holds the zone to it under any settings.
+        DateTime? finalThrough = _watchDevices ? KnownThrough() : null;
         QueueStep step;
         var guard = 0;
         do
         {
             step = _engine.Advance(_reference);
-            var update = _bins.Accept(step);
+            var update = _bins.Accept(step, finalThrough);
             _minutes.AddRange(update.Minutes);
             _binResults.AddRange(update.Bins);
             _health.AddRange(update.Health);

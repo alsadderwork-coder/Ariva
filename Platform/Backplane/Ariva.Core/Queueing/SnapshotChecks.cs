@@ -79,6 +79,16 @@ public static class SnapshotChecks
             if (state.ReferenceUtc == DateTime.MinValue || pending > state.ReferenceUtc)
                 bad++;
         }
+        // The engine's event clock (ARV-148, written from version 9 on): never ahead of the zone's receive clock, since each
+        // event counts at most up to the reference it arrived with, and set once the watermark has moved (the first event
+        // sets it). The engine's Restore checks it against the events held.
+        if (e.ClockUtc.HasValue)
+        {
+            Time(e.ClockUtc.Value);
+            if (e.ClockUtc.Value > state.ReferenceUtc || (e.ClockUtc.Value == DateTime.MinValue && e.WatermarkUtc != DateTime.MinValue))
+                bad++;
+        }
+
         Count(e.Sequence);
         Count(e.Order);
         Count(e.Reanchors);
