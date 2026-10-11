@@ -624,6 +624,14 @@ public sealed class DeskAgreementTests
         var atTheBound = Compare(new ComparisonInput { Scope = Scope(), ShadowMinutes = [.. Enumerable.Repeat<ShadowMinuteRow>(null, MaxRows)] });
         atTheBound.Problem.Should().BeNull();
         atTheBound.LeftOut.ShadowMinutes.Should().Be(MaxRows);
+
+        // ARV-149a (CWE-120): the desk-state agreement's level rows have the same bound, and each row that cannot be placed is
+        // counted, never read past.
+        Compare(new ComparisonInput { Scope = Scope(), DeskLevels = [.. Enumerable.Repeat<DeskLevelRow>(null, MaxRows + 1)] }).Problem.Should()
+            .Be(ComparisonProblem.InputTooLarge);
+        var levelsAtTheBound = Compare(new ComparisonInput { Scope = Scope(), DeskLevels = [.. Enumerable.Repeat<DeskLevelRow>(null, MaxRows)] });
+        levelsAtTheBound.Problem.Should().BeNull();
+        levelsAtTheBound.LeftOut.DeskLevels.Should().Be(MaxRows);
     }
 
     [Fact]

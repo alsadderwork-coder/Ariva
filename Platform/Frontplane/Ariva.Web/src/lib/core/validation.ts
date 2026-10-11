@@ -700,6 +700,20 @@ export interface NowcastZoneErrors {
 	check: CriterionCheck;
 }
 
+/**
+ * The level a desk's minutes were judged at (ARV-149a, F18): its full state (a staff or service zone at the desk), open or
+ * not open (no such zone: the state comes from AMAN alone), or both (its zones changed during the campaign); null when no
+ * minute was judged. Results frozen before ARV-149a read as the full state.
+ */
+export type DeskAgreementLevel = 'FullState' | 'Throughput' | 'Mixed';
+
+/** The levels a desk's minutes can be judged at, the only values a level from the server is shown as (ARV-149a). */
+export const deskAgreementLevels: readonly DeskAgreementLevel[] = [
+	'FullState',
+	'Throughput',
+	'Mixed'
+];
+
 /** Desk-state agreement of one border desk, or of every desk (deskId null). Border data. */
 export interface DeskAgreementSummary {
 	deskId: string | null;
@@ -712,6 +726,12 @@ export interface DeskAgreementSummary {
 	withoutSystemMinute: number;
 	strictAgreement: number | null;
 	check: CriterionCheck;
+	/** Judged minutes at the throughput level (absent in results frozen before ARV-149a: none). */
+	judgedAtThroughput?: number;
+	level?: DeskAgreementLevel | null;
+	/** Serving against Idle at the throughput level, no target (ARV-149a); null with no minute both sides call open. */
+	servingIdleMinutes?: number;
+	servingIdleAgreement?: number | null;
 }
 
 /** A calibration record of a device in scope (no notes, no person). */

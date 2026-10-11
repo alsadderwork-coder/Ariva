@@ -16,6 +16,7 @@
       "**/Desks/DeskRhythm.cs",
       "**/Desks/DeskState.cs",
       "**/Desks/DeskStateEngine.cs",
+      "**/Desks/DeskStateEngine.Snapshot.cs",
       "**/Validation/Comparison/*.cs"
     ],
     "coverage-analysis": "perTest",

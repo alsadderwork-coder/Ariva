@@ -26,6 +26,7 @@ public sealed partial class ImmigrationIntakeTests
     /// R3 (Residents, no zone), mapped to XR1 to XR3, and the queue zones Q-VIS and Q-RES of those lanes on the desks' level;</item>
     /// <item>XS7: the same checkpoint, desk, AMAN and zone codes on a level of its own, R2 without a zone (CWE-863);</item>
     /// <item>XS8: IMM with one AMAN desk R1 (Visitors, XR1) and the queue zone Q-VIS (the row cap and the context minute).</item>
+    /// <item>XS9: the same as XS8 (ARV-149a: a wave's first entrants before the stream has written the minute's length).</item>
     /// </list>
     /// </summary>
     private Task RhythmSiteAsync() => ExecuteAsMigrationAsync("""
@@ -96,6 +97,24 @@ public sealed partial class ImmigrationIntakeTests
                 INSERT INTO zone (id, profile_id, name, kind, level_id, queue_zone_id, desk_id, polygon, lane_category) VALUES
                     ('a1490000-0000-0000-0000-000000000221', 'a1490000-0000-0000-0000-000000000220', 'Q-VIS', 'Queue', 'a1490000-0000-0000-0000-000000000202', NULL, NULL, 'probe', 'VIS');
                 UPDATE zone_profile SET status = 'Published', version = 1, geometry_hash = repeat('e', 64), published_on = now() WHERE id = 'a1490000-0000-0000-0000-000000000220';
+            END IF;
+
+            IF NOT EXISTS (SELECT 1 FROM zone_profile WHERE id = 'a1490000-0000-0000-0000-000000000320') THEN
+                INSERT INTO site (id, code, name) VALUES (gen_random_uuid(), 'XS9', 'Transaction rhythm wave');
+                INSERT INTO terminal (id, airport_id, code, name, site_code)
+                     SELECT 'a1490000-0000-0000-0000-000000000301', id, 'XT9', 'Probe terminal 9', 'XS9' FROM airport WHERE iata_code = 'DMO' AND deleted_on IS NULL;
+                INSERT INTO level (id, terminal_id, site_code, code, name, floor_number, width_metres, depth_metres)
+                     VALUES ('a1490000-0000-0000-0000-000000000302', 'a1490000-0000-0000-0000-000000000301', 'XS9', 'L0', 'Arrivals', 0, 100, 100);
+                INSERT INTO checkpoint (id, level_id, site_code, code, name, kind)
+                     VALUES ('a1490000-0000-0000-0000-000000000303', 'a1490000-0000-0000-0000-000000000302', 'XS9', 'IMM', 'Immigration', 'Immigration');
+                INSERT INTO desk (id, checkpoint_id, site_code, code, name, kind, lane_category_codes) VALUES
+                    ('a1490000-0000-0000-0000-000000000311', 'a1490000-0000-0000-0000-000000000303', 'XS9', 'R1', 'Visitors 1', 'Desk', 'VIS');
+                INSERT INTO desk_code_mapping (id, system, external_code, desk_id, site_code) VALUES
+                    (gen_random_uuid(), 'Aman', 'XR1', 'a1490000-0000-0000-0000-000000000311', 'XS9');
+                INSERT INTO zone_profile (id, site_code, name, status) VALUES ('a1490000-0000-0000-0000-000000000320', 'XS9', 'Rhythm wave', 'Draft');
+                INSERT INTO zone (id, profile_id, name, kind, level_id, queue_zone_id, desk_id, polygon, lane_category) VALUES
+                    ('a1490000-0000-0000-0000-000000000321', 'a1490000-0000-0000-0000-000000000320', 'Q-VIS', 'Queue', 'a1490000-0000-0000-0000-000000000302', NULL, NULL, 'probe', 'VIS');
+                UPDATE zone_profile SET status = 'Published', version = 1, geometry_hash = repeat('f', 64), published_on = now() WHERE id = 'a1490000-0000-0000-0000-000000000320';
             END IF;
         END
         $rhythm$;
@@ -206,14 +225,20 @@ public sealed partial class ImmigrationIntakeTests
     }
 
     [Fact]
-    public async Task DeskFeed_Should_GiveNoLaneContextAndWarnOnce_When_ARead_ReachesItsRowCap()
+    public async Task DeskFeed_Should_GiveNoLaneContextAndWarnOnce_When_AReadReachesItsRowCap()
     {
         await SeedAsync();
         await RhythmSiteAsync();
         _host.Clock.Advance(TimeSpan.FromDays(90));
         var log = new FeedLog();
+        // ARV-149a: XS8's stream runs with no lateness and no push interval of its own (Stream:Sites:XS8), so a minute's length
+        // is due 30 s after the minute ends (the idle tick and the write, DeskFeed.QueueLengthDue): minute 6's missing length is
+        // overdue at the read of minute 7 (8:05), as a length the stream never wrote.
+        var stream = new Ariva.Infra.Streaming.StreamSettings();
+        stream.Sites["XS8"] = new Ariva.Infra.Streaming.StreamSiteSettings { LatenessSeconds = 0, PushIntervalSeconds = 0 };
+        Ariva.Infra.Border.DeskFeed.QueueLengthDue(stream, "XS8").Should().Be(TimeSpan.FromSeconds(30));
         var feed = new Ariva.Infra.Border.DeskFeed(_host.Provider.GetRequiredService<Ariva.Infra.Settings.DatabaseSettings>(), _host.Clock,
-            new Ariva.Infra.Border.DeskFeedSettings(), log);
+            new Ariva.Infra.Border.DeskFeedSettings(), log, stream);
         var t0 = new DateTime(Now.Ticks - Now.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc).AddMinutes(1);
         _host.Clock.Advance(t0 - Now);
         (await feed.SiteAsync("XS8", Ct)).Should().BeTrue("the engine starts now");
@@ -223,7 +248,8 @@ public sealed partial class ImmigrationIntakeTests
         DateTime? before = null;
 
         // R1 logs in at 0:20 and completes nothing; nobody waits. The reads of minutes 4 and 5 meet 30,000 AMAN intervals of
-        // the matched desk in the rhythm window (received a day ago, so the AMAN read does not take them).
+        // the matched desk in the rhythm window (received a day ago, so the AMAN read does not take them). ARV-149a: the queue
+        // minute 6 is written without a length.
         for (var m = 0; m < 9; m++)
         {
             _host.Clock.Advance(t0.AddMinutes(m + 1).AddSeconds(5) - Now);
@@ -235,7 +261,7 @@ public sealed partial class ImmigrationIntakeTests
 
             (await Apply<DeskIntervalStats>(i => i.ApplyDeskIntervalsAsync(ImmigrationScope.ForSite("XS8"), "aman-kafka",
                 [new DeskIntervalStats("XS8", "XR1", At(m), 60, 0, 0, 0, 0, 0, "VIS", $"x8-{++id}")], Ct))).Should().OnlyContain(r => r.Applied);
-            await QueueMinuteAsync("XS8/Q-VIS", t0.AddMinutes(m), 0);
+            await QueueMinuteAsync("XS8/Q-VIS", t0.AddMinutes(m), m == 6 ? null : 0);
             if (m == 4)
                 await CapIntervalsAsync(t0.AddMinutes(3), plant: true);
             if (m == 6)
@@ -265,7 +291,15 @@ public sealed partial class ImmigrationIntakeTests
         minutes["XS8/IMM/R1@3"].Should().Be("0|60|0|0|0|0|f", "logged in with nobody waiting");
         minutes["XS8/IMM/R1@4"].Should().Be("0|35|0|25|0|0|f", "no context since the read of minute 3: rows 5 and 7 from 4:35");
         minutes["XS8/IMM/R1@5"].Should().Be("0|25|0|35|0|0|f", "a context again from 5:35");
-        minutes["XS8/IMM/R1@6"].Should().Be("0|60|0|0|0|0|f");
+        // ARV-149a (fail closed, CWE-501): the read of minute 7 finds the zone's latest fresh minute (6) without a length, overdue
+        // (due at 7:30), so the queue is not known (minute 5's 0 does not stand in) and the desk, silent since its login, is
+        // Paused from 6:35 (row 5e); a length missing is not a value refused, so no bounds warning.
+        minutes["XS8/IMM/R1@6"].Should().Be("0|35|0|25|0|0|f", "the queue not known from 6:35");
+        log.Entries.Should().NotContain(e => e.Message.Contains("outside their bounds", StringComparison.Ordinal));
+        // The read that met it says so once, with the site and a count only.
+        log.Entries.Where(e => e.Message.Contains("have no length", StringComparison.Ordinal)).Should().ContainSingle()
+            .Which.Should().Match<FeedLogEntry>(e => e.Level == LogLevel.Warning && e.Values.Count == 3 && Equals(e.Values["Site"], "XS8") &&
+                Equals(e.Values["Count"], 1) && !e.Message.Contains("Q-VIS", StringComparison.Ordinal));
 
         // CWE-501: a context minute read back ahead of the clock counts as absent (else it would hold the contexts back until
         // then): the read gives its contexts and keeps its own minute, with a warning that names the site only.
@@ -278,6 +312,85 @@ public sealed partial class ImmigrationIntakeTests
         (await LaneContextAtAsync("XS8", "XS8/IMM/R1")).Should().Be(t0.AddMinutes(8).AddSeconds(35), "the read's contexts apply from its watermark");
         log.Entries.Where(e => e.Message.Contains("ahead of the clock", StringComparison.Ordinal)).Should().ContainSingle()
             .Which.Should().Match<FeedLogEntry>(e => e.Level == LogLevel.Warning && e.Values.Count == 2 && Equals(e.Values["Site"], "XS8"));
+    }
+
+    [Fact]
+    public async Task DeskFeed_Should_KeepTheMinuteBeforeUntilTheLengthIsDue_When_AWavesFirstEntrantsComeBeforeTheStreamWritesTheLength()
+    {
+        // ARV-149a (the rehearsal of 2026-10-10: A-VIS from 00:23 UTC, AR-10 and AR-11 Paused as their wave began): the stream
+        // writes a minute's counts while it runs and its length only once its watermark has passed the minute's end, D after it
+        // (180 s with the default stream settings, DeskFeed.QueueLengthDue). XS9's R1 logs in at 0:20 and completes one traveller
+        // in the interval of minute 0 (90 s: P is 6 minutes), then nothing; nobody waits in minutes 0 to 4 (length 0). From
+        // minute 5 people arrive: each minute's row has its entries and no length, and here the stream never writes one, so
+        // minute 5's length, due at 9:00, is overdue from the read of minute 8 (9:05).
+        await SeedAsync();
+        await RhythmSiteAsync();
+        _host.Clock.Advance(TimeSpan.FromDays(120));
+        var log = new FeedLog();
+        var feed = new Ariva.Infra.Border.DeskFeed(_host.Provider.GetRequiredService<Ariva.Infra.Settings.DatabaseSettings>(), _host.Clock,
+            new Ariva.Infra.Border.DeskFeedSettings(), log);
+        Ariva.Infra.Border.DeskFeed.QueueLengthDue(null, "XS9").Should().Be(TimeSpan.FromSeconds(180));
+        var t0 = new DateTime(Now.Ticks - Now.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc).AddMinutes(1);
+        _host.Clock.Advance(t0 - Now);
+        (await feed.SiteAsync("XS9", Ct)).Should().BeTrue("the engine starts now");
+        var id = 0;
+        DateTimeOffset At(int m, int s = 0) => new(t0.AddMinutes(m).AddSeconds(s));
+        IEnumerable<FeedLogEntry> WithoutLength() => log.Entries.Where(e => e.Message.Contains("have no length", StringComparison.Ordinal));
+
+        for (var m = 0; m < 10; m++)
+        {
+            _host.Clock.Advance(t0.AddMinutes(m + 1).AddSeconds(5) - Now);
+            if (m == 0)
+            {
+                (await Apply<DeskSessionChanged>(i => i.ApplyDeskSessionsAsync(ImmigrationScope.ForSite("XS9"), "aman-kafka",
+                    [new DeskSessionChanged("XS9", "XR1", DeskSessionState.Opened, "VIS", At(0, 20), $"x9-{++id}")], Ct))).Should().OnlyContain(r => r.Applied);
+            }
+
+            var transactions = m == 0 ? 1 : 0;
+            (await Apply<DeskIntervalStats>(i => i.ApplyDeskIntervalsAsync(ImmigrationScope.ForSite("XS9"), "aman-kafka",
+                [new DeskIntervalStats("XS9", "XR1", At(m), 60, transactions, transactions, transactions * 90, transactions * 90, transactions * 90, "VIS", $"x9-{++id}")], Ct)))
+                .Should().OnlyContain(r => r.Applied);
+            if (m < 5)
+                await QueueMinuteAsync("XS9/Q-VIS", t0.AddMinutes(m), 0);
+            else
+                await CountsMinuteAsync("XS9/Q-VIS", t0.AddMinutes(m), entries: m - 2);
+            (await feed.SiteAsync("XS9", Ct)).Should().BeTrue();
+            // Before minute 5's length is due its row is normal, not a gap: no warning.
+            if (m < 8)
+                WithoutLength().Should().BeEmpty("no length is overdue at the read of minute {0}", m);
+        }
+
+        // The reads of minutes 6 and 7 (contexts from 5:35 and 6:35) skip the rows whose lengths are not yet due and take minute
+        // 4's 0: R1 stays Idle (row 5d), though silent longer than P from 7:00. The read of minute 8 finds minute 5's length
+        // overdue: the queue is not known from 7:35 (minute 4's 0 does not stand in) and R1, silent since 1:00, is Paused (rows
+        // 5 and 7), with the warning that names the site and a count only, once per read that meets it.
+        var minutes = await RowsAsync("""
+            SELECT desk_code || '@' || extract(epoch FROM minute_utc - @from)::int / 60,
+                   concat_ws('|', closed_seconds, idle_seconds, serving_seconds, paused_seconds, unknown_seconds, sensor_derived_seconds, degraded)
+              FROM desk_minute WHERE desk_code LIKE 'XS9/%' AND minute_utc >= @from AND minute_utc < @to
+            """, r => (r.GetString(0), r.GetString(1)), t0, t0.AddMinutes(8));
+        minutes["XS9/IMM/R1@5"].Should().Be("0|60|0|0|0|0|f", "minute 4's 0 stands while minute 5's length is not yet due");
+        minutes["XS9/IMM/R1@6"].Should().Be("0|60|0|0|0|0|f", "minutes 5 and 6 have no length yet, and neither is due");
+        minutes["XS9/IMM/R1@7"].Should().Be("0|35|0|25|0|0|f", "minute 5's length overdue at the read of 9:05: the queue not known from 7:35");
+        WithoutLength().Should().HaveCount(2).And.OnlyContain(e => e.Level == LogLevel.Warning && e.Values.Count == 3 && Equals(e.Values["Site"], "XS9") &&
+            Equals(e.Values["Count"], 1) && !e.Message.Contains("Q-VIS", StringComparison.Ordinal));
+        log.Entries.Should().NotContain(e => e.Message.Contains("outside their bounds", StringComparison.Ordinal));
+    }
+
+    // A queue zone's minute as the stream writes it while the minute runs (ARV-149a): its counts, no length yet.
+    private async Task CountsMinuteAsync(string zoneKey, DateTime minute, int entries)
+    {
+        await using var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync()));
+        await connection.OpenAsync(Ct);
+        await using var command = new NpgsqlCommand("""
+            INSERT INTO queue_minute (zone_key, minute_utc, profile_version, status, entries, updated_on)
+            VALUES (@zone, @minute, 1, 'Provisional', @entries, now())
+            ON CONFLICT (zone_key, minute_utc) DO UPDATE SET entries = EXCLUDED.entries
+            """, connection);
+        command.Parameters.AddWithValue("zone", zoneKey);
+        command.Parameters.AddWithValue("minute", minute);
+        command.Parameters.AddWithValue("entries", (long)entries);
+        await command.ExecuteNonQueryAsync(Ct);
     }
 
     // 30,000 AMAN intervals of XS8's R1 in the minutes before `latest`, received a day before it (planted), or removed.
@@ -315,7 +428,7 @@ public sealed partial class ImmigrationIntakeTests
         return value is DateTime t ? DateTime.SpecifyKind(t, DateTimeKind.Utc) : null;
     }
 
-    private async Task QueueMinuteAsync(string zoneKey, DateTime minute, int length)
+    private async Task QueueMinuteAsync(string zoneKey, DateTime minute, int? length)
     {
         await using var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync()));
         await connection.OpenAsync(Ct);
@@ -326,7 +439,7 @@ public sealed partial class ImmigrationIntakeTests
             """, connection);
         command.Parameters.AddWithValue("zone", zoneKey);
         command.Parameters.AddWithValue("minute", minute);
-        command.Parameters.AddWithValue("length", length);
+        command.Parameters.Add(new NpgsqlParameter("length", NpgsqlTypes.NpgsqlDbType.Integer) { Value = (object)length ?? DBNull.Value });
         await command.ExecuteNonQueryAsync(Ct);
     }
 

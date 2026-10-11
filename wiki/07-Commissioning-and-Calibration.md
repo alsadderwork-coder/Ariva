@@ -147,7 +147,7 @@ Acceptance thresholds (proposals to agree contractually, not industry standards)
 | Realised-wait absolute error | Within the larger of 1 minute or 10 percent of the true wait | Per tracer: `w_system - w_tracer` |
 | Realised-wait bias | Within plus or minus 5 percent | `sum(w_system - w_tracer) / sum(w_tracer)` |
 | Track completion | At least 90 percent | Tracks that exited / tracks that entered |
-| Desk-state agreement with observer log | At least 95 percent of observed minutes | |
+| Desk-state agreement with observer log | At least 95 percent of observed minutes | Each observed minute at its desk's level (ARV-149a): a desk with a staff or service zone on its full state (closed, idle, serving, paused); a desk without one, whose state comes from AMAN alone, open (idle or serving) against not open (paused or closed), with serving against idle shown beside it without a target. 95 percent on the full state needs a staff or service zone at each desk |
 | Nowcast error against later realised wait | Median within 2 minutes for waits under 20 minutes | |
 | Availability during the pilot | 99 percent of operating hours | |
 | Ground-truth proof | No target: nowcast error with and without AMAN inputs, side by side | |

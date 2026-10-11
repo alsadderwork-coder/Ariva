@@ -502,6 +502,26 @@ test('a closed campaign\'s results show each criterion, the tables, the proof an
 	await expect(page.locator('[data-testid="results-tracer-zone"][data-zone="Q-A"] td').first()).toHaveText('4');
 	await expect(page.getByTestId('results-tracer-overall')).toBeVisible();
 	await expect(page.locator('[data-testid="results-desk"][data-desk="WIMM WD01"]')).toBeVisible();
+	// ARV-149a: each desk shows the level its minutes were judged at, as the server judged them (E2EW's desks have no staff or
+	// service zone, so open or not open for minutes after its profile's publication, the full state before it), with Serving
+	// against Idle beside it and the note on the two levels.
+	const levelWords: Record<string, [string, string]> = {
+		FullState: ['Full state', 'الحالة الكاملة'],
+		Throughput: ['Open or not open', 'مفتوح أو غير مفتوح'],
+		Mixed: ['Both (zones changed)', 'كلاهما (تغيرت المناطق)']
+	};
+	const wd01 = second.desks.desks.find((d: any) => d.deskCode === 'WD01');
+	expect(Object.keys(levelWords), JSON.stringify(wd01)).toContain(wd01.level);
+	const wd01Level = page.locator('[data-testid="results-desk"][data-desk="WIMM WD01"] [data-testid="results-desk-level"]');
+	await expect(wd01Level).toHaveText(levelWords[wd01.level][0]);
+	await expect(page.getByTestId('results-desks').getByRole('columnheader', { name: 'Judged at' })).toBeVisible();
+	await expect(page.getByTestId('results-desks').getByRole('columnheader', { name: 'Serving against Idle (no target)' })).toBeVisible();
+	await expect(page.getByTestId('results-desk-levels-note')).toContainText('open (Idle or Serving) against not open (Paused or Closed)');
+	// The desks table can be wider than the page: its scrolling region is reached with the keyboard and named by its caption.
+	const desksRegion = page.getByRole('region', { name: 'Desk-state agreement per border desk', exact: true });
+	await expect(desksRegion).toHaveAttribute('tabindex', '0');
+	await desksRegion.focus();
+	await expect(desksRegion).toBeFocused();
 	await expect(page.getByTestId('results-proof-section')).toBeVisible();
 	await expect(page.getByTestId('results-proof-zone')).toHaveCount(2);
 	await expect(page.getByTestId('results-no-calibrations')).toBeVisible();
@@ -520,6 +540,7 @@ test('a closed campaign\'s results show each criterion, the tables, the proof an
 	await expect(page.getByRole('heading', { level: 1 })).toHaveText('حملات التحقق');
 	await expect(page.getByTestId('campaign-tab-results')).toHaveText('النتائج');
 	await expect(criterion('CountAccuracy').getByTestId('criterion-target')).toHaveText('95.0% على الأقل');
+	await expect(wd01Level).toHaveText(levelWords[wd01.level][1]);
 	const first = (await page.getByTestId('campaign-tab-progress').boundingBox())!;
 	const last = (await page.getByTestId('campaign-tab-results').boundingBox())!;
 	expect(first.x, 'the first tab is on the start side, the right in Arabic').toBeGreaterThan(last.x);
@@ -536,6 +557,7 @@ test('a closed campaign\'s results show each criterion, the tables, the proof an
 	await expect(duty.getByTestId('criterion-row')).toHaveCount(6);
 	await expect(duty.locator('[data-testid="criterion-row"][data-criterion="DeskStateAgreement"]')).toHaveCount(0);
 	await expect(duty.getByTestId('results-desks-section')).toHaveCount(0);
+	await expect(duty.getByTestId('results-desk-level')).toHaveCount(0);
 	await expect(duty.getByText('WD01')).toHaveCount(0);
 	await duty.getByTestId('campaign-tab-progress').click();
 	await expect(duty.locator('[data-testid="progress-line"][data-line="Entry A"] [data-testid="progress-bins"]')).toHaveText('2 of 20');
@@ -577,6 +599,32 @@ test('campaign, zone and line names and correction reasons render as text on the
 	await expect(page.getByTestId('campaign-form-zone')).toHaveCount(2);
 	await expect(page.getByTestId('campaign-form-desks')).toHaveCount(0);
 	await page.getByTestId('campaign-form-cancel').click();
+	await guards.expectClean();
+});
+
+test('a desk level is shown only when it is one of the three level names; markup or any other word from the answer shows as none', async ({ page }) => {
+	// ARV-149a (defence in depth, CWE-79): the level picks a translation, so the screen checks it against the three names
+	// first, as it checks values read from the address. The results answer is rewritten on its way to the page.
+	test.setTimeout(120_000);
+	const id = await runningCampaign(`Levels ${run}`);
+	await groundTruth(id, `Levels checked ${run}`);
+	await page.route(`**/campaigns/${id}/results*`, async (route) => {
+		const response = await route.fetch();
+		if (response.status() !== 200) return route.fulfill({ response });
+		const body = await response.json();
+		for (const desk of body.desks?.desks ?? []) desk.level = desk.deskCode === 'WD01' ? xssPayloads[0] : 'constructor';
+		if (body.desks?.overall) body.desks.overall.level = '__proto__';
+		return route.fulfill({ response, json: body });
+	});
+	const guards = await guardPage(page);
+	await signInThroughUi(page, accounts().webAdmin);
+	await page.goto(campaignsPage(`campaign=${id}&view=results`));
+	await expect(page.getByTestId('results-live')).toBeVisible({ timeout: 60_000 });
+	await expect(page.locator('[data-testid="results-desk"][data-desk="WIMM WD01"] [data-testid="results-desk-level"]')).toHaveText('None');
+	const levels = page.getByTestId('results-desk-level');
+	expect(await levels.count()).toBeGreaterThan(1);
+	for (const cell of await levels.all()) await expect(cell).toHaveText('None');
+	await expectNothingInjected(page);
 	await guards.expectClean();
 });
 

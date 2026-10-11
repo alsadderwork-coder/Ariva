@@ -365,8 +365,9 @@ public sealed class ValidationResultsTests(PostgresFixture fixture) : IAsyncDisp
         // The campaign's site: waits of 8.2 against tracers of 8 (error 0.2, bias 2.5 percent), nowcasts of 8 (error 0.2),
         // 98 of 100 crossings a bin, D01 Serving as observed, track completion 0.95, 100 of 101 minutes available.
         await PlantOutputsAsync(p, 8.2, 8, 7, "Serving", 9, 0.95, 100, "CAM-A1");
-        // The other site, with the same zone, line and desk names: every value would fail a criterion if read.
-        await PlantOutputsAsync(other, 50, 1, 70, "Idle", 99, 0.10, 0, "CAM-B1");
+        // The other site, with the same zone, line and desk names: every value would fail a criterion if read (its desk minutes
+        // account for no second, so Unknown: a disagreement at the full state and at the throughput level alike, ARV-149a).
+        await PlantOutputsAsync(other, 50, 1, 70, "Unknown", 99, 0.10, 0, "CAM-B1");
         await ExecuteAsync("INSERT INTO zone_outage (zone_key, device_code, from_utc, to_utc, closed, recorded_on) VALUES ('VRA2/Q-A', 'CAM-B1', @from, @to, true, now())",
             ("from", Utc(5, 0)), ("to", Utc(8, 0)));
 
@@ -424,6 +425,78 @@ public sealed class ValidationResultsTests(PostgresFixture fixture) : IAsyncDisp
         results.LeftOut.Should().Match<ValidationResultsViewModel.LeftOutView>(l => l.Keys.Count == 0 && l.QualityIntervals == 0 && l.QueueMinutes == 0);
         // 05:59 is a planned minute whose next minute has a realised wait but which has no row: flagged (L5).
         results.Review.Should().Equal(CampaignReview.CampaignNotClosed, CampaignReview.NowcastMissing);
+    }
+
+    [Fact]
+    public async Task Results_Should_JudgeEachDeskMinuteAtTheLevelOfTheProfileInForce_When_AStaffZoneIsPublishedDuringTheObservedMinutes()
+    {
+        // ARV-149a: version 1 (in force since 1 September) has no staff or service zone; version 2, published at 06:08 on 1 October
+        // (retiring version 1), gives D01 a staff zone. The observer logs D01 Serving from 06:00 to 06:14 under version 2's
+        // campaign; Ariva stored Idle. 06:00 to 06:07 had version 1 in force: open or not open, agreeing; 06:08 to 06:14 version 2:
+        // the full state, disagreeing. The level comes from the profile versions, never from the observer. CWE-863: another site's
+        // published version names VRN1's D01 in a staff zone (a zone's desk has no site tie in the schema): it is never read, so
+        // 06:00 to 06:07 stay at the throughput level (a read that ignored the site would put the whole morning on the full state).
+        var p = await PlantSiteAsync("VRN1", "VQT");
+        var other = await PlantSiteAsync("VRN2", "VQU");
+        var (ov2, oqa) = (Guid.CreateVersion7(), Guid.CreateVersion7());
+        await ExecuteAsync("""
+            INSERT INTO zone_profile (id, site_code, name, status) VALUES (@v2, @site, 'Profile', 'Draft');
+            INSERT INTO zone (id, profile_id, name, kind, level_id, polygon, queue_zone_id, desk_id) VALUES
+                (@qa, @v2, 'Q-A', 'Queue', @level, '[]', NULL, NULL),
+                (gen_random_uuid(), @v2, 'D01 staff', 'Staff', @level, '[]', @qa, @foreignDesk);
+            UPDATE zone_profile SET status = 'Retired', retired_on = '2026-09-15T00:00:00Z' WHERE id = @v1;
+            UPDATE zone_profile SET status = 'Published', version = 2, based_on_version = 1, geometry_hash = repeat('e', 64), published_on = '2026-09-15T00:00:00Z',
+                                    published_by = 'it'
+             WHERE id = @v2;
+            """, ("site", other.Site), ("v1", other.Profile), ("v2", ov2), ("qa", oqa), ("level", other.Level), ("foreignDesk", p.D01));
+        var (v2, qa2, qb2, entry2, staff) = (Guid.CreateVersion7(), Guid.CreateVersion7(), Guid.CreateVersion7(), Guid.CreateVersion7(), Guid.CreateVersion7());
+        await ExecuteAsync("""
+            INSERT INTO zone_profile (id, site_code, name, status) VALUES (@v2, @site, 'Profile', 'Draft');
+            INSERT INTO zone (id, profile_id, name, kind, level_id, polygon, queue_zone_id, desk_id) VALUES
+                (@qa2, @v2, 'Q-A', 'Queue', @level, '[]', NULL, NULL),
+                (@qb2, @v2, 'Q-B', 'Queue', @level, '[]', NULL, NULL),
+                (@staff, @v2, 'D01 staff', 'Staff', @level, '[]', @qa2, @d01);
+            INSERT INTO line (id, profile_id, name, role, zone_id, level_id, start_x, start_y, end_x, end_y) VALUES
+                (@entry2, @v2, 'Entry A', 'Entry', @qa2, @level, 0, 0, 0, 1);
+            UPDATE zone_profile SET status = 'Retired', retired_on = '2026-10-01T06:08:00Z' WHERE id = @v1;
+            UPDATE zone_profile SET status = 'Published', version = 2, based_on_version = 1, geometry_hash = repeat('d', 64), published_on = '2026-10-01T06:08:00Z',
+                                    published_by = 'it'
+             WHERE id = @v2;
+            """, ("site", p.Site), ("v1", p.Profile), ("v2", v2), ("qa2", qa2), ("qb2", qb2), ("staff", staff), ("entry2", entry2), ("level", p.Level), ("d01", p.D01));
+        await PlantOutputsAsync(p, 8.2, 8, 7, "Idle", 9, 0.95, 100, "CAM-L1");
+
+        var created = await As(p.Manager, s => s.GetRequiredService<ISvcValidationCampaigns>().CreateAsync(p.Site,
+            new CreateValidationCampaignRequest("Levels", 2, [qa2, qb2], [entry2], ["2026-10-01"], 1, 2, [p.D01]), Ct));
+        created.HasErrors.Should().BeFalse(string.Join(" ", created.ErrorMessages ?? []));
+        var campaign = created.Data.Id;
+        (await As(p.Manager, s => s.GetRequiredService<ISvcValidationCampaigns>().StartAsync(p.Site, campaign, Ct))).HasErrors.Should().BeFalse();
+        var logged = await As(p.Observer, s => s.GetRequiredService<ISvcDeskObservations>().CaptureAsync(p.Site, campaign,
+            new CaptureDeskObservationsRequest("2026-10-01T06:00:00Z", [new DeskMinutesRequest(p.D01, Enumerable.Repeat("Serving", 15).ToArray())]), "desks:Levels", Ct));
+        logged.HasErrors.Should().BeFalse(string.Join(" ", logged.ErrorMessages ?? []));
+
+        var read = await ResultsAsync(p.Manager, "VRN1", campaign);
+        read.HasErrors.Should().BeFalse(string.Join(" ", read.ErrorMessages ?? []));
+        var desk = read.Data.Desks.Desks.Single();
+        (desk.Judged, desk.JudgedAtThroughput, desk.Agreeing, desk.Level).Should().Be((15, 8, 8, (DeskAgreementLevel?)DeskAgreementLevel.Mixed));
+        (desk.ServingIdleMinutes, desk.ServingIdleAgreeing, desk.ServingIdleAgreement).Should().Be((8, 0, (double?)0.0));
+        desk.Check.Value.Should().BeApproximately(8 / 15.0, 1e-12);
+        read.Data.Desks.DeskLevelsLeftOut.Should().Be(0);
+        read.Data.Desks.Overall.Should().Match<DeskAgreementSummary>(o => o.JudgedAtThroughput == 8 && o.Agreeing == 8);
+        // The rows read: VRN1's two versions only, never VRN2's (whose version 2 would say D01 has a staff zone throughout).
+        var rows = await As(p.Manager, async s =>
+        {
+            var service = s.GetRequiredService<SvcValidationResults>();
+            return await service.DeskLevelsAsync(await service.CampaignByIdAsync("VRN1", campaign, Ct), Utc(0, 0), Utc(23, 0), Ct);
+        });
+        rows.Select(r => (r.DeskId, r.ProfileVersion, r.Level)).Should().Equal((p.D01, 1, DeskAgreementLevel.Throughput), (p.D01, 2, DeskAgreementLevel.FullState));
+
+        // An airport role reads the same results without any desk, level or Serving against Idle.
+        var host = await RuntimeAsync();
+        var duty = await host.CreateUserAsync($"it.vres.lvl.{Guid.NewGuid():N}"[..32], roles: [RoleCodes.TerminalDutyManager]);
+        await ExecuteAsync("INSERT INTO user_site (id, user_id, site_code) VALUES (gen_random_uuid(), @user, 'VRN1')", ("user", duty));
+        var airport = await ResultsAsync(duty, "VRN1", campaign);
+        airport.HasErrors.Should().BeFalse(string.Join(" ", airport.ErrorMessages ?? []));
+        airport.Data.Desks.Should().BeNull("desk-state results are border data, never an airport role's");
     }
 
     [Fact]
@@ -516,10 +589,19 @@ public sealed class ValidationResultsTests(PostgresFixture fixture) : IAsyncDisp
         // M1 of the ARV-104g2 review (CWE-120, CWE-400): a ground-truth read, a per-day read and a per-zone read each return
         // nothing (refused) one row beyond their limit and every row at it, and the computation answers TooLarge, never a
         // comparison over a list cut short. The campaign holds 15 desk states, 4 bins of Entry A's crossings on its day and 61
-        // queue minutes of Q-A.
+        // queue minutes of Q-A. ARV-149a: D01 has 2 level rows over 1 and 2 October, version 1 and a version 2 published at the
+        // start of 2 October, after the planned day (the campaign's day keeps version 1 alone).
         var p = await PlantSiteAsync("VRF1", "VQH");
         await PlantOutputsAsync(p, 8.2, 8, 7, "Serving", 9, 0.95, 100, "CAM-H1");
         var campaign = await CampaignAsync(p, "Bounds", 100, "2026-10-01T06:00:00Z", "Serving");
+        await ExecuteAsync("""
+            INSERT INTO zone_profile (id, site_code, name, status) VALUES (@v2, @site, 'Profile', 'Draft');
+            UPDATE zone_profile SET status = 'Retired', retired_on = '2026-10-02T00:00:00Z' WHERE id = @v1;
+            UPDATE zone_profile SET status = 'Published', version = 2, based_on_version = 1, geometry_hash = repeat('e', 64), published_on = '2026-10-02T00:00:00Z',
+                                    published_by = 'it'
+             WHERE id = @v2;
+            """, ("site", p.Site), ("v1", p.Profile), ("v2", Guid.CreateVersion7()));
+        var twoDays = (From: Utc(0, 0), To: new DateTime(2026, 10, 3, 0, 0, 0, DateTimeKind.Utc));
         var day = new UtcWindow(new DateTime(2026, 9, 30, 20, 0, 0, DateTimeKind.Utc), Utc(20, 0));
         var zones = new Dictionary<string, string>(StringComparer.Ordinal) { ["VRF1/Q-A"] = "Q-A", ["VRF1/Q-B"] = "Q-B" };
 
@@ -540,6 +622,9 @@ public sealed class ValidationResultsTests(PostgresFixture fixture) : IAsyncDisp
             (await Limited(61).QueueMinutesAsync("VRF1", "Q-A", day, Ct)).Should().HaveCount(61);
             (await Limited(18).QueueBinsAsync(zones, day, Ct)).Should().HaveCount(18);
             (await Limited(17).QueueBinsAsync(zones, day, Ct)).Should().BeNull();
+            (await Limited(1).DeskLevelsAsync(entity, twoDays.From, twoDays.To, Ct)).Should().BeNull("the level read beyond its limit is refused (CWE-120)");
+            (await Limited(2).DeskLevelsAsync(entity, twoDays.From, twoDays.To, Ct)).Select(r => (r.ProfileVersion, r.Level)).Should()
+                .Equal((1, DeskAgreementLevel.Throughput), (2, DeskAgreementLevel.Throughput));
 
             (await Limited(14).CompareAsync("VRF1", campaign, sliced: true, Ct)).ErrorMessages.Should().Equal(ValidationResultsErrors.TooLarge);
             (await Limited(60).CompareAsync("VRF1", campaign, sliced: true, Ct)).ErrorMessages.Should().Equal(ValidationResultsErrors.TooLarge);
@@ -652,6 +737,62 @@ public sealed class ValidationResultsTests(PostgresFixture fixture) : IAsyncDisp
             INSERT INTO validation_result_revision (id, campaign_id, site_code, revision, reason, document, content_sha256, computed_utc, frozen_utc, frozen_by_id)
             VALUES (gen_random_uuid(), @c, 'VRG1', 2, NULL, '\x7b7d', encode(sha256('\x7b7d'), 'hex'), now(), now(), NULL)
             """, ("c", campaign))).Should().Be("23514", "a recomputation has a reason and a person");
+    }
+
+    [Fact]
+    public async Task Stored_Should_BeServedWithItsHashAndReadOnTheFullState_When_ItWasFrozenBeforeTheLevels()
+    {
+        // ARV-149a (R-b of its review): a revision frozen before the levels has none of their fields. Planted as one (its bytes and
+        // their SHA-256 in the revision table, as ARV-104g stored them), it is served after its hash is checked against those bytes,
+        // the stored row unchanged, and reads as judged on the full state, as it was, though D01 has no staff or service zone (so
+        // results computed today judge it at the throughput level). A document claiming "level":"Throughput" without the counts
+        // behind it reads the same: the level is worked out from the minutes, never taken from the document's word.
+        var p = await PlantSiteAsync("VRO1", "VQV");
+        await PlantOutputsAsync(p, 8.2, 8, 7, "Serving", 9, 0.95, 100, "CAM-O1");
+        var campaign = await CampaignAsync(p, "Before levels", 100, "2026-10-01T06:00:00Z", "Serving");
+        await CloseAsync(p, campaign);
+        var today = Read(await ServedAsync(p.Manager, "VRO1", campaign));
+        today.Desks.Overall.Should().Match<DeskAgreementSummary>(o => o.Level == DeskAgreementLevel.Throughput && o.JudgedAtThroughput == 15 && o.Agreeing == 15,
+            "revision 1, frozen today, judges D01 without a zone at the throughput level");
+
+        // Revision 1's document without the ARV-149a fields; then the same claiming the throughput level.
+        var stored = (byte[])(await RowAsync("SELECT document FROM validation_result_revision WHERE campaign_id = @c AND revision = 1", ("c", campaign)))[0];
+        var node = System.Text.Json.Nodes.JsonNode.Parse(stored).AsObject();
+        var desks = node["desks"].AsObject();
+        var summaries = desks["desks"].AsArray().Append(desks["overall"]).Select(n => n.AsObject()).ToList();
+        foreach (var summary in summaries)
+        {
+            foreach (var name in new[] { "judgedAtThroughput", "servingIdleMinutes", "servingIdleAgreeing", "level", "servingIdleAgreement" })
+                summary.Remove(name).Should().BeTrue(name);
+        }
+
+        desks.Remove("deskLevelsLeftOut").Should().BeTrue();
+        var before = System.Text.Encoding.UTF8.GetBytes(node.ToJsonString());
+        foreach (var summary in summaries)
+            summary["level"] = "Throughput";
+        var claimed = System.Text.Encoding.UTF8.GetBytes(node.ToJsonString());
+
+        foreach (var (revision, document) in new[] { (2, before), (3, claimed) })
+        {
+            var hash = ValidationResultsViewModel.Hash(document);
+            await ExecuteAsync("""
+                INSERT INTO validation_result_revision (id, campaign_id, site_code, revision, reason, document, content_sha256, computed_utc, frozen_utc, frozen_by_id)
+                VALUES (gen_random_uuid(), @c, 'VRO1', @revision, 'Frozen before ARV-149a', @document, @hash, now(), now(), @by)
+                """, ("c", campaign), ("revision", revision), ("document", document), ("hash", hash), ("by", p.Manager));
+
+            var served = await ServedAsync(p.Manager, "VRO1", campaign, revision);
+            served.HasErrors.Should().BeFalse(string.Join(" ", served.ErrorMessages ?? []));
+            served.Data.ContentSha256.Should().Be(hash, "served after its hash is checked against its own stored bytes");
+            var read = Read(served);
+            read.Desks.Desks.Append(read.Desks.Overall).Should()
+                .OnlyContain(d => d.Level == DeskAgreementLevel.FullState && d.JudgedAtThroughput == 0 && d.ServingIdleAgreement == null, $"revision {revision}");
+            (read.Desks.Overall.Judged, read.Desks.Overall.Agreeing).Should().Be((today.Desks.Overall.Judged, today.Desks.Overall.Agreeing));
+            System.Text.Encoding.UTF8.GetString(served.Data.Utf8.Span).Should().Contain("\"level\":\"FullState\"").And.NotContain("\"level\":\"Throughput\"");
+            var row = await RowAsync("SELECT encode(sha256(document), 'hex'), content_sha256, document FROM validation_result_revision WHERE campaign_id = @c AND revision = @revision",
+                ("c", campaign), ("revision", revision));
+            ((string)row[0], (string)row[1]).Should().Be((hash, hash));
+            ((byte[])row[2]).Should().Equal(document, "reading never rewrites a stored revision");
+        }
     }
 
     [Fact]

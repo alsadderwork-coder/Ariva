@@ -330,7 +330,10 @@ public sealed record ValidationResultsViewModel(
     /// Every desk-state result (border per-desk data; see the type): the desk-state agreement's campaign verdict, each desk, every
     /// desk, the desk rows left out, their unusable keys without observers, and the unusable keys of desk states with their
     /// observers (<see cref="ObserverKeys"/>: border data and observer-level at once). The observed minutes themselves are not
-    /// listed (M3, ARV-104g): each desk's summary counts them.
+    /// listed (M3, ARV-104g): each desk's summary counts them. ARV-149a: each summary says the level its minutes were judged at
+    /// and, with no target, Serving against Idle at the throughput level (<see cref="DeskAgreementSummary"/>);
+    /// <see cref="DeskLevelsLeftOut"/> counts the desk level rows left out (0 in results frozen before ARV-149a, which judged every
+    /// minute on the full state and are served as stored).
     /// </summary>
     public sealed record DesksView(
         CampaignCriterionVerdict Verdict,
@@ -339,7 +342,8 @@ public sealed record ValidationResultsViewModel(
         int ObservationsLeftOut,
         int DeskMinutesLeftOut,
         IReadOnlyList<UnusableKey> Keys,
-        IReadOnlyList<UnusableKey> ObserverKeys);
+        IReadOnlyList<UnusableKey> ObserverKeys,
+        int DeskLevelsLeftOut = 0);
 
     /// <summary>
     /// The observer-level results (see the type): each tracer run with its observer, the offset spread per observer and per batch,
@@ -437,7 +441,7 @@ public sealed record ValidationResultsViewModel(
                 CampaignVerdicts.DeskStateAgreement(result, targets, settings, verdictSettings, campaign.HasDesks),
                 result.Desks, result.DeskOverall, left.DeskObservations, left.DeskMinutes,
                 [.. keys.Where(IsDesk).Select(k => k with { ObserverId = null })],
-                [.. keys.Where(k => k.Kind == UnusableKeyKind.DeskObservation)]),
+                [.. keys.Where(k => k.Kind == UnusableKeyKind.DeskObservation)], left.DeskLevels),
             new ObserversView(result.Tracers, result.Observers, result.Batches, [.. keys.Where(k => k.Kind == UnusableKeyKind.ManualCount)]));
     }
 

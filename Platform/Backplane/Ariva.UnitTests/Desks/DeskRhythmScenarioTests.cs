@@ -155,13 +155,16 @@ public sealed class DeskRhythmScenarioTests(ITestOutputHelper output)
     }
 
     private sealed record Agreement(int Judged, int Agreeing, int OpenAgreeing, IReadOnlyDictionary<(DeskStatus Observed, DeskStatus System), int> Confusion,
-        IReadOnlyDictionary<string, (int Judged, int Agreeing)> Regimes)
+        IReadOnlyDictionary<string, (int Judged, int Agreeing, int OpenAgreeing)> Regimes)
     {
         public double Share => (double)Agreeing / Judged;
 
         public double OpenShare => (double)OpenAgreeing / Judged;
 
         public double In(string regime) => (double)Regimes[regime].Agreeing / Regimes[regime].Judged;
+
+        /// <summary>ARV-149a: the agreement at the throughput level (F18 for a desk without a staff or service zone) in a regime.</summary>
+        public double OpenIn(string regime) => (double)Regimes[regime].OpenAgreeing / Regimes[regime].Judged;
     }
 
     /// <summary>Each Visitors desk minute of [from, to) of an evening against what an observer sees in it, in all and by regime.</summary>
@@ -172,7 +175,7 @@ public sealed class DeskRhythmScenarioTests(ITestOutputHelper output)
         var servers = ScenarioModel.Queues[q].Servers;
         var byKey = minutes.ToDictionary(m => (m.DeskCode, m.MinuteUtc));
         var confusion = new Dictionary<(DeskStatus, DeskStatus), int>();
-        var regimes = new Dictionary<string, (int Judged, int Agreeing)>(StringComparer.Ordinal);
+        var regimes = new Dictionary<string, (int Judged, int Agreeing, int OpenAgreeing)>(StringComparer.Ordinal);
         int judged = 0, agreeing = 0, openAgreeing = 0;
         for (var minute = from; minute < to; minute++)
         {
@@ -181,22 +184,34 @@ public sealed class DeskRhythmScenarioTests(ITestOutputHelper output)
             var regime = day.L[q][i] > 0.5 ? "queue" : day.D[q][i] > 0.01 ? "light demand" : "empty hall";
             for (var k = 0; k < servers.Count; k++)
             {
-                var observed = Observed(ValidationTruth.Observed(states[k].State, day.Servers[q][k].Pause[i] != 0, ValidationTruth.Serves(day, q, minute, k)));
+                var seen = ValidationTruth.Observed(states[k].State, day.Servers[q][k].Pause[i] != 0, ValidationTruth.Serves(day, q, minute, k));
+                var observed = Observed(seen);
                 var stored = byKey[(ReferenceReplay.DeskKeyOf(servers[k]), ReferenceReplay.WallOf(minute))];
                 var system = DeskStateAgreement.Dominant(stored.Closed.TotalSeconds, stored.Idle.TotalSeconds, stored.Serving.TotalSeconds, stored.Paused.TotalSeconds,
                     stored.Unknown.TotalSeconds) ?? DeskStatus.Unknown;
                 var agrees = system != DeskStatus.Unknown && system == observed;
                 judged++;
                 agreeing += agrees ? 1 : 0;
-                openAgreeing += DeskStateAgreement.CountsForThroughput(system) == DeskStateAgreement.CountsForThroughput(observed) && system != DeskStatus.Unknown ? 1 : 0;
+                // ARV-149a: open or not open as F18 judges a desk without a staff or service zone (the comparison engine's own rule).
+                var open = DeskStateAgreement.Agrees(AsObserved(seen), system, DeskAgreementLevel.Throughput);
+                openAgreeing += open ? 1 : 0;
                 confusion[(observed, system)] = confusion.GetValueOrDefault((observed, system)) + 1;
                 var tally = regimes.GetValueOrDefault(regime);
-                regimes[regime] = (tally.Judged + 1, tally.Agreeing + (agrees ? 1 : 0));
+                regimes[regime] = (tally.Judged + 1, tally.Agreeing + (agrees ? 1 : 0), tally.OpenAgreeing + (open ? 1 : 0));
             }
         }
 
         return new Agreement(judged, agreeing, openAgreeing, confusion, regimes);
     }
+
+    // The simulator's observed state as the capture API stores it (the comparison engine's own type).
+    private static Ariva.Core.Domain.Enums.ObservedDeskState AsObserved(ObservedDeskState state) => state switch
+    {
+        ObservedDeskState.Serving => Ariva.Core.Domain.Enums.ObservedDeskState.Serving,
+        ObservedDeskState.Idle => Ariva.Core.Domain.Enums.ObservedDeskState.Idle,
+        ObservedDeskState.Paused => Ariva.Core.Domain.Enums.ObservedDeskState.Paused,
+        _ => Ariva.Core.Domain.Enums.ObservedDeskState.Closed
+    };
 
     private static DeskStatus Observed(ObservedDeskState state) => state switch
     {
@@ -209,8 +224,8 @@ public sealed class DeskRhythmScenarioTests(ITestOutputHelper output)
     private void Print(string name, Agreement a)
     {
         output.WriteLine($"{name}: {a.Agreeing} of {a.Judged} desk minutes agree ({a.Share:F3}); open or not open {a.OpenShare:F3}");
-        foreach (var (regime, (judged, agreeing)) in a.Regimes.OrderBy(r => r.Key, StringComparer.Ordinal))
-            output.WriteLine($"  {regime}: {agreeing} of {judged} ({(double)agreeing / judged:F3})");
+        foreach (var (regime, (judged, agreeing, open)) in a.Regimes.OrderBy(r => r.Key, StringComparer.Ordinal))
+            output.WriteLine($"  {regime}: {agreeing} of {judged} ({(double)agreeing / judged:F3}); open or not open {open} ({(double)open / judged:F3})");
         foreach (var ((observed, system), count) in a.Confusion.OrderByDescending(c => c.Value))
             output.WriteLine($"  observed {observed}, system {system}: {count}");
     }
@@ -241,6 +256,25 @@ public sealed class DeskRhythmScenarioTests(ITestOutputHelper output)
         evening.Share.Should().BeGreaterThanOrEqualTo(0.9);
         rehearsal.Share.Should().BeGreaterThanOrEqualTo(0.9);
         evening.OpenShare.Should().BeGreaterThanOrEqualTo(0.99);
+    }
+
+    [Theory]
+    [InlineData(Tuned)]
+    [InlineData(HeldOut)]
+    public void Engine_Should_MeetF18AtTheThroughputLevel_When_DesksWithoutZonesAreJudgedOpenOrNotOpen(uint seed)
+    {
+        // ARV-149a (owner decision 2026-10-10): F18 judges a desk without a staff or service zone open (Idle or Serving) against not
+        // open (Paused or Closed), target 0.95, in both windows and on both evenings (2026 used for no choice), each regime reported.
+        var withRhythm = MinutesOf(seed, Contexts.Watermark);
+        var evening = Compare(seed, withRhythm, FirstMinute, LastMinute);
+        var rehearsal = Compare(seed, withRhythm, RehearsalFrom, RehearsalTo);
+        output.WriteLine($"Seed {seed}, at the throughput level: 17:20 to 20:25 {evening.OpenAgreeing} of {evening.Judged} ({evening.OpenShare:F3}); " +
+                         $"18:00 to 19:30 {rehearsal.OpenAgreeing} of {rehearsal.Judged} ({rehearsal.OpenShare:F3})");
+        foreach (var regime in evening.Regimes.Keys.Order(StringComparer.Ordinal))
+            output.WriteLine($"  {regime}: {evening.OpenIn(regime):F3} (18:00 to 19:30: {(rehearsal.Regimes.ContainsKey(regime) ? rehearsal.OpenIn(regime).ToString("F3", System.Globalization.CultureInfo.InvariantCulture) : "none")})");
+
+        evening.OpenShare.Should().BeGreaterThanOrEqualTo(Target);
+        rehearsal.OpenShare.Should().BeGreaterThanOrEqualTo(Target);
     }
 
     [Theory]

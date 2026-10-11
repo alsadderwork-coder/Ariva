@@ -49,7 +49,7 @@ public sealed class ValidationResultsServingTests
     /// shadow nowcast, tracer runs of both observers in batches of their own, both observers' desk states, and unusable keys of
     /// every kind the serving rules touch (a manual count and a desk state of each observer, a desk minute, a shadow minute).
     /// </summary>
-    private static Results Campaign()
+    private static Results Campaign(IReadOnlyList<DeskLevelRow> levels = null)
     {
         var minutes = new List<QueueMinuteRow>();
         var shadows = new List<ShadowMinuteRow>();
@@ -71,7 +71,8 @@ public sealed class ValidationResultsServingTests
             TracerRuns = [Run(1, O1, G(2001), At(18, 10)), Run(2, O2, G(2002), At(18, 20))],
             DeskObservations = [.. Enumerable.Range(0, 10).Select(m => new DeskObservationRow(D01, At(18, m), O1, 1, ObservedDeskState.Serving)),
                 .. Enumerable.Range(0, 5).Select(m => new DeskObservationRow(D01, At(18, m), O2, 1, ObservedDeskState.Serving))],
-            DeskMinutes = [.. Enumerable.Range(0, 10).Select(m => new DeskMinuteRow("IMM", "D01", At(18, m), 0, 0, 60, 0, 0, false))]
+            DeskMinutes = [.. Enumerable.Range(0, 10).Select(m => new DeskMinuteRow("IMM", "D01", At(18, m), 0, 0, 60, 0, 0, false))],
+            DeskLevels = levels ?? []
         };
         var compared = ValidationComparison.Compare(input);
         compared.Problem.Should().BeNull();
@@ -248,6 +249,61 @@ public sealed class ValidationResultsServingTests
         read.Should().NotBeNull();
         read.ToDocument().Should().Equal(document, "a frozen document read back and written again is the same bytes");
         Results.Hash(document).Should().Be(Convert.ToHexStringLower(SHA256.HashData(document))).And.MatchRegex("^[0-9a-f]{64}$");
+    }
+
+    [Fact]
+    public void FromJson_Should_ReadAResultFrozenBeforeTheLevelsAsJudgedOnTheFullState_When_ItsDocumentLacksThem()
+    {
+        // ARV-149a: a document frozen before the levels has every field of today's except the additions (each desk summary's
+        // minutes at the throughput level, Serving against Idle and the level computed from them; the desk view's left-out level
+        // rows). Read back, it says every minute was judged on the full state, as it was, with every figure it held. That it is
+        // served from its own stored bytes with its hash unchanged is ValidationResultsTests' (integration, a revision planted so).
+        var current = System.Text.Json.Nodes.JsonNode.Parse(Shared.ToDocument()).AsObject();
+        var desks = current["desks"].AsObject();
+        string[] added = ["judgedAtThroughput", "servingIdleMinutes", "servingIdleAgreeing", "level", "servingIdleAgreement"];
+        foreach (var summary in desks["desks"].AsArray().Append(desks["overall"]).Select(n => n.AsObject()))
+        {
+            foreach (var name in added)
+                summary.Remove(name).Should().BeTrue(name);
+        }
+
+        desks.Remove("deskLevelsLeftOut").Should().BeTrue();
+        var frozenBefore = Encoding.UTF8.GetBytes(current.ToJsonString());
+
+        var read = Results.FromJson(frozenBefore);
+        read.Should().NotBeNull();
+        foreach (var (before, now) in read.Desks.Desks.Append(read.Desks.Overall).Zip(Shared.Desks.Desks.Append(Shared.Desks.Overall)))
+        {
+            (before.Judged, before.Agreeing, before.Check, before.StrictAgreement, before.ThroughputAgreement)
+                .Should().Be((now.Judged, now.Agreeing, now.Check, now.StrictAgreement, now.ThroughputAgreement));
+            (before.JudgedAtThroughput, before.Level, before.ServingIdleMinutes, before.ServingIdleAgreement)
+                .Should().Be((0, (DeskAgreementLevel?)DeskAgreementLevel.FullState, 0, (double?)null));
+        }
+
+        read.Desks.DeskLevelsLeftOut.Should().Be(0);
+        // The verdict holds a list, so a copy read back is compared by its members, not by reference.
+        read.Desks.Verdict.Should().BeEquivalentTo(Shared.Desks.Verdict, o => o.WithStrictOrdering().ComparingRecordsByMembers());
+        Json(read.For(Results.Reader.Of([RoleCodes.BorderShiftSupervisor], O1))).Should().Contain("\"level\":\"FullState\"");
+
+        // A document that says "level":"Throughput" without the counts behind it is read on the full state all the same: the level
+        // is worked out from the minutes judged at each level, never taken from the document's word.
+        foreach (var summary in desks["desks"].AsArray().Append(desks["overall"]).Select(n => n.AsObject()))
+            summary["level"] = "Throughput";
+        var claimed = Results.FromJson(Encoding.UTF8.GetBytes(current.ToJsonString()));
+        claimed.Desks.Desks.Append(claimed.Desks.Overall).Should().OnlyContain(d => d.Level == DeskAgreementLevel.FullState && d.JudgedAtThroughput == 0);
+    }
+
+    [Fact]
+    public void ToDocument_Should_RecordEachDesksLevel_When_TheResultsAreComputedWithLevels()
+    {
+        // D01 without a staff or service zone over the campaign: judged at the throughput level, and the document says so.
+        var results = Campaign([new DeskLevelRow(D01, Version, At(6, 0), null, DeskAgreementLevel.Throughput)]);
+        var desk = results.Desks.Desks.Single();
+        (desk.Judged, desk.JudgedAtThroughput, desk.Level, desk.ServingIdleMinutes, desk.ServingIdleAgreement)
+            .Should().Be((10, 10, (DeskAgreementLevel?)DeskAgreementLevel.Throughput, 10, (double?)1.0));
+        var json = Encoding.UTF8.GetString(results.ToDocument());
+        json.Should().Contain("\"judgedAtThroughput\":10").And.Contain("\"level\":\"Throughput\"").And.Contain("\"servingIdleAgreement\":1");
+        Results.FromJson(results.ToDocument()).ToDocument().Should().Equal(results.ToDocument(), "read back and written again, the same bytes");
     }
 
     [Fact]

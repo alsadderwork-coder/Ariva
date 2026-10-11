@@ -189,6 +189,7 @@ public sealed class ComparisonPropertyTests
                 QualityIntervals = draws.Shuffled(input.QualityIntervals),
                 DeskObservations = draws.Shuffled(input.DeskObservations),
                 DeskMinutes = draws.Shuffled(input.DeskMinutes),
+                DeskLevels = draws.Shuffled(input.DeskLevels),
                 ShadowMinutes = draws.Shuffled(input.ShadowMinutes),
                 Scope = input.Scope with { Zones = draws.Shuffled(input.Scope.Zones), Lines = draws.Shuffled(input.Scope.Lines), Desks = draws.Shuffled(input.Scope.Desks) }
             };
@@ -198,7 +199,7 @@ public sealed class ComparisonPropertyTests
 
             foreach (var share in result.CountBins.Select(i => i.Accuracy).Concat(result.Lines.Select(l => l.PooledAccuracy))
                          .Concat(result.TrackCompletion.Select(z => z.Good.Rate))
-                         .Concat(result.Desks.Append(result.DeskOverall).SelectMany(d => new[] { d.Check.Value, d.ThroughputAgreement }))
+                         .Concat(result.Desks.Append(result.DeskOverall).SelectMany(d => new[] { d.Check.Value, d.ThroughputAgreement, d.ServingIdleAgreement }))
                          .Where(v => v is not null))
                 share.GetValueOrDefault().Should().BeInRange(0, 1);
 
@@ -210,9 +211,26 @@ public sealed class ComparisonPropertyTests
                 desk.Standings.Total.Should().Be(desk.Judged);
                 desk.Confusion.Sum(c => c.Minutes).Should().Be(desk.Judged);
                 desk.Agreeing.Should().BeLessThanOrEqualTo(desk.Judged - desk.Standings.Unknown);
+                // ARV-149a: the minutes at each level add up to the judged ones, each judged at its level, and Serving against Idle
+                // counts only throughput-level minutes both sides call open.
+                var mine = result.DeskMinutes.Where(m => !m.ObserversDisagree && (desk.DeskId is null || m.DeskId == desk.DeskId)).ToList();
+                desk.JudgedAtThroughput.Should().Be(mine.Count(m => m.Level == DeskAgreementLevel.Throughput)).And.BeInRange(0, desk.Judged);
+                desk.Agreeing.Should().Be(mine.Count(m => m.Agrees == true));
+                desk.ServingIdleAgreeing.Should().BeInRange(0, desk.ServingIdleMinutes);
+                desk.ServingIdleMinutes.Should().BeLessThanOrEqualTo(desk.JudgedAtThroughput);
+                if (desk.Judged > 0)
+                    desk.Level.Should().Be(desk.JudgedAtThroughput == 0 ? DeskAgreementLevel.FullState
+                        : desk.JudgedAtThroughput == desk.Judged ? DeskAgreementLevel.Throughput : DeskAgreementLevel.Mixed);
             }
 
+            // ARV-149a: each desk minute's level as the rows give it, worked out minute by minute (R-a of its review): the throughput
+            // level only when a throughput row covers the whole minute and no full-state row touches it, never for a desk with a refused row.
+            foreach (var m in result.DeskMinutes)
+                m.Level.Should().Be(ExpectedLevel(input.DeskLevels, m.DeskId, m.MinuteUtc), $"{m.DeskCode} at {m.MinuteUtc:O}");
+
             result.DeskMinutes.Where(m => m.SystemState == Ariva.Core.Desks.DeskStatus.Unknown).Should().OnlyContain(m => m.Agrees != true);
+            result.DeskMinutes.Where(m => m.ObservedState is not null).Should().OnlyContain(m =>
+                m.Agrees == DeskStateAgreement.Agrees(m.ObservedState.GetValueOrDefault(), m.SystemState, m.Level));
             foreach (var zone in result.NowcastZones.Append(result.NowcastOverall))
             {
                 foreach (var summary in new[] { zone.Published, zone.Shadow })
@@ -246,6 +264,7 @@ public sealed class ComparisonPropertyTests
             left.QualityIntervals.Should().BeInRange(0, input.QualityIntervals.Count);
             left.DeskObservations.Should().BeInRange(0, input.DeskObservations.Count);
             left.DeskMinutes.Should().BeInRange(0, input.DeskMinutes.Count);
+            left.DeskLevels.Should().BeInRange(0, input.DeskLevels.Count);
             left.ShadowMinutes.Should().BeInRange(0, input.ShadowMinutes.Count);
             left.UnusableKeys.Should().OnlyHaveUniqueItems();
         }, iter: Fuzz.Iterations);
@@ -350,6 +369,22 @@ public sealed class ComparisonPropertyTests
 
             return copy;
         }
+    }
+
+    /// <summary>
+    /// A desk minute's level worked out from the level rows by brute force (ARV-149a, independent of the engine's spans): the
+    /// throughput level when one throughput row covers the whole minute and no full-state row touches it; the full state for a
+    /// desk with a row whose end is not after its start (refused). One row suffices: the generator never splits a level's period.
+    /// </summary>
+    private static DeskAgreementLevel ExpectedLevel(IEnumerable<DeskLevelRow> rows, Guid desk, DateTime minute)
+    {
+        var mine = rows.Where(r => r is not null && r.DeskId == desk).ToList();
+        if (mine.Any(r => r.ToUtc.HasValue && r.ToUtc.Value <= r.FromUtc))
+            return DeskAgreementLevel.FullState;
+        var end = minute.AddMinutes(1);
+        var covered = mine.Any(r => r.Level == DeskAgreementLevel.Throughput && r.FromUtc <= minute && (r.ToUtc ?? DateTime.MaxValue) >= end);
+        var touched = mine.Any(r => r.Level == DeskAgreementLevel.FullState && r.FromUtc < end && (r.ToUtc ?? DateTime.MaxValue) > minute);
+        return covered && !touched ? DeskAgreementLevel.Throughput : DeskAgreementLevel.FullState;
     }
 
     /// <summary>
@@ -464,6 +499,37 @@ public sealed class ComparisonPropertyTests
             }
         }
 
+        // ARV-149a: each desk's levels from the zone profile versions in force: a desk with a zone throughout, without one, one whose
+        // zone came or went at a drawn minute or half way through one (a version published then), none at all (the full state), and now and then a row
+        // refused (its end before its start: its desk on the full state throughout) or of a desk out of scope (left out).
+        var levels = new List<DeskLevelRow>();
+        var publishedBefore = start.AddDays(-30);
+        foreach (var desk in desks)
+        {
+            switch (random.Next(4))
+            {
+                case 0:
+                    levels.Add(new DeskLevelRow(desk.DeskId, 6, publishedBefore, null, random.Next(2) == 0 ? DeskAgreementLevel.FullState : DeskAgreementLevel.Throughput));
+                    break;
+                case 1:
+                    var change = start.AddMinutes(random.Next(1, 60)).AddSeconds(30 * random.Next(2));
+                    var first = random.Next(2) == 0 ? DeskAgreementLevel.FullState : DeskAgreementLevel.Throughput;
+                    levels.Add(new DeskLevelRow(desk.DeskId, 6, publishedBefore, change, first));
+                    levels.Add(new DeskLevelRow(desk.DeskId, 7, change, null,
+                        first == DeskAgreementLevel.FullState ? DeskAgreementLevel.Throughput : DeskAgreementLevel.FullState));
+                    break;
+                case 2:
+                    levels.Add(new DeskLevelRow(desk.DeskId, 6, publishedBefore, null, DeskAgreementLevel.Throughput));
+                    break;
+            }
+
+            if (random.Next(10) == 0)
+                levels.Add(new DeskLevelRow(desk.DeskId, 5, start, start.AddMinutes(-1), DeskAgreementLevel.Throughput));
+        }
+
+        if (random.Next(5) == 0)
+            levels.Add(new DeskLevelRow(Guid.Parse("00000000-0000-7000-8000-000000000099"), 6, publishedBefore, null, DeskAgreementLevel.Throughput));
+
         var offsets = Enumerable.Range(0, 4).Select(_ => random.Next(-8_000, 8_000)).ToArray();
         var runs = new List<TracerRunRow>();
         for (var n = 1; n <= random.Next(0, 14); n++)
@@ -500,6 +566,7 @@ public sealed class ComparisonPropertyTests
             QualityIntervals = intervals,
             DeskObservations = observations,
             DeskMinutes = deskMinutes,
+            DeskLevels = levels,
             ShadowMinutes = shadows
         };
     }

@@ -82,6 +82,23 @@ public sealed class HostServicesTests
     }
 
     [Fact]
+    public async Task Stream_Should_GiveTheDeskFeedTheStreamsTimingOfEachSite_When_ItBuildsTheFeed()
+    {
+        // ARV-149a (R-g of its security re-check): the desk feed takes the stream settings the Stream host registers
+        // (AddArivaQueueStream), so a queue minute's length falls due after the site's own stream timing; built without them the
+        // feed would take the defaults, 180 s, whatever a site's timing.
+        await using var app = ArivaHosts.Create(ArivaHosts.Stream, configure: builder => builder.UseSetting("Stream:Sites:XS1:LatenessSeconds", "120"));
+        var stream = app.Services.GetRequiredService<Ariva.Infra.Streaming.StreamSettings>();
+        var feed = app.Services.GetRequiredService<Ariva.Infra.Border.DeskFeed>();
+
+        stream.TimingOf("XS1").LatenessSeconds.Should().Be(120);
+        feed.QueueLengthDueFor("XS1").Should().Be(TimeSpan.FromSeconds(120 + stream.TimingOf("XS1").PushIntervalSeconds + stream.IdleTickSeconds
+            + Ariva.Infra.Border.DeskFeed.QueueLengthWriteSeconds));
+        feed.QueueLengthDueFor("XS2").Should().Be(Ariva.Infra.Border.DeskFeed.QueueLengthDue(stream, "XS2"))
+            .And.NotBe(feed.QueueLengthDueFor("XS1"), "another site keeps the stream's default timing");
+    }
+
+    [Fact]
     public async Task Ingest_Should_ResolveTheDeviceGateway_When_ADeviceAuthenticates()
     {
         await using var app = ArivaHosts.Create(ArivaHosts.Ingest);

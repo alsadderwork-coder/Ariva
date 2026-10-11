@@ -171,6 +171,15 @@ public sealed record DeskMinuteRow(
     bool Degraded);
 
 /// <summary>
+/// A period of a border desk's level in Ariva's own record (ARV-149a, F18 desk-state agreement): one published version of the
+/// site's zone profile, in force from its publication (<see cref="FromUtc"/>) to its retirement (<see cref="ToUtc"/>, null while
+/// it is in force), and the level it gives the desk: <see cref="DeskAgreementLevel.FullState"/> when the version has a staff or
+/// service zone at the desk (as the desk feed gives a desk its zones), <see cref="DeskAgreementLevel.Throughput"/> when it has
+/// none. Configuration, never the observers': a published version is immutable. The engine checks each row again (CWE-501).
+/// </summary>
+public sealed record DeskLevelRow(Guid DeskId, int ProfileVersion, DateTime FromUtc, DateTime? ToUtc, DeskAgreementLevel Level);
+
+/// <summary>
 /// One revision of a stored bin of a queue zone (queue_bin, F6, F11): its status, data quality, version, entries and the
 /// entrants who abandoned. The engine takes each bin's highest revision.
 /// </summary>
@@ -208,6 +217,12 @@ public sealed record ComparisonInput
 
     /// <summary>The stored desk minutes (desk_minute) of the desks in scope: what the desk-state agreement judges.</summary>
     public IReadOnlyList<DeskMinuteRow> DeskMinutes { get; init; } = [];
+
+    /// <summary>
+    /// The desks' levels over time from the zone profile versions in force (ARV-149a): the level each observed minute is judged
+    /// at. A minute no row covers is judged on the full state.
+    /// </summary>
+    public IReadOnlyList<DeskLevelRow> DeskLevels { get; init; } = [];
 
     /// <summary>The stored shadow nowcasts (ARV-117a, script 0043): the ground-truth proof's nowcast without AMAN.</summary>
     public IReadOnlyList<ShadowMinuteRow> ShadowMinutes { get; init; } = [];

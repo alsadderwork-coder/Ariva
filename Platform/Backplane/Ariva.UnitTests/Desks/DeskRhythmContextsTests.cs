@@ -86,6 +86,89 @@ public sealed class DeskRhythmContextsTests
     }
 
     [Fact]
+    public void Contexts_Should_TakeAZoneAsNotKnown_When_ItsLatestFreshMinuteHasNoLength()
+    {
+        // ARV-149a (fail closed, CWE-501): a latest minute without a length makes the zone not known, as one out of bounds does:
+        // the earlier minute with people does not stand in, and nothing is counted as refused (no value was out of bounds). An
+        // earlier minute without a length does not hide a later one with a length.
+        var result = DeskRhythm.Contexts([("D1", "Z"), ("D2", "Y"), ("D3", "Z"), ("D3", "X")],
+            [new LaneQueueSample("Z", At.AddMinutes(-1), null, false), Queue("Z", 2, 6), Queue("Y", 1, 0), new LaneQueueSample("Y", At.AddMinutes(-2), null, false),
+                Queue("X", 1, 3)], [], At);
+
+        result.Contexts.Should().Equal(new DeskLaneContext("D1", At, null, null, false), new DeskLaneContext("D2", At, null, 0, false),
+            new DeskLaneContext("D3", At, null, 3, false));
+        result.RefusedQueues.Should().Be(0);
+        result.QueuesWithoutLength.Should().Be(1, "Z's latest minute has no length (Y's earlier one does not decide)");
+
+        // The same in the reverse input order: the earlier minute with people first, the later one without a length second.
+        var reversed = DeskRhythm.Contexts([("D1", "Z")], [Queue("Z", 2, 6), new LaneQueueSample("Z", At.AddMinutes(-1), null, false)], [], At);
+        reversed.Contexts.Single().Waiting.Should().BeNull("the later minute decides whatever the order");
+        reversed.QueuesWithoutLength.Should().Be(1);
+
+        // Of two rows for one minute, the one without a length wins, in either order.
+        foreach (LaneQueueSample[] pair in new[]
+                 {
+                     new[] { Queue("Z", 1, 4), new LaneQueueSample("Z", At.AddMinutes(-1), null, false) },
+                     new[] { new LaneQueueSample("Z", At.AddMinutes(-1), null, false), Queue("Z", 1, 4) }
+                 })
+        {
+            var same = DeskRhythm.Contexts([("D1", "Z")], pair, [], At);
+            same.Contexts.Single().Waiting.Should().BeNull("of two rows for one minute, the one without a length wins");
+            (same.RefusedQueues, same.QueuesWithoutLength).Should().Be((0, 1));
+        }
+    }
+
+    [Fact]
+    public void Contexts_Should_LetTheMinuteBeforeStand_When_TheLatestMinutesLengthIsNotYetDue()
+    {
+        // ARV-149a (the rehearsal's wave starts): the stream writes a minute's counts while it runs and its length only once its
+        // watermark has passed the minute's end, so a quiet hall's first entrants make a row without a length. Until that length
+        // is due the row is skipped, uncounted, and the minute before it stands (Q = 0: row 5d, Idle, not Paused); once it is
+        // overdue the zone is not known (rows 5 and 7) and counted for the warning. The lengths here are due through the cutoff.
+        var running = new LaneQueueSample("Z", At.AddMinutes(-1), null, false);
+        var empty = Queue("Z", 2, 0);
+        foreach (var order in new[] { new[] { empty, running }, new[] { running, empty } })
+        {
+            var notYetDue = DeskRhythm.Contexts([("D1", "Z")], order, [], At, At.AddMinutes(-3));
+            (notYetDue.Contexts.Single().Waiting, notYetDue.QueuesWithoutLength, notYetDue.RefusedQueues).Should().Be(((int?)0, 0, 0), "the minute before stands");
+
+            var overdue = DeskRhythm.Contexts([("D1", "Z")], order, [], At, At.AddMinutes(-1));
+            (overdue.Contexts.Single().Waiting, overdue.QueuesWithoutLength, overdue.RefusedQueues).Should().Be(((int?)null, 1, 0), "an overdue missing length");
+
+            // The cutoff is inclusive: a minute at it is due, one a tick after it is not.
+            DeskRhythm.Contexts([("D1", "Z")], order, [], At, At.AddMinutes(-1).AddTicks(-1)).Contexts.Single().Waiting.Should().Be(0);
+        }
+
+        // With people waiting in the minute before, they stand too (the desk follows rows 5b and 5c, not T1).
+        DeskRhythm.Contexts([("D1", "Z")], [running, Queue("Z", 2, 5, degraded: true)], [], At, At.AddMinutes(-3)).Contexts.Single()
+            .Should().Match<DeskLaneContext>(c => c.Waiting == 5 && c.Degraded);
+
+        // No earlier minute in the freshness (the one 6 minutes ago is stale): not known, and nothing counted.
+        foreach (var order in new[] { new[] { running, Queue("Z", 6, 0) }, new[] { Queue("Z", 6, 0), running } })
+        {
+            var alone = DeskRhythm.Contexts([("D1", "Z")], order, [], At, At.AddMinutes(-3));
+            (alone.Contexts.Single().Waiting, alone.QueuesWithoutLength, alone.RefusedQueues).Should().Be(((int?)null, 0, 0));
+        }
+
+        // Two minutes without a length: the overdue one decides, though a later one is not yet due; an earlier length does not
+        // stand in for it.
+        var stuck = DeskRhythm.Contexts([("D1", "Z")], [Queue("Z", 4, 0), new LaneQueueSample("Z", At.AddMinutes(-3), null, false), running], [], At,
+            At.AddMinutes(-3));
+        (stuck.Contexts.Single().Waiting, stuck.QueuesWithoutLength).Should().Be(((int?)null, 1));
+
+        // Of two rows for one minute (never from the table, whose key is the minute), a length beats a missing one not yet due,
+        // and a missing one overdue beats a length, in either order.
+        foreach (var pair in new[] { new[] { Queue("Z", 1, 4), running }, new[] { running, Queue("Z", 1, 4) } })
+        {
+            DeskRhythm.Contexts([("D1", "Z")], pair, [], At, At.AddMinutes(-3)).Contexts.Single().Waiting.Should().Be(4);
+            DeskRhythm.Contexts([("D1", "Z")], pair, [], At, At.AddMinutes(-1)).Contexts.Single().Waiting.Should().BeNull();
+        }
+
+        // Without a cutoff every missing length is due (round 1's rule, fail closed).
+        DeskRhythm.Contexts([("D1", "Z")], [empty, running], [], At).QueuesWithoutLength.Should().Be(1);
+    }
+
+    [Fact]
     public void Contexts_Should_CountAnIntervalOnce_When_ItIsReadUnderTwoZones()
     {
         // A desk of two lanes is matched to both queue zones, so its intervals are read once per zone: each counts once.

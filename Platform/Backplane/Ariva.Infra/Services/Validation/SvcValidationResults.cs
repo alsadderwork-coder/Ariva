@@ -169,6 +169,11 @@ internal sealed partial class SvcValidationResults
         if (intervals is null)
             return tooLarge;
 
+        // ARV-149a: the level each desk's minutes are judged at, from the zone profile versions in force over the planned days.
+        List<DeskLevelRow> deskLevels = planned.Count == 0 ? [] : await DeskLevelsAsync(campaign, planned[0].FromUtc, planned[^1].ToUtc, ct);
+        if (deskLevels is null)
+            return tooLarge;
+
         // Bins and minutes, one zone at a time: the queue bins and minutes with their margins and the shadow nowcasts of the planned days.
         var queueBins = new List<QueueBinRow>();
         var tracerMinutes = ComparisonSlices.TracerMinutes(scope, runs);
@@ -243,6 +248,7 @@ internal sealed partial class SvcValidationResults
             QualityIntervals = intervals,
             DeskObservations = observations,
             DeskMinutes = deskMinutes,
+            DeskLevels = deskLevels,
             ShadowMinutes = sliced ? [] : allShadows
         };
         if (!sliced)

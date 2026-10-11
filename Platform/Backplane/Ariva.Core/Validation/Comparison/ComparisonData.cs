@@ -54,6 +54,9 @@ internal sealed class ComparisonData
     /// <summary>The largest sensor cycle time a shadow nowcast may carry (script 0045's check), minutes.</summary>
     public const double MaxSensorCycleMinutes = 60;
 
+    // A desk minute's length: the throughput level holds a minute only over all of it (ARV-149a).
+    private static readonly TimeSpan OneMinute = TimeSpan.FromMinutes(1);
+
     #endregion
 
     #region Fields
@@ -76,6 +79,9 @@ internal sealed class ComparisonData
     private readonly Dictionary<(string Zone, DateTime Minute), ShadowMinuteRow> _shadows = [];
     private readonly HashSet<(string Zone, DateTime Minute)> _unusableShadows = [];
     private readonly Dictionary<(string Checkpoint, string Desk), ScopeDesk> _deskByCodes;
+    // ARV-149a: per desk, the periods it is judged at the throughput level (no staff or service zone in the version in force),
+    // less every period a full-state row covers, in time order; desks whose record could not be used are judged on the full state.
+    private readonly Dictionary<Guid, List<(DateTime From, DateTime To)>> _throughput = [];
 
     #endregion
 
@@ -166,10 +172,11 @@ internal sealed class ComparisonData
         var intervals = Bounded(input.QualityIntervals, MaxRows);
         var observations = Bounded(input.DeskObservations, MaxRows);
         var deskMinutes = Bounded(input.DeskMinutes, MaxRows);
+        var deskLevels = Bounded(input.DeskLevels, MaxRows);
         var shadows = Bounded(input.ShadowMinutes, MaxRows);
         var windowBins = WindowBinsOf(scope.Windows);
         if (counts is null || runs is null || lineBins is null || minutes is null || queueBins is null || health is null || intervals is null ||
-            observations is null || deskMinutes is null || shadows is null || windowBins is null)
+            observations is null || deskMinutes is null || deskLevels is null || shadows is null || windowBins is null)
         {
             problem = ComparisonProblem.InputTooLarge;
             return null;
@@ -180,11 +187,13 @@ internal sealed class ComparisonData
             data.TakeBins(queueBins), data.TakeHealth(health), data.TakeIntervals(intervals));
         var leftOutObservations = data.TakeDeskObservations(observations);
         var leftOutDeskMinutes = data.TakeDeskMinutes(deskMinutes);
+        var leftOutDeskLevels = data.TakeDeskLevels(deskLevels);
         var leftOutShadows = data.TakeShadows(shadows);
         data.LeftOut = leftOut with
         {
             DeskObservations = leftOutObservations,
             DeskMinutes = leftOutDeskMinutes,
+            DeskLevels = leftOutDeskLevels,
             ShadowMinutes = leftOutShadows,
             UnusableKeys = data._unusable.OrderBy(k => k.Kind).ThenBy(k => k.QueueZone, StringComparer.Ordinal).ThenBy(k => k.LineName, StringComparer.Ordinal)
                 .ThenBy(k => k.DeskId).ThenBy(k => k.StartUtc).ThenBy(k => k.ObserverId).ToList()
@@ -491,6 +500,77 @@ internal sealed class ComparisonData
         return leftOut;
     }
 
+    /// <summary>
+    /// The desks' level periods (ARV-149a), checked again (CWE-501): a row of a desk out of scope is left out and counted; a row of
+    /// a desk in scope that cannot be placed (a time not UTC or outside the engine's years, an end not after its start, a level
+    /// that is neither of a minute's two) is left out and counted and puts its desk on the full state for the whole comparison,
+    /// so a refused record never makes a desk's judgement easier. Where a full-state row and a throughput row overlap (two
+    /// versions in force at once, which publication does not allow), the full state wins.
+    /// </summary>
+    private int TakeDeskLevels(List<DeskLevelRow> rows)
+    {
+        var leftOut = 0;
+        var refused = new HashSet<Guid>();
+        var placed = new List<(Guid Desk, DateTime From, DateTime To, DeskAgreementLevel Level)>();
+        foreach (var r in rows)
+        {
+            if (r is null || !DeskById.ContainsKey(r.DeskId))
+            {
+                leftOut++;
+                continue;
+            }
+
+            // No pattern variable in the conditions (ARV-069a): the open end is read into a local first.
+            var to = r.ToUtc ?? LatestUtc;
+            var placeable = (r.Level is DeskAgreementLevel.FullState or DeskAgreementLevel.Throughput) && IsUtc(r.FromUtc) && IsUtc(to) &&
+                            r.FromUtc >= EarliestUtc && to <= LatestUtc && to > r.FromUtc;
+            if (!placeable)
+            {
+                leftOut++;
+                refused.Add(r.DeskId);
+                continue;
+            }
+
+            placed.Add((r.DeskId, r.FromUtc, to, r.Level));
+        }
+
+        foreach (var desk in placed.Where(p => !refused.Contains(p.Desk)).GroupBy(p => p.Desk))
+        {
+            var full = Merge(desk.Where(p => p.Level == DeskAgreementLevel.FullState).Select(p => (p.From, p.To)));
+            var throughput = Merge(desk.Where(p => p.Level == DeskAgreementLevel.Throughput).Select(p => (p.From, p.To)));
+            var spans = Subtract(throughput, full);
+            if (spans.Count > 0)
+                _throughput[desk.Key] = spans;
+        }
+
+        return leftOut;
+    }
+
+    // The spans of `from` not covered by `cut` (both disjoint and in time order), in time order.
+    private static List<(DateTime From, DateTime To)> Subtract(List<(DateTime From, DateTime To)> from, List<(DateTime From, DateTime To)> cut)
+    {
+        var result = new List<(DateTime From, DateTime To)>();
+        foreach (var (start, end) in from)
+        {
+            var cursor = start;
+            foreach (var (cutFrom, cutTo) in cut)
+            {
+                if (cutTo <= cursor || cutFrom >= end)
+                    continue;
+                if (cutFrom > cursor)
+                    result.Add((cursor, cutFrom));
+                cursor = cutTo > cursor ? cutTo : cursor;
+                if (cursor >= end)
+                    break;
+            }
+
+            if (cursor < end)
+                result.Add((cursor, end));
+        }
+
+        return result;
+    }
+
     /// <summary>As script 0018 checks it (each state 0 to 60 seconds) and a minute holds (at most 60 seconds in all).</summary>
     private static bool IsDeskMinute(DeskMinuteRow r) =>
         IsUtc(r.MinuteUtc) && DeskStateAgreement.Dominant(r.ClosedSeconds, r.IdleSeconds, r.ServingSeconds, r.PausedSeconds, r.UnknownSeconds) is not null;
@@ -712,6 +792,28 @@ internal sealed class ComparisonData
 
     /// <summary>A line's crossings in a bin under the campaign's version (0 when none were stored) and what else holds the bin.</summary>
     public LineBinState LineBinAt(string zone, string line, DateTime bin) => _lineBins.GetValueOrDefault((zone, line, bin));
+
+    /// <summary>
+    /// The level a desk's minute is judged at (ARV-149a): the throughput level when a throughput period of Ariva's record covers the
+    /// whole minute and no full-state period touches it; the full state otherwise (a desk with a zone, a minute the record says
+    /// nothing about or only part of, a desk whose record was refused).
+    /// </summary>
+    public DeskAgreementLevel DeskLevelAt(ScopeDesk desk, DateTime minute)
+    {
+        ArgumentNullException.ThrowIfNull(desk);
+        var spans = _throughput.GetValueOrDefault(desk.DeskId);
+        if (spans is null)
+            return DeskAgreementLevel.FullState;
+        // The first span ending after the minute (spans are disjoint, apart and in time order, Merge joining those that touch) holds
+        // the minute at the throughput level only when it covers the whole minute: it starts at or before the minute's start and
+        // ends a minute or more after it. A version with a zone published within the minute leaves the minute on the full state
+        // (fail closed, CWE-501; the minute's start alone would judge it at the easier level). The end is compared as a
+        // difference, so no minute near DateTime's end overflows.
+        var index = FirstEndingAfter(spans, minute);
+        return index < spans.Count && spans[index].From <= minute && spans[index].To - minute >= OneMinute
+            ? DeskAgreementLevel.Throughput
+            : DeskAgreementLevel.FullState;
+    }
 
     /// <summary>A desk's stored minute; null when none was stored or its rows are unusable (<see cref="IsUnusableDeskMinute"/>).</summary>
     public DeskMinuteRow DeskMinuteAt(ScopeDesk desk, DateTime minute) => _deskMinutes.GetValueOrDefault((desk.CheckpointCode, desk.DeskCode, minute));

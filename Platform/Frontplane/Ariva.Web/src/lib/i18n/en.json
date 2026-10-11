@@ -1595,8 +1595,16 @@
 				"agreement": "Agreement",
 				"strict": "Strict agreement",
 				"excluded": "Excluded",
+				"servingIdle": "Serving against Idle (no target)",
+				"level": "Judged at",
 				"verdict": "Verdict"
 			},
+			"deskLevels": {
+				"FullState": "Full state",
+				"Throughput": "Open or not open",
+				"Mixed": "Both (zones changed)"
+			},
+			"deskLevelsNote": "A desk with a staff or service zone is judged on its full state (Closed, Idle, Serving, Paused). A desk without one takes its state from AMAN alone and is judged open (Idle or Serving) against not open (Paused or Closed); Serving against Idle is shown beside it with no target. The target is the same for both.",
 			"everyDesk": "Every desk",
 			"noDesks": "No desk minute was observed.",
 			"proofTitle": "Ground-truth proof: the nowcast with and without AMAN",

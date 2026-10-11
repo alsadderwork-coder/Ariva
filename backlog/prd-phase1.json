@@ -754,6 +754,33 @@
       ]
     },
     {
+      "id": "ARV-149a",
+      "title": "[E13] Desk-state agreement at the throughput level for desks without zones",
+      "description": "Owner decisions 2026-10-10. First on ARV-151's re-measurement: rows 5a and 5b were to read the seconds AMAN's desks worked. The measurement of this story showed no rule on AMAN's interval statistics reaches 0.95 desk by desk (0.940 on the reference evening even in hindsight; 0.927 and 0.933 for the best buildable rule), so the owner decided the same day: for a border desk without a staff or service zone, the desk-state agreement (D6, F18) is judged at the throughput level, open (Idle or Serving) against not open (Paused or Closed), target 0.95, with Serving against Idle reported beside it with no target; a desk with a zone is judged on its full state as before; ARV-149's rows 5a to 5f stay as built. The KPI annex ties 0.95 on the full state to a staff or service zone at each desk. This story changes the comparison engine (ValidationComparison, DeskStateAgreement), not the desk engine, and carries the ARV-149 and ARV-151 reviews' recommendations (done in its first round). Epic: Validation tooling. CWEs to review: CWE-501, CWE-120, CWE-863.",
+      "acceptanceCriteria": [
+        "F18's desk-state agreement judges each observed minute of a desk without a staff or service zone at the throughput level (the observed state and the stored minute's dominant state each mapped to open, Idle or Serving, or not open, Paused or Closed; Unknown never agrees), and of a desk with a zone on its full state as before; the pooled agreement over the campaign counts each minute at its desk's level, target 0.95 (`ComparisonSettings.DeskAgreementTarget`) unchanged",
+        "Whether a desk had a zone comes from Ariva's own record for the minute judged (the published zone profile in force then, or the desk minute itself), never from the observers; a desk whose zones changed during the campaign is judged minute by minute at the level of each minute; the rule is written in F18 with its reason and the owner's decision",
+        "Beside it, with no target: the Serving against Idle agreement of the desks judged at the throughput level, and the existing confusion of observed against dominant states; the per-desk results show the level each desk was judged at",
+        "The frozen results stay verifiable: the comparison's version or the result's shape changes in a way that results frozen before this story still verify and read as they were (their content hash unchanged), and new results record the level; tested",
+        "The ARV-104h results screen and the results API show the level per desk and the Serving against Idle figure beside the throughput-level agreement, border data to border roles only as before (a Playwright functional test and an API end-to-end test, including an airport role refused)",
+        "Unit tests: table-driven cases for each pairing of observed and stored state at both levels, a desk changing level mid-campaign, Unknown at both levels, and the generated campaign's properties (order independence, tallies) with mixed levels; the reference scenario's desks without zones agree at the throughput level at 0.95 or above on seeds 9303 and 2026",
+        "The ARV-149 and ARV-151 security reviews' recommendations are applied (done in the first round: wiki 04 Border:DeskFeed cell, the cap test's name and its references, DeskStateEngine.Snapshot.cs in the mutate list, a NULL latest queue length taken as not known, the Emulators README Truth bullet, the AMAN emulator's golden fingerprint, the CWE-501 row's ARV-151 citations, the Simulation reference architecture test)",
+        "wiki 07 (section 8 and the targets table), wiki 15 (Desk-state agreement) and docs/product/pilot-to-confirm.md state the two levels and that 0.95 on the full state needs a staff or service zone per desk",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "The story's tests pass through node scripts/verify.mjs story (the full suite when the change is wide)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 32,
+      "passes": true,
+      "notes": "Size M. Owner decisions 2026-10-10 (rows 5a and 5b on the intervals' service seconds, measured short of 0.95 even in hindsight, then the throughput level for desks without zones). Before the ARV-104j rerun.",
+      "dependsOn": [
+        "ARV-149",
+        "ARV-151"
+      ]
+    },
+    {
       "id": "ARV-104j",
       "title": "[E13] Validation rehearsal against the live pipeline",
       "description": "Owner decision 2026-10-10 (from ARV-104i): the E2E rehearsal of ARV-104i plants Ariva's system outputs from the simulator's truth, because the E2E suite has no Stream host, so CountAccuracy, WaitError, NowcastError, DeskStateAgreement and Availability pass there by construction and prove only the observer path, the capture API and the verdict engine. This story runs the same rehearsal where Ariva measures for itself: the reference evening (seed 9303) through the real Ingest, Stream and Cronz hosts (the demo scope of ARV-064), the simulator's observers capturing through the capture API, and the campaign closed and frozen. It is the evidence a client will ask for: Ariva's own measurements meet the KPI targets against independent ground truth. Epic: Validation tooling. CWEs to review: CWE-287, CWE-306, CWE-863.",

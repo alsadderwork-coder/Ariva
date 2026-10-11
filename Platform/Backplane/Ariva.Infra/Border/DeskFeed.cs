@@ -123,10 +123,90 @@ public sealed record DeskFeedState(int Version, DeskEngineState Engine, AmanFeed
 /// twice; both engines' snapshots, the read positions and the heartbeat are saved with the rows.
 /// Keys are site, checkpoint and desk code (<see cref="AmanDeskFeed.Key"/>). Parameterised SQL only.
 /// </summary>
-public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvider, DeskFeedSettings settings, ILogger<DeskFeed> logger)
+public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvider, DeskFeedSettings settings, ILogger<DeskFeed> logger,
+    StreamSettings stream = null)
 {
     /// <summary>A saved state larger than this is refused (CWE-120).</summary>
     public const int MaxStateBytes = 64 * 1024 * 1024;
+
+    /// <summary>
+    /// The seconds D allows beyond the stream's timing for writing a closed minute's length (ARV-149a): the checkpoint that
+    /// writes it (<c>Kafka:Consumers:CheckpointSeconds</c>, 5 by default) and the write itself.
+    /// </summary>
+    public const int QueueLengthWriteSeconds = 15;
+
+    /// <summary>
+    /// D of the lane context's queue (ARV-149a, F10): how long after a minute ends the stream has written its length, for
+    /// <paramref name="siteCode"/>, from the stream's own settings in this host (Ariva.Api.Stream runs both): the site's
+    /// lateness (a minute closes when the zone's watermark, its clock less the lateness, passes its end), its push interval
+    /// (a zone's clock trails the receive clock by up to a push, and a zone without events moves on with the receive clock
+    /// less it), the idle tick (a zone without events moves its clock on at most this often) and
+    /// <see cref="QueueLengthWriteSeconds"/>. 180 s with the defaults (90 + 60 + 15 + 15). Too short a D only makes a zone
+    /// not known sooner (fail closed); a long one cannot let a minute stand beyond the queue's freshness of
+    /// <see cref="DeskRhythm.QueueFreshMinutes"/> minutes.
+    /// </summary>
+    public static TimeSpan QueueLengthDue(StreamSettings streamSettings, string siteCode)
+    {
+        var timing = streamSettings ?? new StreamSettings();
+        var (lateness, push) = timing.TimingOf(siteCode);
+        return TimeSpan.FromSeconds((long)Math.Max(0, lateness) + Math.Max(0, push) + Math.Max(0, timing.IdleTickSeconds) + QueueLengthWriteSeconds);
+    }
+
+    /// <summary>D for <paramref name="siteCode"/> from the stream settings this feed was built with (<see cref="QueueLengthDue"/>).</summary>
+    public TimeSpan QueueLengthDueFor(string siteCode) => QueueLengthDue(stream, siteCode);
+
+    /// <summary>
+    /// The longest D for which a fresh minute's missing length can ever be overdue (ARV-149a): a minute is fresh back to the
+    /// queue's freshness before the engine's watermark (the read less the feed's lateness), and overdue from a minute and D
+    /// after its start, so D must be at most the freshness less a minute plus the feed's lateness: 240 + 90 = 330 s by default.
+    /// </summary>
+    public static TimeSpan QueueLengthDueWindow(DeskFeedSettings feedSettings) =>
+        TimeSpan.FromMinutes(DeskRhythm.QueueFreshMinutes - 1) + TimeSpan.FromSeconds(Math.Max(0, (feedSettings ?? new DeskFeedSettings()).LatenessSeconds));
+
+    /// <summary>
+    /// The sites whose D is beyond <see cref="QueueLengthDueWindow"/> (ARV-149a, R-f of its security re-check), in site code
+    /// order, with their D and the window: their fresh minutes' missing lengths are never overdue, so their zones stay not known
+    /// in the lane contexts without a count or a warning per read. A null site stands for the stream's defaults (every site
+    /// without timing of its own). Only keys that are site codes are named (the stream refuses the others at start).
+    /// </summary>
+    public static IReadOnlyList<(string Site, TimeSpan Due, TimeSpan Window)> QueueLengthsNeverDue(StreamSettings streamSettings, DeskFeedSettings feedSettings)
+    {
+        var timing = streamSettings ?? new StreamSettings();
+        var window = QueueLengthDueWindow(feedSettings);
+        var found = new List<(string Site, TimeSpan Due, TimeSpan Window)>();
+        var byDefault = QueueLengthDue(timing, null);
+        if (byDefault > window)
+            found.Add((null, byDefault, window));
+        foreach (var code in (timing.Sites?.Keys ?? Enumerable.Empty<string>()).Where(Ariva.Core.Domain.Entities.Site.IsValidCode).Order(StringComparer.Ordinal))
+        {
+            var due = QueueLengthDue(timing, code);
+            if (due > window)
+                found.Add((code, due, window));
+        }
+
+        return found;
+    }
+
+    /// <summary>
+    /// Warns once, when the feed starts (<see cref="DeskFeedWorker"/>), of each site whose lane contexts can never have a queue
+    /// (<see cref="QueueLengthsNeverDue"/>): its desks without zones follow rows 5 and 7. The site code and the two numbers only.
+    /// Returns how many warnings were written.
+    /// </summary>
+    public int WarnOfQueueLengthsNeverDue()
+    {
+        var found = QueueLengthsNeverDue(stream, settings);
+        foreach (var (site, due, window) in found)
+        {
+            if (site is null)
+                logger.LogWarning("Desk feed: the stream's default timing makes a queue minute's length due {DueSeconds} s after it, beyond the {WindowSeconds} s the lane contexts can wait; sites without timing of their own get no queue in their lane contexts",
+                    (long)due.TotalSeconds, (long)window.TotalSeconds);
+            else
+                logger.LogWarning("Desk feed of site {Site}: the stream's timing makes a queue minute's length due {DueSeconds} s after it, beyond the {WindowSeconds} s the lane contexts can wait; its desks without zones get no queue in their lane contexts",
+                    site, (long)due.TotalSeconds, (long)window.TotalSeconds);
+        }
+
+        return found.Count;
+    }
 
     /// <summary>
     /// How far back the sensor-only engine is rebuilt from the stored zone readings when its snapshot is absent or
@@ -325,7 +405,7 @@ public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvide
         var rhythmDesks = profiles.Where(DeskRule.FollowsRhythm).Select(p => p.DeskCode).ToHashSet(StringComparer.Ordinal);
         if (rhythmDesks.Count > 0 && (!contextUtc.HasValue || contextMinute > contextUtc.Value))
         {
-            foreach (var context in await LaneContextsAsync(connection, transaction, siteCode, rhythmDesks, now - engineSettings.Lateness, ct))
+            foreach (var context in await LaneContextsAsync(connection, transaction, siteCode, rhythmDesks, now - engineSettings.Lateness, now, ct))
                 engine.Offer(context, now);
             contextUtc = contextMinute;
         }
@@ -478,15 +558,17 @@ public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvide
     /// The lane contexts at <paramref name="atUtc"/> (the engine's watermark of the read) of the site's desks that follow the
     /// transaction rhythm (ARV-149, F10 rows 5a to 5f). The queue zones of the site's latest published profile with a lane category are matched to the desks (kind
     /// Desk) of the immigration and emigration checkpoints on their level whose lane categories include it, as the nowcast's
-    /// desk term matches them (<c>DeskTermSource</c>); each zone's latest live minute with a length in the last
-    /// <see cref="DeskRhythm.QueueFreshMinutes"/> minutes, and AMAN's intervals of the matched desks that started in the rhythm
+    /// desk term matches them (<c>DeskTermSource</c>); each zone's live minutes in the last
+    /// <see cref="DeskRhythm.QueueFreshMinutes"/> minutes, the latest deciding (ARV-149a: one without a length whose length is
+    /// due at <paramref name="readUtc"/>, <see cref="QueueLengthDue"/>, makes the zone not known, fail closed, and an earlier
+    /// minute never stands in for it; one whose length is not yet due is skipped), and AMAN's intervals of the matched desks that started in the rhythm
     /// window, are read back and checked again before use (CWE-501: <see cref="DeskRhythm"/>, <see cref="LaneCycle"/>; what
     /// is left out is counted in a warning that names the site and the count only). Bounded (CWE-120): a site whose read
     /// reaches <see cref="DeskTermSource.MaxRows"/> rows of any kind gets no contexts this minute (its desks keep rows 5 and 7).
     /// Parameterised SQL only; only this site's rows (CWE-863).
     /// </summary>
     private async Task<IReadOnlyList<DeskLaneContext>> LaneContextsAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, string siteCode,
-        IReadOnlySet<string> rhythmDesks, DateTime atUtc, CancellationToken ct)
+        IReadOnlySet<string> rhythmDesks, DateTime atUtc, DateTime readUtc, CancellationToken ct)
     {
         var max = Ariva.Infra.Streaming.DeskTermSource.MaxRows;
         var rows = await ReadAsync(connection, transaction, """
@@ -512,9 +594,9 @@ public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvide
                FROM queues q
                CROSS JOIN LATERAL (
                     SELECT qm.minute_utc, qm.queue_length, qm.length_degraded FROM queue_minute qm
-                     WHERE qm.zone_key = @site || '/' || q.zone AND qm.minute_utc >= @fresh AND qm.minute_utc <= @at AND qm.queue_length IS NOT NULL
+                     WHERE qm.zone_key = @site || '/' || q.zone AND qm.minute_utc >= @fresh AND qm.minute_utc <= @at
                      ORDER BY qm.minute_utc DESC
-                     LIMIT 1) m
+                     LIMIT @perZone) m
               LIMIT @max)
             UNION ALL
             (SELECT 'interval', ds.zone, i.id::text, NULL, i.interval_start_utc, i.transactions_processed, i.documents_processed, false,
@@ -523,11 +605,15 @@ public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvide
               WHERE i.interval_start_utc >= @from AND i.interval_start_utc <= @at
               LIMIT @max)
             """, [new NpgsqlParameter("site", siteCode), new NpgsqlParameter("max", max),
+                // ARV-149a: every fresh minute of a zone (one a minute, so at most the freshness and one), so that a minute whose
+                // length is not yet due can give way to the one before it.
+                new NpgsqlParameter("perZone", DeskRhythm.QueueFreshMinutes + 1),
                 new NpgsqlParameter("fresh", NpgsqlDbType.TimestampTz) { Value = atUtc.AddMinutes(-DeskRhythm.QueueFreshMinutes) },
                 new NpgsqlParameter("at", NpgsqlDbType.TimestampTz) { Value = atUtc },
                 new NpgsqlParameter("from", NpgsqlDbType.TimestampTz) { Value = atUtc.AddMinutes(-settings.RhythmWindowMinutes - 2) }],
             r => new LaneContextRow(r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), r.IsDBNull(3) ? null : r.GetString(3),
-                r.IsDBNull(4) ? DateTime.MinValue : Utc(r.GetDateTime(4)), r.GetInt32(5), r.GetInt32(6), r.GetBoolean(7), r.GetDouble(8), r.GetDouble(9), r.GetDouble(10)), ct);
+                r.IsDBNull(4) ? DateTime.MinValue : Utc(r.GetDateTime(4)), r.IsDBNull(5) ? null : r.GetInt32(5), r.GetInt32(6), r.GetBoolean(7), r.GetDouble(8), r.GetDouble(9),
+                r.GetDouble(10)), ct);
         if (rows.GroupBy(r => r.What, StringComparer.Ordinal).Any(g => g.Count() >= max))
         {
             logger.LogWarning("Desk feed of site {Site}: {Max} lane context rows or more; its desks without zones keep the rows without a lane context this minute",
@@ -540,12 +626,20 @@ public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvide
             .Where(s => rhythmDesks.Contains(s.DeskKey))
             .ToList();
         var queues = rows.Where(r => r.What == "queue").Select(r => new LaneQueueSample(r.Zone, r.At, r.N1, r.Degraded));
-        var intervals = rows.Where(r => r.What == "interval" && r.A is not null)
-            .Select(r => new LaneIntervalSample(r.Zone, r.A, new DeskIntervalSample(r.N1, r.N2, r.F1, r.F2, r.F3)));
-        var result = DeskRhythm.Contexts(served, queues, intervals, atUtc);
-        if (result.RefusedIntervals + result.RefusedQueues > 0)
+        var intervals = rows.Where(r => r.What == "interval" && r.A is not null && r.N1.HasValue)
+            .Select(r => new LaneIntervalSample(r.Zone, r.A, new DeskIntervalSample(r.N1.Value, r.N2, r.F1, r.F2, r.F3)));
+        // An interval read back without its transactions (the column is NOT NULL, so never in practice) is refused like one out of bounds.
+        var withoutCount = rows.Count(r => r.What == "interval" && r.A is not null && !r.N1.HasValue);
+        // ARV-149a: a minute's length is due D after the minute ends (D from this host's stream settings for the site).
+        var result = DeskRhythm.Contexts(served, queues, intervals, atUtc, readUtc - TimeSpan.FromMinutes(1) - QueueLengthDue(stream, siteCode));
+        if (result.RefusedIntervals + result.RefusedQueues + withoutCount > 0)
             logger.LogWarning("Desk feed of site {Site}: {Count} AMAN intervals or queue lengths outside their bounds were left out of the lane contexts",
-                siteCode, result.RefusedIntervals + result.RefusedQueues);
+                siteCode, result.RefusedIntervals + result.RefusedQueues + withoutCount);
+        // ARV-149a: zones whose latest fresh minute has no length though it is due count as not known (fail closed); the site and
+        // a count only. A minute whose length is not yet due is normal (the stream writes it once the minute closes): no warning.
+        if (result.QueuesWithoutLength > 0)
+            logger.LogWarning("Desk feed of site {Site}: {Count} queue zones' latest live minutes have no length; they count as not known in the lane contexts",
+                siteCode, result.QueuesWithoutLength);
         return result.Contexts;
     }
 
@@ -619,9 +713,10 @@ public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvide
 
 /// <summary>
 /// One row of the lane context read (ARV-149): a desk serving a queue zone (its checkpoint and desk code), a queue zone's latest
-/// live minute (its length and degraded flag) or an AMAN interval of a matched desk (its id, counts and times). Counts only.
+/// live minute (its length, null when the minute has none, ARV-149a, and degraded flag) or an AMAN interval of a matched desk
+/// (its id, counts and times). Counts only.
 /// </summary>
-internal sealed record LaneContextRow(string What, string Zone, string A, string B, DateTime At, int N1, int N2, bool Degraded, double F1, double F2, double F3);
+internal sealed record LaneContextRow(string What, string Zone, string A, string B, DateTime At, int? N1, int N2, bool Degraded, double F1, double F2, double F3);
 
 /// <summary>A stored staff or service zone reading as the desk feed reads it (ARV-116, <c>desk_zone_reading</c>): counts only.</summary>
 internal sealed record DeskZoneRow(Guid Id, DateTime WrittenUtc, string DeskKey, string Source, DateTime TimeUtc, int Count, bool Degraded)
@@ -640,6 +735,8 @@ public sealed class DeskFeedWorker(DeskFeed feed, DeskFeedSettings settings, Tim
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // ARV-149a: a site whose stream timing leaves its lane contexts without a queue is named once, at start.
+        feed.WarnOfQueueLengthsNeverDue();
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(settings.PollSeconds), timeProvider);
         do
         {

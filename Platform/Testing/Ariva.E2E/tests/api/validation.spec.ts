@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import pg from 'pg';
 import { accounts, call, type CallResponse, claimsOf, databaseAvailable, login, signIn, unusedTotpCode } from '../support/accounts';
 import { expectApiSecurityHeaders, expectNoLeak } from '../support/api-assertions';
 import { hosts } from '../support/hosts';
@@ -1037,6 +1038,81 @@ test('campaign results are served per role while running, frozen at the close as
 	const open = await plan(`Results open ${Date.now()}`);
 	expect((await call('POST', `${campaigns()}/${open.id}/start`, { token: lead })).status()).toBe(200);
 	expect((await call('POST', results(open.id, site, '/revisions'), { token: strong, data: { reason: 'Too early' } })).status()).toBe(409);
+});
+
+// ARV-149a (owner decision 2026-10-10, formulas F18): E2EV's desks have no staff or service zone in its profile, so a minute
+// observed after the profile's publication is judged open or not open, with Serving against Idle beside it (no target); the
+// level comes from the profile in force for the minute, never the observers. The stored desk minutes are planted with the
+// database owner, as other suites plant stream outputs.
+test('a desk without a staff or service zone is judged open or not open from the profile in force, with Serving against Idle beside it; an airport role reads no desk level', async () => {
+	test.setTimeout(240_000);
+	const history = await (await call('GET', `${admin}/zone-profiles?siteCode=${site}`, { token: manager })).json();
+	const publishedOn = Date.parse((history.data ?? history).find((p: any) => p.status === 'Published').publishedOn);
+	expect(Number.isFinite(publishedOn), 'the published version has its publication time').toBe(true);
+	// The judged minutes start at or after the publication (before it no version was in force: the full state, fail closed);
+	// a fresh database published it moments ago, so wait until two whole minutes after it have ended.
+	const firstMinute = Math.ceil(publishedOn / minute) * minute;
+	while (Date.now() < firstMinute + 2 * minute + 5_000) await new Promise((resolve) => setTimeout(resolve, 5_000));
+	const id = await runningWithDesks(`Levels ${Date.now()}`);
+	const last = Math.floor((Date.now() - 90_000) / minute) * minute;
+	const bin = Math.floor(last / quarter) * quarter;
+	const observed = Array.from({ length: (last - Math.max(bin, firstMinute)) / minute + 1 }, (_, i) => Math.max(bin, firstMinute) + i * minute);
+	expect(observed.length, 'at least one whole minute after the publication').toBeGreaterThan(0);
+	const states: (string | null)[] = Array.from({ length: 15 }, () => null);
+	for (const at of observed) states[(at - bin) / minute] = 'Serving';
+	const logged = await sendDesks(id, observer, { binStartUtc: iso(bin).replace('.000Z', 'Z'), desks: [{ deskId: desks.vd01, states }] }, `e2e-levels-${Date.now()}`);
+	expect(logged.status(), await logged.text()).toBe(201);
+
+	// Ariva's stored minutes for them: Idle all minute (open, as the observer's Serving is, but not the same state).
+	const db = new pg.Client({
+		host: process.env.Database__Host || 'localhost',
+		port: Number(process.env.Database__Port || 5432),
+		database: process.env.Database__Name || 'postgres',
+		user: process.env.Database__Migration__Username || 'postgres',
+		password: process.env.Database__Migration__Password
+	});
+	await db.connect();
+	const deskKey = `${site}/VIMM/VD01`;
+	try {
+		await db.query(
+			`INSERT INTO desk_minute (desk_code, lane, minute_utc, closed_seconds, idle_seconds, serving_seconds, paused_seconds, unknown_seconds, transactions,
+			                          sensor_derived_seconds, present_seconds, degraded, updated_on)
+			 SELECT $1, 'CIT', m, 0, 60, 0, 0, 0, 0, 0, 0, false, now() FROM unnest($2::timestamptz[]) AS t(m)
+			 ON CONFLICT (desk_code, minute_utc) DO UPDATE SET idle_seconds = 60, serving_seconds = 0, closed_seconds = 0, paused_seconds = 0, unknown_seconds = 0`,
+			[deskKey, observed.map(iso)]
+		);
+
+		const served = await call('GET', results(id), { token: manager });
+		expect(served.status(), await served.text()).toBe(200);
+		const body = await served.json();
+		const vd01 = body.desks.desks.find((d: any) => d.deskCode === 'VD01');
+		const n = observed.length;
+		expect(vd01, JSON.stringify(body.desks)).toMatchObject({
+			level: 'Throughput',
+			judged: n,
+			judgedAtThroughput: n,
+			agreeing: n,
+			servingIdleMinutes: n,
+			servingIdleAgreeing: 0,
+			servingIdleAgreement: 0,
+			check: { value: 1, target: 0.95, verdict: 'Pass' }
+		});
+		expect(body.desks.overall).toMatchObject({ level: 'Throughput', judgedAtThroughput: n, agreeing: n });
+		expect(body.desks.desks.find((d: any) => d.deskCode === 'VD02').level, 'a desk with no judged minute has no level').toBeNull();
+
+		// Border data: the airport side reads no desk, no level and no Serving against Idle.
+		for (const token of [lead, dual]) {
+			const airport = await call('GET', results(id), { token });
+			expect(airport.status()).toBe(200);
+			const text = await airport.text();
+			expect(JSON.parse(text).desks).toBeNull();
+			for (const fragment of ['judgedAtThroughput', 'servingIdle', 'VD01', desks.vd01]) expect(text, fragment).not.toContain(fragment);
+		}
+		for (const token of [observer, handler]) expect((await call('GET', results(id), { token })).status()).toBe(403);
+	} finally {
+		await db.query('DELETE FROM desk_minute WHERE desk_code = $1 AND minute_utc = ANY($2::timestamptz[])', [deskKey, observed.map(iso)]);
+		await db.end();
+	}
 });
 
 test('campaign results answer 404 across sites, refuse attack payloads and keep markup inert', async () => {

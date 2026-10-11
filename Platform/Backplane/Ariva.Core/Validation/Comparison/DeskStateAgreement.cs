@@ -16,6 +16,14 @@ namespace Ariva.Core.Validation.Comparison;
 /// <see cref="DeskAgreementSummary"/>); a desk minute an observer's unusable state names is not judged, and the other
 /// observers' states of it are left out with it (security review lesson of ARV-104e, CWE-501). Degraded stored minutes count,
 /// tallied apart. Border per-desk data throughout: no person is named, and ARV-104g serves the results to border roles only.
+/// <para>
+/// ARV-149a (owner decision 2026-10-10): each observed minute is judged at its desk's level in Ariva's own record of that minute
+/// (<see cref="ComparisonInput.DeskLevels"/>: the zone profile in force, never the observers): a desk with a staff or service
+/// zone on its full state as before, a desk without one at the throughput level, open (Idle or Serving) against not open
+/// (Paused or Closed); Unknown never agrees at either level. A minute the record says nothing about, and every minute of a desk
+/// whose record could not be used, is judged on the full state (fail closed: a missing or refused record never makes the
+/// judgement easier). The pooled agreement counts each minute at its level against the same target.
+/// </para>
 /// Pure: no I/O, no clock.
 /// </summary>
 public static class DeskStateAgreement
@@ -70,6 +78,20 @@ public static class DeskStateAgreement
     /// <summary>Whether an observed state equals the stored dominant state; Unknown never agrees (F18, Proposed).</summary>
     public static bool Agrees(ObservedDeskState observed, DeskStatus system) => system != DeskStatus.Unknown && StatusOf(observed) == system;
 
+    /// <summary>
+    /// Whether an observed state agrees with the stored dominant state at <paramref name="level"/> (ARV-149a): on the full state they
+    /// are equal; at the throughput level both are open (Idle or Serving) or both not open (Paused or Closed). Unknown never agrees,
+    /// and neither does an observed state that is not one of the four a person can see; a level that is neither is the full state
+    /// (fail closed).
+    /// </summary>
+    public static bool Agrees(ObservedDeskState observed, DeskStatus system, DeskAgreementLevel level)
+    {
+        var seen = StatusOf(observed);
+        if (system == DeskStatus.Unknown || seen == DeskStatus.Unknown)
+            return false;
+        return level == DeskAgreementLevel.Throughput ? CountsForThroughput(seen) == CountsForThroughput(system) : seen == system;
+    }
+
     /// <summary>Whether a state counts for throughput (F8's n_open: Idle or Serving).</summary>
     public static bool CountsForThroughput(DeskStatus status) => status is DeskStatus.Idle or DeskStatus.Serving;
 
@@ -101,8 +123,10 @@ public static class DeskStateAgreement
                 : ComparisonStanding.Good;
             var disagree = states.Distinct().Count() > 1;
             ObservedDeskState? state = disagree ? null : states[0];
+            // ARV-149a: the level of this desk's minute in Ariva's own record (never the observers').
+            var level = data.DeskLevelAt(desk, minute);
             items.Add(new DeskMinuteAgreement(data.Version, desk.DeskId, desk.CheckpointCode, desk.DeskCode, minute, states.Count, state, disagree, system,
-                row is not null, standing, state is { } s ? Agrees(s, system) : null));
+                row is not null, standing, state.HasValue ? Agrees(state.Value, system, level) : null, level));
         }
 
         var byDesk = items.GroupBy(i => i.DeskId).ToDictionary(g => g.Key, g => g.ToList());
@@ -133,9 +157,13 @@ public static class DeskStateAgreement
         var disagree = items.Count - judged.Count;
         // Fail closed beside the Proposed rule: every excluded minute counted as a disagreement (the exclusion lever, ARV-104g).
         var strict = Agreement(agreeing, judged.Count + disagree + unusable);
+        // ARV-149a, no target: of the minutes judged at the throughput level that the observer and the stored minute both call open,
+        // how many agree on Serving against Idle.
+        var atThroughput = judged.Where(i => i.Level == DeskAgreementLevel.Throughput).ToList();
+        var open = atThroughput.Where(i => CountsForThroughput(StatusOf(i.ObservedState.GetValueOrDefault())) && CountsForThroughput(i.SystemState)).ToList();
         return new DeskAgreementSummary(data.Version, desk?.DeskId, desk?.CheckpointCode, desk?.DeskCode, items.Count, judged.Count, agreeing, disagree, unusable,
             disagree + unusable, judged.Count(i => !i.SystemStored), StandingTally.Of(judged.Select(i => i.Standing)), throughput, strict, confusion.AsReadOnly(),
-            new CriterionCheck(agreement, target, verdict));
+            new CriterionCheck(agreement, target, verdict), atThroughput.Count, open.Count, open.Count(i => StatusOf(i.ObservedState.GetValueOrDefault()) == i.SystemState));
     }
 
     #endregion

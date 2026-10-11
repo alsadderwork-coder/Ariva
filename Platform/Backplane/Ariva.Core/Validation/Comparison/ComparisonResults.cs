@@ -319,12 +319,16 @@ public sealed record LeftOutInputs(int ManualCounts, int TracerRuns, int LineBin
     /// <summary>Shadow nowcasts left out (ARV-104f).</summary>
     public int ShadowMinutes { get; init; }
 
-    public int Total => ManualCounts + TracerRuns + LineBins + QueueMinutes + QueueBins + HealthBins + QualityIntervals + DeskObservations + DeskMinutes + ShadowMinutes;
+    /// <summary>Desk level rows left out (ARV-149a): out of scope, or refused, which puts their desk on the full state throughout.</summary>
+    public int DeskLevels { get; init; }
+
+    public int Total => ManualCounts + TracerRuns + LineBins + QueueMinutes + QueueBins + HealthBins + QualityIntervals + DeskObservations + DeskMinutes + ShadowMinutes +
+        DeskLevels;
 
     public bool Equals(LeftOutInputs other) =>
         other is not null && ManualCounts == other.ManualCounts && TracerRuns == other.TracerRuns && LineBins == other.LineBins &&
         QueueMinutes == other.QueueMinutes && QueueBins == other.QueueBins && HealthBins == other.HealthBins && QualityIntervals == other.QualityIntervals &&
-        DeskObservations == other.DeskObservations && DeskMinutes == other.DeskMinutes && ShadowMinutes == other.ShadowMinutes &&
+        DeskObservations == other.DeskObservations && DeskMinutes == other.DeskMinutes && ShadowMinutes == other.ShadowMinutes && DeskLevels == other.DeskLevels &&
         UnusableKeys.SequenceEqual(other.UnusableKeys);
 
     public override int GetHashCode()

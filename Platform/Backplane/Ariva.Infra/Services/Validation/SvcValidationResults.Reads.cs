@@ -92,6 +92,22 @@ internal sealed partial class SvcValidationResults
          LIMIT :limit
         """;
 
+    // ARV-149a: the site's zone profile versions in force during the planned days (published before their end, not retired before
+    // their start; a version is in force from its publication to its retirement, as the availability ledger reads them) and, for
+    // each desk in scope by its id, whether the version has a staff or service zone at it, as the desk feed gives a desk its zones
+    // (a zone of kind Staff or Service naming the desk and a queue zone). Configuration only, never the observers' records.
+    private const string DeskLevelsSql = """
+        SELECT d.id AS "DeskId", p.version AS "Version", p.published_on AS "PublishedOn", p.retired_on AS "RetiredOn",
+               EXISTS (SELECT 1 FROM zone z
+                        WHERE z.profile_id = p.id AND z.desk_id = d.id AND z.kind IN ('Staff', 'Service') AND z.queue_zone_id IS NOT NULL) AS "HasZone"
+          FROM zone_profile p
+          JOIN desk d ON d.site_code = p.site_code AND CAST(d.id AS text) IN (:desks)
+         WHERE p.site_code = :site AND p.status IN ('Published', 'Retired') AND p.version IS NOT NULL AND p.published_on IS NOT NULL
+           AND p.published_on < :to AND (p.retired_on IS NULL OR p.retired_on > :from)
+         ORDER BY d.id, p.version
+         LIMIT :limit
+        """;
+
     // The ledger's minutes of the planned local days, per day (ARV-118, as SvcAvailability counts them).
     private const string AvailabilitySql = """
         SELECT to_char(local_date, 'YYYY-MM-DD') AS "Date",
@@ -250,6 +266,31 @@ internal sealed partial class SvcValidationResults
             ? null
             : [.. rows.Where(r => desks.ContainsKey(r.DeskKey)).Select(r => new DeskMinuteRow(desks[r.DeskKey].CheckpointCode, desks[r.DeskKey].DeskCode, Utc(r.MinuteUtc),
                 r.ClosedSeconds, r.IdleSeconds, r.ServingSeconds, r.PausedSeconds, r.UnknownSeconds, r.Degraded))];
+    }
+
+    /// <summary>
+    /// The level periods of the campaign's desks over [from, to) from the site's zone profile versions in force (ARV-149a): each
+    /// version with each desk in scope, at the full state when the version has a staff or service zone at the desk and at the
+    /// throughput level when it has none; null beyond the bound. The site's own rows only (CWE-863), the desks by their ids.
+    /// </summary>
+    internal async Task<List<DeskLevelRow>> DeskLevelsAsync(ValidationCampaign campaign, DateTime fromUtc, DateTime toUtc, CancellationToken ct)
+    {
+        if (campaign.Desks.Count == 0 || toUtc <= fromUtc)
+            return [];
+        // The storage provider binds a list of strings as a parameter list (each id its own parameter), so the ids go as text.
+        IReadOnlyCollection<string> desks = [.. campaign.Desks.Select(d => d.DeskId.ToString("D")).Distinct(StringComparer.Ordinal)];
+        var rows = await ExecuteSqlAsync<DeskLevelData>(DeskLevelsSql, new Dictionary<string, object>
+        {
+            ["desks"] = desks,
+            ["site"] = campaign.SiteCode,
+            ["from"] = fromUtc,
+            ["to"] = toUtc,
+            ["limit"] = RowLimit + 1
+        }, ct);
+        return rows.Count > RowLimit
+            ? null
+            : [.. rows.Select(r => new DeskLevelRow(r.DeskId, r.Version, Utc(r.PublishedOn), r.RetiredOn is { } retired ? Utc(retired) : null,
+                r.HasZone ? DeskAgreementLevel.FullState : DeskAgreementLevel.Throughput))];
     }
 
     #endregion
@@ -428,6 +469,16 @@ internal sealed partial class SvcValidationResults
         public double PausedSeconds { get; set; }
         public double UnknownSeconds { get; set; }
         public bool Degraded { get; set; }
+    }
+
+    [SuppressMessage("Performance", "CA1812", Justification = "Created by NHibernate's result transformer.")]
+    private sealed class DeskLevelData
+    {
+        public Guid DeskId { get; set; }
+        public int Version { get; set; }
+        public DateTime PublishedOn { get; set; }
+        public DateTime? RetiredOn { get; set; }
+        public bool HasZone { get; set; }
     }
 
     [SuppressMessage("Performance", "CA1812", Justification = "Created by NHibernate's result transformer.")]

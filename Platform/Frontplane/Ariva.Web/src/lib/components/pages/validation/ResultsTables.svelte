@@ -10,6 +10,7 @@
 		TracerZoneSummary,
 		Verdict
 	} from '$lib/core/validation';
+	import { deskAgreementLevels } from '$lib/core/validation';
 	import {
 		minutes,
 		percent,
@@ -131,8 +132,19 @@
 			whole(desk.agreeing, $locale),
 			share(desk.check.value),
 			share(desk.strictAgreement),
-			whole(desk.excluded, $locale)
+			whole(desk.excluded, $locale),
+			share(desk.servingIdleAgreement)
 		];
+	}
+
+	// ARV-149a: the level a desk's minutes were judged at. A result frozen before the levels carries none and was judged on
+	// the full state; a desk with no judged minute has none. The translation key is built only from one of the three level
+	// names (defence in depth, as ARV-104h checks values from the address); anything else shows as none.
+	function deskLevel(desk: DeskAgreementSummary): string {
+		const level = desk.level === undefined && desk.judged > 0 ? 'FullState' : desk.level;
+		return level && deskAgreementLevels.includes(level)
+			? $_(`validationCampaigns.results.deskLevels.${level}`)
+			: none();
 	}
 </script>
 
@@ -326,10 +338,22 @@
 		<h3 id="results-desks-title" class="text-xl font-semibold">
 			{$_('validationCampaigns.results.desksTitle')}
 		</h3>
+		<p class="mt-1 text-sm text-muted-foreground" data-testid="results-desk-levels-note">
+			{$_('validationCampaigns.results.deskLevelsNote')}
+		</p>
 		{#if desks.length === 0}
 			<p class="mt-2 text-sm text-muted-foreground">{$_('validationCampaigns.results.noDesks')}</p>
 		{:else}
-			<div class="mt-3 overflow-x-auto rounded-lg border">
+			<!-- ARV-149a: with the level and Serving against Idle columns the table can be wider than the page, so its scrolling
+			     region takes the keyboard focus (WCAG 2.1.1, axe scrollable-region-focusable), named by the table's caption. -->
+			<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+			<div
+				class="mt-3 overflow-x-auto rounded-lg border focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+				role="region"
+				aria-label={$_('validationCampaigns.results.desksCaption')}
+				tabindex="0"
+				data-testid="results-desks-region"
+			>
 				<table class="w-full text-sm" data-testid="results-desks">
 					<caption class="sr-only">{$_('validationCampaigns.results.desksCaption')}</caption>
 					<thead class="bg-surface-2">
@@ -337,7 +361,10 @@
 							<th scope="col" class={header}
 								>{$_('validationCampaigns.results.desksColumns.desk')}</th
 							>
-							{#each ['minutes', 'judged', 'agreeing', 'agreement', 'strict', 'excluded'] as column (column)}
+							<th scope="col" class={header}
+								>{$_('validationCampaigns.results.desksColumns.level')}</th
+							>
+							{#each ['minutes', 'judged', 'agreeing', 'agreement', 'strict', 'excluded', 'servingIdle'] as column (column)}
 								<th scope="col" class={headerEnd}
 									>{$_(`validationCampaigns.results.desksColumns.${column}`)}</th
 								>
@@ -357,6 +384,7 @@
 								<th scope="row" class="px-4 py-3 text-start font-mono text-xs font-medium"
 									>{desk.checkpointCode} {desk.deskCode}</th
 								>
+								<td class={cell} data-testid="results-desk-level">{deskLevel(desk)}</td>
 								{#each deskCells(desk) as value, index (index)}
 									<td class={cellEnd}>{value}</td>
 								{/each}
@@ -376,6 +404,7 @@
 								<th scope="row" class="px-4 py-3 text-start"
 									>{$_('validationCampaigns.results.everyDesk')}</th
 								>
+								<td class={cell} data-testid="results-desk-level">{deskLevel(overall)}</td>
 								{#each deskCells(overall) as value, index (index)}
 									<td class={cellEnd}>{value}</td>
 								{/each}
