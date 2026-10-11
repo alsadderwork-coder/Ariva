@@ -45,5 +45,11 @@
 		"svelte": "^5.38.0",
 		"svelte-i18n": "^4.0.1",
 		"zod": "^4.0.17"
+	},
+	"overrides": {
+		"cookie": "^0.7.2",
+		"svelte-i18n": {
+			"esbuild": "^0.25.12"
+		}
 	}
 }
