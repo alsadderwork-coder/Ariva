@@ -50,6 +50,7 @@ From a border deployment to an airport deployment, additionally never: track ids
 | Queue intervals, desk intervals, forecasts, border lane KPIs | Indefinite (aggregates) | D5 |
 | Hourly and daily report aggregates | Indefinite | D5 |
 | Report schedules and deliveries (schedule, local day, recipient account, status; ARV-060). Report emails carry lane aggregates, alerts and device uptime only, to Ariva accounts allowed the site | To confirm; Proposed: 400 days for delivery rows, schedules until deleted (audited) | Proposed |
+| Weekly summary figures (ARV-119): computed on request from the stored rows, not stored. Time in each desk state per desk is border data, for border shift supervisors and administrators only; other readers get lane totals, each day and the week only where at least 3 desks were open in it and a lane's days all or none, so no figure is one or two desks' own | Not stored | Proposed |
 | Configuration, contracts, SLA decisions, alerts | Indefinite, audited | D5 |
 | Alert emails (`email_message`: recipient address, subject, body, status) | Kept with the alert as the record of who was told what; the body holds no traveller, officer or document data and no notes, only the staff address. A retention period for staff addresses here is To confirm | ARV-040 |
 | Evidence packs | At least the contract's dispute and audit periods | To confirm |

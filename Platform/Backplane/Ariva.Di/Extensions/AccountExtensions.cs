@@ -93,6 +93,10 @@ public static class AccountExtensions
         services.TryAddScoped<Ariva.Infra.Services.Reports.ReportReader>();
         services.TryAddScoped<Ariva.Core.Services.Reports.ISvcReports, Ariva.Infra.Services.Reports.SvcReports>();
         services.TryAddScoped<Ariva.Core.Services.Reports.ISvcReportSchedules, Ariva.Infra.Services.Reports.SvcReportSchedules>();
+        // The weekly summary's figures (ARV-119): no endpoint yet; the report tool integration (ARV-146) hands them on.
+        services.TryAddScoped<Ariva.Infra.Services.Quality.AvailabilityLedgerReader>();
+        services.TryAddScoped<Ariva.Infra.Services.Reports.WeeklySummaryReader>();
+        services.TryAddScoped<Ariva.Core.Services.Reports.ISvcWeeklySummary, Ariva.Infra.Services.Reports.SvcWeeklySummary>();
         // Data quality (ARV-114a): the stored health checks of the queue zones (F18), read only.
         services.TryAddScoped<Ariva.Core.Services.Quality.ISvcZoneHealth, Ariva.Infra.Services.Quality.SvcZoneHealth>();
         // Availability (ARV-118): the site operating calendar and the ledger's read; the ledger itself runs in Ariva.Api.Cronz.

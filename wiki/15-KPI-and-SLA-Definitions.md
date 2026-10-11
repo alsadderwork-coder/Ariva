@@ -116,6 +116,23 @@ Monte Carlo runs of the backlog recursion `Q(k+1) = max(0, Q(k) + A(k) - C(k))` 
 
 Predicted arrivals per hall or lane over now plus 5 to now plus 25 minutes, from on-blocks (8 to 15 minutes delay, spread over about 12 minutes) and lane demand. Compared with a threshold or with staffed capacity (threshold To confirm).
 
+### Weekly summary (ARV-119, Proposed)
+
+The figures of a site's local week, Monday to Sunday in the airport's time zone (167 or 169 hours when the clock changes). Ariva computes them on request; the weekly report that lays them out, its downloads, schedules and delivery come with the Insight report tool (ARV-146). Exact rules: formulas, "Weekly summary figures".
+
+| Figure | How it is computed |
+|---|---|
+| Lane waits per day | Passengers, waits, P50 and P90 per lane and local day, from the day's minute histograms merged (F7), the same as that day's daily report; every local hour as well |
+| Peak hours | Per lane and day, the hour with the highest P90 among hours with at least 20 waits (the daily report's rule); per lane over the week the same; the site's ten worst lane-hours of the week |
+| Alerts and time to acknowledge | Alerts raised in the week that the reader's roles see, by severity, rule and day; minutes from raised to acknowledged over acknowledged alerts only (P50, P90, mean, longest); alerts never acknowledged counted apart, still open or closed |
+| Device uptime | The share of the week so far with no recorded outage of the device, as in the daily report |
+| Data quality | Stored 15-minute bins by status and quality (Degraded for track completion alone apart); track completion over final bins from the summed tracks (never an average of bin rates) and the bins below 90 percent; the conservation residual's size; minutes outside a physical capacity |
+| Overflow minutes | Per lane and day, minutes in which any band of the queue held anyone (TC-19) |
+| Availability | The availability ledger's minutes per local day and for the week, with both ratios (section 8) |
+| Time in each desk state | Seconds closed, idle, serving, paused and unknown, per lane and per desk, per day and week; no utilisation figure until its definition is agreed (TC-45) |
+
+Per-desk figures are border data: only border shift supervisors and administrators (`BorderDesks.View`) get desk rows. Other readers get lane totals, each day and the week only where at least three desks were open in it (idle, serving or paused; a closed desk does not count), and a lane's days all or none, so no figure is one or two desks' own and none can be worked out from the others. Check-in and security lanes go to readers with `AirportDesks.View` only. Data quality and availability need `DataQuality.View`. A week before a site's data, or partly before it, lists those days empty (no percentile rather than zero).
+
 ## 3. Provisional and final
 
 A bin is **final** when all of these hold, and **provisional** otherwise (F6):
