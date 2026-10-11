@@ -30,7 +30,7 @@ Topic `aman.feed.desk-session-changed.v1`, key AMAN desk code. Used as the rank 
 
 ### DeskIntervalStats
 
-Topic `aman.feed.desk-interval-stats.v1`, key AMAN desk code. Feeds service and cycle times for the nowcast and forecasts (F8, F9, F10). Reconciled with D5 on 2026-10-01.
+Topic `aman.feed.desk-interval-stats.v1`, key AMAN desk code. Feeds service and cycle times for the nowcast and forecasts (F8, F9, F10). Reconciled with D5 on 2026-10-01. Since ARV-149 it also gives a desk without staff or service zones its state (F10 rows 5a to 5f, the transaction rhythm): the desk's completed transactions against its lane's mean service time per document, with the people waiting in the queue zones it serves; that lane context (a service time and a count of people, no identity) is kept only in the desk feed's state (`desk_feed_state`), and the per-desk states it gives stay border data, for border roles only.
 
 | Field | Type | Notes |
 |---|---|---|

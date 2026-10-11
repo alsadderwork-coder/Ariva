@@ -39,6 +39,18 @@ public sealed record DeskFeedSettings
     /// </summary>
     public int MaxSensorMinutesPerRead { get; init; } = DeskFeed.MaxSensorMinutesPerRead;
 
+    /// <summary>
+    /// k of F10 rows 5b to 5e (ARV-149, Proposed 4, 2 to 20): a desk without staff or service zones is Paused only after a
+    /// silence of k times its lane's expected service time, never less than T1 (3 minutes) nor more than 30 minutes.
+    /// </summary>
+    public double RhythmPauseMultiple { get; init; } = 4;
+
+    /// <summary>
+    /// The window of AMAN intervals the lane's expected service time is taken over, in minutes (ARV-149, Proposed 15, 5 to 60),
+    /// plus the 2 minutes an interval may arrive late by.
+    /// </summary>
+    public int RhythmWindowMinutes { get; init; } = 15;
+
     public IEnumerable<string> Problems()
     {
         if (PollSeconds is < 1 or > 300)
@@ -51,14 +63,22 @@ public sealed record DeskFeedSettings
             yield return $"{SectionName}:SensorPauseSeconds is 10 to 180 (at most T1, 3 minutes).";
         if (MaxSensorMinutesPerRead is < 100 or > DeskFeed.MaxSensorMinutesPerRead)
             yield return $"{SectionName}:MaxSensorMinutesPerRead is 100 to 120,000.";
+        if (!double.IsFinite(RhythmPauseMultiple) || RhythmPauseMultiple < 2 || RhythmPauseMultiple > 20)
+            yield return $"{SectionName}:RhythmPauseMultiple is 2 to 20.";
+        if (RhythmWindowMinutes is < 5 or > 60)
+            yield return $"{SectionName}:RhythmWindowMinutes is 5 to 60.";
     }
 
-    /// <summary>The desk engine's settings: the reference values with this feed's lateness and the sensor T1 (ARV-116).</summary>
+    /// <summary>
+    /// The desk engine's settings: the reference values with this feed's lateness, the sensor T1 (ARV-116) and the pause
+    /// multiple of the transaction rhythm (ARV-149).
+    /// </summary>
     public DeskStateSettings Engine => new()
     {
         Lateness = TimeSpan.FromSeconds(LatenessSeconds),
         MaxLate = TimeSpan.FromMinutes(15),
-        SensorPauseAfter = TimeSpan.FromSeconds(SensorPauseSeconds)
+        SensorPauseAfter = TimeSpan.FromSeconds(SensorPauseSeconds),
+        RhythmPauseMultiple = RhythmPauseMultiple
     };
 
     /// <summary>
@@ -72,11 +92,12 @@ public sealed record DeskFeedSettings
 /// <summary>
 /// What the desk feed keeps per site between reads (<c>desk_feed_state</c>, script 0031): the engine, the read position in
 /// AMAN's records, the feed heartbeat, (ARV-116) the read position in the staff and service zone readings, absent in a
-/// state saved before, which then starts at the time of the read, and (ARV-117a) the sensor-only desk engine, absent in a
-/// state saved before (or refused on restore), which is then rebuilt by replaying the stored zone readings.
+/// state saved before, which then starts at the time of the read, (ARV-117a) the sensor-only desk engine, absent in a
+/// state saved before (or refused on restore), which is then rebuilt by replaying the stored zone readings, and (ARV-149)
+/// the whole minute of the latest lane contexts given, so each minute gives them once.
 /// </summary>
 public sealed record DeskFeedState(int Version, DeskEngineState Engine, AmanFeedCursor Cursor, DateTime? HeartbeatUtc, AmanFeedCursor ZoneCursor = null,
-    DeskEngineState SensorEngine = null)
+    DeskEngineState SensorEngine = null, DateTime? ContextUtc = null)
 {
     public const int CurrentVersion = 1;
 }
@@ -94,6 +115,10 @@ public sealed record DeskFeedState(int Version, DeskEngineState Engine, AmanFeed
 /// Since ARV-117a a second, sensor-only desk engine per site (<see cref="SensorOnlyDeskEngine"/>) runs beside the published
 /// one: the desks with staff or service zones, with those zones as their only sources, fed the same zone readings and
 /// nothing from AMAN; its closed minutes go to <c>desk_sensor_minute</c> (script 0044) for the shadow nowcast's desk term.
+/// Since ARV-149 each AMAN desk without staff or service zones gets, once per whole minute and from the engine's watermark of
+/// the read, its lane context (F10 rows 5a to 5f, <see cref="DeskRhythm"/>): the lane cycle time per person of the queue zones it serves (as the nowcast's desk term
+/// matches them) from AMAN's intervals of the last <see cref="DeskFeedSettings.RhythmWindowMinutes"/>, and the people in
+/// those zones from their latest live minute (<c>queue_minute</c>), so its state follows the transaction rhythm.
 /// Each site is one transaction holding a per-site advisory lock (class 49), so replicas share the sites and none is read
 /// twice; both engines' snapshots, the read positions and the heartbeat are saved with the rows.
 /// Keys are site, checkpoint and desk code (<see cref="AmanDeskFeed.Key"/>). Parameterised SQL only.
@@ -220,9 +245,10 @@ public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvide
         {
             engine = state?.Engine is null ? new DeskStateEngine(profiles, Floor(now), engineSettings) : DeskStateEngine.Restore(profiles, engineSettings, state.Engine);
         }
-        catch (InvalidDataException e)
+        catch (InvalidDataException)
         {
-            logger.LogWarning(e, "The desk feed state of site {Site} is not valid; the desks start again from now", siteCode);
+            // The exception text may name a desk; the warning names the site only (as for the sensor-only engine below).
+            logger.LogWarning("The desk feed state of site {Site} is not valid; the desks start again from now", siteCode);
             engine = new DeskStateEngine(profiles, Floor(now), engineSettings);
             state = null;
         }
@@ -282,6 +308,28 @@ public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvide
         foreach (var signal in step.Signals)
             engine.Offer(signal, now);
 
+        // ARV-149: the lane context of the AMAN desks without staff or service zones (F10 rows 5a to 5f), once per whole minute,
+        // from the engine's watermark of this read (the read's time less the lateness): the earliest moment it can apply
+        // without revising a closed minute, so the queue it carries (the zones' latest live minutes) is as little behind as
+        // the stream allows.
+        var contextUtc = state?.ContextUtc;
+        var contextMinute = Floor(now);
+        // CWE-501: the minute of the latest contexts comes back from storage; one after the next minute (a replica's clock a
+        // little ahead is allowed for) would hold the contexts back until then, so it counts as absent.
+        if (contextUtc.HasValue && contextUtc.Value > contextMinute.AddMinutes(1))
+        {
+            logger.LogWarning("The desk feed state of site {Site} gives its lane contexts' minute ahead of the clock; it counts as absent", siteCode);
+            contextUtc = null;
+        }
+
+        var rhythmDesks = profiles.Where(DeskRule.FollowsRhythm).Select(p => p.DeskCode).ToHashSet(StringComparer.Ordinal);
+        if (rhythmDesks.Count > 0 && (!contextUtc.HasValue || contextMinute > contextUtc.Value))
+        {
+            foreach (var context in await LaneContextsAsync(connection, transaction, siteCode, rhythmDesks, now - engineSettings.Lateness, ct))
+                engine.Offer(context, now);
+            contextUtc = contextMinute;
+        }
+
         // The staff and service zone readings the stream wrote since the last read (ARV-116). Values come back from storage
         // and are checked again (CWE-501): the role by its exact name; the engine refuses a desk it does not hold, a role
         // the desk has no zone for, and a count above its bound. Readings older than a day are not read (the engine refuses
@@ -328,8 +376,8 @@ public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvide
         if (step.EgateMinutes.Count > 0)
             await WriteEgateMinutesAsync(connection, transaction, step.EgateMinutes, now, ct);
 
-        var json = JsonSerializer.Serialize(new DeskFeedState(DeskFeedState.CurrentVersion, engine.Capture(), next, step.HeartbeatUtc, nextZones, sensor.Capture()),
-            EventCatalog.Json);
+        var json = JsonSerializer.Serialize(new DeskFeedState(DeskFeedState.CurrentVersion, engine.Capture(), next, step.HeartbeatUtc, nextZones, sensor.Capture(),
+            contextUtc), EventCatalog.Json);
         if (json.Length > MaxStateBytes / 4)
         {
             // A state this large (the cursor or the engine's buffers far beyond any airport) is not kept: the desks start
@@ -338,7 +386,8 @@ public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvide
             logger.LogWarning("The desk feed state of site {Site} is too large to keep; its desks start again from now", siteCode);
             json = JsonSerializer.Serialize(new DeskFeedState(DeskFeedState.CurrentVersion, new DeskStateEngine(profiles, Floor(now), engineSettings).Capture(),
                 new AmanFeedCursor(next.PositionUtc, [.. next.Taken.Where(t => t.ReceivedUtc == next.PositionUtc)], next.PositionUtc), step.HeartbeatUtc,
-                new AmanFeedCursor(nextZones.PositionUtc, [.. nextZones.Taken.Where(t => t.ReceivedUtc == nextZones.PositionUtc)], nextZones.PositionUtc)), EventCatalog.Json);
+                new AmanFeedCursor(nextZones.PositionUtc, [.. nextZones.Taken.Where(t => t.ReceivedUtc == nextZones.PositionUtc)], nextZones.PositionUtc),
+                ContextUtc: contextUtc), EventCatalog.Json);
         }
 
         await using (var upsert = new NpgsqlCommand("""
@@ -425,6 +474,81 @@ public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvide
         return sensor;
     }
 
+    /// <summary>
+    /// The lane contexts at <paramref name="atUtc"/> (the engine's watermark of the read) of the site's desks that follow the
+    /// transaction rhythm (ARV-149, F10 rows 5a to 5f). The queue zones of the site's latest published profile with a lane category are matched to the desks (kind
+    /// Desk) of the immigration and emigration checkpoints on their level whose lane categories include it, as the nowcast's
+    /// desk term matches them (<c>DeskTermSource</c>); each zone's latest live minute with a length in the last
+    /// <see cref="DeskRhythm.QueueFreshMinutes"/> minutes, and AMAN's intervals of the matched desks that started in the rhythm
+    /// window, are read back and checked again before use (CWE-501: <see cref="DeskRhythm"/>, <see cref="LaneCycle"/>; what
+    /// is left out is counted in a warning that names the site and the count only). Bounded (CWE-120): a site whose read
+    /// reaches <see cref="DeskTermSource.MaxRows"/> rows of any kind gets no contexts this minute (its desks keep rows 5 and 7).
+    /// Parameterised SQL only; only this site's rows (CWE-863).
+    /// </summary>
+    private async Task<IReadOnlyList<DeskLaneContext>> LaneContextsAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, string siteCode,
+        IReadOnlySet<string> rhythmDesks, DateTime atUtc, CancellationToken ct)
+    {
+        var max = Ariva.Infra.Streaming.DeskTermSource.MaxRows;
+        var rows = await ReadAsync(connection, transaction, """
+            WITH profile AS (
+                SELECT id FROM zone_profile WHERE site_code = @site AND status = 'Published' ORDER BY version DESC LIMIT 1
+            ), queues AS (
+                SELECT z.name AS zone, z.lane_category AS lane, z.level_id
+                  FROM zone z JOIN profile p ON p.id = z.profile_id
+                 WHERE z.kind = 'Queue' AND z.lane_category IS NOT NULL
+            ), desks AS (
+                SELECT DISTINCT q.zone, d.id AS desk_id, c.code AS checkpoint_code, d.code AS desk_code
+                  FROM queues q
+                  JOIN checkpoint c ON c.level_id = q.level_id AND c.site_code = @site AND c.deleted_on IS NULL AND c.kind IN ('Immigration', 'Emigration')
+                  JOIN desk d ON d.checkpoint_id = c.id AND d.site_code = @site AND d.deleted_on IS NULL AND d.kind = 'Desk'
+                 WHERE q.lane = ANY(string_to_array(COALESCE(d.lane_category_codes, ''), ','))
+            )
+            (SELECT 'desk' AS what, ds.zone, ds.checkpoint_code AS a, ds.desk_code AS b, NULL::timestamptz AS at, 0 AS n1, 0 AS n2, false AS degraded,
+                    0::float8 AS f1, 0::float8 AS f2, 0::float8 AS f3
+               FROM desks ds
+              LIMIT @max)
+            UNION ALL
+            (SELECT 'queue', q.zone, NULL, NULL, m.minute_utc, m.queue_length, 0, COALESCE(m.length_degraded, false), 0, 0, 0
+               FROM queues q
+               CROSS JOIN LATERAL (
+                    SELECT qm.minute_utc, qm.queue_length, qm.length_degraded FROM queue_minute qm
+                     WHERE qm.zone_key = @site || '/' || q.zone AND qm.minute_utc >= @fresh AND qm.minute_utc <= @at AND qm.queue_length IS NOT NULL
+                     ORDER BY qm.minute_utc DESC
+                     LIMIT 1) m
+              LIMIT @max)
+            UNION ALL
+            (SELECT 'interval', ds.zone, i.id::text, NULL, i.interval_start_utc, i.transactions_processed, i.documents_processed, false,
+                    i.mean_service_seconds, i.p90_service_seconds, i.mean_cycle_seconds
+               FROM desks ds JOIN border_desk_interval i ON i.desk_id = ds.desk_id AND i.site_code = @site
+              WHERE i.interval_start_utc >= @from AND i.interval_start_utc <= @at
+              LIMIT @max)
+            """, [new NpgsqlParameter("site", siteCode), new NpgsqlParameter("max", max),
+                new NpgsqlParameter("fresh", NpgsqlDbType.TimestampTz) { Value = atUtc.AddMinutes(-DeskRhythm.QueueFreshMinutes) },
+                new NpgsqlParameter("at", NpgsqlDbType.TimestampTz) { Value = atUtc },
+                new NpgsqlParameter("from", NpgsqlDbType.TimestampTz) { Value = atUtc.AddMinutes(-settings.RhythmWindowMinutes - 2) }],
+            r => new LaneContextRow(r.GetString(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), r.IsDBNull(3) ? null : r.GetString(3),
+                r.IsDBNull(4) ? DateTime.MinValue : Utc(r.GetDateTime(4)), r.GetInt32(5), r.GetInt32(6), r.GetBoolean(7), r.GetDouble(8), r.GetDouble(9), r.GetDouble(10)), ct);
+        if (rows.GroupBy(r => r.What, StringComparer.Ordinal).Any(g => g.Count() >= max))
+        {
+            logger.LogWarning("Desk feed of site {Site}: {Max} lane context rows or more; its desks without zones keep the rows without a lane context this minute",
+                siteCode, max);
+            return [];
+        }
+
+        var served = rows.Where(r => r.What == "desk" && r.A is not null && r.B is not null)
+            .Select(r => (DeskKey: AmanDeskFeed.Key(siteCode, r.A, r.B), r.Zone))
+            .Where(s => rhythmDesks.Contains(s.DeskKey))
+            .ToList();
+        var queues = rows.Where(r => r.What == "queue").Select(r => new LaneQueueSample(r.Zone, r.At, r.N1, r.Degraded));
+        var intervals = rows.Where(r => r.What == "interval" && r.A is not null)
+            .Select(r => new LaneIntervalSample(r.Zone, r.A, new DeskIntervalSample(r.N1, r.N2, r.F1, r.F2, r.F3)));
+        var result = DeskRhythm.Contexts(served, queues, intervals, atUtc);
+        if (result.RefusedIntervals + result.RefusedQueues > 0)
+            logger.LogWarning("Desk feed of site {Site}: {Count} AMAN intervals or queue lengths outside their bounds were left out of the lane contexts",
+                siteCode, result.RefusedIntervals + result.RefusedQueues);
+        return result.Contexts;
+    }
+
     private DeskFeedState Load(string json)
     {
         if (json.Length > MaxStateBytes)
@@ -492,6 +616,12 @@ public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvide
 
     private static DateTime Utc(DateTime value) => DateTime.SpecifyKind(value, DateTimeKind.Utc);
 }
+
+/// <summary>
+/// One row of the lane context read (ARV-149): a desk serving a queue zone (its checkpoint and desk code), a queue zone's latest
+/// live minute (its length and degraded flag) or an AMAN interval of a matched desk (its id, counts and times). Counts only.
+/// </summary>
+internal sealed record LaneContextRow(string What, string Zone, string A, string B, DateTime At, int N1, int N2, bool Degraded, double F1, double F2, double F3);
 
 /// <summary>A stored staff or service zone reading as the desk feed reads it (ARV-116, <c>desk_zone_reading</c>): counts only.</summary>
 internal sealed record DeskZoneRow(Guid Id, DateTime WrittenUtc, string DeskKey, string Source, DateTime TimeUtc, int Count, bool Degraded)

@@ -692,6 +692,28 @@
       ]
     },
     {
+      "id": "ARV-149",
+      "title": "[E9] Desk state from AMAN's transaction rhythm",
+      "description": "Owner decision 2026-10-10 (ARV-104j finding F2). A desk without staff or service zones takes its state only from AMAN, whose interval statistics move only the last-transaction time, so it is never Serving (F10 row 3) and turns Paused after 3 minutes without a transaction (row 5): agreement with observers was 0.129 in the live rehearsal. Such a desk is Serving while transactions keep arriving within the lane's expected service time (the mean service time per document method of ARV-117d), Paused only after a silence well beyond it, Idle when open with no queue. Epic: Desk state. CWEs to review: CWE-501, CWE-863.",
+      "acceptanceCriteria": [
+        "docs/domain/formulas.md F10 gains the AMAN-only rows (Serving from the transaction rhythm against the lane's expected service time, Paused after a silence of a configurable multiple of it, Idle when open with no queue), marked Proposed for the KPI annex",
+        "The desk state engine applies them only to desks without staff or service zones; desks with zones are unchanged",
+        "Unit tests (table-driven from the formula rows) and the golden replay updated where it changes, with the reason",
+        "Per-desk state stays border data (border roles only)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "The story's tests pass through node scripts/verify.mjs story (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 29,
+      "passes": true,
+      "notes": "Size S to M. Owner decision 2026-10-10. Engine change: mutation at the next checkpoint.",
+      "dependsOn": [
+        "ARV-117d"
+      ]
+    },
+    {
       "id": "ARV-150",
       "title": "[E12] Availability ledger from profile publication",
       "description": "Owner decision 2026-10-10 (ARV-104j finding F3). The availability ledger of a site starts before its zone profile is published, so minutes when the site did not yet exist count as unavailable (3 NoPublishedZones minutes decided the verdict of a two-hour rehearsal). A site's ledger starts when its zone profile is first published; the minute before the first push still counts. Epic: Operations health. CWEs to review: CWE-501.",

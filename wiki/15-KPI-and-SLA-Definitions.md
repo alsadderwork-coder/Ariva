@@ -77,6 +77,18 @@ Share of time a desk is staffed and in use, from the desk state machine (F10). S
 | `Closed` (logout, or staff absent beyond T2, example 10 minutes) | No |
 | `Unknown` (all signals stale) | No; bins flagged `Degraded` |
 
+Desks with AMAN's session and transactions alone (no staff or service zone; ARV-149, Proposed for the KPI annex, the owner's decision of 2026-10-10). AMAN reports completed transactions only, a minute at a time, so such a desk's state follows its transaction rhythm against its lane's expected service time s (AMAN's mean service time per document over the lane's desks, as the nowcast uses it) and the queue it serves (formulas F10, rows 5a to 5f):
+
+| Logged in, and | State |
+|---|---|
+| a transaction ended within s plus one minute (AMAN's interval) | `Serving` |
+| people waiting in its queue, and no transaction (nor the start of the waiting) for less than P | `Serving` |
+| people waiting, and silent for P or longer | `Paused` |
+| nobody waiting in its queue | `Idle`, however long it is silent |
+| its queue not measured, and silent for P or longer | `Paused`; otherwise `Idle` |
+
+P is 4 times s, at least 3 minutes (T1) and at most 30 minutes: 6 minutes for a 1.5-minute visitors' lane, 3 minutes for a citizens' lane. Before ARV-149 such a desk was never `Serving` and turned `Paused` 3 minutes after its last transaction, also with nobody to serve, so it was counted as closed in empty halls and between slow transactions (desk-state agreement 0.129 in the live rehearsal of 2026-10-10). Desks with staff or service zones are unchanged; desk states remain border data, shown to border roles only.
+
 Proposed reporting: staffed share = (idle + serving + paused minutes) / interval; serving share = serving minutes / staffed minutes. The exact utilisation definition used in reports is To confirm with the product owner.
 
 Service and cycle times (from AMAN `DeskIntervalStats` at AMAN sites, sensors elsewhere): service time is transaction start to end; cycle time is start to next start and includes the walk-up gap; cycle time sets throughput. AMAN separates approaches (a family of four is one) from documents (four). The published nowcast at AMAN sites takes the mean service time per document (ARV-117d, Nowcast above), since AMAN's cycle also counts the time a desk waits after a quiet spell.

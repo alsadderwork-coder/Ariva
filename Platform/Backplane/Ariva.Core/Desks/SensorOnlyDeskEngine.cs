@@ -14,7 +14,7 @@ namespace Ariva.Core.Desks;
 /// its output. Bounded (CWE-120): at most <see cref="MaxDesks"/> desks per site (beyond, desks are left out in key order,
 /// counted), each holding one open minute, and the inner engine's caps on buffered readings (per desk and per engine)
 /// and on the records of one step. A restored snapshot is checked as the inner engine checks it, and also refused when
-/// it holds any AMAN memory (a session, a transaction, a transaction count). Pure: no I/O and no clock.
+/// it holds any AMAN memory (a session, a transaction, a transaction count) or a lane context (ARV-149). Pure: no I/O and no clock.
 /// </para>
 /// </summary>
 public sealed class SensorOnlyDeskEngine
@@ -95,8 +95,10 @@ public sealed class SensorOnlyDeskEngine
             var m = desk?.Memory;
             if (m is null)
                 continue;
+            // ARV-149: nor a lane context, which only a desk with AMAN's sources alone takes.
             if (m.Session is not null || m.SessionSince is not null || m.SessionSignalAt is not null || m.SessionHeard is not null ||
                 m.TransactionSince is not null || m.TransactionSignalAt is not null || m.LastTransaction is not null || m.TransactionsHeard is not null ||
+                m.LaneContextAt is not null || m.LaneServiceSeconds is not null || m.QueueWaiting is not null || m.QueueWaitingSince is not null || m.QueueDegraded ||
                 desk.Transactions != 0 || desk.PresentTicks != 0 || desk.Current is { PresentNotProcessing: true })
                 throw new InvalidDataException("The sensor-only desk snapshot holds AMAN memory.");
             // Without a login or transaction source every open state (Serving, Idle) is sensor-derived (F10 rows 6 and 7), so

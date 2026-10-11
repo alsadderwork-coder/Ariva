@@ -1,8 +1,11 @@
 namespace Ariva.Core.Desks;
 
-/// <summary>A buffered desk signal in a snapshot: a flat record of the signal kinds.</summary>
+/// <summary>
+/// A buffered desk signal in a snapshot: a flat record of the signal kinds (ARV-149: a lane context keeps its expected
+/// service time and the people waiting, absent from older snapshots).
+/// </summary>
 public sealed record DeskSignalState(string Kind, string DeskCode, DateTime TimeUtc, DeskSource Source = default, DeskSessionSignal State = default, int Count = 0,
-    bool Degraded = false)
+    bool Degraded = false, double? ServiceSeconds = null, int? Waiting = null)
 {
     internal static DeskSignalState From(DeskSignal signal) => signal switch
     {
@@ -12,6 +15,7 @@ public sealed record DeskSignalState(string Kind, string DeskCode, DateTime Time
         DeskSessionChangedSignal s => new("session", s.DeskCode, s.TimeUtc, State: s.State),
         DeskZoneReading s => new("zone", s.DeskCode, s.TimeUtc, s.Zone, Count: s.Count, Degraded: s.Degraded),
         DeskHeartbeat s => new("heartbeat", s.DeskCode, s.TimeUtc, s.Of),
+        DeskLaneContext s => new("context", s.DeskCode, s.TimeUtc, DeskSource.LaneContext, Degraded: s.Degraded, ServiceSeconds: s.ServiceSeconds, Waiting: s.Waiting),
         _ => throw new ArgumentException($"Unknown signal {signal?.GetType().Name}.", nameof(signal))
     };
 
@@ -26,6 +30,7 @@ public sealed record DeskSignalState(string Kind, string DeskCode, DateTime Time
             "session" => new DeskSessionChangedSignal(DeskCode, t, State),
             "zone" => new DeskZoneReading(DeskCode, t, Source, Count, Degraded),
             "heartbeat" => new DeskHeartbeat(DeskCode, t, Source),
+            "context" => new DeskLaneContext(DeskCode, t, ServiceSeconds, Waiting, Degraded),
             _ => throw new InvalidDataException($"Unknown desk signal kind '{Kind}' in a snapshot.")
         };
     }
@@ -99,7 +104,7 @@ public sealed partial class DeskStateEngine
             if ((saved.Pending?.Count ?? 0) > perDesk || saved.Ticks is not { Count: 5 } || saved.Memory is null || saved.Current is null ||
                 saved.Ticks.Any(t => t is < 0 or > TimeSpan.TicksPerMinute) || saved.Ticks.Sum() > TimeSpan.TicksPerMinute ||
                 saved.SensorTicks is < 0 or > TimeSpan.TicksPerMinute || saved.PresentTicks is < 0 or > TimeSpan.TicksPerMinute ||
-                saved.Transactions < 0 || !Enum.IsDefined(saved.Current.Status) || saved.CursorUtc > watermark.AddDays(1))
+                saved.Transactions < 0 || !Enum.IsDefined(saved.Current.Status) || saved.CursorUtc > watermark.AddDays(1) || !LaneMemoryValid(saved.Memory, saved.CursorUtc))
                 throw new InvalidDataException($"The snapshot of desk {saved.DeskCode} is not valid.");
             desk.Memory = saved.Memory;
             desk.Cursor = DateTime.SpecifyKind(saved.CursorUtc, DateTimeKind.Utc);
@@ -131,5 +136,20 @@ public sealed partial class DeskStateEngine
             (engine._accepted, engine._late, engine._superseded, engine._future, engine._invalid, engine._unknownDesk, engine._bufferFull, engine._tooLate, engine._skippedMinutes) =
                 (c.Accepted, c.Late, c.Superseded, c.Future, c.Invalid, c.UnknownDesk, c.BufferFull, c.TooLate, c.SkippedMinutes);
         return engine;
+    }
+
+    // ARV-149 (CWE-501): a desk's lane context as restored is what the engine could have built: values within the bounds a
+    // live context has, its times at or before the desk's cursor (a context applies at its time or, late, at the cursor),
+    // the waiting's start at or before the context and only while people wait. Absent in older snapshots, which is valid.
+    private static bool LaneMemoryValid(DeskMemory memory, DateTime cursorUtc)
+    {
+        var service = memory.LaneServiceSeconds;
+        var waiting = memory.QueueWaiting;
+        var at = memory.LaneContextAt;
+        var since = memory.QueueWaitingSince;
+        var values = (!service.HasValue || DeskLaneContext.ServiceWithinBounds(service.Value)) && (!waiting.HasValue || DeskLaneContext.WaitingWithinBounds(waiting.Value));
+        var context = !at.HasValue || at.Value <= cursorUtc;
+        var waitingSince = !since.HasValue || (at.HasValue && since.Value <= at.Value && waiting.HasValue && waiting.Value > 0);
+        return values && context && waitingSince;
     }
 }

@@ -420,9 +420,10 @@ public sealed partial class ImmigrationIntakeTests(PostgresFixture fixture) : IA
         var dmo = await RowsAsync("SELECT desk_code, sum(transactions) FROM desk_minute WHERE desk_code LIKE 'DMO/%' AND minute_utc >= @from AND minute_utc < @to GROUP BY desk_code",
             r => (r.GetString(0), r.GetInt64(1)), t0, t0.AddMinutes(18));
         dmo["DMO/IMM/AR-09"].Should().BeGreaterThanOrEqualTo(50, "DMO's interval reached DMO's desk (other tests feed DMO too)");
-        // XS3 and XS4 are the desk zone sites of DeskFeed_Should_GiveDesksAStateFromTheirZones (ARV-116), and XS5 the site of
-        // DeskFeed_Should_WriteExactlyTheSensorMinutesTheCapLeaves (ARV-117a), which may run first.
-        (await _host.ReadAsync<long>("SELECT count(*) FROM desk_minute WHERE NOT (desk_code LIKE 'DMO/%' OR desk_code LIKE 'XS2/%' OR desk_code LIKE 'XS3/%' OR desk_code LIKE 'XS4/%' OR desk_code LIKE 'XS5/%')"))
+        // XS3 and XS4 are the desk zone sites of DeskFeed_Should_GiveDesksAStateFromTheirZones (ARV-116), XS5 the site of
+        // DeskFeed_Should_WriteExactlyTheSensorMinutesTheCapLeaves (ARV-117a), and XS6 to XS8 the transaction rhythm sites of
+        // DeskRhythmFeedTests (ARV-149), which may run first.
+        (await _host.ReadAsync<long>("SELECT count(*) FROM desk_minute WHERE NOT (desk_code LIKE 'DMO/%' OR desk_code LIKE 'XS2/%' OR desk_code LIKE 'XS3/%' OR desk_code LIKE 'XS4/%' OR desk_code LIKE 'XS5/%' OR desk_code LIKE 'XS6/%' OR desk_code LIKE 'XS7/%' OR desk_code LIKE 'XS8/%')"))
             .Should().Be(0);
 
 

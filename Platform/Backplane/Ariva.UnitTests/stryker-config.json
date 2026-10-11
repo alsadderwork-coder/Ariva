@@ -13,6 +13,9 @@
       "**/Border/EgateCoupling.cs",
       "**/Flights/ArrivalWave.cs",
       "**/Availability/AvailabilityRule.cs",
+      "**/Desks/DeskRhythm.cs",
+      "**/Desks/DeskState.cs",
+      "**/Desks/DeskStateEngine.cs",
       "**/Validation/Comparison/*.cs"
     ],
     "coverage-analysis": "perTest",
