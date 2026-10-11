@@ -3313,6 +3313,40 @@
     {
       "host": "main",
       "method": "GET",
+      "route": "/api/v1/admin/sites/{siteCode}/configuration",
+      "access": "permission",
+      "permissions": [
+        "TransferSiteConfiguration"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/sites/{siteCode}/configuration",
+      "access": "permission",
+      "permissions": [
+        "TransferSiteConfiguration"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
       "route": "/api/v1/admin/displays",
       "access": "permission",
       "permissions": [

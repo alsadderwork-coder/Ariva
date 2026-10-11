@@ -12,7 +12,8 @@
     "Change outbound endpoints",
     "Regenerate recovery codes",
     "Close a validation campaign",
-    "Recompute validation results"
+    "Recompute validation results",
+    "Export or import a site configuration"
   ],
   "criticalPermissions": [
     "CreateUser",
@@ -26,7 +27,8 @@
     "CreateDevice",
     "PublishZoneProfile",
     "DeleteAlertRule",
-    "CreateDisplay"
+    "CreateDisplay",
+    "TransferSiteConfiguration"
   ],
   "routes": [
     {
@@ -208,6 +210,18 @@
       "method": "POST",
       "route": "/api/v1/sites/{siteCode}/validation/campaigns/{id:guid}/results/revisions",
       "category": "Recompute validation results"
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/admin/sites/{siteCode}/configuration",
+      "category": "Export or import a site configuration"
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/sites/{siteCode}/configuration",
+      "category": "Export or import a site configuration"
     }
   ]
 }

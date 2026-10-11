@@ -553,4 +553,65 @@ public sealed class ZoneProfileTests
     }
 
     #endregion
+
+    #region Portable geometry hash (ARV-122a)
+
+    private const string PortableReferenceHash = "a32ba7a122c54c0fc9a5e8deabb146b21be26383ed766dab6eb34ce5ca4fb527";
+
+    private static Dictionary<Guid, string> LevelNames(Level level) => new() { [level.Id!.Value] = ZoneProfile.PortableLevelName(level.Terminal.Code, level.Code) };
+
+    [Fact]
+    public void PortableGeometryHash_Should_StayTheSameAcrossReleases_When_TheReferenceProfileIsHashed()
+    {
+        // ariva-zone-profile-portable-v1 (formulas F22): v1's text with the level named T1/L0 instead of its id; recomputed
+        // independently in Python (the same script reproduces v1's reference hash).
+        var (profile, level, _) = Publishable();
+
+        profile.ComputePortableGeometryHash(LevelNames(level), new Dictionary<Guid, string>()).Should().Be(PortableReferenceHash);
+        profile.ComputeGeometryHash().Should().Be(ReferenceHash, "F22 v1 is unchanged (owner decision 2026-10-11)");
+    }
+
+    [Fact]
+    public void PortableGeometryHash_Should_NameADeskByItsCheckpointAndCode_When_AServiceZoneNamesADesk()
+    {
+        var (profile, level, queue) = Publishable();
+        var deskId = Guid.Parse("0199a000-0000-7000-8000-00000000d001");
+        profile.AddZone("Service A", ZoneKind.Service, level, Rect(40, 10, 2, 2), queue, deskId);
+
+        profile.ComputePortableGeometryHash(LevelNames(level), new Dictionary<Guid, string> { [deskId] = ZoneProfile.PortableDeskName("IMM", "D01") })
+            .Should().Be("fdbe688e554dfad6f291b6be56591ec2f25e79fbdcf54653dbbfc11a78876131");
+        profile.ComputePortableGeometryHash(LevelNames(level), new Dictionary<Guid, string>()).Should().BeNull("a desk the profile names must be named");
+    }
+
+    [Fact]
+    public void PortableGeometryHash_Should_BeEqualAtAnotherSiteWithOtherIds_When_TheGeometryAndCodesAreTheSame()
+    {
+        var (source, sourceLevel, _) = Publishable();
+        var otherLevel = new Airport("AUH", null, "Abu Dhabi", "Asia/Dubai").AddTerminal("T1", "Terminal 1", "AUH-COPY").AddLevel("L0", "Arrivals", 0, 60, 40);
+        otherLevel.Id = Guid.Parse("0199a000-0000-7000-8000-0000000c0de2");
+        var copy = new ZoneProfile("AUH-COPY", "Copy");
+        var queue = copy.AddZone("Snake A", ZoneKind.Queue, otherLevel, Rect(10, 10, 24, 12));
+        copy.AddLine("Entry A", LineRole.Entry, otherLevel, new FloorPoint(10, 12), new FloorPoint(10, 16), queue);
+        copy.AddLine("Exit A", LineRole.Exit, otherLevel, new FloorPoint(30, 22), new FloorPoint(34, 22), queue);
+        var overflow = copy.AddZone("Overflow A", ZoneKind.Overflow, otherLevel, Rect(10, 4, 24, 6), queue);
+        copy.AddLine("Overflow entry A", LineRole.OverflowEntry, otherLevel, new FloorPoint(10, 5), new FloorPoint(10, 9), overflow);
+        copy.AddLine("Count hall", LineRole.Count, otherLevel, new FloorPoint(40, 0), new FloorPoint(40, 40));
+
+        copy.ComputeGeometryHash().Should().NotBe(source.ComputeGeometryHash(), "v1 names the level by its id, which differs");
+        copy.ComputePortableGeometryHash(LevelNames(otherLevel), new Dictionary<Guid, string>())
+            .Should().Be(source.ComputePortableGeometryHash(LevelNames(sourceLevel), new Dictionary<Guid, string>()));
+    }
+
+    [Fact]
+    public void PortableGeometryHash_Should_ChangeOrBeNull_When_ALevelIsNamedOtherwiseOrNotAtAll()
+    {
+        var (profile, level, _) = Publishable();
+
+        profile.ComputePortableGeometryHash(new Dictionary<Guid, string> { [level.Id!.Value] = "T1/L1" }, new Dictionary<Guid, string>())
+            .Should().NotBe(PortableReferenceHash);
+        profile.ComputePortableGeometryHash(new Dictionary<Guid, string>(), new Dictionary<Guid, string>()).Should().BeNull();
+        profile.Invoking(p => p.ComputePortableGeometryHash(null, new Dictionary<Guid, string>())).Should().Throw<ArgumentNullException>();
+    }
+
+    #endregion
 }

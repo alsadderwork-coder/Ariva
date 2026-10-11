@@ -309,3 +309,16 @@ Authorization: Bearer {{accessToken}}
 Content-Type: application/json
 
 { "reason": "Stored results replayed after the sensor clock fix" }
+
+### ARV-122a: export a site's configuration (SiteConfiguration.Transfer, system administrators; critical: a code in the last 15 minutes).
+### The answer holds bundleSha256 (compare it with the import's answer out of band), the hashes of the published zone profile and the bundle.
+GET {{Ariva.Api.Main_HostAddress}}/api/v1/admin/sites/DMO/configuration
+Authorization: Bearer {{accessToken}}
+
+### Import the export's "bundle" into an empty site (critical); airportCode places every terminal at that existing airport instead of the
+### bundle's own. The zone profile arrives as a draft: publish it with the existing step-up action. At most 20 MB.
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/admin/sites/DMO-COPY/configuration?airportCode=AMM
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "formatVersion": 1, "sourceSite": "DMO", "exportedAtUtc": "2026-10-11T08:00:00Z", "manifest": { "topology": "{{sha256}}" }, "parts": { "topology": "{{base64}}" } }

@@ -35,8 +35,8 @@ public sealed class PermissionModelTests
             // View-only entities: nothing is created, edited, searched or deleted through them (the system information
             // endpoint; the live queue stream of ARV-035; the arrival-wave projection of ARV-047; the border desk states of ARV-055; the daily report of ARV-060, computed from stored data; the zone health checks of ARV-114a, computed by the stream). Alerts (ARV-039) are raised by the evaluation and never
             // deleted: people view, search and act on them (Edit) only. Validation (ARV-104a) is a process with its own actions:
-            // View, Capture and Manage.
-            .Where(p => p.Entity is not ("SystemInfo" or "LiveQueue" or "Alert" or "ArrivalWave" or "ArrivalWaveLanes" or "BorderDesks" or "AirportDesks" or "Immigration" or "Report" or "DataQuality" or "Validation"))
+            // View, Capture and Manage. Site configuration (ARV-122a) has one action: Transfer (export and import).
+            .Where(p => p.Entity is not ("SystemInfo" or "LiveQueue" or "Alert" or "ArrivalWave" or "ArrivalWaveLanes" or "BorderDesks" or "AirportDesks" or "Immigration" or "Report" or "DataQuality" or "Validation" or "SiteConfiguration"))
             .GroupBy(p => p.Entity);
 
         byEntity.Should().AllSatisfy(entity =>
@@ -95,6 +95,23 @@ public sealed class PermissionModelTests
         var codes = Global.Defaults.Permissions.All.Values.Where(p => p.Entity == "Validation").Select(p => p.Code);
 
         codes.Should().BeEquivalentTo("Validation.View", "Validation.Capture", "Validation.Manage");
+    }
+
+    [Fact]
+    public void Permissions_Should_BeSiteConfigurationTransferOnly_When_SiteConfigurationIsCatalogued()
+    {
+        var codes = Global.Defaults.Permissions.All.Values.Where(p => p.Entity == "SiteConfiguration").Select(p => p.Code);
+
+        codes.Should().Equal("SiteConfiguration.Transfer");
+        nameof(Global.Defaults.Permissions.TransferSiteConfiguration).Should().Be(Global.Defaults.Permissions.TransferSiteConfiguration.Name);
+    }
+
+    [Fact]
+    public void ByRole_Should_GrantSiteConfigurationTransferToAdministratorsOnly_When_Seeded()
+    {
+        // ARV-122a: exporting and importing a whole site's configuration is the system administrator's (the every-permission rule).
+        RolePermissions.ByRole.Where(r => r.Value.Contains(Global.Defaults.Permissions.TransferSiteConfiguration)).Select(r => r.Key)
+            .Should().Equal(RoleCodes.SystemAdministrator);
     }
 
     [Fact]

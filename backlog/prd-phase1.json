@@ -923,7 +923,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 38,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. API only; a screen can follow if the field engineer needs one. Split from ARV-122 on 2026-10-11 (too big for one story: the engineer's survey found seven importers, a new permission, the site lock and the geometry hash question).",
       "dependsOn": [
         "ARV-017",

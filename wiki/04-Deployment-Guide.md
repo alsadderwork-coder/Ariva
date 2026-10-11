@@ -647,6 +647,8 @@ pgbackrest --stanza=ariva info
 
 Restore (PostgreSQL stopped): `pgbackrest --stanza=ariva --delta restore`. Run restores with the owner role, not the runtime role.
 
+A database backup restores a whole deployment. To carry one site's configuration (topology, desk code mappings, the published zone profile and floor plans) to another environment, or to rebuild a site into an empty one, use the site configuration export and import instead (ARV-122a, wiki 11 section 2d): a JSON bundle of at most 20 MB with a SHA-256 manifest, imported only into an empty site by an administrator with a fresh second factor. It holds no users, secrets, audit or time series, so it is not a backup.
+
 Retention of backups: backups contain raw track samples. Keep backup retention no longer than the dispute window plus the backup cycle, so backups do not extend the privacy retention of samples (Proposed). Test a restore at least once before go-live and after every major release.
 
 ## 11. Disaster recovery targets

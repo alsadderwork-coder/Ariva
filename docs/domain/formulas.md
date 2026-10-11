@@ -959,6 +959,20 @@ Not in the hash: a queue zone's lane category (ARV-057) and the physical capacit
 
 Tests: the reference profile in `ZoneProfileTests` (snake 24 x 12 m at (10, 10) with an entry and an exit line, an overflow band with its entry line, one count line) hashes to `fd3d7d1585070bd347de877d87aa3bb4e28d2b571081986650ec934471d9a1da`, recomputed independently in Python; moving a vertex by 1 mm changes the hash, by 0.4 mm does not.
 
+### Portable geometry hash (ARV-122a, owner decision 2026-10-11)
+
+v1 names each level and desk by its database id, so the same geometry at another site, or rebuilt in another database, never gives the same v1 hash. The owner decided on 2026-10-11 to keep v1 exactly as it is (it is the hash a published version keeps, and validation campaigns, frozen results, devices and evidence packs quote it) and to add a second hash for comparing geometry across sites: computed on request (`ZoneProfile.ComputePortableGeometryHash`), never stored. Its text is v1's with its own first line, each level named by its terminal's code and its own code, and each desk by its checkpoint's code (unique in the site) and its own code:
+
+```
+ariva-zone-profile-portable-v1
+zone|<name>|<kind>|<terminal code>/<level code>|<queue zone name or empty>|<checkpoint code>/<desk code>, or empty|<x y,x y,...>
+line|<name>|<role>|<zone name or empty>|<terminal code>/<level code>|<x y>|<x y>
+```
+
+Everything else (order, rounding, culture, what is left out) is v1's. Topology codes never change after creation and are unique among the live children of their parent (a checkpoint's code also across its site), and they hold no slash or bar, so the names are unambiguous within a site; a site with two live terminals of one code (possible only at two airports) is refused at export for that reason. The site configuration export answers the published profile's v1 and portable hashes, the import answers its draft's portable hash and refuses a profile that does not reproduce the one in its bundle, and the round trip between two sites compares the portable hash after the copy is published.
+
+Tests: the same reference profile, its level named `T1/L0`, hashes to `a32ba7a122c54c0fc9a5e8deabb146b21be26383ed766dab6eb34ce5ca4fb527`, and with a service zone `Service A` (40, 10, 2 x 2 m) on desk `IMM/D01` to `fdbe688e554dfad6f291b6be56591ec2f25e79fbdcf54653dbbfc11a78876131`, both recomputed independently in Python by a script that also reproduces v1's reference hash; the same geometry at another site with other ids gives the same portable hash and a different v1 hash; an unnamed level or desk gives none (`ZoneProfileTests`, region Portable geometry hash; integration `SiteConfigurationTests`; e2e `site-configuration.spec.ts`).
+
 ## Weekly summary figures (ARV-119, Proposed)
 
 The figures of one site's local week, computed on request from stored data (nothing new is stored), for the report tool of ARV-146 to lay out (`WeeklySummaries` in Ariva.Core/Reports, read by `WeeklySummaryReader`, served by `ISvcWeeklySummary`; no endpoint, template or document in ARV-119). Each choice below is a Proposed point of the ARV-119 entry in docs/product/decisions.md.

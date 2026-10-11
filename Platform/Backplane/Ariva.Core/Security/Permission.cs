@@ -19,7 +19,13 @@ public enum PermissionAction
     Capture,
 
     /// <summary>Runs a process (ARV-104a): creates, starts and closes validation campaigns; closing is critical (step-up MFA).</summary>
-    Manage
+    Manage,
+
+    /// <summary>
+    /// Moves a site's configuration (ARV-122a): exports it as a bundle and imports a bundle into an empty site. Both are
+    /// critical (step-up MFA).
+    /// </summary>
+    Transfer
 }
 
 /// <summary>

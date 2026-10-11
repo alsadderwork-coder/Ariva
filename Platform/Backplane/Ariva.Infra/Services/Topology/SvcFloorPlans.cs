@@ -172,9 +172,10 @@ internal sealed class SvcFloorPlans(
 
     /// <summary>
     /// The name for display, or null when it carries a path (CWE-22), control characters, or invisible format characters
-    /// such as a right-to-left override that would make <c>plan[RLO]gvs.png</c> read as another name.
+    /// such as a right-to-left override that would make <c>plan[RLO]gvs.png</c> read as another name. The site
+    /// configuration import (ARV-122a) applies it again to every floor plan's name.
     /// </summary>
-    private static string SafeFileName(string name)
+    internal static string SafeFileName(string name)
     {
         if (string.IsNullOrWhiteSpace(name))
             return "floor-plan";

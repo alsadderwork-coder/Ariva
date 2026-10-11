@@ -382,6 +382,47 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(text.ToString())));
     }
 
+    /// <summary>The first line of the portable geometry hash's text (ARV-122a, formulas F22).</summary>
+    public const string PortableHashPrefix = "ariva-zone-profile-portable-v1";
+
+    /// <summary>
+    /// The portable geometry hash (ARV-122a, owner decision 2026-10-11, formulas F22): the text of
+    /// <see cref="ComputeGeometryHash"/> with its own first line, a level named by <c>terminal/level</c> codes instead of
+    /// its id and a desk by <c>checkpoint/desk</c> codes instead of its id, so the same geometry on the same codes gives
+    /// the same hash at another site or in another database. Computed on request, never stored; F22 v1 is unchanged and
+    /// stays the hash a published version keeps. Null when a level or desk the profile names has no name in the maps.
+    /// </summary>
+    public virtual string ComputePortableGeometryHash(IReadOnlyDictionary<Guid, string> levelNames, IReadOnlyDictionary<Guid, string> deskNames)
+    {
+        ArgumentNullException.ThrowIfNull(levelNames);
+        ArgumentNullException.ThrowIfNull(deskNames);
+        var text = new StringBuilder(PortableHashPrefix).Append('\n');
+        foreach (var zone in Zones.OrderBy(z => z.Name, StringComparer.Ordinal))
+        {
+            if (!levelNames.TryGetValue(zone.LevelId, out var level))
+                return null;
+            string desk = null;
+            if (zone.DeskId is { } deskId && !deskNames.TryGetValue(deskId, out desk))
+                return null;
+            text.Append(CultureInfo.InvariantCulture, $"zone|{zone.Name}|{zone.Kind}|{level}|{zone.QueueZone?.Name}|{desk}|{Geometry.FormatRing(zone.Points)}\n");
+        }
+
+        foreach (var line in Lines.OrderBy(l => l.Name, StringComparer.Ordinal))
+        {
+            if (!levelNames.TryGetValue(line.LevelId, out var level))
+                return null;
+            text.Append(CultureInfo.InvariantCulture, $"line|{line.Name}|{line.Role}|{line.Zone?.Name}|{level}|{line.Start}|{line.End}\n");
+        }
+
+        return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(text.ToString())));
+    }
+
+    /// <summary>A level's name in the portable hash: its terminal's code, a slash and its own code (codes hold no slash or bar).</summary>
+    public static string PortableLevelName(string terminalCode, string levelCode) => $"{terminalCode}/{levelCode}";
+
+    /// <summary>A desk's name in the portable hash: its checkpoint's code (unique in the site), a slash and its own code.</summary>
+    public static string PortableDeskName(string checkpointCode, string deskCode) => $"{checkpointCode}/{deskCode}";
+
     #endregion
 
     private void EnsureDraft()

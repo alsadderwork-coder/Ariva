@@ -271,7 +271,11 @@ export function accounts() {
 		// through the normal sign-in (the first with its authenticator), neither of which plans or starts a campaign.
 		liveRehearsalManager: account('e2e.livemanager', ['BorderShiftSupervisor'], false, true, ['DMO']),
 		liveObserver1: account('e2e.liveobs1', ['ValidationObserver'], false, true, ['DMO']),
-		liveObserver2: account('e2e.liveobs2', ['ValidationObserver'], false, false, ['DMO'])
+		liveObserver2: account('e2e.liveobs2', ['ValidationObserver'], false, false, ['DMO']),
+		// ARV-122a: exports and imports site configurations (both critical: a second factor). The second is an administrator
+		// of E2XS only (a site no other suite uses), for the answers about a site out of reach.
+		siteConfigAdmin: account('e2e.siteconfadmin', ['SystemAdministrator'], false, true, ['*']),
+		siteConfigScopedAdmin: account('e2e.siteconfscoped', ['SystemAdministrator'], false, true, ['E2XS'])
 	} as const;
 }
 

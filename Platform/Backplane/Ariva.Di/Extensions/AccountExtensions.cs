@@ -73,6 +73,8 @@ public static class AccountExtensions
         services.TryAddSingleton<Ariva.Core.Services.Storage.IFileStorage, Ariva.Infra.Storage.LocalDiskFileStorage>();
         services.TryAddScoped<Ariva.Core.Services.Topology.ISvcFloorPlans, Ariva.Infra.Services.Topology.SvcFloorPlans>();
         services.TryAddScoped<Ariva.Core.Services.Topology.ISvcZoneProfiles, Ariva.Infra.Services.Topology.SvcZoneProfiles>();
+        // Site configuration export and import (ARV-122a): Ariva.Api.Main only, like the rest of the administration.
+        services.TryAddScoped<Ariva.Core.Services.Topology.ISvcSiteConfiguration, Ariva.Infra.Services.Topology.SvcSiteConfiguration>();
         services.TryAddScoped<Ariva.Core.Services.Sensing.ISvcDevices, Ariva.Infra.Services.Sensing.SvcDevices>();
         // The declarative device mappings shipped with Ariva (ARV-024); the registry checks names against them.
         services.TryAddSingleton<Ariva.Core.Services.Sensing.IDeviceMappingCatalog>(Ariva.Infra.Sensing.Declarative.DeclarativeMappingCatalog.Embedded);

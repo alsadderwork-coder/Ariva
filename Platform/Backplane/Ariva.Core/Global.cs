@@ -226,6 +226,16 @@ public static class Global
 
             #endregion
 
+            #region Site onboarding (E15)
+
+            /// <summary>
+            /// Exports a site's configuration as a bundle and imports a bundle into an empty site (ARV-122a). Both are critical
+            /// actions (step-up MFA), audited; held by the system administrator only (the role seed's every-permission rule).
+            /// </summary>
+            public static Permission TransferSiteConfiguration { get; } = new("SiteConfiguration", PermissionAction.Transfer);
+
+            #endregion
+
             private static readonly Lazy<IReadOnlyDictionary<string, Permission>> ByName = new(() =>
                 typeof(Permissions)
                     .GetProperties(BindingFlags.Public | BindingFlags.Static)
