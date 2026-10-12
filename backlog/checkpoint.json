@@ -1,49 +1,57 @@
 {
-  "commit": "69c1e4c47b3219798e163eb5d817ccf013d847f9",
-  "at": "2026-10-11",
-  "stories": 7,
-  "notes": "Written from the checkpoint run of 2026-10-11 05:29 to 09:07 UTC (every step passed except chart security, rerun alone with Helm and passed); the gate writes the record only after a fully green run. Mutation score 94.10 percent over 13 engine files changed since c3a81d0.",
+  "commit": "07070e5468c1922cee6f723c7265a04e24e2264e",
+  "at": "2026-10-12",
+  "stories": 10,
   "results": [
     {
       "name": "dotnet build",
-      "ok": true
+      "ok": true,
+      "seconds": 141
     },
     {
       "name": "reference scenario golden up to date",
-      "ok": true
+      "ok": true,
+      "seconds": 10
     },
     {
       "name": "unit tests",
-      "ok": true
+      "ok": true,
+      "seconds": 210
     },
     {
       "name": "security scanner self-test",
-      "ok": true
+      "ok": true,
+      "seconds": 0
     },
     {
       "name": "security scan",
-      "ok": true
+      "ok": true,
+      "seconds": 1
     },
     {
       "name": "base images pinned",
-      "ok": true
+      "ok": true,
+      "seconds": 0
     },
     {
       "name": "chart security (pod security context, read-only root, TLS, release guards)",
       "ok": true,
-      "rerun": "2026-10-11 09:10 UTC on the same commit with HELM set: PASS (the checkpoint run had no HELM in its environment, and CI=true turns a missing Helm into a failure; no chart file changed since c3a81d0)"
+      "seconds": 2
     },
     {
       "name": "nuget vulnerability audit",
-      "ok": true
+      "ok": true,
+      "seconds": 23
     },
     {
       "name": "npm audit (web)",
-      "ok": true
+      "ok": true,
+      "seconds": 1
     },
     {
       "name": "npm audit (e2e)",
-      "ok": true
+      "ok": true,
+      "seconds": 1
     },
     {
       "name": "docs text rules",
@@ -51,39 +59,48 @@
     },
     {
       "name": "web svelte-check",
-      "ok": true
+      "ok": true,
+      "seconds": 12
     },
     {
       "name": "web lint",
-      "ok": true
+      "ok": true,
+      "seconds": 8
     },
     {
       "name": "web build",
-      "ok": true
+      "ok": true,
+      "seconds": 31
     },
     {
       "name": "integration tests",
-      "ok": true
+      "ok": true,
+      "seconds": 671
     },
     {
       "name": "visual regression (pinned image)",
-      "ok": true
+      "ok": true,
+      "seconds": 184
     },
     {
       "name": "e2e tests (API and functional)",
-      "ok": true
+      "ok": true,
+      "seconds": 950
     },
     {
       "name": "mutation log check self-test",
-      "ok": true
+      "ok": true,
+      "seconds": 0
     },
     {
       "name": "dotnet tool restore (dotnet-stryker)",
-      "ok": true
+      "ok": true,
+      "seconds": 1
     },
     {
-      "name": "mutation tests (Stryker.NET in a worktree of 69c1e4c47b, 13 engine files changed since c3a81d0d1b; fails on safe mode or no score)",
-      "ok": true
+      "name": "mutation tests (Stryker.NET in a worktree of 07070e5468, 6 engine files changed since 69c1e4c47b; fails on safe mode or no score)",
+      "ok": true,
+      "seconds": 15168
     }
   ]
 }
