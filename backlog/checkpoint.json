@@ -1,22 +1,22 @@
 {
-  "commit": "07070e5468c1922cee6f723c7265a04e24e2264e",
+  "commit": "91165078b17f84c0f9ae93b80d71dc50a67f04e4",
   "at": "2026-10-12",
-  "stories": 10,
+  "stories": 5,
   "results": [
     {
       "name": "dotnet build",
       "ok": true,
-      "seconds": 141
+      "seconds": 111
     },
     {
       "name": "reference scenario golden up to date",
       "ok": true,
-      "seconds": 10
+      "seconds": 9
     },
     {
       "name": "unit tests",
       "ok": true,
-      "seconds": 210
+      "seconds": 186
     },
     {
       "name": "security scanner self-test",
@@ -36,7 +36,7 @@
     {
       "name": "chart security (pod security context, read-only root, TLS, release guards)",
       "ok": true,
-      "seconds": 2
+      "seconds": 1
     },
     {
       "name": "nuget vulnerability audit",
@@ -51,7 +51,7 @@
     {
       "name": "npm audit (e2e)",
       "ok": true,
-      "seconds": 1
+      "seconds": 0
     },
     {
       "name": "docs text rules",
@@ -60,7 +60,7 @@
     {
       "name": "web svelte-check",
       "ok": true,
-      "seconds": 12
+      "seconds": 11
     },
     {
       "name": "web lint",
@@ -70,37 +70,27 @@
     {
       "name": "web build",
       "ok": true,
-      "seconds": 31
+      "seconds": 32
     },
     {
       "name": "integration tests",
       "ok": true,
-      "seconds": 671
+      "seconds": 651
     },
     {
       "name": "visual regression (pinned image)",
       "ok": true,
-      "seconds": 184
+      "seconds": 146
     },
     {
       "name": "e2e tests (API and functional)",
       "ok": true,
-      "seconds": 950
+      "seconds": 925
     },
     {
-      "name": "mutation log check self-test",
+      "name": "mutation tests (no engine change since 07070e5468)",
       "ok": true,
-      "seconds": 0
-    },
-    {
-      "name": "dotnet tool restore (dotnet-stryker)",
-      "ok": true,
-      "seconds": 1
-    },
-    {
-      "name": "mutation tests (Stryker.NET in a worktree of 07070e5468, 6 engine files changed since 69c1e4c47b; fails on safe mode or no score)",
-      "ok": true,
-      "seconds": 15168
+      "skipped": true
     }
   ]
 }
