@@ -135,8 +135,8 @@ public sealed class GroundTruthTests(PostgresFixture fixture) : IAsyncDisposable
                 (@c01, @chk, @site, 'C01', 'C01', 'Counter', NULL);
             INSERT INTO zone_profile (id, site_code, name, status) VALUES (@profile, @site, 'Profile', 'Draft');
             INSERT INTO zone (id, profile_id, name, kind, level_id, polygon, queue_zone_id) VALUES
-                (@qa, @profile, 'Q-A', 'Queue', @level, '[]', NULL),
-                (@qb, @profile, 'Q-B', 'Queue', @level, '[]', NULL);
+                (@qa, @profile, 'Q-A', 'Queue', @level, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000', NULL),
+                (@qb, @profile, 'Q-B', 'Queue', @level, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000', NULL);
             INSERT INTO line (id, profile_id, name, role, zone_id, level_id, start_x, start_y, end_x, end_y) VALUES
                 (@entryA, @profile, 'Entry A', 'Entry', @qa, @level, 0, 0, 0, 1);
             UPDATE zone_profile SET status = 'Published', version = 1, geometry_hash = repeat('c', 64), published_on = '2026-09-01T00:00:00Z', published_by = 'it'

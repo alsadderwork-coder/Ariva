@@ -1073,7 +1073,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 38,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Before the pilot. From the ARV-161 review (optional, Proposed for the owner): a minimum-width rule against slivers, every vertex at least 1 cm from its opposite edge (a 10 m by 0.1 mm triangle passes the 1e-4 m2 area minimum today); degenerate, not a security risk.",
       "dependsOn": [
         "ARV-159"
@@ -1169,11 +1169,11 @@
     },
     {
       "id": "ARV-156",
-      "title": "[E17] Unit tests robust under load (ValidationReaderLoginTests, ValidationEmulatorTests)",
-      "description": "`ValidationReaderLoginTests.Host_Should_StartWithTheReaderLoginOnlyWhenItIsMain_When_RunInACluster(host: \"Cronz\")` failed once with \"Cannot access a disposed object. Object name: 'IServiceProvider'\" while a mutation run loaded the machine (ARV-123a story gate, 2026-10-12), and passed in the next run and three times alone. A failing test is never a flake: find the race (a host built and disposed while something still resolves from it) and fix the test or the code. A second test failed the same way on 2026-10-12 (ARV-123b story gate, a mutation run beside it): `ValidationEmulatorTests.MainUrl_Should_BeTheAddressOfTheSimulatorsOwnDeployment_When_Checked` threw a RegexMatchTimeoutException in simulator code; it passes alone (124 of 124). A regex timeout that a loaded machine reaches is either too tight for its input or guards a pattern that backtracks: find which.",
+      "title": "[E17] Tests robust under load and on a busy broker (ValidationReaderLoginTests, ValidationEmulatorTests, BrokerOutageTests)",
+      "description": "`ValidationReaderLoginTests.Host_Should_StartWithTheReaderLoginOnlyWhenItIsMain_When_RunInACluster(host: \"Cronz\")` failed once with \"Cannot access a disposed object. Object name: 'IServiceProvider'\" while a mutation run loaded the machine (ARV-123a story gate, 2026-10-12), and passed in the next run and three times alone. A failing test is never a flake: find the race (a host built and disposed while something still resolves from it) and fix the test or the code. A second test failed the same way on 2026-10-12 (ARV-123b story gate, a mutation run beside it): `ValidationEmulatorTests.MainUrl_Should_BeTheAddressOfTheSimulatorsOwnDeployment_When_Checked` threw a RegexMatchTimeoutException in simulator code; it passes alone (124 of 124). A regex timeout that a loaded machine reaches is either too tight for its input or guards a pattern that backtracks: find which. A third test fails the same way intermittently: `BrokerOutageTests.Outbox_Should_HoldEventsWhileTheBrokerIsDownAndRelayThemInOrder_When_ItIsBack` timed out at its 300 s limit on 2026-10-10, 2026-10-11 (ARV-122a) and 2026-10-12 (ARV-162 story run 1), and passed on each rerun; find whether the broker restart, the outbox poll or the 300 s bound is the cause.",
       "acceptanceCriteria": [
         "The cause of each failure is found and named in backlog/progress.md; the test or the code is fixed, not skipped or retried",
-        "Both tests pass 50 times in a row with the machine loaded (for example beside a mutation run or with a CPU stress)",
+        "All three tests pass 50 times in a row with the machine loaded (for example beside a mutation run or with a CPU stress)",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"

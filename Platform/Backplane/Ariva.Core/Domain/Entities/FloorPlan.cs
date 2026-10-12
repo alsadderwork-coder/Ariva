@@ -25,6 +25,23 @@ public class FloorPlan : BaseSoftDeletableEntity<FloorPlan>, ISiteBound
     public static bool FileNameFits(string name) =>
         name is null || (name.Length <= 2 * MaxFileNameLength && name.EnumerateRunes().Count() <= MaxFileNameLength);
 
+    /// <summary>
+    /// True when a file name holds no path and nothing a reader cannot see (ARV-018, ARV-153; one rule since ARV-162): no
+    /// slash, backslash, <c>..</c> or colon, and no lone surrogate, control or format character, each judged per code point
+    /// (<see cref="Components.DisplayText.IsClean"/>), so a tag character outside the basic plane is refused like a
+    /// right-to-left override. The upload, the site configuration import and export and the pre-pilot check all call it.
+    /// </summary>
+    public static bool HasSafeFileNameCharacters(string name) =>
+        name is not null && !name.Contains('/') && !name.Contains('\\') && !name.Contains("..", StringComparison.Ordinal) && !name.Contains(':') &&
+        Components.DisplayText.IsClean(name);
+
+    /// <summary>
+    /// A file name the floor plan rules take (ARV-162): blank (the upload stores "floor-plan" instead), or safe characters
+    /// (<see cref="HasSafeFileNameCharacters"/>) and at most <see cref="MaxFileNameLength"/> code points after trimming.
+    /// </summary>
+    public static bool IsSafeFileName(string name) =>
+        string.IsNullOrWhiteSpace(name) || (HasSafeFileNameCharacters(name) && FileNameFits(name.Trim()));
+
     protected FloorPlan()
     {
     }

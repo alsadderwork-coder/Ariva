@@ -65,6 +65,20 @@ public sealed class DisplayTextTests
         DisplayText.IsClean(null).Should().BeTrue();
     }
 
+    [Fact]
+    public void Offenders_Should_ListEveryCodePointThatBreaksTheRuleWithItsPosition_When_ATextIsJudged()
+    {
+        // ARV-162: positions in code points from 1, so an emoji or a tag character before an offender counts once.
+        DisplayText.Offenders("Gate A").Should().BeEmpty();
+        DisplayText.Offenders("\U0001F6EB Gate\x202EA\U000E0041").Should().Equal((7, 0x202E), (9, 0xE0041));
+        DisplayText.Offenders("line\none\x0007", allowLineBreaks: true).Should().Equal((9, 0x0007));
+        DisplayText.Offenders("line\none").Should().Equal((5, 0x000A));
+        DisplayText.Offenders("A" + '\xDE00' + "B" + '\xD83D').Should().Equal((2, 0xDE00), (4, 0xD83D));
+        DisplayText.Offenders(null).Should().BeEmpty();
+        foreach (var text in new[] { "Gate A", "Gate\x202EA", "A\U000E0041", "a\nb" })
+            DisplayText.IsClean(text).Should().Be(DisplayText.Offenders(text).Count == 0, "one walk decides both");
+    }
+
     #region One consumer per kind of entity
 
     [Fact]

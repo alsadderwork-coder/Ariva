@@ -94,4 +94,21 @@ public sealed class FloorPlanFileNameTests
     [InlineData(201, false)]
     public void IsFileName_Should_FollowTheSameBound_When_TheSiteConfigurationImportReadsAName(int marks, bool fits) =>
         SiteConfigurationRules.IsFileName("a" + Repeat(Acute, marks - 1)).Should().Be(fits);
+
+    [Fact]
+    public void IsSafeFileName_Should_BeTheUploadsRule_When_ANameIsStoredUploadedImportedOrExported()
+    {
+        // ARV-162 (review R1): one rule in Ariva.Core; the upload refuses exactly what it refuses, and a blank name passes
+        // (the upload stores "floor-plan").
+        foreach (var name in new[]
+                 {
+                     "arrivals.svg", "plan\U000E0041.svg", "plan\x202E.svg", "../etc/x.svg", "a\\b.svg", "c:x.svg", "a..b.svg", "plan\n.svg",
+                     "\x0628\x0648\x0627\x0628\x0629.png", "a" + Repeat(Acute, 199), "a" + Repeat(Acute, 200), "  ", "plan" + '\xD83D' + ".png"
+                 })
+        {
+            FloorPlan.IsSafeFileName(name).Should().Be(SvcFloorPlans.CheckFileName(name).Error is null, name.Length.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+
+        FloorPlan.IsSafeFileName(null).Should().BeTrue();
+    }
 }

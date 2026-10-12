@@ -7,11 +7,11 @@ using Microsoft.Extensions.Logging;
 namespace Ariva.Di;
 
 /// <summary>
-/// The pre-pilot check of stored names (ARV-159). Ariva.Api.Main runs it instead of the web host when started with
-/// <c>--check-stored-names</c>: it reads the site, topology, zone profile, zone, line and device queue zone names through the
-/// hosts' runtime login in a read-only transaction (<see cref="StoredNameCheck"/>) and prints one line per name the name
-/// rule refuses, escaped, then a summary. It never writes. Exit code 0 when every name passes, 3 when some do not, 1 on
-/// failure (logged).
+/// The pre-pilot check of stored texts (ARV-159, widened by ARV-162). Ariva.Api.Main runs it instead of the web host when
+/// started with <c>--check-stored-names</c>: it reads the site, topology, zone profile, zone and line names, every other
+/// stored text the display text rule guards, every zone outline and every floor plan file name through the hosts' runtime
+/// login in a read-only transaction (<see cref="StoredNameCheck"/>) and prints one line per value its rule refuses, escaped
+/// (a personal text only as its offending code points and their positions, never the text), then a summary. It never writes. Exit code 0 when every value passes, 3 when some do not, 1 on failure (logged).
 /// </summary>
 public static class StoredNameCheckCommand
 {
@@ -45,14 +45,14 @@ public static class StoredNameCheckCommand
         }
     }
 
-    /// <summary>One tab-separated line per finding (place, site or "-", id, live or deleted, escaped name), then the summary.</summary>
+    /// <summary>One tab-separated line per finding (place, site or "-", id, state, the escaped text), then the summary.</summary>
     public static string Format(StoredNameCheckResult result)
     {
         ArgumentNullException.ThrowIfNull(result);
         var lines = result.Findings
-            .Select(f => string.Join('\t', f.Place, f.SiteCode ?? "-", f.Id.ToString("D", CultureInfo.InvariantCulture), f.Deleted ? "deleted" : "live", f.Escaped))
+            .Select(f => string.Join('\t', f.Place, f.SiteCode ?? "-", f.Id.ToString("D", CultureInfo.InvariantCulture), f.State, f.Escaped))
             .Append(string.Create(CultureInfo.InvariantCulture,
-                $"{result.Checked} stored names checked; {result.Findings.Count} hold a control, invisible format or broken character (ARV-159)."))
+                $"{result.Checked} stored values checked; {result.Findings.Count} hold a control, invisible format or broken character, or an outline that touches itself (ARV-159, ARV-162)."))
             .Append(string.Empty);
         return string.Join(Environment.NewLine, lines);
     }

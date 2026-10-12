@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { expect, test } from '@playwright/test';
+import pg from 'pg';
 import { accounts, call, databaseAvailable, login, signIn, unusedTotpCode, type Account } from '../support/accounts';
 import { hosts } from '../support/hosts';
 
@@ -56,6 +57,23 @@ let sourceCredential: string;
 const airports: string[] = [];
 
 const sha256 = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
+
+/** The run's database as the migration login (the hosts' own settings), for values only an older release could have stored. */
+async function withDatabase<T>(work: (db: pg.Client) => Promise<T>): Promise<T> {
+	const db = new pg.Client({
+		host: process.env.Database__Host || 'localhost',
+		port: Number(process.env.Database__Port || 5432),
+		database: process.env.Database__Name || 'postgres',
+		user: process.env.Database__Migration__Username || 'postgres',
+		password: process.env.Database__Migration__Password
+	});
+	await db.connect();
+	try {
+		return await work(db);
+	} finally {
+		await db.end();
+	}
+}
 const decoded = (bundle: any, part: string) => JSON.parse(Buffer.from(bundle.parts[part], 'base64').toString('utf8'));
 
 /** A copy of the bundle with one part replaced and its manifest entry recomputed: anyone can, so the manifest proves no author. */
@@ -271,6 +289,26 @@ test('the export carries the published profile with both hashes, every part in t
 	expect(Object.keys(decoded(bundle, 'displays')[0]).sort()).toEqual(
 		['code', 'name', 'location', 'orientation', 'languages', 'bandMinutes', 'hysteresisMinutes', 'staleSeconds', 'entries', 'fallback', 'enabled'].sort()
 	);
+});
+
+test('a terminal name an older release stored with an override refuses the export with a fixed text (ARV-162)', async () => {
+	// Since ARV-159 no endpoint stores such a name, so it is planted past them, in this suite's own source site, and put back.
+	const planted = 'Terminal \u202E1 lanimret';
+	const fixed = 'A terminal, level, checkpoint or desk of the site has a name with a control, invisible format or broken character, which an import refuses; rename it first.';
+	const rename = (name: string) =>
+		withDatabase((db) => db.query("UPDATE terminal SET name = $1::varchar WHERE site_code = $2::varchar AND code = 'T1' AND deleted_on IS NULL", [name, source]));
+	expect((await rename(planted)).rowCount, 'the source terminal').toBe(1);
+	try {
+		const refused = await call('GET', configuration(source), { token: stepped });
+		expect(refused.status(), refused.status() === 409 ? 'export refused' : await refused.text()).toBe(409);
+		const body = await refused.text();
+		expect(body.includes(fixed), 'the fixed text').toBe(true);
+		expect(body.includes(planted) || body.includes('\u202E'), 'the name is not repeated').toBe(false);
+	} finally {
+		await rename(hostileTerminal);
+	}
+	const again = await call('GET', configuration(source), { token: stepped });
+	expect(again.status(), again.status() === 200 ? 'export again' : await again.text()).toBe(200);
 });
 
 test('a tampered bundle is refused with a fixed text and writes nothing', async () => {

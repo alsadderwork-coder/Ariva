@@ -67,6 +67,23 @@ public static class SiteConfigurationErrors
     public const string RuleCodeTooHigh = "An alert rule code of the bundle is above R-100000, which an import does not take, so the target site keeps codes for new rules.";
     public const string RuleCodesBeyondImportBound = "An alert rule of the site has a code above R-100000, which an import does not take, so the site cannot be exported whole.";
 
+    /// <summary>
+    /// ARV-162: the export refuses what its import would refuse of values saved under older rules (topology names, the
+    /// published profile's names and outlines, floor plan file names, device models, alert rule names and display texts);
+    /// each text names the kind of record, never a value.
+    /// </summary>
+    public const string TopologyNamesNotImportable =
+        "A terminal, level, checkpoint or desk of the site has a name with a control, invisible format or broken character, which an import refuses; rename it first.";
+
+    public const string ProfileNotImportable =
+        "The published zone profile has a name with a control, invisible format or broken character, or a zone whose outline touches or crosses itself, which an import refuses; publish a corrected version first.";
+
+    public const string FloorPlanNamesNotImportable =
+        "A floor plan of the site has a file name with a path, a control, invisible format or broken character, or more than 200 characters, which an import refuses; upload the plan again under a clean name first.";
+
+    public const string TextsNotImportable =
+        "A device model, alert rule name or display text of the site has a control, invisible format or broken character, which an import refuses; change it first.";
+
     /// <summary>Notes of the answers (fixed texts).</summary>
     public const string NoPublishedProfile = "The site has no published zone profile, so the bundle carries none.";
     public const string ProfileArrivesAsDraft = "The zone profile arrived as a draft: review it and publish it with a recent second factor.";
@@ -81,7 +98,8 @@ public static class SiteConfigurationErrors
     public static readonly IReadOnlySet<string> Conflicts = new HashSet<string>(StringComparer.Ordinal)
     {
         SiteNotEmpty, TerminalTaken, AmbiguousTerminals, ProfileOnRemovedTopology, TooManyRecords, TooLargeToExport, FloorPlanFileUnreadable, DisplayCodeTaken,
-        ReferencesOutsideProfile, DeviceOnRemovedLevel, RuleCodesBeyondImportBound
+        ReferencesOutsideProfile, DeviceOnRemovedLevel, RuleCodesBeyondImportBound, TopologyNamesNotImportable, ProfileNotImportable, TextsNotImportable,
+        FloorPlanNamesNotImportable
     };
 }
 

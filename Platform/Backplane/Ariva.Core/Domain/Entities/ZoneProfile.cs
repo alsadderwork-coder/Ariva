@@ -129,7 +129,7 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
         var points = Zone.RequirePolygon(polygon, level);
         var stranded = Lines.Where(l => l.Zone == own && l.Role != LineRole.Count && Geometry.EdgeContaining(points, l.Start, l.End) < 0).ToList();
         if (stranded.Count > 0)
-            throw new InvalidOperationException($"Line {stranded[0].Name} would no longer lie on the zone's edge; move or remove it first.");
+            throw new InvalidOperationException($"Line {Label(stranded[0].Name)} would no longer lie on the zone's edge; move or remove it first.");
         own.SetPoints(points);
     }
 
@@ -194,7 +194,7 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
         EnsureDraft();
         var own = Own(zone);
         if (Zones.Any(z => z.QueueZone == own))
-            throw new InvalidOperationException($"Zones hang off {own.Name}; remove them first.");
+            throw new InvalidOperationException($"Zones hang off {Label(own.Name)}; remove them first.");
         var lines = Lines.Where(l => l.Zone == own).ToList();
         foreach (var line in lines)
             Lines.Remove(line);
@@ -237,13 +237,13 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
             case LineRole.OverflowEntry when own?.Kind != ZoneKind.Overflow:
                 throw new InvalidOperationException("An overflow entry line belongs to an overflow zone.");
             case LineRole.Exit when Lines.Any(l => l.Zone == own && l.Role == LineRole.Exit):
-                throw new InvalidOperationException($"Zone {own.Name} already has its exit line.");
+                throw new InvalidOperationException($"Zone {Label(own.Name)} already has its exit line.");
         }
 
         if (own is not null && own.LevelId != level.Id)
             throw new InvalidOperationException("A line lies on its zone's level.");
         if (role != LineRole.Count && Geometry.EdgeContaining(own.Points, a, b) < 0)
-            throw new InvalidOperationException($"Line {trimmed} must lie on an edge of zone {own.Name}.");
+            throw new InvalidOperationException($"Line {trimmed} must lie on an edge of zone {Label(own.Name)}.");
 
         var line = new Line(this, trimmed, role, own, level.Id.GetValueOrDefault(), a, b);
         Lines.Add(line);
@@ -264,7 +264,10 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
     /// <summary>
     /// What stops this draft from being published: no zones; a queue zone without an entry line or without exactly one
     /// exit line; an overflow zone without its overflow entry line; a hanging zone whose queue zone is missing; geometry
-    /// outside its level (levels may have shrunk since the zone was drawn).
+    /// outside its level (levels may have shrunk since the zone was drawn). And what a draft copied from an older version
+    /// may carry (ARV-162): a profile, zone or line name the name rule now refuses (ARV-159), or a zone outline that touches
+    /// or crosses itself by the rule of ARV-161; such a name is named escaped (<see cref="DisplayText.Escape"/>), never as
+    /// stored.
     /// </summary>
     public virtual IReadOnlyList<string> Validate(IReadOnlyDictionary<Guid, Level> levels)
     {
@@ -272,46 +275,59 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
         var problems = new List<string>();
         if (Zones.Count == 0)
             problems.Add("The profile has no zones.");
+        if (!TopologyCodes.IsName(Name))
+            problems.Add($"The profile's name {Label(Name)} {UnsafeNameProblem} rename the draft.");
 
         foreach (var zone in Zones.OrderBy(z => z.Name, StringComparer.Ordinal))
         {
+            var label = Label(zone.Name);
+            if (!TopologyCodes.IsName(zone.Name))
+                problems.Add($"Zone {label}: its name {UnsafeNameProblem} rename the zone.");
             if (!levels.TryGetValue(zone.LevelId, out var level) || level.IsDeleted)
             {
-                problems.Add($"Zone {zone.Name}: its level no longer exists.");
+                problems.Add($"Zone {label}: its level no longer exists.");
                 continue;
             }
 
             if (zone.Points.Any(p => !level.Contains(p.X, p.Y)))
-                problems.Add($"Zone {zone.Name}: a vertex lies outside level {level.Code}.");
+                problems.Add($"Zone {label}: a vertex lies outside level {level.Code}.");
+            // ARV-162: an outline drawn before ARV-161 may touch itself by today's rule; it is moved before publishing.
+            if (!Geometry.IsSimplePolygon(zone.Points))
+                problems.Add($"Zone {label}: {OutlineNotSimple}");
 
             var lines = Lines.Where(l => l.Zone == zone).ToList();
             switch (zone.Kind)
             {
                 case ZoneKind.Queue:
                     if (!lines.Any(l => l.Role == LineRole.Entry))
-                        problems.Add($"Zone {zone.Name}: a queue zone needs at least one entry line.");
+                        problems.Add($"Zone {label}: a queue zone needs at least one entry line.");
                     if (lines.Count(l => l.Role == LineRole.Exit) != 1)
-                        problems.Add($"Zone {zone.Name}: a queue zone needs exactly one exit line.");
+                        problems.Add($"Zone {label}: a queue zone needs exactly one exit line.");
                     break;
                 case ZoneKind.Overflow:
                     if (!lines.Any(l => l.Role == LineRole.OverflowEntry))
-                        problems.Add($"Zone {zone.Name}: an overflow zone needs an overflow entry line.");
+                        problems.Add($"Zone {label}: an overflow zone needs an overflow entry line.");
                     break;
             }
 
             if (zone.Kind != ZoneKind.Queue && (zone.QueueZone is null || !Zones.Contains(zone.QueueZone)))
-                problems.Add($"Zone {zone.Name}: it must hang off a queue zone.");
+                problems.Add($"Zone {label}: it must hang off a queue zone.");
             // A draft copied from a version published before ARV-114c may hold such a name; it is renamed before publishing.
             if (zone.Kind == ZoneKind.Queue && !ZoneKeys.Fits(SiteCode, zone.Name))
-                problems.Add($"Zone {zone.Name}: {QueueZoneNameTooLong(SiteCode)}");
+                problems.Add($"Zone {label}: {QueueZoneNameTooLong(SiteCode)}");
         }
+
+        // ARV-162: a line copied from an older version may carry a name the rule now refuses; lines have no rename, so it
+        // is removed and added again.
+        foreach (var line in Lines.Where(l => !TopologyCodes.IsName(l.Name)).OrderBy(l => l.Name, StringComparer.Ordinal))
+            problems.Add($"Line {Label(line.Name)}: its name {UnsafeNameProblem} remove the line and add it again with a clean name.");
 
         foreach (var line in Lines.Where(l => l.Zone is null).OrderBy(l => l.Name, StringComparer.Ordinal))
         {
             if (!levels.TryGetValue(line.LevelId, out var level) || level.IsDeleted)
-                problems.Add($"Line {line.Name}: its level no longer exists.");
+                problems.Add($"Line {Label(line.Name)}: its level no longer exists.");
             else if (!level.Contains(line.Start.X, line.Start.Y) || !level.Contains(line.End.X, line.End.Y))
-                problems.Add($"Line {line.Name}: it lies outside level {level.Code}.");
+                problems.Add($"Line {Label(line.Name)}: it lies outside level {level.Code}.");
         }
 
         return problems;
@@ -430,6 +446,21 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
         if (Status != ZoneProfileStatus.Draft)
             throw new InvalidOperationException("A published or retired zone profile never changes; create a draft from it.");
     }
+
+    /// <summary>The problem of a stored name the name rule refuses (ARV-162); the sentence ends with what to do.</summary>
+    public const string UnsafeNameProblem = "holds a control, invisible format or broken character (shown escaped);";
+
+    /// <summary>The problem of a stored zone outline that is no longer a simple polygon (ARV-162, the rule of ARV-161).</summary>
+    public const string OutlineNotSimple =
+        "its outline touches or crosses itself (a vertex within 1 cm of an edge it does not end, or two edges meeting); move its vertices.";
+
+    /// <summary>
+    /// A stored zone or line name as a message may show it (ARV-162): as stored when it keeps the name rule and holds no
+    /// backslash, else escaped (<see cref="DisplayText.Escape"/>), so an override or an invisible character of a legacy name
+    /// never reaches a reader, and a clean name that merely spells an escape (a backslash, then u202E) is shown with its
+    /// backslash doubled and cannot pass for an escaped one.
+    /// </summary>
+    public static string Label(string name) => TopologyCodes.IsName(name) && !name.Contains('\\') ? name : DisplayText.Escape(name);
 
     /// <summary>
     /// Why a queue zone name is refused at <paramref name="siteCode"/> (ARV-114c). The name itself is not repeated: the

@@ -91,7 +91,7 @@ public sealed class AvailabilityTests(PostgresFixture fixture) : IAsyncDisposabl
             SELECT gen_random_uuid(), t.id, t.site_code, 'L1', 'L1', 0, 100, 100 FROM t;
             INSERT INTO zone_profile (id, site_code, name, status) VALUES (gen_random_uuid(), @site, 'Profile', 'Draft');
             INSERT INTO zone (id, profile_id, name, kind, level_id, polygon)
-            SELECT gen_random_uuid(), p.id, z, 'Queue', l.id, '[]'
+            SELECT gen_random_uuid(), p.id, z, 'Queue', l.id, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'
               FROM zone_profile p, level l, unnest(@zones) AS z WHERE p.site_code = @site AND l.site_code = @site;
             """, ("site", site), ("iata", iata), ("tz", timeZone), ("zones", zones));
     }
@@ -113,7 +113,7 @@ public sealed class AvailabilityTests(PostgresFixture fixture) : IAsyncDisposabl
             UPDATE zone_profile SET status = 'Retired', retired_on = @at WHERE site_code = @site AND status = 'Published';
             INSERT INTO zone_profile (id, site_code, name, status) VALUES (gen_random_uuid(), @site, 'Profile', 'Draft');
             INSERT INTO zone (id, profile_id, name, kind, level_id, polygon)
-            SELECT gen_random_uuid(), p.id, z, 'Queue', l.id, '[]'
+            SELECT gen_random_uuid(), p.id, z, 'Queue', l.id, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'
               FROM zone_profile p, level l, unnest(@zones) AS z WHERE p.site_code = @site AND p.status = 'Draft' AND l.site_code = @site;
             """, ("site", site), ("at", publishedUtc), ("zones", zones));
         await PublishDraftAsync(site, version, publishedUtc);

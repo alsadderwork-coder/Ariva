@@ -385,6 +385,12 @@ test.describe("the Cronz job's ledger", () => {
 	// the live screens' suites see.
 	const site = 'E2EAV';
 	const zones = ['AV-1', 'AV-2'];
+	// Each zone a real simple outline on the 100 m level, as the zone profile service stores it (ARV-162: the pre-pilot
+	// check finds nothing in a clean database).
+	const outlines: Record<string, string> = {
+		'AV-1': '10.000 10.000,30.000 10.000,30.000 20.000,10.000 20.000',
+		'AV-2': '40.000 10.000,60.000 10.000,60.000 20.000,40.000 20.000'
+	};
 
 	test.beforeAll(async () => {
 		await withDatabase(async (db) => {
@@ -401,8 +407,8 @@ test.describe("the Cronz job's ledger", () => {
 				const profile = await db.query("INSERT INTO zone_profile (id, site_code, name, status) VALUES (gen_random_uuid(), $1, 'Availability', 'Draft') RETURNING id", [site]);
 				for (const zone of zones)
 					await db.query(
-						`INSERT INTO zone (id, profile_id, name, kind, level_id, polygon) SELECT gen_random_uuid(), $1::uuid, $2::varchar, 'Queue', l.id, '[]' FROM level l WHERE l.site_code = $3::varchar LIMIT 1`,
-						[profile.rows[0].id, zone, site]
+						`INSERT INTO zone (id, profile_id, name, kind, level_id, polygon) SELECT gen_random_uuid(), $1::uuid, $2::varchar, 'Queue', l.id, $4::varchar FROM level l WHERE l.site_code = $3::varchar LIMIT 1`,
+						[profile.rows[0].id, zone, site, outlines[zone]]
 					);
 				await db.query(
 					"UPDATE zone_profile SET status = 'Published', version = 1, geometry_hash = repeat('a', 64), published_on = now() - INTERVAL '1 day', published_by = 'e2e' WHERE id = $1",

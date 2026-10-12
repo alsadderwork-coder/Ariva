@@ -576,4 +576,67 @@ public sealed class SiteConfigurationTransferTests
     }
 
     #endregion
+
+    #region ARV-162: an export never yields a bundle its import refuses
+
+    public static TheoryData<string, string> NotImportable => new()
+    {
+        { "a terminal name with a right-to-left override", SiteConfigurationErrors.TopologyNamesNotImportable },
+        { "a desk name with a tag character", SiteConfigurationErrors.TopologyNamesNotImportable },
+        { "a level name with a zero-width space", SiteConfigurationErrors.TopologyNamesNotImportable },
+        { "a checkpoint name with a bell", SiteConfigurationErrors.TopologyNamesNotImportable },
+        { "a floor plan file name with a tag character", SiteConfigurationErrors.FloorPlanNamesNotImportable },
+        { "a floor plan file name with a path", SiteConfigurationErrors.FloorPlanNamesNotImportable },
+        { "a display name with a right-to-left override", SiteConfigurationErrors.TextsNotImportable },
+        { "a display location with a zero-width space", SiteConfigurationErrors.TextsNotImportable },
+        { "a zone name with a zero-width space", SiteConfigurationErrors.ProfileNotImportable },
+        { "a line name with a bell", SiteConfigurationErrors.ProfileNotImportable },
+        { "the profile's name with a right-to-left override", SiteConfigurationErrors.ProfileNotImportable },
+        { "a zone outline that touches itself", SiteConfigurationErrors.ProfileNotImportable },
+        { "a device model with a right-to-left override", SiteConfigurationErrors.TextsNotImportable },
+        { "an alert rule name with a tag character", SiteConfigurationErrors.TextsNotImportable },
+        { "a display label with a right-to-left override", SiteConfigurationErrors.TextsNotImportable },
+        { "a display message with a tag character", SiteConfigurationErrors.TextsNotImportable }
+    };
+
+    [Theory]
+    [MemberData(nameof(NotImportable))]
+    public void Export_Should_RefuseWithTheKindsFixedText_When_AStoredValueWouldBeRefusedByTheImport(string change, string expected)
+    {
+        // Values saved before ARV-158, ARV-159 or ARV-161, written past the entities as an older database holds them.
+        static void Store<T>(T entity, string property, string value) => typeof(T).GetProperty(property)!.SetValue(entity, value);
+        var source = Source();
+        var profile = source.PublishedProfile;
+        switch (change)
+        {
+            case "a terminal name with a right-to-left override": Store(source.Terminals[0], nameof(Terminal.Name), "Terminal \x202E1"); break;
+            case "a desk name with a tag character": Store(source.Desks[0], nameof(Desk.Name), "Desk\U000E0041"); break;
+            case "a level name with a zero-width space": Store(source.Levels[0], nameof(Level.Name), "Arr\x200Bivals"); break;
+            case "a checkpoint name with a bell": Store(source.Checkpoints[0], nameof(Checkpoint.Name), "Immigration\x0007"); break;
+            case "a floor plan file name with a tag character": Store(source.FloorPlans[0], nameof(FloorPlan.OriginalFileName), "arrivals\U000E0041.svg"); break;
+            case "a floor plan file name with a path": Store(source.FloorPlans[0], nameof(FloorPlan.OriginalFileName), "../../etc/arrivals.svg"); break;
+            case "a display name with a right-to-left override": Store(source.Displays[0], nameof(Display.Name), "Hall\x202E board"); break;
+            case "a display location with a zero-width space": Store(source.Displays[0], nameof(Display.Location), "Gate\x200B 3"); break;
+            case "a zone name with a zero-width space": Store(profile.Zones.Single(z => z.Name == "Service A"), nameof(Zone.Name), "Service\x200BA"); break;
+            case "a line name with a bell": Store(profile.Lines.Single(l => l.Name == "Count hall"), nameof(Line.Name), "Count hall\x0007"); break;
+            case "the profile's name with a right-to-left override": Store(profile, nameof(ZoneProfile.Name), "Arr\x202Eivals"); break;
+            case "a zone outline that touches itself":
+                Store(profile.Zones.Single(z => z.Name == "Overflow A"), nameof(Zone.Polygon), "10.000 24.000,34.000 24.000,34.000 28.000,22.000 24.005,10.000 28.000");
+                break;
+            case "a device model with a right-to-left override": Store(source.Devices[0], nameof(Device.Model), "Ouster\x202E"); break;
+            case "an alert rule name with a tag character": Store(source.AlertRules[0], nameof(AlertRule.Name), "Overflow in use\U000E0041"); break;
+            case "a display label with a right-to-left override":
+                Store(source.Displays[0], nameof(Display.Entries), "[{\"zone\":\"Snake A\",\"labels\":{\"en\":\"Cit\\u202Ezens\"}}]");
+                break;
+            case "a display message with a tag character":
+                Store(source.Displays[0], nameof(Display.FallbackMessages), "{\"en\":\"Ask staff\\uDB40\\uDC41\"}");
+                break;
+            default: throw new ArgumentOutOfRangeException(nameof(change));
+        }
+
+        SiteConfigurationTransfer.Export(source).ErrorMessages.Should().Equal([expected], change);
+        SiteConfigurationErrors.Conflicts.Should().Contain(expected, "the site's state does not allow the export (409)");
+    }
+
+    #endregion
 }

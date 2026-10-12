@@ -130,9 +130,9 @@ public sealed class ValidationTests(PostgresFixture fixture) : IAsyncDisposable
             SELECT @level, t.id, @site, 'L1', 'L1', 0, 100, 100 FROM terminal t JOIN airport a ON a.id = t.airport_id WHERE a.iata_code = @iata;
             INSERT INTO zone_profile (id, site_code, name, status) VALUES (@profile, @site, 'Profile', 'Draft');
             INSERT INTO zone (id, profile_id, name, kind, level_id, polygon, queue_zone_id) VALUES
-                (@qa, @profile, 'Q-A', 'Queue', @level, '[]', NULL),
-                (@qb, @profile, 'Q-B', 'Queue', @level, '[]', NULL),
-                (@band, @profile, 'Q-A band', 'Overflow', @level, '[]', @qa);
+                (@qa, @profile, 'Q-A', 'Queue', @level, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000', NULL),
+                (@qb, @profile, 'Q-B', 'Queue', @level, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000', NULL),
+                (@band, @profile, 'Q-A band', 'Overflow', @level, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000', @qa);
             INSERT INTO line (id, profile_id, name, role, zone_id, level_id, start_x, start_y, end_x, end_y) VALUES
                 (@entryA, @profile, 'Entry A', 'Entry', @qa, @level, 0, 0, 0, 1),
                 (@exitA, @profile, 'Exit A', 'Exit', @qa, @level, 1, 0, 1, 1),

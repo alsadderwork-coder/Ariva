@@ -50,11 +50,11 @@ public sealed partial class ImmigrationIntakeTests
                     (gen_random_uuid(), 'Aman', 'XR3', 'a1490000-0000-0000-0000-000000000013', 'XS6');
                 INSERT INTO zone_profile (id, site_code, name, status) VALUES ('a1490000-0000-0000-0000-000000000020', 'XS6', 'Rhythm', 'Draft');
                 INSERT INTO zone (id, profile_id, name, kind, level_id, queue_zone_id, desk_id, polygon, lane_category) VALUES
-                    ('a1490000-0000-0000-0000-000000000021', 'a1490000-0000-0000-0000-000000000020', 'Q-VIS', 'Queue', 'a1490000-0000-0000-0000-000000000002', NULL, NULL, 'probe', 'VIS'),
-                    ('a1490000-0000-0000-0000-000000000022', 'a1490000-0000-0000-0000-000000000020', 'Q-RES', 'Queue', 'a1490000-0000-0000-0000-000000000002', NULL, NULL, 'probe', 'RES');
+                    ('a1490000-0000-0000-0000-000000000021', 'a1490000-0000-0000-0000-000000000020', 'Q-VIS', 'Queue', 'a1490000-0000-0000-0000-000000000002', NULL, NULL, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000', 'VIS'),
+                    ('a1490000-0000-0000-0000-000000000022', 'a1490000-0000-0000-0000-000000000020', 'Q-RES', 'Queue', 'a1490000-0000-0000-0000-000000000002', NULL, NULL, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000', 'RES');
                 INSERT INTO zone (id, profile_id, name, kind, level_id, queue_zone_id, desk_id, polygon) VALUES
                     ('a1490000-0000-0000-0000-000000000031', 'a1490000-0000-0000-0000-000000000020', 'R2 staff', 'Staff', 'a1490000-0000-0000-0000-000000000002',
-                     'a1490000-0000-0000-0000-000000000021', 'a1490000-0000-0000-0000-000000000012', 'probe');
+                     'a1490000-0000-0000-0000-000000000021', 'a1490000-0000-0000-0000-000000000012', '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000');
                 UPDATE zone_profile SET status = 'Published', version = 1, geometry_hash = repeat('c', 64), published_on = now() WHERE id = 'a1490000-0000-0000-0000-000000000020';
             END IF;
 
@@ -76,8 +76,8 @@ public sealed partial class ImmigrationIntakeTests
                     (gen_random_uuid(), 'Aman', 'XR3', 'a1490000-0000-0000-0000-000000000113', 'XS7');
                 INSERT INTO zone_profile (id, site_code, name, status) VALUES ('a1490000-0000-0000-0000-000000000120', 'XS7', 'Rhythm neighbour', 'Draft');
                 INSERT INTO zone (id, profile_id, name, kind, level_id, queue_zone_id, desk_id, polygon, lane_category) VALUES
-                    ('a1490000-0000-0000-0000-000000000121', 'a1490000-0000-0000-0000-000000000120', 'Q-VIS', 'Queue', 'a1490000-0000-0000-0000-000000000102', NULL, NULL, 'probe', 'VIS'),
-                    ('a1490000-0000-0000-0000-000000000122', 'a1490000-0000-0000-0000-000000000120', 'Q-RES', 'Queue', 'a1490000-0000-0000-0000-000000000102', NULL, NULL, 'probe', 'RES');
+                    ('a1490000-0000-0000-0000-000000000121', 'a1490000-0000-0000-0000-000000000120', 'Q-VIS', 'Queue', 'a1490000-0000-0000-0000-000000000102', NULL, NULL, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000', 'VIS'),
+                    ('a1490000-0000-0000-0000-000000000122', 'a1490000-0000-0000-0000-000000000120', 'Q-RES', 'Queue', 'a1490000-0000-0000-0000-000000000102', NULL, NULL, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000', 'RES');
                 UPDATE zone_profile SET status = 'Published', version = 1, geometry_hash = repeat('d', 64), published_on = now() WHERE id = 'a1490000-0000-0000-0000-000000000120';
             END IF;
 
@@ -95,7 +95,7 @@ public sealed partial class ImmigrationIntakeTests
                     (gen_random_uuid(), 'Aman', 'XR1', 'a1490000-0000-0000-0000-000000000211', 'XS8');
                 INSERT INTO zone_profile (id, site_code, name, status) VALUES ('a1490000-0000-0000-0000-000000000220', 'XS8', 'Rhythm cap', 'Draft');
                 INSERT INTO zone (id, profile_id, name, kind, level_id, queue_zone_id, desk_id, polygon, lane_category) VALUES
-                    ('a1490000-0000-0000-0000-000000000221', 'a1490000-0000-0000-0000-000000000220', 'Q-VIS', 'Queue', 'a1490000-0000-0000-0000-000000000202', NULL, NULL, 'probe', 'VIS');
+                    ('a1490000-0000-0000-0000-000000000221', 'a1490000-0000-0000-0000-000000000220', 'Q-VIS', 'Queue', 'a1490000-0000-0000-0000-000000000202', NULL, NULL, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000', 'VIS');
                 UPDATE zone_profile SET status = 'Published', version = 1, geometry_hash = repeat('e', 64), published_on = now() WHERE id = 'a1490000-0000-0000-0000-000000000220';
             END IF;
 
@@ -113,7 +113,7 @@ public sealed partial class ImmigrationIntakeTests
                     (gen_random_uuid(), 'Aman', 'XR1', 'a1490000-0000-0000-0000-000000000311', 'XS9');
                 INSERT INTO zone_profile (id, site_code, name, status) VALUES ('a1490000-0000-0000-0000-000000000320', 'XS9', 'Rhythm wave', 'Draft');
                 INSERT INTO zone (id, profile_id, name, kind, level_id, queue_zone_id, desk_id, polygon, lane_category) VALUES
-                    ('a1490000-0000-0000-0000-000000000321', 'a1490000-0000-0000-0000-000000000320', 'Q-VIS', 'Queue', 'a1490000-0000-0000-0000-000000000302', NULL, NULL, 'probe', 'VIS');
+                    ('a1490000-0000-0000-0000-000000000321', 'a1490000-0000-0000-0000-000000000320', 'Q-VIS', 'Queue', 'a1490000-0000-0000-0000-000000000302', NULL, NULL, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000', 'VIS');
                 UPDATE zone_profile SET status = 'Published', version = 1, geometry_hash = repeat('f', 64), published_on = now() WHERE id = 'a1490000-0000-0000-0000-000000000320';
             END IF;
         END

@@ -1,3 +1,4 @@
+using Ariva.Core.Domain.Components;
 using Ariva.Core.Domain.Enums;
 using Ariva.Core.Domain.InputModels;
 using Ariva.Core.Domain.ViewModels;
@@ -96,6 +97,10 @@ public static class SiteConfigurationTransfer
             .OrderBy(d => d.Checkpoint.Code, StringComparer.Ordinal).ThenBy(d => d.Code, StringComparer.Ordinal).ToList();
         var deskNames = desks.ToDictionary(d => d.Id.GetValueOrDefault(), d => ZoneProfile.PortableDeskName(d.Checkpoint.Code, d.Code));
         var deskRows = desks.ToDictionary(d => d.Id.GetValueOrDefault());
+        // ARV-162: every export can be imported, so a name the import would refuse (ARV-159, saved before) refuses the export.
+        if (terminals.Any(t => !TopologyCodes.IsName(t.Name)) || levels.Any(l => !TopologyCodes.IsName(l.Name)) ||
+            checkpoints.Any(c => !TopologyCodes.IsName(c.Name)) || desks.Any(d => !TopologyCodes.IsName(d.Name)))
+            return Result.Error<ExportedSiteConfiguration>(SiteConfigurationErrors.TopologyNamesNotImportable);
 
         var topology = new TopologyPart(
             [.. terminals.Select(t => new TerminalPartRow(t.Airport.IataCode, t.Code, t.Name))],
@@ -110,6 +115,9 @@ public static class SiteConfigurationTransfer
 
         var plans = source.FloorPlans.Where(p => levelNames.ContainsKey(p.Level.Id.GetValueOrDefault()))
             .OrderBy(p => p.Level.Terminal.Code, StringComparer.Ordinal).ThenBy(p => p.Level.Code, StringComparer.Ordinal).ToList();
+        // ARV-162 (review R1): a file name stored before ARV-153 may hold a tag character, which the import refuses.
+        if (plans.Any(p => !FloorPlan.IsSafeFileName(p.OriginalFileName)))
+            return Result.Error<ExportedSiteConfiguration>(SiteConfigurationErrors.FloorPlanNamesNotImportable);
         var planRows = plans.Select(p => new FloorPlanPartRow(p.Level.Terminal.Code, p.Level.Code, p.OriginalFileName, p.MetresPerPixel, p.OriginX, p.OriginY)).ToList();
 
         List<ZoneProfilePartRow> profiles = [];
@@ -120,6 +128,10 @@ public static class SiteConfigurationTransfer
             if (profile.Zones.Any(z => !levelNames.ContainsKey(z.LevelId) || (z.DeskId is { } desk && !deskNames.ContainsKey(desk))) ||
                 profile.Lines.Any(l => !levelNames.ContainsKey(l.LevelId)))
                 return Result.Error<ExportedSiteConfiguration>(SiteConfigurationErrors.ProfileOnRemovedTopology);
+            // ARV-162: a version published before ARV-159 or ARV-161 may hold a name or an outline the import refuses.
+            if (!TopologyCodes.IsName(profile.Name) || profile.Zones.Any(z => !TopologyCodes.IsName(z.Name) || !Geometry.IsSimplePolygon(z.Points)) ||
+                profile.Lines.Any(l => !TopologyCodes.IsName(l.Name)))
+                return Result.Error<ExportedSiteConfiguration>(SiteConfigurationErrors.ProfileNotImportable);
             portable = profile.ComputePortableGeometryHash(levelNames, deskNames);
             var levelRows = levels.ToDictionary(l => l.Id.GetValueOrDefault());
             var zones = profile.Zones.OrderBy(z => z.Name, StringComparer.Ordinal).Select(z =>
@@ -153,6 +165,11 @@ public static class SiteConfigurationTransfer
             rules.Any(r => !ZonesOf(r.Zones, r.Metric, queues, overflows)) ||
             displays.Any(d => d.EntryList.Any(e => !queues.Contains(e.Zone))))
             return Result.Error<ExportedSiteConfiguration>(SiteConfigurationErrors.ReferencesOutsideProfile);
+        // ARV-162: texts saved before ARV-158 judged them per code point travel only when the import would take them.
+        if (devices.Any(d => !DisplayText.IsClean(d.Model)) || rules.Any(r => !DisplayText.IsClean(r.Name)) ||
+            displays.Any(d => !DisplayText.IsClean(d.Name) || !DisplayText.IsClean(d.Location) ||
+                              d.EntryList.Any(e => e.Labels.Values.Any(label => !DisplayText.IsClean(label))) || d.FallbackMap.Values.Any(m => !DisplayText.IsClean(m))))
+            return Result.Error<ExportedSiteConfiguration>(SiteConfigurationErrors.TextsNotImportable);
 
         var levelRowsById = levels.ToDictionary(l => l.Id.GetValueOrDefault());
         var deviceRows = devices.Select(d =>

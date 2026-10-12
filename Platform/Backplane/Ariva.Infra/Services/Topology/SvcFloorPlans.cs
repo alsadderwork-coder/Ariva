@@ -189,30 +189,14 @@ internal sealed class SvcFloorPlans(
     {
         if (string.IsNullOrWhiteSpace(name))
             return ("floor-plan", null);
-        // A lone surrogate first (a rune walk would read it as a replacement character), then control and format characters
-        // by code point, so the invisible ones outside the basic plane are refused too: tag characters (U+E0001,
-        // U+E0020 to U+E007F), shorthand format controls (U+1BCA0 to U+1BCA3), musical formatting (U+1D173 to U+1D17A).
-        if (name.Contains('/') || name.Contains('\\') || name.Contains("..", StringComparison.Ordinal) || name.Contains(':') || HasLoneSurrogate(name) ||
-            name.EnumerateRunes().Any(r => Rune.IsControl(r) || Rune.GetUnicodeCategory(r) == UnicodeCategory.Format))
-        {
+        // One rule in Ariva.Core (ARV-162): paths, then a lone surrogate, control or format character judged per code point,
+        // so the invisible ones outside the basic plane are refused too: tag characters (U+E0001, U+E0020 to U+E007F),
+        // shorthand format controls (U+1BCA0 to U+1BCA3), musical formatting (U+1D173 to U+1D17A).
+        if (!FloorPlan.HasSafeFileNameCharacters(name))
             return (null, TopologyErrors.UnsafeFileName);
-        }
 
         var trimmed = name.Trim();
         return FloorPlan.FileNameFits(trimmed) ? (trimmed, null) : (null, TopologyErrors.FileNameTooLong);
-    }
-
-    private static bool HasLoneSurrogate(string text)
-    {
-        for (var i = 0; i < text.Length; i++)
-        {
-            if (char.IsHighSurrogate(text[i]) && i + 1 < text.Length && char.IsLowSurrogate(text[i + 1]))
-                i++;
-            else if (char.IsSurrogate(text[i]))
-                return true;
-        }
-
-        return false;
     }
 
     private static string Summary(FloorPlan p) =>
