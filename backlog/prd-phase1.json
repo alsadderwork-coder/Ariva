@@ -999,14 +999,37 @@
       ]
     },
     {
-      "id": "ARV-123",
-      "title": "[E15] Bulk import of devices and desk code mappings from CSV",
-      "description": "Commissioning starts from the as-built pack (wiki/07 section 2: import the device list). Add a preview-then-commit CSV import for devices and for AMAN desk and gate code mappings. Epic: Site onboarding and AMAN. CWEs to review: CWE-501, CWE-120, CWE-863, CWE-79.",
+      "id": "ARV-123a",
+      "title": "[E15] Bulk import of devices and desk code mappings from CSV: API",
+      "description": "Commissioning starts from the as-built pack (wiki/07 section 2: import the device list). Add a preview-then-commit CSV import for devices and for AMAN desk and gate code mappings, as an API; the screens are ARV-123b. Epic: Site onboarding and AMAN. CWEs to review: CWE-501, CWE-120, CWE-863, CWE-79.",
       "acceptanceCriteria": [
-        "Device CSV (code, family, model, transport, mounting height, position, orientation, owning queue zone) and mapping CSV (external system, external code, desk) with streamed parsing, row and size limits, per-row errors",
-        "Preview token bound to file, site and user; commit applies in units with rollback on failure; devices created in Commissioning with credentials shown once on the devices screen",
-        "Registering devices stays a critical action (step-up), audited",
-        "E2E with malformed, oversized and formula-prefixed files; permission and cross-site cases",
+        "Device CSV (code, family, model, transport, dialect, clock source, terminal, level, position, mounting height, orientation, owning queue zone, with the registration's optional fields) and mapping CSV (external system, external code, checkpoint, desk) with streamed parsing, row and size limits, per-row errors that never echo cell content",
+        "Preview token bound to the file's SHA-256, the site, the user and the kind, short-lived; commit re-checks everything and applies the whole file in one transaction with rollback on failure; devices created in Commissioning through the existing registration, credentials returned once in the commit's answer",
+        "Registering devices stays a critical action (step-up on the device commit), both steps audited (file hash, counts, outcome; never cell content or credentials), [SiteScoped]",
+        "E2E with malformed, oversized and formula-prefixed files; permission and cross-site cases; a token replayed by another user, site or file refused",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 39,
+      "passes": false,
+      "notes": "Size M. Split from ARV-123 on 2026-10-12 (the backend alone is about ARV-122a's size). CsvHelper 33.1.0 (already pinned in Directory.Packages.props) referenced from Ariva.Infra, its low-level CsvParser only (lead call). Device code convention per site is TC-40 (survey); the import accepts any code that passes the existing pattern.",
+      "dependsOn": [
+        "ARV-021",
+        "ARV-015"
+      ]
+    },
+    {
+      "id": "ARV-123b",
+      "title": "[E15] Bulk import of devices and desk code mappings from CSV: screens",
+      "description": "The screens for ARV-123a: an import on the devices screen and in the topology screen's desk mappings panel. Epic: Site onboarding and AMAN. CWEs to review: CWE-79, CWE-863, CWE-306.",
+      "acceptanceCriteria": [
+        "Devices screen: upload, preview table with per-row errors, commit through the existing step-up dialog, new credentials shown once on the devices screen (held only while open, cleared on close, never stored client-side)",
+        "Desk mappings panel: upload, preview, commit",
+        "All text in English and Arabic; Playwright functional tests including hostile cell content shown as text, and no credential in the page after the dialog closes",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
         "node scripts/security/scan.mjs passes with 0 errors",
@@ -1015,10 +1038,9 @@
       ],
       "priority": 39,
       "passes": false,
-      "notes": "Size S. Device id convention per site is TC-40 (survey); the import accepts any code that passes the existing pattern.",
+      "notes": "Size S. Split from ARV-123 on 2026-10-12.",
       "dependsOn": [
-        "ARV-021",
-        "ARV-015"
+        "ARV-123a"
       ]
     },
     {
@@ -1451,7 +1473,7 @@
         "ARV-120",
         "ARV-121",
         "ARV-122b",
-        "ARV-123",
+        "ARV-123b",
         "ARV-124",
         "ARV-125",
         "ARV-126",
