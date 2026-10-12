@@ -993,11 +993,49 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 38,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Rated by the reviewer a normal follow-up at the front of the queue, not urgent (authenticated writers only, rendered as text, no reordering).",
       "dependsOn": [
         "ARV-153"
       ]
+    },
+    {
+      "id": "ARV-159",
+      "title": "[E3] Topology and site names refuse control and format characters",
+      "description": "Found while building ARV-158 and confirmed by its security review: topology names (airport, terminal, level, checkpoint, desk, zone, line, zone profile) and site names have no control or format check in any plane: `TopologyCodes.RequireName` only trims and bounds, `Site`'s constructor and `Rename` only check for blank, `SiteConfigurationRules.IsName` refuses only NUL. So bidirectional overrides such as U+202E, which reorder what operators read on screens, reports, emails and audit entries, are accepted today. It also causes a mismatch with Ingest and the archive, which do check: a batch whose queue zone name holds such a character is skipped by `SensingArchive` (one Warning log line with counts, the message acknowledged, not dead-lettered or retried; `DeviceHealthArchive` the same), and Ingest refuses events whose vendor line or zone names fail the check. Writers are administrators; the pilot has not started. CWEs to review: CWE-79, CWE-501.",
+      "acceptanceCriteria": [
+        "`TopologyCodes.RequireName`, `Site` (constructor and `Rename`) and `SiteConfigurationRules.IsName` apply the same per-code-point check as `DisplayText.IsClean` (or call it); tests per entry point (each topology kind, site, the site configuration import) with escapes only",
+        "A pre-pilot check (a script or an admin read) lists stored `device.queue_zone_name`, `zone.name`, `line.name` and site and topology names holding control or format characters; the result for the existing environments is recorded in backlog/progress.md",
+        "Archive skips are visible beyond a Warning line: a metric or a health-check alarm counts skipped sensing and health batches, with a test",
+        "Consumer tests added from the ARV-158 review: `CanonicalEventRules.Validate` refuses a line name holding U+E0041 (device input, the real trust boundary), and `Alert.IsUsableNote` refuses one with line breaks allowed",
+        "The topology, site and import endpoints' new refusals are recorded in decisions.md and the CWE-79 and CWE-501 rows",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 38,
+      "passes": false,
+      "notes": "Size S. Rated by the ARV-158 review the larger of the two gaps (it admits the BMP overrides that reorder text), next in line, not urgent.",
+      "dependsOn": [
+        "ARV-158"
+      ]
+    },
+    {
+      "id": "ARV-160",
+      "title": "[E17] Story gate treats Ariva.Core/Domain/Components as wide",
+      "description": "From the ARV-158 review: a change to `Ariva.Core/Domain/Components` (DisplayText and others, about 25 call sites) ran the scoped story gate because the folder is not on `scripts/verify.mjs`'s WIDE list, so the consumers' integration and E2E areas ran only when chosen by hand.",
+      "acceptanceCriteria": [
+        "`Platform/Backplane/Ariva.Core/Domain/Components` (and any other folder of shared domain components found the same way) is on the WIDE list, with a comment; `node scripts/verify.mjs story --plan` shows the full suites for a change there",
+        "docs/harness/test-cadence.md names the folder",
+        "node scripts/verify.mjs docs passes"
+      ],
+      "priority": 39,
+      "passes": false,
+      "notes": "Size XS. Harness only.",
+      "dependsOn": []
     },
     {
       "id": "ARV-154",

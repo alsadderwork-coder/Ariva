@@ -19,12 +19,13 @@ using Microsoft.Extensions.DependencyInjection;
 namespace Ariva.IntegrationTests.CsvImports;
 
 /// <summary>
-/// ARV-123a against PostgreSQL with the real scripts: a device CSV previewed (a dry run of the registration, nothing kept)
-/// and committed with its token registers every device in Commissioning with a working new credential; a row the
+/// ARV-123a against PostgreSQL with the real scripts: a device CSV previewed (a dry run of the registration, nothing
+/// kept) and committed with its token registers every device in Commissioning with a working new credential; a row the
 /// registration refuses at commit time keeps nothing of the rows before it; a commit rolled back after its devices were
-/// registered keeps nothing and is audited as failed once; the token is refused for another user, site, file or kind and
-/// after 15 minutes; audit entries hold the file's hash and counts, never a cell or a credential. Measures a commit at the
-/// row bound in one transaction.
+/// registered keeps nothing and is audited as failed once; the token is refused for another user, site, file or kind
+/// and after 15 minutes; a model cell with a tag character is refused through the registration (ARV-158); audit entries
+/// hold the file's hash and counts, never a cell or a credential. Measures a commit at the row bound in one
+/// transaction.
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class DeviceImportTests(PostgresFixture fixture) : IAsyncDisposable
@@ -154,6 +155,24 @@ public sealed class DeviceImportTests(PostgresFixture fixture) : IAsyncDisposabl
         preview.ErrorCount.Should().Be(6);
         // The registration's own fixed texts keep their column; an entity's message (it may name a value) becomes one fixed text.
         (await DevicesAsync("XCIB")).Should().Be(1, "only the device that was there");
+    }
+
+    [Fact]
+    public async Task Preview_Should_RefuseTheRowThroughTheRegistration_When_AModelCellHoldsATagCharacter()
+    {
+        // ARV-158: the reader refuses control characters only; an invisible format character outside the basic plane (here
+        // U+E0041, a tag character, written as an escape) reaches the registration, whose display text check judges it per
+        // code point and refuses it.
+        var admin = await AdministratorAsync("tg");
+        await SiteAsync(admin, "XCII");
+        var csv = Csv(Row("S-01", "PC2" + "\U000E0041" + "SE"), Row("S-02"));
+
+        var preview = Ok(await _host.AsCallerAsync(admin, s => Imports(s).PreviewAsync("XCII", File(csv), Ct)));
+
+        preview.PreviewToken.Should().BeNull("a file with a refused row cannot be committed");
+        preview.Devices.Select(d => d.Code).Should().Equal("S-02");
+        preview.Errors.Select(e => (e.Row, e.Column, e.Reason)).Should().BeEquivalentTo(new[] { (2, (int?)null, CsvImportErrors.RegistrationRefused) });
+        (await DevicesAsync("XCII")).Should().Be(0, "a preview is a dry run");
     }
 
     private Task<Guid> LevelAsync(string site) => _host.ReadAsync<Guid>("SELECT id FROM level WHERE site_code = @secret", secret: site);
