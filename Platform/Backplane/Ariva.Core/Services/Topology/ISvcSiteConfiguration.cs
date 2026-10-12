@@ -121,7 +121,7 @@ public static class SiteConfigurationLimits
     public const int MaxLines = ZoneProfile.MaxLines;
     public const int MaxNameLength = 200;
     /// <summary>A floor plan's file name, in code points (the column is varchar(200)).</summary>
-    public const int MaxFileNameLength = 200;
+    public const int MaxFileNameLength = FloorPlan.MaxFileNameLength;
 
     /// <summary>The seven configuration parts and one file part per floor plan.</summary>
     public const int MaxParts = 7 + MaxFloorPlans;

@@ -65,6 +65,32 @@ public sealed class FloorPlanTests(PostgresFixture fixture) : IAsyncDisposable
     }
 
     [Fact]
+    public async Task Upload_Should_StoreANameOf200CodePointsAndRefuseOneMoreWithoutStoringAnything_When_ItIsMostlyCombiningMarks()
+    {
+        // ARV-153: PostgreSQL counts the varchar(200) column in code points; a letter with 300 combining marks once passed
+        // the text-element cut and failed the insert at the commit (22001, a 500).
+        var (admin, level) = await LevelAsync("fn");
+        var plans = (IServiceProvider s) => s.GetRequiredService<ISvcFloorPlans>();
+        FloorPlanUpload Named(string name)
+        {
+            var bytes = Encoding.UTF8.GetBytes(Svg);
+            return new FloorPlanUpload(new MemoryStream(bytes), bytes.Length, name, 0.05, 0, 0);
+        }
+
+        var fits = "a" + string.Concat(Enumerable.Repeat("\u0301", 199));
+        var stored = await _host.AsCallerAsync(admin, s => plans(s).UploadAsync(level, Named(fits), Ct));
+        stored.HasErrors.Should().BeFalse(string.Join(", ", stored.ErrorMessages ?? []));
+        (await _host.ReadAsync<int>("SELECT char_length(original_file_name) FROM floor_plan WHERE level_id = @id AND deleted_on IS NULL", level))
+            .Should().Be(200, "the column holds 200 code points");
+
+        var refused = await _host.AsCallerAsync(admin, s => plans(s).UploadAsync(level, Named("a" + string.Concat(Enumerable.Repeat("\u0301", 300))), Ct));
+        refused.ErrorMessages.Should().Equal(TopologyErrors.FileNameTooLong);
+        (await _host.ReadAsync<long>("SELECT count(*) FROM floor_plan WHERE level_id = @id", level)).Should().Be(1, "nothing more was stored");
+        (await _host.ReadAsync<string>("SELECT original_file_name FROM floor_plan WHERE level_id = @id AND deleted_on IS NULL", level))
+            .Should().Be(fits, "the stored plan is still the one that fitted");
+    }
+
+    [Fact]
     public async Task List_Should_GiveTheSitesLivePlansOnly_When_Asked()
     {
         var (admin, level) = await LevelAsync("rl");

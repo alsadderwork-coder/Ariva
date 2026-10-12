@@ -971,10 +971,32 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 38,
-      "passes": false,
+      "passes": true,
       "notes": "Size XS. A bug in ARV-018's endpoint; no schema change expected.",
       "dependsOn": [
         "ARV-018"
+      ]
+    },
+    {
+      "id": "ARV-158",
+      "title": "[E3] Display texts judged per code point (DisplayText.IsClean)",
+      "description": "Found while building ARV-153 and confirmed by its security review: `DisplayText.IsClean` (Ariva.Core/Domain/Components/DisplayText.cs) steps over every valid surrogate pair before its control and format test, so invisible format characters outside the BMP (the tag characters U+E0001 and U+E0020 to U+E007F, U+1BCA0 to U+1BCA3, U+1D173 to U+1D17A) pass every text it guards: alert rule names, zones and escalation contacts; display names, labels and messages; device models and queue zone names; integration client, outbound endpoint and report schedule names; user display names; calendar reasons, validation texts and alert notes; canonical event, replay and archive zone names; the email sender name. The CSV import reader leaves format characters to it. Bidirectional and zero-width controls are in the BMP and already refused, so nothing can be reordered; hidden content can be carried into audit entries, reports, emails and displays. CWEs to review: CWE-79, CWE-501.",
+      "acceptanceCriteria": [
+        "`DisplayText.IsClean` refuses a lone surrogate, then any control or format character per code point (`Rune.IsControl`, `Rune.GetUnicodeCategory` Format), keeping its `allowLineBreaks` behaviour",
+        "Unit cases U+E0041, U+E0001, U+1D173 and U+1BCA0 refused, an emoji accepted, escapes only; one consumer test per kind of entity (alert rule, display, device, user, integration client, report schedule)",
+        "The CWE-79 and CWE-501 rows corrected; the database CHECK classes of scripts 0020 and 0022 (BMP only, immutable) noted, with any database-level parity left to a new script",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 38,
+      "passes": false,
+      "notes": "Size S. Rated by the reviewer a normal follow-up at the front of the queue, not urgent (authenticated writers only, rendered as text, no reordering).",
+      "dependsOn": [
+        "ARV-153"
       ]
     },
     {

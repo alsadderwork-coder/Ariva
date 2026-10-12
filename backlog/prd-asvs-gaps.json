@@ -442,10 +442,27 @@
       ],
       "priority": 117,
       "passes": false,
-      "notes": "Size S to M. From the ARV-104j security review (required fixes R1 and R2 done in ARV-104j; recommendations 4, 6, 7 and 9 here). Found on 2026-10-12 (the ARV-123b story gate and its security review, a zip-aware scan of the HTML report): full device credentials in 9 report files, response bodies used as step titles, from api/device-auth, api/device-health, api/device-push, api/devices, api/illustrative-site, api/load, api/sensor-emulator, functional/displays and functional/illustrative-site; none from the CSV import specs. Also: every functional spec writes its account's per-run password and its TOTP codes into the report, because `fillSignIn` (tests/support/web-auth.ts) uses `locator.fill`, whose step title carries the value; set those fields so the step title holds no value (for example `locator.evaluate` setting the value and dispatching `input`), and make the report scan (passwords, TOTP codes, ard[kp]_) part of the log-scan gate for every E2E run.",
+      "notes": "Size S to M. From the ARV-104j security review (required fixes R1 and R2 done in ARV-104j; recommendations 4, 6, 7 and 9 here). Found on 2026-10-12 (the ARV-123b story gate and its security review, a zip-aware scan of the HTML report): full device credentials in 9 report files, response bodies used as step titles, from api/device-auth, api/device-health, api/device-push, api/devices, api/illustrative-site, api/load, api/sensor-emulator, functional/displays and functional/illustrative-site; none from the CSV import specs. Also: every functional spec writes its account's per-run password and its TOTP codes into the report, because `fillSignIn` (tests/support/web-auth.ts) uses `locator.fill`, whose step title carries the value; set those fields so the step title holds no value (for example `locator.evaluate` setting the value and dispatching `input`), and make the report scan (passwords, TOTP codes, ard[kp]_) part of the log-scan gate for every E2E run. Also (ARV-153 review): tests/api/floor-plans.spec.ts lines 56, 72 and 123 pass a response body as the expect message whatever the status (no credential in them today).",
       "dependsOn": [
         "ARV-104j"
       ]
+    },
+    {
+      "id": "ARV-157",
+      "title": "[ASVS] Trojan Source check covers every text file",
+      "description": "Found in the ARV-153 review: scripts/security/scan.mjs maps only code and configuration extensions (.cs, .ts, .js, .mjs, .cjs, .svelte, .json, .yaml, .yml, .conf, .env, .csproj, .props, .targets), and SEC-130 (bidirectional and zero-width characters) runs only on cs, js and svelte. Markdown, SQL, .resx, shell, PowerShell, HTML, CSS and text files are never checked, so a raw U+202E in backlog/progress.md passed the docs gate on 2026-10-12. Scripts 0020_alert_rule.sql (lines 11, 14, 28) and 0022_alert_lifecycle.sql (lines 25 to 27) hold raw bidirectional characters on purpose, inside regex classes that refuse them; they are immutable. CWEs to review: CWE-94 (Trojan Source, CVE-2021-42574).",
+      "acceptanceCriteria": [
+        "SEC-130 runs on every text file the repository tracks (.md, .sql, .json, .yaml, .resx, .sh, .ps1, .html, .css, .txt and the code types), and the scanner self-test proves it fires on each",
+        "The two existing scripts are listed as allowlist entries with their reason and `approvedBy: PENDING: Ahmad` (a human approves them, never an agent); new SQL writes such characters as escapes (`U&'\\202E'` or `E'\\u202E'`)",
+        "docs/security/cwe-controls.md and the security skill describe the wider coverage",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 118,
+      "passes": false,
+      "notes": "Size XS.",
+      "dependsOn": []
     }
   ]
 }

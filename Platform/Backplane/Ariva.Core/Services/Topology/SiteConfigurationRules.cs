@@ -221,9 +221,7 @@ public static class SiteConfigurationRules
     /// A floor plan's file name: none, or at most 200 characters as PostgreSQL counts them (code points: the column is
     /// varchar(200)) without a NUL; the import then applies the upload's own name check.
     /// </summary>
-    public static bool IsFileName(string name) =>
-        name is null || (name.Length <= 2 * SiteConfigurationLimits.MaxFileNameLength && !name.Contains('\0') &&
-                         name.EnumerateRunes().Count() <= SiteConfigurationLimits.MaxFileNameLength);
+    public static bool IsFileName(string name) => name is null || (!name.Contains('\0') && FloorPlan.FileNameFits(name));
 
     /// <summary>A kind by its name only (numbers and unknown names refused), as the endpoints parse kinds.</summary>
     public static bool IsKind<TEnum>(string value) where TEnum : struct, Enum => ParseKind<TEnum>(value) is not null;
