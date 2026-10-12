@@ -11,9 +11,11 @@ using Microsoft.AspNetCore.RateLimiting;
 namespace Ariva.Api.Main.Controllers.AdminArea.Sites;
 
 /// <summary>
-/// A site's configuration as one bundle (ARV-122a): export it (topology, desk code mappings, the published zone profile
-/// and floor plans, with a SHA-256 manifest and the bundle hash) and import a bundle into an empty site (the zone profile
-/// arrives as a draft). Both are critical actions: <c>SiteConfiguration.Transfer</c> (system administrators) with a second
+/// A site's configuration as one bundle (ARV-122a, ARV-122b): export it (topology, desk code mappings, the published zone
+/// profile, floor plans, devices, alert rules and displays, with a SHA-256 manifest and the bundle hash; never a credential,
+/// calibration, access setting, escalation contact or pairing secret) and import a bundle into an empty site (the zone
+/// profile arrives as a draft, each device in Commissioning with a new credential shown once in the answer, displays
+/// unpaired). Both are critical actions: <c>SiteConfiguration.Transfer</c> (system administrators) with a second
 /// factor in the last 15 minutes. Site-scoped (404 outside the caller's sites, nothing echoed) and audited. The import's
 /// body is at most 20 MB (the file-import class, 413 beyond) and runs one at a time per host with the other uploads.
 /// Every refusal is a fixed text; answers are never cached.

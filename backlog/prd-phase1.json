@@ -951,7 +951,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 38,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Split from ARV-122 on 2026-10-11.",
       "dependsOn": [
         "ARV-122a"

@@ -4,9 +4,9 @@ using Ariva.Core.Domain.InputModels;
 namespace Ariva.Core.Services.Topology;
 
 /// <summary>
-/// The request rules of a bundle's parts (ARV-122a, Fx.Specification), checked before any entity is touched: the same
-/// limits the topology, desk code mapping, zone profile and floor plan requests carry (codes, names of at most 200
-/// characters, kinds by name, polygons, coordinates), the bounds of <see cref="SiteConfigurationLimits"/>, no code or name
+/// The request rules of a bundle's parts (ARV-122a, ARV-122b, Fx.Specification), checked before any entity is touched:
+/// the same limits the topology, desk code mapping, zone profile, floor plan, device registration, alert rule and display
+/// requests carry (codes, names of at most 200 characters, kinds by name, polygons, coordinates), the bounds of <see cref="SiteConfigurationLimits"/>, no code or name
 /// twice where the endpoints refuse it, and every reference between parts resolved through the bundle's own codes and
 /// names. The entities then apply their own rules as they do for an administrator's request. Each rule names the part it
 /// refuses with a fixed text and repeats no value (CWE-79, CWE-501).
@@ -19,7 +19,11 @@ public static class SiteConfigurationRules
             .And(c => c is not null && IsTopology(c.Topology), SiteConfigurationErrors.InvalidTopology)
             .And(c => c is null || !IsTopology(c.Topology) || AreMappings(c.DeskCodeMappings, c.Topology), SiteConfigurationErrors.InvalidDeskCodeMappings)
             .And(c => c is null || !IsTopology(c.Topology) || IsProfilePart(c.ZoneProfiles, c.Topology), SiteConfigurationErrors.InvalidZoneProfile)
-            .And(c => c is null || !IsTopology(c.Topology) || AreFloorPlans(c.FloorPlans, c.FloorPlanFiles, c.Topology), SiteConfigurationErrors.InvalidFloorPlans);
+            .And(c => c is null || !IsTopology(c.Topology) || AreFloorPlans(c.FloorPlans, c.FloorPlanFiles, c.Topology), SiteConfigurationErrors.InvalidFloorPlans)
+            .And(c => c is null || !IsTopology(c.Topology) || AreDevices(c.Devices, c.Topology), SiteConfigurationErrors.InvalidDevices)
+            .And(c => c is null || AreAlertRules(c.AlertRules), SiteConfigurationErrors.InvalidAlertRules)
+            .And(c => c is null || !AreAlertRules(c.AlertRules) || AreImportableCodes(c.AlertRules), SiteConfigurationErrors.RuleCodeTooHigh)
+            .And(c => c is null || AreDisplays(c.Displays), SiteConfigurationErrors.InvalidDisplays);
 
     #region Topology
 
@@ -124,6 +128,86 @@ public static class SiteConfigurationRules
                                !double.IsFinite(p.MetresPerPixel) || !double.IsFinite(p.OriginX) || !double.IsFinite(p.OriginY)) &&
                Unique(plans.Select(p => LevelKey(p.Terminal, p.Level)));
     }
+
+    #endregion
+
+    #region Devices, alert rules and displays (ARV-122b)
+
+    /// <summary>
+    /// Devices as registration takes them (its request's limits; kinds by exact name), each on a level of the bundle, codes
+    /// once each. The registration path then applies its own rules (mapping catalog, zone, footprint reach) to each.
+    /// </summary>
+    public static bool AreDevices(IReadOnlyList<DevicePartRow> devices, TopologyPart topology)
+    {
+        if (devices is null || devices.Count > SiteConfigurationLimits.MaxDevices)
+            return false;
+        var levels = topology.Levels.Select(l => LevelKey(l.Terminal, l.Code)).ToHashSet(StringComparer.Ordinal);
+        return !devices.Any(d => d is null || !TopologyCodes.IsValid(d.Code) || !IsKind<DeviceFamily>(d.Family) || !IsKind<DeviceTransport>(d.Transport) ||
+                                 !IsKind<DeviceDialect>(d.Dialect) || !IsKind<ClockSource>(d.ClockSource) || !IsText(d.Model, Device.ModelLength) ||
+                                 !(d.MappingName is null || IsText(d.MappingName, Device.MappingNameLength)) || !levels.Contains(LevelKey(d.Terminal, d.Level)) ||
+                                 !IsCoordinate(d.X) || !IsCoordinate(d.Y) || !Within(d.MountingHeightMetres, 0, 100) || !Within(d.OrientationDegrees, 0, 360) ||
+                                 !IsName(d.QueueZone) || !IsFootprint(d.FootprintLengthMetres) || !IsFootprint(d.FootprintWidthMetres) || !IsFootprint(d.FootprintRadiusMetres)) &&
+               Unique(devices.Select(d => d.Code));
+    }
+
+    /// <summary>
+    /// Alert rules as the rule request takes them (lengths, ranges, kinds by exact name), each code the canonical
+    /// <c>R-nnn</c> of a number from 1 to <see cref="AlertRule.MaxNumber"/>, once each. The entity's own checks and the zone
+    /// check against the imported draft follow.
+    /// </summary>
+    public static bool AreAlertRules(IReadOnlyList<AlertRulePartRow> rules) =>
+        rules is not null && rules.Count <= SiteConfigurationLimits.MaxAlertRules &&
+        !rules.Any(r => r is null || RuleNumber(r.Code) is null || !IsText(r.Name, AlertRule.MaxNameLength) ||
+                        r.Zones is not { Count: >= 1 and <= AlertRule.MaxZones } || r.Zones.Any(z => !IsName(z)) ||
+                        !IsKind<AlertMetric>(r.Metric) || !IsKind<AlertComparator>(r.Comparator) || !IsKind<AlertSeverity>(r.Severity) ||
+                        !IsFinite(r.Threshold) || !IsFinite(r.ClearThreshold) || r.SustainMinutes is < 1 or > AlertRule.MaxMinutes ||
+                        r.ClearAfterMinutes is < 1 or > AlertRule.MaxMinutes || r.EscalateAfterMinutes is < 1 or > AlertRule.MaxEscalationMinutes ||
+                        r.LeadMinutes is < AlertRule.MinLeadMinutes or > AlertRule.MaxLeadMinutes ||
+                        !(r.OwnerRole is null || IsText(r.OwnerRole, 32)) || !(r.EscalateToRole is null || IsText(r.EscalateToRole, 32))) &&
+        Unique(rules.Select(r => r.Code));
+
+    /// <summary>
+    /// Every code at most <c>R-100000</c> (<see cref="SiteConfigurationLimits.MaxImportedRuleNumber"/>): kept codes beyond it
+    /// would leave the target site too few codes for new rules (the rule service numbers after the highest code ever used).
+    /// </summary>
+    public static bool AreImportableCodes(IReadOnlyList<AlertRulePartRow> rules) =>
+        rules.All(r => RuleNumber(r.Code) is { } number && number <= SiteConfigurationLimits.MaxImportedRuleNumber);
+
+    /// <summary>The number of a rule code in its canonical form (<c>R-007</c>), or null.</summary>
+    public static int? RuleNumber(string code) =>
+        code is { Length: >= 5 and <= 8 } && code.StartsWith("R-", StringComparison.Ordinal) &&
+        int.TryParse(code.AsSpan(2), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var number) &&
+        number is >= 1 and <= AlertRule.MaxNumber && string.Equals(AlertRule.CodeOf(number), code, StringComparison.Ordinal)
+            ? number
+            : null;
+
+    /// <summary>
+    /// Displays as the display request takes them (lengths, ranges, at most 4 languages and 12 entries, orientation by exact
+    /// name), codes once each. The entity's own checks, the zone check against the imported draft and the deployment-wide
+    /// code check follow.
+    /// </summary>
+    public static bool AreDisplays(IReadOnlyList<DisplayPartRow> displays) =>
+        displays is not null && displays.Count <= SiteConfigurationLimits.MaxDisplays &&
+        !displays.Any(d => d is null || !TopologyCodes.IsValid(d.Code) || !IsText(d.Name, Display.MaxNameLength) ||
+                           !(d.Location is null || IsText(d.Location, Display.MaxNameLength)) || !IsKind<DisplayOrientation>(d.Orientation) ||
+                           d.Languages is not { Count: >= 1 and <= 4 } || d.Languages.Any(l => !IsText(l, 8)) ||
+                           d.BandMinutes is < DisplayValues.MinBand or > DisplayValues.MaxBand || !Within(d.HysteresisMinutes, 0, 30) ||
+                           d.StaleSeconds is < DisplayValues.MinStale or > DisplayValues.MaxStale ||
+                           d.Entries is not { Count: >= 1 and <= Display.MaxEntries } || d.Entries.Any(e => e is null || !IsName(e.Zone) || !AreTexts(e.Labels, Display.MaxLabelLength)) ||
+                           !AreTexts(d.Fallback, Display.MaxMessageLength)) &&
+        Unique(displays.Select(d => d.Code));
+
+    private static bool AreTexts(IReadOnlyDictionary<string, string> texts, int max) =>
+        texts is { Count: >= 1 and <= 4 } && texts.All(t => IsText(t.Key, 8) && IsText(t.Value, max));
+
+    /// <summary>A required text of at most <paramref name="max"/> characters without a NUL (the entities check the rest).</summary>
+    private static bool IsText(string text, int max) => !string.IsNullOrWhiteSpace(text) && text.Length <= max && !text.Contains('\0');
+
+    private static bool IsFinite(double? value) => value is null || double.IsFinite(value.Value);
+
+    private static bool Within(double value, double min, double max) => double.IsFinite(value) && value >= min && value <= max;
+
+    private static bool IsFootprint(double? metres) => metres is null || Within(metres.Value, 0, 1000);
 
     #endregion
 

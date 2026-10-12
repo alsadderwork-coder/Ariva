@@ -2,6 +2,7 @@ using Ariva.Core.Domain.Enums;
 using Ariva.Core.Domain.InputModels;
 using Ariva.Core.Domain.ViewModels;
 using Ariva.Core.Sensing;
+using Ariva.Core.Services.Alerting;
 
 namespace Ariva.Core.Services.Topology;
 
@@ -13,7 +14,10 @@ public sealed record SiteConfigurationSource(
     IReadOnlyList<Desk> Desks,
     IReadOnlyList<DeskCodeMapping> DeskCodeMappings,
     ZoneProfile PublishedProfile,
-    IReadOnlyList<FloorPlan> FloorPlans);
+    IReadOnlyList<FloorPlan> FloorPlans,
+    IReadOnlyList<Device> Devices,
+    IReadOnlyList<AlertRule> AlertRules,
+    IReadOnlyList<Display> Displays);
 
 /// <summary>An export's parts as rows; floor plan file N is the plan at <c>FloorPlanFiles[N - 1]</c>.</summary>
 public sealed record ExportedSiteConfiguration(
@@ -22,6 +26,9 @@ public sealed record ExportedSiteConfiguration(
     IReadOnlyList<ZoneProfilePartRow> ZoneProfiles,
     IReadOnlyList<FloorPlanPartRow> FloorPlans,
     IReadOnlyList<FloorPlan> FloorPlanFiles,
+    IReadOnlyList<DevicePartRow> Devices,
+    IReadOnlyList<AlertRulePartRow> AlertRules,
+    IReadOnlyList<DisplayPartRow> Displays,
     SiteConfigurationCountsViewModel Counts,
     int? ProfileVersion,
     string GeometryHash,
@@ -32,7 +39,10 @@ public sealed record PlannedFloorPlan(Level Level, FloorPlanPartRow Row, byte[] 
 
 /// <summary>
 /// What an import creates, every record new and bound to the target site: the topology, the desk code mappings, the zone
-/// profile as a draft (null when the bundle carries none) with its portable geometry hash, and the floor plans.
+/// profile as a draft (null when the bundle carries none) with its portable geometry hash, the floor plans, the devices as
+/// registration requests (registered, with their new credentials, by the registration path itself; the codes of those whose
+/// access settings were withheld listed), the alert rules (without escalation contacts; their codes listed) and the displays
+/// (unpaired).
 /// </summary>
 public sealed record SiteConfigurationPlan(
     IReadOnlyList<Terminal> Terminals,
@@ -43,6 +53,11 @@ public sealed record SiteConfigurationPlan(
     ZoneProfile Draft,
     string PortableGeometryHash,
     IReadOnlyList<PlannedFloorPlan> FloorPlans,
+    IReadOnlyList<RegisterDeviceRequest> Devices,
+    IReadOnlyList<AlertRule> AlertRules,
+    IReadOnlyList<Display> Displays,
+    IReadOnlyList<string> DevicesNeedingAccessSettings,
+    IReadOnlyList<string> RulesNeedingEscalationContact,
     SiteConfigurationCountsViewModel Counts);
 
 /// <summary>
@@ -61,7 +76,9 @@ public static class SiteConfigurationTransfer
         ArgumentNullException.ThrowIfNull(source);
         if (source.Terminals.Count > SiteConfigurationLimits.MaxTerminals || source.Levels.Count > SiteConfigurationLimits.MaxLevels ||
             source.Checkpoints.Count > SiteConfigurationLimits.MaxCheckpoints || source.Desks.Count > SiteConfigurationLimits.MaxDesks ||
-            source.DeskCodeMappings.Count > SiteConfigurationLimits.MaxDeskCodeMappings || source.FloorPlans.Count > SiteConfigurationLimits.MaxFloorPlans)
+            source.DeskCodeMappings.Count > SiteConfigurationLimits.MaxDeskCodeMappings || source.FloorPlans.Count > SiteConfigurationLimits.MaxFloorPlans ||
+            source.Devices.Count > SiteConfigurationLimits.MaxDevices || source.AlertRules.Count > SiteConfigurationLimits.MaxAlertRules ||
+            source.Displays.Count > SiteConfigurationLimits.MaxDisplays)
             return Result.Error<ExportedSiteConfiguration>(SiteConfigurationErrors.TooManyRecords);
         // Terminal codes are unique per airport; a site with terminals at two airports could hold one code twice.
         if (source.Terminals.Select(t => t.Code).Distinct(StringComparer.Ordinal).Count() != source.Terminals.Count)
@@ -120,11 +137,51 @@ public static class SiteConfigurationTransfer
             profiles.Add(new ZoneProfilePartRow(profile.Name, profile.Version, profile.GeometryHash, portable, zones, lines));
         }
 
+        // ARV-122b: devices, alert rules and displays name the published profile's zones; one that names another zone could
+        // not be imported (the import checks them against the imported draft), so the export refuses it now.
+        var queues = profile?.Zones.Where(z => z.Kind == ZoneKind.Queue).Select(z => z.Name).ToHashSet(StringComparer.Ordinal) ?? [];
+        var overflows = profile?.Zones.Where(z => z.Kind == ZoneKind.Overflow).Select(z => z.Name).ToHashSet(StringComparer.Ordinal) ?? [];
+        var devices = source.Devices.OrderBy(d => d.Code, StringComparer.Ordinal).ToList();
+        if (devices.Any(d => !levelNames.ContainsKey(d.Level.Id.GetValueOrDefault())))
+            return Result.Error<ExportedSiteConfiguration>(SiteConfigurationErrors.DeviceOnRemovedLevel);
+        var rules = source.AlertRules.OrderBy(r => SiteConfigurationRules.RuleNumber(r.Code) ?? int.MaxValue).ThenBy(r => r.Code, StringComparer.Ordinal).ToList();
+        // Every export can be imported: a rule code the import would refuse (above R-100000) refuses the export instead.
+        if (rules.Any(r => SiteConfigurationRules.RuleNumber(r.Code) is not { } number || number > SiteConfigurationLimits.MaxImportedRuleNumber))
+            return Result.Error<ExportedSiteConfiguration>(SiteConfigurationErrors.RuleCodesBeyondImportBound);
+        var displays = source.Displays.OrderBy(d => d.Code, StringComparer.Ordinal).ToList();
+        if (devices.Any(d => !queues.Contains(d.QueueZoneName)) ||
+            rules.Any(r => !ZonesOf(r.Zones, r.Metric, queues, overflows)) ||
+            displays.Any(d => d.EntryList.Any(e => !queues.Contains(e.Zone))))
+            return Result.Error<ExportedSiteConfiguration>(SiteConfigurationErrors.ReferencesOutsideProfile);
+
+        var levelRowsById = levels.ToDictionary(l => l.Id.GetValueOrDefault());
+        var deviceRows = devices.Select(d =>
+        {
+            var level = levelRowsById[d.Level.Id.GetValueOrDefault()];
+            var vendor = d.FootprintSource == FootprintSource.Vendor;
+            return new DevicePartRow(d.Code, d.Family.ToString(), d.Model, d.Transport.ToString(), d.Dialect.ToString(), d.ClockSource.ToString(), d.MappingName,
+                level.Terminal.Code, level.Code, d.X, d.Y, d.MountingHeightMetres, d.OrientationDegrees, d.QueueZoneName,
+                vendor ? d.FootprintLengthMetres : null, vendor ? d.FootprintWidthMetres : null, vendor ? d.FootprintRadiusMetres : null,
+                !string.IsNullOrEmpty(d.AllowedSources) || !string.IsNullOrEmpty(d.ClientCertificateSha256));
+        }).ToList();
+        var ruleRows = rules.Select(r => new AlertRulePartRow(r.Code, r.Name, [.. r.Zones], r.Metric.ToString(), r.Comparator.ToString(), r.Threshold, r.MinQueueLength,
+            r.ClearThreshold, r.SustainMinutes, r.ClearAfterMinutes, r.Severity.ToString(), r.OwnerRole, r.EscalateAfterMinutes, r.EscalateToRole,
+            !string.IsNullOrWhiteSpace(r.EscalationContact), r.NotifyByEmail, r.Enabled, r.LeadMinutes)).ToList();
+        var displayRows = displays.Select(d => new DisplayPartRow(d.Code, d.Name, d.Location, d.Orientation.ToString(), [.. d.LanguageList], d.BandMinutes,
+            d.HysteresisMinutes, d.StaleSeconds, [.. d.EntryList.Select(e => new DisplayEntryPartRow(e.Zone, e.Labels))], d.FallbackMap, d.Enabled)).ToList();
+
         var counts = new SiteConfigurationCountsViewModel(topology.Terminals.Count, topology.Levels.Count, topology.Checkpoints.Count, topology.Desks.Count,
-            mappings.Count, profile?.Zones.Count ?? 0, profile?.Lines.Count ?? 0, planRows.Count);
-        return new Result<ExportedSiteConfiguration>(new ExportedSiteConfiguration(topology, mappings, profiles, planRows, plans, counts,
-            profile?.Version, profile?.GeometryHash, portable));
+            mappings.Count, profile?.Zones.Count ?? 0, profile?.Lines.Count ?? 0, planRows.Count, deviceRows.Count, ruleRows.Count, displayRows.Count);
+        return new Result<ExportedSiteConfiguration>(new ExportedSiteConfiguration(topology, mappings, profiles, planRows, plans, deviceRows, ruleRows, displayRows,
+            counts, profile?.Version, profile?.GeometryHash, portable));
     }
+
+    /// <summary>
+    /// The zone rule of alert rules (the rule service's, owner decision 2026-10-11 for imports): every zone a queue zone or
+    /// an overflow band of the profile; a health check watches queue zones only.
+    /// </summary>
+    public static bool ZonesOf(IReadOnlyList<string> zones, AlertMetric metric, IReadOnlySet<string> queues, IReadOnlySet<string> overflows) =>
+        zones.All(z => queues.Contains(z) || (!AlertRuleValues.IsHealthCheck(metric) && overflows.Contains(z)));
 
     #endregion
 
@@ -206,11 +263,58 @@ public static class SiteConfigurationTransfer
         var plans = content.FloorPlans
             .Select((row, index) => new PlannedFloorPlan(levels[SiteConfigurationRules.LevelKey(row.Terminal, row.Level)], row, content.FloorPlanFiles[index + 1]))
             .ToList();
+
+        // ARV-122b. Devices become registration requests on their new levels; the registration path checks and registers them.
+        var devices = content.Devices.Select(d => new RegisterDeviceRequest(d.Code, d.Family, d.Model, d.Transport, d.Dialect, d.ClockSource,
+            new DevicePlacement(levels[SiteConfigurationRules.LevelKey(d.Terminal, d.Level)].Id, d.X, d.Y, d.MountingHeightMetres, d.OrientationDegrees, d.QueueZone,
+                d.FootprintLengthMetres, d.FootprintWidthMetres, d.FootprintRadiusMetres), d.MappingName)).ToList();
+
+        // Alert rules and displays: the entities' own checks, then their zones against the imported draft (owner decision
+        // 2026-10-11): queue zones and overflow bands for rules (queue zones only for health checks), queue zones for displays.
+        var queues = draft?.Zones.Where(z => z.Kind == ZoneKind.Queue).Select(z => z.Name).ToHashSet(StringComparer.Ordinal) ?? [];
+        var overflows = draft?.Zones.Where(z => z.Kind == ZoneKind.Overflow).Select(z => z.Name).ToHashSet(StringComparer.Ordinal) ?? [];
+        var rules = new List<AlertRule>();
+        foreach (var row in content.AlertRules)
+        {
+            var metric = SiteConfigurationRules.ParseKind<AlertMetric>(row.Metric).GetValueOrDefault();
+            if (AlertRuleErrors.NotEvaluatedMetrics.Contains(metric))
+                return Result.Error<SiteConfigurationPlan>(SiteConfigurationErrors.InvalidAlertRules);
+            AlertRule rule = null;
+            built = Guarded(SiteConfigurationErrors.InvalidAlertRules, () => rule = new AlertRule(siteCode, SiteConfigurationRules.RuleNumber(row.Code).GetValueOrDefault(),
+                new AlertRuleValues(row.Name, row.Zones, metric, SiteConfigurationRules.ParseKind<AlertComparator>(row.Comparator).GetValueOrDefault(), row.Threshold,
+                    row.MinQueueLength, row.ClearThreshold, row.SustainMinutes, row.ClearAfterMinutes, SiteConfigurationRules.ParseKind<AlertSeverity>(row.Severity).GetValueOrDefault(),
+                    Blank(row.OwnerRole), row.EscalateAfterMinutes, Blank(row.EscalateToRole), EscalationContact: null, row.NotifyByEmail, row.Enabled, row.LeadMinutes)));
+            if (built is not null)
+                return Result.Error<SiteConfigurationPlan>(built);
+            if (!ZonesOf(rule.Zones, rule.Metric, queues, overflows))
+                return Result.Error<SiteConfigurationPlan>(SiteConfigurationErrors.AlertRuleZonesNotInProfile);
+            rules.Add(rule);
+        }
+
+        var displays = new List<Display>();
+        foreach (var row in content.Displays)
+        {
+            Display display = null;
+            built = Guarded(SiteConfigurationErrors.InvalidDisplays, () => display = new Display(siteCode, row.Code, new DisplayValues(row.Name, row.Location,
+                SiteConfigurationRules.ParseKind<DisplayOrientation>(row.Orientation).GetValueOrDefault(), row.Languages, row.BandMinutes, row.HysteresisMinutes,
+                row.StaleSeconds, [.. row.Entries.Select(e => new DisplayEntry(e.Zone, e.Labels))], row.Fallback, row.Enabled)));
+            if (built is not null)
+                return Result.Error<SiteConfigurationPlan>(built);
+            if (display.EntryList.Any(e => !queues.Contains(e.Zone)))
+                return Result.Error<SiteConfigurationPlan>(SiteConfigurationErrors.DisplayZonesNotInProfile);
+            displays.Add(display);
+        }
+
+        var needAccess = content.Devices.Where(d => d.AccessSettingsWithheld).Select(d => d.Code).ToList();
+        var needContact = content.AlertRules.Where(r => r.EscalationContactWithheld).Select(r => r.Code).ToList();
         var counts = new SiteConfigurationCountsViewModel(terminals.Count, levels.Count, checkpoints.Count, desks.Count, mappings.Count,
-            draft?.Zones.Count ?? 0, draft?.Lines.Count ?? 0, plans.Count);
+            draft?.Zones.Count ?? 0, draft?.Lines.Count ?? 0, plans.Count, devices.Count, rules.Count, displays.Count);
         return new Result<SiteConfigurationPlan>(new SiteConfigurationPlan([.. terminals.Values], [.. levels.Values], [.. checkpoints.Values], [.. desks.Values],
-            mappings, draft, portable, plans, counts));
+            mappings, draft, portable, plans, devices, rules, displays, needAccess, needContact, counts));
     }
+
+    /// <summary>An empty role is no role, as the rule service reads one.</summary>
+    private static string Blank(string role) => string.IsNullOrWhiteSpace(role) ? null : role.Trim();
 
     /// <summary>The draft: queue zones first (hanging zones name them), then the rest, then the lines, through the aggregate's methods.</summary>
     private static ZoneProfile Draft(string siteCode, ZoneProfilePartRow profile, Dictionary<string, Level> levels, Dictionary<string, Desk> desks)

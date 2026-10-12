@@ -10,6 +10,13 @@ import { hosts } from '../support/hosts';
 // 413 and a deeply nested one 400. The round trip between two sites gives the same portable geometry hash once the
 // imported draft is published (F22 v1 differs: it names levels and desks by their ids). Names made of markup or SQL
 // travel as data and are never echoed in an error.
+// ARV-122b: the bundle also carries the devices (without any credential, calibration or access setting), the alert rules
+// (without escalation contacts) and the displays (without pairing secrets). An import registers each device through the
+// registration path, in Commissioning with a new credential returned once (asserted by its format, never printed);
+// rules keep their codes and the answer lists, by code, those whose escalation contact must be typed again; displays
+// arrive unpaired; the devices whose access settings (source networks, certificate pin) were withheld are listed by code.
+// A display code a live display holds answers 409 and writes nothing, so the source's display is deleted before the
+// round trip.
 // The sites are new each run (codes CFA, CFB and CFC with a random tail; no other suite uses them). Everything the
 // suite creates is removed at the end except what Ariva never deletes: the sites themselves and the published zone
 // profile versions (immutable by design, script 0012).
@@ -31,13 +38,21 @@ const configuration = (site: string) => `${admin}/sites/${site}/configuration`;
 const hostileTerminal = '<script>alert(1)</script>';
 const hostileDesk = "' OR '1'='1";
 const hostileZone = '<img src=x onerror=alert(1)>';
+const hostileRule = '<script>alert(1)</script> rule';
 const echoes = ['<script', 'onerror', "'1'='1", 'alert(1)', '../../etc'];
+const displayCode = `CFD${tail}`;
+const contact = 'Duty officer, extension 4411';
+const ingestDevice = `${hosts.ingest}/api/v1/ingest/device`;
+/** A device credential: the marker and 43 base64url characters. Tested inside an expect, never printed. */
+const deviceCredentialFormat = /^ardk_[A-Za-z0-9_-]{43}$/;
+const secretPattern = /ard[kp]_/;
 
 let stepped: string;
 let passwordOnly: string;
 let scoped: string;
 let duty: string;
 let exported: any;
+let sourceCredential: string;
 const airports: string[] = [];
 
 const sha256 = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
@@ -106,6 +121,8 @@ test.beforeAll(async () => {
 	await create(`zone-profiles/${draft}/lines`, { name: 'Entry A', role: 'Entry', levelId: arrivals, startX: 10, startY: 12, endX: 10, endY: 16, zoneId: queue });
 	await create(`zone-profiles/${draft}/lines`, { name: 'Exit A', role: 'Exit', levelId: arrivals, startX: 30, startY: 22, endX: 34, endY: 22, zoneId: queue });
 	await create(`zone-profiles/${draft}/lines`, { name: 'Count hall', role: 'Count', levelId: departures, startX: 1, startY: 1, endX: 1, endY: 9 });
+	const overflow = await create(`zone-profiles/${draft}/zones`, { name: 'Overflow A', kind: 'Overflow', levelId: arrivals, queueZoneId: queue, polygon: '10 24,34 24,34 28,10 28' });
+	await create(`zone-profiles/${draft}/lines`, { name: 'Overflow entry A', role: 'OverflowEntry', levelId: arrivals, startX: 10, startY: 25, endX: 10, endY: 27, zoneId: overflow });
 	await publish(draft);
 
 	const form = new FormData();
@@ -115,11 +132,55 @@ test.beforeAll(async () => {
 	form.append('originY', '0');
 	const plan = await call('POST', `${admin}/levels/${arrivals}/floor-plan`, { token: stepped, form });
 	expect(plan.status(), plan.status() === 201 ? 'floor plan' : await plan.text()).toBe(201);
+
+	// ARV-122b: a device (its credential kept only to show it never travels), two alert rules (one with an escalation
+	// contact) and a display.
+	const device = await call('POST', `${admin}/devices`, {
+		token: stepped,
+		data: {
+			code: 'S01', family: 'StereoVision', model: 'PC2SE', transport: 'HttpsPush', dialect: 'Xovis', clockSource: 'Ntp',
+			placement: { levelId: arrivals, x: 20, y: 16, mountingHeightMetres: 5, orientationDegrees: 0, queueZoneName: 'Snake A' }
+		}
+	});
+	expect(device.status(), device.status() === 201 ? 'device' : await device.text()).toBe(201);
+	const registered = await device.json();
+	sourceCredential = registered.credential;
+	// Source networks: withheld from the bundle (only the fact that there were some travels).
+	const access = await call('PUT', `${admin}/devices/${registered.device.id}/access`, { token: stepped, data: { allowedSources: ['10.20.0.0/24'], clientCertificateSha256: '' } });
+	expect(access.status(), access.status() === 200 ? 'device access' : await access.text()).toBe(200);
+	const rule = {
+		siteCode: source, name: hostileRule, zones: ['Snake A'], metric: 'Nowcast', comparator: 'GreaterThan', threshold: 20, minQueueLength: null, clearThreshold: null,
+		sustainMinutes: 5, clearAfterMinutes: 5, severity: 'Warning', ownerRole: 'BorderShiftSupervisor', escalateAfterMinutes: 15, escalateToRole: null,
+		escalationContact: contact, notifyByEmail: false, enabled: true
+	};
+	await create('alert-rules', rule);
+	await create('alert-rules', {
+		...rule, name: 'Overflow in use', zones: ['Overflow A'], metric: 'OverflowOccupied', comparator: 'IsTrue', threshold: null, severity: 'Info', ownerRole: null,
+		escalateAfterMinutes: null, escalationContact: null
+	});
+	const display = await call('POST', `${admin}/displays`, {
+		token: stepped,
+		data: {
+			siteCode: source, code: displayCode, name: hostileZone, location: 'Gate 3', orientation: 'Landscape', languages: ['en', 'ar'], bandMinutes: 5, hysteresisMinutes: 1,
+			staleSeconds: 300, entries: [{ zone: 'Snake A', labels: { en: 'Citizens', ar: '\u0645\u0648\u0627\u0637\u0646\u0648\u0646' } }],
+			fallback: { en: 'Ask a member of staff', ar: '\u0627\u0633\u0623\u0644' }, enabled: true
+		}
+	});
+	expect(display.status(), display.status() === 201 ? 'display' : await display.text()).toBe(201);
 });
+
+/** The live displays of a site (the display search answers a list). */
+async function displaysOf(site: string): Promise<any[]> {
+	const response = await call('GET', `${admin}/displays?siteCode=${site}`, { token: stepped });
+	return response.status() === 200 ? await response.json() : [];
+}
 
 test.afterAll(async () => {
 	if (!stepped) return;
 	for (const site of [source, target, spare]) {
+		for (const display of await displaysOf(site)) await call('DELETE', `${admin}/displays/${display.id}`, { token: stepped });
+		for (const rule of await search('alert-rules', site)) await call('DELETE', `${admin}/alert-rules/${rule.id}`, { token: stepped });
+		for (const device of await search('devices', site)) await call('DELETE', `${admin}/devices/${device.id}`, { token: stepped });
 		for (const plan of await (async () => {
 			const response = await call('GET', `${admin}/floor-plans?siteCode=${site}`, { token: stepped });
 			return response.status() === 200 ? await response.json() : [];
@@ -174,28 +235,70 @@ test('the export carries the published profile with both hashes, every part in t
 	expect(exported.geometryHash).toMatch(/^[0-9a-f]{64}$/);
 	expect(exported.portableGeometryHash).toMatch(/^[0-9a-f]{64}$/);
 	expect(exported.portableGeometryHash).not.toBe(exported.geometryHash);
-	expect(exported.counts).toEqual({ terminals: 1, levels: 2, checkpoints: 2, desks: 3, deskCodeMappings: 1, zones: 2, lines: 3, floorPlans: 1 });
+	expect(exported.counts).toEqual({
+		terminals: 1, levels: 2, checkpoints: 2, desks: 3, deskCodeMappings: 1, zones: 3, lines: 4, floorPlans: 1, devices: 1, alertRules: 2, displays: 1
+	});
 	const bundle = exported.bundle;
 	expect(bundle.formatVersion).toBe(1);
 	expect(bundle.sourceSite).toBe(source);
-	expect(Object.keys(bundle.manifest).sort()).toEqual(['deskCodeMappings', 'floorPlanFile.1', 'floorPlans', 'topology', 'zoneProfile']);
+	expect(Object.keys(bundle.manifest).sort()).toEqual(
+		['alertRules', 'deskCodeMappings', 'devices', 'displays', 'floorPlanFile.1', 'floorPlans', 'topology', 'zoneProfile'].sort()
+	);
 	expect(Object.keys(bundle.parts).sort()).toEqual(Object.keys(bundle.manifest).sort());
 	for (const [part, hash] of Object.entries(bundle.manifest)) expect(sha256(Buffer.from(bundle.parts[part], 'base64')), part).toBe(hash);
 	// Hostile names are data inside the parts; no id travels.
 	expect(decoded(bundle, 'topology').terminals[0]).toEqual({ airport: sourceIata, code: 'T1', name: hostileTerminal });
 	expect(decoded(bundle, 'zoneProfile')[0].portableGeometryHash).toBe(exported.portableGeometryHash);
 	expect(Buffer.from(bundle.parts.topology, 'base64').toString('utf8')).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-/);
+
+	// ARV-122b (CWE-532): no credential, pairing secret, escalation contact or access setting in any decoded part. Each
+	// check is a boolean, so a failure prints no value.
+	for (const part of Object.keys(bundle.parts)) {
+		const text = Buffer.from(bundle.parts[part], 'base64').toString('utf8');
+		expect(secretPattern.test(text), `no device credential or pairing secret in ${part}`).toBe(false);
+		expect(text.includes(sourceCredential.slice(5, 13)) || text.includes(sourceCredential.slice(13)), `no fragment of the device's credential in ${part}`).toBe(false);
+		expect(text.includes(contact), `no escalation contact in ${part}`).toBe(false);
+	}
+	expect(Object.keys(decoded(bundle, 'devices')[0]).sort()).toEqual(
+		['code', 'family', 'model', 'transport', 'dialect', 'clockSource', 'mappingName', 'terminal', 'level', 'x', 'y', 'mountingHeightMetres', 'orientationDegrees',
+			'queueZone', 'footprintLengthMetres', 'footprintWidthMetres', 'footprintRadiusMetres', 'accessSettingsWithheld'].sort()
+	);
+	expect(decoded(bundle, 'devices')[0]).toMatchObject({ code: 'S01', terminal: 'T1', level: 'L0', queueZone: 'Snake A', accessSettingsWithheld: true });
+	expect(Object.keys(bundle.parts).some((part) => Buffer.from(bundle.parts[part], 'base64').toString('utf8').includes('10.20.0.0')), 'no source network travels').toBe(false);
+	const rules = decoded(bundle, 'alertRules');
+	expect(rules.map((r: any) => [r.code, r.escalationContactWithheld])).toEqual([['R-001', true], ['R-002', false]]);
+	expect(rules.every((r: any) => !('escalationContact' in r))).toBe(true);
+	expect(Object.keys(decoded(bundle, 'displays')[0]).sort()).toEqual(
+		['code', 'name', 'location', 'orientation', 'languages', 'bandMinutes', 'hysteresisMinutes', 'staleSeconds', 'entries', 'fallback', 'enabled'].sort()
+	);
 });
 
 test('a tampered bundle is refused with a fixed text and writes nothing', async () => {
 	const bundle = exported.bundle;
 	const devices = Buffer.from('[]');
+	const withMember = (part: string, member: string) =>
+		rehashed(bundle, part, Buffer.from(JSON.stringify(decoded(bundle, part).map((row: any) => ({ [member]: 'x', ...row })))));
+	const without122b = {
+		...bundle,
+		manifest: Object.fromEntries(Object.entries(bundle.manifest).filter(([name]) => !['devices', 'alertRules', 'displays'].includes(name))),
+		parts: Object.fromEntries(Object.entries(bundle.parts).filter(([name]) => !['devices', 'alertRules', 'displays'].includes(name)))
+	};
 	const cases: [string, any, number][] = [
 		['a part changed', { ...bundle, parts: { ...bundle.parts, topology: Buffer.from('{"terminals":[],"levels":[],"checkpoints":[],"desks":[]}').toString('base64') } }, 400],
 		['a hash changed', { ...bundle, manifest: { ...bundle.manifest, zoneProfile: '0'.repeat(64) } }, 400],
 		['a part missing', { ...bundle, parts: Object.fromEntries(Object.entries(bundle.parts).filter(([name]) => name !== 'floorPlans')) }, 400],
 		['an entry without its part', { ...bundle, manifest: { ...bundle.manifest, 'floorPlanFile.2': '0'.repeat(64) } }, 400],
-		['a later story part', { ...bundle, manifest: { ...bundle.manifest, devices: sha256(devices) }, parts: { ...bundle.parts, devices: devices.toString('base64') } }, 400],
+		['a part this version does not know', { ...bundle, manifest: { ...bundle.manifest, users: sha256(devices) }, parts: { ...bundle.parts, users: devices.toString('base64') } }, 400],
+		['a bundle written before the devices, alert rules and displays parts', without122b, 400],
+		['a device row carrying a credential hash', withMember('devices', 'credentialHash'), 400],
+		['a device row carrying source networks', withMember('devices', 'allowedSources'), 400],
+		['an alert rule carrying an escalation contact', withMember('alertRules', 'escalationContact'), 400],
+		['a display row carrying a pairing secret', withMember('displays', 'pairingSecret'), 400],
+		['an alert rule on a zone the profile lacks', rehashed(bundle, 'alertRules', Buffer.from(JSON.stringify(decoded(bundle, 'alertRules').map((r: any) => ({ ...r, zones: [hostileZone] }))))), 400],
+		['a display on a zone that is no queue zone', rehashed(bundle, 'displays', Buffer.from(JSON.stringify(decoded(bundle, 'displays').map((d: any) => ({ ...d, entries: [{ ...d.entries[0], zone: 'Overflow A' }] }))))), 400],
+		['a rule code above R-100000', rehashed(bundle, 'alertRules', Buffer.from(JSON.stringify(decoded(bundle, 'alertRules').map((r: any, i: number) => ({ ...r, code: i === 0 ? 'R-100001' : r.code }))))), 400],
+		['a device row without its access settings flag', rehashed(bundle, 'devices', Buffer.from(JSON.stringify(decoded(bundle, 'devices').map(({ accessSettingsWithheld, ...row }: any) => row)))), 400],
+		['a device on a level outside the bundle', rehashed(bundle, 'devices', Buffer.from(JSON.stringify(decoded(bundle, 'devices').map((d: any) => ({ ...d, level: 'L9' }))))), 400],
 		['an unknown part named with markup', { ...bundle, manifest: { ...bundle.manifest, [hostileTerminal]: sha256(devices) }, parts: { ...bundle.parts, [hostileTerminal]: devices.toString('base64') } }, 400],
 		['format version 2', { ...bundle, formatVersion: 2 }, 400],
 		['a zone profile that names a level outside the bundle', rehashed(bundle, 'zoneProfile', Buffer.from(JSON.stringify(decoded(bundle, 'zoneProfile').map((p: any) => ({ ...p, zones: p.zones.map((z: any) => ({ ...z, level: hostileTerminal })) }))))), 400],
@@ -211,7 +314,9 @@ test('a tampered bundle is refused with a fixed text and writes nothing', async 
 	}
 
 	const empty = await (await call('GET', configuration(target), { token: stepped })).json();
-	expect(empty.counts, 'the target is still empty').toEqual({ terminals: 0, levels: 0, checkpoints: 0, desks: 0, deskCodeMappings: 0, zones: 0, lines: 0, floorPlans: 0 });
+	expect(empty.counts, 'the target is still empty').toEqual({
+		terminals: 0, levels: 0, checkpoints: 0, desks: 0, deskCodeMappings: 0, zones: 0, lines: 0, floorPlans: 0, devices: 0, alertRules: 0, displays: 0
+	});
 	expect(empty.zoneProfileIncluded).toBe(false);
 });
 
@@ -251,6 +356,22 @@ test('the airport is checked as an IATA code that exists and is never created', 
 	expect(airportsNow.data.filter((a: any) => a.iataCode === unknown), 'no airport is created').toHaveLength(0);
 });
 
+test('a display code a live display holds answers 409 and writes nothing', async () => {
+	const refused = await call('POST', `${configuration(target)}?airportCode=${targetIata}`, { token: stepped, data: exported.bundle });
+	const text = await refused.text();
+	expect(refused.status(), refused.status() === 409 ? 'display code taken' : text).toBe(409);
+	expect(text, 'the fixed text names no code').not.toContain(displayCode);
+	for (const fragment of echoes) expect(text).not.toContain(fragment);
+	const still = await (await call('GET', configuration(target), { token: stepped })).json();
+	expect(Object.values(still.counts).every((count) => count === 0), 'nothing was written').toBe(true);
+
+	// Display codes are unique among the deployment's live displays: the source's display goes before its copy arrives.
+	for (const display of await displaysOf(source)) {
+		const deleted = await call('DELETE', `${admin}/displays/${display.id}`, { token: stepped });
+		expect(deleted.status(), deleted.status() === 204 ? 'delete display' : await deleted.text()).toBe(204);
+	}
+});
+
 test('a round trip between two sites gives the same portable geometry hash once the draft is published', async () => {
 	const imported = await call('POST', `${configuration(target)}?airportCode=${targetIata}`, { token: stepped, data: exported.bundle });
 	expect(imported.status(), imported.status() === 201 ? 'import' : await imported.text()).toBe(201);
@@ -269,7 +390,42 @@ test('a round trip between two sites gives the same portable geometry hash once 
 	expect((await terminals.json()).data[0]).toMatchObject({ code: 'T1', name: hostileTerminal, airportIataCode: targetIata });
 	const draft = await (await call('GET', `${admin}/zone-profiles/${answer.draftProfileId}`, { token: stepped })).json();
 	expect(draft.profile.status, 'the profile arrives as a draft').toBe('Draft');
-	expect(draft.zones.map((z: any) => z.name).sort()).toEqual([hostileZone, 'Snake A'].sort());
+	expect(draft.zones.map((z: any) => z.name).sort()).toEqual([hostileZone, 'Overflow A', 'Snake A'].sort());
+
+	// Devices: in Commissioning, each with a new credential that works at Ingest as the target's device; the source's
+	// credential still names the source's device. Credentials are tested inside expects and never printed.
+	expect(answer.deviceCredentials.length, 'one new credential').toBe(1);
+	const issued = answer.deviceCredentials[0];
+	expect(issued.code).toBe('S01');
+	expect(deviceCredentialFormat.test(issued.credential), 'the credential has the device credential format').toBe(true);
+	expect(issued.credential === sourceCredential, 'a new credential, not the source one').toBe(false);
+	const asTarget = await call('GET', ingestDevice, { headers: { 'X-Ariva-Device-Key': issued.credential } });
+	expect(asTarget.status(), 'the new credential authenticates').toBe(200);
+	expect(await asTarget.json()).toMatchObject({ code: 'S01', siteCode: target, state: 'Commissioning' });
+	const asSource = await call('GET', ingestDevice, { headers: { 'X-Ariva-Device-Key': sourceCredential }, address: '10.20.0.17' });
+	expect(asSource.status(), 'the source device keeps its own credential').toBe(200);
+	expect((await asSource.json()).siteCode, 'the old credential never reaches the copy').toBe(source);
+	const [copied] = await search('devices', target);
+	const [original] = await search('devices', source);
+	expect(copied.state).toBe('Commissioning');
+	expect(copied.credentialPrefix === original.credentialPrefix, 'a different credential prefix').toBe(false);
+	expect(copied.allowedSources ?? [], 'no source networks').toEqual([]);
+	expect(answer.devicesNeedingAccessSettings, 'listed by code for its access settings').toEqual(['S01']);
+
+	// Alert rules: their codes, no escalation contact; the answer lists the rule that needs one, by code only.
+	expect(answer.rulesNeedingEscalationContact).toEqual(['R-001']);
+	const rules = await call('GET', `${admin}/alert-rules?siteCode=${target}&pageSize=500`, { token: stepped });
+	expect(rules.headers()['content-type']).toContain('application/json');
+	expect(rules.headers()['x-content-type-options']).toBe('nosniff');
+	const copiedRules = (await rules.json()).data.sort((a: any, b: any) => a.code.localeCompare(b.code));
+	expect(copiedRules.map((r: any) => [r.code, r.escalationContact, r.ownerRole])).toEqual([['R-001', null, 'BorderShiftSupervisor'], ['R-002', null, null]]);
+	expect(copiedRules[0].name, 'a hostile name is data').toBe(hostileRule);
+
+	// Displays: unpaired, with their entries.
+	const [board] = await displaysOf(target);
+	expect(board).toMatchObject({ code: displayCode, siteCode: target, name: hostileZone, credentialPrefix: null });
+	expect(board.entries.map((e: any) => e.zone)).toEqual(['Snake A']);
+	expect(answer.notes.length).toBeGreaterThanOrEqual(6);
 
 	const published = await publish(answer.draftProfileId);
 	const again = await call('GET', configuration(target), { token: stepped });

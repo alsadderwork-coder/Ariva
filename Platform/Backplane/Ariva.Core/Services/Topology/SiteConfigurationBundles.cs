@@ -17,9 +17,10 @@ public sealed record OpenedSiteBundle(int FormatVersion, string SourceSite, stri
 /// <summary>
 /// The site configuration bundle format, version 1 (ARV-122a, docs/product/decisions.md). One JSON document:
 /// <c>{ formatVersion, sourceSite, exportedAtUtc, manifest: { part: sha256 }, parts: { part: base64 } }</c>. The parts are
-/// <see cref="Topology"/>, <see cref="DeskCodeMappings"/>, <see cref="ZoneProfile"/> and <see cref="FloorPlans"/>, always
-/// present (an empty list when the site has none), and one <c>floorPlanFile.N</c> per floor plan. A later story adds its
-/// parts by name without a new format version; until then an unknown part is refused.
+/// <see cref="Topology"/>, <see cref="DeskCodeMappings"/>, <see cref="ZoneProfile"/>, <see cref="FloorPlans"/> and, since
+/// ARV-122b, <see cref="Devices"/>, <see cref="AlertRules"/> and <see cref="Displays"/>, always present (an empty list when
+/// the site has none), and one <c>floorPlanFile.N</c> per floor plan. A bundle without one of them is refused like any
+/// missing part (the lead's call of 2026-10-11: no bundle had left a test environment); an unknown part is refused.
 /// <para>
 /// Trust (CWE-501): the manifest proves that the parts were not changed or cut after export; it does not prove who made the
 /// bundle, since anyone can recompute SHA-256. The trust comes from the import being a step-up critical action of an
@@ -37,10 +38,13 @@ public static partial class SiteConfigurationBundles
     public const string DeskCodeMappings = "deskCodeMappings";
     public const string ZoneProfile = "zoneProfile";
     public const string FloorPlans = "floorPlans";
+    public const string Devices = "devices";
+    public const string AlertRules = "alertRules";
+    public const string Displays = "displays";
     public const string FloorPlanFilePrefix = "floorPlanFile.";
 
     /// <summary>The configuration parts every bundle of this version holds.</summary>
-    public static readonly IReadOnlyList<string> ConfigurationParts = [Topology, DeskCodeMappings, ZoneProfile, FloorPlans];
+    public static readonly IReadOnlyList<string> ConfigurationParts = [Topology, DeskCodeMappings, ZoneProfile, FloorPlans, Devices, AlertRules, Displays];
 
     private const string ExportedAtFormat = "yyyy-MM-dd'T'HH:mm:ss'Z'";
 

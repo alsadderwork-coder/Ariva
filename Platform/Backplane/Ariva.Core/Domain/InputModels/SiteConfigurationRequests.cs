@@ -74,3 +74,72 @@ public sealed record LinePartRow(string Name, string Role, string Zone, string T
 /// read from the file's bytes, never from the bundle.
 /// </summary>
 public sealed record FloorPlanPartRow(string Terminal, string Level, string FileName, double MetresPerPixel, double OriginX, double OriginY);
+
+/// <summary>
+/// A device (ARV-122b): what registration takes, its level by terminal and level codes and its queue zone by name. No
+/// credential, prefix, hash or issue time, no state, no calibration, and nothing else its own authentication uses (source
+/// networks, certificate pin); the footprint only when the vendor's (otherwise the assumed one is worked out again).
+/// <c>AccessSettingsWithheld</c> says the device had source networks or a certificate pin (never which, nor how many), so
+/// the import answer can list the device for them to be set again.
+/// </summary>
+public sealed record DevicePartRow(
+    string Code,
+    string Family,
+    string Model,
+    string Transport,
+    string Dialect,
+    string ClockSource,
+    string MappingName,
+    string Terminal,
+    string Level,
+    double X,
+    double Y,
+    double MountingHeightMetres,
+    double OrientationDegrees,
+    string QueueZone,
+    double? FootprintLengthMetres,
+    double? FootprintWidthMetres,
+    double? FootprintRadiusMetres,
+    bool AccessSettingsWithheld);
+
+/// <summary>
+/// An alert rule (ARV-122b): its code and values, zones by name, roles from the built-in list. Its escalation contact is
+/// never exported (owner decision 2026-10-11): <c>EscalationContactWithheld</c> says the rule had one, so the import answer
+/// can list the rule.
+/// </summary>
+public sealed record AlertRulePartRow(
+    string Code,
+    string Name,
+    IReadOnlyList<string> Zones,
+    string Metric,
+    string Comparator,
+    double? Threshold,
+    int? MinQueueLength,
+    double? ClearThreshold,
+    int SustainMinutes,
+    int ClearAfterMinutes,
+    string Severity,
+    string OwnerRole,
+    int? EscalateAfterMinutes,
+    string EscalateToRole,
+    bool EscalationContactWithheld,
+    bool NotifyByEmail,
+    bool Enabled,
+    int? LeadMinutes);
+
+/// <summary>A display's settings (ARV-122b); no pairing secret, prefix, hash or pairing state: an imported display is unpaired.</summary>
+public sealed record DisplayPartRow(
+    string Code,
+    string Name,
+    string Location,
+    string Orientation,
+    IReadOnlyList<string> Languages,
+    int BandMinutes,
+    double HysteresisMinutes,
+    int StaleSeconds,
+    IReadOnlyList<DisplayEntryPartRow> Entries,
+    IReadOnlyDictionary<string, string> Fallback,
+    bool Enabled);
+
+/// <summary>One line of a display: a queue zone by name and its label per language.</summary>
+public sealed record DisplayEntryPartRow(string Zone, IReadOnlyDictionary<string, string> Labels);

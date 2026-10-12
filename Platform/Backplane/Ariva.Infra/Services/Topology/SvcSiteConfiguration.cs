@@ -5,6 +5,7 @@ using Ariva.Core.Domain.Enums;
 using Ariva.Core.Domain.InputModels;
 using Ariva.Core.Domain.ViewModels;
 using Ariva.Core.Security;
+using Ariva.Core.Services.Sensing;
 using Ariva.Core.Services.Storage;
 using Ariva.Core.Services.Topology;
 using Ariva.Infra.Services.Administration;
@@ -23,7 +24,10 @@ namespace Ariva.Infra.Services.Topology;
 /// manifest, every part's rules, the entities' rules and the ARV-018 floor plan checks run before anything is kept; it
 /// locks the site row, imports into an empty site only, creates every record with a new id in one transaction (all or
 /// nothing), and audits the bundle hash, the counts and the outcome, a refusal in a transaction of its own. Neither
-/// audit entry holds a part's content.
+/// audit entry holds a part's content. ARV-122b: devices, alert rules and displays travel without any credential,
+/// calibration, access setting, escalation contact or pairing secret; each device is registered through the registration
+/// path itself (its rules, its credential issuing, its audit entry) in the import's transaction, and its new credential is
+/// answered once and never logged.
 /// </summary>
 internal sealed class SvcSiteConfiguration(
     IUnitOfWork unitOfWork,
@@ -34,6 +38,8 @@ internal sealed class SvcSiteConfiguration(
     AuditTrail audit,
     IServiceScopeFactory scopes,
     IFusionCache cache,
+    ISvcDevices devices,
+    CallerRoles callerRoles,
     ILogger<SvcSiteConfiguration> logger) : SvcBase(unitOfWork, currentUser, timeProvider), ISvcSiteConfiguration
 {
     private const string Target = "SiteConfiguration";
@@ -59,7 +65,10 @@ internal sealed class SvcSiteConfiguration(
             [SiteConfigurationBundles.Topology] = SiteConfigurationParts.Write(data.Topology),
             [SiteConfigurationBundles.DeskCodeMappings] = SiteConfigurationParts.Write(data.DeskCodeMappings),
             [SiteConfigurationBundles.ZoneProfile] = SiteConfigurationParts.Write(data.ZoneProfiles),
-            [SiteConfigurationBundles.FloorPlans] = SiteConfigurationParts.Write(data.FloorPlans)
+            [SiteConfigurationBundles.FloorPlans] = SiteConfigurationParts.Write(data.FloorPlans),
+            [SiteConfigurationBundles.Devices] = SiteConfigurationParts.Write(data.Devices),
+            [SiteConfigurationBundles.AlertRules] = SiteConfigurationParts.Write(data.AlertRules),
+            [SiteConfigurationBundles.Displays] = SiteConfigurationParts.Write(data.Displays)
         };
         if (parts.Values.Any(part => part.Length > SiteConfigurationLimits.MaxJsonPartBytes))
             return await RefuseExportAsync(siteCode, SiteConfigurationErrors.TooLargeToExport, ct);
@@ -107,7 +116,12 @@ internal sealed class SvcSiteConfiguration(
         var published = await Query<ZoneProfile>().FirstOrDefaultAsync(p => p.SiteCode == siteCode && p.Status == ZoneProfileStatus.Published, ct);
         var plans = await Query<FloorPlan>().Where(p => p.SiteCode == siteCode && p.DeletedOn == null && p.Level.DeletedOn == null)
             .Take(SiteConfigurationLimits.MaxFloorPlans + 1).ToListAsync(ct);
-        return new SiteConfigurationSource(terminals, levels, checkpoints, desks, mappings, published, plans);
+        // ARV-122b: devices that are not retired (a retired one is history: it stays at the source), live alert rules and displays.
+        var siteDevices = await Query<Device>().Where(d => d.SiteCode == siteCode && d.DeletedOn == null && d.State != DeviceState.Retired)
+            .Take(SiteConfigurationLimits.MaxDevices + 1).ToListAsync(ct);
+        var rules = await Query<AlertRule>().Where(r => r.SiteCode == siteCode && r.DeletedOn == null).Take(SiteConfigurationLimits.MaxAlertRules + 1).ToListAsync(ct);
+        var displays = await Query<Display>().Where(d => d.SiteCode == siteCode && d.DeletedOn == null).Take(SiteConfigurationLimits.MaxDisplays + 1).ToListAsync(ct);
+        return new SiteConfigurationSource(terminals, levels, checkpoints, desks, mappings, published, plans, siteDevices, rules, displays);
     }
 
     /// <summary>A stored plan's bytes, read to at most the floor plan limit; null when missing, larger or not the bytes its record hashed.</summary>
@@ -204,6 +218,16 @@ internal sealed class SvcSiteConfiguration(
             return await RefuseImportAsync(siteCode, planned.ErrorMessages.First(), bundle);
         var plan = planned.Data;
 
+        // The rule service's role check: a role the caller does not hold is neither given nor taken, and a rule without an
+        // owner (every role's) is an administrator's; Transfer is held by administrators, who pass it.
+        if (plan.AlertRules.Count > 0)
+        {
+            var held = (await callerRoles.GetAsync(ct)).ToHashSet(StringComparer.Ordinal);
+            if (!held.Contains(Ariva.Core.RoleCodes.SystemAdministrator) &&
+                plan.AlertRules.Any(r => r.OwnerRole is null || !held.Contains(r.OwnerRole) || (r.EscalateToRole is not null && !held.Contains(r.EscalateToRole))))
+                return await RefuseImportAsync(siteCode, SiteConfigurationErrors.InvalidAlertRules, bundle);
+        }
+
         // ARV-018 again: each file typed by its bytes, SVG sanitised, rasters within their bounds, the name without a path.
         var floorPlans = new List<(FloorPlan Plan, byte[] Bytes)>();
         foreach (var item in plan.FloorPlans)
@@ -224,16 +248,42 @@ internal sealed class SvcSiteConfiguration(
             }
         }
 
+        // Display codes are unique among the live displays of the deployment, not the site (script 0035). Checked after the
+        // bundle's checks above and before anything is written; the registration path's own device rules run later, after
+        // the records and files are written, so a bundle with a taken code and a device it refuses answers this conflict.
+        var displayCodes = plan.Displays.Select(d => d.Code).ToList();
+        if (displayCodes.Count > 0 && await Query<Display>().AnyAsync(d => displayCodes.Contains(d.Code) && d.DeletedOn == null, ct))
+            return await RefuseImportAsync(siteCode, SiteConfigurationErrors.DisplayCodeTaken, bundle);
+
+        var credentials = new List<SiteConfigurationDeviceCredentialViewModel>();
         try
         {
             await SaveAsync(plan, floorPlans, ct);
-            // Constraint violations surface here, inside the service, rather than at the commit.
+            // Constraint violations surface here, inside the service, rather than at the commit; the registration path below
+            // finds the draft's zones in the database.
+            await FlushAsync(ct);
+
+            // ARV-122b: each device through the registration path itself (its rules, its credential issuing, its audit entry),
+            // in this transaction: Commissioning, a new credential shown once.
+            foreach (var registration in plan.Devices)
+            {
+                var registered = await devices.RegisterAsync(registration, ct);
+                if (registered.HasErrors)
+                    return await RefuseImportAsync(siteCode, SiteConfigurationErrors.InvalidDevices, bundle);
+                credentials.Add(new SiteConfigurationDeviceCredentialViewModel(registered.Data.Device.Code, registered.Data.Credential));
+            }
+
             await FlushAsync(ct);
         }
         catch (global::NHibernate.Exceptions.GenericADOException e) when (e.InnerException is global::Npgsql.PostgresException { SqlState: "23505" } unique)
         {
-            // A terminal code taken at its airport, or a record created at the site meanwhile by another endpoint.
-            var error = unique.ConstraintName == "ux_terminal_airport_code" ? SiteConfigurationErrors.TerminalTaken : SiteConfigurationErrors.SiteNotEmpty;
+            // A terminal or display code taken meanwhile, or a record created at the site meanwhile by another endpoint.
+            var error = unique.ConstraintName switch
+            {
+                "ux_terminal_airport_code" => SiteConfigurationErrors.TerminalTaken,
+                "ux_display_code" => SiteConfigurationErrors.DisplayCodeTaken,
+                _ => SiteConfigurationErrors.SiteNotEmpty
+            };
             return await RefuseImportAsync(siteCode, error, bundle);
         }
 
@@ -245,9 +295,19 @@ internal sealed class SvcSiteConfiguration(
         // records the import as failed in a transaction of its own (a failure to write it is logged by the unit of work).
         var rolledBack = Summary("failed", RolledBack, bundle.BundleSha256, bundle.FormatVersion, bundle.SourceSite, bundle.Parts.Count, null);
         RegisterPostRollbackAction(() => WriteOwnAuditAsync($"{Target}.ImportFailed", siteCode, rolledBack));
-        IReadOnlyList<string> notes = plan.Draft is null ? [SiteConfigurationErrors.BundleCarriesNoProfile] : [SiteConfigurationErrors.ProfileArrivesAsDraft];
+        var notes = new List<string> { plan.Draft is null ? SiteConfigurationErrors.BundleCarriesNoProfile : SiteConfigurationErrors.ProfileArrivesAsDraft };
+        if (plan.Devices.Count > 0)
+            notes.Add(SiteConfigurationErrors.DevicesArriveCommissioning);
+        if (plan.DevicesNeedingAccessSettings.Count > 0)
+            notes.Add(SiteConfigurationErrors.AccessSettingsWithheld);
+        if (plan.Displays.Count > 0)
+            notes.Add(SiteConfigurationErrors.DisplaysArriveUnpaired);
+        if (plan.AlertRules.Count > 0 || plan.Displays.Count > 0)
+            notes.Add(SiteConfigurationErrors.RulesAndDisplaysWaitForPublication);
+        if (plan.RulesNeedingEscalationContact.Count > 0)
+            notes.Add(SiteConfigurationErrors.EscalationContactsWithheld);
         return new Result<SiteConfigurationImportViewModel>(new SiteConfigurationImportViewModel(bundle.BundleSha256, bundle.SourceSite, plan.Draft?.Id,
-            plan.PortableGeometryHash, plan.Counts, notes));
+            plan.PortableGeometryHash, plan.Counts, credentials, plan.DevicesNeedingAccessSettings, plan.RulesNeedingEscalationContact, notes));
     }
 
     /// <summary>Parents before children; queue zones before the zones that hang off them; each file stored before its record, removed on rollback.</summary>
@@ -280,6 +340,12 @@ internal sealed class SvcSiteConfiguration(
                 await storage.SaveAsync(key, content, ct);
             await SaveAsync(floorPlan, ct);
         }
+
+        // ARV-122b: alert rules without escalation contacts, displays unpaired (no credential).
+        foreach (var rule in plan.AlertRules)
+            await SaveAsync(rule, ct);
+        foreach (var display in plan.Displays)
+            await SaveAsync(display, ct);
     }
 
     /// <summary>

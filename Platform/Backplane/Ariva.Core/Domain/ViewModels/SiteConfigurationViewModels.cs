@@ -21,7 +21,13 @@ public sealed record SiteConfigurationCountsViewModel(
     int DeskCodeMappings,
     int Zones,
     int Lines,
-    int FloorPlans);
+    int FloorPlans,
+    int Devices,
+    int AlertRules,
+    int Displays);
+
+/// <summary>A device's new credential (ARV-122b), shown this once like a registration's; only its prefix and hash are kept.</summary>
+public sealed record SiteConfigurationDeviceCredentialViewModel(string Code, string Credential);
 
 /// <summary>
 /// An export's answer: the bundle and its hash (compare it with the import's answer out of band), whether the site's
@@ -38,8 +44,10 @@ public sealed record SiteConfigurationExportViewModel(
     SiteConfigurationBundleViewModel Bundle);
 
 /// <summary>
-/// An import's answer: the bundle hash it verified, the draft zone profile it created (publish it with the existing
-/// step-up action) and that draft's portable geometry hash, the counts, and fixed notes.
+/// An import's answer: the bundle hash it verified, the bundle's claimed source site (not authenticated), the draft zone
+/// profile it created (publish it with the existing step-up action) and that draft's portable geometry hash, the counts,
+/// each device's new credential (shown this once), the codes of the devices whose access settings (source networks,
+/// certificate pin) and of the alert rules whose escalation contact must be set again, and fixed notes. Never cached.
 /// </summary>
 public sealed record SiteConfigurationImportViewModel(
     string BundleSha256,
@@ -47,4 +55,7 @@ public sealed record SiteConfigurationImportViewModel(
     Guid? DraftProfileId,
     string PortableGeometryHash,
     SiteConfigurationCountsViewModel Counts,
+    IReadOnlyList<SiteConfigurationDeviceCredentialViewModel> DeviceCredentials,
+    IReadOnlyList<string> DevicesNeedingAccessSettings,
+    IReadOnlyList<string> RulesNeedingEscalationContact,
     IReadOnlyList<string> Notes);

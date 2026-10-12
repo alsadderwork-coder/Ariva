@@ -6,8 +6,12 @@ using Ariva.Core.Domain.ViewModels;
 using Ariva.Core.Security;
 using Ariva.Core.Services;
 using Ariva.Core.Services.Administration;
+using Ariva.Core.Services.Alerting;
+using Ariva.Core.Services.Displays;
+using Ariva.Core.Services.Sensing;
 using Ariva.Core.Services.Storage;
 using Ariva.Core.Services.Topology;
+using Ariva.Infra.Security;
 using Ariva.Infra.Storage;
 using Ariva.IntegrationTests.Security;
 using Ariva.IntegrationTests.Setup;
@@ -27,6 +31,10 @@ namespace Ariva.IntegrationTests.Topology;
 /// leaves nothing; of concurrent imports into one empty site one wins and the rest are refused; an SVG plan passes the
 /// ARV-018 sanitiser again; a plan file name with a path, a drive or a right-to-left override is refused and one made of
 /// markup is kept as text; stored keys are generated; audit entries hold the bundle hash and counts, never a name.
+/// ARV-122b: devices arrive in Commissioning through the registration path with new working credentials (the source's
+/// do not work there, and no calibration or access setting travels); alert rules keep their codes and lose their
+/// escalation contacts, which the answer lists by code; displays arrive unpaired; a display code a live display holds
+/// answers the conflict and writes nothing; a rule naming a zone the imported draft lacks is refused.
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class SiteConfigurationTests(PostgresFixture fixture) : IAsyncDisposable
@@ -69,10 +77,12 @@ public sealed class SiteConfigurationTests(PostgresFixture fixture) : IAsyncDisp
 
     /// <summary>
     /// A configured source site: two levels, an immigration checkpoint with a desk and an e-gate, a check-in counter, two
-    /// desk code mappings, a published profile (a queue, a service zone on the desk, entry, exit and a count line on the
-    /// upper level) and an SVG plan; a terminal, a desk and a zone named with markup or SQL.
+    /// desk code mappings, a published profile (a queue with its overflow band, a service zone on the desk, entry, exit,
+    /// overflow entry and a count line on the upper level) and an SVG plan; a calibrated device with access settings, two
+    /// alert rules (R-001 with an escalation contact, R-002 on the overflow band) and, when a code is given, a paired
+    /// display; a terminal, a desk, a zone, a rule and a display named with markup or SQL. Answers the device's credential.
     /// </summary>
-    private async Task SourceAsync(Guid admin, string site, string iata, bool twoPlans = false)
+    private async Task<string> SourceAsync(Guid admin, string site, string iata, bool twoPlans = false, string displayCode = null)
     {
         await SiteAsync(admin, site);
         var airport = await AirportAsync(admin, iata);
@@ -95,12 +105,45 @@ public sealed class SiteConfigurationTests(PostgresFixture fixture) : IAsyncDisp
         Ok(await _host.AsCallerAsync(admin, s => profiles(s).AddLineAsync(draft, new AddLineRequest("Entry A", "Entry", arrivals, 10, 12, 10, 16, queue), Ct)));
         Ok(await _host.AsCallerAsync(admin, s => profiles(s).AddLineAsync(draft, new AddLineRequest("Exit A", "Exit", arrivals, 30, 22, 34, 22, queue), Ct)));
         Ok(await _host.AsCallerAsync(admin, s => profiles(s).AddLineAsync(draft, new AddLineRequest("Count hall", "Count", departures, 1, 1, 1, 9), Ct)));
+        var overflow = Ok(await _host.AsCallerAsync(admin, s => profiles(s).AddZoneAsync(draft, new AddZoneRequest("Overflow A", "Overflow", arrivals, Rect(10, 24, 24, 4), queue), Ct))).Id;
+        Ok(await _host.AsCallerAsync(admin, s => profiles(s).AddLineAsync(draft, new AddLineRequest("Overflow entry A", "OverflowEntry", arrivals, 10, 25, 10, 27, overflow), Ct)));
         await PublishAsync(admin, draft);
 
         var bytes = Encoding.UTF8.GetBytes(Svg);
         Ok(await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcFloorPlans>().UploadAsync(arrivals, new FloorPlanUpload(new MemoryStream(bytes), bytes.Length, "arrivals.svg", 0.05, 1, 2), Ct)));
         if (twoPlans)
             Ok(await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcFloorPlans>().UploadAsync(departures, new FloorPlanUpload(new MemoryStream(bytes), bytes.Length, "departures.svg", 0.05, 0, 0), Ct)));
+
+        var devices = (IServiceProvider s) => s.GetRequiredService<ISvcDevices>();
+        var registered = Ok(await _host.AsCallerAsync(admin, s => devices(s).RegisterAsync(
+            new RegisterDeviceRequest("S01", "StereoVision", "PC2SE <b>", "HttpsPush", "Xovis", "Ntp", new DevicePlacement(arrivals, 20, 16, 5, 0, "Snake A")), Ct)));
+        Ok(await _host.AsCallerAsync(admin, s => devices(s).SetAccessAsync(registered.Device.Id, new SetDeviceAccessRequest(["10.20.0.0/24"], new string('c', 64)), Ct)));
+        Ok(await _host.AsCallerAsync(admin, s => devices(s).RecordCalibrationAsync(registered.Device.Id, new RecordCalibrationRequest("ManualCountTally", 200, 97, 0.4), Ct)));
+
+        var rules = (IServiceProvider s) => s.GetRequiredService<ISvcAlertRules>();
+        Ok(await _host.AsCallerAsync(admin, s => rules(s).CreateAsync(new AlertRuleRequest(site, HostileName, ["Snake A"], "Nowcast", "GreaterThan", 20, null, null, 5, 5,
+            "Warning", RoleCodes.BorderShiftSupervisor, 15, null, Contact, false), Ct)));
+        Ok(await _host.AsCallerAsync(admin, s => rules(s).CreateAsync(new AlertRuleRequest(site, "Overflow in use", ["Overflow A"], "OverflowOccupied", "IsTrue", null, null, null,
+            5, 5, "Info", null, null, null, null, false), Ct)));
+
+        if (displayCode is not null)
+            Ok(await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcDisplays>().CreateAsync(Board(site, displayCode), Ct)));
+        return registered.Credential;
+    }
+
+    /// <summary>An escalation contact: never exported.</summary>
+    private const string Contact = "Duty officer, extension 4411";
+
+    private static DisplayRequest Board(string site, string code) =>
+        new(site, code, "<img src=x onerror=alert(1)>", "Gate 3", "Landscape", ["en", "ar"], 5, 1, 300,
+            [new DisplayEntryRequest("Snake A", new Dictionary<string, string> { ["en"] = "Citizens", ["ar"] = "\u0645\u0648\u0627\u0637\u0646\u0648\u0646" })],
+            new Dictionary<string, string> { ["en"] = "Ask a member of staff", ["ar"] = "\u0627\u0633\u0623\u0644" });
+
+    private async Task DeleteDisplaysAsync(Guid admin, string site)
+    {
+        var displays = Ok(await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcDisplays>().SearchAsync(site, Ct)));
+        foreach (var display in displays)
+            Ok(await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcDisplays>().DeleteAsync(display.Id, Ct)));
     }
 
     private const string StorageKeyPattern = "^[0-9a-f]{32}\\.(png|jpg|svg)$";
@@ -139,6 +182,16 @@ public sealed class SiteConfigurationTests(PostgresFixture fixture) : IAsyncDisp
         return Ok(await _host.AsCallerAsync(admin, s => profiles(s).PublishAsync(draft, new PublishZoneProfileRequest(reviewed.GeometryHash), Ct)));
     }
 
+    /// <summary>
+    /// Checks text that could hold a credential (a part, an audit summary) without printing it: a failure shows only the
+    /// fixed fragments that are missing or should not be there, never the text.
+    /// </summary>
+    private static void Holds(string text, string because, string[] wanted, string[] unwanted = null)
+    {
+        wanted.Where(w => !text.Contains(w, StringComparison.Ordinal)).Should().BeEmpty(because);
+        (unwanted ?? []).Where(u => text.Contains(u, StringComparison.Ordinal)).Should().BeEmpty(because);
+    }
+
     private static ImportSiteConfigurationRequest Request(SiteConfigurationBundleViewModel bundle) =>
         new(bundle.FormatVersion, bundle.SourceSite, bundle.ExportedAtUtc, new Dictionary<string, string>(bundle.Manifest), new Dictionary<string, string>(bundle.Parts));
 
@@ -156,22 +209,35 @@ public sealed class SiteConfigurationTests(PostgresFixture fixture) : IAsyncDisp
             SELECT (SELECT count(*) FROM terminal WHERE site_code = @secret) + (SELECT count(*) FROM level WHERE site_code = @secret)
                  + (SELECT count(*) FROM checkpoint WHERE site_code = @secret) + (SELECT count(*) FROM desk WHERE site_code = @secret)
                  + (SELECT count(*) FROM desk_code_mapping WHERE site_code = @secret) + (SELECT count(*) FROM zone_profile WHERE site_code = @secret)
-                 + (SELECT count(*) FROM floor_plan WHERE site_code = @secret)
+                 + (SELECT count(*) FROM floor_plan WHERE site_code = @secret) + (SELECT count(*) FROM device WHERE site_code = @secret)
+                 + (SELECT count(*) FROM alert_rule WHERE site_code = @secret) + (SELECT count(*) FROM display WHERE site_code = @secret)
             """, secret: site);
 
     [Fact]
     public async Task ExportThenImport_Should_RecreateTheSiteAndKeepThePortableHash_When_TheDraftIsPublishedAtTheTarget()
     {
         var admin = await AdministratorAsync("rt");
-        await SourceAsync(admin, "XCFA", "QXA");
+        var sourceCredential = await SourceAsync(admin, "XCFA", "QXA", displayCode: "CFRT1");
         await SiteAsync(admin, "XCFB");
         await AirportAsync(admin, "QXB");
 
         var exported = Ok(await _host.AsCallerAsync(admin, s => Configuration(s).ExportAsync("XCFA", Ct)));
+        // Display codes are unique among the deployment's live displays: the source's goes first (as when moving a site).
+        await DeleteDisplaysAsync(admin, "XCFA");
         var imported = Ok(await _host.AsCallerAsync(admin, s => Configuration(s).ImportAsync("XCFB", Request(exported.Bundle), "QXB", Ct)));
 
         exported.ZoneProfileIncluded.Should().BeTrue();
-        exported.Counts.Should().Be(new SiteConfigurationCountsViewModel(1, 2, 2, 3, 2, 2, 3, 1));
+        exported.Counts.Should().Be(new SiteConfigurationCountsViewModel(1, 2, 2, 3, 2, 3, 4, 1, 1, 2, 1));
+        exported.Bundle.Manifest.Keys.Should().BeEquivalentTo("topology", "deskCodeMappings", "zoneProfile", "floorPlans", "devices", "alertRules", "displays", "floorPlanFile.1");
+        var everyPart = string.Concat(exported.Bundle.Parts.Values.Select(part => Encoding.UTF8.GetString(Convert.FromBase64String(part))));
+        // Booleans only around credentials, so a failure prints no credential material.
+        System.Text.RegularExpressions.Regex.IsMatch(everyPart, "ard[kp]_").Should().BeFalse("no device credential or pairing secret is exported");
+        (everyPart.Contains(sourceCredential[5..13], StringComparison.Ordinal) || everyPart.Contains(sourceCredential[13..], StringComparison.Ordinal))
+            .Should().BeFalse("no fragment of the source device's credential is exported");
+        Holds(everyPart, "no contact, access setting or calibration travels", [], [Contact, "10.20.0.0", new string('c', 64), "ManualCountTally"]);
+        var deviceRows = System.Text.Json.JsonSerializer.Deserialize<List<DevicePartRow>>(Convert.FromBase64String(exported.Bundle.Parts[SiteConfigurationBundles.Devices]),
+            SiteConfigurationParts.Json)!;
+        deviceRows.Select(d => (d.Code, d.AccessSettingsWithheld)).Should().Equal([("S01", true)], "that access settings were withheld travels, never what they were");
         imported.BundleSha256.Should().Be(exported.BundleSha256, "an operator compares the two out of band");
         imported.Counts.Should().Be(exported.Counts);
         imported.PortableGeometryHash.Should().Be(exported.PortableGeometryHash);
@@ -195,6 +261,42 @@ public sealed class SiteConfigurationTests(PostgresFixture fixture) : IAsyncDisp
 
         (await StorageKeysAsync("XCFB")).Should().ContainSingle().Which.Should().MatchRegex(StorageKeyPattern, "the key is generated, never a name from the bundle");
 
+        // Devices: registered by the registration path in Commissioning, each with a new credential that works there; the
+        // source's credential does not, and no access setting or calibration came along.
+        imported.DeviceCredentials.Count.Should().Be(1, "one device, one new credential");
+        var issued = imported.DeviceCredentials[0];
+        issued.Code.Should().Be("S01");
+        DeviceCredentials.IsWellFormed(issued.Credential).Should().BeTrue();
+        var hash = await _host.ReadAsync<string>("SELECT credential_hash FROM device WHERE site_code = @secret", secret: "XCFB");
+        DeviceCredentials.Matches(issued.Credential, hash).Should().BeTrue("the new credential works at the target");
+        DeviceCredentials.Matches(sourceCredential, hash).Should().BeFalse("the source's credential does not");
+        DeviceCredentials.Matches(sourceCredential, await _host.ReadAsync<string>("SELECT credential_hash FROM device WHERE site_code = @secret", secret: "XCFA"))
+            .Should().BeTrue("the source keeps its own");
+        (await _host.ReadAsync<string>("SELECT state FROM device WHERE site_code = @secret", secret: "XCFB")).Should().Be("Commissioning");
+        (await _host.ReadAsync<string>("SELECT state FROM device WHERE site_code = @secret", secret: "XCFA")).Should().Be("Online", "the source was calibrated");
+        (await _host.ReadAsync<long>("SELECT count(*) FROM device WHERE site_code = @secret AND (allowed_sources IS NOT NULL OR client_certificate_sha256 IS NOT NULL)", secret: "XCFB"))
+            .Should().Be(0);
+        (await _host.ReadAsync<long>("SELECT count(*) FROM device_calibration WHERE site_code = @secret", secret: "XCFB")).Should().Be(0);
+        (await _host.ReadAsync<long>("""
+            SELECT count(*) FROM device d JOIN level l ON l.id = d.level_id WHERE d.site_code = 'XCFB' AND l.site_code = 'XCFB' AND l.code = 'L0' AND d.queue_zone_name = 'Snake A'
+            """)).Should().Be(1, "remapped to the target's level");
+        (await _host.ReadAsync<long>("SELECT count(*) FROM audit_entry WHERE position(@secret IN coalesce(before_summary, '') || coalesce(after_summary, '')) > 0", null,
+            issued.Credential[13..])).Should().Be(0, "no audit entry holds a credential");
+
+        // Alert rules: their codes, the target's site, no escalation contact; the answer lists the rule that needs one.
+        (await _host.ReadAsync<string>("SELECT string_agg(code, ',' ORDER BY code) FROM alert_rule WHERE site_code = @secret", secret: "XCFB")).Should().Be("R-001,R-002");
+        (await _host.ReadAsync<long>("SELECT count(*) FROM alert_rule WHERE site_code = @secret AND escalation_contact IS NOT NULL", secret: "XCFB")).Should().Be(0);
+        (await _host.ReadAsync<string>("SELECT name FROM alert_rule WHERE site_code = @secret AND code = 'R-001'", secret: "XCFB")).Should().Be(HostileName, "kept as data");
+        (await _host.ReadAsync<string>("SELECT owner_role FROM alert_rule WHERE site_code = @secret AND code = 'R-001'", secret: "XCFB")).Should().Be(RoleCodes.BorderShiftSupervisor);
+        imported.RulesNeedingEscalationContact.Should().Equal("R-001");
+        imported.DevicesNeedingAccessSettings.Should().Equal(["S01"], "the source device had source networks and a certificate pin");
+
+        // Displays: unpaired, at the target site, with their entries.
+        (await _host.ReadAsync<long>("SELECT count(*) FROM display WHERE site_code = @secret AND code = 'CFRT1' AND credential_hash IS NULL AND credential_prefix IS NULL", secret: "XCFB"))
+            .Should().Be(1);
+        imported.Notes.Should().Contain([SiteConfigurationErrors.DevicesArriveCommissioning, SiteConfigurationErrors.AccessSettingsWithheld, SiteConfigurationErrors.DisplaysArriveUnpaired,
+            SiteConfigurationErrors.RulesAndDisplaysWaitForPublication, SiteConfigurationErrors.EscalationContactsWithheld]);
+
         var published = await PublishAsync(admin, imported.DraftProfileId!.Value);
         var again = Ok(await _host.AsCallerAsync(admin, s => Configuration(s).ExportAsync("XCFB", Ct)));
         again.PortableGeometryHash.Should().Be(exported.PortableGeometryHash, "the round trip keeps the portable geometry hash");
@@ -202,8 +304,10 @@ public sealed class SiteConfigurationTests(PostgresFixture fixture) : IAsyncDisp
         again.Counts.Should().Be(exported.Counts);
 
         var audit = await _host.ReadAsync<string>("SELECT after_summary FROM audit_entry WHERE action = 'SiteConfiguration.Imported' AND target_name = @secret", secret: "XCFB");
-        audit.Should().Contain(exported.BundleSha256).And.Contain("\"outcome\":\"imported\"").And.Contain("\"desks\":3");
-        audit.Should().NotContain("script").And.NotContain("onerror").And.NotContain("OR '1'", "the audit holds no part content");
+        Holds(audit, "the audit holds the bundle hash, the outcome and the counts, and no part content",
+            [exported.BundleSha256, "\"outcome\":\"imported\"", "\"desks\":3", "\"devices\":1", "\"alertRules\":2", "\"displays\":1"],
+            ["script", "onerror", "OR '1'", "S01"]);
+        System.Text.RegularExpressions.Regex.IsMatch(audit, "ard[kp]_").Should().BeFalse("the audit holds no credential");
         (await _host.ReadAsync<string>("SELECT after_summary FROM audit_entry WHERE action = 'SiteConfiguration.Exported' AND target_name = @secret", secret: "XCFA"))
             .Should().Contain(exported.BundleSha256);
     }
@@ -270,7 +374,7 @@ public sealed class SiteConfigurationTests(PostgresFixture fixture) : IAsyncDisp
 
         // Then the same bundle imports whole.
         Ok(await _host.AsCallerAsync(admin, s => Configuration(s).ImportAsync("XCFG", Request(bundle), "QXG", Ct)));
-        (await RecordsAsync("XCFG")).Should().Be(1 + 2 + 2 + 3 + 2 + 1 + 2);
+        (await RecordsAsync("XCFG")).Should().Be(1 + 2 + 2 + 3 + 2 + 1 + 2 + 1 + 2, "terminal, levels, checkpoints, desks, mappings, profile, plans, device, rules");
         (await StorageKeysAsync("XCFG")).Should().HaveCount(2).And.OnlyContain(key => System.Text.RegularExpressions.Regex.IsMatch(key, StorageKeyPattern));
     }
 
@@ -286,20 +390,140 @@ public sealed class SiteConfigurationTests(PostgresFixture fixture) : IAsyncDisp
         var storage = (SwitchableFileStorage)_host.Provider.GetRequiredService<IFileStorage>();
         storage.Arm(failAt: 0);
 
+        SiteConfigurationImportViewModel imported;
         await using (var scope = _host.Provider.CreateAsyncScope())
         {
             var caller = (TestCurrentUser)scope.ServiceProvider.GetRequiredService<ICurrentUser>();
             caller.Id = admin;
             caller.UserName = "it-admin";
-            Ok(await Configuration(scope.ServiceProvider).ImportAsync("XCFQ", Request(bundle), "QXQ", Ct));
+            imported = Ok(await Configuration(scope.ServiceProvider).ImportAsync("XCFQ", Request(bundle), "QXQ", Ct));
             await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().RollbackAsync(Ct);
         }
 
-        (await RecordsAsync("XCFQ")).Should().Be(0);
+        imported.DeviceCredentials.Count.Should().Be(1, "the device was registered before the rollback");
+        imported.Counts.AlertRules.Should().Be(2);
+        (await RecordsAsync("XCFQ")).Should().Be(0, "no record of any part, the device included, survives the rollback");
+        (await _host.ReadAsync<long>("SELECT count(*) FROM audit_entry WHERE action = 'Device.Registered' AND after_summary LIKE '%' || @secret || '%'", null,
+            imported.DeviceCredentials[0].Credential[..13])).Should().Be(0, "the registration's audit entry went with it");
         (await StoredAsync(storage, storage.Saved.Should().ContainSingle().Subject)).Should().BeFalse("the rollback removes the stored file");
         (await _host.ReadAsync<long>("SELECT count(*) FROM audit_entry WHERE action = 'SiteConfiguration.Imported' AND target_name = @secret", secret: "XCFQ")).Should().Be(0);
-        (await _host.ReadAsync<string>("SELECT after_summary FROM audit_entry WHERE action = 'SiteConfiguration.ImportFailed' AND target_name = @secret", secret: "XCFQ"))
-            .Should().Contain("\"outcome\":\"failed\"").And.Contain("rolled back after its records were written");
+        (await _host.ReadAsync<long>("SELECT count(*) FROM audit_entry WHERE action = 'SiteConfiguration.ImportFailed' AND target_name = @secret", secret: "XCFQ"))
+            .Should().Be(1, "one failure, one entry");
+        var failed = await _host.ReadAsync<string>("SELECT after_summary FROM audit_entry WHERE action = 'SiteConfiguration.ImportFailed' AND target_name = @secret", secret: "XCFQ");
+        Holds(failed, "the failure is recorded with its fixed reason", ["\"outcome\":\"failed\"", "rolled back after its records were written"]);
+        System.Text.RegularExpressions.Regex.IsMatch(failed, "ard[kp]_").Should().BeFalse("the failure entry holds no credential");
+    }
+
+    [Fact]
+    public async Task Import_Should_ApplyTheRuleServicesRoleCheck_When_TheCallerIsNotASystemAdministrator()
+    {
+        // The endpoint needs SiteConfiguration.Transfer, which only system administrators hold, so this caller cannot reach
+        // the import through the API today; the service applies the rule service's role check all the same (CWE-863, CWE-269).
+        var admin = await AdministratorAsync("ro");
+        await SourceAsync(admin, "XCFX", "QXX");
+        var bundle = Ok(await _host.AsCallerAsync(admin, s => Configuration(s).ExportAsync("XCFX", Ct))).Bundle;
+        await SiteAsync(admin, "XCFY");
+        await AirportAsync(admin, "QXY");
+        var supervisor = await _host.CreateUserAsync("it.cfg.supervisor", roles: [RoleCodes.BorderShiftSupervisor]);
+        await _host.ReadAsync<int>("UPDATE \"user\" SET all_sites = true WHERE id = @id RETURNING 1", supervisor);
+        var rules = System.Text.Json.JsonSerializer.Deserialize<List<AlertRulePartRow>>(Convert.FromBase64String(bundle.Parts[SiteConfigurationBundles.AlertRules]),
+            SiteConfigurationParts.Json)!;
+        var owned = rules.Single(r => r.Code == "R-001");
+        owned.OwnerRole.Should().Be(RoleCodes.BorderShiftSupervisor);
+        ImportSiteConfigurationRequest With(params AlertRulePartRow[] only) => Rehashed(bundle, SiteConfigurationBundles.AlertRules, SiteConfigurationParts.Write(only.ToList()));
+
+        foreach (var (what, refused) in new[]
+                 {
+                     ("a rule without an owner (every role's)", With(rules.Single(r => r.OwnerRole is null))),
+                     ("an owner role the caller does not hold", With(owned with { OwnerRole = RoleCodes.TerminalDutyManager })),
+                     ("an escalation role the caller does not hold", With(owned with { EscalateToRole = RoleCodes.HandlerStationManager }))
+                 })
+        {
+            (await _host.AsCallerAsync(supervisor, s => Configuration(s).ImportAsync("XCFY", refused, "QXY", Ct))).ErrorMessages
+                .Should().Equal([SiteConfigurationErrors.InvalidAlertRules], what);
+            (await RecordsAsync("XCFY")).Should().Be(0, what);
+        }
+
+        // Only roles the caller holds: past the role check, and the whole import goes through.
+        var held = Ok(await _host.AsCallerAsync(supervisor, s => Configuration(s).ImportAsync("XCFY",
+            With(owned with { EscalateToRole = RoleCodes.BorderShiftSupervisor }), "QXY", Ct)));
+        held.Counts.AlertRules.Should().Be(1);
+        (await _host.ReadAsync<string>("SELECT owner_role || '/' || escalate_to_role FROM alert_rule WHERE site_code = @secret", secret: "XCFY"))
+            .Should().Be($"{RoleCodes.BorderShiftSupervisor}/{RoleCodes.BorderShiftSupervisor}");
+    }
+
+    [Fact]
+    public async Task Import_Should_RefuseADisplayCodeALiveDisplayHoldsAndWriteNothing_When_TheSourceStillHasIt()
+    {
+        var admin = await AdministratorAsync("dc");
+        await SourceAsync(admin, "XCFR", "QXR", displayCode: "CFDC1");
+        var bundle = Ok(await _host.AsCallerAsync(admin, s => Configuration(s).ExportAsync("XCFR", Ct))).Bundle;
+        await SiteAsync(admin, "XCFS");
+        await AirportAsync(admin, "QXS");
+
+        var refused = await _host.AsCallerAsync(admin, s => Configuration(s).ImportAsync("XCFS", Request(bundle), "QXS", Ct));
+
+        refused.ErrorMessages.Should().Equal(SiteConfigurationErrors.DisplayCodeTaken);
+        SiteConfigurationErrors.Conflicts.Should().Contain(SiteConfigurationErrors.DisplayCodeTaken, "the controller answers 409");
+        (await RecordsAsync("XCFS")).Should().Be(0);
+        (await _host.ReadAsync<string>("SELECT after_summary FROM audit_entry WHERE action = 'SiteConfiguration.ImportRefused' AND target_name = @secret", secret: "XCFS"))
+            .Should().Contain(SiteConfigurationErrors.DisplayCodeTaken).And.NotContain("CFDC1", "the fixed text names no code");
+
+        await DeleteDisplaysAsync(admin, "XCFR");
+        Ok(await _host.AsCallerAsync(admin, s => Configuration(s).ImportAsync("XCFS", Request(bundle), "QXS", Ct))).Counts.Displays.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Import_Should_RefuseARuleOrDisplay_When_ItNamesAZoneTheImportedDraftLacks()
+    {
+        var admin = await AdministratorAsync("dz");
+        await SourceAsync(admin, "XCFT", "QXT", displayCode: "CFDZ1");
+        var exported = Ok(await _host.AsCallerAsync(admin, s => Configuration(s).ExportAsync("XCFT", Ct)));
+        await DeleteDisplaysAsync(admin, "XCFT");
+        await SiteAsync(admin, "XCFU");
+        await AirportAsync(admin, "QXU");
+        var rules = System.Text.Json.JsonSerializer.Deserialize<List<AlertRulePartRow>>(Convert.FromBase64String(exported.Bundle.Parts[SiteConfigurationBundles.AlertRules]),
+            SiteConfigurationParts.Json)!;
+        var displays = System.Text.Json.JsonSerializer.Deserialize<List<DisplayPartRow>>(Convert.FromBase64String(exported.Bundle.Parts[SiteConfigurationBundles.Displays]),
+            SiteConfigurationParts.Json)!;
+
+        var ghostRule = Rehashed(exported.Bundle, SiteConfigurationBundles.AlertRules, SiteConfigurationParts.Write(rules.Select(r => r with { Zones = ["Snake B"] }).ToList()));
+        var healthOnBand = Rehashed(exported.Bundle, SiteConfigurationBundles.AlertRules, SiteConfigurationParts.Write(rules.Select(r => r with
+        {
+            Zones = ["Overflow A"], Metric = "TrackCompletion", Comparator = "LessThan", Threshold = 80, ClearThreshold = null, MinQueueLength = null, LeadMinutes = null
+        }).ToList()));
+        var displayOnBand = Rehashed(exported.Bundle, SiteConfigurationBundles.Displays,
+            SiteConfigurationParts.Write(displays.Select(d => d with { Entries = [d.Entries[0] with { Zone = "Overflow A" }] }).ToList()));
+
+        (await _host.AsCallerAsync(admin, s => Configuration(s).ImportAsync("XCFU", ghostRule, "QXU", Ct))).ErrorMessages
+            .Should().Equal(SiteConfigurationErrors.AlertRuleZonesNotInProfile);
+        (await _host.AsCallerAsync(admin, s => Configuration(s).ImportAsync("XCFU", healthOnBand, "QXU", Ct))).ErrorMessages
+            .Should().Equal([SiteConfigurationErrors.AlertRuleZonesNotInProfile], "a health check watches queue zones only");
+        (await _host.AsCallerAsync(admin, s => Configuration(s).ImportAsync("XCFU", displayOnBand, "QXU", Ct))).ErrorMessages
+            .Should().Equal(SiteConfigurationErrors.DisplayZonesNotInProfile);
+        (await RecordsAsync("XCFU")).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Import_Should_LeaveNothingBehind_When_TheRegistrationPathRefusesALaterDeviceAfterRecordsFilesAndADeviceWereWritten()
+    {
+        var admin = await AdministratorAsync("dv");
+        await SourceAsync(admin, "XCFV", "QXV");
+        var bundle = Ok(await _host.AsCallerAsync(admin, s => Configuration(s).ExportAsync("XCFV", Ct))).Bundle;
+        await SiteAsync(admin, "XCFW");
+        await AirportAsync(admin, "QXW");
+        var devices = System.Text.Json.JsonSerializer.Deserialize<List<DevicePartRow>>(Convert.FromBase64String(bundle.Parts[SiteConfigurationBundles.Devices]),
+            SiteConfigurationParts.Json)!;
+        // The second device hangs inside the level but far from its queue zone: the registration path's reach check refuses it.
+        var farAway = Rehashed(bundle, SiteConfigurationBundles.Devices, SiteConfigurationParts.Write(new List<DevicePartRow> { devices[0], devices[0] with { Code = "S02", X = 90, Y = 45 } }));
+        var storage = (SwitchableFileStorage)_host.Provider.GetRequiredService<IFileStorage>();
+        storage.Arm(failAt: 0);
+
+        (await _host.AsCallerAsync(admin, s => Configuration(s).ImportAsync("XCFW", farAway, "QXW", Ct))).ErrorMessages.Should().Equal(SiteConfigurationErrors.InvalidDevices);
+
+        (await RecordsAsync("XCFW")).Should().Be(0, "the first device, the records and the plan are all rolled back");
+        (await StoredAsync(storage, storage.Saved.Should().ContainSingle("the plan's file was stored before the devices").Subject)).Should().BeFalse();
+        (await _host.ReadAsync<long>("SELECT count(*) FROM audit_entry WHERE action = 'SiteConfiguration.ImportRefused' AND target_name = @secret", secret: "XCFW")).Should().Be(1);
     }
 
     [Fact]

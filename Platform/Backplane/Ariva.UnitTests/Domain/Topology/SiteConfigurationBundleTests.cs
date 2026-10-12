@@ -23,7 +23,10 @@ public sealed class SiteConfigurationBundleTests
         [SiteConfigurationBundles.Topology] = Encoding.UTF8.GetBytes(EmptyTopology),
         [SiteConfigurationBundles.DeskCodeMappings] = "[]"u8.ToArray(),
         [SiteConfigurationBundles.ZoneProfile] = "[]"u8.ToArray(),
-        [SiteConfigurationBundles.FloorPlans] = "[]"u8.ToArray()
+        [SiteConfigurationBundles.FloorPlans] = "[]"u8.ToArray(),
+        [SiteConfigurationBundles.Devices] = "[]"u8.ToArray(),
+        [SiteConfigurationBundles.AlertRules] = "[]"u8.ToArray(),
+        [SiteConfigurationBundles.Displays] = "[]"u8.ToArray()
     };
 
     private static ImportSiteConfigurationRequest Request(SiteConfigurationBundleViewModel bundle) =>
@@ -46,7 +49,7 @@ public sealed class SiteConfigurationBundleTests
         bundle.Parts[SiteConfigurationBundles.Topology].Should().Be(Convert.ToBase64String(Encoding.UTF8.GetBytes(EmptyTopology)));
         // The canonical form is a contract: an operator compares this value out of band. Recomputed independently in Python.
         SiteConfigurationBundles.BundleSha256(bundle.FormatVersion, bundle.SourceSite, bundle.ExportedAtUtc, bundle.Manifest)
-            .Should().Be("26e54f8a9936597c13cbb1f59e785c96ff2a4e952ea5d55d7ff2004dd5c4b8b3");
+            .Should().Be("be523a50b6a59a947bddc1b5bc33afab5258fcda8e77dce81ab2054b45d504cc");
     }
 
     [Fact]
@@ -62,7 +65,7 @@ public sealed class SiteConfigurationBundleTests
     public void Build_Should_RefuseAnUnknownPart_When_OneIsGiven()
     {
         var parts = EmptyParts();
-        parts["devices"] = "[]"u8.ToArray();
+        parts["users"] = "[]"u8.ToArray();
 
         var build = () => SiteConfigurationBundles.Build("DMO", ExportedAt, parts);
 
@@ -98,7 +101,8 @@ public sealed class SiteConfigurationBundleTests
         { "a part without its entry", SiteConfigurationErrors.PartsDoNotMatchManifest },
         { "a configuration part missing from both", SiteConfigurationErrors.PartsDoNotMatchManifest },
         { "an unknown part in both", SiteConfigurationErrors.PartsDoNotMatchManifest },
-        { "a later story's part in both", SiteConfigurationErrors.PartsDoNotMatchManifest },
+        { "a part this version never exports in both", SiteConfigurationErrors.PartsDoNotMatchManifest },
+        { "an ARV-122b part missing from both", SiteConfigurationErrors.PartsDoNotMatchManifest },
         { "an extra file part after a gap", SiteConfigurationErrors.PartsDoNotMatchManifest },
         { "a file part beyond the floor plan bound", SiteConfigurationErrors.PartsDoNotMatchManifest },
         { "an upper-case hash", SiteConfigurationErrors.ManifestNotValid },
@@ -129,7 +133,8 @@ public sealed class SiteConfigurationBundleTests
             "a part without its entry" => With(request, parts: p => p[SiteConfigurationBundles.FloorPlanFile(1)] = "AQID"),
             "a configuration part missing from both" => With(request, manifest: m => m.Remove(SiteConfigurationBundles.ZoneProfile), parts: p => p.Remove(SiteConfigurationBundles.ZoneProfile)),
             "an unknown part in both" => With(request, manifest: m => m[hostile] = topologyHash, parts: p => p[hostile] = "W10="),
-            "a later story's part in both" => With(request, manifest: m => m["devices"] = SiteConfigurationBundles.Sha256("[]"u8), parts: p => p["devices"] = "W10="),
+            "a part this version never exports in both" => With(request, manifest: m => m["users"] = SiteConfigurationBundles.Sha256("[]"u8), parts: p => p["users"] = "W10="),
+            "an ARV-122b part missing from both" => With(request, manifest: m => m.Remove(SiteConfigurationBundles.Devices), parts: p => p.Remove(SiteConfigurationBundles.Devices)),
             "an extra file part after a gap" => With(request, manifest: m => m[SiteConfigurationBundles.FloorPlanFile(2)] = SiteConfigurationBundles.Sha256([1]),
                 parts: p => p[SiteConfigurationBundles.FloorPlanFile(2)] = "AQ=="),
             "a file part beyond the floor plan bound" => With(request, manifest: m => m["floorPlanFile.201"] = SiteConfigurationBundles.Sha256([1]), parts: p => p["floorPlanFile.201"] = "AQ=="),
@@ -161,7 +166,7 @@ public sealed class SiteConfigurationBundleTests
         var atBound = Valid(parts);
         atBound.Manifest.Should().HaveCount(SiteConfigurationLimits.MaxParts);
 
-        SiteConfigurationBundles.Open(atBound).HasErrors.Should().BeFalse("4 configuration parts and 200 files are the bound");
+        SiteConfigurationBundles.Open(atBound).HasErrors.Should().BeFalse("7 configuration parts and 200 files are the bound");
 
         var beyond = With(atBound, manifest: m => m["extra"] = new string('0', 64), parts: p => p["extra"] = "AQ==");
         SiteConfigurationBundles.Open(beyond).ErrorMessages.Should().Equal(SiteConfigurationErrors.PartsDoNotMatchManifest);
@@ -232,10 +237,12 @@ public sealed class SiteConfigurationBundleTests
     [InlineData("zoneProfile", true)]
     [InlineData("floorPlans", true)]
     [InlineData("floorPlanFile.7", true)]
+    [InlineData("devices", true)]
+    [InlineData("alertRules", true)]
+    [InlineData("displays", true)]
     [InlineData("Topology", false)]
-    [InlineData("devices", false)]
-    [InlineData("alertRules", false)]
-    [InlineData("displays", false)]
+    [InlineData("users", false)]
+    [InlineData("deviceCalibrations", false)]
     public void IsKnownPart_Should_KnowOnlyThisVersionsParts_When_Asked(string name, bool known) =>
         SiteConfigurationBundles.IsKnownPart(name).Should().Be(known);
 

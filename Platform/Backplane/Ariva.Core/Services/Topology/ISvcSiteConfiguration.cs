@@ -4,10 +4,13 @@ using Ariva.Core.Domain.ViewModels;
 namespace Ariva.Core.Services.Topology;
 
 /// <summary>
-/// Site configuration export and import (ARV-122a): a site's topology, desk code mappings, published zone profile and
-/// floor plans as one bundle with a SHA-256 manifest, imported into an empty site only. Both are critical actions (the
-/// controller asks for a recent second factor), scoped to the caller's sites (404 outside, nothing echoed) and audited
-/// with the bundle hash, the counts and the outcome, never a part's content.
+/// Site configuration export and import (ARV-122a, ARV-122b): a site's topology, desk code mappings, published zone
+/// profile, floor plans, devices, alert rules and displays as one bundle with a SHA-256 manifest, imported into an empty
+/// site only. No credential, calibration, access setting, escalation contact or pairing secret is exported; an import
+/// registers each device through the registration path with a new credential (answered once) and leaves displays
+/// unpaired. Both are critical actions (the controller asks for a recent second factor), scoped to the caller's sites
+/// (404 outside, nothing echoed) and audited with the bundle hash, the counts and the outcome, never a part's content
+/// or a credential.
 /// </summary>
 public interface ISvcSiteConfiguration : ISvcScoped
 {
@@ -53,23 +56,40 @@ public static class SiteConfigurationErrors
     public const string TooManyRecords = "The site has more records of a kind than a bundle holds.";
     public const string TooLargeToExport = "The site's configuration is larger than an import takes.";
     public const string FloorPlanFileUnreadable = "A floor plan file of the site is missing from storage or does not match its record.";
+    public const string InvalidDevices = "The devices part of the bundle is not valid, or a device does not meet the registration's rules at this site.";
+    public const string InvalidAlertRules = "The alert rules part of the bundle is not valid.";
+    public const string AlertRuleZonesNotInProfile = "An alert rule of the bundle names a zone the imported zone profile does not have as a queue zone or overflow band (health checks: queue zones only).";
+    public const string InvalidDisplays = "The displays part of the bundle is not valid.";
+    public const string DisplayZonesNotInProfile = "A display of the bundle shows a zone that is not a queue zone of the imported zone profile.";
+    public const string DisplayCodeTaken = "A display code of the bundle is already used by a live display here; display codes are unique across the deployment.";
+    public const string DeviceOnRemovedLevel = "A device of the site hangs on a level that no longer exists; move or retire it first.";
+    public const string ReferencesOutsideProfile = "A device, alert rule or display names a zone the published zone profile does not have; change it, or publish a profile with that zone, first.";
+    public const string RuleCodeTooHigh = "An alert rule code of the bundle is above R-100000, which an import does not take, so the target site keeps codes for new rules.";
+    public const string RuleCodesBeyondImportBound = "An alert rule of the site has a code above R-100000, which an import does not take, so the site cannot be exported whole.";
 
     /// <summary>Notes of the answers (fixed texts).</summary>
     public const string NoPublishedProfile = "The site has no published zone profile, so the bundle carries none.";
     public const string ProfileArrivesAsDraft = "The zone profile arrived as a draft: review it and publish it with a recent second factor.";
     public const string BundleCarriesNoProfile = "The bundle carries no zone profile.";
+    public const string DevicesArriveCommissioning = "Devices arrived in Commissioning, each with a new credential shown this once: install it on the device and calibrate it.";
+    public const string AccessSettingsWithheld = "Device access settings are never exported: set the source networks and certificate pin again for the devices listed in devicesNeedingAccessSettings.";
+    public const string DisplaysArriveUnpaired = "Displays arrived unpaired: issue each player's credential with the display's credential action.";
+    public const string RulesAndDisplaysWaitForPublication = "Alert rules and displays act once the imported zone profile is published.";
+    public const string EscalationContactsWithheld = "Escalation contacts are never exported: type them again for the rules listed in rulesNeedingEscalationContact.";
 
     /// <summary>Errors that mean the site's state does not allow the action (409).</summary>
     public static readonly IReadOnlySet<string> Conflicts = new HashSet<string>(StringComparer.Ordinal)
     {
-        SiteNotEmpty, TerminalTaken, AmbiguousTerminals, ProfileOnRemovedTopology, TooManyRecords, TooLargeToExport, FloorPlanFileUnreadable
+        SiteNotEmpty, TerminalTaken, AmbiguousTerminals, ProfileOnRemovedTopology, TooManyRecords, TooLargeToExport, FloorPlanFileUnreadable, DisplayCodeTaken,
+        ReferencesOutsideProfile, DeviceOnRemovedLevel, RuleCodesBeyondImportBound
     };
 }
 
 /// <summary>
-/// The bounds of a bundle (ARV-122a, CWE-120). The body is at most the 20 MB of a floor plan upload (the file-import
-/// class); a configuration part is at most 8 MB decoded and a file part at most the floor plan limit; each kind of record
-/// has its own bound, the zone profile's from the entity. A site beyond a bound is refused at export, never cut short.
+/// The bounds of a bundle (ARV-122a, ARV-122b, CWE-120). The body is at most the 20 MB of a floor plan upload (the
+/// file-import class); a configuration part is at most 8 MB decoded and a file part at most the floor plan limit; each kind
+/// of record has its own bound, the zone profile's, the alert rules' and the displays' from their own services. A site
+/// beyond a bound is refused at export, never cut short.
 /// </summary>
 public static class SiteConfigurationLimits
 {
@@ -82,14 +102,29 @@ public static class SiteConfigurationLimits
     public const int MaxDesks = 5_000;
     public const int MaxDeskCodeMappings = 10_000;
     public const int MaxFloorPlans = MaxLevels;
+    /// <summary>Devices of a site (ARV-122b): the weekly summary's bound on a site's devices.</summary>
+    public const int MaxDevices = 2_000;
+
+    /// <summary>Alert rules of a site (ARV-122b): the rule service's own bound (SvcAlertRules.MaxRulesPerSite).</summary>
+    public const int MaxAlertRules = 500;
+
+    /// <summary>Displays of a site (ARV-122b): the display service's own bound (SvcDisplays.MaxDisplaysPerSite).</summary>
+    public const int MaxDisplays = 200;
+
+    /// <summary>
+    /// The highest alert rule number an import takes (ARV-122b, lead's decision 2026-10-11): imported codes are kept and the
+    /// rule service numbers a new rule after the highest code ever used, so this leaves the target at least 899,999 codes.
+    /// </summary>
+    public const int MaxImportedRuleNumber = 100_000;
+
     public const int MaxZones = ZoneProfile.MaxZones;
     public const int MaxLines = ZoneProfile.MaxLines;
     public const int MaxNameLength = 200;
     /// <summary>A floor plan's file name, in code points (the column is varchar(200)).</summary>
     public const int MaxFileNameLength = 200;
 
-    /// <summary>The four configuration parts and one file part per floor plan.</summary>
-    public const int MaxParts = 4 + MaxFloorPlans;
+    /// <summary>The seven configuration parts and one file part per floor plan.</summary>
+    public const int MaxParts = 7 + MaxFloorPlans;
 
     /// <summary>The longest base64 text of at most <paramref name="bytes"/> bytes (padded): checked before any decoding.</summary>
     public static int Base64Length(int bytes) => checked(4 * ((bytes + 2) / 3));

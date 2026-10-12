@@ -10,7 +10,10 @@ public sealed record SiteConfigurationContent(
     IReadOnlyList<DeskCodeMappingPartRow> DeskCodeMappings,
     IReadOnlyList<ZoneProfilePartRow> ZoneProfiles,
     IReadOnlyList<FloorPlanPartRow> FloorPlans,
-    IReadOnlyDictionary<int, byte[]> FloorPlanFiles)
+    IReadOnlyDictionary<int, byte[]> FloorPlanFiles,
+    IReadOnlyList<DevicePartRow> Devices,
+    IReadOnlyList<AlertRulePartRow> AlertRules,
+    IReadOnlyList<DisplayPartRow> Displays)
 {
     /// <summary>The zone profile the bundle carries, or null (the part holds at most one; the rules check it).</summary>
     public ZoneProfilePartRow ZoneProfile => ZoneProfiles is { Count: 1 } ? ZoneProfiles[0] : null;
@@ -27,6 +30,8 @@ public static class SiteConfigurationParts
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = false,
+        // Every member of a row is present (ARV-122b review): a row cannot leave out a flag such as a withheld access setting.
+        RespectRequiredConstructorParameters = true,
         MaxDepth = 32,
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
         AllowDuplicateProperties = false,
@@ -48,13 +53,16 @@ public static class SiteConfigurationParts
             var mappings = JsonSerializer.Deserialize<List<DeskCodeMappingPartRow>>(bundle.Parts[SiteConfigurationBundles.DeskCodeMappings], Json);
             var profiles = JsonSerializer.Deserialize<List<ZoneProfilePartRow>>(bundle.Parts[SiteConfigurationBundles.ZoneProfile], Json);
             var plans = JsonSerializer.Deserialize<List<FloorPlanPartRow>>(bundle.Parts[SiteConfigurationBundles.FloorPlans], Json);
-            if (topology is null || mappings is null || profiles is null || plans is null)
+            var devices = JsonSerializer.Deserialize<List<DevicePartRow>>(bundle.Parts[SiteConfigurationBundles.Devices], Json);
+            var rules = JsonSerializer.Deserialize<List<AlertRulePartRow>>(bundle.Parts[SiteConfigurationBundles.AlertRules], Json);
+            var displays = JsonSerializer.Deserialize<List<DisplayPartRow>>(bundle.Parts[SiteConfigurationBundles.Displays], Json);
+            if (topology is null || mappings is null || profiles is null || plans is null || devices is null || rules is null || displays is null)
                 return Result.Error<SiteConfigurationContent>(SiteConfigurationErrors.PartNotReadable);
             var files = bundle.Parts
                 .Select(part => (Number: SiteConfigurationBundles.FloorPlanFileNumber(part.Key), Bytes: part.Value))
                 .Where(part => part.Number is not null)
                 .ToDictionary(part => part.Number.GetValueOrDefault(), part => part.Bytes);
-            return new Result<SiteConfigurationContent>(new SiteConfigurationContent(topology, mappings, profiles, plans, files));
+            return new Result<SiteConfigurationContent>(new SiteConfigurationContent(topology, mappings, profiles, plans, files, devices, rules, displays));
         }
         catch (JsonException)
         {
