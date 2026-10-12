@@ -76,6 +76,9 @@ public static class AccountExtensions
         // Site configuration export and import (ARV-122a): Ariva.Api.Main only, like the rest of the administration.
         services.TryAddScoped<Ariva.Core.Services.Topology.ISvcSiteConfiguration, Ariva.Infra.Services.Topology.SvcSiteConfiguration>();
         services.TryAddScoped<Ariva.Core.Services.Sensing.ISvcDevices, Ariva.Infra.Services.Sensing.SvcDevices>();
+        // CSV imports of devices and desk code mappings (ARV-123a): through the registration and mapping services above.
+        services.TryAddScoped<Ariva.Core.Services.Imports.ISvcDeviceImports, Ariva.Infra.Services.Sensing.SvcDeviceImports>();
+        services.TryAddScoped<Ariva.Core.Services.Imports.ISvcDeskCodeMappingImports, Ariva.Infra.Services.Topology.SvcDeskCodeMappingImports>();
         // The declarative device mappings shipped with Ariva (ARV-024); the registry checks names against them.
         services.TryAddSingleton<Ariva.Core.Services.Sensing.IDeviceMappingCatalog>(Ariva.Infra.Sensing.Declarative.DeclarativeMappingCatalog.Embedded);
         services.TryAddScoped<Ariva.Core.Services.Sensing.ISvcDeviceGateway, Ariva.Infra.Services.Sensing.SvcDeviceGateway>();

@@ -12,15 +12,21 @@ import { pathOf } from '../support/permission-matrix';
 // with this run's development key and auth_time moved back, so it belongs to a live session.
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const critical: { routes: { host: string; method: string; route: string }[] } = JSON.parse(
+const critical: { routes: { host: string; method: string; route: string; body?: 'multipart' }[] } = JSON.parse(
 	fs.readFileSync(path.resolve(here, '..', '..', '..', '..', '..', 'security', 'critical-actions.json'), 'utf8')
 );
 const stepUpUrl = `${hosts.main}/api/auth/step-up`;
 // Route parameters are filled like the permission matrix does ({id:guid} becomes an id that never exists).
-// A GET carries no body (fetch refuses one); every other route gets an empty JSON object (ARV-122a added the first GET).
+// A GET carries no body (fetch refuses one); every other route gets an empty JSON object (ARV-122a added the first GET),
+// or an empty form where it takes a file (ARV-123a): routing answers 415 to any other content type, before authorization.
 const routes = critical.routes
 	.filter((route) => route.host === 'main')
-	.map((route) => ({ ...route, url: `${hosts.main}${pathOf(route.route)}`, data: route.method === 'GET' ? undefined : {} }));
+	.map((route) => ({
+		...route,
+		url: `${hosts.main}${pathOf(route.route)}`,
+		data: route.method === 'GET' || route.body === 'multipart' ? undefined : {},
+		form: route.body === 'multipart' ? new FormData() : undefined
+	}));
 
 test.skip(!databaseAvailable, 'step-up needs the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true)');
 test.describe.configure({ mode: 'serial' });
@@ -46,7 +52,7 @@ test('a password-only session is asked to step up on every critical action', asy
 	expect(routes.length).toBeGreaterThan(0);
 
 	for (const route of routes) {
-		const response = await call(route.method, route.url, { token: token.accessToken, data: route.data });
+		const response = await call(route.method, route.url, { token: token.accessToken, data: route.data, form: route.form });
 		expectMfaRequired(response.status(), response.headers()['www-authenticate'], await response.json(), `${route.method} ${route.route}`);
 	}
 
@@ -64,10 +70,10 @@ test('an old second factor is refused, step-up renews it in the same session, a 
 	const old = aged(fresh, 16);
 
 	for (const route of routes) {
-		const recent = await call(route.method, route.url, { token: aged(fresh, 14), data: route.data });
+		const recent = await call(route.method, route.url, { token: aged(fresh, 14), data: route.data, form: route.form });
 		expect(recent.status(), `${route.route} within 15 minutes`).not.toBe(401);
 
-		const refused = await call(route.method, route.url, { token: old, data: route.data });
+		const refused = await call(route.method, route.url, { token: old, data: route.data, form: route.form });
 		expectMfaRequired(refused.status(), refused.headers()['www-authenticate'], await refused.json(), `${route.method} ${route.route}`);
 	}
 
@@ -85,7 +91,7 @@ test('an old second factor is refused, step-up renews it in the same session, a 
 	expect(Date.now() / 1000 - (claims.auth_time as number)).toBeLessThan(60);
 
 	for (const route of routes) {
-		const reached = await call(route.method, route.url, { token: renewed, data: route.data });
+		const reached = await call(route.method, route.url, { token: renewed, data: route.data, form: route.form });
 		expect(reached.status(), `${route.route} after step-up`).not.toBe(401);
 	}
 

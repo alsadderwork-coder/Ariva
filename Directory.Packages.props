@@ -40,6 +40,7 @@
     <PackageVersion Include="ClosedXML" Version="0.104.2" />
     <PackageVersion Include="ConfigurationSubstitutor" Version="1.5.1" />
     <PackageVersion Include="Cronos" Version="0.11.1" />
+    <!-- CsvHelper: Ariva.Infra's CSV imports (ARV-123a), the low-level CsvParser only (docs/product/decisions.md) -->
     <PackageVersion Include="CsvHelper" Version="33.1.0" />
     <PackageVersion Include="Fluentx" Version="6.1.9" />
     <PackageVersion Include="Handlebars.Net" Version="2.1.6" />

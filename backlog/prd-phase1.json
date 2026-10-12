@@ -1015,7 +1015,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 39,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. Split from ARV-123 on 2026-10-12 (the backend alone is about ARV-122a's size). CsvHelper 33.1.0 (already pinned in Directory.Packages.props) referenced from Ariva.Infra, its low-level CsvParser only (lead call). Device code convention per site is TC-40 (survey); the import accepts any code that passes the existing pattern.",
       "dependsOn": [
         "ARV-021",
@@ -1038,10 +1038,48 @@
       ],
       "priority": 39,
       "passes": false,
-      "notes": "Size S. Split from ARV-123 on 2026-10-12.",
+      "notes": "Size S. Split from ARV-123 on 2026-10-12. From the ARV-123a review (N6): the preview answers row content, hostile models and zones included, as JSON data; the screens render it as text only (test it).",
       "dependsOn": [
         "ARV-123a"
       ]
+    },
+    {
+      "id": "ARV-155",
+      "title": "[E15] CSV imports: lock and upload contention, tokens kept out of test messages, absent optional columns",
+      "description": "Follow-ups from the ARV-123a security review (N1, N4, N5). A preview holds the site row lock for its dry run (about 3 s at 500 devices, 12 s at 10,000 mappings) and the host's single upload permit, so a holder of CreateDevice or CreateDeskCodeMapping looping previews delays single registrations, calibrations, publications and configuration imports at the site and makes other uploads answer 429. CWEs to review: CWE-400, CWE-532.",
+      "acceptanceCriteria": [
+        "A per-user limit on import previews (or a partitioned upload policy) and a lock timeout on the imports' site lock, answering 429 or 409 with fixed texts; the contention and its bound recorded in docs/security",
+        "Tests assert a preview token's absence as a boolean (E2E `previewToken === null`, integration `(token is null).Should().BeTrue()`), so a failure never prints a token",
+        "A refusal in an optional column the file does not carry answers no column (null), never column 0",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 39,
+      "passes": false,
+      "notes": "Size S.",
+      "dependsOn": [
+        "ARV-123a"
+      ]
+    },
+    {
+      "id": "ARV-156",
+      "title": "[E17] ValidationReaderLoginTests robust under load",
+      "description": "`ValidationReaderLoginTests.Host_Should_StartWithTheReaderLoginOnlyWhenItIsMain_When_RunInACluster(host: \"Cronz\")` failed once with \"Cannot access a disposed object. Object name: 'IServiceProvider'\" while a mutation run loaded the machine (ARV-123a story gate, 2026-10-12), and passed in the next run and three times alone. A failing test is never a flake: find the race (a host built and disposed while something still resolves from it) and fix the test or the code.",
+      "acceptanceCriteria": [
+        "The cause is found and named in backlog/progress.md; the test or the code is fixed, not skipped or retried",
+        "The test passes 50 times in a row with the machine loaded (for example beside a mutation run or with a CPU stress)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 39,
+      "passes": false,
+      "notes": "Size XS.",
+      "dependsOn": []
     },
     {
       "id": "ARV-128",

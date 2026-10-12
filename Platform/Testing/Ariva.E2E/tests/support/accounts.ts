@@ -275,7 +275,12 @@ export function accounts() {
 		// ARV-122a: exports and imports site configurations (both critical: a second factor). The second is an administrator
 		// of E2XS only (a site no other suite uses), for the answers about a site out of reach.
 		siteConfigAdmin: account('e2e.siteconfadmin', ['SystemAdministrator'], false, true, ['*']),
-		siteConfigScopedAdmin: account('e2e.siteconfscoped', ['SystemAdministrator'], false, true, ['E2XS'])
+		siteConfigScopedAdmin: account('e2e.siteconfscoped', ['SystemAdministrator'], false, true, ['E2XS']),
+		// ARV-123a: CSV imports of devices (both steps critical: a second factor) and desk code mappings. A second
+		// administrator replays the first one's preview token; the third holds E2XI only (a site no other suite uses).
+		csvImportAdmin: account('e2e.csvimport', ['SystemAdministrator'], false, true, ['*']),
+		csvImportOtherAdmin: account('e2e.csvimport2', ['SystemAdministrator'], false, true, ['*']),
+		csvImportScopedAdmin: account('e2e.csvimportscoped', ['SystemAdministrator'], false, true, ['E2XI'])
 	} as const;
 }
 

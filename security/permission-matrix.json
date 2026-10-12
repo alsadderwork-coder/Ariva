@@ -3346,6 +3346,74 @@
     },
     {
       "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/sites/{siteCode}/device-imports/preview",
+      "access": "permission",
+      "permissions": [
+        "CreateDevice"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/sites/{siteCode}/device-imports/commit",
+      "access": "permission",
+      "permissions": [
+        "CreateDevice"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/sites/{siteCode}/desk-code-mapping-imports/preview",
+      "access": "permission",
+      "permissions": [
+        "CreateDeskCodeMapping"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/sites/{siteCode}/desk-code-mapping-imports/commit",
+      "access": "permission",
+      "permissions": [
+        "CreateDeskCodeMapping"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
       "method": "GET",
       "route": "/api/v1/admin/displays",
       "access": "permission",

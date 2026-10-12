@@ -34,7 +34,7 @@ Upload the plan image or CAD export for each level. Scale and align it to the se
 
 ## 2. Register devices
 
-Import the device list from the as-built pack or register each device:
+Import the device list from the as-built pack (a CSV file, below) or register each device:
 
 | Field | Notes |
 |---|---|
@@ -50,6 +50,19 @@ Import the device list from the as-built pack or register each device:
 | Status | Starts as `Commissioning` |
 
 Device statuses: `Commissioning`, `Online`, `Degraded`, `Offline`, `Retired`. A device becomes `Online` only after a passed calibration.
+
+### Import the device list (ARV-123a)
+
+Save the as-built pack's device list as a UTF-8 CSV file with a header row of these exact names, in any order: `code, family, model, transport, dialect, clockSource, terminal, level, x, y, mountingHeightMetres, orientationDegrees, queueZone`, and if you have them `mappingName, footprintLengthMetres, footprintWidthMetres, footprintRadiusMetres`. For example:
+
+```
+code,family,model,transport,dialect,clockSource,terminal,level,x,y,mountingHeightMetres,orientationDegrees,queueZone
+S-17,StereoVision,"Xovis PC2SE",HttpsPush,Xovis,Ntp,T1,L0,20.5,16,5,90,Snake A
+```
+
+Kinds are written as Ariva names them (`StereoVision`, `HttpsPush`, `Xovis`, `Ntp`); the level is named by its terminal and level codes; the zone by its name in the zone profile. Numbers are digits with an optional leading minus and decimal point: the minus is only ever the sign, and each column keeps its range (a position may be -1 m, just outside the level's edge as the request allows, an orientation never below 0); `+`, `=` and `@` are never part of a number, and no text cell may start with `=`, `+`, `-`, `@`, a tab or a carriage return. At most 500 devices and 1 MB a file.
+
+Preview the file (`POST api/v1/admin/sites/{siteCode}/device-imports/preview`, a second factor in the last 15 minutes): each row is registered and rolled back, so the answer refuses, by row and column, exactly what registering would. When nothing is refused the answer carries a token: commit the same file with it within 15 minutes (`.../commit`). Every device is registered in `Commissioning`, or none; the commit's answer shows each device's credential once. Details: [Administration guide](11-Administration-Guide.md), section 2e.
 
 ## 3. Credentials and device output
 

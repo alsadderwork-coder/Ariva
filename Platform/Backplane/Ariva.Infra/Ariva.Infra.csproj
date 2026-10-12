@@ -28,6 +28,8 @@
         <PackageReference Include="MassTransit.Kafka" />
         <PackageReference Include="Confluent.Kafka" />
         <PackageReference Include="MailKit" />
+        <!-- CSV imports (ARV-123a, lead's approval 2026-10-12): the low-level CsvParser only; no record mapping, dynamic types or class maps -->
+        <PackageReference Include="CsvHelper" />
     </ItemGroup>
 
     <ItemGroup>
