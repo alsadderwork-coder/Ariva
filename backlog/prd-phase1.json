@@ -1053,16 +1053,17 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 38,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Normal priority: an intermittent CI failure, not a product defect today.",
       "dependsOn": []
     },
     {
       "id": "ARV-162",
       "title": "[E3] Legacy unclean names: blocked at publication and found by the pre-pilot check",
-      "description": "From the ARV-159 security review (R1, R2). `ZoneProfile.CreateDraft` copies zone and line names through the Zone and Line constructors without the name rule and `Validate` does not check names (lines have no rename), so a stored unclean zone or line name is carried into every new draft and published again. And ARV-158 did not migrate the texts DisplayText guards (alert rule names, zones and contacts, display names, labels and messages, device models, notes and others), which `--check-stored-names` does not read. CWEs to review: CWE-79, CWE-501.",
+      "description": "From the ARV-159 security review (R1, R2). `ZoneProfile.CreateDraft` copies zone and line names through the Zone and Line constructors without the name rule and `Validate` does not check names (lines have no rename), so a stored unclean zone or line name is carried into every new draft and published again. And ARV-158 did not migrate the texts DisplayText guards (alert rule names, zones and contacts, display names, labels and messages, device models, notes and others), which `--check-stored-names` does not read. CWEs to review: CWE-79, CWE-501. ARV-161 (decisions point 7) adds the same gap for geometry: publication and CreateDraft do not re-check polygon simplicity.",
       "acceptanceCriteria": [
         "`ZoneProfile.Validate` refuses a draft whose zone or line name fails the name rule, with a problem text that does not repeat the name (its position or escaped form), so a legacy name blocks publication until renamed or recreated; lines gain a rename if needed",
+        "`ZoneProfile.Validate` also re-checks each zone's polygon with `Geometry.IsSimplePolygon` (ARV-161's order-independent rule), so a stored zone that was accepted before ARV-161 but now touches itself blocks publication until it is moved, and its export no longer yields a bundle the import refuses",
         "`--check-stored-names` (or a sibling check) also reads the columns DisplayText guards, read-only as today, with the result for the E2E database recorded in backlog/progress.md",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
@@ -1073,7 +1074,7 @@
       ],
       "priority": 38,
       "passes": false,
-      "notes": "Size S. Before the pilot.",
+      "notes": "Size S. Before the pilot. From the ARV-161 review (optional, Proposed for the owner): a minimum-width rule against slivers, every vertex at least 1 cm from its opposite edge (a 10 m by 0.1 mm triangle passes the 1e-4 m2 area minimum today); degenerate, not a security risk.",
       "dependsOn": [
         "ARV-159"
       ]

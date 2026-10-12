@@ -126,6 +126,23 @@ Rules:
 
 Tests: line from (-1, 0) to (1, 0). Samples (0, -1) at 0 s and (0, 1) at 2 s give one crossing at 1.0 s. Samples (0, -1), (0, 0), (0, -1) give no crossing (touch and return). Samples (2, -1) and (2, 1) give no crossing (outside the segment).
 
+The future track-crossing code (D5: crossings computed centrally from tracks) applies the side-of-line rule above itself: the side is the sign of the cross product, a sample exactly on the line keeps the side of the previous sample, and a track that touches the line without passing it is not a crossing. It does not use `Geometry.SegmentsIntersect` (below), which answers another question: whether two closed segments meet, a touch included. A touch must count for zone validity and a footprint's reach, and must not count as a crossing. Today counts come from vendor crossing events, so no count depends on either.
+
+### Segment intersection for zone validity and footprint reach (ARV-161)
+
+`Geometry.SegmentsIntersect(p1, p2, q1, q2)` serves `IsSimplePolygon` (zone validity, F22) and `Overlaps` (a device footprint reaching its zone, ARV-021). It is true when the closed segments touch or cross:
+
+```
+touch     an end of either segment is closer than Tolerance (1 cm) to the other segment (DistanceToSegment < 0.01 m):
+          a shared end, an end on the other segment, a collinear overlap, a segment of no length on the other
+cross     otherwise, each segment's ends lie on opposite sides of the other's line, each at least 1 cm from it:
+          side(a, b, r) = sign of cross(b - a, r - a), and 0 when |cross| < 0.01 x |b - a|
+```
+
+A cross product is a length squared, so it is compared with the tolerance times the segment's length: the point's distance to the line against 1 cm. Before any arithmetic, the ends of each segment are put in order (by x, then y) and then the two segments, so all eight orders and directions of the arguments compute with the same numbers and give one answer, rounding included. An end within 1 cm of the other's line but beyond its end has side 0 and gives no crossing; segments that do cross then always have a touch, because the part between that end and the crossing passes within 1 cm of the other segment's end. So `IsSimplePolygon` refuses a vertex on, or closer than 1 cm to, an edge that is not its own, and `Overlaps` counts rings that only touch, or come within 1 cm, as overlapping, in any vertex order. Before ARV-161 a side was 0 only for a cross product below 1e-12 m2 (in effect exactly zero), so at an exact touch the order of the points decided the answer (CsCheck seed `cCcbgdLcNjA6`), and a vertex 1 to 9 mm beside another edge passed as simple.
+
+Tests: `GeometryTests`, each case in all eight orders or every rotation and direction of the rings: the seed's segments sharing an end at the origin (3.5e-14 m apart), true; an end 9 mm from the other segment true, 11 mm false; collinear segments 9 mm apart true, 11 mm false; an end on the other segment in decimals binary cannot hold, true, also a kilometre from the origin; an end 9 mm from the other's line beyond its end with the segments crossing, true; segments of no length; a ring with a vertex on another edge, 5 mm from it or a spike folding back 1 mm beside an earlier edge, not simple, 2 cm from it, simple; a footprint 5 mm from its zone overlapping, 2 cm from it not. Properties below.
+
 ## F5. Realised wait
 
 Source: D4.
@@ -935,7 +952,7 @@ About 9 GB a day uncompressed, 1 to 2 GB a day compressed, 80 to 160 GB for a 90
 
 ARV-016. A zone profile version is publishable when:
 
-- every zone is a simple polygon of 3 to 200 vertices with non-zero area, every vertex inside its level (0 to width, 0 to depth metres), and no two vertices closer than 1 cm;
+- every zone is a simple polygon of 3 to 200 vertices with non-zero area, every vertex inside its level (0 to width, 0 to depth metres), no two vertices closer than 1 cm, and no edge touching another that is not its neighbour, where a vertex on or closer than 1 cm to an edge that is not its own touches it (F4, segment intersection, ARV-161);
 - zone names are unique in the profile, ignoring case; line names likewise;
 - every queue zone has at least one entry line and exactly one exit line, each lying on one edge of that zone (both ends within 1 cm of the same edge);
 - every overflow zone has an overflow entry line on one of its edges; service, staff and overflow zones hang off a queue zone on the same level; only service and staff zones name a desk;
@@ -1014,13 +1031,13 @@ Tests: `Ariva.UnitTests/Reports/WeeklySummaryTests` (Monday 9:00 with 17 waits o
 
 ## Property tests (ARV-070)
 
-Beyond the fixed cases above, `Ariva.UnitTests/Properties/FormulaPropertyTests.cs` checks invariants over generated inputs with CsCheck (2,000 inputs per property in every build; `ARIVA_FUZZ_ITERATIONS=10000` runs 50,000, done once for ARV-070). A failure prints the shrunk input and its seed; the case then joins the formula's own tests.
+Beyond the fixed cases above, `Ariva.UnitTests/Properties/FormulaPropertyTests.cs` checks invariants over generated inputs with CsCheck (2,000 inputs per property in every build, at least 10,000 for the segment intersection properties since ARV-161; `ARIVA_FUZZ_ITERATIONS=10000` runs 50,000, done once for ARV-070). A failure prints the shrunk input and its seed; the case then joins the formula's own tests, and the seed is kept as a fixed regression case beside its property (`cCcbgdLcNjA6` for F4).
 
 | Formula | Property | Status |
 |---|---|---|
 | F1 | Footprints are positive; length never shrinks as the sensor goes higher, nor the area beyond the 0.1 m rounding | Property |
 | F2, F3, F21 | Sensor counts, BOQ footprints and sizing arithmetic | Not in Ariva.Core (planning and BOQ work); no property |
-| F4 | Segment intersection does not depend on order or direction; a ring keeps its area (sign flips when reversed) and its contents when rotated or reversed; a convex ring is simple and holds the mean of its corners | Property |
+| F4 | Segment intersection gives one answer in all eight orders and directions (also on seed `cCcbgdLcNjA6`); an end placed on the other segment is a touch; a segment moved sideways touches within 1 cm and not beyond, whatever its length; on a 10 cm grid the answer is the exact one from integer arithmetic; a simple ring and the overlap of two rings do not depend on where a ring starts or its direction; a ring keeps its area (sign flips when reversed) and its contents when rotated or reversed; a convex ring is simple and holds the mean of its corners | Property |
 | F5, F6 | Realised waits and their attribution | Covered by the reference scenario, the queue engine tests and mutation testing (ARV-069); the engine's state machine has no independent model to generate against |
 | F7 | A percentile is one of the waits, grows with p, and does not change when every weight is scaled; the share within target is a fraction that grows with the target; the mean lies within the waits; a histogram percentile is the exact one to the bucket, and merging two halves gives what the whole would | Property |
 | F8 | The nowcast is finite and positive, equals (Q + 1) / mu, and never falls as the queue grows or rejects rise; a displayed band holds the estimate (live bands 5 minutes wide, degraded at least 10, within the ceiling) | Property |

@@ -45,7 +45,7 @@ Import the device list from the as-built pack (a CSV file, below) or register ea
 | Mounting height | Measured, from the as-built pack |
 | Position on the level | From the as-built plan |
 | Coverage footprint | Length by width at the tracking plane, from the vendor table (or a radius for LiDAR). Left empty, Ariva uses the BOQ's assumed footprint for the mounting height and labels it as an estimate |
-| Owning queue zone | Each device is registered to exactly one owning queue zone, by its name in the zone profile; its events are keyed by that zone. The device's footprint must reach the zone or one hanging off it |
+| Owning queue zone | Each device is registered to exactly one owning queue zone, by its name in the zone profile; its events are keyed by that zone. The device's footprint must reach the zone or one hanging off it (touching its edge, or coming within 1 cm, counts) |
 | Clock source | NTP or PTP |
 | Status | Starts as `Commissioning` |
 
@@ -102,7 +102,7 @@ Zones are polygons in floor coordinates, each with one role:
 | Count | Counts flow only; used between processes and for validation |
 | Overflow entry | Entry line of the overflow band |
 
-Validation rules for geometry (from the prototype): a polygon has at least three points and does not intersect itself; it lies inside the level; entry and exit lines lie on the polygon edge; names are unique. Each line records which side is inside, so a crossing from outside to inside is `In`.
+Validation rules for geometry (from the prototype): a polygon has at least three points and does not intersect or touch itself (a vertex on, or within 1 cm of, an edge that is not its own is refused); it lies inside the level; entry and exit lines lie on the polygon edge; names are unique. Each line records which side is inside, so a crossing from outside to inside is `In`.
 
 Also define in the profile:
 
