@@ -90,9 +90,16 @@ public static class OverflowBandStates
         var byZone = new SortedDictionary<string, List<OverflowBandViewModel>>(StringComparer.Ordinal);
         foreach (var band in bands)
         {
-            if (band?.Zone is not { Length: > 0 } zone || band.Band is not { Length: > 0 } name || !seen.Add((zone, name)))
+            // Plain locals rather than pattern variables in the conditions: a mutant that turns an || into && must still compile
+            // (Stryker removes every mutant of a method one of its mutants fails to build, so the method would not be measured).
+            if (band is null)
                 continue;
-            var fresh = band.MinuteUtc is { } minute && minute >= from && minute <= asOfUtc;
+            var zone = band.Zone;
+            var name = band.Band;
+            if (string.IsNullOrEmpty(zone) || string.IsNullOrEmpty(name) || !seen.Add((zone, name)))
+                continue;
+            var minute = band.MinuteUtc;
+            var fresh = minute.HasValue && minute.Value >= from && minute.Value <= asOfUtc;
             var occupancy = fresh ? band.MaxOccupancy : null;
             var state = Of(occupancy);
             var shown = string.Equals(state, NotHeard, StringComparison.Ordinal)
