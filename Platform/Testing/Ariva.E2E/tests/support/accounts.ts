@@ -280,7 +280,10 @@ export function accounts() {
 		// administrator replays the first one's preview token; the third holds E2XI only (a site no other suite uses).
 		csvImportAdmin: account('e2e.csvimport', ['SystemAdministrator'], false, true, ['*']),
 		csvImportOtherAdmin: account('e2e.csvimport2', ['SystemAdministrator'], false, true, ['*']),
-		csvImportScopedAdmin: account('e2e.csvimportscoped', ['SystemAdministrator'], false, true, ['E2XI'])
+		csvImportScopedAdmin: account('e2e.csvimportscoped', ['SystemAdministrator'], false, true, ['E2XI']),
+		// ARV-123b: the CSV import screens' functional suite builds sites of its own (CIW and a random tail) and imports
+		// devices through the screen, which needs a second factor; its own account, since a TOTP code counts once per account.
+		webCsvImport: account('e2e.webcsvimport', ['SystemAdministrator'], false, true, ['*'])
 	} as const;
 }
 

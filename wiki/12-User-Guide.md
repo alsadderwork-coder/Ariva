@@ -169,7 +169,7 @@ Common tasks:
 
 ## Topology
 
-ARV-052. The airports, terminals, levels, checkpoints and desks of your sites in five columns, with each desk's kind, lane categories and whether it is in service, and (terminal duty managers) the codes AMAN and the AODB use for it. Read only for the operational roles; administrators change it (see the [Administration guide](11-Administration-Guide.md), section 2a).
+ARV-052. The airports, terminals, levels, checkpoints and desks of your sites in five columns, with each desk's kind, lane categories and whether it is in service, and (terminal duty managers) the codes AMAN and the AODB use for it. Read only for the operational roles; administrators change it (see the [Administration guide](11-Administration-Guide.md), section 2a), and import a site's desk codes from a CSV file with Import mappings on a desk's code panel (section 2e).
 
 ## Zones
 
@@ -191,7 +191,7 @@ ARV-054, for border shift supervisors, terminal duty managers and administrators
 
 Health-check alarms (ARV-120): the open alerts of the three health-check metrics (conservation residual, track completion, occupancy out of range; rules on the Alert rules screen, ARV-114b), grouped by queue zone, each with its rule code and name, the metric and the value that raised it in its unit, the 15-minute bin it judged, when it was raised, its severity and its state. You see the alarms your role is responsible for, as on the live screen (a border shift supervisor does not see a terminal duty manager's, and the other way round; administrators see all). Acknowledge them in the live screen's Alerts panel. A health-check alarm says the measurement of a queue is in doubt, not that a device is down: check the zone's devices, their calibration and the zone's physical capacity, and re-validate if it persists.
 
-Common tasks: register a sensor (code, family, model, transport, dialect, clock, level, position, height, orientation, queue zone, footprint if the vendor gives one); store its credential, which is shown once with a copy action and never again (a lost one is replaced, not recovered); record a calibration (a pass at the threshold takes it Online); move it (back to Commissioning until a calibration passes); restrict the networks it may push from or pin its client certificate; issue a new credential; retire it (administrators). Registering, a new credential, network access and retiring ask for a fresh authenticator code if the last one is older than 15 minutes.
+Common tasks: register a sensor (code, family, model, transport, dialect, clock, level, position, height, orientation, queue zone, footprint if the vendor gives one), or import the as-built pack's device list from a CSV file (Import devices: check the file, read the refused rows, register them all at once, then copy each new credential, shown once in the dialog; [Administration guide](11-Administration-Guide.md), section 2e); store its credential, which is shown once with a copy action and never again (a lost one is replaced, not recovered); record a calibration (a pass at the threshold takes it Online); move it (back to Commissioning until a calibration passes); restrict the networks it may push from or pin its client certificate; issue a new credential; retire it (administrators). Registering, a new credential, network access and retiring ask for a fresh authenticator code if the last one is older than 15 minutes.
 
 ## Passenger display
 

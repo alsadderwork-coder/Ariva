@@ -1,15 +1,17 @@
 <script lang="ts">
-	import { Trash2 } from '@lucide/svelte';
+	import { FileUp, Trash2 } from '@lucide/svelte';
 	import { onMount } from 'svelte';
 	import { _ } from 'svelte-i18n';
 	import { toast } from 'svelte-sonner';
 	import FormField from '$lib/components/shared/FormField.svelte';
 	import SelectField from '$lib/components/shared/SelectField.svelte';
+	import CsvImportDialog from '$lib/components/pages/imports/CsvImportDialog.svelte';
 	import { auth } from '$lib/core/auth.svelte';
 	import * as topology from '$lib/core/topology';
 	import type { DeskCodeMapping } from '$lib/core/topology';
 
-	let { deskId }: { deskId: string } = $props();
+	/** The desk shown and its site: the CSV import (ARV-123b) maps codes to any desk of the site. */
+	let { deskId, siteCode }: { deskId: string; siteCode: string } = $props();
 
 	let items = $state<DeskCodeMapping[]>([]);
 	let system = $state<string>('Aman');
@@ -18,6 +20,7 @@
 	let failedToLoad = $state('');
 	/** The mapping waiting for its delete to be confirmed on the page. */
 	let confirming = $state<string | null>(null);
+	let importing = $state(false);
 
 	const canSee = $derived(auth.can('DeskCodeMapping.Search'));
 	const canAdd = $derived(auth.can('DeskCodeMapping.Create'));
@@ -75,9 +78,22 @@
 
 {#if canSee}
 	<section aria-labelledby="mappings-title" data-testid="desk-mappings" class="flex flex-col gap-3">
-		<div>
-			<h3 id="mappings-title" class="text-base font-semibold">{$_('topology.mappings.title')}</h3>
-			<p class="text-xs text-muted-foreground">{$_('topology.mappings.description')}</p>
+		<div class="flex flex-wrap items-start justify-between gap-2">
+			<div>
+				<h3 id="mappings-title" class="text-base font-semibold">{$_('topology.mappings.title')}</h3>
+				<p class="text-xs text-muted-foreground">{$_('topology.mappings.description')}</p>
+			</div>
+			{#if canAdd && siteCode}
+				<button
+					type="button"
+					data-testid="import-mappings"
+					onclick={() => (importing = true)}
+					class="inline-flex h-9 items-center gap-1.5 rounded-md border bg-card px-3 text-sm font-medium hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+				>
+					<FileUp class="size-4" aria-hidden="true" />
+					{$_('csvImport.mappings.action')}
+				</button>
+			{/if}
 		</div>
 		{#if failedToLoad}
 			<p role="alert" class="text-sm text-status-danger-foreground">
@@ -160,4 +176,12 @@
 			</form>
 		{/if}
 	</section>
+	{#if importing && canAdd && siteCode}
+		<CsvImportDialog
+			kind="mappings"
+			{siteCode}
+			onClose={() => (importing = false)}
+			onCommitted={() => load()}
+		/>
+	{/if}
 {/if}

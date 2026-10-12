@@ -1037,7 +1037,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 39,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Split from ARV-123 on 2026-10-12. From the ARV-123a review (N6): the preview answers row content, hostile models and zones included, as JSON data; the screens render it as text only (test it).",
       "dependsOn": [
         "ARV-123a"
@@ -1067,11 +1067,11 @@
     },
     {
       "id": "ARV-156",
-      "title": "[E17] ValidationReaderLoginTests robust under load",
-      "description": "`ValidationReaderLoginTests.Host_Should_StartWithTheReaderLoginOnlyWhenItIsMain_When_RunInACluster(host: \"Cronz\")` failed once with \"Cannot access a disposed object. Object name: 'IServiceProvider'\" while a mutation run loaded the machine (ARV-123a story gate, 2026-10-12), and passed in the next run and three times alone. A failing test is never a flake: find the race (a host built and disposed while something still resolves from it) and fix the test or the code.",
+      "title": "[E17] Unit tests robust under load (ValidationReaderLoginTests, ValidationEmulatorTests)",
+      "description": "`ValidationReaderLoginTests.Host_Should_StartWithTheReaderLoginOnlyWhenItIsMain_When_RunInACluster(host: \"Cronz\")` failed once with \"Cannot access a disposed object. Object name: 'IServiceProvider'\" while a mutation run loaded the machine (ARV-123a story gate, 2026-10-12), and passed in the next run and three times alone. A failing test is never a flake: find the race (a host built and disposed while something still resolves from it) and fix the test or the code. A second test failed the same way on 2026-10-12 (ARV-123b story gate, a mutation run beside it): `ValidationEmulatorTests.MainUrl_Should_BeTheAddressOfTheSimulatorsOwnDeployment_When_Checked` threw a RegexMatchTimeoutException in simulator code; it passes alone (124 of 124). A regex timeout that a loaded machine reaches is either too tight for its input or guards a pattern that backtracks: find which.",
       "acceptanceCriteria": [
-        "The cause is found and named in backlog/progress.md; the test or the code is fixed, not skipped or retried",
-        "The test passes 50 times in a row with the machine loaded (for example beside a mutation run or with a CPU stress)",
+        "The cause of each failure is found and named in backlog/progress.md; the test or the code is fixed, not skipped or retried",
+        "Both tests pass 50 times in a row with the machine loaded (for example beside a mutation run or with a CPU stress)",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"

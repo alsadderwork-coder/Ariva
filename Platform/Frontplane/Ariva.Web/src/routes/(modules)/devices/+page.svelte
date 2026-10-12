@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Cpu, Plus } from '@lucide/svelte';
+	import { Cpu, FileUp, Plus } from '@lucide/svelte';
 	import { onDestroy, onMount } from 'svelte';
 	import { _ } from 'svelte-i18n';
 	import { toast } from 'svelte-sonner';
@@ -7,6 +7,7 @@
 	import CredentialReveal from '$lib/components/pages/devices/CredentialReveal.svelte';
 	import DevicePanel from '$lib/components/pages/devices/DevicePanel.svelte';
 	import HealthAlarms from '$lib/components/pages/devices/HealthAlarms.svelte';
+	import CsvImportDialog from '$lib/components/pages/imports/CsvImportDialog.svelte';
 	import RegisterForm from '$lib/components/pages/devices/RegisterForm.svelte';
 	import IllustrativeBanner from '$lib/components/shared/IllustrativeBanner.svelte';
 	import SimplePageHeader from '$lib/components/shared/SimplePageHeader.svelte';
@@ -30,6 +31,8 @@
 	let mappings = $state<Mapping[]>([]);
 	let selectedId = $state<string | null>(null);
 	let registering = $state(false);
+	/** The CSV import dialog is open (ARV-123b); it holds the new credentials itself and drops them when it closes. */
+	let importing = $state(false);
 	/** The credential of the last registration or rotation, shown once and dropped when the user is done. */
 	let issued = $state<Issued | null>(null);
 	let plan = $state<zones.PlanImage | null>(null);
@@ -210,6 +213,16 @@
 				<Plus class="size-4" aria-hidden="true" />
 				{$_('devices.register')}
 			</button>
+			<button
+				type="button"
+				data-testid="import-devices"
+				disabled={!siteCode}
+				onclick={() => ((importing = true), (registering = false))}
+				class="inline-flex h-10 items-center gap-1 rounded-lg border bg-card px-4 text-sm font-medium whitespace-nowrap hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-60"
+			>
+				<FileUp class="size-4" aria-hidden="true" />
+				{$_('csvImport.devices.action')}
+			</button>
 		{/if}
 	{/snippet}
 </SimplePageHeader>
@@ -233,6 +246,15 @@
 			onDone={() => (issued = null)}
 		/>
 	</div>
+{/if}
+
+{#if importing && siteCode}
+	<CsvImportDialog
+		kind="devices"
+		{siteCode}
+		onClose={() => (importing = false)}
+		onCommitted={() => loadDevices()}
+	/>
 {/if}
 
 {#if registering}

@@ -256,7 +256,7 @@
 			{/if}
 		</form>
 		{#if entity === 'desk'}
-			<DeskMappings deskId={item.id} />
+			<DeskMappings deskId={item.id} siteCode={item.siteCode ?? ''} />
 		{/if}
 	</div>
 </section>
