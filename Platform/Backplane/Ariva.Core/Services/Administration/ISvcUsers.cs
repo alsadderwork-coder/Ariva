@@ -16,6 +16,10 @@ public static class AdministrationErrors
     public const string InvalidCriteria = "The search criteria are not valid.";
     public const string UnknownSite = "Unknown site.";
     public const string SiteTaken = "That site code is already in use.";
+
+    /// <summary>ARV-159: a site name breaks the topology name rule (400); the text never repeats the name.</summary>
+    public const string InvalidSiteName = "The site name is at most 200 characters, without control, invisible or broken characters.";
+
     public const string BeyondOwnSites = "You cannot grant access to sites you cannot access yourself.";
     public const string SitesRequired = "Give the account at least one of your sites.";
     public const string InvalidDisplayName = "The name is at most 200 characters, without control, invisible or broken characters.";

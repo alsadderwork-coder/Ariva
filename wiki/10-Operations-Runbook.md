@@ -27,6 +27,7 @@ Thresholds are To confirm per site unless a value is given.
 | Stream processing latency (sensor time to nowcast published) | End-to-end freshness of screens | Above a few seconds (D5 expects seconds) |
 | Bin maturity backlog (bins provisional for too long) | Censored tracks, stuck watermarks, missing data | Bins older than the censoring timeout still provisional |
 | Zones `Degraded` or `Unknown` | Measurement quality across the site | Any zone `Unknown`; degraded count above normal |
+| `ariva.sensing.archive_skipped` (meter `Ariva.Sensing`, by `kind`: `sensing_batch`, `sensing_event`, `health_report`; ARV-159) | Sensing data and health reports the archive acknowledged without archiving them (out of bounds, or a queue zone name with a control or invisible character) | Any increase (section 4.2b) |
 | AODB feed freshness (time since last message while flights are due) | Stale flight data | No message within the agreed cadence |
 | AMAN feed heartbeat (`aman.feed` topics) | Border desk state and service rates going stale | Heartbeat gap above T_stale |
 | Outbox backlog (unpublished rows) | Kafka problems or a stuck relay | Growing backlog |
@@ -96,6 +97,16 @@ Every event of a queue zone is keyed by its zone key: the site code, a slash and
    WHERE deleted_on IS NULL AND length(site_code) + 1 + length(queue_zone_name) > 200 GROUP BY site_code, queue_zone_name;
   ```
 - **Actions**: create a draft of the site's profile (it copies the name, and its validation lists the zone with "A queue zone name at site ... is at most N characters"), rename the queue zone to fit, validate and publish (a second factor is needed). Then move each device of the zone to the renamed zone (Administration, Devices, or `PUT /api/v1/admin/devices/{id}/placement`): a move sends the device back to commissioning, so calibrate it again before it counts. Zone health, `ZoneHealthChanged` and `OverflowDetected` resume for the new key; recompute the affected period from the archive (4.10) if its overflow changes are needed.
+
+### 4.2b Names with control or invisible characters (ARV-159)
+
+Since ARV-159 site and topology names (sites, airports, terminals, levels, checkpoints, desks, zone profiles, zones, lines) may hold no control character and no invisible format character (a right-to-left override, a zero-width space, a tag character), the rule display texts and the sensing path already applied. A name saved before is kept, but its record cannot be edited until it is renamed, and Ingest and the archive skip sensing data that carries it as a queue zone name.
+
+- **Symptoms**: the warnings "Sensing archive skipped ... batches and ... events out of bounds" or "Device health archive skipped ... reports out of bounds" from the Stream host, the metric `ariva.sensing.archive_skipped` rising; an edit of a topology record or a site answering 400 with "A name holds no control characters, invisible format characters or broken characters." although the name was not changed
+- **Alerting**: a skipped item is acknowledged and never archived, dead-lettered or retried, so alert on any increase of `ariva.sensing.archive_skipped`
+- **Checks** (read only, safe on production): run `./Ariva.Api.Main --check-stored-names` in an api-main pod, the way the break-glass command runs (Deployment Guide), or locally `dotnet run --project Platform/Backplane/Ariva.Api.Main -- --check-stored-names` with the hosts' settings. It reads the site, topology, zone profile, zone and line names and the devices' queue zone names through the runtime login in a read-only transaction and prints, escaped, each name that breaks the rule (place, site, id, live or deleted, name), then a summary. Exit code 0 when every name passes, 3 when some do not, 1 on failure.
+- **Read only, by the session.** The check opens its connection with `default_transaction_read_only` on and runs one constant statement in a read-only transaction that it rolls back. The runtime login it uses could still write, so the guarantee comes from the session and the transaction, not from the login's privileges (security review of ARV-159).
+- **Actions**: rename each listed record through Topology, Users and access (sites) or a new zone profile draft (zones and lines: a draft copies the stored name, so rename it there, validate and publish); then move the devices of a renamed queue zone to the new name. Run the check before a pilot starts and after importing data from another system.
 
 ### 4.3 Stale AODB feed
 
@@ -373,5 +384,6 @@ If an event does not show:
 |---|---|
 | Daily | Zones `Degraded` or `Unknown` in the last 24 hours and why; device offline minutes; feed freshness; failed TickerQ jobs |
 | Weekly | Disk growth against forecast; certificate expiries in the next 60 days; integration client lockouts; conservation residual and track completion trends |
+| Before a pilot and after a data import | `Ariva.Api.Main --check-stored-names` lists no name (section 4.2b) |
 | Monthly | Restore test on a copy (at least before go-live and after major releases); review of audit log for configuration changes |
 | Quarterly | Re-validation of penalty-grade zones |

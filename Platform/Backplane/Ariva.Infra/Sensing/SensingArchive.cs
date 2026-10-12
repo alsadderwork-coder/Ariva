@@ -18,7 +18,8 @@ namespace Ariva.Infra.Sensing;
 /// <list type="bullet">
 /// <item>each batch and event is checked again (they crossed Kafka): a batch without a site, zone or device, or
 /// received outside a sane window, is skipped whole; an event out of the canonical bounds, with unknown flags or a time
-/// far from its receipt is skipped alone; both are counted and logged, never failing the write;</item>
+/// far from its receipt is skipped alone; both are counted, logged and measured (<see cref="SensingArchiveMetrics"/>,
+/// ARV-159), never failing the write;</item>
 /// <item>batch ids are locked (advisory lock class 26, in key order) and recorded in <c>sensing_batch</c> unless
 /// archived within three days (the topics keep three days, so nothing older can be redelivered): a batch seen before is
 /// skipped whole;</item>
@@ -29,7 +30,8 @@ namespace Ariva.Infra.Sensing;
 /// Reads stream one zone of one site over at most 31 days in time order, one day per statement. Every value is a
 /// parameter or a COPY field; no SQL is built from input (CWE-89).
 /// </summary>
-public sealed class SensingArchive(DatabaseSettings database, TimeProvider timeProvider, ILogger<SensingArchive> logger = null) : ISensingArchive
+public sealed class SensingArchive(DatabaseSettings database, TimeProvider timeProvider, ILogger<SensingArchive> logger = null, SensingArchiveMetrics metrics = null)
+    : ISensingArchive
 {
     /// <summary>Events per COPY at most; larger writes are split into several COPYs inside the same transaction.</summary>
     public const int CopyChunk = 20_000;
@@ -69,7 +71,13 @@ public sealed class SensingArchive(DatabaseSettings database, TimeProvider timeP
         }
 
         if (skippedBatches + skippedEvents > 0)
+        {
             _logger.LogWarning("Sensing archive skipped {Batches} batches and {Events} events out of bounds", skippedBatches, skippedEvents);
+            // ARV-159: counted too, so a skip (acknowledged, never archived) is visible beyond the log line.
+            metrics?.Skipped(SensingArchiveMetrics.BatchKind, skippedBatches);
+            metrics?.Skipped(SensingArchiveMetrics.EventKind, skippedEvents);
+        }
+
         if (rows.Count == 0)
             return new SensingArchiveWrite(0, 0, 0, skippedEvents);
 

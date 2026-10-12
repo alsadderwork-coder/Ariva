@@ -213,9 +213,13 @@ public static class SiteConfigurationRules
 
     #region Helpers
 
-    /// <summary>A name as the endpoints take it: 1 to 200 characters after trimming, no NUL (PostgreSQL refuses it in text).</summary>
+    /// <summary>
+    /// A name as the endpoints take it: 1 to 200 characters after trimming, no NUL (PostgreSQL refuses it in text), and the
+    /// topology name rule (ARV-159, <see cref="TopologyCodes.IsName"/>): no control, invisible format or broken character,
+    /// judged per code point, so a bundle carries no name the topology, zone profile or device endpoints would refuse.
+    /// </summary>
     public static bool IsName(string name) =>
-        !string.IsNullOrWhiteSpace(name) && name.Trim().Length <= SiteConfigurationLimits.MaxNameLength && !name.Contains('\0');
+        !string.IsNullOrWhiteSpace(name) && name.Trim().Length <= SiteConfigurationLimits.MaxNameLength && !name.Contains('\0') && TopologyCodes.IsName(name);
 
     /// <summary>
     /// A floor plan's file name: none, or at most 200 characters as PostgreSQL counts them (code points: the column is

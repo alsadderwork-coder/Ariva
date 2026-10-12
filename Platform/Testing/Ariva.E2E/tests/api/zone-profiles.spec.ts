@@ -129,6 +129,32 @@ test('a draft is edited, validated and published as version 1 only with a recent
 	const kept = await (await call('GET', `${api}/${firstId}`, { token: withSecondFactor })).json();
 	expect(kept.zones.find((z: any) => z.id === queueId).name, 'the refused rename changed nothing').toBe('Snake A');
 
+	// ARV-159: zone, line and profile names refuse control and invisible format characters of every plane (a right-to-left
+	// override, a zero-width space, a tag character) with one fixed text that never repeats the name; Arabic is a name.
+	const unsafeName = 'A name holds no control characters, invisible format characters or broken characters.';
+	for (const name of ['Snake \u202EA', 'Snake\u200BA', 'Snake \u{E0041}', 'Snake\u0007']) {
+		for (const [method, url, data] of [
+			['POST', `${api}/${firstId}/zones`, { name, kind: 'Queue', levelId, polygon: '50 10,60 10,60 20' }],
+			['PUT', `${api}/${firstId}/zones/${queueId}`, { name, polygon: '10 10,34 10,34 22,10 22' }],
+			['POST', `${api}/${firstId}/lines`, { name, role: 'Count', levelId, startX: 40, startY: 0, endX: 40, endY: 40 }],
+			['PUT', `${api}/${firstId}`, { name }]
+		] as const) {
+			const unsafe = await call(method, url, { token: withSecondFactor, data });
+			expect(unsafe.status(), `${method} ${url.replace(api, '')}`).toBe(400);
+			const body = await unsafe.text();
+			expect(body.includes(unsafeName), 'the fixed text').toBe(true);
+			expect(body.includes(name), 'the name is not repeated').toBe(false);
+		}
+	}
+	const arabic = '\u0634\u0631\u064A \u0637 \u0627\u0644\u0639\u062F';
+	const arabicLine = await call('POST', `${api}/${firstId}/lines`, { token: withSecondFactor, data: { name: arabic, role: 'Count', levelId, startX: 40, startY: 0, endX: 40, endY: 40 } });
+	expect(arabicLine.status(), 'an Arabic line name').toBe(201);
+	expect((await arabicLine.json()).name).toBe(arabic);
+	expect((await call('DELETE', `${api}/${firstId}/lines/${(await arabicLine.json()).id}`, { token: withSecondFactor })).status()).toBe(204);
+	const unchanged = await (await call('GET', `${api}/${firstId}`, { token: withSecondFactor })).json();
+	expect(unchanged.profile.name, 'the refused renames changed nothing').toBe('Arrivals immigration');
+	expect(unchanged.zones.find((z: any) => z.id === queueId).name).toBe('Snake A');
+
 	const problems = await (await call('GET', `${api}/${firstId}/validation`, { token: withSecondFactor })).json();
 	expect(problems.publishable).toBe(false);
 	for (const line of [

@@ -4,6 +4,7 @@ using Ariva.Core.Domain.Entities;
 using Ariva.Core.Domain.Enums;
 using Ariva.Core.Integration;
 using Ariva.Core.Security;
+using Ariva.Core.Sensing;
 using Ariva.Infra.Integration;
 using Ariva.Infra.Security;
 using Ariva.Infra.Services.Administration;
@@ -15,7 +16,8 @@ namespace Ariva.UnitTests.Domain;
 /// ARV-158 (CWE-79, CWE-501): display texts are judged per code point, so the invisible format characters outside the
 /// basic plane (tag characters, shorthand format controls, musical formatting) are refused like those inside it, while an
 /// emoji is still taken; a lone surrogate is refused; line breaks only where a text allows them. Each kind of entity is
-/// shown to refuse a tag character through its own entry point. Every invisible character here is an escape.
+/// shown to refuse a tag character through its own entry point, and so are device events and alert notes (ARV-159). Every
+/// invisible character here is an escape.
 /// </summary>
 public sealed class DisplayTextTests
 {
@@ -140,6 +142,28 @@ public sealed class DisplayTextTests
         Schedule("Morning peaks").Name.Should().Be("Morning peaks");
         var tagged = () => Schedule("Morning" + Tag);
         tagged.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void CanonicalEventRules_Should_RefuseATagCharacter_When_InALineOrZoneNameADeviceSends()
+    {
+        // ARV-159 (from the ARV-158 review): device input is the real trust boundary; Ingest refuses the event before Kafka.
+        var at = new DateTime(2026, 10, 12, 9, 0, 0, DateTimeKind.Utc);
+
+        CanonicalEventRules.Validate(new LineCrossing("A-VIS entry", CrossingDirection.In, "7", at)).Should().BeEmpty();
+        CanonicalEventRules.Validate(new LineCrossing("A-VIS entry" + Tag, CrossingDirection.In, "7", at)).Should().ContainSingle().Which.Should().Contain("line name");
+        CanonicalEventRules.Validate(new IntervalCount("A-VIS" + Tag + " entry", 30, 2, at.AddMinutes(-5), at)).Should().ContainSingle().Which.Should().Contain("line name");
+        CanonicalEventRules.Validate(new ZoneOccupancy("A-VIS" + Tag, 41, at)).Should().ContainSingle().Which.Should().Contain("zone name");
+    }
+
+    [Fact]
+    public void Alert_Should_RefuseATagCharacter_When_InANoteThatAllowsLineBreaks()
+    {
+        // ARV-159 (from the ARV-158 review): notes take line breaks, and nothing invisible with them.
+        Alert.IsValidNote("Desks 4 and 5 opened.\nQueue back under 20 minutes.", required: true).Should().BeTrue();
+        Alert.IsValidNote("Desks opened.\n" + Tag + "Queue back.", required: true).Should().BeFalse();
+        Alert.IsValidNote("Desks opened." + Tag, required: false).Should().BeFalse();
+        Alert.IsValidNote("Desks opened.\x202E\nQueue back.", required: true).Should().BeFalse();
     }
 
     #endregion

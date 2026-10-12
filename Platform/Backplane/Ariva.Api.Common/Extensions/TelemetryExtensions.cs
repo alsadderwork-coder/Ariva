@@ -28,6 +28,8 @@ public static class TelemetryExtensions
             options.Meters.Add(MassTransit);
             // Device heartbeats and zone degradation (ARV-025).
             options.Meters.Add(Ariva.Infra.Sensing.DeviceHealthMetrics.MeterName);
+            // Sensing batches, events and health reports the archive skipped (ARV-159).
+            options.Meters.Add(Ariva.Infra.Sensing.SensingArchiveMetrics.MeterName);
             options.ConfigureTracing = tracing => tracing.AddNpgsql();
         });
     }

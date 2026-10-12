@@ -109,6 +109,40 @@ test('injection and markup payloads are refused or stored as inert text', async 
 	expect((await call('GET', `${api}/desks?sortBy=${encodeURIComponent('code; DROP TABLE desk')}`, { token: admin })).status()).toBe(400);
 	expect((await call('GET', `${api}/desks?pageSize=501`, { token: admin })).status()).toBe(400);
 });
+test('names with control or invisible characters are refused with one fixed text, and Arabic names are taken (ARV-159)', async () => {
+	const fixed = 'A name holds no control characters, invisible format characters or broken characters.';
+	for (const [why, name] of [
+		['a right-to-left override', 'Hall \u202Eevil'],
+		['a zero-width space', 'Hall\u200BA'],
+		['a tag character', 'Hall \u{E0041}'],
+		['a bell', 'Hall\u0007']
+	] as const) {
+		for (const [method, url, data] of [
+			['POST', `${api}/airports`, { iataCode: 'ZZR', name, timeZoneId: 'Asia/Amman' }],
+			['PUT', `${api}/airports/${ids.airport}`, { name, timeZoneId: 'Asia/Dubai' }],
+			['POST', `${api}/terminals`, { airportId: ids.airport, code: 'T9', name, siteCode: 'E2E1' }],
+			['PUT', `${api}/terminals/${ids.t1}`, { name }],
+			['POST', `${api}/levels`, { terminalId: ids.t1, code: 'L9', name, floorNumber: 9, widthMetres: 10, depthMetres: 10 }],
+			['PUT', `${api}/levels/${ids.level}`, { name, floorNumber: 0, widthMetres: 310, depthMetres: 120 }],
+			['POST', `${api}/checkpoints`, { levelId: ids.level, code: `S${iata}`, name, kind: 'Security' }],
+			['PUT', `${api}/checkpoints/${ids.checkpoint}`, { name }],
+			['POST', `${api}/desks`, { checkpointId: ids.checkpoint, code: 'D11', name, kind: 'Desk', laneCategories: ['CIT'] }]
+		] as const) {
+			const response = await call(method, url, { token: admin, data });
+			expect(response.status(), `${why}: ${method} ${url.replace(api, '')}`).toBe(400);
+			const body = await response.text();
+			expect(body.includes(fixed), 'the fixed text').toBe(true);
+			expect(body.includes(name), 'the answer does not repeat the name').toBe(false);
+		}
+	}
+	expect((await (await call('GET', `${api}/terminals/${ids.t1}`, { token: admin })).json()).name, 'a refused rename changes nothing').toBe('Terminal 1 renamed');
+
+	// "Arrivals hall" in Arabic, and "airport" with its vowel marks.
+	for (const [code, name, floor] of [['L7', '\u0635\u0627\u0644\u0629 \u0627\u0644\u0648\u0635\u0648\u0644', 7], ['L8', '\u0645\u064E\u0637\u0627\u0631', 8]] as const) {
+		const level = await create('levels', { terminalId: ids.t1, code, name, floorNumber: floor, widthMetres: 10, depthMetres: 10 });
+		expect(level.name).toBe(name);
+	}
+});
 
 test('desk ranges are all or nothing and capped at 200 (ARV-015)', async () => {
 	const range = await call('POST', `${api}/desks/range`, { token: admin, data: { checkpointId: ids.checkpoint, prefix: 'R', from: 1, to: 22, width: 2, kind: 'Desk', laneCategories: ['VIS'] } });

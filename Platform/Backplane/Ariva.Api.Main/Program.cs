@@ -30,6 +30,9 @@ args = TopicProvisioning.WithoutFlag(args);
 var breakGlassArgs = args;
 var breakGlass = BreakGlassCommand.IsRequested(args);
 args = BreakGlassCommand.WithoutFlags(args);
+// --check-stored-names (ARV-159): the read-only pre-pilot check of stored names, never configuration.
+var checkStoredNames = StoredNameCheckCommand.IsRequested(args);
+args = StoredNameCheckCommand.WithoutFlag(args);
 
 var environment = ArivaEnvironment.Resolve(args, AppContext.BaseDirectory);
 
@@ -72,6 +75,12 @@ if (provisionTopics)
 if (breakGlass)
 {
     return await BreakGlassCommand.RunAsync(builder.Configuration, builder.Environment.EnvironmentName, breakGlassArgs, Console.Out);
+}
+
+// Operator command: lists stored names that the name rule refuses, read-only, before a pilot (ARV-159).
+if (checkStoredNames)
+{
+    return await StoredNameCheckCommand.RunAsync(builder.Configuration, Console.Out);
 }
 
 #endregion

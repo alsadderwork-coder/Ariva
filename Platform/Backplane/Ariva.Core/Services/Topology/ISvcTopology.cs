@@ -18,6 +18,9 @@ public static class TopologyErrors
     public const string UnsafeFileName = "The file name must not contain a path.";
     public const string FileNameTooLong = FloorPlan.FileNameTooLongMessage;
 
+    /// <summary>ARV-159: a site or topology name with a control, invisible format or broken character (400); never repeats the name.</summary>
+    public const string UnsafeName = TopologyCodes.UnsafeNameMessage;
+
     /// <summary>Errors that mean "already exists or in use" (409).</summary>
     public static readonly IReadOnlySet<string> Conflicts = new HashSet<string>(StringComparer.Ordinal) { Duplicate, HasChildren };
 }

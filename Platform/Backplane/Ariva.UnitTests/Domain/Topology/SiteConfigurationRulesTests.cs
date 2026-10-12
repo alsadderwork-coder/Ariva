@@ -347,4 +347,68 @@ public sealed class SiteConfigurationRulesTests
     [InlineData(null, false)]
     public void IsKind_Should_TakeKindsByTheirNamesOnly_When_Parsed(string value, bool valid) =>
         SiteConfigurationRules.IsKind<Ariva.Core.Domain.Enums.CheckpointKind>(value).Should().Be(valid);
+
+    #region ARV-159: names judged per code point
+
+    public static TheoryData<string, string> UnsafeNames => new()
+    {
+        { "a terminal name with a right-to-left override", SiteConfigurationErrors.InvalidTopology },
+        { "a level name with a tag character", SiteConfigurationErrors.InvalidTopology },
+        { "a checkpoint name with a zero-width space", SiteConfigurationErrors.InvalidTopology },
+        { "a desk name with a bell", SiteConfigurationErrors.InvalidTopology },
+        { "a profile name with a right-to-left override", SiteConfigurationErrors.InvalidZoneProfile },
+        { "a zone name with a tag character", SiteConfigurationErrors.InvalidZoneProfile },
+        { "a line name with a zero-width space", SiteConfigurationErrors.InvalidZoneProfile }
+    };
+
+    [Theory]
+    [MemberData(nameof(UnsafeNames))]
+    public async Task Content_Should_RefuseANameWithAnInvisibleOrControlCharacter_When_AnyPartCarriesIt(string change, string expected)
+    {
+        // ARV-159: the import takes the names the topology and zone profile endpoints take, and no other (escapes only).
+        const string Override = "\x202E";
+        const string Tag = "\U000E0041";
+        var topology = Topology();
+        var profile = Profile();
+        var content = change switch
+        {
+            "a terminal name with a right-to-left override" => Content(topology with { Terminals = [new TerminalPartRow("AAA", "T1", "Terminal" + Override + "1")] }),
+            "a level name with a tag character" => Content(topology with { Levels = [topology.Levels[0] with { Name = "Arrivals" + Tag }, topology.Levels[1]] }),
+            "a checkpoint name with a zero-width space" => Content(topology with { Checkpoints = [topology.Checkpoints[0] with { Name = "Immi\x200Bgration" }, topology.Checkpoints[1]] }),
+            "a desk name with a bell" => Content(topology with { Desks = [topology.Desks[0], topology.Desks[1] with { Name = "Counter\x0007" }] }),
+            "a profile name with a right-to-left override" => Content(profiles: [profile with { Name = "Arrivals" + Override }]),
+            "a zone name with a tag character" => Content(profiles: [profile with { Zones = [.. profile.Zones, profile.Zones[0] with { Name = "Band" + Tag, Kind = "Overflow", QueueZone = "Snake A" }] }]),
+            "a line name with a zero-width space" => Content(profiles: [profile with { Lines = [profile.Lines[0] with { Name = "Line\x200B 0" }, profile.Lines[1]] }]),
+            _ => throw new ArgumentOutOfRangeException(nameof(change))
+        };
+
+        (await Errors(content)).Should().Equal([expected], change);
+    }
+
+    [Fact]
+    public async Task Content_Should_TakeNamesInArabic_When_EveryPartCarriesThem()
+    {
+        // "Arrivals hall", "Immigration", "Counter" and "Entry line" in Arabic; the zone keeps its name, which other parts reference.
+        const string Hall = "\x0635\x0627\x0644\x0629 \x0627\x0644\x0648\x0635\x0648\x0644";
+        const string Immigration = "\x0627\x0644\x062C\x0648\x0627\x0632\x0627\x062A";
+        const string Counter = "\x0645\x0646\x0636\x062F \x0661";
+        const string Entry = "\x062E\x0637 \x0627\x0644\x062F\x062E\x0648\x0644";
+        var topology = Topology();
+        var profile = Profile();
+        var content = Content(
+            topology with
+            {
+                Terminals = [new TerminalPartRow("AAA", "T1", Hall)],
+                Levels = [topology.Levels[0] with { Name = Hall }, topology.Levels[1]],
+                Checkpoints = [topology.Checkpoints[0] with { Name = Immigration }, topology.Checkpoints[1]],
+                Desks = [topology.Desks[0], topology.Desks[1] with { Name = Counter }]
+            },
+            profiles: [profile with { Name = Hall, Lines = [profile.Lines[0] with { Name = Entry }, profile.Lines[1]] }]);
+
+        (await Errors(content)).Should().BeEmpty();
+        SiteConfigurationRules.IsName(Hall).Should().BeTrue();
+        SiteConfigurationRules.IsName("Hall" + "\x202E").Should().BeFalse();
+    }
+
+    #endregion
 }

@@ -17,9 +17,8 @@ public partial class Site : BaseAuditableEntity<Site>
     {
         if (!IsValidCode(code))
             throw new ArgumentException("A site code is 2 to 8 upper case letters or digits, optionally followed by a hyphen and 1 to 8 more.", nameof(code));
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
         Code = code;
-        Name = name.Trim();
+        Name = TopologyCodes.RequireName(name, nameof(name));
     }
 
     public virtual string Code { get; protected set; }
@@ -39,11 +38,12 @@ public partial class Site : BaseAuditableEntity<Site>
     /// </summary>
     public static Site CreateIllustrative(string code, string name) => new(code, name) { IsIllustrative = true };
 
-    public virtual void Rename(string name)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        Name = name.Trim();
-    }
+    /// <summary>
+    /// A new name, with the rule of every topology name (ARV-159, <see cref="TopologyCodes.IsName"/>): trimmed, at most 200
+    /// characters, no control, invisible format or broken character judged per code point. A stored name that breaks it
+    /// is kept until the site is renamed.
+    /// </summary>
+    public virtual void Rename(string name) => Name = TopologyCodes.RequireName(name, nameof(name));
 
     public static bool IsValidCode(string code) => code is not null && CodePattern().IsMatch(code);
 

@@ -1017,7 +1017,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 38,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Rated by the ARV-158 review the larger of the two gaps (it admits the BMP overrides that reorder text), next in line, not urgent.",
       "dependsOn": [
         "ARV-158"
@@ -1036,6 +1036,47 @@
       "passes": false,
       "notes": "Size XS. Harness only.",
       "dependsOn": []
+    },
+    {
+      "id": "ARV-161",
+      "title": "[E4] Geometry.SegmentsIntersect independent of point order",
+      "description": "Found by FormulaPropertyTests.F4_SegmentsIntersect_Should_NotDependOnOrderOrDirection (CsCheck seed cCcbgdLcNjA6, deterministic) in the ARV-159 story gate and confirmed by its security review: `Geometry.SegmentsIntersect` (Geometry.cs) treats an orientation as collinear only when the cross product is exactly 0, so reversing or swapping segments changes the rounding and, at an exact touch or collinear overlap, the answer. It serves only `Overlaps` (a device footprint's reach at registration and calibration) and `IsSimplePolygon` (zone polygons); counts come from vendor crossing events, so no count is missed or doubled. Low product risk, but CsCheck draws a fresh seed each run, so any gate can fail at random. CWEs to review: none (domain correctness).",
+      "acceptanceCriteria": [
+        "The predicate gives the same answer for every order and direction of its two segments: orientation within the existing Tolerance counts as collinear, with canonical endpoint ordering (or an equivalent proven approach)",
+        "Seed cCcbgdLcNjA6 is kept as a fixed regression case beside the property test, and the property test passes across at least 10,000 generated cases",
+        "docs/domain/formulas.md F4 says the future track-crossing code uses F4's own side-of-line rule (a point exactly on the line keeps the side of the previous sample; a touch without passing is not a crossing), not this predicate",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 38,
+      "passes": false,
+      "notes": "Size S. Normal priority: an intermittent CI failure, not a product defect today.",
+      "dependsOn": []
+    },
+    {
+      "id": "ARV-162",
+      "title": "[E3] Legacy unclean names: blocked at publication and found by the pre-pilot check",
+      "description": "From the ARV-159 security review (R1, R2). `ZoneProfile.CreateDraft` copies zone and line names through the Zone and Line constructors without the name rule and `Validate` does not check names (lines have no rename), so a stored unclean zone or line name is carried into every new draft and published again. And ARV-158 did not migrate the texts DisplayText guards (alert rule names, zones and contacts, display names, labels and messages, device models, notes and others), which `--check-stored-names` does not read. CWEs to review: CWE-79, CWE-501.",
+      "acceptanceCriteria": [
+        "`ZoneProfile.Validate` refuses a draft whose zone or line name fails the name rule, with a problem text that does not repeat the name (its position or escaped form), so a legacy name blocks publication until renamed or recreated; lines gain a rename if needed",
+        "`--check-stored-names` (or a sibling check) also reads the columns DisplayText guards, read-only as today, with the result for the E2E database recorded in backlog/progress.md",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 38,
+      "passes": false,
+      "notes": "Size S. Before the pilot.",
+      "dependsOn": [
+        "ARV-159"
+      ]
     },
     {
       "id": "ARV-154",
@@ -1199,7 +1240,7 @@
       ],
       "priority": 42,
       "passes": false,
-      "notes": "Size M. Monitoring stack and alert routing at the site depend on TC-32 and TC-36; defaults ship now.",
+      "notes": "Size M. Monitoring stack and alert routing at the site depend on TC-32 and TC-36; defaults ship now. Found while building ARV-159 (2026-10-12): the `Ariva.Border`, `Ariva.Flights` and `Ariva.Integration` meters are created but never added to the OpenTelemetry exporters in TelemetryExtensions, so their counters are not exported; add them (and a test that every meter Ariva creates is exported) before building alerts on them.",
       "dependsOn": [
         "ARV-062"
       ]

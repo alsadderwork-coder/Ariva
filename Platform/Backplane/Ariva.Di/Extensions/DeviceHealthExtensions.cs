@@ -1,5 +1,6 @@
 using Ariva.Infra.Sensing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace Ariva.Di.Extensions;
 
@@ -27,6 +28,8 @@ public static class SensingArchiveExtensions
     public static IServiceCollection AddArivaSensingArchive(this IServiceCollection services)
     {
         ArgumentNullException.ThrowIfNull(services);
+        // ARV-159: the archive's skips are counted (meter Ariva.Sensing), not only logged.
+        services.TryAddSingleton<SensingArchiveMetrics>();
         services.AddSingleton<Ariva.Core.Sensing.ISensingArchive, SensingArchive>();
         services.AddSingleton<Ariva.Core.Sensing.IDeviceHealthArchive, DeviceHealthArchive>();
         return services;
