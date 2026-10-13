@@ -1276,6 +1276,44 @@
       ]
     },
     {
+      "id": "ARV-172",
+      "title": "[E17] BoundedProduceTests deadline race under load",
+      "description": "Found in the ARV-168 gates: BoundedProduceTests.Produce_Should_CancelItsOwnTokenAndFailAsATimeout_When_TheBoundPasses (ARV-166) failed the unit step of both first-round gates under load and passed 11 of 11 alone. In KafkaProduce.BoundedAsync the produce's deadline token and the WaitAsync share one 300 ms bound; under load the wait fires first and the test reads the token before its own timer has run. The code is correct; the test races. It fails gates at random, so it goes ahead of the queue. CWEs to review: none (test determinism).",
+      "acceptanceCriteria": [
+        "The test waits (a bounded condition, never a fixed sleep) for the deadline token to be cancelled after the timeout surfaces, or asserts the token's state at a point the code guarantees; the production code is unchanged unless the race shows a real ordering defect (then name it)",
+        "The test passes 50 times in a row beside 16 CPU hogs, recorded in backlog/progress.md",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story"
+      ],
+      "priority": 36,
+      "passes": false,
+      "notes": "Size XS. Fails gates at random: first in line.",
+      "dependsOn": []
+    },
+    {
+      "id": "ARV-173",
+      "title": "[E4] Two interval readings ending at the same instant both land in their own minute",
+      "description": "Found while building ARV-168: when two interval-count readings end at the same instant (the entry and exit lines of one T1 push), the engine applies them one after the other and the second gets no time span, so its counts land in the next minute (17:03's exits show up in 17:04). Totals are right; per-minute counts, which the F18 validation campaigns compare, are not. ARV-148 fixed the same case for occupancy but not for two intervals. The fix may change the golden replay; regenerating it needs the owner's approval. CWEs to review: none (domain correctness).",
+      "acceptanceCriteria": [
+        "Interval readings ending at the same instant are each applied to the minute they cover, whatever their order within the batch or across batches, by the same rule ARV-148 used for occupancy (or a stated, proven rule); formulas.md says so",
+        "Table-driven unit tests: entry and exit ending together in one push, in both orders; across two batches; at a minute boundary; the totals unchanged; the per-minute counts right",
+        "The golden replay: if its output changes, the change is explained minute by minute and the owner approves the regenerated golden before it is committed",
+        "An integration test through Ingest and the stream shows the exits in their own minute",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 37,
+      "passes": false,
+      "notes": "Size S. Before the pilot: per-minute counts are what the validation campaigns judge.",
+      "dependsOn": [
+        "ARV-168"
+      ]
+    },
+    {
       "id": "ARV-154",
       "title": "[E15] Site configuration import: creates take the site lock so an empty site stays empty",
       "description": "Found in the ARV-122a security review (N2, accepted residual): the import locks the site row while it checks the site is empty and writes, but the topology, device and display create endpoints do not take that lock, so a record created by hand during an import is not refused by the emptiness check (a code collision is still refused by the unique indexes). Take the site row lock (FOR SHARE) in every create that adds configuration to a site. Epic: Site onboarding and AMAN. CWEs to review: CWE-501, CWE-89.",
