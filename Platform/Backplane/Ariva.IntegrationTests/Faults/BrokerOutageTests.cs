@@ -41,18 +41,41 @@ public sealed class OutageProbeConsumer : IConsumer<OutageProbe>
 
 /// <summary>
 /// ARV-072, the broker cut off under a running host. Domain events keep going into the outbox in their own transactions;
-/// the relay sends nothing while the broker is unreachable and loses nothing; the readiness check reports the bus
-/// unhealthy (what the orchestrator and the operations dashboards show); a direct publish, which is how Ingest hands
-/// sensor batches on, fails, and Ingest answers the device 503 with Retry-After. Once the broker is back the relay
-/// resumes by itself and the consumer gets every event of a key once, in the order they were written.
+/// the relay sends nothing while the broker is unreachable and loses nothing; the readiness checks no longer report the
+/// bus healthy (MassTransit reports it Degraded while its Kafka endpoint is faulted, never Unhealthy); a direct publish,
+/// which is how Ingest hands sensor batches on, fails, and Ingest answers the device 503 with Retry-After. Once the
+/// broker is back the relay resumes by itself and the consumer gets every event of a key once, in the order they were
+/// written. The outage lasts until the broker has evicted the consumer that lost its connection (its session timed out),
+/// so the endpoint comes back by joining its group again and resuming from the committed offsets.
+/// <para>
+/// The test sequences around two production races on purpose; ARV-165 and ARV-166 own them, and these conditions are
+/// not proof that the races are handled: the broker is cut only once the consumer has committed what it read (a cut
+/// during an offset commit leaves the bus Healthy until the commit returns, ARV-165), and events are written and the
+/// direct publish made only once readiness reports the outage, so that no produce is in flight at the cut (a produce
+/// queued behind one in flight when the connection drops never completes, ARV-166).
+/// </para>
+/// <para>
+/// ARV-156: every wait is for a condition the test asserts, never for a time or a status that may not come, and all of
+/// them share one budget inside the fact's timeout, so a step that is too slow fails with its name and the time each
+/// earlier step took rather than as a timed out test.
+/// </para>
 /// </summary>
 [Collection(FaultsCollection.Name)]
 public sealed class BrokerOutageTests(FaultsFixture faults) : IAsyncLifetime
 {
     private const string Proxy = "kafka";
     private const string Purpose = "it-faults";
+
+    /// <summary>The probe consumer's group: <c>ariva-&lt;Kafka:ServiceName&gt;.&lt;purpose&gt;</c> (ArivaMessagingBuilder).</summary>
+    private const string Group = "ariva-it." + Purpose;
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
+
+    /// <summary>What every wait of the test shares: inside the fact's 300 s, so the step that runs out names itself.</summary>
+    private static readonly TimeSpan Budget = TimeSpan.FromSeconds(270);
+
     private readonly EventCatalog _catalog = new([typeof(OutageProbe).Assembly]);
+    private readonly Stopwatch _clock = Stopwatch.StartNew();
+    private readonly List<string> _steps = [];
 
     public ValueTask InitializeAsync() => ValueTask.CompletedTask;
 
@@ -87,18 +110,18 @@ public sealed class BrokerOutageTests(FaultsFixture faults) : IAsyncLifetime
             .AddEventsFrom(typeof(OutageProbe).Assembly)
             .Consume<OutageProbe, OutageProbeConsumer>(KafkaTopics.SlaBreachDetected, Purpose));
         var host = builder.Build();
-        await host.StartAsync(Ct);
-        (await ReadinessAsync(host, HealthStatus.Healthy, TimeSpan.FromSeconds(240))).Should().Be(HealthStatus.Healthy, "the bus is ready before the test");
+        await host.StartAsync(Ct); // held until the consumed topics exist (KafkaTopicsReady)
+        Done("the host started");
+        (await ReadinessAsync(host, status => status == HealthStatus.Healthy, "the bus ready before the test")).Should().Be(HealthStatus.Healthy);
         return host;
     }
 
-    private static async Task<HealthStatus> ReadinessAsync(IHost host, HealthStatus wanted, TimeSpan within)
+    /// <summary>Waits, within the budget, until the readiness checks give a status <paramref name="wanted"/> takes.</summary>
+    private async Task<HealthStatus> ReadinessAsync(IHost host, Func<HealthStatus, bool> wanted, string what)
     {
         var checks = host.Services.GetRequiredService<HealthCheckService>();
-        var until = DateTime.UtcNow + within;
-        HealthStatus status;
-        while ((status = (await checks.CheckHealthAsync(c => c.Tags.Contains("ready"), Ct)).Status) != wanted && DateTime.UtcNow < until)
-            await Task.Delay(500, Ct);
+        var status = HealthStatus.Healthy;
+        await WaitForAsync(async () => wanted(status = (await checks.CheckHealthAsync(c => c.Tags.Contains("ready"), Ct)).Status), what);
         return status;
     }
 
@@ -128,48 +151,142 @@ public sealed class BrokerOutageTests(FaultsFixture faults) : IAsyncLifetime
 
     private static int[] StepsOf(string key) => [.. OutageProbeConsumer.Received.Where(r => r.Key == key).Select(r => r.Step)];
 
-    private static async Task WaitForAsync(Func<Task<bool>> condition, TimeSpan timeout, string what)
+    /// <summary>Whether the probe consumer's committed offset has reached the topic's latest offset (nothing left to commit).</summary>
+    private static async Task<bool> CommittedAllAsync(Confluent.Kafka.IAdminClient admin)
     {
-        var until = DateTime.UtcNow + timeout;
+        var partition = new Confluent.Kafka.TopicPartition(KafkaTopics.SlaBreachDetected, new Confluent.Kafka.Partition(0));
+        var latest = await Confluent.Kafka.IAdminClientExtensions.ListOffsetsAsync(admin,
+            [new Confluent.Kafka.Admin.TopicPartitionOffsetSpec { TopicPartition = partition, OffsetSpec = Confluent.Kafka.Admin.OffsetSpec.Latest() }]);
+        var committed = await admin.ListConsumerGroupOffsetsAsync([new Confluent.Kafka.ConsumerGroupTopicPartitions(Group, [partition])]);
+        var end = latest.ResultInfos.Single().TopicPartitionOffsetError.Offset.Value;
+        return end > 0 && committed.Single().Partitions.Single().Offset.Value == end;
+    }
+
+    /// <summary>
+    /// Records that a step is done and when: in the test's output as it happens (kept with the result, also when the fact
+    /// times out) and for the message of a step that runs out of the budget.
+    /// </summary>
+    private void Done(string step)
+    {
+        var entry = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{step} at {_clock.Elapsed.TotalSeconds:F1} s");
+        _steps.Add(entry);
+        TestContext.Current.TestOutputHelper?.WriteLine(entry);
+    }
+
+    /// <summary>Polls <paramref name="condition"/> until it holds, within what is left of the budget; then records the step.</summary>
+    private async Task WaitForAsync(Func<Task<bool>> condition, string what)
+    {
         while (!await condition())
         {
-            if (DateTime.UtcNow > until)
-                throw new TimeoutException($"{what}: not within {timeout}");
+            if (_clock.Elapsed > Budget)
+                throw new TimeoutException($"{what}: not within the test's {Budget.TotalSeconds:F0} s (done: {string.Join(", ", _steps)})");
             await Task.Delay(500, Ct);
         }
+
+        Done(what);
+    }
+
+    /// <summary>
+    /// Stops and disposes the host within <paramref name="within"/>: the stop waits for any message its consumer is handling,
+    /// and a dead letter that can never be sent holds that message for ever (ARV-166), so the test fails rather than hangs.
+    /// The test's budget (270 s) and this bound (25 s) stay inside the fact's 300 s.
+    /// </summary>
+    private static (Task Stop, Task<bool> Within) StopWithin(IHost host, TimeSpan within)
+    {
+        var stop = Task.Run(async () =>
+        {
+            using var shutdown = new CancellationTokenSource(within - TimeSpan.FromSeconds(5));
+            await host.StopAsync(shutdown.Token);
+            host.Dispose();
+        });
+        return (stop, WithinAsync());
+
+        async Task<bool> WithinAsync() => await Task.WhenAny(stop, Task.Delay(within)) == stop;
     }
 
     [Fact(Timeout = 300_000)] // a fault test never hangs the run: a dependency that does not come back fails it
     public async Task Outbox_Should_HoldEventsWhileTheBrokerIsDownAndRelayThemInOrder_When_ItIsBack()
     {
-        using var host = await StartHostAsync();
-        var key = "K-" + Guid.NewGuid().ToString("N")[..8];
-        await WriteAsync(host, key, [1, 2, 3]);
-        await WaitForAsync(() => Task.FromResult(StepsOf(key).Length == 3), TimeSpan.FromSeconds(60), "the first three before the outage");
+        var host = await StartHostAsync();
+        var completed = false;
+        try
+        {
+            // The broker's own view, read past the proxy (also while the proxy is cut).
+            using var admin = new Confluent.Kafka.AdminClientBuilder(new Confluent.Kafka.AdminClientConfig { BootstrapServers = faults.KafkaDirectBootstrap }).Build();
+            try
+            {
+                var key = "K-" + Guid.NewGuid().ToString("N")[..8];
+                await WriteAsync(host, key, [1, 2, 3]);
+                await WaitForAsync(() => Task.FromResult(StepsOf(key).Length == 3), "the first three before the outage");
 
-        await faults.CutAsync(Proxy);
-        await WriteAsync(host, key, [4, 5]);
-        await WriteAsync(host, key, [6, 7, 8]);
+                // Not cosmetic, and not proof that the race is handled (ARV-165 owns it): a cut while the consumer's offset
+                // commit is in flight keeps MassTransit's Kafka endpoint ready and the bus Healthy until that commit returns
+                // (45 s, or minutes), and the host cannot stop meanwhile. This test is about the outbox during an outage, so
+                // it sequences around the race: the broker is cut only once the first three are committed.
+                await WaitForAsync(() => CommittedAllAsync(admin), "the first three committed");
+                await faults.CutAsync(Proxy);
+                Done("the broker cut off");
 
-        // A direct publish (Ingest's sensing sink) cannot reach the broker: Ingest turns that into 503 with Retry-After.
-        var clock = Stopwatch.StartNew();
-        var publish = async () => await host.Services.GetRequiredService<ISvcMessageBus>()
-            .PublishAsync(new OutageProbe { Key = key + "-direct", Step = 1, CorrelationId = "corr-direct" }, Ct);
-        await publish.Should().ThrowAsync<Exception>("nothing is acknowledged without the broker");
-        clock.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(60), "the producer gives up within its message timeout (30 seconds)");
+                // Not cosmetic either (ARV-166 owns this race): readiness reports the outage once the endpoint has faulted,
+                // and the relay sends only while the bus is Healthy, so from here on the direct publish below is the only
+                // produce of the outage. A produce made at the cut can still go out on the connection being closed, and a
+                // produce queued behind it never completes, not even once the broker is back. The bus reports the outage as
+                // Degraded, not Unhealthy (ARV-156): the wait is for what is asserted, any status but Healthy.
+                (await ReadinessAsync(host, status => status != HealthStatus.Healthy, "readiness reporting the outage")).Should().NotBe(HealthStatus.Healthy,
+                    "the bus's readiness check reports the outage");
+                await WriteAsync(host, key, [4, 5]);
+                await WriteAsync(host, key, [6, 7, 8]);
 
-        (await ReadinessAsync(host, HealthStatus.Unhealthy, TimeSpan.FromSeconds(90))).Should().NotBe(HealthStatus.Healthy,
-            "readiness reports the bus, so the orchestrator and the dashboards see the outage");
-        (await OutboxAsync(key)).Should().Be((5, 3), "the five written during the outage wait in the outbox, none lost and none sent");
-        StepsOf(key).Should().Equal([1, 2, 3]);
+                // A direct publish (Ingest's sensing sink) cannot reach the broker: Ingest turns that into 503 with Retry-After.
+                var clock = Stopwatch.StartNew();
+                var publish = async () => await host.Services.GetRequiredService<ISvcMessageBus>()
+                    .PublishAsync(new OutageProbe { Key = key + "-direct", Step = 1, CorrelationId = "corr-direct" }, Ct);
+                await publish.Should().ThrowAsync<Exception>("nothing is acknowledged without the broker");
+                clock.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(60), "the producer gives up within its message timeout (30 seconds)");
+                Done("the direct publish refused");
 
-        await faults.RestoreAsync(Proxy);
+                // The outage outlasts the consumer's session (librdkafka's 45 s): the broker reports the group empty once it
+                // has evicted the member that lost its connection, so after the restore the endpoint joins again.
+                var describe = new Confluent.Kafka.Admin.DescribeConsumerGroupsOptions { RequestTimeout = TimeSpan.FromSeconds(10) };
+                await WaitForAsync(async () => (await admin.DescribeConsumerGroupsAsync([Group], describe)).ConsumerGroupDescriptions.Single().State ==
+                                               Confluent.Kafka.ConsumerGroupState.Empty, "the consumer's session expired on the broker");
 
-        // No restart: the relay resumes once the bus is ready; per key, in the order written, each once.
-        await WaitForAsync(async () => (await OutboxAsync(key)).Unsent == 0 && StepsOf(key).Length >= 8, TimeSpan.FromSeconds(300), "the relay after the outage");
-        await Task.Delay(TimeSpan.FromSeconds(3), Ct);
-        StepsOf(key).Should().Equal([1, 2, 3, 4, 5, 6, 7, 8]);
-        (await ReadinessAsync(host, HealthStatus.Healthy, TimeSpan.FromSeconds(120))).Should().Be(HealthStatus.Healthy);
-        await host.StopAsync(Ct);
+                (await OutboxAsync(key)).Should().Be((5, 3), "the five written during the outage wait in the outbox, none lost and none sent");
+                StepsOf(key).Should().Equal([1, 2, 3]);
+
+                await faults.RestoreAsync(Proxy);
+                Done("the broker back");
+
+                // No restart: the relay resumes once the bus is ready (the endpoint rejoined its group); per key, in the order
+                // written, each once (a record delivered again after the rejoin is dropped by the inbox).
+                await WaitForAsync(async () => (await OutboxAsync(key)).Unsent == 0 && StepsOf(key).Length >= 8, "the relay after the outage");
+                await Task.Delay(TimeSpan.FromSeconds(3), Ct);
+                StepsOf(key).Should().Equal([1, 2, 3, 4, 5, 6, 7, 8]);
+                (await ReadinessAsync(host, status => status == HealthStatus.Healthy, "the bus healthy again")).Should().Be(HealthStatus.Healthy);
+                completed = true;
+            }
+            finally
+            {
+                // A failing step must not leave the broker cut while the host stops: a consumer stuck in an offset commit
+                // holds the stop until the broker answers (ARV-165), and the fact's timeout would hide the step's own message.
+                await faults.RestoreAsync(Proxy);
+            }
+        }
+        finally
+        {
+            var (stop, within) = StopWithin(host, TimeSpan.FromSeconds(25));
+            if (await within)
+            {
+                Done("the host stopped");
+                if (completed)
+                    await stop;
+            }
+            else
+            {
+                Done("the host not stopped within 25 s");
+                if (completed)
+                    throw new TimeoutException("The host did not stop and dispose within 25 s (ARV-166).");
+            }
+        }
     }
 }

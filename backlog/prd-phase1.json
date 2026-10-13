@@ -1080,6 +1080,93 @@
       ]
     },
     {
+      "id": "ARV-163",
+      "title": "[E17] Production regular expressions linear, not timed",
+      "description": "Found in ARV-156 and rated by its security review: 12 production `[GeneratedRegex]` rules backtrack under a match timeout (Site.CodePattern, TopologyCodes.Code, FlightRules.Carrier and Codeshare, OutboundRules.PathAndQuery and Scope, EmailAddresses.Rule, EmailTemplates.Placeholder, CsvImportReader.Number, the Cronz JobsDashboardGuard rules), and three interpreted calls also check the clock (Email.cs:199, JobsDashboard.cs:30 and :32). A timeout is wall-clock time, so a loaded node can raise RegexMatchTimeoutException on a short input: it fails closed (DependencyOutage treats it as no outage, the handler answers 500 without detail, a check never passes), so this is robustness rather than security, but it can give a rare 500 or a failed start under load. CWEs to review: CWE-1333, CWE-400.",
+      "acceptanceCriteria": [
+        "Every anchored production rule above runs on RegexOptions.NonBacktracking without a timeout (captures and unanchored search work on it); the linear engine is the ReDoS bound, stated in the CWE-1333 row",
+        "TopologyCodes.Code drops its lookahead for a length check (1 to 16) plus `^[A-Z0-9]+(-[A-Z0-9]+)*\\z` on NonBacktracking, proven equivalent by a CsCheck property comparing old and new rules on random strings of up to 20 characters over A-Z, 0-9, '-', '\\n', lowercase and non-ASCII; parity with script 0008's CHECK and varchar(16) kept",
+        "The RedactionEnricher rules keep no timeout (a timeout in a Serilog enricher would throw and could let an event out unredacted); the FloorPlanFiles backreference rule stays anchored and bounded; both are named in the CWE-1333 row with their reason",
+        "A test per rule asserts its options and infinite timeout, and each rule's accepted set is unchanged (existing tests plus a table per rule)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 39,
+      "passes": false,
+      "notes": "Size S. Rated low by the ARV-156 review: robustness, fails closed.",
+      "dependsOn": [
+        "ARV-156"
+      ]
+    },
+    {
+      "id": "ARV-164",
+      "title": "[E17] Test determinism: date-dependent theory data and tight stall bounds",
+      "description": "Found in ARV-156: the unit test count has varied by one between runs for days (4,956 against 4,955, 5,227 against 5,228); the missing row is the date-dependent `SiteCalendarRulesTests` \"tomorrow\" case, whose theory data depends on the clock and collapses or shifts across runs. And `DatabaseStallTests.CredentialLookup...` failed once under the heaviest load (10.08 s against its 10 s limit). CWEs to review: none (test determinism).",
+      "acceptanceCriteria": [
+        "Theory data never reads the clock: SiteCalendarRulesTests (and any other theory found the same way) builds its dates from a fixed TimeProvider, so the unit count is the same on every run; a search for DateTime.Now, DateTime.UtcNow and TimeProvider.System in test data finds none",
+        "DatabaseStallTests' bound is derived from what it guards (the credential lookup's own timeout plus a stated margin), not a round 10 s; the cause of the 10.08 s case is named",
+        "The unit count is identical across three consecutive backend gates",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 39,
+      "passes": false,
+      "notes": "Size XS.",
+      "dependsOn": []
+    },
+    {
+      "id": "ARV-165",
+      "title": "[E6] Broker outage during an offset commit: bus health, host stop and the outbox relay",
+      "description": "Found while finishing ARV-156 (run 12 of the BrokerOutageTests loop) and proven with a diagnostic test against the faults fixture: when the broker is cut while a MassTransit Kafka consumer's offset commit is in flight, the consume loop is held until the commit returns, so the endpoint never faults and `bus.CheckHealth()` stays Healthy (46 s in the diagnostic, over four minutes in the failing run; Degraded only when MassTransit logs 'checkpoint failed ... Waiting for coordinator'). Meanwhile the host cannot stop (a dispose waited 35.2 s on the same commit) and the outbox relay, which holds rows only while the bus is not Healthy, keeps producing and backing off (up to 300 s) instead of waiting, which can delay its resumption after the outage. Readiness is not affected (it answers 200 on Degraded anyway; see the open decision 'Readiness on a Degraded bus'). CWEs to review: CWE-400 (availability).",
+      "acceptanceCriteria": [
+        "The bus health seen by the relay and readiness turns not-Healthy within a stated bound (for example 10 s) of a broker outage even while an offset commit is in flight: a commit timeout or cancellation on the checkpoint, a producer-side or broker-connectivity signal folded into the health check, or an equivalent, chosen after reading MassTransit 8.5's Kafka rider options",
+        "Host stop completes within the host's shutdown timeout while the broker is unreachable and a commit is in flight",
+        "The outbox relay's backoff after a failed produce cannot exceed a stated bound once the broker is back, so relayed events resume within a stated time of restore",
+        "An integration test reproduces the race deterministically (the cut from inside the consumer before its checkpoint, as in the ARV-156 diagnostic) and proves the three bounds; BrokerOutageTests' commit-settled cut condition (ARV-156) stays for its own scenario",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 39,
+      "passes": false,
+      "notes": "Size M. Production behaviour; diagnosis and evidence in the ARV-156 progress entry.",
+      "dependsOn": [
+        "ARV-156"
+      ]
+    },
+    {
+      "id": "ARV-166",
+      "title": "[E6] A produce queued behind an in-flight message on a dropped connection never completes",
+      "description": "Found while finishing ARV-156 (run 16 of the BrokerOutageTests loop) and reproduced deterministically against the faults fixture: when the broker connection drops while a message is in flight (unacknowledged), that message ends with 'Local: Message timed out' after 30 s, but a produce queued behind it on the same producer (EnableIdempotence = true) never completes, not even after the broker is back; a new produce after the restore succeeds in 0.5 s. A heap dump shows the stuck call awaiting its delivery report inside Confluent.Kafka.Producer.ProduceAsync under MassTransit's send path, with librdkafka never reporting it. Consequences: Ingest's direct publish can hang a device push; the outbox relay awaits each produce inside its pass, so it can hang holding its transaction and leader lock and the outbox stops draining until the host restarts. Also seen: after the host is disposed, `DeadLetterFilter.SendUntilAcceptedAsync` keeps retrying a dead letter every 30 s with ObjectDisposedException and keeps the process alive. CWEs to review: CWE-400 (availability).",
+      "acceptanceCriteria": [
+        "Every produce Ariva awaits (the outbox relay, Ingest's direct publish, dead letters, the live snapshot publisher and any other ISvcMessageBus send) completes or fails within a stated bound, even when queued behind a message in flight on a dropped connection: a cancellation or timeout on the send, a producer reset on a stuck delivery, or a librdkafka setting proven to change it, chosen after reading Confluent.Kafka, librdkafka and MassTransit 8.5's rider",
+        "The outbox relay never holds its transaction or leader lock across a produce that can hang: a stuck send releases them and the pass ends within its bound, and the next pass resumes after restore; Ingest answers a device push 503 with Retry-After within its bound instead of hanging",
+        "The dead-letter retry loop stops when the host stops (it honours the host's stopping token)",
+        "An integration test reproduces the stuck produce deterministically (a message in flight on a stalled connection, the cut, a second produce, as in the ARV-156 diagnostic) and proves each bound, including recovery after restore; another proves the dead-letter loop ends with the host",
+        "Any librdkafka or MassTransit setting changed is recorded in docs/architecture with its reason, and ADR-0018 gains a dated note if the messaging design changes",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 37,
+      "passes": false,
+      "notes": "Size M. Ahead of the queue: the outbox can stop draining until a restart. Diagnosis, the heap dump and the reproduction are in the ARV-156 progress entry. From the ARV-156 re-review: give the two admin calls in BrokerOutageTests.CommittedAllAsync a RequestTimeout (10 s, as DescribeConsumerGroups has) when this story touches that test.",
+      "dependsOn": [
+        "ARV-156"
+      ]
+    },
+    {
       "id": "ARV-154",
       "title": "[E15] Site configuration import: creates take the site lock so an empty site stays empty",
       "description": "Found in the ARV-122a security review (N2, accepted residual): the import locks the site row while it checks the site is empty and writes, but the topology, device and display create endpoints do not take that lock, so a record created by hand during an import is not refused by the emptiness check (a code collision is still refused by the unique indexes). Take the site row lock (FOR SHARE) in every create that adds configuration to a site. Epic: Site onboarding and AMAN. CWEs to review: CWE-501, CWE-89.",
@@ -1179,7 +1266,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 39,
-      "passes": false,
+      "passes": true,
       "notes": "Size XS.",
       "dependsOn": []
     },
@@ -1241,7 +1328,7 @@
       ],
       "priority": 42,
       "passes": false,
-      "notes": "Size M. Monitoring stack and alert routing at the site depend on TC-32 and TC-36; defaults ship now. Found while building ARV-159 (2026-10-12): the `Ariva.Border`, `Ariva.Flights` and `Ariva.Integration` meters are created but never added to the OpenTelemetry exporters in TelemetryExtensions, so their counters are not exported; add them (and a test that every meter Ariva creates is exported) before building alerts on them.",
+      "notes": "Size M. Monitoring stack and alert routing at the site depend on TC-32 and TC-36; defaults ship now. Found while building ARV-159 (2026-10-12): the `Ariva.Border`, `Ariva.Flights` and `Ariva.Integration` meters are created but never added to the OpenTelemetry exporters in TelemetryExtensions, so their counters are not exported; add them (and a test that every meter Ariva creates is exported) before building alerts on them. From the ARV-156 review: readiness answers 200 while the message bus is Degraded (HealthEndpoints answers 503 only for Unhealthy and writes \"Healthy\" in the body for Degraded); an alert on the Degraded bus status is the better control than failing readiness (owner decision pending in decisions.md).",
       "dependsOn": [
         "ARV-062"
       ]

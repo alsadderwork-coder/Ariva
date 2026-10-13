@@ -51,7 +51,7 @@ public sealed class KafkaProbeConsumer : IConsumer<KafkaProbe>
 /// <summary>A single-broker Kafka for the pipeline tests (KRaft is not needed for these).</summary>
 public sealed class KafkaFixture : IAsyncLifetime
 {
-    private readonly KafkaContainer _container = new KafkaBuilder().WithImage("confluentinc/cp-kafka:7.6.1").Build();
+    private readonly KafkaContainer _container = KafkaContainers.Builder().Build();
 
     public string BootstrapServers => _container.GetBootstrapAddress();
 

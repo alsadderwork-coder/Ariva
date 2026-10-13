@@ -85,14 +85,26 @@ public sealed partial class ArivaTargetSettings : IValidatableObject
         var host = uri.Host;
         if (string.Equals(host, MainService, StringComparison.OrdinalIgnoreCase))
             return true;
-        return ownNamespace is not null && NamespaceLabel().IsMatch(ownNamespace) &&
+        return IsNamespaceName(ownNamespace) &&
                (string.Equals(host, $"{MainService}.{ownNamespace}.svc", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(host, $"{MainService}.{ownNamespace}.svc.cluster.local", StringComparison.OrdinalIgnoreCase));
     }
 
-    /// <summary>A Kubernetes namespace name (RFC 1123 label).</summary>
-    [GeneratedRegex("^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\\z", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
-    private static partial Regex NamespaceLabel();
+    /// <summary>
+    /// Whether a value is a Kubernetes namespace name (an RFC 1123 label): 1 to 63 lowercase letters, digits and hyphens,
+    /// beginning and ending with a letter or digit.
+    /// </summary>
+    internal static bool IsNamespaceName(string value) => value is not null && NamespaceLabel().IsMatch(value);
+
+    /// <summary>
+    /// A Kubernetes namespace name (RFC 1123 label). ARV-156 (CWE-1333): matched by the non-backtracking engine, whose time
+    /// is linear in the input's length; that is the bound against ReDoS, so the rule has no timeout. A timeout is
+    /// wall-clock time from the start of a match: with the former backtracking matcher and its 100 ms, a thread descheduled
+    /// on a loaded machine timed out on a 9-character name (a backtracking matcher checks the clock where it backtracks, and
+    /// this pattern backtracked on every name of two characters or more).
+    /// </summary>
+    [GeneratedRegex("^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\\z", RegexOptions.NonBacktracking | RegexOptions.CultureInvariant, Timeout.Infinite)]
+    internal static partial Regex NamespaceLabel();
 }
 
 /// <summary>Kafka for the AMAN feed topics (<c>aman.feed.*.v1</c>), as AMAN's own cluster would be reached.</summary>

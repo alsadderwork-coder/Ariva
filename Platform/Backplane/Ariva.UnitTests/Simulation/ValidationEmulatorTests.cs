@@ -205,6 +205,58 @@ public sealed class ValidationEmulatorTests
         problems.Should().NotContain(p => p.ErrorMessage!.Contains("secret", StringComparison.Ordinal), "a configured value is never quoted");
     }
 
+    /// <summary>The simulator's own namespace (the downward API's value) is a Kubernetes namespace name: an RFC 1123 label.</summary>
+    [Theory]
+    [InlineData("a", true)]
+    [InlineData("0", true)]
+    [InlineData("ariva-dev", true)]
+    [InlineData("ariva-prd2", true)]
+    [InlineData("a--b", true)]
+    [InlineData("9-a-9", true)]
+    [InlineData(null, false)]
+    [InlineData("", false)]
+    [InlineData("-", false)]
+    [InlineData("-ariva", false)]
+    [InlineData("ariva-", false)]
+    [InlineData("ariva--", false)]
+    [InlineData("Ariva-dev", false)]
+    [InlineData("ARIVA", false)]
+    [InlineData("ariva_dev", false)]
+    [InlineData("ariva.dev", false)]
+    [InlineData("ariva dev", false)]
+    [InlineData("ariva-dev\n", false)]
+    [InlineData("\u00E4riva", false)] // a with diaeresis
+    [InlineData("ariva\u2010dev", false)] // U+2010 HYPHEN, not the hyphen-minus
+    [InlineData("\uFF41riva", false)] // fullwidth a
+    public void IsNamespaceName_Should_TakeAnRfc1123LabelOnly_When_Checked(string value, bool valid)
+    {
+        Ariva.Simulation.Api.Emulators.ArivaTargetSettings.IsNamespaceName(value).Should().Be(valid);
+    }
+
+    [Fact]
+    public void IsNamespaceName_Should_TakeAtMost63Characters_When_TheNameIsLong()
+    {
+        Ariva.Simulation.Api.Emulators.ArivaTargetSettings.IsNamespaceName(new string('a', 63)).Should().BeTrue();
+        Ariva.Simulation.Api.Emulators.ArivaTargetSettings.IsNamespaceName("a" + new string('-', 61) + "a").Should().BeTrue();
+        Ariva.Simulation.Api.Emulators.ArivaTargetSettings.IsNamespaceName(new string('a', 64)).Should().BeFalse();
+        Ariva.Simulation.Api.Emulators.ArivaTargetSettings.IsNamespaceName(new string('a', 62) + "-").Should().BeFalse();
+        Ariva.Simulation.Api.Emulators.ArivaTargetSettings.IsNamespaceName(new string('a', 1_000_000)).Should().BeFalse();
+    }
+
+    /// <summary>
+    /// ARV-156 (CWE-1333): the namespace rule is linear in its input (the non-backtracking engine), which is its bound against
+    /// ReDoS, and has no timeout, so no match can throw RegexMatchTimeoutException however long a loaded machine holds its thread.
+    /// With a backtracking matcher and a 100 ms timeout, a unit run beside a mutation run timed out on "ariva-dev".
+    /// </summary>
+    [Fact]
+    public void NamespaceLabel_Should_BeLinearWithoutATimeout_When_Matched()
+    {
+        var rule = Ariva.Simulation.Api.Emulators.ArivaTargetSettings.NamespaceLabel();
+
+        rule.Options.Should().HaveFlag(System.Text.RegularExpressions.RegexOptions.NonBacktracking, "linear time is the bound against ReDoS");
+        rule.MatchTimeout.Should().Be(System.Text.RegularExpressions.Regex.InfiniteMatchTimeout, "a wall-clock timeout fails a short match on a loaded machine");
+    }
+
     [Fact]
     public void Observers_Should_BeRefusedWithoutQuotingThem_When_TheyCannotBeAccounts()
     {
