@@ -14,7 +14,7 @@ namespace Ariva.Api.Common.Extensions;
 /// </summary>
 public static class TelemetryExtensions
 {
-    // MassTransit's Kafka produce and consume spans and its meter share this name (ADR-0018).
+    // MassTransit's Kafka consume spans and its meter share this name (ADR-0018); since ARV-167 Ariva's producer has its own source.
     private const string MassTransit = "MassTransit";
 
     public static WebApplicationBuilder AddAppServiceDefaults(this WebApplicationBuilder builder)
@@ -25,7 +25,11 @@ public static class TelemetryExtensions
             options.ServiceName = ArivaLogging.ApplicationName(builder.Configuration);
             options.Environment = builder.Configuration["Application:Environment"] ?? "unknown";
             options.ActivitySources.Add(MassTransit);
+            // Ariva's own Kafka producer's send spans (ARV-167); MassTransit's consume spans take them as parents.
+            options.ActivitySources.Add(Ariva.Infra.Messaging.Kafka.KafkaProduce.ActivitySourceName);
             options.Meters.Add(MassTransit);
+            // Ariva's own Kafka producer's fatal errors and recreations (ARV-167).
+            options.Meters.Add(Ariva.Infra.Messaging.Kafka.KafkaProducerMetrics.MeterName);
             // Device heartbeats and zone degradation (ARV-025).
             options.Meters.Add(Ariva.Infra.Sensing.DeviceHealthMetrics.MeterName);
             // Sensing batches, events and health reports the archive skipped (ARV-159).

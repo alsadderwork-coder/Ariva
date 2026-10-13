@@ -15,11 +15,13 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 namespace Ariva.Di.Extensions;
 
 /// <summary>
-/// Messaging (ARV-020, ADR-0018): MassTransit 8 on an in-memory bus with the Kafka Rider, behind
-/// <see cref="ISvcMessageBus"/>. Always registered: the event catalog, the NHibernate outbox (domain events become
-/// outbox rows in the entity's transaction) and the inbox. With <c>Kafka:Enabled</c>: topic provisioning, a keyed
-/// producer per event topic and per dead-letter topic, the outbox relay, and a topic endpoint per consumer with one
-/// consumer group per service and purpose and the Ariva consume pipe (<see cref="ConsumePipeline"/>).
+/// Messaging (ARV-020, ADR-0018): Ariva's own Kafka producer behind <see cref="ISvcMessageBus"/> (ARV-167) and MassTransit 8
+/// on an in-memory bus with the Kafka Rider for consuming. Always registered: the event catalog, the NHibernate outbox
+/// (domain events become outbox rows in the entity's transaction) and the inbox. With <c>Kafka:Enabled</c>: the host's one
+/// producer (<see cref="KafkaProduce"/>, built at start and flushed at stop), topic provisioning, the outbox relay, and a
+/// topic endpoint per consumer with one consumer group per service and purpose and the Ariva consume pipe
+/// (<see cref="ConsumePipeline"/>). The rider registers no producer: every send, dead letters included, goes through
+/// <see cref="KafkaProduce"/>.
 /// </summary>
 public static partial class MessagingExtensions
 {
@@ -49,6 +51,15 @@ public static partial class MessagingExtensions
 
     internal const string UsageTelemetryVariable = "MASSTRANSIT_USAGE_TELEMETRY";
 
+    /// <summary>ARV-167: the producer's recreation interval is bounded, or the host does not start.</summary>
+    internal static void EnsureProducerSettings(KafkaSettings settings)
+    {
+        var seconds = settings.Producer?.RecreateSeconds ?? 0;
+        if (seconds is < ProducerSettings.MinRecreateSeconds or > ProducerSettings.MaxRecreateSeconds)
+            throw new InvalidOperationException(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                $"Kafka:Producer:RecreateSeconds must be from {ProducerSettings.MinRecreateSeconds} to {ProducerSettings.MaxRecreateSeconds}."));
+    }
+
     public static IServiceCollection AddArivaMessaging(this IServiceCollection services, IConfiguration configuration, Action<ArivaMessagingBuilder> configure = null)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -67,6 +78,7 @@ public static partial class MessagingExtensions
 
         EnsureProductionTransport(settings, configuration);
         EnsureNoUsageTelemetry(configuration);
+        EnsureProducerSettings(settings);
 
         if (!settings.Enabled)
         {
@@ -74,22 +86,21 @@ public static partial class MessagingExtensions
             return services;
         }
 
+        // ARV-167: the host's one producer, built when the host starts. Its lifetime is the first messaging hosted service, so
+        // it starts before the relay and the bus and stops (with its bounded flush) after them.
+        services.TryAddSingleton<KafkaProducerMetrics>();
+        services.AddSingleton(provider => new KafkaProduce(settings, provider.GetRequiredService<TimeProvider>(),
+            provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<KafkaProduce>>(), provider.GetRequiredService<KafkaProducerMetrics>()));
+        services.AddHostedService<KafkaProducerLifetime>();
+
         if (settings.ProvisionTopics)
             services.AddHostedService<TopicProvisioner>();
 
-        services.AddSingleton<KafkaProduce>();
-        services.AddSingleton<IOutboxTransport, MassTransitOutboxTransport>();
+        services.AddSingleton<IOutboxTransport, KafkaOutboxTransport>();
         services.AddSingleton<IDeadLetterSink, KafkaDeadLetterSink>();
         // ARV-171: a dead letter Kafka did not take before its endpoint stopped is kept as an outbox row.
         services.AddSingleton<IDeadLetterStore, OutboxDeadLetterStore>();
         services.Replace(ServiceDescriptor.Singleton<ISvcMessageBus, KafkaMessageBus>());
-
-        var producerConfig = KafkaClientConfig.Producer(settings);
-        // Every topic's dead-letter producer, not only those of the topics this host consumes (ARV-171): the outbox relay is
-        // led by any host and sends dead letters kept at a stop by any other, and MassTransit gives a topic without a
-        // registered producer a default one without Ariva's JSON serializer. The topic provisioner creates them all.
-        var deadLetterTopics = builder.Consumers.Select(c => c.Topic).Concat(builder.StreamTopics).Concat(KafkaTopics.All)
-            .Select(KafkaTopics.DeadLetter).Distinct(StringComparer.Ordinal).ToList();
 
         services.AddHealthChecks();
 
@@ -104,10 +115,6 @@ public static partial class MessagingExtensions
             bus.UsingInMemory((context, memory) => memory.ConfigureEndpoints(context));
             bus.AddRider(rider =>
             {
-                foreach (var type in catalog.EventTypes)
-                    AddProducerOf(type, rider, catalog.TopicOf(type), producerConfig);
-                foreach (var topic in deadLetterTopics)
-                    AddProducer<DeadLetter>(rider, topic, producerConfig);
                 foreach (var consumer in builder.Consumers)
                     consumer.Register(rider);
 
@@ -144,14 +151,6 @@ public static partial class MessagingExtensions
         return services;
     }
 
-    private static readonly MethodInfo AddProducerGeneric = typeof(MessagingExtensions).GetMethod(nameof(AddProducer), BindingFlags.NonPublic | BindingFlags.Static)!;
-
-    private static void AddProducerOf(Type type, IRiderRegistrationConfigurator rider, string topic, ProducerConfig config) =>
-        AddProducerGeneric.MakeGenericMethod(type).Invoke(null, [rider, topic, config]);
-
-    private static void AddProducer<T>(IRiderRegistrationConfigurator rider, string topic, ProducerConfig config) where T : class =>
-        rider.AddProducer<string, T>(topic, config, (_, producer) => producer.SetValueSerializer(new JsonValueSerializer<T>()));
-
     [GeneratedRegex("^[a-z0-9]+(-[a-z0-9]+)*$")]
     internal static partial Regex PurposeRule();
 }
@@ -163,17 +162,15 @@ public sealed class ArivaMessagingBuilder
 
     internal List<ConsumerRegistration> Consumers { get; } = [];
 
-    internal List<string> StreamTopics { get; } = [];
-
     /// <summary>
-    /// A topic this host reads with <c>PartitionedConsumer</c> (Ariva.Api.Stream): registers its dead-letter producer,
-    /// which an unreadable record needs.
+    /// A topic this host reads with <c>PartitionedConsumer</c> (Ariva.Api.Stream); it must be a <see cref="KafkaTopics"/>
+    /// constant. Its unreadable records go to its dead-letter topic through the host's one producer, which needs no
+    /// registration per topic (ARV-167).
     /// </summary>
     public ArivaMessagingBuilder StreamFrom(string topic)
     {
         if (!KafkaTopics.IsKnown(topic))
             throw new ArgumentException($"Unknown topic '{topic}'. Use a KafkaTopics constant.", nameof(topic));
-        StreamTopics.Add(topic);
         return this;
     }
 

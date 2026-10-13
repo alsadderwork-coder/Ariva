@@ -326,6 +326,31 @@ public sealed class MessagingRegistrationTests
     }
 
     [Theory]
+    [InlineData("4", true)]
+    [InlineData("5", false)]
+    [InlineData("30", false)]
+    [InlineData("3600", false)]
+    [InlineData("3601", true)]
+    [InlineData("0", true)]
+    public void AddArivaMessaging_Should_RefuseToStart_When_TheProducersRecreateIntervalIsOutOfBounds(string seconds, bool refused)
+    {
+        // ARV-167: the producer is recreated after a fatal client error at most once per interval; a host with an interval
+        // outside 5 to 3600 seconds does not start.
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
+        {
+            ["Kafka:Enabled"] = "true",
+            ["Kafka:Producer:RecreateSeconds"] = seconds
+        }).Build();
+
+        var add = () => Ariva.Di.Extensions.MessagingExtensions.AddArivaMessaging(new ServiceCollection(), configuration);
+
+        if (refused)
+            add.Should().Throw<InvalidOperationException>().WithMessage("*Kafka:Producer:RecreateSeconds*");
+        else
+            add.Should().NotThrow();
+    }
+
+    [Theory]
     [InlineData("k8s-prd", "Plaintext", true)]
     [InlineData("k8s-prd", "Ssl", true)]
     [InlineData("k8s-prd", "SaslSsl", false)]

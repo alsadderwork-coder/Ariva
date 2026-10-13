@@ -79,7 +79,7 @@ Invariants:
 | Concern | Choice | ADR |
 |---|---|---|
 | Persistence | NHibernate through `IStorageProvider` and `IUnitOfWork`; `SchemaUpdate` in development only; Npgsql binary COPY on the hot path | ADR-0017 |
-| Messaging client | MassTransit 8.5 Kafka Rider behind `ISvcMessageBus` (AMAN parity) with Ariva outbox, inbox and dead-letter filters; raw Confluent consumer for the stateful Stream engine (Accepted) | ADR-0018 |
+| Messaging client | MassTransit 8.5 Kafka Rider for consuming behind `ISvcMessageBus` (AMAN parity) with Ariva outbox, inbox and dead-letter filters; every send through one Confluent producer per host that Ariva owns (ARV-167, amendment of 2026-10-13); raw Confluent consumer for the stateful Stream engine (Accepted) | ADR-0018 |
 | Background jobs | TickerQ in Ariva.Api.Cronz | ADR-0020 |
 | Live push | SignalR with Redis backplane and MessagePack | ADR-0021 |
 | Observability | Serilog plus OpenTelemetry to SigNoz or Loki | ADR-0022 |

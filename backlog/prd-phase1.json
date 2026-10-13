@@ -1137,7 +1137,7 @@
       ],
       "priority": 39,
       "passes": false,
-      "notes": "Size M. Production behaviour; diagnosis and evidence in the ARV-156 progress entry. From the ARV-166 review, residual (b), low: ReceiveEndpointCollection.StopEndpoints stops only endpoints whose IsStarted() is true, so a host stopping while a Kafka endpoint is between restarts after a broker error can leave a stray Confluent consumer running until the process exits (it holds a partition and acknowledges nothing); prove it and close it here.",
+      "notes": "Size M. Production behaviour; diagnosis and evidence in the ARV-156 progress entry. From the ARV-166 review, residual (b), low: ReceiveEndpointCollection.StopEndpoints stops only endpoints whose IsStarted() is true, so a host stopping while a Kafka endpoint is between restarts after a broker error can leave a stray Confluent consumer running until the process exits (it holds a partition and acknowledges nothing); prove it and close it here. From the ARV-167 security review (2026-10-13): ARV-167 took the relay off MassTransit's bus health (it now waits for the producer and the database), so criterion 1 concerns readiness and the ARV-125 alert, not the relay. For criterion 3, the review suggests not counting broker-unavailable failures (Local_MsgTimedOut, Local_AllBrokersDown, Local_Transport, Local_QueueFull, KafkaProduceTimeoutException) against the row: pause the relay with a short capped delay (5 to 30 s), or reset those rows' next_attempt_on at the first successful send after failures, and test that recovery drains every key within a stated bound. Also from that review, producer hardening: KafkaProduce.Recreate runs on a timer and catches only Kafka, Argument and InvalidOperation exceptions, so any other exception would end the process; catch every non-fatal exception, log Critical and reschedule. And add a sweep that ends Unreported entries older than twice SendTimeout (librdkafka reports every message, so it only covers a report that never comes).",
       "dependsOn": [
         "ARV-156"
       ]
@@ -1185,7 +1185,7 @@
       ],
       "priority": 37,
       "passes": false,
-      "notes": "Size M. Owner decision 2026-10-13: bound it in ARV-166, then own sends. Before the pilot. From the ARV-172 review: the new send path uses one timer for the produce's token and the wait (strict order; it still ends the wait if the client ignores the token, as OutboxRelay.SendWithinAsync does), and the bounded-produce timeout test asserts the cancellation lands between the bound and the bound plus 5 s (a Stopwatch noted in the cancellation callback), so a deadline set later than the wait is caught.",
+      "notes": "Size M. Owner decision 2026-10-13: bound it in ARV-166, then own sends. Before the pilot. From the ARV-172 review: the new send path uses one timer for the produce's token and the wait (strict order; it still ends the wait if the client ignores the token, as OutboxRelay.SendWithinAsync does), and the bounded-produce timeout test asserts the cancellation lands between the bound and the bound plus 5 s (a Stopwatch noted in the cancellation callback), so a deadline set later than the wait is caught. 2026-10-13: built and security review PASS; passes waits only for the owner's approval of the CLAUDE.md rule 4 and kafka-streaming skill wording (criterion 5), drafted by the engineer and corrected by the lead.",
       "dependsOn": [
         "ARV-166"
       ]
@@ -1357,6 +1357,28 @@
       "notes": "Size S. Before the pilot, after ARV-174. Follow-up 4 of the same review (WRITE on every dead-letter topic for each per-service principal) is in ARV-083's notes.",
       "dependsOn": [
         "ARV-171"
+      ]
+    },
+    {
+      "id": "ARV-176",
+      "title": "[E6] A consumed topic missing from the broker does not stall the host's other consumers",
+      "description": "From the ARV-167 security review (2026-10-13). While building ARV-167 the engineer saw a test host where one receive endpoint was faulted (a consumer of a topic the broker lacked) and MassTransit did not deliver to the host's other, working endpoint within 60 s; not investigated. Production consequence: Ariva.Api.Integration consumes four AMAN feed topics, each with its own endpoint (BorderExtensions). AMAN's topics are external, so a site without e-gates, or an AMAN release not yet publishing one contract, can leave one aman.feed.* topic missing; KafkaTopicsReady starts the bus anyway after 300 s, that endpoint faults, and the other AMAN desk feeds may stop, leaving the border screens stale while readiness answers 200 (Degraded). CWEs to review: CWE-400.",
+      "acceptanceCriteria": [
+        "A deterministic integration test proves or disproves the stall: one host with two consumed topics, one missing from the broker, and a record on the other topic consumed within a stated bound; the finding (with MassTransit 8.5.11's code path) is in backlog/progress.md",
+        "If the stall is real, a host's consumers of topics that exist keep consuming while another consumed topic is missing (for example: register only endpoints whose topics exist and add the rest when they appear, or isolate external-feed endpoints on their own bus), and an endpoint whose topic appears later starts consuming without a restart",
+        "A missing consumed topic is visible to operators (a log line naming the topic and a signal ARV-125 can alert on), and the AMAN integration runbook names the four topics that must exist before go-live",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 37,
+      "passes": false,
+      "notes": "Size S to M. Before the pilot.",
+      "dependsOn": [
+        "ARV-167"
       ]
     },
     {

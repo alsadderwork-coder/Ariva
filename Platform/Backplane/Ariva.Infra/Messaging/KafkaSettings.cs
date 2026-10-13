@@ -44,6 +44,8 @@ public sealed class KafkaSettings
 
     public ConsumerSettings Consumers { get; init; } = new();
 
+    public ProducerSettings Producer { get; init; } = new();
+
     /// <summary>Kafka's own limit is enforced on the producer too (ADR-0018): 1 MB.</summary>
     public const int MaxMessageBytes = 1_048_576;
 }
@@ -103,6 +105,20 @@ public sealed class OutboxRelaySettings
     /// seconds anyway (<c>KafkaProduce.SendTimeout</c>); this also bounds a pass of many slow sends.
     /// </summary>
     public int PassSeconds { get; init; } = 60;
+}
+
+/// <summary>The host's own producer (ARV-167).</summary>
+public sealed class ProducerSettings
+{
+    public const int MinRecreateSeconds = 5;
+    public const int MaxRecreateSeconds = 3600;
+
+    /// <summary>
+    /// After a fatal client error the producer is recreated in place, at most once in this many seconds (counted from the
+    /// previous client's creation); sends in between fail at once (ARV-167). From <see cref="MinRecreateSeconds"/> to
+    /// <see cref="MaxRecreateSeconds"/>; a host with another value does not start.
+    /// </summary>
+    public int RecreateSeconds { get; init; } = 30;
 }
 
 /// <summary>Endpoint defaults (ADR-0018).</summary>

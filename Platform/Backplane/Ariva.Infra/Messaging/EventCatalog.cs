@@ -45,7 +45,7 @@ public sealed class EventCatalog
             throw new InvalidOperationException($"{type.FullName} names topic '{topic}', which is not a KafkaTopics constant.");
         if (_types.TryGetValue(type.Name, out var other) && other != type)
             throw new InvalidOperationException($"Event names must be unique: {type.FullName} and {other.FullName} are both '{type.Name}'.");
-        // The rider keeps one producer per topic, so a topic carries one event type (a new shape is a new versioned topic).
+        // A topic endpoint reads one value type, so a topic carries one event type (a new shape is a new versioned topic).
         var sharing = _topics.FirstOrDefault(t => t.Value == topic && t.Key != type).Key;
         if (sharing is not null)
             throw new InvalidOperationException($"Topic '{topic}' already carries {sharing.FullName}; {type.FullName} needs its own topic.");

@@ -19,7 +19,10 @@ public sealed class UnknownEventTypeException(string messageType)
 /// <summary>Produces one outbox row to Kafka. Throws when the broker did not take it.</summary>
 public interface IOutboxTransport
 {
-    /// <summary>False until the producer side is up (the bus starts after the host); the relay waits instead of failing rows.</summary>
+    /// <summary>
+    /// False until the producer can send (the host's producer started and not in the gap after a fatal client error,
+    /// ARV-167); the relay waits instead of failing rows.
+    /// </summary>
     bool IsReady => true;
 
     Task SendAsync(OutboxEnvelope message, CancellationToken ct);

@@ -149,8 +149,7 @@ public sealed class DeadLetterOutboxTests
     [Fact]
     public async Task Relay_Should_RefuseAKeptLetter_When_TheRowsTopicIsNotItsDeadLetterTopic()
     {
-        var bus = new Mock<IBusControl>();
-        var transport = new MassTransitOutboxTransport(new KafkaProduce(null, TimeProvider.System), new EventCatalog([]), bus.Object);
+        var transport = new KafkaOutboxTransport(new KafkaProduce(new Mock<Confluent.Kafka.IProducer<string, byte[]>>(MockBehavior.Strict).Object, TimeProvider.System, null), new EventCatalog([]));
         var payload = System.Text.Json.JsonSerializer.Serialize(Letter(), EventCatalog.Json);
 
         foreach (var topic in new[] { KafkaTopics.FlowNowcast, KafkaTopics.DeadLetter(KafkaTopics.AlertStateChanged), "ariva.flow.other.v1.dlq.v1" })

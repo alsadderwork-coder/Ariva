@@ -34,10 +34,16 @@ namespace Ariva.IntegrationTests.Faults;
 /// relay's pass ends within its own bound (<c>Kafka:Outbox:PassSeconds</c>, 20 seconds here so that it ends before the
 /// produce bound would) and lets go of its transaction, its leader lock and its row; after the restore a new produce
 /// succeeds and the relay sends the row, which the consumer gets once.
-/// The second test proves that a caller who gives up no longer strands the other sends on its topic's producer.
+/// The second test proves that a caller who gives up no longer strands the other sends on the producer.
 /// <para>
-/// The cause is bounded here, not removed: the rider still disposes a topic's producer when a send on it fails, so B is
-/// still discarded with it and fails at its bound (the device or the relay sends it again). ARV-167 removes the cause.
+/// ARV-166 bounded the cause; ARV-167 removed it: the host has one producer of its own, which no failed or cancelled send
+/// disposes, so B is no longer discarded. Both publishes now get their own delivery report (librdkafka's message timeout,
+/// 30 seconds, while the broker is away), which the test reads from each send's span: the span ends at the report and
+/// starts at that send's own produce, so the time is measured against the message timeout plus a stated margin
+/// (<see cref="ReportMargin"/>), whatever the load. Under the rider B never got a report (its producer was disposed under
+/// it) and failed at the 45 second bound. The caller's wait keeps that bound as a backstop, so on a starved machine a wait
+/// may still end at 45 seconds just before its report; the test therefore does not read the report from the exception's
+/// type (it held a margin of about 8 seconds: B's report came 36.7 seconds after its produce).
 /// </para>
 /// <para>
 /// Every wait is for a condition, within one budget inside the fact's timeout (ARV-156), and the host's stop has a
@@ -55,6 +61,16 @@ public sealed class StuckProduceTests(FaultsFixture faults) : IAsyncLifetime
 
     /// <summary>Scheduling slack on a loaded machine, on top of each bound.</summary>
     private static readonly TimeSpan Slack = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// How long after librdkafka's message timeout (30 s) a timed out message's report may come and still count as its
+    /// own: librdkafka notices it at its next scan, at most its 10 second reconnect backoff later (30.6 to 39.5 s measured),
+    /// and 20 seconds more cover a starved machine. A send that is stranded never reports, so the margin only has to tell
+    /// a slow report from none; it is the test's, and no production bound depends on it.
+    /// </summary>
+    private static readonly TimeSpan ReportMargin = TimeSpan.FromSeconds(30);
+
+    private static readonly TimeSpan MessageTimeout = TimeSpan.FromMilliseconds(KafkaClientConfig.MessageTimeoutMilliseconds);
 
     private static readonly TimeSpan Budget = TimeSpan.FromSeconds(270);
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
@@ -235,7 +251,8 @@ public sealed class StuckProduceTests(FaultsFixture faults) : IAsyncLifetime
                 var direct = key + "-direct";
                 await PublishAsync(host, key + "-warm", 0).WaitAsync(TimeSpan.FromSeconds(60), Ct);
                 Done("the warm-up publish delivered");
-                // The relay sends only while the bus is Healthy, which it is once the consumer has joined its group.
+                // The consumer has joined its group once the bus is Healthy, so what the relay sends later is consumed (since ARV-167
+                // the relay itself waits only for the producer, not for the bus).
                 var bus = host.Services.GetRequiredService<IBusControl>();
                 await WaitForAsync(() => Task.FromResult(bus.CheckHealth().Status == BusHealthStatus.Healthy), "the bus healthy");
 
@@ -259,7 +276,9 @@ public sealed class StuckProduceTests(FaultsFixture faults) : IAsyncLifetime
                     }
                 }, Ct);
                 var a = Stopwatch.StartNew();
-                var publishA = PublishAsync(host, direct, 1);
+                using var reports = new SendReports();
+                var probeA = new OutageProbe { Key = direct, Step = 1, CorrelationId = "corr-" + direct };
+                var publishA = host.Services.GetRequiredService<ISvcMessageBus>().PublishAsync(probeA, CancellationToken.None);
                 await Task.Delay(TimeSpan.FromSeconds(2), Ct);
                 await faults.CutAsync(Proxy);
                 Done("the broker cut off");
@@ -267,16 +286,29 @@ public sealed class StuckProduceTests(FaultsFixture faults) : IAsyncLifetime
                 // when the first of them fails (see the summary).
                 await Task.Delay(TimeSpan.FromSeconds(12), Ct);
                 var b = Stopwatch.StartNew();
-                var publishB = PublishAsync(host, direct, 2);
+                var probeB = new OutageProbe { Key = direct, Step = 2, CorrelationId = "corr-" + direct };
+                var publishB = host.Services.GetRequiredService<ISvcMessageBus>().PublishAsync(probeB, CancellationToken.None);
                 Done("a second publish queued behind them");
 
                 // Ingest's direct publish: both end within the produce bound, failed, and not as a cancellation, which Ingest
-                // answers 503 with Retry-After (PushEndpointTests). Before ARV-166, B never ended.
+                // answers 503 with Retry-After (PushEndpointTests). Before ARV-166, B never ended; under ARV-166's bound it failed
+                // at 45 seconds. Since ARV-167 each ends by its own delivery report: nothing disposed the producer under it.
                 foreach (var (produce, since, what) in new[] { (publishA, a, "the publish in flight"), (publishB, b, "the publish queued behind it") })
                 {
                     var (_, error) = await EndedAsync(produce, since, KafkaProduce.SendTimeout, what);
                     error.Should().NotBeNull($"{what} cannot be acknowledged without the broker");
                     error.Should().NotBeAssignableTo<OperationCanceledException>($"{what} fails as a broker failure, which Ingest answers 503");
+                }
+
+                // Each got its own delivery report (ARV-167): its send span ends at the report, timed from that send's own
+                // produce. Under the rider B never got one.
+                foreach (var (probe, since, what) in new[] { (probeA, a, "the publish in flight"), (probeB, b, "the publish queued behind it") })
+                {
+                    var report = await reports.OfAsync(probe.Id, since, MessageTimeout + ReportMargin, what);
+                    Done($"{what}: its report came {report.Duration.TotalSeconds:F1} s after its produce ({report.Description})");
+                    report.Duration.Should().BeLessThan(MessageTimeout + ReportMargin,
+                        $"{what} is reported within librdkafka's message timeout and the margin: the producer it was queued on still serves its reports");
+                    report.Status.Should().Be(System.Diagnostics.ActivityStatusCode.Error, $"Kafka did not take {what} without the broker");
                 }
 
                 // The relay's pass ended within its own bound, with the row marked failed and nothing held: the row, and the lock.
@@ -335,14 +367,14 @@ public sealed class StuckProduceTests(FaultsFixture faults) : IAsyncLifetime
     }
 
     /// <summary>
-    /// ARV-166: a caller who gives up no longer strands the other sends on its topic's producer. Before, the caller's token
-    /// reached the rider, the cancelled send faulted the topic's shared producer and MassTransit disposed it; once the
-    /// producer has reported a local error (the cut here) the dispose skips its flush, and librdkafka drops what is still
-    /// outstanding without a report. Now the caller stops waiting at once, its produce runs on, and nothing is disposed:
-    /// the send that was outstanding is delivered once the broker is back, well inside its 30 second message timeout,
-    /// and so is the message whose caller gave up (at-least-once: a device that dropped its request sends it again, and
-    /// consumers drop the copy). On the unfixed code the outstanding send never ended; with only the produce bound it
-    /// would fail at 45 seconds instead of being delivered.
+    /// ARV-166: a caller who gives up no longer strands the other sends on the producer. Under the rider, the caller's token
+    /// reached the producer, the cancelled send faulted the topic's shared producer and MassTransit disposed it; once the
+    /// producer had reported a local error (the cut here) the dispose skipped its flush, and librdkafka dropped what was
+    /// still outstanding without a report. Now the caller stops waiting at once, its message stays with the client (since
+    /// ARV-167 a send takes no token at all), and nothing is disposed: the send that was outstanding is delivered once the
+    /// broker is back, well inside its 30 second message timeout, and so is the message whose caller gave up
+    /// (at-least-once: a device that dropped its request sends it again, and consumers drop the copy). On the code before
+    /// ARV-166 the outstanding send never ended; with only the produce bound it would fail at 45 seconds instead.
     /// </summary>
     [Fact(Timeout = 300_000)]
     public async Task Produce_Should_NotStrandTheOtherSends_When_ACallerGivesUp()
@@ -359,14 +391,15 @@ public sealed class StuckProduceTests(FaultsFixture faults) : IAsyncLifetime
                 var bus = host.Services.GetRequiredService<IBusControl>();
                 await WaitForAsync(() => Task.FromResult(bus.CheckHealth().Status == BusHealthStatus.Healthy), "the bus healthy");
 
-                // A send outstanding on the topic's producer: the connection stalls, so it stays in flight.
+                // A send outstanding on the producer: the connection stalls, so it stays in flight.
                 await faults.StallAsync(Proxy);
                 Done("the broker connection stalled");
                 var since = Stopwatch.StartNew();
                 var outstanding = PublishAsync(host, key, 1);
                 await Task.Delay(TimeSpan.FromSeconds(1), Ct);
 
-                // The cut makes the producer report a local error, after which MassTransit's dispose of it skips its flush.
+                // The cut makes the producer report a local error (under the rider, the error after which its dispose skipped
+                // its flush).
                 var downBefore = Logged(BrokersDown);
                 await faults.CutAsync(Proxy);
                 Done("the broker cut off");
@@ -382,7 +415,7 @@ public sealed class StuckProduceTests(FaultsFixture faults) : IAsyncLifetime
                 givenUp.IsCanceled.Should().BeTrue("the caller's wait ends as its own cancellation");
                 Done("the caller gave up");
 
-                // Time for a dispose to take the producer down, were the cancellation to reach the rider; then the broker is back.
+                // Time for a dispose to take the producer down, were the cancellation to reach it; then the broker is back.
                 await Task.Delay(TimeSpan.FromSeconds(2), Ct);
                 await faults.RestoreAsync(Proxy);
                 Done("the broker back");
@@ -417,12 +450,52 @@ public sealed class StuckProduceTests(FaultsFixture faults) : IAsyncLifetime
         }
     }
 
-    /// <summary>librdkafka's error when the producer's connections are all down, as MassTransit logs it for a producer.</summary>
-    private const string BrokersDown = "brokers are down on producer";
+    /// <summary>
+    /// The send spans of Ariva's producer (ARV-167), recorded as they end: a span ends at its message's delivery report, so a
+    /// recorded span is a report that came, timed from the send's own produce.
+    /// </summary>
+    private sealed class SendReports : IDisposable
+    {
+        private readonly ConcurrentDictionary<string, (TimeSpan Duration, System.Diagnostics.ActivityStatusCode Status, string Description)> _ended = new();
+        private readonly System.Diagnostics.ActivityListener _listener;
+
+        public SendReports()
+        {
+            _listener = new System.Diagnostics.ActivityListener
+            {
+                ShouldListenTo = source => source.Name == KafkaProduce.ActivitySourceName,
+                Sample = (ref System.Diagnostics.ActivityCreationOptions<System.Diagnostics.ActivityContext> _) => System.Diagnostics.ActivitySamplingResult.AllDataAndRecorded,
+                ActivityStopped = span =>
+                {
+                    if (span.GetTagItem("messaging.message.id") is string id)
+                        _ended.TryAdd(id, (span.Duration, span.Status, span.StatusDescription));
+                }
+            };
+            System.Diagnostics.ActivitySource.AddActivityListener(_listener);
+        }
+
+        /// <summary>The report of the send with <paramref name="messageId"/>, waited for until <paramref name="since"/> passes <paramref name="bound"/>.</summary>
+        public async Task<(TimeSpan Duration, System.Diagnostics.ActivityStatusCode Status, string Description)> OfAsync(Guid messageId, Stopwatch since, TimeSpan bound, string what)
+        {
+            var id = messageId.ToString("D");
+            while (!_ended.ContainsKey(id) && since.Elapsed < bound)
+                await Task.Delay(100, Ct);
+            _ended.Should().ContainKey(id, $"{what} gets its own delivery report within {bound.TotalSeconds:F0} s of its produce (it was not stranded)");
+            return _ended[id];
+        }
+
+        public void Dispose() => _listener.Dispose();
+    }
+
+    /// <summary>librdkafka's error when the producer's connections are all down, as Ariva's producer logs it.</summary>
+    private const string BrokersDown = "brokers are down";
 
     private int Logged(string text) => _log.Count(l => l.Contains(text, StringComparison.Ordinal));
 
-    /// <summary>Records MassTransit's warnings and errors (no message content: MassTransit logs ids, types and client errors).</summary>
+    /// <summary>
+    /// Records the warnings and errors of MassTransit and of Ariva's producer (no message content: they log ids, types and
+    /// client errors).
+    /// </summary>
     private sealed class WarningRecorder(ConcurrentQueue<string> log) : ILoggerProvider
     {
         public ILogger CreateLogger(string categoryName) => new Recorder(log, categoryName);
@@ -435,7 +508,8 @@ public sealed class StuckProduceTests(FaultsFixture faults) : IAsyncLifetime
         {
             public IDisposable BeginScope<TState>(TState state) where TState : notnull => null;
 
-            public bool IsEnabled(LogLevel logLevel) => category.StartsWith("MassTransit", StringComparison.Ordinal) && logLevel >= LogLevel.Warning;
+            public bool IsEnabled(LogLevel logLevel) =>
+                (category.StartsWith("MassTransit", StringComparison.Ordinal) || category == typeof(KafkaProduce).FullName) && logLevel >= LogLevel.Warning;
 
             public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception, Func<TState, Exception, string> formatter)
             {

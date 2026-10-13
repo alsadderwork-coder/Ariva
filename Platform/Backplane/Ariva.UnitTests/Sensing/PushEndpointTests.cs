@@ -45,10 +45,16 @@ public sealed class PushEndpointTests
     {
         public static bool Fail { get; set; }
         public static bool TimedOut { get; set; }
+
+        /// <summary>When set, the push goes through this sink instead (ARV-167: the hosts' sink over Ariva's producer).</summary>
+        public static ISensingSink Through { get; set; }
+
         public static List<IEvent> Published { get; } = [];
 
         public Task PublishAsync(IReadOnlyList<IEvent> events, CancellationToken ct = default)
         {
+            if (Through is { } through)
+                return through.PublishAsync(events, ct);
             if (Fail && TimedOut)
                 throw new Ariva.Infra.Messaging.Kafka.KafkaProduceTimeoutException("ariva.device.interval-count.v1", Ariva.Infra.Messaging.Kafka.KafkaProduce.SendTimeout);
             if (Fail)
@@ -147,6 +153,41 @@ public sealed class PushEndpointTests
         {
             Sink.Fail = false;
             Sink.TimedOut = false;
+        }
+    }
+
+    /// <summary>
+    /// ARV-167: the hosts' sink over Ariva's producer, whose client refuses the message because its queue is full
+    /// (<c>Local_QueueFull</c>, thrown by <c>Produce</c> itself, as librdkafka does when the bounded queue is full during an
+    /// outage): the push is answered 503 with Retry-After, after one attempt and without waiting for anything.
+    /// </summary>
+    [Fact]
+    public async Task Push_Should_Answer503WithRetryAfter_When_TheProducersQueueIsFull()
+    {
+        var client = new Moq.Mock<Confluent.Kafka.IProducer<string, byte[]>>(Moq.MockBehavior.Strict);
+        client.Setup(c => c.Produce(Moq.It.IsAny<string>(), Moq.It.IsAny<Confluent.Kafka.Message<string, byte[]>>(),
+                Moq.It.IsAny<Action<Confluent.Kafka.DeliveryReport<string, byte[]>>>()))
+            .Throws(new Confluent.Kafka.ProduceException<string, byte[]>(new Confluent.Kafka.Error(Confluent.Kafka.ErrorCode.Local_QueueFull), null));
+        var produce = new Ariva.Infra.Messaging.Kafka.KafkaProduce(client.Object, TimeProvider.System, null);
+        var catalog = new Ariva.Infra.Messaging.EventCatalog([typeof(Ariva.Core._IAssemblyMark).Assembly]);
+        Sink.Through = new Ariva.Infra.Sensing.MessageBusSensingSink(new Ariva.Infra.Messaging.Kafka.KafkaMessageBus(produce, catalog));
+        try
+        {
+            await using var host = Ingest();
+            using var http = host.CreateClient();
+
+            var result = await PostAsync(http, "/api/v1/ingest/zones/Snake%20A/events", Canonical.Credential, JsonBody(Push.Replace("\"packageId\": 1", "\"packageId\": 3", StringComparison.Ordinal)));
+
+            result.Status.Should().Be(HttpStatusCode.ServiceUnavailable, result.Body);
+            result.RetryAfter.Should().Be("5", "the device sends the push again after five seconds");
+            result.Body.Should().NotContain("Queue full", "the cause is logged, not returned");
+            client.Verify(c => c.Produce(Moq.It.IsAny<string>(), Moq.It.IsAny<Confluent.Kafka.Message<string, byte[]>>(),
+                Moq.It.IsAny<Action<Confluent.Kafka.DeliveryReport<string, byte[]>>>()), Moq.Times.Once(), "one refusal ends the push");
+            produce.Unreported.Should().Be(0, "a refused message leaves nothing waiting");
+        }
+        finally
+        {
+            Sink.Through = null;
         }
     }
 

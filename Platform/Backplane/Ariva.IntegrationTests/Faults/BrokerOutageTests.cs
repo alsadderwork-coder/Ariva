@@ -41,7 +41,8 @@ public sealed class OutageProbeConsumer : IConsumer<OutageProbe>
 
 /// <summary>
 /// ARV-072, the broker cut off under a running host. Domain events keep going into the outbox in their own transactions;
-/// the relay sends nothing while the broker is unreachable and loses nothing; the readiness checks no longer report the
+/// the relay sends nothing while the broker is unreachable and loses nothing (since ARV-167 it tries, and each failed row
+/// backs off and holds its key); the readiness checks no longer report the
 /// bus healthy (MassTransit reports it Degraded while its Kafka endpoint is faulted, never Unhealthy); a direct publish,
 /// which is how Ingest hands sensor batches on, fails, and Ingest answers the device 503 with Retry-After. Once the
 /// broker is back the relay resumes by itself and the consumer gets every event of a key once, in the order they were
@@ -51,11 +52,10 @@ public sealed class OutageProbeConsumer : IConsumer<OutageProbe>
 /// The test sequences around two production races on purpose, and these conditions are not proof that the races are
 /// handled: the broker is cut only once the consumer has committed what it read (a cut during an offset commit leaves the
 /// bus Healthy until the commit returns; ARV-165 owns that race), and events are written and the direct publish made only
-/// once readiness reports the outage, so that no produce is in flight at the cut. ARV-166 bounded the second race without
-/// removing its cause: a produce queued behind one in flight when the connection drops is still discarded with the
-/// producer that MassTransit's rider disposes after the first failed send, but it now fails at the produce bound (45 s)
-/// instead of waiting for ever (StuckProduceTests); ARV-167 removes the cause (Ariva's own producer for sends). The
-/// sequencing stays so that the direct publish here fails on the producer's own message timeout, not on the bound.
+/// once readiness reports the outage, so that no produce is in flight at the cut. ARV-166 bounded the second race (a
+/// produce queued behind one in flight when the connection drops was discarded with the producer MassTransit's rider
+/// disposed after the first failed send) and ARV-167 removed its cause (Ariva's own producer for sends, StuckProduceTests).
+/// The sequencing stays so that the direct publish here fails on the producer's own message timeout.
 /// </para>
 /// <para>
 /// ARV-156: every wait is for a condition the test asserts, never for a time or a status that may not come, and all of
@@ -235,13 +235,13 @@ public sealed class BrokerOutageTests(FaultsFixture faults) : IAsyncLifetime
                 await faults.CutAsync(Proxy);
                 Done("the broker cut off");
 
-                // Not cosmetic either: readiness reports the outage once the endpoint has faulted, and the relay sends only
-                // while the bus is Healthy, so from here on the direct publish below is the only produce of the outage and
-                // fails on the producer's own message timeout. A produce made at the cut can still go out on the connection
-                // being closed; a produce queued behind it is still discarded with the producer the rider disposes, and since
-                // ARV-166 fails at the produce bound (45 s, StuckProduceTests) instead of waiting for ever; ARV-167 removes
-                // the cause. The bus reports the outage as Degraded, not Unhealthy (ARV-156): the wait is for what is
-                // asserted, any status but Healthy.
+                // Not cosmetic either: readiness reports the outage once the endpoint has faulted, so the rows below are
+                // written during the outage. Since ARV-167 the relay waits for the producer, not the bus, so it tries them
+                // during the outage too: each pass ends at its first failed row (the message timeout), which backs off and
+                // holds its key, so none is sent and none is lost; the direct publish below shares the host's one producer and
+                // fails on its own message timeout (before ARV-167 a produce queued behind a failed one could be discarded
+                // with the producer the rider disposed). The bus reports the outage as Degraded, not Unhealthy (ARV-156): the
+                // wait is for what is asserted, any status but Healthy.
                 (await ReadinessAsync(host, status => status != HealthStatus.Healthy, "readiness reporting the outage")).Should().NotBe(HealthStatus.Healthy,
                     "the bus's readiness check reports the outage");
                 await WriteAsync(host, key, [4, 5]);
@@ -267,8 +267,9 @@ public sealed class BrokerOutageTests(FaultsFixture faults) : IAsyncLifetime
                 await faults.RestoreAsync(Proxy);
                 Done("the broker back");
 
-                // No restart: the relay resumes once the bus is ready (the endpoint rejoined its group); per key, in the order
-                // written, each once (a record delivered again after the rejoin is dropped by the inbox).
+                // No restart: the relay sends once its rows' backoff has passed, and the consumer resumes once its endpoint has
+                // rejoined its group; per key, in the order written, each once (a record delivered again after the rejoin is
+                // dropped by the inbox).
                 await WaitForAsync(async () => (await OutboxAsync(key)).Unsent == 0 && StepsOf(key).Length >= 8, "the relay after the outage");
                 await Task.Delay(TimeSpan.FromSeconds(3), Ct);
                 StepsOf(key).Should().Equal([1, 2, 3, 4, 5, 6, 7, 8]);

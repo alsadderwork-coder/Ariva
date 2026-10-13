@@ -75,13 +75,28 @@ internal sealed class TopicProvisioner(KafkaSettings settings, ILogger<TopicProv
     }
 }
 
-/// <summary>Client settings shared by the rider, the admin client and the raw stream consumer.</summary>
+/// <summary>Client settings shared by Ariva's producer, the admin client and the raw stream consumer.</summary>
 public static class KafkaClientConfig
 {
     public static AdminClientConfig Admin(KafkaSettings settings) => Apply(new AdminClientConfig(), settings);
 
-    /// <summary>librdkafka's <c>message.timeout.ms</c> for Ariva's producers: 30 seconds.</summary>
+    /// <summary>librdkafka's <c>message.timeout.ms</c> for Ariva's producer: 30 seconds.</summary>
     public const int MessageTimeoutMilliseconds = 30_000;
+
+    /// <summary>
+    /// librdkafka's <c>queue.buffering.max.kbytes</c> for Ariva's producer (ARV-167): 32 MiB, 32 messages at the 1 MB
+    /// maximum. librdkafka's default (1 GiB) is larger than every host's pod memory limit (750 to 1500 MiB in the chart),
+    /// so a broker outage could get a pod killed before the queue refused anything. The arithmetic is in
+    /// docs/architecture/overview.md (Producing).
+    /// </summary>
+    public const int QueueMaxKbytes = 32 * 1024;
+
+    /// <summary>
+    /// librdkafka's <c>queue.buffering.max.messages</c> for Ariva's producer (ARV-167): 10,000 (default 100,000). A queue
+    /// that is full refuses the next message at once (<c>Local_QueueFull</c>): Ingest answers 503 with Retry-After, the
+    /// relay ends its pass and backs off.
+    /// </summary>
+    public const int QueueMaxMessages = 10_000;
 
     public static ProducerConfig Producer(KafkaSettings settings) => Apply(new ProducerConfig
     {
@@ -94,14 +109,14 @@ public static class KafkaClientConfig
         // A produce that the broker has not acknowledged in 30 seconds fails, so the outbox relay backs off instead of
         // holding its transaction open for librdkafka's default five minutes.
         MessageTimeoutMs = MessageTimeoutMilliseconds,
-        // ARV-166: the delivery report keeps no copy of the key, value or headers. Nothing reads them (the rider awaits the
-        // report only for its outcome), and a report that never comes keeps its handler alive for good: when the rider
-        // disposes a producer after a failed send, librdkafka discards the messages still outstanding on it without a
-        // report, and Confluent's handler for each stays pinned by its GCHandle. Without the copies that costs a few
-        // hundred bytes per discarded message rather than the message itself (up to 1 MB); the rest of the produce, which
-        // holds the serialised message, is released when KafkaProduce's own token cancels it at its 45 second bound.
+        // ARV-166: the delivery report keeps no copy of the key, value or headers. Nothing reads them (the producer awaits
+        // the report only for its outcome), and each copy would cost up to the message itself (1 MB) until the report is
+        // handled.
         DeliveryReportFields = "none",
-        CompressionType = CompressionType.Lz4
+        CompressionType = CompressionType.Lz4,
+        // ARV-167: the queue is bounded to fit the pods' memory limits, and a full queue refuses at once.
+        QueueBufferingMaxKbytes = QueueMaxKbytes,
+        QueueBufferingMaxMessages = QueueMaxMessages
     }, settings);
 
     public static ConsumerConfig Consumer(KafkaSettings settings, string groupId) => Apply(new ConsumerConfig
