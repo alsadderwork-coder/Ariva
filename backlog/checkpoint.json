@@ -1,22 +1,22 @@
 {
-  "commit": "91165078b17f84c0f9ae93b80d71dc50a67f04e4",
-  "at": "2026-10-12",
-  "stories": 5,
+  "commit": "0666febc17088181dab735c480ad9f92e976567a",
+  "at": "2026-10-13",
+  "stories": 6,
   "results": [
     {
       "name": "dotnet build",
       "ok": true,
-      "seconds": 111
+      "seconds": 133
     },
     {
       "name": "reference scenario golden up to date",
       "ok": true,
-      "seconds": 9
+      "seconds": 11
     },
     {
       "name": "unit tests",
       "ok": true,
-      "seconds": 186
+      "seconds": 246
     },
     {
       "name": "security scanner self-test",
@@ -36,12 +36,12 @@
     {
       "name": "chart security (pod security context, read-only root, TLS, release guards)",
       "ok": true,
-      "seconds": 1
+      "seconds": 2
     },
     {
       "name": "nuget vulnerability audit",
       "ok": true,
-      "seconds": 23
+      "seconds": 26
     },
     {
       "name": "npm audit (web)",
@@ -51,7 +51,7 @@
     {
       "name": "npm audit (e2e)",
       "ok": true,
-      "seconds": 0
+      "seconds": 1
     },
     {
       "name": "docs text rules",
@@ -60,7 +60,7 @@
     {
       "name": "web svelte-check",
       "ok": true,
-      "seconds": 11
+      "seconds": 13
     },
     {
       "name": "web lint",
@@ -70,27 +70,37 @@
     {
       "name": "web build",
       "ok": true,
-      "seconds": 32
+      "seconds": 34
     },
     {
       "name": "integration tests",
       "ok": true,
-      "seconds": 651
+      "seconds": 737
     },
     {
       "name": "visual regression (pinned image)",
       "ok": true,
-      "seconds": 146
+      "seconds": 158
     },
     {
       "name": "e2e tests (API and functional)",
       "ok": true,
-      "seconds": 925
+      "seconds": 981
     },
     {
-      "name": "mutation tests (no engine change since 07070e5468)",
+      "name": "mutation log check self-test",
       "ok": true,
-      "skipped": true
+      "seconds": 0
+    },
+    {
+      "name": "dotnet tool restore (dotnet-stryker)",
+      "ok": true,
+      "seconds": 0
+    },
+    {
+      "name": "mutation tests (Stryker.NET in a worktree of 0666febc17, 1 engine files changed since 91165078b1; fails on safe mode or no score)",
+      "ok": true,
+      "seconds": 6466
     }
   ]
 }
