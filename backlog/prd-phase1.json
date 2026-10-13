@@ -1137,7 +1137,7 @@
       ],
       "priority": 39,
       "passes": false,
-      "notes": "Size M. Production behaviour; diagnosis and evidence in the ARV-156 progress entry.",
+      "notes": "Size M. Production behaviour; diagnosis and evidence in the ARV-156 progress entry. From the ARV-166 review, residual (b), low: ReceiveEndpointCollection.StopEndpoints stops only endpoints whose IsStarted() is true, so a host stopping while a Kafka endpoint is between restarts after a broker error can leave a stray Confluent consumer running until the process exits (it holds a partition and acknowledges nothing); prove it and close it here.",
       "dependsOn": [
         "ARV-156"
       ]
@@ -1160,7 +1160,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 37,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. Ahead of the queue: the outbox can stop draining until a restart. Diagnosis, the heap dump and the reproduction are in the ARV-156 progress entry. From the ARV-156 re-review: give the two admin calls in BrokerOutageTests.CommittedAllAsync a RequestTimeout (10 s, as DescribeConsumerGroups has) when this story touches that test.",
       "dependsOn": [
         "ARV-156"
@@ -1174,6 +1174,7 @@
         "Every send Ariva makes (the outbox relay, Ingest's direct publish, dead letters, the live snapshot publisher, any ISvcMessageBus send) goes through one Ariva-owned Confluent producer per host, created at start and disposed only at host stop with a bounded flush; a failed or cancelled send never disposes or recreates it",
         "Messages keep their wire format: topic names from KafkaTopics, keys, the headers consumers and the inbox rely on (message id, type, correlation), serialisation; a contract test proves a message sent the new way is consumed by the existing MassTransit consumers and inbox unchanged",
         "ARV-166's bounds stay (a per-send limit, the relay pass bound, caller cancellation detached), and StuckProduceTests proves that a fault or cancellation of one send no longer strands any other",
+        "The own producer's queue is bounded to fit the pod's memory limit (queue.buffering.max.kbytes and queue.buffering.max.messages, from the ARV-166 review), so an outage fails fast (a full queue answers 503 at once) instead of growing towards librdkafka's 1 GB default; the values and their reason are in docs/architecture",
         "ADR-0018 gains an amendment (dated, the owner's decision of 2026-10-13: producing through Ariva's own Confluent producer, consuming through the rider) and CLAUDE.md rule 4 and the kafka-streaming skill are updated to match, with the owner's approval recorded",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
@@ -1250,6 +1251,29 @@
       "passes": false,
       "notes": "Size XS. Owner decision 2026-10-13.",
       "dependsOn": []
+    },
+    {
+      "id": "ARV-171",
+      "title": "[E6] A dead letter refused at a stop is kept durably, so no record is skipped",
+      "description": "Owner decision 2026-10-13 (the ARV-166 security review, condition C1): ARV-166's bounded stop marks a record faulted when Kafka refuses its dead letter at a stop. MassTransit's BatchCheckpointer then checkpoints the records before it and carries on, so a later record of the same partition with another key (ConcurrentMessageLimit 8), completing during the stop and checkpointed before the endpoint stops, commits past it: the record is neither processed nor dead-lettered. Before ARV-166 the stop hung until SIGKILL and nothing was lost. Reachable whenever the dead letter is refused while commits succeed: a partial broker outage, or a missing dead-letter topic or ACL at every rolling deploy. Medium severity; before the pilot. CWEs to review: CWE-501 (message loss), CWE-400.",
+      "acceptanceCriteria": [
+        "When Kafka refuses a dead letter at a stop, the dead letter is first written durably (an outbox row for the dead-letter topic, which the relay sends later, with its headers, topic, partition and offset) and only then is the record completed; the faulted-record path (ARV-166) stays only for when the database is also unavailable",
+        "A deterministic integration test on real Kafka: a poison message, the dead-letter topic refused while commits are allowed, a later record of another key on the same partition, then the stop; the poison message reaches the dead-letter topic after the restore and no record is skipped",
+        "Tests from the ARV-166 review: the unreadable-record path (UnreadableFilter) ending at a stop, at receive level on Kafka; a ConsumePipelineTests case where the bus stops while the retry filter waits between attempts",
+        "ADR-0018's ARV-166 note, wiki 10 section 4.5a, the CWE-400 row and decisions.md say the skip is closed",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 37,
+      "passes": false,
+      "notes": "Size S. Owner decision 2026-10-13: accept for ARV-166, close before the pilot.",
+      "dependsOn": [
+        "ARV-166"
+      ]
     },
     {
       "id": "ARV-154",

@@ -305,7 +305,7 @@ public sealed class QueueStreamWorker(
                 var full = false;
                 if (result?.Message is not null)
                 {
-                    await HoldAsync(result);
+                    await HoldAsync(result, ct);
                     full = await ReleaseAsync(consumer, ct);
                 }
                 else
@@ -460,7 +460,7 @@ public sealed class QueueStreamWorker(
     }
 
     /// <summary>Reads and checks one record and holds it for the merge; an unreadable one is dead-lettered and held as a gap.</summary>
-    private async Task HoldAsync(ConsumeResult<string, byte[]> result)
+    private async Task HoldAsync(ConsumeResult<string, byte[]> result, CancellationToken ct)
     {
         _records++;
         var partition = result.Partition.Value;
@@ -483,7 +483,7 @@ public sealed class QueueStreamWorker(
         }
         catch (Exception e) when (e is JsonException or InvalidDataException or NotSupportedException or ArgumentException)
         {
-            await DeadLetterAsync(result, e);
+            await DeadLetterAsync(result, e, ct);
             batch = null;
         }
 
@@ -890,14 +890,16 @@ public sealed class QueueStreamWorker(
             states.Count, outputs.Sum(o => o.Count), _records, _deadLettered, _failedBatches, _wrongPartition, _forcedReleases);
     }
 
-    private Task DeadLetterAsync(ConsumeResult<string, byte[]> result, Exception error)
+    // ARV-166: a dead letter is retried until the broker takes it or the worker stops; a stop leaves the record unreleased,
+    // so its position is not saved and it is read again (and dead-lettered then) after restart.
+    private Task DeadLetterAsync(ConsumeResult<string, byte[]> result, Exception error, CancellationToken ct)
     {
         var headers = (result.Message.Headers ?? [])
             .Select(h => new KeyValuePair<string, string>(h.Key, h.GetValueBytes() is { } bytes ? System.Text.Encoding.UTF8.GetString(bytes) : null));
         var letter = DeadLetters.Create(result.Topic, result.Partition.Value, result.Offset.Value, result.Message.Key, result.Message.Value, headers, GroupId,
             error, timeProvider.GetUtcNow().UtcDateTime);
         logger.LogError("Unreadable record at {Topic} partition {Partition} offset {Offset}; sent to the dead-letter topic", result.Topic, result.Partition.Value, result.Offset.Value);
-        return SendAsync(letter, CancellationToken.None);
+        return SendAsync(letter, ct);
     }
 
     // A held batch that cannot be applied: its value is serialised again from what was read (the raw bytes are not kept).
@@ -908,7 +910,8 @@ public sealed class QueueStreamWorker(
         return SendAsync(letter, ct);
     }
 
-    // A dead letter the broker refuses is tried again (2, 4 ... 30 seconds) and holds the partition until it is accepted.
+    // A dead letter the broker refuses is tried again (2, 4 ... 30 seconds; each attempt ends within the produce bound,
+    // ARV-166) and holds the partition until it is accepted or the worker stops.
     private async Task SendAsync(DeadLetter letter, CancellationToken ct)
     {
         _deadLettered++;
@@ -922,7 +925,8 @@ public sealed class QueueStreamWorker(
             catch (Exception e) when (!ct.IsCancellationRequested && e is not OperationCanceledException)
             {
                 var wait = TimeSpan.FromSeconds(Math.Min(30, Math.Pow(2, Math.Min(attempt, 5))));
-                logger.LogError(e, "Dead letter for {Topic} offset {Offset} not accepted (attempt {Attempt}); retrying in {Wait}", letter.Topic, letter.Offset, attempt, wait);
+                logger.LogError(e, "Dead letter for {Topic} partition {Partition} offset {Offset} not accepted (attempt {Attempt}); retrying in {Wait}",
+                    letter.Topic, letter.Partition, letter.Offset, attempt, wait);
                 await Task.Delay(wait, timeProvider, ct);
             }
         }

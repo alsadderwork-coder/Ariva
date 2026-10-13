@@ -80,6 +80,9 @@ public static class KafkaClientConfig
 {
     public static AdminClientConfig Admin(KafkaSettings settings) => Apply(new AdminClientConfig(), settings);
 
+    /// <summary>librdkafka's <c>message.timeout.ms</c> for Ariva's producers: 30 seconds.</summary>
+    public const int MessageTimeoutMilliseconds = 30_000;
+
     public static ProducerConfig Producer(KafkaSettings settings) => Apply(new ProducerConfig
     {
         // ADR-0018: every write acknowledged by all in-sync replicas, no duplicates from producer retries, 1 MB cap.
@@ -90,7 +93,14 @@ public static class KafkaClientConfig
         LingerMs = 0,
         // A produce that the broker has not acknowledged in 30 seconds fails, so the outbox relay backs off instead of
         // holding its transaction open for librdkafka's default five minutes.
-        MessageTimeoutMs = 30_000,
+        MessageTimeoutMs = MessageTimeoutMilliseconds,
+        // ARV-166: the delivery report keeps no copy of the key, value or headers. Nothing reads them (the rider awaits the
+        // report only for its outcome), and a report that never comes keeps its handler alive for good: when the rider
+        // disposes a producer after a failed send, librdkafka discards the messages still outstanding on it without a
+        // report, and Confluent's handler for each stays pinned by its GCHandle. Without the copies that costs a few
+        // hundred bytes per discarded message rather than the message itself (up to 1 MB); the rest of the produce, which
+        // holds the serialised message, is released when KafkaProduce's own token cancels it at its 45 second bound.
+        DeliveryReportFields = "none",
         CompressionType = CompressionType.Lz4
     }, settings);
 

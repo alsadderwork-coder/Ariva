@@ -42,25 +42,105 @@ public sealed class JsonValueSerializer<T> : IAsyncSerializer<T>, IDeserializer<
 }
 
 /// <summary>
+/// A produce that Kafka neither acknowledged nor refused within <see cref="KafkaProduce.SendTimeout"/> (ARV-166). The
+/// message may still be written later (at-least-once: the caller sends it again and consumers drop the duplicate).
+/// </summary>
+public sealed class KafkaProduceTimeoutException(string topic, TimeSpan bound, Exception inner = null)
+    : TimeoutException(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+        $"Kafka neither acknowledged nor refused the message for {topic} within {bound.TotalSeconds:F0} seconds."), inner);
+
+/// <summary>
 /// Produces a value of a type known only at run time through the rider's registered producer for its topic, keyed and
 /// with the outbox headers. One compiled delegate per type.
-/// </summary>
 /// <para>
 /// MassTransit registers the producer provider per scope and it needs the started rider, so it is resolved in a scope
 /// of its own for each produce, never at construction (hosted services are built before the bus starts).
 /// </para>
-public sealed class KafkaProduce(IServiceScopeFactory scopes)
+/// <para>
+/// ARV-166: every produce ends within <see cref="SendTimeout"/>, whatever the client does. The rider keeps one producer
+/// per topic and disposes it when any send on it fails or is cancelled (MassTransit's <c>PipeContextSupervisor</c>
+/// recreates a faulted context); a disposed producer that had reported a local error serves no more delivery reports,
+/// so a produce that was waiting behind the failed one would otherwise wait for ever. Two rules keep that contained.
+/// The produce gets a token of its own that cancels at the bound, never the caller's: a caller that gives up (a device
+/// that drops its request, the relay's pass bound, a stopping host) stops waiting at once while its produce carries on
+/// and ends by its report or the bound, so a caller's cancellation never disposes a producer that other sends are using.
+/// The bound's own cancellation releases a produce whose report will never come; on a producer that is still live (no
+/// report within 45 seconds, rare: 30.6 to 39.5 seconds measured) it disposes that producer like any failed send, which
+/// is accepted because every send it strands is bounded the same way. And the wait itself ends at the bound even if the
+/// token is ignored somewhere below. ARV-167 removes the cause (Ariva's own producer for sends).
+/// </para>
+/// </summary>
+public sealed class KafkaProduce(IServiceScopeFactory scopes, TimeProvider timeProvider)
 {
+    /// <summary>
+    /// The longest an awaited produce takes: librdkafka's message timeout (30 seconds) plus the time it takes to report
+    /// a timed out message (up to its 10 second reconnect backoff; 30.6 to 39.5 seconds measured during broker outages),
+    /// plus 5 seconds. Past it the produce fails with <see cref="KafkaProduceTimeoutException"/>.
+    /// </summary>
+    public static readonly TimeSpan SendTimeout = TimeSpan.FromSeconds(45);
+
     private static readonly MethodInfo Generic = typeof(KafkaProduce).GetMethod(nameof(ProduceTyped), BindingFlags.NonPublic | BindingFlags.Static)!;
     private static readonly ConcurrentDictionary<Type, Func<ITopicProducerProvider, string, string, object, Guid, IReadOnlyDictionary<string, string>, CancellationToken, Task>> Delegates = new();
 
-    public async Task ProduceAsync(Type type, string topic, string key, object value, Guid messageId, IReadOnlyDictionary<string, string> headers, CancellationToken ct)
+    public Task ProduceAsync(Type type, string topic, string key, object value, Guid messageId, IReadOnlyDictionary<string, string> headers, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(type);
         var produce = Delegates.GetOrAdd(type, t => Generic.MakeGenericMethod(t)
             .CreateDelegate<Func<ITopicProducerProvider, string, string, object, Guid, IReadOnlyDictionary<string, string>, CancellationToken, Task>>());
-        await using var scope = scopes.CreateAsyncScope();
-        await produce(scope.ServiceProvider.GetRequiredService<ITopicProducerProvider>(), topic, key, value, messageId, headers, ct);
+        return BoundedAsync(topic, SendTimeout, timeProvider, async token =>
+        {
+            await using var scope = scopes.CreateAsyncScope();
+            await produce(scope.ServiceProvider.GetRequiredService<ITopicProducerProvider>(), topic, key, value, messageId, headers, token);
+        }, ct);
+    }
+
+    /// <summary>
+    /// Runs <paramref name="produce"/> with a token of its own that cancels after <paramref name="bound"/>, and waits for it
+    /// at most that long or until <paramref name="ct"/> is cancelled. The caller's token never reaches the produce; a produce
+    /// the caller stopped waiting for runs on, and its outcome is observed and its token released when it ends.
+    /// </summary>
+    internal static async Task BoundedAsync(string topic, TimeSpan bound, TimeProvider time, Func<CancellationToken, Task> produce, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(produce);
+        ct.ThrowIfCancellationRequested();
+        var deadline = new CancellationTokenSource(bound, time ?? TimeProvider.System);
+        Task send;
+        try
+        {
+            send = produce(deadline.Token);
+        }
+        catch
+        {
+            deadline.Dispose();
+            throw;
+        }
+
+        // Released only when the produce has ended (its timer must still cancel a produce the caller stopped waiting for),
+        // and its outcome observed then, so a produce nobody awaits any more raises no unobserved task exception.
+        _ = send.ContinueWith(static (task, state) =>
+        {
+            _ = task.Exception;
+            ((CancellationTokenSource)state).Dispose();
+        }, deadline, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+
+        try
+        {
+            await send.WaitAsync(bound, time ?? TimeProvider.System, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException e)
+        {
+            // The produce's own token cancelled it at the bound.
+            throw new KafkaProduceTimeoutException(topic, bound, e);
+        }
+        catch (TimeoutException e) when (e is not KafkaProduceTimeoutException)
+        {
+            // The wait reached the bound before the produce ended.
+            throw new KafkaProduceTimeoutException(topic, bound, e);
+        }
     }
 
     private static Task ProduceTyped<T>(ITopicProducerProvider producers, string topic, string key, object value, Guid messageId,

@@ -48,11 +48,14 @@ public sealed class OutageProbeConsumer : IConsumer<OutageProbe>
 /// written. The outage lasts until the broker has evicted the consumer that lost its connection (its session timed out),
 /// so the endpoint comes back by joining its group again and resuming from the committed offsets.
 /// <para>
-/// The test sequences around two production races on purpose; ARV-165 and ARV-166 own them, and these conditions are
-/// not proof that the races are handled: the broker is cut only once the consumer has committed what it read (a cut
-/// during an offset commit leaves the bus Healthy until the commit returns, ARV-165), and events are written and the
-/// direct publish made only once readiness reports the outage, so that no produce is in flight at the cut (a produce
-/// queued behind one in flight when the connection drops never completes, ARV-166).
+/// The test sequences around two production races on purpose, and these conditions are not proof that the races are
+/// handled: the broker is cut only once the consumer has committed what it read (a cut during an offset commit leaves the
+/// bus Healthy until the commit returns; ARV-165 owns that race), and events are written and the direct publish made only
+/// once readiness reports the outage, so that no produce is in flight at the cut. ARV-166 bounded the second race without
+/// removing its cause: a produce queued behind one in flight when the connection drops is still discarded with the
+/// producer that MassTransit's rider disposes after the first failed send, but it now fails at the produce bound (45 s)
+/// instead of waiting for ever (StuckProduceTests); ARV-167 removes the cause (Ariva's own producer for sends). The
+/// sequencing stays so that the direct publish here fails on the producer's own message timeout, not on the bound.
 /// </para>
 /// <para>
 /// ARV-156: every wait is for a condition the test asserts, never for a time or a status that may not come, and all of
@@ -155,9 +158,13 @@ public sealed class BrokerOutageTests(FaultsFixture faults) : IAsyncLifetime
     private static async Task<bool> CommittedAllAsync(Confluent.Kafka.IAdminClient admin)
     {
         var partition = new Confluent.Kafka.TopicPartition(KafkaTopics.SlaBreachDetected, new Confluent.Kafka.Partition(0));
+        // Each admin call has its own 10 second bound, as DescribeConsumerGroups has, so a slow broker fails one poll of the
+        // condition rather than holding it past the budget.
         var latest = await Confluent.Kafka.IAdminClientExtensions.ListOffsetsAsync(admin,
-            [new Confluent.Kafka.Admin.TopicPartitionOffsetSpec { TopicPartition = partition, OffsetSpec = Confluent.Kafka.Admin.OffsetSpec.Latest() }]);
-        var committed = await admin.ListConsumerGroupOffsetsAsync([new Confluent.Kafka.ConsumerGroupTopicPartitions(Group, [partition])]);
+            [new Confluent.Kafka.Admin.TopicPartitionOffsetSpec { TopicPartition = partition, OffsetSpec = Confluent.Kafka.Admin.OffsetSpec.Latest() }],
+            new Confluent.Kafka.Admin.ListOffsetsOptions { RequestTimeout = TimeSpan.FromSeconds(10) });
+        var committed = await admin.ListConsumerGroupOffsetsAsync([new Confluent.Kafka.ConsumerGroupTopicPartitions(Group, [partition])],
+            new Confluent.Kafka.Admin.ListConsumerGroupOffsetsOptions { RequestTimeout = TimeSpan.FromSeconds(10) });
         var end = latest.ResultInfos.Single().TopicPartitionOffsetError.Offset.Value;
         return end > 0 && committed.Single().Partitions.Single().Offset.Value == end;
     }
@@ -187,9 +194,10 @@ public sealed class BrokerOutageTests(FaultsFixture faults) : IAsyncLifetime
     }
 
     /// <summary>
-    /// Stops and disposes the host within <paramref name="within"/>: the stop waits for any message its consumer is handling,
-    /// and a dead letter that can never be sent holds that message for ever (ARV-166), so the test fails rather than hangs.
-    /// The test's budget (270 s) and this bound (25 s) stay inside the fact's 300 s.
+    /// Stops and disposes the host within <paramref name="within"/>: the stop waits for any message its consumer is handling.
+    /// A dead letter that could never be sent used to hold that message for ever; since ARV-166 its retry loop ends when the
+    /// host stops (DeadLetterShutdownTests), and the bound stays so that a hang anywhere in the stop fails the test with its
+    /// own message rather than the fact's timeout. The test's budget (270 s) and this bound (25 s) stay inside the fact's 300 s.
     /// </summary>
     private static (Task Stop, Task<bool> Within) StopWithin(IHost host, TimeSpan within)
     {
@@ -227,11 +235,13 @@ public sealed class BrokerOutageTests(FaultsFixture faults) : IAsyncLifetime
                 await faults.CutAsync(Proxy);
                 Done("the broker cut off");
 
-                // Not cosmetic either (ARV-166 owns this race): readiness reports the outage once the endpoint has faulted,
-                // and the relay sends only while the bus is Healthy, so from here on the direct publish below is the only
-                // produce of the outage. A produce made at the cut can still go out on the connection being closed, and a
-                // produce queued behind it never completes, not even once the broker is back. The bus reports the outage as
-                // Degraded, not Unhealthy (ARV-156): the wait is for what is asserted, any status but Healthy.
+                // Not cosmetic either: readiness reports the outage once the endpoint has faulted, and the relay sends only
+                // while the bus is Healthy, so from here on the direct publish below is the only produce of the outage and
+                // fails on the producer's own message timeout. A produce made at the cut can still go out on the connection
+                // being closed; a produce queued behind it is still discarded with the producer the rider disposes, and since
+                // ARV-166 fails at the produce bound (45 s, StuckProduceTests) instead of waiting for ever; ARV-167 removes
+                // the cause. The bus reports the outage as Degraded, not Unhealthy (ARV-156): the wait is for what is
+                // asserted, any status but Healthy.
                 (await ReadinessAsync(host, status => status != HealthStatus.Healthy, "readiness reporting the outage")).Should().NotBe(HealthStatus.Healthy,
                     "the bus's readiness check reports the outage");
                 await WriteAsync(host, key, [4, 5]);
@@ -285,7 +295,7 @@ public sealed class BrokerOutageTests(FaultsFixture faults) : IAsyncLifetime
             {
                 Done("the host not stopped within 25 s");
                 if (completed)
-                    throw new TimeoutException("The host did not stop and dispose within 25 s (ARV-166).");
+                    throw new TimeoutException("The host did not stop and dispose within 25 s.");
             }
         }
     }

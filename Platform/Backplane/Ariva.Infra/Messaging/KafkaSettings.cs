@@ -96,6 +96,13 @@ public sealed class OutboxRelaySettings
 
     /// <summary>A row this many attempts old is logged as an error on every further failure, for the alert.</summary>
     public int StuckAfterAttempts { get; init; } = 10;
+
+    /// <summary>
+    /// The longest a relay pass produces while it holds its transaction, its leader lock and its claimed rows (ARV-166):
+    /// a send still waiting then fails as a broker failure and the pass ends and commits. Each produce ends within 45
+    /// seconds anyway (<c>KafkaProduce.SendTimeout</c>); this also bounds a pass of many slow sends.
+    /// </summary>
+    public int PassSeconds { get; init; } = 60;
 }
 
 /// <summary>Endpoint defaults (ADR-0018).</summary>

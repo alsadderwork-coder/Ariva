@@ -44,10 +44,13 @@ public sealed class PushEndpointTests
     private sealed class Sink : ISensingSink
     {
         public static bool Fail { get; set; }
+        public static bool TimedOut { get; set; }
         public static List<IEvent> Published { get; } = [];
 
         public Task PublishAsync(IReadOnlyList<IEvent> events, CancellationToken ct = default)
         {
+            if (Fail && TimedOut)
+                throw new Ariva.Infra.Messaging.Kafka.KafkaProduceTimeoutException("ariva.device.interval-count.v1", Ariva.Infra.Messaging.Kafka.KafkaProduce.SendTimeout);
             if (Fail)
                 throw new InvalidOperationException("broker down");
             lock (Published)
@@ -64,13 +67,13 @@ public sealed class PushEndpointTests
         services.Replace(ServiceDescriptor.Singleton<TimeProvider>(new ManualClock(new DateTimeOffset(2026, 10, 2, 14, 5, 1, TimeSpan.Zero))));
     }));
 
-    private static async Task<(HttpStatusCode Status, string Body)> PostAsync(HttpClient client, string path, string key, HttpContent content)
+    private static async Task<(HttpStatusCode Status, string Body, string RetryAfter)> PostAsync(HttpClient client, string path, string key, HttpContent content)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, path) { Content = content };
         if (key is not null)
             request.Headers.Add("X-Ariva-Device-Key", key);
         using var response = await client.SendAsync(request, TestContext.Current.CancellationToken);
-        return (response.StatusCode, await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        return (response.StatusCode, await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken), response.Headers.RetryAfter?.ToString());
     }
 
     private static StringContent JsonBody(string json) => new(json, Encoding.UTF8, "application/json");
@@ -122,22 +125,28 @@ public sealed class PushEndpointTests
         test.Status.Should().Be(HttpStatusCode.Accepted, "a connection test is answered so the sensor marks the agent healthy");
     }
 
-    [Fact]
-    public async Task Push_Should_Answer503_When_TheEventsCannotBeStored()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)] // ARV-166: a produce that reached its bound fails as a timeout, not a cancellation
+    public async Task Push_Should_Answer503WithRetryAfter_When_TheEventsCannotBeStored(bool timedOut)
     {
         await using var host = Ingest();
         using var client = host.CreateClient();
         Sink.Fail = true;
+        Sink.TimedOut = timedOut;
         try
         {
             var result = await PostAsync(client, "/api/v1/ingest/zones/Snake%20A/events", Canonical.Credential, JsonBody(Push.Replace("\"packageId\": 1", "\"packageId\": 2", StringComparison.Ordinal)));
 
             result.Status.Should().Be(HttpStatusCode.ServiceUnavailable);
+            result.RetryAfter.Should().Be("5", "the device sends the push again after five seconds");
             result.Body.Should().NotContain("broker down", "the cause is logged, not returned");
+            result.Body.Should().NotContain("acknowledged", "the cause is logged, not returned");
         }
         finally
         {
             Sink.Fail = false;
+            Sink.TimedOut = false;
         }
     }
 

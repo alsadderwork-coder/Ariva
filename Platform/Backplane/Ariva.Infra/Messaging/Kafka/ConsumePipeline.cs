@@ -17,11 +17,16 @@ public static class ConsumePipeline
         ArgumentNullException.ThrowIfNull(settings);
 
         var retries = Math.Max(0, settings.RetryCount);
+        // ARV-166: a dead letter that cannot be sent is retried only until this endpoint begins to stop, so it never holds
+        // a host open. The endpoint's own Stopping event, not the host's: EndpointStopping explains why.
+        var stopping = new EndpointStopping();
+        endpoint.ConnectReceiveEndpointObserver(stopping);
         endpoint.UseFilter(new DeadLetterFilter(
             retries,
             context.GetRequiredService<IDeadLetterSink>(),
             context.GetRequiredService<TimeProvider>(),
-            context.GetRequiredService<ILogger<DeadLetterFilter>>()));
+            context.GetRequiredService<ILogger<DeadLetterFilter>>(),
+            stopping));
         endpoint.UseMessageRetry(retry =>
         {
             retry.Exponential(
@@ -36,6 +41,7 @@ public static class ConsumePipeline
         endpoint.ConfigureDeadLetter(skipped => skipped.UseFilter(new UnreadableFilter(
             context.GetRequiredService<IDeadLetterSink>(),
             context.GetRequiredService<TimeProvider>(),
-            context.GetRequiredService<ILogger<UnreadableFilter>>())));
+            context.GetRequiredService<ILogger<UnreadableFilter>>(),
+            stopping)));
     }
 }

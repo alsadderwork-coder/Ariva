@@ -34,7 +34,7 @@ public sealed class ConsumePipelineTests
 {
     private static readonly ConsumerSettings Fast = new() { RetryCount = 2, RetryMinMilliseconds = 1, RetryMaxMilliseconds = 5 };
 
-    private static async Task<(ServiceProvider Provider, ITestHarness Harness, Ledger Ledger)> StartAsync()
+    private static async Task<(ServiceProvider Provider, ITestHarness Harness, Ledger Ledger)> StartAsync(ConsumerSettings settings = null)
     {
         var ledger = new Ledger();
         var services = new ServiceCollection();
@@ -50,7 +50,7 @@ public sealed class ConsumePipelineTests
             bus.AddConsumer<ProbeConsumer>();
             bus.UsingInMemory((context, memory) => memory.ReceiveEndpoint("ariva-pipeline-probe", endpoint =>
             {
-                ConsumePipeline.Configure(endpoint, context, Fast);
+                ConsumePipeline.Configure(endpoint, context, settings ?? Fast);
                 endpoint.ConfigureConsumer<ProbeConsumer>(context);
             }));
         });
@@ -165,6 +165,71 @@ public sealed class ConsumePipelineTests
         ledger.Attempts[probe.Id].Should().Be(1, "the redelivery found the inbox claim and did not run the consumer");
         ledger.Committed.Should().ContainSingle();
         ledger.Letters.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// ARV-166: a dead letter that cannot be sent is retried until its endpoint stops, and the stop must leave the message
+    /// unacknowledged so that it is delivered again after restart. The bus is stopped for real: the endpoint's Stopping
+    /// event ends the loop (EndpointStopping), and the bus's stop, which waits for the message in hand, then completes. The
+    /// loop ends as a cancellation of the message's own token: MassTransit's retry filter passes that on without another
+    /// attempt (anything else it retries; with no retries configured its exponential policy even failed on it), and the
+    /// receive pipe's rescue filter, which sends any other exception to the error pipe (a published fault and an
+    /// acknowledged message), lets it through to the transport as a faulted receive. Before the fix the loop ended with its
+    /// linked token: with no retries the message was rescued, with retries a fault was published.
+    /// </summary>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(2)]
+    public async Task Pipe_Should_LeaveTheMessageUnacknowledgedWithoutRetryOrFault_When_TheEndpointStopsWhileItsDeadLetterIsRefused(int retries)
+    {
+        var settings = new ConsumerSettings { RetryCount = retries, RetryMinMilliseconds = 1, RetryMaxMilliseconds = 5 };
+        var (provider, harness, ledger) = await StartAsync(settings);
+        await using var _ = provider;
+        var receive = new ReceiveOutcome();
+        harness.Bus.ConnectReceiveObserver(receive);
+        ledger.RefuseLetters = int.MaxValue;
+        var probe = new PipelineProbe { FailTimes = 99 };
+
+        await harness.Bus.Publish(probe, TestContext.Current.CancellationToken);
+        var until = DateTime.UtcNow.AddSeconds(10);
+        while (Volatile.Read(ref ledger.Refused) < 1 && DateTime.UtcNow < until)
+            await Task.Delay(20, TestContext.Current.CancellationToken);
+        ledger.Refused.Should().Be(1, "the dead letter was refused once and the loop waits out its backoff");
+        var stop = provider.GetRequiredService<IBusControl>().StopAsync(TestContext.Current.CancellationToken);
+
+        var outcome = await receive.Ended.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await stop.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        outcome.Should().BeAssignableTo<OperationCanceledException>("the receive faults as a cancellation, so the transport does not acknowledge it");
+        ledger.Attempts[probe.Id].Should().Be(retries + 1, "the stop is not retried");
+        ledger.Refused.Should().Be(1, "nothing is tried after the stop");
+        ledger.Letters.Should().BeEmpty();
+        (await harness.Published.Any<Fault<PipelineProbe>>(TestContext.Current.CancellationToken)).Should().BeFalse(
+            "the error pipe, which would publish a fault and acknowledge the message, is not reached");
+    }
+
+    /// <summary>How the receive of a message ended: its exception, or null when it completed (acknowledged).</summary>
+    private sealed class ReceiveOutcome : IReceiveObserver
+    {
+        public TaskCompletionSource<Exception> Ended { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task PreReceive(ReceiveContext context) => Task.CompletedTask;
+
+        public Task PostReceive(ReceiveContext context)
+        {
+            Ended.TrySetResult(null);
+            return Task.CompletedTask;
+        }
+
+        public Task PostConsume<T>(ConsumeContext<T> context, TimeSpan duration, string consumerType) where T : class => Task.CompletedTask;
+
+        public Task ConsumeFault<T>(ConsumeContext<T> context, TimeSpan duration, string consumerType, Exception exception) where T : class =>
+            Task.CompletedTask;
+
+        public Task ReceiveFault(ReceiveContext context, Exception exception)
+        {
+            Ended.TrySetResult(exception);
+            return Task.CompletedTask;
+        }
     }
 
     public sealed class ProbeConsumer(Ledger ledger) : IConsumer<PipelineProbe>

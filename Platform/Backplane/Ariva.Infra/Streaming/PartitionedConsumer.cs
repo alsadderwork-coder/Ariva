@@ -105,7 +105,7 @@ public sealed class PartitionedConsumer<TValue>(KafkaSettings settings, IDeadLet
                 var result = consumer.Consume(TimeSpan.FromMilliseconds(500));
                 if (result?.Message is not null)
                 {
-                    if (TryRead(result, groupId, out var value) && value is not null)
+                    if (TryRead(result, groupId, ct, out var value) && value is not null)
                     {
                         var record = new StreamRecord<TValue>(result.Topic, result.Partition.Value, result.Offset.Value, result.Message.Key, value, result.Message.Timestamp.UtcDateTime);
                         handler.HandleAsync(record, ct).GetAwaiter().GetResult();
@@ -138,7 +138,7 @@ public sealed class PartitionedConsumer<TValue>(KafkaSettings settings, IDeadLet
     }
 
     /// <summary>The value, or false after dead-lettering a record that cannot be read.</summary>
-    private bool TryRead(ConsumeResult<string, byte[]> result, string groupId, out TValue value)
+    private bool TryRead(ConsumeResult<string, byte[]> result, string groupId, CancellationToken ct, out TValue value)
     {
         try
         {
@@ -154,7 +154,9 @@ public sealed class PartitionedConsumer<TValue>(KafkaSettings settings, IDeadLet
             var letter = DeadLetters.Create(result.Topic, result.Partition.Value, result.Offset.Value, result.Message.Key, result.Message.Value, headers, groupId, e,
                 timeProvider.GetUtcNow().UtcDateTime);
             logger.LogError(e, "Unreadable record at {Topic} partition {Partition} offset {Offset}; sent to the dead-letter topic", result.Topic, result.Partition.Value, result.Offset.Value);
-            deadLetters.SendAsync(letter, CancellationToken.None).GetAwaiter().GetResult();
+            // One attempt, ending within the produce bound (ARV-166) or at a stop; a failure stops the loop before the offset
+            // is stored, so the record is read again after restart.
+            deadLetters.SendAsync(letter, ct).GetAwaiter().GetResult();
             return false;
         }
     }

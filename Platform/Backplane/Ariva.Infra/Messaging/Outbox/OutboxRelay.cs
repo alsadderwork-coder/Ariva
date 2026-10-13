@@ -40,6 +40,13 @@ public sealed record RelayPass(bool Leader, int Claimed, int Sent, int Failed, i
 /// the pass and until the row's retry time, so later events for that key never overtake it; other keys carry on.
 /// A broker failure ends the pass. Sent rows are marked in the same transaction, so a crash between produce and commit sends those rows again
 /// (at-least-once; consumers deduplicate in the inbox). The leader also removes old sent rows and inbox entries.
+/// <para>
+/// ARV-166: a pass never holds its transaction, its leader lock and its claimed rows for longer than
+/// <see cref="OutboxRelaySettings.PassSeconds"/> of producing. Every send is awaited for at most what is left of that
+/// time, whatever the transport does (a send that ignores its token included), and one that runs out counts as a broker
+/// failure: its row is marked failed with its backoff, its key held back, the pass ends and commits, and the next pass
+/// sends the row again. A pass that has used its time sends nothing more; the rows not reached wait untouched.
+/// </para>
 /// </summary>
 public sealed class OutboxRelay(
     DatabaseSettings database,
@@ -90,6 +97,8 @@ public sealed class OutboxRelay(
         if (!transport.IsReady)
             return RelayPass.NotReady;
 
+        var passTime = TimeSpan.FromSeconds(Math.Max(1, kafka.Outbox.PassSeconds));
+        var passStarted = timeProvider.GetTimestamp();
         await using var connection = new NpgsqlConnection(database.BuildConnectionString());
         await connection.OpenAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
@@ -114,9 +123,17 @@ public sealed class OutboxRelay(
                 continue;
             }
 
+            var left = passTime - timeProvider.GetElapsedTime(passStarted);
+            if (left <= TimeSpan.Zero)
+            {
+                // The pass has used its time: the rest wait, untouched, for the next pass.
+                heldBack += rows.Count - rows.IndexOf(row);
+                break;
+            }
+
             try
             {
-                await transport.SendAsync(row, ct);
+                await SendWithinAsync(row, left, ct);
                 sent.Add(row.Seq);
             }
             catch (UnknownEventTypeException e)
@@ -137,9 +154,10 @@ public sealed class OutboxRelay(
                     logger.LogWarning(e, "Outbox row {Seq} ({MessageType} {EventId} to {Topic}) not sent; key held back", row.Seq, row.MessageType, row.Id, row.Topic);
 
                 // A row that cannot be read (unknown type, bad payload) only holds back its key. Anything else is the
-                // broker or the network: the rest of the batch would fail the same way after the produce timeout, so
-                // the pass ends here and the remaining rows wait untouched for the next one.
-                if (e is not (InvalidOperationException or JsonException))
+                // broker or the network (a send past the pass's time included, and a transport already disposed): the rest
+                // of the batch would fail the same way after the produce timeout, so the pass ends here and the remaining
+                // rows wait untouched for the next one.
+                if (e is not (InvalidOperationException or JsonException) || e is ObjectDisposedException)
                 {
                     heldBack += rows.Count - rows.IndexOf(row) - 1;
                     break;
@@ -155,6 +173,26 @@ public sealed class OutboxRelay(
         if (rows.Count > 0)
             logger.LogDebug("Outbox relay pass: {Claimed} claimed, {Sent} sent, {Failed} failed, {HeldBack} held back", rows.Count, sent.Count, failed, heldBack);
         return new RelayPass(true, rows.Count, sent.Count, failed, heldBack);
+    }
+
+    /// <summary>
+    /// Sends one row, waiting at most <paramref name="left"/>: the transport gets a token that cancels then, and the wait
+    /// ends on the same token even if the transport ignores it (ARV-166), as a <see cref="TimeoutException"/> that ends the
+    /// pass. One timer decides both, so the row's error always names the pass bound. The transport's own failures,
+    /// <c>KafkaProduce</c>'s 45 second bound included, pass through as they are.
+    /// </summary>
+    private async Task SendWithinAsync(OutboxEnvelope row, TimeSpan left, CancellationToken ct)
+    {
+        using var within = new CancellationTokenSource(left, timeProvider);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, within.Token);
+        try
+        {
+            await transport.SendAsync(row, linked.Token).WaitAsync(linked.Token);
+        }
+        catch (OperationCanceledException e) when (!ct.IsCancellationRequested && within.IsCancellationRequested)
+        {
+            throw new TimeoutException($"Outbox row {row.Seq} was not sent within what was left of the relay pass's {kafka.Outbox.PassSeconds} seconds.", e);
+        }
     }
 
     /// <summary>Retry delay after the given number of failed attempts: 2, 4, 8 ... seconds, at most five minutes.</summary>

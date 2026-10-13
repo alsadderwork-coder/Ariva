@@ -58,9 +58,9 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
             return true;
         });
 
-    private OutboxRelay Relay(IOutboxTransport transport) => new(
+    private OutboxRelay Relay(IOutboxTransport transport, int passSeconds = 60) => new(
         _host.Provider.GetRequiredService<DatabaseSettings>(),
-        new KafkaSettings { Outbox = new OutboxRelaySettings { BatchSize = 50 } },
+        new KafkaSettings { Outbox = new OutboxRelaySettings { BatchSize = 50, PassSeconds = passSeconds } },
         transport,
         _host.Clock,
         NullLogger<OutboxRelay>.Instance);
@@ -120,6 +120,48 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
 
         pass.Should().Be(new RelayPass(true, 3, 0, 1, 2), "the first failure ends the pass instead of waiting out a timeout per row");
         (await _host.ReadAsync<long>("SELECT count(*) FROM outbox_message WHERE attempts = 0")).Should().Be(2, "the rows after it were not touched");
+    }
+
+    /// <summary>
+    /// ARV-166: a send that never ends (the rider's producer can strand a produce for good, and a transport may ignore its
+    /// token) cannot hold the relay's transaction, leader lock and rows: the pass ends within its bound, marks the row
+    /// failed with its backoff, commits, and the next pass after the backoff sends the row, in order before its key's next.
+    /// </summary>
+    [Fact]
+    public async Task Relay_Should_EndThePassWithinItsBoundAndLetGo_When_ASendNeverEnds()
+    {
+        await ResetAsync();
+        await WriteAsync(true, Probe("S", 1), Probe("S", 2), Probe("T", 1));
+        var transport = new RecordingTransport { Hang = true };
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+
+        var pass = await Relay(transport, passSeconds: 2).RunOnceAsync(Ct).WaitAsync(TimeSpan.FromSeconds(30), Ct);
+
+        clock.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(10), "the pass ends at its 2 second bound, not when the send does");
+        pass.Should().Be(new RelayPass(true, 3, 0, 1, 2), "the stuck send fails the pass like a broker failure; the rows after it wait untouched");
+        (await _host.ReadAsync<int>("SELECT attempts FROM outbox_message WHERE message_key = 'S' AND payload->>'step' = '1'")).Should().Be(1);
+        (await _host.ReadAsync<string>("SELECT last_error FROM outbox_message WHERE message_key = 'S' AND payload->>'step' = '1'")).Should().Contain("TimeoutException");
+
+        // Nothing is held any more: another relay leads at once and the rows can be locked.
+        var settings = _host.Provider.GetRequiredService<DatabaseSettings>();
+        await using (var other = new NpgsqlConnection(settings.BuildConnectionString()))
+        {
+            await other.OpenAsync(Ct);
+            await using var transaction = await other.BeginTransactionAsync(Ct);
+            await using var lead = new NpgsqlCommand("SELECT pg_try_advisory_xact_lock(@key)", other, transaction);
+            lead.Parameters.AddWithValue("key", OutboxRelay.LeaderLock);
+            ((bool)(await lead.ExecuteScalarAsync(Ct))!).Should().BeTrue("the pass's transaction ended, and its leader lock with it");
+            await using var rows = new NpgsqlCommand("SELECT count(*) FROM (SELECT seq FROM outbox_message FOR UPDATE NOWAIT) locked", other, transaction);
+            ((long)(await rows.ExecuteScalarAsync(Ct))!).Should().Be(3, "no row is still locked by the pass");
+            await transaction.RollbackAsync(Ct);
+        }
+
+        transport.Hang = false;
+        _host.Clock.Advance(OutboxRelay.Backoff(1) + TimeSpan.FromSeconds(1));
+        var next = await Relay(transport).RunOnceAsync(Ct);
+
+        next.Sent.Should().Be(3);
+        transport.Sent.Select(Describe).Should().Equal("S1", "S2", "T1");
     }
 
     [Fact]
@@ -198,8 +240,13 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
         public EventCatalog Catalog { get; set; }
         public bool BrokerDown { get; set; }
 
+        /// <summary>A send that never ends and ignores its token (a stranded produce).</summary>
+        public bool Hang { get; set; }
+
         public Task SendAsync(OutboxEnvelope message, CancellationToken ct)
         {
+            if (Hang)
+                return new TaskCompletionSource().Task;
             if (BrokerDown)
                 throw new TimeoutException("Local: Message timed out");
             if (Catalog is not null && !Catalog.TryResolve(message.MessageType, out _))
