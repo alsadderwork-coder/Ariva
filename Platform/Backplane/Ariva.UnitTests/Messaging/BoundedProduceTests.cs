@@ -35,17 +35,21 @@ public sealed class BoundedProduceTests
     [Fact]
     public async Task Produce_Should_CancelItsOwnTokenAndFailAsATimeout_When_TheBoundPasses()
     {
-        CancellationToken given = default;
+        // The produce's token and the wait have a timer each, with the same bound, and nothing orders the two: on a loaded
+        // machine the wait's timer often runs first and the token's a moment later, so the timeout can reach the test before
+        // the token is cancelled (ARV-172). The test therefore waits for the cancellation itself, within a bound.
+        var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var act = () => KafkaProduce.BoundedAsync("ariva.flow.nowcast.v1", Bound, TimeProvider.System, token =>
         {
-            given = token;
+            _ = token.Register(() => cancelled.TrySetResult());
             return Task.Delay(Timeout.Infinite, token);
         }, Ct);
 
         (await act.Should().ThrowAsync<KafkaProduceTimeoutException>()).Which.Should().NotBeAssignableTo<OperationCanceledException>(
             "a produce cancelled at its bound is a failure of the send, not the caller's cancellation");
-        given.IsCancellationRequested.Should().BeTrue("the produce's own token cancels at the bound, so the client lets go of it");
+        await cancelled.Should().CompleteWithinAsync(TimeSpan.FromSeconds(10),
+            "the produce's own token cancels at the bound, so the client lets go of it");
     }
 
     [Fact]
@@ -131,9 +135,14 @@ public sealed class BoundedProduceTests
     [Fact]
     public async Task Produce_Should_Complete_When_TheBrokerAcknowledges()
     {
-        var act = () => KafkaProduce.BoundedAsync("ariva.flow.nowcast.v1", Bound, TimeProvider.System, _ => Task.Delay(10, Ct), Ct);
+        // The test acknowledges while the produce is waited for, rather than a timer racing the bound's own timers (ARV-172).
+        var report = new TaskCompletionSource();
 
-        await act.Should().NotThrowAsync();
+        var produce = KafkaProduce.BoundedAsync("ariva.flow.nowcast.v1", TimeSpan.FromSeconds(30), TimeProvider.System, _ => report.Task, Ct);
+        produce.IsCompleted.Should().BeFalse("the produce is waited for until its report");
+        report.SetResult();
+
+        await produce.Invoking(p => p).Should().NotThrowAsync();
     }
 
     [Fact]

@@ -1185,7 +1185,7 @@
       ],
       "priority": 37,
       "passes": false,
-      "notes": "Size M. Owner decision 2026-10-13: bound it in ARV-166, then own sends. Before the pilot.",
+      "notes": "Size M. Owner decision 2026-10-13: bound it in ARV-166, then own sends. Before the pilot. From the ARV-172 review: the new send path uses one timer for the produce's token and the wait (strict order; it still ends the wait if the client ignores the token, as OutboxRelay.SendWithinAsync does), and the bounded-produce timeout test asserts the cancellation lands between the bound and the bound plus 5 s (a Stopwatch noted in the cancellation callback), so a deadline set later than the wait is caught.",
       "dependsOn": [
         "ARV-166"
       ]
@@ -1286,7 +1286,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story"
       ],
       "priority": 36,
-      "passes": false,
+      "passes": true,
       "notes": "Size XS. Fails gates at random: first in line.",
       "dependsOn": []
     },
