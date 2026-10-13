@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Reflection;
 using System.Text.Json;
+using Ariva.Core.Messaging;
 using Ariva.Infra.Messaging.Outbox;
 using Confluent.Kafka;
 using MassTransit;
@@ -157,7 +158,11 @@ public sealed class KafkaProduce(IServiceScopeFactory scopes, TimeProvider timeP
     }
 }
 
-/// <summary>The relay's transport: the outbox row's payload, read back as its event type, produced keyed to its topic.</summary>
+/// <summary>
+/// The relay's transport: the outbox row's payload, read back as its event type, produced keyed to its topic. A dead
+/// letter kept at a stop (ARV-171, type <see cref="DeadLetters.OutboxMessageType"/>) is read back as a
+/// <see cref="DeadLetter"/> and goes to the dead-letter topic of its source topic, which must be the row's topic.
+/// </summary>
 internal sealed class MassTransitOutboxTransport(KafkaProduce produce, EventCatalog catalog, IBusControl bus) : IOutboxTransport
 {
     public bool IsReady => bus.CheckHealth().Status == BusHealthStatus.Healthy;
@@ -165,11 +170,27 @@ internal sealed class MassTransitOutboxTransport(KafkaProduce produce, EventCata
     public Task SendAsync(OutboxEnvelope message, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(message);
+        if (string.Equals(message.MessageType, DeadLetters.OutboxMessageType, StringComparison.Ordinal))
+            return SendDeadLetterAsync(message, ct);
         if (!catalog.TryResolve(message.MessageType, out var type))
             throw new UnknownEventTypeException(message.MessageType);
         var value = JsonSerializer.Deserialize(message.Payload, type, EventCatalog.Json)
             ?? throw new InvalidOperationException($"Outbox row {message.Seq} has an empty payload.");
         return produce.ProduceAsync(type, message.Topic, message.Key, value, message.Id, message.Headers, ct);
+    }
+
+    /// <summary>
+    /// A kept dead letter: produced as the direct sink produces it, to the topic the row names only when that is the
+    /// dead-letter topic of the letter's source topic, both from <see cref="KafkaTopics"/>. A row that is not (written by
+    /// hand, or damaged) fails like an unreadable row: its key waits with its backoff and the relay logs it.
+    /// </summary>
+    private Task SendDeadLetterAsync(OutboxEnvelope message, CancellationToken ct)
+    {
+        var letter = JsonSerializer.Deserialize<DeadLetter>(message.Payload, EventCatalog.Json)
+            ?? throw new InvalidOperationException($"Outbox row {message.Seq} has an empty dead letter.");
+        if (!KafkaTopics.IsKnown(letter.Topic) || !string.Equals(message.Topic, KafkaTopics.DeadLetter(letter.Topic), StringComparison.Ordinal))
+            throw new InvalidOperationException($"Outbox row {message.Seq} is not a dead letter for the dead-letter topic of a known topic.");
+        return produce.ProduceAsync(typeof(DeadLetter), message.Topic, message.Key, letter, message.Id, message.Headers, ct);
     }
 }
 

@@ -1,0 +1,381 @@
+using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Text;
+using System.Text.Json;
+using Ariva.Core.Messaging;
+using Ariva.Core.Services;
+using Ariva.Di.Extensions;
+using Ariva.Infra.Messaging;
+using Ariva.Infra.Messaging.Kafka;
+using Ariva.IntegrationTests.Security;
+using FluentAssertions;
+using MassTransit;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Npgsql;
+
+namespace Ariva.IntegrationTests.Faults;
+
+/// <summary>
+/// Fails the poison message of the running test, takes four seconds over its slow message (so that a stop waits for it),
+/// and records every message as it starts.
+/// </summary>
+public sealed class KeptProbeConsumer : IConsumer<OutageProbe>
+{
+    public static string PoisonKey { get; set; }
+
+    public static string SlowKey { get; set; }
+
+    public static readonly ConcurrentQueue<(string Key, int Step)> Received = new();
+
+    public async Task Consume(ConsumeContext<OutageProbe> context)
+    {
+        Received.Enqueue((context.Message.Key, context.Message.Step));
+        if (context.Message.Key == PoisonKey)
+            throw new InvalidOperationException("Poison probe (ARV-171).");
+        if (context.Message.Key == SlowKey)
+            await Task.Delay(TimeSpan.FromSeconds(4), CancellationToken.None);
+    }
+}
+
+/// <summary>
+/// ARV-171 on real Kafka: a dead letter the broker refuses when its endpoint stops is kept as an outbox row before the record
+/// completes, so no record is skipped. Kafka refuses only the dead-letter topic: its <c>max.message.bytes</c> is set to 1
+/// (the broker answers MESSAGE_TOO_LARGE at once), while the source topic, the consumer group's commits and the database
+/// stay available. Toxiproxy cuts the whole broker connection, which would refuse the commits as well, so it cannot make
+/// this case. The order of events is the one ARV-166 left open: the record fails and its dead letter is refused, a later
+/// record of another key on the same partition completes, then the endpoint stops. A third, slow record (another key) is
+/// still being handled at the stop, so the endpoint's stop waits for it, and in that time MassTransit's checkpointer
+/// commits the later record's offset, past the poison record, every time: before ARV-171 the poison record was faulted
+/// there and so skipped, neither processed nor dead-lettered. Now the letter is in the outbox before the record completes,
+/// and once the topic takes messages again the relay of the next host sends it. The unreadable-record path (the rider's
+/// dead-letter pipe, at receive level) is proven the same way.
+/// <para>
+/// Every wait is for a condition within one budget (ARV-156); the topic's limit is restored in every case.
+/// </para>
+/// </summary>
+[Collection(FaultsCollection.Name)]
+public sealed class DeadLetterKeptAtStopTests(FaultsFixture faults) : IAsyncLifetime
+{
+    private const string Purpose = "dead-letter-kept";
+    private const string Group = "ariva-dlkept." + Purpose;
+    private const string Kept = "kept in the outbox, which sends it later";
+    private static readonly string DeadLetterTopic = KafkaTopics.DeadLetter(KafkaTopics.SlaBreachDetected);
+    private static readonly TimeSpan Budget = TimeSpan.FromSeconds(240);
+    private static CancellationToken Ct => TestContext.Current.CancellationToken;
+
+    private readonly Stopwatch _clock = Stopwatch.StartNew();
+    private readonly List<string> _steps = [];
+    private readonly ConcurrentQueue<string> _log = new();
+
+    public ValueTask InitializeAsync() => ValueTask.CompletedTask;
+
+    public async ValueTask DisposeAsync()
+    {
+        KeptProbeConsumer.PoisonKey = null;
+        KeptProbeConsumer.SlowKey = null;
+        await AcceptDeadLettersAsync();
+    }
+
+    private Confluent.Kafka.IAdminClient Admin() =>
+        new Confluent.Kafka.AdminClientBuilder(new Confluent.Kafka.AdminClientConfig { BootstrapServers = faults.KafkaDirectBootstrap }).Build();
+
+    /// <summary>The dead-letter topic refuses every message (and nothing else is touched).</summary>
+    private async Task RefuseDeadLettersAsync() => await SetMaxMessageBytesAsync("1");
+
+    /// <summary>The dead-letter topic takes messages again, with the limit the provisioner gives it.</summary>
+    private async Task AcceptDeadLettersAsync() => await SetMaxMessageBytesAsync(KafkaSettings.MaxMessageBytes.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
+    private async Task SetMaxMessageBytesAsync(string value)
+    {
+        using var admin = Admin();
+        try
+        {
+            await admin.IncrementalAlterConfigsAsync(
+                new Dictionary<Confluent.Kafka.Admin.ConfigResource, List<Confluent.Kafka.Admin.ConfigEntry>>
+                {
+                    [new Confluent.Kafka.Admin.ConfigResource { Type = Confluent.Kafka.Admin.ResourceType.Topic, Name = DeadLetterTopic }] =
+                    [
+                        new Confluent.Kafka.Admin.ConfigEntry
+                        {
+                            Name = "max.message.bytes", Value = value, IncrementalOperation = Confluent.Kafka.Admin.AlterConfigOpType.Set
+                        }
+                    ]
+                },
+                new Confluent.Kafka.Admin.IncrementalAlterConfigsOptions { RequestTimeout = TimeSpan.FromSeconds(10) });
+        }
+        catch (Confluent.Kafka.Admin.IncrementalAlterConfigsException e) when (e.Results.All(r => r.Error.Code == Confluent.Kafka.ErrorCode.UnknownTopicOrPart))
+        {
+            // The topic is created by the first host (the provisioner); nothing to restore before that.
+        }
+    }
+
+    private async Task<IHost> StartHostAsync()
+    {
+        var builder = Host.CreateApplicationBuilder();
+        builder.Configuration.AddInMemoryCollection(new Dictionary<string, string>
+        {
+            ["Database:Host"] = faults.Host,
+            ["Database:Port"] = faults.PostgresPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["Database:Name"] = FaultsFixture.Database,
+            ["Database:Username"] = faults.PostgresUsername,
+            ["Database:Password"] = faults.PostgresPassword,
+            ["Kafka:Enabled"] = "true",
+            ["Kafka:BootstrapServers"] = faults.KafkaBootstrap,
+            ["Kafka:ServiceName"] = "dlkept",
+            ["Kafka:ProvisionTopics"] = "true",
+            ["Kafka:Topics:Partitions"] = "1",
+            ["Kafka:Topics:ReplicationFactor"] = "1",
+            ["Kafka:Topics:MinInSyncReplicas"] = "1",
+            ["Kafka:Outbox:PollMilliseconds"] = "200",
+            ["Kafka:Consumers:RetryCount"] = "0",
+            ["Kafka:Consumers:CheckpointSeconds"] = "1",
+            ["Kafka:Consumers:CheckpointMessageCount"] = "1"
+        });
+        builder.Logging.AddProvider(new Recorder(_log));
+        if (Environment.GetEnvironmentVariable("ARIVA_IT_LOG") is { Length: > 0 } log)
+            builder.Logging.AddProvider(new Ariva.IntegrationTests.Streaming.FileLoggerProvider(log));
+        builder.Services.AddScoped<ICurrentUser, TestCurrentUser>();
+        builder.Services.AddArivaPersistence(builder.Configuration);
+        builder.Services.AddArivaMessaging(builder.Configuration, messaging => messaging
+            .AddEventsFrom(typeof(OutageProbe).Assembly)
+            .Consume<OutageProbe, KeptProbeConsumer>(KafkaTopics.SlaBreachDetected, Purpose));
+        var host = builder.Build();
+        await host.StartAsync(Ct);
+        Done("a host started");
+        return host;
+    }
+
+    private static async Task StopAsync(IHost host)
+    {
+        using var shutdown = new CancellationTokenSource(TimeSpan.FromSeconds(40));
+        await host.StopAsync(shutdown.Token);
+        host.Dispose();
+    }
+
+    /// <summary>The topic's end and the group's committed offset on the probe topic, read past the proxy.</summary>
+    private async Task<(long End, long Committed)> OffsetsAsync()
+    {
+        using var admin = Admin();
+        var partition = new Confluent.Kafka.TopicPartition(KafkaTopics.SlaBreachDetected, new Confluent.Kafka.Partition(0));
+        var latest = await Confluent.Kafka.IAdminClientExtensions.ListOffsetsAsync(admin,
+            [new Confluent.Kafka.Admin.TopicPartitionOffsetSpec { TopicPartition = partition, OffsetSpec = Confluent.Kafka.Admin.OffsetSpec.Latest() }],
+            new Confluent.Kafka.Admin.ListOffsetsOptions { RequestTimeout = TimeSpan.FromSeconds(10) });
+        var committed = await admin.ListConsumerGroupOffsetsAsync([new Confluent.Kafka.ConsumerGroupTopicPartitions(Group, [partition])],
+            new Confluent.Kafka.Admin.ListConsumerGroupOffsetsOptions { RequestTimeout = TimeSpan.FromSeconds(10) });
+        return (latest.ResultInfos.Single().TopicPartitionOffsetError.Offset.Value, committed.Single().Partitions.Single().Offset.Value);
+    }
+
+    /// <summary>The dead letters for a key, read past the proxy up to the topic's end as it was when the read began.</summary>
+    private List<DeadLetter> LettersFor(string key)
+    {
+        using var consumer = new Confluent.Kafka.ConsumerBuilder<string, string>(new Confluent.Kafka.ConsumerConfig
+        {
+            BootstrapServers = faults.KafkaDirectBootstrap,
+            GroupId = "it-dead-letter-reader-" + Guid.NewGuid().ToString("N")[..8],
+            AutoOffsetReset = Confluent.Kafka.AutoOffsetReset.Earliest,
+            EnableAutoCommit = false
+        }).Build();
+        var partition = new Confluent.Kafka.TopicPartition(DeadLetterTopic, new Confluent.Kafka.Partition(0));
+        var end = consumer.QueryWatermarkOffsets(partition, TimeSpan.FromSeconds(10)).High.Value;
+        consumer.Assign(new Confluent.Kafka.TopicPartitionOffset(partition, Confluent.Kafka.Offset.Beginning));
+        var letters = new List<DeadLetter>();
+        var until = DateTime.UtcNow.AddSeconds(10);
+        while (end > 0 && DateTime.UtcNow < until)
+        {
+            if (consumer.Consume(TimeSpan.FromMilliseconds(500)) is not { } record)
+                continue;
+            if (record.Message.Key == key)
+                letters.Add(JsonSerializer.Deserialize<DeadLetter>(record.Message.Value, EventCatalog.Json));
+            if (record.Offset.Value >= end - 1)
+                break;
+        }
+
+        consumer.Close();
+        return letters;
+    }
+
+    /// <summary>The outbox rows of kept dead letters for a key, read past the proxy: whether each was sent.</summary>
+    private async Task<List<bool>> KeptRowsAsync(string key)
+    {
+        await using var sql = new NpgsqlConnection(faults.DirectConnectionString);
+        await sql.OpenAsync(Ct);
+        await using var command = new NpgsqlCommand(
+            "SELECT sent_on IS NOT NULL FROM outbox_message WHERE message_type = @type AND topic = @topic AND message_key = @key ORDER BY seq", sql);
+        command.Parameters.AddWithValue("type", DeadLetters.OutboxMessageType);
+        command.Parameters.AddWithValue("topic", DeadLetterTopic);
+        command.Parameters.AddWithValue("key", key);
+        var rows = new List<bool>();
+        await using var reader = await command.ExecuteReaderAsync(Ct);
+        while (await reader.ReadAsync(Ct))
+            rows.Add(reader.GetBoolean(0));
+        return rows;
+    }
+
+    private int Logged(string text) => _log.Count(l => l.Contains(text, StringComparison.Ordinal));
+
+    private void Done(string step)
+    {
+        var entry = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{step} at {_clock.Elapsed.TotalSeconds:F1} s");
+        _steps.Add(entry);
+        TestContext.Current.TestOutputHelper?.WriteLine(entry);
+    }
+
+    private async Task WaitForAsync(Func<Task<bool>> condition, string what)
+    {
+        while (!await condition())
+        {
+            if (_clock.Elapsed > Budget)
+                throw new TimeoutException($"{what}: not within the test's {Budget.TotalSeconds:F0} s (done: {string.Join(", ", _steps)})");
+            await Task.Delay(250, Ct);
+        }
+
+        Done(what);
+    }
+
+    private Task WaitForAsync(Func<bool> condition, string what) => WaitForAsync(() => Task.FromResult(condition()), what);
+
+    private static int Count(string key) => KeptProbeConsumer.Received.Count(r => r.Key == key);
+
+    /// <summary>
+    /// The rider's lane for a key: MassTransit hashes the record's key (Murmur3) to one of <c>ConcurrentMessageLimit</c>
+    /// lanes (8, the setting's default here), each handling one message at a time, so a key in the poison record's lane
+    /// would wait behind it instead of completing during its dead-letter loop.
+    /// </summary>
+    private static long LaneOf(string key) => new MassTransit.Middleware.Murmur3UnsafeHashGenerator().Hash(Encoding.UTF8.GetBytes(key)) % 8;
+
+    /// <summary>A key of the run whose lane is none of <paramref name="taken"/>.</summary>
+    private static string KeyOutside(string prefix, string run, params string[] taken)
+    {
+        for (var i = 0; ; i++)
+        {
+            var key = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{prefix}-{run}-{i}");
+            if (taken.All(t => LaneOf(t) != LaneOf(key)))
+                return key;
+        }
+    }
+
+    [Theory(Timeout = 300_000)]
+    [InlineData(false)] // a message whose consumer fails: the consume pipe's dead-letter filter
+    [InlineData(true)]  // a record that is not a readable message: the rider's dead-letter pipe, at receive level
+    public async Task Stop_Should_KeepTheRefusedDeadLetterAndSkipNoRecord_When_ALaterRecordOfThePartitionCompletes(bool unreadable)
+    {
+        var run = Guid.NewGuid().ToString("N")[..8];
+        var poison = "P-" + run;
+        var later = KeyOutside("L", run, poison);
+        var slow = KeyOutside("S", run, poison, later);
+        var raw = Encoding.UTF8.GetBytes("not a message (ARV-171) " + run);
+        KeptProbeConsumer.PoisonKey = poison;
+        KeptProbeConsumer.SlowKey = slow;
+        await AcceptDeadLettersAsync();
+        var host = await StartHostAsync();
+        var stopped = false;
+        try
+        {
+            // The new group reads and commits the records already on the topic first, so that the poison record is the
+            // first one pending.
+            await host.Services.GetRequiredService<ISvcMessageBus>().PublishAsync(new OutageProbe { Key = "F-" + run, Step = 0, CorrelationId = "corr" }, Ct);
+            await WaitForAsync(async () => await OffsetsAsync() is { End: > 0 } o && o.Committed == o.End, "the consumer caught up and committed");
+            var poisonOffset = (await OffsetsAsync()).End;
+
+            await RefuseDeadLettersAsync();
+            Done("the dead-letter topic refusing");
+            if (unreadable)
+            {
+                using var producer = new Confluent.Kafka.ProducerBuilder<string, byte[]>(new Confluent.Kafka.ProducerConfig { BootstrapServers = faults.KafkaDirectBootstrap }).Build();
+                await producer.ProduceAsync(KafkaTopics.SlaBreachDetected, new Confluent.Kafka.Message<string, byte[]> { Key = poison, Value = raw }, Ct);
+            }
+            else
+            {
+                await host.Services.GetRequiredService<ISvcMessageBus>().PublishAsync(new OutageProbe { Key = poison, Step = 1, CorrelationId = "corr" }, Ct);
+            }
+
+            await WaitForAsync(() => Logged("not accepted (attempt") >= 1, "the record failed and Kafka refused its dead letter");
+
+            // A later record of another key on the same partition completes while the poison record is still pending.
+            await host.Services.GetRequiredService<ISvcMessageBus>().PublishAsync(new OutageProbe { Key = later, Step = 2, CorrelationId = "corr" }, Ct);
+            await WaitForAsync(() => Count(later) == 1, "a later record of another key consumed");
+            await host.Services.GetRequiredService<ISvcMessageBus>().PublishAsync(new OutageProbe { Key = slow, Step = 3, CorrelationId = "corr" }, Ct);
+            await WaitForAsync(() => Count(slow) == 1, "a slow record of a third key being handled");
+            (await OffsetsAsync()).Committed.Should().Be(poisonOffset, "nothing is committed past the pending poison record before the stop");
+
+            await StopAsync(host);
+            stopped = true;
+            Done("the host stopped");
+            (await OffsetsAsync()).Committed.Should().BeGreaterThan(poisonOffset + 1,
+                "the later record was committed during the stop, past the poison record: the case that skipped it before ARV-171");
+            Logged("left unacknowledged").Should().Be(0, "the database was there, so the record was not faulted (and so skipped)");
+            Logged(Kept).Should().Be(1, "the refused dead letter was kept in the outbox at the stop");
+            (await KeptRowsAsync(poison)).Should().Equal([false], "one outbox row holds the letter, not sent yet: the topic still refuses");
+
+            // The topic takes messages again: the next host's relay sends the kept letter.
+            await AcceptDeadLettersAsync();
+            Done("the dead-letter topic accepting again");
+            var next = await StartHostAsync();
+            try
+            {
+                await WaitForAsync(async () => (await KeptRowsAsync(poison)) is [true], "the relay sent the kept dead letter");
+                await WaitForAsync(() => LettersFor(poison).Count >= 1, "the dead letter on the dead-letter topic");
+                await WaitForAsync(async () => await OffsetsAsync() is var o && o.Committed == o.End, "every record committed");
+                await Task.Delay(TimeSpan.FromSeconds(3), Ct);
+
+                var letter = LettersFor(poison).Should().ContainSingle("the record completed after its letter was kept, so it was not delivered and dead-lettered again").Subject;
+                letter.Topic.Should().Be(KafkaTopics.SlaBreachDetected);
+                letter.Partition.Should().Be(0);
+                letter.Offset.Should().Be(poisonOffset, "the letter names the record");
+                letter.Consumer.Should().Be(Group);
+                if (unreadable)
+                {
+                    letter.ErrorType.Should().Be(typeof(InvalidDataException).FullName);
+                    Convert.FromBase64String(letter.BodyBase64).Should().Equal(raw, "the raw record travels with the letter");
+                    Count(poison).Should().Be(0, "an unreadable record never reaches the consumer");
+                }
+                else
+                {
+                    letter.ErrorType.Should().Be(typeof(InvalidOperationException).FullName);
+                    letter.ErrorMessage.Should().Be("Poison probe (ARV-171).");
+                    Count(poison).Should().Be(1, "the poison record completed at the stop and is not delivered again");
+                }
+
+                Count(later).Should().Be(1, "the later record is processed once");
+                Count(slow).Should().BeInRange(1, 2, "the slow record completed at the stop; its own commit may not have been made before the endpoint stopped");
+            }
+            finally
+            {
+                await StopAsync(next);
+            }
+        }
+        finally
+        {
+            KeptProbeConsumer.PoisonKey = null;
+            KeptProbeConsumer.SlowKey = null;
+            await AcceptDeadLettersAsync();
+            if (!stopped)
+                _ = Task.Run(host.Dispose, CancellationToken.None);
+        }
+    }
+
+    private sealed class Recorder(ConcurrentQueue<string> log) : ILoggerProvider
+    {
+        public ILogger CreateLogger(string categoryName) => new Logger(log, categoryName);
+
+        public void Dispose()
+        {
+        }
+
+        private sealed class Logger(ConcurrentQueue<string> log, string category) : ILogger
+        {
+            public IDisposable BeginScope<TState>(TState state) where TState : notnull => null;
+
+            public bool IsEnabled(LogLevel logLevel) => category.StartsWith("Ariva.Infra.Messaging.Kafka", StringComparison.Ordinal) && logLevel >= LogLevel.Information;
+
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception, Func<TState, Exception, string> formatter)
+            {
+                if (IsEnabled(logLevel))
+                    log.Enqueue(formatter(state, exception));
+            }
+        }
+    }
+}

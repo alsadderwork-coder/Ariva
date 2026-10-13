@@ -34,12 +34,15 @@ public sealed class ConsumePipelineTests
 {
     private static readonly ConsumerSettings Fast = new() { RetryCount = 2, RetryMinMilliseconds = 1, RetryMaxMilliseconds = 5 };
 
-    private static async Task<(ServiceProvider Provider, ITestHarness Harness, Ledger Ledger)> StartAsync(ConsumerSettings settings = null)
+    private static async Task<(ServiceProvider Provider, ITestHarness Harness, Ledger Ledger)> StartAsync(ConsumerSettings settings = null,
+        IDeadLetterStore store = null)
     {
         var ledger = new Ledger();
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(ledger);
+        if (store is not null)
+            services.AddSingleton(store);
         services.AddSingleton(TimeProvider.System);
         services.AddSingleton<IDeadLetterSink>(ledger);
         services.AddScoped<FakeUnitOfWork>();
@@ -205,6 +208,121 @@ public sealed class ConsumePipelineTests
         ledger.Letters.Should().BeEmpty();
         (await harness.Published.Any<Fault<PipelineProbe>>(TestContext.Current.CancellationToken)).Should().BeFalse(
             "the error pipe, which would publish a fault and acknowledge the message, is not reached");
+    }
+
+    /// <summary>
+    /// ARV-171: with a store for dead letters (the outbox), a stop while the dead letter is refused keeps the letter and
+    /// completes the message, so MassTransit's checkpointer never commits past a record that was neither processed nor
+    /// dead-lettered. No fault is published, the consumer is not run again, and Kafka is not asked again.
+    /// </summary>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(2)]
+    public async Task Pipe_Should_KeepTheDeadLetterAndCompleteTheMessage_When_TheEndpointStopsWhileItsDeadLetterIsRefused(int retries)
+    {
+        var settings = new ConsumerSettings { RetryCount = retries, RetryMinMilliseconds = 1, RetryMaxMilliseconds = 5 };
+        var store = new KeptLetters();
+        var (provider, harness, ledger) = await StartAsync(settings, store);
+        await using var _ = provider;
+        var receive = new ReceiveOutcome();
+        harness.Bus.ConnectReceiveObserver(receive);
+        ledger.RefuseLetters = int.MaxValue;
+        var probe = new PipelineProbe { FailTimes = 99 };
+
+        await harness.Bus.Publish(probe, TestContext.Current.CancellationToken);
+        var until = DateTime.UtcNow.AddSeconds(10);
+        while (Volatile.Read(ref ledger.Refused) < 1 && DateTime.UtcNow < until)
+            await Task.Delay(20, TestContext.Current.CancellationToken);
+        var stop = provider.GetRequiredService<IBusControl>().StopAsync(TestContext.Current.CancellationToken);
+
+        var outcome = await receive.Ended.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await stop.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        outcome.Should().BeNull("the letter is kept durably, so the message completes");
+        store.Letters.Should().ContainSingle().Which.ErrorMessage.Should().Be($"probe failure {retries + 1}");
+        ledger.Attempts[probe.Id].Should().Be(retries + 1, "the stop is not retried");
+        ledger.Refused.Should().Be(1, "Kafka is not asked again after the stop");
+        ledger.Letters.Should().BeEmpty();
+        (await harness.Published.Any<Fault<PipelineProbe>>(TestContext.Current.CancellationToken)).Should().BeFalse();
+    }
+
+    /// <summary>
+    /// ARV-171: the database away as well (the store fails) leaves ARV-166's path: the message is not acknowledged.
+    /// </summary>
+    [Fact]
+    public async Task Pipe_Should_LeaveTheMessageUnacknowledged_When_TheDeadLetterCannotBeKeptEither()
+    {
+        var store = new KeptLetters { Fail = true };
+        var (provider, harness, ledger) = await StartAsync(new ConsumerSettings { RetryCount = 0, RetryMinMilliseconds = 1, RetryMaxMilliseconds = 5 }, store);
+        await using var _ = provider;
+        var receive = new ReceiveOutcome();
+        harness.Bus.ConnectReceiveObserver(receive);
+        ledger.RefuseLetters = int.MaxValue;
+
+        await harness.Bus.Publish(new PipelineProbe { FailTimes = 99 }, TestContext.Current.CancellationToken);
+        var until = DateTime.UtcNow.AddSeconds(10);
+        while (Volatile.Read(ref ledger.Refused) < 1 && DateTime.UtcNow < until)
+            await Task.Delay(20, TestContext.Current.CancellationToken);
+        var stop = provider.GetRequiredService<IBusControl>().StopAsync(TestContext.Current.CancellationToken);
+
+        var outcome = await receive.Ended.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await stop.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        outcome.Should().BeAssignableTo<OperationCanceledException>("nothing durable was written, so the message must not complete");
+        store.Attempts.Should().Be(1);
+        (await harness.Published.Any<Fault<PipelineProbe>>(TestContext.Current.CancellationToken)).Should().BeFalse();
+    }
+
+    /// <summary>
+    /// From the ARV-166 review: the bus stops while the retry filter waits between two attempts. The endpoint's retry is
+    /// not cancelled by a stop (MassTransit builds <c>UseMessageRetry</c> on an endpoint with <c>CancellationToken.None</c>):
+    /// the stop waits out the schedule, the remaining attempts run, and the final one keeps the dead letter in the outbox
+    /// at once (the endpoint is already stopping, so Kafka is not asked within the stop) and the message completes. So a
+    /// retry wait never leaves a faulted record behind for the checkpointer to commit past (ARV-171).
+    /// </summary>
+    [Fact]
+    public async Task Pipe_Should_FinishItsRetriesAndKeepTheDeadLetter_When_TheBusStopsDuringARetryWait()
+    {
+        var store = new KeptLetters();
+        var settings = new ConsumerSettings { RetryCount = 2, RetryMinMilliseconds = 1500, RetryMaxMilliseconds = 1500 };
+        var (provider, harness, ledger) = await StartAsync(settings, store);
+        await using var _ = provider;
+        var receive = new ReceiveOutcome();
+        harness.Bus.ConnectReceiveObserver(receive);
+        var probe = new PipelineProbe { FailTimes = 99 };
+
+        await harness.Bus.Publish(probe, TestContext.Current.CancellationToken);
+        var until = DateTime.UtcNow.AddSeconds(10);
+        while (!ledger.Attempts.ContainsKey(probe.Id) && DateTime.UtcNow < until)
+            await Task.Delay(20, TestContext.Current.CancellationToken);
+        await Task.Delay(200, TestContext.Current.CancellationToken); // into the first retry wait
+        ledger.Attempts[probe.Id].Should().Be(1);
+        var stop = provider.GetRequiredService<IBusControl>().StopAsync(TestContext.Current.CancellationToken);
+
+        var outcome = await receive.Ended.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+        await stop.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+        outcome.Should().BeNull("the message completes once its dead letter is kept");
+        ledger.Attempts[probe.Id].Should().Be(3, "the stop waits for the remaining attempts");
+        store.Letters.Should().ContainSingle("the final attempt keeps the dead letter in the outbox, which sends it later");
+        ledger.Letters.Should().BeEmpty("the endpoint was already stopping, so Kafka is not asked");
+        (await harness.Published.Any<Fault<PipelineProbe>>(TestContext.Current.CancellationToken)).Should().BeFalse();
+    }
+
+    /// <summary>The outbox for dead letters, in memory.</summary>
+    private sealed class KeptLetters : IDeadLetterStore
+    {
+        private int _attempts;
+
+        public bool Fail { get; init; }
+        public System.Collections.Concurrent.ConcurrentQueue<DeadLetter> Letters { get; } = new();
+        public int Attempts => Volatile.Read(ref _attempts);
+
+        public Task KeepAsync(DeadLetter letter, CancellationToken ct)
+        {
+            Interlocked.Increment(ref _attempts);
+            if (Fail)
+                return Task.FromException(new TimeoutException("The database is away."));
+            Letters.Enqueue(letter);
+            return Task.CompletedTask;
+        }
     }
 
     /// <summary>How the receive of a message ended: its exception, or null when it completed (acknowledged).</summary>

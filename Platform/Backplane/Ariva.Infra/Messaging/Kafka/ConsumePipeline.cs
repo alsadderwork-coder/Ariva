@@ -21,12 +21,15 @@ public static class ConsumePipeline
         // a host open. The endpoint's own Stopping event, not the host's: EndpointStopping explains why.
         var stopping = new EndpointStopping();
         endpoint.ConnectReceiveEndpointObserver(stopping);
+        // ARV-171: a dead letter Kafka did not take before the stop is kept in the outbox, so the record can complete.
+        var store = context.GetService<IDeadLetterStore>();
         endpoint.UseFilter(new DeadLetterFilter(
             retries,
             context.GetRequiredService<IDeadLetterSink>(),
             context.GetRequiredService<TimeProvider>(),
             context.GetRequiredService<ILogger<DeadLetterFilter>>(),
-            stopping));
+            stopping,
+            store));
         endpoint.UseMessageRetry(retry =>
         {
             retry.Exponential(
@@ -35,13 +38,16 @@ public static class ConsumePipeline
                 TimeSpan.FromMilliseconds(settings.RetryMaxMilliseconds),
                 TimeSpan.FromMilliseconds(Math.Max(1, settings.RetryMinMilliseconds)));
             // No Ignore<OperationCanceledException>: a consumer's own timeout is a failure like any other and must reach
-            // the dead-letter topic; MassTransit stops retrying by itself when the endpoint is shutting down.
+            // the dead-letter topic. A stop does not cancel this retry (MassTransit builds it with CancellationToken.None
+            // on an endpoint): the stop waits out the rest of the schedule, and the final attempt dead-letters the message
+            // or keeps its letter (ARV-171), so a retry wait never leaves a faulted record behind.
         });
         endpoint.UseConsumeFilter(typeof(InboxFilter<>), context);
         endpoint.ConfigureDeadLetter(skipped => skipped.UseFilter(new UnreadableFilter(
             context.GetRequiredService<IDeadLetterSink>(),
             context.GetRequiredService<TimeProvider>(),
             context.GetRequiredService<ILogger<UnreadableFilter>>(),
-            stopping)));
+            stopping,
+            store)));
     }
 }

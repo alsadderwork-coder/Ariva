@@ -55,6 +55,12 @@ public sealed class PoisonProbeConsumer : IConsumer<OutageProbe>
 /// residual risk recorded with ARV-166 (DeadLetterRetry, docs/architecture/overview.md).
 /// </para>
 /// <para>
+/// ARV-171 closed that risk: with the database there the letter is kept in the outbox at the stop and the message
+/// completes, and the next host's relay sends the letter (the first two cases); only with the database away as well is
+/// the message left unacknowledged as above (the third case, the Postgres proxy cut before the stop). The skip itself is
+/// reproduced, with a later record committed during the stop, by DeadLetterKeptAtStopTests.
+/// </para>
+/// <para>
 /// The broker is cut only once the consumer has committed everything before the poison message, so the cut cannot land in
 /// an offset commit (ARV-165 owns that race), and it is restored once the loop has ended, so the endpoint's own close does
 /// not wait on an unreachable broker. Every wait is for a condition within one budget (ARV-156).
@@ -67,6 +73,7 @@ public sealed class DeadLetterShutdownTests(FaultsFixture faults) : IAsyncLifeti
     private const string Purpose = "dead-letter-stop";
     private const string Group = "ariva-dlstop." + Purpose;
     private const string Stopping = "messaging is stopping";
+    private const string Kept = "kept in the outbox, which sends it later";
     private static readonly TimeSpan Budget = TimeSpan.FromSeconds(270);
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
@@ -80,6 +87,7 @@ public sealed class DeadLetterShutdownTests(FaultsFixture faults) : IAsyncLifeti
     {
         PoisonProbeConsumer.BeforeFailing = null;
         await faults.RestoreAsync(Proxy);
+        await faults.RestoreAsync("postgres");
     }
 
     private async Task<IHost> StartHostAsync()
@@ -99,7 +107,8 @@ public sealed class DeadLetterShutdownTests(FaultsFixture faults) : IAsyncLifeti
             ["Kafka:Topics:Partitions"] = "1",
             ["Kafka:Topics:ReplicationFactor"] = "1",
             ["Kafka:Topics:MinInSyncReplicas"] = "1",
-            ["Kafka:Outbox:Enabled"] = "false",
+            ["Kafka:Outbox:Enabled"] = "true",
+            ["Kafka:Outbox:PollMilliseconds"] = "200",
             ["Kafka:Consumers:RetryCount"] = "0",
             ["Kafka:Consumers:CheckpointSeconds"] = "1",
             ["Kafka:Consumers:CheckpointMessageCount"] = "1"
@@ -191,10 +200,27 @@ public sealed class DeadLetterShutdownTests(FaultsFixture faults) : IAsyncLifeti
 
     private Task WaitForAsync(Func<bool> condition, string what) => WaitForAsync(() => Task.FromResult(condition()), what);
 
+    /// <summary>The outbox rows of kept dead letters for a key, read past the proxy: whether each was sent (ARV-171).</summary>
+    private async Task<List<bool>> KeptRowsAsync(string key)
+    {
+        await using var sql = new Npgsql.NpgsqlConnection(faults.DirectConnectionString);
+        await sql.OpenAsync(Ct);
+        await using var command = new Npgsql.NpgsqlCommand(
+            "SELECT sent_on IS NOT NULL FROM outbox_message WHERE message_type = @type AND message_key = @key ORDER BY seq", sql);
+        command.Parameters.AddWithValue("type", DeadLetters.OutboxMessageType);
+        command.Parameters.AddWithValue("key", key);
+        var rows = new List<bool>();
+        await using var reader = await command.ExecuteReaderAsync(Ct);
+        while (await reader.ReadAsync(Ct))
+            rows.Add(reader.GetBoolean(0));
+        return rows;
+    }
+
     [Theory(Timeout = 300_000)]
-    [InlineData(true)]  // the host is stopped, then disposed (the orchestrator's SIGTERM)
-    [InlineData(false)] // the host is only disposed (the ARV-156 diagnosis): disposing stops the bus and its endpoints
-    public async Task DeadLetterLoop_Should_EndWithTheHost_When_TheLetterCannotBeSent(bool stopFirst)
+    [InlineData(true, false)]  // the host is stopped, then disposed (the orchestrator's SIGTERM): the letter is kept (ARV-171)
+    [InlineData(false, false)] // the host is only disposed (the ARV-156 diagnosis): disposing stops the bus and its endpoints
+    [InlineData(true, true)]   // the database away as well: nothing durable, the record is left unacknowledged (ARV-166)
+    public async Task DeadLetterLoop_Should_EndWithTheHost_When_TheLetterCannotBeSent(bool stopFirst, bool databaseToo)
     {
         var key = "P-" + Guid.NewGuid().ToString("N")[..8];
         PoisonProbeConsumer.PoisonKey = key;
@@ -214,6 +240,12 @@ public sealed class DeadLetterShutdownTests(FaultsFixture faults) : IAsyncLifeti
             await Task.Delay(TimeSpan.FromSeconds(3), Ct);
             Logged(Stopping).Should().Be(0, "the loop keeps trying while the host runs");
 
+            if (databaseToo)
+            {
+                await faults.CutAsync("postgres");
+                Done("the database cut off as well");
+            }
+
             var stopStarted = _clock.Elapsed;
             var stop = Task.Run(async () =>
             {
@@ -227,11 +259,19 @@ public sealed class DeadLetterShutdownTests(FaultsFixture faults) : IAsyncLifeti
             }, CancellationToken.None);
             Done(stopFirst ? "the host stopping" : "the host disposing");
 
-            // The loop ends on the stop, while the broker is still cut off: the dead letter was not sent.
-            await WaitForAsync(() => Logged(Stopping) >= 1, "the dead-letter loop ended");
-            _log.First(l => l.Text.Contains(Stopping, StringComparison.Ordinal)).At.Should().BeGreaterThan(stopStarted, "the stop ended it, not the message's own token");
+            // The loop ends on the stop, while the broker is still cut off: the dead letter was not sent. With the database
+            // there it is kept in the outbox and the message completes (ARV-171); with the database away as well nothing
+            // durable can be written and the message is left unacknowledged (ARV-166).
+            var ending = databaseToo ? Stopping : Kept;
+            await WaitForAsync(() => Logged(ending) >= 1, databaseToo ? "the dead-letter loop ended, the letter not kept" : "the dead-letter loop ended, the letter kept");
+            _log.First(l => l.Text.Contains(ending, StringComparison.Ordinal)).At.Should().BeGreaterThan(stopStarted, "the stop ended it, not the message's own token");
+            Logged(databaseToo ? Kept : Stopping).Should().Be(0);
+            if (databaseToo)
+                Logged("could not be kept in the outbox either").Should().Be(1);
             var attempts = Logged("not accepted (attempt");
             await faults.RestoreAsync(Proxy);
+            if (databaseToo)
+                await faults.RestoreAsync("postgres");
             Done("the broker back");
 
             (await Task.WhenAny(stop, Task.Delay(TimeSpan.FromSeconds(40), Ct)) == stop).Should().BeTrue("the host stops and is disposed within 40 s once the loop has ended");
@@ -241,15 +281,27 @@ public sealed class DeadLetterShutdownTests(FaultsFixture faults) : IAsyncLifeti
             await Task.Delay(TimeSpan.FromSeconds(5), Ct);
             Logged("not accepted (attempt").Should().Be(attempts, "no attempt after the host stopped: the loop is over, not just abandoned");
 
-            // At-least-once: the message was never acknowledged, so the next host gets it again and dead-letters it. (The
-            // attempt that was in flight at the stop may still have reached the broker once it was back, so the letter can
-            // be there twice; never not at all.)
             var again = await StartHostAsync();
             try
             {
-                await WaitForAsync(() => PoisonProbeConsumer.Received.Count(r => r.Key == key) >= 2 && LettersFor(key) >= 1,
-                    "the poison message delivered again and dead-lettered after the restart");
-                PoisonProbeConsumer.Received.Count(r => r.Key == key).Should().BeGreaterThanOrEqualTo(2, "delivered before the stop and again after it");
+                if (databaseToo)
+                {
+                    // At-least-once (ARV-166): the message was never acknowledged, so the next host gets it again and
+                    // dead-letters it. (The attempt in flight at the stop may still have reached the broker once it was back,
+                    // so the letter can be there twice; never not at all.)
+                    await WaitForAsync(() => PoisonProbeConsumer.Received.Count(r => r.Key == key) >= 2 && LettersFor(key) >= 1,
+                        "the poison message delivered again and dead-lettered after the restart");
+                    PoisonProbeConsumer.Received.Count(r => r.Key == key).Should().BeGreaterThanOrEqualTo(2, "delivered before the stop and again after it");
+                    (await KeptRowsAsync(key)).Should().BeEmpty("nothing could be kept with the database away");
+                }
+                else
+                {
+                    // ARV-171: the kept letter is sent by the relay. The message completed at the stop; whether its offset was
+                    // committed before the endpoint stopped (the broker came back during the stop) decides whether it is
+                    // delivered again, which then dead-letters it once more: at least one letter, never none.
+                    await WaitForAsync(async () => (await KeptRowsAsync(key)) is [true] && LettersFor(key) >= 1,
+                        "the kept dead letter sent by the relay after the restart");
+                }
             }
             finally
             {
@@ -262,6 +314,7 @@ public sealed class DeadLetterShutdownTests(FaultsFixture faults) : IAsyncLifeti
         {
             PoisonProbeConsumer.BeforeFailing = null;
             await faults.RestoreAsync(Proxy);
+            await faults.RestoreAsync("postgres");
             if (!disposed)
                 _ = Task.Run(host.Dispose, CancellationToken.None);
         }

@@ -80,10 +80,15 @@ public static partial class MessagingExtensions
         services.AddSingleton<KafkaProduce>();
         services.AddSingleton<IOutboxTransport, MassTransitOutboxTransport>();
         services.AddSingleton<IDeadLetterSink, KafkaDeadLetterSink>();
+        // ARV-171: a dead letter Kafka did not take before its endpoint stopped is kept as an outbox row.
+        services.AddSingleton<IDeadLetterStore, OutboxDeadLetterStore>();
         services.Replace(ServiceDescriptor.Singleton<ISvcMessageBus, KafkaMessageBus>());
 
         var producerConfig = KafkaClientConfig.Producer(settings);
-        var deadLetterTopics = builder.Consumers.Select(c => c.Topic).Concat(builder.StreamTopics)
+        // Every topic's dead-letter producer, not only those of the topics this host consumes (ARV-171): the outbox relay is
+        // led by any host and sends dead letters kept at a stop by any other, and MassTransit gives a topic without a
+        // registered producer a default one without Ariva's JSON serializer. The topic provisioner creates them all.
+        var deadLetterTopics = builder.Consumers.Select(c => c.Topic).Concat(builder.StreamTopics).Concat(KafkaTopics.All)
             .Select(KafkaTopics.DeadLetter).Distinct(StringComparer.Ordinal).ToList();
 
         services.AddHealthChecks();

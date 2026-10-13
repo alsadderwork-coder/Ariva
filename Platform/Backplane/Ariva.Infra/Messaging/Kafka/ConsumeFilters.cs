@@ -62,7 +62,7 @@ public sealed class InboxFilter<T>(IInbox inbox, IUnitOfWork unitOfWork, ILogger
 /// </para>
 /// </summary>
 public sealed class DeadLetterFilter(int retryLimit, IDeadLetterSink sink, TimeProvider timeProvider, ILogger<DeadLetterFilter> logger,
-    EndpointStopping stopping = null) : IFilter<ConsumeContext>
+    EndpointStopping stopping = null, IDeadLetterStore store = null) : IFilter<ConsumeContext>
 {
     public async Task Send(ConsumeContext context, IPipe<ConsumeContext> next)
     {
@@ -92,12 +92,13 @@ public sealed class DeadLetterFilter(int retryLimit, IDeadLetterSink sink, TimeP
     /// <summary>
     /// The v8 rider discards a message whose fault escapes the pipe, so a dead letter that the broker refuses is tried
     /// again (2, 4 ... 30 seconds; each attempt ends within the produce bound, ARV-166) and holds the partition until it is
-    /// accepted. Shutdown ends the wait and leaves the message unacknowledged: the message's own token, or the endpoint
-    /// beginning to stop, since MassTransit does not cancel the message's token when its endpoint stops (ARV-166). Either
-    /// way the loop ends as a cancellation of the message's token (<see cref="DeadLetterRetry"/> says why).
+    /// accepted. Shutdown ends the wait: the message's own token, or the endpoint beginning to stop, since MassTransit does
+    /// not cancel the message's token when its endpoint stops (ARV-166). The letter is then kept in the outbox and the
+    /// message completes (ARV-171); only when that fails too is the message left unacknowledged
+    /// (<see cref="DeadLetterRetry"/> says why).
     /// </summary>
     private Task SendUntilAcceptedAsync(DeadLetter letter, CancellationToken messageToken) =>
-        DeadLetterRetry.SendUntilAcceptedAsync(sink, letter, timeProvider, logger, messageToken, stopping?.Token ?? CancellationToken.None);
+        DeadLetterRetry.SendUntilAcceptedAsync(sink, letter, timeProvider, logger, messageToken, stopping?.Token ?? CancellationToken.None, store);
 
     public void Probe(ProbeContext context) => context?.CreateFilterScope("ariva-dead-letter");
 }
@@ -107,7 +108,8 @@ public sealed class DeadLetterFilter(int retryLimit, IDeadLetterSink sink, TimeP
 /// rider skipped it) goes to the dead-letter topic with its raw bytes, not dropped and not blocking the partition.
 /// Records skipped for other reasons (an inbox duplicate, one already dead-lettered after its retries) pass through.
 /// </summary>
-public sealed class UnreadableFilter(IDeadLetterSink sink, TimeProvider timeProvider, ILogger<UnreadableFilter> logger, EndpointStopping stopping = null)
+public sealed class UnreadableFilter(IDeadLetterSink sink, TimeProvider timeProvider, ILogger<UnreadableFilter> logger, EndpointStopping stopping = null,
+    IDeadLetterStore store = null)
     : IFilter<ReceiveContext>
 {
     public async Task Send(ReceiveContext context, IPipe<ReceiveContext> next)
@@ -130,7 +132,7 @@ public sealed class UnreadableFilter(IDeadLetterSink sink, TimeProvider timeProv
             timeProvider.GetUtcNow().UtcDateTime);
         logger.LogError("Unreadable record from {Topic} partition {Partition} offset {Offset}; sending it to the dead-letter topic",
             letter.Topic, letter.Partition, letter.Offset);
-        await DeadLetterRetry.SendUntilAcceptedAsync(sink, letter, timeProvider, logger, context.CancellationToken, stopping?.Token ?? CancellationToken.None);
+        await DeadLetterRetry.SendUntilAcceptedAsync(sink, letter, timeProvider, logger, context.CancellationToken, stopping?.Token ?? CancellationToken.None, store);
 
         await next.Send(context);
     }
@@ -143,25 +145,40 @@ public sealed class UnreadableFilter(IDeadLetterSink sink, TimeProvider timeProv
 /// attempts are retried after 2, 4 ... 30 seconds until the message's token or <c>stopping</c> (the endpoint beginning to
 /// stop, <see cref="EndpointStopping"/>) is cancelled.
 /// <para>
-/// The loop then ends with an <see cref="OperationCanceledException"/> that carries the message's own token, whichever of
-/// the two ended it (ARV-166). MassTransit's retry filter passes on only a cancellation of that token and retries anything
-/// else, and the receive pipe's rescue filter sends every exception but an <see cref="OperationCanceledException"/> to the
-/// error pipe, which acknowledges the message. Ended with the linked token, a stop went to the retry policy: with no
-/// retries configured the policy failed on it and the rescue acknowledged the message (lost), with retries the exhausted
-/// policy published a fault. Carrying the message's token, the cancellation leaves
-/// the pipe, the Kafka receive marks the record faulted rather than consumed, and its offset is not committed for it, so
-/// the message is delivered again after restart. MassTransit's checkpointer still commits past a faulted record once a
-/// later record of its partition completes and is checkpointed before the endpoint stops; the warning names the record
-/// so that it can be replayed (docs/architecture/overview.md, Producing).
+/// When the loop ends without Kafka having taken the letter, the letter is first kept durably (ARV-171): an outbox row for
+/// the dead-letter topic (<see cref="IDeadLetterStore"/>), written within <see cref="KeepTimeout"/>, and the loop returns
+/// so that the record completes and its offset may be committed. A loop that begins when its endpoint is already stopping
+/// (the last attempt of a retry schedule, which a stop does not cancel, ConsumePipeline) keeps the letter at once, without
+/// a Kafka attempt that could hold the stop for the produce bound. Faulting the record instead let MassTransit's
+/// checkpointer commit past it once a later record of its partition (another key) completed during the stop, so the
+/// record was neither processed nor dead-lettered (ARV-166's residual, closed here).
+/// </para>
+/// <para>
+/// Only when the letter cannot be kept (no store, the database away, its bound, a host already disposed, or a NUL or lone
+/// surrogate in the record's key, headers or error text, which PostgreSQL refuses until ARV-175 sanitises them) does the loop end
+/// as ARV-166 did: with an <see cref="OperationCanceledException"/> that carries the message's own token, whichever of the
+/// two tokens ended it. MassTransit's retry filter passes on only a cancellation of that token and retries anything else,
+/// and the receive pipe's rescue filter sends every exception but an <see cref="OperationCanceledException"/> to the error
+/// pipe, which acknowledges the message. Ended with the linked token, a stop went to the retry policy: with no retries
+/// configured the policy failed on it and the rescue acknowledged the message (lost), with retries the exhausted policy
+/// published a fault. Carrying the message's token, the cancellation leaves the pipe, the Kafka receive marks the record
+/// faulted rather than consumed, and its offset is not committed for it, so the message is delivered again after restart.
+/// In that one case MassTransit's checkpointer can still commit past the faulted record (a later record of its partition
+/// completing and checkpointed before the endpoint stops): the database being away as well leaves nothing durable to
+/// write. The warning names the record so that it can be replayed (docs/architecture/overview.md, Producing).
 /// </para>
 /// </summary>
 internal static class DeadLetterRetry
 {
+    /// <summary>The longest the outbox write of a dead letter may hold an endpoint's stop (ARV-171).</summary>
+    public static readonly TimeSpan KeepTimeout = TimeSpan.FromSeconds(10);
+
     public static async Task SendUntilAcceptedAsync(IDeadLetterSink sink, DeadLetter letter, TimeProvider timeProvider, ILogger logger,
-        CancellationToken messageToken, CancellationToken stopping)
+        CancellationToken messageToken, CancellationToken stopping, IDeadLetterStore store = null)
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(messageToken, stopping);
         var ct = linked.Token;
+        Exception ended;
         for (var attempt = 1; ; attempt++)
         {
             TimeSpan wait;
@@ -179,7 +196,8 @@ internal static class DeadLetterRetry
             }
             catch (Exception e)
             {
-                throw Stopping(logger, letter, e, messageToken);
+                ended = e;
+                break;
             }
 
             try
@@ -188,12 +206,50 @@ internal static class DeadLetterRetry
             }
             catch (OperationCanceledException e)
             {
-                throw Stopping(logger, letter, e, messageToken);
+                ended = e;
+                break;
             }
+        }
+
+        if (store is not null && await KeepAsync(store, letter, timeProvider, logger))
+            return;
+        throw Stopping(logger, letter, ended, messageToken);
+    }
+
+    /// <summary>Writes the letter to the outbox within <see cref="KeepTimeout"/>; false when it could not.</summary>
+    private static async Task<bool> KeepAsync(IDeadLetterStore store, DeadLetter letter, TimeProvider timeProvider, ILogger logger)
+    {
+        try
+        {
+            using var bound = new CancellationTokenSource(KeepTimeout, timeProvider);
+            var keep = store.KeepAsync(letter, bound.Token);
+            try
+            {
+                await keep.WaitAsync(bound.Token);
+            }
+            catch (OperationCanceledException) when (!keep.IsCompleted)
+            {
+                // The bound passed with the write still going (it should have honoured the token): observe its end.
+                _ = keep.ContinueWith(static t => _ = t.Exception, CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
+                throw;
+            }
+
+            logger.LogWarning("Dead letter for {Topic} partition {Partition} offset {Offset} not sent before messaging stopped; kept in the outbox, which sends it later",
+                letter.Topic, letter.Partition, letter.Offset);
+            return true;
+        }
+        catch (Exception e)
+        {
+            // The database away, the bound, a host already disposed, text PostgreSQL refuses (a NUL, until ARV-175): nothing
+            // durable was written, so the record must not
+            // complete. The exception names the failure, not the letter.
+            logger.LogError(e, "Dead letter for {Topic} partition {Partition} offset {Offset} could not be kept in the outbox either",
+                letter.Topic, letter.Partition, letter.Offset);
+            return false;
         }
     }
 
-    /// <summary>The loop ends: not a failure of the message, which is left unacknowledged (see the summary).</summary>
+    /// <summary>The loop ends with nothing durable: not a failure of the message, which is left unacknowledged.</summary>
     private static OperationCanceledException Stopping(ILogger logger, DeadLetter letter, Exception cause, CancellationToken messageToken)
     {
         logger.LogWarning("Dead letter for {Topic} partition {Partition} offset {Offset} not sent: messaging is stopping; the message is left unacknowledged and is delivered again after restart",

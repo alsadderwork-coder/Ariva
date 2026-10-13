@@ -1269,7 +1269,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 37,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Owner decision 2026-10-13: accept for ARV-166, close before the pilot.",
       "dependsOn": [
         "ARV-166"
@@ -1333,6 +1333,30 @@
       "notes": "Size S.",
       "dependsOn": [
         "ARV-168"
+      ]
+    },
+    {
+      "id": "ARV-175",
+      "title": "[E6] Dead letters: text PostgreSQL accepts, a per-topic relay hold and a shutdown budget that fits",
+      "description": "From the ARV-171 security review (PASS, 2026-10-13), three non-blocking findings. (1) A NUL character or a lone surrogate in a record's key, a header name or value, or the error message makes the keep fail (PostgreSQL text refuses 0x00 in message_key, and CAST AS jsonb refuses \\u0000 and unpaired surrogates in the payload), so such a record still ends on ARV-166's unacknowledged path; it needs a buggy or hostile Kafka producer, which is what the unreadable path is for. (2) A dead-letter row that fails with a broker error ends the relay pass like any broker failure; a .dlq.v1 topic that hangs (its leader away while domain topics are fine) holds each attempt up to the 45 s produce bound and can delay domain events by up to 45 s repeatedly during the short backoffs. (3) The app charts set no terminationGracePeriodSeconds (Kubernetes default 30 s) and no host sets HostOptions.ShutdownTimeout (.NET default 30 s), while one in-flight message can need the rest of its retry schedule (at most 3 x 5 s), the keep (at most 10 s) and the consumer close. CWEs to review: CWE-501, CWE-400.",
+      "acceptanceCriteria": [
+        "DeadLetters.Create replaces NUL and lone surrogates with U+FFFD in the key, header names and values and the error message, and flags the letter when it did (a header naming what was replaced, never the original bytes); OutboxKeyOf uses the digest when the key held such a character; the letter's topic, partition, offset and consumer stay exact so a replay can still fetch the original record",
+        "A .dlq.v1 row whose send fails with a broker error holds back only its topic for the rest of the relay pass instead of ending the pass, so domain rows keep draining; a domain row's failure still ends the pass as today",
+        "The consuming hosts' pods set terminationGracePeriodSeconds 60 and the hosts set HostOptions.ShutdownTimeout to about 50 s (configurable, validated), so the clean path (the rest of the retry schedule, the keep, the consumer close) fits; chart render tests assert both; wiki 10 or the deployment guide names the budget",
+        "Unit tests: a letter with \"\\0\" in a header and in the key is kept and its row key is the digest; a lone surrogate in the error message is replaced; a failing .dlq.v1 row leaves a domain row of the same pass sent. Integration test: a record whose key and headers carry a NUL is kept at a stop and its row read back",
+        "The residual text that names this case (ConsumeFilters, overview Producing, ADR-0018 in a new dated note, wiki 10 section 4.5a) says it is closed",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 38,
+      "passes": false,
+      "notes": "Size S. Before the pilot, after ARV-174. Follow-up 4 of the same review (WRITE on every dead-letter topic for each per-service principal) is in ARV-083's notes.",
+      "dependsOn": [
+        "ARV-171"
       ]
     },
     {

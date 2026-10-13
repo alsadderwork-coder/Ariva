@@ -103,7 +103,7 @@
       ],
       "priority": 103,
       "passes": false,
-      "notes": "2026-10-10: owner folded the ARV-118 availability ledger rights into this story (see the criterion).",
+      "notes": "2026-10-10: owner folded the ARV-118 availability ledger rights into this story (see the criterion). 2026-10-13 (ARV-171 security review): every host registers every topic's dead-letter producer, because any host can lead the outbox relay and send a kept dead letter; so each per-service Kafka principal needs WRITE on every *.dlq.v1 topic, while READ on dead-letter topics stays with operators and the replay tool.",
       "dependsOn": [
         "ARV-074"
       ]
