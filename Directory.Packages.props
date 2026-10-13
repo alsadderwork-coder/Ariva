@@ -85,15 +85,15 @@
     <PackageVersion Include="Serilog.Sinks.Grafana.Loki" Version="8.3.1" />
     <PackageVersion Include="Serilog.Sinks.OpenTelemetry" Version="4.2.0" />
     <!-- Testing Frameworks -->
-    <PackageVersion Include="xunit.v3" Version="3.0.1" />
-    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.4" />
-    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.0.1" />
+    <PackageVersion Include="xunit.v3" Version="3.2.2" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.10.1" />
     <PackageVersion Include="coverlet.collector" Version="6.0.4" />
-    <PackageVersion Include="Moq" Version="4.20.70" />
-    <PackageVersion Include="FluentAssertions" Version="6.12.0" />
+    <PackageVersion Include="Moq" Version="4.21.0" />
+    <PackageVersion Include="FluentAssertions" Version="6.12.2" />
     <PackageVersion Include="AutoFixture" Version="4.18.1" />
     <PackageVersion Include="Bogus" Version="35.6.5" />
-    <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.0" />
+    <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.12" />
     <PackageVersion Include="BenchmarkDotNet" Version="0.13.12" />
     <!-- Integration tests (ARV-005); latest on nuget.org on 2026-10-01 -->
     <PackageVersion Include="Testcontainers.PostgreSql" Version="4.15.0" />
