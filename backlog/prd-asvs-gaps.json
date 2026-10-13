@@ -461,7 +461,7 @@
       ],
       "priority": 118,
       "passes": false,
-      "notes": "Size XS.",
+      "notes": "Size XS. Owner approval 2026-10-13 (Ahmad, in the session): the two allowlist entries for the raw bidirectional characters in scripts 0020_alert_rule.sql (lines 11, 14, 28) and 0022_alert_lifecycle.sql (lines 25 to 27), inside regex classes that refuse them, are approved; record them with approvedBy: Ahmad and this date, scoped to exactly those lines and SEC-130.",
       "dependsOn": []
     }
   ]

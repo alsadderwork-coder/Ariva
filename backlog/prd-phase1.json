@@ -1074,7 +1074,7 @@
       ],
       "priority": 38,
       "passes": true,
-      "notes": "Size S. Before the pilot. From the ARV-161 review (optional, Proposed for the owner): a minimum-width rule against slivers, every vertex at least 1 cm from its opposite edge (a 10 m by 0.1 mm triangle passes the 1e-4 m2 area minimum today); degenerate, not a security risk.",
+      "notes": "Size S. Before the pilot. From the ARV-161 review (decided by the owner on 2026-10-13 as ARV-170, 1 cm): a minimum-width rule against slivers, every vertex at least 1 cm from its opposite edge (a 10 m by 0.1 mm triangle passes the 1e-4 m2 area minimum today); degenerate, not a security risk.",
       "dependsOn": [
         "ARV-159"
       ]
@@ -1167,6 +1167,91 @@
       ]
     },
     {
+      "id": "ARV-167",
+      "title": "[E6] Ariva owns its Kafka sends: one Confluent producer behind ISvcMessageBus",
+      "description": "Owner decision 2026-10-13 (from ARV-166): MassTransit 8.5.11's Kafka rider disposes a topic's shared producer on any fault or cancellation of a send (PipeContextSupervisor, ActivePipeContext.Faulted), which strands every other produce waiting on it. ARV-166 bounds the damage (a 45 s limit per send, caller cancellations kept from the rider, a bounded relay pass); this story removes the cause before the pilot. Ariva gives itself one Confluent.Kafka producer per host for sends, behind ISvcMessageBus, never disposed on a failed send, and keeps MassTransit's rider for consuming (the inbox and dead-letter filters stay). CWEs to review: CWE-400 (availability), CWE-501 (headers and serialisation unchanged).",
+      "acceptanceCriteria": [
+        "Every send Ariva makes (the outbox relay, Ingest's direct publish, dead letters, the live snapshot publisher, any ISvcMessageBus send) goes through one Ariva-owned Confluent producer per host, created at start and disposed only at host stop with a bounded flush; a failed or cancelled send never disposes or recreates it",
+        "Messages keep their wire format: topic names from KafkaTopics, keys, the headers consumers and the inbox rely on (message id, type, correlation), serialisation; a contract test proves a message sent the new way is consumed by the existing MassTransit consumers and inbox unchanged",
+        "ARV-166's bounds stay (a per-send limit, the relay pass bound, caller cancellation detached), and StuckProduceTests proves that a fault or cancellation of one send no longer strands any other",
+        "ADR-0018 gains an amendment (dated, the owner's decision of 2026-10-13: producing through Ariva's own Confluent producer, consuming through the rider) and CLAUDE.md rule 4 and the kafka-streaming skill are updated to match, with the owner's approval recorded",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 37,
+      "passes": false,
+      "notes": "Size M. Owner decision 2026-10-13: bound it in ARV-166, then own sends. Before the pilot.",
+      "dependsOn": [
+        "ARV-166"
+      ]
+    },
+    {
+      "id": "ARV-168",
+      "title": "[E4] The queue engine drops a resent interval-count batch",
+      "description": "Found while finishing ARV-166 (read in ZoneProcessor and QueueStateEngine.Interval): when a device resends a push whose request it dropped, with the same batch id, the sensing archive drops the duplicate (sensing_batch) and consumers behind the inbox drop theirs by event id, and the engine counts a repeated track entry or exit as a duplicate; but the engine has no batch-id check, so a repeated interval-count batch is applied again (Interval tallies In and Out again). That inflates queue counts and throughput, the figures the F18 validation campaigns judge. Pre-existing for any resend whose first produce reached the broker; more frequent after ARV-166, since an abandoned produce now completes. docs/architecture/sensor-adapters.md claimed consumers drop a resent body, which holds for the archive, not the engine. CWEs to review: CWE-501 (device-supplied batch ids are untrusted).",
+      "acceptanceCriteria": [
+        "The engine drops a repeated batch id per zone within the lateness window (bounded per zone, so a device cannot grow the memory), applying an interval-count batch once; the bound and the window are stated in docs/domain/formulas.md and the engine's snapshot carries the seen ids so a restore does not re-apply a batch",
+        "A device cannot suppress another device's batch: the key is the device and the batch id within the zone, never the batch id alone",
+        "Unit tests (table-driven, the engine is pure): the same batch twice counts once; two devices with the same batch id both count; a batch outside the window; the bound; snapshot and restore; the golden replay unchanged (it has no resends) or regenerated only with the owner's approval",
+        "An integration test resends a push through Ingest with the same batch id and shows one interval applied in the stream's minute counts",
+        "docs/architecture/sensor-adapters.md says where resent bodies are dropped (archive, inbox, engine)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 37,
+      "passes": false,
+      "notes": "Size S. Ahead of the queue: count accuracy is an F18 validation target. Evidence in the ARV-166 progress entry.",
+      "dependsOn": []
+    },
+    {
+      "id": "ARV-169",
+      "title": "[E3] Subdivision flag emoji allowed in display texts and names",
+      "description": "Owner decision 2026-10-13: the England, Scotland and Wales flag emoji, refused since ARV-158 because they are built from tag characters, are allowed again. Only the three well-formed RGI subdivision flag sequences are allowed (U+1F3F4, then the tags for gbeng, gbsct or gbwls, then U+E007F); every other tag character stays refused, so no text can carry hidden tag content. The ARV-158 review saw no security reason to allow them; this is the owner's product choice with that scope. CWEs to review: CWE-79, CWE-501.",
+      "acceptanceCriteria": [
+        "`DisplayText.IsClean` (and so topology and site names, the import and `--check-stored-names`) accepts exactly the three RGI subdivision flag sequences as whole units and refuses any other tag character, a lone U+1F3F4 followed by tags, a sequence without its cancel tag, or tags after a flag",
+        "Unit tests with escapes only: the three flags accepted alone and inside text; malformed and unknown subdivision sequences, a truncated sequence, extra tags and tags elsewhere refused; `Offenders` reports nothing for the three flags",
+        "The CWE-79 and CWE-501 rows and decisions.md record the owner's decision and its scope",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 39,
+      "passes": false,
+      "notes": "Size XS. Owner decision 2026-10-13.",
+      "dependsOn": []
+    },
+    {
+      "id": "ARV-170",
+      "title": "[E3] Zone outlines have a minimum width of 1 cm",
+      "description": "Owner decision 2026-10-13 (from the ARV-161 review): a zone outline 10 m long and 0.1 mm wide passes every check today (simple, area above 1e-4 m2), though it is effectively a line and almost always a drawing slip. Every outline must now be at least 1 cm wide everywhere, consistent with the 1 cm touch rule (also confirmed by the owner on 2026-10-13). CWEs to review: CWE-20.",
+      "acceptanceCriteria": [
+        "`Geometry` refuses an outline narrower than 1 cm anywhere: every vertex at least 1 cm from each edge it is not part of (or an equivalent, proven, order-independent rule), applied wherever IsSimplePolygon is: zone add, move and import, and ZoneProfile.Validate at publication, so a stored sliver blocks publication until moved",
+        "Table-driven tests in every rotation and direction: a sliver refused, 9 mm against 11 mm, a real zone accepted, the seeds still publish; the property tests still pass; `--check-stored-names` reports a stored sliver",
+        "docs/domain/formulas.md and wiki 07 describe the rule; decisions.md records the owner's decision",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 39,
+      "passes": false,
+      "notes": "Size XS. Owner decision 2026-10-13.",
+      "dependsOn": []
+    },
+    {
       "id": "ARV-154",
       "title": "[E15] Site configuration import: creates take the site lock so an empty site stays empty",
       "description": "Found in the ARV-122a security review (N2, accepted residual): the import locks the site row while it checks the site is empty and writes, but the topology, device and display create endpoints do not take that lock, so a record created by hand during an import is not refused by the emptiness check (a code collision is still refused by the unique indexes). Take the site row lock (FOR SHARE) in every create that adds configuration to a site. Epic: Site onboarding and AMAN. CWEs to review: CWE-501, CWE-89.",
@@ -1235,11 +1320,12 @@
     {
       "id": "ARV-155",
       "title": "[E15] CSV imports: lock and upload contention, tokens kept out of test messages, absent optional columns",
-      "description": "Follow-ups from the ARV-123a security review (N1, N4, N5). A preview holds the site row lock for its dry run (about 3 s at 500 devices, 12 s at 10,000 mappings) and the host's single upload permit, so a holder of CreateDevice or CreateDeskCodeMapping looping previews delays single registrations, calibrations, publications and configuration imports at the site and makes other uploads answer 429. CWEs to review: CWE-400, CWE-532.",
+      "description": "Follow-ups from the ARV-123a security review (N1, N4, N5). A preview holds the site row lock for its dry run (about 3 s at 500 devices, 12 s at 10,000 mappings) and the host's single upload permit, so a holder of CreateDevice or CreateDeskCodeMapping looping previews delays single registrations, calibrations, publications and configuration imports at the site and makes other uploads answer 429. CWEs to review: CWE-400, CWE-532. Also the owner's decision of 2026-10-13: the bulk mapping import's commit asks for step-up.",
       "acceptanceCriteria": [
         "A per-user limit on import previews (or a partitioned upload policy) and a lock timeout on the imports' site lock, answering 429 or 409 with fixed texts; the contention and its bound recorded in docs/security",
         "Tests assert a preview token's absence as a boolean (E2E `previewToken === null`, integration `(token is null).Should().BeTrue()`), so a failure never prints a token",
         "A refusal in an optional column the file does not carry answers no column (null), never column 0",
+        "Owner decision 2026-10-13: the desk code mapping CSV import's commit asks for step-up ([RequiresRecentMfa], a critical-actions.json entry, the CriticalActionsTests rule satisfied without making single mapping changes critical); the preview stays without step-up; the ARV-123b dialog's existing step-up path covers the screen (functional test); decisions.md records the decision",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
         "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
@@ -1328,7 +1414,7 @@
       ],
       "priority": 42,
       "passes": false,
-      "notes": "Size M. Monitoring stack and alert routing at the site depend on TC-32 and TC-36; defaults ship now. Found while building ARV-159 (2026-10-12): the `Ariva.Border`, `Ariva.Flights` and `Ariva.Integration` meters are created but never added to the OpenTelemetry exporters in TelemetryExtensions, so their counters are not exported; add them (and a test that every meter Ariva creates is exported) before building alerts on them. From the ARV-156 review: readiness answers 200 while the message bus is Degraded (HealthEndpoints answers 503 only for Unhealthy and writes \"Healthy\" in the body for Degraded); an alert on the Degraded bus status is the better control than failing readiness (owner decision pending in decisions.md).",
+      "notes": "Size M. Monitoring stack and alert routing at the site depend on TC-32 and TC-36; defaults ship now. Found while building ARV-159 (2026-10-12): the `Ariva.Border`, `Ariva.Flights` and `Ariva.Integration` meters are created but never added to the OpenTelemetry exporters in TelemetryExtensions, so their counters are not exported; add them (and a test that every meter Ariva creates is exported) before building alerts on them. From the ARV-156 review: readiness answers 200 while the message bus is Degraded (HealthEndpoints answers 503 only for Unhealthy and writes \"Healthy\" in the body for Degraded); an alert on the Degraded bus status is the better control than failing readiness (owner decision pending in decisions.md). Owner decision 2026-10-13: a Degraded message bus raises an alert, it does not fail readiness; build that alert here (HealthEndpoints stays as it is, but its body should no longer say \"Healthy\" when the status is Degraded).",
       "dependsOn": [
         "ARV-062"
       ]
