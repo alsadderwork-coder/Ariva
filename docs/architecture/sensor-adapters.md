@@ -30,7 +30,7 @@ Penalty-grade evaluation (v1) requires T3 data or T1 data validated against manu
 
 ## Dialect mappers
 
-A dialect maps a vendor payload to canonical events: `LineCrossing` (lineId, direction, trackId optional, timeUtc), `ZoneOccupancy` (zoneId, count, timeUtc), `TrackPosition` (trackId, x, y, timeUtc), `IntervalCount` (lineId, in, out, fromUtc, toUtc), `DeviceStatus` (online, temperature, frame rate, clock offset).
+A dialect maps a vendor payload to canonical events: `LineCrossing` (lineId, direction, trackId optional, timeUtc), `ZoneOccupancy` (zoneId, count, timeUtc), `TrackPosition` (trackId, x, y, timeUtc), `IntervalCount` (lineId, in, out, fromUtc, toUtc), `DeviceStatus` (online, temperature, frame rate, clock offset). The queue engine spreads an `IntervalCount` evenly over the part of its interval it has not processed yet and counts it in the minutes that part covers; the readings a push carries for several lines (a T1 counter's entry and exit lines, ending together) are each spread over their own interval, whatever their order in the push or whether they come in one push or several, so each minute's exits are counted in that minute (formulas F5, ARV-173; before it the second reading of an instant landed in the next minute).
 
 Two kinds:
 - **Coded mappers** for first-class families (Xovis, the main LiDAR perception platforms), with typed parsing and full conformance tests.

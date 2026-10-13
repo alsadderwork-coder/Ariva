@@ -1116,7 +1116,7 @@
       ],
       "priority": 39,
       "passes": false,
-      "notes": "Size XS.",
+      "notes": "Size XS. 2026-10-13 (ARV-173 story gate, Stryker running alongside): site-configuration.spec.ts:361 (\"an oversized body answers 413 and a deeply nested one 400\") failed in 88 ms on its first try and passed on Playwright's retry, with connection resets in the web server log; find why a 413 or 400 answer can surface as a reset under load and make the test robust to it without loosening what it proves.",
       "dependsOn": []
     },
     {
@@ -1307,7 +1307,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 37,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Before the pilot: per-minute counts are what the validation campaigns judge. From the ARV-168 review (recommendation 2): remember only the kinds whose resend changes counts (intervals and crossings); track samples and occupancy repeat harmlessly, so leaving them out of RecentBatches cuts memory and snapshot size several times over; do it here if it is cheap.",
       "dependsOn": [
         "ARV-168"

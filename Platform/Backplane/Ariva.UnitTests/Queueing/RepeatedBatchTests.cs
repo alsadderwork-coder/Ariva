@@ -151,11 +151,7 @@ public sealed class RepeatedBatchTests
         outputs.SelectMany(o => o.Lines).Where(l => l.LineName == line && l.MinuteUtc == T0.AddMinutes(m))
             .Aggregate((In: 0L, Out: 0L), (t, l) => (t.In + l.In, t.Out + l.Out));
 
-    /// <summary>
-    /// The ins and outs counted on a line over the evening. Per minute only the entry line is checked: the exit line's
-    /// reading ends at the same instant and is applied second, so the engine puts it at that instant, the next minute
-    /// (a separate quirk, recorded in backlog/progress.md under ARV-168).
-    /// </summary>
+    /// <summary>The ins and outs counted on a line over the evening.</summary>
     private static (long In, long Out) Total(IEnumerable<ZoneOutputs> outputs, string line) =>
         outputs.SelectMany(o => o.Lines).Where(l => l.LineName == line).Aggregate((In: 0L, Out: 0L), (t, l) => (t.In + l.In, t.Out + l.Out));
 
@@ -197,7 +193,12 @@ public sealed class RepeatedBatchTests
         zone.Counters.RepeatedBatches.Should().Be(resends.Count, because);
         zone.Counters.ForgottenBatches.Should().Be(0);
         foreach (var m in minutes.Distinct())
+        {
             Line(raw, Entry, m).Should().Be((5L, 0L), "minute {0}'s entries count once ({1})", m, because);
+            // ARV-173: the exit line's reading ends with the entry line's and is spread over its own minute too.
+            Line(raw, Exit, m).Should().Be((0L, 3L), "minute {0}'s exits count once, in their minute ({1})", m, because);
+        }
+
         Total(raw, Entry).Should().Be((60L, 0L), "twelve pushes of 5 entries ({0})", because);
         Total(raw, Exit).Should().Be((0L, 36L), "twelve pushes of 3 exits ({0})", because);
 

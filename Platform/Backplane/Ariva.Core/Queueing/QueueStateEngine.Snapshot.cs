@@ -168,7 +168,7 @@ public sealed partial class QueueStateEngine
             if (input is null)
                 throw new InvalidDataException("The queue engine snapshot has an empty input.");
             var restored = input.ToInput();
-            engine._buffer.Enqueue((restored, ahead), new Due(QueueInputState.Utc(input.TimeUtc), InputKey.Of(restored), sequence));
+            engine._buffer.Enqueue((restored, ahead), new Due(QueueInputState.Utc(input.TimeUtc), InputKey.Of(restored, geometry), sequence));
             if (ahead)
                 engine._aheadBuffered++;
         }

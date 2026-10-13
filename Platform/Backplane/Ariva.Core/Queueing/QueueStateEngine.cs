@@ -105,7 +105,8 @@ public sealed record QueueEngineSettings
 /// reference time it arrived with (CWE-501: a device whose clock runs ahead cannot carry the watermark past Ariva's
 /// receive clock and close other devices' minutes early), and once the zone has had its first event the clock never
 /// falls more than the push interval behind the reference time, so a zone whose devices go quiet still moves on. Events of one instant are applied in a fixed order of
-/// their content, then arrival, so the batches and topics that carried them never change the result. Events that
+/// their content (interval readings of an entry line first, by the zone's geometry: ARV-173), then arrival, so the batches
+/// and topics that carried them never change the result. Events that
 /// arrive at or behind the watermark are late and counted, not applied: the minutes they touch are already processed,
 /// and a recomputation decides (F6 revisions). The watermark never passes the reference time minus the lateness,
 /// whatever the buffer holds.
@@ -115,8 +116,11 @@ public sealed record QueueEngineSettings
 /// time counts as wait, F5) and the "in" counts of interval readings; exits are outward crossings of an exit line and
 /// "out" counts. A tracked exit closes its own track (T3, the primary method); any other exit pairs with the earliest
 /// entrant still held (FIFO; with interval counts spread over their interval this is the cumulative-curve method, T1),
-/// except that a tracked exit never takes a person the same device is tracking. An interval's counts are spread over the
-/// part of it after the last processed event, so they never reach into minutes already processed. Leaving backwards
+/// except that a tracked exit never takes a person the same device is tracking. An interval reading ending at T is spread
+/// over the part of it after the last event processed before T's instant and after the watermark, so it never reaches into
+/// minutes already processed and no event of its own instant narrows it: readings that end together (the entry and exit
+/// lines of one T1 push) each spread over their own interval (ARV-173). A counted exit whose FIFO partner entered after it
+/// is unmatched, as in time order: nobody counted in was waiting then. Leaving backwards
 /// over an entry line abandons (the tracked person, or the latest anonymous entrant); entrants not resolved within
 /// T_censor are censored; a tracked person with position samples not seen within the hand-over window is fragmented;
 /// when every zone of the queue reports zero occupancy the FIFO sequence is re-anchored (F5), checked once every event of
@@ -163,6 +167,10 @@ public sealed partial class QueueStateEngine
     // The zone's event clock (ARV-148): the latest time of the events accepted, each at most the reference it arrived with.
     private DateTime _clock = DateTime.MinValue;
     private DateTime _cursor = DateTime.MinValue;
+    // ARV-173: the last processed event time before the instant being applied, where an interval reading of that instant
+    // starts its spread. Not part of the snapshot: between steps the next event always starts a new instant (anything at or
+    // before the watermark is late), and in a step split inside an instant the watermark, one tick before it, is later.
+    private DateTime _instantFloor = DateTime.MinValue;
     private readonly PriorityQueue<(string Key, DateTime Seen), DateTime> _handovers = new();
     private bool _residualSuspect;
     // The time of the occupancy reading applied last, until the events of its instant are all applied. A full step that
@@ -276,7 +284,7 @@ public sealed partial class QueueStateEngine
             }
         }
 
-        _buffer.Enqueue((input, ahead), new Due(time, InputKey.Of(input), _sequence++));
+        _buffer.Enqueue((input, ahead), new Due(time, InputKey.Of(input, _geometry), _sequence++));
         if (ahead)
             _aheadBuffered++;
         // The zone's clock moves with the events it holds, each at most to the time it arrived (CWE-501: a device whose
@@ -404,6 +412,8 @@ public sealed partial class QueueStateEngine
             if (item.Ahead)
                 _aheadBuffered--;
             Expire(key.Time);
+            if (key.Time > _cursor)
+                _instantFloor = _cursor;
             Apply(item.Input);
             if (key.Time > _cursor)
                 _cursor = key.Time;
@@ -533,15 +543,23 @@ public sealed partial class QueueStateEngine
             return;
         }
 
-        // Spread over the part of the interval after the last processed event and the watermark: earlier minutes are
-        // already processed.
+        // Spread over the part of the interval after the watermark and the last event processed before this instant: earlier
+        // minutes are already processed, and no reading of the same instant (the other line of the same push) narrows the
+        // spread, so every reading ending at T stays in the minutes before T (ARV-173; the cursor is T after the first).
         var start = i.FromUtc;
-        if (_cursor > start)
-            start = _cursor;
+        if (_instantFloor > start)
+            start = _instantFloor;
         if (_watermark > start)
             start = _watermark;
         var span = i.TimeUtc - start;
-        DateTime Spread(int k, int n) => start + span * ((k + 0.5) / n);
+        // Strictly before the reading's end: a span of a few ticks (the rest of an instant after a full step) would otherwise
+        // round its last people up to the end itself, the next minute when the reading ends on one.
+        var last = i.TimeUtc.AddTicks(-1);
+        DateTime Spread(int k, int n)
+        {
+            var at = start + span * ((k + 0.5) / n);
+            return at <= last ? at : last;
+        }
         // The line's own counts, spread the same way whatever the counts do to the queue (ARV-113).
         for (var k = 0; k < i.In; k++)
             Tally(i.LineName, role, Spread(k, i.In), 1, 0);
@@ -594,8 +612,11 @@ public sealed partial class QueueStateEngine
             }
         }
 
-        // Events are applied in time order and spread counts start after the last processed event, so a new entrant is
-        // never earlier than those held; equal times keep the order of application (content, then arrival: ARV-148).
+        // Events are applied in time order, so a new entrant is never earlier than those held, except a later interval reading
+        // of the same instant, which is spread over the same part of the minute (ARV-173): it is held at the latest entry
+        // time, so the held list stays in entry order for FIFO, and counted at its own time, in the minute its reading
+        // covers. Equal times keep the order of application (content, then arrival: ARV-148).
+        var counted = time;
         if (_held.Last is { } last && last.Value.EntryUtc > time)
             time = last.Value.EntryUtc;
         var entrant = new Entrant(time, trackKey, group, degraded, method, _order++);
@@ -605,7 +626,7 @@ public sealed partial class QueueStateEngine
             _byTrack[trackKey] = entrant;
         if (degraded)
             _degradedHeld++;
-        Count(time, entry: true, degraded, tracked: trackKey is not null);
+        Count(counted, entry: true, degraded, tracked: trackKey is not null);
     }
 
     private void Exit(DateTime time, string trackKey, bool degraded, bool cumulative)
@@ -621,6 +642,12 @@ public sealed partial class QueueStateEngine
         }
 
         var entrant = tracked ? own : FifoPartner(trackKey);
+        // ARV-173: an exit of an interval reading may be spread before the earliest person held entered (an entry reading of
+        // the same instant is applied first): in time order nobody counted in was waiting then, so it pairs with nobody and
+        // that person stays held. Every exit applied before it was earlier, so this is exactly time-ordered FIFO.
+        var early = !tracked && cumulative && entrant is not null && entrant.EntryUtc > time;
+        if (early)
+            entrant = null;
         if (entrant is null)
         {
             _unmatched++;
@@ -864,25 +891,28 @@ public sealed partial class QueueStateEngine
     #region Order
 
     /// <summary>
-    /// The content of an input that orders the events of one instant (ARV-148): kind (interval readings first, so that a
-    /// reading of the interval's own end, the device's occupancy at it, never narrows its spread to nothing; then
-    /// crossings, occupancy and track samples), then line or zone, direction, track, interval start, counts and flag.
+    /// The content of an input that orders the events of one instant (ARV-148): kind (interval readings first, so that the
+    /// readings of an instant are applied before its crossings, occupancy and track samples), then for interval readings
+    /// the role of their line in the zone's geometry (entry lines first, ARV-173: the instant's entrants are held before its
+    /// exits pair, whatever the lines are called), then line or zone, direction, track, interval start, counts and flag.
     /// Two inputs with the same key are the same reading, so their order cannot change a result.
     /// </summary>
-    private readonly record struct InputKey(int Rank, string Name, int Direction, string Track, long FromTicks, int In, int Out, int Count, bool Degraded)
+    private readonly record struct InputKey(int Rank, int Role, string Name, int Direction, string Track, long FromTicks, int In, int Out, int Count, bool Degraded)
     {
-        public static InputKey Of(QueueInput input) => input switch
+        public static InputKey Of(QueueInput input, QueueZoneGeometry geometry) => input switch
         {
-            QueueInterval i => new(0, i.LineName, 0, null, i.FromUtc.Ticks, i.In, i.Out, 0, i.Degraded),
-            QueueCrossing c => new(1, c.LineName, (int)c.Direction, c.TrackKey, 0, 0, 0, 0, c.Degraded),
-            QueueOccupancy o => new(2, o.ZoneName, 0, null, 0, 0, 0, o.Count, o.Degraded),
-            QueueTrackSeen s => new(3, null, 0, s.TrackKey, 0, 0, 0, 0, s.Degraded),
-            _ => new(4, null, 0, null, 0, 0, 0, 0, input.Degraded)
+            QueueInterval i => new(0, geometry.RoleOf(i.LineName) == QueueLineRole.Entry ? 0 : 1, i.LineName, 0, null, i.FromUtc.Ticks, i.In, i.Out, 0, i.Degraded),
+            QueueCrossing c => new(1, 0, c.LineName, (int)c.Direction, c.TrackKey, 0, 0, 0, 0, c.Degraded),
+            QueueOccupancy o => new(2, 0, o.ZoneName, 0, null, 0, 0, 0, o.Count, o.Degraded),
+            QueueTrackSeen s => new(3, 0, null, 0, s.TrackKey, 0, 0, 0, 0, s.Degraded),
+            _ => new(4, 0, null, 0, null, 0, 0, 0, 0, input.Degraded)
         };
 
         public int CompareTo(InputKey other)
         {
             var c = Rank.CompareTo(other.Rank);
+            if (c == 0)
+                c = Role.CompareTo(other.Role);
             if (c == 0)
                 c = string.CompareOrdinal(Name, other.Name);
             if (c == 0)

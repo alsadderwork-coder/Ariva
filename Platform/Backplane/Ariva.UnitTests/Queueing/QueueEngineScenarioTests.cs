@@ -86,6 +86,24 @@ public sealed class QueueEngineScenarioTests
     }
 
     [Fact]
+    public void Intervals_Should_CountEachMinutesEntriesAndExitsInThatMinute_When_TheSameEveningIsCounted()
+    {
+        // ARV-173: a Xovis push carries the entry and exit lines' counts of one minute, two readings that end together. Each
+        // is spread over its own minute, so the zone's minutes match the tracked crossings' minute by minute (before, every
+        // minute's exits were counted a minute late), nobody is lost, and no counted exit pairs before its partner entered.
+        static Dictionary<DateTime, (long Entries, long Exits)> Minutes(List<QueueStep> steps) =>
+            steps.SelectMany(s => s.Movements).GroupBy(m => m.MinuteUtc).ToDictionary(g => g.Key, g => (g.Sum(m => m.Entries), g.Sum(m => m.Exits)));
+        var tracked = Minutes(Play(EmulatedDialect.Canonical, 0, 1440));
+        var countedSteps = Play(EmulatedDialect.Xovis, 0, 1440);
+        var counted = Minutes(countedSteps);
+
+        foreach (var minute in tracked.Keys.Union(counted.Keys))
+            counted.GetValueOrDefault(minute).Should().Be(tracked.GetValueOrDefault(minute), "minute {0:HH:mm}", minute);
+        counted.Values.Sum(m => m.Exits).Should().Be(tracked.Values.Sum(m => m.Exits)).And.BePositive();
+        countedSteps.Sum(s => s.Rejections.NegativeWaits + s.Rejections.UnmatchedExits).Should().Be(0);
+    }
+
+    [Fact]
     public void Length_Should_FollowTheOccupancyReadings_When_TheLeadSensorReportsThem()
     {
         // Without the overflow band in the geometry the queue zone's own reading is the whole length.
