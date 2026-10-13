@@ -1208,7 +1208,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 37,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Ahead of the queue: count accuracy is an F18 validation target. Evidence in the ARV-166 progress entry.",
       "dependsOn": []
     },
@@ -1308,7 +1308,29 @@
       ],
       "priority": 37,
       "passes": false,
-      "notes": "Size S. Before the pilot: per-minute counts are what the validation campaigns judge.",
+      "notes": "Size S. Before the pilot: per-minute counts are what the validation campaigns judge. From the ARV-168 review (recommendation 2): remember only the kinds whose resend changes counts (intervals and crossings); track samples and occupancy repeat harmlessly, so leaving them out of RecentBatches cuts memory and snapshot size several times over; do it here if it is cheap.",
+      "dependsOn": [
+        "ARV-168"
+      ]
+    },
+    {
+      "id": "ARV-174",
+      "title": "[E4] Resent receipt-timed crossings counted once",
+      "description": "From the ARV-168 security review: Ingest's batch id includes the receipt time for kinds whose events take it (tracks, crossings and occupancy under a declarative mapping without an event time), so a resent push of such a kind gets a new id and is not deduplicated by the engine or the archive; for anonymous vendor crossings that is still a double count. A device that re-stamps sentUtc on a retry has the same effect. CWEs to review: CWE-501.",
+      "acceptanceCriteria": [
+        "When a mapping supplies a vendor package id (SensingBatch.PackageId), a receipt-timed kind's batch id uses it in place of the receipt time, so a resend of the same package is recognised; without one, the residual is stated in the mapping guidance and the conformance kit warns when crossings have neither an event time nor a package id",
+        "A canonical push's batch id ignores `sentUtc` (it hashes the events, not the send stamp), so a retry that re-stamps its send time is recognised, unless that would merge two genuinely different pushes (prove it cannot)",
+        "Unit and integration tests: a resent receipt-timed crossing batch with a package id counts once; a re-stamped canonical retry counts once; two different packages both count",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 38,
+      "passes": false,
+      "notes": "Size S.",
       "dependsOn": [
         "ARV-168"
       ]
@@ -1453,7 +1475,7 @@
       ],
       "priority": 41,
       "passes": false,
-      "notes": "Size M. TC-33 (node sizes on site hardware) is answered later from these numbers and the site survey.",
+      "notes": "Size M. TC-33 (node sizes on site hardware) is answered later from these numbers and the site survey. From the ARV-168 review: measure stream_zone_state.state_bytes before and after ARV-168 on AUH-TA and on a busy zone (every checkpoint upserts each zone's whole state, now with its remembered batch keys) and add state_bytes to what wiki 10 says to watch.",
       "dependsOn": [
         "ARV-071",
         "ARV-113",

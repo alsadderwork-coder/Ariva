@@ -642,6 +642,7 @@ public sealed class QueueEngineWatermarkTests
         zone.Offer(Reading("S-15", "A-VIS", 2, At(60), At(61)), DateTime.MaxValue);
         var json = JsonSerializer.SerializeToNode(zone.Capture() with { Version = 8 }, EventCatalog.Json)!.AsObject();
         json["engine"]!.AsObject().Remove("clockUtc").Should().BeTrue("a snapshot written now names the clock");
+        json.Remove("recentBatches").Should().BeTrue("so do the remembered batches, which version 8 never carried (ARV-168)");
         var older = json.Deserialize<ZoneProcessorState>(EventCatalog.Json)!;
 
         var restored = ZoneProcessor.Restore("DMO/A-VIS", Geometry, 12, new ZoneProcessorSettings(), older, At(86_400));

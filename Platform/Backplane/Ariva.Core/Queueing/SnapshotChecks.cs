@@ -278,6 +278,27 @@ public static class SnapshotChecks
             }
         }
 
+        // Remembered batches (ARV-168): only a snapshot of version 10 or later carries them, within the largest bound a zone
+        // may be set to; ZoneProcessor.Restore checks them against the zone's own bounds, watermark and receive clock.
+        if (state.RecentBatches is { Count: > 0 } remembered)
+        {
+            if (state.Version < ZoneProcessorState.RecentBatchesSinceVersion)
+                yield return $"A snapshot before version {ZoneProcessorState.RecentBatchesSinceVersion} remembers no batches.";
+            if (remembered.Count > ZoneProcessorSettings.MaxRememberedBatchesLimit)
+            {
+                yield return "The snapshot remembers more batches than a zone keeps.";
+                yield break;
+            }
+
+            foreach (var b in remembered)
+            {
+                if (b is null || !DeviceCodes.IsValid(b.DeviceCode) || b.BatchId == Guid.Empty)
+                    bad++;
+                else
+                    Set(b.UntilUtc);
+            }
+        }
+
         if (bad > 0)
             yield return $"{bad} values of the snapshot are not plausible (negative counts, implausible times or empty items).";
     }

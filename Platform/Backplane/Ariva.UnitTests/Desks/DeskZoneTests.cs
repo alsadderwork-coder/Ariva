@@ -313,7 +313,8 @@ public sealed class DeskZoneTests
         var zone = new ZoneProcessor("DMO/A-VIS", Geometry(), 12);
         zone.Offer(Occupancy(At(70), ("AR-08 staff", 1, At(60), SensedFlags.None)), At(70));
         zone.Drain();
-        var older = zone.Capture() with { Version = 6, DeskZones = null };
+        // Version 6 had neither the desk zones' memory nor remembered batches (version 10, ARV-168).
+        var older = zone.Capture() with { Version = 6, DeskZones = null, RecentBatches = [] };
 
         var restored = ZoneProcessor.Restore("DMO/A-VIS", Geometry(), 12, null, JsonSerializer.Deserialize<ZoneProcessorState>(JsonSerializer.Serialize(older)), At(200));
         restored.Offer(Occupancy(At(75), ("AR-08 staff", 1, At(61), SensedFlags.None)), At(75));

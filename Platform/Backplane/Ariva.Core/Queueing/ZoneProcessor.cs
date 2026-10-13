@@ -31,6 +31,16 @@ public sealed record ZoneProcessorSettings
     public int MaxDevices { get; init; } = 256;
 
     /// <summary>
+    /// Sensing batches a zone remembers at most to apply a resent batch once (ARV-168, <see cref="RecentBatches"/>): a
+    /// batch is remembered until the watermark is a lateness past its latest event, about three minutes with the
+    /// defaults, so a device pushing all four kinds every second holds about 720.
+    /// </summary>
+    public int MaxRememberedBatches { get; init; } = 20_000;
+
+    /// <summary>Of those, one device's at most: a device that floods the zone with batches forgets only its own.</summary>
+    public int MaxRememberedBatchesPerDevice { get; init; } = 1_000;
+
+    /// <summary>
     /// A desk term (ARV-064) is used for a live minute while its own minute is at most this many minutes older; desk
     /// minutes close about a minute after the queue's (the desk feed's lateness), so 5 minutes leaves room for a slow read.
     /// </summary>
@@ -62,11 +72,18 @@ public sealed record ZoneProcessorSettings
             yield return "DeviceForgetHours is from 1 to 72 and longer than the silence limit.";
         if (MaxDevices is < 1 or > 4_096)
             yield return "MaxDevices is from 1 to 4,096.";
+        if (MaxRememberedBatches is < 1 or > MaxRememberedBatchesLimit)
+            yield return "MaxRememberedBatches is from 1 to 200,000.";
+        if (MaxRememberedBatchesPerDevice < 1 || MaxRememberedBatchesPerDevice > MaxRememberedBatches)
+            yield return "MaxRememberedBatchesPerDevice is from 1 to MaxRememberedBatches.";
         if (DeskTermFreshMinutes is < 1 or > 30)
             yield return "DeskTermFreshMinutes is from 1 to 30.";
         foreach (var p in SensorCycle?.Problems() ?? ["SensorCycle settings are required."])
             yield return p;
     }
+
+    /// <summary>The largest <see cref="MaxRememberedBatches"/> (and so the most batches a snapshot may hold).</summary>
+    public const int MaxRememberedBatchesLimit = 200_000;
 }
 
 /// <summary>
@@ -131,8 +148,12 @@ public sealed record ZoneOutputs(
 /// <summary>
 /// Counts of what a zone refused, for health. <see cref="OtherZones"/> (ARV-116): occupancy readings of a zone that is
 /// neither the queue's nor a staff or service zone linked to a desk, kept from the queue engine.
+/// <see cref="RepeatedBatches"/> (ARV-168): batches dropped because the zone applied them within their window (a resend);
+/// <see cref="ForgottenBatches"/>: batches the zone forgot before their window ended because a bound was reached, so a
+/// resend of one of them would have been applied again.
 /// </summary>
-public sealed record ZoneProcessorCounters(long Batches, long Uncommissioned, long WrongZone, long Invalid, long OtherZones = 0);
+public sealed record ZoneProcessorCounters(long Batches, long Uncommissioned, long WrongZone, long Invalid, long OtherZones = 0, long RepeatedBatches = 0,
+    long ForgottenBatches = 0);
 
 /// <summary>Everything a <see cref="ZoneProcessor"/> holds between checkpoints (outputs drained).</summary>
 public sealed record ZoneProcessorState
@@ -151,11 +172,17 @@ public sealed record ZoneProcessorState
     /// carries none (the engine that wrote it ran the check when a step filled) and is refused if it says otherwise. 9 adds
     /// the queue engine's event clock (<see cref="QueueEngineState.ClockUtc"/>, ARV-148); a snapshot without one restores
     /// with the clock at the latest of its watermark and its held events, and the clock then catches up with the events.
+    /// 10 adds the batches the zone remembers to apply a resent batch once (<see cref="RecentBatches"/>, ARV-168); an
+    /// earlier snapshot carries none (its zone did not remember batches) and is refused if it says otherwise, and restores
+    /// remembering none, so a batch applied before the upgrade and resent just after it is applied again.
     /// </summary>
-    public const int CurrentVersion = 9;
+    public const int CurrentVersion = 10;
 
     /// <summary>The first version that may carry the queue engine's pending empty-queue check (ARV-114d).</summary>
     public const int PendingAnchorSinceVersion = 8;
+
+    /// <summary>The first version that may carry remembered batches (ARV-168).</summary>
+    public const int RecentBatchesSinceVersion = 10;
 
     public int Version { get; init; } = CurrentVersion;
     public string ZoneKey { get; init; }
@@ -181,6 +208,9 @@ public sealed record ZoneProcessorState
 
     /// <summary>The latest reading passed on to the desk engine per staff and service zone (ARV-116).</summary>
     public IReadOnlyList<DeskZoneMemoState> DeskZones { get; init; } = [];
+
+    /// <summary>The batches the zone applied within their window, by device and batch id (ARV-168), in the order they would be forgotten.</summary>
+    public IReadOnlyList<RecentBatchState> RecentBatches { get; init; } = [];
 }
 
 /// <summary>
@@ -193,7 +223,9 @@ public sealed record ZoneProcessorState
 /// time less the push interval), so the order of the records of one receive time never changes the bins. Replaying
 /// the same records gives the same results whatever batches and topics carried the events. Every batch is checked
 /// again here (CWE-501: Kafka is a trust boundary): the zone must be this zone, the device commissioned, the counts and
-/// names within the canonical bounds. Pure: no I/O and no clock of its own.
+/// names within the canonical bounds. A batch the zone applied within its window, by the same device with the same
+/// batch id (a resend), is dropped: its push still says the device was heard and moves the receive clock, but none of
+/// its events reach the engines again (ARV-168, <see cref="RecentBatches"/>). Pure: no I/O and no clock of its own.
 /// </summary>
 public sealed class ZoneProcessor
 {
@@ -204,7 +236,8 @@ public sealed class ZoneProcessor
     private ExitRate _exits;
     private DateTime _reference = DateTime.MinValue;
     private DateTime? _lastLive;
-    private long _batches, _uncommissioned, _wrongZone, _invalid, _otherZones;
+    private long _batches, _uncommissioned, _wrongZone, _invalid, _otherZones, _repeated, _forgotten;
+    private RecentBatches _recent;
     private readonly List<MinuteResult> _minutes = [];
     private readonly List<BinResult> _binResults = [];
     private readonly List<QueueLiveMinute> _live = [];
@@ -239,6 +272,7 @@ public sealed class ZoneProcessor
         _liveness = NewLiveness(_settings);
         _bands = new OverflowBands(geometry, _settings.Engine.OccupancyFreshFor);
         _deskZones = new DeskZoneReadings(geometry.DeskZones);
+        _recent = new RecentBatches(_settings.MaxRememberedBatches, _settings.MaxRememberedBatchesPerDevice);
     }
 
     private static DeviceLiveness NewLiveness(ZoneProcessorSettings settings) =>
@@ -253,7 +287,10 @@ public sealed class ZoneProcessor
 
     public DateTime WatermarkUtc => _engine.WatermarkUtc;
 
-    public ZoneProcessorCounters Counters => new(_batches, _uncommissioned, _wrongZone, _invalid, _otherZones);
+    public ZoneProcessorCounters Counters => new(_batches, _uncommissioned, _wrongZone, _invalid, _otherZones, _repeated, _forgotten);
+
+    /// <summary>The batches the zone remembers now (ARV-168).</summary>
+    public int RememberedBatches => _recent.Count;
 
     /// <summary>What happened to the desk zones' readings (ARV-116), for health; not part of the saved state.</summary>
     public DeskZoneReadingCounters DeskZoneCounters => _deskZones.Counters;
@@ -312,6 +349,18 @@ public sealed class ZoneProcessor
         // Every batch of a commissioned device says it was heard; a health report may say it is offline (ARV-036).
         if (_liveness.Heard(ZoneKey, batch.DeviceCode, _reference, batch is not DeviceStatusBatch { Online: false }) is { } ended)
             Ended(ended.Outage, ended.MarkFromUtc);
+
+        // ARV-168: a batch this device sent before with the same id, still within its window, is a resend (the device
+        // dropped the request, or Kafka delivered the push twice): it was heard, but its events were applied already.
+        // Keyed by the device and the id, never the id alone, so one device's ids never drop another's batches (CWE-501).
+        var identified = batch is not DeviceStatusBatch && batch.Id != Guid.Empty;
+        if (identified && _recent.Contains(batch.DeviceCode, batch.Id))
+        {
+            _repeated++;
+            Step();
+            return;
+        }
+
         var unreliable = batch.Clock?.State == ClockState.Unreliable;
         // ARV-148: each event is offered with its own batch's receive time (capped as above), not the zone's latest one, so
         // an event moves the zone's clock at most to the time Ingest stamped on the push that carried it. That depends on
@@ -324,7 +373,42 @@ public sealed class ZoneProcessor
                 _engine.Offer(input, reference);
         }
 
+        // Remembered until the watermark is a lateness past its latest event (events beyond the engine's MaxAhead are
+        // refused, so they never lengthen the window); Step forgets it once the watermark gets there.
+        if (identified && LatestEvent(batch, Plus(reference, _settings.Engine.MaxAhead)) is { } latest)
+            _forgotten += _recent.Remember(batch.DeviceCode, batch.Id, Plus(latest, _settings.Engine.Lateness));
         Step();
+    }
+
+    private static DateTime Plus(DateTime t, TimeSpan d) => t > DateTime.MaxValue - d ? DateTime.MaxValue : t + d;
+
+    /// <summary>
+    /// The latest plausible event time of a batch, at most <paramref name="notAfterUtc"/> (ARV-168): every kind, every path
+    /// (the queue, the desk zones, zones that count for neither), the same events <see cref="Inputs"/> reads; null when it
+    /// has none.
+    /// </summary>
+    private static DateTime? LatestEvent(SensingBatch batch, DateTime notAfterUtc)
+    {
+        static DateTime? Latest<T>(IReadOnlyList<Sensed<T>> events, DateTime notAfter) where T : CanonicalEvent
+        {
+            DateTime? latest = null;
+            foreach (var e in (events ?? []).Take(MaxEventsPerBatch))
+            {
+                if (e is not null && Plausible(e.TimeUtc) && e.TimeUtc <= notAfter && (latest is null || e.TimeUtc > latest))
+                    latest = e.TimeUtc;
+            }
+
+            return latest;
+        }
+
+        return batch switch
+        {
+            VendorLineCrossingBatch c => Latest(c.Crossings, notAfterUtc),
+            ZoneOccupancyBatch o => Latest(o.Occupancy, notAfterUtc),
+            IntervalCountBatch i => Latest(i.Intervals, notAfterUtc),
+            TrackSampleBatch t => Latest(t.Samples, notAfterUtc),
+            _ => null
+        };
     }
 
     /// <summary>
@@ -490,6 +574,8 @@ public sealed class ZoneProcessor
 
         if (step.WatermarkUtc > before && before > DateTime.MinValue)
             _exits.Observed(before, step.WatermarkUtc);
+        // ARV-168: a batch whose window the watermark has reached is forgotten; every event of a repeat would be late.
+        _recent.Expire(step.WatermarkUtc);
         Live(step);
     }
 
@@ -609,7 +695,8 @@ public sealed class ZoneProcessor
             LinesReleasedEarlyThroughUtc = _lines.ReleasedEarlyThroughUtc,
             OverflowOpen = _bands.CaptureOpen(),
             OverflowBands = _bands.CaptureBands(),
-            DeskZones = _deskZones.Capture()
+            DeskZones = _deskZones.Capture(),
+            RecentBatches = _recent.Capture()
         };
     }
 
@@ -632,12 +719,17 @@ public sealed class ZoneProcessor
         zone._reference = DateTime.SpecifyKind(state.ReferenceUtc, DateTimeKind.Utc);
         zone._lastLive = state.LastLiveMinuteUtc is { } live ? DateTime.SpecifyKind(live, DateTimeKind.Utc) : null;
         if (state.Counters is { } c)
-            (zone._batches, zone._uncommissioned, zone._wrongZone, zone._invalid, zone._otherZones) = (c.Batches, c.Uncommissioned, c.WrongZone, c.Invalid,
-                Math.Max(0, c.OtherZones));
+            (zone._batches, zone._uncommissioned, zone._wrongZone, zone._invalid, zone._otherZones, zone._repeated, zone._forgotten) = (c.Batches, c.Uncommissioned,
+                c.WrongZone, c.Invalid, Math.Max(0, c.OtherZones), Math.Max(0, c.RepeatedBatches), Math.Max(0, c.ForgottenBatches));
         zone._liveness.Restore(state.Devices, state.RecentOutages);
         zone._lines = LineCounts.Restore(geometry, state.Lines, state.LinesReleasedEarlyThroughUtc);
         zone._bands = OverflowBands.Restore(geometry, state.OverflowOpen, state.OverflowBands, zone._settings.Engine.OccupancyFreshFor);
         zone._deskZones = DeskZoneReadings.Restore(geometry.DeskZones, state.DeskZones, notAfterUtc);
+        // ARV-168: each window ends after the watermark (the zone forgets a batch when the watermark reaches it) and at most
+        // a lateness past the latest event the zone could have taken, its receive clock plus the engine's MaxAhead.
+        var engine = zone._settings.Engine;
+        zone._recent = RecentBatches.Restore(state.RecentBatches, zone._settings.MaxRememberedBatches, zone._settings.MaxRememberedBatchesPerDevice,
+            zone._engine.WatermarkUtc, Plus(Plus(zone._reference, engine.MaxAhead), engine.Lateness));
         return zone;
     }
 }
