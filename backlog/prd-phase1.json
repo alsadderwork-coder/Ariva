@@ -1565,7 +1565,7 @@
       ],
       "priority": 49,
       "passes": false,
-      "notes": "Size M. Blocked on: the family decision from the site survey (and TC-71 if the hall is in Angola, stereo against LiDAR), then TC-38 (Xovis real capture and details) or TC-39 (Ouster Detect recorded payload). A capture from the vendor or the lab can unblock it before site hardware arrives.",
+      "notes": "Size M. Blocked on: the family decision from the site survey (and TC-71 if the hall is in Angola, stereo against LiDAR), then TC-38 (Xovis real capture and details) or TC-39 (Ouster Detect recorded payload). A capture from the vendor or the lab can unblock it before site hardware arrives. 2026-10-14: the owner states that Xovis devices keep package_info.id on a retry (decisions.md); if the pilot family is Xovis, confirm it in the real capture (a retried push carries the same package id) and record the result.",
       "dependsOn": [
         "ARV-023",
         "ARV-024",
