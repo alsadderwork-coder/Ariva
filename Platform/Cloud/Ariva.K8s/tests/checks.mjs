@@ -54,6 +54,33 @@ function dotnetEnvironmentOf(container, docs) {
 	return fromSources;
 }
 
+/**
+ * The value a container's environment gives a variable: its own env over envFrom ConfigMaps (the last definition wins in
+ * each). Undefined when nothing names it, null when it comes from somewhere the check cannot read (a Secret, a valueFrom).
+ */
+function envValueOf(container, docs, name) {
+	const own = (container.env ?? []).findLast((variable) => variable.name === name);
+	if (own) return own.valueFrom ? null : own.value;
+	let fromSources;
+	for (const source of container.envFrom ?? []) {
+		if (source.prefix) continue;
+		if (source.secretRef) {
+			fromSources = null;
+			continue;
+		}
+		const map = docs.find((doc) => doc?.kind === 'ConfigMap' && doc.metadata?.name === source.configMapRef?.name);
+		if (map?.data?.[name] !== undefined) fromSources = map.data[name];
+	}
+	return fromSources;
+}
+
+/**
+ * ARV-165: an API host stops within its 50 s shutdown timeout (the message bus gets 35 s, and a stop during a message's
+ * retries needs up to 25 s), then disposes and exits, so its pod's grace period is at least 60 s, and the host is told the
+ * value (Hosting__GracePeriodSeconds) so it can refuse a shutdown timeout that would not fit.
+ */
+const MIN_GRACE_SECONDS = 60;
+
 /** Environment variable names that hold credentials: their values come from secrets, never from the manifest (CWE-798). */
 const SECRET_ENV = /(PASSWORD|PASSWD|SECRET|TOKEN|PRIVATE_?KEY|API_?KEY)/i;
 
@@ -160,6 +187,18 @@ export function checkManifests(docs, { environment }) {
 			}
 			if (/^api-[a-z]+-deployment$/.test(doc.metadata?.name ?? '') && !secretVolumes.some((name) => name.includes('token-public'))) {
 				findings.push(`${id}: API pods must mount the token public keys`);
+			}
+			if (doc.kind === 'Deployment' && /^api-[a-z]+-deployment$/.test(doc.metadata?.name ?? '')) {
+				const grace = Number(pod.terminationGracePeriodSeconds);
+				if (!(grace >= MIN_GRACE_SECONDS)) {
+					findings.push(`${id}: an API pod needs terminationGracePeriodSeconds of at least ${MIN_GRACE_SECONDS} (the hosts' stop budget, ARV-165)`);
+				} else {
+					for (const container of (pod.containers ?? []).filter((c) => DOTNET_IMAGES.has(imageName(c.image ?? '')))) {
+						if (String(envValueOf(container, docs, 'Hosting__GracePeriodSeconds')) !== String(grace)) {
+							findings.push(`${id} container ${container.name}: must set Hosting__GracePeriodSeconds to the pod's terminationGracePeriodSeconds (${grace})`);
+						}
+					}
+				}
 			}
 			const containers = [...(pod.initContainers ?? []), ...(pod.containers ?? [])];
 			if (containers.length === 0) findings.push(`${id}: no containers`);

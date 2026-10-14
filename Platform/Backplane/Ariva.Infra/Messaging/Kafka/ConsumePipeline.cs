@@ -21,6 +21,8 @@ public static class ConsumePipeline
         // a host open. The endpoint's own Stopping event, not the host's: EndpointStopping explains why.
         var stopping = new EndpointStopping();
         endpoint.ConnectReceiveEndpointObserver(stopping);
+        // ARV-165: an endpoint the bus's stop skips is stopped after it.
+        context.GetService<KafkaEndpoints>()?.Add(stopping);
         // ARV-171: a dead letter Kafka did not take before the stop is kept in the outbox, so the record can complete.
         var store = context.GetService<IDeadLetterStore>();
         endpoint.UseFilter(new DeadLetterFilter(

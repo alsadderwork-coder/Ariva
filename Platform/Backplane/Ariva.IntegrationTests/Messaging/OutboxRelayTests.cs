@@ -58,6 +58,9 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
             return true;
         });
 
+    /// <summary>The relay's retry after a broker failure in these tests (the default).</summary>
+    private static readonly TimeSpan BrokerRetry = TimeSpan.FromSeconds(new OutboxRelaySettings().BrokerRetrySeconds);
+
     private OutboxRelay Relay(IOutboxTransport transport, int passSeconds = 60) => new(
         _host.Provider.GetRequiredService<DatabaseSettings>(),
         new KafkaSettings { Outbox = new OutboxRelaySettings { BatchSize = 50, PassSeconds = passSeconds } },
@@ -119,13 +122,62 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
         var pass = await Relay(transport).RunOnceAsync(Ct);
 
         pass.Should().Be(new RelayPass(true, 3, 0, 1, 2), "the first failure ends the pass instead of waiting out a timeout per row");
-        (await _host.ReadAsync<long>("SELECT count(*) FROM outbox_message WHERE attempts = 0")).Should().Be(2, "the rows after it were not touched");
+        (await _host.ReadAsync<long>("SELECT count(*) FROM outbox_message WHERE last_error IS NULL")).Should().Be(2, "the rows after it were not touched");
+        (await _host.ReadAsync<long>("SELECT count(*) FROM outbox_message WHERE attempts = 0")).Should().Be(3,
+            "a broker that is away does not count against the row (ARV-165)");
+    }
+
+    /// <summary>
+    /// ARV-165: a broker outage no longer grows the rows' backoff. Six passes fail on the broker, each on the next key's head
+    /// row as the earlier ones wait their short retry; under the old rule those rows would wait 2, 4, 8 ... seconds more at
+    /// each failure (up to five minutes) and resume that long after the broker came back. Now no attempt is counted and each
+    /// row is due again within <see cref="BrokerRetry"/>, so the first pass after the broker's return and that wait sends
+    /// every key, in order per key. A row's own failure keeps its exponential backoff (the control, last).
+    /// </summary>
+    [Fact]
+    public async Task Relay_Should_ResumeEveryKeyWithinTheBrokerRetry_When_TheBrokerComesBackAfterManyFailedPasses()
+    {
+        await ResetAsync();
+        await WriteAsync(true, Probe("K1", 1), Probe("K2", 1), Probe("K3", 1), Probe("K1", 2), Probe("K2", 2), Probe("K3", 2));
+        var transport = new RecordingTransport { BrokerDown = true };
+
+        for (var pass = 0; pass < 6; pass++)
+        {
+            (await Relay(transport).RunOnceAsync(Ct)).Failed.Should().BeLessThanOrEqualTo(1);
+            _host.Clock.Advance(TimeSpan.FromSeconds(2));
+        }
+
+        (await _host.ReadAsync<long>("SELECT count(*) FROM outbox_message WHERE attempts > 0")).Should().Be(0, "no failure was the rows' own");
+        (await _host.ReadAsync<long>("SELECT count(*) FROM outbox_message WHERE last_error IS NOT NULL")).Should().BeGreaterThanOrEqualTo(3,
+            "every key's head row was tried during the outage");
+
+        transport.BrokerDown = false;
+        _host.Clock.Advance(BrokerRetry);
+        var resumed = await Relay(transport).RunOnceAsync(Ct);
+
+        resumed.Sent.Should().Be(6, "every key resumes within the broker retry of the broker's return");
+        transport.Sent.Select(Describe).Should().Equal("K1" + "1", "K2" + "1", "K3" + "1", "K1" + "2", "K2" + "2", "K3" + "2");
+
+        // The control: a failure of the row itself still counts and backs off exponentially (2, 4, 8, 16 s), so after four
+        // of them the row waits longer than the broker retry.
+        await WriteAsync(true, Probe("K4", 1));
+        for (var attempt = 1; attempt <= 4; attempt++)
+        {
+            transport.FailOnce = ("K4", 1);
+            (await Relay(transport).RunOnceAsync(Ct)).Failed.Should().Be(1);
+            _host.Clock.Advance(attempt < 4 ? OutboxRelay.Backoff(attempt) + TimeSpan.FromSeconds(1) : BrokerRetry);
+        }
+
+        (await _host.ReadAsync<int>("SELECT attempts FROM outbox_message WHERE message_key = 'K4'")).Should().Be(4);
+        (await Relay(transport).RunOnceAsync(Ct)).Claimed.Should().Be(0, "a row's own failure waits its backoff (16 s now), not the broker retry");
     }
 
     /// <summary>
     /// ARV-166: a send that never ends (the rider's producer can strand a produce for good, and a transport may ignore its
-    /// token) cannot hold the relay's transaction, leader lock and rows: the pass ends within its bound, marks the row
-    /// failed with its backoff, commits, and the next pass after the backoff sends the row, in order before its key's next.
+    /// token) cannot hold the relay's transaction, leader lock and rows: the pass ends within its bound, marks the row to be
+    /// tried again after the broker retry (ARV-165: a send that outlived the pass is the broker's slowness, not the row's
+    /// failure, so no attempt is counted), commits, and the next pass after that sends the row, in order before its key's
+    /// next.
     /// </summary>
     [Fact]
     public async Task Relay_Should_EndThePassWithinItsBoundAndLetGo_When_ASendNeverEnds()
@@ -139,8 +191,9 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
 
         clock.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(10), "the pass ends at its 2 second bound, not when the send does");
         pass.Should().Be(new RelayPass(true, 3, 0, 1, 2), "the stuck send fails the pass like a broker failure; the rows after it wait untouched");
-        (await _host.ReadAsync<int>("SELECT attempts FROM outbox_message WHERE message_key = 'S' AND payload->>'step' = '1'")).Should().Be(1);
-        (await _host.ReadAsync<string>("SELECT last_error FROM outbox_message WHERE message_key = 'S' AND payload->>'step' = '1'")).Should().Contain("TimeoutException");
+        (await _host.ReadAsync<int>("SELECT attempts FROM outbox_message WHERE message_key = 'S' AND payload->>'step' = '1'")).Should().Be(0,
+            "a send that outlived the pass is the broker's slowness, not the row's failure (ARV-165)");
+        (await _host.ReadAsync<string>("SELECT last_error FROM outbox_message WHERE message_key = 'S' AND payload->>'step' = '1'")).Should().Contain("OutboxPassTimeoutException");
 
         // Nothing is held any more: another relay leads at once and the rows can be locked.
         var settings = _host.Provider.GetRequiredService<DatabaseSettings>();
@@ -157,7 +210,7 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
         }
 
         transport.Hang = false;
-        _host.Clock.Advance(OutboxRelay.Backoff(1) + TimeSpan.FromSeconds(1));
+        _host.Clock.Advance(BrokerRetry + TimeSpan.FromSeconds(1));
         var next = await Relay(transport).RunOnceAsync(Ct);
 
         next.Sent.Should().Be(3);
@@ -242,6 +295,9 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
 
         /// <summary>A send that never ends and ignores its token (a stranded produce).</summary>
         public bool Hang { get; set; }
+
+        /// <summary>The broker's absence, as the Kafka transport classifies it (ARV-165).</summary>
+        public bool IsBrokerUnavailable(Exception error) => error is TimeoutException { Message: "Local: Message timed out" };
 
         public Task SendAsync(OutboxEnvelope message, CancellationToken ct)
         {

@@ -263,14 +263,14 @@ public sealed class StuckProduceTests(FaultsFixture faults) : IAsyncLifetime
                 var relayed = Stopwatch.StartNew();
                 await WaitForAsync(async () => (await RowAsync(key)).Locked, "the relay producing the row (its pass holds it)");
                 // When the relay's pass lets go of the row with the row failed: watched from now on, so the time is the pass's own.
-                // The pass's failure becomes visible when it commits, which also releases its row and its leader lock. A later
-                // pass may claim the row again at once (the bus can stay Healthy through the cut), so the committed state is
-                // read without a lock.
+                // The pass's failure becomes visible when it commits (its last error written; since ARV-165 a broker failure
+                // counts no attempt), which also releases its row and its leader lock. A later pass may claim the row again
+                // after the broker retry, so the committed state is read without a lock.
                 var passEnded = Task.Run(async () =>
                 {
                     while (true)
                     {
-                        if (await CommittedRowAsync(key) is { Attempts: >= 1 } failed)
+                        if (await CommittedRowAsync(key) is { LastError.Length: > 0 } failed)
                             return (Took: relayed.Elapsed, failed.LastError);
                         await Task.Delay(100, Ct);
                     }
@@ -331,8 +331,8 @@ public sealed class StuckProduceTests(FaultsFixture faults) : IAsyncLifetime
                 await faults.RestoreAsync(Proxy);
                 Done("the broker back");
 
-                // Recovery without a restart: a new produce succeeds, and the relay sends the row (after its backoff, once the
-                // bus is ready again), which the consumer gets once, however often it reached the broker.
+                // Recovery without a restart: a new produce succeeds, and the relay sends the row (after its broker retry,
+                // ARV-165), which the consumer gets once, however often it reached the broker.
                 await WaitForAsync(async () =>
                 {
                     var c = PublishAsync(host, key + "-after", 1);

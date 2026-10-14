@@ -4,6 +4,7 @@ metadata: { name: api-integration-deployment }
 spec:
   template:
     spec:
+      terminationGracePeriodSeconds: 60
       securityContext: { runAsNonRoot: true, runAsUser: 10001, fsGroup: 10001, seccompProfile: { type: RuntimeDefault } }
       volumes:
         - { name: tmp, emptyDir: {} }
@@ -82,7 +83,7 @@ spec:
 apiVersion: v1
 kind: ConfigMap
 metadata: { name: api-main-configmap }
-data: { Kafka__ProvisionTopics: "false", DOTNET_ENVIRONMENT: k8s-prd }
+data: { Kafka__ProvisionTopics: "false", DOTNET_ENVIRONMENT: k8s-prd, Hosting__GracePeriodSeconds: "60" }
 ---
 apiVersion: batch/v1
 kind: Job

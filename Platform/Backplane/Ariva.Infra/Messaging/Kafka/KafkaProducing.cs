@@ -150,6 +150,10 @@ public sealed class KafkaProduce : IDisposable
     private readonly object _swap = new();
     private Generation _current;
     private ITimer _recreation;
+    private readonly ITimer _sweep;
+    private readonly object _probing = new();
+    private Task<bool> _probe;
+    private long _probeStarted;
     private long _sends;
     private int _clientNumbers;
     private int _started;
@@ -190,6 +194,7 @@ public sealed class KafkaProduce : IDisposable
         _recreateAfter = recreateAfter;
         _metrics = metrics;
         _current = NewGeneration();
+        _sweep = _time.CreateTimer(static state => ((KafkaProduce)state).SweepSafely(), this, SendTimeout, SendTimeout);
     }
 
     #endregion
@@ -214,6 +219,21 @@ public sealed class KafkaProduce : IDisposable
 
     /// <summary>The value's bytes: the JSON of its runtime type, as the rider's <see cref="JsonValueSerializer{T}"/> wrote it.</summary>
     public static byte[] ValueOf(object value, Type type) => JsonSerializer.SerializeToUtf8Bytes(value, type, EventCatalog.Json);
+
+    /// <summary>
+    /// Whether a send's failure says the broker or the producer is unavailable rather than that the message is wrong
+    /// (ARV-165): librdkafka's message timeout, all brokers down, a transport error, a full queue, the producer's own bound,
+    /// a client in its fatal gap, retired or stopping, or a report that never came. The relay does not count these against
+    /// the row.
+    /// </summary>
+    public static bool IsBrokerUnavailable(Exception error) => error switch
+    {
+        KafkaProduceTimeoutException => true,
+        KafkaException kafka => kafka.Error.IsFatal || kafka.Error.Code is ErrorCode.Local_MsgTimedOut or ErrorCode.Local_AllBrokersDown
+            or ErrorCode.Local_Transport or ErrorCode.Local_QueueFull or ErrorCode.Local_Destroy or ErrorCode.Local_TimedOut,
+        ObjectDisposedException => true,
+        _ => false
+    };
 
     /// <summary>Whether Ariva may produce to <paramref name="topic"/>.</summary>
     public static bool IsProducible(string topic) => topic is not null && Producible.Contains(topic);
@@ -252,7 +272,7 @@ public sealed class KafkaProduce : IDisposable
         var span = StartSpan(topic, messageId);
         var message = new Message<string, byte[]> { Key = key, Value = value, Headers = HeadersOf(messageId, headers, span?.Id) };
         var id = Interlocked.Increment(ref _sends);
-        var pending = new Pending(new TaskCompletionSource<Error>(TaskCreationOptions.RunContinuationsAsynchronously), span);
+        var pending = new Pending(new TaskCompletionSource<Error>(TaskCreationOptions.RunContinuationsAsynchronously), span, _time.GetTimestamp());
         generation.Unreported[id] = pending;
         // The retirement closes a client before it fails what the client holds; a send that registered after that fails here
         // instead (the dictionary's write and the close are both full fences, so one of the two sees the other).
@@ -336,6 +356,8 @@ public sealed class KafkaProduce : IDisposable
             current = _current;
         }
 
+        _sweep.Dispose();
+
         Interlocked.Exchange(ref current.Closed, 1);
         FailUnreported(current, new Error(ErrorCode.Local_Destroy, "The host stopped before Kafka reported on the message."));
         var disposal = Task.Run(current.Client.Dispose);
@@ -380,8 +402,30 @@ public sealed class KafkaProduce : IDisposable
         _recreation = _time.CreateTimer(static state => ((KafkaProduce)state).Recreate(), this, wait, Timeout.InfiniteTimeSpan);
     }
 
+    /// <summary>
+    /// The recreation timer's callback (ARV-165): nothing may escape it, since an exception on a timer thread ends the
+    /// process. Any failure but the process's own (out of memory) is logged Critical and the recreation is tried again
+    /// after the interval; a recreation that had already replaced the client finds nothing to do then.
+    /// </summary>
+    internal void Recreate()
+    {
+        try
+        {
+            RecreateCore();
+        }
+        catch (Exception e) when (e is not OutOfMemoryException)
+        {
+            _logger.LogCritical(e, "Kafka producer could not be recreated after a fatal error; trying again in {Seconds:F0} s", _recreateAfter.TotalSeconds);
+            lock (_swap)
+            {
+                if (Volatile.Read(ref _disposed) == 0)
+                    ScheduleRecreation(_recreateAfter);
+            }
+        }
+    }
+
     /// <summary>Replaces the client after its fatal error, then retires the old one off the send path.</summary>
-    private void Recreate()
+    private void RecreateCore()
     {
         Generation retired, next;
         lock (_swap)
@@ -391,17 +435,7 @@ public sealed class KafkaProduce : IDisposable
             retired = _current;
             if (Volatile.Read(ref retired.Fatal) is null)
                 return;
-            try
-            {
-                next = NewGeneration();
-            }
-            catch (Exception e) when (e is KafkaException or ArgumentException or InvalidOperationException)
-            {
-                _logger.LogCritical(e, "Kafka producer could not be recreated after a fatal error; trying again in {Seconds:F0} s", _recreateAfter.TotalSeconds);
-                ScheduleRecreation(_recreateAfter);
-                return;
-            }
-
+            next = NewGeneration();
             Volatile.Write(ref _current, next);
         }
 
@@ -442,6 +476,82 @@ public sealed class KafkaProduce : IDisposable
         }
     }
 
+    /// <summary>
+    /// The sweep's timer callback: every <see cref="SendTimeout"/>, ends the waiters whose report is more than twice that
+    /// late (ARV-165). librdkafka reports every message it was given (delivered, failed, or purged at its message timeout),
+    /// so this covers only a report that never comes, which would otherwise keep its entry, its span and its report task
+    /// for the life of the host. Nothing may escape a timer callback.
+    /// </summary>
+    private void SweepSafely()
+    {
+        try
+        {
+            Sweep();
+        }
+        catch (Exception e) when (e is not OutOfMemoryException)
+        {
+            _logger.LogError(e, "Kafka producer sweep of unreported messages failed; trying again in {Seconds:F0} s", SendTimeout.TotalSeconds);
+        }
+    }
+
+    /// <summary>Ends the waiters of the current client whose report is more than twice <see cref="SendTimeout"/> late; returns how many.</summary>
+    internal int Sweep()
+    {
+        var generation = Volatile.Read(ref _current);
+        var swept = 0;
+        foreach (var (id, pending) in generation.Unreported)
+        {
+            if (_time.GetElapsedTime(pending.HandedOverAt) <= 2 * SendTimeout)
+                continue;
+            if (Complete(generation, id, new Error(ErrorCode.Local_TimedOut, "Kafka gave no delivery report for the message; its sender sends it again.")))
+                swept++;
+        }
+
+        if (swept > 0)
+            _logger.LogError("Kafka producer ended {Count} messages that had no delivery report after {Seconds:F0} s (client {Client}); their senders send them again",
+                swept, 2 * SendTimeout.TotalSeconds, generation.Number);
+        return swept;
+    }
+
+    /// <summary>
+    /// Whether a broker answers a metadata request through the current client within <paramref name="timeout"/> (ARV-165):
+    /// a dependent admin client on the producer's handle, so the probe opens no connection of its own and sees what the
+    /// producer sees. At most one probe runs at a time, and a result is reused for a second, so a burst of readiness
+    /// requests asks the broker once. Never throws: a broker that does not answer, a client in its fatal gap or a disposed
+    /// producer is false.
+    /// </summary>
+    public Task<bool> BrokersAnswerAsync(TimeSpan timeout)
+    {
+        if (!IsReady)
+            return Task.FromResult(false);
+        lock (_probing)
+        {
+            if (_probe is { } running && (!running.IsCompleted || _time.GetElapsedTime(_probeStarted) < ProbeReuse))
+                return running;
+            var client = Volatile.Read(ref _current).Client;
+            _probeStarted = _time.GetTimestamp();
+            _probe = Task.Run(() => Probe(client, timeout));
+            return _probe;
+        }
+    }
+
+    /// <summary>How long a probe's result is reused.</summary>
+    private static readonly TimeSpan ProbeReuse = TimeSpan.FromSeconds(1);
+
+    private bool Probe(IProducer<string, byte[]> client, TimeSpan timeout)
+    {
+        try
+        {
+            using var admin = new DependentAdminClientBuilder(client.Handle).Build();
+            return admin.GetMetadata(timeout).Brokers.Count > 0;
+        }
+        catch (Exception e) when (e is not OutOfMemoryException)
+        {
+            _logger.LogDebug("Kafka brokers did not answer a metadata request within {Seconds:F0} s ({Error})", timeout.TotalSeconds, e.GetType().Name);
+            return false;
+        }
+    }
+
     private Generation NewGeneration()
     {
         var generation = new Generation(Interlocked.Increment(ref _clientNumbers), _time.GetTimestamp());
@@ -472,13 +582,13 @@ public sealed class KafkaProduce : IDisposable
         return left;
     }
 
-    private static void Complete(Generation generation, long id, Error error)
+    private static bool Complete(Generation generation, long id, Error error)
     {
-        if (generation.Unreported.TryRemove(id, out var pending))
-        {
-            EndSpan(pending.Span, error.IsError ? error.Code.ToString() : null);
-            pending.Report.TrySetResult(error);
-        }
+        if (!generation.Unreported.TryRemove(id, out var pending))
+            return false;
+        EndSpan(pending.Span, error.IsError ? error.Code.ToString() : null);
+        pending.Report.TrySetResult(error);
+        return true;
     }
 
     private static void FailUnreported(Generation generation, Error error)
@@ -549,7 +659,7 @@ public sealed class KafkaProduce : IDisposable
         public int Closed;
     }
 
-    private sealed record Pending(TaskCompletionSource<Error> Report, Activity Span);
+    private sealed record Pending(TaskCompletionSource<Error> Report, Activity Span, long HandedOverAt);
 }
 
 /// <summary>
@@ -584,6 +694,8 @@ internal sealed class KafkaProducerLifetime(KafkaProduce produce, ILogger<KafkaP
 internal sealed class KafkaOutboxTransport(KafkaProduce produce, EventCatalog catalog) : IOutboxTransport
 {
     public bool IsReady => produce.IsReady;
+
+    public bool IsBrokerUnavailable(Exception error) => KafkaProduce.IsBrokerUnavailable(error);
 
     public Task SendAsync(OutboxEnvelope message, CancellationToken ct)
     {

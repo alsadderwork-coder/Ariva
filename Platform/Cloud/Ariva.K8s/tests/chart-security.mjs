@@ -36,7 +36,8 @@ function selfTest() {
 		'POSTGRES_INITDB_ARGS', 'POSTGRES_HOST_AUTH_METHOD', 'without NOSUPERUSER', 'must set DOTNET_ENVIRONMENT',
 		'Deployment/no-environment', 'Job/argument-overrides', 'Deployment/later-config-map-overrides', 'Deployment/wrong-environment', 'Job/bare-argument-overrides',
 		'may get the validation reader login', 'comes from its secret (secretKeyRef)', 'must get the validation reader login',
-		'must not mark the validation reader secret optional'
+		'must not mark the validation reader secret optional',
+		'terminationGracePeriodSeconds of at least 60', 'must set Hosting__GracePeriodSeconds'
 	];
 	const missing = expected.filter((rule) => !bad.some((finding) => finding.includes(rule)));
 	if (good.length || missing.length) {

@@ -9,6 +9,8 @@ metadata:
 data:
   DOTNET_ENVIRONMENT: {{ .Values.environment | quote }}
   RELEASE_VERSION: {{ .Values.releaseVersion | quote }}
+  # ARV-165: the pod's grace period, so the host checks its 50 s shutdown timeout fits inside it
+  Hosting__GracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds | default 60 | quote }}
   # Floor plans and other uploaded files (ARV-018), on the files volume below
   Storage__LocalRoot: /app/data/files
   {{- if .Values.kafkaTopics.job }}
@@ -46,6 +48,8 @@ spec:
       labels:
         app: api-main
     spec:
+      # ARV-165: the host stops within its 50 s shutdown timeout (the bus 35 s, a stop during retries needing up to 25 s), then disposes and exits
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds | default 60 }}
       imagePullSecrets:
         - name: dalilacr-secret
       volumes:

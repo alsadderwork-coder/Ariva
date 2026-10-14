@@ -6,6 +6,7 @@ using Ariva.Infra.Messaging;
 using Ariva.Infra.Messaging.Inbox;
 using Ariva.Infra.Messaging.Kafka;
 using Ariva.Infra.Messaging.Outbox;
+using Ariva.Infra.Settings;
 using Confluent.Kafka;
 using MassTransit;
 using Microsoft.Extensions.Configuration;
@@ -51,9 +52,58 @@ public static partial class MessagingExtensions
 
     internal const string UsageTelemetryVariable = "MASSTRANSIT_USAGE_TELEMETRY";
 
-    /// <summary>ARV-167: the producer's recreation interval is bounded, or the host does not start.</summary>
+    /// <summary>
+    /// ARV-165: the host's stop budget must fit, or the host does not start. The bus's share (the shutdown timeout less
+    /// <see cref="StopReserve"/>) must cover a stop that comes during a message's retries: the rest of the retry schedule
+    /// (at most <c>RetryCount</c> times <c>RetryMaxMilliseconds</c>) and the dead letter's keep (10 s), the clean path of
+    /// ARV-171; and the shutdown timeout must end <see cref="HostingSettings.ExitMarginSeconds"/> before the pod's grace
+    /// period, so the dispose and the exit happen before the kubelet kills the process.
+    /// </summary>
+    internal static void EnsureStopBudget(HostingSettings hosting, KafkaSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(hosting);
+        ArgumentNullException.ThrowIfNull(settings);
+        var shutdown = TimeSpan.FromSeconds(hosting.ShutdownSeconds);
+        var grace = TimeSpan.FromSeconds(hosting.GracePeriodSeconds);
+        if (hosting.ShutdownSeconds <= 0 || shutdown > grace - TimeSpan.FromSeconds(HostingSettings.ExitMarginSeconds))
+            throw new InvalidOperationException(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                $"Hosting:ShutdownSeconds ({hosting.ShutdownSeconds}) must be positive and at most Hosting:GracePeriodSeconds ({hosting.GracePeriodSeconds}) less {HostingSettings.ExitMarginSeconds}."));
+        var cleanStop = CleanStop(settings.Consumers ?? new ConsumerSettings());
+        if (settings.Enabled && BusStopTimeout(shutdown) < cleanStop)
+            throw new InvalidOperationException(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                $"Hosting:ShutdownSeconds ({hosting.ShutdownSeconds}) leaves the message bus {BusStopTimeout(shutdown).TotalSeconds:F0} s to stop, less than the {cleanStop.TotalSeconds:F0} s a stop during a message's retries needs (the retry schedule and the dead letter's keep)."));
+    }
+
+    /// <summary>The longest clean stop of an endpoint with a message in hand: the rest of its retry schedule and the dead letter's keep.</summary>
+    internal static TimeSpan CleanStop(ConsumerSettings consumers) =>
+        TimeSpan.FromMilliseconds((double)Math.Max(0, consumers.RetryCount) * Math.Max(0, consumers.RetryMaxMilliseconds)) + DeadLetterRetry.KeepTimeout;
+
+    /// <summary>
+    /// What the host's stop keeps for the services that stop after the bus (ARV-165): the endpoints the bus skipped
+    /// (<see cref="KafkaEndpoints.StopTimeout"/>, 5 s), the producer's flush (<see cref="KafkaProduce.FlushTimeout"/>, 5 s)
+    /// and 5 s for the rest.
+    /// </summary>
+    internal static readonly TimeSpan StopReserve = KafkaEndpoints.StopTimeout + KafkaProduce.FlushTimeout + TimeSpan.FromSeconds(5);
+
+    /// <summary>The bus's stop wait for a host shutdown timeout: the timeout less <see cref="StopReserve"/>, at least 5 s.</summary>
+    internal static TimeSpan BusStopTimeout(TimeSpan shutdownTimeout)
+    {
+        if (shutdownTimeout == Timeout.InfiniteTimeSpan)
+            return Timeout.InfiniteTimeSpan;
+        var left = shutdownTimeout - StopReserve;
+        return left < TimeSpan.FromSeconds(5) ? TimeSpan.FromSeconds(5) : left;
+    }
+
+    /// <summary>
+    /// ARV-167 and ARV-165: the producer's recreation interval and the relay's retry after a broker failure are bounded, or
+    /// the host does not start.
+    /// </summary>
     internal static void EnsureProducerSettings(KafkaSettings settings)
     {
+        var retry = settings.Outbox?.BrokerRetrySeconds ?? 0;
+        if (retry is < OutboxRelaySettings.MinBrokerRetrySeconds or > OutboxRelaySettings.MaxBrokerRetrySeconds)
+            throw new InvalidOperationException(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                $"Kafka:Outbox:BrokerRetrySeconds must be from {OutboxRelaySettings.MinBrokerRetrySeconds} to {OutboxRelaySettings.MaxBrokerRetrySeconds}."));
         var seconds = settings.Producer?.RecreateSeconds ?? 0;
         if (seconds is < ProducerSettings.MinRecreateSeconds or > ProducerSettings.MaxRecreateSeconds)
             throw new InvalidOperationException(string.Create(System.Globalization.CultureInfo.InvariantCulture,
@@ -80,6 +130,11 @@ public static partial class MessagingExtensions
         EnsureNoUsageTelemetry(configuration);
         EnsureProducerSettings(settings);
 
+        // ARV-165: the host's stop budget, checked against what a stop must fit (EnsureStopBudget) and set for every host.
+        var hosting = configuration.GetSection(HostingSettings.SectionName).Get<HostingSettings>() ?? new HostingSettings();
+        EnsureStopBudget(hosting, settings);
+        services.Configure<Microsoft.Extensions.Hosting.HostOptions>(host => host.ShutdownTimeout = TimeSpan.FromSeconds(hosting.ShutdownSeconds));
+
         if (!settings.Enabled)
         {
             services.TryAddSingleton<ISvcMessageBus, DisabledMessageBus>();
@@ -92,6 +147,13 @@ public static partial class MessagingExtensions
         services.AddSingleton(provider => new KafkaProduce(settings, provider.GetRequiredService<TimeProvider>(),
             provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<KafkaProduce>>(), provider.GetRequiredService<KafkaProducerMetrics>()));
         services.AddHostedService<KafkaProducerLifetime>();
+        // ARV-165: after the bus (registered before it, so it stops after it), the endpoints the bus's stop skipped.
+        services.TryAddSingleton<KafkaEndpoints>();
+        services.AddHostedService<KafkaEndpointsLifetime>();
+        // ARV-165: the bus's stop waits at most the host's shutdown timeout less what the services after it need, so the
+        // host stops in time even while a consumer is held by an offset commit (the bus is still stopped; only the wait ends).
+        services.AddOptions<MassTransitHostOptions>().Configure<Microsoft.Extensions.Options.IOptions<Microsoft.Extensions.Hosting.HostOptions>>(
+            (bus, host) => bus.StopTimeout = BusStopTimeout(host.Value.ShutdownTimeout));
 
         if (settings.ProvisionTopics)
             services.AddHostedService<TopicProvisioner>();
@@ -102,7 +164,10 @@ public static partial class MessagingExtensions
         services.AddSingleton<IDeadLetterStore, OutboxDeadLetterStore>();
         services.Replace(ServiceDescriptor.Singleton<ISvcMessageBus, KafkaMessageBus>());
 
-        services.AddHealthChecks();
+        // ARV-165: the brokers as the producer sees them, so an outage is reported even while MassTransit's consumer is held
+        // by an offset commit (KafkaReadiness). Degraded, as the bus's own check, so readiness answers 200 and the alert fires.
+        services.AddHealthChecks().AddCheck<KafkaReadiness>("kafka", Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Degraded,
+            [HealthExtensions.ReadyTag], KafkaReadiness.ProbeTimeout + TimeSpan.FromSeconds(2));
 
         // Before the bus (hosted services start in order): the rider faults for good on a topic that does not exist yet.
         var consumedTopics = builder.Consumers.Select(c => c.Topic).Distinct(StringComparer.Ordinal).ToList();

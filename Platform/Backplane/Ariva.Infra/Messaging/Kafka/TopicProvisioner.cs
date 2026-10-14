@@ -94,7 +94,7 @@ public static class KafkaClientConfig
     /// <summary>
     /// librdkafka's <c>queue.buffering.max.messages</c> for Ariva's producer (ARV-167): 10,000 (default 100,000). A queue
     /// that is full refuses the next message at once (<c>Local_QueueFull</c>): Ingest answers 503 with Retry-After, the
-    /// relay ends its pass and backs off.
+    /// relay ends its pass and tries the row again after its broker retry (ARV-165).
     /// </summary>
     public const int QueueMaxMessages = 10_000;
 
@@ -106,8 +106,8 @@ public static class KafkaClientConfig
         MessageMaxBytes = KafkaSettings.MaxMessageBytes,
         // No linger: the outbox relay awaits each produce in order, so a linger would be paid per row.
         LingerMs = 0,
-        // A produce that the broker has not acknowledged in 30 seconds fails, so the outbox relay backs off instead of
-        // holding its transaction open for librdkafka's default five minutes.
+        // A produce that the broker has not acknowledged in 30 seconds fails, so the outbox relay ends its pass and retries
+        // the row later instead of holding its transaction open for librdkafka's default five minutes.
         MessageTimeoutMs = MessageTimeoutMilliseconds,
         // ARV-166: the delivery report keeps no copy of the key, value or headers. Nothing reads them (the producer awaits
         // the report only for its outcome), and each copy would cost up to the message itself (1 MB) until the report is

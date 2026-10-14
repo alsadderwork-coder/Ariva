@@ -105,6 +105,19 @@ public sealed class OutboxRelaySettings
     /// seconds anyway (<c>KafkaProduce.SendTimeout</c>); this also bounds a pass of many slow sends.
     /// </summary>
     public int PassSeconds { get; init; } = 60;
+
+    public const int MinBrokerRetrySeconds = 1;
+    public const int MaxBrokerRetrySeconds = 30;
+
+    /// <summary>
+    /// When a send fails because the broker is unavailable (its message timeout, all brokers down, a transport error, a
+    /// full producer queue, the producer's own bound or the pass's, the producer in its fatal gap or stopping), the row is
+    /// tried again after this many seconds and its attempts are not counted (ARV-165), so after an outage every key
+    /// resumes within this wait of the broker's return instead of the row's grown backoff (up to five minutes). From
+    /// <see cref="MinBrokerRetrySeconds"/> to <see cref="MaxBrokerRetrySeconds"/>; a host with another value does not
+    /// start. Any other failure keeps the exponential backoff.
+    /// </summary>
+    public int BrokerRetrySeconds { get; init; } = 5;
 }
 
 /// <summary>The host's own producer (ARV-167).</summary>

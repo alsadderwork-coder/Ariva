@@ -11,6 +11,11 @@ imagePullPolicy: Always
 # release that verified the images' signatures: the pods then pull <repository>/<service>:<buildNumber>@<digest>.
 imageDigests: {}
 replicas: 1
+
+# Pod grace period of every API host (ARV-165), in seconds: the kubelet kills the process this long after SIGTERM. The
+# hosts' shutdown timeout is 50 s (Hosting:ShutdownSeconds) and they refuse to start unless it ends 5 s before this; the
+# chart passes the value to each host as Hosting__GracePeriodSeconds. At least 60.
+terminationGracePeriodSeconds: 60
 releaseVersion: v-0.0.0
 
 # Uploaded files (ARV-018): floor plans. PVCs can only grow; never lower size below the live capacity.

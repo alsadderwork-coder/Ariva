@@ -26,7 +26,16 @@ public interface IOutboxTransport
     bool IsReady => true;
 
     Task SendAsync(OutboxEnvelope message, CancellationToken ct);
+
+    /// <summary>
+    /// Whether <paramref name="error"/> from <see cref="SendAsync"/> says the broker is unavailable rather than that the row
+    /// is wrong (ARV-165): such a failure does not count against the row (no attempt, no growing backoff).
+    /// </summary>
+    bool IsBrokerUnavailable(Exception error) => false;
 }
+
+/// <summary>A send that did not end within what was left of the relay pass's time (ARV-166): the broker is slow or away.</summary>
+public sealed class OutboxPassTimeoutException(string message, Exception inner) : TimeoutException(message, inner);
 
 /// <summary>What one relay pass did.</summary>
 public sealed record RelayPass(bool Leader, int Claimed, int Sent, int Failed, int HeldBack)
@@ -47,8 +56,15 @@ public sealed record RelayPass(bool Leader, int Claimed, int Sent, int Failed, i
 /// ARV-166: a pass never holds its transaction, its leader lock and its claimed rows for longer than
 /// <see cref="OutboxRelaySettings.PassSeconds"/> of producing. Every send is awaited for at most what is left of that
 /// time, whatever the transport does (a send that ignores its token included), and one that runs out counts as a broker
-/// failure: its row is marked failed with its backoff, its key held back, the pass ends and commits, and the next pass
-/// sends the row again. A pass that has used its time sends nothing more; the rows not reached wait untouched.
+/// failure: its key is held back, the pass ends and commits, and a later pass sends the row again. A pass that has used its
+/// time sends nothing more; the rows not reached wait untouched.
+/// </para>
+/// <para>
+/// ARV-165: a failure that says the broker or the producer is unavailable (the transport's
+/// <see cref="IOutboxTransport.IsBrokerUnavailable"/>, or the pass's own bound, <see cref="OutboxPassTimeoutException"/>)
+/// does not count against the row: no attempt, no growing backoff, the row is due again after
+/// <see cref="OutboxRelaySettings.BrokerRetrySeconds"/>. So after an outage every key resumes within that wait of the
+/// broker's return, whatever the outage's length. Any other failure counts and backs off exponentially, up to five minutes.
 /// </para>
 /// </summary>
 public sealed class OutboxRelay(
@@ -146,6 +162,18 @@ public sealed class OutboxRelay(
                 await MarkUnreadableAsync(connection, transaction, row.Seq, e, ct);
                 logger.LogWarning("Outbox row {Seq} names {MessageType}, which this build does not know; key held back", row.Seq, row.MessageType);
             }
+            catch (Exception e) when ((e is not OperationCanceledException || !ct.IsCancellationRequested) && (e is OutboxPassTimeoutException || transport.IsBrokerUnavailable(e)))
+            {
+                // ARV-165: the broker is away (or slow), not the row: no attempt is counted and the row is tried again after a
+                // short fixed wait, so once the broker is back every key resumes within that wait, however long the outage.
+                failed++;
+                held.Add((row.Topic, row.Key));
+                await MarkBrokerUnavailableAsync(connection, transaction, row.Seq, now, BrokerRetry, e, ct);
+                logger.LogWarning(e, "Outbox row {Seq} ({MessageType} {EventId} to {Topic}) not sent: the broker is unavailable; trying again in {Seconds} s",
+                    row.Seq, row.MessageType, row.Id, row.Topic, BrokerRetry.TotalSeconds);
+                heldBack += rows.Count - rows.IndexOf(row) - 1;
+                break;
+            }
             catch (Exception e) when (e is not OperationCanceledException || !ct.IsCancellationRequested)
             {
                 failed++;
@@ -194,9 +222,12 @@ public sealed class OutboxRelay(
         }
         catch (OperationCanceledException e) when (!ct.IsCancellationRequested && within.IsCancellationRequested)
         {
-            throw new TimeoutException($"Outbox row {row.Seq} was not sent within what was left of the relay pass's {kafka.Outbox.PassSeconds} seconds.", e);
+            throw new OutboxPassTimeoutException($"Outbox row {row.Seq} was not sent within what was left of the relay pass's {kafka.Outbox.PassSeconds} seconds.", e);
         }
     }
+
+    /// <summary>The wait before a row is tried again after the broker was unavailable (ARV-165), <c>Kafka:Outbox:BrokerRetrySeconds</c>.</summary>
+    private TimeSpan BrokerRetry => TimeSpan.FromSeconds(kafka.Outbox.BrokerRetrySeconds);
 
     /// <summary>Retry delay after the given number of failed attempts: 2, 4, 8 ... seconds, at most five minutes.</summary>
     public static TimeSpan Backoff(int attempts) => TimeSpan.FromSeconds(Math.Min(300, Math.Pow(2, Math.Clamp(attempts, 1, 9))));
@@ -261,6 +292,19 @@ public sealed class OutboxRelay(
             transaction);
         var message = $"{error.GetType().Name}: {error.Message}";
         command.Parameters.AddWithValue("now", now);
+        command.Parameters.AddWithValue("error", message.Length <= MaxErrorLength ? message : message[..MaxErrorLength]);
+        command.Parameters.AddWithValue("seq", seq);
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <summary>The broker was unavailable (ARV-165): the row keeps its attempts and is due again after <paramref name="retry"/>.</summary>
+    private static async Task MarkBrokerUnavailableAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, long seq, DateTime now, TimeSpan retry,
+        Exception error, CancellationToken ct)
+    {
+        await using var command = new NpgsqlCommand(
+            "UPDATE outbox_message SET next_attempt_on = @next, last_error = @error WHERE seq = @seq", connection, transaction);
+        var message = $"{error.GetType().Name}: {error.Message}";
+        command.Parameters.AddWithValue("next", now + retry);
         command.Parameters.AddWithValue("error", message.Length <= MaxErrorLength ? message : message[..MaxErrorLength]);
         command.Parameters.AddWithValue("seq", seq);
         await command.ExecuteNonQueryAsync(ct);

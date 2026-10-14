@@ -1082,7 +1082,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 39,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. Production behaviour; diagnosis and evidence in the ARV-156 progress entry. From the ARV-166 review, residual (b), low: ReceiveEndpointCollection.StopEndpoints stops only endpoints whose IsStarted() is true, so a host stopping while a Kafka endpoint is between restarts after a broker error can leave a stray Confluent consumer running until the process exits (it holds a partition and acknowledges nothing); prove it and close it here. From the ARV-167 security review (2026-10-13): ARV-167 took the relay off MassTransit's bus health (it now waits for the producer and the database), so criterion 1 concerns readiness and the ARV-125 alert, not the relay. For criterion 3, the review suggests not counting broker-unavailable failures (Local_MsgTimedOut, Local_AllBrokersDown, Local_Transport, Local_QueueFull, KafkaProduceTimeoutException) against the row: pause the relay with a short capped delay (5 to 30 s), or reset those rows' next_attempt_on at the first successful send after failures, and test that recovery drains every key within a stated bound. Also from that review, producer hardening: KafkaProduce.Recreate runs on a timer and catches only Kafka, Argument and InvalidOperation exceptions, so any other exception would end the process; catch every non-fatal exception, log Critical and reschedule. And add a sweep that ends Unreported entries older than twice SendTimeout (librdkafka reports every message, so it only covers a report that never comes).",
       "dependsOn": [
         "ARV-156"

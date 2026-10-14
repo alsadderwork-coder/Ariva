@@ -99,12 +99,11 @@
     },
     {
       "id": "ARV-175",
-      "title": "[E6] Dead letters: text PostgreSQL accepts, a per-topic relay hold and a shutdown budget that fits",
+      "title": "[E6] Dead letters: text PostgreSQL accepts and a per-topic relay hold",
       "description": "From the ARV-171 security review (PASS, 2026-10-13), three non-blocking findings. (1) A NUL character or a lone surrogate in a record's key, a header name or value, or the error message makes the keep fail (PostgreSQL text refuses 0x00 in message_key, and CAST AS jsonb refuses \\u0000 and unpaired surrogates in the payload), so such a record still ends on ARV-166's unacknowledged path; it needs a buggy or hostile Kafka producer, which is what the unreadable path is for. (2) A dead-letter row that fails with a broker error ends the relay pass like any broker failure; a .dlq.v1 topic that hangs (its leader away while domain topics are fine) holds each attempt up to the 45 s produce bound and can delay domain events by up to 45 s repeatedly during the short backoffs. (3) The app charts set no terminationGracePeriodSeconds (Kubernetes default 30 s) and no host sets HostOptions.ShutdownTimeout (.NET default 30 s), while one in-flight message can need the rest of its retry schedule (at most 3 x 5 s), the keep (at most 10 s) and the consumer close. CWEs to review: CWE-501, CWE-400.",
       "acceptanceCriteria": [
         "DeadLetters.Create replaces NUL and lone surrogates with U+FFFD in the key, header names and values and the error message, and flags the letter when it did (a header naming what was replaced, never the original bytes); OutboxKeyOf uses the digest when the key held such a character; the letter's topic, partition, offset and consumer stay exact so a replay can still fetch the original record",
         "A .dlq.v1 row whose send fails with a broker error holds back only its topic for the rest of the relay pass instead of ending the pass, so domain rows keep draining; a domain row's failure still ends the pass as today",
-        "The consuming hosts' pods set terminationGracePeriodSeconds 60 and the hosts set HostOptions.ShutdownTimeout to about 50 s (configurable, validated), so the clean path (the rest of the retry schedule, the keep, the consumer close) fits; chart render tests assert both; wiki 10 or the deployment guide names the budget",
         "Unit tests: a letter with \"\\0\" in a header and in the key is kept and its row key is the digest; a lone surrogate in the error message is replaced; a failing .dlq.v1 row leaves a domain row of the same pass sent. Integration test: a record whose key and headers carry a NUL is kept at a stop and its row read back",
         "The residual text that names this case (ConsumeFilters, overview Producing, ADR-0018 in a new dated note, wiki 10 section 4.5a) says it is closed",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
@@ -116,7 +115,7 @@
       ],
       "priority": 38,
       "passes": false,
-      "notes": "Size S. Was planned before the pilot, after ARV-174. Follow-up 4 of the same review (WRITE on every dead-letter topic for each per-service principal) is in ARV-083's notes. 2026-10-14: moved from Phase 1 to Phase 3 by the owner's decision (low-severity follow-ups wait until after the pilot go-live; the owner can pull one back).",
+      "notes": "Size S. Was planned before the pilot, after ARV-174. Follow-up 4 of the same review (WRITE on every dead-letter topic for each per-service principal) is in ARV-083's notes. 2026-10-14: moved from Phase 1 to Phase 3 by the owner's decision (low-severity follow-ups wait until after the pilot go-live; the owner can pull one back). 2026-10-14: the shutdown budget (finding 3: terminationGracePeriodSeconds 60, ShutdownTimeout about 50 s) moved into ARV-165, whose shorter bus stop wait made it needed before the pilot. From the ARV-165 security review (2026-10-14, F1, low): Local_MsgTimedOut also covers one topic-partition without a leader (a partial outage), and since ARV-165 a broker-unavailable failure does not count against the row, so such a row is retried every 5 s for ever, each attempt holding a relay pass up to 30 s, and the \"stuck after N attempts\" Error never fires (only Warnings). Escalate a broker-unavailable streak past a few minutes (an Error and a metric), pair it with this story's per-topic hold, and optionally skip passes while the cached broker probe (BrokersAnswerAsync) answers false, which removes the 30 s holds of a full outage.",
       "dependsOn": [
         "ARV-171"
       ]
@@ -184,6 +183,29 @@
       "notes": "Size S. Low severity; was due before go-live (ARV-138). Raised by the ARV-104c re-review (2026-10-09). 2026-10-14: moved from Phase 1 to Phase 3 by the owner's decision (low-severity follow-ups wait until after the pilot go-live; the owner can pull one back).",
       "dependsOn": [
         "ARV-104c"
+      ]
+    },
+    {
+      "id": "ARV-177",
+      "title": "[E6] A host's own disposal never dead-letters a valid message, and the broker probe asks for one topic",
+      "description": "From the ARV-165 security review (PASS, 2026-10-14), two low findings. (F2) The stop budget covers the retry schedule and the 10 s keep but not the consumer's own time per attempt: when attempts are slow at a stop (a database stall at Npgsql's 30 s command timeout), MassTransit's stop wait can end with a message still in its retries; the host disposes its container while the bus keeps stopping in the background, the later attempts fail with ObjectDisposedException, and the final attempt keeps the dead letter, so a valid event lands in the dead-letter topic (a replay is needed), or is faulted when the database is away too. Wiki 10 section 4.5a states the case and the replay meanwhile. (Probe) KafkaProduce.BrokersAnswerAsync calls GetMetadata(timeout), which asks for every topic on the cluster; on a large or shared cluster the reply is large. CWEs to review: CWE-400, CWE-501.",
+      "acceptanceCriteria": [
+        "A failure caused by the host's own disposal while its endpoint stops (ObjectDisposedException from the host's services, or an equivalent signal) does not dead-letter the message: the record is left unacknowledged so it is delivered again after the restart, without opening the ARV-166 skip (prove the checkpointer cannot pass it)",
+        "The readiness probe asks for one Ariva topic's metadata (GetMetadata(topic, timeout)), not the whole cluster's, and still reports Degraded within its bound when no broker answers",
+        "Unit tests for both; an integration test where a slow attempt outlasts the bus's stop wait and the message comes back after the restart instead of reaching the dead-letter topic",
+        "Wiki 10 section 4.5a no longer describes the edge case as open",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size S. Phase 3 (the owner's rule of 2026-10-14: low-severity review findings wait until after the pilot).",
+      "dependsOn": [
+        "ARV-165"
       ]
     }
   ]

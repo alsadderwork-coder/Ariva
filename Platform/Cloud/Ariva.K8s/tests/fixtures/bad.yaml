@@ -238,6 +238,8 @@ metadata: { name: api-main-deployment }
 spec:
   template:
     spec:
+      # ARV-165: a grace period without the host being told it (Hosting__GracePeriodSeconds)
+      terminationGracePeriodSeconds: 60
       securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
       volumes:
         - { name: tmp, emptyDir: {} }

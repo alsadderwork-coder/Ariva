@@ -230,6 +230,7 @@ Main Helm values (`Charts/platform/values*.yaml`):
 | `releaseVersion` | Written to `RELEASE_VERSION`, labels and telemetry; the release pipeline sets it to the build number |
 | `domain`, `clusterName` | Ingress host suffix; cluster identity in telemetry |
 | `replicas`, `<service>Replicas`, `<service>HpaMin`, `<service>HpaMax` | Replica counts (AMAN key style) |
+| `terminationGracePeriodSeconds` | Grace period of every API pod after SIGTERM, 60 by default and at least 60 (chart render test); passed to each host as `Hosting__GracePeriodSeconds`, which refuses to start unless its 50 second shutdown timeout ends 5 seconds before it (ARV-165; the budget is in wiki 10, section 4.5a) |
 | `<service>CpuRequest`, `MemRequest`, `CpuLimit`, `MemLimit` | Resource overrides per service |
 | `simulationEnabled` | Deploys the simulation host; `false` in production |
 | `validationReader.secretName`, `validationReader.optional` | The validation reader login's secret (keys `username` and `password`; default `ariva-validation-reader`) and whether a release may run without it: `true` in dev, demo and localk8s, `false` in k8s-prd (the chart refuses `true` there and a name that is not a Kubernetes name anywhere). Without the secret in k8s-prd an upgrade fails at the migration job (a pre-upgrade hook) before any pod changes; a first install runs that job after the objects exist (post-install), so it fails there too and the new api-main pods wait in `CreateContainerConfigError` until the secret is created. Only api-main and the migration job get it (ARV-104g1) |

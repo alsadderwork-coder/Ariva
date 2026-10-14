@@ -41,8 +41,8 @@ public sealed class OutageProbeConsumer : IConsumer<OutageProbe>
 
 /// <summary>
 /// ARV-072, the broker cut off under a running host. Domain events keep going into the outbox in their own transactions;
-/// the relay sends nothing while the broker is unreachable and loses nothing (since ARV-167 it tries, and each failed row
-/// backs off and holds its key); the readiness checks no longer report the
+/// the relay sends nothing while the broker is unreachable and loses nothing (since ARV-167 it tries; since ARV-165 a failed
+/// row is tried again 5 seconds later without an attempt counted, and holds its key meanwhile); the readiness checks no longer report the
 /// bus healthy (MassTransit reports it Degraded while its Kafka endpoint is faulted, never Unhealthy); a direct publish,
 /// which is how Ingest hands sensor batches on, fails, and Ingest answers the device 503 with Retry-After. Once the
 /// broker is back the relay resumes by itself and the consumer gets every event of a key once, in the order they were
@@ -237,8 +237,8 @@ public sealed class BrokerOutageTests(FaultsFixture faults) : IAsyncLifetime
 
                 // Not cosmetic either: readiness reports the outage once the endpoint has faulted, so the rows below are
                 // written during the outage. Since ARV-167 the relay waits for the producer, not the bus, so it tries them
-                // during the outage too: each pass ends at its first failed row (the message timeout), which backs off and
-                // holds its key, so none is sent and none is lost; the direct publish below shares the host's one producer and
+                // during the outage too: each pass ends at its first failed row (the message timeout), which is tried again
+                // after the broker retry (ARV-165) and holds its key, so none is sent and none is lost; the direct publish below shares the host's one producer and
                 // fails on its own message timeout (before ARV-167 a produce queued behind a failed one could be discarded
                 // with the producer the rider disposed). The bus reports the outage as Degraded, not Unhealthy (ARV-156): the
                 // wait is for what is asserted, any status but Healthy.
