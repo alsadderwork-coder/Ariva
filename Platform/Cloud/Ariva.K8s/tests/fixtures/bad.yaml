@@ -259,3 +259,54 @@ spec:
             - { name: Database__ValidationReader__Password, valueFrom: { secretKeyRef: { name: ariva-validation-reader, key: password, optional: true } } }
           securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
           volumeMounts: [{ name: tmp, mountPath: /tmp }]
+---
+# ARV-125b: monitoring objects that break the rules.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ariva-monitoring-alerts
+  labels: { app.kubernetes.io/component: monitoring }
+  annotations: { ariva.dalil.tech/environment: k8s-dev }
+data:
+  # a label holding a person and a credential, a threshold without severity or number, no runbook, a token left over
+  personal.json: |
+    {"alert": "x", "version": "v5", "schemaVersion": "v2alpha1",
+     "condition": {"compositeQuery": {"queries": [{"type": "builder_query", "spec": {"name": "A", "filter": {"expression": "user_id = '1'"},
+       "groupBy": [{"name": "client_secret"}]}}]}, "thresholds": {"kind": "basic", "spec": [{"name": "page", "op": "above", "matchType": "last", "target": "${x.records}", "channels": []}]}},
+     "evaluation": {"kind": "rolling", "spec": {"evalWindow": "${x.minutes}m", "frequency": "1m"}},
+     "annotations": {"summary": "{{$email}} at {{$value}}"}}
+  # queries that read other releases: an Ariva metric without the environment filter (and one widened by OR), a volume
+  # metric outside a namespace filter, a PromQL query without a namespace matcher
+  unscoped.json: |
+    {"alert": "z", "version": "v5", "schemaVersion": "v2alpha1",
+     "condition": {"compositeQuery": {"queries": [
+       {"type": "builder_query", "spec": {"name": "A", "aggregations": [{"metricName": "ariva.health.status", "timeAggregation": "max", "spaceAggregation": "max"}], "filter": {"expression": "check = 'kafka'"}}},
+       {"type": "builder_query", "spec": {"name": "B", "aggregations": [{"metricName": "ariva.outbox.unsent", "timeAggregation": "max", "spaceAggregation": "max"}], "filter": {"expression": "deployment.environment = 'k8s-dev' OR check = 'kafka'"}}},
+       {"type": "builder_query", "spec": {"name": "C", "aggregations": [{"metricName": "k8s.volume.available", "timeAggregation": "max", "spaceAggregation": "max"}], "filter": {"expression": "k8s.persistentvolumeclaim.name IN ['data-timescaledb-0']"}}},
+       {"type": "promql", "spec": {"name": "D", "query": "min(certmanager_certificate_expiration_timestamp_seconds) - time()"}}]},
+       "thresholds": {"kind": "basic", "spec": [{"name": "critical", "op": "above", "matchType": "last", "target": 1, "channels": []}]}},
+     "evaluation": {"kind": "rolling", "spec": {"evalWindow": "5m", "frequency": "1m"}}, "annotations": {"runbook": "wiki/10-Operations-Runbook.md#49-certificate-expiry"}}
+  # not JSON at all
+  broken.json: |
+    {"alert": "broken",
+  # an API key in the object
+  keyed.json: |
+    {"alert": "y", "version": "v5", "schemaVersion": "v2alpha1", "apiKey": "abc", "condition": {"thresholds": {"kind": "basic", "spec": [{"name": "critical", "op": "above", "matchType": "last", "target": 1, "channels": []}]}},
+     "evaluation": {"kind": "rolling", "spec": {"evalWindow": "5m", "frequency": "1m"}}, "annotations": {"runbook": "wiki/10-Operations-Runbook.md#49-certificate-expiry"}}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ariva-monitoring-dashboards
+  labels: { app.kubernetes.io/component: monitoring }
+data:
+  old.json: |
+    {"title": "a v1 dashboard", "widgets": []}
+---
+# a monitoring object that is not a ConfigMap
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ariva-monitoring-importer
+  labels: { app.kubernetes.io/component: monitoring }
+rules: []

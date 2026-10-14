@@ -1,0 +1,133 @@
+{
+  "alert": "Ariva database volume filling (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "A volume Ariva's data lives on (the claims named, in the release's namespaces) is fuller than the threshold, from the site collector's kubelet volume metrics (external, ARV-125b).",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "unit": "percent",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "disabled": true,
+            "aggregations": [
+              {
+                "metricName": "k8s.volume.available",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
+              }
+            ],
+            "filter": {
+              "expression": "k8s.volume.type = 'persistentVolumeClaim' AND k8s.namespace.name IN ${disk.namespaces} AND k8s.persistentvolumeclaim.name IN ${disk.claims}"
+            },
+            "groupBy": [
+              {
+                "name": "k8s.persistentvolumeclaim.name",
+                "fieldContext": "resource",
+                "fieldDataType": "string"
+              },
+              {
+                "name": "k8s.namespace.name",
+                "fieldContext": "resource",
+                "fieldDataType": "string"
+              }
+            ]
+          }
+        },
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "B",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "disabled": true,
+            "aggregations": [
+              {
+                "metricName": "k8s.volume.capacity",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
+              }
+            ],
+            "filter": {
+              "expression": "k8s.volume.type = 'persistentVolumeClaim' AND k8s.namespace.name IN ${disk.namespaces} AND k8s.persistentvolumeclaim.name IN ${disk.claims}"
+            },
+            "groupBy": [
+              {
+                "name": "k8s.persistentvolumeclaim.name",
+                "fieldContext": "resource",
+                "fieldDataType": "string"
+              },
+              {
+                "name": "k8s.namespace.name",
+                "fieldContext": "resource",
+                "fieldDataType": "string"
+              }
+            ]
+          }
+        },
+        {
+          "type": "builder_formula",
+          "spec": {
+            "name": "F1",
+            "expression": "(1 - A/B) * 100",
+            "legend": "{{k8s.persistentvolumeclaim.name}} ({{k8s.namespace.name}})"
+          }
+        }
+      ]
+    },
+    "selectedQueryName": "F1",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${disk.severity}",
+          "op": "above",
+          "matchType": "all_the_times",
+          "target": "${disk.usedPercent}",
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "${disk.minutes}m",
+      "frequency": "5m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [
+      "k8s.namespace.name",
+      "k8s.persistentvolumeclaim.name"
+    ],
+    "renotify": {
+      "enabled": true,
+      "interval": "4h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "disk",
+    "environment": "${environment}",
+    "severity": "${disk.severity}"
+  },
+  "annotations": {
+    "summary": "Volume {{$k8s.persistentvolumeclaim.name}} filling",
+    "description": "Volume {{$k8s.persistentvolumeclaim.name}} in {{$k8s.namespace.name}} is {{$value}} percent full, above ${disk.usedPercent}.",
+    "runbook": "wiki/10-Operations-Runbook.md#47-database-disk-filling"
+  },
+  "disabled": false
+}

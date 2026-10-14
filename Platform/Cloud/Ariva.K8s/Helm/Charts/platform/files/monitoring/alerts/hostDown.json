@@ -1,0 +1,81 @@
+{
+  "alert": "Ariva ${service} down (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "No readiness report from ${service} for the window: every pod of the host is down or not exporting telemetry (ARV-125b).",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "ariva.health.status",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}' AND service.name = '${service}'"
+            },
+            "groupBy": []
+          }
+        }
+      ]
+    },
+    "alertOnAbsent": true,
+    "absentFor": "${hostDown.minutes}",
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${hostDown.severity}",
+          "op": "below",
+          "matchType": "at_least_once",
+          "target": 0,
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "${hostDown.minutes}m",
+      "frequency": "1m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [],
+    "renotify": {
+      "enabled": true,
+      "interval": "4h",
+      "alertStates": [
+        "firing",
+        "nodata"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "hostDown",
+    "environment": "${environment}",
+    "severity": "${hostDown.severity}"
+  },
+  "annotations": {
+    "summary": "Ariva ${service} sends no health report",
+    "description": "Ariva ${service} has sent no ariva.health.status for ${hostDown.minutes} minutes: no pod of it is running or exporting.",
+    "runbook": "wiki/10-Operations-Runbook.md#412-host-down-or-not-ready-arv-125b"
+  },
+  "disabled": false
+}

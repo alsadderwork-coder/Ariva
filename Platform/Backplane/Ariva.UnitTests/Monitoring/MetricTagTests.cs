@@ -42,8 +42,8 @@ public sealed partial class MetricTagTests
     private static DeadLetter Letter(string topic = KafkaTopics.AmanEgateIntervalStats, string group = Group) =>
         DeadLetters.Create(topic, 0, 1, "key", [1], [], group, new InvalidOperationException("probe"), DateTime.UtcNow);
 
-    /// <summary>Every method of every metrics type, called with plausible values.</summary>
-    private static readonly Dictionary<Type, Action<object>> Drives = new()
+    /// <summary>Every method of every metrics type, called with plausible values (MonitoringRulesTests builds the instruments with it too).</summary>
+    internal static readonly Dictionary<Type, Action<object>> Drives = new()
     {
         [typeof(KafkaProducerMetrics)] = m =>
         {

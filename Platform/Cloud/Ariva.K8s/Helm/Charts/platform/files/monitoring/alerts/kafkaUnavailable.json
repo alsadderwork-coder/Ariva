@@ -1,0 +1,87 @@
+{
+  "alert": "Ariva Kafka unavailable (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "On the kafka readiness check is Degraded: no broker answered a metadata request through the host's producer (ARV-165) (ARV-125b).",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "ariva.health.status",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}' AND check = 'kafka'"
+            },
+            "groupBy": [
+              {
+                "name": "service.name",
+                "fieldContext": "resource",
+                "fieldDataType": "string"
+              }
+            ],
+            "legend": "{{service.name}}"
+          }
+        }
+      ]
+    },
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${kafkaUnavailable.severity}",
+          "op": "above_or_equal",
+          "matchType": "all_the_times",
+          "target": 1,
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "${kafkaUnavailable.minutes}m",
+      "frequency": "1m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [
+      "service.name"
+    ],
+    "renotify": {
+      "enabled": true,
+      "interval": "4h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "kafkaUnavailable",
+    "environment": "${environment}",
+    "severity": "${kafkaUnavailable.severity}"
+  },
+  "annotations": {
+    "summary": "Ariva Kafka unavailable on {{$service.name}}",
+    "description": "The kafka check of {{$service.name}} has read {{$value}} (1 Degraded, 2 Unhealthy) for ${kafkaUnavailable.minutes} minutes.",
+    "runbook": "wiki/10-Operations-Runbook.md#46-kafka-consumer-lag-growing"
+  },
+  "disabled": false
+}

@@ -1,0 +1,81 @@
+{
+  "alert": "AMAN feed stopped (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "No AMAN record applied or unchanged for T_stale: border desk states and service rates go stale (ARV-125b; border deployments).",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "ariva.border.feed.records",
+                "timeAggregation": "increase",
+                "spaceAggregation": "sum"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}' AND outcome != 'refused'"
+            },
+            "groupBy": []
+          }
+        }
+      ]
+    },
+    "alertOnAbsent": true,
+    "absentFor": "${amanFeedStale.minutes}",
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${amanFeedStale.severity}",
+          "op": "below_or_equal",
+          "matchType": "in_total",
+          "target": 0,
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "${amanFeedStale.minutes}m",
+      "frequency": "1m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [],
+    "renotify": {
+      "enabled": true,
+      "interval": "4h",
+      "alertStates": [
+        "firing",
+        "nodata"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "amanFeedStale",
+    "environment": "${environment}",
+    "severity": "${amanFeedStale.severity}"
+  },
+  "annotations": {
+    "summary": "AMAN feed stopped",
+    "description": "No AMAN record other than refused ones has arrived for ${amanFeedStale.minutes} minutes.",
+    "runbook": "wiki/10-Operations-Runbook.md#44-aman-feed-stopped-border-deployments"
+  },
+  "disabled": false
+}

@@ -20,3 +20,7 @@ Ariva logs with Serilog and emits traces and metrics with OpenTelemetry, exporte
 ## Alternatives considered
 
 - Prometheus, Grafana and Loki (D5). Superseded for AMAN parity.
+
+## Notes
+
+- Note of 2026-10-14 (ARV-125a, ARV-125b), adding to the decision without changing it: every meter Ariva creates is exported over OTLP (the hosts have no Prometheus exporter), and the system alerts and dashboards target SigNoz (the owner's decision of 2026-10-14). They ship with the platform chart as SigNoz JSON in two ConfigMaps (`ariva-monitoring-alerts`, `ariva-monitoring-dashboards`) that an operator imports through SigNoz's API; written for SigNoz v0.146.0 (alert rules `version` v5, `schemaVersion` v2alpha1; dashboards in its v2 format, `schemaVersion` v6). A site that keeps only Loki has the logs but not these rules. Thresholds are Helm values that TC-36 tunes per site; disk and the ingress certificate come from the site's collector (kubelet volume metrics, cert-manager), the only external metrics, listed in `Platform/Cloud/Ariva.K8s/tests/monitoring.json`.

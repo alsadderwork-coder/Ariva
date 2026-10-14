@@ -2,7 +2,7 @@
 	"name": "ariva-chart-tests",
 	"private": true,
 	"type": "module",
-	"description": "Renders the ariva-platform chart for every environment and checks pod security and ingress TLS (ARV-002, CWE-269).",
+	"description": "Renders the ariva-platform chart for every environment and checks pod security, ingress TLS (ARV-002, CWE-269) and the SigNoz monitoring rules and dashboards (ARV-125b).",
 	"scripts": {
 		"test": "node chart-security.mjs",
 		"self-test": "node chart-security.mjs --self-test"

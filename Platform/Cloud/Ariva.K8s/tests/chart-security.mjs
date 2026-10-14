@@ -5,6 +5,10 @@
 // production (ARV-019), the MQTT transport without its TLS secret (ARV-024), a database image without a digest,
 // passwords without a secret or the superuser as the migration login (ARV-062), and the validation reader login without its
 // secret or optional in production (ARV-104g1) must fail to render; the reader login reaches only api-main and the migration job.
+// ARV-125b: every render ships the SigNoz alert rules the story names and the dashboards, as ConfigMaps only, valid JSON with
+// a severity, a runbook link and resolved numbers, labels from tests/monitoring.json and no credential; thresholds out of
+// range fail to render; every query reads its own release (the environment, or the namespaces for the external metrics);
+// the AMAN feed rule appears where it is turned on and nothing appears with monitoring off.
 //   node Platform/Cloud/Ariva.K8s/tests/chart-security.mjs              needs helm 3 on PATH (or HELM=path)
 //   node Platform/Cloud/Ariva.K8s/tests/chart-security.mjs --self-test  checks the rules against fixtures, no helm
 // Without helm the test is skipped locally and fails in CI (CI=true).
@@ -14,7 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseAllDocuments } from 'yaml';
-import { checkManifests } from './checks.mjs';
+import { checkManifests, missingMonitoringRules } from './checks.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const chart = path.resolve(here, '..', 'Helm', 'Charts', 'platform');
@@ -39,9 +43,21 @@ function selfTest() {
 		'must not mark the validation reader secret optional',
 		'terminationGracePeriodSeconds of at least 60', 'must set Hosting__GracePeriodSeconds',
 		'needs a startupProbe', 'must set Hosting__StartupAllowanceSeconds',
-		"api-ingest-deployment container app: must set Hosting__StartupAllowanceSeconds to its startup probe's allowance at its worst, initialDelaySeconds plus periodSeconds times (failureThreshold - 1) (115)"
+		"api-ingest-deployment container app: must set Hosting__StartupAllowanceSeconds to its startup probe's allowance at its worst, initialDelaySeconds plus periodSeconds times (failureThreshold - 1) (115)",
+		// ARV-125b: the monitoring ConfigMaps.
+		'holds an unresolved token', 'queries the label user_id, which may hold a secret or a person identifier', 'queries the label client_secret',
+		'queries the label email', 'not on the allowlist', 'threshold page is not a severity', 'has no resolved number', 'has no runbook link',
+		'has no evaluation window', 'is not valid JSON', 'field apiKey looks like a credential', 'is not a SigNoz dashboard of schemaVersion v6',
+		'has no panel', 'a monitoring object must be a ConfigMap',
+		"reads ariva.health.status without the filter deployment.environment = 'k8s-dev'", "reads ariva.outbox.unsent without the filter",
+		'reads k8s.volume.available outside a namespace filter', 'a PromQL query reads no namespace', 'has no environment annotation'
 	];
 	const missing = expected.filter((rule) => !bad.some((finding) => finding.includes(rule)));
+	// ARV-125b: a render without a rule the story names is caught (the good fixture holds one rule of them).
+	const absent = missingMonitoringRules(parse(fs.readFileSync(path.join(here, 'fixtures', 'good.yaml'), 'utf8')));
+	if (!absent.some((finding) => finding.includes('rule hostDown is missing')) || absent.some((finding) => finding.includes('rule kafkaUnavailable is missing'))) {
+		missing.push('missingMonitoringRules names the absent rules and only them');
+	}
 	if (good.length || missing.length) {
 		console.error('chart-security self-test FAILED');
 		if (good.length) console.error('  good fixture produced findings:\n   ' + good.join('\n   '));
@@ -55,8 +71,9 @@ function helmAvailable() {
 	return spawnSync(helm, ['version', '--short'], { encoding: 'utf8', shell: false }).status === 0;
 }
 
-function render(valuesFile, sets = []) {
+function render(valuesFile, sets = [], namespace = '') {
 	const args = ['template', 'ariva-platform', chart, '-f', path.join(chart, valuesFile), '--set', 'imageCredentials.password='];
+	if (namespace) args.push('--namespace', namespace);
 	for (const set of sets) args.push('--set', set);
 	return spawnSync(helm, args, { encoding: 'utf8', shell: false, maxBuffer: 32 * 1024 * 1024 });
 }
@@ -65,6 +82,21 @@ function renderDatabase(sets = []) {
 	const args = ['template', 'timescaledb', databaseChart];
 	for (const set of sets) args.push('--set', set);
 	return spawnSync(helm, args, { encoding: 'utf8', shell: false, maxBuffer: 8 * 1024 * 1024 });
+}
+
+/** ARV-125b: the monitoring ConfigMaps of a render read the given deployment.environment (checkManifests checks every query). */
+function monitoringEnvironment(docs, environment) {
+	const findings = [];
+	for (const name of ['ariva-monitoring-alerts', 'ariva-monitoring-dashboards']) {
+		const scope = docs.find((doc) => doc?.kind === 'ConfigMap' && doc.metadata?.name === name)?.metadata?.annotations?.['ariva.dalil.tech/environment'];
+		if (scope !== environment) findings.push(`ConfigMap/${name}: reads deployment.environment ${scope}, not ${environment}`);
+	}
+	return findings;
+}
+
+/** ARV-125b: the text of one rule of a render's ariva-monitoring-alerts. */
+function monitoringRule(docs, key) {
+	return docs.find((doc) => doc?.kind === 'ConfigMap' && doc.metadata?.name === 'ariva-monitoring-alerts')?.data?.[key] ?? '';
 }
 
 if (process.argv.includes('--self-test')) {
@@ -101,17 +133,21 @@ for (const env of environments) {
 	}
 	const docs = parse(result.stdout);
 	const findings = checkManifests(docs, { environment: env.environment });
+	// ARV-125b: every environment ships the alert rules the story names and the dashboards, reading its own environment.
+	findings.push(...missingMonitoringRules(docs), ...monitoringEnvironment(docs, env.environment));
 	// ARV-104g1: the validation reader login reaches exactly api-main and the migration job, in every environment.
 	const readers = docs.filter((doc) => (doc?.spec?.template?.spec?.containers ?? []).some((container) =>
 		(container.env ?? []).some((variable) => variable.name === 'Database__ValidationReader__Password' && variable.valueFrom?.secretKeyRef))).map((doc) => `${doc.kind}/${doc.metadata?.name}`).sort();
 	if (readers.join(',') !== 'Deployment/api-main-deployment,Job/database-migration') findings.push(`the validation reader login reaches ${readers.join(', ') || 'no workload'}, not exactly api-main-deployment and the database-migration job`);
 	const workloads = docs.filter((doc) => doc?.kind === 'Deployment').length;
 	const ingresses = docs.filter((doc) => doc?.kind === 'Ingress').length;
+	const monitoring = (name) => Object.keys(docs.find((doc) => doc?.kind === 'ConfigMap' && doc.metadata?.name === name)?.data ?? {}).length;
 	if (findings.length) {
 		failed = true;
 		console.error(`FAIL ${env.file}:\n  ${findings.join('\n  ')}`);
 	} else {
-		console.log(`PASS ${env.file}: ${workloads} deployments, ${ingresses} ingresses, validation reader login in api-main and the migration job only`);
+		console.log(`PASS ${env.file}: ${workloads} deployments, ${ingresses} ingresses, validation reader login in api-main and the migration job only, ` +
+			`${monitoring('ariva-monitoring-alerts')} alert rules and ${monitoring('ariva-monitoring-dashboards')} dashboards`);
 	}
 }
 
@@ -157,7 +193,27 @@ for (const [label, file, sets] of [
 	// ARV-104g1: the validation reader login's secret is named, and required in production.
 	['the validation reader login without a secret name', 'values-k8s-dev.yaml', ['validationReader.secretName=']],
 	['a validation reader secret name that is not a Kubernetes name', 'values-k8s-dev.yaml', ['validationReader.secretName=Reader_Secret']],
-	['production with an optional validation reader secret', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1', 'validationReader.optional=true']]
+	['production with an optional validation reader secret', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1', 'validationReader.optional=true']],
+	// ARV-125b: monitoring thresholds out of range, an unknown rule, a channel name that could break the JSON, a rule
+	// without its values, a claim that is not a name.
+	['a disk threshold above 99 percent', 'values-k8s-dev.yaml', ['monitoring.alerts.disk.usedPercent=150']],
+	['a critical certificate expiry not below the warning', 'values-k8s-dev.yaml', ['monitoring.alerts.certificateExpiry.criticalDays=40']],
+	['a devices offline share above 1', 'values-k8s-dev.yaml', ['monitoring.alerts.devicesOffline.share=2']],
+	['a rule window of 0 minutes', 'values-k8s-dev.yaml', ['monitoring.alerts.hostDown.minutes=0']],
+	['a rule window that is not a whole number', 'values-k8s-dev.yaml', ['monitoring.alerts.streamConsumerLag.minutes=2.5']],
+	['a severity that is not warning or critical', 'values-k8s-dev.yaml', ['monitoring.alerts.busDegraded.severity=page']],
+	['a values entry for a rule that does not exist', 'values-k8s-dev.yaml', ['monitoring.alerts.unknownRule.minutes=5']],
+	['a channel name with a quote', 'values-k8s-dev.yaml', ['monitoring.channels={bad"name}']],
+	['a disk rule without its claims', 'values-k8s-dev.yaml', ['monitoring.alerts.disk.claims=null']],
+	['a claim that is not a Kubernetes name', 'values-k8s-dev.yaml', ["monitoring.alerts.disk.claims={data') OR (1}"]],
+	// ARV-125b: the scopes that keep a rule on its own release: the environment and the namespaces.
+	['a monitoring environment that is not a plain name', 'values-k8s-dev.yaml', ["monitoring.environment=k8s-dev' OR deployment.environment = 'k8s-prd"]],
+	['an environment that is not a plain name when monitoring reads it', 'values-k8s-dev.yaml', ['environment=k8s dev']],
+	['a disk namespace that is not a Kubernetes name', 'values-k8s-dev.yaml', ['monitoring.alerts.disk.namespaces={Ariva_NS}']],
+	['a disk namespaces value that is not a list', 'values-k8s-dev.yaml', ['monitoring.alerts.disk.namespaces=ariva']],
+	['a disk rule without its namespaces', 'values-k8s-dev.yaml', ['monitoring.alerts.disk.namespaces=null']],
+	['a certificate namespace that is a PromQL pattern', 'values-k8s-dev.yaml', ['monitoring.alerts.ingressCertificateExpiry.namespaces={.*}']],
+	['a certificate namespace label other than namespace or exported_namespace', 'values-k8s-dev.yaml', ['monitoring.alerts.ingressCertificateExpiry.namespaceLabel=job']]
 ]) {
 	const result = render(file, sets);
 	if (result.status === 0) {
@@ -165,6 +221,52 @@ for (const [label, file, sets] of [
 		console.error(`FAIL release guard: rendering ${label} must fail but succeeded`);
 	} else {
 		console.log(`PASS release guard: ${label} is refused`);
+	}
+}
+
+// ARV-125b: the AMAN feed rule renders where it is turned on (border deployments), channels reach every threshold, and
+// monitoring off renders no monitoring object.
+{
+	const findings = [];
+	const aman = render('values-k8s-dev.yaml', ['monitoring.alerts.amanFeedStale.enabled=true', 'monitoring.channels={ops-pager,site it}']);
+	if (aman.status !== 0) findings.push(`the AMAN feed rule turned on: template failed\n${aman.stderr}`);
+	else {
+		const docs = parse(aman.stdout);
+		findings.push(...checkManifests(docs, { environment: 'k8s-dev' }), ...missingMonitoringRules(docs, { amanFeedStale: true }));
+		const alerts = docs.find((doc) => doc?.kind === 'ConfigMap' && doc.metadata?.name === 'ariva-monitoring-alerts');
+		for (const [key, text] of Object.entries(alerts?.data ?? {})) {
+			for (const threshold of JSON.parse(text).condition?.thresholds?.spec ?? []) {
+				if (JSON.stringify(threshold.channels) !== JSON.stringify(['ops-pager', 'site it'])) findings.push(`${key}: a threshold does not notify monitoring.channels`);
+			}
+		}
+	}
+	// The default scopes: the release's environment and namespace.
+	const own = render('values-k8s-dev.yaml', [], 'ariva-site');
+	if (own.status !== 0) findings.push(`a release in ariva-site: template failed\n${own.stderr}`);
+	else {
+		const docs = parse(own.stdout);
+		findings.push(...monitoringEnvironment(docs, 'k8s-dev'));
+		if (!monitoringRule(docs, 'disk.json').includes("k8s.namespace.name IN ['ariva-site']")) findings.push('disk does not read the release namespace by default');
+		if (!monitoringRule(docs, 'ingressCertificateExpiry.json').includes('{namespace=~\\"ariva-site\\"}')) findings.push('ingressCertificateExpiry does not read the release namespace by default');
+	}
+	// The scopes set: another environment name, namespaces and the exported_namespace label.
+	const set = render('values-k8s-dev.yaml', ['monitoring.environment=site-a', 'monitoring.alerts.disk.namespaces={ariva-a,ariva-db}',
+		'monitoring.alerts.ingressCertificateExpiry.namespaces={ariva-a,ariva-edge}', 'monitoring.alerts.ingressCertificateExpiry.namespaceLabel=exported_namespace']);
+	if (set.status !== 0) findings.push(`the scopes set: template failed\n${set.stderr}`);
+	else {
+		const docs = parse(set.stdout);
+		findings.push(...checkManifests(docs, { environment: 'k8s-dev' }), ...monitoringEnvironment(docs, 'site-a'));
+		if (!monitoringRule(docs, 'disk.json').includes("k8s.namespace.name IN ['ariva-a', 'ariva-db']")) findings.push('disk does not read monitoring.alerts.disk.namespaces');
+		if (!monitoringRule(docs, 'ingressCertificateExpiry.json').includes('{exported_namespace=~\\"ariva-a|ariva-edge\\"}')) findings.push('ingressCertificateExpiry does not read its namespaces through namespaceLabel');
+	}
+	const off = render('values-k8s-prd.yaml', ['buildNumber=main-20261001.1', 'monitoring.enabled=false']);
+	if (off.status !== 0) findings.push(`monitoring off: template failed\n${off.stderr}`);
+	else if (parse(off.stdout).some((doc) => doc?.metadata?.labels?.['app.kubernetes.io/component'] === 'monitoring')) findings.push('monitoring off still renders a monitoring object');
+	if (findings.length) {
+		failed = true;
+		console.error(`FAIL monitoring switches:\n  ${findings.join('\n  ')}`);
+	} else {
+		console.log('PASS monitoring switches: the AMAN feed rule where turned on, channels on every threshold, the release\'s environment and namespace by default and the scopes set, nothing when monitoring is off');
 	}
 }
 
@@ -196,6 +298,7 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 		const findings = checkManifests(docs, { environment: contextEnvironment });
 		if (!docs.some((doc) => doc?.kind === 'StatefulSet' && doc.metadata?.name === 'timescaledb')) findings.push('the timescaledb release is not installed');
 		if (!docs.some((doc) => doc?.kind === 'Job' && doc.metadata?.name === 'kafka-topics')) findings.push('the kafka-topics job is not rendered');
+		findings.push(...missingMonitoringRules(docs), ...monitoringEnvironment(docs, contextEnvironment));
 		if (findings.length) {
 			failed = true;
 			console.error(`FAIL helmfile -e ${environment}:\n  ${findings.join('\n  ')}`);

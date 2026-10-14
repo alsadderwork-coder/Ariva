@@ -106,6 +106,57 @@ otel:
   endpoint: ""
   protocol: grpc
 
+# System monitoring (ARV-125b): SigNoz alert rules and dashboards rendered into the ConfigMaps ariva-monitoring-alerts and
+# ariva-monitoring-dashboards, which an operator imports into the site's SigNoz (v0.146.0; wiki/10 section 1). Nothing
+# here is a credential: the SigNoz address, its API key and the notification channels' settings stay in SigNoz.
+# Thresholds are the defaults of wiki/10 section 2 (Proposed where the wiki gives none); TC-36 tunes them per site in the
+# site's values file. templates/validate.yaml refuses a value out of range.
+monitoring:
+  enabled: true
+  # The deployment.environment every rule and dashboard reads (the hosts' Application:Environment, which the chart's
+  # appsettings set to environment). Empty: environment. One SigNoz may take several environments without mixing them.
+  environment: ""
+  # Names of SigNoz notification channels every rule notifies (created in SigNoz first). Empty: choose them after import.
+  channels: []
+  alerts:
+    # No ariva.health.status from a service for the window: every pod of it is down or silent. One rule per service.
+    hostDown: { enabled: true, minutes: 5, severity: critical, services: [api-main, api-ingest, api-stream, api-cronz, api-integration] }
+    # A readiness check Unhealthy (readiness answers 503) for the whole window.
+    readinessFailing: { enabled: true, minutes: 5, severity: critical }
+    # The MassTransit bus Degraded (readiness stays 200, the owner's ARV-125 decision).
+    busDegraded: { enabled: true, minutes: 2, severity: warning }
+    # The kafka readiness check Degraded (ARV-165): no broker answers the host's producer.
+    kafkaUnavailable: { enabled: true, minutes: 2, severity: critical }
+    # The database readiness check Unhealthy.
+    databaseUnavailable: { enabled: true, minutes: 2, severity: critical }
+    # The queue engine more than records behind a sensing topic for the whole window ("lag growing for several minutes").
+    streamConsumerLag: { enabled: true, minutes: 5, records: 1000, severity: critical }
+    # The oldest unsent outbox row older than minutes.
+    outboxBacklog: { enabled: true, minutes: 5, severity: critical }
+    # Any dead letter (sent, kept or failed) in the window.
+    deadLetters: { enabled: true, minutes: 15, severity: warning }
+    # A volume Ariva's data lives on fuller than usedPercent for the window, from the site collector's kubelet volume
+    # metrics (external). claims names the PersistentVolumeClaims (the TimescaleDB release's by default) and namespaces
+    # the namespaces they are in (empty: the release's namespace), so a claim of the same name elsewhere is not read.
+    disk: { enabled: true, minutes: 15, usedPercent: 75, severity: critical, claims: [data-timescaledb-0], namespaces: [] }
+    # A certificate an Ariva host loaded ends within warningDays (warning) or criticalDays (critical).
+    certificateExpiry: { enabled: true, warningDays: 30, criticalDays: 7 }
+    # The certificate cert-manager manages in namespaces (empty: the release's namespace) that ends soonest (the ingress
+    # certificate among them), from cert-manager's metric scraped by the site collector (external; silent where
+    # cert-manager is not scraped). namespaceLabel is the label that carries the certificate's namespace in SigNoz:
+    # namespace as cert-manager exports it, or exported_namespace when the scrape adds a namespace label of its own.
+    ingressCertificateExpiry: { enabled: true, warningDays: 30, criticalDays: 7, namespaces: [], namespaceLabel: namespace }
+    # No AMAN record other than refused ones for T_stale (2 minutes). Border deployments only: turn it on there.
+    amanFeedStale: { enabled: false, minutes: 2, severity: critical }
+    # The share of monitored devices Offline above share for the whole window.
+    devicesOffline: { enabled: true, minutes: 5, share: 0.2, severity: warning }
+    # A Kafka producer fatal error or recreation (ARV-167) in the window.
+    kafkaProducerFatal: { enabled: true, minutes: 5, severity: critical }
+    # A consumed topic missing (ARV-176) for the whole window.
+    consumedTopicMissing: { enabled: true, minutes: 5, severity: warning }
+    # A consumer whose topic exists but whose connect keeps failing, for the whole window.
+    consumerUnconnected: { enabled: true, minutes: 5, severity: warning }
+
 # Registry credentials for dalilacr-secret. Leave the password empty to skip rendering the secret
 # (for example when it is created out of band). The release pipeline passes these with set flags.
 imageCredentials:

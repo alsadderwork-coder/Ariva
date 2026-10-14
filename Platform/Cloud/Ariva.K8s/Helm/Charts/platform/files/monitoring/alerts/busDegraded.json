@@ -1,0 +1,87 @@
+{
+  "alert": "Ariva message bus degraded (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "On the MassTransit bus is Degraded (a Kafka endpoint faulted); readiness still answers 200 (ARV-125b).",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "ariva.health.status",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}' AND check = 'masstransit-bus'"
+            },
+            "groupBy": [
+              {
+                "name": "service.name",
+                "fieldContext": "resource",
+                "fieldDataType": "string"
+              }
+            ],
+            "legend": "{{service.name}}"
+          }
+        }
+      ]
+    },
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${busDegraded.severity}",
+          "op": "above_or_equal",
+          "matchType": "all_the_times",
+          "target": 1,
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "${busDegraded.minutes}m",
+      "frequency": "1m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [
+      "service.name"
+    ],
+    "renotify": {
+      "enabled": true,
+      "interval": "4h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "busDegraded",
+    "environment": "${environment}",
+    "severity": "${busDegraded.severity}"
+  },
+  "annotations": {
+    "summary": "Ariva message bus degraded on {{$service.name}}",
+    "description": "The masstransit-bus check of {{$service.name}} has read {{$value}} (1 Degraded, 2 Unhealthy) for ${busDegraded.minutes} minutes.",
+    "runbook": "wiki/10-Operations-Runbook.md#46-kafka-consumer-lag-growing"
+  },
+  "disabled": false
+}

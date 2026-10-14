@@ -1,0 +1,93 @@
+{
+  "alert": "Ariva stream consumer lag (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "The queue engine is behind the end of a sensing topic by more than the floor for the whole window (ARV-125b).",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "ariva.stream.consumer_lag",
+                "timeAggregation": "max",
+                "spaceAggregation": "sum"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}'"
+            },
+            "groupBy": [
+              {
+                "name": "topic",
+                "fieldContext": "attribute",
+                "fieldDataType": "string"
+              },
+              {
+                "name": "group",
+                "fieldContext": "attribute",
+                "fieldDataType": "string"
+              }
+            ],
+            "legend": "{{topic}} ({{group}})"
+          }
+        }
+      ]
+    },
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${streamConsumerLag.severity}",
+          "op": "above",
+          "matchType": "all_the_times",
+          "target": "${streamConsumerLag.records}",
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "${streamConsumerLag.minutes}m",
+      "frequency": "1m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [
+      "topic",
+      "group"
+    ],
+    "renotify": {
+      "enabled": true,
+      "interval": "4h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "streamConsumerLag",
+    "environment": "${environment}",
+    "severity": "${streamConsumerLag.severity}"
+  },
+  "annotations": {
+    "summary": "Stream lag on {{$topic}}",
+    "description": "The queue engine ({{$group}}) has been more than ${streamConsumerLag.records} records behind on {{$topic}} for ${streamConsumerLag.minutes} minutes ({{$value}} now).",
+    "runbook": "wiki/10-Operations-Runbook.md#46-kafka-consumer-lag-growing"
+  },
+  "disabled": false
+}

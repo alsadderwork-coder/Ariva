@@ -1850,3 +1850,73 @@ Full suite green at 6151619 (backlog/checkpoint.json): build, unit, security wit
 - Gotchas: FluentAssertions' `OnlyContain` fails on an empty collection (an instrument without tags); the stream's lag window is a minute because a checkpoint can hold the loop for the database's command timeout; the xUnit v3 runner combines a namespace filter and a class filter with AND, so the classes are named one by one.
 - For Phase 3 (not needed before the pilot, for the lead): a per-site AMAN feed age gauge from the desk feed's heartbeat (the 125b alert is site-blind); broker-side lag for the MassTransit groups (the site collector's Kafka receiver); a lag that grows while reading is paused (the fetched watermark does not move then).
 - Security review (security-reviewer; CWE-200, CWE-269, CWE-532, with CWE-400 and the data boundary judged): PASS (2026-10-14). The readiness bodies are constants (no check name, description, exception or detail; check tags reduced to `other` unless code-shaped); the certificate metric reads only the end date of certificates the host already loaded (no new key access, mount or permission); no tag carries a desk, zone, line, officer, traveller or document value, and the border figures are site-wide aggregates; the publisher (15 s, run bound 10 s, checks 5 s) and the outbox count (30 s, 10 s bound) are bounded and cannot stack; each dead letter is counted once per sending outcome, and the relay's later send of a kept letter is not counted. ADR-0018: the engineer had edited the dated 2026-10-12 note in place; the lead restored it byte for byte and appended a dated 2026-10-14 note (the reviewer confirmed additions only). `scan.mjs --changed` 44 files, 0 errors (the 13 new files scanned explicitly, 0 errors). Recommendations: (4) the counter semantics added to wiki 10 section 2a by the lead; (3) a note in ARV-085 that the public ingress must not route /health/*; (1) the client-chosen feed tag and (2) the outbox count before each relay pass, with the engineer's three gaps (per-site AMAN feed age, MassTransit consumer lag, flat stream lag while paused), to Phase 3 as ARV-179. Passes set to true.
+
+## 2026-10-14 ARV-125b: System monitoring alerts and dashboards in the chart (Phase 1, branch story/mvp-phase1)
+- Built by the devops engineer; not committed and passes not set (the lead's security review, CWE-269 and CWE-532).
+- Target: SigNoz v0.146.0, the latest release on Docker Hub on 2026-10-14. Rules use `version` v5 with `schemaVersion` v2alpha1 (`POST /api/v2/rules`). Dashboards use the v2 (Perses) format, `schemaVersion` v6 (`POST /api/v2/dashboards`). Both import with an Editor's `SIGNOZ-API-KEY`.
+- How the target was verified: the GitHub API and signoz.io could not be reached from the session. The version is the newest tag on Docker Hub. The schemas come from SigNoz's own source at that tag on raw.githubusercontent.com: the rule examples and validation in pkg/types/ruletypes, the dashboard types in pkg/types/dashboardtypes, and the Redis integration dashboard. Nothing was tried against a running SigNoz.
+- Chart (`Charts/platform`):
+  - `files/monitoring/alerts/*.json`: 16 rule sources, one per criterion and per Kafka signal of the notes.
+  - `files/monitoring/dashboards/*.json`: two dashboards, System health (9 panels) and Sensing and feeds (13 panels).
+  - `templates/monitoring.yaml`: renders only the ConfigMaps `ariva-monitoring-alerts` and `ariva-monitoring-dashboards` (no Job, no RBAC, no SigNoz address or key).
+    - Tokens in the sources take the values of `monitoring.alerts.<key>`. `${key.seconds}` and `${key.<x>Seconds}` are derived.
+    - `hostDown` renders once per service. A rule with enabled false is left out. A missing values entry or an unresolved token fails the render.
+  - `values.yaml`: a `monitoring` block (enabled, channels, alerts) with the wiki 10 section 2 defaults; `amanFeedStale` is off.
+  - `validate.yaml`: guards for every field (minutes, severity, records, usedPercent, share, days, claims and services, channel names, unknown keys).
+- External metrics are only on the reviewed list in `Ariva.K8s/tests/monitoring.json`:
+  - kubelet `k8s.volume.available` and `k8s.volume.capacity` for `disk`;
+  - cert-manager's `certmanager_certificate_expiration_timestamp_seconds` for `ingressCertificateExpiry`.
+  - The same file holds the label allowlist and denylist.
+- Tests:
+  - Unit `MonitoringRulesTests` (10): every metric is a registered instrument or on the external list (external ones only in their listed rules, none stale); counters are read with increase or rate, gauges never; labels are allowlisted and none forbidden; the Ariva label list equals `MetricTagTests.AllowedKeys`; runbook anchors exist in wiki 10; the rule files equal `criterionRules`; schema versions are right. `MetricTagTests.Drives` is now internal.
+  - `checks.mjs` monitoring findings: credentials, unresolved tokens, labels, severities, numeric targets, runbook links, schema versions, ConfigMaps only.
+  - `chart-security.mjs`: every criterion rule present in each render; 10 release guards; the switches (AMAN on with channels on every threshold, nothing when off).
+  - Good and bad fixtures; the self-test now fires 59 rules.
+- Docs:
+  - wiki 10: section 1 (SigNoz row, 1.1 import), section 2 (pointer), 3.1 (the rule table), 4.12 (host down or not ready).
+  - wiki 04: prerequisites and the monitoring values.
+  - ADR-0022: a new dated Notes section.
+  - decisions.md: the entry and an open-decisions row.
+- Gates (2026-10-14, 17:08 to 17:27 UTC, Stryker running beside them):
+  - `verify backend` exit 0: unit 5,477; chart security PASS in every environment with 19 alert rules and 2 dashboards; 10 new guards and the switches PASS; Helmfile renders skipped locally (no helmfile; CI runs them).
+  - `verify story --specs tests/api/health.spec.ts` exit 0: unit 5,478, integration skipped (no persistence change), E2E 5 spec files 309 passed (health.spec.ts 15 of 15).
+  - `scan.mjs --changed`: 29 files, 0 errors.
+  - docs rules PASS.
+- Gotchas:
+  - `--set` gives int64 and values files give float64, so the guards accept both kinds before comparing.
+  - Helm `replace` order matters: replace the quoted token (the JSON value) before the bare one (the text).
+  - The credential-key check matched a dashboard panel id containing "token"; the panel was renamed `ariva-integration-exchanges`.
+  - Runbook anchors use GitHub's slug: dots dropped, spaces to hyphens. The unit test checks each anchor against wiki 10's headings.
+- For Phase 3 (for the lead; not needed before the pilot):
+  - Rules for the section 3 alarms not built yet: sensor degraded, zone Unknown, clock drift, stale AODB feed, unknown AMAN codes, bin maturity backlog, failed retention job, display stale, client locked out.
+  - An import tested against a running SigNoz v0.146.0 (Testcontainers or the dev stack); the lead adds a live import before go-live to ARV-137's notes.
+  - A per-site AMAN feed age (the rule is site-blind; already on ARV-179).
+- Security review (lead's reviewer, CWE-269 and CWE-532): the chart side passed. FAIL on R1 (CWE-214, CWE-522): wiki 10 section 1.1 put the SigNoz key on curl's command line and in `~/.signoz-api-key`. Fixed the same day, with the reviewer's recommendations 1, 2 and 4:
+  - R1 and recommendation 4 (wiki 10 section 1.1):
+    - the import runs as a SigNoz user kept for it (Editor), with a key created for the import and revoked after it;
+    - the key is read with `read -rs`, never written to a file, and unset at the end;
+    - curl takes the header from `-H @<(printf 'SIGNOZ-API-KEY: %s\n' "$SIGNOZ_API_KEY")` (curl 7.55 or later; `printf` is a builtin, so no command line carries the key). Checked locally against a listener with curl 8.5: the header is sent.
+  - Recommendation 1, the external rules scoped by namespace:
+    - `disk` reads `k8s.namespace.name IN ${disk.namespaces}`;
+    - `ingressCertificateExpiry` reads `{<namespaceLabel>=~"<namespaces joined with |>"}`, the label `namespace` or `exported_namespace` from values;
+    - both `namespaces` lists default to the release's namespace when empty;
+    - the description says `kubectl -n <namespace> get certificate`, and wiki 10 section 4.9 has that check.
+  - Recommendation 2, every query of an Ariva metric scoped by environment:
+    - rules and dashboards start their filter with `deployment.environment = '${environment}'`, filled from `monitoring.environment`, or the release's `environment` when empty;
+    - the hosts report `deployment.environment` from `Application:Environment` (ServiceDefaults), and the chart's `OTEL_RESOURCE_ATTRIBUTES` from `environment`: the same value, since the chart's appsettings set one to the other;
+    - names end with the environment; rules carry the label `environment`; both ConfigMaps carry the annotation `ariva.dalil.tech/environment`.
+  - Guards: the environment (and `environment` when monitoring reads it) must be a plain name; namespaces a list of namespace names; `namespaceLabel` is `namespace` or `exported_namespace`; a missing list or label fails as an unresolved token.
+  - Tests:
+    - unit `EveryQuery_Should_ReadItsOwnReleaseOnly_When_ARuleOrDashboardReadsAMetric`: the environment filter first, the namespace filters, no OR; seen failing with one filter removed;
+    - `checks.mjs` monitoring scope findings on every render;
+    - `chart-security.mjs`: each environment's annotation, 7 new release guards, and switches for the release namespace by default (`--namespace ariva-site`) and for explicit scopes;
+    - fixtures: a scoped disk and PromQL rule in the good fixture and an `unscoped.json` in the bad one; the self-test now fires 64 rules;
+    - `monitoring.json` allows `namespace` and `exported_namespace` as reviewed exceptions.
+  - Docs: wiki 10 sections 1.1, 3.1 and 4.9; wiki 04 `monitoring.environment` and the namespace values; decisions.md points (2) and (6) revised and (9) added, with the open-decisions row. ADR-0022 is unchanged, since its note stays true.
+  - Gates (2026-10-14, 17:45 to 18:00 UTC, Stryker running beside them):
+    - `verify backend` exit 0: unit 5,479; chart security PASS in every environment, every guard and the switches;
+    - `verify story --specs tests/api/health.spec.ts` exit 0: unit 5,479, integration skipped, E2E 309 passed;
+    - `scan.mjs --changed`: 30 files, 0 errors;
+    - docs rules PASS;
+    - `helm lint` clean in all four environments.
+- Security review verdict (security-reviewer; CWE-269, CWE-532, with CWE-94, CWE-214 and CWE-522 judged): FAIL, then PASS (2026-10-14, re-review). First review, R1: the import procedure put the SigNoz Editor key on curl's command line and left it in a key file; fixed with a dedicated Editor-only import user, a short-lived key revoked after the import, `read -rs`, the header by process substitution and `unset`. Recommendations 1 (external rules scoped to the release's namespaces) and 2 (every Ariva query scoped to its environment) built in the same round; 3 (a live import before go-live) in ARV-137's notes. Re-review: PASS. The chart adds two ConfigMaps only; labels and annotations are allowlisted and no request-chosen value reaches a notification; the environment, namespace list and namespace label are validated so they cannot inject into PromQL, builder filters or JSON. `scan.mjs --changed` 30 files, 0 errors; chart-security self-test 64 rules. Nits: the import script's NAMESPACE line added by the lead before the commit; the unchecked default namespace and the remaining section 3 alarm rules to Phase 3 (ARV-179's notes). Passes set to true.

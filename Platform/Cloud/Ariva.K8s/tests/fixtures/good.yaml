@@ -124,3 +124,47 @@ spec:
             - { name: Database__ValidationReader__Password, valueFrom: { secretKeyRef: { name: ariva-validation-reader, key: password, optional: false } } }
           securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
           volumeMounts: [{ name: tmp, mountPath: /tmp }]
+---
+# ARV-125b: a monitoring pair as the chart renders it (one rule, one dashboard).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ariva-monitoring-alerts
+  labels: { app.kubernetes.io/component: monitoring }
+  annotations: { ariva.dalil.tech/environment: k8s-dev }
+data:
+  kafkaUnavailable.json: |
+    {"alert": "Ariva Kafka unavailable", "alertType": "METRIC_BASED_ALERT", "ruleType": "threshold_rule", "version": "v5", "schemaVersion": "v2alpha1",
+     "condition": {"compositeQuery": {"queryType": "builder", "panelType": "graph", "queries": [{"type": "builder_query", "spec": {"name": "A", "signal": "metrics",
+       "aggregations": [{"metricName": "ariva.health.status", "timeAggregation": "max", "spaceAggregation": "max"}], "filter": {"expression": "deployment.environment = 'k8s-dev' AND check = 'kafka'"},
+       "groupBy": [{"name": "service.name", "fieldContext": "resource", "fieldDataType": "string"}], "legend": "{{service.name}}"}}]},
+       "selectedQueryName": "A", "thresholds": {"kind": "basic", "spec": [{"name": "critical", "op": "above_or_equal", "matchType": "all_the_times", "target": 1, "channels": []}]}},
+     "evaluation": {"kind": "rolling", "spec": {"evalWindow": "2m", "frequency": "1m"}},
+     "notificationSettings": {"groupBy": ["service.name"], "renotify": {"enabled": true, "interval": "4h", "alertStates": ["firing"]}, "usePolicy": false},
+     "labels": {"product": "ariva", "rule": "kafkaUnavailable", "severity": "critical"},
+     "annotations": {"summary": "Kafka unavailable on {{$service.name}}", "runbook": "wiki/10-Operations-Runbook.md#46-kafka-consumer-lag-growing"}}
+  disk.json: |
+    {"alert": "Ariva database volume filling (k8s-dev)", "alertType": "METRIC_BASED_ALERT", "ruleType": "threshold_rule", "version": "v5", "schemaVersion": "v2alpha1",
+     "condition": {"compositeQuery": {"queryType": "builder", "panelType": "graph", "queries": [
+       {"type": "builder_query", "spec": {"name": "A", "signal": "metrics", "aggregations": [{"metricName": "k8s.volume.available", "timeAggregation": "max", "spaceAggregation": "max"}],
+         "filter": {"expression": "k8s.volume.type = 'persistentVolumeClaim' AND k8s.namespace.name IN ['ariva'] AND k8s.persistentvolumeclaim.name IN ['data-timescaledb-0']"}, "groupBy": []}},
+       {"type": "promql", "spec": {"name": "B", "query": "min(certmanager_certificate_expiration_timestamp_seconds{exported_namespace=~\"ariva|ariva-edge\"}) - time()"}}]},
+       "selectedQueryName": "A", "thresholds": {"kind": "basic", "spec": [{"name": "critical", "op": "above", "matchType": "all_the_times", "target": 75, "channels": []}]}},
+     "evaluation": {"kind": "rolling", "spec": {"evalWindow": "15m", "frequency": "5m"}},
+     "labels": {"product": "ariva", "rule": "disk", "severity": "critical", "environment": "k8s-dev"},
+     "annotations": {"summary": "Volume filling", "runbook": "wiki/10-Operations-Runbook.md#47-database-disk-filling"}}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ariva-monitoring-dashboards
+  labels: { app.kubernetes.io/component: monitoring }
+  annotations: { ariva.dalil.tech/environment: k8s-dev }
+data:
+  ariva-system-health.json: |
+    {"schemaVersion": "v6", "image": "", "name": "", "generateName": true, "tags": [{"key": "tag", "value": "ariva"}],
+     "spec": {"display": {"name": "Ariva system health", "description": ""}, "variables": [], "layouts": [], "duration": "", "refreshInterval": "", "links": [],
+       "panels": {"ariva-health-status": {"kind": "Panel", "spec": {"display": {"name": "Readiness checks", "description": ""}, "plugin": {"kind": "signoz/TimeSeriesPanel", "spec": {}},
+         "queries": [{"kind": "time_series", "spec": {"name": "A", "plugin": {"kind": "signoz/BuilderQuery", "spec": {"name": "A", "signal": "metrics",
+           "aggregations": [{"metricName": "ariva.health.status", "timeAggregation": "max", "spaceAggregation": "max"}],
+           "filter": {"expression": "deployment.environment = 'k8s-dev'"}, "groupBy": [{"name": "check", "fieldContext": "attribute", "fieldDataType": "string"}], "legend": "{{check}}"}}}}], "links": []}}}}}

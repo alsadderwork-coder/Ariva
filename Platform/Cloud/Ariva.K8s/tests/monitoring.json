@@ -1,0 +1,34 @@
+{
+  "description": "ARV-125b: what the SigNoz rules and dashboards in Charts/platform/files/monitoring may read. Checked by MonitoringRulesTests (Ariva.UnitTests, against the instruments Ariva registers) and by checks.mjs (against every render). A change here is reviewed: a label key must name a bounded set of configuration values or constants, never a person, a credential or a value from a request; an external metric is allowed only where Ariva cannot measure, and is read within the release's namespaces (every Ariva metric within the release's deployment.environment).",
+  "labels": {
+    "ariva": ["certificate", "check", "contract", "feed", "feed_kind", "group", "kind", "outcome", "site", "topic"],
+    "resource": ["deployment.environment", "k8s.cluster.name", "k8s.deployment.name", "k8s.namespace.name", "k8s.pod.name", "service.instance.id", "service.name", "service.namespace"],
+    "external": ["k8s.persistentvolumeclaim.name", "k8s.volume.type", "namespace", "exported_namespace"]
+  },
+  "forbidden": "user|name|mail|person|officer|travel|passenger|document|passport|nationality|phone|address|^ip$|token|secret|password|credential|key|auth|cookie|session|client|subject|serial",
+  "forbiddenExceptions": ["service.name", "k8s.cluster.name", "k8s.deployment.name", "k8s.namespace.name", "k8s.pod.name", "service.namespace", "k8s.persistentvolumeclaim.name", "namespace", "exported_namespace"],
+  "externalMetrics": [
+    {
+      "metric": "k8s.volume.available",
+      "source": "The site collector's kubelet stats receiver (SigNoz k8s-infra): free bytes of each pod volume. Ariva cannot see the volume of its database pod.",
+      "rules": ["disk"]
+    },
+    {
+      "metric": "k8s.volume.capacity",
+      "source": "The site collector's kubelet stats receiver (SigNoz k8s-infra): size of each pod volume.",
+      "rules": ["disk"]
+    },
+    {
+      "metric": "certmanager_certificate_expiration_timestamp_seconds",
+      "source": "cert-manager's own metric, scraped by the site collector's Prometheus receiver; its namespace label is namespace, or exported_namespace when the scrape adds a namespace label of its own. The ingress certificate is in no Ariva pod (CWE-269: no pod mounts its key for this).",
+      "rules": ["ingressCertificateExpiry"]
+    }
+  ],
+  "criterionRules": [
+    "hostDown", "readinessFailing", "busDegraded", "kafkaUnavailable", "databaseUnavailable", "streamConsumerLag", "outboxBacklog",
+    "deadLetters", "disk", "certificateExpiry", "ingressCertificateExpiry", "amanFeedStale", "devicesOffline", "kafkaProducerFatal",
+    "consumedTopicMissing", "consumerUnconnected"
+  ],
+  "severities": ["warning", "critical"],
+  "runbook": "wiki/10-Operations-Runbook.md#"
+}

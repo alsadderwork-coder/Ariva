@@ -1,0 +1,87 @@
+{
+  "alert": "Ariva database unavailable (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "On the database readiness check is Unhealthy: the runtime login cannot run a statement (ARV-125b).",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "ariva.health.status",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}' AND check = 'database'"
+            },
+            "groupBy": [
+              {
+                "name": "service.name",
+                "fieldContext": "resource",
+                "fieldDataType": "string"
+              }
+            ],
+            "legend": "{{service.name}}"
+          }
+        }
+      ]
+    },
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${databaseUnavailable.severity}",
+          "op": "above_or_equal",
+          "matchType": "all_the_times",
+          "target": 2,
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "${databaseUnavailable.minutes}m",
+      "frequency": "1m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [
+      "service.name"
+    ],
+    "renotify": {
+      "enabled": true,
+      "interval": "4h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "databaseUnavailable",
+    "environment": "${environment}",
+    "severity": "${databaseUnavailable.severity}"
+  },
+  "annotations": {
+    "summary": "Ariva database unavailable on {{$service.name}}",
+    "description": "The database check of {{$service.name}} has read {{$value}} (1 Degraded, 2 Unhealthy) for ${databaseUnavailable.minutes} minutes.",
+    "runbook": "wiki/10-Operations-Runbook.md#412-host-down-or-not-ready-arv-125b"
+  },
+  "disabled": false
+}

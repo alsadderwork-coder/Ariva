@@ -13,10 +13,55 @@ Status: metric names, dashboards and system alarms are built in Phase 0 epic Ske
 | Resource attributes | `service.namespace=ariva`, `deployment.environment`, `k8s.cluster.name`, `service.version`, plus node, pod and namespace names |
 | Kubernetes probes | `/health/startup`, `/health/readiness`, `/health/liveness` on every .NET host; `/healthz` on the web pods. Readiness runs the checks tagged `ready` and answers 503 only when one is Unhealthy: PostgreSQL (Unhealthy when the runtime login cannot run a statement, ARV-066), the MassTransit bus (Unhealthy until it has started, ARV-020), `kafka` (Degraded at most: no broker answered a metadata request through the host's producer within 3 seconds, or the producer is not started or is in its fatal gap; ARV-165) and Redis when enabled (Degraded at most). During a Kafka outage a started bus is Degraded (its Kafka endpoint faulted), not Unhealthy, so readiness keeps answering 200, with "Degraded" in its body (since ARV-125a; it said "Healthy" before), and a consuming host stays in the service like one that only publishes; the outage shows as the `kafka` and `masstransit-bus` health checks' Warnings in the log, as consumer lag and as Ingest's 503 to devices, while services keep their events in the outbox (ARV-156). `kafka` reports the outage within 3 seconds even while a consumer's offset commit is in flight, which holds `masstransit-bus` Healthy for up to 45 seconds (ARV-165). A Degraded check raises an alert and does not fail readiness (the owner's ARV-125 decision): the alert reads `ariva.health.status` (section 2a), since the readiness body is a status word only and names no check (CWE-200) |
 | TickerQ dashboard | Job runs and failures in Ariva.Api.Cronz (management network only) |
+| SigNoz alert rules and dashboards (ARV-125b) | Shipped with the chart as two ConfigMaps for an operator to import (section 1.1): the rules of section 3.1 and two dashboards, "Ariva system health" and "Ariva sensors, feeds and integration". Written for SigNoz v0.146.0 (rule schema `v5`, `schemaVersion` `v2alpha1`; dashboards in SigNoz's v2 format, `schemaVersion` `v6`) |
+
+### 1.1 Importing the alert rules and dashboards into SigNoz (ARV-125b)
+
+The chart renders `ariva-monitoring-alerts` (one SigNoz alert rule per key, the thresholds already in them from `monitoring.alerts`) and `ariva-monitoring-dashboards` (two dashboards) in the release's namespace when `monitoring.enabled` is true (the default). It creates nothing in SigNoz itself: no Job, no SigNoz address or API key in the chart.
+
+Every rule and dashboard reads its own release only, so one SigNoz can take several environments and clusters without mixing them. Each query of an Ariva metric is filtered on `deployment.environment`, which is `monitoring.environment`, or the release's `environment` when that is empty. The value must equal the hosts' `Application:Environment`, which the chart's appsettings set to `environment`. The `disk` and `ingressCertificateExpiry` rules read external metrics, so they are filtered on the release's namespaces instead. Rule and dashboard names end with the environment, for example "Ariva readiness failing (k8s-prd)", and each rule carries the label `environment`.
+
+Import after each release that changes the rules or dashboards:
+
+1. Create the notification channels in SigNoz (Settings, Alert Channels). Before the release, list their names in `monitoring.channels` in the site's values file; or leave it empty and choose each rule's channels after the import.
+2. Use a SigNoz user kept for this import only, with the Editor role and nothing more. Signed in as that user, create an API key for this import (Settings, API Keys) with the shortest expiry SigNoz offers. Do not write the key to a file, to git or to shell history.
+3. Import from a machine that reaches both the cluster and SigNoz. It needs bash, `jq` and curl 7.55 or later (for `-H @file`).
+   - The key is read without echo and never written to disk.
+   - curl reads the header from a process substitution, and `printf` is a bash builtin, so the key never appears on a command line: not in `ps`, and not in `/proc/<pid>/cmdline` on a shared host.
+
+```bash
+SIGNOZ_URL=https://signoz.example.internal          # the site's SigNoz
+NAMESPACE=ariva                                     # the release's namespace
+read -rs -p 'SigNoz API key: ' SIGNOZ_API_KEY; echo   # not echoed, not in history, not exported
+for kind in alerts dashboards; do
+  path=$([ "$kind" = alerts ] && echo rules || echo dashboards)
+  kubectl -n "$NAMESPACE" get configmap "ariva-monitoring-$kind" -o json | jq -c '.data | to_entries[]' |
+  while read -r entry; do
+    echo "$entry" | jq -r .key
+    echo "$entry" | jq -r .value | curl -sS -X POST "$SIGNOZ_URL/api/v2/$path" \
+      -H @<(printf 'SIGNOZ-API-KEY: %s\n' "$SIGNOZ_API_KEY") \
+      -H 'Content-Type: application/json' --data-binary @- -w '\n%{http_code}\n'
+  done
+done
+unset SIGNOZ_API_KEY
+```
+
+4. Revoke the API key in SigNoz (Settings, API Keys) as soon as the import is done, and leave the import user without a key.
+
+Each POST answers 201; any other code prints SigNoz's reason above it.
+
+Importing again creates a second copy. Delete the rules (Alerts) and dashboards Ariva created before, or update a rule in place with `PUT /api/v2/rules/{id}`.
+
+After an import, check three things:
+- **Environment**: every `hostDown` rule firing at once means `deployment.environment` does not match the hosts. Compare `monitoring.environment` with `Application:Environment`.
+- **External metrics**: a rule whose metric the site does not collect stays without data and never fires.
+  - `disk` needs the collector's kubelet volume metrics (SigNoz k8s-infra).
+  - `ingressCertificateExpiry` needs cert-manager's metrics scraped, under the label set in `monitoring.alerts.ingressCertificateExpiry.namespaceLabel`. That is `namespace` as cert-manager exports it, or `exported_namespace` when the scrape configuration adds a `namespace` label of its own.
+- **SigNoz version**: another version may refuse these schemas. Test one rule first with `POST /api/v2/rules/test`.
 
 ## 2. Key metrics
 
-Thresholds are To confirm per site unless a value is given.
+Thresholds are To confirm per site unless a value is given. The defaults the chart's alert rules ship with, and the values that change them, are in section 3.1.
 
 | Metric | What it tells you | Alarm (proposal) |
 |---|---|---|
@@ -78,6 +123,40 @@ Every Backplane host exports these over OTLP (section 1) when `otel.endpoint` is
 | Display stale | Warning | Terminal or border operations |
 | Certificate expiring | Warning at 30 days, critical at 7 | Site IT |
 | Integration client locked out | Warning | Site administrator |
+
+### 3.1 The alert rules the chart ships (ARV-125b)
+
+Each rule is a key of `ariva-monitoring-alerts`, tuned by `monitoring.alerts.<key>` in the site's values file. TC-36 sets the site's values. The defaults below come from section 2, marked Proposed where it gives none.
+
+Every rule carries:
+- a `runbook` annotation that links the procedure below;
+- the labels `product: ariva`, `rule: <key>` and `environment`;
+- the severity as its threshold's name.
+
+Every rule reads its own release only (section 1.1): the Ariva metrics for `deployment.environment`, and the two external rules for the release's namespaces.
+
+`templates/validate.yaml` refuses a value out of range: minutes 1 to 1440, a percentage 1 to 99, a share above 0 and at most 1, critical days below warning days, and namespaces and the environment that are not plain names.
+
+| Rule | Fires when | Default | Severity | What to do |
+|---|---|---|---|---|
+| `hostDown` (one per host: `hostDown-api-main` and so on, `services`) | No `ariva.health.status` from the host for the window: every pod of it is down or silent | 5 minutes (Proposed) | Critical | 4.12 |
+| `readinessFailing` | A readiness check Unhealthy (2) for the whole window: readiness answers 503 | 5 minutes (Proposed) | Critical | 4.12 |
+| `databaseUnavailable` | The `database` check Unhealthy | 2 minutes (Proposed) | Critical | 4.12 |
+| `kafkaUnavailable` | The `kafka` check Degraded (ARV-165): no broker answers the host's producer; readiness stays 200 | 2 minutes (Proposed) | Critical | 4.6 |
+| `busDegraded` | The `masstransit-bus` check Degraded; readiness stays 200 (the owner's ARV-125 decision) | 2 minutes (Proposed) | Warning | 4.6 |
+| `streamConsumerLag` | The queue engine more than `records` behind a sensing topic for the whole window ("lag growing for several minutes") | 1,000 records for 5 minutes (Proposed) | Critical | 4.6 |
+| `outboxBacklog` | The oldest unsent outbox row older than `minutes` ("growing backlog") | 5 minutes (Proposed) | Critical | 4.5a |
+| `deadLetters` | Any dead letter (sent, kept or failed) in the window | 15 minutes (Proposed) | Warning | 4.5a |
+| `kafkaProducerFatal` | A producer fatal error or recreation (ARV-167) in the window | 5 minutes | Critical | 4.5a |
+| `consumedTopicMissing` | A consumed topic missing (ARV-176) for the whole window | 5 minutes ("a few") | Warning | 4.5a |
+| `consumerUnconnected` | A consumer whose topic exists but whose connect keeps failing, for the whole window | 5 minutes | Warning | 4.5a |
+| `disk` | A volume in `claims`, in the namespaces `namespaces` (empty: the release's), fuller than `usedPercent` for the window (the site collector's kubelet volume metrics) | 75 percent, `data-timescaledb-0` in the release's namespace, 15 minutes | Critical | 4.7 |
+| `certificateExpiry` | A certificate an Ariva host loaded ends within `warningDays` or `criticalDays` | 30 and 7 days | Warning, critical | 4.9 |
+| `ingressCertificateExpiry` | The certificate cert-manager manages in `namespaces` (empty: the release's) that ends soonest ends within those days (cert-manager's metric, its namespace read from the label `namespaceLabel`: `namespace` or `exported_namespace`) | 30 and 7 days, the release's namespace, `namespace` | Warning, critical | 4.9 |
+| `amanFeedStale` (off by default; turn it on in border deployments) | No AMAN record other than refused ones for T_stale, or no AMAN record at all | 2 minutes (T_stale, formulas F10) | Critical | 4.4 |
+| `devicesOffline` | The share of monitored devices Offline above `share` for the whole window | 0.2 for 5 minutes (Proposed) | Warning | 4.1 |
+
+The alarms of the table above that are not rules yet (sensor degraded, zone `Unknown`, clock drift, stale AODB feed, unknown AMAN codes, bin maturity backlog, a failed retention job, display stale, a client locked out) are read from the dashboards and the log until rules are added for them.
 
 Operational alerts for queues (for example R-001 "Nowcast above 15 min") are configured by users; see [Administration guide](11-Administration-Guide.md).
 
@@ -331,6 +410,7 @@ SELECT job_id, hypertable_name, last_run_status, last_successful_finish, next_st
 
 ```bash
 echo | openssl s_client -connect <host>:443 -servername <host> 2>/dev/null | openssl x509 -noout -enddate
+kubectl -n "$NAMESPACE" get certificate    # where cert-manager issues it: the ingressCertificateExpiry alert reads these
 ```
 
 Also check device client certificates (MQTT), outbound endpoint client certificates, the border-to-airport mutual TLS certificates, and integration partners' pinned CAs.
@@ -416,6 +496,17 @@ If an event does not show:
 | AUH-TA shows no data | `start` says how many AUH-TA sensors it calibrated; none means the illustrative seed has not run (`Seed:DemoTopology`, ARV-139a). The simulator's `GET api/v1/simulation/sensors` lists each device with its site |
 | Every desk Unknown on the immigration screen | The AMAN feed: the simulator plays it with the demo clock, so it is Unknown until the clock runs; then section 4.8i |
 | R-004 not by 19:16 | The 19:00 to 19:15 bin is judged once it has ended; the 15-minute bins need the alignment of step 3 (do not use `--no-align` for the rehearsal) |
+
+### 4.12 Host down or not ready (ARV-125b)
+
+- **Symptoms**: `hostDown-<host>` (no health report from any pod of the host), `readinessFailing` (a readiness check Unhealthy, so readiness answers 503 and Kubernetes routes nothing to the pod) or `databaseUnavailable` (the `database` check Unhealthy).
+- **Effect**: a host down stops its part of the system (Ingest: devices get no answer and keep their batches; Stream: no new minutes or alerts; Main: the screens and the administration). A pod not ready keeps running but gets no traffic. The database away makes every host's readiness fail together.
+- **Checks**:
+  1. `kubectl -n "$NAMESPACE" get pods -l app=api-<host>` and `kubectl -n "$NAMESPACE" describe pod <pod>`: restarts, `CrashLoopBackOff`, a failed startup probe, an image that cannot be pulled, a missing secret.
+  2. The host's log since the start: a setting refused at start names itself (`Hosting:ShutdownSeconds`, `Kafka:Consumers:StartWaitSeconds`, the schema version).
+  3. For the database: the TimescaleDB pod, its log and its volume (4.7), and `kubectl -n "$NAMESPACE" exec timescaledb-0 -- pg_isready`; for a database the site provides, its own monitoring.
+  4. A host that runs but reports nothing: the OTLP endpoint (`otel.endpoint`) and the collector, since the rule cannot tell a silent host from a stopped one.
+- **Actions**: fix the cause and let Kubernetes restart the pods; never set readiness aside. A Degraded check (Kafka, Redis, the message bus) does not make a host unready: it raises `kafkaUnavailable` or `busDegraded` (4.6).
 
 ## 5. Routine checks
 

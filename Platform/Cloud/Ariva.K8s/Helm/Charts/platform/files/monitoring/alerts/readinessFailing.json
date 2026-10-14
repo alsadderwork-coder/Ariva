@@ -1,0 +1,87 @@
+{
+  "alert": "Ariva readiness failing (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "A readiness check of a host is Unhealthy (2), so its readiness answers 503 and Kubernetes routes nothing to it (ARV-125b).",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "ariva.health.status",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}'"
+            },
+            "groupBy": [
+              {
+                "name": "service.name",
+                "fieldContext": "resource",
+                "fieldDataType": "string"
+              }
+            ],
+            "legend": "{{service.name}}"
+          }
+        }
+      ]
+    },
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${readinessFailing.severity}",
+          "op": "above_or_equal",
+          "matchType": "all_the_times",
+          "target": 2,
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "${readinessFailing.minutes}m",
+      "frequency": "1m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [
+      "service.name"
+    ],
+    "renotify": {
+      "enabled": true,
+      "interval": "4h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "readinessFailing",
+    "environment": "${environment}",
+    "severity": "${readinessFailing.severity}"
+  },
+  "annotations": {
+    "summary": "Readiness of {{$service.name}} failing",
+    "description": "A readiness check of {{$service.name}} has been Unhealthy for ${readinessFailing.minutes} minutes.",
+    "runbook": "wiki/10-Operations-Runbook.md#412-host-down-or-not-ready-arv-125b"
+  },
+  "disabled": false
+}

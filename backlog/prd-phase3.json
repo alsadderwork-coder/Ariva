@@ -247,7 +247,7 @@
       ],
       "priority": 40,
       "passes": false,
-      "notes": "Size S. Phase 3 (the owner's rule of 2026-10-14).",
+      "notes": "Size S. Phase 3 (the owner's rule of 2026-10-14). 2026-10-14 (ARV-125b re-review, nit 1): an empty monitoring namespaces list defaults to $.Release.Namespace, which validate.yaml does not check (Kubernetes guarantees a valid name on install and upgrade, helm template --namespace does not); apply the same DNS-label check to the effective value. Also from the ARV-125b work, for Phase 3: rules for the wiki 10 section 3 alarms not built yet (sensor degraded, zone Unknown, clock drift, stale AODB feed, unknown AMAN codes, bin maturity backlog, failed retention job, display stale, client locked out).",
       "dependsOn": [
         "ARV-125a"
       ]

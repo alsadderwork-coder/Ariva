@@ -1,0 +1,100 @@
+{
+  "alert": "Ariva certificate expiring (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "A certificate an Ariva host loaded (the Data Protection certificate, the MQTT server certificate) ends soon (ARV-125b).",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "unit": "s",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "ariva.certificates.expires_in",
+                "timeAggregation": "min",
+                "spaceAggregation": "min"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}'"
+            },
+            "groupBy": [
+              {
+                "name": "certificate",
+                "fieldContext": "attribute",
+                "fieldDataType": "string"
+              },
+              {
+                "name": "service.name",
+                "fieldContext": "resource",
+                "fieldDataType": "string"
+              }
+            ],
+            "legend": "{{certificate}} ({{service.name}})"
+          }
+        }
+      ]
+    },
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "warning",
+          "op": "below",
+          "matchType": "last",
+          "target": "${certificateExpiry.warningSeconds}",
+          "channels": "${channels}"
+        },
+        {
+          "name": "critical",
+          "op": "below",
+          "matchType": "last",
+          "target": "${certificateExpiry.criticalSeconds}",
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "15m",
+      "frequency": "5m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [
+      "certificate",
+      "service.name"
+    ],
+    "renotify": {
+      "enabled": true,
+      "interval": "4h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "certificateExpiry",
+    "environment": "${environment}"
+  },
+  "annotations": {
+    "summary": "Certificate {{$certificate}} expiring",
+    "description": "The {{$certificate}} certificate of {{$service.name}} ends in {{$value}} seconds (warning at ${certificateExpiry.warningDays} days, critical at ${certificateExpiry.criticalDays}).",
+    "runbook": "wiki/10-Operations-Runbook.md#49-certificate-expiry"
+  },
+  "disabled": false
+}

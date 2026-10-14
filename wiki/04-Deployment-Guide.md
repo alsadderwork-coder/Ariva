@@ -51,7 +51,7 @@ Rules: every deployment is in-country; the airport side never gets a route into 
 | PostgreSQL | PostgreSQL 16 or later (17 recommended) with TimescaleDB Community Edition | See dependencies below |
 | Kafka | KRaft mode | Dedicated or AMAN's |
 | Redis | Any supported version (To confirm) | Dedicated or AMAN's |
-| Observability | An OTLP endpoint (SigNoz) or Loki | Set `otel.endpoint` |
+| Observability | An OTLP endpoint (SigNoz) or Loki; for the system alerts (ARV-125b) SigNoz v0.146.0 or a version that accepts its rule and dashboard schemas, with its Kubernetes collectors (kubelet volume metrics) and cert-manager's metrics scraped | Set `otel.endpoint`; import the alert rules and dashboards (wiki 10 section 1.1) |
 | Identity | Bundled Keycloak or the customer's OIDC provider (Phase 1) | Which one per site: To confirm |
 | Mail relay | SMTP relay reachable from Integration | For alert email (MVP) |
 | Licence | Signed, offline-verifiable licence file per deployment | Basic in the MVP, complete in v1. Loading mechanism: To confirm |
@@ -236,6 +236,10 @@ Main Helm values (`Charts/platform/values*.yaml`):
 | `validationReader.secretName`, `validationReader.optional` | The validation reader login's secret (keys `username` and `password`; default `ariva-validation-reader`) and whether a release may run without it: `true` in dev, demo and localk8s, `false` in k8s-prd (the chart refuses `true` there and a name that is not a Kubernetes name anywhere). Without the secret in k8s-prd an upgrade fails at the migration job (a pre-upgrade hook) before any pod changes; a first install runs that job after the objects exist (post-install), so it fails there too and the new api-main pods wait in `CreateContainerConfigError` until the secret is created. Only api-main and the migration job get it (ARV-104g1) |
 | `demoSeed` | Sets `Seed__DemoTopology` on api-main to seed Demo International Airport and the illustrative `AUH-TA`; `true` in demo only. The chart refuses to render it for k8s-prd |
 | `otel.endpoint`, `otel.protocol` | OTLP export target (`grpc` by default) |
+| `monitoring.enabled` | Renders the SigNoz alert rules and dashboards into the ConfigMaps `ariva-monitoring-alerts` and `ariva-monitoring-dashboards` (ARV-125b; `true` by default). The operator imports them (wiki 10 section 1.1); the chart holds no SigNoz address or key |
+| `monitoring.environment` | The `deployment.environment` every rule and dashboard reads, so that one SigNoz can take several environments without mixing them. Empty by default: the release's `environment`. It must equal the hosts' `Application:Environment` (a plain name; the chart refuses others) |
+| `monitoring.channels` | Names of SigNoz notification channels every rule notifies (created in SigNoz first; plain names only, the chart refuses others). Empty by default: choose them after the import |
+| `monitoring.alerts.<rule>` | Each rule's thresholds and severity, and `enabled` to leave one out. Wiki 10 section 3.1 lists the rules and their defaults; TC-36 tunes them per site. The chart refuses a value out of range. Per site, check three rules. `amanFeedStale.enabled` is `false` by default: set it `true` in border deployments. `disk.claims` names the volumes to watch (`data-timescaledb-0` by default), and `disk.namespaces` their namespaces (empty: the release's). `ingressCertificateExpiry.namespaces` names the namespaces of the certificates to watch (empty: the release's). `ingressCertificateExpiry.namespaceLabel` is the label that carries their namespace: `namespace` by default, or `exported_namespace` when the site's scrape configuration adds a `namespace` label of its own |
 | `imageCredentials.registry`, `username`, `password` | Rendered into `dalilacr-secret` when a password is given |
 | `ingresses` | List of `{ name, comment, subdomain, serviceName, annotations }` |
 
