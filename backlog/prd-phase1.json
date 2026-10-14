@@ -1368,12 +1368,34 @@
       ]
     },
     {
-      "id": "ARV-125",
+      "id": "ARV-125a",
+      "title": "[E17] System health metrics for the monitoring rules",
+      "description": "Split from ARV-125 on 2026-10-14 (the plan in progress.md: the alerts the story names have no metric to read today). Every meter Ariva creates is exported, and the instruments the system alerts need exist: health check status, stream consumer lag, outbox backlog, dead letters, certificate expiry, devices monitored and a consumer that cannot connect. Backplane only; the rules and dashboards are ARV-125b. CWEs to review: CWE-532, CWE-200, CWE-269.",
+      "acceptanceCriteria": [
+        "Every meter Ariva creates is exported: a public TelemetryExtensions.Meters list, a unit test that every type with a MeterName constant is in it (it fails today for Ariva.Border, Ariva.Flights and Ariva.Integration), and a source scan that no meter is created outside such a type; BorderMetrics uses IMeterFactory",
+        "New instruments, each with a unit test (and a Testcontainers test where it reads the database or Kafka): ariva.health.status per check (0 Healthy, 1 Degraded, 2 Unhealthy, fed by an IHealthCheckPublisher, covering database, redis, masstransit-bus and kafka); ariva.stream.consumer_lag per topic and group for the Stream engine; ariva.outbox.unsent and the age of the oldest unsent row; ariva.kafka.dead_letters per topic, group and outcome (sent, kept in the outbox, failed) on every dead-letter path; ariva.certificates.expires_in for the Data Protection and MQTT certificates (read without exposing a key, CWE-269); ariva.devices.monitored beside ariva.devices.offline; ariva.kafka.consumer_unconnected (1 while a consumer's connect keeps failing, ARV-176)",
+        "Totals that only one replica computes (devices, feeds) are reported only where they are fresh, so a dashboard never sums stale copies from other replicas or hosts",
+        "Readiness answers 200 with Degraded in its body when a check is Degraded (the owner's ARV-125 decision; HealthEndpoints wrote Healthy), and the anonymous body names no check, dependency or detail (CWE-200); the E2E health spec is updated",
+        "No metric tag carries a secret, a credential, a person, officer, traveller or document identifier, or a value taken from a request (a unit test over every registered instrument's tag keys against an allowlist)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 42,
+      "passes": false,
+      "notes": "Size M. Split from ARV-125 (see that story and progress.md). Lead decision 2026-10-14: a gauge for the unconnected consumer rather than a log-based rule.",
+      "dependsOn": [
+        "ARV-062"
+      ]
+    },
+    {
+      "id": "ARV-125b",
       "title": "[E17] System monitoring alerts and dashboards in the chart",
-      "description": "Alerts on the system itself (not on queues): nothing ships today. Add alert rules and dashboards to the Helm chart with default thresholds that TC-36 tunes per site. Rendering tests only; no cluster work. Epic: Operations and deployment. CWEs to review: CWE-269, CWE-532.",
+      "description": "Alerts on the system itself (not on queues): nothing ships today. Add alert rules and dashboards to the Helm chart with default thresholds that TC-36 tunes per site. Rendering tests only; no cluster work. Epic: Operations and deployment. CWEs to review: CWE-269, CWE-532. Split on 2026-10-14: the metrics these rules read are ARV-125a; this story ships the rules, dashboards, thresholds as values, chart tests and docs. The shipping format follows the owner's choice of monitoring stack (the docs name SigNoz over OTLP; the hosts export OTLP only, with no Prometheus exporter).",
       "acceptanceCriteria": [
         "Alert rules for host down, readiness failing, stream consumer lag, outbox backlog, dead-letter growth, Kafka and database unavailable, disk, certificate expiry, AMAN feed stale and share of devices offline, with thresholds as Helm values and defaults from wiki/10 section 2",
-        "Dashboards as JSON in the chart for the OpenTelemetry backend the overview names; every metric they use exists (unit test over the registered meters)",
+        "Dashboards as JSON in the chart for the OpenTelemetry backend the overview names; every metric they use exists among the registered instruments of ARV-125a or in a reviewed list of external metrics (disk from the site collector's volume metrics, the ingress certificate from cert-manager or a TLS check), unit test",
         "Chart tests render the rules and dashboards for every environment; no rule queries a label holding a secret or a person identifier",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "node scripts/security/scan.mjs passes with 0 errors",
@@ -1382,9 +1404,10 @@
       ],
       "priority": 42,
       "passes": false,
-      "notes": "Size M. Monitoring stack and alert routing at the site depend on TC-32 and TC-36; defaults ship now. Found while building ARV-159 (2026-10-12): the `Ariva.Border`, `Ariva.Flights` and `Ariva.Integration` meters are created but never added to the OpenTelemetry exporters in TelemetryExtensions, so their counters are not exported; add them (and a test that every meter Ariva creates is exported) before building alerts on them. From the ARV-156 review: readiness answers 200 while the message bus is Degraded (HealthEndpoints answers 503 only for Unhealthy and writes \"Healthy\" in the body for Degraded); an alert on the Degraded bus status is the better control than failing readiness (owner decision pending in decisions.md). Owner decision 2026-10-13: a Degraded message bus raises an alert, it does not fail readiness; build that alert here (HealthEndpoints stays as it is, but its body should no longer say \"Healthy\" when the status is Degraded). 2026-10-14 (ARV-176 security review, recommendation 7): the runbook promises alerts on signals added since this story was written; the alert rules and dashboards must include the `kafka` readiness check reporting Degraded (ARV-165), `ariva.kafka.producer_fatal` above 0 (ARV-167, kinds fatal_error and recreated) and `ariva.kafka.consumed_topic_missing` above 0 for longer than a few minutes (ARV-176, tags topic and group). Also from the ARV-176 re-review (recommendation a): a consumer whose topic exists but whose connect keeps failing reads 0 on ariva.kafka.consumed_topic_missing yet consumes nothing; its only signal is the Warning \"Kafka consumer {Group} of {Topic} could not be connected\", so include that Warning in the log-based alerts (or report such a consumer as 1).",
+      "notes": "Size M. Monitoring stack and alert routing at the site depend on TC-32 and TC-36; defaults ship now. Found while building ARV-159 (2026-10-12): the `Ariva.Border`, `Ariva.Flights` and `Ariva.Integration` meters are created but never added to the OpenTelemetry exporters in TelemetryExtensions, so their counters are not exported; add them (and a test that every meter Ariva creates is exported) before building alerts on them. From the ARV-156 review: readiness answers 200 while the message bus is Degraded (HealthEndpoints answers 503 only for Unhealthy and writes \"Healthy\" in the body for Degraded); an alert on the Degraded bus status is the better control than failing readiness (owner decision pending in decisions.md). Owner decision 2026-10-13: a Degraded message bus raises an alert, it does not fail readiness; build that alert here (HealthEndpoints stays as it is, but its body should no longer say \"Healthy\" when the status is Degraded). 2026-10-14 (ARV-176 security review, recommendation 7): the runbook promises alerts on signals added since this story was written; the alert rules and dashboards must include the `kafka` readiness check reporting Degraded (ARV-165), `ariva.kafka.producer_fatal` above 0 (ARV-167, kinds fatal_error and recreated) and `ariva.kafka.consumed_topic_missing` above 0 for longer than a few minutes (ARV-176, tags topic and group). Also from the ARV-176 re-review (recommendation a): a consumer whose topic exists but whose connect keeps failing reads 0 on ariva.kafka.consumed_topic_missing yet consumes nothing; its only signal is the Warning \"Kafka consumer {Group} of {Topic} could not be connected\", so include that Warning in the log-based alerts (or report such a consumer as 1). 2026-10-14: split; the metrics moved to ARV-125a. Plan: scratchpad notes summarised in progress.md (ARV-125 split entry). Lead decisions: rules use external metrics only where Ariva cannot measure (disk, the ingress certificate), listed and reviewed; the AMAN feed alert fires when ariva.border.feed.records (outcome not refused) has not increased for T_stale (2 minutes, formulas), off by default and on for border deployments. Owner decision 2026-10-14: target SigNoz; ship rules and dashboards as SigNoz JSON in ConfigMaps that an operator imports; state the SigNoz version targeted (the latest stable at build time).",
       "dependsOn": [
-        "ARV-062"
+        "ARV-062",
+        "ARV-125a"
       ]
     },
     {
@@ -1735,7 +1758,6 @@
         "ARV-122b",
         "ARV-123b",
         "ARV-124",
-        "ARV-125",
         "ARV-126",
         "ARV-127",
         "ARV-128",
@@ -1760,7 +1782,9 @@
         "ARV-146",
         "ARV-104g1",
         "ARV-104g2",
-        "ARV-069a"
+        "ARV-069a",
+        "ARV-125a",
+        "ARV-125b"
       ]
     },
     {
