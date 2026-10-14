@@ -1024,20 +1024,6 @@
       ]
     },
     {
-      "id": "ARV-160",
-      "title": "[E17] Story gate treats Ariva.Core/Domain/Components as wide",
-      "description": "From the ARV-158 review: a change to `Ariva.Core/Domain/Components` (DisplayText and others, about 25 call sites) ran the scoped story gate because the folder is not on `scripts/verify.mjs`'s WIDE list, so the consumers' integration and E2E areas ran only when chosen by hand.",
-      "acceptanceCriteria": [
-        "`Platform/Backplane/Ariva.Core/Domain/Components` (and any other folder of shared domain components found the same way) is on the WIDE list, with a comment; `node scripts/verify.mjs story --plan` shows the full suites for a change there",
-        "docs/harness/test-cadence.md names the folder",
-        "node scripts/verify.mjs docs passes"
-      ],
-      "priority": 39,
-      "passes": false,
-      "notes": "Size XS. Harness only.",
-      "dependsOn": []
-    },
-    {
       "id": "ARV-161",
       "title": "[E4] Geometry.SegmentsIntersect independent of point order",
       "description": "Found by FormulaPropertyTests.F4_SegmentsIntersect_Should_NotDependOnOrderOrDirection (CsCheck seed cCcbgdLcNjA6, deterministic) in the ARV-159 story gate and confirmed by its security review: `Geometry.SegmentsIntersect` (Geometry.cs) treats an orientation as collinear only when the cross product is exactly 0, so reversing or swapping segments changes the rounding and, at an exact touch or collinear overlap, the answer. It serves only `Overlaps` (a device footprint's reach at registration and calibration) and `IsSimplePolygon` (zone polygons); counts come from vendor crossing events, so no count is missed or doubled. Low product risk, but CsCheck draws a fresh seed each run, so any gate can fail at random. CWEs to review: none (domain correctness).",
@@ -1078,46 +1064,6 @@
       "dependsOn": [
         "ARV-159"
       ]
-    },
-    {
-      "id": "ARV-163",
-      "title": "[E17] Production regular expressions linear, not timed",
-      "description": "Found in ARV-156 and rated by its security review: 12 production `[GeneratedRegex]` rules backtrack under a match timeout (Site.CodePattern, TopologyCodes.Code, FlightRules.Carrier and Codeshare, OutboundRules.PathAndQuery and Scope, EmailAddresses.Rule, EmailTemplates.Placeholder, CsvImportReader.Number, the Cronz JobsDashboardGuard rules), and three interpreted calls also check the clock (Email.cs:199, JobsDashboard.cs:30 and :32). A timeout is wall-clock time, so a loaded node can raise RegexMatchTimeoutException on a short input: it fails closed (DependencyOutage treats it as no outage, the handler answers 500 without detail, a check never passes), so this is robustness rather than security, but it can give a rare 500 or a failed start under load. CWEs to review: CWE-1333, CWE-400.",
-      "acceptanceCriteria": [
-        "Every anchored production rule above runs on RegexOptions.NonBacktracking without a timeout (captures and unanchored search work on it); the linear engine is the ReDoS bound, stated in the CWE-1333 row",
-        "TopologyCodes.Code drops its lookahead for a length check (1 to 16) plus `^[A-Z0-9]+(-[A-Z0-9]+)*\\z` on NonBacktracking, proven equivalent by a CsCheck property comparing old and new rules on random strings of up to 20 characters over A-Z, 0-9, '-', '\\n', lowercase and non-ASCII; parity with script 0008's CHECK and varchar(16) kept",
-        "The RedactionEnricher rules keep no timeout (a timeout in a Serilog enricher would throw and could let an event out unredacted); the FloorPlanFiles backreference rule stays anchored and bounded; both are named in the CWE-1333 row with their reason",
-        "A test per rule asserts its options and infinite timeout, and each rule's accepted set is unchanged (existing tests plus a table per rule)",
-        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
-        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
-        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
-        "node scripts/security/scan.mjs passes with 0 errors",
-        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
-        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
-      ],
-      "priority": 39,
-      "passes": false,
-      "notes": "Size S. Rated low by the ARV-156 review: robustness, fails closed.",
-      "dependsOn": [
-        "ARV-156"
-      ]
-    },
-    {
-      "id": "ARV-164",
-      "title": "[E17] Test determinism: date-dependent theory data and tight stall bounds",
-      "description": "Found in ARV-156: the unit test count has varied by one between runs for days (4,956 against 4,955, 5,227 against 5,228); the missing row is the date-dependent `SiteCalendarRulesTests` \"tomorrow\" case, whose theory data depends on the clock and collapses or shifts across runs. And `DatabaseStallTests.CredentialLookup...` failed once under the heaviest load (10.08 s against its 10 s limit). CWEs to review: none (test determinism).",
-      "acceptanceCriteria": [
-        "Theory data never reads the clock: SiteCalendarRulesTests (and any other theory found the same way) builds its dates from a fixed TimeProvider, so the unit count is the same on every run; a search for DateTime.Now, DateTime.UtcNow and TimeProvider.System in test data finds none",
-        "DatabaseStallTests' bound is derived from what it guards (the credential lookup's own timeout plus a stated margin), not a round 10 s; the cause of the 10.08 s case is named",
-        "The unit count is identical across three consecutive backend gates",
-        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
-        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
-        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
-      ],
-      "priority": 39,
-      "passes": false,
-      "notes": "Size XS. 2026-10-13 (ARV-173 story gate, Stryker running alongside): site-configuration.spec.ts:361 (\"an oversized body answers 413 and a deeply nested one 400\") failed in 88 ms on its first try and passed on Playwright's retry, with connection resets in the web server log; find why a 413 or 400 answer can surface as a reset under load and make the test robust to it without loosening what it proves.",
-      "dependsOn": []
     },
     {
       "id": "ARV-165",
@@ -1213,46 +1159,6 @@
       "dependsOn": []
     },
     {
-      "id": "ARV-169",
-      "title": "[E3] Subdivision flag emoji allowed in display texts and names",
-      "description": "Owner decision 2026-10-13: the England, Scotland and Wales flag emoji, refused since ARV-158 because they are built from tag characters, are allowed again. Only the three well-formed RGI subdivision flag sequences are allowed (U+1F3F4, then the tags for gbeng, gbsct or gbwls, then U+E007F); every other tag character stays refused, so no text can carry hidden tag content. The ARV-158 review saw no security reason to allow them; this is the owner's product choice with that scope. CWEs to review: CWE-79, CWE-501.",
-      "acceptanceCriteria": [
-        "`DisplayText.IsClean` (and so topology and site names, the import and `--check-stored-names`) accepts exactly the three RGI subdivision flag sequences as whole units and refuses any other tag character, a lone U+1F3F4 followed by tags, a sequence without its cancel tag, or tags after a flag",
-        "Unit tests with escapes only: the three flags accepted alone and inside text; malformed and unknown subdivision sequences, a truncated sequence, extra tags and tags elsewhere refused; `Offenders` reports nothing for the three flags",
-        "The CWE-79 and CWE-501 rows and decisions.md record the owner's decision and its scope",
-        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
-        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
-        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
-        "node scripts/security/scan.mjs passes with 0 errors",
-        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
-        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
-      ],
-      "priority": 39,
-      "passes": false,
-      "notes": "Size XS. Owner decision 2026-10-13.",
-      "dependsOn": []
-    },
-    {
-      "id": "ARV-170",
-      "title": "[E3] Zone outlines have a minimum width of 1 cm",
-      "description": "Owner decision 2026-10-13 (from the ARV-161 review): a zone outline 10 m long and 0.1 mm wide passes every check today (simple, area above 1e-4 m2), though it is effectively a line and almost always a drawing slip. Every outline must now be at least 1 cm wide everywhere, consistent with the 1 cm touch rule (also confirmed by the owner on 2026-10-13). CWEs to review: CWE-20.",
-      "acceptanceCriteria": [
-        "`Geometry` refuses an outline narrower than 1 cm anywhere: every vertex at least 1 cm from each edge it is not part of (or an equivalent, proven, order-independent rule), applied wherever IsSimplePolygon is: zone add, move and import, and ZoneProfile.Validate at publication, so a stored sliver blocks publication until moved",
-        "Table-driven tests in every rotation and direction: a sliver refused, 9 mm against 11 mm, a real zone accepted, the seeds still publish; the property tests still pass; `--check-stored-names` reports a stored sliver",
-        "docs/domain/formulas.md and wiki 07 describe the rule; decisions.md records the owner's decision",
-        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
-        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
-        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
-        "node scripts/security/scan.mjs passes with 0 errors",
-        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
-        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
-      ],
-      "priority": 39,
-      "passes": false,
-      "notes": "Size XS. Owner decision 2026-10-13.",
-      "dependsOn": []
-    },
-    {
       "id": "ARV-171",
       "title": "[E6] A dead letter refused at a stop is kept durably, so no record is skipped",
       "description": "Owner decision 2026-10-13 (the ARV-166 security review, condition C1): ARV-166's bounded stop marks a record faulted when Kafka refuses its dead letter at a stop. MassTransit's BatchCheckpointer then checkpoints the records before it and carries on, so a later record of the same partition with another key (ConcurrentMessageLimit 8), completing during the stop and checkpointed before the endpoint stops, commits past it: the record is neither processed nor dead-lettered. Before ARV-166 the stop hung until SIGKILL and nothing was lost. Reachable whenever the dead letter is refused while commits succeed: a partial broker outage, or a missing dead-letter topic or ACL at every rolling deploy. Medium severity; before the pilot. CWEs to review: CWE-501 (message loss), CWE-400.",
@@ -1336,30 +1242,6 @@
       ]
     },
     {
-      "id": "ARV-175",
-      "title": "[E6] Dead letters: text PostgreSQL accepts, a per-topic relay hold and a shutdown budget that fits",
-      "description": "From the ARV-171 security review (PASS, 2026-10-13), three non-blocking findings. (1) A NUL character or a lone surrogate in a record's key, a header name or value, or the error message makes the keep fail (PostgreSQL text refuses 0x00 in message_key, and CAST AS jsonb refuses \\u0000 and unpaired surrogates in the payload), so such a record still ends on ARV-166's unacknowledged path; it needs a buggy or hostile Kafka producer, which is what the unreadable path is for. (2) A dead-letter row that fails with a broker error ends the relay pass like any broker failure; a .dlq.v1 topic that hangs (its leader away while domain topics are fine) holds each attempt up to the 45 s produce bound and can delay domain events by up to 45 s repeatedly during the short backoffs. (3) The app charts set no terminationGracePeriodSeconds (Kubernetes default 30 s) and no host sets HostOptions.ShutdownTimeout (.NET default 30 s), while one in-flight message can need the rest of its retry schedule (at most 3 x 5 s), the keep (at most 10 s) and the consumer close. CWEs to review: CWE-501, CWE-400.",
-      "acceptanceCriteria": [
-        "DeadLetters.Create replaces NUL and lone surrogates with U+FFFD in the key, header names and values and the error message, and flags the letter when it did (a header naming what was replaced, never the original bytes); OutboxKeyOf uses the digest when the key held such a character; the letter's topic, partition, offset and consumer stay exact so a replay can still fetch the original record",
-        "A .dlq.v1 row whose send fails with a broker error holds back only its topic for the rest of the relay pass instead of ending the pass, so domain rows keep draining; a domain row's failure still ends the pass as today",
-        "The consuming hosts' pods set terminationGracePeriodSeconds 60 and the hosts set HostOptions.ShutdownTimeout to about 50 s (configurable, validated), so the clean path (the rest of the retry schedule, the keep, the consumer close) fits; chart render tests assert both; wiki 10 or the deployment guide names the budget",
-        "Unit tests: a letter with \"\\0\" in a header and in the key is kept and its row key is the digest; a lone surrogate in the error message is replaced; a failing .dlq.v1 row leaves a domain row of the same pass sent. Integration test: a record whose key and headers carry a NUL is kept at a stop and its row read back",
-        "The residual text that names this case (ConsumeFilters, overview Producing, ADR-0018 in a new dated note, wiki 10 section 4.5a) says it is closed",
-        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
-        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
-        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
-        "node scripts/security/scan.mjs passes with 0 errors",
-        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
-        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
-      ],
-      "priority": 38,
-      "passes": false,
-      "notes": "Size S. Before the pilot, after ARV-174. Follow-up 4 of the same review (WRITE on every dead-letter topic for each per-service principal) is in ARV-083's notes.",
-      "dependsOn": [
-        "ARV-171"
-      ]
-    },
-    {
       "id": "ARV-176",
       "title": "[E6] A consumed topic missing from the broker does not stall the host's other consumers",
       "description": "From the ARV-167 security review (2026-10-13). While building ARV-167 the engineer saw a test host where one receive endpoint was faulted (a consumer of a topic the broker lacked) and MassTransit did not deliver to the host's other, working endpoint within 60 s; not investigated. Production consequence: Ariva.Api.Integration consumes four AMAN feed topics, each with its own endpoint (BorderExtensions). AMAN's topics are external, so a site without e-gates, or an AMAN release not yet publishing one contract, can leave one aman.feed.* topic missing; KafkaTopicsReady starts the bus anyway after 300 s, that endpoint faults, and the other AMAN desk feeds may stop, leaving the border screens stale while readiness answers 200 (Degraded). CWEs to review: CWE-400.",
@@ -1379,27 +1261,6 @@
       "notes": "Size S to M. Before the pilot.",
       "dependsOn": [
         "ARV-167"
-      ]
-    },
-    {
-      "id": "ARV-154",
-      "title": "[E15] Site configuration import: creates take the site lock so an empty site stays empty",
-      "description": "Found in the ARV-122a security review (N2, accepted residual): the import locks the site row while it checks the site is empty and writes, but the topology, device and display create endpoints do not take that lock, so a record created by hand during an import is not refused by the emptiness check (a code collision is still refused by the unique indexes). Take the site row lock (FOR SHARE) in every create that adds configuration to a site. Epic: Site onboarding and AMAN. CWEs to review: CWE-501, CWE-89.",
-      "acceptanceCriteria": [
-        "Terminal, level, checkpoint, desk, desk code mapping, zone profile draft, floor plan, device, alert rule and display creates take the site row lock in share mode before writing; the import's update lock then excludes them",
-        "Integration test: a create started during an import waits and then either succeeds after the import commits (and the site is no longer empty) or the import answers 409; never both an import and a create into an empty site",
-        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
-        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
-        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
-        "node scripts/security/scan.mjs passes with 0 errors",
-        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
-        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
-      ],
-      "priority": 38,
-      "passes": false,
-      "notes": "Size S. Not a security gap today (no authorisation decision depends on emptiness; the creator already holds the permission); it makes the documented rule exact.",
-      "dependsOn": [
-        "ARV-122b"
       ]
     },
     {
@@ -1443,29 +1304,6 @@
       "priority": 39,
       "passes": true,
       "notes": "Size S. Split from ARV-123 on 2026-10-12. From the ARV-123a review (N6): the preview answers row content, hostile models and zones included, as JSON data; the screens render it as text only (test it).",
-      "dependsOn": [
-        "ARV-123a"
-      ]
-    },
-    {
-      "id": "ARV-155",
-      "title": "[E15] CSV imports: lock and upload contention, tokens kept out of test messages, absent optional columns",
-      "description": "Follow-ups from the ARV-123a security review (N1, N4, N5). A preview holds the site row lock for its dry run (about 3 s at 500 devices, 12 s at 10,000 mappings) and the host's single upload permit, so a holder of CreateDevice or CreateDeskCodeMapping looping previews delays single registrations, calibrations, publications and configuration imports at the site and makes other uploads answer 429. CWEs to review: CWE-400, CWE-532. Also the owner's decision of 2026-10-13: the bulk mapping import's commit asks for step-up.",
-      "acceptanceCriteria": [
-        "A per-user limit on import previews (or a partitioned upload policy) and a lock timeout on the imports' site lock, answering 429 or 409 with fixed texts; the contention and its bound recorded in docs/security",
-        "Tests assert a preview token's absence as a boolean (E2E `previewToken === null`, integration `(token is null).Should().BeTrue()`), so a failure never prints a token",
-        "A refusal in an optional column the file does not carry answers no column (null), never column 0",
-        "Owner decision 2026-10-13: the desk code mapping CSV import's commit asks for step-up ([RequiresRecentMfa], a critical-actions.json entry, the CriticalActionsTests rule satisfied without making single mapping changes critical); the preview stays without step-up; the ARV-123b dialog's existing step-up path covers the screen (functional test); decisions.md records the decision",
-        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
-        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
-        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
-        "node scripts/security/scan.mjs passes with 0 errors",
-        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
-        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
-      ],
-      "priority": 39,
-      "passes": false,
-      "notes": "Size S.",
       "dependsOn": [
         "ARV-123a"
       ]
@@ -1820,27 +1658,6 @@
       "notes": "Size M. Blocked on: TC-42 (which module licenses the SLA engine) and TC-43 (how the licence file is loaded and renewed). Conditional: the owner may defer licensing to v1 for a single pilot; record the decision and close.",
       "dependsOn": [
         "ARV-011"
-      ]
-    },
-    {
-      "id": "ARV-147",
-      "title": "[E18] Web requests bound to the account that started them",
-      "description": "Follow-up from the ARV-104c security review (2026-10-09, Low). Api.ts recovers a 401 by refreshing the session and sending the request again. A request started by one account that is still in flight when that account signs out and another signs in on the same browser is then sent again under the second account, or its recovery signs the second account out; an MFA step-up can be shown to the second account for the first account's action. ARV-104c closed this for the capture calls only (asSubject). The server still applies the second account's permissions and site scope and audits it, so the exposure is small, but a request must never change hands. Epic: Accounts and sessions. CWEs to review: CWE-384, CWE-863, CWE-501.",
-      "acceptanceCriteria": [
-        "Api.ts request() records auth.subject when a call starts and uses it as the default for asSubject: once a different account or none is signed in, the request is not sent, not sent again after a refresh, and does not trigger the 401 recovery (no refresh, no sessionEnded, no MFA step-up)",
-        "Callers that legitimately run before a subject exists (sign-in, refresh, MFA enrolment) keep working, named explicitly in code",
-        "Playwright: a save on an administration screen held in flight across a sign-out and another account's sign-in in the same page is never sent under the second account, the second account stays signed in and sees no step-up prompt; existing session, MFA and multi-tab tests still pass",
-        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
-        "The story's new Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
-        "node scripts/security/scan.mjs passes with 0 errors",
-        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
-        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
-      ],
-      "priority": 55,
-      "passes": false,
-      "notes": "Size S. Low severity; must land before go-live (ARV-138). Raised by the ARV-104c re-review (2026-10-09).",
-      "dependsOn": [
-        "ARV-104c"
       ]
     },
     {
