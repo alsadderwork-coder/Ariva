@@ -36,7 +36,13 @@ public sealed class BoundedProduceTests
         /// <summary>The producer's error callback for this client (set when the producer makes it).</summary>
         public Action<Error> RaiseError { get; set; }
 
-        /// <summary>When the producer made this client, on the test's clock.</summary>
+        /// <summary>
+        /// When the producer began this client's generation, on the test's clock: the producer's own timestamp, which starts
+        /// the client's recreation window, read back through a <see cref="StampingClock"/> (null without one).
+        /// </summary>
+        public TimeSpan? CreatedAt { get; init; }
+
+        /// <summary>When the client's mock was built, on the test's clock (after <see cref="CreatedAt"/>; for the test output only).</summary>
         public TimeSpan MadeAt { get; init; }
 
         public bool Disposed => Volatile.Read(ref _disposed) != 0;
@@ -88,11 +94,40 @@ public sealed class BoundedProduceTests
         }
     }
 
+    /// <summary>
+    /// The system clock, remembering on each thread the last timestamp it gave. <c>KafkaProduce.NewGeneration</c> takes a
+    /// generation's timestamp (the start of its client's recreation window) right before it calls the client factory, on
+    /// the same thread, so the factory reads it back here: the window is measured where the product measures it, not after
+    /// the factory has built its mock, which under load can take longer for one client than for the next.
+    /// </summary>
+    private sealed class StampingClock : TimeProvider
+    {
+        // Per thread, with the clock that gave it, so that nothing needs disposing while the producer's timers may still read the clock.
+        [ThreadStatic]
+        private static StampingClock _owner;
+
+        [ThreadStatic]
+        private static long _stamp;
+
+        public override long GetTimestamp()
+        {
+            var now = base.GetTimestamp();
+            _owner = this;
+            _stamp = now;
+            return now;
+        }
+
+        /// <summary>The last timestamp this clock gave on the calling thread (0 if none).</summary>
+        public long LastOnThisThread => ReferenceEquals(_owner, this) ? _stamp : 0;
+    }
+
     /// <summary>The clients a producer made, in order, each a <see cref="Client"/>.</summary>
-    private sealed class Clients(bool autoReport = false)
+    /// <param name="autoReport">Whether each client reports every message at once.</param>
+    /// <param name="stamps">The producer's clock, when the test reads the generations' own timestamps.</param>
+    private sealed class Clients(bool autoReport = false, StampingClock stamps = null)
     {
         private readonly List<Client> _made = [];
-        private readonly Stopwatch _clock = Stopwatch.StartNew();
+        private readonly long _origin = Stopwatch.GetTimestamp();
 
         public int Count
         {
@@ -114,7 +149,16 @@ public sealed class BoundedProduceTests
 
         public IProducer<string, byte[]> Make(Action<Error> raiseError)
         {
-            var client = new Client(autoReport: autoReport) { RaiseError = raiseError, MadeAt = _clock.Elapsed };
+            TimeSpan? createdAt = null;
+            if (stamps is not null)
+            {
+                var stamp = stamps.LastOnThisThread;
+                if (stamp == 0)
+                    throw new InvalidOperationException("The producer took no timestamp on this thread before it called the client factory; the window can no longer be read here.");
+                createdAt = Stopwatch.GetElapsedTime(_origin, stamp);
+            }
+
+            var client = new Client(autoReport: autoReport) { RaiseError = raiseError, CreatedAt = createdAt, MadeAt = Stopwatch.GetElapsedTime(_origin) };
             lock (_made)
                 _made.Add(client);
             return client.Mock.Object;
@@ -158,6 +202,18 @@ public sealed class BoundedProduceTests
 
     /// <summary>The timer's clock counts whole milliseconds, so it may fire up to one tick before a Stopwatch says it is due.</summary>
     private static readonly TimeSpan Tick = TimeSpan.FromMilliseconds(16);
+
+    /// <summary>
+    /// The time between two clients' generations, by the producer's own timestamps (where its recreation window is
+    /// counted from), written to the test output with the gap between their mocks' construction for comparison.
+    /// </summary>
+    private static TimeSpan Gap(string what, Client earlier, Client later)
+    {
+        var gap = later.CreatedAt!.Value - earlier.CreatedAt!.Value;
+        TestContext.Current.TestOutputHelper?.WriteLine(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+            $"{what}: {gap.TotalMilliseconds:F1} ms between the generations ({(later.MadeAt - earlier.MadeAt).TotalMilliseconds:F1} ms between the mocks)"));
+        return gap;
+    }
 
     [Fact]
     public async Task Wait_Should_FailAsATimeoutAtItsBound_When_TheClientNeverReports()
@@ -429,12 +485,13 @@ public sealed class BoundedProduceTests
     {
         // ARV-167, the lead's decision: a fatal client error is the one thing that replaces the client, in place, at most once
         // per window counted from the client's creation; sends in the gap fail at once, and the relay waits meanwhile.
-        var clients = new Clients();
+        var stamps = new StampingClock();
+        var clients = new Clients(stamps: stamps);
         using var metrics = new KafkaProducerMetrics();
         var (listener, counts) = Listen(metrics);
         using var listening = listener;
         var window = TimeSpan.FromMilliseconds(600);
-        using var produce = new KafkaProduce(clients.Make, TimeProvider.System, null, window, metrics);
+        using var produce = new KafkaProduce(clients.Make, stamps, null, window, metrics);
         var transport = new KafkaOutboxTransport(produce, new EventCatalog([typeof(CatalogProbe).Assembly]));
         transport.IsReady.Should().BeFalse("the relay waits until the host has started the producer");
         produce.Started();
@@ -453,7 +510,7 @@ public sealed class BoundedProduceTests
         clients[0].Given.Should().HaveCount(1, "nothing reaches the failed client");
 
         await UntilAsync(() => clients.Count == 2 && transport.IsReady, "the producer recreated");
-        (clients[1].MadeAt - clients[0].MadeAt).Should().BeGreaterThanOrEqualTo(window - Tick, "not before the window from the failed client's creation");
+        Gap("first to second client", clients[0], clients[1]).Should().BeGreaterThanOrEqualTo(window - Tick, "not before the window from the failed client's creation");
         produce.ClientNumber.Should().Be(2);
         var after = produce.SendAsync("ariva.flow.nowcast.v1", "zone-1", [3], Guid.NewGuid(), null, Ct);
         clients[1].Report(0, ErrorCode.NoError);
@@ -466,12 +523,13 @@ public sealed class BoundedProduceTests
     [Fact]
     public async Task Producer_Should_WaitForTheWindow_When_ASecondFatalErrorComesSoonAfterARecreation()
     {
-        var clients = new Clients();
+        var stamps = new StampingClock();
+        var clients = new Clients(stamps: stamps);
         using var metrics = new KafkaProducerMetrics();
         var (listener, counts) = Listen(metrics);
         using var listening = listener;
         var window = TimeSpan.FromMilliseconds(800);
-        using var produce = new KafkaProduce(clients.Make, TimeProvider.System, null, window, metrics);
+        using var produce = new KafkaProduce(clients.Make, stamps, null, window, metrics);
         produce.Started();
 
         clients[0].Fail();
@@ -482,7 +540,7 @@ public sealed class BoundedProduceTests
         inTheGap.Should().Throw<KafkaException>();
         await UntilAsync(() => clients.Count == 3 && produce.IsReady, "the second recreation");
 
-        (clients[2].MadeAt - clients[1].MadeAt).Should().BeGreaterThanOrEqualTo(window - Tick,
+        Gap("second to third client", clients[1], clients[2]).Should().BeGreaterThanOrEqualTo(window - Tick,
             "a client that fails soon after it was made is replaced only once its window has passed, so a misconfiguration recreates at most once per window");
         counts.Should().Contain(KafkaProducerMetrics.FatalErrorKind, 2).And.Contain(KafkaProducerMetrics.RecreatedKind, 2);
     }
