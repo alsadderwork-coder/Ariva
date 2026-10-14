@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using Ariva.Core.Domain.Enums;
 using Ariva.Core.Domain.ViewModels;
@@ -231,9 +230,9 @@ public sealed class SensingIngest(
         var packages = push.PackageIds;
         var bodyHash = SHA256.HashData(body.Span);
         var events = new List<Ariva.Core.Domain.Contracts.IEvent>();
-        T Batch<T>(T batch, string kind) where T : SensingBatch
+        T Batch<T>(T batch, PushKinds kind) where T : SensingBatch
         {
-            batch.Id = BatchId(device.DeviceId, kind, bodyHash, (push.ReceiptTimed & KindFlag(kind)) != 0 ? receivedUtc : null);
+            batch.Id = SensingBatchIds.Of(device.DeviceId, kind, push, bodyHash, receivedUtc);
             batch.DeviceId = device.DeviceId;
             batch.DeviceCode = device.Code;
             batch.SiteCode = device.SiteCode;
@@ -248,13 +247,13 @@ public sealed class SensingIngest(
         }
 
         if (tracks.Count > 0)
-            events.Add(Batch(new TrackSampleBatch { Samples = tracks }, "tracks"));
+            events.Add(Batch(new TrackSampleBatch { Samples = tracks }, PushKinds.Tracks));
         if (crossings.Count > 0)
-            events.Add(Batch(new VendorLineCrossingBatch { Crossings = crossings }, "crossings"));
+            events.Add(Batch(new VendorLineCrossingBatch { Crossings = crossings }, PushKinds.Crossings));
         if (occupancy.Count > 0)
-            events.Add(Batch(new ZoneOccupancyBatch { Occupancy = occupancy }, "occupancy"));
+            events.Add(Batch(new ZoneOccupancyBatch { Occupancy = occupancy }, PushKinds.Occupancy));
         if (intervals.Count > 0)
-            events.Add(Batch(new IntervalCountBatch { Intervals = intervals }, "intervals"));
+            events.Add(Batch(new IntervalCountBatch { Intervals = intervals }, PushKinds.Intervals));
 
         var statusAccepted = false;
         var health = false;
@@ -312,31 +311,6 @@ public sealed class SensingIngest(
         ReceivedUtc = receivedUtc,
         Commissioned = device.State is "Online" or "Degraded" or "Offline",
         OccurredOn = status.TimeUtc
-    };
-
-    /// <summary>
-    /// The same body from the same device always gives the same batch id, so a resend (after a 503, or a vendor retry)
-    /// is a duplicate that consumers drop; any other body, including one whose vendor package counter restarted, gives
-    /// a new id.
-    /// </summary>
-    private static Guid BatchId(Guid device, string kind, byte[] bodyHash, DateTime? receivedUtc)
-    {
-        // Events stamped at receipt (ARV-024) carry no time of their own: the same body later is a new reading, not a
-        // resend, so the receipt time is part of the id.
-        var receipt = receivedUtc is { } at ? "|" + at.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture) : string.Empty;
-        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes($"{device:N}|{kind}|{Convert.ToHexString(bodyHash)}{receipt}"));
-        bytes[6] = (byte)((bytes[6] & 0x0F) | 0x80); // version 8 (custom, RFC 9562)
-        bytes[8] = (byte)((bytes[8] & 0x3F) | 0x80);
-        return new Guid(bytes.AsSpan(0, 16), bigEndian: true);
-    }
-
-    private static PushKinds KindFlag(string kind) => kind switch
-    {
-        "tracks" => PushKinds.Tracks,
-        "crossings" => PushKinds.Crossings,
-        "occupancy" => PushKinds.Occupancy,
-        "intervals" => PushKinds.Intervals,
-        _ => PushKinds.None
     };
 
     /// <summary>The line and zone names of the device's zone in the published profile (cached a minute), or null when it is not published.</summary>

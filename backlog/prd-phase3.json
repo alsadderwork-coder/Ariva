@@ -208,6 +208,27 @@
       "dependsOn": [
         "ARV-165"
       ]
+    },
+    {
+      "id": "ARV-178",
+      "title": "[E4] Sensing resends: late receipt-timed resends and bounded declarative names",
+      "description": "Two low findings from ARV-174 (2026-10-14). (1) The engineer's: a receipt-timed message resent more than about three minutes after the first (the queue engine's RecentBatches window) is applied again live while the archive keeps it once (its id window is three days), so live and replayed counts differ; no shipped mapping stamps crossings at receipt, so the pilot is not affected. (2) The ARV-174 security review's recommendation 1: a declarative mapping that reads a name or id from the group (^) or payload ($) level makes DeclarativeMapper.State.Name and Id call GetString() per item, a fresh copy each time (2,000 items x up to about 500 KB, roughly 1 GB), and the batch id's encoding would copy and sort it again; latent, since no shipped mapping does this. CWEs to review: CWE-400, CWE-120, CWE-501.",
+      "acceptanceCriteria": [
+        "A receipt-timed resend later than the engine's window is either recognised live (a longer window for receipt-timed kinds, bounded in memory) or stated as a residual with the live and replay difference documented in formulas F5 and sensor-adapters.md, with a test either way",
+        "The declarative mapper caps name and id lengths at the canonical maxima, refusing longer values as a format error, or refuses ^ and $ rooted name and id paths when a mapping is parsed; a test with a mapping that would have copied a large group-level string per item",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size S. Phase 3 (the owner's rule of 2026-10-14).",
+      "dependsOn": [
+        "ARV-174"
+      ]
     }
   ]
 }

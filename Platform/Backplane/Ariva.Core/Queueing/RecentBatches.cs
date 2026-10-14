@@ -7,12 +7,13 @@ public sealed record RecentBatchState(string DeviceCode, Guid BatchId, DateTime 
 
 /// <summary>
 /// The sensing batches a queue zone has applied within their window (ARV-168, formulas F5), so that a batch offered
-/// again is applied once. A device that sends a push again whose request it dropped sends the same body, and Ingest
-/// gives the same body from the same device the same batch id; without this memory a repeated interval-count batch
-/// (or an anonymous vendor crossing) would be counted twice.
+/// again is applied once. A device that sends a push again whose request it dropped sends the same events (or, for a kind
+/// stamped at receipt, the same body and package), and Ingest gives them from the same device the same batch id
+/// (<c>SensingBatchIds</c>, ARV-174); without this memory a repeated interval-count batch (or an anonymous vendor crossing)
+/// would be counted twice.
 /// <para>
 /// The key is the device and the batch id together, never the id alone: an id is device-supplied data in effect (it is
-/// derived from the body), so one device's ids never drop another device's batches (CWE-501). A batch is remembered
+/// derived from what the device sent), so one device's ids never drop another device's batches (CWE-501). A batch is remembered
 /// until the zone's watermark reaches its latest event time plus the lateness; until then a repeat could still have
 /// events ahead of the watermark, even with its times corrected by up to a lateness differently (another Ingest
 /// replica's clock estimate), and after it every event of a repeat is behind the watermark: late, counted as late and

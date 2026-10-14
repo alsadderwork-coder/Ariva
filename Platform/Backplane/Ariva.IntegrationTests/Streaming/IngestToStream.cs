@@ -28,9 +28,10 @@ namespace Ariva.IntegrationTests.Streaming;
 /// Pushes through Ingest's sensing path into the queue stream, on a test class's own broker (ARV-168, ARV-173): the hosts of
 /// Ariva.Api.Ingest (caches, bus, ingest with its Kafka sink; only the registry's lookup of the published zone replaced
 /// by the zone's lines) and of Ariva.Api.Stream (the queue engine worker with <see cref="FixedGeometrySource"/>), the topics
-/// and the reads the tests check. <paramref name="name"/> names the hosts' services, so their consumer groups.
+/// and the reads the tests check. <paramref name="name"/> names the hosts' services, so their consumer groups;
+/// <paramref name="mappings"/>, when given, replaces the shipped declarative mappings in Ingest (ARV-174).
 /// </summary>
-internal sealed class IngestToStream(PostgresFixture postgres, KafkaFixture kafka, string name)
+internal sealed class IngestToStream(PostgresFixture postgres, KafkaFixture kafka, string name, Ariva.Infra.Sensing.Declarative.DeclarativeMappingCatalog mappings = null)
 {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
@@ -120,12 +121,14 @@ internal sealed class IngestToStream(PostgresFixture postgres, KafkaFixture kafk
         builder.Services.AddArivaMessaging(builder.Configuration);
         builder.Services.AddArivaSensingIngest(builder.Configuration);
         builder.Services.Replace(ServiceDescriptor.Scoped<ISvcDeviceGateway, Gateway>());
+        if (mappings is not null)
+            builder.Services.Replace(ServiceDescriptor.Singleton(mappings));
         return builder.Build();
     }
 
     /// <summary>
-    /// Ingests every push in receive order through Ingest's host (each must be accepted whole: <paramref name="accepted"/>
-    /// events), then stops the host.
+    /// Ingests every push in receive order through Ingest's host, each in its device's dialect (each must be accepted whole:
+    /// <paramref name="accepted"/> events), then stops the host.
     /// </summary>
     public async Task IngestAsync(string database, IEnumerable<(DeviceCredentialRecord Device, byte[] Body, DateTime ReceivedUtc)> sends, Func<byte[], int> accepted)
     {
@@ -134,7 +137,7 @@ internal sealed class IngestToStream(PostgresFixture postgres, KafkaFixture kafk
         foreach (var (device, body, received) in sends.OrderBy(s => s.ReceivedUtc))
         {
             await using var scope = host.Services.CreateAsyncScope();
-            var outcome = await scope.ServiceProvider.GetRequiredService<SensingIngest>().IngestAsync(device, DeviceDialect.Canonical, body, received, Ct);
+            var outcome = await scope.ServiceProvider.GetRequiredService<SensingIngest>().IngestAsync(device, Enum.Parse<DeviceDialect>(device.Dialect), body, received, Ct);
             outcome.HasErrors.Should().BeFalse(string.Join(", ", outcome.ErrorMessages ?? []));
             outcome.Data.Accepted.Should().Be(accepted(body), string.Join(", ", outcome.Data.Problems));
         }
@@ -167,8 +170,13 @@ internal sealed class IngestToStream(PostgresFixture postgres, KafkaFixture kafk
         await host.StopAsync(Ct);
     }
 
-    /// <summary>The batch ids of the interval-count records on the topic, per zone key, in offset order.</summary>
-    public Dictionary<string, List<Guid>> IntervalRecords()
+    /// <summary>The batch ids of the interval-count records on their topic, per zone key, in offset order.</summary>
+    public Dictionary<string, List<Guid>> IntervalRecords() => Records(KafkaTopics.DeviceIntervalCount);
+
+    /// <summary>The batch ids of the vendor line crossing records on their topic, per zone key, in offset order.</summary>
+    public Dictionary<string, List<Guid>> CrossingRecords() => Records(KafkaTopics.DeviceVendorLineCrossing);
+
+    private Dictionary<string, List<Guid>> Records(string topic)
     {
         using var consumer = new ConsumerBuilder<string, byte[]>(new ConsumerConfig
         {
@@ -179,7 +187,7 @@ internal sealed class IngestToStream(PostgresFixture postgres, KafkaFixture kafk
         var ids = new Dictionary<string, List<Guid>>(StringComparer.Ordinal);
         for (var p = 0; p < 3; p++)
         {
-            var partition = new TopicPartition(KafkaTopics.DeviceIntervalCount, new Partition(p));
+            var partition = new TopicPartition(topic, new Partition(p));
             var high = consumer.QueryWatermarkOffsets(partition, TimeSpan.FromSeconds(10)).High.Value;
             if (high == 0)
                 continue;

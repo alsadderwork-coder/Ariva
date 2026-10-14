@@ -46,6 +46,29 @@ public sealed class DeclarativeConformanceTests
             "a mapping ships only with a documented sample and its expected events");
     }
 
+    /// <summary>
+    /// The kit's warnings for <paramref name="mappings"/> (ARV-174): a mapping whose crossings are stamped with the receipt
+    /// time and that names no package gives every message a new batch id, so a resent message is counted again. A warning,
+    /// not a failure: such a mapping may be the best a vendor format allows, and the residual is in the mapping guidance.
+    /// </summary>
+    internal static IReadOnlyList<string> ConformanceWarnings(IEnumerable<DeclarativeMapping> mappings) => [.. mappings.SelectMany(m => m.Warnings)];
+
+    [Fact]
+    public void Mappings_Should_BeWarnedAbout_When_TheirCrossingsHaveNeitherAnEventTimeNorAPackage()
+    {
+        var shipped = DeclarativeMappingCatalog.Embedded.Mappings.Select(m => DeclarativeMappingCatalog.Embedded.Find(m.Name)).ToList();
+        foreach (var warning in ConformanceWarnings(shipped))
+            TestContext.Current.AddWarning(warning);
+
+        // The kit does warn: a mapping of receipt-timed crossings without a package is named, with what to do.
+        var bare = DeclarativeMapping.Parse(Encoding.UTF8.GetBytes("""
+            { "name": "bare-v1", "title": "Receipt-timed crossings", "crossings": { "items": "$.events[*]", "line": "@.line",
+              "direction": { "path": "@.dir", "in": ["in"], "out": ["out"] }, "time": { "received": true } } }
+            """), "bare-v1");
+        ConformanceWarnings([.. shipped, bare]).Should().ContainSingle().Which.Should().StartWith("bare-v1: crossings are stamped with the receipt time")
+            .And.Contain("\"package\"");
+    }
+
     [Theory]
     [MemberData(nameof(SampleNames))]
     public void Map_Should_ProduceTheExpectedCanonicalEvents_When_GivenASample(string mappingName, string sample)

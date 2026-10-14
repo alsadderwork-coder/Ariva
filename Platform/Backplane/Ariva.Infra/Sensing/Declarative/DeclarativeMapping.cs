@@ -59,6 +59,22 @@ public sealed partial class DeclarativeMapping
     public OccupancySection Occupancy { get; private init; }
     public IntervalSection Intervals { get; private init; }
 
+    /// <summary>
+    /// What the mapping leaves to chance, for the conformance kit (ARV-174). Crossings stamped with Ariva's receipt time and
+    /// no package path give every message a new batch id (a crossing has no time of its own to recognise it by), so a resent
+    /// message is counted again. Crossings with a time of their own but neither a track id nor a package path are told
+    /// apart by the message's send time (two people crossing one line in the same instant look alike), so a resent message
+    /// is recognised only when its send time is unchanged, and never without a <c>sentTime</c> path. Empty when there is
+    /// nothing to warn about.
+    /// </summary>
+    public IReadOnlyList<string> Warnings => Crossings is null || Package is not null
+        ? []
+        : Crossings.Time.Received
+            ? [$"{Name}: crossings are stamped with the receipt time and the mapping names no package, so a resent message is counted again; name the vendor's package or sequence number in \"package\", or map the crossings' own time"]
+            : Crossings.TrackId is null
+                ? [$"{Name}: crossings have no track id and the mapping names no package, so a resent message is recognised only by an unchanged send time{(SentTime is null ? " (the mapping has no \"sentTime\", so never)" : string.Empty)}; name the vendor's package or sequence number in \"package\", or map a track id"]
+                : [];
+
     /// <summary>Parses and checks a mapping document; <paramref name="expectedName"/> must be its name (the file it came from).</summary>
     public static DeclarativeMapping Parse(ReadOnlySpan<byte> utf8, string expectedName)
     {
