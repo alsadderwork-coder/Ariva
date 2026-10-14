@@ -1,22 +1,22 @@
 {
-  "commit": "0666febc17088181dab735c480ad9f92e976567a",
-  "at": "2026-10-13",
+  "commit": "a04953dbd69afc08c779a9bc3ae970efa7e546ac",
+  "at": "2026-10-14",
   "stories": 6,
   "results": [
     {
       "name": "dotnet build",
       "ok": true,
-      "seconds": 133
+      "seconds": 163
     },
     {
       "name": "reference scenario golden up to date",
       "ok": true,
-      "seconds": 11
+      "seconds": 15
     },
     {
       "name": "unit tests",
       "ok": true,
-      "seconds": 246
+      "seconds": 245
     },
     {
       "name": "security scanner self-test",
@@ -41,7 +41,7 @@
     {
       "name": "nuget vulnerability audit",
       "ok": true,
-      "seconds": 26
+      "seconds": 24
     },
     {
       "name": "npm audit (web)",
@@ -60,32 +60,32 @@
     {
       "name": "web svelte-check",
       "ok": true,
-      "seconds": 13
+      "seconds": 16
     },
     {
       "name": "web lint",
       "ok": true,
-      "seconds": 8
+      "seconds": 11
     },
     {
       "name": "web build",
       "ok": true,
-      "seconds": 34
+      "seconds": 43
     },
     {
       "name": "integration tests",
       "ok": true,
-      "seconds": 737
+      "seconds": 1041
     },
     {
       "name": "visual regression (pinned image)",
       "ok": true,
-      "seconds": 158
+      "seconds": 224
     },
     {
       "name": "e2e tests (API and functional)",
       "ok": true,
-      "seconds": 981
+      "seconds": 1159
     },
     {
       "name": "mutation log check self-test",
@@ -95,12 +95,12 @@
     {
       "name": "dotnet tool restore (dotnet-stryker)",
       "ok": true,
-      "seconds": 0
+      "seconds": 1
     },
     {
-      "name": "mutation tests (Stryker.NET in a worktree of 0666febc17, 1 engine files changed since 91165078b1; fails on safe mode or no score)",
+      "name": "mutation tests (Stryker.NET in a worktree of a04953dbd6, 1 engine files changed since 0666febc17; fails on safe mode or no score)",
       "ok": true,
-      "seconds": 6466
+      "seconds": 8089
     }
   ]
 }
