@@ -29,7 +29,7 @@ builder.Services.RegisterArivaServices(builder.Configuration, messaging => messa
 ```
 - Pipe, from the outside in (proven by `ConsumePipelineTests` with MassTransit's probe): retry (MassTransit always puts it first), `DeadLetterFilter` (acts on the final attempt only), `InboxFilter` (claim + unit of work, fresh scope per attempt), consumer.
 - `InboxFilter`: `INSERT INTO processed_event(consumer, event_id) ON CONFLICT DO NOTHING` in the consumer's transaction, then the consumer, then commit; a duplicate is acknowledged without running the consumer; a failure rolls the claim back. The consumer does not commit itself.
-- `DeadLetterFilter`: produces key, body (base64), headers, topic, partition, offset, consumer and error to the dead-letter topic, then returns so the checkpoint advances. A refused dead letter is retried until accepted; v8 discards rethrown faults.
+- `DeadLetterFilter`: sends key, body (base64), headers, topic, partition, offset, consumer and error to the dead-letter topic through `IDeadLetterSink`, then returns so the checkpoint advances. A refused dead letter is retried until accepted (v8 discards rethrown faults); if the endpoint stops first, the letter is kept as an `outbox_message` row (type `ariva.dead-letter`, `OutboxDeadLetterStore`, within 10 s) that the relay sends later, and only when that write fails too is the record left unacknowledged for redelivery (ARV-171). Each letter is counted once by outcome on `ariva.kafka.dead_letters` (sent, kept, failed; ARV-125a).
 - Keep retries short (`Kafka:Consumers`): a retrying message blocks its key lane.
 
 ## Raw consumer (Stream engine only)
