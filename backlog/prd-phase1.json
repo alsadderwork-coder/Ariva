@@ -1184,8 +1184,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 37,
-      "passes": false,
-      "notes": "Size M. Owner decision 2026-10-13: bound it in ARV-166, then own sends. Before the pilot. From the ARV-172 review: the new send path uses one timer for the produce's token and the wait (strict order; it still ends the wait if the client ignores the token, as OutboxRelay.SendWithinAsync does), and the bounded-produce timeout test asserts the cancellation lands between the bound and the bound plus 5 s (a Stopwatch noted in the cancellation callback), so a deadline set later than the wait is caught. 2026-10-13: built and security review PASS; passes waits only for the owner's approval of the CLAUDE.md rule 4 and kafka-streaming skill wording (criterion 5), drafted by the engineer and corrected by the lead.",
+      "passes": true,
+      "notes": "Size M. Owner decision 2026-10-13: bound it in ARV-166, then own sends. Before the pilot. From the ARV-172 review: the new send path uses one timer for the produce's token and the wait (strict order; it still ends the wait if the client ignores the token, as OutboxRelay.SendWithinAsync does), and the bounded-produce timeout test asserts the cancellation lands between the bound and the bound plus 5 s (a Stopwatch noted in the cancellation callback), so a deadline set later than the wait is caught. 2026-10-13: built and security review PASS; passes waits only for the owner's approval of the CLAUDE.md rule 4 and kafka-streaming skill wording (criterion 5), drafted by the engineer and corrected by the lead. 2026-10-14: the owner approved the wording; CLAUDE.md rule 4, Platform/Backplane/CLAUDE.md, the kafka-streaming skill and the stream-engineer agent updated; passes set to true.",
       "dependsOn": [
         "ARV-166"
       ]

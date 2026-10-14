@@ -1,11 +1,11 @@
 ---
 name: kafka-streaming
-description: Kafka usage in Ariva (MassTransit 8 Kafka Rider behind ISvcMessageBus, raw Confluent consumer for the Stream engine, topics, keys, outbox, inbox, dead letters, replay, live snapshots). Load for Ingest, Stream, Integration, Cronz consumers and any event publishing.
+description: Kafka usage in Ariva (Ariva's own Confluent producer behind ISvcMessageBus, MassTransit 8 Kafka Rider consumers, raw Confluent consumer for the Stream engine, topics, keys, outbox, inbox, dead letters, replay, live snapshots). Load for Ingest, Stream, Integration, Cronz consumers and any event publishing.
 ---
 # Kafka in Ariva
 
 ## Which client where (ADR-0018)
-- **Integration and domain events** (queue intervals, nowcasts, alerts, topology changes, AMAN feed, AODB and immigration events): MassTransit 8.5.11 with the Kafka Rider, hosted on an in-memory bus, behind `ISvcMessageBus`. Same shape as AMAN's `Aman.Di/Extensions/MassTransitServiceExtensions.cs`, with the gaps below closed.
+- **Integration and domain events** (queue intervals, nowcasts, alerts, topology changes, AMAN feed, AODB and immigration events): consumed with MassTransit 8.5.11 and the Kafka Rider (topic endpoints on an in-memory bus, same shape as AMAN's `Aman.Di/Extensions/MassTransitServiceExtensions.cs` with the gaps below closed); produced through Ariva's own producer, one Confluent `IProducer<string, byte[]>` per host (`KafkaProduce`, ARV-167), which `ISvcMessageBus`, the outbox relay and `IDeadLetterSink` share; consumers are declared with `Consume<TMessage, TConsumer>`.
 - **Stateful stream engine** (Ariva.Api.Stream: per-zone track state, snapshots, replay): raw Confluent.Kafka consumer through the Ariva.Infra partition-aware abstraction. The v8 rider has no partition assigned or revoked callbacks.
 - MassTransit and Confluent types live only in Ariva.Infra and Ariva.Di. Ariva.Core sees `ISvcMessageBus` and event records; an architecture test enforces this.
 - Pinned: MassTransit 8.5.11, MassTransit.Kafka 8.5.11, Confluent.Kafka 2.15.1. Never 9.x without a licence decision (v9 is commercial; v8 maintenance ends after 2026).
@@ -16,8 +16,8 @@ AMAN's `IdempotencyFilter` is never registered, its outbox is a fallback table w
 ## Topics
 `ariva.<context>.<event>.v1` from `KafkaTopics` constants only. Examples: `KafkaTopics.DeviceTrackSample` (`ariva.device.track-sample.v1`, key zone id), `KafkaTopics.FlowQueueInterval`, `KafkaTopics.AlertStateChanged`, `KafkaTopics.TopologyZoneProfileActivated`. An event class names its topic with `[KafkaTopic(KafkaTopics.X)]`; one event type per topic. AMAN produces `aman.feed.<contract>.v1`. `TopicProvisioner` creates missing topics from `TopicCatalog` (partitions, replication, retention or compaction) in the background when `Kafka:ProvisionTopics` is set (Api.Main); do not rely on `CreateIfMissing`. Dead letters: `KafkaTopics.DeadLetter(topic)`, `<topic>.dlq.v1` (AMAN topics get the `ariva.` prefix in front).
 
-## Producers
-Keyed always: `r.AddProducer<string, T>(topic, (ctx, p) => { p.EnableIdempotence = true; p.CompressionType = CompressionType.Lz4; })`, `Acks.All`, `MessageMaxBytes` 1 MB. Domain events never go to Kafka from inside a transaction: write `outbox_message` in the aggregate's NHibernate transaction; the relay (single leader by PostgreSQL advisory lock, `FOR UPDATE SKIP LOCKED`, id order, stop per key on failure) produces them.
+## Producing (ARV-167)
+One producer per host, `KafkaProduce` (Ariva.Infra), registered by `AddArivaMessaging`, built at host start, flushed for at most 5 seconds at stop, disposed only with the host. No send outcome disposes or replaces it; only a fatal client error does, in place, at most once per `Kafka:Producer:RecreateSeconds` (30), sends failing at once in between; fatal errors and recreations (not the failed sends) are counted on the `Ariva.Kafka` meter. The outbox relay waits for the producer (`KafkaProduce.IsReady`), not for MassTransit's bus. Never register `r.AddProducer` on the rider and never build another producer: publish with `ISvcMessageBus` (keyed by the event's `GetPartitionKey()`), write domain events to `outbox_message` in the aggregate's NHibernate transaction (the relay, single leader by PostgreSQL advisory lock, `FOR UPDATE SKIP LOCKED`, `seq` order, stop per key on failure, sends them), and send dead letters with `IDeadLetterSink`. Settings come from `KafkaClientConfig.Producer`: `Acks.All`, idempotence, 1 MB, linger 0, 30 s message timeout, LZ4, delivery reports without the message, queue bounded (`QueueMaxKbytes` 32768, `QueueMaxMessages` 10,000; a full queue throws `Local_QueueFull` at once, which Ingest answers 503). A send takes no cancellation token into the client: the caller's token ends only its own wait, and every awaited send ends within `KafkaProduce.SendTimeout` (45 s). The wire format is the rider's (contract test in `KafkaPipelineTests`): UTF-8 key, the event's JSON, Ariva's four headers, `MT-Activity-Id` when traced, `MessageId`.
 
 ## Rider consumers (at-least-once)
 Hosts declare consumers through the composition root; `AddArivaMessaging` builds the topic endpoint with the group, the endpoint defaults and the Ariva consume pipe (`ConsumePipeline.Configure`):
@@ -34,11 +34,11 @@ builder.Services.RegisterArivaServices(builder.Configuration, messaging => messa
 
 ## Raw consumer (Stream engine only)
 - `EnableAutoCommit = false`, `EnableAutoOffsetStore = false`; `StoreOffset(result)` after the handler; `Commit()` only right after `CheckpointAsync` made the state durable (every `Kafka:Consumers:CheckpointSeconds` and before a clean revoke). Never commit past state that was not persisted.
-- Revoked: checkpoint, commit, release. Lost or after a handler failure: drop state, commit nothing (replay from the last checkpoint). Assigned: rebuild per-zone state from the latest snapshot plus replay. Register the topic with `messaging.StreamFrom(topic)` so its dead-letter producer exists.
+- Revoked: checkpoint, commit, release. Lost or after a handler failure: drop state, commit nothing (replay from the last checkpoint). Assigned: rebuild per-zone state from the latest snapshot plus replay. Declare the topic with `messaging.StreamFrom(topic)` (it must be a `KafkaTopics` constant); its unreadable records go to its dead-letter topic through the host's producer.
 - `PartitionedConsumer<T>` (Ariva.Infra/Streaming) implements this with `IPartitionHandler<T>` (assigned, revoked, lost, handle); a record that is not valid JSON goes to the dead-letter topic and its offset is stored; a handler failure stops the loop so the record is replayed after restart.
 
 ## Always
-Bound memory per partition and per zone (CWE-120); validate every message against its contract before use (CWE-501); topics never built from input (CWE-77). Telemetry: `AddSource("MassTransit")` and `AddMeter("MassTransit")`.
+Bound memory per partition and per zone (CWE-120); validate every message against its contract before use (CWE-501); topics never built from input (CWE-77). Telemetry: `AddSource("MassTransit")` (consume spans), `AddSource(KafkaProduce.ActivitySourceName)` (send spans, `Ariva.Kafka`, each ending at its message's delivery report), `AddMeter("MassTransit")` and `AddMeter(KafkaProducerMetrics.MeterName)` (`ariva.kafka.producer_fatal`).
 
 ## Replay and determinism
 Raw canonical events are archived in `sensing_events`; replay re-runs the pure engine for a time range and profile version and must produce the same output hash. Golden test: seed 9303.
