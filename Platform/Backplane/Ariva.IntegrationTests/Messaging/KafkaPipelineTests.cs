@@ -7,6 +7,7 @@ using Ariva.Di.Extensions;
 using Ariva.Infra.Messaging;
 using Ariva.Infra.Messaging.Kafka;
 using Ariva.Infra.Messaging.Outbox;
+using Ariva.Infra.Monitoring;
 using Ariva.Infra.Timescale;
 using Ariva.IntegrationTests.Setup;
 using Confluent.Kafka;
@@ -110,7 +111,7 @@ public sealed class KafkaPipelineTests(PostgresFixture postgres, KafkaFixture ka
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
-    private async Task<IHost> StartHostAsync()
+    private async Task<IHost> StartHostAsync(bool monitoring = false)
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Configuration.AddInMemoryCollection(new Dictionary<string, string>
@@ -140,6 +141,17 @@ public sealed class KafkaPipelineTests(PostgresFixture postgres, KafkaFixture ka
         builder.Services.AddArivaMessaging(builder.Configuration, messaging => messaging
             .AddEventsFrom(typeof(KafkaProbe).Assembly)
             .Consume<KafkaProbe, KafkaProbeConsumer>(KafkaTopics.SlaDisputeChanged, Purpose));
+        if (monitoring)
+        {
+            // ARV-125a: the hosts' readiness checks and their publisher, which runs them every second here.
+            builder.Services.AddArivaDependencyChecks(builder.Configuration);
+            builder.Services.AddArivaMonitoring();
+            builder.Services.PostConfigure<HealthCheckPublisherOptions>(options =>
+            {
+                options.Delay = TimeSpan.Zero;
+                options.Period = TimeSpan.FromSeconds(1);
+            });
+        }
 
         var host = builder.Build();
         await host.StartAsync(Ct);
@@ -423,9 +435,24 @@ public sealed class KafkaPipelineTests(PostgresFixture postgres, KafkaFixture ka
     }
 
     [Fact]
+    public async Task HealthStatus_Should_ReportEveryReadyCheckHealthy_When_TheDatabaseAndKafkaAnswer()
+    {
+        // ARV-125a: ariva.health.status from the real checks: the database (the runtime login runs a statement), the
+        // kafka check (a metadata request through the host's producer) and MassTransit's bus.
+        using var host = await StartHostAsync(monitoring: true);
+        using var reader = new InstrumentReader(host.Services.GetRequiredService<HealthStatusMetrics>().Meter);
+        IReadOnlyList<(double Value, IReadOnlyDictionary<string, string> Tags)> measured = [];
+        await WaitAsync(() => (measured = reader.Observe(HealthStatusMetrics.StatusName)).Count >= 3, seconds: 30);
+
+        measured.Select(m => (m.Tags["check"], m.Value)).Should().BeEquivalentTo([("database", 0d), ("kafka", 0d), ("masstransit-bus", 0d)]);
+        await host.StopAsync(Ct);
+    }
+
+    [Fact]
     public async Task Poison_Should_ReachTheDeadLetterTopicAfterRetries_When_TheConsumerKeepsFailing()
     {
         using var host = await StartHostAsync();
+        using var counts = new InstrumentReader(host.Services.GetRequiredService<KafkaProducerMetrics>().Meter);
         var poison = new KafkaProbe { ContractId = "C-poison", Mode = "fail" };
         var healthy = new KafkaProbe { ContractId = "C-poison" };
         var bus = host.Services.GetRequiredService<ISvcMessageBus>();
@@ -444,6 +471,11 @@ public sealed class KafkaPipelineTests(PostgresFixture postgres, KafkaFixture ka
         letter.Consumer.Should().Be(GroupId);
         letter.ErrorMessage.Should().Be("poison C-poison");
         letter.BodyBase64.Should().NotBeEmpty();
+        // ARV-125a: counted as sent, by source topic and group (the group's earlier records may add letters of their own;
+        // that a retry is not counted is DeadLetterOutboxTests').
+        await WaitAsync(() => counts.Sum(KafkaProducerMetrics.DeadLettersName, ("topic", KafkaTopics.SlaDisputeChanged), ("group", GroupId),
+            ("outcome", KafkaProducerMetrics.SentOutcome)) >= 1, seconds: 10);
+        counts.Sum(KafkaProducerMetrics.DeadLettersName, ("outcome", KafkaProducerMetrics.FailedOutcome)).Should().Be(0);
         await host.StopAsync(Ct);
     }
 
@@ -451,6 +483,7 @@ public sealed class KafkaPipelineTests(PostgresFixture postgres, KafkaFixture ka
     public async Task UnreadableValue_Should_ReachTheDeadLetterTopic_When_ItIsNotJson()
     {
         using var host = await StartHostAsync();
+        using var counts = new InstrumentReader(host.Services.GetRequiredService<KafkaProducerMetrics>().Meter);
         using (var producer = new ProducerBuilder<string, string>(new ProducerConfig { BootstrapServers = _kafka.BootstrapServers }).Build())
             await producer.ProduceAsync(KafkaTopics.SlaDisputeChanged, new Message<string, string> { Key = "C-garbage", Value = "{not json" }, Ct);
 
@@ -460,6 +493,9 @@ public sealed class KafkaPipelineTests(PostgresFixture postgres, KafkaFixture ka
         var letter = JsonSerializer.Deserialize<DeadLetter>(record.Message.Value, EventCatalog.Json);
         letter.Key.Should().Be("C-garbage");
         System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(letter.BodyBase64)).Should().Be("{not json");
+        // ARV-125a: the receive-level dead-letter path counts too.
+        await WaitAsync(() => counts.Sum(KafkaProducerMetrics.DeadLettersName, ("topic", KafkaTopics.SlaDisputeChanged), ("group", GroupId),
+            ("outcome", KafkaProducerMetrics.SentOutcome)) >= 1, seconds: 10);
         await host.StopAsync(Ct);
     }
 

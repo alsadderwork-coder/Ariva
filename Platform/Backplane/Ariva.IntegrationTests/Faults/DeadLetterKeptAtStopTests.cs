@@ -8,6 +8,7 @@ using Ariva.Di.Extensions;
 using Ariva.Infra.Messaging;
 using Ariva.Infra.Messaging.Kafka;
 using Ariva.IntegrationTests.Security;
+using Ariva.IntegrationTests.Setup;
 using FluentAssertions;
 using MassTransit;
 using Microsoft.Extensions.Configuration;
@@ -271,6 +272,8 @@ public sealed class DeadLetterKeptAtStopTests(FaultsFixture faults) : IAsyncLife
         KeptProbeConsumer.SlowKey = slow;
         await AcceptDeadLettersAsync();
         var host = await StartHostAsync();
+        // ARV-125a: the refused letter is counted once, as kept.
+        using var counts = new InstrumentReader(host.Services.GetRequiredService<KafkaProducerMetrics>().Meter);
         var stopped = false;
         try
         {
@@ -308,6 +311,8 @@ public sealed class DeadLetterKeptAtStopTests(FaultsFixture faults) : IAsyncLife
                 "the later record was committed during the stop, past the poison record: the case that skipped it before ARV-171");
             Logged("left unacknowledged").Should().Be(0, "the database was there, so the record was not faulted (and so skipped)");
             Logged(Kept).Should().Be(1, "the refused dead letter was kept in the outbox at the stop");
+            counts.Sum(KafkaProducerMetrics.DeadLettersName, ("topic", KafkaTopics.SlaBreachDetected), ("group", Group), ("outcome", KafkaProducerMetrics.KeptOutcome))
+                .Should().Be(1);
             (await KeptRowsAsync(poison)).Should().Equal([false], "one outbox row holds the letter, not sent yet: the topic still refuses");
 
             // The topic takes messages again: the next host's relay sends the kept letter.

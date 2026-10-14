@@ -57,6 +57,9 @@ public static class MqttExtensions
                 using var pem = X509Certificate2.CreateFromPemFile(settings.CertificatePath, settings.CertificateKeyPath);
                 // Re-imported so the private key is usable by SslStream on every platform.
                 certificate = X509CertificateLoader.LoadPkcs12(pem.Export(X509ContentType.Pkcs12), null);
+                // ARV-125a: only its end of validity is kept, for ariva.certificates.expires_in.
+                kestrel.ApplicationServices.GetService<Ariva.Infra.Monitoring.CertificateMetrics>()?
+                    .Track(Ariva.Infra.Monitoring.CertificateMetrics.MqttServer, certificate.NotAfter.ToUniversalTime());
             }
 
             var open = 0;

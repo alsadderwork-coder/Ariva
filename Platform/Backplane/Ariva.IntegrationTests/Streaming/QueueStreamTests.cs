@@ -6,6 +6,7 @@ using Ariva.Core.Queueing;
 using Ariva.Core.Sensing;
 using Ariva.Di.Extensions;
 using Ariva.Infra.Messaging;
+using Ariva.Infra.Messaging.Kafka;
 using Ariva.Infra.Settings;
 using Ariva.Infra.Streaming;
 using Ariva.Infra.Timescale;
@@ -1319,9 +1320,20 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
         var database = await DatabaseAsync(TestDatabase.StreamMisplaced);
         using (var host = Host(database, "it-misplaced"))
         {
+            using var lag = new InstrumentReader(host.Services.GetRequiredService<StreamMetrics>().Meter);
             await host.StartAsync(Ct);
             await WaitForAsync(database, "ariva-it-misplaced.queue-engine");
+
+            // ARV-125a: caught up, the worker measures no lag on the topics it read, under its own group.
+            var until = DateTime.UtcNow.AddSeconds(30);
+            IReadOnlyList<(double Value, IReadOnlyDictionary<string, string> Tags)> measured = [];
+            while (!(measured = lag.Observe(StreamMetrics.ConsumerLagName)).Any(m => m.Tags["topic"] == KafkaTopics.DeviceZoneOccupancy && m.Value == 0) &&
+                   DateTime.UtcNow < until)
+                await Task.Delay(250, Ct);
+            measured.Should().Contain(m => m.Tags["topic"] == KafkaTopics.DeviceZoneOccupancy && m.Value == 0);
+            measured.Should().OnlyContain(m => m.Tags["group"] == "ariva-it-misplaced.queue-engine" && QueueStreamWorker.Topics.Contains(m.Tags["topic"]));
             await host.StopAsync(Ct);
+            lag.Observe(StreamMetrics.ConsumerLagName).Should().BeEmpty("a stopped worker reports no lag");
         }
 
         int.Parse((await RowsAsync(database, "SELECT count(*) FROM queue_minute WHERE zone_key = 'DMO/Q1mp'"))[0], System.Globalization.CultureInfo.InvariantCulture)
@@ -1350,6 +1362,7 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
         }
 
         using var host = Host(database, "it-deadletter");
+        using var counts = new InstrumentReader(host.Services.GetRequiredService<KafkaProducerMetrics>().Meter);
         await host.StartAsync(Ct);
         using var consumer = new ConsumerBuilder<string, string>(new ConsumerConfig
         {
@@ -1380,6 +1393,12 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
         await host.StopAsync(Ct);
         keys.Should().Contain(["DMO/Q9", "DMO/elsewhere"]);
         healthKeys.Should().Equal(["DMO/Q9"], "the report keyed by device id is skipped, not dead-lettered");
+        // ARV-125a: the stream worker's dead letters are counted, by source topic and the worker's group.
+        const string group = "ariva-it-deadletter.queue-engine";
+        counts.Sum(KafkaProducerMetrics.DeadLettersName, ("topic", KafkaTopics.DeviceZoneOccupancy), ("group", group), ("outcome", KafkaProducerMetrics.SentOutcome))
+            .Should().BeGreaterThanOrEqualTo(2);
+        counts.Sum(KafkaProducerMetrics.DeadLettersName, ("topic", KafkaTopics.DeviceHealth), ("group", group), ("outcome", KafkaProducerMetrics.SentOutcome))
+            .Should().BeGreaterThanOrEqualTo(1);
     }
 
     /// <summary>Collects the warnings a store logs (ARV-113: dropped line minutes name the zone key and the count only).</summary>

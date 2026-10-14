@@ -95,19 +95,27 @@ public sealed class DeadLetterOutboxTests
         DeadLetters.OutboxKeyOf(Letter() with { Key = key }).Should().Be(outboxKey);
     }
 
+    /// <summary>ARV-125a: the dead letters counted by outcome, for the letters of <see cref="Letter"/>.</summary>
+    private static double Counted(Setup.InstrumentReader reader, string outcome) => reader.Sum(KafkaProducerMetrics.DeadLettersName,
+        ("topic", KafkaTopics.FlowNowcast), ("group", "ariva-it.probe"), ("outcome", outcome));
+
     [Fact]
     public async Task Retry_Should_KeepTheLetterAndReturn_When_TheEndpointStopsBeforeKafkaTakesIt()
     {
         var sink = new RefusingSink();
         var store = new Store();
         var stopping = new EndpointStopping();
+        using var metrics = new KafkaProducerMetrics();
+        using var reader = new Setup.InstrumentReader(metrics.Meter);
 
-        var loop = DeadLetterRetry.SendUntilAcceptedAsync(sink, Letter(), TimeProvider.System, NullLogger.Instance, CancellationToken.None, stopping.Token, store);
+        var loop = DeadLetterRetry.SendUntilAcceptedAsync(sink, Letter(), TimeProvider.System, NullLogger.Instance, CancellationToken.None, stopping.Token, store, metrics);
         await sink.Attempted.Task.WaitAsync(TimeSpan.FromSeconds(10), Ct);
         stopping.Signal();
 
         await loop.WaitAsync(TimeSpan.FromSeconds(10), Ct);
         store.Kept.Should().ContainSingle().Which.Offset.Should().Be(7, "the letter is kept, so the record may complete");
+        Counted(reader, KafkaProducerMetrics.KeptOutcome).Should().Be(1, "ARV-125a: counted once, as kept");
+        reader.Sum(KafkaProducerMetrics.DeadLettersName).Should().Be(1, "a refused attempt is not counted");
     }
 
     [Fact]
@@ -117,8 +125,10 @@ public sealed class DeadLetterOutboxTests
         var store = new Store { Fail = true };
         var stopping = new EndpointStopping();
         using var message = new CancellationTokenSource();
+        using var metrics = new KafkaProducerMetrics();
+        using var reader = new Setup.InstrumentReader(metrics.Meter);
 
-        var loop = DeadLetterRetry.SendUntilAcceptedAsync(sink, Letter(), TimeProvider.System, NullLogger.Instance, message.Token, stopping.Token, store);
+        var loop = DeadLetterRetry.SendUntilAcceptedAsync(sink, Letter(), TimeProvider.System, NullLogger.Instance, message.Token, stopping.Token, store, metrics);
         await sink.Attempted.Task.WaitAsync(TimeSpan.FromSeconds(10), Ct);
         stopping.Signal();
 
@@ -126,6 +136,22 @@ public sealed class DeadLetterOutboxTests
             "with the database away as well nothing durable was written, so the record must not complete (ARV-166's path)"))
             .Which.CancellationToken.Should().Be(message.Token);
         store.Attempts.Should().Be(1);
+        Counted(reader, KafkaProducerMetrics.FailedOutcome).Should().Be(1, "ARV-125a: neither sent nor kept, the record is delivered again");
+        reader.Sum(KafkaProducerMetrics.DeadLettersName).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Retry_Should_CountTheLetterSentOnce_When_TheBrokerTakesItAfterARefusal()
+    {
+        var sink = new RefusingSink { Refusals = 1 };
+        using var metrics = new KafkaProducerMetrics();
+        using var reader = new Setup.InstrumentReader(metrics.Meter);
+
+        await DeadLetterRetry.SendUntilAcceptedAsync(sink, Letter(), TimeProvider.System, NullLogger.Instance, CancellationToken.None, CancellationToken.None,
+            new Store(), metrics).WaitAsync(TimeSpan.FromSeconds(20), Ct);
+
+        Counted(reader, KafkaProducerMetrics.SentOutcome).Should().Be(1, "ARV-125a: the broker took it on its second attempt");
+        reader.Sum(KafkaProducerMetrics.DeadLettersName).Should().Be(1, "the refusal before it is not a dead letter of its own");
     }
 
     [Fact]
@@ -167,11 +193,18 @@ public sealed class DeadLetterOutboxTests
 
     private sealed class RefusingSink : IDeadLetterSink
     {
+        private int _attempts;
+
         public TaskCompletionSource Attempted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        /// <summary>How many attempts are refused before one is taken; all of them by default.</summary>
+        public int Refusals { get; init; } = int.MaxValue;
 
         public Task SendAsync(DeadLetter letter, CancellationToken ct)
         {
             Attempted.TrySetResult();
+            if (Interlocked.Increment(ref _attempts) > Refusals)
+                return Task.CompletedTask;
             throw new KafkaProduceTimeoutException(DeadLetters.TopicFor(letter), KafkaProduce.SendTimeout);
         }
     }

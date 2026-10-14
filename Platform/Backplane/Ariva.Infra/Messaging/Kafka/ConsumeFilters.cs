@@ -62,7 +62,7 @@ public sealed class InboxFilter<T>(IInbox inbox, IUnitOfWork unitOfWork, ILogger
 /// </para>
 /// </summary>
 public sealed class DeadLetterFilter(int retryLimit, IDeadLetterSink sink, TimeProvider timeProvider, ILogger<DeadLetterFilter> logger,
-    EndpointStopping stopping = null, IDeadLetterStore store = null) : IFilter<ConsumeContext>
+    EndpointStopping stopping = null, IDeadLetterStore store = null, KafkaProducerMetrics metrics = null) : IFilter<ConsumeContext>
 {
     public async Task Send(ConsumeContext context, IPipe<ConsumeContext> next)
     {
@@ -98,7 +98,7 @@ public sealed class DeadLetterFilter(int retryLimit, IDeadLetterSink sink, TimeP
     /// (<see cref="DeadLetterRetry"/> says why).
     /// </summary>
     private Task SendUntilAcceptedAsync(DeadLetter letter, CancellationToken messageToken) =>
-        DeadLetterRetry.SendUntilAcceptedAsync(sink, letter, timeProvider, logger, messageToken, stopping?.Token ?? CancellationToken.None, store);
+        DeadLetterRetry.SendUntilAcceptedAsync(sink, letter, timeProvider, logger, messageToken, stopping?.Token ?? CancellationToken.None, store, metrics);
 
     public void Probe(ProbeContext context) => context?.CreateFilterScope("ariva-dead-letter");
 }
@@ -109,7 +109,7 @@ public sealed class DeadLetterFilter(int retryLimit, IDeadLetterSink sink, TimeP
 /// Records skipped for other reasons (an inbox duplicate, one already dead-lettered after its retries) pass through.
 /// </summary>
 public sealed class UnreadableFilter(IDeadLetterSink sink, TimeProvider timeProvider, ILogger<UnreadableFilter> logger, EndpointStopping stopping = null,
-    IDeadLetterStore store = null)
+    IDeadLetterStore store = null, KafkaProducerMetrics metrics = null)
     : IFilter<ReceiveContext>
 {
     public async Task Send(ReceiveContext context, IPipe<ReceiveContext> next)
@@ -132,7 +132,7 @@ public sealed class UnreadableFilter(IDeadLetterSink sink, TimeProvider timeProv
             timeProvider.GetUtcNow().UtcDateTime);
         logger.LogError("Unreadable record from {Topic} partition {Partition} offset {Offset}; sending it to the dead-letter topic",
             letter.Topic, letter.Partition, letter.Offset);
-        await DeadLetterRetry.SendUntilAcceptedAsync(sink, letter, timeProvider, logger, context.CancellationToken, stopping?.Token ?? CancellationToken.None, store);
+        await DeadLetterRetry.SendUntilAcceptedAsync(sink, letter, timeProvider, logger, context.CancellationToken, stopping?.Token ?? CancellationToken.None, store, metrics);
 
         await next.Send(context);
     }
@@ -167,6 +167,10 @@ public sealed class UnreadableFilter(IDeadLetterSink sink, TimeProvider timeProv
 /// completing and checkpointed before the endpoint stops): the database being away as well leaves nothing durable to
 /// write. The warning names the record so that it can be replayed (docs/architecture/overview.md, Producing).
 /// </para>
+/// <para>
+/// Each letter is counted once on <see cref="KafkaProducerMetrics.DeadLettersName"/> (ARV-125a) by how it ended: sent, kept
+/// in the outbox or failed (left unacknowledged); a refused attempt that is retried is not counted.
+/// </para>
 /// </summary>
 internal static class DeadLetterRetry
 {
@@ -174,7 +178,7 @@ internal static class DeadLetterRetry
     public static readonly TimeSpan KeepTimeout = TimeSpan.FromSeconds(10);
 
     public static async Task SendUntilAcceptedAsync(IDeadLetterSink sink, DeadLetter letter, TimeProvider timeProvider, ILogger logger,
-        CancellationToken messageToken, CancellationToken stopping, IDeadLetterStore store = null)
+        CancellationToken messageToken, CancellationToken stopping, IDeadLetterStore store = null, KafkaProducerMetrics metrics = null)
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(messageToken, stopping);
         var ct = linked.Token;
@@ -186,6 +190,7 @@ internal static class DeadLetterRetry
             {
                 ct.ThrowIfCancellationRequested();
                 await sink.SendAsync(letter, ct);
+                metrics?.DeadLetter(letter, KafkaProducerMetrics.SentOutcome);
                 return;
             }
             catch (Exception e) when (!ct.IsCancellationRequested)
@@ -212,7 +217,12 @@ internal static class DeadLetterRetry
         }
 
         if (store is not null && await KeepAsync(store, letter, timeProvider, logger))
+        {
+            metrics?.DeadLetter(letter, KafkaProducerMetrics.KeptOutcome);
             return;
+        }
+
+        metrics?.DeadLetter(letter, KafkaProducerMetrics.FailedOutcome);
         throw Stopping(logger, letter, ended, messageToken);
     }
 

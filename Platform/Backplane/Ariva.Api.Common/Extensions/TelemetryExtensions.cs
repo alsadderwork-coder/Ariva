@@ -17,6 +17,36 @@ public static class TelemetryExtensions
     // MassTransit's Kafka consume spans and its meter share this name (ADR-0018); since ARV-167 Ariva's producer has its own source.
     private const string MassTransit = "MassTransit";
 
+    /// <summary>
+    /// Every meter a Backplane host exports (ARV-125a). Every Ariva type that creates a meter names it in a <c>MeterName</c>
+    /// constant and is listed here; MeterExportTests fails for one that is not, and for a meter created outside such a type.
+    /// </summary>
+    public static readonly IReadOnlyList<string> Meters =
+    [
+        MassTransit,
+        // Ariva's own Kafka producer's fatal errors and recreations (ARV-167), the consumed topics (ARV-176), the consumers
+        // that cannot connect and the dead letters (ARV-125a).
+        Ariva.Infra.Messaging.Kafka.KafkaProducerMetrics.MeterName,
+        // Device heartbeats and zone degradation (ARV-025), devices monitored (ARV-125a).
+        Ariva.Infra.Sensing.DeviceHealthMetrics.MeterName,
+        // Sensing batches, events and health reports the archive skipped (ARV-159).
+        Ariva.Infra.Sensing.SensingArchiveMetrics.MeterName,
+        // Immigration records by contract and outcome, unmapped codes (ARV-048); exported since ARV-125a.
+        Ariva.Infra.Border.BorderMetrics.MeterName,
+        // Flight feed items, stale feeds (ARV-041); exported since ARV-125a.
+        Ariva.Infra.Flights.FlightMetrics.MeterName,
+        // Integration token exchanges and lockouts (ARV-042); exported since ARV-125a.
+        Ariva.Infra.Services.Integration.IntegrationMetrics.MeterName,
+        // The readiness checks per check (ARV-125a).
+        Ariva.Infra.Monitoring.HealthStatusMetrics.MeterName,
+        // The expiry of the certificates the host loaded (ARV-125a).
+        Ariva.Infra.Monitoring.CertificateMetrics.MeterName,
+        // The outbox backlog (ARV-125a).
+        Ariva.Infra.Messaging.Outbox.OutboxMetrics.MeterName,
+        // The queue stream worker's consumer lag (ARV-125a).
+        Ariva.Infra.Streaming.StreamMetrics.MeterName
+    ];
+
     public static WebApplicationBuilder AddAppServiceDefaults(this WebApplicationBuilder builder)
     {
         ArgumentNullException.ThrowIfNull(builder);
@@ -27,13 +57,8 @@ public static class TelemetryExtensions
             options.ActivitySources.Add(MassTransit);
             // Ariva's own Kafka producer's send spans (ARV-167); MassTransit's consume spans take them as parents.
             options.ActivitySources.Add(Ariva.Infra.Messaging.Kafka.KafkaProduce.ActivitySourceName);
-            options.Meters.Add(MassTransit);
-            // Ariva's own Kafka producer's fatal errors and recreations (ARV-167).
-            options.Meters.Add(Ariva.Infra.Messaging.Kafka.KafkaProducerMetrics.MeterName);
-            // Device heartbeats and zone degradation (ARV-025).
-            options.Meters.Add(Ariva.Infra.Sensing.DeviceHealthMetrics.MeterName);
-            // Sensing batches, events and health reports the archive skipped (ARV-159).
-            options.Meters.Add(Ariva.Infra.Sensing.SensingArchiveMetrics.MeterName);
+            foreach (var meter in Meters)
+                options.Meters.Add(meter);
             options.ConfigureTracing = tracing => tracing.AddNpgsql();
         });
     }

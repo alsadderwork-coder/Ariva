@@ -25,6 +25,7 @@ public sealed record ConsumedTopic(string Topic, string Group, Func<IKafkaRider,
 /// the same group and pipe as before). An endpoint's fault after it started is retried by its own transport, as it always was.
 /// A connect that throws is logged and tried again at the next look: MassTransit removes an endpoint whose start threw
 /// (<c>ReceiveEndpointCollection.StartEndpoint</c>), and adds one only once it is built, so a retry never meets "already added".
+/// Until it connects, the consumer reads 1 on the <see cref="KafkaProducerMetrics.ConsumerUnconnectedName"/> gauge (ARV-125a).
 /// </para>
 /// <para>
 /// At start it waits up to <see cref="ConsumerSettings.StartWaitSeconds"/> (60) for the consumed topics Ariva owns (the Helm
@@ -106,6 +107,9 @@ internal sealed class KafkaConsumerEndpoints : IHostedService, IDisposable
         // A consumer reports once its topic has been read: 1 while the broker says the topic does not exist, 0 otherwise.
         _metrics?.ObserveConsumedTopics(() => _consumers.Where(c => c.State != TopicState.Unknown)
             .Select(c => (c.Topic.Topic, c.Topic.Group, c.State == TopicState.Missing)));
+        // ARV-125a: 1 while a consumer's topic exists but its connect failed (it is tried again at each check), 0 otherwise.
+        _metrics?.ObserveUnconnectedConsumers(() => _consumers.Where(c => c.State != TopicState.Unknown)
+            .Select(c => (c.Topic.Topic, c.Topic.Group, c.State == TopicState.Present)));
 
         var until = _time.GetUtcNow() + TimeSpan.FromSeconds(Math.Max(0, _settings.Consumers.StartWaitSeconds));
         var owned = _consumers.Select(c => c.Topic.Topic).Where(t => Enumerable.Contains(KafkaTopics.Owned, t, StringComparer.Ordinal))

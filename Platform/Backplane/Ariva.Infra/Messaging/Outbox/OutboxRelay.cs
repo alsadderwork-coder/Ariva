@@ -66,16 +66,27 @@ public sealed record RelayPass(bool Leader, int Claimed, int Sent, int Failed, i
 /// <see cref="OutboxRelaySettings.BrokerRetrySeconds"/>. So after an outage every key resumes within that wait of the
 /// broker's return, whatever the outage's length. Any other failure counts and backs off exponentially, up to five minutes.
 /// </para>
+/// <para>
+/// ARV-125a: every relay, leader or not, measures the backlog (<see cref="MeasureAsync"/>) at most every
+/// <see cref="MeasureEvery"/> on a short connection of its own, outside the pass, also while the producer is not ready, so a
+/// Kafka outage shows as a growing backlog (<see cref="OutboxMetrics"/>).
+/// </para>
 /// </summary>
 public sealed class OutboxRelay(
     DatabaseSettings database,
     KafkaSettings kafka,
     IOutboxTransport transport,
     TimeProvider timeProvider,
-    ILogger<OutboxRelay> logger) : BackgroundService
+    ILogger<OutboxRelay> logger,
+    OutboxMetrics metrics = null) : BackgroundService
 {
     /// <summary>"ARIV" and the story number, like the administrators lock of ARV-011.</summary>
     public const long LeaderLock = 0x41524956_00000020;
+
+    /// <summary>How often the backlog is measured (ARV-125a); a measurement is reported for three of these.</summary>
+    public static readonly TimeSpan MeasureEvery = TimeSpan.FromSeconds(30);
+
+    private DateTimeOffset _nextMeasure = DateTimeOffset.MinValue;
 
     private const int MaxErrorLength = 2000;
     private static readonly TimeSpan HousekeepingEvery = TimeSpan.FromHours(1);
@@ -88,6 +99,7 @@ public sealed class OutboxRelay(
         while (!stoppingToken.IsCancellationRequested)
         {
             var delay = TimeSpan.FromMilliseconds(settings.PollMilliseconds);
+            await MeasureIfDueAsync(stoppingToken);
             try
             {
                 var pass = await RunOnceAsync(stoppingToken);
@@ -108,6 +120,44 @@ public sealed class OutboxRelay(
             if (delay > TimeSpan.Zero)
                 await Task.Delay(delay, timeProvider, stoppingToken).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
         }
+    }
+
+    /// <summary>Measures the backlog when <see cref="MeasureEvery"/> has passed; a failure leaves the last measurement to expire.</summary>
+    private async Task MeasureIfDueAsync(CancellationToken ct)
+    {
+        if (metrics is null || timeProvider.GetUtcNow() < _nextMeasure)
+            return;
+        _nextMeasure = timeProvider.GetUtcNow() + MeasureEvery;
+        try
+        {
+            metrics.Report(await MeasureAsync(ct), MeasureEvery * 3);
+        }
+#pragma warning disable CA1031 // a failed measurement must not stop the relay; the pass below meets the same cause and logs it
+        catch (Exception e) when (e is not OperationCanceledException || !ct.IsCancellationRequested)
+#pragma warning restore CA1031
+        {
+            // The database is away: the backlog is not reported until it is measured again.
+            logger.LogDebug(e, "Outbox backlog not measured");
+        }
+    }
+
+    /// <summary>
+    /// The rows not yet sent and when the oldest was written (ARV-125a): one constant statement on the partial index of
+    /// unsent rows (script 0011, <c>ix_outbox_message_unsent</c>), with a 10 second bound. Public for the integration tests.
+    /// </summary>
+    public async Task<OutboxBacklog> MeasureAsync(CancellationToken ct)
+    {
+        await using var connection = new NpgsqlConnection(database.BuildConnectionString());
+        await connection.OpenAsync(ct);
+        await using var command = new NpgsqlCommand(
+            """
+            SELECT (SELECT count(*) FROM outbox_message WHERE sent_on IS NULL),
+                   (SELECT created_on FROM outbox_message WHERE sent_on IS NULL ORDER BY seq LIMIT 1)
+            """,
+            connection) { CommandTimeout = 10 };
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        await reader.ReadAsync(ct);
+        return new OutboxBacklog(reader.GetInt64(0), reader.IsDBNull(1) ? null : DateTime.SpecifyKind(reader.GetDateTime(1), DateTimeKind.Utc));
     }
 
     /// <summary>One pass: lead, claim, produce, mark. Public for the integration tests.</summary>

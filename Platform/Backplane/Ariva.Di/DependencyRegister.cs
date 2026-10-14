@@ -28,6 +28,7 @@ public static class DependencyRegister
         services.AddArivaDataProtection(configuration);
         services.AddArivaMessaging(configuration, messaging);
         services.AddArivaDependencyChecks(configuration);
+        services.AddArivaMonitoring();
 
         return services;
     }

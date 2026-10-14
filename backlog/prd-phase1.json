@@ -1383,7 +1383,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 42,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. Split from ARV-125 (see that story and progress.md). Lead decision 2026-10-14: a gauge for the unconnected consumer rather than a log-based rule.",
       "dependsOn": [
         "ARV-062"

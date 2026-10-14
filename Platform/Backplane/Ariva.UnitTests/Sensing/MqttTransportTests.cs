@@ -411,10 +411,28 @@ public sealed class MqttTransportTests
         AddIngest(builder.Services, sink);
         builder.Services.AddOptions<RateLimitingSettings>();
         builder.Services.AddArivaMqttTransport(builder.Configuration, "k8s-dev");
+        // ARV-125a: the hosts register it with AddArivaMonitoring; the listener records its certificate's end of validity.
+        builder.Services.AddSingleton<Ariva.Infra.Monitoring.CertificateMetrics>();
         builder.WebHost.UseArivaMqttListener();
         var app = builder.Build();
         await app.StartAsync(TestContext.Current.CancellationToken);
         return (app, sink, port);
+    }
+
+    [Fact]
+    public async Task Listener_Should_ReportItsCertificatesEndOfValidity_When_ItStartsWithTls()
+    {
+        // ARV-125a: only the end date of the certificate the listener loaded; its key is not read again or kept for this.
+        Gateway.Find = Gateway.Default;
+        var (app, _, _) = await StartAsync();
+        await using var _ = app;
+        var metrics = app.Services.GetRequiredService<Ariva.Infra.Monitoring.CertificateMetrics>();
+        using var reader = new Ariva.UnitTests.Setup.InstrumentReader(metrics.Meter);
+
+        var measured = reader.Observe(Ariva.Infra.Monitoring.CertificateMetrics.ExpiresInName).Should().ContainSingle().Subject;
+
+        measured.Tags.Should().Equal(new Dictionary<string, string> { ["certificate"] = Ariva.Infra.Monitoring.CertificateMetrics.MqttServer });
+        measured.Value.Should().BeInRange(TimeSpan.FromDays(1).TotalSeconds - 120, TimeSpan.FromDays(1).TotalSeconds, "the test certificate ends a day after it was made");
     }
 
     private static MqttClientOptions Client(int port, string user, string password, string clientId = "", MqttProtocolVersion version = MqttProtocolVersion.V500, bool tls = true)

@@ -249,10 +249,11 @@ internal sealed class SvcDeviceHealth(
                 changed++;
         }
 
-        var totals = counts.Aggregate((Offline: 0, Degraded: 0, Zones: 0), (t, c) =>
-            (t.Offline + c.Offline, t.Degraded + c.Degraded, t.Zones + (c.Offline + c.Degraded > 0 ? 1 : 0)));
-        metrics.Snapshot(totals.Offline, totals.Degraded, totals.Zones);
-        return new DeviceHealthSweep(true, marked, changed, totals.Offline, totals.Degraded, totals.Zones);
+        var totals = counts.Aggregate((Monitored: 0, Offline: 0, Degraded: 0, Zones: 0), (t, c) =>
+            (t.Monitored + c.Devices, t.Offline + c.Offline, t.Degraded + c.Degraded, t.Zones + (c.Offline + c.Degraded > 0 ? 1 : 0)));
+        // ARV-125a: reported for two sweep intervals, so only the replica that swept lately reports the totals.
+        metrics.Snapshot(totals.Monitored, totals.Offline, totals.Degraded, totals.Zones, TimeSpan.FromSeconds(2 * settings.Value.SweepSeconds));
+        return new DeviceHealthSweep(true, marked, changed, totals.Offline, totals.Degraded, totals.Zones, totals.Monitored);
     }
 
     /// <summary>

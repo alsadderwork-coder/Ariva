@@ -7,7 +7,9 @@ using Ariva.Core.Services;
 using Ariva.Di.Extensions;
 using Ariva.Infra.Messaging;
 using Ariva.Infra.Messaging.Outbox;
+using Ariva.Infra.Monitoring;
 using Ariva.IntegrationTests.Security;
+using Ariva.IntegrationTests.Setup;
 using FluentAssertions;
 using MassTransit;
 using Microsoft.Extensions.Configuration;
@@ -112,6 +114,13 @@ public sealed class BrokerOutageTests(FaultsFixture faults) : IAsyncLifetime
         builder.Services.AddArivaMessaging(builder.Configuration, messaging => messaging
             .AddEventsFrom(typeof(OutageProbe).Assembly)
             .Consume<OutageProbe, OutageProbeConsumer>(KafkaTopics.SlaBreachDetected, Purpose));
+        // ARV-125a: ariva.health.status, its publisher running the readiness checks every second here.
+        builder.Services.AddArivaMonitoring();
+        builder.Services.PostConfigure<HealthCheckPublisherOptions>(options =>
+        {
+            options.Delay = TimeSpan.Zero;
+            options.Period = TimeSpan.FromSeconds(1);
+        });
         var host = builder.Build();
         await host.StartAsync(Ct); // held until the consumed Ariva topics exist and their consumers are ready (KafkaConsumerEndpoints)
         Done("the host started");
@@ -127,6 +136,10 @@ public sealed class BrokerOutageTests(FaultsFixture faults) : IAsyncLifetime
         await WaitForAsync(async () => wanted(status = (await checks.CheckHealthAsync(c => c.Tags.Contains("ready"), Ct)).Status), what);
         return status;
     }
+
+    /// <summary>Waits, within the budget, until the <c>kafka</c> check reads <paramref name="value"/> on <c>ariva.health.status</c> (ARV-125a).</summary>
+    private Task KafkaStatusAsync(InstrumentReader reader, double value, string what) => WaitForAsync(() => Task.FromResult(
+        reader.Observe(HealthStatusMetrics.StatusName).Any(m => m.Tags["check"] == "kafka" && m.Value == value)), what);
 
     /// <summary>What a service does when it commits a change that raises events: the rows go in with the change.</summary>
     private async Task WriteAsync(IHost host, string key, IEnumerable<int> steps)
@@ -216,6 +229,7 @@ public sealed class BrokerOutageTests(FaultsFixture faults) : IAsyncLifetime
     public async Task Outbox_Should_HoldEventsWhileTheBrokerIsDownAndRelayThemInOrder_When_ItIsBack()
     {
         var host = await StartHostAsync();
+        using var health = new InstrumentReader(host.Services.GetRequiredService<HealthStatusMetrics>().Meter);
         var completed = false;
         try
         {
@@ -244,6 +258,8 @@ public sealed class BrokerOutageTests(FaultsFixture faults) : IAsyncLifetime
                 // wait is for what is asserted, any status but Healthy.
                 (await ReadinessAsync(host, status => status != HealthStatus.Healthy, "readiness reporting the outage")).Should().NotBe(HealthStatus.Healthy,
                     "the bus's readiness check reports the outage");
+                // ARV-125a: readiness stays 200 while Degraded, so the alert reads the kafka check's status: 1, Degraded.
+                await KafkaStatusAsync(health, 1, "ariva.health.status reading the kafka check Degraded");
                 await WriteAsync(host, key, [4, 5]);
                 await WriteAsync(host, key, [6, 7, 8]);
 
@@ -274,6 +290,7 @@ public sealed class BrokerOutageTests(FaultsFixture faults) : IAsyncLifetime
                 await Task.Delay(TimeSpan.FromSeconds(3), Ct);
                 StepsOf(key).Should().Equal([1, 2, 3, 4, 5, 6, 7, 8]);
                 (await ReadinessAsync(host, status => status == HealthStatus.Healthy, "the bus healthy again")).Should().Be(HealthStatus.Healthy);
+                await KafkaStatusAsync(health, 0, "ariva.health.status reading the kafka check Healthy again");
                 completed = true;
             }
             finally

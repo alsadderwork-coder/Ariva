@@ -25,13 +25,16 @@ public static class ConsumePipeline
         context.GetService<KafkaEndpoints>()?.Add(stopping);
         // ARV-171: a dead letter Kafka did not take before the stop is kept in the outbox, so the record can complete.
         var store = context.GetService<IDeadLetterStore>();
+        // ARV-125a: every dead letter counted by how it ended (sent, kept or failed).
+        var metrics = context.GetService<KafkaProducerMetrics>();
         endpoint.UseFilter(new DeadLetterFilter(
             retries,
             context.GetRequiredService<IDeadLetterSink>(),
             context.GetRequiredService<TimeProvider>(),
             context.GetRequiredService<ILogger<DeadLetterFilter>>(),
             stopping,
-            store));
+            store,
+            metrics));
         endpoint.UseMessageRetry(retry =>
         {
             retry.Exponential(
@@ -50,6 +53,7 @@ public static class ConsumePipeline
             context.GetRequiredService<TimeProvider>(),
             context.GetRequiredService<ILogger<UnreadableFilter>>(),
             stopping,
-            store)));
+            store,
+            metrics)));
     }
 }

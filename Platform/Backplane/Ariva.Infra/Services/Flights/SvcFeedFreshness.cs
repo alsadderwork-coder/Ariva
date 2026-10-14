@@ -63,7 +63,8 @@ internal sealed class SvcFeedFreshness(IUnitOfWork unitOfWork, ICurrentUser curr
             }
         }
 
-        metrics.Snapshot(stale);
+        // ARV-125a: reported for two sweep intervals, so only the replica that swept lately reports the total.
+        metrics.Snapshot(stale, TimeSpan.FromSeconds(2 * settings.SweepSeconds));
         return new FeedFreshnessSweep(true, feeds.Count, stale, changed);
     }
 

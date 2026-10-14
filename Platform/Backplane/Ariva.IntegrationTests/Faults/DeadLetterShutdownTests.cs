@@ -7,6 +7,7 @@ using Ariva.Di.Extensions;
 using Ariva.Infra.Messaging;
 using Ariva.Infra.Messaging.Kafka;
 using Ariva.IntegrationTests.Security;
+using Ariva.IntegrationTests.Setup;
 using FluentAssertions;
 using MassTransit;
 using Microsoft.Extensions.Configuration;
@@ -227,6 +228,8 @@ public sealed class DeadLetterShutdownTests(FaultsFixture faults) : IAsyncLifeti
         PoisonProbeConsumer.BeforeFailing = () => faults.CutAsync(Proxy);
         using var admin = new Confluent.Kafka.AdminClientBuilder(new Confluent.Kafka.AdminClientConfig { BootstrapServers = faults.KafkaDirectBootstrap }).Build();
         var host = await StartHostAsync();
+        // ARV-125a: how the letter ended is counted (kept, or failed with the database away too).
+        using var counts = new InstrumentReader(host.Services.GetRequiredService<KafkaProducerMetrics>().Meter);
         var disposed = false;
         try
         {
@@ -268,6 +271,9 @@ public sealed class DeadLetterShutdownTests(FaultsFixture faults) : IAsyncLifeti
             Logged(databaseToo ? Kept : Stopping).Should().Be(0);
             if (databaseToo)
                 Logged("could not be kept in the outbox either").Should().Be(1);
+            counts.Sum(KafkaProducerMetrics.DeadLettersName, ("topic", KafkaTopics.SlaBreachDetected), ("group", Group),
+                ("outcome", databaseToo ? KafkaProducerMetrics.FailedOutcome : KafkaProducerMetrics.KeptOutcome)).Should().Be(1);
+            counts.Sum(KafkaProducerMetrics.DeadLettersName, ("outcome", KafkaProducerMetrics.SentOutcome)).Should().Be(0, "the broker never took it");
             var attempts = Logged("not accepted (attempt");
             await faults.RestoreAsync(Proxy);
             if (databaseToo)

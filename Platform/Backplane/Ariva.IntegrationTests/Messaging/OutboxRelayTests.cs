@@ -286,6 +286,63 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
         return envelope.Key + payload.RootElement.GetProperty("step").GetInt32();
     }
 
+    [Fact]
+    public async Task Measure_Should_CountTheUnsentRowsAndDateTheOldest_When_RowsWait()
+    {
+        // ARV-125a: one constant statement on the partial index of unsent rows (script 0011), kept dead letters included.
+        await ResetAsync();
+        (await Relay(new RecordingTransport()).MeasureAsync(Ct)).Should().Be(new OutboxBacklog(0, null), "an empty outbox has no oldest row");
+        var firstWritten = _host.Clock.GetUtcNow().UtcDateTime;
+        await WriteAsync(true, Probe("M", 1), Probe("N", 1));
+        _host.Clock.Advance(TimeSpan.FromMinutes(1));
+        await WriteAsync(true, Probe("M", 2));
+
+        var backlog = await Relay(new RecordingTransport()).MeasureAsync(Ct);
+
+        backlog.Unsent.Should().Be(3);
+        backlog.OldestUtc.Should().BeCloseTo(firstWritten, TimeSpan.FromMilliseconds(1), "the oldest unsent row by its order of writing");
+        await Relay(new RecordingTransport()).RunOnceAsync(Ct);
+        (await Relay(new RecordingTransport()).MeasureAsync(Ct)).Should().Be(new OutboxBacklog(0, null), "the relay sent them all");
+    }
+
+    [Fact]
+    public async Task Relay_Should_ReportTheBacklog_When_ItRunsAndTheProducerIsNotReady()
+    {
+        // ARV-125a: every relay measures, leader or not and whatever the producer's state, so a Kafka outage shows as a
+        // growing backlog; the gauges read the measurement.
+        await ResetAsync();
+        await WriteAsync(true, Probe("R", 1), Probe("R", 2));
+        _host.Clock.Advance(TimeSpan.FromMinutes(2));
+        using var metrics = new OutboxMetrics(timeProvider: _host.Clock);
+        using var reader = new InstrumentReader(metrics.Meter);
+        using var relay = new OutboxRelay(_host.Provider.GetRequiredService<DatabaseSettings>(), new KafkaSettings(), new NotReadyTransport(), _host.Clock,
+            NullLogger<OutboxRelay>.Instance, metrics);
+
+        await relay.StartAsync(Ct);
+        try
+        {
+            var until = DateTime.UtcNow.AddSeconds(30);
+            while (reader.Observe(OutboxMetrics.UnsentName).Count == 0 && DateTime.UtcNow < until)
+                await Task.Delay(100, Ct);
+        }
+        finally
+        {
+            await relay.StopAsync(Ct);
+        }
+
+        reader.Observe(OutboxMetrics.UnsentName).Should().ContainSingle().Which.Value.Should().Be(2);
+        reader.Observe(OutboxMetrics.OldestUnsentAgeName).Should().ContainSingle().Which.Value.Should().BeApproximately(120, 1);
+        (await _host.ReadAsync<long>("SELECT count(*) FROM outbox_message WHERE sent_on IS NULL")).Should().Be(2, "measuring sends nothing");
+    }
+
+    /// <summary>A producer that has not started (ARV-167): the relay waits, and still measures.</summary>
+    private sealed class NotReadyTransport : IOutboxTransport
+    {
+        public bool IsReady => false;
+
+        public Task SendAsync(OutboxEnvelope message, CancellationToken ct) => throw new InvalidOperationException("The producer is not started.");
+    }
+
     private sealed class RecordingTransport : IOutboxTransport
     {
         public List<OutboxEnvelope> Sent { get; } = [];

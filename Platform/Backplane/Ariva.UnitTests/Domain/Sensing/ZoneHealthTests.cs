@@ -96,11 +96,11 @@ public sealed class ZoneHealthTests
         metrics.HeartbeatLost("DMO");
         metrics.Recovered("DMO");
         metrics.ZoneDegraded("DMO");
-        metrics.Snapshot(2, 1, 1);
+        metrics.Snapshot(5, 2, 1, 1, TimeSpan.FromMinutes(1));
         listener.RecordObservableInstruments();
 
         measured.Should().Contain([("ariva.devices.heartbeat_lost", 1L), ("ariva.devices.recovered", 1L), ("ariva.zones.degraded", 1L),
-            ("ariva.devices.offline", 2L), ("ariva.devices.degraded", 1L), ("ariva.zones.degraded_now", 1L)]);
+            ("ariva.devices.monitored", 5L), ("ariva.devices.offline", 2L), ("ariva.devices.degraded", 1L), ("ariva.zones.degraded_now", 1L)]);
     }
 
     [Fact]

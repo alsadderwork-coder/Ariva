@@ -229,6 +229,28 @@
       "dependsOn": [
         "ARV-174"
       ]
+    },
+    {
+      "id": "ARV-179",
+      "title": "[E17] Monitoring metrics: bounded feed tags, the outbox count off the relay's path, and the gaps the pilot can live with",
+      "description": "Low findings from ARV-125a (2026-10-14). From its security review: (1) ariva.flights.items, ariva.feeds.went_stale and ariva.feeds.recovered are tagged with the feed name an authenticated integration client chooses (any normalized 2 to 32 character name per known site), so now that the meter is exported the OpenTelemetry SDK's default of 2,000 points per metric stream is the only per-pod bound; (2) OutboxRelay awaits MeasureIfDueAsync before each pass, so in a large backlog (after an outage, when draining matters) a slow count(*) can hold a pass up to 10 s every 30 s. From the engineer: (3) the ARV-125b AMAN feed alert, based on the records counter, cannot tell sites apart; a per-site feed age gauge from the desk feed's heartbeat would; (4) lag of the MassTransit consumer groups can only come from the broker or the site's collector; (5) while the stream worker's reading is paused (a zone at its bound with the database away) the fetched watermark does not move, so ariva.stream.consumer_lag stays flat instead of growing (the database alert covers that case). CWEs to review: CWE-400, CWE-532.",
+      "acceptanceCriteria": [
+        "Feed tags are bounded: an unknown feed is reduced to `other` (only feeds the site has configured keep their name), or the feed is bound to the client; MetricTagTests' allowlist commentary says so, with a test that a new client-chosen feed name does not add a series",
+        "The outbox measurement runs on its own timer, never before a relay pass, or its count is capped (for example at 100,000, reported as at least), with a test that a slow measurement does not delay a pass",
+        "A per-site AMAN feed age gauge exists (from the desk feed's heartbeat, no desk or officer data), or the residual is stated in wiki 10 section 2a; the MassTransit consumer lag and the flat stream lag while reading is paused are stated there as known gaps with the alert that covers each",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size S. Phase 3 (the owner's rule of 2026-10-14).",
+      "dependsOn": [
+        "ARV-125a"
+      ]
     }
   ]
 }

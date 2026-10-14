@@ -257,7 +257,11 @@ public static partial class MessagingExtensions
             provider.GetRequiredService<KafkaProducerMetrics>()));
 
         if (settings.Outbox.Enabled)
+        {
+            // ARV-125a: the backlog every relay measures (meter Ariva.Outbox).
+            services.TryAddSingleton<OutboxMetrics>();
             services.AddHostedService<OutboxRelay>();
+        }
 
         return services;
     }

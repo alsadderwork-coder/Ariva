@@ -53,19 +53,22 @@ public sealed class ConsumerEndpointsTests
             Logged.Enqueue((logLevel, formatter(state, exception)));
     }
 
-    /// <summary>Reads the <see cref="KafkaProducerMetrics.ConsumedTopicMissingName"/> gauge of one metrics instance.</summary>
+    /// <summary>
+    /// Reads one gauge of one metrics instance: <see cref="KafkaProducerMetrics.ConsumedTopicMissingName"/> by default, or
+    /// <see cref="KafkaProducerMetrics.ConsumerUnconnectedName"/> (ARV-125a).
+    /// </summary>
     private sealed class Gauge : IDisposable
     {
         private readonly System.Diagnostics.Metrics.MeterListener _listener;
         private readonly ConcurrentDictionary<(string Topic, string Group), int> _seen = new();
 
-        public Gauge(KafkaProducerMetrics metrics)
+        public Gauge(KafkaProducerMetrics metrics, string name = KafkaProducerMetrics.ConsumedTopicMissingName)
         {
             _listener = new System.Diagnostics.Metrics.MeterListener
             {
                 InstrumentPublished = (instrument, listener) =>
                 {
-                    if (instrument.Meter == metrics.Meter && instrument.Name == KafkaProducerMetrics.ConsumedTopicMissingName)
+                    if (instrument.Meter == metrics.Meter && instrument.Name == name)
                         listener.EnableMeasurementEvents(instrument);
                 }
             };
@@ -182,6 +185,36 @@ public sealed class ConsumerEndpointsTests
         Volatile.Read(ref connects).Should().Be(2, "a connected consumer is not connected again");
         Volatile.Read(ref reads).Should().Be(readsThen, "every consumer is connected, so the watch looks no more");
         gauge.Read().Should().Contain((Feed, Group), 0);
+        await endpoints.StopAsync(Ct);
+    }
+
+    [Fact]
+    public async Task UnconnectedGauge_Should_ReadOneWhileTheConnectKeepsFailing_When_TheTopicExists()
+    {
+        // ARV-125a (ARV-176 re-review, recommendation a): a consumer whose topic exists but whose connect keeps failing
+        // consumes nothing and reads 0 on consumed_topic_missing; it reads 1 here until it connects, then 0.
+        var failing = 1;
+        var connects = 0;
+        HostReceiveEndpointHandle Connect(IKafkaRider rider)
+        {
+            Interlocked.Increment(ref connects);
+            return Volatile.Read(ref failing) == 1 ? throw new InvalidOperationException("the endpoint could not be built") : Handle();
+        }
+
+        using var metrics = new KafkaProducerMetrics();
+        using var missing = new Gauge(metrics);
+        using var unconnected = new Gauge(metrics, KafkaProducerMetrics.ConsumerUnconnectedName);
+        using var endpoints = new KafkaConsumerEndpoints(Settings(), [new ConsumedTopic(Feed, Group, Connect)], () => null,
+            () => new HashSet<string>(StringComparer.Ordinal) { Feed }, TimeProvider.System, new Lines(), metrics);
+
+        await endpoints.StartAsync(Ct);
+        await UntilAsync(() => Volatile.Read(ref connects) >= 2, "the connect tried again at the next check");
+
+        unconnected.Read().Should().Contain((Feed, Group), 1, "its topic exists and its connect keeps failing");
+        missing.Read().Should().Contain((Feed, Group), 0, "the topic is not missing, which is why this gauge exists");
+
+        Volatile.Write(ref failing, 0);
+        await UntilAsync(() => unconnected.Read().GetValueOrDefault((Feed, Group), -1) == 0, "connected at the next check");
         await endpoints.StopAsync(Ct);
     }
 

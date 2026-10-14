@@ -201,7 +201,9 @@ public sealed class QueueStreamWorker(
     ILogger<QueueStreamWorker> logger,
     Ariva.Infra.Live.ILiveSnapshotStore live = null,
     ZoneProcessorSettings zoneSettings = null,
-    DeskTermSource deskTerms = null) : BackgroundService
+    DeskTermSource deskTerms = null,
+    StreamMetrics metrics = null,
+    KafkaProducerMetrics producerMetrics = null) : BackgroundService
 {
     public const string Purpose = "queue-engine";
 
@@ -297,6 +299,7 @@ public sealed class QueueStreamWorker(
         var every = TimeSpan.FromSeconds(Math.Max(1, kafka.Consumers.CheckpointSeconds));
         var paused = new List<TopicPartition>();
         var next = timeProvider.GetUtcNow() + every;
+        var nextLag = timeProvider.GetUtcNow();
         try
         {
             while (!ct.IsCancellationRequested)
@@ -316,6 +319,14 @@ public sealed class QueueStreamWorker(
                 }
 
                 await RefreshDeskTermsAsync(ct);
+
+                // ARV-125a: the lag is measured whether or not a checkpoint succeeds, so a worker held back by its database
+                // shows a growing lag.
+                if (metrics is not null && timeProvider.GetUtcNow() >= nextLag)
+                {
+                    nextLag = timeProvider.GetUtcNow() + every;
+                    ReportLag(consumer, every);
+                }
 
                 if (full || (timeProvider.GetUtcNow() >= next && _positions.Count > 0))
                 {
@@ -355,8 +366,42 @@ public sealed class QueueStreamWorker(
         }
         finally
         {
+            metrics?.Clear();
             consumer.Close();
         }
+    }
+
+    /// <summary>
+    /// ARV-125a: the records behind the end of each topic for the partitions this instance owns: the high watermark the
+    /// consumer last fetched (else the one last asked of the broker) less the next offset to read (else the consumer's
+    /// position). No broker call.
+    /// </summary>
+    private void ReportLag(IConsumer<string, byte[]> consumer, TimeSpan every)
+    {
+        var partitions = new List<(string Topic, long High, long Next)>();
+        try
+        {
+            foreach (var tp in consumer.Assignment)
+            {
+                var high = consumer.GetWatermarkOffsets(tp).High;
+                var known = high != Offset.Unset ? high.Value : _watermarks.TryGetValue((tp.Topic, tp.Partition.Value), out var asked) ? asked.High : -1;
+                long next = -1;
+                if (_consumed.TryGetValue((tp.Topic, tp.Partition.Value), out var consumed))
+                    next = consumed;
+                else if (consumer.Position(tp) is var position && position != Offset.Unset)
+                    next = position.Value;
+                partitions.Add((tp.Topic, known, next));
+            }
+        }
+        catch (KafkaException e)
+        {
+            // A measurement never stops the worker (a rebalance in progress, for example): the last one expires instead.
+            logger.LogDebug(e, "Queue stream lag not measured");
+            return;
+        }
+
+        // Reported for a minute (at least 12 intervals), longer than a checkpoint the database holds to its command timeout.
+        metrics.Report(GroupId, StreamMetrics.LagByTopic(partitions), TimeSpan.FromSeconds(Math.Max(60, every.TotalSeconds * 12)));
     }
 
     /// <summary>
@@ -912,23 +957,34 @@ public sealed class QueueStreamWorker(
 
     // A dead letter the broker refuses is tried again (2, 4 ... 30 seconds; each attempt ends within the produce bound,
     // ARV-166) and holds the partition until it is accepted or the worker stops.
+    // ARV-125a: counted once, sent, or failed when the worker stops first (the record is read again after restart).
     private async Task SendAsync(DeadLetter letter, CancellationToken ct)
     {
         _deadLettered++;
-        for (var attempt = 1; ; attempt++)
+        try
         {
-            try
+            for (var attempt = 1; ; attempt++)
             {
-                await deadLetters.SendAsync(letter, ct);
-                return;
+                try
+                {
+                    await deadLetters.SendAsync(letter, ct);
+                    producerMetrics?.DeadLetter(letter, KafkaProducerMetrics.SentOutcome);
+                    return;
+                }
+                catch (Exception e) when (!ct.IsCancellationRequested && e is not OperationCanceledException)
+                {
+                    var wait = TimeSpan.FromSeconds(Math.Min(30, Math.Pow(2, Math.Min(attempt, 5))));
+                    logger.LogError(e, "Dead letter for {Topic} partition {Partition} offset {Offset} not accepted (attempt {Attempt}); retrying in {Wait}",
+                        letter.Topic, letter.Partition, letter.Offset, attempt, wait);
+                    await Task.Delay(wait, timeProvider, ct);
+                }
             }
-            catch (Exception e) when (!ct.IsCancellationRequested && e is not OperationCanceledException)
-            {
-                var wait = TimeSpan.FromSeconds(Math.Min(30, Math.Pow(2, Math.Min(attempt, 5))));
-                logger.LogError(e, "Dead letter for {Topic} partition {Partition} offset {Offset} not accepted (attempt {Attempt}); retrying in {Wait}",
-                    letter.Topic, letter.Partition, letter.Offset, attempt, wait);
-                await Task.Delay(wait, timeProvider, ct);
-            }
+        }
+        catch (Exception)
+        {
+            // A stop (or a failure that stops the worker) before the broker took it: not sent, read again after restart.
+            producerMetrics?.DeadLetter(letter, KafkaProducerMetrics.FailedOutcome);
+            throw;
         }
     }
 }

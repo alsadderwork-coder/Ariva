@@ -29,6 +29,8 @@ public static class StreamExtensions
         services.AddSingleton<StreamStore>();
         services.AddSingleton<ZoneGeometrySource>();
         services.AddSingleton<DeskTermSource>();
+        // ARV-125a: the worker's consumer lag (meter Ariva.Stream).
+        services.TryAddSingleton<StreamMetrics>();
         var kafka = configuration.GetSection(KafkaSettings.SectionName).Get<KafkaSettings>() ?? new KafkaSettings();
         if (settings.Enabled && kafka.Enabled)
             services.AddHostedService<QueueStreamWorker>();

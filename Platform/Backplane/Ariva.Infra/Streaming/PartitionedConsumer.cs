@@ -41,7 +41,8 @@ public interface IPartitionHandler<TValue>
 /// checkpointing: the partitions' state is dropped and the records since the last checkpoint are replayed after
 /// restart, because skipping a record would corrupt the partition's state.
 /// </summary>
-public sealed class PartitionedConsumer<TValue>(KafkaSettings settings, IDeadLetterSink deadLetters, TimeProvider timeProvider, ILogger<PartitionedConsumer<TValue>> logger)
+public sealed class PartitionedConsumer<TValue>(KafkaSettings settings, IDeadLetterSink deadLetters, TimeProvider timeProvider, ILogger<PartitionedConsumer<TValue>> logger,
+    KafkaProducerMetrics metrics = null)
     where TValue : class
 {
     public static string GroupId(KafkaSettings settings, string purpose)
@@ -156,7 +157,18 @@ public sealed class PartitionedConsumer<TValue>(KafkaSettings settings, IDeadLet
             logger.LogError(e, "Unreadable record at {Topic} partition {Partition} offset {Offset}; sent to the dead-letter topic", result.Topic, result.Partition.Value, result.Offset.Value);
             // One attempt, ending within the produce bound (ARV-166) or at a stop; a failure stops the loop before the offset
             // is stored, so the record is read again after restart.
-            deadLetters.SendAsync(letter, ct).GetAwaiter().GetResult();
+            // ARV-125a: counted once, sent or failed.
+            try
+            {
+                deadLetters.SendAsync(letter, ct).GetAwaiter().GetResult();
+            }
+            catch (Exception)
+            {
+                metrics?.DeadLetter(letter, KafkaProducerMetrics.FailedOutcome);
+                throw;
+            }
+
+            metrics?.DeadLetter(letter, KafkaProducerMetrics.SentOutcome);
             return false;
         }
     }
