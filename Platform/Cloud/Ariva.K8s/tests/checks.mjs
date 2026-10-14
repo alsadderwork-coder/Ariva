@@ -77,9 +77,19 @@ function envValueOf(container, docs, name) {
 /**
  * ARV-165: an API host stops within its 50 s shutdown timeout (the message bus gets 35 s, and a stop during a message's
  * retries needs up to 25 s), then disposes and exits, so its pod's grace period is at least 60 s, and the host is told the
- * value (Hosting__GracePeriodSeconds) so it can refuse a shutdown timeout that would not fit.
+ * value (Hosting__GracePeriodSeconds) so it can refuse a shutdown timeout that would not fit. ARV-176: likewise its startup
+ * probe's allowance (Hosting__StartupAllowanceSeconds), so it can refuse consumer waits at start that would not fit.
  */
 const MIN_GRACE_SECONDS = 60;
+
+/**
+ * ARV-176: the least time a startup probe gives a container before the kubelet restarts it: initialDelaySeconds plus
+ * periodSeconds times (failureThreshold - 1), with Kubernetes' defaults (0, 10, 3). The prober's ticks are not aligned
+ * with the container's start, so the restart comes between this and one period later; the host must fit the earlier.
+ */
+export function startupAllowance(probe) {
+	return Number(probe.initialDelaySeconds ?? 0) + Number(probe.periodSeconds ?? 10) * (Number(probe.failureThreshold ?? 3) - 1);
+}
 
 /** Environment variable names that hold credentials: their values come from secrets, never from the manifest (CWE-798). */
 const SECRET_ENV = /(PASSWORD|PASSWD|SECRET|TOKEN|PRIVATE_?KEY|API_?KEY)/i;
@@ -197,6 +207,23 @@ export function checkManifests(docs, { environment }) {
 						if (String(envValueOf(container, docs, 'Hosting__GracePeriodSeconds')) !== String(grace)) {
 							findings.push(`${id} container ${container.name}: must set Hosting__GracePeriodSeconds to the pod's terminationGracePeriodSeconds (${grace})`);
 						}
+					}
+				}
+				// ARV-176: the host's start holds its web server while its consumers wait for their topics and readiness, so it
+				// is told its startup probe's allowance and refuses waits that would not fit. The allowance is the probe's worst
+				// case: the kubelet's prober ticks every periodSeconds from before the container starts and skips the ticks
+				// within initialDelaySeconds of its start, so the first counted tick can come at initialDelaySeconds and the
+				// failureThreshold-th failure, which restarts the container, periodSeconds times (failureThreshold - 1) later
+				// (a refused connection fails at once, so the probe's timeout adds nothing).
+				for (const container of (pod.containers ?? []).filter((c) => DOTNET_IMAGES.has(imageName(c.image ?? '')))) {
+					const probe = container.startupProbe;
+					if (!probe) {
+						findings.push(`${id} container ${container.name}: an API host needs a startupProbe (the hosts' start budget, ARV-176)`);
+						continue;
+					}
+					const allowance = startupAllowance(probe);
+					if (String(envValueOf(container, docs, 'Hosting__StartupAllowanceSeconds')) !== String(allowance)) {
+						findings.push(`${id} container ${container.name}: must set Hosting__StartupAllowanceSeconds to its startup probe's allowance at its worst, initialDelaySeconds plus periodSeconds times (failureThreshold - 1) (${allowance})`);
 					}
 				}
 			}

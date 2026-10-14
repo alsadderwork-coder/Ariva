@@ -293,6 +293,118 @@ public sealed class ProducerHardeningTests
             add.Should().NotThrow();
     }
 
+    [Theory]
+    [InlineData("0", true)]
+    [InlineData("1", false)]
+    [InlineData("10", false)]
+    [InlineData("300", false)]
+    [InlineData("301", true)]
+    public void AddArivaMessaging_Should_RefuseToStart_When_TheTopicWatchIsOutOfBounds(string seconds, bool refused)
+    {
+        // ARV-176: a consumed topic that does not exist is looked for again every TopicWatchSeconds.
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
+        {
+            ["Kafka:Enabled"] = "true",
+            ["Kafka:Consumers:TopicWatchSeconds"] = seconds
+        }).Build();
+
+        var add = () => Ariva.Di.Extensions.MessagingExtensions.AddArivaMessaging(new ServiceCollection(), configuration);
+
+        if (refused)
+            add.Should().Throw<InvalidOperationException>().WithMessage("*Kafka:Consumers:TopicWatchSeconds*");
+        else
+            add.Should().NotThrow();
+    }
+
+    [Theory]
+    [InlineData("60", "130", false)]
+    [InlineData("70", "130", false)]
+    [InlineData("71", "130", true)]
+    [InlineData("70", "115", true)]
+    [InlineData("55", "115", false)]
+    [InlineData("300", "130", true)]
+    [InlineData("-1", "130", true)]
+    [InlineData("300", "360", false)]
+    public void AddArivaMessaging_Should_RefuseToStart_When_TheTopicWaitDoesNotFitTheStartupAllowance(string wait, string allowance, bool refused)
+    {
+        // ARV-176 (recommendation 1 and R4 of the review): the host's start holds its web server while its consumers wait
+        // for their topics (StartWaitSeconds) and for their readiness (30 s); with a 30 s margin (the bus's start, at most
+        // 15 s, and a metadata request's overrun, at most 12 s) both must fit in the pod's startup allowance at its worst,
+        // initialDelaySeconds + periodSeconds x (failureThreshold - 1): 10 + 15 x (9 - 1) = 130 s in the chart. 115 s is
+        // the old probe's worst case (10 + 15 x 7), where 70 s did not fit; or the kubelet restarts the host again and again.
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
+        {
+            ["Kafka:Enabled"] = "true",
+            ["Kafka:Consumers:StartWaitSeconds"] = wait,
+            ["Hosting:StartupAllowanceSeconds"] = allowance
+        }).Build();
+
+        var add = () => Ariva.Di.Extensions.MessagingExtensions.AddArivaMessaging(new ServiceCollection(), configuration);
+
+        if (refused)
+            add.Should().Throw<InvalidOperationException>().WithMessage("*Kafka:Consumers:StartWaitSeconds*Hosting:StartupAllowanceSeconds*");
+        else
+            add.Should().NotThrow();
+    }
+
+    [Fact]
+    public void Defaults_Should_FitTheChartsStartupAllowance_When_NothingIsSet()
+    {
+        // ARV-176: the defaults (60 s topic wait, 30 s ready wait, 30 s margin with the bus's 15 s start bound in it) fit
+        // the chart's 130 s, its startup probe's worst case.
+        new Ariva.Infra.Settings.HostingSettings().StartupAllowanceSeconds.Should().Be(130);
+        new ConsumerSettings().StartWaitSeconds.Should().Be(60);
+        var services = new ServiceCollection();
+        var add = () => Ariva.Di.Extensions.MessagingExtensions.AddArivaMessaging(services,
+            new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string> { ["Kafka:Enabled"] = "true" }).Build());
+        add.Should().NotThrow();
+
+        // The bus's start is waited for, at most 15 s (recommendation (b) of the re-review).
+        using var provider = services.BuildServiceProvider();
+        var bus = provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<MassTransitHostOptions>>().Value;
+        bus.WaitUntilStarted.Should().BeTrue();
+        bus.StartTimeout.Should().Be(TimeSpan.FromSeconds(15));
+    }
+
+    [Fact]
+    public void Gauge_Should_ReportEachConsumedTopicMissingOrPresent_When_Collected()
+    {
+        // ARV-176: the signal ARV-125 alerts on: 1 for a consumed topic the broker does not have, 0 otherwise, per topic and
+        // consumer group, read from the consumers' state when collected.
+        using var metrics = new KafkaProducerMetrics();
+        var missing = new HashSet<string> { "ariva-integration.aman-egate-intervals" };
+        metrics.ObserveConsumedTopics(() =>
+        [
+            ("aman.feed.desk-session-changed.v1", "ariva-integration.aman-desk-sessions", missing.Contains("ariva-integration.aman-desk-sessions")),
+            ("aman.feed.egate-interval-stats.v1", "ariva-integration.aman-egate-intervals", missing.Contains("ariva-integration.aman-egate-intervals"))
+        ]);
+        var seen = new ConcurrentDictionary<string, int>();
+        using var listener = new System.Diagnostics.Metrics.MeterListener
+        {
+            InstrumentPublished = (instrument, l) =>
+            {
+                if (instrument.Meter == metrics.Meter && instrument.Name == KafkaProducerMetrics.ConsumedTopicMissingName)
+                    l.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<int>((_, value, tags, _) =>
+        {
+            foreach (var tag in tags)
+            {
+                if (tag.Key == "topic")
+                    seen[(string)tag.Value!] = value;
+            }
+        });
+        listener.Start();
+
+        listener.RecordObservableInstruments();
+        seen.Should().Contain("aman.feed.egate-interval-stats.v1", 1).And.Contain("aman.feed.desk-session-changed.v1", 0);
+
+        missing.Clear();
+        listener.RecordObservableInstruments();
+        seen.Should().Contain("aman.feed.egate-interval-stats.v1", 0, "the topic appeared and its consumer started");
+    }
+
     [Fact]
     public async Task Endpoints_Should_StopOnlyTheEndpointsTheBusSkipped_When_TheHostStops()
     {

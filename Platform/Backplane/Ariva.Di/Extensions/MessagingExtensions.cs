@@ -53,6 +53,12 @@ public static partial class MessagingExtensions
     internal const string UsageTelemetryVariable = "MASSTRANSIT_USAGE_TELEMETRY";
 
     /// <summary>
+    /// The most a host's start waits for the bus (ARV-176): 15 seconds. The bus starts with no topic endpoint, so its start
+    /// takes well under a second; the bound is counted in <see cref="HostingSettings.StartMarginSeconds"/>.
+    /// </summary>
+    internal static readonly TimeSpan BusStartTimeout = TimeSpan.FromSeconds(15);
+
+    /// <summary>
     /// ARV-165: the host's stop budget must fit, or the host does not start. The bus's share (the shutdown timeout less
     /// <see cref="StopReserve"/>) must cover a stop that comes during a message's retries: the rest of the retry schedule
     /// (at most <c>RetryCount</c> times <c>RetryMaxMilliseconds</c>) and the dead letter's keep (10 s), the clean path of
@@ -72,6 +78,27 @@ public static partial class MessagingExtensions
         if (settings.Enabled && BusStopTimeout(shutdown) < cleanStop)
             throw new InvalidOperationException(string.Create(System.Globalization.CultureInfo.InvariantCulture,
                 $"Hosting:ShutdownSeconds ({hosting.ShutdownSeconds}) leaves the message bus {BusStopTimeout(shutdown).TotalSeconds:F0} s to stop, less than the {cleanStop.TotalSeconds:F0} s a stop during a message's retries needs (the retry schedule and the dead letter's keep)."));
+    }
+
+    /// <summary>
+    /// ARV-176: the host's start budget must fit, or the host does not start. Its start holds the web server until the
+    /// consumers' wait for their topics (<c>Kafka:Consumers:StartWaitSeconds</c>) and their ready wait
+    /// (<see cref="KafkaConsumerEndpoints.ReadyWaitSeconds"/>) have ended, so the two, with
+    /// <see cref="HostingSettings.StartMarginSeconds"/> for the rest of the start, must fit in the pod's startup allowance
+    /// (<see cref="HostingSettings.StartupAllowanceSeconds"/>); otherwise the kubelet restarts a host that is still waiting,
+    /// again and again.
+    /// </summary>
+    internal static void EnsureStartBudget(HostingSettings hosting, KafkaSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(hosting);
+        ArgumentNullException.ThrowIfNull(settings);
+        if (!settings.Enabled)
+            return;
+        var wait = settings.Consumers?.StartWaitSeconds ?? 0;
+        var most = hosting.StartupAllowanceSeconds - KafkaConsumerEndpoints.ReadyWaitSeconds - HostingSettings.StartMarginSeconds;
+        if (wait < 0 || wait > most)
+            throw new InvalidOperationException(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                $"Kafka:Consumers:StartWaitSeconds ({wait}) must be from 0 to Hosting:StartupAllowanceSeconds ({hosting.StartupAllowanceSeconds}) less the {KafkaConsumerEndpoints.ReadyWaitSeconds} s ready wait and the {HostingSettings.StartMarginSeconds} s margin ({Math.Max(0, most)})."));
     }
 
     /// <summary>The longest clean stop of an endpoint with a message in hand: the rest of its retry schedule and the dead letter's keep.</summary>
@@ -104,6 +131,9 @@ public static partial class MessagingExtensions
         if (retry is < OutboxRelaySettings.MinBrokerRetrySeconds or > OutboxRelaySettings.MaxBrokerRetrySeconds)
             throw new InvalidOperationException(string.Create(System.Globalization.CultureInfo.InvariantCulture,
                 $"Kafka:Outbox:BrokerRetrySeconds must be from {OutboxRelaySettings.MinBrokerRetrySeconds} to {OutboxRelaySettings.MaxBrokerRetrySeconds}."));
+        var watch = settings.Consumers?.TopicWatchSeconds ?? 0;
+        if (watch is < 1 or > 300)
+            throw new InvalidOperationException("Kafka:Consumers:TopicWatchSeconds must be from 1 to 300.");
         var seconds = settings.Producer?.RecreateSeconds ?? 0;
         if (seconds is < ProducerSettings.MinRecreateSeconds or > ProducerSettings.MaxRecreateSeconds)
             throw new InvalidOperationException(string.Create(System.Globalization.CultureInfo.InvariantCulture,
@@ -133,6 +163,7 @@ public static partial class MessagingExtensions
         // ARV-165: the host's stop budget, checked against what a stop must fit (EnsureStopBudget) and set for every host.
         var hosting = configuration.GetSection(HostingSettings.SectionName).Get<HostingSettings>() ?? new HostingSettings();
         EnsureStopBudget(hosting, settings);
+        EnsureStartBudget(hosting, settings);
         services.Configure<Microsoft.Extensions.Hosting.HostOptions>(host => host.ShutdownTimeout = TimeSpan.FromSeconds(hosting.ShutdownSeconds));
 
         if (!settings.Enabled)
@@ -153,7 +184,15 @@ public static partial class MessagingExtensions
         // ARV-165: the bus's stop waits at most the host's shutdown timeout less what the services after it need, so the
         // host stops in time even while a consumer is held by an offset commit (the bus is still stopped; only the wait ends).
         services.AddOptions<MassTransitHostOptions>().Configure<Microsoft.Extensions.Options.IOptions<Microsoft.Extensions.Hosting.HostOptions>>(
-            (bus, host) => bus.StopTimeout = BusStopTimeout(host.Value.ShutdownTimeout));
+            (bus, host) =>
+            {
+                bus.StopTimeout = BusStopTimeout(host.Value.ShutdownTimeout);
+                // ARV-176: the bus has no topic endpoint to start (KafkaConsumerEndpoints connects them after it), so its
+                // start is quick, and it is waited for: the consumers are connected to a started bus. Its bound is part of
+                // the host's start budget (HostingSettings.StartMarginSeconds), so it holds even when the start times out.
+                bus.WaitUntilStarted = true;
+                bus.StartTimeout = BusStartTimeout;
+            });
 
         if (settings.ProvisionTopics)
             services.AddHostedService<TopicProvisioner>();
@@ -169,10 +208,6 @@ public static partial class MessagingExtensions
         services.AddHealthChecks().AddCheck<KafkaReadiness>("kafka", Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Degraded,
             [HealthExtensions.ReadyTag], KafkaReadiness.ProbeTimeout + TimeSpan.FromSeconds(2));
 
-        // Before the bus (hosted services start in order): the rider faults for good on a topic that does not exist yet.
-        var consumedTopics = builder.Consumers.Select(c => c.Topic).Distinct(StringComparer.Ordinal).ToList();
-        services.AddHostedService(provider => new KafkaTopicsReady(settings, consumedTopics,
-            provider.GetRequiredService<TimeProvider>(), provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<KafkaTopicsReady>>()));
         services.AddMassTransit(bus =>
         {
             // ARV-097: MassTransit otherwise reports versions, the OS, the time zone and the topic names to an external endpoint at startup.
@@ -204,11 +239,22 @@ public static partial class MessagingExtensions
                     kafka.SecurityProtocol = Enum.Parse<SecurityProtocol>(settings.SecurityProtocol, ignoreCase: true);
                     kafka.Acks = Acks.All;
                     kafka.MessageMaxBytes = KafkaSettings.MaxMessageBytes;
-                    foreach (var consumer in builder.Consumers)
-                        consumer.Endpoint(context, kafka, settings);
+                    // ARV-176: no topic endpoint here. MassTransit starts the endpoints configured with the bus as part of the
+                    // bus's start, and one whose topic is missing faults that start and leaves the bus stopped for good, every
+                    // consumer of the host with it. KafkaConsumerEndpoints connects each endpoint after the bus has started,
+                    // once its topic exists.
                 });
             });
         });
+
+        // ARV-176: after the bus (hosted services start in order), each consumer's endpoint once its topic exists. The bus
+        // starts with no topic endpoint, so its start is quick and is waited for.
+        var consumed = builder.Consumers
+            .Select(c => new ConsumedTopic(c.Topic, $"ariva-{settings.ServiceName}.{c.Purpose}", rider => c.Connect(rider, settings)))
+            .ToList();
+        services.AddHostedService(provider => new KafkaConsumerEndpoints(settings, consumed, provider.GetRequiredService<IKafkaRider>,
+            provider.GetRequiredService<TimeProvider>(), provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<KafkaConsumerEndpoints>>(),
+            provider.GetRequiredService<KafkaProducerMetrics>()));
 
         if (settings.Outbox.Enabled)
             services.AddHostedService<OutboxRelay>();
@@ -270,7 +316,7 @@ public sealed class ArivaMessagingBuilder
             topic,
             purpose,
             rider => rider.AddConsumer<TConsumer>(),
-            (context, kafka, settings) => kafka.TopicEndpoint<string, TMessage>(topic, $"ariva-{settings.ServiceName}.{purpose}", endpoint =>
+            (kafkaRider, settings) => kafkaRider.ConnectTopicEndpoint<string, TMessage>(topic, $"ariva-{settings.ServiceName}.{purpose}", (context, endpoint) =>
             {
                 endpoint.AutoOffsetReset = AutoOffsetReset.Earliest;
                 endpoint.ConcurrentDeliveryLimit = 1;
@@ -285,8 +331,12 @@ public sealed class ArivaMessagingBuilder
     }
 }
 
+/// <summary>
+/// One consumer: its topic and purpose, its registration with the rider, and how to connect its topic endpoint at run time
+/// (ARV-176, <see cref="KafkaConsumerEndpoints"/>).
+/// </summary>
 internal sealed record ConsumerRegistration(
     string Topic,
     string Purpose,
     Action<IRiderRegistrationConfigurator> Register,
-    Action<IRiderRegistrationContext, IKafkaFactoryConfigurator, KafkaSettings> Endpoint);
+    Func<IKafkaRider, KafkaSettings, HostReceiveEndpointHandle> Connect);

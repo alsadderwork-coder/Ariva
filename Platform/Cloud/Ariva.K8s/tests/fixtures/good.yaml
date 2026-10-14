@@ -15,6 +15,7 @@ spec:
         - name: app
           image: registry.example/api-integration:main-20261001.1
           envFrom: [{ configMapRef: { name: api-main-configmap } }]
+          startupProbe: { httpGet: { path: /health/startup, port: 8080 }, initialDelaySeconds: 10, periodSeconds: 15, failureThreshold: 9 }
           securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
           volumeMounts: [{ name: tmp, mountPath: /tmp }]
 ---
@@ -83,7 +84,7 @@ spec:
 apiVersion: v1
 kind: ConfigMap
 metadata: { name: api-main-configmap }
-data: { Kafka__ProvisionTopics: "false", DOTNET_ENVIRONMENT: k8s-prd, Hosting__GracePeriodSeconds: "60" }
+data: { Kafka__ProvisionTopics: "false", DOTNET_ENVIRONMENT: k8s-prd, Hosting__GracePeriodSeconds: "60", Hosting__StartupAllowanceSeconds: "130" }
 ---
 apiVersion: batch/v1
 kind: Job

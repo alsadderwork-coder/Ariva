@@ -1257,7 +1257,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 37,
-      "passes": false,
+      "passes": true,
       "notes": "Size S to M. Before the pilot.",
       "dependsOn": [
         "ARV-167"
@@ -1382,7 +1382,7 @@
       ],
       "priority": 42,
       "passes": false,
-      "notes": "Size M. Monitoring stack and alert routing at the site depend on TC-32 and TC-36; defaults ship now. Found while building ARV-159 (2026-10-12): the `Ariva.Border`, `Ariva.Flights` and `Ariva.Integration` meters are created but never added to the OpenTelemetry exporters in TelemetryExtensions, so their counters are not exported; add them (and a test that every meter Ariva creates is exported) before building alerts on them. From the ARV-156 review: readiness answers 200 while the message bus is Degraded (HealthEndpoints answers 503 only for Unhealthy and writes \"Healthy\" in the body for Degraded); an alert on the Degraded bus status is the better control than failing readiness (owner decision pending in decisions.md). Owner decision 2026-10-13: a Degraded message bus raises an alert, it does not fail readiness; build that alert here (HealthEndpoints stays as it is, but its body should no longer say \"Healthy\" when the status is Degraded).",
+      "notes": "Size M. Monitoring stack and alert routing at the site depend on TC-32 and TC-36; defaults ship now. Found while building ARV-159 (2026-10-12): the `Ariva.Border`, `Ariva.Flights` and `Ariva.Integration` meters are created but never added to the OpenTelemetry exporters in TelemetryExtensions, so their counters are not exported; add them (and a test that every meter Ariva creates is exported) before building alerts on them. From the ARV-156 review: readiness answers 200 while the message bus is Degraded (HealthEndpoints answers 503 only for Unhealthy and writes \"Healthy\" in the body for Degraded); an alert on the Degraded bus status is the better control than failing readiness (owner decision pending in decisions.md). Owner decision 2026-10-13: a Degraded message bus raises an alert, it does not fail readiness; build that alert here (HealthEndpoints stays as it is, but its body should no longer say \"Healthy\" when the status is Degraded). 2026-10-14 (ARV-176 security review, recommendation 7): the runbook promises alerts on signals added since this story was written; the alert rules and dashboards must include the `kafka` readiness check reporting Degraded (ARV-165), `ariva.kafka.producer_fatal` above 0 (ARV-167, kinds fatal_error and recreated) and `ariva.kafka.consumed_topic_missing` above 0 for longer than a few minutes (ARV-176, tags topic and group). Also from the ARV-176 re-review (recommendation a): a consumer whose topic exists but whose connect keeps failing reads 0 on ariva.kafka.consumed_topic_missing yet consumes nothing; its only signal is the Warning \"Kafka consumer {Group} of {Topic} could not be connected\", so include that Warning in the log-based alerts (or report such a consumer as 1).",
       "dependsOn": [
         "ARV-062"
       ]

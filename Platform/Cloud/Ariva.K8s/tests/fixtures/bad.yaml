@@ -42,6 +42,10 @@ spec:
       containers:
         - name: app
           image: registry.example/api-ingest:1.2.3
+          # ARV-176: the allowance by the best case (10 + 15 x 8 = 130), where the kubelet can restart the host at 115 s
+          startupProbe: { httpGet: { path: /health/startup, port: 8080 }, initialDelaySeconds: 10, periodSeconds: 15, failureThreshold: 8 }
+          env:
+            - { name: Hosting__StartupAllowanceSeconds, value: "130" }
           securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
           volumeMounts: [{ name: tmp, mountPath: /tmp }]
 ---
@@ -65,6 +69,8 @@ spec:
       containers:
         - name: app
           image: registry.example/api-integration:main-20261001.1
+          # ARV-176: a startup probe the host is not told about (Hosting__StartupAllowanceSeconds)
+          startupProbe: { httpGet: { path: /health/startup, port: 8080 }, initialDelaySeconds: 10, periodSeconds: 15, failureThreshold: 8 }
           securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
           volumeMounts: [{ name: tmp, mountPath: /tmp }]
 ---

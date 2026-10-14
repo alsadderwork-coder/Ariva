@@ -113,7 +113,7 @@ public sealed class BrokerOutageTests(FaultsFixture faults) : IAsyncLifetime
             .AddEventsFrom(typeof(OutageProbe).Assembly)
             .Consume<OutageProbe, OutageProbeConsumer>(KafkaTopics.SlaBreachDetected, Purpose));
         var host = builder.Build();
-        await host.StartAsync(Ct); // held until the consumed topics exist (KafkaTopicsReady)
+        await host.StartAsync(Ct); // held until the consumed Ariva topics exist and their consumers are ready (KafkaConsumerEndpoints)
         Done("the host started");
         (await ReadinessAsync(host, status => status == HealthStatus.Healthy, "the bus ready before the test")).Should().Be(HealthStatus.Healthy);
         return host;

@@ -53,17 +53,6 @@ public sealed class KafkaProbeConsumer : IConsumer<KafkaProbe>
     }
 }
 
-/// <summary>A record of a topic the pipeline tests' broker never has (ARV-167: an endpoint that cannot start).</summary>
-public sealed class UnreachableFeed
-{
-    public string Id { get; set; }
-}
-
-public sealed class UnreachableFeedConsumer : IConsumer<UnreachableFeed>
-{
-    public Task Consume(ConsumeContext<UnreachableFeed> context) => Task.CompletedTask;
-}
-
 /// <summary>A single-broker Kafka for the pipeline tests (KRaft is not needed for these).</summary>
 public sealed class KafkaFixture : IAsyncLifetime
 {
@@ -121,11 +110,7 @@ public sealed class KafkaPipelineTests(PostgresFixture postgres, KafkaFixture ka
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
-    /// <param name="unreachableConsumer">
-    /// Also consumes a topic this broker never has (AMAN's feed, which the provisioner leaves to AMAN), so MassTransit's bus
-    /// stays not Healthy while the producer is fine (ARV-167); the host is then not waited for until it is ready.
-    /// </param>
-    private async Task<IHost> StartHostAsync(bool unreachableConsumer = false)
+    private async Task<IHost> StartHostAsync()
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Configuration.AddInMemoryCollection(new Dictionary<string, string>
@@ -146,24 +131,18 @@ public sealed class KafkaPipelineTests(PostgresFixture postgres, KafkaFixture ka
             ["Kafka:Consumers:RetryMinMilliseconds"] = "10",
             ["Kafka:Consumers:RetryMaxMilliseconds"] = "50",
             ["Kafka:Consumers:CheckpointSeconds"] = "1",
-            ["Kafka:Consumers:CheckpointMessageCount"] = "1",
-            ["Kafka:Consumers:StartWaitSeconds"] = unreachableConsumer ? "2" : "300"
+            ["Kafka:Consumers:CheckpointMessageCount"] = "1"
         });
         if (Environment.GetEnvironmentVariable("ARIVA_IT_LOG") is { Length: > 0 } log)
             builder.Logging.AddProvider(new Ariva.IntegrationTests.Streaming.FileLoggerProvider(log));
         builder.Services.AddScoped<ICurrentUser, Ariva.IntegrationTests.Security.TestCurrentUser>();
         builder.Services.AddArivaPersistence(builder.Configuration);
-        builder.Services.AddArivaMessaging(builder.Configuration, messaging =>
-        {
-            messaging.AddEventsFrom(typeof(KafkaProbe).Assembly).Consume<KafkaProbe, KafkaProbeConsumer>(KafkaTopics.SlaDisputeChanged, Purpose);
-            if (unreachableConsumer)
-                messaging.Consume<UnreachableFeed, UnreachableFeedConsumer>(KafkaTopics.AmanDeskSessionChanged, "it-unreachable");
-        });
+        builder.Services.AddArivaMessaging(builder.Configuration, messaging => messaging
+            .AddEventsFrom(typeof(KafkaProbe).Assembly)
+            .Consume<KafkaProbe, KafkaProbeConsumer>(KafkaTopics.SlaDisputeChanged, Purpose));
 
         var host = builder.Build();
         await host.StartAsync(Ct);
-        if (unreachableConsumer)
-            return host;
         var checks = host.Services.GetRequiredService<HealthCheckService>();
         // A cold broker (the first test after the container starts) can take well over a minute to elect and provision.
         var until = DateTime.UtcNow.AddSeconds(240);
@@ -398,16 +377,17 @@ public sealed class KafkaPipelineTests(PostgresFixture postgres, KafkaFixture ka
 
     /// <summary>
     /// ARV-167, the lead's decision: the relay waits for the producer, not for MassTransit's bus, since sending does not need
-    /// the bus. A consumer of a topic the broker does not have keeps the bus from being Healthy for good (one endpoint
-    /// faulted); the producer is started and fine, so the relay drains the outbox: the row is marked sent and its record is
-    /// on its topic. Before, the relay skipped every pass while the bus was not Healthy, so one faulted endpoint stopped the
-    /// outbox of the whole host. (Whether MassTransit still runs this host's other endpoints then is MassTransit's matter.)
+    /// the bus. The bus is stopped (not Healthy); the producer is started and fine, so the relay drains the outbox: the row is
+    /// marked sent and its record is on its topic. Before, the relay skipped every pass while the bus was not Healthy, so an
+    /// unhealthy bus stopped the outbox of the whole host. (ARV-167 made the bus unhealthy with a consumer of a missing
+    /// topic, which faulted the bus's start; since ARV-176 a missing topic no longer does, so the test stops the bus.)
     /// </summary>
     [Fact]
     public async Task Relay_Should_DrainTheOutbox_When_TheBusIsNotHealthyButTheProducerIs()
     {
-        using var host = await StartHostAsync(unreachableConsumer: true);
+        using var host = await StartHostAsync();
         var bus = host.Services.GetRequiredService<IBusControl>();
+        await bus.StopAsync(Ct);
         var produce = host.Services.GetRequiredService<KafkaProduce>();
         produce.IsReady.Should().BeTrue("the host started its producer");
         var key = "C-relay-" + Guid.NewGuid().ToString("N")[..8];

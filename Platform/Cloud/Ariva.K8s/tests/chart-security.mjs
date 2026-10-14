@@ -37,7 +37,9 @@ function selfTest() {
 		'Deployment/no-environment', 'Job/argument-overrides', 'Deployment/later-config-map-overrides', 'Deployment/wrong-environment', 'Job/bare-argument-overrides',
 		'may get the validation reader login', 'comes from its secret (secretKeyRef)', 'must get the validation reader login',
 		'must not mark the validation reader secret optional',
-		'terminationGracePeriodSeconds of at least 60', 'must set Hosting__GracePeriodSeconds'
+		'terminationGracePeriodSeconds of at least 60', 'must set Hosting__GracePeriodSeconds',
+		'needs a startupProbe', 'must set Hosting__StartupAllowanceSeconds',
+		"api-ingest-deployment container app: must set Hosting__StartupAllowanceSeconds to its startup probe's allowance at its worst, initialDelaySeconds plus periodSeconds times (failureThreshold - 1) (115)"
 	];
 	const missing = expected.filter((rule) => !bad.some((finding) => finding.includes(rule)));
 	if (good.length || missing.length) {

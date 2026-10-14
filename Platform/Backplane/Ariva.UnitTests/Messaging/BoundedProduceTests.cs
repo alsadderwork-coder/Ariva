@@ -518,6 +518,10 @@ public sealed class BoundedProduceTests
         // Eight senders run through a fatal error and the recreation. Every send ends (by its report, or failed at once in the
         // gap, refused by the failed client, or failed at its retirement), none is given to two clients, and each client
         // reads as one: a send uses the client it read first.
+        // In the gap a send fails synchronously, so a sender that failed waits a millisecond before its next send, as a real
+        // sender backs off; without it eight synchronous loops hold the four thread pool threads the recreation timer needs.
+        // Each sender is bounded (MaxSends) and the finally block stops them, so a failure cannot leave them running.
+        const int MaxSends = 20_000;
         var clients = new Clients(autoReport: true);
         using var produce = new KafkaProduce(clients.Make, TimeProvider.System, null, TimeSpan.FromMilliseconds(200), null);
         produce.Started();
@@ -528,9 +532,10 @@ public sealed class BoundedProduceTests
 
         var senders = Enumerable.Range(0, 8).Select(lane => Task.Run(async () =>
         {
-            while (!stop.IsCancellationRequested)
+            for (var attempt = 0; attempt < MaxSends && !stop.IsCancellationRequested; attempt++)
             {
                 var id = Guid.NewGuid();
+                var refused = false;
                 try
                 {
                     await produce.SendAsync("ariva.flow.nowcast.v1", "zone-" + lane, [1], id, null, Ct);
@@ -539,21 +544,32 @@ public sealed class BoundedProduceTests
                 catch (KafkaException e)
                 {
                     failed.Add(e.Error.Code);
+                    refused = true;
                 }
                 catch (Exception e)
                 {
                     other.Add(e);
+                    refused = true;
                 }
-            }
-        })).ToList();
 
-        await UntilAsync(() => sent.Count > 100, "sends on the first client");
-        clients[0].Fail();
-        await UntilAsync(() => clients.Count == 2, "the recreation");
-        var before = sent.Count;
-        await UntilAsync(() => sent.Count > before + 100, "sends on the new client");
-        await stop.CancelAsync();
-        await Task.WhenAll(senders).WaitAsync(TimeSpan.FromSeconds(15), Ct);
+                if (refused)
+                    await Task.Delay(1, CancellationToken.None);
+            }
+        }, CancellationToken.None)).ToList();
+
+        try
+        {
+            await UntilAsync(() => sent.Count > 100, "sends on the first client");
+            clients[0].Fail();
+            await UntilAsync(() => clients.Count == 2, "the recreation");
+            var before = sent.Count;
+            await UntilAsync(() => sent.Count > before + 100, "sends on the new client");
+        }
+        finally
+        {
+            await stop.CancelAsync();
+            await Task.WhenAll(senders).WaitAsync(TimeSpan.FromSeconds(15), CancellationToken.None);
+        }
 
         other.Should().BeEmpty("a send ends by its report or a Kafka error, never otherwise");
         failed.Should().NotBeEmpty("sends in the gap failed at once").And.OnlyContain(c => c == ErrorCode.Local_Fatal || c == ErrorCode.Local_Destroy);

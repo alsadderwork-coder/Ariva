@@ -146,6 +146,18 @@ public sealed class ConsumerSettings
     /// <summary>Parallel lanes per endpoint, split by key so order holds per key.</summary>
     public int ConcurrentMessageLimit { get; init; } = 8;
 
-    /// <summary>How long a host waits at start for the topics it consumes to exist before starting the bus anyway.</summary>
-    public int StartWaitSeconds { get; init; } = 300;
+    /// <summary>
+    /// How long a host waits at start for the Ariva topics it consumes to exist before it connects the consumers whose
+    /// topics do (ARV-176: AMAN's feed topics are never waited for, and a topic that is still missing is connected when it
+    /// appears). 60 seconds; the connected consumers then get at most 30 seconds more to be ready. The host's start holds
+    /// its web server, so the two waits must fit in the pod's startup allowance with a margin
+    /// (<c>Hosting:StartupAllowanceSeconds</c>, checked at start).
+    /// </summary>
+    public int StartWaitSeconds { get; init; } = 60;
+
+    /// <summary>
+    /// How often a host looks for a consumed topic that did not exist, to start its consumer when it appears without a
+    /// restart (ARV-176). From 1 to 300.
+    /// </summary>
+    public int TopicWatchSeconds { get; init; } = 10;
 }
