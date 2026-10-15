@@ -1359,7 +1359,7 @@
       ],
       "priority": 41,
       "passes": false,
-      "notes": "Size M. TC-33 (node sizes on site hardware) is answered later from these numbers and the site survey. From the ARV-168 review: measure stream_zone_state.state_bytes before and after ARV-168 on AUH-TA and on a busy zone (every checkpoint upserts each zone's whole state, now with its remembered batch keys) and add state_bytes to what wiki 10 says to watch.",
+      "notes": "Size M. TC-33 (node sizes on site hardware) is answered later from these numbers and the site survey. From the ARV-168 review: measure stream_zone_state.state_bytes before and after ARV-168 on AUH-TA and on a busy zone (every checkpoint upserts each zone's whole state, now with its remembered batch keys) and add state_bytes to what wiki 10 says to watch. From the ARV-181a security review (2026-10-15): measure the staffing job's run duration at pilot scale (StaffingJobs, every minute) and confirm what TickerQ does when a run takes longer than a minute (overlap or skip).",
       "dependsOn": [
         "ARV-071",
         "ARV-113",
@@ -1488,7 +1488,7 @@
       ],
       "priority": 45,
       "passes": false,
-      "notes": "Size M. Reuses candidate id ARV-111 (part a). The jurisdiction mapping (part b) is counsel's work, not a story here.",
+      "notes": "Size M. Reuses candidate id ARV-111 (part a). The jurisdiction mapping (part b) is counsel's work, not a story here. 2026-10-15: lane_staffing (ARV-181a, script 0053, 90 days) goes into the data inventory: zone keys, lane codes and lane counts only, no identity.",
       "dependsOn": [
         "ARV-006",
         "ARV-060"
@@ -1564,7 +1564,7 @@
       ],
       "priority": 46,
       "passes": false,
-      "notes": "Size M. Split from ARV-181; depends on ARV-181a. Decisions of 2026-10-15. Owner: (a) the recommendation also keeps each desk at most 85% busy over the interval (configurable per site), a margin for the variability the deterministic recursion leaves out, until v1's P90; (b) a flight without a passenger estimate (SSIM only, no AMAN inbound lane demand, no AODB) gives no recommendation for the intervals it affects, with the reason shown, never a guess. Lead: the predicted wait is max(Q_k, Q_(k+1)) over the interval's capacity, not F9's (Q_k + A_k/2)/mu_k, which ignores what the desks serve during the interval and cannot express F16's own test; the target wait is configuration now (Staffing:TargetMinutes, default 10, per-site and per-lane overrides on the ARV-148 pattern), an audited setting later; no fallback cycle time is shipped: a lane without a measured throughput gives no recommendation until the site configures its fallback at commissioning; 13 rows (the current quarter hour and 12 more, reaching now plus 3 hours); the panel's \"open now\" is the desk-state count the engine uses (F10), labelled as such, distinct from the lanes table's AMAN sessions; lane_staffing kept 90 days (configurable, in ARV-111a's data inventory). Plan: the ARV-181 progress entry (domain modeler, 2026-10-15).",
+      "notes": "Size M. Split from ARV-181; depends on ARV-181a. Decisions of 2026-10-15. Owner: (a) the recommendation also keeps each desk at most 85% busy over the interval (configurable per site), a margin for the variability the deterministic recursion leaves out, until v1's P90; (b) a flight without a passenger estimate (SSIM only, no AMAN inbound lane demand, no AODB) gives no recommendation for the intervals it affects, with the reason shown, never a guess. Lead: the predicted wait is max(Q_k, Q_(k+1)) over the interval's capacity, not F9's (Q_k + A_k/2)/mu_k, which ignores what the desks serve during the interval and cannot express F16's own test; the target wait is configuration now (Staffing:TargetMinutes, default 10, per-site and per-lane overrides on the ARV-148 pattern), an audited setting later; no fallback cycle time is shipped: a lane without a measured throughput gives no recommendation until the site configures its fallback at commissioning; 13 rows (the current quarter hour and 12 more, reaching now plus 3 hours); the panel's \"open now\" is the desk-state count the engine uses (F10), labelled as such, distinct from the lanes table's AMAN sessions; lane_staffing kept 90 days (configurable, in ARV-111a's data inventory). Plan: the ARV-181 progress entry (domain modeler, 2026-10-15). From the ARV-181a security review (2026-10-15), to carry: the Terminal duty manager holds Immigration.View, so the staffing panel on the immigration screen is gated on ArrivalWaveLanes.View, not on the screen's permission; the Terminal duty manager and the Handler station manager hold the Alerts permissions, so the DesksBelowPlan alert's instances, notifications, displays, reports and hub messages must reach border roles only (restricting rule ownership and escalation is not enough), with tests per role.",
       "dependsOn": [
         "ARV-181a"
       ]
