@@ -21,7 +21,9 @@ const SKIP = ['node_modules', '.git', 'bin', 'obj', 'fixtures', 'build', '.svelt
 const LINES = {
 	'mcr.microsoft.com/dotnet/runtime-deps': { patterns: [/^10\.0\.\d+$/], list: 'mcr' },
 	'mcr.microsoft.com/dotnet/aspnet': { patterns: [/^10\.0\.\d+$/], list: 'mcr' },
-	'mcr.microsoft.com/dotnet/sdk': { patterns: [/^10\.0\.1\d\d$/], list: 'mcr' },
+	// Any feature band (ARV-184): MCR publishes patches of the newest band only (the 1xx tags stopped at 10.0.103, which bundles
+	// runtime 10.0.3), and a self-contained publish ships the SDK's own runtime, so the band moves with the runtime.
+	'mcr.microsoft.com/dotnet/sdk': { patterns: [/^10\.0\.\d{3}$/], list: 'mcr' },
 	nginx: { patterns: [/^1\.30\.\d+-alpine\d+\.\d+$/], list: 'hub', hubName: 'library/nginx', hubFilter: '1.30.' },
 	// Alpine for the web image; Debian slim for the dev container (ARV-076), whose glibc base runs its node binary.
 	node: { patterns: [/^22\.\d+\.\d+-alpine\d+\.\d+$/, /^22\.\d+\.\d+-bookworm-slim$/], list: 'hub', hubName: 'library/node', hubFilter: '22.' },
@@ -102,6 +104,58 @@ export function devcontainerProblems(dockerfile, config) {
 	return problems;
 }
 
+/**
+ * ARV-184 (CWE-1395): a Dockerfile on runtime-deps publishes self-contained, so what it ships is the SDK's runtime pack, not
+ * the base's. It must check the publish output with scripts/published-runtime.mjs, giving --runtime its runtime-deps tag, in a
+ * named stage, and its final stage must copy from that stage only. Problems for a Dockerfile text (none without runtime-deps).
+ */
+export function publishedRuntimeProblems(dockerfile) {
+	const base = dockerfile.match(/^\s*FROM\s+mcr\.microsoft\.com\/dotnet\/runtime-deps:([^@\s]+)@/m)?.[1];
+	if (!base) return [];
+	const stages = dockerfile.split(/^(?=\s*FROM\s)/m).filter((stage) => /^\s*FROM\s/.test(stage))
+		.map((body) => ({ name: body.match(/^\s*FROM\s+\S+\s+AS\s+(\S+)/i)?.[1]?.toLowerCase(), body }));
+	const problems = [];
+	const checks = stages.filter((stage) => /^\s*RUN\s+node\s+\/check\/published-runtime\.mjs\s+--check\s+\/app\/publish\s+--runtime\s+\S+\s*$/m.test(stage.body));
+	if (checks.length !== 1) return [`one stage must run "node /check/published-runtime.mjs --check /app/publish --runtime ${base}" (found ${checks.length})`];
+	const checked = checks[0];
+	const runtime = checked.body.match(/--runtime\s+(\S+)/)[1];
+	if (runtime !== base) problems.push(`the published runtime check uses --runtime ${runtime}; it must be the runtime-deps tag ${base}, with the SDK that bundles it`);
+	if (!/^\s*COPY\s+.*scripts\/published-runtime\.mjs.*\/check\/\S*\s*$/m.test(checked.body)) problems.push('the check stage must copy scripts/published-runtime.mjs to /check/');
+	if (!checked.name) problems.push('the check stage must be named (FROM ... AS checked)');
+	const final = stages.at(-1);
+	const sources = [...final.body.matchAll(/^\s*COPY\s+--from=(\S+)/gim)].map((m) => m[1].toLowerCase());
+	if (final === checked || !checked.name || !sources.includes(checked.name) || sources.some((source) => source !== checked.name)) {
+		problems.push(`the final stage must copy the app from the check stage only (copies from: ${sources.join(', ') || 'nothing'})`);
+	}
+	return problems;
+}
+
+function selfTestPublishedRuntime() {
+	const digest = '@sha256:' + '0'.repeat(64);
+	const good = `FROM mcr.microsoft.com/dotnet/runtime-deps:10.0.13${digest} AS base\nFROM mcr.microsoft.com/dotnet/sdk:10.0.402${digest} AS build\nFROM build AS publish\nRUN dotnet publish -o /app/publish\nFROM node:22.23.3-alpine3.24${digest} AS checked\nCOPY ["scripts/published-runtime.mjs", "/check/"]\nCOPY --from=publish /app/publish /app/publish\nRUN node /check/published-runtime.mjs --check /app/publish --runtime 10.0.13\nFROM base AS final\nCOPY --from=checked /app/publish .\nUSER 10001\n`;
+	const cases = [
+		['good', good, []],
+		['no runtime-deps base', 'FROM node:22.23.3-alpine3.24\nCOPY . .\n', []],
+		['no check stage', good.replace(/^RUN node \/check.*$/m, 'RUN true'), ['one stage must run']],
+		['stale --runtime', good.replace('--runtime 10.0.13', '--runtime 10.0.12'), ['--runtime 10.0.12; it must be the runtime-deps tag 10.0.13']],
+		['base moved alone', good.replace('runtime-deps:10.0.13', 'runtime-deps:10.0.14'), ['must be the runtime-deps tag 10.0.14']],
+		['script not copied', good.replace('COPY ["scripts/published-runtime.mjs", "/check/"]\n', ''), ['must copy scripts/published-runtime.mjs']],
+		['final ships the unchecked output', good.replace('COPY --from=checked /app/publish .', 'COPY --from=publish /app/publish .'), ['from the check stage only (copies from: publish)']],
+		['final copies from both', good.replace('COPY --from=checked /app/publish .', 'COPY --from=checked /app/publish .\nCOPY --from=build /src/x .'), ['copies from: checked, build']],
+		['unnamed check stage', good.replace(' AS checked', '').replace('--from=checked', '--from=2'), ['must be named']]
+	];
+	const failures = [];
+	for (const [name, text, expected] of cases) {
+		const found = publishedRuntimeProblems(text).join('\n');
+		if (!expected.length && found) failures.push(`${name}: expected clean, got ${found}`);
+		for (const fragment of expected) if (!found.includes(fragment)) failures.push(`${name}: did not report "${fragment}" (got: ${found || 'nothing'})`);
+	}
+	if (failures.length) {
+		console.error(`base images: published runtime self-test failed:\n  ${failures.join('\n  ')}`);
+		process.exit(1);
+	}
+}
+
 /** JSON with // comments (devcontainer.json). Comments start a line or follow a comma, a bracket or a brace. */
 function parseJsonc(text) {
 	return JSON.parse(text.split(/\r?\n/).map((line) => line.replace(/^\s*\/\/.*$/, '')).join('\n'));
@@ -126,7 +180,9 @@ function selfTestDevcontainer() {
 function check() {
 	const problems = [];
 	let count = 0;
+	let runtimeChecked = 0;
 	selfTestDevcontainer();
+	selfTestPublishedRuntime();
 	const devDockerfile = path.join(ROOT, '.devcontainer', 'Dockerfile');
 	const devConfig = path.join(ROOT, '.devcontainer', 'devcontainer.json');
 	if (fs.existsSync(devConfig)) {
@@ -135,6 +191,9 @@ function check() {
 		}
 	}
 	for (const file of dockerfiles()) {
+		const runtimeProblems = publishedRuntimeProblems(fs.readFileSync(file, 'utf8'));
+		for (const problem of runtimeProblems) problems.push(`${path.relative(ROOT, file)}: ${problem}`);
+		if (/^\s*FROM\s+mcr\.microsoft\.com\/dotnet\/runtime-deps:/m.test(fs.readFileSync(file, 'utf8')) && !runtimeProblems.length) runtimeChecked++;
 		for (const from of fromLines(file)) {
 			count++;
 			const where = `${path.relative(ROOT, file)}:${from.line}`;
@@ -192,7 +251,7 @@ function check() {
 		console.error('Run the base-images workflow (Actions, base-images, Run workflow) to get pinned lines.');
 		process.exit(1);
 	}
-	console.log(`base images: ${count} FROM lines pinned by version and digest; dev container non-root and unprivileged.`);
+	console.log(`base images: ${count} FROM lines pinned by version and digest; dev container non-root and unprivileged; ${runtimeChecked} runtime-deps images check their published runtime against their base.`);
 }
 
 async function tagsFor(image) {
@@ -252,6 +311,10 @@ async function resolve(write) {
 			const index = LINES[from.image]?.patterns.findIndex((pattern) => pattern.test(from.tag)) ?? -1;
 			const next = latest[`${from.image}#${index}`];
 			if (next) text = text.replace(from.ref, next);
+			// ARV-184: the published runtime check follows the runtime-deps tag (the image build then proves the SDK bundles it).
+			if (next && from.image === 'mcr.microsoft.com/dotnet/runtime-deps') {
+				text = text.replace(/(published-runtime\.mjs --check \S+ --runtime )\S+/, `$1${next.split('@')[0].slice(from.image.length + 1)}`);
+			}
 			if (next && from.image === 'mcr.microsoft.com/playwright') {
 				const visual = fs.readFileSync(VISUAL_BROWSER, 'utf8');
 				fs.writeFileSync(VISUAL_BROWSER, visual.replace(/image = 'mcr\.microsoft\.com\/playwright@sha256:[0-9a-f]{64}'/, `image = '${next.replace(/:v[^@]+@/, '@')}'`));

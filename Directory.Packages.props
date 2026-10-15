@@ -18,7 +18,9 @@
     <!-- ASP.NET Core and Microsoft Extensions, .NET 10 -->
     <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.12" />
     <PackageVersion Include="Microsoft.AspNetCore.OpenApi" Version="10.0.12" />
-    <PackageVersion Include="Microsoft.AspNetCore.SignalR.Protocols.MessagePack" Version="10.0.12" />
+    <!-- 10.0.13 (nuget.org, 13 October 2026) fixes GHSA-86xp-94pg-8r6r (Moderate, affected 10.0.0 to 10.0.12) and brings
+         Microsoft.AspNetCore.SignalR.Common 10.0.13, which fixes GHSA-334f-vvp4-7g6p (High, same range) (ARV-184) -->
+    <PackageVersion Include="Microsoft.AspNetCore.SignalR.Protocols.MessagePack" Version="10.0.13" />
     <PackageVersion Include="Microsoft.AspNetCore.SignalR.StackExchangeRedis" Version="10.0.12" />
     <PackageVersion Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="10.0.12" />
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.12" />
@@ -54,6 +56,12 @@
     <PackageVersion Include="TimeZoneConverter" Version="7.2.0" />
     <!-- System / BCL, .NET 10 -->
     <PackageVersion Include="System.Threading.Channels" Version="10.0.12" />
+    <!-- MimeKit (under MailKit) asks for System.Security.Cryptography.Pkcs 10.0.0 or later; 10.0.13 (nuget.org, 13 October 2026)
+         fixes GHSA-846f-f764-76mx (High) and GHSA-2fmv-rv2c-59x7 (Moderate), both affecting 10.0.0 to 10.0.12. Ariva.Infra, the
+         only project whose graph brings it, references it directly, so every project above it resolves 10.0.13 without
+         transitive pinning of the whole list. The hosts' self-contained runtime pack carries its own copy: the image build
+         checks the published file (scripts/published-runtime.mjs, ARV-184). -->
+    <PackageVersion Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />
     <!-- Microsoft.CodeAnalysis -->
     <PackageVersion Include="Microsoft.CodeAnalysis.Common" Version="4.14.0" />
     <!-- ML.NET (forecasting) -->

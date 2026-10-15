@@ -12,7 +12,8 @@ on:
   push:
     tags: ['v*']
   pull_request:
-    paths: ['**/Dockerfile', '.dockerignore', 'Directory.*.props']
+    # ARV-184: every .NET image build runs scripts/published-runtime.mjs on its publish output
+    paths: ['**/Dockerfile', '.dockerignore', 'Directory.*.props', 'scripts/published-runtime.mjs']
   workflow_dispatch:
 
 permissions:

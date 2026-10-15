@@ -489,6 +489,14 @@ spec:
 
 Replace `<namespace>` with the deployment's namespace (section 6.1). Keep `Audit` until every image in it is signed (the Azure DevOps builds are not, see above), then switch to `Enforce`. The policy passes Kyverno's schema but has not been run against a cluster (To confirm on the customer's cluster); the Sigstore policy-controller (`ClusterImagePolicy`) is an alternative. The policy is not part of the chart: the admission controller is the cluster owner's.
 
+The runtime an image carries (ARV-184). The .NET images are self-contained on `runtime-deps`, which holds no .NET runtime: they run the runtime pack of the SDK they were built with, whatever the base image's tag says. Every image build, on GitHub and on Azure DevOps, fails unless both runtime packs (.NET and ASP.NET Core) are the version of its `runtime-deps` base and System.Security.Cryptography.Pkcs.dll and the SignalR assemblies are at or above the file version of the release that fixed their last advisories (`scripts/published-runtime.mjs`, in the Dockerfile's `checked` stage, which the final stage copies from). To check an image you were given, copy its `/app` out and run the same check with Node 22 from a checkout of the release:
+
+```bash
+docker create --name ariva-check <registry>/ariva/api-main@sha256:<digest>
+docker cp ariva-check:/app ./ariva-app && docker rm ariva-check
+node scripts/published-runtime.mjs --check ./ariva-app --runtime <the runtime-deps version in its Dockerfile, for example 10.0.13>
+```
+
 ### 6.6 Release to k8s-dev from GitHub
 
 Until the dev cluster moves to Dalil Azure, the dev release runs from GitHub Actions (`.github/workflows/release-dev.yml`) with the images the `images` workflow pushes to `ghcr.io/alsadderwork-coder/ariva/<service>`. The Azure DevOps pipelines (`Build-k8s-*`, `Release-ariva-k8s-dev.yaml`) stay as they are for the move. Both use the same Helmfile and chart; the GitHub release only points `imageRepository` at GHCR and its pull secret at a GHCR token.

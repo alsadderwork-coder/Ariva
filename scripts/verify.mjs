@@ -83,6 +83,24 @@ function run(name, cmd, cmdArgs, cwd = ROOT, { optional = false } = {}) {
   return ok;
 }
 
+// The NuGet audit fails on a High or Critical advisory, as CI's "Vulnerable packages" step does: dotnet list exits 0 whatever
+// it finds, so its table is read (ARV-184 review). Moderate and Low advisories are printed and do not fail the gate.
+function nugetAudit() {
+  const name = 'nuget vulnerability audit (fails on high or critical)';
+  const cmdArgs = ['list', 'Ariva.slnx', 'package', '--vulnerable', '--include-transitive'];
+  const started = Date.now();
+  process.stdout.write(`\n=== ${name}: dotnet ${cmdArgs.join(' ')}\n`);
+  if (PLAN) { results.push({ name, ok: true, planned: true }); return; }
+  // English output whatever the machine's locale, since the severity words are what is read.
+  const r = spawnSync('dotnet', cmdArgs, { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, env: { ...process.env, DOTNET_CLI_UI_LANGUAGE: 'en' } });
+  process.stdout.write(`${r.stdout ?? ''}${r.stderr ?? ''}`);
+  const skipped = r.error?.code === 'ENOENT';
+  const severe = /\b(High|Critical)\b/.test(r.stdout ?? '');
+  if (severe) process.stdout.write('High or critical vulnerable package (CI fails on it too)\n');
+  if (skipped) process.stdout.write('(dotnet not found, skipped)\n');
+  results.push({ name, ok: skipped || (r.status === 0 && !severe), skipped, seconds: Math.round((Date.now() - started) / 1000), exit: r.status });
+}
+
 // ARV-104j review (CWE-532): the live-pipeline scopes register DMO's sensors, whose answers carry device credentials; none
 // may reach the Playwright report or the test output (an expect's message is a step title even when it passes). Runs after
 // the run, since the HTML reporter writes after global teardown; counts the files, never prints a value.
@@ -391,10 +409,13 @@ const steps = {
     run('ops tooling self-test (backup and restore wrapper)', 'node', ['scripts/ops/ariva-ops.mjs', '--self-test']);
     run('ops database script syntax', 'bash', ['-n', 'scripts/ops/ariva-db.sh'], ROOT, { optional: true });
     run('base images pinned', 'node', ['scripts/base-images.mjs', '--check']);
+    // ARV-184: the check every host image build runs on its publish output (runtime packs at the runtime-deps version, Pkcs and
+    // SignalR assemblies at or above the fixed file version); base-images --check holds each Dockerfile to it.
+    run('published runtime check self-test', 'node', ['scripts/published-runtime.mjs', '--self-test']);
     const CHART_TESTS = path.join(ROOT, 'Platform', 'Cloud', 'Ariva.K8s', 'tests');
     if (!fs.existsSync(path.join(CHART_TESTS, 'node_modules'))) run('chart tests npm ci', 'npm', ['ci'], CHART_TESTS);
     run('chart security (pod security context, read-only root, TLS, release guards)', 'node', ['chart-security.mjs'], CHART_TESTS);
-    run('nuget vulnerability audit', 'dotnet', ['list', 'Ariva.slnx', 'package', '--vulnerable', '--include-transitive'], ROOT, { optional: true });
+    nugetAudit();
     if (fs.existsSync(path.join(WEB, 'package-lock.json'))) run('npm audit (web)', 'npm', ['audit', '--audit-level=high'], WEB, { optional: true });
     if (fs.existsSync(path.join(E2E, 'package-lock.json'))) run('npm audit (e2e)', 'npm', ['audit', '--audit-level=high'], E2E, { optional: true });
   },

@@ -341,6 +341,28 @@
       "dependsOn": [
         "ARV-181a"
       ]
+    },
+    {
+      "id": "ARV-186",
+      "title": "[E17] Image build and audit hardening: the checked stage takes only the publish output, root-owned binaries, a JSON NuGet audit",
+      "description": "Low and informational findings from the ARV-184 security review (2026-10-15), not needed before the pilot. (1) scripts/base-images.mjs --check holds the final stage to copy from the checked stage only, but not what the checked stage copies in (COPY --from=publish /app/publish /app/publish), and it does not catch a final stage that reads another stage through RUN --mount=type=bind,from=... or is based FROM publish; only a deliberate misconfiguration reaches this. Run the check with RUN --network=none as well. (2) Pre-existing in all six .NET Dockerfiles: chown -R nonroot:nonroot /app lets the runtime user rewrite its own binaries; the chart's readOnlyRootFilesystem stops it in Kubernetes, not elsewhere (docker run, the offline bundle of ARV-127). Keep /app root-owned and world-readable, writable only where the host writes. CWEs to review: CWE-269, CWE-732, CWE-1395. (3) From the same review: the NuGet audit step of scripts/verify.mjs reads the severity words of dotnet list (now forced to English) and passes when dotnet list exits 0 without the vulnerability data; read --format json and fail when no source answered.",
+      "acceptanceCriteria": [
+        "base-images --check refuses a checked stage that copies anything but the publish stage's /app/publish, a final stage with RUN --mount from another stage, and a final stage based on another build stage; each with a self-test case",
+        "The published runtime check runs with RUN --network=none in every .NET Dockerfile, held by the same rule",
+        "The NuGet audit step reads dotnet list --format json, fails on a high or critical advisory and when no vulnerability source was read, with a self-test of both",
+        "/app stays root-owned in every .NET image; the hosts start and run their E2E suite as user 10001 with nothing under /app writable; the chart security test still passes",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "The images build in images.yml and pass the Trivy image scan",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 41,
+      "passes": false,
+      "notes": "Size S. Phase 3 (the owner rule of 2026-10-14: a review finding becomes a Phase 1 story only when it blocks or is needed before the pilot).",
+      "dependsOn": [
+        "ARV-184"
+      ]
     }
   ]
 }

@@ -13,7 +13,7 @@
 `.devcontainer/` gives a Linux workspace where every gate runs: open the repository in a Codespace (or "Reopen in Container" with the Dev Containers extension), wait for the post-create step, then `node scripts/verify.mjs all --with-integration`.
 
 - Image (`.devcontainer/Dockerfile`): built only from images pinned by version and digest, with nothing downloaded during its own build. The docker-outside-of-docker feature then adds the Docker CLI 29.4.3 from Docker's signed apt repository, pinned by version, not by digest.
-  - The .NET 10.0.103 SDK, the one the host images build with.
+  - The .NET 10.0.402 SDK (runtime 10.0.13), the one the host images build with (ARV-184).
   - Node 22.
   - The OpenSSH client (`ssh-keygen`) of the Playwright base image, which the backup tooling's self-test needs (ARV-126).
   - The Playwright 1.63.0 image as the base. It brings Chromium for Ariva.E2E's @playwright/test and its libraries, and it is the same image the visual baselines render in (`scripts/visual-browser.mjs`).

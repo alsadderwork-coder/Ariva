@@ -39,6 +39,10 @@ jobs:
       - script: node scripts/security/scan.mjs
         displayName: 'Security: scan (writes .verify/security-report.md)'
 
+      # The check every host image build runs on its publish output (ARV-184): proven here before the images trust it.
+      - script: node scripts/published-runtime.mjs --self-test
+        displayName: 'Security: published runtime check self-test'
+
       # 2. .NET build; the CWE analyzers in .editorconfig run as errors.
       - task: UseDotNet@2
         inputs:

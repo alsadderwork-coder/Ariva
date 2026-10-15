@@ -117,6 +117,7 @@ Field validation is not a software test but uses the same metrics (F18): count a
 | Architecture and security reflection tests | `node scripts/verify.mjs unit` |
 | Behaviour tests with attack payloads | `node scripts/verify.mjs e2e` |
 | Dependency audits (NuGet, npm) | `node scripts/verify.mjs security` (needs registry access) |
+| What each .NET image ships (ARV-184): runtime packs at the runtime-deps version, Pkcs and SignalR assemblies at or above the fixed file version | Every image build (`scripts/published-runtime.mjs` in the Dockerfile's `checked` stage); its self-test and the Dockerfile rule (`scripts/base-images.mjs --check`) in `node scripts/verify.mjs security` and CI |
 | OWASP ZAP API and baseline scans (ARV-063) | `node scripts/verify.mjs zap` (Docker and the E2E database environment), and `.github/workflows/security-zap.yml` weekly and on demand; fails on an untriaged High risk alert |
 | External penetration test | Before the pilot goes live; once per major release |
 
@@ -132,7 +133,7 @@ Details in [Security guide](13-Security-Guide.md).
 | `integration` | `Ariva.IntegrationTests` (needs Docker) |
 | `web` | Ariva.Web: `npm ci` if needed, `svelte-check`, Prettier lint, build |
 | `e2e` | `Platform/Testing/Ariva.E2E`: `npm ci` if needed, then `npx playwright test` |
-| `security` | Scanner self-test, full scan, the backup tooling's self-test and script syntax (ARV-126), NuGet and npm audits |
+| `security` | Scanner self-test, full scan, the backup tooling's self-test and script syntax (ARV-126), base images pinned with each runtime-deps Dockerfile's published runtime check (ARV-184), the published runtime check's self-test, chart security, NuGet and npm audits (each fails on high or critical) |
 | `zap` | The dynamic security scan (ARV-063): `npx playwright test --project=zap` with `ARIVA_E2E_ZAP=1`; reports in `Platform/Testing/Ariva.E2E/zap-reports` |
 | `demo` | The scripted demo (ARV-064): the reference evening in real time through the whole pipeline, Stream included, its three events checked on screen (`--project=demo` with `ARIVA_E2E_DEMO=1`); at phase ends and before go-live |
 | `rehearsal` | The validation rehearsal against the live pipeline (ARV-104j): the reference evening through Ingest, Stream and Cronz, the simulator's observers capturing through the capture API, two campaigns closed with step-up and their frozen results judged from Ariva's own measurements (`--project=rehearsal` with `ARIVA_E2E_REHEARSAL=1`; record `rehearsal-record.json`); at phase ends and before go-live, on fresh services ([test cadence](../docs/harness/test-cadence.md)) |
