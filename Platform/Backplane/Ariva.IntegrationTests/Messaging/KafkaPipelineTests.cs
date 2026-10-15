@@ -442,7 +442,12 @@ public sealed class KafkaPipelineTests(PostgresFixture postgres, KafkaFixture ka
         using var host = await StartHostAsync(monitoring: true);
         using var reader = new InstrumentReader(host.Services.GetRequiredService<HealthStatusMetrics>().Meter);
         IReadOnlyList<(double Value, IReadOnlyDictionary<string, string> Tags)> measured = [];
-        await WaitAsync(() => (measured = reader.Observe(HealthStatusMetrics.StatusName)).Count >= 3, seconds: 30);
+        // StartHostAsync returns once the checks answer Healthy, but the publisher's last report (every second here, the first
+        // at start) can predate that, with the bus still starting: wait up to 30 s for a report from after it, then compare.
+        var until = DateTime.UtcNow.AddSeconds(30);
+        bool AllHealthy() => (measured = reader.Observe(HealthStatusMetrics.StatusName)).Count >= 3 && measured.All(x => x.Value == 0);
+        while (!AllHealthy() && DateTime.UtcNow < until)
+            await Task.Delay(100, Ct);
 
         measured.Select(m => (m.Tags["check"], m.Value)).Should().BeEquivalentTo([("database", 0d), ("kafka", 0d), ("masstransit-bus", 0d)]);
         await host.StopAsync(Ct);
