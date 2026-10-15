@@ -652,7 +652,8 @@ test('tracer runs are corrected by the device clock offset, resent batches retur
 	for (const [what, data] of refused) {
 		const answer = await sendRuns(id, observer, data, `e2e-refused-${Date.now()}`);
 		expect(answer.status(), what).toBe(400);
-		const body = await answer.text();
+		// The traceId is random hex and may hold any run of digits (CI once saw "...58723799994..."): blanked before the echo checks.
+		const body = (await answer.text()).replace(/"traceId":"[^"]*"/g, '"traceId":""');
 		expect(body, what).not.toContain('T-10');
 		expect(body, what).not.toMatch(/\d{4}-\d{2}-\d{2}T/);
 		expect(body, what).not.toContain('9999');
