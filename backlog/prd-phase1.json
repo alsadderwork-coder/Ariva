@@ -1502,15 +1502,15 @@
       ]
     },
     {
-      "id": "ARV-181",
-      "title": "[E12] Recommended open desks per lane (indicative, next 3 hours)",
-      "description": "Owner decision 2026-10-15 (in the session): the pilot should tell the supervisor how many desks to open. This is the staffing recommendation (formulas F16), which the roadmap put in v1; this story builds an indicative pilot version from what the MVP has. Per lane and 15-minute interval for the next 3 hours: the fewest open desks n_k that keep the predicted wait at or below the lane's target, decided forward in time because n_k changes the backlog carried into k+1 (F9). Inputs: the lane's current queue (nowcast, F8), its arrival wave from the flight schedule or AODB (F14), the measured throughput per open desk, the target wait and the most desks the lane has. Not in this version (v1): roster, shift and break rules, minimum open durations, shared officers across lanes (integer optimiser), Monte Carlo P50 and P90 (F15), show-up and lane-mix forecasting. The DesksBelowPlan alert, without data since ARV-129 was closed, compares open desks with this recommendation. Aggregate data only: lanes, desks open, counts and waits, no officer, traveller or document identity. CWEs to review: CWE-862, CWE-863, CWE-501, CWE-400, CWE-120.",
+      "id": "ARV-181a",
+      "title": "[E12] Recommended open desks: engine, measured throughput, stored minutes and API",
+      "description": "Owner decision 2026-10-15 (in the session): the pilot should tell the supervisor how many desks to open. This is the staffing recommendation (formulas F16), which the roadmap put in v1; this story builds an indicative pilot version from what the MVP has. Per lane and 15-minute interval for the next 3 hours: the fewest open desks n_k that keep the predicted wait at or below the lane's target, decided forward in time because n_k changes the backlog carried into k+1 (F9). Inputs: the lane's current queue (nowcast, F8), its arrival wave from the flight schedule or AODB (F14), the measured throughput per open desk, the target wait and the most desks the lane has. Not in this version (v1): roster, shift and break rules, minimum open durations, shared officers across lanes (integer optimiser), Monte Carlo P50 and P90 (F15), show-up and lane-mix forecasting. The DesksBelowPlan alert, without data since ARV-129 was closed, compares open desks with this recommendation. Aggregate data only: lanes, desks open, counts and waits, no officer, traveller or document identity. CWEs to review: CWE-862, CWE-863, CWE-501, CWE-400, CWE-120. Split on 2026-10-15 (the plan found the story L to XL): this part builds the pure engines (the recommendation and the measured throughput per open desk), the inputs reader, a Cronz job writing one row per lane and minute to a new hypertable lane_staffing, and the API; ARV-181b adds the screen and the alert.",
       "acceptanceCriteria": [
         "A pure engine in Ariva.Core computes, per lane and 15-minute interval for the next 3 hours, the recommended open desks (greedy forward, deterministic F9 recursion), the predicted wait with the desks open now and with the recommendation, from the current queue, the arrival wave, the measured throughput per desk, the lane's target wait and its desk count; table-driven unit tests include F16's case (C 10 per 15 minutes per desk, Q_0 0, A 25: n 3), a lane at its desk limit (recommendation capped, the shortfall shown), no arrivals, and a missing input (no recommendation rather than a guess)",
         "Throughput per desk is measured from the lane's own recent served passengers per open desk (with a stated minimum sample and a configured fallback per lane category); the target wait per lane is a site setting (default 10 minutes for immigration, formulas F16); formulas.md F16 describes the pilot version, its inputs and what waits for v1",
         "An API returns the recommendation for a site the caller reaches ([SiteScoped], NotFound outside the caller's sites), only to roles that see the lane split of the arrival wave (border data: ViewArrivalWaveLanes or the border desk view), bounded in size; API end-to-end tests cover each role, another site's code and attack payloads",
-        "The immigration screen shows, per lane, the next 3 hours by 15 minutes: arrivals, desks open now, recommended desks and the predicted wait, labelled indicative (from the flight schedule and measured throughput; no roster or break rules); Playwright per role, accessibility checked",
-        "The DesksBelowPlan alert is evaluated as open desks below the recommendation for the current interval (display name 'Open desks below recommendation'), supplied by AlertInputs; backtest equals live on a constructed case; the alert rules screen no longer marks it not evaluated",
+        "The 85% busy cap and the no-guess rule for flights without a passenger estimate (owner decisions of 2026-10-15) are in the engine with table cases; every case with no recommendation carries its reason (no queue length, no throughput measured or configured, a flight without passengers, truncated legs, no desks)",
+        "A Cronz job computes each site once a minute under an advisory lock and inserts each lane's minute once into lane_staffing (a new versioned script, checksum in checksums.lock, the runtime role INSERT and SELECT only, retention 90 days configurable); reads are bounded and a site above the bound is refused, never cut short; integration tests for the script, its grants, the reader, one write per minute and the bound",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
         "node scripts/verify.mjs web passes (svelte-check, lint, build)",
@@ -1521,11 +1521,34 @@
       ],
       "priority": 46,
       "passes": false,
-      "notes": "Size M to L. Owner decision 2026-10-15: add the indicative version to Phase 1 (preview agreed: lane, time, arrivals, open now, recommended, predicted wait). v1 keeps roster and break rules, the hall optimiser, F15 and the forecasts. The roadmap names 'the pilot client insists on staffing recommendations inside the pilot' as a sign the second developer is needed earlier; this is the indicative version only.",
+      "notes": "Size M to L. Split from ARV-181. Decisions of 2026-10-15. Owner: (a) the recommendation also keeps each desk at most 85% busy over the interval (configurable per site), a margin for the variability the deterministic recursion leaves out, until v1's P90; (b) a flight without a passenger estimate (SSIM only, no AMAN inbound lane demand, no AODB) gives no recommendation for the intervals it affects, with the reason shown, never a guess. Lead: the predicted wait is max(Q_k, Q_(k+1)) over the interval's capacity, not F9's (Q_k + A_k/2)/mu_k, which ignores what the desks serve during the interval and cannot express F16's own test; the target wait is configuration now (Staffing:TargetMinutes, default 10, per-site and per-lane overrides on the ARV-148 pattern), an audited setting later; no fallback cycle time is shipped: a lane without a measured throughput gives no recommendation until the site configures its fallback at commissioning; 13 rows (the current quarter hour and 12 more, reaching now plus 3 hours); the panel's \"open now\" is the desk-state count the engine uses (F10), labelled as such, distinct from the lanes table's AMAN sessions; lane_staffing kept 90 days (configurable, in ARV-111a's data inventory). Plan: the ARV-181 progress entry (domain modeler, 2026-10-15).",
       "dependsOn": [
         "ARV-116",
         "ARV-038",
         "ARV-057"
+      ]
+    },
+    {
+      "id": "ARV-181b",
+      "title": "[E12] Recommended open desks: immigration screen and the desks-below-recommendation alert",
+      "description": "Split from ARV-181 on 2026-10-15: the immigration screen shows ARV-181a's stored recommendation (the owner's preview: per lane, 15 minutes for the next 3 hours, arrivals, desks open now, recommended, predicted wait, labelled indicative), and the DesksBelowPlan alert is evaluated as open desks below the recommendation, for border roles only. CWEs to review: CWE-862, CWE-863, CWE-79.",
+      "acceptanceCriteria": [
+        "The immigration screen shows, per lane, the next 3 hours by 15 minutes: arrivals, desks open now, recommended desks and the predicted wait, labelled indicative (from the flight schedule and measured throughput; no roster or break rules); Playwright per role, accessibility checked",
+        "The DesksBelowPlan alert is evaluated as open desks below the recommendation for the current interval (display name 'Open desks below recommendation'), supplied by AlertInputs; backtest equals live on a constructed case; the alert rules screen no longer marks it not evaluated",
+        "DesksBelowPlan rules can be created, edited, imported and backtested only with ArrivalWaveLanes.View, and their owner and escalation roles are never airport-side (BorderDeskAccess); site configuration import accepts them; API end-to-end tests for each role",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 46,
+      "passes": false,
+      "notes": "Size M. Split from ARV-181; depends on ARV-181a. Decisions of 2026-10-15. Owner: (a) the recommendation also keeps each desk at most 85% busy over the interval (configurable per site), a margin for the variability the deterministic recursion leaves out, until v1's P90; (b) a flight without a passenger estimate (SSIM only, no AMAN inbound lane demand, no AODB) gives no recommendation for the intervals it affects, with the reason shown, never a guess. Lead: the predicted wait is max(Q_k, Q_(k+1)) over the interval's capacity, not F9's (Q_k + A_k/2)/mu_k, which ignores what the desks serve during the interval and cannot express F16's own test; the target wait is configuration now (Staffing:TargetMinutes, default 10, per-site and per-lane overrides on the ARV-148 pattern), an audited setting later; no fallback cycle time is shipped: a lane without a measured throughput gives no recommendation until the site configures its fallback at commissioning; 13 rows (the current quarter hour and 12 more, reaching now plus 3 hours); the panel's \"open now\" is the desk-state count the engine uses (F10), labelled as such, distinct from the lanes table's AMAN sessions; lane_staffing kept 90 days (configurable, in ARV-111a's data inventory). Plan: the ARV-181 progress entry (domain modeler, 2026-10-15).",
+      "dependsOn": [
+        "ARV-181a"
       ]
     },
     {
@@ -1812,7 +1835,8 @@
         "ARV-069a",
         "ARV-125a",
         "ARV-125b",
-        "ARV-181"
+        "ARV-181a",
+        "ARV-181b"
       ]
     },
     {
