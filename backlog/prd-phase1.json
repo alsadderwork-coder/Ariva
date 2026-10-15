@@ -1339,7 +1339,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 40,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. First run against a cluster happens in ARV-137 (owner), not earlier.",
       "dependsOn": []
     },

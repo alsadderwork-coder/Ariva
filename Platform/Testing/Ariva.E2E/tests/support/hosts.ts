@@ -1,6 +1,7 @@
 /**
- * Base URLs of the hosts under test. The defaults are the launchSettings.json ports; ARIVA_E2E_* variables point
- * the suites at another deployment (for example the dev cluster) without changing code.
+ * Base URLs of the hosts under test. The defaults are the launchSettings.json ports; ARIVA_E2E_* variables point the
+ * suites at other ports or loopback addresses of this machine (the AppHost's, for example). Never at a deployed
+ * environment: playwright.config.ts refuses a non-local target (ARV-128), which gets the read-only smoke suite instead.
  */
 export const hosts = {
 	main: process.env.ARIVA_E2E_MAIN_URL || 'http://localhost:51001',

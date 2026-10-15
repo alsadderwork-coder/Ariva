@@ -3,12 +3,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, devices } from '@playwright/test';
-import { databaseAvailable, developmentUserEnvironment, keyDirectory, lockoutSeconds, refreshGraceSeconds } from './tests/support/accounts';
+import { accounts, databaseAvailable, developmentUserEnvironment, keyDirectory, lockoutSeconds, refreshGraceSeconds } from './tests/support/accounts';
 import { hosts, smtp4dev, streamUrl, webUrl } from './tests/support/hosts';
+import { nonLocalTargets } from './tests/support/local-target';
+import { provisionedVariables, smokeSite, smokeStack } from './tests/support/smoke-site';
+import { structureProblems } from './tests/smoke/support/guard';
 
 // Ariva API end-to-end and functional tests. See README.md.
 //   api          Playwright's request fixture against the running .NET hosts, no browser
 //   functional   Chromium against the production build of Ariva.Web served by `vite preview`
+//   smoke        the read-only release smoke suite (ARV-128, tests/smoke) against this local stack; a deployed environment
+//                runs the same specs through playwright.smoke.config.ts
 // The web servers below start smtp4dev, build the backend once (first .NET entry), start Ariva.Api.Main, Ariva.Api.Integration,
 // Ariva.Api.Ingest and Ariva.Simulation.Api with `dotnet run --no-build` on their launchSettings ports, then build
 // and preview the web app. Playwright starts them one after another and waits for each health URL.
@@ -50,6 +55,28 @@ const livePipeline = demo || rehearsal;
 
 const project = (relative: string) => path.join(repositoryRoot, 'Platform', relative);
 
+// ARV-128 (TC-56): these suites write, attack and load, so every target they call or write to is on this machine. A
+// deployed environment gets the read-only smoke suite instead (npm run test:smoke, playwright.smoke.config.ts). Only the
+// names of the refused targets are printed: a Redis address can carry its password.
+const remoteTargets = nonLocalTargets(
+	{
+		...hosts,
+		stream: streamUrl,
+		web: webUrl,
+		smtp4dev: smtp4dev.url,
+		redis: process.env.ARIVA_E2E_REDIS_URL,
+		kafka: process.env.ARIVA_E2E_KAFKA_BOOTSTRAP,
+		database: databaseAvailable ? process.env.Database__Host : undefined
+	},
+	{ kafka: 'bootstrap', database: 'host' }
+);
+if (remoteTargets.length > 0) {
+	throw new Error(
+		`ARV-128: the E2E suites write, attack and load, so they run only against this machine; refused for ${remoteTargets.join(', ')}. ` +
+			'Check a deployed environment with the read-only smoke suite: npm run test:smoke (wiki 04 section 8).'
+	);
+}
+
 // Sign-in (ARV-010a) needs the database; CI always provides one (ci.yml starts PostgreSQL), so a CI run without it is
 // a configuration error rather than a reason to skip the account tests.
 if (isCi && !databaseAvailable) {
@@ -83,6 +110,31 @@ process.env.ARIVA_E2E_ACRIS_KEY ||= 'acris-e2e-' + crypto.randomBytes(24).toStri
 process.env.ARIVA_E2E_CRONZ_KEY ||= 'cronz-e2e-' + crypto.randomBytes(24).toString('base64url');
 // ARV-104g1: the validation reader login's password for this run (Ariva.Api.Main only; see validationReaderEnvironment).
 process.env.ARIVA_E2E_VALIDATION_READER_PASSWORD ||= 'reader-e2e-' + crypto.randomBytes(24).toString('base64url');
+
+// ARV-128: the smoke project reads its target and credentials from ARIVA_SMOKE_* only, as against a deployed environment.
+// Here they are this stack's: the addresses and the smoke account now, the zone, the test device and the display from
+// global setup (tests/support/smoke-site.ts) once the hosts are up. Values left from a deployed run in the shell are
+// dropped in the runner, before global setup; the workers inherit the runner's.
+if (smokeStack) {
+	if (!process.env.TEST_WORKER_INDEX) for (const name of [...provisionedVariables, 'ARIVA_SMOKE_UNAVAILABLE']) delete process.env[name];
+	const smokeAccount = accounts().smoke;
+	Object.assign(process.env, {
+		ARIVA_SMOKE_BASE_URL: webUrl,
+		ARIVA_SMOKE_MAIN_URL: hosts.main,
+		ARIVA_SMOKE_INGEST_URL: hosts.ingest,
+		ARIVA_SMOKE_INTEGRATION_URL: hosts.integration,
+		ARIVA_SMOKE_USERNAME: smokeAccount.userName,
+		ARIVA_SMOKE_PASSWORD: smokeAccount.password,
+		ARIVA_SMOKE_TOTP_SECRET: smokeAccount.totpSecret!,
+		ARIVA_SMOKE_SITE: smokeSite
+	});
+	// Without a database nobody signs in and global setup provisions nothing: the smoke specs skip, as the sign-in suites do.
+	if (!databaseAvailable) process.env.ARIVA_SMOKE_UNAVAILABLE = 'the smoke suite needs the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true)';
+	// A smoke spec imports from tests/smoke/support only (tests/smoke/support/guard.ts), here as in the smoke config.
+	const smokeDir = path.join(here, 'tests', 'smoke');
+	const problems = structureProblems(fs.readdirSync(smokeDir).filter((name) => name.endsWith('.spec.ts')).map((name) => path.join(smokeDir, name)));
+	if (problems.length > 0) throw new Error(`ARV-128: a smoke spec may import from tests/smoke/support only; refused:\n${problems.join('\n')}`);
+}
 
 function base32Of(bytes: Buffer): string {
 	const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
@@ -318,7 +370,12 @@ export default defineConfig({
 	retries: isCi ? 1 : 0,
 	workers: isCi ? 2 : undefined,
 	timeout: 30_000,
-	reporter: [['list'], ['html', { outputFolder: 'playwright-report', open: 'never' }]],
+	reporter: [
+		['list'],
+		['html', { outputFolder: 'playwright-report', open: 'never' }],
+		// ARV-128: last, after the HTML report is written: the smoke credentials of this run never reach the report or the output.
+		...(smokeStack ? [['./tests/smoke/support/artifact-reporter.ts', { folders: [path.join(here, 'playwright-report')] }] as [string, object]] : [])
+	],
 	use: {
 		trace: 'retain-on-failure'
 	},
@@ -410,7 +467,29 @@ export default defineConfig({
 				locale: 'en-US',
 				launchOptions: { executablePath: chromiumExecutable }
 			}
-		}
+		},
+		...(smokeStack
+			? [
+					{
+						// ARV-128: the release smoke suite against this stack, with its credentials from ARIVA_SMOKE_* (set above and in
+						// global setup). The probes (tests/smoke/probes) run only through tests/api/smoke-guard.spec.ts.
+						name: 'smoke',
+						testDir: './tests/smoke',
+						testMatch: /[\\/]tests[\\/]smoke[\\/][a-z0-9-]+\.spec\.ts$/,
+						fullyParallel: false,
+						use: {
+							...devices['Desktop Chrome'],
+							baseURL: webUrl,
+							locale: 'en-US',
+							launchOptions: { executablePath: chromiumExecutable },
+							// As in the smoke config: a trace holds every header and typed value, a screenshot or video the screens.
+							trace: 'off' as const,
+							screenshot: 'off' as const,
+							video: 'off' as const
+						}
+					}
+				]
+			: [])
 	],
 	webServer: [
 		{

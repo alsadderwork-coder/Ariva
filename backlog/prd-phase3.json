@@ -251,6 +251,28 @@
       "dependsOn": [
         "ARV-125a"
       ]
+    },
+    {
+      "id": "ARV-180",
+      "title": "[E17] Guards around the test stack and the smoke account: development seeds never reach another environment's store, report alerts for Alert.View holders only",
+      "description": "Low findings from the ARV-128 security reviews (2026-10-14 and 2026-10-15). (1) A run of the E2E suites whose Database__*, Redis or Kafka settings point at a tunnel to a deployed store passes the vm-local host check (its own hosts are genuinely vm-local), and those hosts run SchemaUpdate and seed the development accounts with known passwords into that store before any check runs; deployed least-privilege logins limit it (the runtime login is DML-only, so no DDL), but it can insert rows. Pre-existing; the E2E README and wiki 16 now warn against it. (2) The daily report and its CSV list ownerless alerts to any Report.View holder; every role with Report.View also holds Alert.View today, so nothing reaches it, but a future role without Alert.View would. (3) Under the owner's decision of 2026-10-15 (no new role), the smoke account is a Handler station manager that the server cannot keep to named sites; an account marker for service accounts (not a role) would let the server enforce it, should the owner revisit. CWEs to review: CWE-269, CWE-863, CWE-200.",
+      "acceptanceCriteria": [
+        "The migration job records the environment in the database (a versioned script and a row the runtime login can read), and a vm-local host refuses to run SchemaUpdate or seed development accounts in a database that names another environment, with an integration test",
+        "The daily report and its CSV (and the emailed and weekly summaries) list alerts only for callers holding Alert.View, with a unit and an integration test using a test-only role without Alert.View",
+        "The service-account marker is decided by the owner and, if accepted, built: the server keeps a marked account to named sites, with tests mirroring the validation observer's; otherwise the residual stays documented in wiki 04 section 8.1",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size S to M. Phase 3 (the owner's rule of 2026-10-14). Item 1 is worth weighing for the pilot: it needs an operator mistake, but its effect (known-password accounts in a deployed database) is serious.",
+      "dependsOn": [
+        "ARV-128"
+      ]
     }
   ]
 }

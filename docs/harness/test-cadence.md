@@ -22,7 +22,7 @@ The gate compares the working tree with `--base` (default `HEAD`, the uncommitte
 | E2E: the story's `--specs`, the spec files it changed, and the smoke set | When backend, web, simulator or E2E code changed |
 | E2E, full | When the change is wide |
 
-The smoke set is `health`, `auth`, `security-baseline` and `permission-matrix` (API) and `shell` (functional). The permission matrix is always in because authorization is where cross-site and missing-permission defects show.
+The smoke set is `health`, `auth`, `security-baseline` and `permission-matrix` (API) and `shell` (functional). The permission matrix is always in because authorization is where cross-site and missing-permission defects show. The smoke set is not the release smoke suite (ARV-128, `tests/smoke`, wiki 04 section 8.1), which is the read-only check of a deployed environment; its specs are the `smoke` project of the full E2E run, and a story that changes them names them in `--specs` (`tests/smoke/<name>.spec.ts`) with `tests/api/smoke-guard.spec.ts`.
 
 A change is wide when it reaches every host, every screen or the whole pipeline (the `WIDE` list in `scripts/verify.mjs`): `Ariva.Api.Common`, `Ariva.ServiceDefaults`, `Ariva.Di`, `Ariva.Api.Stream`; `Ariva.Core` `Security`, `Messaging`, `Queueing`, `Global.cs`, `RoleCodes.cs`; `Ariva.Infra` `NHibernate`, `Messaging`, `Streaming`, `Security`, `DataProtection`, `Caching`; the simulator; the web app's `src/lib/core`, hooks and build configuration; the E2E configuration and `tests/support`; the solution and central package files.
 

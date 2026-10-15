@@ -181,7 +181,8 @@ const E2E_SMOKE = [
   'tests/api/permission-matrix.spec.ts', 'tests/functional/shell.spec.ts'
 ];
 // Values from the command line reach git, dotnet and (on Windows, through the npx shim) a shell: fixed shapes only.
-const SPEC = /^tests\/(api|functional)\/[a-z0-9-]+\.spec\.ts$/;
+// ARV-128: the release smoke suite's specs (tests/smoke) too; its probes (tests/smoke/probes) run only through tests/api/smoke-guard.spec.ts.
+const SPEC = /^tests\/(api|functional|smoke)\/[a-z0-9-]+\.spec\.ts$/;
 const TEST_FILTER = /^[A-Za-z0-9_.~=!|&]{1,400}$/;
 const GIT_REF = /^[A-Za-z0-9_./^~-]{1,100}$/;
 const SHA = /^[0-9a-f]{7,40}$/;
@@ -223,7 +224,7 @@ function storyGate() {
     ...(filter === undefined || TEST_FILTER.test(filter) ? [] : ['--integration'])
   ];
   if (refused.length) {
-    results.push({ name: `story arguments refused (${refused.join('; ')}); specs are tests/api|functional/<name>.spec.ts files that exist`, ok: false });
+    results.push({ name: `story arguments refused (${refused.join('; ')}); specs are tests/api|functional|smoke/<name>.spec.ts files that exist`, ok: false });
     return;
   }
   const files = changedFiles(base);

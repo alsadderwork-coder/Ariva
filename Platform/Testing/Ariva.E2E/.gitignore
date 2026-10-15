@@ -2,7 +2,10 @@ node_modules
 /test-results
 /test-results-visual
 /test-results-demo
+/test-results-smoke
+/test-results-smoke-runs
 /playwright-report
+/playwright-report-smoke
 /blob-report
 /playwright/.cache
 /logs

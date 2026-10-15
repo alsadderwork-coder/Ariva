@@ -106,9 +106,12 @@
 		alertReload = setTimeout(() => void loadAlerts(), 300);
 	}
 
+	/** Alerts are read by roles with Alert.View only, so a role with LiveQueue.View but no alerts is never answered 403 (ARV-128). */
+	const seesAlerts = $derived(auth.can('Alert.View'));
+
 	async function loadAlerts(): Promise<void> {
 		const site = siteCode;
-		if (!site) return;
+		if (!site || !seesAlerts) return;
 		const result = await operations.openAlerts(site);
 		if (site === siteCode && !result.hasErrors) alerts = result.data?.data ?? [];
 	}
@@ -198,7 +201,7 @@
 		await Promise.all([
 			live.watch(
 				queueZones.map((z) => z.key),
-				auth.can('Alert.View') ? site : null
+				seesAlerts ? site : null
 			),
 			loadAlerts(),
 			loadDesks(),
@@ -510,7 +513,9 @@
 		</div>
 
 		<aside class="flex min-w-0 flex-col gap-4">
-			<AlertsPanel {alerts} onChanged={loadAlerts} />
+			{#if seesAlerts}
+				<AlertsPanel {alerts} onChanged={loadAlerts} />
+			{/if}
 			{#if auth.can('ArrivalWave.View')}
 				<ArrivalStrip {wave} />
 			{/if}

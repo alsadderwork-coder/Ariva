@@ -73,7 +73,7 @@ Run:
 node scripts/verify.mjs e2e
 ```
 
-The scope reports a failure until the project exists. How to point it at a deployed environment is To confirm.
+The suites never run against a deployed environment (TC-56, answered as Proposed by ARV-128): they write, attack and load, so `playwright.config.ts` refuses to load when a target is not on this machine (`localhost`, `127.0.0.0/8`, `[::1]`). A deployed environment, at go-live and after each release, gets the read-only release smoke suite: the specs in `tests/smoke`, run with `npm run test:smoke` (`playwright.smoke.config.ts`, no host started, every address and credential from `ARIVA_SMOKE_*` variables; wiki 04 section 8.1). Each smoke test declares `@read`, `@write`, `@attack` or `@load`; against a non-local target only `@read` tests may exist (anything else stops the run before a test starts), the smoke client and the browser send reads and the session calls only, traces, screenshots and videos are off, and the run fails when a credential reaches its report or output. Never run the suites with a port-forward or tunnel open on the hosts' ports (51001 to 51005, 51011, 51020): global setup checks, before it writes anything, that every host answers as a vm-local host of this run (a CORS preflight from the vm-local web origin, this run's simulator key) and stops otherwise (`tests/support/local-hosts.ts`). Never point the database, Redis or Kafka of an E2E run (`Database__*`, `ARIVA_E2E_*` or the hosts' connection settings) at a tunnel or port-forward to a deployed store either: the hosts the run starts are genuinely vm-local, so the check above passes, and they run SchemaUpdate and seed the development accounts (known passwords) into whatever store they reach before any test starts. A lasting guard is in Phase 3 (ARV-180). The same specs are the `smoke` project of every ordinary E2E run, against the local stack (global setup provisions the smoke site `E2SM`, a test device and a display); `tests/api/smoke-guard.spec.ts` proves the guard with probe files and `tests/api/smoke-config.spec.ts` runs the deployed config against the local stack.
 
 Against Ariva.AppHost (ARV-066): `node scripts/e2e-apphost.mjs [playwright arguments]` runs the same suite against hosts the AppHost starts, configured exactly as Playwright would start them (the config writes each host's variables when `ARIVA_E2E_WRITE_HOST_ENV` names a file; the AppHost applies them with `AppHost:HostEnvironmentFile`), on throwaway containers. It is for local runs and agents; CI keeps compose. The integration tests use an existing PostgreSQL instead of their own container when `ARIVA_IT_POSTGRES` holds a superuser connection string (they recreate only their `ariva_it` and `it_*` databases there).
 
@@ -153,7 +153,7 @@ The script is cross-platform (Windows, Linux, CI) and has no dependencies beyond
 | Image builds | `K8s/Build-k8s-<service>.yaml`, fan-out `Build-k8s-all.yaml` | Docker build and push per service on trunk changes to its paths |
 | Release to dev | `K8s/Release-ariva-k8s-dev.yaml` | Secrets and `helmfile apply` |
 
-Planned additions: the repository scan and dependency audits in PR validation, the e2e suite against a deployed stack, a nightly dependency audit, and the ZAP pipeline.
+Planned additions: the repository scan and dependency audits in PR validation, the release smoke suite (wiki 04 section 8.1) as a release step after each deployment, a nightly dependency audit, and the ZAP pipeline.
 
 ## 10. Definition of done for a story
 

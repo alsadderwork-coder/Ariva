@@ -573,8 +573,78 @@ Target procedure, implemented in Phase 1 epic Authentication, roles and audit.
 | 3 | Web through the ingress | `curl -fsS https://<web host>/healthz` | `ok` |
 | 4 | APIs through the ingress | `curl -fsS https://<api-main host>/health/liveness` | Healthy JSON |
 | 5 | Dependencies | Readiness will include PostgreSQL, Kafka and Redis checks (Target procedure, implemented in Phase 0 epic Skeleton and platform) | Today readiness only proves the process is up |
-| 6 | End-to-end suite | `node scripts/verify.mjs e2e` against the environment (Target procedure, implemented in Phase 0 epic Integration API and mocks: `Platform/Testing/Ariva.E2E` is not yet in the repository; how to point it at a deployed environment is To confirm) | All tests pass |
+| 6 | Release smoke suite (ARV-128) | `npm run test:smoke` in `Platform/Testing/Ariva.E2E` with the `ARIVA_SMOKE_*` variables, from a machine that reaches the ingress (section 8.1). Never `node scripts/verify.mjs e2e`: the E2E suites write, attack and load, and refuse a target that is not on the machine they run on | 11 passed and `smoke artifacts: no credential in 2 folders.` |
 | 7 | Reference scenario (dev and demo) | With a read key: `curl -fsS -H "Authorization: Bearer $KEY" http://localhost:8080/api/v1/simulation/scenario/alerts` through a port-forward to `simulation-service` | Seed 9303 gives R-001 at 1085 (18:05), R-003 for S-17 from 1100 to 1110 (18:20 to 18:30) and R-004 at 1150 (19:10); with `?site=AUH-TA`, seed 9304 gives R-001 for A-VIS at 1092 (18:12), R-003 for Q-RES-04 from 1105 to 1115 (18:25 to 18:35) and R-002 for A-EG at 1154 (19:14) |
+
+### 8.1 Release smoke suite (ARV-128)
+
+TC-56, answered as Proposed (pending the owner): the end-to-end suite is never pointed at a deployed environment. Its API, functional, load, ZAP, demo and rehearsal suites create records, send attack payloads and flood the hosts, and they need the development accounts only vm-local seeds; `playwright.config.ts` refuses to load when any target it calls or writes to (the hosts, the web app, Stream, smtp4dev, Redis, Kafka, the database) is not on the machine it runs on. A deployed environment gets the read-only smoke suite instead, at go-live and after each release (after the upgrade in section 9, before the window closes). The first run against a cluster is part of ARV-137, done by the owner.
+
+What it checks, in about a minute (11 checks; nothing is created, changed or deleted):
+
+| Check | Expected |
+|---|---|
+| Readiness of Ariva.Api.Main, Ariva.Api.Ingest and, when its address is given, Ariva.Api.Integration | 200 and `Healthy` (readiness includes the database) |
+| The web app's sign-in page | 200 with the Content-Security-Policy (`frame-ancestors 'none'`, no `'unsafe-inline'`) and `nosniff`; no console error, dialog or CSP violation in Chromium |
+| Ingest device check with the test device's credential (`GET /api/v1/ingest/device`) | 401 without a credential; 200, `no-store`, the device's code and site; the Ingest clock within 5 minutes of the machine running the suite |
+| The display board (`GET /api/v1/display/board`) and the player (`/display`) | 401 without a credential; 200 with entries; the player in Chromium shows the board live, without console errors or CSP violations |
+| Sign-in of the smoke account (with its authenticator code) and `GET /api/auth/me`, before anything else uses the account | The Handler station manager role alone, exactly that role's permissions, none of the critical permissions (`security/critical-actions.json`), exactly the smoke site or sites (never every site, no other site), not pending; otherwise the signed-in checks refuse to run |
+| The live hub on the web host (`/hubs/live`, WebSockets) | Refused without a token; the smoke site's queue zone joined; a zone of another site `forbidden` |
+| The daily report's route at the smoke site (`GET /api/v1/sites/{site}/reports/daily`) | 403 for the smoke account (a Handler station manager does not read reports) and 401 without a token: the route and its authorization answer. What a report holds is checked by the E2E reports specs, not here |
+| Sign-in through the web app | The live screen with the hub connected; sign-out answers 204 |
+| Sign-out of the API session | 204, then the token is refused (within 5 seconds on every replica) |
+
+Prepare once per environment (a System administrator, with a second factor for each critical step):
+
+1. The smoke site. Proposed: a site of its own (for example `SMOKE`) with one level and a published zone profile with one queue zone and its entry and exit lines (wiki 11). Its test device never pushes, so it shows Offline on that site only (it counts once in the overall offline share of the monitoring rules), and nothing of it reaches a pilot site's reports, alerts or availability ledger.
+2. The smoke account (Users and access): a user such as `smoke.<environment>` with the Handler station manager role and no other, and the smoke site only, never every site and no other site. Why this role (owner decision 2026-10-15, no role of its own): it is the least privileged existing role, with topology reads, zone profile reads, `LiveQueue.View`, alert rule reads and alerts (View, Search, Edit); none of its permissions is critical (`security/critical-actions.json`), and its one write, acknowledging its own alerts, is never sent by the smoke suite, whose client sends reads only. The server does not keep an account of this role away from every site (it does so only for the validation observer), so the smoke site only is the administrator's rule, and the suite checks it at every run: an account with another role, another permission, every site or any other site is refused before it is used. Keep it that way: the account's password and authenticator sit in a secret store, and a leaked copy reads what the account's sites allow. Sign in with it once in the web app to choose its password and enrol its authenticator (every committed environment requires one, `Auth:TotpRequired`); keep the password, the authenticator's secret (the base32 text shown at enrolment, under the QR code) and the recovery codes in the operations secret store.
+3. A test device at the smoke site (Devices: register, placed in the smoke queue zone, HTTPS push); keep its credential, shown once.
+4. A display at the smoke site for that queue zone (Displays); keep its code and its credential, shown once (the player address carries it after `#key=`).
+
+Variables (environment only; nothing is read from a file, and no default points anywhere):
+
+| Variable | Required | Value |
+|---|---|---|
+| `ARIVA_SMOKE_BASE_URL` | Yes | The web origin, `https://<web host>` (its `/api` and `/hubs` reach Ariva.Api.Main, ADR-0026) |
+| `ARIVA_SMOKE_MAIN_URL` | Yes | `https://<api-main host>`, for its health probe |
+| `ARIVA_SMOKE_INGEST_URL` | Yes | `https://<api-ingest host>` |
+| `ARIVA_SMOKE_INTEGRATION_URL` | No | `https://<api-integration host>`, for its health probe |
+| `ARIVA_SMOKE_USERNAME`, `ARIVA_SMOKE_PASSWORD` | Yes | The smoke account (secret: the password) |
+| `ARIVA_SMOKE_TOTP_SECRET` | Where the account has an authenticator (every committed environment) | Its base32 secret (secret) |
+| `ARIVA_SMOKE_SITE` | Yes | The smoke site's code, or several separated by commas: the account must hold exactly these sites |
+| `ARIVA_SMOKE_ZONE` | No | A queue zone of the (first) smoke site's published profile (default: its first queue zone) |
+| `ARIVA_SMOKE_DEVICE_KEY` | Yes | The test device's credential (secret) |
+| `ARIVA_SMOKE_DISPLAY_CODE`, `ARIVA_SMOKE_DISPLAY_KEY` | Yes | The display's code and credential (secret: the credential) |
+| `ARIVA_E2E_CHROMIUM` | No | An installed Chromium, where `npx playwright install chromium` cannot run |
+
+Run (from a checkout of the release's tag, on a machine used by the operator alone; `read -rs` keeps the secrets out of the shell history and the screen):
+
+```bash
+cd Platform/Testing/Ariva.E2E
+npm ci && npx playwright install chromium        # once per machine
+export ARIVA_SMOKE_BASE_URL=https://<web host> ARIVA_SMOKE_MAIN_URL=https://<api-main host> ARIVA_SMOKE_INGEST_URL=https://<api-ingest host>
+export ARIVA_SMOKE_USERNAME=smoke.<environment> ARIVA_SMOKE_SITE=<site> ARIVA_SMOKE_DISPLAY_CODE=<display code>
+for name in ARIVA_SMOKE_PASSWORD ARIVA_SMOKE_TOTP_SECRET ARIVA_SMOKE_DEVICE_KEY ARIVA_SMOKE_DISPLAY_KEY; do
+  read -rsp "$name: " value && export "$name=$value"; echo
+done; unset value
+npm run test:smoke
+unset ARIVA_SMOKE_PASSWORD ARIVA_SMOKE_TOTP_SECRET ARIVA_SMOKE_DEVICE_KEY ARIVA_SMOKE_DISPLAY_KEY
+```
+
+How it stays read-only and keeps its credentials (tests/smoke/support, CWE-287, CWE-306, CWE-532):
+
+- Only the smoke project runs (`playwright.smoke.config.ts`, the specs in `tests/smoke`). Every smoke test declares one kind, `@read`, `@write`, `@attack` or `@load`. Against a target that is not local (only `localhost`, `127.0.0.0/8` and `[::1]` are local), a test of any kind but `@read`, of no kind or of two kinds (Playwright also takes a tag from an `@word` of the title) stops the run before any test starts; a spec that does not go through the smoke guard (it imports anything but `tests/smoke/support`) stops the config from loading. Against a non-local target the suite sends only GET requests, plus the sign-in, the web app's session refresh and the sign-outs: its HTTP client refuses anything else before sending and the browser aborts it. `tests/api/smoke-guard.spec.ts` proves each refusal, and that the same probes run against a local target.
+- Credentials come from the variables only. Requests go through Node's fetch (Playwright's request fixture prints request headers in its errors) to the configured origins only, without following redirects; errors name the method and path, with every secret, token and `access_token` value masked. Fields are filled without the value entering a step title (Playwright titles a fill step with its text), the display key goes into the player's session storage, never into an address. Traces, screenshots and videos are off (the config refuses `--trace` other than `off`, `--reporter`, `--ui` and `--debug`), no storage state is saved, and the run fails when a credential (or any token, device or display key) is found in `playwright-report-smoke` or `test-results-smoke`, naming the file and the variable, never the value. Delete both folders after a failed run before sharing anything from them.
+- A smoke test gets the guarded page and its guards only: no request, browser, context or playwright fixture, by type and at run time, and a smoke spec that calls `fetch(`, `WebSocket(`, `XMLHttpRequest`, `newContext`, `newPage` or `.request.` stops the config from loading.
+- The folders the run empties and writes stay inside the project's own git-ignored smoke folders: `ARIVA_SMOKE_REPORT_DIR` (default `playwright-report-smoke`), `--output` (default `test-results-smoke`) and `ARIVA_SMOKE_JSON_FILE` must be inside `playwright-report-smoke`, `test-results-smoke` or `test-results-smoke-runs`, or the run refuses to start.
+- Each sign-in uses its own TOTP step (the replay guard takes a step once), so two runs for one account within the same 30 seconds fail the second; keep the machine's clock on NTP. A wrong password counts towards the account's lockout (10 failures, ADR-0026).
+- Node's fetch ignores `HTTPS_PROXY`: run it where the ingress is reachable directly. With a private certificate authority, set `NODE_EXTRA_CA_CERTS` to its certificate.
+
+Rotation: the smoke account's password and authenticator, the test device's credential and the display's credential sit together in the operations secret store. When an operator who had access to them leaves, or a copy may have leaked, rotate all four the same day: reset the account's password and TOTP (Users and access, critical, step-up; the account then chooses a new password and enrols a new authenticator at its next sign-in, done by a remaining operator), regenerate the device's credential (Devices) and the display's (Displays), and replace the four values in the store. The old credentials stop working at once with Redis, within a minute without it (the hosts' caches).
+
+Never run the E2E suites (`node scripts/verify.mjs e2e`, `npx playwright test` with `playwright.config.ts`) on a machine with a port-forward or tunnel open on the hosts' ports (51001 to 51005, 51011, 51020), for example `kubectl port-forward svc/api-main-service 51001:80`: a deployed host would then answer on a local address. The suites refuse to load against a non-local address, and their global setup checks, before anything is written, that every host answers as a vm-local host of this run (a CORS preflight from `http://localhost:51011`, which only vm-local's settings allow, and this run's own simulator key), and stops the run otherwise (`tests/support/local-hosts.ts`).
+
+The same specs run against the local E2E stack as the `smoke` project of `playwright.config.ts` (part of every ordinary E2E run): its global setup gives the smoke site `E2SM` a published profile, a test device and a display, as step 1 to 4 above, and `tests/api/smoke-config.spec.ts` runs `playwright.smoke.config.ts` itself against that stack. Against Ariva.AppHost: `node scripts/e2e-apphost.mjs --project=smoke`.
 
 ## 9. Upgrades and rollbacks
 
@@ -586,6 +656,8 @@ Before an upgrade:
 4. Agree the window: every apply restarts all pods.
 
 Upgrade: the build pipelines tag every image with the branch name and the build number. Re-run the install step with the new `buildNumber` and `releaseVersion`, and update the appsettings secrets first if the release notes say so. From the release with ARV-104g1 on, a k8s-prd release needs the secret `ariva-validation-reader` (section 6.2) before it starts: without it the chart's migration job cannot start, so an upgrade fails before any pod changes (on a first install the job runs after the objects exist and the new api-main pods wait in `CreateContainerConfigError`).
+
+After the upgrade, run the release smoke suite (section 8.1, Proposed by ARV-128); a failing check is a reason to roll back.
 
 Rollback:
 

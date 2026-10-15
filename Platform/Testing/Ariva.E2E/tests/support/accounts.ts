@@ -283,7 +283,15 @@ export function accounts() {
 		csvImportScopedAdmin: account('e2e.csvimportscoped', ['SystemAdministrator'], false, true, ['E2XI']),
 		// ARV-123b: the CSV import screens' functional suite builds sites of its own (CIW and a random tail) and imports
 		// devices through the screen, which needs a second factor; its own account, since a TOTP code counts once per account.
-		webCsvImport: account('e2e.webcsvimport', ['SystemAdministrator'], false, true, ['*'])
+		webCsvImport: account('e2e.webcsvimport', ['SystemAdministrator'], false, true, ['*']),
+		// ARV-128: the release smoke suite (tests/smoke). The smoke project signs in as e2e.smoke and the deployed smoke config's
+		// run against this stack (api/smoke-config.spec.ts) as e2e.smokecfg: Handler station managers (the least privileged
+		// existing role, owner decision 2026-10-15), with an authenticator as every account in a deployed environment, at the
+		// smoke site E2SM only (a TOTP code counts once per account, so one account each). e2e.smokeadmin gives E2SM its zone
+		// profile, the test device and the display in global setup (critical: a second factor).
+		smoke: account('e2e.smoke', ['HandlerStationManager'], false, true, ['E2SM']),
+		smokeConfig: account('e2e.smokecfg', ['HandlerStationManager'], false, true, ['E2SM']),
+		smokeAdmin: account('e2e.smokeadmin', ['SystemAdministrator'], false, true, ['*'])
 	} as const;
 }
 

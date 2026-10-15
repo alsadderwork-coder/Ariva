@@ -62,6 +62,9 @@ const run = {
 	ARIVA_E2E_ACCOUNT_SEED: secret(),
 	ARIVA_E2E_KEY_DIR: path.join(work, 'keys'),
 	ARIVA_E2E_SIMULATION_KEY: 'sim-e2e-' + secret(),
+	// ARV-104i's read-only simulator key: drawn here too, so the simulator the AppHost starts holds the digest of the key the
+	// suite uses (global setup's host check and the read scope's tests ask with it; ARV-128 found it missing).
+	ARIVA_E2E_SIMULATION_READ_KEY: 'sim-e2e-read-' + secret(),
 	ARIVA_E2E_MOCK_AMAN_SECRET: 'aman-e2e-' + secret(),
 	ARIVA_E2E_MOCK_AMAN_SEED: base32(randomBytes(20)),
 	ARIVA_E2E_MOCK_AMAN_PULL_SECRET: 'aman-pull-' + secret(),
