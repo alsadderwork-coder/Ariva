@@ -1,8 +1,9 @@
 import { expect, test } from '@playwright/test';
-import pg from 'pg';
+import type { Client } from 'pg';
 import { accounts, call, databaseAvailable, signIn } from '../support/accounts';
 import { hosts } from '../support/hosts';
 import { markupFragments, sqlInjectionPayloads, xssPayloads } from '../support/payloads';
+import { staffingDatabase as database, staffingPlan as plan } from '../support/staffing';
 
 // ARV-181a: GET api/v1/sites/{siteCode}/staffing-recommendation (ArrivalWaveLanes.View: border data, site-scoped) answers
 // the indicative staffing recommendation (formulas F16 pilot version) that Ariva.Api.Cronz computes once a minute into
@@ -17,26 +18,7 @@ test.describe.configure({ mode: 'serial' });
 
 const api = (site = 'DMO') => `${hosts.main}/api/v1/sites/${site}/staffing-recommendation`;
 
-function database(): pg.Client {
-	return new pg.Client({
-		host: process.env.Database__Host || 'localhost',
-		port: Number(process.env.Database__Port || 5432),
-		database: process.env.Database__Name || 'postgres',
-		user: process.env.Database__Migration__Username || 'postgres',
-		password: process.env.Database__Migration__Password
-	});
-}
-
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-/** The 13 intervals the job plans from a minute: to the next quarter hour, then 12 quarter hours. */
-function plan(minute: Date): { start: Date; minutes: number }[] {
-	const quarter = 15 * 60_000;
-	const next = new Date(Math.floor(minute.getTime() / quarter) * quarter + quarter);
-	const slots = [{ start: minute, minutes: Math.round((next.getTime() - minute.getTime()) / 60_000) }];
-	for (let k = 1; k < 13; k++) slots.push({ start: new Date(next.getTime() + (k - 1) * quarter), minutes: 15 });
-	return slots;
-}
 
 // The owner's preview (2026-10-15) for the first three intervals; a flight without passengers in the fifth.
 const preview = [
@@ -49,7 +31,7 @@ const preview = [
 let planted: Date;
 let border: string, terminal: string, handler: string, admin: string, observer: string, elsewhere: string;
 
-async function plant(db: pg.Client): Promise<void> {
+async function plant(db: Client): Promise<void> {
 	// Planted between seconds 0 and 40 of a minute: after the job's run of the minute before, more than a minute before its
 	// run of the next, so the planted minute stays the latest while the tests read it.
 	while (new Date().getUTCSeconds() >= 40) await sleep(1_000);
@@ -205,23 +187,24 @@ test('each arrivals-hall lane with its 13 intervals, the owner’s preview for t
 
 test('Ariva.Api.Cronz writes every arrivals-hall lane once a minute', async () => {
 	test.setTimeout(200_000);
-	// The lanes the suite does not plant: the job's own rows, written within the last few minutes.
+	// Only the lanes no suite plants, so every row counted is the job's own: this spec plants A-VIS, and the immigration
+	// screen's suite (functional/immigration-staffing.spec.ts, which may run at the same time) plants A-RES for the current
+	// minute and the next nine. The job's write of every lane is covered by the integration StaffingTests.
+	const jobLanes = ['DMO/A-CIT', 'DMO/A-CRW', 'DMO/A-EG'];
 	const db = database();
 	await db.connect();
 	try {
 		let latest: Date | null = null;
 		for (let attempt = 0; attempt < 30; attempt++) {
 			const row = await db.query(`SELECT max(minute_utc) AS latest, count(DISTINCT zone_key) AS lanes FROM lane_staffing
-			                             WHERE zone_key = ANY($1) AND minute_utc >= now() - interval '3 minutes'`, [['DMO/A-CIT', 'DMO/A-CRW', 'DMO/A-RES', 'DMO/A-EG']]);
+			                             WHERE zone_key = ANY($1) AND minute_utc >= now() - interval '3 minutes' AND minute_utc <= now()`, [jobLanes]);
 			latest = row.rows[0].latest;
-			if (latest && Number(row.rows[0].lanes) === 4) break;
+			if (latest && Number(row.rows[0].lanes) === jobLanes.length) break;
 			await sleep(5_000);
 		}
 		expect(latest, 'a minute of the job within the last 3 minutes').not.toBeNull();
-		const counts = await db.query(`SELECT zone_key, count(*)::int AS rows FROM lane_staffing WHERE zone_key = ANY($1) AND minute_utc = $2 GROUP BY zone_key`, [
-			['DMO/A-CIT', 'DMO/A-CRW', 'DMO/A-RES', 'DMO/A-EG'],
-			latest
-		]);
+		const counts = await db.query(`SELECT zone_key, count(*)::int AS rows FROM lane_staffing WHERE zone_key = ANY($1) AND minute_utc = $2 GROUP BY zone_key`, [jobLanes, latest]);
+		expect(counts.rows.length, 'every lane no suite plants has the latest minute').toBe(jobLanes.length);
 		for (const row of counts.rows as { zone_key: string; rows: number }[]) expect(row.rows, `${row.zone_key}: 13 intervals once`).toBe(13);
 		const departures = await db.query(`SELECT count(*)::int AS rows FROM lane_staffing WHERE zone_key LIKE 'DMO/D-%'`);
 		expect(departures.rows[0].rows, 'the departures hall gets no recommendation in this version').toBe(0);

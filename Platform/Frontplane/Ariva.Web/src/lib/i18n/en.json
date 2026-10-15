@@ -953,7 +953,71 @@
 			"Closed": "Closed",
 			"Unknown": "Unknown"
 		},
-		"served": "{count} served"
+		"served": "{count} served",
+		"staffing": {
+			"title": "Recommended open desks",
+			"indicative": "Indicative",
+			"description": "Per arrivals lane and quarter hour for the next 3 hours: the fewest open desks that keep the predicted wait within the lane's target with no desk too busy. From the flight schedule or AODB and each lane's measured throughput per open desk; no roster, shift or break rules.",
+			"settings": "Target wait {target} min; each desk at most {cap} busy.",
+			"computedAt": "Computed at {time}.",
+			"departures": "Recommended open desks cover the arrivals hall only in this version: departures need show-up forecasts, which come later.",
+			"loading": "Loading the recommendation…",
+			"noLanes": "The site's published zone profile has no arrivals lane queue.",
+			"refused": "The site has more arrivals lanes than one answer holds (100), so no recommendation is shown.",
+			"failed": "The recommendation could not be read. It is read again every minute.",
+			"nextHours": "Next 3 hours",
+			"nextHoursFor": "Next 3 hours, {lane} ({zone})",
+			"nowTo": "Now to {time}",
+			"atLimit": "All {desks} desks, short by {short}",
+			"outOfReach": "All {desks} desks, target out of reach",
+			"over120": "Over 120 min",
+			"noService": "No desk open",
+			"unknown": "Not known",
+			"short": "Short by {count}",
+			"spare": "Spare {count}",
+			"matches": "Matches",
+			"openUnknown": "Open count not known",
+			"openNowHint": "Open now counts the desks open by their desk states (idle or serving), the figure the wait estimate uses; Desks open in the lanes table counts AMAN's desk sessions.",
+			"degraded": "Approximate: a desk state is degraded",
+			"summaryCaption": "Each arrivals lane in the current quarter hour",
+			"caption": "{lane} ({zone}), next 3 hours by quarter hour, computed at {time}.",
+			"captionSettings": "Target wait {target} min, each desk at most {cap} busy.",
+			"captionCycle": "{cycle} min per passenger at a desk ({source}).",
+			"columns": {
+				"lane": "Lane",
+				"openNow": "Open now (desk states)",
+				"recommendedNow": "Recommended now",
+				"difference": "Difference",
+				"waitOpenNow": "Predicted wait, desks open now",
+				"waitRecommended": "Predicted wait, recommended",
+				"details": "Details",
+				"from": "From",
+				"arrivals": "Arrivals",
+				"recommended": "Recommended desks",
+				"waitOpenNowCount": "Predicted wait, {count} open now",
+				"reason": "Why none"
+			},
+			"reasons": {
+				"NoQueueLength": "No queue length now",
+				"NoThroughput": "No throughput measured or set",
+				"FlightWithoutPassengers": "A flight without a passenger figure",
+				"BacklogUnknown": "Queue not known: earlier arrivals missing",
+				"ArrivalsTruncated": "Too many arriving flights to read",
+				"NoDesks": "No desk in service",
+				"NoLaneDemand": "No arrivals forecast for this lane",
+				"ArrivalsOutOfRange": "Arrivals out of range",
+				"Stale": "No recent recommendation"
+			},
+			"bounds": {
+				"Wait": "for the wait",
+				"Busy": "for the busy cap",
+				"Both": "for both"
+			},
+			"sources": {
+				"Measured": "measured",
+				"Fallback": "set at commissioning"
+			}
+		}
 	},
 	"displays": {
 		"title": "Passenger displays",

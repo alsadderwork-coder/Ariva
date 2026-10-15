@@ -42,7 +42,7 @@ Phase 0 calendar: 9 to 13.5 developer-weeks at half-time is 22 to 32 calendar we
 | Flight data | Schedule-file (SSIM) import | AIDX plus one vendor AODB on a real feed | More vendors |
 | Arrival-wave alert | Only if an AODB feed is already available | Yes | Yes |
 | Lane-mix forecast from API | No | Yes | Yes |
-| Show-up forecasts and staffing recommendation | Indicative recommended open desks per arrivals lane only (ARV-181a, owner decision 2026-10-15: no roster, break rules, show-up forecast or P90) | Yes | Yes |
+| Show-up forecasts and staffing recommendation | Indicative recommended open desks per arrivals lane only (ARV-181a, on the immigration screen for border roles since ARV-181b1; owner decision 2026-10-15: no roster, break rules, show-up forecast or P90) | Yes | Yes |
 | Airport Operations module (check-in, security, handler tenancy) | No | Yes | Yes |
 | SLA and penalty engine with disputes | No | Yes | Yes |
 | Border-to-airport aggregate feed | No | Yes | Yes |

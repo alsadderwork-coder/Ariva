@@ -171,6 +171,74 @@ export function immigration(siteCode: string): Promise<Result<Immigration>> {
 	return Api.get<Immigration>(`/api/v1/sites/${siteCode}/immigration`);
 }
 
+/**
+ * One interval of a lane's staffing recommendation (ARV-181a, formulas F16 pilot version): the first runs from the computed
+ * minute to the next quarter hour, the other 12 are quarter hours. Waits are minutes, 120 meaning 120 or more; null when not
+ * known. `bound` is what set the recommendation (Wait, Busy, Both or None), `gap` why there is none (None otherwise); both
+ * are names the server writes, shown only through the screen's allowlists.
+ */
+export interface StaffingInterval {
+	startUtc: string;
+	minutes: number;
+	arrivals: number | null;
+	recommended: number | null;
+	bound: string;
+	atLimit: boolean;
+	shortfallDesks: number | null;
+	waitRecommendedMinutes: number | null;
+	waitOpenNowMinutes: number | null;
+	noServiceOpenNow: boolean;
+	gap: string;
+}
+
+/**
+ * One arrivals-hall lane: its latest computed minute with the target wait and busy cap used, the desks in service, the desks
+ * open now by their desk states (not AMAN's sessions), the queue now, the cycle time per passenger and its source (Measured
+ * or Fallback), the lane-wide reason there is no recommendation (Stale when its minute is too old: no numbers) and 13
+ * intervals. Lane aggregates only: no desk code, no identity.
+ */
+export interface LaneStaffing {
+	zone: string;
+	zoneKey: string;
+	lane: string;
+	minuteUtc: string | null;
+	targetMinutes: number | null;
+	busyCap: number | null;
+	desks: number | null;
+	openNow: number | null;
+	openNowDegraded: boolean;
+	queueNow: number | null;
+	cycleMinutes: number | null;
+	throughputSource: string | null;
+	gap: string;
+	intervals: StaffingInterval[];
+}
+
+/** The indicative staffing recommendation of a site (ARV-181a): border data, `ArrivalWaveLanes.View` only (the server decides). */
+export interface StaffingRecommendation {
+	siteCode: string;
+	asOfUtc: string;
+	intervalMinutes: number;
+	indicative: boolean;
+	lanes: LaneStaffing[];
+}
+
+/**
+ * The site's staffing recommendation (ARV-181a). Call it only for holders of `ArrivalWaveLanes.View`: the screen sends no
+ * request for other roles, and the server refuses them (403) and answers 404 for a site the caller cannot see. A profile with
+ * more arrivals-hall lanes than one answer holds (100) is refused with 409, never answered in part (`staffingRefused`).
+ */
+export function staffingRecommendation(siteCode: string): Promise<Result<StaffingRecommendation>> {
+	if (!site.test(siteCode))
+		return Promise.resolve(fail<StaffingRecommendation>('Refused: not a site.'));
+	return Api.get<StaffingRecommendation>(`/api/v1/sites/${siteCode}/staffing-recommendation`);
+}
+
+/** The server refused the staffing read for its bound (409): the panel shows no lane and says why. */
+export function staffingRefused(result: Result<unknown>): boolean {
+	return result.hasErrors && result.status === 409;
+}
+
 /** An overflow band's state (ARV-120): its latest minute with a reading within the server's window, or NotHeard. */
 export interface OverflowBand {
 	band: string;

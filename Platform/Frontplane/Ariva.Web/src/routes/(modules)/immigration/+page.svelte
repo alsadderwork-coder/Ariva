@@ -2,6 +2,7 @@
 	import { ExternalLink, Radio, ScanLine } from '@lucide/svelte';
 	import { onDestroy, onMount } from 'svelte';
 	import { _, locale } from 'svelte-i18n';
+	import StaffingPanel from '$lib/components/pages/immigration/StaffingPanel.svelte';
 	import DataQualityPanel from '$lib/components/pages/live/DataQualityPanel.svelte';
 	import OverflowMarker from '$lib/components/pages/live/OverflowMarker.svelte';
 	import { estimateOnly, statusTone, waitStatus } from '$lib/components/pages/live/waits';
@@ -346,6 +347,24 @@
 				</div>
 			{/if}
 		</section>
+
+		<!--
+			ARV-181b1: the indicative recommended open desks of the arrivals hall. Border data (the lane split of the arrival
+			wave): only holders of ArrivalWaveLanes.View get the panel and its request, not every holder of the screen's
+			Immigration.View (the terminal duty manager holds that too); the server refuses the others anyway.
+		-->
+		{#if auth.can('ArrivalWaveLanes.View')}
+			{#if hallKind === 'Immigration'}
+				<StaffingPanel {siteCode} laneOrder={lanesKnown} />
+			{:else}
+				<p
+					class="rounded-xl border bg-card px-4 py-3 text-sm text-muted-foreground"
+					data-testid="staffing-departures"
+				>
+					{$_('immigration.staffing.departures')}
+				</p>
+			{/if}
+		{/if}
 
 		<!-- ARV-120: the latest health bin of each lane's queue, for DataQuality.View holders only (the server checks it too). -->
 		{#if auth.can('DataQuality.View') && qualityZones.length > 0}
