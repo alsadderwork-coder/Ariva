@@ -98,7 +98,8 @@ public static class LaneThroughput
         {
             if (sample?.DeskKey is null || !desks.Contains(sample.DeskKey) || sample.MinuteUtc < from || sample.MinuteUtc > to)
                 continue;
-            if (!byMinute.TryGetValue(sample.MinuteUtc, out var minute))
+            var minute = byMinute.GetValueOrDefault(sample.MinuteUtc);
+            if (minute is null)
                 byMinute[sample.MinuteUtc] = minute = new Dictionary<string, StaffingDeskMinute>(StringComparer.Ordinal);
             minute.TryAdd(sample.DeskKey, sample);
         }
@@ -111,13 +112,18 @@ public static class LaneThroughput
         int used = 0, leftOut = 0;
         for (var m = from; m <= to; m = m.AddMinutes(1))
         {
-            if (!queue.TryGetValue(m, out var q) || q.QueueLength is not { } length || length < 0 || q.LengthDegraded || q.Exits is not { } x || x is < 0 or > MaxExitsPerMinute ||
-                heard.Count == 0 || !byMinute.TryGetValue(m, out var minute) || minute.Count < heard.Count || !minute.Values.All(Usable))
+            // Pattern and out variables stay out of this condition: a mutant that short-circuits it would leave them
+            // unassigned and send the whole method to Stryker's safe mode (testing-strategy skill).
+            var q = queue.GetValueOrDefault(m);
+            var minute = byMinute.GetValueOrDefault(m);
+            if (!Measurable(q, minute, heard.Count))
             {
                 leftOut++;
                 continue;
             }
 
+            var length = q.QueueLength.GetValueOrDefault();
+            var x = q.Exits.GetValueOrDefault();
             var openMinutes = minute.Values.Sum(s => s.IdleSeconds + s.ServingSeconds) / MinuteSeconds;
             // Not busy: nobody waited for some open desk, so its idle time says nothing about how fast it serves.
             if (openMinutes <= 0 || length < Math.Ceiling(Math.Round(openMinutes, 9)))
@@ -128,18 +134,27 @@ public static class LaneThroughput
         }
 
         ThroughputMiss? miss = null;
+        var cycle = open / exits;
         if (open < settings.MinOpenDeskMinutes)
             miss = ThroughputMiss.TooFewOpenDeskMinutes;
         else if (exits < settings.MinExits)
             miss = ThroughputMiss.TooFewExits;
-        else if (open / exits is var cycle && (cycle < settings.CycleMinMinutes || cycle > settings.CycleMaxMinutes))
+        else if (cycle < settings.CycleMinMinutes || cycle > settings.CycleMaxMinutes)
             miss = ThroughputMiss.OutOfBounds;
         if (miss is null)
             return new LaneThroughputResult(exits / open, DeskThroughputSource.Measured, null, exits, open, used, leftOut);
-        if (fallbackCycleSeconds is { } seconds && double.IsFinite(seconds) && seconds is >= 3 and <= 600)
+        var seconds = fallbackCycleSeconds.GetValueOrDefault(double.NaN);
+        if (double.IsFinite(seconds) && seconds is >= 3 and <= 600)
             return new LaneThroughputResult(MinuteSeconds / seconds, DeskThroughputSource.Fallback, miss, exits, open, used, leftOut);
         return new LaneThroughputResult(null, null, miss, exits, open, used, leftOut);
     }
+
+    // A minute is measured only with the lane queue's sample (length and exits known and within bounds, the length not
+    // degraded; CWE-501) and a usable sample from every desk heard in the window.
+    private static bool Measurable(QueueMinuteSample q, Dictionary<string, StaffingDeskMinute> desks, int heard) =>
+        q is not null && q.QueueLength.HasValue && q.QueueLength.GetValueOrDefault() >= 0 && !q.LengthDegraded &&
+        q.Exits.HasValue && q.Exits.GetValueOrDefault() is >= 0 and <= MaxExitsPerMinute &&
+        heard > 0 && desks is not null && desks.Count >= heard && desks.Values.All(Usable);
 
     // A desk minute within its bounds (each state's seconds 0 to 60, together at most a minute; CWE-501), not degraded, not
     // Unknown for half of it.
