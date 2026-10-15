@@ -78,8 +78,8 @@ Each iteration starts a fresh Claude Code session on the highest-priority story 
 
 ## GitHub repository settings (one time, by the owner)
 
-- Visibility: private (set 2026-10-01). It was public for about an hour after creation; anyone who cloned it then keeps a copy, so treat anything in that first commit as disclosed.
+- Visibility: public, confirmed as intended by the owner on 2026-10-15 (it had been set private on 2026-10-01). Everything committed is published: client material stays out of the repository (`.private/` is git-ignored), and so do credentials.
 - Actions secrets: `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) or `ANTHROPIC_API_KEY` for the `claude` workflow; install the Claude GitHub App on the repository so the workflow can comment.
-- Optional variable `ENABLE_CODEQL=true` once GitHub Code Security (Advanced Security) is licensed; CodeQL, secret scanning and dependency review need it on private repositories.
-- Branch protection or a ruleset on `main` (require the `ci` checks and one review, block force pushes and deletions) needs GitHub Pro or a Team organisation for a private repository; on GitHub Free the harness hooks are the only guard, so move the repository to a Dalil organisation on Team when the team grows.
+- Variable `ENABLE_CODEQL=true`: CodeQL, secret scanning (with push protection) and dependency review are free on a public repository, so they can be turned on now (Settings, Code security).
+- A ruleset on `main` (require the `ci` checks and one review, block force pushes and deletions) is available on GitHub Free for a public repository; until the owner sets one, the harness hooks are the only guard.
 - Dependabot alerts and security updates: on (free on private repositories).
