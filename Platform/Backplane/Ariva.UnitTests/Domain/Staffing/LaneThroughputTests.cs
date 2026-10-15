@@ -147,6 +147,65 @@ public sealed class LaneThroughputTests
         result.Exits.Should().BeGreaterThanOrEqualTo(0);
     }
 
+    [Theory]
+    [InlineData("queue length unknown", 1, 59)]
+    [InlineData("queue length negative", 1, 59)]
+    [InlineData("queue length zero", 0, 59)]
+    [InlineData("exits unknown", 1, 59)]
+    [InlineData("no queue sample", 1, 59)]
+    [InlineData("no desk minute", 1, 59)]
+    public void PerOpenDesk_Should_LeaveOutAMinute_When_ItsQueueSampleOrDeskMinutesAreMissingOrUnknown(string change, int leftOut, int used)
+    {
+        // CWE-501, each operand of the minute filter on its own (review of the safe mode fix): queue_minute's exits and length
+        // are nullable when read (StaffingInputs), so an unknown value is a real input. An empty queue (0 waiting) is valid but
+        // not busy, so that minute is neither used nor left out.
+        var desks = Desks(4);
+        var all = Enumerable.Range(0, 60).ToList();
+        var minutes = Open(desks, all);
+        var queue = Queue(all, 10, 2);
+        switch (change)
+        {
+            case "queue length unknown": queue[7] = queue[7] with { QueueLength = null }; break;
+            case "queue length negative": queue[7] = queue[7] with { QueueLength = -1 }; break;
+            case "queue length zero": queue[7] = queue[7] with { QueueLength = 0 }; break;
+            case "exits unknown": queue[7] = queue[7] with { Exits = null }; break;
+            case "no queue sample": queue.RemoveAt(7); break;
+            case "no desk minute": minutes.RemoveAll(m => m.MinuteUtc == Minute(7)); break;
+        }
+
+        var result = Measure(desks, minutes, queue);
+
+        result.MinutesLeftOut.Should().Be(leftOut);
+        result.MinutesUsed.Should().Be(used);
+        result.Exits.Should().Be(118);
+        result.RatePerDeskMinute.Should().BeApproximately(0.5, 1e-12);
+    }
+
+    [Theory]
+    [InlineData(3.0, true)]
+    [InlineData(2.999, false)]
+    [InlineData(600.0, true)]
+    [InlineData(600.001, false)]
+    [InlineData(601.0, false)]
+    [InlineData(double.PositiveInfinity, false)]
+    [InlineData(double.NegativeInfinity, false)]
+    public void PerOpenDesk_Should_TakeTheFallbackOnlyFromThreeToSixHundredSeconds_When_NothingIsMeasured(double seconds, bool taken)
+    {
+        var result = Measure(Desks(2), [], [], seconds);
+
+        result.Miss.Should().Be(ThroughputMiss.TooFewOpenDeskMinutes);
+        if (taken)
+        {
+            result.Source.Should().Be(DeskThroughputSource.Fallback);
+            result.RatePerDeskMinute.Should().BeApproximately(60 / seconds, 1e-12);
+        }
+        else
+        {
+            result.Source.Should().BeNull();
+            result.RatePerDeskMinute.Should().BeNull();
+        }
+    }
+
     [Fact]
     public void PerOpenDesk_Should_NotWaitForADeskNeverHeardInTheWindow_When_TheLaneListsIt()
     {
