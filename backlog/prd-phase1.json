@@ -1494,7 +1494,34 @@
       ],
       "priority": 46,
       "passes": true,
-      "notes": "Size M. Conditional: product owner decides whether the pilot needs it (known limit in the exit review). If ruled out, mark passes true with the note 'Not in MVP: decided by <owner> on <date>' so the gate is not held. Not in MVP: decided by Ahmad Al-Sadder on 2026-10-15. The pilot gets the number of open (occupied) desks from AMAN's desk sessions or from desk sensors; no staffing plan is entered, so the DesksBelowPlan rule stays as it is today: listed but marked not evaluated (AlertInputs supplies nothing; the alert rules screen says so), never firing. A plan, or v1 staffing recommendations, can bring it back later.",
+      "notes": "Size M. Conditional: product owner decides whether the pilot needs it (known limit in the exit review). If ruled out, mark passes true with the note 'Not in MVP: decided by <owner> on <date>' so the gate is not held. Not in MVP: decided by Ahmad Al-Sadder on 2026-10-15. The pilot gets the number of open (occupied) desks from AMAN's desk sessions or from desk sensors; no staffing plan is entered, so the DesksBelowPlan rule stays as it is today: listed but marked not evaluated (AlertInputs supplies nothing; the alert rules screen says so), never firing. A plan, or v1 staffing recommendations, can bring it back later. 2026-10-15: the owner wants Ariva to say how many desks should open; that is ARV-181 (indicative staffing recommendation), whose recommendation the DesksBelowPlan alert now compares against.",
+      "dependsOn": [
+        "ARV-116",
+        "ARV-038",
+        "ARV-057"
+      ]
+    },
+    {
+      "id": "ARV-181",
+      "title": "[E12] Recommended open desks per lane (indicative, next 3 hours)",
+      "description": "Owner decision 2026-10-15 (in the session): the pilot should tell the supervisor how many desks to open. This is the staffing recommendation (formulas F16), which the roadmap put in v1; this story builds an indicative pilot version from what the MVP has. Per lane and 15-minute interval for the next 3 hours: the fewest open desks n_k that keep the predicted wait at or below the lane's target, decided forward in time because n_k changes the backlog carried into k+1 (F9). Inputs: the lane's current queue (nowcast, F8), its arrival wave from the flight schedule or AODB (F14), the measured throughput per open desk, the target wait and the most desks the lane has. Not in this version (v1): roster, shift and break rules, minimum open durations, shared officers across lanes (integer optimiser), Monte Carlo P50 and P90 (F15), show-up and lane-mix forecasting. The DesksBelowPlan alert, without data since ARV-129 was closed, compares open desks with this recommendation. Aggregate data only: lanes, desks open, counts and waits, no officer, traveller or document identity. CWEs to review: CWE-862, CWE-863, CWE-501, CWE-400, CWE-120.",
+      "acceptanceCriteria": [
+        "A pure engine in Ariva.Core computes, per lane and 15-minute interval for the next 3 hours, the recommended open desks (greedy forward, deterministic F9 recursion), the predicted wait with the desks open now and with the recommendation, from the current queue, the arrival wave, the measured throughput per desk, the lane's target wait and its desk count; table-driven unit tests include F16's case (C 10 per 15 minutes per desk, Q_0 0, A 25: n 3), a lane at its desk limit (recommendation capped, the shortfall shown), no arrivals, and a missing input (no recommendation rather than a guess)",
+        "Throughput per desk is measured from the lane's own recent served passengers per open desk (with a stated minimum sample and a configured fallback per lane category); the target wait per lane is a site setting (default 10 minutes for immigration, formulas F16); formulas.md F16 describes the pilot version, its inputs and what waits for v1",
+        "An API returns the recommendation for a site the caller reaches ([SiteScoped], NotFound outside the caller's sites), only to roles that see the lane split of the arrival wave (border data: ViewArrivalWaveLanes or the border desk view), bounded in size; API end-to-end tests cover each role, another site's code and attack payloads",
+        "The immigration screen shows, per lane, the next 3 hours by 15 minutes: arrivals, desks open now, recommended desks and the predicted wait, labelled indicative (from the flight schedule and measured throughput; no roster or break rules); Playwright per role, accessibility checked",
+        "The DesksBelowPlan alert is evaluated as open desks below the recommendation for the current interval (display name 'Open desks below recommendation'), supplied by AlertInputs; backtest equals live on a constructed case; the alert rules screen no longer marks it not evaluated",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 46,
+      "passes": false,
+      "notes": "Size M to L. Owner decision 2026-10-15: add the indicative version to Phase 1 (preview agreed: lane, time, arrivals, open now, recommended, predicted wait). v1 keeps roster and break rules, the hall optimiser, F15 and the forecasts. The roadmap names 'the pilot client insists on staffing recommendations inside the pilot' as a sign the second developer is needed earlier; this is the indicative version only.",
       "dependsOn": [
         "ARV-116",
         "ARV-038",
@@ -1784,7 +1811,8 @@
         "ARV-104g2",
         "ARV-069a",
         "ARV-125a",
-        "ARV-125b"
+        "ARV-125b",
+        "ARV-181"
       ]
     },
     {
