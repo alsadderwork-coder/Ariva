@@ -3,7 +3,7 @@
 ## One-time setup on the developer machine (Windows)
 
 1. Clone Ariva next to AMAN: `git clone https://github.com/alsadderwork-coder/Ariva.git D:\DevOps\Ariva`, with AMAN at `D:\DevOps\Aman` (agents read AMAN as reference through `additionalDirectories`; hooks block writes to it).
-2. Install: .NET 10 SDK, Node 22 or later, Docker Desktop (or Rancher Desktop) for Testcontainers and Compose, Git, the GitHub CLI (`winget install GitHub.cli`, then `gh auth login`), Claude Code, ralph-tui (`npm i -g ralph-tui` or as you installed it for AMAN), and `uv` for the Python-based MCP servers (`winget install astral-sh.uv`).
+2. Install: .NET 10 SDK, Node 22 or later, Docker Desktop (or Rancher Desktop) for Testcontainers and Compose, Git, the OpenSSH client 8.1 or later (`ssh-keygen`, built into Windows 10 and later and Git for Windows; the backup tooling's self-test in `verify security` signs and verifies with it, ARV-126), the GitHub CLI (`winget install GitHub.cli`, then `gh auth login`), Claude Code, ralph-tui (`npm i -g ralph-tui` or as you installed it for AMAN), and `uv` for the Python-based MCP servers (`winget install astral-sh.uv`).
 3. `npx playwright install chromium` once.
 4. Environment variables: `GITHUB_PERSONAL_ACCESS_TOKEN` for the github MCP server (fine-grained token for `alsadderwork-coder/Ariva` only: Contents, Issues, Pull requests and Actions read and write, Metadata read; no Administration). Optional: `ARIVA_DEV_DATABASE_URI` for the read-only dev database MCP (`node scripts/dev-up.mjs` prints it with the generated password), `CONTEXT7_API_KEY` if you have a Context7 key (add a header in `.mcp.json`), `SHADCN_MCP_URL` for the shadcn.io Pro MCP server (the full URL including `?token=`; it is a secret, so keep it in `.claude/settings.local.json` under `env` or your shell, never in `.mcp.json`).
 5. Open the folder in Claude Code; approve the project MCP servers when asked (they are listed in `.claude/settings.json` under `enabledMcpjsonServers`).
@@ -15,6 +15,7 @@
 - Image (`.devcontainer/Dockerfile`): built only from images pinned by version and digest, with nothing downloaded during its own build. The docker-outside-of-docker feature then adds the Docker CLI 29.4.3 from Docker's signed apt repository, pinned by version, not by digest.
   - The .NET 10.0.103 SDK, the one the host images build with.
   - Node 22.
+  - The OpenSSH client (`ssh-keygen`) of the Playwright base image, which the backup tooling's self-test needs (ARV-126).
   - The Playwright 1.63.0 image as the base. It brings Chromium for Ariva.E2E's @playwright/test and its libraries, and it is the same image the visual baselines render in (`scripts/visual-browser.mjs`).
   - uv, for the semgrep and postgres-dev MCP servers.
   - The Docker CLI with Compose.

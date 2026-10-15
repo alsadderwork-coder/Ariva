@@ -295,6 +295,29 @@
       "dependsOn": [
         "ARV-126"
       ]
+    },
+    {
+      "id": "ARV-183",
+      "title": "[E17] Backup restore hardening: strict allowed signers, a restore preview and wider post-restore checks",
+      "description": "Low recommendations from the ARV-126 security re-review (PASS, 2026-10-15). (1) ssh-keygen honours principal patterns (*, ?, !) and cert-authority lines in allowed_signers for any name the restore tries, so such a line silently widens who can sign a restore; the tool should refuse them unless explicitly allowed, and report the key fingerprint that verified. (2) Before restoring, show the signed manifest's taken time, database and file label, and refuse a set from another namespace (better, a namespace field in the signed manifest) unless forced. (3) `ariva-db.sh check` does not yet fail on: new LOGIN roles with SUPERUSER, CREATEROLE, REPLICATION or BYPASSRLS outside Ariva's groups; ALTER SYSTEM settings (pg_file_settings from postgresql.auto.conf); non-view rules; functions with oid >= 16384 in any schema (pg_catalog included) that are not extension members. (4) A DBA-provided PostgreSQL with an extra extension such as pg_stat_statements fails the extensions check; allow a documented --allow-extension. CWEs to review: CWE-269, CWE-345.",
+      "acceptanceCriteria": [
+        "The restore refuses an allowed_signers file holding a principal pattern or a cert-authority line unless an explicit option allows it, and names the verifying key's fingerprint; self-test cases",
+        "The restore prints the signed manifest's taken time, database and file label before acting, and refuses a set whose namespace differs from --namespace unless forced (the namespace added to the signed manifest); self-test cases",
+        "`ariva-db.sh check` also fails on the four effects listed, with BackupRestoreTests planting each; the CWE-269 row drops 'some of'",
+        "A validated --allow-extension (identifier) lets a DBA-provided server's extra extension pass, documented in wiki 04 section 10",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size S to M. Phase 3 (the owner's rule of 2026-10-14). The NuGet item of the same review (System.Security.Cryptography.Pkcs and the SDK band) is ARV-184 in Phase 1.",
+      "dependsOn": [
+        "ARV-126"
+      ]
     }
   ]
 }

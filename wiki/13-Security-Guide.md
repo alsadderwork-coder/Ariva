@@ -71,7 +71,7 @@ Ariva's integration authentication follows AMAN's flow but adds hashed secrets, 
 
 The key ring table (`data_protection_key`) admits only signed keys in Ariva's format (ARV-080), so a key planted there is ignored. A planted revocation is still possible for anyone who can write to the database: values under the revoked keys stop working (users re-enrol their authenticator, outbound secrets must be entered again, everyone signs in again). If that happens, delete the planted `revocation` row with the migration (administrator) login, since the runtime login cannot delete from that table, and restart the hosts, or restore the database from backup; and treat it as a database compromise.
 
-At rest, secrets stay in Kubernetes secrets or a vault (D5). Enable encryption at rest for Kubernetes secrets on the customer's cluster. Back up the Data Protection key ring and signing keys separately and encrypted (see [Deployment guide](04-Deployment-Guide.md), backup section).
+At rest, secrets stay in Kubernetes secrets or a vault (D5). Enable encryption at rest for Kubernetes secrets on the customer's cluster. Backups (ARV-126, [Deployment guide](04-Deployment-Guide.md) section 10): the Data Protection key ring lives in the database, wrapped under the certificate, so it travels in the database backup and no backup holds a key unwrapped; every backup file is encrypted with age and its manifest signed with an operator's SSH key, which a restore verifies against an allowed-signers file kept outside the backup store before it trusts any hash; the Data Protection certificate, the token signing keys, the backup identity and the backup signing key are never in a backup, each in a custody of its own.
 
 ## 6. TLS
 
@@ -96,7 +96,7 @@ TLS on every external hop: users, displays and integrators to the ingress; senso
 | 13 | Vendor cloud connectivity disabled on sensors and perception platforms at government sites; 802.1X on sensor switch ports | |
 | 14 | NTP on all nodes and devices | |
 | 15 | Central log collection and audit log retention agreed | |
-| 16 | Backups encrypted, restore tested | |
+| 16 | Backups encrypted, restore tested | `scripts/ops/ariva-ops.mjs` encrypts every backup with age and signs its manifest; a restore needs the signature to verify against the allowed signers (or the operator's own hash). Restore tested by `BackupRestoreTests` on every integration run and by the operator before go-live (wiki 04 section 10) |
 
 ## 8. Security gates in the pipeline
 

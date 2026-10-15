@@ -48,6 +48,15 @@ public static class TopicCatalog
         [KafkaTopics.FeedBorderLaneKpi] = Medium
     };
 
+    /// <summary>
+    /// The compacted topics: state, one value per key (device registry, zone health, zone profile, desk, nowcast, desk state).
+    /// The outbox relay keeps the newest sent row of each of their keys (ARV-126), so the database always holds that state and
+    /// scripts/ops/ariva-db.sh (after-kafka-loss) can send it again after the topics were recreated empty; a unit test keeps
+    /// the script's list equal to this one.
+    /// </summary>
+    public static IReadOnlyList<string> CompactedTopics { get; } =
+        [.. Retention.Where(r => r.Value is null).Select(r => r.Key).Order(StringComparer.Ordinal)];
+
     /// <summary>True when the catalog has a retention for every topic Ariva owns (a unit test keeps it so).</summary>
     public static bool Covers(string topic) => Retention.ContainsKey(topic);
 

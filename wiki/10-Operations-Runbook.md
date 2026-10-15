@@ -508,12 +508,22 @@ If an event does not show:
   4. A host that runs but reports nothing: the OTLP endpoint (`otel.endpoint`) and the collector, since the rule cannot tell a silent host from a stopped one.
 - **Actions**: fix the cause and let Kubernetes restart the pods; never set readiness aside. A Degraded check (Kafka, Redis, the message bus) does not make a host unready: it raises `kafkaUnavailable` or `busDegraded` (4.6).
 
+### 4.13 Database or Kafka lost: restore and recovery (ARV-126)
+
+The tooling is in `scripts/ops` (`ariva-ops.mjs` on an operator's machine, `ariva-db.sh` in the TimescaleDB pod); the procedure is wiki 04 section 10 and the Proposed recovery objectives are in its section 11.
+
+- **Database lost or corrupted** (the TimescaleDB volume, an upgrade whose scripts cannot be rolled back, data deleted by mistake): restore the latest backup into an empty database (wiki 04 section 10.4), then run the migration job, restore the files, check the key ring against the certificate, start the hosts, run the release smoke suite, re-apply the security changes made since the backup (disabled accounts, removed roles, rotated credentials come back as they were) and, when Kafka survived, reset Ariva's consumer groups to the backup time.
+- **Kafka lost** (topics gone, a new cluster): recreate the topics, scale api-stream to 0, run `node scripts/ops/ariva-ops.mjs after-kafka-loss --namespace "$NAMESPACE" --confirm-stream-stopped`, then start api-stream (wiki 04 section 10.5). `ariva.outbox.unsent` and `ariva.outbox.oldest_unsent_age` show the re-sent events until the relay has sent them; the outbox age alert can fire briefly.
+- **The Data Protection certificate lost with no copy**: there is nothing to restore it from. An administrator resets every user's authenticator and every integration client's TOTP (they enrol again), outbound endpoints get their secrets again, everyone signs in again; then create a new certificate (wiki 04 section 6.2). Everything else is intact.
+- Messages of `ariva-db.sh`: "is not empty" (a restore goes into an empty database only: give it a new volume); "refused: owned by ... not the migration login" (the dump is from another deployment, or its migration login has another name); "a key the hosts still need is wrapped under a certificate that was not given" (find the certificate in use at backup time, `DataProtection:Previous` during a rotation); "the restore did not finish" (fix the cause, then start again from a new volume). The wrapper's "the manifest's signature does not verify against ...: refused" (the manifest was altered, its signature is missing, or its signer is not in `allowed_signers`) and "has SHA-256 ..., not the expected ...: refused" (the file is not the one the signed manifest, or your own log, names) mean the backup set is not the one taken: do not restore it, and find out who could write to the backup store. A `FAIL` line of `ariva-db.sh check` about functions, languages, extensions, event triggers or group members after a restore means the database holds something no Ariva script creates: stop, do not start the hosts, and treat the dump as untrusted.
+- Rehearse the restore at least before go-live and after every major release, in a scratch namespace (wiki 04 section 10.6).
+
 ## 5. Routine checks
 
 | Frequency | Check |
 |---|---|
-| Daily | Zones `Degraded` or `Unknown` in the last 24 hours and why; device offline minutes; feed freshness; failed TickerQ jobs |
+| Daily | Zones `Degraded` or `Unknown` in the last 24 hours and why; device offline minutes; feed freshness; failed TickerQ jobs; the day's backup taken and its SHA-256 values in the operations log (wiki 04 section 10.3, Proposed) |
 | Weekly | Disk growth against forecast; certificate expiries in the next 60 days; integration client lockouts; conservation residual and track completion trends |
 | Before a pilot and after a data import | `Ariva.Api.Main --check-stored-names` lists no name (section 4.2b) |
-| Monthly | Restore test on a copy (at least before go-live and after major releases); review of audit log for configuration changes |
+| Monthly | Restore test on a copy with `scripts/ops` in a scratch namespace (wiki 04 section 10.6; at least before go-live and after major releases), recording how long it took; `ariva-ops.mjs keyring` with the certificate in the secret store; review of audit log for configuration changes |
 | Quarterly | Re-validation of penalty-grade zones |

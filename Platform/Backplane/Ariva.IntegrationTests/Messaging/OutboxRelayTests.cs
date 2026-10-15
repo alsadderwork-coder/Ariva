@@ -287,6 +287,32 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
     }
 
     [Fact]
+    public async Task Housekeeping_Should_KeepTheNewestRowOfEachCompactedKey_When_SentRowsAreOld()
+    {
+        // ARV-126: the newest sent row of each key on a compacted topic is the state that topic carries; it stays however old,
+        // so ariva-db.sh can send it again after a Kafka loss. Older rows of such a key, and every old row of any other topic,
+        // go as before; recent rows stay. The clock is 2026-10-01, so rows sent in August are past the 7 days.
+        await ResetAsync();
+        await _host.ReadAsync<object>("""
+            INSERT INTO outbox_message (id, topic, message_key, message_type, payload, created_on, sent_on) VALUES
+              (gen_random_uuid(), 'ariva.device.registry-changed.v1', 'device-1', 'DeviceRegistryChanged', '{"step": 1}', '2026-08-01Z', '2026-08-01Z'),
+              (gen_random_uuid(), 'ariva.device.registry-changed.v1', 'device-1', 'DeviceRegistryChanged', '{"step": 2}', '2026-08-02Z', '2026-08-02Z'),
+              (gen_random_uuid(), 'ariva.device.registry-changed.v1', 'device-2', 'DeviceRegistryChanged', '{"step": 1}', '2026-08-01Z', '2026-08-01Z'),
+              (gen_random_uuid(), 'ariva.topology.zone-profile-activated.v1', 'site-1', 'ZoneProfilePublished', '{"step": 1}', '2026-08-01Z', '2026-08-01Z'),
+              (gen_random_uuid(), 'ariva.device.zone-health.v1', 'DMO/Q1', 'ZoneHealthChanged', '{"step": 1}', '2026-08-01Z', '2026-08-01Z'),
+              (gen_random_uuid(), 'ariva.device.zone-health.v1', 'DMO/Q1', 'ZoneHealthChanged', '{"step": 2}', '2026-08-03Z', NULL),
+              (gen_random_uuid(), 'ariva.alert.state-changed.v1', 'alert-1', 'OutboxProbe', '{"alertId": "alert-1", "step": 1}', '2026-08-01Z', '2026-08-01Z'),
+              (gen_random_uuid(), 'ariva.alert.state-changed.v1', 'alert-2', 'OutboxProbe', '{"alertId": "alert-2", "step": 1}', '2026-09-30Z', '2026-09-30Z')
+            """);
+
+        await Relay(new RecordingTransport()).RunOnceAsync(Ct);
+
+        (await _host.ReadAsync<string>("SELECT string_agg(message_key || ':' || (payload->>'step'), ',' ORDER BY seq) FROM outbox_message"))
+            .Should().Be("device-1:2,device-2:1,site-1:1,DMO/Q1:2,alert-2:1",
+                "the newest row of each compacted key stays (the zone's unsent row was sent in the pass and is now its newest), the rest goes");
+    }
+
+    [Fact]
     public async Task Measure_Should_CountTheUnsentRowsAndDateTheOldest_When_RowsWait()
     {
         // ARV-125a: one constant statement on the partial index of unsent rows (script 0011), kept dead letters included.

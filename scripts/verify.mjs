@@ -20,7 +20,7 @@
 //                go-live, never in a story gate (docs/harness/test-cadence.md)
 //   zap          dynamic security scan (ARV-063): OWASP ZAP in its pinned image against the E2E stack (Docker and the E2E
 //                database environment; about 10 minutes); reports in Platform/Testing/Ariva.E2E/zap-reports
-//   security     scanner self-test + full scan + dependency audits
+//   security     scanner self-test + full scan + ops tooling self-test (ARV-126) + dependency audits
 //   docs         text rules on Markdown (no em dashes, no double hyphens in prose)
 //   backend      build + unit + security
 //   mutation     Stryker.NET on the pure engines (ARV-069; one to three hours, mostly the queue engine; report in .verify/stryker);
@@ -386,6 +386,10 @@ const steps = {
   security: () => {
     run('security scanner self-test', 'node', ['scripts/security/scan.mjs', '--self-test']);
     run('security scan', 'node', ['scripts/security/scan.mjs']);
+    // ARV-126: the backup and restore tooling. The wrapper's validation and argument arrays; the database script's syntax
+    // (its behaviour is proven by BackupRestoreTests in the integration suite). Without bash on the machine the second is skipped.
+    run('ops tooling self-test (backup and restore wrapper)', 'node', ['scripts/ops/ariva-ops.mjs', '--self-test']);
+    run('ops database script syntax', 'bash', ['-n', 'scripts/ops/ariva-db.sh'], ROOT, { optional: true });
     run('base images pinned', 'node', ['scripts/base-images.mjs', '--check']);
     const CHART_TESTS = path.join(ROOT, 'Platform', 'Cloud', 'Ariva.K8s', 'tests');
     if (!fs.existsSync(path.join(CHART_TESTS, 'node_modules'))) run('chart tests npm ci', 'npm', ['ci'], CHART_TESTS);

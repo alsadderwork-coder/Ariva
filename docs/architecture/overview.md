@@ -183,7 +183,7 @@ Processing model (D5):
 - Event time, not arrival time. Bins close on a watermark with a lateness allowance (seconds, tuned per site). A late event reopens its bin, which is republished as a new revision.
 - Keyed state per partition, held in memory and checkpointed to PostgreSQL. On a rebalance the new owner reloads the checkpoint and replays from the committed offset.
 - At-least-once delivery with idempotent writes. Interval results are upserted by (zone, bin start, revision), so a replay never double-counts. Command-style handlers also deduplicate by event id (AMAN's FusionCache and Redis idempotency pattern).
-- Transactional outbox for anything written to PostgreSQL that must be published, relayed to Kafka by the outbox relay ported from AMAN (D5 also allowed Debezium; not planned, To confirm).
+- Transactional outbox for anything written to PostgreSQL that must be published, relayed to Kafka by the outbox relay ported from AMAN (D5 also allowed Debezium; not planned, To confirm). The relay deletes sent rows after `Kafka:Outbox:KeepSentDays` except the newest row of each key on a compacted topic (ARV-126, script 0052), so the database always holds the state those topics carry and sends it again after a Kafka loss (`scripts/ops/ariva-db.sh after-kafka-loss`, wiki 04 section 10.5).
 - Kafka in KRaft mode. D5 recommends the Strimzi operator (KRaft only from 0.46). AMAN's Helmfile deploys Kafka with a different chart; if the cluster is shared, align with AMAN's chart (To confirm). Three brokers, replication factor 3, minimum two in-sync replicas, producers with acks=all for a standard site; one broker for the small-site profile. In border deployments, AMAN's Kafka cluster may be reused only with a dedicated `ariva.` prefix and ACLs.
 
 ## 6. Storage
@@ -331,6 +331,8 @@ Rule: degrade and flag, never guess silently. Every failure leaves affected numb
 | Clock drift on a sensor | Per-sensor offset monitoring (alarm above 500 ms, an assumption to tune) | If the offset is stable it is corrected; otherwise the sensor is marked `Degraded` | Alarm; resynchronise |
 | Border-to-airport link down | Feed heartbeat | Airport screens mark immigration waits stale after a threshold; the border side buffers | Buffer replays on reconnect |
 | Whole site down | External monitoring | Nothing live; sensors keep on-board counts | Counts backfilled; waits for the gap `Unknown`; SLA exclusion applies |
+| Database lost or corrupted (ARV-126) | Readiness (database check), host start (schema check), the operator | Nothing is served; devices get 503 and keep their batches | Restore the latest encrypted backup into an empty database with `scripts/ops` (wiki 04 section 10.4), then the migration job, files, key ring check and hosts; the stream worker re-reads the sensing topics from its restored positions while Kafka keeps them |
+| Kafka cluster lost with its data (ARV-126) | Producer errors, the `kafka` readiness check | As a Kafka outage until topics exist again | Recreate the topics, then `ariva-db.sh after-kafka-loss` re-sends the newest event of every compacted key from the outbox and clears the stream positions (wiki 04 section 10.5) |
 | Wrong zone configuration | Commissioning sign-off, anomaly checks | Results carry the wrong profile version | Recompute the period under a corrected profile; keep both revisions |
 
 Replay and recomputation:

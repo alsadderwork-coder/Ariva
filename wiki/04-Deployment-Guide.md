@@ -288,7 +288,7 @@ kubectl create secret tls ariva-dataprotection --cert=dp.crt --key=dp.key \
 
 Every API host refuses to start with a certificate whose key is not RSA 3072 or larger, the previous ones included (ARV-080); an EC key is refused because the ring is wrapped with RSA-OAEP. Keys are stored wrapped with RSA-OAEP-SHA256 and AES-256-GCM and signed with the certificate's private key (`RSA-OAEP-256+A256GCM` in the `data_protection_key` table). The hosts admit only keys in that form, so a key planted in the table is ignored. Keys written before ARV-080 in the framework's older format are read only while `DataProtection:LegacyFormatUntil` (a date) is in the future: when upgrading an installation that holds data, set it to at least 30 days ahead in that environment's settings, let the `SecretReprotection` job run (or run it from the jobs dashboard), then remove the setting. Without it, values still under an old key (TOTP seeds, outbound secrets, refresh cookies) can no longer be read, and users re-enrol their authenticator. vm-local sets it to 2027-01-06 for developer databases; no committed cluster file sets it.
 
-Rotation: create the new pair, add the old one under `DataProtection:Previous:0:CertificatePath` and `KeyPath` (mount it from a second secret), then replace `ariva-dataprotection`. New keys are encrypted with the new certificate; existing keys stay readable until they expire (90 days), after which the previous entry can go. The Cronz job `SecretReprotection` (daily, 02:40 UTC) rewrites stored TOTP seeds and outbound secrets under the current key, so after a roll nothing depends on an expired key for long; run it from the jobs dashboard to move them at once. Losing the certificate makes every protected value unreadable (refresh cookies, encrypted TOTP seeds); back it up with the database.
+Rotation: create the new pair, add the old one under `DataProtection:Previous:0:CertificatePath` and `KeyPath` (mount it from a second secret), then replace `ariva-dataprotection`. New keys are encrypted with the new certificate; existing keys stay readable until they expire (90 days), after which the previous entry can go. The Cronz job `SecretReprotection` (daily, 02:40 UTC) rewrites stored TOTP seeds and outbound secrets under the current key, so after a roll nothing depends on an expired key for long; run it from the jobs dashboard to move them at once. Losing the certificate makes every protected value unreadable (refresh cookies, encrypted TOTP seeds); keep it in the site's secret store, apart from the database backups, which carry the key ring wrapped under it (section 10).
 
 The web app and the API share one host (ADR-0026, ARV-010b): the `web-api` ingress in each `values-*.yaml` routes `/api`, and the `web-hubs` ingress `/hubs`, on the web host to `api-main`, so the browser keeps the refresh cookie (`__Secure-ariva_rt`, Path=/api/auth, SameSite=Strict) on that one origin and SignalR needs no cross-origin calls. Keep the web origin in `Security:Cors:AllowedOrigins`: token refresh refuses any other Origin. The observer tablet's desk log (ARV-104d) also depends on this: it keeps its minutes on Ariva's clock, read from the HTTP `Date` header of api-main's answers, which a browser lets the page read only on the same origin (`Date` is not a header CORS exposes, and Ariva does not expose it). Served from another origin (for example with `VITE_ARIVA_API_MAIN_URL` pointing at the `api-main-*` host), the desk log falls back to the tablet's own clock and says so on screen; keep the web app and api-main on one origin, and keep the ingress (or nginx) passing api-main's `Date` header or writing its own from an NTP-synchronised clock. The `api-main-*` host stays for integrations and operators. `web-hubs` is separate because the SignalR WebSocket URL carries the access token (ARV-035): it sets `tokenInQuery: true`, which turns off its access log and ModSecurity audit log and keeps only critical errors; the chart security test fails any ingress that serves `/hubs` otherwise. The ingress controller must allow snippet annotations (the chart already uses server and ModSecurity snippets).
 
@@ -673,62 +673,123 @@ helm rollback ariva-platform <revision> -n "$NAMESPACE"
 
 ## 10. Backup and restore
 
-The method depends on how PostgreSQL is run (operator or Patroni, to match AMAN; To confirm). The commands below are a Target procedure, implemented in Phase 1 epic Hardening.
+ARV-126. The tooling lives in `scripts/ops` and runs outside every Ariva host. `ariva-db.sh` runs inside the TimescaleDB pod, whose image has bash, psql, pg_dump and pg_restore of the server's own version. `ariva-ops.mjs` runs on an operator's machine with Node 22, kubectl (a context allowed to `exec` into the namespace's pods), age 1.1 or later (https://age-encryption.org) and ssh-keygen from OpenSSH 8.1 or later. Both are proven together by an integration test that restores a backup into a fresh server and starts the hosts on it (`BackupRestoreTests`, section 10.6). The database method is a logical backup (pg_dump). Point-in-time recovery with WAL archiving depends on how PostgreSQL runs at the site (TC-26) and stays a Target procedure (section 10.7).
 
-What to back up:
+### 10.1 What is backed up, and where each part lives
 
-| Item | Back up? | Why |
-|---|---|---|
-| PostgreSQL database `ariva` (relational tables and hypertables) | Yes | System of record: configuration, contracts, alerts, audit, interval results (indefinite) and raw samples for the dispute window |
-| Data Protection key ring | Yes, separately and encrypted | Integration client TOTP seeds and outbound endpoint secrets are encrypted with it; without it they cannot be decrypted. Where it is persisted: To confirm |
-| Token signing keys (users, integration clients, devices) | Yes, separately and encrypted | Separate keys per principal type. User tokens: `ariva-token-signing` and `ariva-token-public` (ARV-010a); losing them only signs everyone out, a leak lets anyone mint tokens |
-| Uploaded files (`ariva-files` claim: floor plans) | Yes, with the database | The `floor_plan` rows point at these files by generated name; restore both from the same point in time. A volume snapshot or a copy of `/app/data/files` |
-| Appsettings secrets, TLS certificates, licence file | Yes, in the customer's secret store | Needed to rebuild the deployment |
-| Site overrides in `deploy/<site>/` | In git | Values without credentials |
-| Kafka topics | No | Kafka carries facts with short retention; anything that must be published is kept in the PostgreSQL outbox until relayed; raw samples for recomputation are in TimescaleDB. After a Kafka loss, compacted topics (registry, topology, desk state) are republished from the database (procedure To confirm) |
-| Redis | No | Cache, SignalR backplane and idempotency keys; not a system of record. The TOTP replay guard falls back to the database |
-| Container images | No, if the registry or offline bundle keeps every released build | Rebuildable from the repository at the release tag |
-| Sensor on-board counts | Not by Ariva | Stereo sensors keep counts on board; they are used to backfill interval counts after an outage |
+| Item | How | Where the copy lives | Why |
+|---|---|---|---|
+| Database `ariva`: configuration, accounts, contracts, alerts, audit, interval results, raw samples for the dispute window, the outbox and the inbox | `ariva-ops.mjs backup`: `pg_dump` (custom format) in the database pod as the migration login, encrypted with age while it streams | The backup store, off the cluster, encrypted | System of record |
+| Data Protection key ring | Inside the database (table `data_protection_key`, ARV-008), every key wrapped with RSA-OAEP-SHA256 and AES-256-GCM under the `ariva-dataprotection` certificate and signed with its key (ARV-080). It travels in the database backup; no key is ever stored unwrapped (TC-50 answered) | With the database backup | TOTP seeds, integration client seeds, outbound secrets and refresh cookies are protected with it |
+| The Data Protection certificate and its key (`ariva-dataprotection`, and the previous one during a rotation) | Never in a backup | The site's secret store (created in section 6.2), apart from the backups | Without it the key ring cannot be unwrapped and every protected value is lost: users enrol their authenticator again, integration clients get new seeds, outbound secrets are entered again |
+| The backup identity (the age private key that decrypts backups) | Never in a backup | Offline, in a custody separate from the certificate's (Proposed: sealed, two people, like the break-glass credential) | Without it no backup can be read. A stolen backup with its identity still reveals no protected secret without the certificate |
+| The backup signing key (an operator's SSH key, Ed25519) | Never in a backup | With the operators who take backups (their machine or ssh-agent, protected by a passphrase), apart from the backup store, the backup identity and the certificate | It signs each backup's manifest. Whoever holds it can make a restore accept a dump, which the database superuser then runs: keep it like an administrator credential |
+| The allowed-signers file (the signing keys' public halves) | Never in the backup store | The operations repository or the secret store, where the people who restore read it and the backup store's writers cannot change it | A restore trusts a manifest only if its signature verifies against this file |
+| Uploaded files (`ariva-files` claim: floor plans) | `ariva-ops.mjs backup --files`: a tar of `/app/data/files` streamed from api-main, encrypted with age | The backup store, beside the database backup of the same run | The `floor_plan` rows name these files by generated key |
+| Token signing keys, appsettings secrets, TLS certificates, licence file | Never in a backup | The site's secret store | Needed to rebuild the deployment; a leaked signing key lets anyone mint tokens |
+| Site overrides in `deploy/<site>/` | In git | git | Values without credentials |
+| Kafka topics | Not backed up | | Facts with short retention; anything still to be sent waits in the PostgreSQL outbox; the compacted topics are sent again from the database after a Kafka loss (section 10.5, TC-51 answered) |
+| Redis | Not backed up | | Cache, SignalR backplane and idempotency keys, not a system of record; the TOTP replay guard falls back to the database |
+| Container images | Not backed up, if the registry or offline bundle keeps every released build | | Rebuildable from the repository at the release tag |
+| Sensor on-board counts | Not by Ariva | | Stereo sensors keep counts on board; they backfill interval counts after an outage |
 
-Logical backup with pg_dump (small sites, copies for test):
+What a database backup holds: password and client secret hashes (PBKDF2), device credential and refresh token hashes, TOTP seeds and outbound secrets only as Data Protection payloads, and the key ring only wrapped. It holds no role, no password and no password verifier: roles are server objects, not part of a database dump, and a restore does not need them, because the migration job creates the runtime and validation reader logins with the deployment's own passwords. It does hold operational data (pseudonymous track samples, audit entries), which is why every backup file is encrypted. The integration test reads a seeded site's dump, and its plain SQL, for every secret of that site and finds none.
 
-```bash
-pg_dump -Fc -d ariva -f ariva-<date>.dump
-```
+### 10.2 Prepare once
 
-Restore into a database where the same TimescaleDB version is installed:
-
-```sql
-CREATE DATABASE ariva;
-\c ariva
-CREATE EXTENSION IF NOT EXISTS timescaledb;
-SELECT timescaledb_pre_restore();
-```
+1. Create the backup identity on an offline machine and give the operators its recipient only:
 
 ```bash
-pg_restore -d ariva ariva-<date>.dump
+age-keygen -o ariva-backup-identity.txt            # the private key: offline, never on a shared disk
+age-keygen -y ariva-backup-identity.txt > ariva-backup-recipients.txt
 ```
 
-```sql
-SELECT timescaledb_post_restore();
-```
-
-Physical backup with pgBackRest (standard sites, point-in-time recovery with WAL archiving):
+   To rotate it, create a new pair and give out the new recipient; keep the old identity as long as backups encrypted to it are kept.
+2. Create each backup operator's signing key and the allowed-signers file. age encrypts to a public recipient, so it proves that a file was not altered after it was encrypted, but not who encrypted it: anyone holding the recipient can make a valid `.dump.age`. The origin comes from the manifest's signature:
 
 ```bash
-pgbackrest --stanza=ariva stanza-create
-pgbackrest --stanza=ariva --type=full backup
-pgbackrest --stanza=ariva --type=diff backup
-pgbackrest --stanza=ariva info
+ssh-keygen -t ed25519 -C ops-<name>@<site> -f ariva-backup-signing      # with a passphrase; or an existing Ed25519 key in ssh-agent
+printf 'ops-<name>@<site> namespaces="ariva-backup" %s\n' "$(cut -d' ' -f1,2 ariva-backup-signing.pub)" >> allowed_signers
 ```
 
-Restore (PostgreSQL stopped): `pgbackrest --stanza=ariva --delta restore`. Run restores with the owner role, not the runtime role.
+   List exact principals in `allowed_signers`, one key each: no `*`, `?` or `!` pattern and no `cert-authority` line, because ssh-keygen honours those for any name the restore tries, which widens who can sign a restore without anyone noticing (the tool does not refuse them yet, ARV-183).
+   Keep the private key with its operator (a passphrase, or ssh-agent), apart from the backup store, the backup identity and the Data Protection certificate. Keep `allowed_signers` where the people who restore read it and whoever can write to the backup store cannot change it (the operations repository or the secret store), never in the backup store. To rotate a signing key, or when an operator leaves, add the new key's line and sign new backups with it; keep the old line only as long as backups it signed are kept, and remove it at once if the key may have leaked (backups it signed are then restored with `--sha256` from the operations log, below).
+3. Check that the certificate in the secret store is the one the deployment uses: `node scripts/ops/ariva-ops.mjs keyring --namespace "$NAMESPACE" --certificate tls.crt` (add `--certificate previous.crt` during a rotation). It lists every key with the certificate it needs (SHA-256 fingerprints, the form `openssl x509 -noout -fingerprint -sha256` prints) and fails when an unexpired key needs a certificate that was not given. It reads the certificate only; a file holding a private key is refused.
+4. The operators' kubectl must be able to `exec` into `timescaledb-0` and the api-main pods of the namespace.
 
-A database backup restores a whole deployment. To carry one site's configuration (topology, desk code mappings, the published zone profile, floor plans, devices, alert rules and displays) to another environment, or to rebuild a site into an empty one, use the site configuration export and import instead (ARV-122a, ARV-122b, wiki 11 section 2d): a JSON bundle of at most 20 MB with a SHA-256 manifest, imported only into an empty site by an administrator with a fresh second factor. It holds no users, secrets, credentials, calibrations, escalation contacts, audit or time series, so it is not a backup: imported devices get new credentials and are calibrated again, and displays are paired again.
+### 10.3 Take a backup
 
-Retention of backups: backups contain raw track samples. Keep backup retention no longer than the dispute window plus the backup cycle, so backups do not extend the privacy retention of samples (Proposed). Test a restore at least once before go-live and after every major release.
+```bash
+node scripts/ops/ariva-ops.mjs backup --namespace "$NAMESPACE" --context <context> \
+  --out /backups/ariva --recipient-file ariva-backup-recipients.txt --signing-key ariva-backup-signing --files
+```
+
+It writes `ariva-<namespace>-<UTC time>.dump.age`, `.files.tar.age`, `.manifest.json` and the manifest's signature `.manifest.json.sig` (`ssh-keygen -Y sign`, namespace `ariva-backup`), each readable by the operator only and renamed into place only when complete. The manifest is not secret: PostgreSQL and TimescaleDB versions, the scripts applied, the certificates the key ring needs and each file's SHA-256. A restore runs the dump's SQL as the database superuser (section 10.4), so it accepts a file only when its SHA-256 is the one of a manifest whose signature verifies against `allowed_signers`. The printed SHA-256 values may also go in the operations log, apart from the backup store: a restore given `--sha256` from that log is the only other way to restore (for example after the signing key was withdrawn).
+
+What happens: the wrapper copies `ariva-db.sh` into the pod's `/tmp` and runs `pg_dump --format=custom` there as the migration login over 127.0.0.1, with the password the pod already holds (`ARIVA_MIGRATION_PASSWORD`, from `timescaledb-credentials`). The dump streams through kubectl into age, so only ciphertext reaches the operator's disk, and no password passes through the operator's machine or any command line. The backup runs while the platform serves (pg_dump reads one snapshot); its warning about circular foreign keys in TimescaleDB's catalog is expected. The files are taken after the database, so every floor plan row has its file (a file without a row is harmless).
+
+Proposed (TC-34, pending the owner): a backup every day at a quiet hour and before every upgrade (section 9); 14 daily backups kept; backup retention never longer than the dispute window plus the backup cycle, so backups do not extend the retention of raw samples. Operator-run backups are the pilot's method (owner decision 2026-10-15); a scheduled backup is a Phase 3 story.
+
+### 10.4 Restore
+
+A restore goes into an empty database only; `ariva-db.sh` refuses a database that already holds tables. In this order:
+
+1. Stop the platform: scale every Ariva deployment of the namespace to 0 replicas (`kubectl -n "$NAMESPACE" scale deployment --all --replicas=0`; TimescaleDB is a StatefulSet and keeps running).
+2. Give the database an empty volume the way the chart starts one: the same image (the restore needs the same TimescaleDB version, 2.30.2 on PostgreSQL 17 today), the database `ariva` with the extension, and the migration login with the same name as in the backup, owning the database (section 7.1). With the Ariva TimescaleDB chart: scale the StatefulSet to 0, delete the claim `data-timescaledb-0` (only once the backup set to restore is at hand and `ssh-keygen -Y verify -f allowed_signers -I <signer> -n ariva-backup -s <set>.manifest.json.sig < <set>.manifest.json` accepts its manifest), and scale it back to 1; the init script runs again on the new volume. With another PostgreSQL, the database administrator creates the same.
+3. Restore the database:
+
+```bash
+node scripts/ops/ariva-ops.mjs restore --namespace "$NAMESPACE" --context <context> \
+  --in ariva-<namespace>-<time>.dump.age --identity ariva-backup-identity.txt \
+  --manifest ariva-<namespace>-<time>.manifest.json --allowed-signers allowed_signers
+```
+
+   The gate is the signed manifest. Before anything reaches the cluster, the wrapper verifies the manifest's signature (`.manifest.json.sig`, or `--signature`) against `allowed_signers` with `ssh-keygen -Y verify` in the namespace `ariva-backup`, and refuses a missing or invalid signature, a signer not in the file and a manifest that does not name the file as the database backup; only then does it take the file's SHA-256 from the manifest. The only alternative is `--sha256 <SHA-256>` given by the operator from their own operations log; a hash is never taken from anywhere else. It then copies the file into a private folder (0700, under the machine's temporary folder; it needs room for one copy of the encrypted file), hashes the copy and refuses it unless the hash matches; both decryption passes read that copy only, so the file cannot be swapped between the check and the restore, and the folder is removed afterwards, also after a failure. The first pass checks the dump in the pod (`check-dump` reads its table of contents, that is kinds, names and owners, not the SQL of each entry: only Ariva's objects owned by the migration login, TimescaleDB's catalog data and the two TimescaleDB extensions; no other extension, language, event trigger, foreign server or owner); the second restores it. The table of contents check is defence in depth, as is the check after the restore below: a forged dump with a list like Ariva's could still carry other SQL, which is why the signature is the gate. In the pod, `ariva-db.sh restore` checks that the database is empty and has TimescaleDB and that the migration login owns it and is not a superuser; creates Ariva's group roles (`ariva_migration`, `ariva_runtime`, `ariva_validation_reader`) as the migration login, as scripts 0001 and 0043 do; then runs TimescaleDB's restore mode, pg_restore and the end of restore mode as the database superuser over the pod's local socket. TimescaleDB allows nothing else: these steps stop its background workers and write its catalog and its internal schema, which belong to the extension's owner; the socket uses peer authentication, so no password is involved. Every object keeps the owner the dump records, the migration login. Statistics and the checks run as the migration login again (`ariva-db.sh check`: every object owned by the migration login; `ariva_runtime` owns nothing and cannot create objects; the migration login is neither superuser, replication nor bypassrls; Ariva's group roles have no member but the migration login and the logins named with `--runtime-login` and `--reader-login`; and nothing a forged dump could leave: no C, untrusted-language or SECURITY DEFINER function, no language but plpgsql, no extension but the TimescaleDB ones and no event trigger outside the extensions). When Ariva's roles already exist on the server with this deployment's logins as members (the database was lost, the server was not), pass those logins to the restore with `--runtime-login` and `--reader-login`; any other member stops the restore before anything changes. A restore that fails part way leaves TimescaleDB's restore mode and says so; start again from a new volume.
+4. Run the migration job: a release (`helmfile apply`, section 6.3), which also starts the platform again, or `./Ariva.Api.Main --migrate` (section 7.1), which leaves it stopped. It applies the scripts newer than the backup, if any, creates or updates the runtime login and the validation reader login with this deployment's passwords (from its secrets, never from the backup) and checks that the runtime login cannot read the shadow nowcast. Then `node scripts/ops/ariva-ops.mjs check --namespace "$NAMESPACE" --runtime-login ariva_app` (add `--reader-login ariva_validation` where the validation reader exists) shows the runtime login holding `ariva_runtime` only (DML) and every other check passing.
+5. Restore the files before users come back (api-main must run: it holds the claim; scale it to 1 if the platform is still stopped) and run `node scripts/ops/ariva-ops.mjs files-restore --namespace "$NAMESPACE" --in ariva-<namespace>-<time>.files.tar.age --identity ariva-backup-identity.txt --manifest ariva-<namespace>-<time>.manifest.json --allowed-signers allowed_signers`, which verifies the same way (or `--sha256` from the operations log).
+6. Check the key ring against the certificate you hold: `node scripts/ops/ariva-ops.mjs keyring --namespace "$NAMESPACE" --certificate tls.crt`. A key that needs another certificate means the certificate in the secret store is not the one in use at backup time: find that one (section 6.2, `DataProtection:Previous`) before anyone signs in.
+7. Start the platform if it is still stopped (`helmfile apply`, or scale the deployments back). Each host verifies `schema_version` at its start and stops on a missing or changed script. Run the release smoke suite (section 8.1).
+8. Re-apply what changed after the backup, because the restore brings back the state of that time: accounts disabled, roles removed and sessions revoked since are active again; credentials rotated since (users' passwords and authenticators, integration client secrets, device and display credentials) are back to their old values, so the new ones are refused and the old ones work. Use the operations log and the change tickets (the audit entries after the backup are lost with the database), disable or rotate again, and tell the device and integration owners.
+9. Kafka. If Kafka survived, the records consumed after the backup were applied to a database you no longer have. The queue stream worker reads them again from its restored positions (`stream_offset`), within the sensing topics' retention (3 days). Every other consumer keeps its position in Kafka: before the hosts start, reset each Ariva consumer group (`ariva-<service>.<purpose>`, section 5) to the backup time from the manifest, for example `kafka-consumer-groups.sh --bootstrap-server <broker:port> --group ariva-main.device-health --reset-offsets --to-datetime <takenUtc> --all-topics --execute`; their inboxes drop what is applied twice. Events sent between the backup and the loss were delivered and are not sent again; events unsent at the backup are sent again and dropped by consumers that had them. If Kafka was lost as well, follow section 10.5 after step 7.
+
+### 10.5 After a Kafka loss: the compacted topics
+
+Kafka holds nothing Ariva cannot rebuild (TC-51 answered). Events not yet sent wait in the outbox and go once the topics exist again. Facts on the other topics are gone from Kafka, and their effect is already in the database. The compacted topics (`TopicCatalog.CompactedTopics`: device registry, zone health, zone profile activation, desk changes, nowcast and desk state) carry each key's current state: since ARV-126 the outbox relay keeps the newest sent event of every key of these topics however old (script 0052), while older rows still go after `Kafka:Outbox:KeepSentDays`, so the database holds that state.
+
+1. Recreate the topics before any host sends: the release's `kafka-topics` job (`helmfile apply`) or `./Ariva.Api.Main --provision-topics` (section 7.2).
+2. Scale api-stream to 0: its saved positions point into the lost topics.
+3. `node scripts/ops/ariva-ops.mjs after-kafka-loss --namespace "$NAMESPACE" --confirm-stream-stopped`, with `--dry-run` first to see the counts. As the migration login and in one transaction, it marks the newest event of every key of the compacted topics unsent again and clears `stream_offset`. The relay sends those events through its normal path with their original event ids; a consumer that applied one already drops it in its inbox.
+4. Start api-stream. With no saved position and no committed offset on the new topics, it reads them from their start (`auto.offset.reset` earliest), as every other consumer does.
+
+The `ariva.outbox.oldest_unsent_age` gauge reads the re-sent events' original creation time until the relay has sent them (seconds), so the outbox age alert can fire briefly (wiki 10 section 3.1). Upgrading to the release with script 0052: sent rows the relay deleted before it are gone, so a key unchanged for more than 7 days before the upgrade is sent again only after its next change.
+
+### 10.6 Restore tests
+
+The integration suite restores a backup on every run (`Ariva.IntegrationTests/Operations/BackupRestoreTests.cs`). Two servers start as the chart starts one (its image, initdb arguments and init script, uid 1000, read-only root filesystem). The source gets the release's migration job, Ariva.Api.Main as a cluster runs it with the demo site, an administrator with an authenticator, an integration client, an outbound endpoint with a secret, time series with a compressed chunk, a stream position and sent events of compacted topics. `ariva-db.sh` takes the backup in the source and restores it into the other server. The test then checks:
+
+- the dump, and its plain SQL, hold no secret of the site and no role;
+- the migration job (with another runtime password) leaves the runtime login with `ariva_runtime` only, no DDL, and refuses the source's password;
+- Ariva.Api.Main and Ariva.Api.Integration start on the restored database with the same certificate files and verify `schema_version`;
+- the administrator signs in with a code from the restored seed and reads the site exactly as before;
+- the integration client's token exchange accepts a code from its restored seed and the outbound secret reads back;
+- the key ring check passes with the certificate and fails with another;
+- the recovery after a Kafka loss marks exactly the newest event of each compacted key;
+- a host refuses to start once a script is missing from `schema_version`.
+
+The test then plants, as the superuser and the migration login, what a forged dump could leave (a C function, a SECURITY DEFINER function, an event trigger, an extra member of `ariva_runtime`, a migration login with replication) and checks that `ariva-db.sh check` fails on each.
+
+The operator wrapper is checked by `node scripts/ops/ariva-ops.mjs --self-test` in every `verify security` run: its validation and argument arrays, and the signed path end to end with stand-ins for kubectl and age and the real ssh-keygen. A backup signs its manifest; a restore and a files restore with the signed manifest, and one with `--sha256`, decrypt only the private copy and leave no folder behind. Each of these is refused before any kubectl step and leaves no folder: a file whose SHA-256 differs from the signed manifest's or from the one given, a manifest altered after signing, a manifest without its signature, a manifest signed by a key not in `allowed_signers`, an allowed signer limited to another namespace, and the files archive given to the database restore. A file replaced after the check is never read: the restore goes on with the verified copy.
+
+Before go-live and after every major release, restore the latest production backup into a scratch namespace (never the production one) with the same commands, run the migration job, start the hosts with the production certificate, run the smoke suite and record how long it took: that is the measured recovery time of section 11 (wiki 10 section 5).
+
+### 10.7 Other methods
+
+- Physical backups with pgBackRest (`stanza-create`, full and differential backups, `restore --delta` with PostgreSQL stopped), with WAL archiving for point-in-time recovery: a Target procedure, chosen with the site's PostgreSQL method (TC-26), since an operator or Patroni brings its own. The key ring and secret custody rules above apply unchanged, and restores run as the owner, never the runtime login.
+- A database backup restores a whole deployment. To carry one site's configuration (topology, desk code mappings, the published zone profile, floor plans, devices, alert rules and displays) to another environment, or to rebuild a site into an empty one, use the site configuration export and import instead (ARV-122a, ARV-122b, wiki 11 section 2d): a JSON bundle of at most 20 MB with a SHA-256 manifest, imported only into an empty site by an administrator with a fresh second factor. It holds no users, secrets, credentials, calibrations, escalation contacts, audit or time series, so it is not a backup: imported devices get new credentials and are calibrated again, and displays are paired again.
 
 ## 11. Disaster recovery targets
+
+The recovery objectives are Proposed until TC-34 (recovery point and time objectives, secondary site) is answered with the customer.
 
 | Target | Value | Status |
 |---|---|---|
@@ -736,9 +797,11 @@ Retention of backups: backups contain raw track samples. Keep backup retention n
 | Committed interval data | No loss | Proposed |
 | Recovery from a single node failure | Within 15 minutes | Proposed |
 | Pilot availability | 99 percent of operating hours | Proposed pilot acceptance criterion |
-| Recovery point objective for loss of the site | To agree with the customer | To confirm |
-| Recovery time objective for loss of the site | To agree with the customer | To confirm |
-| Secondary site or cold standby | To agree with the customer | To confirm |
+| Recovery point objective for the loss of the database | Configuration, accounts and audit: the last backup, at most 24 hours with the daily backup (section 10.3). Interval results and raw samples: no loss while Kafka keeps the sensing topics (3 days) and the restored stream worker reads them again (section 10.4, step 9); otherwise the last backup | Proposed until TC-34 is answered |
+| Recovery time objective for the loss of the database | 4 hours from the decision to restore to the platform serving again, at pilot scale; replaced by the time measured in the go-live restore test (section 10.6) | Proposed until TC-34 is answered |
+| Recovery from the loss of Kafka | Within 1 hour: topics recreated, compacted state sent again from the database (section 10.5), no committed data lost | Proposed until TC-34 is answered |
+| Loss of the Data Protection certificate with no copy | Not recoverable for protected values: users enrol their authenticator again, integration clients get new seeds, outbound secrets are entered again; everything else is intact | Consequence, not a target: keep the certificate in the secret store (section 10.1) |
+| Secondary site or cold standby | None for the pilot | Proposed until TC-34 is answered |
 
 When the whole site is down nothing is live; sensors keep on-board counts, which are backfilled; waits for the gap are `Unknown`, and SLA evaluation applies an exclusion rather than a fake value.
 

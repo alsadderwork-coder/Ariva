@@ -1426,12 +1426,30 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 43,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. Process execution stays out of production code (ForbiddenDependencyTests); if the scanner flags the ops tooling, propose an allowlist entry for the owner, never approve it. 2026-10-15: owner decisions: the superuser runs the three TimescaleDB restore steps (accepted); operator-run backups are enough for the pilot, the scheduled backup is ARV-182 in Phase 3.",
       "dependsOn": [
         "ARV-006",
         "ARV-080"
       ]
+    },
+    {
+      "id": "ARV-184",
+      "title": "[E17] Patched dependencies in every image: System.Security.Cryptography.Pkcs, SignalR MessagePack and the SDK band",
+      "description": "From the ARV-126 security reviews (2026-10-15). The NuGet audit lists System.Security.Cryptography.Pkcs 10.0.0 (GHSA-846f-f764-76mx High, GHSA-2fmv-rv2c-59x7 Moderate) in every production project and Microsoft.AspNetCore.SignalR.Protocols.MessagePack 10.0.12 (GHSA-86xp-94pg-8r6r Moderate) in api-main; GitHub reports two Dependabot alerts on the default branch. The review found no Ariva call into Pkcs's affected APIs and that the 10.0.0 assembly is not what ships (it resolves from the shared framework or the self-contained runtime pack), but the images publish self-contained with SDK 10.0.103 on runtime-deps 10.0.12, so which runtime pack ships, and whether it carries the fixes, is unverified. Before the pilot: ship fixed versions and prove it. CWEs to review: CWE-1395 (vulnerable dependency), CWE-269.",
+      "acceptanceCriteria": [
+        "Patched versions pinned centrally (Directory.Packages.props, CentralPackageTransitivePinningEnabled where needed) for System.Security.Cryptography.Pkcs and Microsoft.AspNetCore.SignalR.Protocols.MessagePack, with versions taken from the NuGet registry (never invented) and the advisories' fixed versions cited",
+        "The SDK image band matches the runtime-deps base so the self-contained publish bundles the runtime pack the base expects; a check (in the image build or chart security) reads the published System.Security.Cryptography.Pkcs.dll file version and fails below the advisory's fixed version",
+        "node scripts/verify.mjs backend shows the NuGet audit clean for production projects; the Dependabot alerts on the default branch are named in progress.md with how each is closed",
+        "The full E2E and integration suites pass on the new versions (no behaviour change)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 41,
+      "passes": false,
+      "notes": "Size S. Before the pilot (a High advisory in shipped dependencies).",
+      "dependsOn": []
     },
     {
       "id": "ARV-127",
@@ -1836,7 +1854,8 @@
         "ARV-125a",
         "ARV-125b",
         "ARV-181a",
-        "ARV-181b"
+        "ARV-181b",
+        "ARV-184"
       ]
     },
     {

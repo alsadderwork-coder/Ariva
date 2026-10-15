@@ -51,7 +51,8 @@ public sealed record RelayPass(bool Leader, int Claimed, int Sent, int Failed, i
 /// <c>FOR UPDATE SKIP LOCKED</c>, and produces them one by one. When a row fails, its key is held back for the rest of
 /// the pass and until the row's retry time, so later events for that key never overtake it; other keys carry on.
 /// A broker failure ends the pass. Sent rows are marked in the same transaction, so a crash between produce and commit sends those rows again
-/// (at-least-once; consumers deduplicate in the inbox). The leader also removes old sent rows and inbox entries.
+/// (at-least-once; consumers deduplicate in the inbox). The leader also removes old sent rows and inbox entries, keeping the
+/// newest row of each key on a compacted topic (ARV-126).
 /// <para>
 /// ARV-166: a pass never holds its transaction, its leader lock and its claimed rows for longer than
 /// <see cref="OutboxRelaySettings.PassSeconds"/> of producing. Every send is awaited for at most what is left of that
@@ -376,7 +377,11 @@ public sealed class OutboxRelay(
         await command.ExecuteNonQueryAsync(ct);
     }
 
-    /// <summary>Hourly, by the leader: sent rows and inbox entries past their keep time go, at most 10,000 of each per pass.</summary>
+    /// <summary>
+    /// Hourly, by the leader: sent rows and inbox entries past their keep time go, at most 10,000 of each per pass. The newest
+    /// row of each key on a compacted topic stays however old it is (ARV-126): it is the state that topic carries, which
+    /// scripts/ops/ariva-db.sh sends again after a Kafka loss. An older row of such a key goes once a newer one exists.
+    /// </summary>
     private async Task HousekeepAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, DateTime now, CancellationToken ct)
     {
         if (timeProvider.GetUtcNow() - _lastHousekeeping < HousekeepingEvery)
@@ -386,13 +391,18 @@ public sealed class OutboxRelay(
         await using var command = new NpgsqlCommand(
             """
             DELETE FROM outbox_message WHERE seq IN (
-                SELECT seq FROM outbox_message WHERE sent_on IS NOT NULL AND sent_on < @sentBefore LIMIT 10000);
+                SELECT o.seq FROM outbox_message o
+                 WHERE o.sent_on IS NOT NULL AND o.sent_on < @sentBefore
+                   AND (o.topic <> ALL (@compacted)
+                        OR EXISTS (SELECT 1 FROM outbox_message n WHERE n.topic = o.topic AND n.message_key = o.message_key AND n.seq > o.seq))
+                 LIMIT 10000);
             DELETE FROM processed_event WHERE ctid IN (
                 SELECT ctid FROM processed_event WHERE processed_on < @processedBefore LIMIT 10000);
             """,
             connection,
             transaction);
         command.Parameters.AddWithValue("sentBefore", now.AddDays(-kafka.Outbox.KeepSentDays));
+        command.Parameters.AddWithValue("compacted", TopicCatalog.CompactedTopics.ToArray());
         command.Parameters.AddWithValue("processedBefore", now.AddDays(-kafka.Outbox.KeepProcessedDays));
         await command.ExecuteNonQueryAsync(ct);
     }
