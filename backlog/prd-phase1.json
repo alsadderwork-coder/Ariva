@@ -1448,7 +1448,7 @@
       ],
       "priority": 41,
       "passes": false,
-      "notes": "Size S. Before the pilot (a High advisory in shipped dependencies). Built, gates green and security review PASS on 2026-10-15 (round 2). passes waits for (a) the owner to confirm the Dependabot alerts on the default branch in the Security tab (AC 3; inferred: esbuild and cookie in Ariva.Web, fixed on story/mvp-phase1 by a489b69, open until main moves) and (b) a green images.yml run of all six .NET images with their published runtime lines and Trivy clean, before any image is pushed to GHCR or DCR or a release tag is cut; a red run reopens the story.",
+      "notes": "Size S. Before the pilot (a High advisory in shipped dependencies). Built, gates green and security review PASS on 2026-10-15 (round 2). passes waits for (a) the owner to confirm the Dependabot alerts on the default branch in the Security tab (AC 3; inferred: esbuild and cookie in Ariva.Web, fixed on story/mvp-phase1 by a489b69, open until main moves) and (b) a green images.yml run of all six .NET images with their published runtime lines and Trivy clean, before any image is pushed to GHCR or DCR or a release tag is cut; a red run reopens the story. Condition (b) met on 2026-10-15: images.yml run 38795588169 built the six images with their published runtime lines and Trivy clean (progress.md). Waiting only on (a).",
       "dependsOn": []
     },
     {
