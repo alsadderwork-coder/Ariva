@@ -1493,8 +1493,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 46,
-      "passes": false,
-      "notes": "Size M. Conditional: product owner decides whether the pilot needs it (known limit in the exit review). If ruled out, mark passes true with the note 'Not in MVP: decided by <owner> on <date>' so the gate is not held.",
+      "passes": true,
+      "notes": "Size M. Conditional: product owner decides whether the pilot needs it (known limit in the exit review). If ruled out, mark passes true with the note 'Not in MVP: decided by <owner> on <date>' so the gate is not held. Not in MVP: decided by Ahmad Al-Sadder on 2026-10-15. The pilot gets the number of open (occupied) desks from AMAN's desk sessions or from desk sensors; no staffing plan is entered, so the DesksBelowPlan rule stays as it is today: listed but marked not evaluated (AlertInputs supplies nothing; the alert rules screen says so), never firing. A plan, or v1 staffing recommendations, can bring it back later.",
       "dependsOn": [
         "ARV-116",
         "ARV-038",
