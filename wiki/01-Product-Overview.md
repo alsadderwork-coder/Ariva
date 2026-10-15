@@ -9,7 +9,7 @@ Ariva measures queues at border control, e-gates, check-in and security with ano
 | Measure | Sensors report anonymous track samples or counts. Ariva applies its own versioned zones and lines to them, computes crossings, queue lengths and desk states | Queue length, crossings, desk state, data-quality flag |
 | Compute waits | Realised wait per passenger (exit time minus entry time) attributed to the 15-minute bin of entry; nowcast for someone joining now from queue length and staffed-desk throughput | Realised wait per bin (provisional, then final); nowcast |
 | Predict | Arrival-wave forecast from on-blocks and lane demand; from v1, show-up forecasts and Monte Carlo waits | Predicted hall arrivals, P50 and P90 waits |
-| Decide | Alert rules on nowcasts and forecasts; from v1, staffing recommendations | Alerts with owner role and escalation; recommended desks per interval |
+| Decide | Alert rules on nowcasts and forecasts; in the pilot, indicative recommended open desks per arrivals lane (ARV-181a); from v1, staffing recommendations against the roster | Alerts with owner role and escalation; recommended desks per interval |
 | Inform | Live dashboards, passenger display boards, reports, outbound APIs | Banded nowcast on screens, CSV and (v1) PDF reports |
 | Evaluate (v1) | Contracts applied to final bins with exclusions, disputes and evidence packs | Evaluations, penalty notices, sealed evidence packs |
 
@@ -77,7 +77,7 @@ The prototype defines the target screens. Phase per screen comes from the roadma
 | Access and data boundary | Users, roles, what each role sees, audit log | Core | MVP (Phase 1 epic Authentication, roles and audit) |
 | Check-in and handlers | Islands by handler, counter state, waits per island, SLA compliance per bin | Airport Operations | v1 |
 | SLA and penalties | Contract card, evaluation table, exclusions, disputes, evidence pack | Airport Operations (licensing To confirm) | v1 |
-| Forecast and staffing | Demand per lane, recommended desks against the roster, predicted P90 under plan and recommendation | Core | v1 |
+| Forecast and staffing | Demand per lane, recommended desks against the roster, predicted P90 under plan and recommendation (the pilot has an indicative version for the arrivals hall: recommended open desks per lane for the next 3 hours, from the flight schedule and measured desk throughput, with no roster or break rules; ARV-181a, owner decision 2026-10-15) | Core | v1 |
 | What-if simulation | Planning scenarios | Core | v2 |
 
 Screen details per role are in [User guide](12-User-Guide.md).

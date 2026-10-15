@@ -12,6 +12,7 @@
       "**/Queueing/ZoneProcessor.cs",
       "**/Border/EgateCoupling.cs",
       "**/Flights/ArrivalWave.cs",
+      "**/Staffing/*.cs",
       "**/Availability/AvailabilityRule.cs",
       "**/Desks/DeskRhythm.cs",
       "**/Desks/DeskState.cs",

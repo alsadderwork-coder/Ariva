@@ -117,6 +117,7 @@ public sealed class PostgresFixture : IAsyncLifetime
             TestDatabase.ValidationResults => "CREATE DATABASE it_validation_results",
             TestDatabase.WeeklySummary => "CREATE DATABASE it_weekly_summary",
             TestDatabase.StoredNames => "CREATE DATABASE it_stored_names",
+            TestDatabase.Staffing => "CREATE DATABASE it_staffing",
             _ => throw new ArgumentOutOfRangeException(nameof(database))
         };
         var name = sql["CREATE DATABASE ".Length..];
@@ -255,7 +256,8 @@ public enum TestDatabase
     ValidationReaderOther,
     ValidationResults,
     WeeklySummary,
-    StoredNames
+    StoredNames,
+    Staffing
 }
 
 [CollectionDefinition(Name)]

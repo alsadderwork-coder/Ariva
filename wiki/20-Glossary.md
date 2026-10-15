@@ -67,6 +67,8 @@ A short version of Ariva's ubiquitous language. The authoritative glossary, with
 | Backlog | Passengers still waiting at the end of an interval in the forecast recursion |
 | Forecast run | One execution of the forecast with its model version and input snapshot |
 | Staffing plan | Desks per lane per interval, recommended and accepted |
+| Recommended open desks (indicative) | The pilot's staffing recommendation: per arrivals lane and 15 minutes for the next 3 hours, the fewest open desks that keep the predicted wait within the lane's target and each desk at most 85 percent busy, from the queue now, the arrival wave and the measured throughput per open desk; no roster or break rules; border data |
+| Throughput per open desk | Passengers an open desk of a lane serves per minute, measured from the lane's exits over its open desk-minutes while people wait for every open desk, or configured per lane category at commissioning |
 | Contract | The agreement evaluated for SLA and penalties: party, KPIs, thresholds, windows, exclusions, penalty schedule |
 | Allowance | Breached bins per evaluation window that carry no penalty |
 | Evaluation | The result of applying a contract to final bins in a window |

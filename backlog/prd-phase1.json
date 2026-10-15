@@ -1538,7 +1538,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 46,
-      "passes": false,
+      "passes": true,
       "notes": "Size M to L. Split from ARV-181. Decisions of 2026-10-15. Owner: (a) the recommendation also keeps each desk at most 85% busy over the interval (configurable per site), a margin for the variability the deterministic recursion leaves out, until v1's P90; (b) a flight without a passenger estimate (SSIM only, no AMAN inbound lane demand, no AODB) gives no recommendation for the intervals it affects, with the reason shown, never a guess. Lead: the predicted wait is max(Q_k, Q_(k+1)) over the interval's capacity, not F9's (Q_k + A_k/2)/mu_k, which ignores what the desks serve during the interval and cannot express F16's own test; the target wait is configuration now (Staffing:TargetMinutes, default 10, per-site and per-lane overrides on the ARV-148 pattern), an audited setting later; no fallback cycle time is shipped: a lane without a measured throughput gives no recommendation until the site configures its fallback at commissioning; 13 rows (the current quarter hour and 12 more, reaching now plus 3 hours); the panel's \"open now\" is the desk-state count the engine uses (F10), labelled as such, distinct from the lanes table's AMAN sessions; lane_staffing kept 90 days (configurable, in ARV-111a's data inventory). Plan: the ARV-181 progress entry (domain modeler, 2026-10-15).",
       "dependsOn": [
         "ARV-116",

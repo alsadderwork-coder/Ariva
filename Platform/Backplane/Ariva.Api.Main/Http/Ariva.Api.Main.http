@@ -322,3 +322,9 @@ Authorization: Bearer {{accessToken}}
 Content-Type: application/json
 
 { "formatVersion": 1, "sourceSite": "DMO", "exportedAtUtc": "2026-10-11T08:00:00Z", "manifest": { "topology": "{{sha256}}" }, "parts": { "topology": "{{base64}}" } }
+
+### ARV-181a: the indicative staffing recommendation of a site (ArrivalWaveLanes.View: border shift supervisors and administrators).
+### Per arrivals-hall lane, 13 intervals from now (the current quarter hour and 12 more): arrivals, desks open now (desk states),
+### recommended open desks and what set them (Wait, Busy, Both), the shortfall at the desk limit, and the predicted waits.
+GET {{Ariva.Api.Main_HostAddress}}/api/v1/sites/DMO/staffing-recommendation
+Authorization: Bearer {{accessToken}}

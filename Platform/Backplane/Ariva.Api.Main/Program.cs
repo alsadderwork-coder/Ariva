@@ -121,6 +121,8 @@ builder.Services.AddArivaIntegrationClients();
 builder.Services.AddArivaOutboundEndpoints(builder.Configuration, builder.Environment.EnvironmentName);
 builder.Services.AddArivaFlightSchedules(builder.Configuration);
 builder.Services.AddArivaArrivalWave(builder.Configuration);
+// ARV-181a: the indicative staffing recommendation Ariva.Api.Cronz stores each minute (border data, ArrivalWaveLanes.View).
+builder.Services.AddArivaStaffingRecommendations(builder.Configuration);
 
 // Demo Airport (DMO) topology and zone profile v12 in vm-local and k8s-demo; refused outside dev and demo (ARV-019).
 builder.Services.AddArivaDemoSeed(builder.Configuration, builder.Environment.EnvironmentName);

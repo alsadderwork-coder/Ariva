@@ -318,6 +318,29 @@
       "dependsOn": [
         "ARV-126"
       ]
+    },
+    {
+      "id": "ARV-185",
+      "title": "[E12] Staffing recommendation refinements: shared queues, one lane mapping, look-back and read-back tightening",
+      "description": "Low findings from ARV-181a (2026-10-15), not needed before the pilot. From the engineer: (1) a hall with one shared queue for all categories (the NBJ seed's lane ALL) gets 'no lane demand'; its demand would be the sum of the manual lanes; (2) the predicted-breach alert finds a queue's lanes through its service zones' desks, while the immigration screen, the nowcast desk term and the recommendation use the zone's own lane category; make them one rule; (3) the reference simulator's look-back (raise an earlier interval when a later one cannot meet the target at the desk limit) is not built. From the ARV-181a re-review: (4) zones whose keys do not fit (ZoneKeys.Fits) are dropped before the category's sharing, unlike refused lanes; count them too; (5) Plausible still accepts a missing open-now wait where the engine always writes one; tighten to (WaitOpen is null) == (Recommended is null || OpenNow is null || NoServiceOpen); (6) the MaxQueueRows comment should also name a queue_minute row off a whole minute. CWEs to review: CWE-501.",
+      "acceptanceCriteria": [
+        "A shared all-category queue gets the sum of its lanes' demand, with a table case",
+        "One lane mapping rule for the predicted-breach alert, the immigration screen, the nowcast desk term and the recommendation, with tests that they agree",
+        "The look-back raises earlier intervals when a later one cannot meet the target at the desk limit, matching the simulator's Recommend on seed 9303 within a stated bound",
+        "Zones whose keys do not fit count in the sharing; Plausible's open-now pairing is tightened with read-back cases; the MaxQueueRows comment is corrected",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size M. Phase 3 (the owner's rule of 2026-10-14).",
+      "dependsOn": [
+        "ARV-181a"
+      ]
     }
   ]
 }
