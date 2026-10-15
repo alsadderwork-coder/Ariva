@@ -273,6 +273,28 @@
       "dependsOn": [
         "ARV-128"
       ]
+    },
+    {
+      "id": "ARV-182",
+      "title": "[E17] Scheduled encrypted backups and a session reset after a restore",
+      "description": "From ARV-126 (2026-10-15). (1) Owner decision 2026-10-15: operator-run backups are enough for the pilot; a scheduled backup comes later: a CronJob in the chart running the ARV-126 tooling daily, encrypting to the backup custodian's public age recipient (no private key in the cluster), signing as ARV-126 requires (or handing the unsigned file to a signing step outside the cluster), keeping N copies, and a monitoring alert when a backup is missing or failed. (2) A restore brings back sessions and access revoked after the backup; today the runbook has the operator re-apply those changes by hand. A command that ends every session after a restore touches authentication, so it waits for the owner's login freeze to lift. (3) DatabaseChartBootstrapTests duplicates the new ChartDatabase helper. CWEs to review: CWE-269, CWE-532, CWE-613.",
+      "acceptanceCriteria": [
+        "A chart CronJob (off by default, validated values) runs the daily backup with the ARV-126 tooling, encrypted to a public recipient only, with retention and a failure or missing-backup alert in the ARV-125b rules; chart render tests and release guards",
+        "After a restore, every session issued before the restore can be ended with one audited command (once the login freeze lifts), and the runbook uses it",
+        "DatabaseChartBootstrapTests reuses ChartDatabase",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size M. Phase 3 (the owner's decision of 2026-10-15 for the schedule; the login freeze for the session reset).",
+      "dependsOn": [
+        "ARV-126"
+      ]
     }
   ]
 }

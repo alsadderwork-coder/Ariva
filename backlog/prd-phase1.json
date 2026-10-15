@@ -1417,7 +1417,7 @@
       "acceptanceCriteria": [
         "Procedure and tooling under scripts/ops (not in any host) for PostgreSQL with TimescaleDB, the Data Protection key ring and file storage, plus the republish of compacted topics from the database after a Kafka loss",
         "An integration test restores a backup into a fresh TimescaleDB container; the hosts start, verify schema_version, decrypt a TOTP seed and an outbound secret, and serve the restored site",
-        "Backups contain no plaintext secret; the restore runs with the migration role, the runtime role stays DML only",
+        "Backups contain no plaintext secret; the restore runs with the migration role, except the three TimescaleDB steps only the superuser may run (pre-restore, the catalog and chunk restore, post-restore; owner decision 2026-10-15), which run as the superuser over the pod's local socket behind a signed, verified archive, the runtime role stays DML only",
         "wiki/04 section 10 and section 11 updated, with recovery objectives marked Proposed until TC-34 is answered",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
@@ -1427,7 +1427,7 @@
       ],
       "priority": 43,
       "passes": false,
-      "notes": "Size M. Process execution stays out of production code (ForbiddenDependencyTests); if the scanner flags the ops tooling, propose an allowlist entry for the owner, never approve it.",
+      "notes": "Size M. Process execution stays out of production code (ForbiddenDependencyTests); if the scanner flags the ops tooling, propose an allowlist entry for the owner, never approve it. 2026-10-15: owner decisions: the superuser runs the three TimescaleDB restore steps (accepted); operator-run backups are enough for the pilot, the scheduled backup is ARV-182 in Phase 3.",
       "dependsOn": [
         "ARV-006",
         "ARV-080"
