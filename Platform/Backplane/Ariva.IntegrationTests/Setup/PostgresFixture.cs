@@ -168,6 +168,11 @@ public sealed class PostgresFixture : IAsyncLifetime
             .WithUsername(Username)
             .WithPassword(_password)
             .WithEnvironment("TIMESCALEDB_TELEMETRY", "off")
+            // The image allows 100 connections (3 kept for the superuser). The collection's tests run one after another, but
+            // the pools of the hosts they start keep idle connections for up to five minutes, and some tests open many at
+            // once (parallel sign-ins, stream workers): on the slower CI runners these overlapped past the limit, and a
+            // different test failed with 53300 "too many clients" on most runs. Appended to Testcontainers' own -c options.
+            .WithCommand("-c", "max_connections=300")
             .Build();
         await _container.StartAsync();
 
