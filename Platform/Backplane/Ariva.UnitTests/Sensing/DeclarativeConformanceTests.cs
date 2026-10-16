@@ -73,11 +73,14 @@ public sealed class DeclarativeConformanceTests
     [MemberData(nameof(SampleNames))]
     public void Map_Should_ProduceTheExpectedCanonicalEvents_When_GivenASample(string mappingName, string sample)
     {
-        var expected = Parse(File.ReadAllText(Path.Combine(Samples, mappingName, "expected", sample + ".json")));
+        // The theory data are directory and file names under Samples already; GetFileName keeps every read inside it (CWE-22).
+        var folder = Path.GetFileName(mappingName);
+        var file = Path.GetFileName(sample) + ".json";
+        var expected = Parse(File.ReadAllText(Path.Combine(Samples, folder, "expected", file)));
         var pose = expected.GetProperty("pose");
         var mapping = DeclarativeMappingCatalog.Embedded.Find(mappingName);
 
-        var mapped = DeclarativeMapper.Map(Parse(File.ReadAllText(Path.Combine(Samples, mappingName, sample + ".json"))), mapping,
+        var mapped = DeclarativeMapper.Map(Parse(File.ReadAllText(Path.Combine(Samples, folder, file))), mapping,
             new DevicePose(pose[0].GetDouble(), pose[1].GetDouble(), pose[2].GetDouble()), 2_000, Received);
 
         if (expected.GetProperty("sentUtc").ValueKind == JsonValueKind.Null)
