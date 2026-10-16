@@ -89,6 +89,30 @@ public sealed partial class OpsScriptTests
             "the password reaches a child only as PGPASSWORD of the migration login's own connections");
     }
 
+    [Fact]
+    public void Check_Should_PassOnlyTheRetentionPurgeAsShipped_When_ItLooksForSecurityDefinerFunctions()
+    {
+        // ARV-111a: the shipped scripts hold exactly one SECURITY DEFINER function, and the check after a restore lets it pass
+        // only with the body script 0054 ships (PostgreSQL stores the text between the dollar quotes as the function's source).
+        var definers = SqlScriptCatalog.Embedded().Where(script => script.Sql.Contains("SECURITY DEFINER", StringComparison.Ordinal)).Select(script => script.Name);
+        definers.Should().Equal(["0054_retention_period.sql"], "a new SECURITY DEFINER function needs its own entry in the restore check");
+
+        var sql = SqlScriptCatalog.Embedded().Single(script => script.Name == "0054_retention_period.sql").Sql;
+        var start = sql.IndexOf("AS $$", sql.IndexOf("CREATE FUNCTION ariva_retention_purge(", StringComparison.Ordinal), StringComparison.Ordinal) + "AS $$".Length;
+        var body = sql[start..sql.IndexOf("$$", start, StringComparison.Ordinal)];
+        var hash = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(body)));
+
+        Script.Value.Should().Contain($"encode(sha256(convert_to(p.prosrc, 'UTF8')), 'hex') = '{hash}'", "the check pins the purge's body as shipped")
+            .And.Contain("p.oid = to_regprocedure('public.ariva_retention_purge(text, integer)') AND p.proowner = (SELECT oid FROM me)")
+            .And.Contain("p.proconfig = ARRAY['search_path=pg_catalog, pg_temp', 'TimeZone=UTC']")
+            .And.Contain("AND p.proacl IS NOT NULL")
+            .And.Contain("WHERE a.grantee NOT IN ((SELECT oid FROM me), 'ariva_runtime'::regrole) OR a.is_grantable",
+                "EXECUTE for the owner and ariva_runtime only, without grant option (a NULL ACL means PUBLIC may run it)");
+        sql.Should().Contain("SET search_path = pg_catalog, pg_temp\n    SET TimeZone = 'UTC'", "the settings the check pins, in that order");
+        sql.Should().Contain("REVOKE ALL ON FUNCTION ariva_retention_purge(text, integer) FROM PUBLIC")
+            .And.Contain("GRANT EXECUTE ON FUNCTION ariva_retention_purge(text, integer) TO ariva_runtime", "the grants the check pins");
+    }
+
     #endregion
 
     #region Patterns

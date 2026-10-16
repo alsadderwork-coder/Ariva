@@ -58,6 +58,20 @@ spec:
               value: {{ .Values.environment | quote }}
             # The validation reader login (ARV-104g1): the job creates or updates it (script 0049)
             {{- include "ariva-platform.validationReaderEnv" . | nindent 12 }}
+            # Retention periods in days (ARV-111a, values migration.retention, checked in validate.yaml): after the scripts the
+            # job sets the hypertables' TimescaleDB retention policies and the relational periods the Cronz retention job reads
+            - name: Database__Retention__RawSensingDays
+              value: {{ .Values.migration.retention.rawSensingDays | quote }}
+            - name: Database__Retention__DeskZoneReadingDays
+              value: {{ .Values.migration.retention.deskZoneReadingDays | quote }}
+            - name: Database__Retention__LaneStaffingDays
+              value: {{ .Values.migration.retention.laneStaffingDays | quote }}
+            - name: Database__Retention__AlertEmailDays
+              value: {{ .Values.migration.retention.alertEmailDays | quote }}
+            - name: Database__Retention__IntegrationCallDays
+              value: {{ .Values.migration.retention.integrationCallDays | quote }}
+            - name: Database__Retention__ReportDeliveryDays
+              value: {{ .Values.migration.retention.reportDeliveryDays | quote }}
           volumeMounts:
             - name: tmp
               mountPath: /tmp

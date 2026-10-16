@@ -36,6 +36,17 @@ validationReader:
   secretName: ariva-validation-reader
   optional: true
 
+# Retention periods (ARV-111a; values.yaml, docs/privacy/data-inventory.md): the migration job applies them after the scripts.
+# The demo keeps production's defaults, so what it shows ages as a pilot would.
+migration:
+  retention:
+    rawSensingDays: 90
+    deskZoneReadingDays: 7
+    laneStaffingDays: 90
+    alertEmailDays: 180
+    integrationCallDays: 400
+    reportDeliveryDays: 400
+
 # Ingress definitions
 ingresses:
   - name: api-main

@@ -362,8 +362,9 @@ public sealed class BackupRestoreTests : IAsyncLifetime
 
     /// <summary>
     /// Defence in depth behind the signed manifest (ARV-126 review): `ariva-db.sh check` fails on what a forged dump run by
-    /// the superuser could leave: a C function, a SECURITY DEFINER function, an event trigger, an extra member of Ariva's
-    /// runtime role, and a migration login given replication.
+    /// the superuser could leave: a C function, a SECURITY DEFINER function (and, ARV-111a, the retention purge granted to
+    /// PUBLIC, or with another body), an event trigger, an extra member of Ariva's runtime role, and a migration login given
+    /// replication; the purge passes again once its grants are the shipped ones.
     /// </summary>
     private async Task AssertCheckFindsWhatAForgedDumpWouldLeaveAsync()
     {
@@ -373,8 +374,17 @@ public sealed class BackupRestoreTests : IAsyncLifetime
         var check = await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin);
         check.ExitCode.Should().NotBe(0, check.Stdout);
         check.Stdout.Should().Contain("FAIL  functions|").And.Contain("public.it_c_function (c)").And.Contain("public.it_definer (sql, SECURITY DEFINER)");
+        // ARV-111a: Ariva's own SECURITY DEFINER function passes only with the grants and the body script 0054 ships: granted to
+        // PUBLIC it is reported; with its grants back it passes; with another body (same settings and grants) it is reported again.
+        check.Stdout.Should().Contain("public.ariva_retention_purge (plpgsql, SECURITY DEFINER)", "EXECUTE granted to PUBLIC");
         check.Stdout.Should().Contain("FAIL  event triggers|it_event");
         check.Stdout.Should().Contain("FAIL  group members|ariva_runtime has member it_extra_member");
+        await ExecuteAsync(_target.ConnectionString(ChartDatabase.MigrationLogin, _target.MigrationPassword), Query.RevokePurgeFromPublic);
+        FunctionsLine(await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin)).Should().Contain("public.it_definer")
+            .And.NotContain("ariva_retention_purge", "the shipped body with the shipped grants");
+        await ExecuteAsync(_target.ConnectionString(ChartDatabase.MigrationLogin, _target.MigrationPassword), Query.ForgePurgeBody);
+        FunctionsLine(await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin)).Should().Contain("public.ariva_retention_purge (plpgsql, SECURITY DEFINER)",
+            "another body under the purge's name, its settings and grants unchanged");
 
         await ExecuteAsync(_target.ConnectionString("postgres", _target.SuperuserPassword), Query.GiveMigrationLoginReplication);
         var replication = await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin);
@@ -425,6 +435,10 @@ public sealed class BackupRestoreTests : IAsyncLifetime
 
     private static string Hex(int bytes) => Convert.ToHexString(RandomNumberGenerator.GetBytes(bytes));
 
+    /// <summary>The functions line of an <c>ariva-db.sh check</c> report (ARV-111a).</summary>
+    private static string FunctionsLine(ExecResult check) =>
+        check.Stdout.Split('\n').Single(line => line.Contains("functions|", StringComparison.Ordinal));
+
     private enum Query
     {
         One,
@@ -449,7 +463,9 @@ public sealed class BackupRestoreTests : IAsyncLifetime
         ForgetLatestScript,
         PlantAsMigrationLogin,
         PlantAsSuperuser,
-        GiveMigrationLoginReplication
+        GiveMigrationLoginReplication,
+        RevokePurgeFromPublic,
+        ForgePurgeBody
     }
 
     // A switch over string literals keeps every command text constant (CA2100).
@@ -497,6 +513,7 @@ public sealed class BackupRestoreTests : IAsyncLifetime
         Query.ForgetLatestScript => "DELETE FROM schema_version WHERE script_name = (SELECT max(script_name) FROM schema_version)",
         Query.PlantAsMigrationLogin => """
             CREATE FUNCTION public.it_definer() RETURNS int LANGUAGE sql SECURITY DEFINER AS 'SELECT 1';
+            GRANT EXECUTE ON FUNCTION public.ariva_retention_purge(text, integer) TO PUBLIC;
             CREATE ROLE it_extra_member NOLOGIN;
             GRANT ariva_runtime TO it_extra_member;
             """,
@@ -506,6 +523,12 @@ public sealed class BackupRestoreTests : IAsyncLifetime
             CREATE EVENT TRIGGER it_event ON ddl_command_start EXECUTE FUNCTION public.it_event_function();
             """,
         Query.GiveMigrationLoginReplication => "ALTER ROLE ariva REPLICATION",
+        Query.RevokePurgeFromPublic => "REVOKE EXECUTE ON FUNCTION public.ariva_retention_purge(text, integer) FROM PUBLIC",
+        // CREATE OR REPLACE keeps the function's grants; the settings are the shipped ones, so only the body differs.
+        Query.ForgePurgeBody => """
+            CREATE OR REPLACE FUNCTION public.ariva_retention_purge(p_data_set text, p_limit integer) RETURNS integer
+                LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp SET TimeZone = 'UTC' AS $$ BEGIN RETURN 0; END $$
+            """,
         _ => throw new ArgumentOutOfRangeException(nameof(query))
     };
 

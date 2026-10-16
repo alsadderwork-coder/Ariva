@@ -40,6 +40,19 @@ simulationEnabled: false
 validationReader:
   secretName: ariva-validation-reader
   optional: false
+
+# Retention periods (ARV-111a; values.yaml, docs/privacy/data-inventory.md): the migration job applies them after the scripts.
+# Raw sensing keeps the 90-day default until the contract's dispute window is known (TC-62); the relational periods are the
+# Proposed defaults (TC-66 to TC-68). Change them here, per environment, and the next release applies them.
+migration:
+  retention:
+    rawSensingDays: 90
+    deskZoneReadingDays: 7
+    laneStaffingDays: 90
+    alertEmailDays: 180
+    integrationCallDays: 400
+    reportDeliveryDays: 400
+
 apiMainHpaMin: 2
 apiMainHpaMax: 4
 apiIngestHpaMin: 2

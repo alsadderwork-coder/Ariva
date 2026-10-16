@@ -70,6 +70,9 @@ builder.Services.AddArivaReportDeliveries(builder.Configuration);
 builder.Services.AddArivaAvailabilityLedger(builder.Configuration);
 // The indicative staffing recommendation (ARV-181a): the database only, no call to another host.
 builder.Services.AddArivaStaffingJob(builder.Configuration);
+// Relational retention (ARV-111a): alert emails, Integration API call records and report deliveries past the periods the
+// migration job set; the database only, no call to another host.
+builder.Services.AddArivaRetentionJob(builder.Configuration);
 builder.Services.AddArivaJobs(builder.Configuration);
 
 #endregion

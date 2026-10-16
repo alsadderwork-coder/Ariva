@@ -9,6 +9,8 @@
 // a severity, a runbook link and resolved numbers, labels from tests/monitoring.json and no credential; thresholds out of
 // range fail to render; every query reads its own release (the environment, or the namespaces for the external metrics);
 // the AMAN feed rule appears where it is turned on and nothing appears with monitoring off.
+// ARV-111a: the migration job carries each environment's retention periods (migration.retention) as Database__Retention__*, and a
+// period out of range, not a whole number, unknown or missing fails to render.
 //   node Platform/Cloud/Ariva.K8s/tests/chart-security.mjs              needs helm 3 on PATH (or HELM=path)
 //   node Platform/Cloud/Ariva.K8s/tests/chart-security.mjs --self-test  checks the rules against fixtures, no helm
 // Without helm the test is skipped locally and fails in CI (CI=true).
@@ -94,6 +96,27 @@ function monitoringEnvironment(docs, environment) {
 	return findings;
 }
 
+/** ARV-111a: the retention periods the values give (values.yaml under the environment's file), by key. */
+function retentionValues(valuesFile) {
+	const read = (file) => parseAllDocuments(fs.readFileSync(path.join(chart, file), 'utf8'))[0].toJS()?.migration?.retention ?? {};
+	return { ...read('values.yaml'), ...read(valuesFile) };
+}
+
+/** ARV-111a: the migration job of a render carries every retention period of its values, as the job reads them. */
+function retentionFindings(docs, valuesFile) {
+	const job = docs.find((doc) => doc?.kind === 'Job' && doc.metadata?.name === 'database-migration');
+	if (!job) return ['the database-migration job is not rendered'];
+	const env = Object.fromEntries((job.spec?.template?.spec?.containers?.[0]?.env ?? []).map((variable) => [variable.name, variable.value]));
+	const findings = [];
+	const expected = retentionValues(valuesFile);
+	for (const key of ['rawSensingDays', 'deskZoneReadingDays', 'laneStaffingDays', 'alertEmailDays', 'integrationCallDays', 'reportDeliveryDays']) {
+		const name = `Database__Retention__${key[0].toUpperCase()}${key.slice(1)}`;
+		if (expected[key] === undefined) findings.push(`${valuesFile}: migration.retention.${key} has no value`);
+		else if (env[name] !== String(expected[key])) findings.push(`Job/database-migration: ${name} is ${env[name]}, not migration.retention.${key} (${expected[key]})`);
+	}
+	return findings;
+}
+
 /** ARV-125b: the text of one rule of a render's ariva-monitoring-alerts. */
 function monitoringRule(docs, key) {
 	return docs.find((doc) => doc?.kind === 'ConfigMap' && doc.metadata?.name === 'ariva-monitoring-alerts')?.data?.[key] ?? '';
@@ -139,6 +162,8 @@ for (const env of environments) {
 	const readers = docs.filter((doc) => (doc?.spec?.template?.spec?.containers ?? []).some((container) =>
 		(container.env ?? []).some((variable) => variable.name === 'Database__ValidationReader__Password' && variable.valueFrom?.secretKeyRef))).map((doc) => `${doc.kind}/${doc.metadata?.name}`).sort();
 	if (readers.join(',') !== 'Deployment/api-main-deployment,Job/database-migration') findings.push(`the validation reader login reaches ${readers.join(', ') || 'no workload'}, not exactly api-main-deployment and the database-migration job`);
+	// ARV-111a: the migration job applies this environment's retention periods.
+	findings.push(...retentionFindings(docs, env.file));
 	const workloads = docs.filter((doc) => doc?.kind === 'Deployment').length;
 	const ingresses = docs.filter((doc) => doc?.kind === 'Ingress').length;
 	const monitoring = (name) => Object.keys(docs.find((doc) => doc?.kind === 'ConfigMap' && doc.metadata?.name === name)?.data ?? {}).length;
@@ -147,6 +172,7 @@ for (const env of environments) {
 		console.error(`FAIL ${env.file}:\n  ${findings.join('\n  ')}`);
 	} else {
 		console.log(`PASS ${env.file}: ${workloads} deployments, ${ingresses} ingresses, validation reader login in api-main and the migration job only, ` +
+			`retention periods ${Object.values(retentionValues(env.file)).join('/')} days in the migration job, ` +
 			`${monitoring('ariva-monitoring-alerts')} alert rules and ${monitoring('ariva-monitoring-dashboards')} dashboards`);
 	}
 }
@@ -194,6 +220,16 @@ for (const [label, file, sets] of [
 	['the validation reader login without a secret name', 'values-k8s-dev.yaml', ['validationReader.secretName=']],
 	['a validation reader secret name that is not a Kubernetes name', 'values-k8s-dev.yaml', ['validationReader.secretName=Reader_Secret']],
 	['production with an optional validation reader secret', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1', 'validationReader.optional=true']],
+	// ARV-111a: the retention periods are whole days within RetentionSettings' bounds, and only the six known keys.
+	['a raw sensing retention below 7 days', 'values-k8s-dev.yaml', ['migration.retention.rawSensingDays=6']],
+	['a raw sensing retention above 3650 days', 'values-k8s-dev.yaml', ['migration.retention.rawSensingDays=3651']],
+	['a desk zone reading retention above 90 days', 'values-k8s-dev.yaml', ['migration.retention.deskZoneReadingDays=91']],
+	['a lane staffing retention below the alert backtest history', 'values-k8s-dev.yaml', ['migration.retention.laneStaffingDays=30']],
+	['an alert email retention below 30 days in production', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1', 'migration.retention.alertEmailDays=29']],
+	['a retention period that is not a whole number', 'values-k8s-dev.yaml', ['migration.retention.integrationCallDays=30.5']],
+	['a retention period that is not a number', 'values-k8s-dev.yaml', ['migration.retention.reportDeliveryDays=forever']],
+	['an unknown retention period', 'values-k8s-dev.yaml', ['migration.retention.auditDays=40']],
+	['the retention periods removed', 'values-k8s-dev.yaml', ['migration.retention=null']],
 	// ARV-125b: monitoring thresholds out of range, an unknown rule, a channel name that could break the JSON, a rule
 	// without its values, a claim that is not a name.
 	['a disk threshold above 99 percent', 'values-k8s-dev.yaml', ['monitoring.alerts.disk.usedPercent=150']],

@@ -53,6 +53,7 @@
     "0050_validation_result_revision.sql": "250880cb3424ef538976a9cfdf3ff61f9431474f369bf6e5f00541268d1e338b",
     "0051_health_alarms.sql": "a354d39229dddf67a46fd8290daef388e3423cfc7ad40e5b5fe9fed8e39ab70e",
     "0052_outbox_compacted_state.sql": "9f0736a39930dfd79ae7c80ae24383ff3e9912dbf15013993c2cabcefef0baff",
-    "0053_lane_staffing.sql": "a63a7e5853b4eaf13e6728c29082f8ef3b0bd6392bc7f83221a363d822674f40"
+    "0053_lane_staffing.sql": "a63a7e5853b4eaf13e6728c29082f8ef3b0bd6392bc7f83221a363d822674f40",
+    "0054_retention_period.sql": "a78d2fee7ef866b2bfeed91a809db3deecd2cc9f760a71bb0f08c1db79c3178d"
   }
 }

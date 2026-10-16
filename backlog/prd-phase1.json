@@ -1487,7 +1487,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 45,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. Reuses candidate id ARV-111 (part a). The jurisdiction mapping (part b) is counsel's work, not a story here. 2026-10-15: lane_staffing (ARV-181a, script 0053, 90 days) goes into the data inventory: zone keys, lane codes and lane counts only, no identity.",
       "dependsOn": [
         "ARV-006",

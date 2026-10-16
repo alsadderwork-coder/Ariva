@@ -5,10 +5,11 @@ using Npgsql;
 namespace Ariva.Infra.Timescale;
 
 /// <summary>
-/// The migration job (ARV-006): applies the versioned scripts with the migration login, then creates or updates the
-/// runtime login the hosts use and (ARV-104g1) the validation reader login, the only login that reads the shadow nowcast. On a
-/// developer machine (Database:AllowSchemaUpdate) NHibernate SchemaUpdate then adds whatever the scripts do not cover yet,
-/// also with the migration login.
+/// The migration job (ARV-006): applies the versioned scripts with the migration login, sets the retention periods of this
+/// environment (ARV-111a, <see cref="RetentionPolicies"/>: the hypertables' TimescaleDB policies and the relational periods
+/// the Cronz retention job reads), then creates or updates the runtime login the hosts use and (ARV-104g1) the validation
+/// reader login, the only login that reads the shadow nowcast. On a developer machine (Database:AllowSchemaUpdate) NHibernate
+/// SchemaUpdate then adds whatever the scripts do not cover yet, also with the migration login.
 /// </summary>
 internal sealed class DatabaseMigrator(
     DatabaseSettings settings,
@@ -23,11 +24,16 @@ internal sealed class DatabaseMigrator(
         // ARV-104g1: a reader login that is the runtime or the migration login, or is otherwise unusable, stops the job before
         // anything changes (no secret in the message).
         reader.EnsureValid(settings);
+        // ARV-111a: a retention period out of range stops the job before anything changes, too.
+        settings.Retention.EnsureValid();
 
         var migrationConnection = settings.BuildMigrationConnectionString();
         var runner = new SqlScriptRunner(migrationConnection, loggerFactory.CreateLogger<SqlScriptRunner>());
         var applied = await runner.ApplyAsync(SqlScriptCatalog.Embedded(), ct);
         _logger.LogInformation("Migration applied {Count} script(s)", applied.Count);
+
+        // ARV-111a: after the scripts, so the configured periods replace the scripts' defaults on every release.
+        await RetentionPolicies.ApplyAsync(migrationConnection, settings.Retention, _logger, ct);
 
         await EnsureRuntimeLoginAsync(migrationConnection, ct);
         await EnsureValidationReaderLoginAsync(migrationConnection, ct);

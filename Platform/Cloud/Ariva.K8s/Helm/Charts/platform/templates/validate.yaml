@@ -6,6 +6,8 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 - The MQTT transport always has its TLS secret (ARV-024): device credentials never cross the network in clear.
 - The validation reader login (ARV-104g1) comes from a secret named by validationReader.secretName, and production
   requires it (optional false), so the pilot's ground-truth proof always has its reader.
+- The retention periods (ARV-111a, migration.retention) are whole numbers of days within their bounds (the same bounds as
+  RetentionSettings in Ariva.Infra), and no other key is given.
 - The monitoring thresholds (ARV-125b) are in range: minutes 1 to 1440, a severity of warning or critical, usedPercent
   1 to 99, share above 0 and at most 1, criticalDays below warningDays (both 1 to 365), records 0 or more, claims,
   services and namespaces Kubernetes names, namespaceLabel namespace or exported_namespace, channels and the monitoring
@@ -42,6 +44,23 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- end }}
 {{- if and (eq .Values.environment "k8s-prd") .Values.validationReader.optional }}
 {{- fail "k8s-prd needs the validation reader secret: set validationReader.optional false (ARV-104g1)" }}
+{{- end }}
+{{- $retention := (.Values.migration | default dict).retention | default dict }}
+{{- $retentionBounds := dict "rawSensingDays" (list 7 3650) "deskZoneReadingDays" (list 2 90) "laneStaffingDays" (list 90 3650) "alertEmailDays" (list 30 3650) "integrationCallDays" (list 30 3650) "reportDeliveryDays" (list 30 3650) }}
+{{- if not (kindIs "map" $retention) }}
+{{- fail "migration.retention must be a map of retention periods in days (ARV-111a)" }}
+{{- end }}
+{{- range $key, $_ := $retention }}
+{{- if not (hasKey $retentionBounds $key) }}
+{{- fail (printf "migration.retention.%s is not a retention period (ARV-111a); the periods are %s" $key (keys $retentionBounds | sortAlpha | join ", ")) }}
+{{- end }}
+{{- end }}
+{{- range $key, $range := $retentionBounds }}
+{{- $value := index $retention $key }}
+{{- $number := or (kindIs "float64" $value) (kindIs "int64" $value) (kindIs "int" $value) }}
+{{- if or (not $number) (lt (float64 $value) (float64 (index $range 0))) (gt (float64 $value) (float64 (index $range 1))) (ne (float64 $value) (float64 (int $value))) }}
+{{- fail (printf "migration.retention.%s must be a whole number of days from %d to %d (ARV-111a)" $key (index $range 0) (index $range 1)) }}
+{{- end }}
 {{- end }}
 {{- with .Values.monitoring }}
 {{- if not (kindIs "bool" .enabled) }}

@@ -17,7 +17,8 @@
 #   restore --input - --dump-checked [...]   the same from stdin, after check-dump has read the same stream
 #   check [--runtime-login NAME] [--reader-login NAME]
 #                                   owners, the runtime role's privileges, members of Ariva's roles, no C, untrusted-language
-#                                   or SECURITY DEFINER function, other language, extension or event trigger outside the
+#                                   or SECURITY DEFINER function (but Ariva's retention purge exactly as script 0054 ships
+#                                   it, grants included), other language, extension or event trigger outside the
 #                                   extensions, schema_version and TimescaleDB jobs
 #   keyring [--certificate-sha256 HEX]...   the Data Protection keys and the certificate each needs
 #   after-kafka-loss --confirm-stream-stopped [--dry-run]
@@ -412,7 +413,18 @@ risky_functions AS (
       FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace JOIN pg_language l ON l.oid = p.prolang
      WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
        AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')
-       AND (p.prosecdef OR NOT l.lanpltrusted OR l.lanname NOT IN ('sql', 'plpgsql'))),
+       AND (p.prosecdef OR NOT l.lanpltrusted OR l.lanname NOT IN ('sql', 'plpgsql'))
+       -- ARV-111a: Ariva's one SECURITY DEFINER function (script 0054, the retention purge the Cronz job calls), exactly as
+       -- shipped: its name and arguments, the migration login as owner, plpgsql, its settings (search path and time zone),
+       -- the SHA-256 of its body (OpsScriptTests keeps this hash equal to the script) and its grants: EXECUTE for the owner
+       -- and ariva_runtime only, without grant option (a NULL ACL would mean PUBLIC may run it). Anything else under its name
+       -- is reported.
+       AND NOT (p.oid = to_regprocedure('public.ariva_retention_purge(text, integer)') AND p.proowner = (SELECT oid FROM me)
+                AND l.lanname = 'plpgsql' AND p.proconfig = ARRAY['search_path=pg_catalog, pg_temp', 'TimeZone=UTC']
+                AND encode(sha256(convert_to(p.prosrc, 'UTF8')), 'hex') = '535ad38b539587c302aa4ea85e1c3508d55e5d5df6bf4f0675bbadf0076f78d7'
+                AND p.proacl IS NOT NULL
+                AND NOT EXISTS (SELECT 1 FROM aclexplode(p.proacl) a
+                                 WHERE a.grantee NOT IN ((SELECT oid FROM me), 'ariva_runtime'::regrole) OR a.is_grantable))),
 other_languages AS (
     SELECT lanname AS name FROM pg_language WHERE lanispl AND lanname <> 'plpgsql'),
 other_extensions AS (
@@ -441,7 +453,7 @@ UNION ALL SELECT 'migration login|' || current_user || ' owns the database; not 
 UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'group members|only the migration login and the named logins'
                       ELSE 'FAIL group members|' || string_agg(name, ', ' ORDER BY name) || ' (name this deployment''s logins with --runtime-login and --reader-login)' END
                  FROM extra_members
-UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'functions|no C, untrusted-language or SECURITY DEFINER function outside the extensions'
+UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'functions|no C, untrusted-language or SECURITY DEFINER function outside the extensions, but the retention purge as script 0054 ships it'
                       ELSE 'FAIL functions|' || count(*) || ' outside the extensions: ' || string_agg(name, ', ' ORDER BY name) END FROM risky_functions
 UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'languages|plpgsql only'
                       ELSE 'FAIL languages|' || string_agg(name, ', ' ORDER BY name) END FROM other_languages

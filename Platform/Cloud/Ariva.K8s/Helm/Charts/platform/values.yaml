@@ -49,6 +49,18 @@ migration:
   enabled: true
   backoffLimit: 1
   activeDeadlineSeconds: 900
+  # Retention periods in whole days (ARV-111a, docs/privacy/data-inventory.md). After the scripts, the job sets each hypertable's
+  # TimescaleDB retention policy and each relational period (table retention_period, which the Cronz retention job reads) to
+  # these, with the migration login; the chart passes them as Database__Retention__* (environment variables win over the
+  # appsettings files). A period that is already in force is left alone. The chart refuses an unknown key or a value out of
+  # range (validate.yaml). Defaults: the scripts' values and the Proposed periods of docs/product/decisions.md (2026-10-16).
+  retention:
+    rawSensingDays: 90        # sensing_event, sensing_batch, device_health_event: the contract's dispute window (TC-62); 7 to 3650
+    deskZoneReadingDays: 7    # desk_zone_reading (desk-level border data); 2 to 90
+    laneStaffingDays: 90      # lane_staffing (the open desks alert's backtest history); 90 to 3650
+    alertEmailDays: 180       # email_message, with staff email addresses (TC-67); 30 to 3650
+    integrationCallDays: 400  # integration_call, the Integration API call record (TC-68); 30 to 3650
+    reportDeliveryDays: 400   # report_delivery (TC-66); 30 to 3650
 
 # Validation reader login (ARV-104g1): the only database login that reads the shadow nowcast (a member of
 # ariva_validation_reader and nothing else, created and updated by the migration job, script 0049). Its name and password

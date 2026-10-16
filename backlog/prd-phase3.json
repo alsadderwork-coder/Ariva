@@ -377,6 +377,24 @@
       "passes": false,
       "notes": "Size S. Phase 3 (the owner rule of 2026-10-14). Cost: the visual step takes about 4 minutes and needs the 1.2 GB pinned image.",
       "dependsOn": []
+    },
+    {
+      "id": "ARV-189",
+      "title": "[E17] Retention: the low findings of the ARV-111a review",
+      "description": "From the ARV-111a security review (rounds 2 and 3, 2026-10-16), all Low, moved to Phase 3 by the owner's rule of 2026-10-14. L1: DatabaseChartBootstrapTests runs only the integration_call branch of ariva_retention_purge with the chart's non-superuser owner; loop over the three data sets. L2: BackupRestoreTests forges only a PUBLIC grant and a different body of the purge function; a grant option, a grant to another role and a changed proconfig are checked by the ariva-db.sh SQL but pinned only as text by OpsScriptTests; add the forged cases. L3: no test for the unlock failure path of RetentionRound.UnlockAsync (the warning, and the run's own exception not masked). L4 (its doc part fixed in ARV-111a): add owner-side assertions to DatabaseChartBootstrapTests that ariva_runtime has no UPDATE on report_delivery.created_utc, email_message.created_utc and integration_call.at_utc and has UPDATE on report_delivery.status. L5: ariva-db.sh check does not compare the runtime role's per-table and per-column privileges with the scripts, so a restore that lost a revoke (report_delivery table-wide UPDATE again) passes the check; add a check row from has_table_privilege and has_column_privilege for ariva_runtime on the revoked tables and columns. CWEs to review: CWE-269.",
+      "acceptanceCriteria": [
+        "L1 to L5 each have a test that fails without the control (or the check row) and passes with it",
+        "scripts/ops/ariva-db.sh check reports a restored database whose ariva_runtime privileges differ from the scripts' revokes and column grants, with OpsScriptTests and a BackupRestoreTests case",
+        "node scripts/verify.mjs backend passes and the integration tests for the story's areas pass through node scripts/verify.mjs story",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for CWE-269",
+        "node scripts/verify.mjs docs passes"
+      ],
+      "priority": 43,
+      "passes": false,
+      "notes": "Size S. Phase 3 (owner rule of 2026-10-14: low findings unless needed before the pilot). Nothing here is exploitable today: the scripts apply the grants and the signed dump manifest gates a restore.",
+      "dependsOn": [
+        "ARV-111a"
+      ]
     }
   ]
 }
