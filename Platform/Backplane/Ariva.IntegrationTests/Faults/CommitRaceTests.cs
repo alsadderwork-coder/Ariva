@@ -53,7 +53,8 @@ public sealed class CommitRaceConsumer : IConsumer<OutageProbe>
 /// which shows the race was reproduced. The third test proves the stray consumer of ARV-166's residual (b) gone: an endpoint
 /// between restarts when the host stops (its consumer ended on the failed commit) is stopped after the bus, so no consumer
 /// of the stopped host rejoins its group. Each test has its own consumer group, so a stray of one cannot hold another's
-/// partition.
+/// partition. The first two hold whether or not the consumer ends during the outage; the third needs it to end, which
+/// librdkafka does not always bring about (see that test).
 /// </summary>
 [Collection(FaultsCollection.Name)]
 public sealed class CommitRaceTests(FaultsFixture faults) : IAsyncLifetime
@@ -74,12 +75,24 @@ public sealed class CommitRaceTests(FaultsFixture faults) : IAsyncLifetime
 
     private static readonly TimeSpan DisposeBound = TimeSpan.FromSeconds(10);
 
-    private static readonly TimeSpan Budget = TimeSpan.FromSeconds(270);
+    /// <summary>The stray test tries the race at most this many times, each with its own host and consumer group.</summary>
+    private const int StrayAttempts = 3;
+
+    /// <summary>
+    /// An ended consumer's endpoint is between restarts once its deferred commit fails, librdkafka's session timeout (45 s)
+    /// after the cut; 20 s of slack. An attempt whose endpoint is still Ready then counts as one whose consumer did not end.
+    /// </summary>
+    private static readonly TimeSpan PremiseBound = TimeSpan.FromSeconds(65);
+
+    /// <summary>The stray test's budget: three attempts of at most about 130 s each (start, race, premise, stop, watch).</summary>
+    private static readonly TimeSpan StrayBudget = TimeSpan.FromSeconds(420);
+
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     private readonly EventCatalog _catalog = new([typeof(OutageProbe).Assembly]);
     private readonly Stopwatch _clock = Stopwatch.StartNew();
     private readonly List<string> _steps = [];
+    private TimeSpan _budget = TimeSpan.FromSeconds(270);
 
     public ValueTask InitializeAsync() => ValueTask.CompletedTask;
 
@@ -265,41 +278,54 @@ public sealed class CommitRaceTests(FaultsFixture faults) : IAsyncLifetime
     /// (it stops only started, ready or faulted ones), and before ARV-165 its transport started a new consumer in the
     /// stopped host, which rejoined the group and consumed the uncommitted record with a disposed service provider (the
     /// baseline in backlog/progress.md). Now the endpoint is stopped after the bus: the group stays empty after the stop.
+    /// The consumer ends only when librdkafka tells it that every broker is down (<c>Local_AllBrokersDown</c>, the error
+    /// that ends MassTransit's consume loop; a failed commit alone does not). librdkafka 2.15 re-bootstraps during an outage
+    /// and its count of brokers down races that sequence, so nothing guarantees the error: once in PR #67's CI on 2026-10-16
+    /// the endpoint stayed Ready for the whole 270 s (that run kept no host log; locally, with librdkafka's debug log, every
+    /// ended consumer had the error first). A consumer that is not told polls on and carries on when the broker is back,
+    /// with nothing between restarts. So the race is tried up to <see cref="StrayAttempts"/> times, each with its own host
+    /// and group, until an attempt's endpoint is between restarts when its host stops; every attempt's group must stay
+    /// empty after the stop.
     /// </summary>
-    [Fact(Timeout = 300_000)]
+    [Fact(Timeout = 450_000)]
     public async Task Host_Should_LeaveNoConsumerRunning_When_ItStopsWhileAnEndpointIsBetweenRestarts()
     {
-        const string purpose = "commit-race-stray";
+        _budget = StrayBudget;
+        for (var attempt = 1; ; attempt++)
+        {
+            if (await StrayAttemptAsync(attempt))
+                return;
+            attempt.Should().BeLessThan(StrayAttempts,
+                $"the endpoint is between restarts in one of {StrayAttempts} attempts (done: {string.Join(", ", _steps)})");
+        }
+    }
+
+    /// <summary>
+    /// One attempt of the stray test, with its own host and consumer group: the race, the endpoint between restarts within
+    /// <see cref="PremiseBound"/> of the cut or not, the broker back, the host stopped, and its group watched for 20 s.
+    /// Returns whether the endpoint was between restarts when the host stopped.
+    /// </summary>
+    private async Task<bool> StrayAttemptAsync(int attempt)
+    {
+        var purpose = attempt == 1 ? "commit-race-stray" : $"commit-race-stray-{attempt}";
         var host = await StartHostAsync(purpose);
         var stopped = false;
+        bool between;
         try
         {
-            var key = "S-" + Guid.NewGuid().ToString("N")[..8];
+            var key = "S" + attempt + "-" + Guid.NewGuid().ToString("N")[..8];
             var since = await RaceAsync(host, purpose, key);
             var bus = host.Services.GetRequiredService<IBusControl>();
-            // The commit fails with the session (about 45 s after the cut), and the endpoint's consumer ends with it.
-            await WaitForAsync(() => Task.FromResult(bus.CheckHealth().Status != BusHealthStatus.Healthy), "the commit failed and the endpoint's consumer ended");
-            Done($"the endpoint between restarts {since.Elapsed.TotalSeconds:F1} s after the cut");
+            // The commit fails with the session (about 45 s after the cut); the endpoint's consumer ends with it if librdkafka
+            // told the consumer that every broker is down.
+            between = await WithinAsync(() => bus.CheckHealth().Status != BusHealthStatus.Healthy, since, PremiseBound);
+            Done(between
+                ? $"attempt {attempt}: the endpoint between restarts {since.Elapsed.TotalSeconds:F1} s after the cut"
+                : $"attempt {attempt}: the endpoint still Ready {since.Elapsed.TotalSeconds:F1} s after the cut (its consumer did not end)");
             await faults.RestoreAsync(Proxy);
 
             stopped = true;
             await StopAsync(host, assert: false);
-
-            // Nothing of the stopped host may join the group again. A stray consumer rejoins within a few seconds (one second
-            // in the baseline); the group is watched for 20 seconds after the stop.
-            using var admin = new Confluent.Kafka.AdminClientBuilder(new Confluent.Kafka.AdminClientConfig { BootstrapServers = faults.KafkaDirectBootstrap }).Build();
-            var describe = new Confluent.Kafka.Admin.DescribeConsumerGroupsOptions { RequestTimeout = TimeSpan.FromSeconds(10) };
-            var watch = Stopwatch.StartNew();
-            var members = new List<int>();
-            while (watch.Elapsed < TimeSpan.FromSeconds(20))
-            {
-                var group = (await admin.DescribeConsumerGroupsAsync([GroupOf(purpose)], describe)).ConsumerGroupDescriptions.Single();
-                members.Add(group.Members.Count);
-                await Task.Delay(500, Ct);
-            }
-
-            Done($"the group watched for 20 s after the stop: at most {members.Max()} members");
-            members.Should().OnlyContain(count => count == 0, "no consumer of the stopped host is left running");
         }
         finally
         {
@@ -307,6 +333,36 @@ public sealed class CommitRaceTests(FaultsFixture faults) : IAsyncLifetime
             if (!stopped)
                 await StopAsync(host, assert: false);
         }
+
+        // Nothing of the stopped host may join the group again. A stray consumer rejoins within a few seconds (one second in
+        // the baseline); the group is watched for 20 seconds after the stop.
+        using var admin = new Confluent.Kafka.AdminClientBuilder(new Confluent.Kafka.AdminClientConfig { BootstrapServers = faults.KafkaDirectBootstrap }).Build();
+        var describe = new Confluent.Kafka.Admin.DescribeConsumerGroupsOptions { RequestTimeout = TimeSpan.FromSeconds(10) };
+        var watch = Stopwatch.StartNew();
+        var members = new List<int>();
+        while (watch.Elapsed < TimeSpan.FromSeconds(20))
+        {
+            var group = (await admin.DescribeConsumerGroupsAsync([GroupOf(purpose)], describe)).ConsumerGroupDescriptions.Single();
+            members.Add(group.Members.Count);
+            await Task.Delay(500, Ct);
+        }
+
+        Done($"attempt {attempt}: the group watched for 20 s after the stop, at most {members.Max()} members");
+        members.Should().OnlyContain(count => count == 0, "no consumer of the stopped host is left running");
+        return between;
+    }
+
+    /// <summary>Whether <paramref name="condition"/> holds within <paramref name="bound"/> of <paramref name="since"/>.</summary>
+    private static async Task<bool> WithinAsync(Func<bool> condition, Stopwatch since, TimeSpan bound)
+    {
+        while (!condition())
+        {
+            if (since.Elapsed > bound)
+                return false;
+            await Task.Delay(250, Ct);
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -396,8 +452,8 @@ public sealed class CommitRaceTests(FaultsFixture faults) : IAsyncLifetime
     {
         while (!await condition())
         {
-            if (_clock.Elapsed > Budget)
-                throw new TimeoutException($"{what}: not within the test's {Budget.TotalSeconds:F0} s (done: {string.Join(", ", _steps)})");
+            if (_clock.Elapsed > _budget)
+                throw new TimeoutException($"{what}: not within the test's {_budget.TotalSeconds:F0} s (done: {string.Join(", ", _steps)})");
             await Task.Delay(250, Ct);
         }
 
