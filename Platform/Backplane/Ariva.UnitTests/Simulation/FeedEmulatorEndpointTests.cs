@@ -174,6 +174,27 @@ public sealed class FeedEmulatorEndpointTests
     }
 
     [Fact]
+    public async Task Play_Should_LayTheMinuteOnTheCurrentWallMinute_When_ItFollowsAFasterRunsLastMinute()
+    {
+        // 2026-10-16: tests/api/aman-feed.spec.ts played minute 1100 at once right after sensor-emulator.spec.ts had run the
+        // demo clock at speed 60 to 1099; the minute followed, inherited that run's lead on real time, and Ariva refused its
+        // records as later than its clock allows.
+        await using var app = Host();
+        using var client = app.CreateClient();
+        var feedTime = app.Services.GetRequiredService<Ariva.Simulation.Api.Emulators.FeedTime>();
+        var before = DateTime.UtcNow;
+        for (var minute = 1095; minute <= 1099; minute++)
+            feedTime.Observe(minute, _ => before);
+        feedTime.At(1100).Should().BeOnOrAfter(before.AddMinutes(4), "the faster run is ahead of real time");
+
+        using var play = await SendAsync(client, HttpMethod.Post, Route + "/play", ControlKey, "{\"minute\":1100}");
+        play.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var floor = new DateTime(before.Ticks - before.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc);
+        feedTime.At(1100).Should().BeOnOrAfter(floor).And.BeOnOrBefore(DateTime.UtcNow, "a minute played at once is the current wall minute");
+    }
+
+    [Fact]
     public async Task Acris_Should_NeedTheKeyAndHonourIfModifiedSince_When_Pulled()
     {
         await using var app = Host();

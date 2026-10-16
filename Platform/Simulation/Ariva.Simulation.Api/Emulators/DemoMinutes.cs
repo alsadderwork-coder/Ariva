@@ -43,6 +43,20 @@ public sealed class FeedTime
         }
     }
 
+    /// <summary>
+    /// Forgets the anchor, so the next minute played is laid on its own wall minute: a run that starts at a minute or jumps,
+    /// and a minute played at once. Without it, a new run whose first minute follows the last one played inherits that run's
+    /// lead on real time (a run at speed 60 is minutes ahead of it), and Ariva refuses records later than its clock allows.
+    /// </summary>
+    public void Restart()
+    {
+        lock (_gate)
+        {
+            _dayStart = default;
+            _last = int.MinValue;
+        }
+    }
+
     /// <summary>The UTC time of a demo minute on the current anchor (the anchor is set by the first minute played).</summary>
     public DateTime At(int minute)
     {

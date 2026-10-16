@@ -43,7 +43,7 @@ public sealed record AmanCodeMapping(string AmanCode, string ArivaCode);
 [Route("api/v1/simulation/feeds")]
 [Authorize(Policy = SimulationScopes.ReadPolicy)]
 public sealed class FeedEmulatorController(BorderFeeds border, AodbEmulators aodbs, FeedClients clients, IEnumerable<IDemoMinuteSink> sinks, TimeProvider time,
-    Emulators.Sensors.SensorEmulator clock, ILogger<FeedEmulatorController> logger) : ControllerBase
+    Emulators.Sensors.SensorEmulator clock, FeedTime feedTime, ILogger<FeedEmulatorController> logger) : ControllerBase
 {
     private string Operator => User.Identity?.Name ?? "unknown";
 
@@ -70,6 +70,8 @@ public sealed class FeedEmulatorController(BorderFeeds border, AodbEmulators aod
             return Problem(statusCode: StatusCodes.Status400BadRequest, title: "The minute must be a clock minute of the day, 0 to 1439.");
         var now = time.GetUtcNow().UtcDateTime;
         logger.LogInformation("Feed emulators play demo minute {Minute} at once, by {Operator}", minute, Operator);
+        // A minute played at once is laid on the current wall minute, even when it follows a faster run's last minute.
+        feedTime.Restart();
         foreach (var sink in sinks)
             await sink.PlayAsync(minute, _ => now, ct);
         return Ok(Get());

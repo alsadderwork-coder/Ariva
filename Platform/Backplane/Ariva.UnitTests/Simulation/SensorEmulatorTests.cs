@@ -92,6 +92,30 @@ public sealed class SensorEmulatorTests
     #endregion
 
     [Fact]
+    public void StartAndJump_Should_RestartTheFeedTime_When_TheyNameAMinute()
+    {
+        var time = new ManualTime();
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string> { ["Simulation:Seed"] = "9303" }).Build();
+        var engine = new ScenarioEngine(configuration, NullLogger<ScenarioEngine>.Instance, time);
+        var feedTime = new Ariva.Simulation.Api.Emulators.FeedTime();
+        var emulator = new SensorEmulator(engine, new Factory(new FakeIngest()), new Monitor<SensorEmulatorSettings>(new SensorEmulatorSettings()), time,
+            NullLogger<SensorEmulator>.Instance, feedTime: feedTime);
+        void Ahead() => feedTime.Observe(1099, _ => time.Now.UtcDateTime.AddMinutes(4));
+
+        Ahead();
+        emulator.Start(null, 2, null, "test");
+        feedTime.At(1100).Should().NotBe(default, "a resume continues the run on its anchor");
+        emulator.Start(1100, 1, null, "test");
+        feedTime.At(1100).Should().Be(default, "a run that starts at a minute is laid on real time again");
+        Ahead();
+        emulator.Jump(1100, "test");
+        feedTime.At(1100).Should().Be(default, "so is a jump");
+        Ahead();
+        emulator.SetSpeed(60, "test");
+        feedTime.At(1100).Should().NotBe(default, "a speed change keeps the anchor");
+    }
+
+    [Fact]
     public async Task Start_Should_PlayTenMinutesInOrder_When_RunAtSpeed60UntilAStopMinute()
     {
         var (emulator, time, ingest) = Create(("S-15", EmulatedDialect.Canonical, Credential15), ("S-50", EmulatedDialect.Xovis, Credential50));

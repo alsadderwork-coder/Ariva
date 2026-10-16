@@ -198,6 +198,27 @@ public sealed class FeedEmulatorTests
         time.Observe(900, _ => wall.AddSeconds(2)).Should().Be(new DateTime(2026, 10, 3, 9, 41, 0, DateTimeKind.Utc), "a jump re-anchors");
     }
 
+    [Fact]
+    public void FeedTime_Should_LayTheNextMinuteOnItsWallMinute_When_RestartedAfterAFasterRun()
+    {
+        // A run at speed 60 plays minutes 1095 to 1099 within seconds, each dated a minute later: 1099 is four minutes ahead.
+        var wall = new DateTime(2026, 10, 16, 9, 30, 10, DateTimeKind.Utc);
+        var time = new FeedTime();
+        var unrestarted = new FeedTime();
+        for (var minute = 1095; minute <= 1099; minute++)
+        {
+            time.Observe(minute, _ => wall);
+            unrestarted.Observe(minute, _ => wall);
+        }
+
+        unrestarted.Observe(1100, _ => wall.AddSeconds(5)).Should().Be(new DateTime(2026, 10, 16, 9, 35, 0, DateTimeKind.Utc),
+            "a minute that follows inherits the faster run's lead (the aman-feed spec's refusal)");
+        time.Restart();
+        time.At(1100).Should().Be(default, "the anchor is forgotten");
+        time.Observe(1100, _ => wall.AddSeconds(5)).Should().Be(new DateTime(2026, 10, 16, 9, 30, 0, DateTimeKind.Utc), "laid on its own wall minute");
+        time.Observe(1101, _ => wall.AddSeconds(6)).Should().Be(new DateTime(2026, 10, 16, 9, 31, 0, DateTimeKind.Utc), "and the run follows from there");
+    }
+
     [Theory]
     [InlineData("kafka.example.com:9092", "SaslPlaintext", "user", "secret", false)]
     [InlineData("kafka.example.com:9092", "Plaintext", null, null, false)]

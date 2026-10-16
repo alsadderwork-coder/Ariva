@@ -58,6 +58,7 @@ public sealed class SensorEmulator : BackgroundService
     private readonly ILogger<SensorEmulator> _logger;
     private readonly SemaphoreSlim _tick = new(1, 1);
     private readonly SinkPump[] _sinks;
+    private readonly FeedTime _feedTime;
 
     private Device[] _devices;
     private bool _running;
@@ -69,9 +70,10 @@ public sealed class SensorEmulator : BackgroundService
     private DateTime? _playedDayStart;
 
     public SensorEmulator(ScenarioEngine engine, IHttpClientFactory http, IOptionsMonitor<SensorEmulatorSettings> settings, TimeProvider time,
-        ILogger<SensorEmulator> logger, IEnumerable<IDemoMinuteSink> sinks = null)
+        ILogger<SensorEmulator> logger, IEnumerable<IDemoMinuteSink> sinks = null, FeedTime feedTime = null)
     {
         _sinks = [.. (sinks ?? []).Select(sink => new SinkPump(sink, Dropped))];
+        _feedTime = feedTime;
         ArgumentNullException.ThrowIfNull(settings);
         _engine = engine;
         _http = http;
@@ -154,6 +156,8 @@ public sealed class SensorEmulator : BackgroundService
                 _nextMinute = m;
                 foreach (var d in _devices)
                     Reset(d);
+                // The feeds lay the new run on real time even when its first minute follows the last one played.
+                _feedTime?.Restart();
             }
 
             _untilMinute = untilMinute;
@@ -200,6 +204,7 @@ public sealed class SensorEmulator : BackgroundService
             _nextMinute = minute;
             if (_untilMinute is { } until && until <= minute)
                 _untilMinute = null;
+            _feedTime?.Restart();
             _logger.LogInformation("Sensor emulator jumped to demo minute {Minute} by {Operator}", minute, by);
         }
 
