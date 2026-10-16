@@ -1947,7 +1947,7 @@
         "node scripts/verify.mjs docs passes"
       ],
       "priority": 59,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Before the pilot if the site measures departure queues with service zones on lane-coded emigration desks; otherwise it can move to Phase 3 by the owner's call.",
       "dependsOn": [
         "ARV-187"

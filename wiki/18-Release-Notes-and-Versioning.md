@@ -145,6 +145,16 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-191: the arrival wave reaches arrivals queues only (2026-10-16)
+
+Fixed: the predicted nowcast's arrival-wave projection linked a queue zone to a lane through the desks its service zones stand at, of any checkpoint. Border desks of every kind carry lane categories, so a departures queue standing at lane-coded emigration desks shared the lane with the arrivals queue (dividing the arrivals queue's share, so its breach was under-predicted) and was judged on the arrivals wave itself. A queue zone now takes a lane only through desks of an Immigration checkpoint on its own level (formulas F14, predicted breach). No database script, endpoint or permission changes, and no upgrade step.
+
+Known effects:
+
+- A predicted-nowcast rule on a departures queue (or on a queue whose service zones name emigration desks, or desks of another level) has no projection from this release on, so it raises nothing. An alert such a rule left open is not cleared by the evaluation (minutes without a value are skipped, formulas F20): a Border shift supervisor or the administrator resolves it by hand.
+- An arrivals queue whose lane such a queue shared now takes the whole lane, so its projected arrivals are higher (twice its former share when one departures queue shared the lane), its predicted values are higher and its rules can raise earlier than before.
+- Seeded sites: NBJ-BC1's departures hall queue and its overflow band no longer have a projection (their lane ALL carried no arrivals, so the projection was zero); DMO (no service zones) and AUH-TA (one immigration checkpoint) are unchanged.
+
 ### ARV-187: predicted-nowcast rules become border data (2026-10-16)
 
 Changed (owner decision of 2026-10-16, docs/product/decisions.md): the predicted nowcast (`PredictedNowcast`, "Predicted nowcast", a breach projected 15 to 60 minutes ahead) steps a lane queue with its share of the arrival wave, which is border data. It is now a border metric like open desks below recommendation (`DesksBelowPlan`): its rules, backtests, previews, alerts, live notices, emails and reports are for holders of `ArrivalWaveLanes.View` only (the Border shift supervisor and the system administrator). A rule on it belongs to one of those roles (never to no owner, which means every role) and escalates to one of them or to no role; it keeps all four comparators, its lead time and its overflow bands. The terminal duty manager loses predicted-wait alerts and keeps live-wait (`Nowcast`) alerts; nothing airport-side is lost in practice, since only lane queues have a projection. No database script, endpoint or permission changes.

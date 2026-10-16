@@ -351,6 +351,91 @@ public sealed partial class ImmigrationIntakeTests(PostgresFixture fixture) : IA
         $probe$;
         """);
 
+    /// <summary>
+    /// ARV-191: border desks of every kind carry lane categories, emigration desks included, so a queue zone takes a lane of
+    /// the arrival wave only through the desks of an Immigration checkpoint on its own level (the arrivals hall, the scope of
+    /// the staffing recommendation's lanes). At XW1 an arrivals queue and an emigration queue on the departures level both
+    /// stand at Visitors desks; an emigration checkpoint shares the arrivals level; and a departures queue's service zone
+    /// names an arrivals immigration desk. The arrivals queue keeps the whole Visitors lane (not a quarter of it) and none of
+    /// the others is projected the arrivals wave.
+    /// </summary>
+    [Fact]
+    public async Task ProjectedArrivalWave_Should_LinkAQueueThroughItsLevelsImmigrationDesksOnly_When_AnEmigrationQueueServesTheSameLane()
+    {
+        await SeedAsync();
+        // Each test of the shared database projects its own day, so the order the tests run in never mixes their flights.
+        _host.Clock.Advance(TimeSpan.FromDays(5));
+        await DeparturesProbeSiteAsync();
+        var minute = new DateTime(Now.Ticks - Now.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc);
+        var leg = new FlightLegData("XW1-LANE-A", "XW", "1", null, "Arrival", minute.AddMinutes(10), null, null, minute.AddMinutes(-11), null, Origin: "BEY",
+            Destination: "DMO", PaxEstimate: 300);
+        (await _host.AsCallerAsync(null, s => s.GetRequiredService<ISvcFlightIntake>().ApplyLegsAsync("XW1", "it-wave", [leg], Now.AddMinutes(-1), Ct)))
+            .Should().OnlyContain(r => !r.HasErrors);
+        (await Apply<InboundFlightLaneDemand>(i => i.ApplyLaneDemandAsync(ImmigrationScope.ForSite("XW1"), "aman-kafka",
+            [new("XW1", "XW1-LANE-A", new DateTimeOffset(minute.AddMinutes(10)), 100, new Dictionary<string, int> { ["VIS"] = 100 }, 0,
+                new DateTimeOffset(Now.AddMinutes(-5)), "xw1-ld")], Ct))).Should().OnlyContain(r => r.Applied);
+
+        async Task<IReadOnlyDictionary<DateTime, double>> Arrivals(string zone) =>
+            await _host.AsCallerAsync(null, s => s.GetRequiredService<Ariva.Core.Alerting.IArrivalWaveSource>().ArrivalsAsync("XW1", zone, minute.AddMinutes(-1), minute.AddMinutes(60), Ct));
+
+        // On-block 11 minutes ago: the 12 hall minutes start now, so the whole flight lies ahead.
+        var arrivals = await Arrivals("Q-ARR");
+        arrivals.Should().NotBeNull("the arrivals queue stands at the arrivals immigration desks");
+        arrivals.Values.Sum().Should().BeApproximately(100, 1e-6, "the arrivals queue keeps the whole Visitors lane: no emigration or other level's queue shares it");
+        arrivals[minute].Should().BeApproximately(100 * 0.03, 1e-6);
+        (await Arrivals("OV-ARR")).Values.Sum().Should().BeApproximately(100, 1e-6, "an overflow band takes its queue's arrivals");
+        (await Arrivals("Q-DEP")).Should().BeNull("an emigration queue on the departures level is not projected the arrivals wave");
+        (await Arrivals("OV-DEP")).Should().BeNull("nor is the overflow band of an emigration queue");
+        (await Arrivals("Q-EMA")).Should().BeNull("the desks of an emigration checkpoint on the arrivals level link no queue to a lane either");
+        (await Arrivals("Q-STRAY")).Should().BeNull("an immigration desk on another level than the queue links it to no lane");
+    }
+
+    /// <summary>
+    /// A site, XW1, at the demo airport (once per database) for ARV-191: an arrivals level with an immigration checkpoint
+    /// (Visitors desks V1 and V2) and an emigration checkpoint (Visitors desk E2), and a departures level with an emigration
+    /// checkpoint (Visitors desk E1). Its published profile links, through service zones, the arrivals queue Q-ARR (with its
+    /// overflow band OV-ARR) to V1, the departures queue Q-DEP (with its overflow band OV-DEP) to E1, the arrivals level queue
+    /// Q-EMA to E2, and the departures level queue Q-STRAY to V2.
+    /// </summary>
+    private Task DeparturesProbeSiteAsync() => ExecuteAsMigrationAsync("""
+        DO $probe$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM zone_profile WHERE id = 'a1910000-0000-0000-0000-000000000040') THEN
+                RETURN;
+            END IF;
+                INSERT INTO site (id, code, name) SELECT gen_random_uuid(), 'XW1', 'Departures lane probe' WHERE NOT EXISTS (SELECT 1 FROM site WHERE code = 'XW1');
+                INSERT INTO terminal (id, airport_id, code, name, site_code)
+                     SELECT 'a1910000-0000-0000-0000-000000000001', id, 'XTW', 'Probe terminal W', 'XW1' FROM airport WHERE iata_code = 'DMO' AND deleted_on IS NULL;
+                INSERT INTO level (id, terminal_id, site_code, code, name, floor_number, width_metres, depth_metres) VALUES
+                    ('a1910000-0000-0000-0000-000000000002', 'a1910000-0000-0000-0000-000000000001', 'XW1', 'ARR', 'Arrivals', 0, 100, 100),
+                    ('a1910000-0000-0000-0000-000000000003', 'a1910000-0000-0000-0000-000000000001', 'XW1', 'DEP', 'Departures', 1, 100, 100);
+                INSERT INTO checkpoint (id, level_id, site_code, code, name, kind) VALUES
+                    ('a1910000-0000-0000-0000-000000000004', 'a1910000-0000-0000-0000-000000000002', 'XW1', 'IMM', 'Arrival immigration', 'Immigration'),
+                    ('a1910000-0000-0000-0000-000000000005', 'a1910000-0000-0000-0000-000000000003', 'XW1', 'EMI', 'Departure emigration', 'Emigration'),
+                    ('a1910000-0000-0000-0000-000000000006', 'a1910000-0000-0000-0000-000000000002', 'XW1', 'EMA', 'Emigration on the arrivals level', 'Emigration');
+                INSERT INTO desk (id, checkpoint_id, site_code, code, name, kind, lane_category_codes) VALUES
+                    ('a1910000-0000-0000-0000-000000000011', 'a1910000-0000-0000-0000-000000000004', 'XW1', 'V1', 'Visitors 1', 'Desk', 'VIS'),
+                    ('a1910000-0000-0000-0000-000000000012', 'a1910000-0000-0000-0000-000000000004', 'XW1', 'V2', 'Visitors 2', 'Desk', 'VIS'),
+                    ('a1910000-0000-0000-0000-000000000013', 'a1910000-0000-0000-0000-000000000005', 'XW1', 'E1', 'Departing visitors 1', 'Desk', 'VIS'),
+                    ('a1910000-0000-0000-0000-000000000014', 'a1910000-0000-0000-0000-000000000006', 'XW1', 'E2', 'Departing visitors 2', 'Desk', 'VIS');
+                INSERT INTO zone_profile (id, site_code, name, status) VALUES ('a1910000-0000-0000-0000-000000000040', 'XW1', 'Departures probe', 'Draft');
+                INSERT INTO zone (id, profile_id, name, kind, level_id, queue_zone_id, desk_id, polygon) VALUES
+                    ('a1910000-0000-0000-0000-000000000041', 'a1910000-0000-0000-0000-000000000040', 'Q-ARR', 'Queue', 'a1910000-0000-0000-0000-000000000002', NULL, NULL, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
+                    ('a1910000-0000-0000-0000-000000000042', 'a1910000-0000-0000-0000-000000000040', 'Q-DEP', 'Queue', 'a1910000-0000-0000-0000-000000000003', NULL, NULL, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
+                    ('a1910000-0000-0000-0000-000000000043', 'a1910000-0000-0000-0000-000000000040', 'Q-EMA', 'Queue', 'a1910000-0000-0000-0000-000000000002', NULL, NULL, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
+                    ('a1910000-0000-0000-0000-000000000044', 'a1910000-0000-0000-0000-000000000040', 'Q-STRAY', 'Queue', 'a1910000-0000-0000-0000-000000000003', NULL, NULL, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000');
+                INSERT INTO zone (id, profile_id, name, kind, level_id, queue_zone_id, desk_id, polygon) VALUES
+                    ('a1910000-0000-0000-0000-000000000051', 'a1910000-0000-0000-0000-000000000040', 'S-V1', 'Service', 'a1910000-0000-0000-0000-000000000002', 'a1910000-0000-0000-0000-000000000041', 'a1910000-0000-0000-0000-000000000011', '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
+                    ('a1910000-0000-0000-0000-000000000052', 'a1910000-0000-0000-0000-000000000040', 'S-E1', 'Service', 'a1910000-0000-0000-0000-000000000003', 'a1910000-0000-0000-0000-000000000042', 'a1910000-0000-0000-0000-000000000013', '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
+                    ('a1910000-0000-0000-0000-000000000053', 'a1910000-0000-0000-0000-000000000040', 'S-E2', 'Service', 'a1910000-0000-0000-0000-000000000002', 'a1910000-0000-0000-0000-000000000043', 'a1910000-0000-0000-0000-000000000014', '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
+                    ('a1910000-0000-0000-0000-000000000054', 'a1910000-0000-0000-0000-000000000040', 'S-V2', 'Service', 'a1910000-0000-0000-0000-000000000003', 'a1910000-0000-0000-0000-000000000044', 'a1910000-0000-0000-0000-000000000012', '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
+                    ('a1910000-0000-0000-0000-000000000055', 'a1910000-0000-0000-0000-000000000040', 'OV-ARR', 'Overflow', 'a1910000-0000-0000-0000-000000000002', 'a1910000-0000-0000-0000-000000000041', NULL, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
+                    ('a1910000-0000-0000-0000-000000000056', 'a1910000-0000-0000-0000-000000000040', 'OV-DEP', 'Overflow', 'a1910000-0000-0000-0000-000000000003', 'a1910000-0000-0000-0000-000000000042', NULL, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000');
+                UPDATE zone_profile SET status = 'Published', version = 1, geometry_hash = repeat('b', 64), published_on = now() WHERE id = 'a1910000-0000-0000-0000-000000000040';
+        END
+        $probe$;
+        """);
+
     [Fact]
     public async Task DeskFeed_Should_DriveTheDeskEngineFromAmanAndFillTheEgateMinutes_When_AmanRecordsAreStored()
     {
