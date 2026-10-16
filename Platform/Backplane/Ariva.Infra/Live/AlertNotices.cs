@@ -43,7 +43,8 @@ public sealed record AlertNotice(
     /// <summary>
     /// The roles whose screens are told: its owner role, and its escalation role once escalated, and always the
     /// administrators; every operational role of the site when it has no owner role (as <see cref="Alert.IsFor"/>). A notice
-    /// of a border-only metric (<see cref="BorderAlerts"/>, ARV-181b2) goes to the border roles among those only, whatever its
+    /// of a border-only metric (<see cref="BorderAlerts"/>: open desks below recommendation since ARV-181b2, the predicted
+    /// nowcast since ARV-187) goes to the border roles among those only, whatever its
     /// owner and escalation roles say (none when neither is one, and the administrators always).
     /// </summary>
     public IReadOnlyList<string> Audience()

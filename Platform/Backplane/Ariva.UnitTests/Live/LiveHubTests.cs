@@ -181,16 +181,21 @@ public sealed class LiveHubTests
             AlertNotice.Plausible(bad).Should().BeFalse(bad.ToString());
     }
 
+    /// <summary>The border-only metrics by their stored names (ARV-181b2, ARV-187), pinned by <c>BorderAlertsTests</c>.</summary>
+    public static TheoryData<string> BorderMetrics => [.. Ariva.Core.Security.BorderAlerts.MetricNames];
+
     /// <summary>
-    /// ARV-181b2 (CWE-863, data boundary): a notice of open desks below recommendation reaches the alert groups of border roles
-    /// only (the border shift supervisor and the administrator), whatever its owner and escalation roles say: without an owner
-    /// (a rule from before the story, or a row changed in the database) it is not every alert role, owned by the terminal duty
-    /// manager it reaches the administrator alone, and escalated to an airport-side role it leaves that role out.
+    /// ARV-181b2 and ARV-187 (CWE-863, CWE-200, data boundary): a notice of open desks below recommendation or of the
+    /// predicted nowcast reaches the alert groups of border roles only (the border shift supervisor and the administrator),
+    /// whatever its owner and escalation roles say: without an owner (a rule from before the story, or a row changed in the
+    /// database) it is not every alert role, owned by the terminal duty manager it reaches the administrator alone, and
+    /// escalated to an airport-side role it leaves that role out.
     /// </summary>
-    [Fact]
-    public void Notices_Should_ReachBorderRolesOnly_When_TheMetricIsBorderOnly()
+    [Theory]
+    [MemberData(nameof(BorderMetrics))]
+    public void Notices_Should_ReachBorderRolesOnly_When_TheMetricIsBorderOnly(string borderMetric)
     {
-        var notice = new AlertNotice(Guid.NewGuid(), "DMO", "R-006", "Desks short", "A-VIS", null, "DesksBelowPlan", "Warning", "Raised",
+        var notice = new AlertNotice(Guid.NewGuid(), "DMO", "R-006", "Border alert", "A-VIS", null, borderMetric, "Warning", "Raised",
             new DateTime(2026, 10, 15, 10, 9, 0, DateTimeKind.Utc), 3, RoleCodes.BorderShiftSupervisor, null, false, null, new DateTime(2026, 10, 15, 10, 9, 1, DateTimeKind.Utc));
 
         AlertNotice.Plausible(notice).Should().BeTrue();
@@ -201,8 +206,9 @@ public sealed class LiveHubTests
             .Should().Equal([RoleCodes.SystemAdministrator], "an airport-side escalation role is left out");
         (notice with { EscalateToRole = RoleCodes.TerminalDutyManager, Escalated = true }).Audience()
             .Should().Equal([RoleCodes.BorderShiftSupervisor, RoleCodes.SystemAdministrator]);
-        foreach (var metric in Enum.GetNames<Ariva.Core.Domain.Enums.AlertMetric>().Where(m => m != "DesksBelowPlan"))
+        foreach (var metric in Enum.GetNames<Ariva.Core.Domain.Enums.AlertMetric>().Where(m => !Ariva.Core.Security.BorderAlerts.IsBorderOnly(m)))
             (notice with { Metric = metric, OwnerRole = null }).Audience().Should().Contain(RoleCodes.TerminalDutyManager, metric + " stays every alert role's without an owner");
+        Enum.GetNames<Ariva.Core.Domain.Enums.AlertMetric>().Count(m => !Ariva.Core.Security.BorderAlerts.IsBorderOnly(m)).Should().Be(8, "two border metrics of ten");
     }
 
     [Fact]

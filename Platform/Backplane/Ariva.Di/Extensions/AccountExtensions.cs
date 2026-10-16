@@ -117,6 +117,7 @@ public static class AccountExtensions
         services.AddArivaArrivalWaveSource(configuration);
         services.TryAddScoped<Ariva.Infra.Alerting.AlertInputs>();
         services.TryAddScoped<Ariva.Infra.Alerting.AlertRuleTick>();
+        services.TryAddSingleton<Ariva.Infra.Alerting.NotEvaluatedWarnings>();
         // Alert emails are written with the alert change (ARV-040).
         services.AddArivaEmailOutbox(configuration);
         // Alerts (ARV-039); their notices come from AddArivaCaching (Redis, or nothing without it).

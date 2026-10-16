@@ -16,9 +16,11 @@ namespace Ariva.Infra.Services.Alerting;
 /// <summary>
 /// Alerts (ARV-039). An alert is visible, and can be acted on, only within the caller's sites and where the caller's
 /// role is responsible for it (<see cref="Alert.IsFor"/>); any other alert answers like one that does not exist
-/// (CWE-863). An alert on a border-only metric (<see cref="BorderAlerts"/>, ARV-181b2) is visible to a caller holding
-/// <c>ArrivalWaveLanes.View</c> only, whatever its owner and escalation roles (a row without an owner, from before ARV-181b2
-/// or changed in the database included): left out of the list, 404 on get and on every action. An action locks the alert's
+/// (CWE-863). An alert on a border-only metric (<see cref="BorderAlerts"/>: open desks below recommendation since
+/// ARV-181b2, the predicted nowcast since ARV-187, whose raised value and predicted minute carry the lane split) is visible
+/// to a caller holding <c>ArrivalWaveLanes.View</c> only, whatever its owner and escalation roles (a row without an owner
+/// or owned airport-side, from before those stories or changed in the database included): left out of the list and its
+/// counts, 404 on get and on every action. An action locks the alert's
 /// row first, so it never overwrites what the evaluation or another person did in between, moves the alert forward only
 /// (otherwise 409), is audited, and is announced to the live hub after commit (to its audience, <see cref="AlertNotice.Audience"/>).
 /// </summary>
@@ -135,8 +137,8 @@ internal sealed class SvcAlerts(
         return alert;
     }
 
-    // The alerts the roles see, by Alert.IsFor's rule in the query: alerts on a border-only metric for holders of
-    // ArrivalWaveLanes.View only, before the administrator's and the owner and escalation roles' rule (ARV-181b2).
+    // The alerts the roles see, by Alert.IsFor's rule in the query: alerts on a border-only metric (each of them) for holders
+    // of ArrivalWaveLanes.View only, before the administrator's and the owner and escalation roles' rule (ARV-181b2, ARV-187).
     private static IQueryable<Alert> Visible(IQueryable<Alert> query, IReadOnlyCollection<string> roles)
     {
         if (!BorderAlerts.Receives(roles))

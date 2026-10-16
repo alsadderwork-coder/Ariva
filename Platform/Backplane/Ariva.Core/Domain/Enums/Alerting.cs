@@ -29,7 +29,9 @@ public enum AlertMetric
     /// <summary>
     /// The highest nowcast wait a queue zone is projected to reach within the rule's lead time (15 to 60 minutes), in
     /// minutes: the queue now, stepped with the arrival-wave projection (F14, ARV-047) and what the desks clear at the
-    /// current throughput (ARV-038). A predicted breach, not a measurement.
+    /// current throughput (ARV-038). A predicted breach, not a measurement. Border data since ARV-187: a lane queue is
+    /// stepped with its share of the arrival wave, so its rules, backtests, previews and alerts reach holders of
+    /// <c>ArrivalWaveLanes.View</c> only (<see cref="Ariva.Core.Security.BorderAlerts"/>).
     /// </summary>
     PredictedNowcast,
 

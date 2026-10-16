@@ -26,9 +26,11 @@ const reportsApi = `${hosts.main}/api/v1/sites/DMO/reports`;
 const redisUrl = process.env.ARIVA_E2E_REDIS_URL;
 
 // The rule service's answers, as the web app matches them (Ariva.Core AlertRuleErrors).
-const borderOnly = 'Open desks below recommendation is border data: only a caller with ArrivalWaveLanes.View creates, changes, imports or backtests a rule on it.';
+// ARV-187: one text for both border metrics (open desks below recommendation and the predicted nowcast).
+const borderOnly =
+	'Open desks below recommendation and predicted nowcast are border data: only a caller with ArrivalWaveLanes.View creates, changes, imports or backtests a rule on them.';
 const borderRolesOnly =
-	'A rule on open desks below recommendation belongs to a border role: its owner is the Border shift supervisor or the system administrator (never empty), and it escalates to one of them or to no role.';
+	'A rule on open desks below recommendation or predicted nowcast belongs to a border role: its owner is the Border shift supervisor or the system administrator (never empty), and it escalates to one of them or to no role.';
 const borderComparator = 'A rule on open desks below recommendation fires at or above its threshold: compare with GreaterThan or GreaterOrEqual.';
 const queueZonesOnly = 'ConservationResidual, TrackCompletion, OccupancyOutOfRange and DesksBelowPlan are judged per queue zone: choose queue zones only.';
 

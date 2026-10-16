@@ -395,6 +395,24 @@
       "dependsOn": [
         "ARV-111a"
       ]
+    },
+    {
+      "id": "ARV-190",
+      "title": "[E12] Not-evaluated border rules: audit the withdrawal and forget deleted rules (ARV-187 review lows)",
+      "description": "From the ARV-187 security review (2026-10-16), Low, Phase 3 by the owner's rule of 2026-10-14. (4) AlertRuleTick.NotEvaluatedAsync resolves a not-evaluated border rule's open alerts as RuleWithdrawn without an AuditTrail entry (as the existing system withdrawals); the alert row keeps the resolution, resolved_by and time and the warning names the rule. When NotEvaluatedWarnings.ShouldWarn is true, write one AlertRule.NotEvaluated audit entry in the same unit of work (site and code, values hash, the fixed reason, the withdrawn count). (5) NotEvaluatedWarnings keeps entries of rules deleted later (Forget runs only when a rule is evaluated) and records the warning before the commit, so a failed commit does not repeat it; at the end of TickAsync remove ids not in the tick's rule ids, and record after the commit. CWEs to review: CWE-778 (audit), CWE-400.",
+      "acceptanceCriteria": [
+        "A not-evaluated border rule's first sighting per values version writes one audit entry with the withdrawn count, in the same unit of work, tested in integration",
+        "NotEvaluatedWarnings drops the entries of rules no longer ticked and warns again after a failed commit, with unit tests",
+        "node scripts/verify.mjs backend passes and the story's integration tests pass through node scripts/verify.mjs story",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "node scripts/verify.mjs docs passes"
+      ],
+      "priority": 44,
+      "passes": false,
+      "notes": "Size S. Phase 3. Memory is bounded by the number of rules (at most 500 per site) meanwhile.",
+      "dependsOn": [
+        "ARV-187"
+      ]
     }
   ]
 }

@@ -19,16 +19,25 @@ public static class AlertRuleErrors
     public static readonly IReadOnlySet<Ariva.Core.Domain.Enums.AlertMetric> NotEvaluatedMetrics = new HashSet<Ariva.Core.Domain.Enums.AlertMetric>();
 
     /// <summary>
-    /// ARV-181b2 (CWE-862, CWE-863): a caller without <c>ArrivalWaveLanes.View</c> creating a rule on a border-only metric,
-    /// changing a rule to one, or backtesting one (403). Rules on such a metric are hidden from that caller otherwise (404).
+    /// ARV-181b2 and ARV-187 (CWE-862, CWE-863): a caller without <c>ArrivalWaveLanes.View</c> creating a rule on a
+    /// border-only metric (open desks below recommendation or the predicted nowcast), changing a rule to one, or backtesting
+    /// or previewing one (403). Rules on such a metric are hidden from that caller otherwise (404). One text for every border
+    /// metric (ARV-187, lead decision P1), which <c>TopologyAnswers</c> maps to 403 by its exact value.
     /// </summary>
-    public const string BorderOnly = "Open desks below recommendation is border data: only a caller with ArrivalWaveLanes.View creates, changes, imports or backtests a rule on it.";
+    public const string BorderOnly =
+        "Open desks below recommendation and predicted nowcast are border data: only a caller with ArrivalWaveLanes.View creates, changes, imports or backtests a rule on them.";
 
-    /// <summary>ARV-181b2: a rule on a border-only metric names a role that is not a border role, or no owner (every role).</summary>
+    /// <summary>
+    /// ARV-181b2 and ARV-187: a rule on a border-only metric names a role that is not a border role, or no owner (every
+    /// role). One text for every border metric (lead decision P1).
+    /// </summary>
     public const string BorderRolesOnly =
-        "A rule on open desks below recommendation belongs to a border role: its owner is the Border shift supervisor or the system administrator (never empty), and it escalates to one of them or to no role.";
+        "A rule on open desks below recommendation or predicted nowcast belongs to a border role: its owner is the Border shift supervisor or the system administrator (never empty), and it escalates to one of them or to no role.";
 
-    /// <summary>ARV-181b2: open desks below recommendation counts desks short, so a rule fires above its threshold.</summary>
+    /// <summary>
+    /// ARV-181b2: open desks below recommendation counts desks short, so a rule fires above its threshold. The predicted
+    /// nowcast keeps all four comparators (ARV-187, lead decision P2; <see cref="Ariva.Core.Domain.Entities.AlertRuleValues.FiresAboveOnly"/>).
+    /// </summary>
     public const string BorderComparator = "A rule on open desks below recommendation fires at or above its threshold: compare with GreaterThan or GreaterOrEqual.";
 
     public const string UnknownZones = "Every zone in scope must be a zone of the site's published zone profile.";
@@ -44,8 +53,9 @@ public static class AlertRuleErrors
 /// Alert rules (ARV-037): typed rules per site, read and written within the caller's sites (a rule elsewhere answers like
 /// one that does not exist), every change audited. Zones in scope must belong to the site's published zone profile;
 /// owner and escalation roles are roles the caller holds unless the caller is an administrator. A rule on a border-only
-/// metric (<see cref="Ariva.Core.Security.BorderAlerts"/>, ARV-181b2) is for callers holding <c>ArrivalWaveLanes.View</c> only: others are
-/// refused 403 (<see cref="AlertRuleErrors.BorderOnly"/>) when they create, change or backtest one, and never find one.
+/// metric (<see cref="Ariva.Core.Security.BorderAlerts"/>: open desks below recommendation since ARV-181b2, the predicted
+/// nowcast since ARV-187) is for callers holding <c>ArrivalWaveLanes.View</c> only: others are refused 403
+/// (<see cref="AlertRuleErrors.BorderOnly"/>) when they create, change, backtest or preview one, and never find one.
 /// </summary>
 public interface ISvcAlertRules : ISvcScoped
 {

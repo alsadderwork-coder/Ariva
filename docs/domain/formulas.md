@@ -653,6 +653,8 @@ predicted(t) = max over k of W(t + k), for the first k that reaches it
 
 The rule judges predicted(t) against its threshold like a nowcast, and its alert names t + k as the minute the breach is projected for. Taking the highest W over the horizon, not only W(t + L), keeps a wave that the desks would have cleared by t + L. No value without mu(t) > 0 or without A for every minute of the horizon, and none while the queue length is degraded.
 
+Border data since ARV-187 (owner decision 2026-10-16): for a lane queue, A(t + k) is its lane's share of the arrival wave (F14), so predicted(t) and its minute, with Q(t) and mu(t), give the cumulative lane arrivals ahead: for a peak at k with no empty minute before it, the sum of A over the first k minutes is (W(t + k) x mu(t) - 1) - Q(t) + k x mu(t). Its rules, backtests, previews and alerts are therefore for holders of `ArrivalWaveLanes.View` only, like open desks below recommendation (data-boundary.md); a rule may still compare with any of the four comparators and watch an overflow band, which takes its queue zone's arrivals.
+
 Tests (ARV-038):
 
 - Q = 20, mu = 5, A = 10 per minute for L = 15: W peaks at k = 15, (20 + 75 + 1) / 5 = 19.2.

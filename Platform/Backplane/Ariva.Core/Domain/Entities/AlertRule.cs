@@ -198,6 +198,13 @@ public sealed record AlertRuleValues(
     /// </summary>
     public static bool WatchesQueueZonesOnly(AlertMetric metric) => IsHealthCheck(metric) || metric == AlertMetric.DesksBelowPlan;
 
+    /// <summary>
+    /// Border metrics that count a shortfall, so a rule on one fires at or above its threshold (ARV-181b2): open desks below
+    /// recommendation only. The predicted nowcast, border data since ARV-187, keeps all four comparators and may watch an
+    /// overflow zone (which takes its queue's arrivals); only its roles and channels are border-only.
+    /// </summary>
+    public static bool FiresAboveOnly(AlertMetric metric) => metric == AlertMetric.DesksBelowPlan;
+
     private static bool IsRole(string code) => RoleCodes.AlertRoles.Any(r => string.Equals(r, code, StringComparison.Ordinal));
 
     public IReadOnlyList<string> Problems()
@@ -258,10 +265,12 @@ public sealed record AlertRuleValues(
     }
 
     /// <summary>
-    /// ARV-181b2 (CWE-863, data boundary): a rule on a border-only metric (<see cref="BorderAlerts"/>) belongs to a
-    /// border role, never to no one (no owner means every alert role, airport-side included), escalates to a border role or
-    /// to no role, and fires above its threshold (desks short). Checked here, so a create, an update, a backtest and an import
-    /// all refuse such a rule alike, and the evaluation never judges a stored one that fails it.
+    /// ARV-181b2 and ARV-187 (CWE-863, CWE-200, data boundary): a rule on a border-only metric (<see cref="BorderAlerts"/>:
+    /// open desks below recommendation and the predicted nowcast) belongs to a border role, never to no one (no owner means
+    /// every alert role, airport-side included), and escalates to a border role or to no role; a rule on open desks below
+    /// recommendation also fires above its threshold (desks short, <see cref="FiresAboveOnly"/>). Checked here, so a create,
+    /// an update, a backtest, a preview and an import all refuse such a rule alike, and the evaluation never judges a stored
+    /// one that fails it.
     /// </summary>
     private List<string> BorderProblems()
     {
@@ -271,7 +280,7 @@ public sealed record AlertRuleValues(
         var escalatesElsewhere = EscalateToRole is not null && !BorderAlerts.IsBorderRole(EscalateToRole);
         if (!BorderAlerts.IsBorderRole(OwnerRole) || escalatesElsewhere)
             problems.Add(AlertRuleErrors.BorderRolesOnly);
-        if (Comparator is not (AlertComparator.GreaterThan or AlertComparator.GreaterOrEqual))
+        if (FiresAboveOnly(Metric) && Comparator is not (AlertComparator.GreaterThan or AlertComparator.GreaterOrEqual))
             problems.Add(AlertRuleErrors.BorderComparator);
         return problems;
     }

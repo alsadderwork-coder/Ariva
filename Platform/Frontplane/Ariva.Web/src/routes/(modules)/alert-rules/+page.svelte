@@ -44,9 +44,11 @@
 		rules.operationalRoles.filter((r) => isAdministrator || (auth.user?.roles ?? []).includes(r))
 	);
 	/**
-	 * ARV-181b2: open desks below recommendation is border data, offered to holders of ArrivalWaveLanes.View only and given
-	 * to border roles only (their own, or both for an administrator). Hiding it is a convenience: the server refuses others
-	 * 403 and leaves their rules out of this list.
+	 * ARV-181b2, ARV-187: open desks below recommendation and the predicted nowcast are border data, offered to holders of
+	 * ArrivalWaveLanes.View only and given to border roles only (their own, or both for an administrator). Hiding them is a
+	 * convenience: the server refuses others 403 and leaves their rules out of this list. A listed border rule that fails
+	 * the border checks (a predicted nowcast rule of an airport-side role from before ARV-187) is not evaluated, and the
+	 * list says so.
 	 */
 	const seesBorderAlerts = $derived(auth.can(rules.borderPermission));
 	const borderRoles = $derived(
@@ -293,21 +295,25 @@
 										>
 											{rule.enabled ? $_('alertRules.enabled') : $_('alertRules.disabled')}
 										</button>
-										{#if rule.enabled && rules.notEvaluated.has(rule.metric)}
-											<span data-testid="not-evaluated" class="ms-1.5"
-												><StatusBadge tone="warning" label={$_('alertRules.notEvaluated')} /></span
-											>
-										{/if}
 									{:else}
 										<StatusBadge
 											tone={rule.enabled ? 'success' : 'neutral'}
 											label={rule.enabled ? $_('alertRules.enabled') : $_('alertRules.disabled')}
 										/>
-										{#if rule.enabled && rules.notEvaluated.has(rule.metric)}
-											<span data-testid="not-evaluated" class="ms-1.5"
-												><StatusBadge tone="warning" label={$_('alertRules.notEvaluated')} /></span
-											>
-										{/if}
+									{/if}
+									{#if rule.enabled && rules.notEvaluated.has(rule.metric)}
+										<span data-testid="not-evaluated" class="ms-1.5"
+											><StatusBadge tone="warning" label={$_('alertRules.notEvaluated')} /></span
+										>
+									{/if}
+									<!-- ARV-187 P3: a border rule failing the border checks is never evaluated; editing it repairs it. -->
+									{#if rule.enabled && rules.failsBorderRules(rule)}
+										<span data-testid="not-evaluated-border" class="ms-1.5"
+											><StatusBadge
+												tone="warning"
+												label={$_('alertRules.notEvaluatedBorder')}
+											/></span
+										>
 									{/if}
 								</td>
 								<td class="px-4 py-2">

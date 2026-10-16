@@ -189,9 +189,11 @@ test('a backtest returns the count and first fire time, within bounds, for creat
 	expect(result.alerts.length).toBe(result.count);
 	expect(result.firstRaisedUtc === null || typeof result.firstRaisedUtc === 'string').toBe(true);
 
+	// ARV-187: a predicted nowcast rule is border data, so it escalates to a border role or none (the default rule's
+	// escalation to the duty manager is refused; tests/api/predicted-breach-border.spec.ts covers the rest).
 	const predicted = await call('POST', `${api}/backtest`, {
 		token: administrator,
-		data: { rule: rule({ metric: 'PredictedNowcast', leadMinutes: 30, minQueueLength: null }), fromUtc, toUtc }
+		data: { rule: rule({ metric: 'PredictedNowcast', leadMinutes: 30, minQueueLength: null, escalateAfterMinutes: null, escalateToRole: null }), fromUtc, toUtc }
 	});
 	expect(predicted.status(), await predicted.text()).toBe(200);
 	expect((await predicted.json()).targetsWithData, 'no arrival-wave projection before ARV-047').toBe(0);

@@ -754,6 +754,7 @@
 	},
 	"alertRules": {
 		"notEvaluated": "Not evaluated yet",
+		"notEvaluatedBorder": "Not evaluated: fix its border settings",
 		"title": "Alert rules",
 		"description": "The rules that drive every alert, with a preview of when they would have fired",
 		"listTitle": "Rules",
@@ -790,7 +791,7 @@
 			"zonesRequired": "Choose at least one zone.",
 			"noOwner": "Every role of the site",
 			"noRole": "None",
-			"borderOwner": "Choose the Border shift supervisor or the system administrator as owner: a rule on open desks below recommendation belongs to a border role."
+			"borderOwner": "Choose the Border shift supervisor or the system administrator as owner: a rule on border data belongs to a border role."
 		},
 		"fields": {
 			"name": "Name",
@@ -817,7 +818,8 @@
 			"leadMinutes": "15 to 60 minutes ahead, from the arrival wave of landing flights.",
 			"escalation": "Unacknowledged alerts go to the role or contact after this.",
 			"condition": "This metric is true or false: the rule fires while it is true.",
-			"desksBelowPlan": "Border data: how many desks each arrivals lane is short of the current quarter hour's indicative recommendation. The rule and its alerts reach the Border shift supervisor and the system administrator only."
+			"desksBelowPlan": "Border data: how many desks each arrivals lane is short of the current quarter hour's indicative recommendation. The rule and its alerts reach the Border shift supervisor and the system administrator only.",
+			"predictedNowcast": "Border data: the wait expected at the lead time, from the queue now and its lane's share of the arrival wave. The rule and its alerts reach the Border shift supervisor and the system administrator only."
 		},
 		"healthHints": {
 			"ConservationResidual": "People counted in or out that the occupancy does not show, in the zone's latest ended 15-minute bin (0 when every person is accounted for). Queue zones only.",

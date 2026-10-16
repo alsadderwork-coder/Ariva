@@ -251,6 +251,68 @@ public sealed class AlertRuleTests
         (values with { Threshold = 0, ClearThreshold = null }).Problems().Should().BeEmpty("0 desks short and above: a rule that fires on any minute with a value");
     }
 
+    /// <summary>A predicted nowcast rule (ARV-187): above 15 minutes within 30 minutes ahead for 2 minutes, owned by the border.</summary>
+    private static AlertRuleValues PredictedBreach(string owner = RoleCodes.BorderShiftSupervisor, string escalateTo = null) =>
+        new("Wave ahead", ["A-VIS"], AlertMetric.PredictedNowcast, AlertComparator.GreaterThan, 15, null, null, 2, 2, AlertSeverity.Warning, owner,
+            escalateTo is null ? null : 10, escalateTo, null, false, true, 30);
+
+    public static TheoryData<string, AlertRuleValues> PredictedRefused => new()
+    {
+        { "no owner (every alert role)", PredictedBreach(owner: null) },
+        { "the terminal duty manager as owner", PredictedBreach(owner: RoleCodes.TerminalDutyManager) },
+        { "the handler station manager as owner", PredictedBreach(owner: RoleCodes.HandlerStationManager) },
+        { "the validation observer as owner", PredictedBreach(owner: RoleCodes.ValidationObserver) },
+        { "an owner in another case", PredictedBreach(owner: "bordershiftsupervisor") },
+        { "escalated to the terminal duty manager", PredictedBreach(escalateTo: RoleCodes.TerminalDutyManager) },
+        { "escalated to the handler station manager", PredictedBreach(owner: RoleCodes.SystemAdministrator, escalateTo: RoleCodes.HandlerStationManager) },
+        { "no owner, firing below", PredictedBreach(owner: null) with { Comparator = AlertComparator.LessThan } }
+    };
+
+    /// <summary>
+    /// ARV-187 (CWE-863, CWE-200, data boundary; owner decision 2026-10-16): a predicted nowcast rule is border data, so it
+    /// belongs to a border role, never to no one, and escalates to a border role or none; the entity refuses anything else
+    /// with the one border roles text, so a create, an update, a backtest, a preview and an import refuse it alike, and the
+    /// evaluation never judges a stored one.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(PredictedRefused))]
+    public void Rule_Should_BeRefused_When_APredictedNowcastLeavesTheBorder(string why, AlertRuleValues values)
+    {
+        values.Problems().Should().Contain(AlertRuleErrors.BorderRolesOnly, why)
+            .And.NotContain(AlertRuleErrors.BorderComparator, why + ": the roles only, never the comparator (lead decision P2)");
+        var create = () => new Core.Domain.Entities.AlertRule("DMO", 6, values);
+        create.Should().Throw<ArgumentException>(why);
+    }
+
+    /// <summary>
+    /// ARV-187 (lead decision P2): a predicted nowcast rule owned by a border role keeps all four comparators, its lead of 15
+    /// to 60 minutes and its overflow zones; only its roles and channels became border-only. Open desks below recommendation
+    /// alone fires above only and watches queue zones only.
+    /// </summary>
+    [Theory]
+    [InlineData(RoleCodes.BorderShiftSupervisor, null, AlertComparator.GreaterThan, 15)]
+    [InlineData(RoleCodes.BorderShiftSupervisor, RoleCodes.SystemAdministrator, AlertComparator.GreaterOrEqual, 60)]
+    [InlineData(RoleCodes.SystemAdministrator, RoleCodes.BorderShiftSupervisor, AlertComparator.LessThan, 15)]
+    [InlineData(RoleCodes.SystemAdministrator, null, AlertComparator.LessOrEqual, 60)]
+    public void Rule_Should_AcceptAPredictedNowcast_When_ItBelongsToABorderRole(string owner, string escalateTo, AlertComparator comparator, int lead)
+    {
+        var below = comparator is AlertComparator.LessThan or AlertComparator.LessOrEqual;
+        var values = PredictedBreach(owner, escalateTo) with { Comparator = comparator, LeadMinutes = lead, ClearThreshold = below ? 20 : 10, Zones = ["A-VIS", "A-OV"] };
+
+        values.Problems().Should().BeEmpty();
+        new Core.Domain.Entities.AlertRule("DMO", 6, values).Values().Should().BeEquivalentTo(values);
+        AlertRuleValues.WatchesQueueZonesOnly(AlertMetric.PredictedNowcast).Should().BeFalse("an overflow zone takes its queue zone's arrivals");
+        AlertRuleValues.FiresAboveOnly(AlertMetric.PredictedNowcast).Should().BeFalse();
+    }
+
+    [Fact]
+    public void FiresAboveOnly_Should_HoldForOpenDesksBelowRecommendationOnly_When_EveryMetricIsChecked()
+    {
+        Enum.GetValues<AlertMetric>().Where(AlertRuleValues.FiresAboveOnly).Should().Equal(AlertMetric.DesksBelowPlan);
+        Enum.GetValues<AlertMetric>().Where(AlertRuleValues.FiresAboveOnly).Should().OnlyContain(m => Ariva.Core.Security.BorderAlerts.IsBorderOnly(m),
+            "the border comparator check is one of the border checks");
+    }
+
     [Fact]
     public void BorderChecks_Should_LeaveOtherMetricsAlone_When_TheirRolesAreAirportSide()
     {

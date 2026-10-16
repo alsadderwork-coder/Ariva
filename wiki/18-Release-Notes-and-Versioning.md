@@ -140,3 +140,36 @@ Known issues and To confirm items:
 - `Platform/Testing/Ariva.E2E` does not exist yet; `verify.mjs e2e` reports it missing.
 - Integration tests are skipped until story ARV-007 adds Testcontainers.
 - Open decisions are listed in `../docs/product/decisions.md`.
+
+## 6. Migration notes for the next release
+
+Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
+
+### ARV-187: predicted-nowcast rules become border data (2026-10-16)
+
+Changed (owner decision of 2026-10-16, docs/product/decisions.md): the predicted nowcast (`PredictedNowcast`, "Predicted nowcast", a breach projected 15 to 60 minutes ahead) steps a lane queue with its share of the arrival wave, which is border data. It is now a border metric like open desks below recommendation (`DesksBelowPlan`): its rules, backtests, previews, alerts, live notices, emails and reports are for holders of `ArrivalWaveLanes.View` only (the Border shift supervisor and the system administrator). A rule on it belongs to one of those roles (never to no owner, which means every role) and escalates to one of them or to no role; it keeps all four comparators, its lead time and its overflow bands. The terminal duty manager loses predicted-wait alerts and keeps live-wait (`Nowcast`) alerts; nothing airport-side is lost in practice, since only lane queues have a projection. No database script, endpoint or permission changes.
+
+Upgrade steps:
+
+1. Before the upgrade, list the predicted-nowcast rules that will no longer pass the border checks (a read only query, run with the operator's database access, wiki 04):
+
+   ```sql
+   SELECT site_code, code, name, owner_role, escalate_to_role, enabled
+   FROM alert_rule
+   WHERE deleted_on IS NULL AND metric = 'PredictedNowcast'
+     AND (owner_role IS NULL OR owner_role NOT IN ('BorderShiftSupervisor', 'SystemAdministrator')
+          OR (escalate_to_role IS NOT NULL AND escalate_to_role NOT IN ('BorderShiftSupervisor', 'SystemAdministrator')))
+   ORDER BY site_code, code;
+   ```
+
+2. For each rule listed, decide with the site and act before the upgrade where you can: on the release still running, an administrator edits the rule and sets the Border shift supervisor or the administrator as owner and a border escalation role or none, or a Border shift supervisor or administrator deletes it (a second factor is asked). Doing this first closes the legacy-rule part of the rolling upgrade window below. After the upgrade the same repair is still possible: Edit opens such a rule on border roles; a supervisor cannot take a rule from the duty manager (the server answers that only an administrator can), and disabling it is refused until it has a border owner. Never change rows by hand in the database.
+3. Upgrade every host in the same release (Ariva.Api.Main, Ariva.Api.Stream, Ariva.Api.Integration, Ariva.Api.Cronz and the rest). During a rolling upgrade each old host keeps the old rule until it is replaced: an old Ariva.Api.Main lets the terminal duty manager create, backtest and list predicted rules and alerts and relays live notices to it; an old Ariva.Api.Stream keeps evaluating rules owned by airport-side roles (re-raising alerts a new Stream withdraws) and queues their alert emails; an old Ariva.Api.Integration sends pending emails to airport-side people; an old Ariva.Api.Cronz renders scheduled report deliveries with predicted alerts for them. Keep the window short and run step 1's query again after the upgrade.
+4. Until a listed rule is repaired or deleted: it is not evaluated (it raises nothing); its open alerts are resolved as withdrawn at the first evaluation tick; Ariva.Api.Stream logs one warning per rule ("not evaluated, it fails the rule checks of its border metric", wiki 10); the alert rules screen marks it "Not evaluated: fix its border settings"; and the site's configuration export answers 409 (an alert rule fails the checks an import applies).
+
+Known effects:
+
+- The terminal duty manager no longer finds its own predicted-nowcast rules (404) and no longer sees predicted alerts, historic ones included: they leave its alerts list, its daily report and CSV, scheduled report deliveries rendered after the upgrade and the weekly summary. Reports and emails already delivered cannot be recalled.
+- Alert emails about predicted alerts still pending for airport-side people at the upgrade are not sent (recorded as held back).
+- A site configuration bundle exported before the upgrade that holds a predicted-nowcast rule without a border owner no longer imports (the alert rules part is refused); repair the rule at the source and export again.
+
+Rollback notes: rolling the chart back alone restores the previous behaviour (there is no script to undo), which re-opens the channel the change closes (the duty manager could again create and backtest predicted rules and receive their alerts); rules repaired or deleted in the meantime stay as they are.

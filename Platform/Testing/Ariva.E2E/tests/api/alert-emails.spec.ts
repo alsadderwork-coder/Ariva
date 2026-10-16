@@ -11,6 +11,7 @@ import { hosts, smtp4dev } from '../support/hosts';
 // when the supervisor escalates it, the duty manager, and nobody else, gets one email: from Ariva's address, to one
 // recipient, with a one-line subject naming the rule, and with no header a value could have added. ARV-181b2: an open desks
 // below recommendation alert whose rule was changed in the database to escalate to the duty managers writes them no email.
+// ARV-187: an email to the duty manager about a predicted nowcast alert, pending from before the upgrade, is never sent.
 
 test.skip(!databaseAvailable, 'alert emails need the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true)');
 test.describe.configure({ mode: 'serial' });
@@ -57,6 +58,7 @@ test.beforeAll(async () => {
 });
 
 let desksRuleId: string, desksAlertId: string;
+let predictedRuleId: string, predictedAlertId: string;
 
 test.afterAll(async () => {
 	const db = database();
@@ -64,7 +66,8 @@ test.afterAll(async () => {
 	try {
 		for (const [rule, alert] of [
 			[ruleId, alertId],
-			[desksRuleId, desksAlertId]
+			[desksRuleId, desksAlertId],
+			[predictedRuleId, predictedAlertId]
 		]) {
 			if (!rule || !alert) continue;
 			await db.query(
@@ -240,4 +243,70 @@ test('an open desks below recommendation alert escalated to an airport-side role
 	await new Promise((resolve) => setTimeout(resolve, 3_000));
 	expect((await messagesTo(terminalAddress)).filter((m) => m.subject.includes(code)), 'no email to an airport-side role').toHaveLength(0);
 	expect((await call('GET', `${alertsApi}/${desksAlertId}`, { token: terminal })).status()).toBe(404);
+});
+
+test('a pending email to the duty manager about a predicted nowcast alert is never sent (ARV-187)', async () => {
+	// A predicted nowcast rule as a release before ARV-187 could have left it (owned by the duty managers; made here by a
+	// change in the database), its alert as the evaluation wrote it then, and the duty manager's email pending at the upgrade.
+	// Integration's sender checks the border rule again before each send: the email is held back, and the duty manager, who
+	// never finds the alert or the rule, is never told.
+	const created = await call('POST', rulesApi, {
+		token: admin,
+		data: {
+			siteCode: 'DMO',
+			name: `E2E mail wave ahead ${runId}`,
+			zones: ['A-CIT'],
+			metric: 'PredictedNowcast',
+			comparator: 'GreaterThan',
+			threshold: 20,
+			minQueueLength: null,
+			clearThreshold: null,
+			sustainMinutes: 2,
+			clearAfterMinutes: 2,
+			severity: 'Warning',
+			ownerRole: 'BorderShiftSupervisor',
+			escalateAfterMinutes: null,
+			escalateToRole: null,
+			escalationContact: null,
+			notifyByEmail: true,
+			enabled: true,
+			leadMinutes: 30
+		}
+	});
+	expect(created.status(), await created.text()).toBe(201);
+	const { id, code } = await created.json();
+	predictedRuleId = id;
+
+	const db = database();
+	await db.connect();
+	try {
+		await db.query(`UPDATE alert_rule SET owner_role = 'TerminalDutyManager', enabled = false WHERE id = $1`, [id]);
+		const planted = await db.query(
+			`INSERT INTO alert (id, site_code, rule_id, rule_code, rule_name, zone_name, device_code, metric, severity, owner_role, escalate_after_minutes,
+			                    escalate_to_role, raised_utc, raised_value, predicted_for_utc, state)
+			 SELECT gen_random_uuid(), site_code, id, code, name, 'A-CIT', NULL, metric, severity, owner_role, NULL, NULL,
+			        date_trunc('minute', now()) - interval '2 minutes', 48.2, date_trunc('minute', now()) + interval '28 minutes', 'Raised'
+			 FROM alert_rule WHERE id = $1 RETURNING id`,
+			[id]
+		);
+		predictedAlertId = planted.rows[0].id;
+		await db.query(
+			`INSERT INTO email_message (id, kind, alert_id, site_code, recipient, subject, body, status, attempts, created_utc, next_attempt_utc)
+			 SELECT gen_random_uuid(), 'AlertRaised', id, site_code, $2, '[Ariva] ' || rule_code || ' planted before the upgrade', 'planted', 'Pending', 0, now(), now()
+			 FROM alert WHERE id = $1`,
+			[predictedAlertId, terminalAddress]
+		);
+
+		expect((await call('GET', `${alertsApi}/${predictedAlertId}`, { token: terminal })).status(), 'the duty manager never finds the alert').toBe(404);
+		expect((await call('GET', `${rulesApi}/${id}`, { token: terminal })).status(), 'nor its own rule from before the story').toBe(404);
+		// Integration's sender runs every second in this run and marks the row in the transaction that claimed it.
+		await expect
+			.poll(async () => (await db.query(`SELECT recipient, status FROM email_message WHERE alert_id = $1`, [predictedAlertId])).rows, { timeout: 15_000 })
+			.toEqual([{ recipient: terminalAddress, status: 'Suppressed' }]);
+	} finally {
+		// Back to a border owner, so the demo airport holds no rule an export or the evaluation would refuse.
+		await db.query(`UPDATE alert_rule SET owner_role = 'BorderShiftSupervisor' WHERE id = $1`, [id]);
+		await db.end();
+	}
+	expect((await messagesTo(terminalAddress)).filter((m) => m.subject.includes(code)), 'no email to an airport-side role').toHaveLength(0);
 });

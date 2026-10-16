@@ -503,6 +503,62 @@ public sealed class SiteConfigurationTests(PostgresFixture fixture) : IAsyncDisp
             .Should().Be($"{RoleCodes.BorderShiftSupervisor}/GreaterOrEqual");
     }
 
+    /// <summary>
+    /// ARV-187: a predicted nowcast rule travels like any other once it belongs to a border role, with any comparator and on
+    /// an overflow band (lead decision P2); an import refuses one with an airport-side or no owner, or an airport-side
+    /// escalation role; the export is refused to a caller without ArrivalWaveLanes.View; and a stored rule from before the
+    /// story that the import would refuse refuses the export instead (lead decision P5, 409 through the conflicts).
+    /// </summary>
+    [Fact]
+    public async Task Transfer_Should_CarryAPredictedNowcast_When_TheRuleBelongsToABorderRole()
+    {
+        var admin = await AdministratorAsync("pn");
+        await SourceAsync(admin, "XCPA", "QPA");
+        var predicted = Ok(await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcAlertRules>().CreateAsync(new AlertRuleRequest("XCPA", "Wave ahead",
+            ["Snake A", "Overflow A"], "PredictedNowcast", "LessThan", 5, null, 8, 2, 2, "Warning", RoleCodes.BorderShiftSupervisor, null, null, null, false,
+            LeadMinutes: 30), Ct)));
+        var duty = await _host.CreateUserAsync("it.cfg.predicted.duty", roles: [RoleCodes.TerminalDutyManager]);
+        await _host.ReadAsync<int>("UPDATE \"user\" SET all_sites = true WHERE id = @id RETURNING 1", duty);
+
+        (await _host.AsCallerAsync(duty, s => Configuration(s).ExportAsync("XCPA", Ct))).ErrorMessages
+            .Should().Equal([AlertRuleErrors.BorderOnly], "the predicted rule never travels to a caller without the lane split");
+        var exported = Ok(await _host.AsCallerAsync(admin, s => Configuration(s).ExportAsync("XCPA", Ct)));
+        var rules = System.Text.Json.JsonSerializer.Deserialize<List<AlertRulePartRow>>(Convert.FromBase64String(exported.Bundle.Parts[SiteConfigurationBundles.AlertRules]),
+            SiteConfigurationParts.Json)!;
+        var row = rules.Single(r => r.Metric == "PredictedNowcast");
+        row.Should().Match<AlertRulePartRow>(r => r.OwnerRole == RoleCodes.BorderShiftSupervisor && r.Comparator == "LessThan" && r.LeadMinutes == 30);
+        row.Zones.Should().Equal("Snake A", "Overflow A");
+        await SiteAsync(admin, "XCPB");
+        await AirportAsync(admin, "QPB");
+        ImportSiteConfigurationRequest With(AlertRulePartRow changed) =>
+            Rehashed(exported.Bundle, SiteConfigurationBundles.AlertRules, SiteConfigurationParts.Write(rules.Select(r => r.Code == row.Code ? changed : r).ToList()));
+
+        foreach (var (what, refused) in new[]
+                 {
+                     ("an airport-side owner", With(row with { OwnerRole = RoleCodes.TerminalDutyManager })),
+                     ("no owner (every role's)", With(row with { OwnerRole = null })),
+                     ("an airport-side escalation role", With(row with { EscalateAfterMinutes = 10, EscalateToRole = RoleCodes.TerminalDutyManager }))
+                 })
+        {
+            (await _host.AsCallerAsync(admin, s => Configuration(s).ImportAsync("XCPB", refused, "QPB", Ct))).ErrorMessages
+                .Should().Equal([SiteConfigurationErrors.InvalidAlertRules], what);
+            (await RecordsAsync("XCPB")).Should().Be(0, what);
+        }
+
+        var imported = Ok(await _host.AsCallerAsync(admin, s => Configuration(s).ImportAsync("XCPB", Request(exported.Bundle), "QPB", Ct)));
+        imported.Counts.AlertRules.Should().Be(3);
+        (await _host.ReadAsync<string>(
+                "SELECT owner_role || '/' || comparator || '/' || lead_minutes || '/' || scope_zones FROM alert_rule WHERE site_code = @secret AND metric = 'PredictedNowcast'",
+                secret: "XCPB"))
+            .Should().Be($"{RoleCodes.BorderShiftSupervisor}/LessThan/30/Snake A\nOverflow A");
+
+        // P5: the source rule as a release before ARV-187 could have left it (owned by the duty manager) refuses the export.
+        (await _host.ReadAsync<int>("UPDATE alert_rule SET owner_role = 'TerminalDutyManager' WHERE id = @id RETURNING 1", predicted.Id)).Should().Be(1);
+        (await _host.AsCallerAsync(admin, s => Configuration(s).ExportAsync("XCPA", Ct))).ErrorMessages
+            .Should().Equal([SiteConfigurationErrors.RulesNotImportable], "every export can be imported");
+        SiteConfigurationErrors.Conflicts.Should().Contain(SiteConfigurationErrors.RulesNotImportable);
+    }
+
     [Fact]
     public async Task Import_Should_RefuseADisplayCodeALiveDisplayHoldsAndWriteNothing_When_TheSourceStillHasIt()
     {

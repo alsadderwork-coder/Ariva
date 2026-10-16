@@ -30,7 +30,9 @@ public sealed record AlertTargetSeries(AlertTarget Target, IReadOnlyList<AlertMi
 /// <item><c>SensorOffline</c>: per commissioned device of the zones, 1 for a minute inside one of its outages (<c>zone_outage</c>, and an
 /// outage still open while the registry has it offline), otherwise 0;</item>
 /// <item><c>PredictedNowcast</c>: <see cref="PredictedWait"/> from the queue minute's length and throughput and the arrival wave over the
-/// lead time (nothing while the length is degraded), for the minute of the projected peak;</item>
+/// lead time (nothing while the length is degraded), for the minute of the projected peak. The wave of a lane queue is its
+/// share of the arrival wave (<see cref="IArrivalWaveSource.ArrivalsAsync"/>, read here only), so the value carries the lane
+/// split: border data since ARV-187, the rule and its alerts reach border roles only (<see cref="Ariva.Core.Security.BorderAlerts"/>);</item>
 /// <item><c>OverflowOccupied</c> (ARV-115): per minute, 1 when a watched overflow band held anyone in it (TC-19, decided 2026-10-06:
 /// the band's highest reading in the minute above zero), 0 when the watched bands that reported held no one, nothing for a minute
 /// without a band reading, from <c>overflow_minute</c>. Only bands with a reading in the minute count: a band silent within the

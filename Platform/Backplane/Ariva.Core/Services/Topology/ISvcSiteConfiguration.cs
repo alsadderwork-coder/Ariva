@@ -84,6 +84,14 @@ public static class SiteConfigurationErrors
     public const string TextsNotImportable =
         "A device model, alert rule name or display text of the site has a control, invisible format or broken character, which an import refuses; change it first.";
 
+    /// <summary>
+    /// ARV-187 (lead decision P5): an alert rule of the site fails the rule checks the import applies (the entity's
+    /// <c>AlertRuleValues.Problems</c>), for example a predicted nowcast rule from before ARV-187 owned airport-side or by no
+    /// one, so every export still imports. Names no rule and no value.
+    /// </summary>
+    public const string RulesNotImportable =
+        "An alert rule of the site fails the checks an import applies (for example a rule on open desks below recommendation or predicted nowcast that does not belong to a border role), which an import refuses; change or delete it first.";
+
     /// <summary>Notes of the answers (fixed texts).</summary>
     public const string NoPublishedProfile = "The site has no published zone profile, so the bundle carries none.";
     public const string ProfileArrivesAsDraft = "The zone profile arrived as a draft: review it and publish it with a recent second factor.";
@@ -99,7 +107,7 @@ public static class SiteConfigurationErrors
     {
         SiteNotEmpty, TerminalTaken, AmbiguousTerminals, ProfileOnRemovedTopology, TooManyRecords, TooLargeToExport, FloorPlanFileUnreadable, DisplayCodeTaken,
         ReferencesOutsideProfile, DeviceOnRemovedLevel, RuleCodesBeyondImportBound, TopologyNamesNotImportable, ProfileNotImportable, TextsNotImportable,
-        FloorPlanNamesNotImportable
+        FloorPlanNamesNotImportable, RulesNotImportable
     };
 }
 

@@ -217,6 +217,145 @@ public sealed class AlertRuleServiceTests(PostgresFixture fixture) : IAsyncDispo
         (await _host.AsCallerAsync(duty, s => Rules(s).GetAsync(dutyOwn.Id, Ct))).ErrorMessages.Should().Equal(TopologyErrors.NotFound);
     }
 
+    /// <summary>A predicted nowcast rule (ARV-187): above 20 minutes within 30 minutes ahead on the Visitors lane.</summary>
+    private static AlertRuleRequest WaveAhead(string name, string owner = RoleCodes.BorderShiftSupervisor, string escalateTo = null, string[] zones = null) =>
+        new("DMO", name, zones ?? ["A-VIS"], "PredictedNowcast", "GreaterThan", 20, null, null, 2, 2, "Warning", owner, escalateTo is null ? null : 10, escalateTo, null, false,
+            LeadMinutes: 30);
+
+    /// <summary>
+    /// ARV-187 (owner decision 2026-10-16): a predicted nowcast rule is border data, so it belongs to a border role, never to
+    /// no one, and escalates to a border role or none; it keeps all four comparators and its overflow zones (lead decision P2).
+    /// </summary>
+    [Fact]
+    public async Task PredictedNowcast_Should_BelongToABorderRole_When_ARuleIsCreatedOrChanged()
+    {
+        var admin = await AdminAsync("it.alert.predicted.roles.admin");
+        var supervisor = await SupervisorAsync(admin, "it.alert.predicted.roles.supervisor");
+
+        (await _host.AsCallerAsync(admin, s => Rules(s).CreateAsync(WaveAhead("No owner", owner: null), Ct))).ErrorMessages
+            .Should().Equal([AlertRuleErrors.BorderRolesOnly], "no owner means every alert role, so not even an administrator gives one");
+        (await _host.AsCallerAsync(admin, s => Rules(s).CreateAsync(WaveAhead("Duty manager", owner: RoleCodes.TerminalDutyManager), Ct))).ErrorMessages
+            .Should().Equal(AlertRuleErrors.BorderRolesOnly);
+        (await _host.AsCallerAsync(admin, s => Rules(s).CreateAsync(WaveAhead("Handler", owner: RoleCodes.HandlerStationManager), Ct))).ErrorMessages
+            .Should().Equal(AlertRuleErrors.BorderRolesOnly);
+        (await _host.AsCallerAsync(admin, s => Rules(s).CreateAsync(WaveAhead("To duty manager", escalateTo: RoleCodes.TerminalDutyManager), Ct))).ErrorMessages
+            .Should().Equal(AlertRuleErrors.BorderRolesOnly);
+        (await _host.AsCallerAsync(admin, s => Rules(s).CreateAsync(WaveAhead("To handler", RoleCodes.SystemAdministrator, RoleCodes.HandlerStationManager), Ct))).ErrorMessages
+            .Should().Equal(AlertRuleErrors.BorderRolesOnly);
+        (await _host.AsCallerAsync(supervisor, s => Rules(s).BacktestAsync(new AlertBacktestRequest(WaveAhead("Preview", owner: null),
+            new DateTime(2026, 9, 30, 10, 0, 0, DateTimeKind.Utc), new DateTime(2026, 9, 30, 11, 0, 0, DateTimeKind.Utc)), Ct))).ErrorMessages
+            .Should().Equal([AlertRuleErrors.BorderRolesOnly], "a backtest judges the rule as it would be created");
+
+        var below = await _host.AsCallerAsync(supervisor, s => Rules(s).CreateAsync(WaveAhead("Below, with the band", zones: ["A-VIS", "A-OV"]) with
+        {
+            Comparator = "LessThan", Threshold = 5, ClearThreshold = 8
+        }, Ct));
+        below.HasErrors.Should().BeFalse(string.Join(", ", below.ErrorMessages ?? []));
+        below.Data.Should().Match<Core.Domain.ViewModels.AlertRuleViewModel>(r =>
+            r.Metric == "PredictedNowcast" && r.Comparator == "LessThan" && r.LeadMinutes == 30 && r.OwnerRole == RoleCodes.BorderShiftSupervisor);
+        below.Data.Zones.Should().Equal("A-VIS", "A-OV");
+        var backtest = await _host.AsCallerAsync(supervisor, s => Rules(s).BacktestAsync(new AlertBacktestRequest(WaveAhead("Preview, border"),
+            new DateTime(2026, 9, 30, 10, 0, 0, DateTimeKind.Utc), new DateTime(2026, 9, 30, 11, 0, 0, DateTimeKind.Utc)), Ct));
+        backtest.HasErrors.Should().BeFalse(string.Join(", ", backtest.ErrorMessages ?? []));
+
+        // The supervisor's rule changed by an administrator to an airport-side owner or escalation role is refused, BorderRolesOnly first.
+        (await _host.AsCallerAsync(admin, s => Rules(s).UpdateAsync(below.Data.Id, WaveAhead("Below", owner: RoleCodes.TerminalDutyManager), Ct))).ErrorMessages
+            .Should().Equal(AlertRuleErrors.BorderRolesOnly);
+        (await _host.AsCallerAsync(admin, s => Rules(s).UpdateAsync(below.Data.Id, WaveAhead("Below", escalateTo: RoleCodes.HandlerStationManager), Ct))).ErrorMessages
+            .Should().Equal(AlertRuleErrors.BorderRolesOnly);
+        (await _host.ReadAsync<long>("""
+            SELECT count(*) FROM alert_rule WHERE metric = 'PredictedNowcast' AND deleted_on IS NULL
+              AND (owner_role IS NULL OR owner_role NOT IN ('BorderShiftSupervisor', 'SystemAdministrator')
+                   OR (escalate_to_role IS NOT NULL AND escalate_to_role NOT IN ('BorderShiftSupervisor', 'SystemAdministrator')))
+            """)).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task PredictedNowcast_Should_BeHiddenFromAndRefusedToAirportRoles_When_TheyHaveNoArrivalWaveLanes()
+    {
+        var admin = await AdminAsync("it.alert.predicted.hidden.admin");
+        var supervisor = await SupervisorAsync(admin, "it.alert.predicted.hidden.supervisor");
+        var duty = await SupervisorAsync(admin, "it.alert.predicted.hidden.duty", role: RoleCodes.TerminalDutyManager);
+        var handler = await SupervisorAsync(admin, "it.alert.predicted.hidden.handler", role: RoleCodes.HandlerStationManager);
+        var both = await _host.CreateUserAsync("it.alert.predicted.hidden.both", roles: [RoleCodes.TerminalDutyManager, RoleCodes.BorderShiftSupervisor]);
+        await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcUsers>().SetSitesAsync(both, new SiteAccessRequest(false, ["DMO"]), Ct));
+        var border = (await _host.AsCallerAsync(supervisor, s => Rules(s).CreateAsync(WaveAhead("Hidden wave"), Ct))).Data;
+        var desks = (await _host.AsCallerAsync(supervisor, s => Rules(s).CreateAsync(DesksShort("Hidden desks beside the wave"), Ct))).Data;
+        var dutyOwn = (await _host.AsCallerAsync(duty, s => Rules(s).CreateAsync(Request("Duty wait, wave", owner: RoleCodes.TerminalDutyManager), Ct))).Data;
+
+        foreach (var (caller, who) in new[] { (duty, "terminal duty manager"), (handler, "handler station manager") })
+        {
+            // Both border metrics are left out of one query (the filter's loop runs twice), and out of its count.
+            var search = (await _host.AsCallerAsync(caller, s => Rules(s).SearchAsync(new AlertRuleCriteria { SiteCode = "DMO", PageSize = 500 }, Ct))).Data;
+            search.Data.Should().NotContain(r => r.Metric == "PredictedNowcast" || r.Metric == "DesksBelowPlan", who);
+            search.TotalCount.Should().Be(search.Data.Count, who + ": counted as listed");
+            search.Data.Select(r => r.Id).Should().NotContain([border.Id, desks.Id], who);
+            (await _host.AsCallerAsync(caller, s => Rules(s).SearchAsync(new AlertRuleCriteria { SiteCode = "DMO", Metric = "PredictedNowcast" }, Ct))).Data.TotalCount
+                .Should().Be(0, who + ": not even counted");
+            (await _host.AsCallerAsync(caller, s => Rules(s).GetAsync(border.Id, Ct))).ErrorMessages.Should().Equal([TopologyErrors.NotFound], who);
+            (await _host.AsCallerAsync(caller, s => Rules(s).UpdateAsync(border.Id, Request("Took it", owner: caller == duty ? RoleCodes.TerminalDutyManager : null), Ct)))
+                .ErrorMessages.Should().Equal([TopologyErrors.NotFound], who);
+            (await _host.AsCallerAsync(caller, s => Rules(s).DeleteAsync(border.Id, Ct))).ErrorMessages.Should().Equal([TopologyErrors.NotFound], who);
+            (await _host.AsCallerAsync(caller, s => Rules(s).CreateAsync(WaveAhead("Probe wave"), Ct))).ErrorMessages.Should().Equal([AlertRuleErrors.BorderOnly], who);
+        }
+
+        (await _host.AsCallerAsync(duty, s => Rules(s).CreateAsync(WaveAhead("Duty wave", owner: RoleCodes.TerminalDutyManager), Ct))).ErrorMessages
+            .Should().Equal([AlertRuleErrors.BorderOnly], "403 before any other check");
+        (await _host.AsCallerAsync(duty, s => Rules(s).UpdateAsync(dutyOwn.Id, WaveAhead("Duty wait, wave", owner: RoleCodes.TerminalDutyManager), Ct))).ErrorMessages
+            .Should().Equal([AlertRuleErrors.BorderOnly], "an own rule changed to the border metric");
+        var now = _host.Clock.GetUtcNow().UtcDateTime;
+        var ended = new DateTime(now.Year, now.Month, now.Day, now.Hour, now.Minute, 0, DateTimeKind.Utc);
+        (await _host.AsCallerAsync(duty, s => Rules(s).BacktestAsync(new AlertBacktestRequest(WaveAhead("Probe"), ended.AddMinutes(-60), ended), Ct))).ErrorMessages
+            .Should().Equal([AlertRuleErrors.BorderOnly], "the backtest ending now is the one that would carry a projection");
+        (await _host.AsCallerAsync(duty, s => Rules(s).BacktestAsync(new AlertBacktestRequest(WaveAhead("Probe"), ended, ended.AddMinutes(-60)), Ct))).ErrorMessages
+            .Should().Equal([AlertRuleErrors.BorderOnly], "refused before the range is checked");
+        (await _host.AsCallerAsync(duty, s => Rules(s).CreateAsync(WaveAhead("Lower case") with { Metric = "predictednowcast" }, Ct))).ErrorMessages
+            .Should().Equal("Unknown metric, comparator or severity.");
+        (await _host.ReadAsync<DateTime?>("SELECT deleted_on FROM alert_rule WHERE id = @id", border.Id)).Should().BeNull("the duty manager's delete did nothing");
+        (await _host.ReadAsync<string>("SELECT metric FROM alert_rule WHERE id = @id", dutyOwn.Id)).Should().Be("Nowcast");
+        (await _host.ReadAsync<string>("SELECT name FROM alert_rule WHERE id = @id", border.Id)).Should().Be("Hidden wave");
+
+        foreach (var caller in new[] { supervisor, admin, both })
+        {
+            (await _host.AsCallerAsync(caller, s => Rules(s).GetAsync(border.Id, Ct))).HasErrors.Should().BeFalse();
+            (await _host.AsCallerAsync(caller, s => Rules(s).SearchAsync(new AlertRuleCriteria { SiteCode = "DMO", Metric = "PredictedNowcast" }, Ct))).Data.Data
+                .Should().Contain(r => r.Id == border.Id);
+        }
+    }
+
+    /// <summary>
+    /// ARV-187 migration: a predicted nowcast rule from before the story owned by the terminal duty manager (made here in the
+    /// database) is hidden from its old owner, refused to the supervisor when changed or disabled without a border owner
+    /// (the supervisor cannot take it from a role it does not hold), repaired by an administrator, and deleted by a supervisor.
+    /// </summary>
+    [Fact]
+    public async Task PredictedNowcast_Should_BeRepairedByAnAdministratorOrDeleted_When_ARuleFromBeforeTheStoryBelongsToAnAirportRole()
+    {
+        var admin = await AdminAsync("it.alert.predicted.legacy.admin");
+        var supervisor = await SupervisorAsync(admin, "it.alert.predicted.legacy.supervisor");
+        var duty = await SupervisorAsync(admin, "it.alert.predicted.legacy.duty", role: RoleCodes.TerminalDutyManager);
+        var legacy = (await _host.AsCallerAsync(supervisor, s => Rules(s).CreateAsync(WaveAhead("Legacy wave, repaired"), Ct))).Data;
+        var gone = (await _host.AsCallerAsync(supervisor, s => Rules(s).CreateAsync(WaveAhead("Legacy wave, deleted"), Ct))).Data;
+        (await _host.ReadAsync<int>("UPDATE alert_rule SET owner_role = 'TerminalDutyManager' WHERE id = @id RETURNING 1", legacy.Id)).Should().Be(1);
+        (await _host.ReadAsync<int>("UPDATE alert_rule SET owner_role = NULL WHERE id = @id RETURNING 1", gone.Id)).Should().Be(1);
+
+        (await _host.AsCallerAsync(duty, s => Rules(s).GetAsync(legacy.Id, Ct))).ErrorMessages.Should().Equal([TopologyErrors.NotFound], "its old owner no longer finds it");
+        (await _host.AsCallerAsync(duty, s => Rules(s).DeleteAsync(legacy.Id, Ct))).ErrorMessages.Should().Equal([TopologyErrors.NotFound]);
+        (await _host.AsCallerAsync(supervisor, s => Rules(s).GetAsync(legacy.Id, Ct))).Data.OwnerRole.Should().Be(RoleCodes.TerminalDutyManager);
+        (await _host.AsCallerAsync(supervisor, s => Rules(s).UpdateAsync(legacy.Id, WaveAhead("Legacy wave, repaired", owner: RoleCodes.TerminalDutyManager) with
+        {
+            Enabled = false
+        }, Ct))).ErrorMessages.Should().Equal([AlertRuleErrors.BorderRolesOnly], "disabled or not, it needs a border owner first");
+        (await _host.AsCallerAsync(supervisor, s => Rules(s).UpdateAsync(legacy.Id, WaveAhead("Legacy wave, repaired"), Ct))).ErrorMessages
+            .Should().Equal([AlertRuleErrors.RoleNotHeld], "the supervisor cannot take it from the duty manager");
+
+        var repaired = await _host.AsCallerAsync(admin, s => Rules(s).UpdateAsync(legacy.Id, WaveAhead("Legacy wave, repaired"), Ct));
+        repaired.HasErrors.Should().BeFalse(string.Join(", ", repaired.ErrorMessages ?? []));
+        repaired.Data.OwnerRole.Should().Be(RoleCodes.BorderShiftSupervisor);
+        (await _host.AsCallerAsync(supervisor, s => Rules(s).DeleteAsync(gone.Id, Ct))).Data.Should().BeTrue("a supervisor removes a legacy rule it sees");
+        (await _host.ReadAsync<DateTime?>("SELECT deleted_on FROM alert_rule WHERE id = @id", gone.Id)).Should().NotBeNull();
+    }
+
     [Fact]
     public async Task Create_Should_AcceptAnOverflowRule_When_TheStreamStoresBandOccupancy()
     {

@@ -221,6 +221,9 @@ export function accounts() {
 		// accounts of their own, because a TOTP code counts once per account.
 		desksBorder: account('e2e.desksborder', ['BorderShiftSupervisor'], false, true, ['DMO']),
 		desksTerminal: account('e2e.desksterminal', ['TerminalDutyManager'], false, true, ['DMO']),
+		// ARV-187: the same for the predicted-breach suite (predicted nowcast rules are border data), its own accounts again.
+		predBorder: account('e2e.predborder', ['BorderShiftSupervisor'], false, true, ['DMO']),
+		predTerminal: account('e2e.predterminal', ['TerminalDutyManager'], false, true, ['DMO']),
 		// ARV-059: administers accounts through the Users and access screen (creating, resets and role grants need a second
 		// factor); the second is limited to the demo airport, to show that the screen and the server keep it there.
 		webUsers: account('e2e.webusers', ['SystemAdministrator'], false, true, ['*']),

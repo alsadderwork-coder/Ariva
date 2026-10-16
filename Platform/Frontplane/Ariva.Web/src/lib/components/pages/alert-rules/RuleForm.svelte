@@ -14,7 +14,10 @@
 		initial: AlertRuleRequest;
 		/** Queue and overflow zones of the site's published zone profile. */
 		zoneNames: string[];
-		/** The queue zones alone, which a health-check or border-only rule watches (ARV-114b, ARV-181b2). */
+		/**
+		 * The queue zones alone, which a health-check rule or a rule on open desks below recommendation watches (ARV-114b,
+		 * ARV-181b2).
+		 */
 		queueZoneNames: string[];
 		/** Roles the caller may give a rule to (their own; every operational role for an administrator). */
 		roles: string[];
@@ -26,8 +29,9 @@
 		/** An administrator may leave a rule without an owner (every role of the site is responsible). */
 		allowNoOwner: boolean;
 		/**
-		 * ARV-181b2: the caller holds ArrivalWaveLanes.View, so the border-only metrics are offered. A convenience only: the
-		 * server refuses such a rule to anyone else (403) and hides such rules from them.
+		 * ARV-181b2, ARV-187: the caller holds ArrivalWaveLanes.View, so the border-only metrics (open desks below
+		 * recommendation, the predicted nowcast) are offered. A convenience only: the server refuses such a rule to anyone
+		 * else (403) and hides such rules from them.
 		 */
 		seesBorderAlerts: boolean;
 		canPreview: boolean;
@@ -72,10 +76,13 @@
 
 	const unit = $derived(rules.unitOf(metric));
 	const healthCheck = $derived(rules.healthChecks.has(metric));
-	/** ARV-181b2: a border-only metric (open desks below recommendation), with its own owners, comparators and hint. */
+	/**
+	 * ARV-181b2, ARV-187: a border-only metric (open desks below recommendation, the predicted nowcast), with its own owners
+	 * and hint; open desks below recommendation also has its own comparators and watches queue zones only.
+	 */
 	const borderMetric = $derived(rules.borderOnly.has(metric));
 	const queueOnly = $derived(rules.watchesQueueZonesOnly(metric));
-	/** The zones the chosen metric can watch: queue zones only for a health check or a border-only metric. */
+	/** The zones the chosen metric can watch: queue zones only for a health check or open desks below recommendation. */
 	const choices = $derived(queueOnly ? queueZoneNames : zoneNames);
 	/**
 	 * The zones the form sends: for a queue-zone metric without the overflow zones chosen before (the form no longer shows
@@ -93,7 +100,18 @@
 	const roleChoices = $derived(
 		borderMetric ? borderChoices : [...new Set([...roles, ...savedRoles])]
 	);
-	const comparatorChoices = $derived(borderMetric ? rules.aboveComparators : rules.comparators);
+	const comparatorChoices = $derived(
+		rules.aboveOnly.has(metric) ? rules.aboveComparators : rules.comparators
+	);
+	/**
+	 * The hint of each border-only metric, by message key: the key is chosen from this list, never built from the metric's
+	 * value, so a metric without a hint here shows none.
+	 */
+	const borderHints: ReadonlyMap<string, string> = new Map([
+		['DesksBelowPlan', 'hints.desksBelowPlan'],
+		['PredictedNowcast', 'hints.predictedNowcast']
+	]);
+	const borderHint = $derived(borderMetric ? borderHints.get(metric) : undefined);
 	const metricChoices = $derived(
 		rules.metrics.filter(
 			(m) =>
@@ -145,14 +163,16 @@
 	}
 
 	/**
-	 * ARV-181b2: a border-only metric takes a border owner (never no owner), a border escalation role or none, and a
-	 * comparator that fires above; choosing one moves the form's values onto those choices, so the selects show what is sent.
+	 * ARV-181b2, ARV-187: a border-only metric takes a border owner (never no owner) and a border escalation role or none;
+	 * open desks below recommendation also a comparator that fires above (the predicted nowcast keeps all four). Choosing
+	 * one moves the form's values onto those choices, so the selects show what is sent.
 	 */
 	function fitBorder(): void {
 		if (!rules.borderOnly.has(metric)) return;
 		if (!borderChoices.includes(ownerRole)) ownerRole = borderChoices[0] ?? '';
 		if (escalateToRole && !borderChoices.includes(escalateToRole)) escalateToRole = '';
-		if (!rules.aboveComparators.includes(comparator)) comparator = rules.aboveComparators[0];
+		if (rules.aboveOnly.has(metric) && !rules.aboveComparators.includes(comparator))
+			comparator = rules.aboveComparators[0];
 	}
 
 	function chooseMetric(next: string): void {
@@ -164,7 +184,8 @@
 		if (leaving && escalateToRole && !roleChoices.includes(escalateToRole)) escalateToRole = '';
 	}
 
-	// A saved or duplicated border-only rule starts on the border choices too.
+	// A saved or duplicated border-only rule starts on the border choices too: a rule from before ARV-187 owned by an
+	// airport-side role (not evaluated, marked on the list) opens on a border owner, so saving it repairs it.
 	fitBorder();
 
 	async function submit(event: SubmitEvent): Promise<void> {
@@ -278,12 +299,12 @@
 				{label(`healthHints.${metric}`)}
 			</p>
 		{/if}
-		{#if borderMetric}
+		{#if borderHint}
 			<p
 				class="self-end text-xs text-muted-foreground sm:col-span-2 lg:col-span-3"
 				data-testid="border-hint"
 			>
-				{label('hints.desksBelowPlan')}
+				{label(borderHint)}
 			</p>
 		{/if}
 		{#if metric === 'Nowcast'}

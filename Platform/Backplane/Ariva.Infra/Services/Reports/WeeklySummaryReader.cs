@@ -217,7 +217,7 @@ internal sealed class WeeklySummaryReader(IUnitOfWork unitOfWork, AvailabilityLe
 
         // The alerts the roles see, by the alert screens' rule (as the daily report): the owner role, the escalation role once
         // escalated, an alert without an owner, or an administrator; an alert on a border-only metric only for roles holding
-        // ArrivalWaveLanes.View, whatever its owner and escalation roles (BorderAlerts, ARV-181b2).
+        // ArrivalWaveLanes.View, whatever its owner and escalation roles (BorderAlerts, ARV-181b2, ARV-187).
         var admin = Enumerable.Contains(roles, RoleCodes.SystemAdministrator, StringComparer.Ordinal);
         var alerts = await ExecuteSqlAsync<AlertRow>("""
             SELECT rule_code AS "RuleCode", rule_name AS "RuleName", zone_name AS "ZoneName", severity AS "Severity", state AS "State",

@@ -73,18 +73,25 @@ public sealed class AlertLifecycleTests
         NewAlert(owner: null).IsFor([RoleCodes.HandlerStationManager]).Should().BeTrue("no owner: every role of the site");
     }
 
+    /// <summary>The border-only metrics (ARV-181b2, ARV-187), pinned by <c>BorderAlertsTests</c>.</summary>
+    public static TheoryData<AlertMetric> BorderMetrics => [.. Ariva.Core.Security.BorderAlerts.Metrics.Order()];
+
     /// <summary>
-    /// ARV-181b2 (CWE-863, data boundary): an alert on open desks below recommendation is for holders of ArrivalWaveLanes.View
-    /// only (the border shift supervisor and the administrator, or an account holding either besides an airport-side role),
-    /// whatever its owner and escalation roles say; a row without an owner or with an airport-side owner (from before the story,
-    /// or changed in the database) reaches no airport-side role, escalated or not.
+    /// ARV-181b2 and ARV-187 (CWE-863, CWE-200, data boundary): an alert on open desks below recommendation or on the
+    /// predicted nowcast is for holders of ArrivalWaveLanes.View only (the border shift supervisor and the administrator, or
+    /// an account holding either besides an airport-side role), whatever its owner and escalation roles say; a row without an
+    /// owner or with an airport-side owner (from before the story, or changed in the database) reaches no airport-side role,
+    /// escalated or not.
     /// </summary>
-    [Fact]
-    public void IsFor_Should_AnswerBorderRolesOnly_When_TheAlertIsOnOpenDesksBelowRecommendation()
+    [Theory]
+    [MemberData(nameof(BorderMetrics))]
+    public void IsFor_Should_AnswerBorderRolesOnly_When_TheAlertIsOnABorderMetric(AlertMetric metric)
     {
-        var rule = new AlertRule("DMO", 6, new AlertRuleValues("Desks short", ["A-VIS"], AlertMetric.DesksBelowPlan, AlertComparator.GreaterOrEqual, 2, null, null, 3, 2,
-            AlertSeverity.Warning, RoleCodes.BorderShiftSupervisor, 10, RoleCodes.SystemAdministrator, null, false, true)) { Id = Guid.NewGuid() };
-        var owned = new Alert(rule, "A-VIS", null, new AlertTransition(AlertTransitionKind.Raised, Raised, 3, null, null));
+        var predicted = metric == AlertMetric.PredictedNowcast;
+        var rule = new AlertRule("DMO", 6, new AlertRuleValues("Border alert", ["A-VIS"], metric, AlertComparator.GreaterOrEqual, 2, null, null, 3, 2,
+            AlertSeverity.Warning, RoleCodes.BorderShiftSupervisor, 10, RoleCodes.SystemAdministrator, null, false, true, predicted ? 30 : null)) { Id = Guid.NewGuid() };
+        var owned = new Alert(rule, "A-VIS", null, new AlertTransition(AlertTransitionKind.Raised, Raised, 3, null, predicted ? Raised.AddMinutes(20) : null));
+        owned.Metric.Should().Be(metric);
 
         owned.IsFor([RoleCodes.BorderShiftSupervisor]).Should().BeTrue();
         owned.IsFor([RoleCodes.SystemAdministrator]).Should().BeTrue();
@@ -101,7 +108,7 @@ public sealed class AlertLifecycleTests
                      (null, RoleCodes.HandlerStationManager, true)
                  })
         {
-            var stored = new StoredAlert(AlertMetric.DesksBelowPlan, owner, escalateTo, escalated);
+            var stored = new StoredAlert(metric, owner, escalateTo, escalated);
             var row = $"owner {owner ?? "none"}, escalated to {escalateTo ?? "none"}";
             stored.IsFor([RoleCodes.TerminalDutyManager]).Should().BeFalse(row);
             stored.IsFor([RoleCodes.HandlerStationManager]).Should().BeFalse(row);
@@ -110,8 +117,8 @@ public sealed class AlertLifecycleTests
             new StoredAlert(AlertMetric.Nowcast, owner, escalateTo, escalated).IsFor([RoleCodes.SystemAdministrator]).Should().BeTrue(row);
         }
 
-        new StoredAlert(AlertMetric.DesksBelowPlan, null, null, false).IsFor([RoleCodes.BorderShiftSupervisor]).Should().BeTrue("no owner: every border role");
-        new StoredAlert(AlertMetric.DesksBelowPlan, RoleCodes.TerminalDutyManager, null, false).IsFor([RoleCodes.BorderShiftSupervisor])
+        new StoredAlert(metric, null, null, false).IsFor([RoleCodes.BorderShiftSupervisor]).Should().BeTrue("no owner: every border role");
+        new StoredAlert(metric, RoleCodes.TerminalDutyManager, null, false).IsFor([RoleCodes.BorderShiftSupervisor])
             .Should().BeFalse("a border role that is neither owner nor escalation role is not responsible");
         new StoredAlert(AlertMetric.Nowcast, null, null, false).IsFor([RoleCodes.TerminalDutyManager]).Should().BeTrue("other metrics keep their rule");
     }

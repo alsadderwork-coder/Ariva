@@ -79,6 +79,13 @@ public sealed class HostServicesTests
         scope.ServiceProvider.GetService<Ariva.Infra.Alerting.AlertRuleTick>().Should().NotBeNull();
         scope.ServiceProvider.GetService<Ariva.Infra.Alerting.AlertInputs>().Should().NotBeNull();
         scope.ServiceProvider.GetService<Ariva.Core.Alerting.IArrivalWaveSource>().Should().NotBeNull();
+        // ARV-187 (lead decision P3): one not-evaluated warning per rule and values version in the host, so the memory outlives each tick's scope.
+        await using var next = app.Services.CreateAsyncScope();
+        scope.ServiceProvider.GetRequiredService<Ariva.Infra.Alerting.NotEvaluatedWarnings>()
+            .Should().BeSameAs(next.ServiceProvider.GetRequiredService<Ariva.Infra.Alerting.NotEvaluatedWarnings>());
+        await using var main = ArivaHosts.Create(ArivaHosts.Main);
+        await using var mainScope = main.Services.CreateAsyncScope();
+        mainScope.ServiceProvider.GetService<Ariva.Infra.Alerting.AlertRuleTick>().Should().NotBeNull("Main registers the tick too (RegisterArivaServices)");
     }
 
     [Fact]

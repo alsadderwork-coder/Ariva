@@ -399,8 +399,9 @@ test('a handler station manager reads the rules only; the server refuses a chang
 const desksStart = at('04:00');
 const desksFrom = at('03:55');
 const desksTo = at('04:25');
+/** The 403 the server answers a caller without ArrivalWaveLanes.View for either border metric (one generic text since ARV-187). */
 const borderOnlyText =
-	'Not allowed: Open desks below recommendation is border data: only a caller with ArrivalWaveLanes.View creates, changes, imports or backtests a rule on it.';
+	'Not allowed: Open desks below recommendation and predicted nowcast are border data: only a caller with ArrivalWaveLanes.View creates, changes, imports or backtests a rule on them.';
 
 /** The values of a select's options, in order. */
 async function optionValues(page: Page, select: string): Promise<string[]> {
@@ -582,6 +583,7 @@ test.describe('open desks below recommendation (ARV-181b2)', () => {
 		const form = page.getByTestId('rule-form');
 		const metrics = await optionValues(page, '#rule-metric');
 		expect(metrics, 'border data is not offered').not.toContain('DesksBelowPlan');
+		expect(metrics, 'the predicted nowcast is border data too (ARV-187)').not.toContain('PredictedNowcast');
 		expect(metrics).toEqual(expect.arrayContaining(['Nowcast', 'OverflowOccupied', 'ConservationResidual', 'TrackCompletion', 'OccupancyOutOfRange']));
 
 		// Hiding the metric is a convenience: a request changed on its way to the server is refused there, and the form
@@ -608,6 +610,236 @@ test.describe('open desks below recommendation (ARV-181b2)', () => {
 		expect((await probe.json()).totalCount).toBe(0);
 		const id = (await hidden.json()).id;
 		expect((await call('GET', `${api}/${id}`, { token: terminalToken })).status()).toBe(404);
+		expect((await call('GET', `${api}/${id}`, { token: borderToken })).status()).toBe(200);
+		allowStatuses(guards, 403);
+		await guards.expectClean();
+	});
+});
+
+/** The 400 the server answers a border rule whose owner or escalation is not a border role (one generic text since ARV-187). */
+const borderRolesText =
+	'Not valid: A rule on open desks below recommendation or predicted nowcast belongs to a border role: its owner is the Border shift supervisor or the system administrator (never empty), and it escalates to one of them or to no role.';
+const predictedHint =
+	"Border data: the wait expected at the lead time, from the queue now and its lane's share of the arrival wave. The rule and its alerts reach the Border shift supervisor and the system administrator only.";
+
+/** A predicted nowcast rule as the API takes it, owned by the Border shift supervisor (the suites' own setup). */
+function predictedRule(name: string, overrides: Record<string, unknown> = {}) {
+	return borderRule(name, { zones: ['A-VIS'], metric: 'PredictedNowcast', comparator: 'GreaterThan', threshold: 20, leadMinutes: 30, ...overrides });
+}
+
+/**
+ * Turns a stored rule into one an upgrade to ARV-187 finds: a predicted nowcast rule owned by the terminal duty manager or
+ * escalated to the handler station manager, which the rule checks have refused since (the table's own checks allow it).
+ */
+async function makeLegacy(id: string, change: 'owner' | 'escalation'): Promise<void> {
+	const db = database();
+	await db.connect();
+	try {
+		const updated = await db.query(
+			change === 'owner'
+				? `UPDATE alert_rule SET owner_role = 'TerminalDutyManager' WHERE id = $1 AND deleted_on IS NULL`
+				: `UPDATE alert_rule SET escalate_to_role = 'HandlerStationManager' WHERE id = $1 AND deleted_on IS NULL`,
+			[id]
+		);
+		expect(updated.rowCount, `the rule ${id} changed in the database`).toBe(1);
+	} finally {
+		await db.end();
+	}
+}
+
+test.describe('predicted nowcast is border data (ARV-187)', () => {
+	// The rules an upgrade finds, made in the administrator's test and looked for in the duty manager's (serial).
+	const legacy = {
+		owner: `E2E predicted legacy owner ${run}`,
+		escalation: `E2E predicted legacy escalation ${run}`,
+		disabled: `E2E predicted legacy disabled ${run}`
+	};
+	const legacyIds: Partial<Record<keyof typeof legacy, string>> = {};
+
+	test('a border shift supervisor creates a predicted nowcast rule with any condition and an overflow zone, and previews it', async ({ page }) => {
+		test.setTimeout(90_000);
+		const guards = await guardPage(page);
+		await signInThroughUi(page, accounts().webBorder);
+		await openRules(page);
+		await expect(page.getByTestId('not-evaluated')).toHaveCount(0);
+
+		await page.getByTestId('add-rule').click();
+		const form = page.getByTestId('rule-form');
+		const name = `E2E predicted ${run}`;
+		await form.getByLabel('Name').fill(name);
+		await expect(form.locator('#rule-metric option[value="PredictedNowcast"]')).toHaveText('Predicted nowcast');
+
+		// Only the roles are the border ones: a rule that fires below stays below, and the overflow zones stay offered.
+		await form.getByLabel('Condition').selectOption('LessThan');
+		await form.getByLabel('Metric').selectOption('PredictedNowcast');
+		await expect(form.getByTestId('border-hint')).toHaveText(predictedHint);
+		await expect(form.getByLabel('Condition')).toHaveValue('LessThan');
+		expect(await optionValues(page, '#rule-comparator'), 'all four conditions').toEqual(['GreaterThan', 'GreaterOrEqual', 'LessThan', 'LessOrEqual']);
+		expect(await optionValues(page, '#rule-owner'), 'the supervisor’s own border role, never every role').toEqual(['BorderShiftSupervisor']);
+		expect(await optionValues(page, '#rule-escalate-to')).toEqual(['', 'BorderShiftSupervisor']);
+		await expect(form.getByLabel('Lead time (minutes)')).toHaveValue('30');
+		await expect(form.getByRole('checkbox', { name: 'A-OV', exact: true }), 'an overflow zone takes its queue’s arrivals').toHaveCount(1);
+		await form.getByRole('checkbox', { name: 'A-VIS', exact: true }).check();
+		await form.getByRole('checkbox', { name: 'A-OV', exact: true }).check();
+		await form.getByLabel('Threshold (minutes)').fill('5');
+
+		// The preview answers the supervisor (whatever the stored minutes hold), never with a refusal.
+		await form.getByLabel('From (UTC)').fill(fromLocal);
+		await form.getByLabel('To (UTC)').fill(toLocal);
+		await form.getByTestId('run-backtest').click();
+		await expect(form.getByTestId('backtest-summary')).toBeVisible();
+		await expect(form.getByTestId('backtest-problem')).toHaveCount(0);
+
+		const axe = await new AxeBuilder({ page }).include('[data-testid="rule-form"]').withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']).analyze();
+		expect(axe.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`), 'axe violations in the form').toEqual([]);
+
+		await form.getByTestId('save-rule').click();
+		await expect(page.getByText(/^Rule R-\d+ saved\.$/)).toBeVisible();
+		const row = page.getByTestId('rule-row').filter({ hasText: name });
+		await expect(row).toHaveCount(1);
+		await expect(row).toContainText('Predicted nowcast < 5 minutes for 3 min');
+		await expect(row).toContainText('A-VIS');
+		await expect(row).toContainText('A-OV');
+		await expect(row).toContainText('Border shift supervisor');
+		await expect(row.getByTestId('not-evaluated-border'), 'a rule meeting the border checks is evaluated').toHaveCount(0);
+
+		// The server agrees.
+		const token = (await signIn(accounts().webBorder)).accessToken;
+		const found = await call('GET', `${api}?siteCode=DMO&metric=PredictedNowcast&text=${encodeURIComponent(run)}`, { token });
+		expect(found.status(), 'the saved rule is listed by its metric').toBe(200);
+		const saved = (await found.json()).data.find((r: { name: string }) => r.name === name);
+		expect(saved).toMatchObject({ metric: 'PredictedNowcast', comparator: 'LessThan', threshold: 5, leadMinutes: 30, ownerRole: 'BorderShiftSupervisor', escalateToRole: null });
+		expect([...saved.zones].sort()).toEqual(['A-OV', 'A-VIS']);
+
+		// Editing opens on the rule as saved; Arabic mirrors the form and translates the name and the hint.
+		await row.getByTestId('edit-rule').click();
+		await expect(form.getByLabel('Metric')).toHaveValue('PredictedNowcast');
+		await expect(form.getByLabel('Condition')).toHaveValue('LessThan');
+		await expect(form.getByLabel('Owner role')).toHaveValue('BorderShiftSupervisor');
+		await expect(form.getByRole('checkbox', { name: 'A-OV', exact: true })).toBeChecked();
+		await page.getByTestId('language-toggle').click();
+		await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
+		await expect(form.locator('#rule-metric option[value="PredictedNowcast"]')).toHaveText('الانتظار المتوقع');
+		await expect(form.getByTestId('border-hint')).toContainText('بيانات حدودية');
+		await expect(form.getByTestId('border-hint')).toContainText('موجة الوصول');
+		await guards.expectClean();
+	});
+
+	test('an administrator sees the predicted nowcast rules of airport-side roles marked not evaluated, and saving one with a border owner repairs it', async ({
+		page
+	}) => {
+		test.setTimeout(90_000);
+		const guards = await guardPage(page);
+		// Created by the supervisor, then changed in the database as rules from before ARV-187 are stored.
+		const borderToken = (await signIn(accounts().webBorder)).accessToken;
+		for (const key of Object.keys(legacy) as (keyof typeof legacy)[]) {
+			const overrides =
+				key === 'escalation'
+					? { enabled: true, escalateAfterMinutes: 10, escalateToRole: 'BorderShiftSupervisor' }
+					: { enabled: key === 'owner' };
+			const response = await call('POST', api, { token: borderToken, data: predictedRule(legacy[key], overrides) });
+			expect(response.status(), await response.text()).toBe(201);
+			legacyIds[key] = (await response.json()).id;
+		}
+		await makeLegacy(legacyIds.owner!, 'owner');
+		await makeLegacy(legacyIds.escalation!, 'escalation');
+		await makeLegacy(legacyIds.disabled!, 'owner');
+
+		await signInThroughUi(page, accounts().webAdmin);
+		await openRules(page);
+		const row = (name: string) => page.getByTestId('rule-row').filter({ hasText: name });
+		await expect(row(legacy.owner)).toHaveCount(1);
+		await expect(row(legacy.owner)).toContainText('Terminal duty manager');
+		await expect(row(legacy.owner).getByTestId('not-evaluated-border')).toHaveText('Not evaluated: fix its border settings');
+		await expect(row(legacy.escalation).getByTestId('not-evaluated-border'), 'an escalation to an airport-side role').toHaveCount(1);
+		await expect(row(legacy.disabled)).toHaveAttribute('data-enabled', 'false');
+		await expect(row(legacy.disabled).getByTestId('not-evaluated-border'), 'a disabled rule is not judged anyway').toHaveCount(0);
+		await expect(page.getByTestId('not-evaluated'), 'the other badge is for metrics without inputs').toHaveCount(0);
+
+		// The server refuses to keep the airport-side role: disabling the escalated rule fails with the border roles text.
+		await row(legacy.escalation).getByTestId('toggle-rule').click();
+		await expect(page.getByText(borderRolesText)).toBeVisible();
+		await expect(row(legacy.escalation)).toHaveAttribute('data-enabled', 'true');
+
+		// Editing opens on the border choices (the duty manager's place taken by the first border role); saving repairs it.
+		const code = (await row(legacy.owner).getAttribute('data-code'))!;
+		await row(legacy.owner).getByTestId('edit-rule').click();
+		const form = page.getByTestId('rule-form');
+		await expect(form.getByLabel('Metric')).toHaveValue('PredictedNowcast');
+		await expect(form.getByLabel('Owner role')).toHaveValue('BorderShiftSupervisor');
+		expect(await optionValues(page, '#rule-owner'), 'border roles only, never every role').toEqual(['BorderShiftSupervisor', 'SystemAdministrator']);
+		await expect(form.getByTestId('border-hint')).toHaveText(predictedHint);
+		await form.getByTestId('save-rule').click();
+		await expect(page.getByText(`Rule ${code} saved.`)).toBeVisible();
+		await expect(row(legacy.owner)).toContainText('Border shift supervisor');
+		await expect(row(legacy.owner).getByTestId('not-evaluated-border')).toHaveCount(0);
+		await expect(row(legacy.escalation).getByTestId('not-evaluated-border'), 'the other rule waits for its own repair').toHaveCount(1);
+		const repaired = await call('GET', `${api}/${legacyIds.owner}`, { token: borderToken });
+		expect(repaired.status()).toBe(200);
+		expect(await repaired.json()).toMatchObject({ metric: 'PredictedNowcast', ownerRole: 'BorderShiftSupervisor', enabled: true });
+		allowStatuses(guards, 400);
+		await guards.expectClean();
+	});
+
+	test('a terminal duty manager is not offered the predicted nowcast, finds none of its rules, and the server refuses a crafted request (403)', async ({ page }) => {
+		test.setTimeout(90_000);
+		const guards = await guardPage(page);
+		// A predicted nowcast rule with a script payload for a name: never listed for the duty manager, so nothing of it reaches the page.
+		const borderToken = (await signIn(accounts().webBorder)).accessToken;
+		const hiddenName = `${xssPayloads[5]} predicted ${run}`;
+		const hidden = await call('POST', api, { token: borderToken, data: predictedRule(hiddenName) });
+		expect(hidden.status(), await hidden.text()).toBe(201);
+
+		await signInThroughUi(page, accounts().web);
+		await openRules(page);
+		// The condition column starts with the metric's name; a rule's own name, which could hold the same words, is in another column.
+		const conditions = page.getByTestId('rule-row').locator('td:nth-child(3)');
+		await expect(conditions.first()).toBeVisible();
+		await expect(conditions.filter({ hasText: /^Predicted nowcast / }), 'no predicted nowcast rule, whoever owns it').toHaveCount(0);
+		await expect(page.getByTestId('rule-row').filter({ hasText: hiddenName })).toHaveCount(0);
+		await expect(page.getByTestId('rule-row').filter({ hasText: legacy.disabled }), 'its own role’s rule from before ARV-187 too').toHaveCount(0);
+		await expect(page.getByTestId('not-evaluated')).toHaveCount(0);
+		await expect(page.getByTestId('not-evaluated-border')).toHaveCount(0);
+		await expect(page.locator('img[src="x"], svg[onload], iframe, [onerror]')).toHaveCount(0);
+
+		await page.getByTestId('add-rule').click();
+		const form = page.getByTestId('rule-form');
+		const metrics = await optionValues(page, '#rule-metric');
+		expect(metrics, 'border data is not offered').not.toContain('PredictedNowcast');
+		expect(metrics).not.toContain('DesksBelowPlan');
+		expect(metrics).toEqual(expect.arrayContaining(['Nowcast', 'BinP90', 'QueueLength']));
+
+		// Hiding the metric is a convenience: a request changed on its way to the server is refused there, owned by the duty
+		// manager's own role as the form sends it, and the form shows the refusal (create and preview alike).
+		await page.route('**/api/v1/admin/alert-rules**', async (route) => {
+			const request = route.request();
+			if (request.method() !== 'POST') return route.continue();
+			const body = request.postDataJSON();
+			const predicted = { metric: 'PredictedNowcast', leadMinutes: 30, minQueueLength: null };
+			const changed = body.rule ? { ...body, rule: { ...body.rule, ...predicted } } : { ...body, ...predicted };
+			return route.continue({ postData: JSON.stringify(changed) });
+		});
+		await form.getByLabel('Name').fill(`E2E predicted probe ${run}`);
+		await form.getByRole('checkbox', { name: 'A-VIS', exact: true }).check();
+		await expect(form.getByLabel('Owner role')).toHaveValue('TerminalDutyManager');
+		await form.getByLabel('From (UTC)').fill(fromLocal);
+		await form.getByLabel('To (UTC)').fill(toLocal);
+		await form.getByTestId('run-backtest').click();
+		await expect(form.getByTestId('backtest-problem')).toHaveText(borderOnlyText);
+		await form.getByTestId('save-rule').click();
+		await expect(form.getByTestId('rule-problems')).toHaveText(borderOnlyText);
+		await page.unrouteAll({ behavior: 'wait' });
+
+		// Nothing was created; the duty manager finds no predicted nowcast rule (its own role's included) and reads none.
+		const probe = await call('GET', `${api}?siteCode=DMO&text=${encodeURIComponent(`predicted probe ${run}`)}`, { token: borderToken });
+		expect((await probe.json()).totalCount).toBe(0);
+		const terminalToken = (await signIn(accounts().web)).accessToken;
+		const listed = await call('GET', `${api}?siteCode=DMO&metric=PredictedNowcast`, { token: terminalToken });
+		expect(listed.status()).toBe(200);
+		expect((await listed.json()).totalCount, 'no predicted nowcast rule for the duty manager').toBe(0);
+		const id = (await hidden.json()).id;
+		expect((await call('GET', `${api}/${id}`, { token: terminalToken })).status()).toBe(404);
+		expect((await call('GET', `${api}/${legacyIds.disabled}`, { token: terminalToken })).status(), 'its own role’s rule from before ARV-187').toBe(404);
 		expect((await call('GET', `${api}/${id}`, { token: borderToken })).status()).toBe(200);
 		allowStatuses(guards, 403);
 		await guards.expectClean();

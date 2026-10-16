@@ -118,9 +118,9 @@ public class Alert : EntityBase<Alert>, ISiteBound
 
     /// <summary>
     /// Whether a caller holding these roles sees the alert and may act on it. An alert on a border-only metric
-    /// (<see cref="BorderAlerts"/>, ARV-181b2) is for a caller holding <c>ArrivalWaveLanes.View</c> only, whatever its
-    /// owner and escalation roles say (a row from before ARV-181b2 or changed in the database included), before the
-    /// administrator's and the no-owner rule.
+    /// (<see cref="BorderAlerts"/>: open desks below recommendation since ARV-181b2, the predicted nowcast since ARV-187) is
+    /// for a caller holding <c>ArrivalWaveLanes.View</c> only, whatever its owner and escalation roles say (a row from before
+    /// those stories or changed in the database included), before the administrator's and the no-owner rule.
     /// </summary>
     public virtual bool IsFor(IEnumerable<string> roles)
     {

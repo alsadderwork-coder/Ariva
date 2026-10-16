@@ -554,7 +554,13 @@ public sealed class SiteConfigurationTransferTests
                      rule with { Metric = "DesksBelowPlan", OwnerRole = RoleCodes.TerminalDutyManager }, rule with { Metric = "DesksBelowPlan", OwnerRole = null },
                      rule with { Metric = "DesksBelowPlan", OwnerRole = RoleCodes.HandlerStationManager },
                      rule with { Metric = "DesksBelowPlan", EscalateToRole = RoleCodes.TerminalDutyManager },
-                     rule with { Metric = "DesksBelowPlan", Comparator = "LessThan" }
+                     rule with { Metric = "DesksBelowPlan", Comparator = "LessThan" },
+                     // ARV-187: so does the predicted nowcast (any comparator).
+                     rule with { Metric = "PredictedNowcast", LeadMinutes = 30, OwnerRole = RoleCodes.TerminalDutyManager },
+                     rule with { Metric = "PredictedNowcast", LeadMinutes = 30, OwnerRole = null },
+                     rule with { Metric = "PredictedNowcast", LeadMinutes = 30, OwnerRole = RoleCodes.HandlerStationManager },
+                     rule with { Metric = "PredictedNowcast", LeadMinutes = 30, EscalateToRole = RoleCodes.TerminalDutyManager },
+                     rule with { Metric = "PredictedNowcast", LeadMinutes = 30, OwnerRole = null, Comparator = "LessThan", ClearThreshold = 25 }
                  })
             SiteConfigurationTransfer.Plan("DST", content with { AlertRules = [refused] }, Target(), "ZZZ").ErrorMessages
                 .Should().Equal([SiteConfigurationErrors.InvalidAlertRules], refused.ToString());
@@ -590,6 +596,62 @@ public sealed class SiteConfigurationTransferTests
             .Should().BeFalse();
         SiteConfigurationTransfer.ZonesOf(["Overflow A"], AlertMetric.Nowcast, new HashSet<string> { "Snake A" }, new HashSet<string> { "Overflow A" })
             .Should().BeTrue();
+    }
+
+    /// <summary>
+    /// ARV-187 (lead decision P2): a predicted nowcast rule that belongs to a border role imports with any comparator and on
+    /// an overflow band (which takes its queue zone's arrivals); only its roles became border-only.
+    /// </summary>
+    [Fact]
+    public void Plan_Should_ImportAPredictedNowcast_When_TheRuleBelongsToABorderRoleEvenBelowAndOnAnOverflowBand()
+    {
+        var content = RoundTrip(SiteConfigurationTransfer.Export(Source()).Data);
+        var rule = content.AlertRules[0] with
+        {
+            Metric = "PredictedNowcast", Comparator = "LessThan", Threshold = 10, ClearThreshold = 12, LeadMinutes = 30, Zones = ["Overflow A"],
+            OwnerRole = RoleCodes.BorderShiftSupervisor, EscalateAfterMinutes = null, EscalateToRole = null
+        };
+
+        var plan = SiteConfigurationTransfer.Plan("DST", content with { AlertRules = [rule] }, Target(), "ZZZ");
+
+        plan.HasErrors.Should().BeFalse(string.Join(", ", plan.ErrorMessages ?? []));
+        plan.Data.AlertRules.Single().Should().Match<AlertRule>(r =>
+            r.Metric == AlertMetric.PredictedNowcast && r.Comparator == AlertComparator.LessThan && r.OwnerRole == RoleCodes.BorderShiftSupervisor && r.LeadMinutes == 30);
+        SiteConfigurationTransfer.ZonesOf(["Overflow A"], AlertMetric.PredictedNowcast, new HashSet<string> { "Snake A" }, new HashSet<string> { "Overflow A" })
+            .Should().BeTrue();
+    }
+
+    /// <summary>
+    /// ARV-187 (lead decision P5): a stored predicted nowcast rule from before ARV-187 that does not belong to a border role
+    /// (written past the entity, as an older database holds it) is refused by the import, so it refuses the export with a
+    /// fixed text (409) that names no rule; the same rule repaired exports and imports.
+    /// </summary>
+    [Fact]
+    public void Export_Should_RefuseTheSite_When_ARuleFailsTheChecksTheImportApplies()
+    {
+        static void Store(AlertRule rule, string property, object value) => typeof(AlertRule).GetProperty(property)!.SetValue(rule, value);
+        var source = Source();
+        AlertRule Predicted() => WithId(new AlertRule("SRC", 7, new AlertRuleValues("Wave ahead", ["Snake A"], AlertMetric.PredictedNowcast, AlertComparator.GreaterThan, 15,
+            null, null, 2, 2, AlertSeverity.Warning, RoleCodes.BorderShiftSupervisor, null, null, null, false, true, 30)));
+
+        SiteConfigurationTransfer.Export(source with { AlertRules = [.. source.AlertRules, Predicted()] }).HasErrors.Should().BeFalse("a border owner imports");
+        foreach (var (property, value) in new (string, object)[]
+                 {
+                     (nameof(AlertRule.OwnerRole), RoleCodes.TerminalDutyManager), (nameof(AlertRule.OwnerRole), null), (nameof(AlertRule.OwnerRole), RoleCodes.HandlerStationManager)
+                 })
+        {
+            var legacy = Predicted();
+            Store(legacy, property, value);
+            SiteConfigurationTransfer.Export(source with { AlertRules = [.. source.AlertRules, legacy] }).ErrorMessages
+                .Should().Equal([SiteConfigurationErrors.RulesNotImportable], $"{property} {value ?? "none"}: every export can be imported");
+        }
+
+        var escalated = Predicted();
+        Store(escalated, nameof(AlertRule.EscalateAfterMinutes), 10);
+        Store(escalated, nameof(AlertRule.EscalateToRole), RoleCodes.TerminalDutyManager);
+        SiteConfigurationTransfer.Export(source with { AlertRules = [escalated] }).ErrorMessages.Should().Equal(SiteConfigurationErrors.RulesNotImportable);
+        SiteConfigurationErrors.Conflicts.Should().Contain(SiteConfigurationErrors.RulesNotImportable, "the site's state does not allow the export (409)");
+        SiteConfigurationErrors.RulesNotImportable.Should().NotContain("Wave ahead").And.NotContain("R-007");
     }
 
     [Fact]

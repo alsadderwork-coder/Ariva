@@ -20,6 +20,8 @@ import { hosts } from '../support/hosts';
 // round trip.
 // ARV-181b2: a rule on open desks below recommendation travels when a border role owns it (it imports into the spare site
 // with its owner) and is refused with an airport-side owner or escalation role, without an owner, or on an overflow band.
+// ARV-187: a predicted nowcast rule is refused the same way (roles only), and a stored one an older release left with an
+// airport-side owner refuses the export with a fixed text (409) that names no rule.
 // The sites are new each run (codes CFA, CFB and CFC with a random tail; no other suite uses them). Everything the
 // suite creates is removed at the end except what Ariva never deletes: the sites themselves and the published zone
 // profile versions (immutable by design, script 0012).
@@ -87,6 +89,14 @@ function rehashed(bundle: any, part: string, bytes: Buffer) {
 function desksBelow(bundle: any, changes: Record<string, unknown>) {
 	const rules = decoded(bundle, 'alertRules').map((r: any) =>
 		r.code === 'R-001' ? { ...r, metric: 'DesksBelowPlan', comparator: 'GreaterOrEqual', threshold: 2, ...changes } : r
+	);
+	return rehashed(bundle, 'alertRules', Buffer.from(JSON.stringify(rules)));
+}
+
+/** ARV-187: R-001 of the bundle as a predicted nowcast rule (border data: a border owner, escalating to a border role or none). */
+function predictedBreach(bundle: any, changes: Record<string, unknown>) {
+	const rules = decoded(bundle, 'alertRules').map((r: any) =>
+		r.code === 'R-001' ? { ...r, metric: 'PredictedNowcast', comparator: 'GreaterThan', threshold: 20, minQueueLength: null, leadMinutes: 30, ...changes } : r
 	);
 	return rehashed(bundle, 'alertRules', Buffer.from(JSON.stringify(rules)));
 }
@@ -321,6 +331,39 @@ test('a terminal name an older release stored with an override refuses the expor
 	expect(again.status(), again.status() === 200 ? 'export again' : await again.text()).toBe(200);
 });
 
+test('a predicted nowcast rule an older release left with an airport-side owner refuses the export with a fixed text (ARV-187)', async () => {
+	// A rule from before ARV-187 that the import would refuse: the export is refused instead (409), so every export imports.
+	// Planted past the endpoints in this suite's own source site (R-001 becomes such a rule) and put back.
+	const fixed =
+		'An alert rule of the site fails the checks an import applies (for example a rule on open desks below recommendation or predicted nowcast that does not belong to a border role), which an import refuses; change or delete it first.';
+	const legacy = () =>
+		withDatabase((db) =>
+			db.query(
+				"UPDATE alert_rule SET metric = 'PredictedNowcast', lead_minutes = 30, owner_role = 'TerminalDutyManager' WHERE site_code = $1::varchar AND code = 'R-001' AND deleted_on IS NULL",
+				[source]
+			)
+		);
+	const restore = () =>
+		withDatabase((db) =>
+			db.query(
+				"UPDATE alert_rule SET metric = 'Nowcast', lead_minutes = NULL, owner_role = 'BorderShiftSupervisor' WHERE site_code = $1::varchar AND code = 'R-001' AND deleted_on IS NULL",
+				[source]
+			)
+		);
+	expect((await legacy()).rowCount, 'the source rule').toBe(1);
+	try {
+		const refused = await call('GET', configuration(source), { token: stepped });
+		expect(refused.status(), refused.status() === 409 ? 'export refused' : await refused.text()).toBe(409);
+		const body = await refused.text();
+		expect(body.includes(fixed), 'the fixed text').toBe(true);
+		for (const fragment of [...echoes, 'R-001']) expect(body, 'no rule is named').not.toContain(fragment);
+	} finally {
+		expect((await restore()).rowCount).toBe(1);
+	}
+	const again = await call('GET', configuration(source), { token: stepped });
+	expect(again.status(), again.status() === 200 ? 'export again' : await again.text()).toBe(200);
+});
+
 test('a tampered bundle is refused with a fixed text and writes nothing', async () => {
 	const bundle = exported.bundle;
 	const devices = Buffer.from('[]');
@@ -350,6 +393,11 @@ test('a tampered bundle is refused with a fixed text and writes nothing', async 
 		['open desks below recommendation without an owner', desksBelow(bundle, { ownerRole: null }), 400],
 		['open desks below recommendation escalated to the handler', desksBelow(bundle, { escalateAfterMinutes: 10, escalateToRole: 'HandlerStationManager' }), 400],
 		['open desks below recommendation on an overflow band', desksBelow(bundle, { zones: ['Overflow A'] }), 400],
+		// ARV-187: so does a predicted nowcast rule (with any comparator and on an overflow band).
+		['a predicted nowcast owned by the duty manager', predictedBreach(bundle, { ownerRole: 'TerminalDutyManager' }), 400],
+		['a predicted nowcast without an owner', predictedBreach(bundle, { ownerRole: null }), 400],
+		['a predicted nowcast escalated to the duty manager', predictedBreach(bundle, { escalateAfterMinutes: 10, escalateToRole: 'TerminalDutyManager' }), 400],
+		['a predicted nowcast below its threshold without an owner', predictedBreach(bundle, { ownerRole: null, comparator: 'LessThan', zones: ['Overflow A'] }), 400],
 		['a device row without its access settings flag', rehashed(bundle, 'devices', Buffer.from(JSON.stringify(decoded(bundle, 'devices').map(({ accessSettingsWithheld, ...row }: any) => row)))), 400],
 		['a device on a level outside the bundle', rehashed(bundle, 'devices', Buffer.from(JSON.stringify(decoded(bundle, 'devices').map((d: any) => ({ ...d, level: 'L9' }))))), 400],
 		['an unknown part named with markup', { ...bundle, manifest: { ...bundle.manifest, [hostileTerminal]: sha256(devices) }, parts: { ...bundle.parts, [hostileTerminal]: devices.toString('base64') } }, 400],

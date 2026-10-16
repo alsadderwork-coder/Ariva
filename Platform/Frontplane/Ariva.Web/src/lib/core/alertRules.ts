@@ -38,12 +38,14 @@ export const healthChecks: ReadonlySet<string> = new Set([
  */
 export const notEvaluated: ReadonlySet<string> = new Set<string>();
 /**
- * ARV-181b2: the metrics whose rules and alerts are border data (Ariva.Core BorderAlerts.Metrics): open desks below
- * recommendation. The form offers them only to holders of {@link borderPermission}, owned by a border role (never no
- * owner), escalated to a border role or none, firing above ({@link aboveComparators}) and on queue zones only. Hiding them
- * is a convenience: the server refuses every other caller (403) and every other value (400), and hides such rules (404).
+ * The metrics whose rules and alerts are border data (Ariva.Core BorderAlerts.Metrics): open desks below recommendation
+ * (ARV-181b2) and, since ARV-187, the predicted nowcast (a lane queue stepped with its share of the arrival wave, from
+ * which the lane split could be solved). The form offers them only to holders of {@link borderPermission}, owned by a
+ * border role (never no owner) and escalated to a border role or none; open desks below recommendation also fires above
+ * ({@link aboveOnly}) and watches queue zones only. Hiding them is a convenience: the server refuses every other caller
+ * (403) and every other value (400), and hides such rules (404).
  */
-export const borderOnly: ReadonlySet<string> = new Set(['DesksBelowPlan']);
+export const borderOnly: ReadonlySet<string> = new Set(['DesksBelowPlan', 'PredictedNowcast']);
 /** The permission whose holders create, change, preview and see border-only rules (BorderAlerts.Receives). */
 export const borderPermission = 'ArrivalWaveLanes.View';
 /**
@@ -51,14 +53,42 @@ export const borderPermission = 'ArrivalWaveLanes.View';
  * border-only rule belongs to one of them and escalates to one of them or to no role (AlertRuleErrors.BorderRolesOnly).
  */
 export const borderRoles: readonly string[] = ['BorderShiftSupervisor', 'SystemAdministrator'];
-/** The comparators of a border-only rule: it counts desks short, so it fires above (AlertRuleErrors.BorderComparator). */
+/**
+ * The border metrics that count a shortfall, so a rule on one fires above (AlertRuleValues.FiresAboveOnly,
+ * AlertRuleErrors.BorderComparator): open desks below recommendation only. The predicted nowcast keeps all four
+ * comparators (ARV-187).
+ */
+export const aboveOnly: ReadonlySet<string> = new Set(['DesksBelowPlan']);
+/** The comparators of a rule on an {@link aboveOnly} metric. */
 export const aboveComparators: readonly string[] = ['GreaterThan', 'GreaterOrEqual'];
 /**
  * Whether a rule on the metric watches queue zones only (AlertRuleValues.WatchesQueueZonesOnly): the health checks
- * (stored per queue zone, ARV-114b) and the border-only metric (a recommendation per lane, a queue zone; ARV-181b2).
+ * (stored per queue zone, ARV-114b) and open desks below recommendation (a recommendation per lane, a queue zone;
+ * ARV-181b2). The predicted nowcast, border data since ARV-187, may watch an overflow zone (which takes its queue's
+ * arrivals), so it is not listed here: listing it would drop a saved rule's overflow zones from the form.
  */
 export function watchesQueueZonesOnly(metric: string): boolean {
-	return healthChecks.has(metric) || borderOnly.has(metric);
+	return healthChecks.has(metric) || metric === 'DesksBelowPlan';
+}
+
+/**
+ * Whether a saved rule on a border-only metric fails the border checks (AlertRuleValues' BorderProblems), so the
+ * evaluation never judges it (ARV-181b2, ARV-187 P3): an owner that is not a border role (no owner included), an
+ * escalation to a role that is not a border role, or for an {@link aboveOnly} metric a comparator that does not fire
+ * above. Such a rule comes from before ARV-187 (a predicted nowcast rule of an airport-side role) or from a row changed in
+ * the database; only a border caller sees it, and saving it with border choices repairs it. A marker only: the server
+ * decides.
+ */
+export function failsBorderRules(
+	rule: Pick<AlertRule, 'metric' | 'comparator' | 'ownerRole' | 'escalateToRole'>
+): boolean {
+	if (!borderOnly.has(rule.metric)) return false;
+	const isBorderRole = (role: string | null): boolean => !!role && borderRoles.includes(role);
+	return (
+		!isBorderRole(rule.ownerRole) ||
+		(!!rule.escalateToRole && !isBorderRole(rule.escalateToRole)) ||
+		(aboveOnly.has(rule.metric) && !aboveComparators.includes(rule.comparator))
+	);
 }
 export const comparators = ['GreaterThan', 'GreaterOrEqual', 'LessThan', 'LessOrEqual'] as const;
 export const severities = ['Info', 'Warning', 'Critical'] as const;

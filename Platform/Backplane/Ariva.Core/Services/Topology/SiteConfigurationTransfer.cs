@@ -170,6 +170,11 @@ public static class SiteConfigurationTransfer
             displays.Any(d => !DisplayText.IsClean(d.Name) || !DisplayText.IsClean(d.Location) ||
                               d.EntryList.Any(e => e.Labels.Values.Any(label => !DisplayText.IsClean(label))) || d.FallbackMap.Values.Any(m => !DisplayText.IsClean(m))))
             return Result.Error<ExportedSiteConfiguration>(SiteConfigurationErrors.TextsNotImportable);
+        // ARV-187 (lead decision P5): a rule the import's entity checks would refuse (Plan builds each rule without its
+        // escalation contact, which is never exported), such as a predicted nowcast rule from before ARV-187 that does not
+        // belong to a border role, refuses the export instead, so every export still imports.
+        if (rules.Any(r => (r.Values() with { EscalationContact = null }).Problems().Count > 0))
+            return Result.Error<ExportedSiteConfiguration>(SiteConfigurationErrors.RulesNotImportable);
 
         var levelRowsById = levels.ToDictionary(l => l.Id.GetValueOrDefault());
         var deviceRows = devices.Select(d =>
@@ -298,8 +303,9 @@ public static class SiteConfigurationTransfer
             var metric = SiteConfigurationRules.ParseKind<AlertMetric>(row.Metric).GetValueOrDefault();
             if (AlertRuleErrors.NotEvaluatedMetrics.Contains(metric))
                 return Result.Error<SiteConfigurationPlan>(SiteConfigurationErrors.InvalidAlertRules);
-            // ARV-181b2: a rule on open desks below recommendation passes the entity's border checks (a border owner, never
-            // none; a border escalation role or none; fires above) like any other value, so the import refuses it otherwise.
+            // ARV-181b2, ARV-187: a rule on a border-only metric (open desks below recommendation, the predicted nowcast)
+            // passes the entity's border checks (a border owner, never none; a border escalation role or none; for open desks
+            // below recommendation, fires above) like any other value, so the import refuses it otherwise.
             AlertRule rule = null;
             built = Guarded(SiteConfigurationErrors.InvalidAlertRules, () => rule = new AlertRule(siteCode, SiteConfigurationRules.RuleNumber(row.Code).GetValueOrDefault(),
                 new AlertRuleValues(row.Name, row.Zones, metric, SiteConfigurationRules.ParseKind<AlertComparator>(row.Comparator).GetValueOrDefault(), row.Threshold,

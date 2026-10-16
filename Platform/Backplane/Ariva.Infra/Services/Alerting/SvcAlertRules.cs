@@ -22,10 +22,11 @@ namespace Ariva.Infra.Services.Alerting;
 /// R-001, R-002 and so on are given per site in order, under a lock, deleted rules keeping theirs. Every change is
 /// audited with the rule's values before and after.
 /// <para>
-/// ARV-181b2 (CWE-862, CWE-863): a rule on a border-only metric (<see cref="BorderAlerts"/>, open desks below
-/// recommendation) is border data. A caller without <c>ArrivalWaveLanes.View</c> is refused 403
-/// (<see cref="AlertRuleErrors.BorderOnly"/>) when it creates one, changes a rule to one or backtests one, and never finds
-/// one otherwise: search leaves such rules out, and get, update and delete answer like a rule that does not exist.
+/// ARV-181b2 and ARV-187 (CWE-862, CWE-863, CWE-200): a rule on a border-only metric (<see cref="BorderAlerts"/>: open
+/// desks below recommendation, and the predicted nowcast, whose values carry the lane split of the arrival wave) is border
+/// data. A caller without <c>ArrivalWaveLanes.View</c> is refused 403 (<see cref="AlertRuleErrors.BorderOnly"/>) when it
+/// creates one, changes a rule to one or backtests (previews) one, and never finds one otherwise: search leaves such rules
+/// out, and get, update and delete answer like a rule that does not exist.
 /// </para>
 /// </summary>
 internal sealed class SvcAlertRules(
@@ -62,7 +63,8 @@ internal sealed class SvcAlertRules(
         }
 
         var query = QueryAsNoTracking<AlertRule>().WithinSites(await siteScope.GetAsync(ct)).Where(r => r.DeletedOn == null);
-        // ARV-181b2: rules on a border-only metric are left out for a caller without ArrivalWaveLanes.View (counted nowhere).
+        // ARV-181b2, ARV-187: rules on a border-only metric (each of them) are left out for a caller without
+        // ArrivalWaveLanes.View (counted nowhere).
         if (!await SeesBorderAsync(ct))
         {
             foreach (var border in BorderAlerts.Metrics)
@@ -160,7 +162,9 @@ internal sealed class SvcAlertRules(
         if (rule is null || string.IsNullOrWhiteSpace(rule.SiteCode) || !(await siteScope.GetAsync(ct)).Allows(rule.SiteCode) ||
             !await QueryAsNoTracking<Site>().AnyAsync(s => s.Code == rule.SiteCode, ct))
             return Result.Error<AlertBacktestViewModel>(TopologyErrors.UnknownSite);
-        // ARV-181b2: a backtest of a border-only metric shows the lanes' staffing against their recommendation.
+        // ARV-181b2, ARV-187: a backtest of a border-only metric shows the lanes' staffing against their recommendation, or
+        // a lane queue stepped with its share of the arrival wave (the lane split could be solved from its peaks); refused
+        // before the range is checked, so nothing about the stored minutes is answered.
         if (await RefusesBorderAsync(rule.Metric, ct))
             return Result.Error<AlertBacktestViewModel>(AlertRuleErrors.BorderOnly);
         var now = UtcNow;
@@ -260,7 +264,8 @@ internal sealed class SvcAlertRules(
     }
 
     // A rule in the caller's sites that is not deleted and, on a border-only metric, only for a caller who sees border data:
-    // any other answers like one that does not exist (ARV-181b2: a terminal duty manager neither reads nor deletes it).
+    // any other answers like one that does not exist (ARV-181b2, ARV-187: a terminal duty manager neither reads nor deletes
+    // it, its own predicted-nowcast rules from before ARV-187 included).
     private async Task<AlertRule> VisibleAsync(Guid id, CancellationToken ct)
     {
         var rule = id == Guid.Empty ? null : await GetAsync<AlertRule>(id, ct);

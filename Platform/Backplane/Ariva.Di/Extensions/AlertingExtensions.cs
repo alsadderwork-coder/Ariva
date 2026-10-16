@@ -26,6 +26,8 @@ public static class AlertingExtensions
         services.AddArivaArrivalWaveSource(configuration);
         services.TryAddScoped<AlertInputs>();
         services.TryAddScoped<AlertRuleTick>();
+        // ARV-187: one not-evaluated warning per rule and values version in this host.
+        services.TryAddSingleton<NotEvaluatedWarnings>();
         // Raised and escalated alerts write their emails (ARV-040); Integration sends them.
         services.AddArivaEmailOutbox(configuration);
         // Escalations are audited (ARV-039) and changes announced to the live hub (Redis, or nothing without it).

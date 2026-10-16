@@ -17,7 +17,7 @@ namespace Ariva.Infra.Notifications;
 /// break-glass account, holding the role and the alert's site, with a valid address (others are skipped). One email per
 /// alert, kind and address; an address that already had <see cref="EmailSettings.MaxPerRecipientPerHour"/> alert emails
 /// in the last hour gets the next ones held back (Suppressed), not queued. An alert on a border-only metric
-/// (<see cref="BorderAlerts"/>, ARV-181b2) is written to the people of border roles only, whatever its owner and escalation
+/// (<see cref="BorderAlerts"/>, ARV-181b2 and ARV-187) is written to the people of border roles only, whatever its owner and escalation
 /// roles say: none when neither is a border role.
 /// </summary>
 public sealed class AlertEmails(IUnitOfWork unitOfWork, EmailSettings settings, EmailTemplates templates, ILogger<AlertEmails> logger)
@@ -44,7 +44,7 @@ public sealed class AlertEmails(IUnitOfWork unitOfWork, EmailSettings settings, 
         string[] roles = kind == EmailKind.AlertRaised
             ? alert.OwnerRole is { } owner ? [owner] : OperationalRoles
             : alert.EscalateToRole is { } to ? [to] : [];
-        // ARV-181b2: an alert on a border-only metric is written to the people of border roles only, whatever its owner and
+        // ARV-181b2, ARV-187: an alert on a border-only metric is written to the people of border roles only, whatever its owner and
         // escalation roles say (the sender checks it again before each send).
         roles = [.. BorderAlerts.Audience(alert.Metric, roles)];
         if (roles.Length == 0)

@@ -93,7 +93,9 @@ public static class ArrivingLegs
 /// value needs every minute after it to be from now on: a backtest finds none, except at most for its last minute when it
 /// ends at the current minute. The e-gate rejects join their manual lane (ARV-049, F12, <see cref="EgateCoupling"/>):
 /// r measured from AMAN's e-gate intervals over the window (<see cref="EgateRejects"/>), times the e-gate eligible
-/// arrivals a lag earlier. One read per site and lifetime (a scope: one evaluation tick).
+/// arrivals a lag earlier. One read per site and lifetime (a scope: one evaluation tick). The result is a lane queue's
+/// share of the arrival wave, which is border data (ArrivalWaveLanes.View): it is read only by the predicted nowcast's
+/// evaluation and backtest (<c>AlertInputs</c>), whose rules and alerts are border-only since ARV-187.
 /// </summary>
 public sealed class ProjectedArrivalWave(IUnitOfWork unitOfWork, TimeProvider timeProvider, ArrivalWaveSettings settings, EgateCouplingSettings coupling)
     : IArrivalWaveSource

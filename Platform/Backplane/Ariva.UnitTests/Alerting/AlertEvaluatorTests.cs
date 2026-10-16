@@ -187,8 +187,9 @@ public sealed class AlertEvaluatorTests
     [InlineData(60)]
     public void Prediction_Should_WarnItsLeadTimeAhead_When_AWaveIsComing(int lead)
     {
+        // ARV-187: a predicted nowcast rule belongs to a border role.
         var rule = new AlertRuleValues("Wave ahead", ["A-VIS"], AlertMetric.PredictedNowcast, AlertComparator.GreaterThan, 15, null, null, 1, 1, AlertSeverity.Warning,
-            null, null, null, null, false, true, lead);
+            RoleCodes.BorderShiftSupervisor, null, null, null, false, true, lead);
         rule.Problems().Should().BeEmpty();
         // 30 queuing, 6 an hour... 6 a minute served; 300 passengers arrive between 18:20 and 18:44 (a 25-minute wave).
         double Arrivals(DateTime m) => m >= T0.AddMinutes(80) && m < T0.AddMinutes(105) ? 12 : 0;

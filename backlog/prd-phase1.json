@@ -1606,7 +1606,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 48,
-      "passes": false,
+      "passes": true,
       "notes": "Size S to M. Before the pilot (the reviewer: an inference leak of border data). Owner decision needed first: the simplest fix makes PredictedNowcast border-only (a zone serving no lane has no projection, so in practice the metric only judges arrivals lanes); the minimum interim fix refuses its backtest and preview to anyone without ArrivalWaveLanes.View, which is the precise channel. Depends on ARV-181b2 (BorderAlerts). Owner decision 2026-10-16 (in the session, after the lead's explanation with a worked example): PredictedNowcast joins BorderAlerts.Metrics and becomes border data like DesksBelowPlan (rules, backtests, previews, alerts, notices, emails and reports only for holders of ArrivalWaveLanes.View); the terminal duty manager loses predicted-wait alerts on immigration lanes and keeps live-wait alerts. Existing PredictedNowcast rules with an airport-side or empty owner are not evaluated (one warning), with a migration note.",
       "dependsOn": [
         "ARV-181b2"

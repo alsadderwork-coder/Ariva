@@ -30,8 +30,9 @@ namespace Ariva.IntegrationTests.Alerting;
 /// open count, a gap, an unknown open count, rows that fail the read-back check) neither counting toward nor breaking a run;
 /// the backtest over the same range gives exactly that alert; another tick changes nothing; another site's lane of the same
 /// name is never read; a read beyond the bound is refused (backtest) or skipped with one warning (live) and resumed; a stored
-/// rule without an owner (from before the story, or changed in the database) is never evaluated, with one warning per tick
-/// naming the site and the rule only. Every channel answers holders of ArrivalWaveLanes.View only: the alerts API (list, get,
+/// rule without an owner (from before the story, or changed in the database) is never evaluated, with one warning per rule
+/// and values version in a host (ARV-187, lead decision P3, superseding the warning per tick) naming the site and the rule
+/// only. Every channel answers holders of ArrivalWaveLanes.View only: the alerts API (list, get,
 /// actions), the daily report (on demand and as delivered) and the weekly summary, per role and for an account holding an
 /// airport-side and a border role.
 /// </summary>
@@ -227,15 +228,24 @@ public sealed class StaffingAlertTests(PostgresFixture fixture) : IAsyncDisposab
         (await AlertsOfAsync(c.Changed.Id)).Should().BeEmpty("the same case would raise at 10:09 for anyone (no owner) if it were evaluated");
         (await _host.ReadAsync<long>("SELECT count(*) FROM alert_rule_state WHERE rule_id = @id", c.Changed.Id)).Should().Be(0, "not even its targets are kept");
 
-        var before = Warnings.Of(c.Changed.Code);
-        (await TickAsync(Ten.AddMinutes(23).AddSeconds(5))).Failed.Should().Be(0);
+        // ARV-187 (lead decision P3): one warning per rule and values version in a host process, so a host of its own here.
+        await using var fresh = new AccountsHost(fixture, database: TestDatabase.AlertStaffing, configure: s => s.AddSingleton<ILoggerProvider>(Warnings));
+        await fresh.CreateUserAsync("it.staffing.fresh." + Guid.NewGuid().ToString("N")[..8]);
+        var before = Warnings.Of(c.Changed.Code).Count;
+        (await TickAsync(Ten.AddMinutes(23).AddSeconds(5), fresh)).Failed.Should().Be(0);
+        (await TickAsync(Ten.AddMinutes(24).AddSeconds(5), fresh)).Failed.Should().Be(0);
 
         var warnings = Warnings.Of(c.Changed.Code);
-        warnings.Should().HaveCount(before.Count + 1, "one warning per tick");
-        warnings[^1].Should().Be($"Alert evaluation of site DMO rule {c.Changed.Code}: not evaluated, it fails the rule checks of its metric (border roles only, fires above)");
+        warnings.Should().HaveCount(before + 1, "one warning for two ticks of the same values");
+        warnings[^1].Should().Be($"Alert evaluation of site DMO rule {c.Changed.Code}: not evaluated, it fails the rule checks of its border metric");
         warnings.Should().OnlyContain(w => !w.Contains("A-VIS", StringComparison.Ordinal) && !w.Contains("Desks short", StringComparison.Ordinal),
             "the site, the rule code and a fixed reason only");
         Warnings.Of(c.Rule.Code).Should().BeEmpty("the border rule is evaluated");
+
+        (await fresh.ReadAsync<int>("UPDATE alert_rule SET sustain_minutes = sustain_minutes % 5 + 1 WHERE id = @id RETURNING 1", c.Changed.Id)).Should().Be(1);
+        (await TickAsync(Ten.AddMinutes(25).AddSeconds(5), fresh)).Failed.Should().Be(0);
+        Warnings.Of(c.Changed.Code).Should().HaveCount(before + 2, "its values changed and it still fails the checks");
+        (await _host.ReadAsync<long>("SELECT count(*) FROM alert_rule_state WHERE rule_id = @id", c.Changed.Id)).Should().Be(0);
     }
 
     [Fact]
@@ -302,9 +312,10 @@ public sealed class StaffingAlertTests(PostgresFixture fixture) : IAsyncDisposab
         var c = await CaseAsync();
         var raised = (await _host.ReadAsync<Guid>("SELECT id FROM alert WHERE rule_id = @id ORDER BY raised_utc LIMIT 1", c.Rule.Id));
         // Without an owner (every alert role's, as before the story), owned and escalated airport-side, and a wait alert without an
-        // owner for comparison (other metrics keep their rule).
-        await PlantAlertAsync(Ownerless, c.Changed, "A-CIT", "DesksBelowPlan", null, null, false);
-        await PlantAlertAsync(DutyOwned, c.Changed, "A-RES", "DesksBelowPlan", RoleCodes.TerminalDutyManager, RoleCodes.TerminalDutyManager, true);
+        // owner for comparison (other metrics keep their rule). Planted on the evaluated rule's code: a tick withdraws the open
+        // alerts of the rule that is not evaluated (ARV-187, lead decision P4), and the class's ticks run in any order.
+        await PlantAlertAsync(Ownerless, c.Rule, "A-CIT", "DesksBelowPlan", null, null, false);
+        await PlantAlertAsync(DutyOwned, c.Rule, "A-RES", "DesksBelowPlan", RoleCodes.TerminalDutyManager, RoleCodes.TerminalDutyManager, true);
         var wait = (await _host.AsCallerAsync(c.Admin, s => s.GetRequiredService<ISvcAlertRules>().SearchAsync(new AlertRuleCriteria { SiteCode = "DMO", Text = "R-001" }, Ct)))
             .Data.Data.Single();
         await PlantAlertAsync(WaitOwnerless, wait, "A-EG", "Nowcast", null, null, false);
@@ -327,7 +338,7 @@ public sealed class StaffingAlertTests(PostgresFixture fixture) : IAsyncDisposab
                     .Should().Equal([TopologyErrors.NotFound], who);
             }
 
-            (await _host.AsCallerAsync(caller, s => s.GetRequiredService<ISvcAlerts>().SearchAsync(new AlertCriteria { SiteCode = "DMO", RuleCode = c.Changed.Code }, Ct)))
+            (await _host.AsCallerAsync(caller, s => s.GetRequiredService<ISvcAlerts>().SearchAsync(new AlertCriteria { SiteCode = "DMO", RuleCode = c.Rule.Code }, Ct)))
                 .Data.TotalCount.Should().Be(0, who + ": not even counted");
         }
 
@@ -341,7 +352,7 @@ public sealed class StaffingAlertTests(PostgresFixture fixture) : IAsyncDisposab
         // The daily report on demand (its CSV is built from it) and as delivered (the reader with the recipient's roles).
         async Task<List<string>> Daily(Guid caller) =>
             [.. (await _host.AsCallerAsync(caller, s => s.GetRequiredService<ISvcReports>().DailyAsync("DMO", Day, Ct))).Data.Alerts.Select(a => a.RuleCode)];
-        var codes = new[] { c.Rule.Code, c.Changed.Code };
+        var codes = new[] { c.Rule.Code };
         (await Daily(c.Duty)).Should().Contain(wait.Code).And.NotContain(codes);
         (await Daily(c.Border)).Should().Contain(codes);
         var delivered = await _host.AsCallerAsync(null, s => s.GetRequiredService<ReportReader>().ReadAsync("DMO", Day, [RoleCodes.TerminalDutyManager], Ten.AddDays(1), Ct));

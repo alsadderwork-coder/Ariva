@@ -56,8 +56,9 @@ internal sealed class SvcSiteConfiguration(
             UnitOfWork.StorageProvider.BeginTransaction(IsolationLevel.RepeatableRead);
 
         var source = await SourceAsync(siteCode, ct);
-        // ARV-181b2 (defence in depth; Transfer is held by administrators, who see border data): rules on a border-only metric
-        // travel only to a caller who sees border data.
+        // ARV-181b2, ARV-187 (defence in depth; Transfer is held by administrators, who see border data): rules on a
+        // border-only metric travel only to a caller who sees border data. A rule the import would refuse (one from before
+        // ARV-187 on the predicted nowcast without a border owner) refuses the export in Export (RulesNotImportable).
         if (source.AlertRules.Any(r => BorderAlerts.IsBorderOnly(r.Metric)) && !BorderAlerts.Receives(await callerRoles.GetAsync(ct)))
             return await RefuseExportAsync(siteCode, Ariva.Core.Services.Alerting.AlertRuleErrors.BorderOnly, ct);
         var exported = SiteConfigurationTransfer.Export(source);

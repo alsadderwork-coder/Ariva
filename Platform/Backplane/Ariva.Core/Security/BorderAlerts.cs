@@ -4,9 +4,11 @@ using static Ariva.Core.Global.Defaults;
 namespace Ariva.Core.Security;
 
 /// <summary>
-/// Which alerts are border data and who receives them (ARV-181b2; data boundary, CWE-863). An alert on a border-only metric
-/// (<see cref="Metrics"/>: <see cref="AlertMetric.DesksBelowPlan"/>, the lane split of the arrival wave against the desks
-/// open in each immigration lane) reaches a caller or a role only when it holds <c>ArrivalWaveLanes.View</c>
+/// Which alerts are border data and who receives them (ARV-181b2, ARV-187; data boundary, CWE-863, CWE-200). An alert on a
+/// border-only metric (<see cref="Metrics"/>: <see cref="AlertMetric.DesksBelowPlan"/>, the lane split of the arrival wave
+/// against the desks open in each immigration lane, and since ARV-187 <see cref="AlertMetric.PredictedNowcast"/>, a lane
+/// queue stepped with its share of the arrival wave, from which the lane split could be solved) reaches a caller or a role
+/// only when it holds <c>ArrivalWaveLanes.View</c>
 /// (<see cref="Receives"/>), on every channel and whatever the rule's owner and escalation roles say: the alerts API, the
 /// live hub, email when queued and when sent, the daily report with its CSV and deliveries, and the weekly summary. The
 /// rule itself names border roles only (<see cref="Roles"/>, checked by <c>AlertRuleValues.Problems</c>), never an empty
@@ -24,7 +26,7 @@ public static class BorderAlerts
     #region Properties
 
     /// <summary>The metrics whose alerts and rules are border data.</summary>
-    public static IReadOnlySet<AlertMetric> Metrics { get; } = new HashSet<AlertMetric> { AlertMetric.DesksBelowPlan };
+    public static IReadOnlySet<AlertMetric> Metrics { get; } = new HashSet<AlertMetric> { AlertMetric.DesksBelowPlan, AlertMetric.PredictedNowcast };
 
     /// <summary>The names of <see cref="Metrics"/> as stored (<c>alert.metric</c>, <c>alert_rule.metric</c>), for SQL parameters.</summary>
     public static IReadOnlyList<string> MetricNames { get; } = [.. Metrics.Select(m => m.ToString()).Order(StringComparer.Ordinal)];

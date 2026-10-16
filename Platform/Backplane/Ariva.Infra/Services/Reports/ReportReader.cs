@@ -10,7 +10,7 @@ namespace Ariva.Infra.Services.Reports;
 /// Reads one site's local day for the daily report (ARV-060) and builds it (<see cref="DailyReports"/>): the stored
 /// minutes of its queue zones with their histograms, the alerts raised that day that the given roles see (the same rule
 /// as the alert screens: the owner role, the escalation role once escalated, or an administrator; an alert on a
-/// border-only metric only for roles holding <c>ArrivalWaveLanes.View</c>, <see cref="BorderAlerts"/>, ARV-181b2), and the
+/// border-only metric only for roles holding <c>ArrivalWaveLanes.View</c>, <see cref="BorderAlerts"/>, ARV-181b2 and ARV-187), and the
 /// outages of its devices. The caller decides who may read the site; this class only reads.
 /// </summary>
 internal sealed class ReportReader(IUnitOfWork unitOfWork) : SvcDb(unitOfWork)
@@ -61,7 +61,7 @@ internal sealed class ReportReader(IUnitOfWork unitOfWork) : SvcDb(unitOfWork)
             .ToList();
 
         var admin = Enumerable.Contains(roles, RoleCodes.SystemAdministrator, StringComparer.Ordinal);
-        // ARV-181b2: alerts on a border-only metric only for roles holding ArrivalWaveLanes.View, whatever their owner and
+        // ARV-181b2, ARV-187: alerts on a border-only metric only for roles holding ArrivalWaveLanes.View, whatever their owner and
         // escalation roles (the on-demand report, its CSV and the scheduled deliveries all read here with their reader's roles).
         var alerts = await ExecuteSqlAsync<AlertRow>("""
             SELECT rule_code AS "RuleCode", rule_name AS "RuleName", zone_name AS "ZoneName", device_code AS "DeviceCode", severity AS "Severity",
