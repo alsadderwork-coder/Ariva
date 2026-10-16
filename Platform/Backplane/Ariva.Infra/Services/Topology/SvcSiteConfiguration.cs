@@ -55,7 +55,12 @@ internal sealed class SvcSiteConfiguration(
         if (!UnitOfWork.StorageProvider.IsTransactionActive())
             UnitOfWork.StorageProvider.BeginTransaction(IsolationLevel.RepeatableRead);
 
-        var exported = SiteConfigurationTransfer.Export(await SourceAsync(siteCode, ct));
+        var source = await SourceAsync(siteCode, ct);
+        // ARV-181b2 (defence in depth; Transfer is held by administrators, who see border data): rules on a border-only metric
+        // travel only to a caller who sees border data.
+        if (source.AlertRules.Any(r => BorderAlerts.IsBorderOnly(r.Metric)) && !BorderAlerts.Receives(await callerRoles.GetAsync(ct)))
+            return await RefuseExportAsync(siteCode, Ariva.Core.Services.Alerting.AlertRuleErrors.BorderOnly, ct);
+        var exported = SiteConfigurationTransfer.Export(source);
         if (exported.HasErrors)
             return await RefuseExportAsync(siteCode, exported.ErrorMessages.First(), ct);
         var data = exported.Data;
@@ -219,12 +224,15 @@ internal sealed class SvcSiteConfiguration(
         var plan = planned.Data;
 
         // The rule service's role check: a role the caller does not hold is neither given nor taken, and a rule without an
-        // owner (every role's) is an administrator's; Transfer is held by administrators, who pass it.
+        // owner (every role's) is an administrator's; Transfer is held by administrators, who pass it. ARV-181b2 (defence in
+        // depth beside the entity's border checks): a rule on a border-only metric only from a caller who sees border data.
         if (plan.AlertRules.Count > 0)
         {
             var held = (await callerRoles.GetAsync(ct)).ToHashSet(StringComparer.Ordinal);
             if (!held.Contains(Ariva.Core.RoleCodes.SystemAdministrator) &&
                 plan.AlertRules.Any(r => r.OwnerRole is null || !held.Contains(r.OwnerRole) || (r.EscalateToRole is not null && !held.Contains(r.EscalateToRole))))
+                return await RefuseImportAsync(siteCode, SiteConfigurationErrors.InvalidAlertRules, bundle);
+            if (plan.AlertRules.Any(r => BorderAlerts.IsBorderOnly(r.Metric)) && !BorderAlerts.Receives(held))
                 return await RefuseImportAsync(siteCode, SiteConfigurationErrors.InvalidAlertRules, bundle);
         }
 

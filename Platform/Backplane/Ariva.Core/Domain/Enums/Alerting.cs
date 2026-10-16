@@ -18,7 +18,12 @@ public enum AlertMetric
     /// <summary>A device of the zone is offline (true or false).</summary>
     SensorOffline,
 
-    /// <summary>Desks open below the accepted staffing plan, in desks.</summary>
+    /// <summary>
+    /// Open desks below recommendation, in desks (F16, ARV-181b2): the indicative recommendation of a lane's current interval
+    /// (interval 0 of <c>lane_staffing</c>) minus the desks open now by desk state, at least 0; no value for a minute the job
+    /// did not compute, a row that fails the read-back check, a gap, or an open count unknown or degraded. Border data: its
+    /// rules and alerts reach holders of <c>ArrivalWaveLanes.View</c> only (<see cref="Ariva.Core.Security.BorderAlerts"/>).
+    /// </summary>
     DesksBelowPlan,
 
     /// <summary>

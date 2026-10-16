@@ -1584,10 +1584,32 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 47,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. Lead decisions of 2026-10-15 (from the ARV-181b plan): split because the alert must reach border roles only on every output channel (no alert kind is border-only today: API, hub, email at enqueue and at send, daily report and deliveries, weekly summary all filter by owner and escalation role only, and an alert without an owner reaches every alert role), the hardest security surface so far; the panel ships first and needs no backend change. Value per minute: max(0, recommended minus open now) from lane_staffing interval 0 (start equal to the minute, the shared read-back check passing, gap None); no value when the job missed the minute, the row is implausible, there is a gap, open now is unknown or its count is degraded (such minutes neither count toward nor break a sustain or clear run). Rules: owner a border role (Border shift supervisor or system administrator), never empty, escalation a border role or none, comparator GreaterThan or GreaterOrEqual only, queue zones only; create, metric change and backtest by other roles answer 403 (BorderOnly), hidden rules and alerts answer 404. A stored rule failing these (from before this story or changed in the database) is never evaluated (one warning naming the site and rule code). No new Timescale script (script 0051 already accepts the metric). Backtest equals live on the constructed case of the plan. To check in the review (out of this story unless it is the same defect): PredictedNowcast rules on lane queues use the lane split of the arrival wave, Terminal duty managers may create and backtest them and their alerts reach airport roles; compare with what the immigration screen already shows those roles. Plan: scratchpad plan of 2026-10-15, sections 1, 2, 4 (AC2, AC3), 5 and 6. Carried from ARV-181b: Size M. Split from ARV-181; depends on ARV-181a. Decisions of 2026-10-15. Owner: (a) the recommendation also keeps each desk at most 85% busy over the interval (configurable per site), a margin for the variability the deterministic recursion leaves out, until v1's P90; (b) a flight without a passenger estimate (SSIM only, no AMAN inbound lane demand, no AODB) gives no recommendation for the intervals it affects, with the reason shown, never a guess. Lead: the predicted wait is max(Q_k, Q_(k+1)) over the interval's capacity, not F9's (Q_k + A_k/2)/mu_k, which ignores what the desks serve during the interval and cannot express F16's own test; the target wait is configuration now (Staffing:TargetMinutes, default 10, per-site and per-lane overrides on the ARV-148 pattern), an audited setting later; no fallback cycle time is shipped: a lane without a measured throughput gives no recommendation until the site configures its fallback at commissioning; 13 rows (the current quarter hour and 12 more, reaching now plus 3 hours); the panel's \"open now\" is the desk-state count the engine uses (F10), labelled as such, distinct from the lanes table's AMAN sessions; lane_staffing kept 90 days (configurable, in ARV-111a's data inventory). Plan: the ARV-181 progress entry (domain modeler, 2026-10-15). From the ARV-181a security review (2026-10-15), to carry: the Terminal duty manager holds Immigration.View, so the staffing panel on the immigration screen is gated on ArrivalWaveLanes.View, not on the screen's permission; the Terminal duty manager and the Handler station manager hold the Alerts permissions, so the DesksBelowPlan alert's instances, notifications, displays, reports and hub messages must reach border roles only (restricting rule ownership and escalation is not enough), with tests per role.",
       "dependsOn": [
         "ARV-181a"
+      ]
+    },
+    {
+      "id": "ARV-187",
+      "title": "[E12] Predicted-breach rules on lane queues are border data: no lane split of the arrival wave through alerts or backtests",
+      "description": "From the ARV-181b2 security review (2026-10-16), finding 1 (Medium, pre-existing since ARV-038 and ARV-047). The PredictedNowcast metric projects a lane queue with the lane split of the arrival wave (AlertInputs PredictedAsync, ArrivingLegs' lane shares), which only holders of ArrivalWaveLanes.View may see (the immigration screen withholds it from the terminal duty manager; wiki 01: no lane split). A terminal duty manager holds the alert rule permissions and LiveQueue.View, so it can create and backtest a PredictedNowcast rule on an arrivals lane and, from each answer's peak value and minute per lead (15 to 60) plus the live queue and service rate, solve for the cumulative lane arrivals ahead, and with the per-flight totals it sees, a lone flight's lane mix (from AMAN lane demand); alerts of such rules without an owner carry it more coarsely to the handler station manager. CWEs to review: CWE-863, CWE-862, CWE-200.",
+      "acceptanceCriteria": [
+        "The owner's decision is recorded (docs/product/decisions.md): either PredictedNowcast joins BorderAlerts.Metrics (rules, evaluation and every alert output border-only, as DesksBelowPlan), or only its backtest and preview are refused without ArrivalWaveLanes.View; with the reason",
+        "Existing PredictedNowcast rules owned by airport-side roles are handled as decided (for example not evaluated with one warning, listed for the operator in the release notes), with a migration note in wiki 18",
+        "A role without ArrivalWaveLanes.View cannot obtain a lane-split projection through any rule, backtest, preview, alert, notice, email or report; tests per role and per channel (unit, integration, API end-to-end), and the architecture exposure test updated",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 48,
+      "passes": false,
+      "notes": "Size S to M. Before the pilot (the reviewer: an inference leak of border data). Owner decision needed first: the simplest fix makes PredictedNowcast border-only (a zone serving no lane has no projection, so in practice the metric only judges arrivals lanes); the minimum interim fix refuses its backtest and preview to anyone without ArrivalWaveLanes.View, which is the precise channel. Depends on ARV-181b2 (BorderAlerts).",
+      "dependsOn": [
+        "ARV-181b2"
       ]
     },
     {
@@ -1877,7 +1899,8 @@
         "ARV-181a",
         "ARV-181b1",
         "ARV-181b2",
-        "ARV-184"
+        "ARV-184",
+        "ARV-187"
       ]
     },
     {

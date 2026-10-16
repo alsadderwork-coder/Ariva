@@ -181,6 +181,30 @@ public sealed class LiveHubTests
             AlertNotice.Plausible(bad).Should().BeFalse(bad.ToString());
     }
 
+    /// <summary>
+    /// ARV-181b2 (CWE-863, data boundary): a notice of open desks below recommendation reaches the alert groups of border roles
+    /// only (the border shift supervisor and the administrator), whatever its owner and escalation roles say: without an owner
+    /// (a rule from before the story, or a row changed in the database) it is not every alert role, owned by the terminal duty
+    /// manager it reaches the administrator alone, and escalated to an airport-side role it leaves that role out.
+    /// </summary>
+    [Fact]
+    public void Notices_Should_ReachBorderRolesOnly_When_TheMetricIsBorderOnly()
+    {
+        var notice = new AlertNotice(Guid.NewGuid(), "DMO", "R-006", "Desks short", "A-VIS", null, "DesksBelowPlan", "Warning", "Raised",
+            new DateTime(2026, 10, 15, 10, 9, 0, DateTimeKind.Utc), 3, RoleCodes.BorderShiftSupervisor, null, false, null, new DateTime(2026, 10, 15, 10, 9, 1, DateTimeKind.Utc));
+
+        AlertNotice.Plausible(notice).Should().BeTrue();
+        notice.Audience().Should().Equal(RoleCodes.BorderShiftSupervisor, RoleCodes.SystemAdministrator);
+        (notice with { OwnerRole = null }).Audience().Should().Equal([RoleCodes.BorderShiftSupervisor, RoleCodes.SystemAdministrator], "no owner is not every alert role");
+        (notice with { OwnerRole = RoleCodes.TerminalDutyManager }).Audience().Should().Equal([RoleCodes.SystemAdministrator], "a changed row's airport-side owner is left out");
+        (notice with { OwnerRole = RoleCodes.HandlerStationManager, EscalateToRole = RoleCodes.TerminalDutyManager, Escalated = true }).Audience()
+            .Should().Equal([RoleCodes.SystemAdministrator], "an airport-side escalation role is left out");
+        (notice with { EscalateToRole = RoleCodes.TerminalDutyManager, Escalated = true }).Audience()
+            .Should().Equal([RoleCodes.BorderShiftSupervisor, RoleCodes.SystemAdministrator]);
+        foreach (var metric in Enum.GetNames<Ariva.Core.Domain.Enums.AlertMetric>().Where(m => m != "DesksBelowPlan"))
+            (notice with { Metric = metric, OwnerRole = null }).Audience().Should().Contain(RoleCodes.TerminalDutyManager, metric + " stays every alert role's without an owner");
+    }
+
     [Fact]
     public async Task JoinZone_Should_JoinAndReturnTheLatestSnapshot_When_TheCallerHoldsTheSite()
     {

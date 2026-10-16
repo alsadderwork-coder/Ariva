@@ -2,6 +2,7 @@ using System.Text.Json;
 using Ariva.Core;
 using Ariva.Core.Domain.Entities;
 using Ariva.Core.Domain.Enums;
+using Ariva.Core.Services.Alerting;
 using Ariva.Infra.Services.Seed;
 using Ariva.Simulation.Api.Scenarios.Engine;
 using FluentAssertions;
@@ -196,6 +197,68 @@ public sealed class AlertRuleTests
         typeof(Core.Domain.InputModels.AlertRuleRequest).GetProperties().Where(p => p.PropertyType == typeof(string)).Select(p => p.Name)
             .Should().BeEquivalentTo(["SiteCode", "Name", "Metric", "Comparator", "Severity", "OwnerRole", "EscalateToRole", "EscalationContact"],
                 "free text is the name and the contact only; the rest are names checked against closed lists");
+    }
+
+    /// <summary>A rule on open desks below recommendation as the plan's example: two or more desks short for 3 minutes, owned by the border (ARV-181b2).</summary>
+    private static AlertRuleValues DesksShort(string owner = RoleCodes.BorderShiftSupervisor, string escalateTo = null) =>
+        new("Desks short", ["A-VIS"], AlertMetric.DesksBelowPlan, AlertComparator.GreaterOrEqual, 2, null, null, 3, 2, AlertSeverity.Warning, owner,
+            escalateTo is null ? null : 10, escalateTo, null, false, true);
+
+    public static TheoryData<string, AlertRuleValues, string> BorderRefused => new()
+    {
+        { "no owner (every alert role)", DesksShort(owner: null), AlertRuleErrors.BorderRolesOnly },
+        { "the terminal duty manager as owner", DesksShort(owner: RoleCodes.TerminalDutyManager), AlertRuleErrors.BorderRolesOnly },
+        { "the handler station manager as owner", DesksShort(owner: RoleCodes.HandlerStationManager), AlertRuleErrors.BorderRolesOnly },
+        { "the validation observer as owner", DesksShort(owner: RoleCodes.ValidationObserver), AlertRuleErrors.BorderRolesOnly },
+        { "an owner in another case", DesksShort(owner: "bordershiftsupervisor"), AlertRuleErrors.BorderRolesOnly },
+        { "escalated to the terminal duty manager", DesksShort(escalateTo: RoleCodes.TerminalDutyManager), AlertRuleErrors.BorderRolesOnly },
+        { "escalated to the handler station manager", DesksShort(owner: RoleCodes.SystemAdministrator, escalateTo: RoleCodes.HandlerStationManager), AlertRuleErrors.BorderRolesOnly },
+        { "fires below", DesksShort() with { Comparator = AlertComparator.LessThan }, AlertRuleErrors.BorderComparator },
+        { "fires at or below", DesksShort() with { Comparator = AlertComparator.LessOrEqual }, AlertRuleErrors.BorderComparator },
+        { "compared as a condition", DesksShort() with { Comparator = AlertComparator.IsTrue, Threshold = null }, AlertRuleErrors.BorderComparator },
+        { "a threshold beyond 1,000 desks", DesksShort() with { Threshold = 1_001 }, "The threshold of DesksBelowPlan is from 0 to 1000." },
+        { "a minimum queue", DesksShort() with { MinQueueLength = 5 }, "A minimum queue length (0 to 100,000 people) applies to the nowcast only." },
+        { "a lead time", DesksShort() with { LeadMinutes = 30 }, "A predicted nowcast looks 15 to 60 minutes ahead; other metrics take no lead time." }
+    };
+
+    /// <summary>
+    /// ARV-181b2 (CWE-863, data boundary): a rule on open desks below recommendation belongs to a border role, never to no one
+    /// (every alert role), escalates to a border role or none, and fires above its threshold; the entity refuses anything else,
+    /// so a create, an update, a backtest and an import refuse it alike.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(BorderRefused))]
+    public void Rule_Should_BeRefused_When_OpenDesksBelowRecommendationLeavesTheBorder(string why, AlertRuleValues values, string problem)
+    {
+        values.Problems().Should().Contain(problem, why);
+        var create = () => new Core.Domain.Entities.AlertRule("DMO", 6, values);
+        create.Should().Throw<ArgumentException>(why);
+    }
+
+    [Theory]
+    [InlineData(RoleCodes.BorderShiftSupervisor, null, AlertComparator.GreaterOrEqual)]
+    [InlineData(RoleCodes.BorderShiftSupervisor, RoleCodes.SystemAdministrator, AlertComparator.GreaterThan)]
+    [InlineData(RoleCodes.SystemAdministrator, RoleCodes.BorderShiftSupervisor, AlertComparator.GreaterOrEqual)]
+    [InlineData(RoleCodes.SystemAdministrator, null, AlertComparator.GreaterThan)]
+    public void Rule_Should_AcceptOpenDesksBelowRecommendation_When_ItBelongsToABorderRoleAndFiresAbove(string owner, string escalateTo, AlertComparator comparator)
+    {
+        var values = DesksShort(owner, escalateTo) with { Comparator = comparator, ClearThreshold = 1 };
+
+        values.Problems().Should().BeEmpty();
+        new Core.Domain.Entities.AlertRule("DMO", 6, values).Values().Should().BeEquivalentTo(values);
+        AlertRuleValues.WatchesQueueZonesOnly(AlertMetric.DesksBelowPlan).Should().BeTrue("the recommendation is stored per lane, a queue zone");
+        (values with { Threshold = 1_000 }).Problems().Should().BeEmpty("the unit's bound is allowed");
+        (values with { Threshold = 0, ClearThreshold = null }).Problems().Should().BeEmpty("0 desks short and above: a rule that fires on any minute with a value");
+    }
+
+    [Fact]
+    public void BorderChecks_Should_LeaveOtherMetricsAlone_When_TheirRolesAreAirportSide()
+    {
+        Enum.GetValues<AlertMetric>().Where(AlertRuleValues.WatchesQueueZonesOnly).Should()
+            .Equal(AlertMetric.DesksBelowPlan, AlertMetric.ConservationResidual, AlertMetric.TrackCompletion, AlertMetric.OccupancyOutOfRange);
+        (Nowcast() with { OwnerRole = null }).Problems().Should().BeEmpty("a wait rule may still belong to every alert role");
+        (Nowcast() with { OwnerRole = RoleCodes.TerminalDutyManager, EscalateToRole = RoleCodes.HandlerStationManager }).Problems().Should().BeEmpty();
+        (Nowcast() with { Comparator = AlertComparator.LessThan, ClearThreshold = 20, MinQueueLength = null }).Problems().Should().BeEmpty();
     }
 
     [Fact]

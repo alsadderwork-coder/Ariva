@@ -2,6 +2,7 @@ using System.Data;
 using Ariva.Core.Alerting;
 using Ariva.Core.Domain.Entities;
 using Ariva.Core.Domain.Enums;
+using Ariva.Core.Security;
 using Ariva.Infra.Live;
 using Ariva.Infra.Services.Administration;
 using Microsoft.Extensions.DependencyInjection;
@@ -251,6 +252,11 @@ internal sealed class AlertRuleTick(IUnitOfWork unitOfWork, ICurrentUser current
         if (rule is null || rule.IsDeleted || !rule.Enabled)
             return new AlertRuleTickResult(0, 0, 0, 0);
         var values = rule.Values();
+        // ARV-181b2 (CWE-863): a stored rule on a border-only metric that fails the rule checks (no owner or an airport-side
+        // owner or escalation role, a comparator below: one from before ARV-181b2 or changed in the database) is never
+        // judged, so it raises nothing for anyone; every output channel filters such alerts by metric besides.
+        if (BorderAlerts.IsBorderOnly(values.Metric) && values.Problems().Count > 0)
+            return NotEvaluated(rule, now, "it fails the rule checks of its metric (border roles only, fires above)");
         var version = rule.ValuesHash();
         // The last minute that has ended.
         var ended = AlertInputs.Minute(now).AddMinutes(-1);
@@ -283,6 +289,8 @@ internal sealed class AlertRuleTick(IUnitOfWork unitOfWork, ICurrentUser current
             // ARV-114b: a health-check rule waits for each zone's latest ended bin to settle, so it judges what a backtest would.
             AlertMetric.ConservationResidual or AlertMetric.TrackCompletion or AlertMetric.OccupancyOutOfRange =>
                 await inputs.LatestHealthMinutesAsync(rule.SiteCode, values.Metric, zoneNames, ended, ct),
+            // ARV-181b2: open desks below recommendation runs on the minutes the staffing job computed, up to each lane's latest.
+            AlertMetric.DesksBelowPlan => await inputs.LatestStaffingMinutesAsync(rule.SiteCode, zoneNames, ended, ct),
             _ => await inputs.LatestMinutesAsync(rule.SiteCode, zoneNames, ended, ct)
         };
         if (latest is null && AlertRuleValues.IsHealthCheck(values.Metric))
@@ -388,17 +396,31 @@ internal sealed class AlertRuleTick(IUnitOfWork unitOfWork, ICurrentUser current
     }
 
     /// <summary>
-    /// A rule whose inputs are beyond their read bound this tick (<see cref="AlertInputs.MaxHealthRows"/>, CWE-120): its
-    /// targets keep their states, so the next tick tries again from the same minutes; what the tick already changed (new
-    /// targets, withdrawn alerts) is kept. One warning names the site and the rule code only.
+    /// A rule whose inputs are beyond their read bound this tick (<see cref="AlertInputs.MaxHealthRows"/> for the health
+    /// checks, <see cref="AlertInputs.MaxStaffingRows"/> for open desks below recommendation; CWE-120): its targets keep their
+    /// states, so the next tick tries again from the same minutes; what the tick already changed (new targets, withdrawn
+    /// alerts) is kept. One warning names the site and the rule code only.
     /// </summary>
     private AlertRuleTickResult Skipped(AlertRule rule, int targets, int withdrawn, DateTime now)
     {
-        logger.LogWarning("Alert evaluation of site {Site} rule {Rule}: its stored bins exceed the {Max} rows one read takes; the rule is not evaluated this tick",
-            rule.SiteCode, rule.Code, inputs.MaxHealthRows);
+        logger.LogWarning("Alert evaluation of site {Site} rule {Rule}: its stored inputs exceed the rows one read takes; the rule is not evaluated this tick",
+            rule.SiteCode, rule.Code);
         Announce(now);
         unitOfWork.PromiseToCommit();
         return new AlertRuleTickResult(targets, 0, 0, withdrawn);
+    }
+
+    /// <summary>
+    /// A stored rule the evaluation does not judge (ARV-181b2): nothing is read or changed, its targets keep their states and
+    /// any open alert stays as it is. One warning names the site, the rule code and a fixed reason only (CWE-117: no value
+    /// of the rule is logged).
+    /// </summary>
+    private AlertRuleTickResult NotEvaluated(AlertRule rule, DateTime now, string reason)
+    {
+        logger.LogWarning("Alert evaluation of site {Site} rule {Rule}: not evaluated, {Reason}", rule.SiteCode, rule.Code, reason);
+        Announce(now);
+        unitOfWork.PromiseToCommit();
+        return new AlertRuleTickResult(0, 0, 0, 0);
     }
 
     private sealed class IdRow

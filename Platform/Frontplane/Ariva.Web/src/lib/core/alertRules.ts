@@ -32,10 +32,34 @@ export const healthChecks: ReadonlySet<string> = new Set([
 	'OccupancyOutOfRange'
 ]);
 /**
- * Metrics the evaluation cannot judge yet: offered only when editing a rule that already uses one (the server refuses new
- * ones). OverflowOccupied is judged since ARV-115 (the stream stores each overflow band's occupancy per minute).
+ * Metrics the evaluation cannot judge yet (AlertRuleErrors.NotEvaluatedMetrics): offered only when editing a rule that
+ * already uses one (the server refuses new ones), and marked "not evaluated" in the list. Empty since ARV-181b2, when
+ * DesksBelowPlan became evaluated (OverflowOccupied left with ARV-115); kept for a metric added before its inputs exist.
  */
-export const notEvaluated: ReadonlySet<string> = new Set(['DesksBelowPlan']);
+export const notEvaluated: ReadonlySet<string> = new Set<string>();
+/**
+ * ARV-181b2: the metrics whose rules and alerts are border data (Ariva.Core BorderAlerts.Metrics): open desks below
+ * recommendation. The form offers them only to holders of {@link borderPermission}, owned by a border role (never no
+ * owner), escalated to a border role or none, firing above ({@link aboveComparators}) and on queue zones only. Hiding them
+ * is a convenience: the server refuses every other caller (403) and every other value (400), and hides such rules (404).
+ */
+export const borderOnly: ReadonlySet<string> = new Set(['DesksBelowPlan']);
+/** The permission whose holders create, change, preview and see border-only rules (BorderAlerts.Receives). */
+export const borderPermission = 'ArrivalWaveLanes.View';
+/**
+ * The border roles (BorderAlerts.Roles): the alert roles holding ArrivalWaveLanes.View that are not airport-side. A
+ * border-only rule belongs to one of them and escalates to one of them or to no role (AlertRuleErrors.BorderRolesOnly).
+ */
+export const borderRoles: readonly string[] = ['BorderShiftSupervisor', 'SystemAdministrator'];
+/** The comparators of a border-only rule: it counts desks short, so it fires above (AlertRuleErrors.BorderComparator). */
+export const aboveComparators: readonly string[] = ['GreaterThan', 'GreaterOrEqual'];
+/**
+ * Whether a rule on the metric watches queue zones only (AlertRuleValues.WatchesQueueZonesOnly): the health checks
+ * (stored per queue zone, ARV-114b) and the border-only metric (a recommendation per lane, a queue zone; ARV-181b2).
+ */
+export function watchesQueueZonesOnly(metric: string): boolean {
+	return healthChecks.has(metric) || borderOnly.has(metric);
+}
 export const comparators = ['GreaterThan', 'GreaterOrEqual', 'LessThan', 'LessOrEqual'] as const;
 export const severities = ['Info', 'Warning', 'Critical'] as const;
 /** The roles a rule can belong to or escalate to (RoleCodes); administrators are not an owner of operational alerts. */

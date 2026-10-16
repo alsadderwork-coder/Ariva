@@ -58,7 +58,7 @@ public static class SiteConfigurationErrors
     public const string FloorPlanFileUnreadable = "A floor plan file of the site is missing from storage or does not match its record.";
     public const string InvalidDevices = "The devices part of the bundle is not valid, or a device does not meet the registration's rules at this site.";
     public const string InvalidAlertRules = "The alert rules part of the bundle is not valid.";
-    public const string AlertRuleZonesNotInProfile = "An alert rule of the bundle names a zone the imported zone profile does not have as a queue zone or overflow band (health checks: queue zones only).";
+    public const string AlertRuleZonesNotInProfile = "An alert rule of the bundle names a zone the imported zone profile does not have as a queue zone or overflow band (health checks and open desks below recommendation: queue zones only).";
     public const string InvalidDisplays = "The displays part of the bundle is not valid.";
     public const string DisplayZonesNotInProfile = "A display of the bundle shows a zone that is not a queue zone of the imported zone profile.";
     public const string DisplayCodeTaken = "A display code of the bundle is already used by a live display here; display codes are unique across the deployment.";

@@ -216,6 +216,11 @@ export function accounts() {
 		webRules: account('e2e.webrules', ['BorderShiftSupervisor'], false, true, ['DMO']),
 		// ARV-058: sets up passenger displays at the demo airport through the screen (creating needs a second factor).
 		webDisplays: account('e2e.webdisplays', ['TerminalDutyManager'], false, true, ['DMO']),
+		// ARV-181b2: the open desks below recommendation suite's supervisor and duty manager at the demo airport, each with a
+		// second factor so that a delete reaches the rule service (it answers 204 for the border, 404 for the duty manager);
+		// accounts of their own, because a TOTP code counts once per account.
+		desksBorder: account('e2e.desksborder', ['BorderShiftSupervisor'], false, true, ['DMO']),
+		desksTerminal: account('e2e.desksterminal', ['TerminalDutyManager'], false, true, ['DMO']),
 		// ARV-059: administers accounts through the Users and access screen (creating, resets and role grants need a second
 		// factor); the second is limited to the demo airport, to show that the screen and the server keep it there.
 		webUsers: account('e2e.webusers', ['SystemAdministrator'], false, true, ['*']),

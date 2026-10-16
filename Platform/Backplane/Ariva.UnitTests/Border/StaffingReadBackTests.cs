@@ -3,7 +3,7 @@ using Ariva.Core.Staffing;
 using Ariva.Infra.Services.Border;
 using Ariva.Infra.Staffing;
 using FluentAssertions;
-using Row = Ariva.Infra.Services.Border.SvcStaffingRecommendations.StaffingRow;
+using Row = Ariva.Infra.Staffing.StaffingReadBack.StaffingRow;
 
 namespace Ariva.UnitTests.Border;
 
@@ -250,7 +250,7 @@ public sealed class StaffingReadBackTests
         var row = Valid();
         Changes[change](row);
 
-        SvcStaffingRecommendations.Plausible(row).Should().Be(accepted, change);
+        StaffingReadBack.Plausible(row).Should().Be(accepted, change);
     }
 
     public static TheoryData<string> Refused()

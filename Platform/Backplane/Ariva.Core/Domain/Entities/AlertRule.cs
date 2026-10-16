@@ -1,6 +1,8 @@
 using System.Globalization;
 using Ariva.Core.Domain.Components;
 using Ariva.Core.Domain.Enums;
+using Ariva.Core.Security;
+using Ariva.Core.Services.Alerting;
 
 namespace Ariva.Core.Domain.Entities;
 
@@ -190,6 +192,12 @@ public sealed record AlertRuleValues(
     public static bool IsHealthCheck(AlertMetric metric) =>
         metric is AlertMetric.ConservationResidual or AlertMetric.TrackCompletion or AlertMetric.OccupancyOutOfRange;
 
+    /// <summary>
+    /// Metrics judged per queue zone only, so a rule on one watches queue zones only: the health checks (stored per queue
+    /// zone, ARV-114b) and open desks below recommendation (stored per lane, a queue zone, in <c>lane_staffing</c>; ARV-181b2).
+    /// </summary>
+    public static bool WatchesQueueZonesOnly(AlertMetric metric) => IsHealthCheck(metric) || metric == AlertMetric.DesksBelowPlan;
+
     private static bool IsRole(string code) => RoleCodes.AlertRoles.Any(r => string.Equals(r, code, StringComparison.Ordinal));
 
     public IReadOnlyList<string> Problems()
@@ -245,6 +253,26 @@ public sealed record AlertRuleValues(
         if (!string.IsNullOrWhiteSpace(EscalationContact) &&
             (EscalationContact.Trim().Length > AlertRule.MaxContactLength || !DisplayText.IsClean(EscalationContact.Trim())))
             problems.Add($"An escalation contact is at most {AlertRule.MaxContactLength} characters without control or invisible characters.");
+        problems.AddRange(BorderProblems());
+        return problems;
+    }
+
+    /// <summary>
+    /// ARV-181b2 (CWE-863, data boundary): a rule on a border-only metric (<see cref="BorderAlerts"/>) belongs to a
+    /// border role, never to no one (no owner means every alert role, airport-side included), escalates to a border role or
+    /// to no role, and fires above its threshold (desks short). Checked here, so a create, an update, a backtest and an import
+    /// all refuse such a rule alike, and the evaluation never judges a stored one that fails it.
+    /// </summary>
+    private List<string> BorderProblems()
+    {
+        var problems = new List<string>();
+        if (!BorderAlerts.IsBorderOnly(Metric))
+            return problems;
+        var escalatesElsewhere = EscalateToRole is not null && !BorderAlerts.IsBorderRole(EscalateToRole);
+        if (!BorderAlerts.IsBorderRole(OwnerRole) || escalatesElsewhere)
+            problems.Add(AlertRuleErrors.BorderRolesOnly);
+        if (Comparator is not (AlertComparator.GreaterThan or AlertComparator.GreaterOrEqual))
+            problems.Add(AlertRuleErrors.BorderComparator);
         return problems;
     }
 }

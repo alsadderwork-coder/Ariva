@@ -16,8 +16,11 @@ namespace Ariva.Infra.Services.Alerting;
 /// <summary>
 /// Alerts (ARV-039). An alert is visible, and can be acted on, only within the caller's sites and where the caller's
 /// role is responsible for it (<see cref="Alert.IsFor"/>); any other alert answers like one that does not exist
-/// (CWE-863). An action locks the alert's row first, so it never overwrites what the evaluation or another person did
-/// in between, moves the alert forward only (otherwise 409), is audited, and is announced to the live hub after commit.
+/// (CWE-863). An alert on a border-only metric (<see cref="BorderAlerts"/>, ARV-181b2) is visible to a caller holding
+/// <c>ArrivalWaveLanes.View</c> only, whatever its owner and escalation roles (a row without an owner, from before ARV-181b2
+/// or changed in the database included): left out of the list, 404 on get and on every action. An action locks the alert's
+/// row first, so it never overwrites what the evaluation or another person did in between, moves the alert forward only
+/// (otherwise 409), is audited, and is announced to the live hub after commit (to its audience, <see cref="AlertNotice.Audience"/>).
 /// </summary>
 internal sealed class SvcAlerts(
     IUnitOfWork unitOfWork,
@@ -132,8 +135,16 @@ internal sealed class SvcAlerts(
         return alert;
     }
 
+    // The alerts the roles see, by Alert.IsFor's rule in the query: alerts on a border-only metric for holders of
+    // ArrivalWaveLanes.View only, before the administrator's and the owner and escalation roles' rule (ARV-181b2).
     private static IQueryable<Alert> Visible(IQueryable<Alert> query, IReadOnlyCollection<string> roles)
     {
+        if (!BorderAlerts.Receives(roles))
+        {
+            foreach (var border in BorderAlerts.Metrics)
+                query = query.Where(a => a.Metric != border);
+        }
+
         if (Enumerable.Contains(roles, Ariva.Core.RoleCodes.SystemAdministrator, StringComparer.Ordinal))
             return query;
         var held = roles.ToList();

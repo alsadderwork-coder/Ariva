@@ -452,6 +452,57 @@ public sealed class SiteConfigurationTests(PostgresFixture fixture) : IAsyncDisp
             .Should().Be($"{RoleCodes.BorderShiftSupervisor}/{RoleCodes.BorderShiftSupervisor}");
     }
 
+    /// <summary>
+    /// ARV-181b2: a rule on open desks below recommendation travels like any other once it belongs to a border role and watches
+    /// queue zones only; an import refuses one with an airport-side or no owner, or on an overflow band, and the export is
+    /// refused to a caller without ArrivalWaveLanes.View (only administrators reach the endpoint; the service checks it besides).
+    /// </summary>
+    [Fact]
+    public async Task Transfer_Should_CarryOpenDesksBelowRecommendation_When_TheRuleBelongsToABorderRole()
+    {
+        var admin = await AdministratorAsync("db");
+        await SourceAsync(admin, "XCDA", "QDA");
+        Ok(await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcAlertRules>().CreateAsync(new AlertRuleRequest("XCDA", "Desks short", ["Snake A"], "DesksBelowPlan",
+            "GreaterOrEqual", 2, null, null, 3, 2, "Warning", RoleCodes.BorderShiftSupervisor, null, null, null, false), Ct)));
+        var duty = await _host.CreateUserAsync("it.cfg.desks.duty", roles: [RoleCodes.TerminalDutyManager]);
+        await _host.ReadAsync<int>("UPDATE \"user\" SET all_sites = true WHERE id = @id RETURNING 1", duty);
+
+        (await _host.AsCallerAsync(duty, s => Configuration(s).ExportAsync("XCDA", Ct))).ErrorMessages
+            .Should().Equal([AlertRuleErrors.BorderOnly], "the border rule never travels to a caller without the lane split");
+        var exported = Ok(await _host.AsCallerAsync(admin, s => Configuration(s).ExportAsync("XCDA", Ct)));
+        var rules = System.Text.Json.JsonSerializer.Deserialize<List<AlertRulePartRow>>(Convert.FromBase64String(exported.Bundle.Parts[SiteConfigurationBundles.AlertRules]),
+            SiteConfigurationParts.Json)!;
+        var desks = rules.Single(r => r.Metric == "DesksBelowPlan");
+        desks.OwnerRole.Should().Be(RoleCodes.BorderShiftSupervisor);
+        await SiteAsync(admin, "XCDB");
+        await AirportAsync(admin, "QDB");
+        ImportSiteConfigurationRequest With(AlertRulePartRow changed) =>
+            Rehashed(exported.Bundle, SiteConfigurationBundles.AlertRules, SiteConfigurationParts.Write(rules.Select(r => r.Code == desks.Code ? changed : r).ToList()));
+
+        foreach (var (what, refused, error) in new[]
+                 {
+                     ("an airport-side owner", With(desks with { OwnerRole = RoleCodes.TerminalDutyManager }), SiteConfigurationErrors.InvalidAlertRules),
+                     ("no owner (every role's)", With(desks with { OwnerRole = null }), SiteConfigurationErrors.InvalidAlertRules),
+                     ("an airport-side escalation role", With(desks with { EscalateAfterMinutes = 10, EscalateToRole = RoleCodes.HandlerStationManager }),
+                         SiteConfigurationErrors.InvalidAlertRules),
+                     ("a rule that fires below", With(desks with { Comparator = "LessThan" }), SiteConfigurationErrors.InvalidAlertRules),
+                     ("an overflow band", With(desks with { Zones = ["Overflow A"] }), SiteConfigurationErrors.AlertRuleZonesNotInProfile)
+                 })
+        {
+            (await _host.AsCallerAsync(admin, s => Configuration(s).ImportAsync("XCDB", refused, "QDB", Ct))).ErrorMessages.Should().Equal([error], what);
+            (await RecordsAsync("XCDB")).Should().Be(0, what);
+        }
+
+        (await _host.AsCallerAsync(duty, s => Configuration(s).ImportAsync("XCDB", Request(exported.Bundle), "QDB", Ct))).ErrorMessages
+            .Should().Equal(SiteConfigurationErrors.InvalidAlertRules);
+        (await RecordsAsync("XCDB")).Should().Be(0);
+
+        var imported = Ok(await _host.AsCallerAsync(admin, s => Configuration(s).ImportAsync("XCDB", Request(exported.Bundle), "QDB", Ct)));
+        imported.Counts.AlertRules.Should().Be(3);
+        (await _host.ReadAsync<string>("SELECT owner_role || '/' || comparator FROM alert_rule WHERE site_code = @secret AND metric = 'DesksBelowPlan'", secret: "XCDB"))
+            .Should().Be($"{RoleCodes.BorderShiftSupervisor}/GreaterOrEqual");
+    }
+
     [Fact]
     public async Task Import_Should_RefuseADisplayCodeALiveDisplayHoldsAndWriteNothing_When_TheSourceStillHasIt()
     {

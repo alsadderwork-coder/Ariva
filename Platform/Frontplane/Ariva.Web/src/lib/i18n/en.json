@@ -789,7 +789,8 @@
 			"noZones": "This site has no published queue zones yet.",
 			"zonesRequired": "Choose at least one zone.",
 			"noOwner": "Every role of the site",
-			"noRole": "None"
+			"noRole": "None",
+			"borderOwner": "Choose the Border shift supervisor or the system administrator as owner: a rule on open desks below recommendation belongs to a border role."
 		},
 		"fields": {
 			"name": "Name",
@@ -815,7 +816,8 @@
 			"minQueueLength": "Only fire when at least this many people are queuing.",
 			"leadMinutes": "15 to 60 minutes ahead, from the arrival wave of landing flights.",
 			"escalation": "Unacknowledged alerts go to the role or contact after this.",
-			"condition": "This metric is true or false: the rule fires while it is true."
+			"condition": "This metric is true or false: the rule fires while it is true.",
+			"desksBelowPlan": "Border data: how many desks each arrivals lane is short of the current quarter hour's indicative recommendation. The rule and its alerts reach the Border shift supervisor and the system administrator only."
 		},
 		"healthHints": {
 			"ConservationResidual": "People counted in or out that the occupancy does not show, in the zone's latest ended 15-minute bin (0 when every person is accounted for). Queue zones only.",
@@ -836,7 +838,7 @@
 			"QueueLength": "Queue length",
 			"SensorOffline": "Sensor offline",
 			"OverflowOccupied": "Overflow occupied",
-			"DesksBelowPlan": "Desks below plan",
+			"DesksBelowPlan": "Open desks below recommendation",
 			"ConservationResidual": "Conservation residual",
 			"TrackCompletion": "Track completion",
 			"OccupancyOutOfRange": "Occupancy out of range"

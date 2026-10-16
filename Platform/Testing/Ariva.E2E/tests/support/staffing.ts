@@ -123,3 +123,70 @@ export async function plantStaffingMinute(db: pg.Client, lane: PlantedLane, minu
 		throw error;
 	}
 }
+
+/**
+ * ARV-181b2: the constructed case of the open desks below recommendation alert (formulas F16, the plan's case), as the
+ * staffing job writes interval 0 of each minute from 0 to 19 after a start: a lane of 8 desks with a measured throughput,
+ * a queue of 40 and 30 arriving. Desks short (recommended minus open now) are 0 to minute 4, then 2, no row, 2, a degraded
+ * open count, 3, a flight without passengers, an unknown open count, 1, 2, 0 and 0 (3 recommended, 5 open), then 0; minutes
+ * 17 to 19 have no arrivals, which the read-back check refuses (8 short, never counted). A rule GreaterOrEqual 2, sustain 3
+ * and clear after 2 is raised at minute 9 with 3 desks short and cleared at minute 15. tests/api/desks-below-recommendation.spec.ts
+ * plants the same rows on its own lane.
+ */
+export const desksShortCase: { minute: number; recommended: number | null; openNow: number | null; degraded?: boolean; gap?: string; arrivals?: boolean }[] = [
+	...[0, 1, 2, 3, 4].map((minute) => ({ minute, recommended: 4, openNow: 4 })),
+	{ minute: 5, recommended: 6, openNow: 4 },
+	{ minute: 7, recommended: 6, openNow: 4 },
+	{ minute: 8, recommended: 7, openNow: 4, degraded: true },
+	{ minute: 9, recommended: 7, openNow: 4 },
+	{ minute: 10, recommended: null, openNow: 4, gap: 'FlightWithoutPassengers' },
+	{ minute: 11, recommended: 5, openNow: null },
+	{ minute: 12, recommended: 5, openNow: 4 },
+	{ minute: 13, recommended: 6, openNow: 4 },
+	{ minute: 14, recommended: 4, openNow: 4 },
+	{ minute: 15, recommended: 3, openNow: 5 },
+	{ minute: 16, recommended: 4, openNow: 4 },
+	...[17, 18, 19].map((minute) => ({ minute, recommended: 8, openNow: 0, arrivals: false }))
+];
+
+/**
+ * Plants {@link desksShortCase} for a lane from a whole UTC minute, over any rows of the lane between `clearFrom` and
+ * `clearTo` (the job's own rows of those minutes, for a database kept from an earlier day). Rows hold together as
+ * script 0053 and the read-back check demand.
+ */
+export async function plantDesksShortCase(db: pg.Client, zoneKey: string, lane: string, start: Date, clearFrom: Date, clearTo: Date): Promise<void> {
+	await db.query('BEGIN');
+	try {
+		await db.query('DELETE FROM lane_staffing WHERE zone_key = $1 AND minute_utc >= $2 AND minute_utc <= $3', [zoneKey, clearFrom, clearTo]);
+		for (const r of desksShortCase) {
+			const minute = new Date(start.getTime() + r.minute * 60_000);
+			await db.query(
+				`INSERT INTO lane_staffing (zone_key, minute_utc, interval_index, lane, start_utc, minutes, arrivals, recommended, bound, at_limit, shortfall,
+				                            wait_recommended, wait_open, no_service_open, backlog_end, gap, lane_gap, queue_minute_utc, queue_now, open_now,
+				                            open_now_degraded, desks, target_minutes, busy_cap, throughput_per_desk, throughput_source, computed_utc)
+				 VALUES ($1, $2, 0, $3, $2, $4, $5, $6, $7, $8, NULL, $9, $10, false, NULL, $11, 'None', $12, 40, $13, $14, 8, 10, 0.85, 0.5, 'Measured', $15)`,
+				[
+					zoneKey,
+					minute,
+					lane,
+					15 - (minute.getUTCMinutes() % 15),
+					r.arrivals === false ? null : 30,
+					r.recommended,
+					r.recommended == null || r.recommended === 0 ? 'None' : 'Wait',
+					r.recommended === 8,
+					r.recommended == null ? null : 8,
+					r.recommended == null || r.openNow == null ? null : 12,
+					r.gap ?? 'None',
+					new Date(minute.getTime() - 60_000),
+					r.openNow,
+					r.degraded ?? false,
+					new Date(minute.getTime() + 45_000)
+				]
+			);
+		}
+		await db.query('COMMIT');
+	} catch (error) {
+		await db.query('ROLLBACK');
+		throw error;
+	}
+}

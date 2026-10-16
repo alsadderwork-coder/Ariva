@@ -195,10 +195,11 @@ public static class SiteConfigurationTransfer
 
     /// <summary>
     /// The zone rule of alert rules (the rule service's, owner decision 2026-10-11 for imports): every zone a queue zone or
-    /// an overflow band of the profile; a health check watches queue zones only.
+    /// an overflow band of the profile; a health check and open desks below recommendation watch queue zones only
+    /// (<see cref="AlertRuleValues.WatchesQueueZonesOnly"/>).
     /// </summary>
     public static bool ZonesOf(IReadOnlyList<string> zones, AlertMetric metric, IReadOnlySet<string> queues, IReadOnlySet<string> overflows) =>
-        zones.All(z => queues.Contains(z) || (!AlertRuleValues.IsHealthCheck(metric) && overflows.Contains(z)));
+        zones.All(z => queues.Contains(z) || (!AlertRuleValues.WatchesQueueZonesOnly(metric) && overflows.Contains(z)));
 
     #endregion
 
@@ -287,7 +288,8 @@ public static class SiteConfigurationTransfer
                 d.FootprintLengthMetres, d.FootprintWidthMetres, d.FootprintRadiusMetres), d.MappingName)).ToList();
 
         // Alert rules and displays: the entities' own checks, then their zones against the imported draft (owner decision
-        // 2026-10-11): queue zones and overflow bands for rules (queue zones only for health checks), queue zones for displays.
+        // 2026-10-11): queue zones and overflow bands for rules (queue zones only for health checks and open desks below recommendation), queue
+        // zones for displays.
         var queues = draft?.Zones.Where(z => z.Kind == ZoneKind.Queue).Select(z => z.Name).ToHashSet(StringComparer.Ordinal) ?? [];
         var overflows = draft?.Zones.Where(z => z.Kind == ZoneKind.Overflow).Select(z => z.Name).ToHashSet(StringComparer.Ordinal) ?? [];
         var rules = new List<AlertRule>();
@@ -296,6 +298,8 @@ public static class SiteConfigurationTransfer
             var metric = SiteConfigurationRules.ParseKind<AlertMetric>(row.Metric).GetValueOrDefault();
             if (AlertRuleErrors.NotEvaluatedMetrics.Contains(metric))
                 return Result.Error<SiteConfigurationPlan>(SiteConfigurationErrors.InvalidAlertRules);
+            // ARV-181b2: a rule on open desks below recommendation passes the entity's border checks (a border owner, never
+            // none; a border escalation role or none; fires above) like any other value, so the import refuses it otherwise.
             AlertRule rule = null;
             built = Guarded(SiteConfigurationErrors.InvalidAlertRules, () => rule = new AlertRule(siteCode, SiteConfigurationRules.RuleNumber(row.Code).GetValueOrDefault(),
                 new AlertRuleValues(row.Name, row.Zones, metric, SiteConfigurationRules.ParseKind<AlertComparator>(row.Comparator).GetValueOrDefault(), row.Threshold,

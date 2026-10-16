@@ -18,6 +18,8 @@ import { hosts } from '../support/hosts';
 // arrive unpaired; the devices whose access settings (source networks, certificate pin) were withheld are listed by code.
 // A display code a live display holds answers 409 and writes nothing, so the source's display is deleted before the
 // round trip.
+// ARV-181b2: a rule on open desks below recommendation travels when a border role owns it (it imports into the spare site
+// with its owner) and is refused with an airport-side owner or escalation role, without an owner, or on an overflow band.
 // The sites are new each run (codes CFA, CFB and CFC with a random tail; no other suite uses them). Everything the
 // suite creates is removed at the end except what Ariva never deletes: the sites themselves and the published zone
 // profile versions (immutable by design, script 0012).
@@ -79,6 +81,14 @@ const decoded = (bundle: any, part: string) => JSON.parse(Buffer.from(bundle.par
 /** A copy of the bundle with one part replaced and its manifest entry recomputed: anyone can, so the manifest proves no author. */
 function rehashed(bundle: any, part: string, bytes: Buffer) {
 	return { ...bundle, manifest: { ...bundle.manifest, [part]: sha256(bytes) }, parts: { ...bundle.parts, [part]: bytes.toString('base64') } };
+}
+
+/** ARV-181b2: the bundle with R-001 turned into an open desks below recommendation rule (2 desks short or more), with changes. */
+function desksBelow(bundle: any, changes: Record<string, unknown>) {
+	const rules = decoded(bundle, 'alertRules').map((r: any) =>
+		r.code === 'R-001' ? { ...r, metric: 'DesksBelowPlan', comparator: 'GreaterOrEqual', threshold: 2, ...changes } : r
+	);
+	return rehashed(bundle, 'alertRules', Buffer.from(JSON.stringify(rules)));
 }
 
 async function secondFactor(account: Account): Promise<string> {
@@ -335,6 +345,11 @@ test('a tampered bundle is refused with a fixed text and writes nothing', async 
 		['an alert rule on a zone the profile lacks', rehashed(bundle, 'alertRules', Buffer.from(JSON.stringify(decoded(bundle, 'alertRules').map((r: any) => ({ ...r, zones: [hostileZone] }))))), 400],
 		['a display on a zone that is no queue zone', rehashed(bundle, 'displays', Buffer.from(JSON.stringify(decoded(bundle, 'displays').map((d: any) => ({ ...d, entries: [{ ...d.entries[0], zone: 'Overflow A' }] }))))), 400],
 		['a rule code above R-100000', rehashed(bundle, 'alertRules', Buffer.from(JSON.stringify(decoded(bundle, 'alertRules').map((r: any, i: number) => ({ ...r, code: i === 0 ? 'R-100001' : r.code }))))), 400],
+		// ARV-181b2: open desks below recommendation belongs to a border role and watches queue zones only.
+		['open desks below recommendation owned by the duty manager', desksBelow(bundle, { ownerRole: 'TerminalDutyManager' }), 400],
+		['open desks below recommendation without an owner', desksBelow(bundle, { ownerRole: null }), 400],
+		['open desks below recommendation escalated to the handler', desksBelow(bundle, { escalateAfterMinutes: 10, escalateToRole: 'HandlerStationManager' }), 400],
+		['open desks below recommendation on an overflow band', desksBelow(bundle, { zones: ['Overflow A'] }), 400],
 		['a device row without its access settings flag', rehashed(bundle, 'devices', Buffer.from(JSON.stringify(decoded(bundle, 'devices').map(({ accessSettingsWithheld, ...row }: any) => row)))), 400],
 		['a device on a level outside the bundle', rehashed(bundle, 'devices', Buffer.from(JSON.stringify(decoded(bundle, 'devices').map((d: any) => ({ ...d, level: 'L9' }))))), 400],
 		['an unknown part named with markup', { ...bundle, manifest: { ...bundle.manifest, [hostileTerminal]: sha256(devices) }, parts: { ...bundle.parts, [hostileTerminal]: devices.toString('base64') } }, 400],
@@ -472,6 +487,22 @@ test('a round trip between two sites gives the same portable geometry hash once 
 	expect(copy.portableGeometryHash, 'the same portable geometry hash').toBe(exported.portableGeometryHash);
 	expect(published.geometryHash, 'F22 v1 names levels and desks by their new ids').not.toBe(exported.geometryHash);
 	expect(copy.counts).toEqual(exported.counts);
+});
+
+test('a rule on open desks below recommendation owned by the border imports with its owner (ARV-181b2)', async () => {
+	// Into the spare site, at an airport of its own (the source's and the target's terminal codes are taken there), without the
+	// display (its code is live at the target now).
+	let iata = random(3);
+	while ([sourceIata, targetIata].includes(iata)) iata = random(3);
+	await create('airports', { iataCode: iata, name: `E2E site configuration ${iata}`, timeZoneId: 'Asia/Dubai' });
+	airports.push(iata);
+	const bundle = desksBelow(rehashed(exported.bundle, 'displays', Buffer.from('[]')), {});
+	const imported = await call('POST', `${configuration(spare)}?airportCode=${iata}`, { token: stepped, data: bundle });
+	expect(imported.status(), imported.status() === 201 ? 'import' : await imported.text()).toBe(201);
+	expect((await imported.json()).counts.alertRules).toBe(2);
+	const rules = await call('GET', `${admin}/alert-rules?siteCode=${spare}&pageSize=500`, { token: stepped });
+	const desks = ((await rules.json()).data as any[]).find((r) => r.code === 'R-001');
+	expect(desks).toMatchObject({ metric: 'DesksBelowPlan', comparator: 'GreaterOrEqual', threshold: 2, ownerRole: 'BorderShiftSupervisor' });
 });
 
 test('an import into a site that is not empty answers 409', async () => {

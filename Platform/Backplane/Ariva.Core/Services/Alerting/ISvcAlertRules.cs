@@ -7,18 +7,33 @@ namespace Ariva.Core.Services.Alerting;
 /// <summary>The answers of the alert rule service that are not plain validation (ARV-037).</summary>
 public static class AlertRuleErrors
 {
-    public const string NotEvaluated = "Ariva does not evaluate this metric yet (there is no staffing plan), so a new rule on it could never fire.";
+    public const string NotEvaluated = "Ariva does not evaluate this metric yet, so a new rule on it could never fire.";
 
     /// <summary>
     /// Metrics a rule can name but the evaluation has nothing to judge for yet (AlertInputs): no new rule may use them, and
     /// an existing rule on one may keep it while it is shown as not evaluated. OverflowOccupied left the set with ARV-115
-    /// (the stream stores each overflow band's occupancy per minute), so the demo seed's R-002 is evaluated.
+    /// (the stream stores each overflow band's occupancy per minute), so the demo seed's R-002 is evaluated; DesksBelowPlan
+    /// left it with ARV-181b2 (open desks below the recommendation of <c>lane_staffing</c>'s current interval), so the set is
+    /// empty and kept for a metric added before its inputs exist.
     /// </summary>
-    public static readonly IReadOnlySet<Ariva.Core.Domain.Enums.AlertMetric> NotEvaluatedMetrics =
-        new HashSet<Ariva.Core.Domain.Enums.AlertMetric> { Ariva.Core.Domain.Enums.AlertMetric.DesksBelowPlan };
+    public static readonly IReadOnlySet<Ariva.Core.Domain.Enums.AlertMetric> NotEvaluatedMetrics = new HashSet<Ariva.Core.Domain.Enums.AlertMetric>();
+
+    /// <summary>
+    /// ARV-181b2 (CWE-862, CWE-863): a caller without <c>ArrivalWaveLanes.View</c> creating a rule on a border-only metric,
+    /// changing a rule to one, or backtesting one (403). Rules on such a metric are hidden from that caller otherwise (404).
+    /// </summary>
+    public const string BorderOnly = "Open desks below recommendation is border data: only a caller with ArrivalWaveLanes.View creates, changes, imports or backtests a rule on it.";
+
+    /// <summary>ARV-181b2: a rule on a border-only metric names a role that is not a border role, or no owner (every role).</summary>
+    public const string BorderRolesOnly =
+        "A rule on open desks below recommendation belongs to a border role: its owner is the Border shift supervisor or the system administrator (never empty), and it escalates to one of them or to no role.";
+
+    /// <summary>ARV-181b2: open desks below recommendation counts desks short, so a rule fires above its threshold.</summary>
+    public const string BorderComparator = "A rule on open desks below recommendation fires at or above its threshold: compare with GreaterThan or GreaterOrEqual.";
 
     public const string UnknownZones = "Every zone in scope must be a zone of the site's published zone profile.";
-    public const string QueueZonesOnly = "ConservationResidual, TrackCompletion and OccupancyOutOfRange are checked per queue zone: choose queue zones only.";
+    public const string QueueZonesOnly =
+        "ConservationResidual, TrackCompletion, OccupancyOutOfRange and DesksBelowPlan are judged per queue zone: choose queue zones only.";
     public const string RoleNotHeld = "Only an administrator can give a rule to, escalate it to, or take it from a role the caller does not hold.";
     public const string BacktestRange = "A backtest covers 1 minute to 24 hours that have ended, in the last 90 days, in UTC (ending in Z).";
     public const string BacktestTooLarge = "The range holds more stored bins than one backtest reads: choose a shorter range or fewer zones.";
@@ -28,7 +43,9 @@ public static class AlertRuleErrors
 /// <summary>
 /// Alert rules (ARV-037): typed rules per site, read and written within the caller's sites (a rule elsewhere answers like
 /// one that does not exist), every change audited. Zones in scope must belong to the site's published zone profile;
-/// owner and escalation roles are roles the caller holds unless the caller is an administrator.
+/// owner and escalation roles are roles the caller holds unless the caller is an administrator. A rule on a border-only
+/// metric (<see cref="Ariva.Core.Security.BorderAlerts"/>, ARV-181b2) is for callers holding <c>ArrivalWaveLanes.View</c> only: others are
+/// refused 403 (<see cref="AlertRuleErrors.BorderOnly"/>) when they create, change or backtest one, and never find one.
 /// </summary>
 public interface ISvcAlertRules : ISvcScoped
 {

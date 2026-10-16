@@ -112,15 +112,109 @@ public sealed class AlertRuleServiceTests(PostgresFixture fixture) : IAsyncDispo
             .Should().Contain("\"threshold\":20").And.Contain("\"enabled\":true");
     }
 
-    [Theory]
-    [InlineData("DesksBelowPlan")]
-    public async Task Create_Should_RefuseAMetricTheEvaluationDoesNotJudgeYet(string metric)
+    /// <summary>A rule on open desks below recommendation (ARV-181b2): two or more desks short for 3 minutes on the Visitors lane.</summary>
+    private static AlertRuleRequest DesksShort(string name, string owner = RoleCodes.BorderShiftSupervisor, string escalateTo = null, string[] zones = null) =>
+        new("DMO", name, zones ?? ["A-VIS"], "DesksBelowPlan", "GreaterOrEqual", 2, null, null, 3, 2, "Warning", owner, escalateTo is null ? null : 10, escalateTo, null, false);
+
+    [Fact]
+    public async Task Create_Should_AcceptDesksBelowPlan_When_TheCallerHoldsArrivalWaveLanes()
     {
-        // There is no staffing plan: a new rule on this could never fire.
-        var admin = await AdminAsync("it.alert.notevaluated." + metric.ToLowerInvariant());
-        var request = Request("Not evaluated " + metric) with { Metric = metric, Threshold = null };
-        (await _host.AsCallerAsync(admin, s => Rules(s).CreateAsync(request, Ct))).ErrorMessages.Should().Equal(AlertRuleErrors.NotEvaluated);
-        (await _host.ReadAsync<long>("SELECT count(*) FROM alert_rule WHERE name LIKE 'Not evaluated %'")).Should().Be(0);
+        // ARV-181b2: the staffing recommendation is evaluated (interval 0 of lane_staffing), so the metric left NotEvaluatedMetrics.
+        var admin = await AdminAsync("it.alert.desks.admin");
+        var supervisor = await SupervisorAsync(admin, "it.alert.desks.supervisor");
+        AlertRuleErrors.NotEvaluatedMetrics.Should().BeEmpty();
+
+        var created = await _host.AsCallerAsync(supervisor, s => Rules(s).CreateAsync(DesksShort("Desks short, border"), Ct));
+
+        created.HasErrors.Should().BeFalse(string.Join(", ", created.ErrorMessages ?? []));
+        created.Data.Should().Match<Core.Domain.ViewModels.AlertRuleViewModel>(r => r.Metric == "DesksBelowPlan" && r.OwnerRole == RoleCodes.BorderShiftSupervisor &&
+                                                                                   r.Comparator == "GreaterOrEqual");
+        var byAdmin = await _host.AsCallerAsync(admin, s => Rules(s).CreateAsync(DesksShort("Desks short, admin", RoleCodes.SystemAdministrator, RoleCodes.BorderShiftSupervisor), Ct));
+        byAdmin.HasErrors.Should().BeFalse(string.Join(", ", byAdmin.ErrorMessages ?? []));
+        (await _host.AsCallerAsync(supervisor, s => Rules(s).GetAsync(created.Data.Id, Ct))).HasErrors.Should().BeFalse();
+        (await _host.AsCallerAsync(supervisor, s => Rules(s).UpdateAsync(created.Data.Id, DesksShort("Desks short, border, 3") with { Threshold = 3 }, Ct)))
+            .Data.Threshold.Should().Be(3);
+    }
+
+    [Fact]
+    public async Task DesksBelowPlan_Should_BelongToABorderRole_When_ARuleIsCreatedOrChanged()
+    {
+        var admin = await AdminAsync("it.alert.desks.roles.admin");
+        var supervisor = await SupervisorAsync(admin, "it.alert.desks.roles.supervisor");
+
+        (await _host.AsCallerAsync(admin, s => Rules(s).CreateAsync(DesksShort("No owner", owner: null), Ct))).ErrorMessages
+            .Should().Equal([AlertRuleErrors.BorderRolesOnly], "no owner means every alert role, so not even an administrator gives one");
+        (await _host.AsCallerAsync(admin, s => Rules(s).CreateAsync(DesksShort("Duty manager", owner: RoleCodes.TerminalDutyManager), Ct))).ErrorMessages
+            .Should().Equal(AlertRuleErrors.BorderRolesOnly);
+        (await _host.AsCallerAsync(admin, s => Rules(s).CreateAsync(DesksShort("Handler", owner: RoleCodes.HandlerStationManager), Ct))).ErrorMessages
+            .Should().Equal(AlertRuleErrors.BorderRolesOnly);
+        (await _host.AsCallerAsync(admin, s => Rules(s).CreateAsync(DesksShort("To duty manager", escalateTo: RoleCodes.TerminalDutyManager), Ct))).ErrorMessages
+            .Should().Equal(AlertRuleErrors.BorderRolesOnly);
+        (await _host.AsCallerAsync(supervisor, s => Rules(s).CreateAsync(DesksShort("Below") with { Comparator = "LessThan" }, Ct))).ErrorMessages
+            .Should().Equal(AlertRuleErrors.BorderComparator);
+        (await _host.AsCallerAsync(supervisor, s => Rules(s).CreateAsync(DesksShort("Overflow", zones: ["A-OV"]), Ct))).ErrorMessages
+            .Should().Equal([AlertRuleErrors.QueueZonesOnly], "the recommendation is per lane, a queue zone");
+        (await _host.AsCallerAsync(supervisor, s => Rules(s).BacktestAsync(new AlertBacktestRequest(DesksShort("Preview", owner: null),
+            new DateTime(2026, 9, 30, 10, 0, 0, DateTimeKind.Utc), new DateTime(2026, 9, 30, 11, 0, 0, DateTimeKind.Utc)), Ct))).ErrorMessages
+            .Should().Equal([AlertRuleErrors.BorderRolesOnly], "a backtest judges the rule as it would be created");
+
+        // A border rule changed to an airport-side owner by its own supervisor is refused as well.
+        var rule = (await _host.AsCallerAsync(supervisor, s => Rules(s).CreateAsync(DesksShort("Owned"), Ct))).Data;
+        (await _host.AsCallerAsync(admin, s => Rules(s).UpdateAsync(rule.Id, DesksShort("Owned", owner: RoleCodes.TerminalDutyManager), Ct))).ErrorMessages
+            .Should().Equal(AlertRuleErrors.BorderRolesOnly);
+        (await _host.ReadAsync<long>("SELECT count(*) FROM alert_rule WHERE metric = 'DesksBelowPlan' AND (owner_role IS NULL OR owner_role NOT IN ('BorderShiftSupervisor', 'SystemAdministrator'))"))
+            .Should().Be(0);
+    }
+
+    [Fact]
+    public async Task DesksBelowPlan_Should_BeHiddenFromAndRefusedToAirportRoles_When_TheyHaveNoArrivalWaveLanes()
+    {
+        var admin = await AdminAsync("it.alert.desks.hidden.admin");
+        var supervisor = await SupervisorAsync(admin, "it.alert.desks.hidden.supervisor");
+        var duty = await SupervisorAsync(admin, "it.alert.desks.hidden.duty", role: RoleCodes.TerminalDutyManager);
+        var handler = await SupervisorAsync(admin, "it.alert.desks.hidden.handler", role: RoleCodes.HandlerStationManager);
+        var both = await _host.CreateUserAsync("it.alert.desks.hidden.both", roles: [RoleCodes.TerminalDutyManager, RoleCodes.BorderShiftSupervisor]);
+        await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcUsers>().SetSitesAsync(both, new SiteAccessRequest(false, ["DMO"]), Ct));
+        var border = (await _host.AsCallerAsync(supervisor, s => Rules(s).CreateAsync(DesksShort("Hidden desks"), Ct))).Data;
+        var dutyOwn = (await _host.AsCallerAsync(duty, s => Rules(s).CreateAsync(Request("Duty wait", owner: RoleCodes.TerminalDutyManager), Ct))).Data;
+
+        foreach (var (caller, who) in new[] { (duty, "terminal duty manager"), (handler, "handler station manager") })
+        {
+            var search = (await _host.AsCallerAsync(caller, s => Rules(s).SearchAsync(new AlertRuleCriteria { SiteCode = "DMO", PageSize = 500 }, Ct))).Data;
+            search.Data.Should().NotContain(r => r.Metric == "DesksBelowPlan", who);
+            (await _host.AsCallerAsync(caller, s => Rules(s).SearchAsync(new AlertRuleCriteria { SiteCode = "DMO", Metric = "DesksBelowPlan" }, Ct))).Data.TotalCount
+                .Should().Be(0, who + ": not even counted");
+            (await _host.AsCallerAsync(caller, s => Rules(s).GetAsync(border.Id, Ct))).ErrorMessages.Should().Equal([TopologyErrors.NotFound], who);
+            (await _host.AsCallerAsync(caller, s => Rules(s).UpdateAsync(border.Id, Request("Took it", owner: RoleCodes.TerminalDutyManager), Ct))).ErrorMessages
+                .Should().Equal([TopologyErrors.NotFound], who);
+            (await _host.AsCallerAsync(caller, s => Rules(s).DeleteAsync(border.Id, Ct))).ErrorMessages.Should().Equal([TopologyErrors.NotFound], who);
+        }
+
+        (await _host.AsCallerAsync(duty, s => Rules(s).CreateAsync(DesksShort("Duty desks", owner: RoleCodes.TerminalDutyManager), Ct))).ErrorMessages
+            .Should().Equal([AlertRuleErrors.BorderOnly], "403 before any other check");
+        (await _host.AsCallerAsync(duty, s => Rules(s).CreateAsync(DesksShort("Duty desks, border owner"), Ct))).ErrorMessages.Should().Equal(AlertRuleErrors.BorderOnly);
+        (await _host.AsCallerAsync(duty, s => Rules(s).UpdateAsync(dutyOwn.Id, DesksShort("Duty wait", owner: RoleCodes.TerminalDutyManager), Ct))).ErrorMessages
+            .Should().Equal([AlertRuleErrors.BorderOnly], "an own rule changed to the border metric");
+        (await _host.AsCallerAsync(duty, s => Rules(s).BacktestAsync(new AlertBacktestRequest(DesksShort("Probe"), new DateTime(2026, 9, 30, 10, 0, 0, DateTimeKind.Utc),
+            new DateTime(2026, 9, 30, 11, 0, 0, DateTimeKind.Utc)), Ct))).ErrorMessages.Should().Equal(AlertRuleErrors.BorderOnly);
+        (await _host.AsCallerAsync(duty, s => Rules(s).CreateAsync(DesksShort("Lower case") with { Metric = "desksbelowplan" }, Ct))).ErrorMessages
+            .Should().Equal("Unknown metric, comparator or severity.");
+        (await _host.ReadAsync<DateTime?>("SELECT deleted_on FROM alert_rule WHERE id = @id", border.Id)).Should().BeNull("the duty manager's delete did nothing");
+        (await _host.ReadAsync<string>("SELECT metric FROM alert_rule WHERE id = @id", dutyOwn.Id)).Should().Be("Nowcast");
+        (await _host.ReadAsync<string>("SELECT name FROM alert_rule WHERE id = @id", border.Id)).Should().Be("Hidden desks");
+
+        foreach (var caller in new[] { supervisor, admin, both })
+        {
+            (await _host.AsCallerAsync(caller, s => Rules(s).GetAsync(border.Id, Ct))).HasErrors.Should().BeFalse();
+            (await _host.AsCallerAsync(caller, s => Rules(s).SearchAsync(new AlertRuleCriteria { SiteCode = "DMO", Metric = "DesksBelowPlan" }, Ct))).Data.Data
+                .Should().Contain(r => r.Id == border.Id);
+        }
+
+        // An account holding both roles may move the duty manager's rule to the border metric and owner (it holds both roles);
+        // from then on the duty manager no longer finds it.
+        var moved = await _host.AsCallerAsync(both, s => Rules(s).UpdateAsync(dutyOwn.Id, DesksShort("Duty wait", owner: RoleCodes.BorderShiftSupervisor), Ct));
+        moved.HasErrors.Should().BeFalse(string.Join(", ", moved.ErrorMessages ?? []));
+        (await _host.AsCallerAsync(duty, s => Rules(s).GetAsync(dutyOwn.Id, Ct))).ErrorMessages.Should().Equal(TopologyErrors.NotFound);
     }
 
     [Fact]

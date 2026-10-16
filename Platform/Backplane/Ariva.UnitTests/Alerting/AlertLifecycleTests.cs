@@ -73,6 +73,63 @@ public sealed class AlertLifecycleTests
         NewAlert(owner: null).IsFor([RoleCodes.HandlerStationManager]).Should().BeTrue("no owner: every role of the site");
     }
 
+    /// <summary>
+    /// ARV-181b2 (CWE-863, data boundary): an alert on open desks below recommendation is for holders of ArrivalWaveLanes.View
+    /// only (the border shift supervisor and the administrator, or an account holding either besides an airport-side role),
+    /// whatever its owner and escalation roles say; a row without an owner or with an airport-side owner (from before the story,
+    /// or changed in the database) reaches no airport-side role, escalated or not.
+    /// </summary>
+    [Fact]
+    public void IsFor_Should_AnswerBorderRolesOnly_When_TheAlertIsOnOpenDesksBelowRecommendation()
+    {
+        var rule = new AlertRule("DMO", 6, new AlertRuleValues("Desks short", ["A-VIS"], AlertMetric.DesksBelowPlan, AlertComparator.GreaterOrEqual, 2, null, null, 3, 2,
+            AlertSeverity.Warning, RoleCodes.BorderShiftSupervisor, 10, RoleCodes.SystemAdministrator, null, false, true)) { Id = Guid.NewGuid() };
+        var owned = new Alert(rule, "A-VIS", null, new AlertTransition(AlertTransitionKind.Raised, Raised, 3, null, null));
+
+        owned.IsFor([RoleCodes.BorderShiftSupervisor]).Should().BeTrue();
+        owned.IsFor([RoleCodes.SystemAdministrator]).Should().BeTrue();
+        owned.IsFor([RoleCodes.TerminalDutyManager, RoleCodes.BorderShiftSupervisor]).Should().BeTrue("the account holds a border role");
+        owned.IsFor([RoleCodes.TerminalDutyManager]).Should().BeFalse();
+        owned.IsFor([RoleCodes.HandlerStationManager]).Should().BeFalse();
+        owned.IsFor([RoleCodes.ValidationObserver]).Should().BeFalse();
+        owned.IsFor([]).Should().BeFalse();
+        owned.IsFor(null).Should().BeFalse();
+
+        foreach (var (owner, escalateTo, escalated) in new (string, string, bool)[]
+                 {
+                     (null, null, false), (RoleCodes.TerminalDutyManager, null, false), (RoleCodes.HandlerStationManager, RoleCodes.TerminalDutyManager, true),
+                     (null, RoleCodes.HandlerStationManager, true)
+                 })
+        {
+            var stored = new StoredAlert(AlertMetric.DesksBelowPlan, owner, escalateTo, escalated);
+            var row = $"owner {owner ?? "none"}, escalated to {escalateTo ?? "none"}";
+            stored.IsFor([RoleCodes.TerminalDutyManager]).Should().BeFalse(row);
+            stored.IsFor([RoleCodes.HandlerStationManager]).Should().BeFalse(row);
+            stored.IsFor([RoleCodes.TerminalDutyManager, RoleCodes.HandlerStationManager]).Should().BeFalse(row);
+            stored.IsFor([RoleCodes.SystemAdministrator]).Should().BeTrue(row + ": administrators see every alert of their sites");
+            new StoredAlert(AlertMetric.Nowcast, owner, escalateTo, escalated).IsFor([RoleCodes.SystemAdministrator]).Should().BeTrue(row);
+        }
+
+        new StoredAlert(AlertMetric.DesksBelowPlan, null, null, false).IsFor([RoleCodes.BorderShiftSupervisor]).Should().BeTrue("no owner: every border role");
+        new StoredAlert(AlertMetric.DesksBelowPlan, RoleCodes.TerminalDutyManager, null, false).IsFor([RoleCodes.BorderShiftSupervisor])
+            .Should().BeFalse("a border role that is neither owner nor escalation role is not responsible");
+        new StoredAlert(AlertMetric.Nowcast, null, null, false).IsFor([RoleCodes.TerminalDutyManager]).Should().BeTrue("other metrics keep their rule");
+    }
+
+    /// <summary>An alert as a stored row may hold it (no rule check): from before ARV-181b2, or changed in the database.</summary>
+    private sealed class StoredAlert : Alert
+    {
+        public StoredAlert(AlertMetric metric, string owner, string escalateTo, bool escalated)
+        {
+            Metric = metric;
+            OwnerRole = owner;
+            EscalateToRole = escalateTo;
+            EscalatedUtc = escalated ? Raised.AddMinutes(10) : null;
+            State = escalated ? AlertState.Escalated : AlertState.Raised;
+            RaisedUtc = Raised;
+        }
+    }
+
     [Theory]
     [InlineData(null, false, true)]
     [InlineData("", false, true)]

@@ -14,12 +14,22 @@
 		initial: AlertRuleRequest;
 		/** Queue and overflow zones of the site's published zone profile. */
 		zoneNames: string[];
-		/** The queue zones alone, which a health-check rule watches (ARV-114b). */
+		/** The queue zones alone, which a health-check or border-only rule watches (ARV-114b, ARV-181b2). */
 		queueZoneNames: string[];
 		/** Roles the caller may give a rule to (their own; every operational role for an administrator). */
 		roles: string[];
+		/**
+		 * ARV-181b2: the border roles the caller may give a border-only rule to or escalate it to (their own; both for an
+		 * administrator).
+		 */
+		borderRoles: string[];
 		/** An administrator may leave a rule without an owner (every role of the site is responsible). */
 		allowNoOwner: boolean;
+		/**
+		 * ARV-181b2: the caller holds ArrivalWaveLanes.View, so the border-only metrics are offered. A convenience only: the
+		 * server refuses such a rule to anyone else (403) and hides such rules from them.
+		 */
+		seesBorderAlerts: boolean;
 		canPreview: boolean;
 		onSaved: (rule: AlertRule) => void | Promise<void>;
 		onCancel: () => void;
@@ -31,7 +41,9 @@
 		zoneNames,
 		queueZoneNames,
 		roles,
+		borderRoles,
 		allowNoOwner,
+		seesBorderAlerts,
 		canPreview,
 		onSaved,
 		onCancel
@@ -60,19 +72,35 @@
 
 	const unit = $derived(rules.unitOf(metric));
 	const healthCheck = $derived(rules.healthChecks.has(metric));
-	/** The zones the chosen metric can watch: queue zones only for a health check. */
-	const choices = $derived(healthCheck ? queueZoneNames : zoneNames);
+	/** ARV-181b2: a border-only metric (open desks below recommendation), with its own owners, comparators and hint. */
+	const borderMetric = $derived(rules.borderOnly.has(metric));
+	const queueOnly = $derived(rules.watchesQueueZonesOnly(metric));
+	/** The zones the chosen metric can watch: queue zones only for a health check or a border-only metric. */
+	const choices = $derived(queueOnly ? queueZoneNames : zoneNames);
 	/**
-	 * The zones the form sends: for a health check without the overflow zones chosen before (the form no longer shows them);
-	 * a zone the profile no longer has is sent as it is, so the server says so rather than the form dropping it.
+	 * The zones the form sends: for a queue-zone metric without the overflow zones chosen before (the form no longer shows
+	 * them); a zone the profile no longer has is sent as it is, so the server says so rather than the form dropping it.
 	 */
 	const sent = $derived(
-		healthCheck ? zones.filter((z) => !zoneNames.includes(z) || queueZoneNames.includes(z)) : zones
+		queueOnly ? zones.filter((z) => !zoneNames.includes(z) || queueZoneNames.includes(z)) : zones
 	);
-	// A saved rule keeps its roles in the choices even when the caller does not hold them (the server decides changes).
-	const roleChoices = $derived([
-		...new Set([...roles, start.ownerRole, start.escalateToRole].filter((r): r is string => !!r))
+	// A saved rule keeps its roles in the choices even when the caller does not hold them (the server decides changes);
+	// for a border-only metric only border roles are offered, the saved ones too only when they are border roles.
+	const savedRoles = [start.ownerRole, start.escalateToRole].filter((r): r is string => !!r);
+	const borderChoices = $derived([
+		...new Set([...borderRoles, ...savedRoles.filter((r) => rules.borderRoles.includes(r))])
 	]);
+	const roleChoices = $derived(
+		borderMetric ? borderChoices : [...new Set([...roles, ...savedRoles])]
+	);
+	const comparatorChoices = $derived(borderMetric ? rules.aboveComparators : rules.comparators);
+	const metricChoices = $derived(
+		rules.metrics.filter(
+			(m) =>
+				(!rules.notEvaluated.has(m) || m === editing?.metric) &&
+				(seesBorderAlerts || !rules.borderOnly.has(m))
+		)
+	);
 	const label = (key: string): string => $_(`alertRules.${key}`);
 	// A value the screen has no words for is shown as it is, never used as a message key.
 	const known: Record<string, readonly string[]> = {
@@ -116,10 +144,36 @@
 		};
 	}
 
+	/**
+	 * ARV-181b2: a border-only metric takes a border owner (never no owner), a border escalation role or none, and a
+	 * comparator that fires above; choosing one moves the form's values onto those choices, so the selects show what is sent.
+	 */
+	function fitBorder(): void {
+		if (!rules.borderOnly.has(metric)) return;
+		if (!borderChoices.includes(ownerRole)) ownerRole = borderChoices[0] ?? '';
+		if (escalateToRole && !borderChoices.includes(escalateToRole)) escalateToRole = '';
+		if (!rules.aboveComparators.includes(comparator)) comparator = rules.aboveComparators[0];
+	}
+
+	function chooseMetric(next: string): void {
+		const leaving = rules.borderOnly.has(metric) && !rules.borderOnly.has(next);
+		metric = next;
+		fitBorder();
+		// Back from a border-only metric: a border role the other metrics do not offer (the administrator) gives way.
+		if (leaving && ownerRole && !roleChoices.includes(ownerRole)) ownerRole = roleChoices[0] ?? '';
+		if (leaving && escalateToRole && !roleChoices.includes(escalateToRole)) escalateToRole = '';
+	}
+
+	// A saved or duplicated border-only rule starts on the border choices too.
+	fitBorder();
+
 	async function submit(event: SubmitEvent): Promise<void> {
 		event.preventDefault();
 		if (busy) return;
-		problems = sent.length ? [] : [label('form.zonesRequired')];
+		problems = [
+			...(sent.length ? [] : [label('form.zonesRequired')]),
+			...(borderMetric && !borderChoices.includes(ownerRole) ? [label('form.borderOwner')] : [])
+		];
 		if (problems.length) return;
 		busy = true;
 		const result = editing
@@ -183,17 +237,15 @@
 		<SelectField
 			id="rule-metric"
 			label={label('fields.metric')}
-			bind:value={metric}
-			options={rules.metrics
-				.filter((m) => !rules.notEvaluated.has(m) || m === editing?.metric)
-				.map(option('metrics'))}
+			bind:value={() => metric, chooseMetric}
+			options={metricChoices.map(option('metrics'))}
 		/>
 		{#if unit !== 'condition'}
 			<SelectField
 				id="rule-comparator"
 				label={label('fields.comparator')}
 				bind:value={comparator}
-				options={rules.comparators.map(option('comparators'))}
+				options={comparatorChoices.map(option('comparators'))}
 			/>
 			<FormField
 				id="rule-threshold"
@@ -224,6 +276,14 @@
 				data-testid="health-check-hint"
 			>
 				{label(`healthHints.${metric}`)}
+			</p>
+		{/if}
+		{#if borderMetric}
+			<p
+				class="self-end text-xs text-muted-foreground sm:col-span-2 lg:col-span-3"
+				data-testid="border-hint"
+			>
+				{label('hints.desksBelowPlan')}
 			</p>
 		{/if}
 		{#if metric === 'Nowcast'}
@@ -278,7 +338,7 @@
 			label={label('fields.ownerRole')}
 			bind:value={ownerRole}
 			options={[
-				...(allowNoOwner ? [{ value: '', label: label('form.noOwner') }] : []),
+				...(allowNoOwner && !borderMetric ? [{ value: '', label: label('form.noOwner') }] : []),
 				...roleChoices.map(option('roles'))
 			]}
 		/>

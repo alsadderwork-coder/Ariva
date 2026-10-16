@@ -216,7 +216,8 @@ internal sealed class WeeklySummaryReader(IUnitOfWork unitOfWork, AvailabilityLe
         }
 
         // The alerts the roles see, by the alert screens' rule (as the daily report): the owner role, the escalation role once
-        // escalated, an alert without an owner, or an administrator.
+        // escalated, an alert without an owner, or an administrator; an alert on a border-only metric only for roles holding
+        // ArrivalWaveLanes.View, whatever its owner and escalation roles (BorderAlerts, ARV-181b2).
         var admin = Enumerable.Contains(roles, RoleCodes.SystemAdministrator, StringComparer.Ordinal);
         var alerts = await ExecuteSqlAsync<AlertRow>("""
             SELECT rule_code AS "RuleCode", rule_name AS "RuleName", zone_name AS "ZoneName", severity AS "Severity", state AS "State",
@@ -224,6 +225,7 @@ internal sealed class WeeklySummaryReader(IUnitOfWork unitOfWork, AvailabilityLe
             FROM alert
             WHERE site_code = :site AND raised_utc >= :from AND raised_utc < :to
               AND (:admin OR owner_role IS NULL OR owner_role IN (:roles) OR (escalated_utc IS NOT NULL AND escalate_to_role IN (:roles)))
+              AND (:border OR metric NOT IN (:borderMetrics))
             ORDER BY raised_utc LIMIT :cap
             """, new Dictionary<string, object>
         {
@@ -233,6 +235,8 @@ internal sealed class WeeklySummaryReader(IUnitOfWork unitOfWork, AvailabilityLe
             ["admin"] = admin,
             // An empty IN list is not valid SQL; a role code that cannot exist stands in for "none".
             ["roles"] = roles.Count > 0 ? roles.ToList() : ["-"],
+            ["border"] = BorderAlerts.Receives(roles),
+            ["borderMetrics"] = BorderAlerts.MetricNames,
             ["cap"] = Limits.MaxAlerts + 1
         }, ct);
         if (alerts.Count > Limits.MaxAlerts)

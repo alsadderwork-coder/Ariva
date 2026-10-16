@@ -1,10 +1,12 @@
 import crypto from 'node:crypto';
+import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page } from '@playwright/test';
 import pg from 'pg';
 import { accounts, call, claimsOf, developmentSigningKey, headerOf, signIn, signToken, totpCode } from '../support/accounts';
 import { guardPage } from '../support/browser-guards';
 import { hosts } from '../support/hosts';
 import { xssPayloads } from '../support/payloads';
+import { plantDesksShortCase, staffingDatabase } from '../support/staffing';
 import { allowStatuses, databaseAvailable, earlyInStep, fillSignIn, ownAddress, signInThroughUi } from '../support/web-auth';
 
 // ARV-056: the alert rules screen on the rule API (ARV-037) and its backtest (ARV-038). A border shift supervisor
@@ -393,26 +395,221 @@ test('a handler station manager reads the rules only; the server refuses a chang
 	await guards.expectClean();
 });
 
-test('a new rule cannot use a metric the evaluation does not judge yet, and R-002 is evaluated', async ({ page }) => {
-	const guards = await guardPage(page);
-	await signInThroughUi(page, accounts().webBorder);
-	await openRules(page);
-	// ARV-115: the stream stores each overflow band's occupancy per minute, so the demo seed's R-002 is judged.
-	await expect(page.locator('[data-testid="rule-row"][data-code="R-002"]')).toBeVisible();
-	await expect(page.locator('[data-testid="rule-row"][data-code="R-002"]').getByTestId('not-evaluated')).toHaveCount(0);
-	await expect(page.locator('[data-testid="rule-row"][data-code="R-001"]').getByTestId('not-evaluated')).toHaveCount(0);
-	await page.getByTestId('add-rule').click();
-	const metrics = await page.locator('#rule-metric option').evaluateAll((o) => o.map((x) => (x as HTMLOptionElement).value));
-	expect(metrics).toContain('OverflowOccupied');
-	expect(metrics).not.toContain('DesksBelowPlan');
-	expect(metrics).toContain('Nowcast');
-	// ARV-114b: the health checks are judged, so a new rule may use them.
-	expect(metrics).toEqual(expect.arrayContaining(['ConservationResidual', 'TrackCompletion', 'OccupancyOutOfRange']));
-	// The server refuses a rule on a metric it does not judge yet (there is no staffing plan).
-	const token = (await signIn(accounts().webBorder)).accessToken;
-	const first = (await (await call('GET', `${api}?siteCode=DMO`, { token })).json()).data[0];
-	const refused = await call('POST', api, { token, data: { ...first, name: 'Desks probe', metric: 'DesksBelowPlan', threshold: 1 } });
-	expect(refused.status()).toBe(400);
-	allowStatuses(guards, 400);
-	await guards.expectClean();
+/** The open desks below recommendation case (ARV-181b2), planted on the citizens lane yesterday from 04:00 UTC. */
+const desksStart = at('04:00');
+const desksFrom = at('03:55');
+const desksTo = at('04:25');
+const borderOnlyText =
+	'Not allowed: Open desks below recommendation is border data: only a caller with ArrivalWaveLanes.View creates, changes, imports or backtests a rule on it.';
+
+/** The values of a select's options, in order. */
+async function optionValues(page: Page, select: string): Promise<string[]> {
+	return page.locator(`${select} option`).evaluateAll((o) => o.map((x) => (x as HTMLOptionElement).value));
+}
+
+/** A border rule as the API takes it, for the suites' own checks (the form builds its own). */
+function borderRule(name: string, overrides: Record<string, unknown> = {}) {
+	return {
+		siteCode: 'DMO',
+		name,
+		zones: ['A-CIT'],
+		metric: 'DesksBelowPlan',
+		comparator: 'GreaterOrEqual',
+		threshold: 2,
+		minQueueLength: null,
+		clearThreshold: null,
+		sustainMinutes: 3,
+		clearAfterMinutes: 2,
+		severity: 'Warning',
+		ownerRole: 'BorderShiftSupervisor',
+		escalateAfterMinutes: null,
+		escalateToRole: null,
+		escalationContact: null,
+		notifyByEmail: false,
+		enabled: false,
+		leadMinutes: null,
+		...overrides
+	};
+}
+
+test.describe('open desks below recommendation (ARV-181b2)', () => {
+	// Ariva.Api.Stream does not run in the E2E run, so the staffing job's own rows have no recommendation: the suite plants
+	// interval 0 of the citizens lane (A-CIT; the API suite plants A-CRW) yesterday as the job writes it, and removes it after.
+	test.beforeAll(async () => {
+		const db = staffingDatabase();
+		await db.connect();
+		try {
+			await plantDesksShortCase(db, 'DMO/A-CIT', 'CIT', new Date(desksStart), new Date(desksFrom), new Date(desksTo));
+		} finally {
+			await db.end();
+		}
+	});
+
+	test.afterAll(async () => {
+		const db = staffingDatabase();
+		await db.connect();
+		try {
+			await db.query('DELETE FROM lane_staffing WHERE zone_key = $1 AND minute_utc >= $2 AND minute_utc <= $3', ['DMO/A-CIT', desksFrom, desksTo]);
+		} finally {
+			await db.end();
+		}
+	});
+
+	test('a border shift supervisor creates a rule on a lane, previews its first fire minute, and no rule is marked not evaluated', async ({ page }) => {
+		test.setTimeout(90_000);
+		const guards = await guardPage(page);
+		await signInThroughUi(page, accounts().webBorder);
+		await openRules(page);
+		// Every metric is judged since ARV-181b2, so no rule is marked "Not evaluated yet" (R-002 since ARV-115).
+		await expect(page.locator('[data-testid="rule-row"][data-code="R-002"]')).toBeVisible();
+		await expect(page.getByTestId('not-evaluated')).toHaveCount(0);
+
+		await page.getByTestId('add-rule').click();
+		const form = page.getByTestId('rule-form');
+		const name = `E2E desks short ${run}`;
+		await form.getByLabel('Name').fill(name);
+		const metrics = await optionValues(page, '#rule-metric');
+		expect(metrics).toEqual(expect.arrayContaining(['DesksBelowPlan', 'Nowcast', 'OverflowOccupied', 'ConservationResidual', 'TrackCompletion', 'OccupancyOutOfRange']));
+		await expect(form.locator('#rule-metric option[value="DesksBelowPlan"]')).toHaveText('Open desks below recommendation');
+		await expect(form.getByRole('checkbox', { name: 'A-OV', exact: true }), 'an overflow band is offered for the nowcast').toHaveCount(1);
+		await expect(form.getByTestId('border-hint')).toHaveCount(0);
+
+		// A rule that fires below, moved to the border metric, fires above; the border choices only.
+		await form.getByLabel('Condition').selectOption('LessThan');
+		await form.getByLabel('Metric').selectOption('DesksBelowPlan');
+		await expect(form.getByTestId('border-hint')).toHaveText(
+			"Border data: how many desks each arrivals lane is short of the current quarter hour's indicative recommendation. The rule and its alerts reach the Border shift supervisor and the system administrator only."
+		);
+		await expect(form.getByLabel('Condition')).toHaveValue('GreaterThan');
+		expect(await optionValues(page, '#rule-comparator')).toEqual(['GreaterThan', 'GreaterOrEqual']);
+		expect(await optionValues(page, '#rule-owner'), 'the supervisor’s own border role, never every role').toEqual(['BorderShiftSupervisor']);
+		expect(await optionValues(page, '#rule-escalate-to')).toEqual(['', 'BorderShiftSupervisor']);
+		await expect(form.getByRole('checkbox', { name: 'A-OV', exact: true }), 'queue zones only').toHaveCount(0);
+		await expect(form.getByRole('checkbox', { name: 'SEC-OV', exact: true })).toHaveCount(0);
+
+		await form.getByRole('checkbox', { name: 'A-CIT', exact: true }).check();
+		await form.getByLabel('Condition').selectOption('GreaterOrEqual');
+		await form.getByLabel('Threshold (desks)').fill('2');
+		await form.getByLabel('Sustain (minutes)').fill('3');
+		await form.getByLabel('Clear after (minutes)').fill('2');
+
+		// Held at 04:05, 04:07 and 04:09 (no row at 04:06, a degraded open count at 04:08): raised at 04:09 with 3 desks
+		// short, cleared at 04:15 (04:14 and 04:15 at 0; the gap at 04:10 and the unknown count at 04:11 are skipped).
+		await form.getByLabel('From (UTC)').fill(`${day}T03:55`);
+		await form.getByLabel('To (UTC)').fill(`${day}T04:25`);
+		await form.getByTestId('run-backtest').click();
+		const summary = form.getByTestId('backtest-summary');
+		await expect(summary).toHaveAttribute('data-count', '1');
+		await expect(summary).toContainText(`Would have fired once, first at ${day} 04:09 UTC.`);
+		const alert = form.getByTestId('backtest-alert');
+		await expect(alert).toHaveCount(1);
+		await expect(alert).toContainText('A-CIT');
+		await expect(alert).toContainText(`${day} 04:15 UTC`);
+		await expect(alert.locator('td').last()).toHaveText('3');
+		const previewed = (await summary.getAttribute('data-first'))!;
+		expect(Date.parse(previewed)).toBe(Date.parse(at('04:09')));
+
+		const axe = await new AxeBuilder({ page }).include('[data-testid="rule-form"]').withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']).analyze();
+		expect(axe.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`), 'axe violations in the form').toEqual([]);
+
+		await form.getByTestId('save-rule').click();
+		await expect(page.getByText(/^Rule R-\d+ saved\.$/)).toBeVisible();
+		const row = page.getByTestId('rule-row').filter({ hasText: name });
+		await expect(row).toHaveCount(1);
+		await expect(row).toContainText('Open desks below recommendation ≥ 2 desks for 3 min');
+		await expect(row).toContainText('A-CIT');
+		await expect(row).toContainText('Border shift supervisor');
+		await expect(row.getByTestId('not-evaluated')).toHaveCount(0);
+
+		// The server agrees, and the saved rule's own backtest fires at the previewed minute.
+		const token = (await signIn(accounts().webBorder)).accessToken;
+		const saved = (await (await call('GET', `${api}?siteCode=DMO&metric=DesksBelowPlan&text=${encodeURIComponent(run)}`, { token })).json()).data.find(
+			(r: { name: string }) => r.name === name
+		);
+		expect(saved).toMatchObject({ metric: 'DesksBelowPlan', comparator: 'GreaterOrEqual', threshold: 2, zones: ['A-CIT'], ownerRole: 'BorderShiftSupervisor', escalateToRole: null });
+		const again = await call('POST', `${api}/backtest`, { token, data: { rule: saved, fromUtc: desksFrom, toUtc: desksTo } });
+		expect(again.status(), again.status() === 200 ? 'the saved rule backtested' : await again.text()).toBe(200);
+		expect(Date.parse((await again.json()).firstRaisedUtc)).toBe(Date.parse(previewed));
+
+		// Editing starts on the border choices; Arabic mirrors the form and translates the hint.
+		await row.getByTestId('edit-rule').click();
+		await expect(form.getByLabel('Metric')).toHaveValue('DesksBelowPlan');
+		await expect(form.getByLabel('Owner role')).toHaveValue('BorderShiftSupervisor');
+		await page.getByTestId('language-toggle').click();
+		await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
+		await expect(form.locator('#rule-metric option[value="DesksBelowPlan"]')).toHaveText('مكاتب مفتوحة أقل من التوصية');
+		await expect(form.getByTestId('border-hint')).toContainText('بيانات حدودية');
+		await guards.expectClean();
+	});
+
+	test('an administrator gives a border rule to a border role only, never to every role', async ({ page }) => {
+		const guards = await guardPage(page);
+		await signInThroughUi(page, accounts().webAdmin);
+		await openRules(page);
+		await page.getByTestId('add-rule').click();
+		const form = page.getByTestId('rule-form');
+		expect(await optionValues(page, '#rule-owner'), 'the nowcast may belong to every role').toContain('');
+		await form.getByLabel('Metric').selectOption('DesksBelowPlan');
+		expect(await optionValues(page, '#rule-owner')).toEqual(['BorderShiftSupervisor', 'SystemAdministrator']);
+		expect(await optionValues(page, '#rule-escalate-to')).toEqual(['', 'BorderShiftSupervisor', 'SystemAdministrator']);
+		await form.getByLabel('Owner role').selectOption('SystemAdministrator');
+		// Back to the nowcast: the administrator is not an owner the other metrics offer, so the first operational role is.
+		await form.getByLabel('Metric').selectOption('Nowcast');
+		await expect(form.getByLabel('Owner role')).toHaveValue('BorderShiftSupervisor');
+		expect(await optionValues(page, '#rule-owner')).toEqual(['', 'BorderShiftSupervisor', 'TerminalDutyManager', 'HandlerStationManager']);
+		await expect(form.getByTestId('border-hint')).toHaveCount(0);
+		await guards.expectClean();
+	});
+
+	test('a terminal duty manager is not offered the metric, does not find border rules, and the server refuses a crafted request (403)', async ({ page }) => {
+		test.setTimeout(90_000);
+		const guards = await guardPage(page);
+		// A border rule with a script payload for a name: never listed for the duty manager, so nothing of it reaches the page.
+		const borderToken = (await signIn(accounts().webBorder)).accessToken;
+		const hiddenName = `${xssPayloads[1]} desks ${run}`;
+		const hidden = await call('POST', api, { token: borderToken, data: borderRule(hiddenName) });
+		expect(hidden.status(), await hidden.text()).toBe(201);
+
+		await signInThroughUi(page, accounts().web);
+		await openRules(page);
+		await expect(page.getByTestId('rule-row').filter({ hasText: `desks ${run}` })).toHaveCount(0);
+		await expect(page.getByTestId('rule-row').filter({ hasText: `E2E desks short ${run}` }), 'the supervisor’s rule of the first test').toHaveCount(0);
+		await expect(page.getByTestId('rule-row').filter({ hasText: 'Open desks below recommendation' })).toHaveCount(0);
+		await expect(page.getByTestId('not-evaluated')).toHaveCount(0);
+		await expect(page.locator('img[src="x"], svg[onload], iframe, [onerror]')).toHaveCount(0);
+
+		await page.getByTestId('add-rule').click();
+		const form = page.getByTestId('rule-form');
+		const metrics = await optionValues(page, '#rule-metric');
+		expect(metrics, 'border data is not offered').not.toContain('DesksBelowPlan');
+		expect(metrics).toEqual(expect.arrayContaining(['Nowcast', 'OverflowOccupied', 'ConservationResidual', 'TrackCompletion', 'OccupancyOutOfRange']));
+
+		// Hiding the metric is a convenience: a request changed on its way to the server is refused there, and the form
+		// shows the refusal as it shows any other (create and preview alike).
+		await page.route('**/api/v1/admin/alert-rules**', async (route) => {
+			const request = route.request();
+			if (request.method() !== 'POST') return route.continue();
+			const body = request.postDataJSON();
+			const border = { metric: 'DesksBelowPlan', comparator: 'GreaterOrEqual', minQueueLength: null, ownerRole: 'BorderShiftSupervisor' };
+			const changed = body.rule ? { ...body, rule: { ...body.rule, ...border } } : { ...body, ...border };
+			return route.continue({ postData: JSON.stringify(changed) });
+		});
+		await form.getByLabel('Name').fill(`E2E desks probe ${run}`);
+		await form.getByRole('checkbox', { name: 'A-CIT', exact: true }).check();
+		await form.getByTestId('run-backtest').click();
+		await expect(form.getByTestId('backtest-problem')).toHaveText(borderOnlyText);
+		await form.getByTestId('save-rule').click();
+		await expect(form.getByTestId('rule-problems')).toHaveText(borderOnlyText);
+		await page.unrouteAll({ behavior: 'wait' });
+
+		// Nothing was created, and the border rule stays hidden from the duty manager (404) and listed for the supervisor.
+		const terminalToken = (await signIn(accounts().web)).accessToken;
+		const probe = await call('GET', `${api}?siteCode=DMO&text=${encodeURIComponent(`desks probe ${run}`)}`, { token: borderToken });
+		expect((await probe.json()).totalCount).toBe(0);
+		const id = (await hidden.json()).id;
+		expect((await call('GET', `${api}/${id}`, { token: terminalToken })).status()).toBe(404);
+		expect((await call('GET', `${api}/${id}`, { token: borderToken })).status()).toBe(200);
+		allowStatuses(guards, 403);
+		await guards.expectClean();
+	});
 });

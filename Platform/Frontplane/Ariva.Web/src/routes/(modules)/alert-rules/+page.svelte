@@ -43,6 +43,15 @@
 	const roles = $derived(
 		rules.operationalRoles.filter((r) => isAdministrator || (auth.user?.roles ?? []).includes(r))
 	);
+	/**
+	 * ARV-181b2: open desks below recommendation is border data, offered to holders of ArrivalWaveLanes.View only and given
+	 * to border roles only (their own, or both for an administrator). Hiding it is a convenience: the server refuses others
+	 * 403 and leaves their rules out of this list.
+	 */
+	const seesBorderAlerts = $derived(auth.can(rules.borderPermission));
+	const borderRoles = $derived(
+		rules.borderRoles.filter((r) => isAdministrator || (auth.user?.roles ?? []).includes(r))
+	);
 
 	function failed(reason: string): void {
 		toast.error($_('alertRules.messages.failed', { values: { reason } }));
@@ -210,7 +219,9 @@
 				{zoneNames}
 				{queueZoneNames}
 				{roles}
+				{borderRoles}
 				allowNoOwner={isAdministrator}
+				{seesBorderAlerts}
 				{canPreview}
 				onSaved={saved}
 				onCancel={() => (form = null)}

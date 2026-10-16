@@ -547,9 +547,14 @@ public sealed class SiteConfigurationTransferTests
 
         foreach (var refused in new[]
                  {
-                     rule with { Metric = "DesksBelowPlan" }, rule with { OwnerRole = "Root" }, rule with { OwnerRole = RoleCodes.ValidationObserver },
+                     rule with { OwnerRole = "Root" }, rule with { OwnerRole = RoleCodes.ValidationObserver },
                      rule with { EscalateToRole = "Root" }, rule with { Comparator = "IsTrue" }, rule with { Code = "R-000" },
-                     rule with { EscalateAfterMinutes = null, EscalateToRole = RoleCodes.TerminalDutyManager }, rule with { Name = "Bell\u0007" }
+                     rule with { EscalateAfterMinutes = null, EscalateToRole = RoleCodes.TerminalDutyManager }, rule with { Name = "Bell\u0007" },
+                     // ARV-181b2: open desks below recommendation belongs to a border role, escalates to one or none, and fires above.
+                     rule with { Metric = "DesksBelowPlan", OwnerRole = RoleCodes.TerminalDutyManager }, rule with { Metric = "DesksBelowPlan", OwnerRole = null },
+                     rule with { Metric = "DesksBelowPlan", OwnerRole = RoleCodes.HandlerStationManager },
+                     rule with { Metric = "DesksBelowPlan", EscalateToRole = RoleCodes.TerminalDutyManager },
+                     rule with { Metric = "DesksBelowPlan", Comparator = "LessThan" }
                  })
             SiteConfigurationTransfer.Plan("DST", content with { AlertRules = [refused] }, Target(), "ZZZ").ErrorMessages
                 .Should().Equal([SiteConfigurationErrors.InvalidAlertRules], refused.ToString());
@@ -561,6 +566,30 @@ public sealed class SiteConfigurationTransferTests
                  })
             SiteConfigurationTransfer.Plan("DST", content with { Displays = [refused] }, Target(), "ZZZ").ErrorMessages
                 .Should().Equal([SiteConfigurationErrors.InvalidDisplays], refused.Code);
+    }
+
+    /// <summary>
+    /// ARV-181b2: open desks below recommendation is evaluated, so a bundle may carry a rule on it when the rule belongs to a
+    /// border role (the entity's checks) and watches queue zones only (as the health checks).
+    /// </summary>
+    [Fact]
+    public void Plan_Should_ImportOpenDesksBelowRecommendation_When_TheRuleBelongsToABorderRoleOnAQueueZone()
+    {
+        var content = RoundTrip(SiteConfigurationTransfer.Export(Source()).Data);
+        var rule = content.AlertRules[0] with { Metric = "DesksBelowPlan", Comparator = "GreaterOrEqual", Threshold = 2 };
+
+        var plan = SiteConfigurationTransfer.Plan("DST", content with { AlertRules = [rule] }, Target(), "ZZZ");
+
+        plan.HasErrors.Should().BeFalse(string.Join(", ", plan.ErrorMessages ?? []));
+        plan.Data.AlertRules.Single().Should().Match<AlertRule>(r => r.Metric == AlertMetric.DesksBelowPlan && r.OwnerRole == RoleCodes.BorderShiftSupervisor);
+        SiteConfigurationTransfer.Plan("DST", content with { AlertRules = [rule with { OwnerRole = RoleCodes.SystemAdministrator }] }, Target(), "ZZZ").HasErrors
+            .Should().BeFalse("the administrator is a border role");
+        SiteConfigurationTransfer.Plan("DST", content with { AlertRules = [rule with { Zones = ["Overflow A"] }] }, Target(), "ZZZ").ErrorMessages
+            .Should().Equal([SiteConfigurationErrors.AlertRuleZonesNotInProfile], "the recommendation is per lane, a queue zone");
+        SiteConfigurationTransfer.ZonesOf(["Overflow A"], AlertMetric.DesksBelowPlan, new HashSet<string> { "Snake A" }, new HashSet<string> { "Overflow A" })
+            .Should().BeFalse();
+        SiteConfigurationTransfer.ZonesOf(["Overflow A"], AlertMetric.Nowcast, new HashSet<string> { "Snake A" }, new HashSet<string> { "Overflow A" })
+            .Should().BeTrue();
     }
 
     [Fact]

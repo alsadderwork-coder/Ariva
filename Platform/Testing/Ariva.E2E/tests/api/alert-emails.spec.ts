@@ -9,7 +9,8 @@ import { hosts, smtp4dev } from '../support/hosts';
 // refused) and creates a rule that notifies by email, owned by the supervisors and escalating to the duty managers.
 // Its alert is planted in the database, as the Stream host's evaluation writes it (Stream is not part of the E2E run);
 // when the supervisor escalates it, the duty manager, and nobody else, gets one email: from Ariva's address, to one
-// recipient, with a one-line subject naming the rule, and with no header a value could have added.
+// recipient, with a one-line subject naming the rule, and with no header a value could have added. ARV-181b2: an open desks
+// below recommendation alert whose rule was changed in the database to escalate to the duty managers writes them no email.
 
 test.skip(!databaseAvailable, 'alert emails need the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true)');
 test.describe.configure({ mode: 'serial' });
@@ -55,17 +56,24 @@ test.beforeAll(async () => {
 	[admin, border, terminal] = await Promise.all([accounts().emailAdmin, accounts().dmoBorder, accounts().dmoTerminal].map(async (a) => (await signIn(a)).accessToken));
 });
 
+let desksRuleId: string, desksAlertId: string;
+
 test.afterAll(async () => {
-	if (!ruleId || !alertId) return;
 	const db = database();
 	await db.connect();
 	try {
-		await db.query(
-			`UPDATE alert SET state = 'Resolved', resolution = 'Manual', resolved_utc = now(), resolved_by = 'e2e-cleanup', resolution_note = 'cleanup'
-			 WHERE id = $1 AND state <> 'Resolved'`,
-			[alertId]
-		);
-		await db.query(`UPDATE alert_rule SET enabled = false WHERE id = $1`, [ruleId]);
+		for (const [rule, alert] of [
+			[ruleId, alertId],
+			[desksRuleId, desksAlertId]
+		]) {
+			if (!rule || !alert) continue;
+			await db.query(
+				`UPDATE alert SET state = 'Resolved', resolution = 'Manual', resolved_utc = now(), resolved_by = 'e2e-cleanup', resolution_note = 'cleanup'
+				 WHERE id = $1 AND state <> 'Resolved'`,
+				[alert]
+			);
+			await db.query(`UPDATE alert_rule SET enabled = false WHERE id = $1`, [rule]);
+		}
 	} finally {
 		await db.end();
 	}
@@ -173,4 +181,63 @@ test('escalating an alert of a rule that notifies by email sends the escalation 
 	}
 	expect((await call('POST', `${alertsApi}/${alertId}/escalate`, { token: border, data: {} })).status()).toBe(409);
 	expect((await call('POST', `${alertsApi}/${alertId}/acknowledge`, { token: terminal, data: { note: 'On it' } })).status()).toBe(200);
+});
+
+test('an open desks below recommendation alert escalated to an airport-side role writes no email to it (ARV-181b2)', async () => {
+	// A border rule as created, then changed in the database to escalate to the duty managers (as a rule from before ARV-181b2
+	// could), with its alert planted as the evaluation writes it. The supervisor escalates it: the escalation role is not a
+	// border role, so no email is written and the duty manager, who never sees the alert, is never told.
+	const created = await call('POST', rulesApi, {
+		token: admin,
+		data: {
+			siteCode: 'DMO',
+			name: `E2E mail desks short ${runId}`,
+			zones: ['A-RES'],
+			metric: 'DesksBelowPlan',
+			comparator: 'GreaterOrEqual',
+			threshold: 2,
+			minQueueLength: null,
+			clearThreshold: null,
+			sustainMinutes: 3,
+			clearAfterMinutes: 2,
+			severity: 'Warning',
+			ownerRole: 'BorderShiftSupervisor',
+			escalateAfterMinutes: null,
+			escalateToRole: null,
+			escalationContact: null,
+			notifyByEmail: true,
+			enabled: true
+		}
+	});
+	expect(created.status(), await created.text()).toBe(201);
+	const { id, code } = await created.json();
+	desksRuleId = id;
+
+	const db = database();
+	await db.connect();
+	try {
+		await db.query(`UPDATE alert_rule SET escalate_after_minutes = 10, escalate_to_role = 'TerminalDutyManager' WHERE id = $1`, [id]);
+		const planted = await db.query(
+			`INSERT INTO alert (id, site_code, rule_id, rule_code, rule_name, zone_name, device_code, metric, severity, owner_role, escalate_after_minutes,
+			                    escalate_to_role, escalation_contact, raised_utc, raised_value, state)
+			 SELECT gen_random_uuid(), site_code, id, code, name, 'A-RES', NULL, metric, severity, owner_role, escalate_after_minutes, escalate_to_role, escalation_contact,
+			        date_trunc('minute', now()) - interval '2 minutes', 3, 'Raised'
+			 FROM alert_rule WHERE id = $1 RETURNING id`,
+			[id]
+		);
+		desksAlertId = planted.rows[0].id;
+
+		expect((await call('POST', `${alertsApi}/${desksAlertId}/escalate`, { token: terminal, data: {} })).status(), 'the duty manager never finds it').toBe(404);
+		const escalated = await call('POST', `${alertsApi}/${desksAlertId}/escalate`, { token: border, data: { note: 'Need more desks' } });
+		expect(escalated.status(), await escalated.text()).toBe(200);
+		expect(await escalated.json()).toMatchObject({ state: 'Escalated', escalateToRole: 'TerminalDutyManager' });
+		// The emails of a change are written in its transaction: none for this one.
+		expect((await db.query(`SELECT count(*)::int AS n FROM email_message WHERE alert_id = $1`, [desksAlertId])).rows[0].n).toBe(0);
+	} finally {
+		await db.end();
+	}
+	// Integration's sender runs every second in this run: still nothing for the duty manager after a few rounds.
+	await new Promise((resolve) => setTimeout(resolve, 3_000));
+	expect((await messagesTo(terminalAddress)).filter((m) => m.subject.includes(code)), 'no email to an airport-side role').toHaveLength(0);
+	expect((await call('GET', `${alertsApi}/${desksAlertId}`, { token: terminal })).status()).toBe(404);
 });
