@@ -4,6 +4,7 @@
 	import * as displays from '$lib/core/displays';
 	import type { Board } from '$lib/core/displays';
 	import SecondRegion from '$lib/components/pages/displays/SecondRegion.svelte';
+	import SlideView from '$lib/components/pages/displays/SlideView.svelte';
 	import ar from '$lib/i18n/board/ar.json';
 	import en from '$lib/i18n/board/en.json';
 	import pt from '$lib/i18n/board/pt.json';
@@ -20,6 +21,9 @@
 	 * first language (left, or right in Arabic, on a landscape screen; on top on a portrait one) and always keeps its share;
 	 * the second region takes the rest and loads its own content, inside an error boundary, so nothing it does reaches the
 	 * queue region. A layout change arrives with the next board, like every other setting.
+	 *
+	 * ARV-141: the board also carries the instruction slides that apply to the display: the second region rotates them, and
+	 * one can be pinned under the waits in either layout. Their words are text, never markup.
 	 */
 	const dictionaries: Record<string, Record<string, string>> = { en, ar, pt, sw };
 	const rtl = new Set(['ar']);
@@ -245,6 +249,18 @@
 			</li>
 		{/each}
 	</ul>
+	{#if current.pinnedSlide}
+		<!-- ARV-141: one slide pinned under the waits, in the display's languages; text only. -->
+		<div data-testid="board-pinned" class="border-t border-white/15 px-[3em] py-[1.2em]">
+			<SlideView
+				icon={current.pinnedSlide.icon}
+				texts={current.pinnedSlide.texts}
+				{rtl}
+				compact
+				testid="board-pinned-slide"
+			/>
+		</div>
+	{/if}
 {/snippet}
 
 {#if split && board}
@@ -277,7 +293,12 @@
 			]}
 		>
 			<svelte:boundary>
-				<SecondRegion languages={board.languages} {rtl} onloaded={() => secondLoaded++} />
+				<SecondRegion
+					languages={board.languages}
+					{rtl}
+					slides={board.slides ?? []}
+					onchanged={() => secondLoaded++}
+				/>
 				{#snippet failed()}
 					<div data-testid="board-second" data-state="failed" class="h-full w-full"></div>
 				{/snippet}

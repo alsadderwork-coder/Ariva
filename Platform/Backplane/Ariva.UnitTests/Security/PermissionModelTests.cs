@@ -35,8 +35,10 @@ public sealed class PermissionModelTests
             // View-only entities: nothing is created, edited, searched or deleted through them (the system information
             // endpoint; the live queue stream of ARV-035; the arrival-wave projection of ARV-047; the border desk states of ARV-055; the daily report of ARV-060, computed from stored data; the zone health checks of ARV-114a, computed by the stream). Alerts (ARV-039) are raised by the evaluation and never
             // deleted: people view, search and act on them (Edit) only. Validation (ARV-104a) is a process with its own actions:
-            // View, Capture and Manage. Site configuration (ARV-122a) has one action: Transfer (export and import).
-            .Where(p => p.Entity is not ("SystemInfo" or "LiveQueue" or "Alert" or "ArrivalWave" or "ArrivalWaveLanes" or "BorderDesks" or "AirportDesks" or "Immigration" or "Report" or "DataQuality" or "Validation" or "SiteConfiguration"))
+            // View, Capture and Manage. Site configuration (ARV-122a) has one action: Transfer (export and import). Display content
+            // (ARV-141) is what the displays say beside the waits: View to see it, Manage to create, change, order, retire and
+            // restore it (the story's single management permission).
+            .Where(p => p.Entity is not ("SystemInfo" or "LiveQueue" or "Alert" or "ArrivalWave" or "ArrivalWaveLanes" or "BorderDesks" or "AirportDesks" or "Immigration" or "Report" or "DataQuality" or "Validation" or "SiteConfiguration" or "DisplayContent"))
             .GroupBy(p => p.Entity);
 
         byEntity.Should().AllSatisfy(entity =>

@@ -181,6 +181,28 @@ public sealed class ErrorHandlingTests
     }
 
     [Fact]
+    public async Task Post_Should_Return400WithoutTheKeysSent_When_ADictionaryValueBreaksItsRules()
+    {
+        // ARV-141, security review: a slide's words are keyed by language; when a value breaks its rule, the answer names the
+        // entry by its place (Texts[0].Value.Title), so a key the caller chose never comes back.
+        await using var app = HostWithProbe(ArivaHosts.Main);
+        using var client = UserClient(app, "SystemAdministrator");
+        const string json = """
+            {"siteCode":"ZZ9","scope":"Site","targets":[],"icon":"Information","durationSeconds":10,"pinned":false,
+             "texts":{"<script>alert(1)</script>":{"title":null,"body":"x"},"en":{"title":"Fine","body":null}}}
+            """;
+        using var content = new StringContent(json, Encoding.UTF8, "application/json");
+
+        using var response = await client.PostAsync("/api/v1/admin/display-slides", content, TestContext.Current.CancellationToken);
+        var body = await response.BodyAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest, body);
+        // The model state names a dictionary entry by its place, never by the key sent.
+        HttpResponses.ParseProblem(body).GetProperty("errors").EnumerateObject().Select(e => e.Name).Should().Equal("Texts[0].Value.Title");
+        body.Should().NotContain("alert(1)").And.NotContainEquivalentOf("script");
+    }
+
+    [Fact]
     public async Task Push_Should_Return400WithoutTheMembersSent_When_AnIngestBodyDoesNotParse()
     {
         // Ingest reads its pushes itself (no MVC body binding): a device's malformed push gets one fixed text.

@@ -8,6 +8,7 @@ import {
 	FileChartColumn,
 	Map,
 	MonitorPlay,
+	Presentation,
 	ScanLine,
 	Timer,
 	UserCog
@@ -70,6 +71,16 @@ export const navItems: readonly NavItem[] = [
 		ready: true,
 		story: 'ARV-058',
 		permission: 'Display.Search'
+	},
+	{
+		// Instruction slides (ARV-141): what the passenger displays say beside the waits.
+		id: 'displaySlides',
+		href: '/display-slides',
+		icon: Presentation,
+		group: 'operations',
+		ready: true,
+		story: 'ARV-141',
+		permission: 'DisplayContent.View'
 	},
 	{
 		// The observer tablet (ARV-104c): only the Validation observer role holds Validation.Capture.

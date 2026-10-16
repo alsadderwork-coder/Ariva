@@ -384,6 +384,20 @@ The three health checks (ARV-114b) are judged on the bins the stream stored (`zo
 
 A split display puts the queues first in the reading order of its first language: on the left with English first, on the right with Arabic first, and on top on a portrait screen; the second region takes the rest. The second region loads its content separately, so if it fails the queues are unaffected and the region stays empty. A layout change reaches running players at their next poll (within about 10 seconds), with no restart, and is audited with the other settings (`Display.Updated`, layout, share and second region before and after). A site configuration export carries the layout; an older bundle without it imports as Full.
 
+### Instruction slides (ARV-141)
+
+The Display instructions screen (`/display-slides`, `DisplayContent.View` to see, `DisplayContent.Manage` to change; terminal duty managers, border shift supervisors and administrators, within their sites; handler station managers have none) keeps a site's instruction slides:
+
+| Field | Notes |
+|---|---|
+| Shown on | Every display of the site, the displays showing chosen queue zones (published queue zones only), or chosen displays |
+| Icon | One of a built-in set (information, passport, e-gate, hat and glasses, fingerprint, family, accessibility, baggage, no phone, follow the signs); nothing is uploaded |
+| Seconds on screen | 5 to 60 |
+| Pinned | Shown under the waits instead of rotating; a display pins the first pinned slide that applies to it, and any other pinned one rotates |
+| Words | A title (up to 80 characters) and an optional text (up to 240) in English, Arabic, Portuguese or Swahili, at least one; plain text only, without line breaks, control or invisible characters |
+
+A split display's second region rotates the active slides that apply to it in the site's order, each for its seconds on screen, with the words in the display's own languages (a slide in none of them is not shown there); without any it shows the default instructions. The pinned slide shows under the waits in either layout. Slides reach the players only through their display-authenticated board, at the next poll. A slide is retired rather than deleted (restore brings it back), and every change is audited (`InstructionSlide.Created`, `Updated`, `Retired`, `Restored`, and `Moved` for each slide a new order moves, with its place before and after); a slide whose words and targets would not fit one audit entry whole is refused. One creation or reorder runs at a time per site. The demo seed adds a starter set of arrivals instructions at DMO and AUH-TA (passport at the photo page, e-gates for residents and GCC nationals, hats and glasses, families, phones) for the arrival queue zones; their Arabic, Portuguese and Swahili wording is To confirm by a native reviewer before a pilot.
+
 Each display is a kiosk URL on the display VLAN. Boards never show a realised wait. Whether an existing signage estate (for example Samsung MagicInfo) can show web content is To confirm on site.
 
 ## 10. Audit log

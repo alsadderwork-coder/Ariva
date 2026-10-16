@@ -27,6 +27,7 @@ const screens = [
 	{ path: '/topology', heading: 'Topology' },
 	{ path: '/alert-rules', heading: 'Alert rules' },
 	{ path: '/displays', heading: 'Passenger displays' },
+	{ path: '/display-slides', heading: 'Display instructions' },
 	{ path: '/reports', heading: 'Reports' }
 ];
 

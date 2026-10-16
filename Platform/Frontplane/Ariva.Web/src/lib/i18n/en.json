@@ -27,7 +27,8 @@
 			"devices": "Devices",
 			"users": "Users and access",
 			"validationCapture": "Validation capture",
-			"validationCampaigns": "Validation campaigns"
+			"validationCampaigns": "Validation campaigns",
+			"displaySlides": "Display instructions"
 		}
 	},
 	"shell": {
@@ -1114,6 +1115,87 @@
 		"layoutSummary": {
 			"Full": "Full screen",
 			"Split": "Split screen, queues {share}%"
+		}
+	},
+	"slides": {
+		"title": "Display instructions",
+		"description": "Short instructions the passenger displays show beside the waits, in each of their languages",
+		"listTitle": "Instruction slides",
+		"none": "No instruction slides at this site yet",
+		"orderHint": "Split displays rotate the active slides that apply to them in this order; a pinned slide shows under the waits instead.",
+		"position": "Position {position}",
+		"active": "Active",
+		"retired": "Retired",
+		"pinned": "Pinned under the waits",
+		"seconds": "{seconds} s on screen",
+		"appliesTo": {
+			"Site": "Every display of the site",
+			"Zone": "Displays showing {targets}",
+			"Display": "Displays {targets}"
+		},
+		"columns": {
+			"order": "Order",
+			"slide": "Slide",
+			"scope": "Shown on",
+			"status": "Status",
+			"actions": "Actions"
+		},
+		"actions": {
+			"add": "New slide",
+			"create": "Create the slide",
+			"save": "Save",
+			"cancel": "Cancel",
+			"edit": "Edit",
+			"retire": "Retire",
+			"restore": "Restore",
+			"up": "Move slide {position} up",
+			"down": "Move slide {position} down",
+			"preview": "Preview"
+		},
+		"form": {
+			"createTitle": "New instruction slide",
+			"editTitle": "Edit slide {position}",
+			"scope": "Shown on",
+			"zones": "Queue zones",
+			"displays": "Displays",
+			"icon": "Icon",
+			"duration": "Seconds on screen",
+			"pinned": "Pin under the waits instead of rotating",
+			"words": "Words",
+			"wordsHint": "Plain text only, in at least one language; never name a person, since displays are public. A display shows the languages it has; a slide without any of them is not shown there.",
+			"titleIn": "Title ({language})",
+			"bodyIn": "Text ({language}, optional)",
+			"noZones": "This site has no published queue zones yet.",
+			"noDisplays": "This site has no displays yet."
+		},
+		"scopes": {
+			"Site": "Every display of the site",
+			"Zone": "Displays showing these queue zones",
+			"Display": "These displays"
+		},
+		"icons": {
+			"Information": "Information",
+			"Passport": "Passport",
+			"EGate": "E-gate",
+			"HatAndGlasses": "Hat and glasses",
+			"Fingerprint": "Fingerprint",
+			"Family": "Family",
+			"Accessibility": "Accessibility",
+			"Baggage": "Baggage",
+			"NoPhone": "No phone",
+			"FollowSigns": "Follow the signs"
+		},
+		"preview": {
+			"title": "Preview",
+			"description": "As a display shows it, in each language: left to right, and right to left for Arabic.",
+			"empty": "Type a title to see the preview."
+		},
+		"messages": {
+			"saved": "Slide {position} saved.",
+			"retired": "Slide {position} retired: no display shows it.",
+			"restored": "Slide {position} restored.",
+			"moved": "The order is saved.",
+			"failed": "That did not work: {reason}"
 		}
 	},
 	"users": {

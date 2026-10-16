@@ -3585,6 +3585,156 @@
     {
       "host": "main",
       "method": "GET",
+      "route": "/api/v1/admin/display-slides",
+      "access": "permission",
+      "permissions": [
+        "ViewDisplayContent"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 200,
+        "TerminalDutyManager": 200,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 200,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/display-slides",
+      "access": "permission",
+      "permissions": [
+        "ManageDisplayContent"
+      ],
+      "body": {
+        "siteCode": "ZZ9",
+        "scope": "Site",
+        "targets": [],
+        "icon": "Information",
+        "durationSeconds": 10,
+        "pinned": false,
+        "texts": {
+          "en": {
+            "title": "Matrix slide",
+            "body": null
+          }
+        }
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 400,
+        "TerminalDutyManager": 400,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 400,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "PUT",
+      "route": "/api/v1/admin/display-slides/order",
+      "access": "permission",
+      "permissions": [
+        "ManageDisplayContent"
+      ],
+      "body": {
+        "ids": []
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 400,
+        "TerminalDutyManager": 400,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 400,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/admin/display-slides/{id:guid}",
+      "access": "permission",
+      "permissions": [
+        "ViewDisplayContent"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "PUT",
+      "route": "/api/v1/admin/display-slides/{id:guid}",
+      "access": "permission",
+      "permissions": [
+        "ManageDisplayContent"
+      ],
+      "body": {
+        "siteCode": "ZZ9",
+        "scope": "Site",
+        "targets": [],
+        "icon": "Information",
+        "durationSeconds": 10,
+        "pinned": false,
+        "texts": {
+          "en": {
+            "title": "Matrix slide",
+            "body": null
+          }
+        }
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/display-slides/{id:guid}/retire",
+      "access": "permission",
+      "permissions": [
+        "ManageDisplayContent"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/display-slides/{id:guid}/restore",
+      "access": "permission",
+      "permissions": [
+        "ManageDisplayContent"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
       "route": "/api/v1/sites/{siteCode}/reports/daily",
       "access": "permission",
       "permissions": [

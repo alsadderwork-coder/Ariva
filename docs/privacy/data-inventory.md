@@ -55,6 +55,7 @@ These periods are migration-job parameters (`Database:Retention`; in the cluster
 | `zone` | Table | Configuration | None: zone outlines of a profile version | As its profile version | D5; script 0012 | Site Topology (Ariva.Api.Main) |
 | `line` | Table | Configuration | None: counting lines of a profile version | As its profile version | D5; script 0012 | Site Topology (Ariva.Api.Main) |
 | `display` | Table | Configuration | None: a board's settings and labels, its player credential as a prefix and a SHA-256 (never the credential); audit columns | Indefinite, soft deleted | D5; script 0035 | Displays (Ariva.Api.Main) |
+| `instruction_slide` | Table | Configuration | None: a slide's words per language (plain text a person types, which the screen asks not to hold a name), its icon, time on screen, scope and order; audit columns | Indefinite: retired, never deleted | Script 0056 (the runtime role cannot delete) | Displays (Ariva.Api.Main) |
 | `operating_week` | Table | Configuration | None: a site's weekly operating hours; audit columns | Indefinite (availability evidence) | Script 0042 | Availability (Ariva.Api.Main) |
 | `operating_day_exception` | Table | Configuration | Possibly: a reason in free text; audit columns | Indefinite (availability evidence) | Script 0042 | Availability (Ariva.Api.Main) |
 | `maintenance_window` | Table | Configuration | Possibly: a reason in free text; audit columns | Indefinite (availability evidence) | Script 0042 | Availability (Ariva.Api.Main) |

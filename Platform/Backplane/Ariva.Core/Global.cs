@@ -181,6 +181,14 @@ public static class Global
             public static Permission EditDisplay { get; } = new("Display", PermissionAction.Edit);
             public static Permission DeleteDisplay { get; } = new("Display", PermissionAction.Delete);
 
+            /// <summary>
+            /// Instruction slides of the passenger displays (ARV-141): see them, and manage them (create, change, order,
+            /// retire and restore). The words reach every display of the site, so managing them is its own permission.
+            /// </summary>
+            public static Permission ViewDisplayContent { get; } = new("DisplayContent", PermissionAction.View);
+
+            public static Permission ManageDisplayContent { get; } = new("DisplayContent", PermissionAction.Manage);
+
             #endregion
 
             #region Reports (E9)

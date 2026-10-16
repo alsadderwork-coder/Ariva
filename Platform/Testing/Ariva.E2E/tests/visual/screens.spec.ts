@@ -367,7 +367,8 @@ for (const variant of variants) {
 		});
 
 		// ARV-140: the split layouts, Arabic first on a landscape screen (the queues on the right) and English first on a
-		// portrait one (the queues on top). The board keeps its own palette, so one colour scheme is enough.
+		// portrait one (the queues on top), the second region showing the first instruction slide (ARV-141). The board keeps
+		// its own palette, so one colour scheme is enough.
 		for (const split of [
 			{ name: 'landscape-ar', viewport: { width: 1920, height: 1080 }, shape: { orientation: 'Landscape', languages: ['ar', 'en'], layout: 'Split', queueShare: 60 } },
 			{ name: 'portrait-en', viewport: { width: 1080, height: 1920 }, shape: { orientation: 'Portrait', languages: ['en', 'ar'], layout: 'Split', queueShare: 60 } }
@@ -380,7 +381,10 @@ for (const variant of variants) {
 				await page.goto(path);
 				await expect(page.getByTestId('board')).toHaveAttribute('data-layout', 'Split');
 				await expect(page.getByTestId('board-entry')).toHaveCount(2);
-				await expect(page.getByTestId('board-second')).toHaveAttribute('data-state', 'ready');
+				// ARV-141: the demo seed's arrivals slides apply to A-RES and A-VIS, so the second region rotates them; the
+				// screenshot is of the first, the passport slide, which stays 10 seconds.
+				await expect(page.getByTestId('board-second')).toHaveAttribute('data-state', 'slides');
+				await expect(page.getByTestId('board-slide')).toHaveAttribute('data-icon', 'Passport');
 				await settle(page);
 				await expect(page).toHaveScreenshot(`passenger-display-split-${split.name}-${variant.name}.png`, { mask: clockMasks(page) });
 			});

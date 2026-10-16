@@ -97,6 +97,8 @@ public sealed record DisplayBoardEntryViewModel(
 /// What a player shows (ARV-058): the display's settings and its entries' latest nowcasts. <paramref name="Illustrative"/>:
 /// the display's site is an illustrative demo site (ARV-139a), so the player shows the "Illustrative, not surveyed" banner.
 /// The layout (ARV-140) comes with every answer, so a change reaches a running player at its next poll, without a restart.
+/// So do the instruction slides that apply to the display (ARV-141): the pinned one, shown under the waits, and the ones the
+/// second region rotates.
 /// </summary>
 public sealed record DisplayBoardViewModel(
     string Code,
@@ -112,7 +114,9 @@ public sealed record DisplayBoardViewModel(
     bool Illustrative = false,
     string Layout = "Full",
     int QueueShare = 60,
-    string SecondRegion = "Instructions");
+    string SecondRegion = "Instructions",
+    DisplayBoardSlideViewModel PinnedSlide = null,
+    IReadOnlyList<DisplayBoardSlideViewModel> Slides = null);
 
 /// <summary>A display player that presented its display's code and credential (ARV-058).</summary>
 public sealed record DisplayPlayer(Guid Id, string Code, string SiteCode, string CredentialPrefix);

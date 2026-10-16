@@ -134,6 +134,18 @@ export interface Board {
 	layout?: string;
 	queueShare?: number;
 	secondRegion?: string;
+	/** ARV-141: the slide shown under the waits, if one applies to the display. */
+	pinnedSlide?: BoardSlide | null;
+	/** ARV-141: the slides the second region rotates, in the site's order; none means the default instructions. */
+	slides?: BoardSlide[];
+}
+
+/** An instruction slide as the player gets it (ARV-141): its icon's name, its time on screen, its words per display language. */
+export interface BoardSlide {
+	position: number;
+	icon: string;
+	durationSeconds: number;
+	texts: { language: string; title: string; body: string | null }[];
 }
 
 /** The default instructions of the second region, per language (static/board/instructions.json; ARV-141 makes them configurable). */

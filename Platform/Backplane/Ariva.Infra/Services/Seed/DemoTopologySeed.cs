@@ -208,6 +208,11 @@ internal sealed class DemoTopologySeed(IUnitOfWork unitOfWork, ICurrentUser curr
             }
         }
 
+        // The starter arrivals instructions (ARV-141), once, when the arrival queue zones are published.
+        if (skipped is null)
+            created += await DemoInstructionSlides.SeedAsync(Storage, audit, SiteCode,
+                DemoInstructionSlides.Values(["A-CIT", "A-RES", "A-VIS"], ["A-CIT", "A-RES", "A-EG"]), ct);
+
         if (created > 0)
         {
             await audit.RecordAsync("Seed.DemoTopology", "Site", null, SiteCode, null, $"created={created}", ct);

@@ -139,6 +139,12 @@ internal sealed class AuhTerminalASeed(IUnitOfWork unitOfWork, ICurrentUser curr
             }
         }
 
+        // The starter arrivals instructions (ARV-141), once, when the lanes' queue zones are published.
+        if (skipped is null)
+            created += await DemoInstructionSlides.SeedAsync(Storage, audit, SiteCode,
+                DemoInstructionSlides.Values([.. CounterLanes.Where(l => l.Code is not "CRW" and not "DIP").Select(l => QueueName(l.Code))],
+                    [QueueName("CIT"), QueueName("RES"), QueueName("GCC"), QueueName(GateLane.Code)]), ct);
+
         if (created > 0)
         {
             await audit.RecordAsync("Seed.IllustrativeTopology", "Site", null, SiteCode, null, $"created={created}; illustrative=true", ct);

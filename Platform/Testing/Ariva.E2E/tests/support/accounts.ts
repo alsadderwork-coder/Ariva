@@ -216,6 +216,9 @@ export function accounts() {
 		webRules: account('e2e.webrules', ['BorderShiftSupervisor'], false, true, ['DMO']),
 		// ARV-058: sets up passenger displays at the demo airport through the screen (creating needs a second factor).
 		webDisplays: account('e2e.webdisplays', ['TerminalDutyManager'], false, true, ['DMO']),
+		// ARV-141: plants the slides spec's display (a critical action, so a fresh second factor); its own account, since a TOTP
+		// code counts once per account and the displays spec signs webDisplays in with the previous step.
+		slidesDisplays: account('e2e.slidesdisp', ['TerminalDutyManager'], false, true, ['DMO']),
 		// ARV-181b2: the open desks below recommendation suite's supervisor and duty manager at the demo airport, each with a
 		// second factor so that a delete reaches the rule service (it answers 204 for the border, 404 for the duty manager);
 		// accounts of their own, because a TOTP code counts once per account.

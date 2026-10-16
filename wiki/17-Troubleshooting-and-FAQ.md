@@ -62,6 +62,7 @@ Symptom, likely cause, check, fix. For longer incident procedures see the [Opera
 | Arabic layout broken | Right-to-left not applied | Language order setting | Report as a defect; right-to-left must be tested for Arabic boards |
 | Split board shows the queues on the "wrong" side | The side follows the display's first language: left for English first, right for Arabic first; on a portrait screen the queues are on top | Language order setting | Put the language the board should read in first |
 | Split board's second region empty | The instructions file did not load (the queues are unaffected) | The player can reach `/board/instructions.json` on the display VLAN | Fix the network path; the region fills at the next reload |
+| A slide does not show on a display | Retired, aimed at other zones or displays, pinned (it shows under the waits), or written in none of the display's languages | The slide's row on Display instructions; the display's languages and queues | Restore it, widen where it shows, or add words in one of the display's languages |
 
 ## FAQ
 
