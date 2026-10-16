@@ -2341,3 +2341,12 @@ Project `Ariva.UnitTests` has the following vulnerable packages
   - Informational Lows, handled before the commit: the lint now also reads quoted values (`"id-token": "write"`, `'write-all'`, with a self-test sample), and its comment names the one remaining limit, job keys indented other than two spaces.
   - The keyless path stays To confirm on the first real bundle, as the wiki and ASVS row say.
 - Status: passes set; committed (signed) and pushed. The checkpoint (full suite plus mutation) is due now: 5 stories since f87ea8a.
+
+## 2026-10-16 Checkpoint on b507ff9, and the gate's story count
+- `node scripts/verify.mjs checkpoint` on b507ff9: green.
+  - Unit 6,001; integration 566 passed and 1 skipped; visual 18 passed and 2 skipped; E2E 754 passed and 1 skipped.
+  - Every security, chart, offline bundle, audit and docs step passed.
+  - Mutation was skipped by its scope rule: no engine file changed since f87ea8a.
+  - The first attempt stopped before E2E: the container's disk allowance ran out while unpacking the visual browser image (`failed to extract layer ... write`), 2.7 GB free. The project's bin folders, the uv cache, the throwaway registry and my rehearsal outputs were cleared (3.8 GB free), and the suite ran again from the start.
+- Correction to the checkpoint commit b916f59: its message named "the Kafka fixture fix" among the five stories. The gate counts story ids at the start of commit subjects, so the five were ARV-111a, ARV-184, ARV-187, ARV-191 and ARV-127; a08e4a1 is a CI fix, not a story.
+- Gate fix found while checking that: `storiesSince` matched `ARV-\d+[a-z]?:`, so ids with a two-character suffix (ARV-181b1, ARV-181b2, ARV-104g1) were never counted, and the cadence undercounted (f87ea8a to b507ff9 held 7 stories, recorded as 5). The pattern is now `ARV-\d+(?:[a-z]\d*)?:`.

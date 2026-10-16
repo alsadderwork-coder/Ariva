@@ -219,7 +219,7 @@ function readCheckpoint() {
 
 // Stories committed since the last checkpoint: distinct ids in commit subjects of the form "ARV-nnn: title".
 function storiesSince(commit) {
-  const ids = git(['log', `${commit}..HEAD`, '--format=%s']).split('\n').map(s => /^(ARV-\d+[a-z]?):/.exec(s)?.[1]).filter(Boolean);
+  const ids = git(['log', `${commit}..HEAD`, '--format=%s']).split('\n').map(s => /^(ARV-\d+(?:[a-z]\d*)?):/.exec(s)?.[1]).filter(Boolean);
   return new Set(ids).size;
 }
 
