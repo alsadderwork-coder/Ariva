@@ -1932,6 +1932,26 @@
         "ARV-104h",
         "ARV-104i"
       ]
+    },
+    {
+      "id": "ARV-191",
+      "title": "[E12] Arrival wave lane projection reads arrivals immigration desks only: emigration queues neither share nor receive the arrivals wave",
+      "description": "Found while planning and building ARV-187 (2026-10-16), checked against the code by the backend engineer. ProjectedArrivalWave.LanesAsync (Ariva.Infra/Flights/ArrivingLegs.cs) links queue zones to lanes through service zones and the lane categories of border desks without filtering by checkpoint kind or level. Border desks of every kind carry lane categories (emigration desks included), so an emigration queue zone linked through service zones to lane-coded desks (1) counts in the lane's sharing, so an arrivals queue's share of its lane is divided (halved when one emigration queue serves the same lane) and PredictedNowcast under-predicts arrivals breaches; and (2) receives an arrivals-wave projection itself, giving false predicted values on departures. StaffingInputs restricts itself to the arrivals hall's Immigration checkpoint; this reader does not. Its only consumer is the PredictedNowcast evaluation and backtest (border-only since ARV-187), so it is a correctness bug, not a data boundary leak. Not visible in the seeds (DMO v12 has no service zones; NBJ-BC1's lane ALL has no arrivals by lane); a pilot site that measures departure queues with service zones on lane-coded emigration desks would hit it. CWEs to review: none beyond a check that the change keeps the BorderAlertExposureTests pins.",
+      "acceptanceCriteria": [
+        "ProjectedArrivalWave links a queue zone to a lane only through desks of an Immigration checkpoint on the arrivals level, the same scope as StaffingInputs, with the reason in a comment",
+        "An integration test on a site with an arrivals queue and an emigration queue whose desks carry the same lane code shows the arrivals queue keeps the whole lane share and the emigration queue gets no projection (failing before the change)",
+        "The existing PredictedNowcast tests (unit, PredictedAlertTests, the predicted-breach-border spec) still pass",
+        "node scripts/verify.mjs backend passes, and the story's integration and E2E tests pass through node scripts/verify.mjs story",
+        "docs/domain/formulas.md (predicted breach) states which desks link a queue to its lane",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "node scripts/verify.mjs docs passes"
+      ],
+      "priority": 59,
+      "passes": false,
+      "notes": "Size S. Before the pilot if the site measures departure queues with service zones on lane-coded emigration desks; otherwise it can move to Phase 3 by the owner's call.",
+      "dependsOn": [
+        "ARV-187"
+      ]
     }
   ]
 }
