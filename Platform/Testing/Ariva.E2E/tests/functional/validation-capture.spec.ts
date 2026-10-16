@@ -310,6 +310,10 @@ function allowCutRequests(guards: PageGuards): void {
 }
 
 async function expectAxeClean(page: Page): Promise<void> {
+	// A theme switch starts CSS colour transitions (the header buttons' transition-colors): in CI axe once measured the
+	// language button mid-way and reported its in-between colour as a contrast failure. Measure once every transition has
+	// ended (CSS animations such as a spinner may run for ever, so only transitions are waited for).
+	await page.waitForFunction(() => document.getAnimations().every((a) => !(a instanceof CSSTransition) || a.playState !== 'running'));
 	const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']).analyze();
 	expect(
 		results.violations.map((v) => `${v.id} (${v.impact}): ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`),
