@@ -412,6 +412,10 @@ const steps = {
     // ARV-184: the check every host image build runs on its publish output (runtime packs at the runtime-deps version, Pkcs and
     // SignalR assemblies at or above the fixed file version); base-images --check holds each Dockerfile to it.
     run('published runtime check self-test', 'node', ['scripts/published-runtime.mjs', '--self-test']);
+    // ARV-127: the offline bundle's verifier and builder (every kind of tampering fails; the builder's bundles need Helm, and
+    // are skipped without it outside GitHub Actions).
+    run('offline bundle verifier self-test', 'node', ['scripts/offline/verify.mjs', '--self-test']);
+    run('offline bundle builder self-test', 'node', ['scripts/offline/bundle.mjs', '--self-test']);
     const CHART_TESTS = path.join(ROOT, 'Platform', 'Cloud', 'Ariva.K8s', 'tests');
     if (!fs.existsSync(path.join(CHART_TESTS, 'node_modules'))) run('chart tests npm ci', 'npm', ['ci'], CHART_TESTS);
     run('chart security (pod security context, read-only root, TLS, release guards)', 'node', ['chart-security.mjs'], CHART_TESTS);

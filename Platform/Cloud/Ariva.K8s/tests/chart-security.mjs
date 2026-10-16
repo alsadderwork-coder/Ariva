@@ -11,14 +11,16 @@
 // the AMAN feed rule appears where it is turned on and nothing appears with monitoring off.
 // ARV-111a: the migration job carries each environment's retention periods (migration.retention) as Database__Retention__*, and a
 // period out of range, not a whole number, unknown or missing fails to render.
+// ARV-127: the offline bundle's Helmfile renders the same objects as helmfile-k8s, every image from the site's mirror by digest.
 //   node Platform/Cloud/Ariva.K8s/tests/chart-security.mjs              needs helm 3 on PATH (or HELM=path)
 //   node Platform/Cloud/Ariva.K8s/tests/chart-security.mjs --self-test  checks the rules against fixtures, no helm
 // Without helm the test is skipped locally and fails in CI (CI=true).
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseAllDocuments } from 'yaml';
 import { checkManifests, missingMonitoringRules } from './checks.mjs';
 
@@ -386,6 +388,87 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 		console.error('FAIL release guard: helmfile -e prd without a build number must fail but succeeded');
 	} else {
 		console.log('PASS release guard: helmfile -e prd without a build number is refused');
+	}
+	// ARV-127: the offline bundle's Helmfile, staged as scripts/offline/bundle.mjs stages it (packaged charts, values files,
+	// images.yaml), renders the same objects as this Helmfile for every environment given the same images; every image comes
+	// from the site's mirror, an Ariva image by the bundle's digest; it refuses to render without a mirror; and a site's own
+	// values files reach their release without moving an image.
+	{
+		const { stageHelm } = await import(pathToFileURL(path.resolve(here, '..', '..', '..', '..', 'scripts', 'offline', 'bundle.mjs')).href);
+		const services = ['api-main', 'api-ingest', 'api-stream', 'api-cronz', 'api-integration', 'simulation', 'web'];
+		const digestOf = (service) => 'sha256:' + createHash('sha256').update(service).digest('hex');
+		const mirror = 'registry.example.local:5000/site';
+		const staged = fs.mkdtempSync(path.join(os.tmpdir(), 'ariva-offline-helm-'));
+		const findings = [];
+		try {
+			stageHelm(staged, { version: '1.2.0', build: 'v1.2.0-57', digests: Object.fromEntries(services.map((service) => [service, digestOf(service)])) });
+			const offline = (environment, sets = []) => spawnSync(helmfile, ['-f', path.join(staged, 'helm', 'helmfile.yaml.gotmpl'), '-e', environment, ...sets, 'template', '--skip-deps', '--set', 'imageCredentials.password='],
+				{ encoding: 'utf8', shell: false, env, maxBuffer: 64 * 1024 * 1024 });
+			// The chart gives every Deployment a random rollme annotation (AMAN pattern); everything else must be equal.
+			const objects = (text) => new Map(parse(text).map((doc) => [`${doc.kind}/${doc.metadata?.name}`, JSON.stringify(doc).replace(/"rollme":"[^"]*"/g, '"rollme":"*"')]));
+			const same = ['--state-values-set', 'buildNumber=v1.2.0-57', '--set', `imageRepository=${mirror}/ariva`, '--set', 'releaseVersion=1.2.0',
+				'--set', `image.repository=${mirror}/timescale/timescaledb-ha`, ...services.flatMap((service) => ['--set', `imageDigests.${service}=${digestOf(service)}`])];
+			for (const environment of ['dev', 'demo', 'localk8s', 'prd']) {
+				const fromBundle = offline(environment, ['--state-values-set', `mirror=${mirror}`]);
+				const fromRepository = template(environment, same);
+				if (fromBundle.status !== 0 || fromRepository.status !== 0) {
+					findings.push(`-e ${environment}: template failed\n${fromBundle.stderr}${fromRepository.stderr}`);
+					continue;
+				}
+				const a = objects(fromBundle.stdout);
+				const b = objects(fromRepository.stdout);
+				const differing = [...new Set([...a.keys(), ...b.keys()])].filter((key) => a.get(key) !== b.get(key));
+				if (differing.length) findings.push(`-e ${environment}: the bundle renders ${differing.join(', ')} differently`);
+				const images = parse(fromBundle.stdout).flatMap((doc) => {
+					const spec = doc?.spec?.template?.spec ?? doc?.spec?.jobTemplate?.spec?.template?.spec;
+					return spec ? [...(spec.initContainers ?? []), ...(spec.containers ?? [])].map((container) => String(container.image)) : [];
+				});
+				for (const image of images) {
+					const ariva = image.match(/^registry\.example\.local:5000\/site\/ariva\/([a-z-]+):v1\.2\.0-57@(sha256:[0-9a-f]{64})$/);
+					if (ariva ? ariva[2] !== digestOf(ariva[1]) : !/^registry\.example\.local:5000\/site\/timescale\/timescaledb-ha:[^@]+@sha256:[0-9a-f]{64}$/.test(image)) {
+						findings.push(`-e ${environment}: ${image} is not a mirror image pinned by the bundle's or the chart's digest`);
+					}
+				}
+			}
+			const unset = offline('prd');
+			if (unset.status === 0 || !unset.stderr.includes("set the state value mirror")) findings.push('-e prd without a mirror rendered');
+			if (offline('prd', ['--state-values-set', 'mirror=https://registry.example.local']).status === 0) findings.push('a mirror with a scheme rendered');
+			const site = path.join(staged, 'site.yaml');
+			fs.writeFileSync(site, `otel:\n  endpoint: "http://otel.offline-site.local:4317"\nimageRepository: other.example/ariva\nimageDigests:\n  api-main: "${digestOf('planted')}"\nbuildNumber: planted\n`);
+			const database = path.join(staged, 'database.yaml');
+			fs.writeFileSync(database, `persistence:\n  size: 77Gi\nimage:\n  tag: planted\n  digest: "${digestOf('planted')}"\n`);
+			const withSite = offline('prd', ['--state-values-set', `mirror=${mirror}`, '--state-values-set', `siteValues=${site}`, '--state-values-set', `databaseValues=${database}`]);
+			if (withSite.status !== 0) findings.push(`-e prd with site values: template failed\n${withSite.stderr}`);
+			else {
+				if (!withSite.stdout.includes('http://otel.offline-site.local:4317')) findings.push('siteValues did not reach the platform release');
+				if (!withSite.stdout.includes('77Gi')) findings.push('databaseValues did not reach the TimescaleDB release');
+				if (/other\.example|planted/.test(withSite.stdout) || withSite.stdout.includes(digestOf('planted').slice(7)) || !withSite.stdout.includes(`${mirror}/ariva/api-main:v1.2.0-57@${digestOf('api-main')}`)) {
+					findings.push('a site values file moved an image away from the bundle\'s repository, build or digest');
+				}
+				const pinnedDatabase = fs.readFileSync(path.join(databaseChart, 'values.yaml'), 'utf8').match(/^\s+tag:\s*(\S+)\r?\n\s+digest:\s*(\S+)/m);
+				if (!pinnedDatabase || !withSite.stdout.includes(`${mirror}/timescale/timescaledb-ha:${pinnedDatabase[1]}@${pinnedDatabase[2]}`)) {
+					findings.push('a site databaseValues file moved the TimescaleDB image away from the chart\'s tag and digest');
+				}
+			}
+			// A dry run's bundle pins no digest: its Helmfile must refuse to render, whatever the site's files say.
+			const dry = fs.mkdtempSync(path.join(os.tmpdir(), 'ariva-offline-dry-'));
+			try {
+				stageHelm(dry, { version: '0.0.0-ci.1', build: 'ci-1', digests: {} });
+				const unpinned = spawnSync(helmfile, ['-f', path.join(dry, 'helm', 'helmfile.yaml.gotmpl'), '-e', 'prd', '--state-values-set', `mirror=${mirror}`,
+					'--state-values-set', `siteValues=${site}`, 'template', '--skip-deps', '--set', 'imageCredentials.password='], { encoding: 'utf8', shell: false, env, maxBuffer: 64 * 1024 * 1024 });
+				if (unpinned.status === 0 || !unpinned.stderr.includes('a dry run bundle cannot be installed')) findings.push('a bundle without image digests (a dry run) rendered');
+			} finally {
+				fs.rmSync(dry, { recursive: true, force: true });
+			}
+		} finally {
+			fs.rmSync(staged, { recursive: true, force: true });
+		}
+		if (findings.length) {
+			failed = true;
+			console.error(`FAIL offline bundle Helmfile:\n  ${findings.join('\n  ')}`);
+		} else {
+			console.log('PASS offline bundle Helmfile: the same objects as helmfile-k8s in every environment, every image from the mirror by digest, no render without a mirror or with a dry run\'s unpinned images, site values reach their release without moving an image');
+		}
 	}
 }
 

@@ -305,7 +305,7 @@ Modules are licensed with a signed, offline-verifiable licence file per deployme
 | Small site | Single node, single Kafka broker, single database | Core plus one module | Same rules; reduced availability, accepted in writing |
 
 - Kubernetes on-prem, packaged as Helm charts under Helmfile in `Platform/Cloud/Ariva.K8s` (AMAN toolchain). The same charts run on a private operator's cloud subscription.
-- Air-gapped installs: offline bundle of images and charts, local registry mirror, no telemetry unless the client opts in.
+- Air-gapped installs: offline bundle of images and charts, local registry mirror, no telemetry unless the client opts in. The basic bundle is built (ARV-127): the images by digest with their signatures and SBOMs, the packaged charts, a Helmfile that takes every image from the site's mirror, and the web build, under a keyless signed checksum manifest that `scripts/offline/verify.mjs` checks on a connected machine before the carry (wiki 04 section 12). Offline licensing and signature checks inside the site come later.
 - Fleet operations: health telemetry only (device status, lag, error rates), pulled by Dalil's support tooling where allowed; never operational data.
 - Hosted SaaS by Dalil is out of scope. If added later, re-check the TimescaleDB licence position and data residency per country.
 - PostgreSQL HA: streaming replication under an operator or Patroni, with an image that includes the TimescaleDB extension; the exact operator should match what AMAN runs (To confirm).

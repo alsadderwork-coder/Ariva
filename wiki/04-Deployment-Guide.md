@@ -247,7 +247,7 @@ Main Helm values (`Charts/platform/values*.yaml`):
 | `imageCredentials.registry`, `username`, `password` | Rendered into `dalilacr-secret` when a password is given |
 | `ingresses` | List of `{ name, comment, subdomain, serviceName, annotations }` |
 
-The web image reads the API base URLs at build time from `VITE_ARIVA_*` variables (`src/lib/core/Endpoints.ts`), falling back to localhost. The current image build passes none, so each site needs a web build with its URLs, or runtime configuration (To confirm; Target procedure, implemented in Phase 0 epic Minimal dashboard).
+One web build serves every site (TC-52, Proposed): the browser calls only Ariva.Api.Main, on the web app's own origin (ADR-0026), so no site address is built in, and the image and the offline bundle (section 12) carry that one build. `src/lib/core/Endpoints.ts` still reads `VITE_ARIVA_*` variables at build time for the other hosts, but no screen calls them. Should a site ever need Ariva.Api.Main on a host of its own, runtime configuration (a file the web reads at start, written by the chart) is the Proposed route rather than a build per site.
 
 ## 6. Install
 
@@ -819,11 +819,93 @@ When the whole site is down nothing is live; sensors keep on-board counts, which
 
 ## 12. Air-gapped sites
 
-Target procedure, implemented in v1 epic Offline bundle, licensing and HA (basic support in the MVP).
+The basic offline install is implemented (ARV-127): Dalil builds a signed bundle per release, the bundle is verified on a connected machine, carried in, mirrored into the site's registry and installed with its own Helmfile. Licensing, signature verification inside the site and a tools bundle remain Target procedures (section 12.5). Trust in a bundle rests on the same repository settings as the image signatures: only release maintainers may create, move or delete `v*` tags, and `main` is protected (TC-54, To confirm; section 6.5).
 
-1. Dalil produces an offline bundle per release: the seven images, the chart, the Helmfile and any dependency charts.
-2. The images are pushed to the site's registry mirror (for example Harbor, which AMAN's Helmfile can install), and `imageRepository` points at it.
-3. The licence file validates offline.
+### 12.1 What the bundle holds
+
+| Path | Content |
+|---|---|
+| `manifest.json` | Release version, build (image tag), commit, the images (source, tag, digest, mirror path), where the web build came from, and every file with its size and SHA-256 |
+| `manifest.json.sigstore.json` | The manifest's keyless signature (cosign 3 Sigstore bundle). Its certificate names this repository's `offline-bundle` workflow, the ref it ran on (`v<version>`, or `main`), the commit and the trigger |
+| `SHA256SUMS` | The same hashes, in the format `sha256sum -c` reads |
+| `helm/helmfile.yaml.gotmpl` | `Platform/Cloud/Ariva.K8s/Helm/helmfile-offline.yaml.gotmpl`: the releases and environments of `helmfile-k8s.yaml.gotmpl`, from the packaged charts (`chart-security.mjs` requires both to render the same objects) |
+| `helm/charts/ariva-platform.tgz`, `helm/charts/ariva-timescaledb.tgz` | The two charts, packaged |
+| `helm/values/` | The platform chart's environment values files and the database chart's values (`timescaledb.yaml`); `images.yaml` (release version, build number, the seven Ariva digests) and `timescaledb-image.yaml` (the chart's TimescaleDB tag and digest), which the Helmfile lists after a site's own files |
+| `images/<name>/` | Each image as an OCI image layout under its tag, copied by digest: the seven Ariva images with their signature and SBOM attestation (OCI referrers), and TimescaleDB (`timescale/timescaledb-ha`, both platforms of the digest its chart pins) |
+| `sboms/<name>.cdx.json` | Each Ariva image's CycloneDX SBOM, taken from its verified attestation |
+| `web/` | The web build (section 5: one build for every site), copied out of the signed web image, where its Dockerfile puts it |
+
+The image layers make up most of the size, several gigabytes in all (To confirm with the first real bundle). Not in the bundle: Kafka and Redis (Ariva ships no release of its own, section 4), the site's secrets (section 6.2), and the tools (Helm 3.19, Helmfile 1.1.7, kubectl, ORAS 1.3), which the site carries in with their published checksums.
+
+### 12.2 Produce the bundle (Dalil)
+
+1. After the `images` workflow has pushed and signed the build (a version tag, or run by hand from `main`), run the `offline-bundle` workflow by hand from the same tag, or from `main` at the same commit. Give it the build's image tag (for example `v1.2.0-57`) and the release version (`1.2.0`). From a tag, the version must be the tag without its `v`.
+2. The workflow runs two jobs. The bundle job can only read: it takes each Ariva image only after cosign verifies that the `images` workflow signed it at this same commit, and copies it by that digest with its referrers. It then adds TimescaleDB by the digest its chart pins, packages the charts, copies the web build out of the signed web image (`docker create` and `docker cp`, nothing runs and no npm code is involved), and writes the manifest. The signing job is the only one that can sign as the workflow; it runs no build and no package manager (`scripts/base-images.mjs --check` refuses one in any job that can sign). It signs the manifest keyless, verifies the bundle as in section 12.3, and keeps it as the `ariva-offline-<version>` artifact for 90 days (the most GitHub keeps one for a public repository). Archive it in Dalil's release store. The run summary gives every image digest and the two SHA-256 values to record (section 12.3); put the manifest's in the release notes (wiki 18).
+3. Nothing is pushed and no cluster is touched. Every pull request runs a dry run of the same script (`ci.yml`, web job): the charts, Helmfile, values and the checkout's web build with their manifest, verified, and a copy with one altered chart archive must fail. The dry run's manifest is the `offline-bundle-dry-run` artifact. A dry run carries no images and is not signed; its `images.yaml` pins no digest, so the bundle's Helmfile refuses to render it.
+
+### 12.3 Verify before carrying it in (connected machine)
+
+On a machine with Node 22, cosign 3 and read access to the registry, from a checkout of this repository at the release tag (never a verifier that travelled with the bundle), run from outside the bundle folder:
+
+```bash
+docker login ghcr.io       # a token that can read packages
+node scripts/offline/verify.mjs /path/to/ariva-offline-1.2.0 --version 1.2.0
+# a bundle built from main instead of the tag v1.2.0: add --from-main
+```
+
+The script checks the steps below in order. Nothing in the manifest is used unless step 3's first signature check holds, and the registry (step 6) is asked only when steps 1 to 5 found nothing; otherwise it reports every finding.
+
+1. It runs from outside the bundle folder, and starts cosign in a private empty folder, so a program in the bundle cannot run in its place.
+2. The folder holds regular files and folders only (no links, devices or pipes).
+3. `manifest.json` is signed by this repository's `offline-bundle` workflow, run by hand on the tag `v<version>` (or on `main` with `--from-main`). The manifest must then name that version, and a second check requires the signing run's commit to be the one the manifest names.
+4. Every file has its size and SHA-256, no file is missing or extra, `SHA256SUMS` agrees, and `images.yaml` and `timescaledb-image.yaml` pin exactly the manifest's version, build and digests.
+5. Each image layout names the image's digest under its tag (once), holds every blob the image needs, each hashing to its name, and for an Ariva image carries its signature and SBOM attestation.
+6. In the registry, each Ariva digest is signed by the `images` workflow at the manifest's commit, its CycloneDX attestation verifies, and the bundle's SBOM is the attested one.
+
+Any failure prints `FAIL` lines and exits 1: do not carry that bundle in. Keyless verification needs the Sigstore public services (wiki 05, row 25). On success it prints the SHA-256 of `manifest.json` and of `SHA256SUMS`. Compare the first with the release notes, and record both with the transfer: they are the only reference the site has after the carry.
+
+### 12.4 Install from the bundle (site)
+
+1. Recheck the bundle after the carry, in its folder. `SHA256SUMS` and `manifest.json` travel with the files, so they prove nothing until their own hashes match the ones recorded in section 12.3. Then no link or special file may be present, the folder must hold exactly the files `SHA256SUMS` lists plus three (itself, the manifest and its signature), and every file must match:
+
+```bash
+sha256sum SHA256SUMS manifest.json     # must print the two values recorded at verification
+find . ! -type f ! -type d | head -n 1 # must print nothing
+echo $(( $(find . -type f | wc -l) - $(wc -l < SHA256SUMS) ))   # must print 3
+sha256sum -c --quiet SHA256SUMS
+```
+
+2. Copy the images into the site's registry mirror (for example Harbor) with ORAS 1.3, under `<mirror>/ariva/<name>` and `<mirror>/timescale/timescaledb-ha`. `-r` carries each image's signature and SBOM attestation with it.
+
+```bash
+MIRROR=harbor.site.local/ariva-mirror      # host[:port][/path], lower case
+BUILD=$(jq -r .build manifest.json)
+for name in api-main api-ingest api-stream api-cronz api-integration simulation web; do
+  oras copy -r --from-oci-layout "images/$name:$BUILD" "$MIRROR/ariva/$name:$BUILD"
+done
+TAG=$(jq -r '.images[] | select(.name == "timescaledb") | .tag' manifest.json)
+oras copy -r --from-oci-layout "images/timescaledb:$TAG" "$MIRROR/timescale/timescaledb-ha:$TAG"
+```
+
+3. Create the secrets of section 6.2, and the pull secret for the mirror if it needs one (`imageCredentials` in the site values file, or `dalilacr-secret` created out of band).
+4. Install with the bundle's Helmfile. It takes every image from the mirror, each Ariva image pinned by the bundle's digest and TimescaleDB by its chart's tag and digest. It refuses to render without `mirror`, or when `images.yaml` does not pin all seven Ariva digests (a dry run). The site values file is the one of section 6 (domain, ingresses, `clusterName`, `otel.endpoint`, image credentials), and `databaseValues` takes the database release's overrides (storage, resources). Neither can move an image: the mirror, `images.yaml` and `timescaledb-image.yaml` win (`chart-security.mjs` tests it).
+
+```bash
+cd helm
+helmfile -f helmfile.yaml.gotmpl -e prd --state-values-set mirror="$MIRROR" \
+  --state-values-set siteValues=/abs/path/values-<site>.yaml \
+  --state-values-set databaseValues=/abs/path/values-<site>-database.yaml apply
+```
+
+5. Run the smoke tests (section 8).
+
+The procedure was rehearsed twice on 2026-10-16 against a local registry, with real ORAS 1.3, cosign 3 and docker and a rehearsal key in place of the keyless identity. The rehearsals covered the bundle, the web build copied out of a real web image, verification, a tampered layer refused, the checks of step 1, the mirror copy, signatures verified in the mirror, and the Helmfile render. A key carries no certificate, so the identity, ref, commit and trigger checks are proven only by the self-tests' stand-in. The first bundle of a real release proves the keyless path (To confirm).
+
+### 12.5 Still Target procedures
+
+1. The licence file validates offline (v1 epic Offline bundle, licensing and HA).
+2. Signature verification inside the site: the mirror holds every Ariva image's signature and SBOM attestation, so an admission policy (section 6.5) could verify there, given the Sigstore trust root offline (`cosign verify --trusted-root`). Not set up or tested.
+3. A tools bundle (Helm, Helmfile, kubectl, ORAS) and Kafka and Redis releases for sites that have neither.
 4. No telemetry leaves the site unless the customer opts in: TimescaleDB telemetry off, OpenTelemetry only to the local collector, Dalil support tooling only where the customer allows, health data only.
 
 ## 13. Local development

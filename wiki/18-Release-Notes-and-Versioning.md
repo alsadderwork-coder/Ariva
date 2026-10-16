@@ -9,6 +9,7 @@ How Ariva versions the product, its charts, images, contracts, APIs, topics and 
 | Product | Semantic versioning `MAJOR.MINOR.PATCH`; 0.x before the first production release | Chart `appVersion`, release notes, a repository tag `v<version>` | Proposed (chart `appVersion` is `0.1.0` today) |
 | Helm chart `ariva-platform` | Semantic versioning; bump on every chart change | `Charts/platform/Chart.yaml` `version` (0.1.0) | Decided (Helm convention noted in the chart) |
 | Container images | GitHub Actions: `<tag or branch>-<run number>` pushed to `ghcr.io/alsadderwork-coder/ariva/<service>` on `v*` tags, or by hand from `main` (`images.yml`), each signed with cosign keyless and carrying a signed CycloneDX SBOM; the release notes give each image's digest (ARV-073). Azure DevOps (customer CD to Dalil Container Registry): `$(Build.SourceBranchName)-yyyyMMddrr` | Build workflows and pipelines | Decided |
+| Offline install bundle | `ariva-offline-<version>`: the images of one build by digest with their signatures and SBOMs, the packaged charts, the Helmfile and the web build, with a signed checksum manifest naming the version, build and commit (ARV-127) | `offline-bundle` workflow, run by hand from the release tag (or `main` at the images' commit) with the build's image tag and the release version; verified on a connected machine with `scripts/offline/verify.mjs --version <version>`; kept as a workflow artifact for 90 days and archived by Dalil (wiki 04, section 12) | Decided |
 | Release identity in a cluster | `releaseVersion`, written to `RELEASE_VERSION`, labels and telemetry | Release pipeline (`--set releaseVersion=$(Build.BuildNumber)`) | Decided |
 | AMAN feed contracts | `Aman/V1` namespace; `ContractVersion.Current` (`1.0`) | `Ariva.Business.Contracts` | Decided |
 | Integration API | URL path version `/api/v1` | Integration host | Decided path; change rules Proposed |
@@ -23,7 +24,7 @@ Proposed product rules:
 - MINOR: new features, new endpoints, new topics, new optional fields, new sensor families.
 - PATCH: fixes and security updates with no configuration change.
 - 1.0.0 marks the first production release (the pilot go-live). Until then, 0.x releases may change anything, with notes.
-- Production deployments pin images by build number; the release notes list the build number and the digest of every image in the release (ARV-073: the `images` workflow's `image-digests` table), and deployments verify the signature of that digest (wiki 04, section 6.5).
+- Production deployments pin images by build number; the release notes list the build number and the digest of every image in the release (ARV-073: the `images` workflow's `image-digests` table), and deployments verify the signature of that digest (wiki 04, section 6.5). For a release that goes to an air-gapped site, the notes also give the offline bundle's manifest SHA-256 from the `offline-bundle` run summary, which the site compares at verification (wiki 04, section 12.3).
 
 ## 2. AMAN contract versioning (the V1 additive rule)
 
