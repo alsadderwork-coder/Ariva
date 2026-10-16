@@ -161,7 +161,8 @@ public sealed class AlertEmailTests(PostgresFixture fixture) : IAsyncDisposable
 
         (await TickAsync(first.AddMinutes(1).AddSeconds(5))).Raised.Should().Be(1);
         var page = await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcAlerts>().SearchAsync(new AlertCriteria { SiteCode = "DMO", ZoneName = zone, Open = true }, Ct));
-        return page.Data.Data.Single();
+        // The alert of this rule: another test's open alert on the same zone (planted, or of another rule) is not this one.
+        return page.Data.Data.Single(a => a.RuleId == rule.Data.Id);
     }
 
     private sealed record Row(string Kind, string Recipient, string Status, int Attempts, string Reason, string Subject, DateTime NextAttemptUtc);
