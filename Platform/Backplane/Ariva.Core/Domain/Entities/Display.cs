@@ -9,7 +9,8 @@ namespace Ariva.Core.Domain.Entities;
 /// nowcast of one queue zone as a band of minutes ("10 to 15 min") in the site's languages. The band changes only when
 /// the nowcast leaves it by the hysteresis; a degraded nowcast shows a band twice as wide; a nowcast older than the stale
 /// threshold shows the display's neutral message instead of a number. The player authenticates with the display's own
-/// credential (stored as a prefix and a SHA-256, like a device's), never as a user.
+/// credential (stored as a prefix and a SHA-256, like a device's), never as a user. ARV-140: a display can split its screen;
+/// the queue region then comes first in the reading order and keeps its share, and the second region shows instructions.
 /// </summary>
 public class Display : BaseSoftDeletableEntity<Display>, ISiteBound
 {
@@ -64,6 +65,15 @@ public class Display : BaseSoftDeletableEntity<Display>, ISiteBound
 
     public virtual bool Enabled { get; protected set; }
 
+    /// <summary>Full (the queue view fills the screen) or Split (ARV-140).</summary>
+    public virtual DisplayLayout Layout { get; protected set; }
+
+    /// <summary>The queue region's share of the screen in a split layout, 50 to 75 percent (kept, unused, in a full one).</summary>
+    public virtual int QueueShare { get; protected set; }
+
+    /// <summary>What the second region of a split layout shows.</summary>
+    public virtual DisplaySecondRegion SecondRegion { get; protected set; }
+
     /// <summary>The first characters of the player's credential, to find the display and to show administrators.</summary>
     public virtual string CredentialPrefix { get; protected set; }
 
@@ -93,6 +103,9 @@ public class Display : BaseSoftDeletableEntity<Display>, ISiteBound
         Entries = EntriesJson(values.Entries);
         FallbackMessages = FallbackJson(values.Fallback);
         Enabled = values.Enabled;
+        Layout = values.Layout;
+        QueueShare = values.QueueShare;
+        SecondRegion = values.SecondRegion;
     }
 
     /// <summary>A new credential replaces the old one at once.</summary>
@@ -107,14 +120,15 @@ public class Display : BaseSoftDeletableEntity<Display>, ISiteBound
     }
 
     public virtual DisplayValues Values() =>
-        new(Name, Location, Orientation, LanguageList, BandMinutes, HysteresisMinutes, StaleSeconds, EntryList, FallbackMap, Enabled);
+        new(Name, Location, Orientation, LanguageList, BandMinutes, HysteresisMinutes, StaleSeconds, EntryList, FallbackMap, Enabled, Layout, QueueShare,
+            SecondRegion);
 
     /// <summary>What the audit trail keeps of a display: its values, never its credential.</summary>
     public virtual string AuditSummary() =>
         JsonSerializer.Serialize(new
         {
             Code, SiteCode, Name, Location, Orientation = Orientation.ToString(), Languages, BandMinutes, HysteresisMinutes, StaleSeconds, Enabled,
-            Zones = EntryList.Select(e => e.Zone).ToList(), CredentialPrefix
+            Layout = Layout.ToString(), QueueShare, SecondRegion = SecondRegion.ToString(), Zones = EntryList.Select(e => e.Zone).ToList(), CredentialPrefix
         }, Json);
 
     /// <summary>
@@ -136,7 +150,7 @@ public sealed record DisplayEntry(string Zone, IReadOnlyDictionary<string, strin
         new(Zone.Trim(), Labels.ToDictionary(p => p.Key, p => p.Value.Trim(), StringComparer.Ordinal));
 }
 
-/// <summary>A display's settings as checked values (ARV-058).</summary>
+/// <summary>A display's settings as checked values (ARV-058; the layout, ARV-140, defaults to the full queue view).</summary>
 public sealed record DisplayValues(
     string Name,
     string Location,
@@ -147,12 +161,27 @@ public sealed record DisplayValues(
     int StaleSeconds,
     IReadOnlyList<DisplayEntry> Entries,
     IReadOnlyDictionary<string, string> Fallback,
-    bool Enabled)
+    bool Enabled,
+    DisplayLayout Layout = DisplayLayout.Full,
+    int QueueShare = DisplayValues.DefaultQueueShare,
+    DisplaySecondRegion SecondRegion = DisplaySecondRegion.Instructions)
 {
     public const int MinBand = 1;
     public const int MaxBand = 30;
     public const int MinStale = 60;
     public const int MaxStale = 1800;
+
+    /// <summary>The queue region's share of a split screen, in percent (ARV-140): never under half, so it stays the main view.</summary>
+    public const int MinQueueShare = 50;
+
+    public const int MaxQueueShare = 75;
+    public const int DefaultQueueShare = 60;
+
+    /// <summary>
+    /// Until the site's advertising policy exists (ARV-145, off by default), no display may show advertising: every path that
+    /// sets a display (the API, a site configuration import) refuses it here.
+    /// </summary>
+    public const string AdvertisingOff = "Advertising is off for every site until its advertising policy allows it; the second region shows instructions.";
 
     private static bool Clean(string text, int max) =>
         !string.IsNullOrWhiteSpace(text) && text.Trim().Length <= max && DisplayText.IsClean(text.Trim());
@@ -166,6 +195,14 @@ public sealed record DisplayValues(
             problems.Add($"A location is at most {Display.MaxNameLength} characters without control or invisible characters.");
         if (!Enum.IsDefined(Orientation))
             problems.Add("Unknown orientation.");
+        if (!Enum.IsDefined(Layout))
+            problems.Add("A layout is Full or Split.");
+        if (QueueShare is < MinQueueShare or > MaxQueueShare)
+            problems.Add($"The queue region takes {MinQueueShare} to {MaxQueueShare} percent of the screen.");
+        if (!Enum.IsDefined(SecondRegion))
+            problems.Add("The second region shows Instructions or Advertising.");
+        else if (SecondRegion == DisplaySecondRegion.Advertising)
+            problems.Add(AdvertisingOff);
         var languages = Languages ?? [];
         if (languages.Count is 0 or > 4 || languages.Distinct(StringComparer.Ordinal).Count() != languages.Count ||
             languages.Any(l => !Enumerable.Contains(Display.SupportedLanguages, l, StringComparer.Ordinal)))

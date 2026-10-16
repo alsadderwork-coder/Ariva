@@ -513,6 +513,25 @@ public sealed class SiteConfigurationTransferTests
     }
 
     [Fact]
+    public void Plan_Should_KeepADisplaysLayoutAndImportAnOlderBundleAsTheFullView_When_TheRowCarriesOrLacksOne()
+    {
+        var content = RoundTrip(SiteConfigurationTransfer.Export(Source()).Data);
+        var row = content.Displays[0];
+        row.Should().Match<DisplayPartRow>(r => r.Layout == "Full" && r.QueueShare == DisplayValues.DefaultQueueShare && r.SecondRegion == "Instructions",
+            "an export carries the layout");
+        Display Imported(DisplayPartRow display) =>
+            SiteConfigurationTransfer.Plan("DST-COPY", content with { Displays = [display] }, Target(), "ZZZ").Data.Displays.Single();
+
+        Imported(row with { Layout = "Split", QueueShare = 70 }).Should().Match<Display>(d =>
+            d.Layout == DisplayLayout.Split && d.QueueShare == 70 && d.SecondRegion == DisplaySecondRegion.Instructions);
+        Imported(row with { Layout = null, QueueShare = null, SecondRegion = null }).Should().Match<Display>(d =>
+            d.Layout == DisplayLayout.Full && d.QueueShare == DisplayValues.DefaultQueueShare && d.SecondRegion == DisplaySecondRegion.Instructions,
+            "a bundle exported before ARV-140 has no layout and keeps the full queue view");
+        SiteConfigurationTransfer.Plan("DST", content with { Displays = [row with { Layout = "Split", SecondRegion = "Advertising" }] }, Target(), "ZZZ")
+            .ErrorMessages.Should().Equal([SiteConfigurationErrors.InvalidDisplays], "no site allows advertising before its policy exists (ARV-145)");
+    }
+
+    [Fact]
     public void Plan_Should_RefuseRulesAndDisplays_When_TheirZonesAreNotInTheImportedDraft()
     {
         var content = RoundTrip(SiteConfigurationTransfer.Export(Source()).Data);

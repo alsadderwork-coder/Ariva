@@ -52,6 +52,7 @@ internal sealed class SvcDisplayBoard(IUnitOfWork unitOfWork, ILiveSnapshotStore
 
         var illustrative = await unitOfWork.StorageProvider.Query<Site>().AnyAsync(s => s.Code == display.SiteCode && s.IsIllustrative, ct);
         return new Result<DisplayBoardViewModel>(new DisplayBoardViewModel(display.Code, display.Name, display.Orientation.ToString(), display.LanguageList,
-            display.BandMinutes, display.HysteresisMinutes, display.StaleSeconds, display.FallbackMap, entries, now, illustrative));
+            display.BandMinutes, display.HysteresisMinutes, display.StaleSeconds, display.FallbackMap, entries, now, illustrative, display.Layout.ToString(),
+            display.QueueShare, display.SecondRegion.ToString()));
     }
 }

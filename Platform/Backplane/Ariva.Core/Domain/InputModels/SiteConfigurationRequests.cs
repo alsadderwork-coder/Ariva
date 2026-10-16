@@ -127,7 +127,10 @@ public sealed record AlertRulePartRow(
     bool Enabled,
     int? LeadMinutes);
 
-/// <summary>A display's settings (ARV-122b); no pairing secret, prefix, hash or pairing state: an imported display is unpaired.</summary>
+/// <summary>
+/// A display's settings (ARV-122b); no pairing secret, prefix, hash or pairing state: an imported display is unpaired. The
+/// layout (ARV-140) is optional, so a bundle exported before it imports with the full queue view.
+/// </summary>
 public sealed record DisplayPartRow(
     string Code,
     string Name,
@@ -139,7 +142,10 @@ public sealed record DisplayPartRow(
     int StaleSeconds,
     IReadOnlyList<DisplayEntryPartRow> Entries,
     IReadOnlyDictionary<string, string> Fallback,
-    bool Enabled);
+    bool Enabled,
+    string Layout = null,
+    int? QueueShare = null,
+    string SecondRegion = null);
 
 /// <summary>One line of a display: a queue zone by name and its label per language.</summary>
 public sealed record DisplayEntryPartRow(string Zone, IReadOnlyDictionary<string, string> Labels);

@@ -149,7 +149,11 @@ public sealed class SiteConfigurationRulesTests
         { "thirteen entries", SiteConfigurationErrors.InvalidDisplays },
         { "a label of 81 characters", SiteConfigurationErrors.InvalidDisplays },
         { "a fallback of 201 characters", SiteConfigurationErrors.InvalidDisplays },
-        { "no fallback", SiteConfigurationErrors.InvalidDisplays }
+        { "no fallback", SiteConfigurationErrors.InvalidDisplays },
+        { "a layout in lower case", SiteConfigurationErrors.InvalidDisplays },
+        { "a queue share of 49 percent", SiteConfigurationErrors.InvalidDisplays },
+        { "a queue share of 76 percent", SiteConfigurationErrors.InvalidDisplays },
+        { "an unknown second region", SiteConfigurationErrors.InvalidDisplays }
     };
 
     [Theory]
@@ -242,6 +246,10 @@ public sealed class SiteConfigurationRulesTests
             "a band of 31 minutes" => Content(displays: [Board() with { BandMinutes = 31 }]),
             "a hysteresis that is not finite" => Content(displays: [Board() with { HysteresisMinutes = double.NaN }]),
             "stale after 59 seconds" => Content(displays: [Board() with { StaleSeconds = 59 }]),
+            "a layout in lower case" => Content(displays: [Board() with { Layout = "split" }]),
+            "a queue share of 49 percent" => Content(displays: [Board() with { Layout = "Split", QueueShare = 49 }]),
+            "a queue share of 76 percent" => Content(displays: [Board() with { Layout = "Split", QueueShare = 76 }]),
+            "an unknown second region" => Content(displays: [Board() with { Layout = "Split", SecondRegion = "Ads" }]),
             "thirteen entries" => Content(displays: [Board() with { Entries = [.. Enumerable.Range(1, 13).Select(n => Board().Entries[0] with { Zone = $"Z{n}" })] }]),
             "a label of 81 characters" => Content(displays: [Board() with { Entries = [new DisplayEntryPartRow("Snake A", new Dictionary<string, string> { ["en"] = new string('l', 81) })] }]),
             "a fallback of 201 characters" => Content(displays: [Board() with { Fallback = new Dictionary<string, string> { ["en"] = new string('f', 201) } }]),

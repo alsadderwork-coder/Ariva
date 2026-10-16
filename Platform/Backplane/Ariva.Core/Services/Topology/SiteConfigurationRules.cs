@@ -183,7 +183,7 @@ public static class SiteConfigurationRules
 
     /// <summary>
     /// Displays as the display request takes them (lengths, ranges, at most 4 languages and 12 entries, orientation by exact
-    /// name), codes once each. The entity's own checks, the zone check against the imported draft and the deployment-wide
+    /// name; a layout, queue share and second region, ARV-140, absent or by exact name and in range), codes once each. The entity's own checks, the zone check against the imported draft and the deployment-wide
     /// code check follow.
     /// </summary>
     public static bool AreDisplays(IReadOnlyList<DisplayPartRow> displays) =>
@@ -194,7 +194,10 @@ public static class SiteConfigurationRules
                            d.BandMinutes is < DisplayValues.MinBand or > DisplayValues.MaxBand || !Within(d.HysteresisMinutes, 0, 30) ||
                            d.StaleSeconds is < DisplayValues.MinStale or > DisplayValues.MaxStale ||
                            d.Entries is not { Count: >= 1 and <= Display.MaxEntries } || d.Entries.Any(e => e is null || !IsName(e.Zone) || !AreTexts(e.Labels, Display.MaxLabelLength)) ||
-                           !AreTexts(d.Fallback, Display.MaxMessageLength)) &&
+                           !AreTexts(d.Fallback, Display.MaxMessageLength) ||
+                           !(d.Layout is null || IsKind<DisplayLayout>(d.Layout)) ||
+                           d.QueueShare is < DisplayValues.MinQueueShare or > DisplayValues.MaxQueueShare ||
+                           !(d.SecondRegion is null || IsKind<DisplaySecondRegion>(d.SecondRegion))) &&
         Unique(displays.Select(d => d.Code));
 
     private static bool AreTexts(IReadOnlyDictionary<string, string> texts, int max) =>

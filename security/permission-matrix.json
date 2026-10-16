@@ -3534,7 +3534,10 @@
         "fallback": {
           "en": "Please follow the signs"
         },
-        "enabled": true
+        "enabled": true,
+        "layout": "Split",
+        "queueShare": 60,
+        "secondRegion": "Instructions"
       },
       "expected": {
         "anonymous": 401,

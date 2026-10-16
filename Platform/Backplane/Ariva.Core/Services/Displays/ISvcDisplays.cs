@@ -8,7 +8,8 @@ public sealed record DisplayEntryRequest([Required, MaxLength(200)] string Zone,
 
 /// <summary>
 /// A passenger display as a request (ARV-058). The site and code are given on creation and never change; the credential
-/// is the server's, returned once on creation and on a new credential.
+/// is the server's, returned once on creation and on a new credential. The layout (ARV-140) is optional: a request without
+/// it keeps the full queue view, with the default share and instructions in the second region.
 /// </summary>
 public sealed record DisplayRequest(
     [MaxLength(17)] string SiteCode,
@@ -22,7 +23,10 @@ public sealed record DisplayRequest(
     [Range(60, 1800)] int StaleSeconds,
     [Required, MaxLength(12)] IReadOnlyList<DisplayEntryRequest> Entries,
     [Required] IReadOnlyDictionary<string, string> Fallback,
-    bool Enabled = true);
+    bool Enabled = true,
+    [MaxLength(16)] string Layout = "Full",
+    [Range(50, 75)] int QueueShare = 60,
+    [MaxLength(16)] string SecondRegion = "Instructions");
 
 public sealed record DisplayEntryViewModel(string Zone, IReadOnlyDictionary<string, string> Labels);
 
@@ -41,6 +45,9 @@ public sealed record DisplayViewModel(
     IReadOnlyList<DisplayEntryViewModel> Entries,
     IReadOnlyDictionary<string, string> Fallback,
     bool Enabled,
+    string Layout,
+    int QueueShare,
+    string SecondRegion,
     string CredentialPrefix,
     DateTime? CredentialIssuedOn,
     DateTime? CreatedOn,
@@ -89,6 +96,7 @@ public sealed record DisplayBoardEntryViewModel(
 /// <summary>
 /// What a player shows (ARV-058): the display's settings and its entries' latest nowcasts. <paramref name="Illustrative"/>:
 /// the display's site is an illustrative demo site (ARV-139a), so the player shows the "Illustrative, not surveyed" banner.
+/// The layout (ARV-140) comes with every answer, so a change reaches a running player at its next poll, without a restart.
 /// </summary>
 public sealed record DisplayBoardViewModel(
     string Code,
@@ -101,7 +109,10 @@ public sealed record DisplayBoardViewModel(
     IReadOnlyDictionary<string, string> Fallback,
     IReadOnlyList<DisplayBoardEntryViewModel> Entries,
     DateTime ServerUtc,
-    bool Illustrative = false);
+    bool Illustrative = false,
+    string Layout = "Full",
+    int QueueShare = 60,
+    string SecondRegion = "Instructions");
 
 /// <summary>A display player that presented its display's code and credential (ARV-058).</summary>
 public sealed record DisplayPlayer(Guid Id, string Code, string SiteCode, string CredentialPrefix);

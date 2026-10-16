@@ -105,16 +105,18 @@ internal sealed class SvcDisplays(IUnitOfWork unitOfWork, ICurrentUser currentUs
     private async Task<(DisplayValues Values, IReadOnlyList<string> Problems)> CheckAsync(string siteCode, DisplayRequest request, CancellationToken ct)
     {
         var problems = new List<string>();
-        if (!Enum.TryParse<DisplayOrientation>(request.Orientation, ignoreCase: false, out var orientation) ||
-            !string.Equals(orientation.ToString(), request.Orientation, StringComparison.Ordinal))
-        {
+        if (!Exactly<DisplayOrientation>(request.Orientation, out var orientation))
             problems.Add("Orientation is Landscape or Portrait.");
+        if (!Exactly<DisplayLayout>(request.Layout ?? nameof(DisplayLayout.Full), out var layout))
+            problems.Add("A layout is Full or Split.");
+        if (!Exactly<DisplaySecondRegion>(request.SecondRegion ?? nameof(DisplaySecondRegion.Instructions), out var secondRegion))
+            problems.Add("The second region shows Instructions or Advertising.");
+        if (problems.Count > 0)
             return (null, problems);
-        }
 
         var values = new DisplayValues(request.Name, request.Location, orientation, request.Languages ?? [], request.BandMinutes, request.HysteresisMinutes,
             request.StaleSeconds, (request.Entries ?? []).Select(e => e is null ? null : new DisplayEntry(e.Zone, e.Labels)).ToList(),
-            request.Fallback, request.Enabled);
+            request.Fallback, request.Enabled, layout, request.QueueShare, secondRegion);
         problems.AddRange(values.Problems());
         if (problems.Count > 0)
             return (values, problems);
@@ -129,6 +131,10 @@ internal sealed class SvcDisplays(IUnitOfWork unitOfWork, ICurrentUser currentUs
         return (values, problems);
     }
 
+    /// <summary>An enum value by its exact name, as stored (never a number or another casing).</summary>
+    private static bool Exactly<TEnum>(string text, out TEnum value) where TEnum : struct, Enum =>
+        Enum.TryParse(text, ignoreCase: false, out value) && string.Equals(value.ToString(), text, StringComparison.Ordinal) && Enum.IsDefined(value);
+
     private async Task<Display> VisibleAsync(Guid id, CancellationToken ct)
     {
         var display = id == Guid.Empty ? null : await GetAsync<Display>(id, ct);
@@ -137,6 +143,6 @@ internal sealed class SvcDisplays(IUnitOfWork unitOfWork, ICurrentUser currentUs
 
     internal static DisplayViewModel View(Display d) =>
         new(d.Id.GetValueOrDefault(), d.SiteCode, d.Code, d.Name, d.Location, d.Orientation.ToString(), d.LanguageList, d.BandMinutes, d.HysteresisMinutes,
-            d.StaleSeconds, d.EntryList.Select(e => new DisplayEntryViewModel(e.Zone, e.Labels)).ToList(), d.FallbackMap, d.Enabled, d.CredentialPrefix,
-            d.CredentialIssuedOn, d.CreatedOn, d.ModifiedOn);
+            d.StaleSeconds, d.EntryList.Select(e => new DisplayEntryViewModel(e.Zone, e.Labels)).ToList(), d.FallbackMap, d.Enabled, d.Layout.ToString(),
+            d.QueueShare, d.SecondRegion.ToString(), d.CredentialPrefix, d.CredentialIssuedOn, d.CreatedOn, d.ModifiedOn);
 }

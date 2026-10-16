@@ -222,7 +222,14 @@
 											hysteresis: display.hysteresisMinutes,
 											stale: display.staleSeconds
 										}
-									})}</td
+									})}
+									<div class="text-muted-foreground" data-testid="display-layout-summary">
+										{display.layout === 'Split'
+											? $_('displays.layoutSummary.Split', {
+													values: { share: display.queueShare }
+												})
+											: $_('displays.layoutSummary.Full')}
+									</div></td
 								>
 								<td class="px-4 py-2 font-mono text-xs">{display.credentialPrefix ?? ''}…</td>
 								<td class="px-4 py-2">

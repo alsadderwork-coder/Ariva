@@ -378,6 +378,11 @@ The three health checks (ARV-114b) are judged on the bins the stream stored (`zo
 | Hysteresis | The band changes only when the nowcast moves a full band from the reference value |
 | Stale threshold | After this age the board shows the fallback message (value To confirm per site) |
 | Fallback message | In each language |
+| Layout | Full (the queues fill the screen, the default) or Split (ARV-140) |
+| Queue region share | Split only: 50 to 75 percent of the screen, 60 by default; the queues keep this share whatever the second region shows |
+| Second region | Split only: Instructions (what to have ready, follow the signs, ask staff, in each of the display's languages). Advertising is listed but refused until the site's advertising policy allows it (ARV-145) |
+
+A split display puts the queues first in the reading order of its first language: on the left with English first, on the right with Arabic first, and on top on a portrait screen; the second region takes the rest. The second region loads its content separately, so if it fails the queues are unaffected and the region stays empty. A layout change reaches running players at their next poll (within about 10 seconds), with no restart, and is audited with the other settings (`Display.Updated`, layout, share and second region before and after). A site configuration export carries the layout; an older bundle without it imports as Full.
 
 Each display is a kiosk URL on the display VLAN. Boards never show a realised wait. Whether an existing signage estate (for example Samsung MagicInfo) can show web content is To confirm on site.
 

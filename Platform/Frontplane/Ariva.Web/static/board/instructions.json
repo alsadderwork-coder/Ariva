@@ -1,0 +1,34 @@
+{
+	"en": {
+		"title": "While you wait",
+		"steps": [
+			"Have your travel documents ready.",
+			"Follow the signs and keep to your lane.",
+			"Ask a member of staff if you need help."
+		]
+	},
+	"ar": {
+		"title": "أثناء الانتظار",
+		"steps": [
+			"جهّز وثائق سفرك.",
+			"اتبع اللافتات والتزم بمسارك.",
+			"اطلب المساعدة من أحد الموظفين عند الحاجة."
+		]
+	},
+	"pt": {
+		"title": "Enquanto espera",
+		"steps": [
+			"Tenha os seus documentos de viagem à mão.",
+			"Siga as indicações e mantenha-se na sua fila.",
+			"Peça ajuda a um funcionário se precisar."
+		]
+	},
+	"sw": {
+		"title": "Unaposubiri",
+		"steps": [
+			"Andaa hati zako za safari.",
+			"Fuata alama na ubaki kwenye mstari wako.",
+			"Muulize mfanyakazi ukihitaji msaada."
+		]
+	}
+}

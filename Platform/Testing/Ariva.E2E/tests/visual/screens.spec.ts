@@ -112,29 +112,43 @@ async function plantSnapshots(): Promise<void> {
 	}
 }
 
+/** A layout for a planted display (ARV-140); the default is the full view in English first, as ARV-058 planted it. */
+interface DisplayLayout {
+	orientation?: 'Landscape' | 'Portrait';
+	languages?: string[];
+	layout?: 'Full' | 'Split';
+	queueShare?: number;
+}
+
+let displayToken = '';
+
 /** A passenger display with two queues and both languages; returns the player's path with its credential. */
-async function createDisplay(): Promise<string> {
-	// A TOTP code is accepted once: a second worker in the same 30 second step waits for the next code.
-	const admin = accounts().visualAdmin;
-	let signedIn = await login(admin.userName, admin.password, undefined, undefined, { code: totpCode(admin.totpSecret!) });
-	for (let attempt = 0; signedIn.status() === 401 && attempt < 3; attempt++) {
-		await new Promise((resolve) => setTimeout(resolve, 31_000 - (Date.now() % 30_000)));
-		signedIn = await login(admin.userName, admin.password, undefined, undefined, { code: totpCode(admin.totpSecret!) });
+async function createDisplay(shape: DisplayLayout = {}): Promise<string> {
+	// A TOTP code is accepted once: a second worker in the same 30 second step waits for the next code. A worker signs in once.
+	if (!displayToken) {
+		const admin = accounts().visualAdmin;
+		let signedIn = await login(admin.userName, admin.password, undefined, undefined, { code: totpCode(admin.totpSecret!) });
+		for (let attempt = 0; signedIn.status() === 401 && attempt < 3; attempt++) {
+			await new Promise((resolve) => setTimeout(resolve, 31_000 - (Date.now() % 30_000)));
+			signedIn = await login(admin.userName, admin.password, undefined, undefined, { code: totpCode(admin.totpSecret!) });
+		}
+		expect(signedIn.status()).toBe(200);
+		displayToken = (await signedIn.json()).accessToken;
 	}
-	expect(signedIn.status()).toBe(200);
-	const token = (await signedIn.json()).accessToken;
+	const token = displayToken;
 	// Each worker plants its own display (the code is not on screen).
 	const code = `VIS-${Array.from({ length: 5 }, () => 'ABCDEFGHJKLMNPQRSTUVWXYZ'[Math.floor(Math.random() * 24)]).join('')}`;
 	const created = await call('POST', `${hosts.main}/api/v1/admin/displays`, {
 		token,
 		data: {
-			siteCode: 'DMO', code, name: 'Arrivals hall', location: 'Arrivals hall', orientation: 'Landscape', languages: ['en', 'ar'],
+			siteCode: 'DMO', code, name: 'Arrivals hall', location: 'Arrivals hall', orientation: shape.orientation ?? 'Landscape', languages: shape.languages ?? ['en', 'ar'],
 			bandMinutes: 5, hysteresisMinutes: 2, staleSeconds: 600,
 			entries: [
 				{ zone: 'A-RES', labels: { en: 'Residents', ar: 'المقيمون' } },
 				{ zone: 'A-VIS', labels: { en: 'Visitors', ar: 'الزوار' } }
 			],
-			fallback: { en: 'Please follow the signs', ar: 'يرجى اتباع اللوحات' }
+			fallback: { en: 'Please follow the signs', ar: 'يرجى اتباع اللوحات' },
+			layout: shape.layout ?? 'Full', queueShare: shape.queueShare ?? 60, secondRegion: 'Instructions'
 		}
 	});
 	expect(created.status(), created.status() === 201 ? 'the display is created' : await created.text()).toBe(201);
@@ -351,5 +365,25 @@ for (const variant of variants) {
 			await settle(page);
 			await expect(page).toHaveScreenshot(`passenger-display-${variant.name}.png`, { mask: clockMasks(page) });
 		});
+
+		// ARV-140: the split layouts, Arabic first on a landscape screen (the queues on the right) and English first on a
+		// portrait one (the queues on top). The board keeps its own palette, so one colour scheme is enough.
+		for (const split of [
+			{ name: 'landscape-ar', viewport: { width: 1920, height: 1080 }, shape: { orientation: 'Landscape', languages: ['ar', 'en'], layout: 'Split', queueShare: 60 } },
+			{ name: 'portrait-en', viewport: { width: 1080, height: 1920 }, shape: { orientation: 'Portrait', languages: ['en', 'ar'], layout: 'Split', queueShare: 60 } }
+		] as const) {
+			test(`passenger display split ${split.name}, ${variant.name}`, async ({ page }) => {
+				test.skip(variant.name !== 'en-light', 'the board keeps its own palette and languages whatever the browser');
+				test.setTimeout(150_000);
+				const path = await createDisplay({ ...split.shape, languages: [...split.shape.languages] });
+				await page.setViewportSize(split.viewport);
+				await page.goto(path);
+				await expect(page.getByTestId('board')).toHaveAttribute('data-layout', 'Split');
+				await expect(page.getByTestId('board-entry')).toHaveCount(2);
+				await expect(page.getByTestId('board-second')).toHaveAttribute('data-state', 'ready');
+				await settle(page);
+				await expect(page).toHaveScreenshot(`passenger-display-split-${split.name}-${variant.name}.png`, { mask: clockMasks(page) });
+			});
+		}
 	});
 }

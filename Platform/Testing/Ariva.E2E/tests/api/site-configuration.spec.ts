@@ -307,7 +307,7 @@ test('the export carries the published profile with both hashes, every part in t
 	expect(rules.map((r: any) => [r.code, r.escalationContactWithheld])).toEqual([['R-001', true], ['R-002', false]]);
 	expect(rules.every((r: any) => !('escalationContact' in r))).toBe(true);
 	expect(Object.keys(decoded(bundle, 'displays')[0]).sort()).toEqual(
-		['code', 'name', 'location', 'orientation', 'languages', 'bandMinutes', 'hysteresisMinutes', 'staleSeconds', 'entries', 'fallback', 'enabled'].sort()
+		['code', 'name', 'location', 'orientation', 'languages', 'bandMinutes', 'hysteresisMinutes', 'staleSeconds', 'entries', 'fallback', 'enabled', 'layout', 'queueShare', 'secondRegion'].sort()
 	);
 });
 

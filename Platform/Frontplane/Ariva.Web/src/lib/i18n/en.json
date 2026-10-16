@@ -1075,12 +1075,18 @@
 			"label": "Label ({language})",
 			"fallback": "Message when the data is stale",
 			"fallbackIn": "Message ({language})",
-			"enabled": "Enabled"
+			"enabled": "Enabled",
+			"layoutGroup": "Screen layout",
+			"layout": "Layout",
+			"queueShare": "Queue region (% of the screen)",
+			"secondRegion": "Second region"
 		},
 		"hints": {
 			"hysteresis": "The band changes only when the wait leaves it by this much.",
 			"stale": "Older data shows the message instead of a number.",
-			"order": "Shown in this order: {order}"
+			"order": "Shown in this order: {order}",
+			"queueShare": "Between 50 and 75. The queues come first in the reading order of the board's first language, and on top on a portrait screen.",
+			"secondRegion": "Advertising stays off until the site's advertising policy allows it."
 		},
 		"orientations": {
 			"Landscape": "Landscape",
@@ -1096,6 +1102,18 @@
 			"saved": "Display {code} saved.",
 			"deleted": "Display {code} deleted.",
 			"failed": "That did not work: {reason}"
+		},
+		"layouts": {
+			"Full": "Full screen queues",
+			"Split": "Split screen"
+		},
+		"secondRegions": {
+			"Instructions": "Instructions",
+			"Advertising": "Advertising (not available)"
+		},
+		"layoutSummary": {
+			"Full": "Full screen",
+			"Split": "Split screen, queues {share}%"
 		}
 	},
 	"users": {
