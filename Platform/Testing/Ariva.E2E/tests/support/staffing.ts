@@ -190,3 +190,100 @@ export async function plantDesksShortCase(db: pg.Client, zoneKey: string, lane: 
 		throw error;
 	}
 }
+
+// Routed answers (ARV-181b1): a browser test that needs the panel to show given values answers the staffing request
+// itself with page.route, shaped exactly as the API's view models (ISvcStaffingRecommendations.cs, camel case).
+
+/** The staffing API's address as a page.route pattern, for any site. */
+export const staffingRoute = '**/api/v1/sites/*/staffing-recommendation';
+
+/** An interval as the API answers it (StaffingIntervalViewModel). */
+export interface RoutedInterval {
+	startUtc: string;
+	minutes: number;
+	arrivals: number | null;
+	recommended: number | null;
+	bound: string;
+	atLimit: boolean;
+	shortfallDesks: number | null;
+	waitRecommendedMinutes: number | null;
+	waitOpenNowMinutes: number | null;
+	noServiceOpenNow: boolean;
+	gap: string;
+}
+
+/** A lane as the API answers it (LaneStaffingViewModel). */
+export interface RoutedLane {
+	zone: string;
+	zoneKey: string;
+	lane: string;
+	minuteUtc: string | null;
+	targetMinutes: number | null;
+	busyCap: number | null;
+	desks: number | null;
+	openNow: number | null;
+	openNowDegraded: boolean;
+	queueNow: number | null;
+	cycleMinutes: number | null;
+	throughputSource: string | null;
+	gap: string;
+	intervals: RoutedInterval[];
+}
+
+/** A site's answer as the API gives it (StaffingRecommendationViewModel). */
+export interface RoutedAnswer {
+	siteCode: string;
+	asOfUtc: string;
+	intervalMinutes: number;
+	indicative: boolean;
+	lanes: RoutedLane[];
+}
+
+/**
+ * A routed lane of the demo airport computed at `minute` (the current minute unless given): 6 desks, 3 open now, a queue
+ * of 25 and a measured cycle time, then 13 intervals on the minute's plan, each with 40 arriving, 4 desks recommended for
+ * the wait and waits of 8 and 12.5 minutes. `values` replace the lane's values and `interval` the first interval's.
+ */
+export function routedLane(
+	zone: string,
+	lane: string,
+	values: Partial<RoutedLane> = {},
+	interval: Partial<RoutedInterval> = {},
+	minute: Date = new Date(Math.floor(Date.now() / 60_000) * 60_000)
+): RoutedLane {
+	return {
+		zone,
+		zoneKey: `DMO/${zone}`,
+		lane,
+		minuteUtc: apiTime(minute),
+		targetMinutes: 10,
+		busyCap: 0.85,
+		desks: 6,
+		openNow: 3,
+		openNowDegraded: false,
+		queueNow: 25,
+		cycleMinutes: 1.583,
+		throughputSource: 'Measured',
+		gap: 'None',
+		...values,
+		intervals: staffingPlan(minute).map((slot, k) => ({
+			startUtc: apiTime(slot.start),
+			minutes: slot.minutes,
+			arrivals: 40,
+			recommended: 4,
+			bound: 'Wait',
+			atLimit: false,
+			shortfallDesks: null,
+			waitRecommendedMinutes: 8,
+			waitOpenNowMinutes: 12.5,
+			noServiceOpenNow: false,
+			gap: 'None',
+			...(k === 0 ? interval : {})
+		}))
+	};
+}
+
+/** The demo airport's routed answer with these lanes, as of `asOf` (now unless given). */
+export function routedAnswer(lanes: RoutedLane[], asOf: Date = new Date()): RoutedAnswer {
+	return { siteCode: 'DMO', asOfUtc: asOf.toISOString(), intervalMinutes: 15, indicative: true, lanes };
+}

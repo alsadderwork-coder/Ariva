@@ -3,13 +3,15 @@ import pg from 'pg';
 import { createClient } from 'redis';
 import { accounts, call, login, totpCode } from '../support/accounts';
 import { hosts } from '../support/hosts';
+import { apiTime, routedAnswer, routedLane, staffingRoute, type RoutedAnswer, type RoutedInterval, type RoutedLane } from '../support/staffing';
 import { databaseAvailable, signInThroughUi } from '../support/web-auth';
 
 // ARV-075: visual regression baselines for the key screens (live operations, immigration, the displays screen and a
 // passenger display, and since ARV-104h a validation campaign) in English and Arabic, light and dark, so an unintended change
 // of layout or design tokens (Aman design system parity) fails the run. Rendered only by the pinned Playwright image (scripts/visual-browser.mjs); run on
 // its own and first, on the fresh demo seed. The live values are planted (fixed numbers in Redis, as Ariva.Api.Stream
-// writes them) and what moves with the clock (times, the arrival wave, charts) is masked.
+// writes them) and what moves with the clock (times, the arrival wave, charts) is masked. The immigration screen's staffing
+// panel (ARV-181b1) reads a fixed answer with fixed times instead (routed in the browser), so it is compared in full.
 
 test.skip(!databaseAvailable, 'the screens need the E2E database');
 // Independent tests, so one changed screen does not hide the others; no retries (a changed pixel is not flaky).
@@ -173,9 +175,60 @@ async function plantCampaign(): Promise<string> {
 	return (await created.json()).id;
 }
 
-/** Everything that moves with the clock, whatever the screen. */
-function clockMasks(page: Page): Locator[] {
-	return [page.locator('time'), page.getByTestId('board-updated'), page.getByTestId('environment-chip')];
+/**
+ * Everything that moves with the clock, whatever the screen. The time elements inside `fixed` (a CSS selector) are not
+ * masked: the test fixed their values, so they are compared like any other text.
+ */
+function clockMasks(page: Page, fixed?: string): Locator[] {
+	return [page.locator(fixed ? `time:not(${fixed} time)` : 'time'), page.getByTestId('board-updated'), page.getByTestId('environment-chip')];
+}
+
+/** The staffing panel's first computed minute and the answer's time: 18:07 and 40 seconds later at the demo airport (Asia/Dubai, the project's time zone). */
+const staffingMinute = new Date('2026-10-16T14:07:00Z');
+const staffingAsOf = new Date('2026-10-16T14:07:40Z');
+
+/**
+ * ARV-181b1: the immigration screen's staffing panel reads GET api/v1/sites/DMO/staffing-recommendation every minute, and
+ * what the job stores there (its values, the computed-at time, the quarter-hour rows and so which lane opens) changes with
+ * the clock. The test answers the request itself with this fixed answer, in the API's shape, so the panel is the same in
+ * every run and variant. Now the citizens lane has a desk spare, the residents lane matches and the visitors lane is short
+ * by 2, so its next 3 hours open (at its limit of 8 desks and short by 1 from 18:15, out of reach from 18:30, a flight
+ * without a passenger figure at 20:30 and the queue unknown after it); the crew lane has no queue length and the e-gates
+ * no open count.
+ */
+function fixedStaffing(): RoutedAnswer {
+	const lane = (zone: string, code: string, values: Partial<RoutedLane>, now: Partial<RoutedInterval>) => routedLane(zone, code, values, now, staffingMinute);
+	const none = { recommended: null, bound: 'None', waitRecommendedMinutes: null, waitOpenNowMinutes: null };
+	const visitors = lane('A-VIS', 'VIS', { desks: 8, openNow: 4, queueNow: 36, cycleMinutes: 2.143 }, { arrivals: 24, recommended: 6, waitRecommendedMinutes: 9.5, waitOpenNowMinutes: 16.8 });
+	const later: Partial<RoutedInterval>[] = [
+		{ arrivals: 95, recommended: 8, bound: 'Busy', atLimit: true, shortfallDesks: 1, waitRecommendedMinutes: 18, waitOpenNowMinutes: 64 },
+		{ arrivals: 140, recommended: 8, bound: 'Both', atLimit: true, waitRecommendedMinutes: 120, waitOpenNowMinutes: 120 },
+		{ arrivals: 70, recommended: 7, waitRecommendedMinutes: 9.6, waitOpenNowMinutes: 48 },
+		{ arrivals: 45, recommended: 5, waitRecommendedMinutes: 7.2, waitOpenNowMinutes: 12.4 },
+		{ arrivals: 30, recommended: 4, waitRecommendedMinutes: 6.1, waitOpenNowMinutes: 5.3 },
+		{ arrivals: 52, recommended: 5, waitRecommendedMinutes: 8.4, waitOpenNowMinutes: 14.9 },
+		{ arrivals: 38, recommended: 4, waitRecommendedMinutes: 7.7, waitOpenNowMinutes: 9.2 },
+		{ arrivals: 20, recommended: 2, waitRecommendedMinutes: 4.5, waitOpenNowMinutes: 2.1 },
+		{ arrivals: 12, recommended: 2, waitRecommendedMinutes: 3.2, waitOpenNowMinutes: 1.4 },
+		{ ...none, arrivals: null, gap: 'FlightWithoutPassengers' },
+		{ ...none, arrivals: 18, gap: 'BacklogUnknown' },
+		{ ...none, arrivals: 22, gap: 'BacklogUnknown' }
+	];
+	later.forEach((values, k) => Object.assign(visitors.intervals[k + 1], values));
+	const crew = lane('A-CRW', 'CRW', { openNow: 1, queueNow: null, gap: 'NoQueueLength' }, {});
+	crew.intervals.forEach((interval) => Object.assign(interval, { ...none, arrivals: 6, gap: 'NoQueueLength' }));
+	const gates = lane('A-EG', 'EG', { openNow: null, queueNow: 22, cycleMinutes: 0.4 }, { arrivals: 44, recommended: 2, waitRecommendedMinutes: 6.5 });
+	gates.intervals.forEach((interval) => (interval.waitOpenNowMinutes = null));
+	return routedAnswer(
+		[
+			lane('A-CIT', 'CIT', { openNow: 4, queueNow: 8, cycleMinutes: 1.25 }, { arrivals: 30, recommended: 3, waitRecommendedMinutes: 2.6, waitOpenNowMinutes: 2 }),
+			lane('A-RES', 'RES', { queueNow: 29 }, { arrivals: 26, recommended: 3, waitRecommendedMinutes: 9.8, waitOpenNowMinutes: 9.8 }),
+			visitors,
+			crew,
+			gates
+		],
+		staffingAsOf
+	);
 }
 
 async function settle(page: Page): Promise<void> {
@@ -245,18 +298,27 @@ for (const variant of variants) {
 		});
 
 		test(`immigration, ${variant.name}`, async ({ page }) => {
+			// The border shift supervisor holds ArrivalWaveLanes.View, so the screen shows the staffing panel: a fixed answer.
+			const staffing = fixedStaffing();
+			await page.route(staffingRoute, (route) => route.fulfill({ json: staffing }));
 			await signInThroughUi(page, accounts().webBorder);
 			await language(page, variant.arabic);
 			// Through the sidebar, so the language chosen stays (a full load would start in English again).
 			await page.locator('a[href="/immigration"]').first().click();
 			await expect(page.getByTestId('lanes')).toBeVisible();
 			await expect(page.locator('[data-testid="data-quality"] [data-testid="quality-row"]').first()).toBeVisible();
+			// The panel shows the fixed answer: the visitors lane, short of desks now, opens its rows from the fixed minute.
+			await expect(page.getByTestId('staffing')).toHaveAttribute('data-state', 'ready');
+			const visitors = page.locator('[data-testid="staffing-lane"][data-zone="A-VIS"]');
+			await expect(visitors).toBeVisible();
+			await expect(visitors.getByTestId('staffing-row').first()).toHaveAttribute('data-start', apiTime(staffingMinute));
 			await settle(page);
 			// The data-quality panel's bin times (ARV-120): their width follows their digits, and the text after them moves.
 			await page.locator('[data-testid="data-quality"] time').evaluateAll((times) => times.forEach((time) => (time.textContent = '00:00')));
 			await expect(page).toHaveScreenshot(`immigration-${variant.name}.png`, {
 				// Desks and e-gates follow AMAN's records, which the simulator keeps sending; the lanes' waits are the planted snapshots.
-				mask: [...clockMasks(page), page.getByTestId('desk-grid'), page.getByTestId('egates')]
+				// The staffing panel's times are the fixed answer's, so they stay visible.
+				mask: [...clockMasks(page, '[data-testid="staffing"]'), page.getByTestId('desk-grid'), page.getByTestId('egates')]
 			});
 		});
 

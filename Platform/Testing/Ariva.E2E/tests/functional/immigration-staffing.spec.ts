@@ -4,7 +4,18 @@ import { accounts, call, signIn } from '../support/accounts';
 import { guardPage } from '../support/browser-guards';
 import { hosts } from '../support/hosts';
 import { xssPayloads } from '../support/payloads';
-import { apiTime, plantStaffingMinute, staffingDatabase, staffingPlan, type PlantedInterval, type PlantedLane } from '../support/staffing';
+import {
+	apiTime,
+	plantStaffingMinute,
+	routedAnswer,
+	routedLane,
+	staffingDatabase,
+	staffingPlan,
+	staffingRoute,
+	type PlantedInterval,
+	type PlantedLane,
+	type RoutedLane
+} from '../support/staffing';
 import { allowStatuses, databaseAvailable, signInThroughUi } from '../support/web-auth';
 
 // ARV-181b1: the immigration screen shows ARV-181a's indicative staffing recommendation (formulas F16 pilot version) to the
@@ -20,7 +31,6 @@ test.skip(!databaseAvailable, 'the staffing panel needs the E2E database (ARIVA_
 test.describe.configure({ mode: 'serial' });
 
 const api = (site = 'DMO') => `${hosts.main}/api/v1/sites/${site}/staffing-recommendation`;
-const staffingRoute = '**/api/v1/sites/*/staffing-recommendation';
 const isStaffingRequest = (request: Request) => /\/staffing-recommendation(\?|$)/.test(new URL(request.url()).pathname);
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 /** Planted minutes from the first one: the suite reads them for at most this many minutes. */
@@ -321,78 +331,6 @@ test('Arabic mirrors the panel with Latin digits', async ({ page }) => {
 	allowStatuses(guards, 404);
 	await guards.expectClean();
 });
-
-/** An interval as the API answers it. */
-interface RoutedInterval {
-	startUtc: string;
-	minutes: number;
-	arrivals: number | null;
-	recommended: number | null;
-	bound: string;
-	atLimit: boolean;
-	shortfallDesks: number | null;
-	waitRecommendedMinutes: number | null;
-	waitOpenNowMinutes: number | null;
-	noServiceOpenNow: boolean;
-	gap: string;
-}
-
-/** A lane as the API answers it. */
-interface RoutedLane {
-	zone: string;
-	zoneKey: string;
-	lane: string;
-	minuteUtc: string | null;
-	targetMinutes: number | null;
-	busyCap: number | null;
-	desks: number | null;
-	openNow: number | null;
-	openNowDegraded: boolean;
-	queueNow: number | null;
-	cycleMinutes: number | null;
-	throughputSource: string | null;
-	gap: string;
-	intervals: RoutedInterval[];
-}
-
-/** A routed lane: the residents lane's shape with the values given (the interval's for the first interval only). */
-function routedLane(zone: string, lane: string, values: Partial<RoutedLane> = {}, interval: Partial<RoutedInterval> = {}): RoutedLane {
-	const minute = new Date(Math.floor(Date.now() / 60_000) * 60_000);
-	return {
-		zone,
-		zoneKey: `DMO/${zone}`,
-		lane,
-		minuteUtc: apiTime(minute),
-		targetMinutes: 10,
-		busyCap: 0.85,
-		desks: 6,
-		openNow: 3,
-		openNowDegraded: false,
-		queueNow: 25,
-		cycleMinutes: 1.583,
-		throughputSource: 'Measured',
-		gap: 'None',
-		...values,
-		intervals: staffingPlan(minute).map((slot, k) => ({
-			startUtc: apiTime(slot.start),
-			minutes: slot.minutes,
-			arrivals: 40,
-			recommended: 4,
-			bound: 'Wait',
-			atLimit: false,
-			shortfallDesks: null,
-			waitRecommendedMinutes: 8,
-			waitOpenNowMinutes: 12.5,
-			noServiceOpenNow: false,
-			gap: 'None',
-			...(k === 0 ? interval : {})
-		}))
-	};
-}
-
-function routedAnswer(lanes: RoutedLane[]) {
-	return { siteCode: 'DMO', asOfUtc: new Date().toISOString(), intervalMinutes: 15, indicative: true, lanes };
-}
 
 test('spare, matching, no desk open, an approximate count, a stale lane, a refusal and a failure are words', async ({ page }) => {
 	const guards = await guardPage(page);
