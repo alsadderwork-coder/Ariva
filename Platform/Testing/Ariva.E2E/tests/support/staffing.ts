@@ -283,7 +283,17 @@ export function routedLane(
 	};
 }
 
-/** The demo airport's routed answer with these lanes, as of `asOf` (now unless given). */
-export function routedAnswer(lanes: RoutedLane[], asOf: Date = new Date()): RoutedAnswer {
+/**
+ * The demo airport's routed answer with these lanes, as of `asOf`: unless given, 30 seconds into the minute the lanes were
+ * computed at (now when none carries one). The panel takes the interval holding the answer's time as the current one, so
+ * an answer built when a test starts and served later must not follow the wall clock: a request after the next quarter
+ * hour would make interval 1 current (2026-10-16, the CWE-79 test's reason row missing once in a story gate).
+ */
+export function routedAnswer(lanes: RoutedLane[], asOf: Date = computedAt(lanes)): RoutedAnswer {
 	return { siteCode: 'DMO', asOfUtc: asOf.toISOString(), intervalMinutes: 15, indicative: true, lanes };
+}
+
+function computedAt(lanes: RoutedLane[]): Date {
+	const minutes = lanes.map((lane) => (lane.minuteUtc ? Date.parse(lane.minuteUtc) : Number.NaN)).filter((m) => Number.isFinite(m));
+	return minutes.length > 0 ? new Date(Math.min(...minutes) + 30_000) : new Date();
 }
