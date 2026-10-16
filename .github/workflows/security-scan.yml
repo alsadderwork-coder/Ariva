@@ -70,12 +70,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The findings are printed in the job log as text and written to semgrep.sarif for the artifact: a reader without
+      # access to the artifact store still sees which rule fired where (owner decision 2026-10-16).
       - name: Scan (fails on findings)
         run: >-
           semgrep scan --error --metrics=off
           --config p/csharp --config p/typescript --config p/secrets --config p/dockerfile
           --exclude docs/design/prototype --exclude scripts/security/fixtures
-          --sarif --output semgrep.sarif
+          --sarif-output=semgrep.sarif
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
