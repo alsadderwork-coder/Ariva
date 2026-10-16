@@ -61,7 +61,12 @@ public sealed class KafkaFixture : IAsyncLifetime
 
     public string BootstrapServers => _container.GetBootstrapAddress();
 
-    public ValueTask InitializeAsync() => new(_container.StartAsync());
+    public async ValueTask InitializeAsync()
+    {
+        await _container.StartAsync();
+        // The broker is handed to the tests only once it names a controller (KafkaContainers.UntilControllerAsync).
+        await KafkaContainers.UntilControllerAsync(BootstrapServers);
+    }
 
     public ValueTask DisposeAsync() => _container.DisposeAsync();
 }
