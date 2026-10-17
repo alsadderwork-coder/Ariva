@@ -22,6 +22,9 @@
         <!-- The live hub (ARV-035): MessagePack protocol and the Redis backplane. -->
         <PackageReference Include="Microsoft.AspNetCore.SignalR.Protocols.MessagePack" />
         <PackageReference Include="Microsoft.AspNetCore.SignalR.StackExchangeRedis" />
+        <!-- Advertisement image uploads (ARV-142a): SkiaSharp and its Linux native library, in this host only (Ariva.Infra references SkiaSharp privately). -->
+        <PackageReference Include="SkiaSharp" />
+        <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" />
     </ItemGroup>
 
     <ItemGroup>

@@ -44,6 +44,10 @@
     <PackageVersion Include="Cronos" Version="0.11.1" />
     <!-- CsvHelper: Ariva.Infra's CSV imports (ARV-123a), the low-level CsvParser only (docs/product/decisions.md) -->
     <PackageVersion Include="CsvHelper" Version="33.1.0" />
+    <!-- SkiaSharp (MIT): advertisement images decoded and written anew (ARV-142a). The managed library is in Ariva.Infra; the
+         Linux native library only in Ariva.Api.Main, the one host that takes uploads, and the test projects. -->
+    <PackageVersion Include="SkiaSharp" Version="4.153.1" />
+    <PackageVersion Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.153.1" />
     <PackageVersion Include="Fluentx" Version="6.1.9" />
     <PackageVersion Include="Handlebars.Net" Version="2.1.6" />
     <PackageVersion Include="Humanizer.Core" Version="3.0.1" />

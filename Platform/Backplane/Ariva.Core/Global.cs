@@ -198,6 +198,18 @@ public static class Global
 
             public static Permission EditAdvertisingPolicy { get; } = new("AdvertisingPolicy", PermissionAction.Edit);
 
+            /// <summary>
+            /// Advertisements (ARV-142a): the media library of a site whose advertising policy allows advertising. View sees the
+            /// library; Manage sees it too and uploads, changes and retires items; Approve approves a draft, which only a person
+            /// other than its uploader and the last person who changed it may do, and is a critical permission (every endpoint it
+            /// guards asks for a second factor). Only approved items within their dates ever play.
+            /// </summary>
+            public static Permission ViewAdvertising { get; } = new("Advertising", PermissionAction.View);
+
+            public static Permission ManageAdvertising { get; } = new("Advertising", PermissionAction.Manage);
+
+            public static Permission ApproveAdvertising { get; } = new("Advertising", PermissionAction.Approve);
+
             #endregion
 
             #region Reports (E9)

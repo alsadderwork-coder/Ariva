@@ -52,6 +52,15 @@ public static class RolePermissions
     ];
 
     /// <summary>
+    /// Advertisements (ARV-142a): the duty manager, airport-side, runs the commercial content of a site whose advertising
+    /// policy allows it, and two duty managers make the two people an approval needs (the uploader or the last person who
+    /// changed an item never approves it). The border shift supervisor does not: border halls carry advertising only where the
+    /// system administrator turned it on (ARV-145), and their content is still the airport's. System administrators hold both
+    /// through the every-permission rule.
+    /// </summary>
+    private static readonly Permission[] Advertising = [Permissions.ViewAdvertising, Permissions.ManageAdvertising, Permissions.ApproveAdvertising];
+
+    /// <summary>
     /// Reports (ARV-060): the daily report and its schedules, for the supervisor and the duty manager of the site; the
     /// handler's own-counter report comes with its module (Phase 1).
     /// </summary>
@@ -89,7 +98,7 @@ public static class RolePermissions
         .. TopologyRead, .. ZonesAndDevices,
         Permissions.ViewDeskCodeMapping, Permissions.SearchDeskCodeMapping,
         Permissions.ViewLiveQueue, Permissions.ViewArrivalWave, Permissions.ViewAirportDesks, Permissions.ViewImmigration, .. AlertRulesWrite, .. Alerts,
-        .. Displays, .. Reports, .. DataQuality, .. ValidationRun
+        .. Displays, .. Advertising, .. Reports, .. DataQuality, .. ValidationRun
     ]);
 
     /// <summary>Handler station manager: its own counters; reads topology and zones, changes none of them.</summary>

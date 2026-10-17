@@ -93,7 +93,9 @@ public sealed class AdvertisingPolicyServiceTests(PostgresFixture fixture) : IAs
         policy.Data.Should().Match<AdvertisingPolicyViewModel>(p =>
             p.SiteCode == "ADV1" && !p.Allowed && p.ExcludedZones.Count == 0 && p.Reason == null && p.ChangedOn == null && p.DisplaysFallingBack.Count == 0);
         (await _host.AsCallerAsync(admin, s => Policies(s).IsAllowedAsync("ADV1", Ct))).Should().BeFalse();
+        (await _host.AsCallerAsync(admin, s => Policies(s).AccessAsync("ADV1", Ct))).Should().Be(AdvertisingAccess.Off, "a site of the caller without a policy");
         (await _host.AsCallerAsync(admin, s => Policies(s).GetAsync("ZZ9", Ct))).ErrorMessages.Should().Equal(TopologyErrors.NotFound);
+        (await _host.AsCallerAsync(admin, s => Policies(s).AccessAsync("ZZ9", Ct))).Should().Be(AdvertisingAccess.NotFound, "a site that does not exist");
     }
 
     [Fact]
@@ -104,6 +106,7 @@ public sealed class AdvertisingPolicyServiceTests(PostgresFixture fixture) : IAs
         allowed.HasErrors.Should().BeFalse(string.Join(", ", allowed.ErrorMessages ?? []));
         allowed.Data.Should().Match<AdvertisingPolicyViewModel>(p => p.Allowed && p.Reason == Allow().Reason && p.ChangedOn != null);
         (await _host.AsCallerAsync(admin, s => Policies(s).IsAllowedAsync("ADV2", Ct))).Should().BeTrue();
+        (await _host.AsCallerAsync(admin, s => Policies(s).AccessAsync("ADV2", Ct))).Should().Be(AdvertisingAccess.Allowed);
 
         var off = await _host.AsCallerAsync(admin, s => Policies(s).ChangeAsync("ADV2", Off("  Border authority asked for no advertising, ref BA-77  "), Ct));
         off.Data.Should().Match<AdvertisingPolicyViewModel>(p => !p.Allowed && p.Reason == "Border authority asked for no advertising, ref BA-77", "kept trimmed");
@@ -164,6 +167,7 @@ public sealed class AdvertisingPolicyServiceTests(PostgresFixture fixture) : IAs
         (await AllowAsync(local, "ADV1")).ErrorMessages.Should().Equal(TopologyErrors.NotFound);
         (await _host.AsCallerAsync(local, s => Policies(s).GetAsync("ADV1", Ct))).ErrorMessages.Should().Equal(TopologyErrors.NotFound);
         (await _host.AsCallerAsync(local, s => Policies(s).IsAllowedAsync("ADV1", Ct))).Should().BeFalse();
+        (await _host.AsCallerAsync(local, s => Policies(s).AccessAsync("ADV1", Ct))).Should().Be(AdvertisingAccess.NotFound, "outside the caller's sites");
         (await _host.ReadAsync<long>("SELECT count(*) FROM advertising_policy WHERE site_code = 'ADV1'")).Should().Be(0);
         (await AllowAsync(local, "ALX")).HasErrors.Should().BeFalse("its own site");
     }

@@ -19,11 +19,13 @@ export interface LoadSite {
 	create: (resource: string, data: unknown) => Promise<any>;
 }
 
-export async function provisionLoadSite(admin: Account, prefix: string, zone = 'Load Zone'): Promise<LoadSite> {
+/**
+ * A fresh site with a published zone profile. The administrator signs in with its second factor, unless a token it already
+ * holds is given (several sites from one sign-in: a TOTP step counts once per account, ARV-142a).
+ */
+export async function provisionLoadSite(admin: Account, prefix: string, zone = 'Load Zone', signedIn?: string): Promise<LoadSite> {
 	const base = `${hosts.main}/api/v1/admin`;
-	const signIn = await login(admin.userName, admin.password, undefined, undefined, { code: await unusedTotpCode(admin.totpSecret!) });
-	expect(signIn.status(), 'administrator sign-in').toBe(200);
-	const token = (await signIn.json()).accessToken as string;
+	const token: string = signedIn ?? (await secondFactorSignIn(admin));
 	const create = async (resource: string, data: unknown) => {
 		const response = await call('POST', `${base}/${resource}`, { token, data });
 		expect(response.status(), `${resource}: ${await response.text()}`).toBe(201);
@@ -43,6 +45,13 @@ export async function provisionLoadSite(admin: Account, prefix: string, zone = '
 	const { geometryHash } = await (await call('GET', `${base}/zone-profiles/${draft}/validation`, { token })).json();
 	expect((await call('POST', `${base}/zone-profiles/${draft}/publish`, { token, data: { geometryHash } })).status()).toBe(200);
 	return { site, zone, levelId, token, create };
+}
+
+/** The account's access token, signed in with its password and a TOTP code it has not used. */
+export async function secondFactorSignIn(account: Account): Promise<string> {
+	const signIn = await login(account.userName, account.password, undefined, undefined, { code: await unusedTotpCode(account.totpSecret!) });
+	expect(signIn.status(), `sign-in of ${account.userName} with its second factor`).toBe(200);
+	return (await signIn.json()).accessToken as string;
 }
 
 /** Access tokens for screens: one sign-in per few screens (the hub holds at most 8 connections per session), each from its own address. */

@@ -25,7 +25,13 @@ public enum PermissionAction
     /// Moves a site's configuration (ARV-122a): exports it as a bundle and imports a bundle into an empty site. Both are
     /// critical (step-up MFA).
     /// </summary>
-    Transfer
+    Transfer,
+
+    /// <summary>
+    /// Lets content reach passengers after another person prepared it (ARV-142a): approving an advertisement, which the
+    /// person who uploaded or last changed it never can; critical (step-up MFA).
+    /// </summary>
+    Approve
 }
 
 /// <summary>

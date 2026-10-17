@@ -6,7 +6,7 @@ import { supportFolder } from './guard';
 // here), so the E2E suite can compare them with what the API reports (tests/api/smoke-config.spec.ts).
 
 const criticalActionsFile = path.resolve(supportFolder, '..', '..', '..', '..', '..', '..', 'security', 'critical-actions.json');
-const actions = ['View', 'Search', 'Create', 'Edit', 'Delete', 'Publish', 'Capture', 'Manage', 'Transfer'];
+const actions = ['View', 'Search', 'Create', 'Edit', 'Delete', 'Publish', 'Capture', 'Manage', 'Transfer', 'Approve'];
 
 /** The permission codes ("Entity.Action") of security/critical-actions.json's criticalPermissions (named "<Action><Entity>"). */
 export function criticalPermissionCodes(): string[] {

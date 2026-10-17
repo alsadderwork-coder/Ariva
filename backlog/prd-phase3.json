@@ -448,6 +448,22 @@
       "dependsOn": [
         "ARV-145"
       ]
+    },
+    {
+      "id": "ARV-194",
+      "title": "[E21] Advertisement approval offered with the image in view",
+      "description": "From round 2 of the ARV-142a security review (advisories N1 and N4, not blocking). The library screen offers Approve on a draft even when its preview was not loaded (the screen fetches previews for the newest 40 items only, and a failed fetch shows a placeholder), and the preview is 96 pixels wide: the review token proves the details did not change, not that the approver saw the picture. The per-person upload window counts per process, so each replica of Ariva.Api.Main adds its own 30 attempts.",
+      "acceptanceCriteria": [
+        "Approve is offered only for a draft whose preview loaded, and opens the image at its full size (or the screen size) before the approval is sent; drafts are fetched first, whatever their age",
+        "The upload window is shared by the replicas of Ariva.Api.Main (for example through the Redis the hosts already use), or the documentation states the multiplied allowance for the deployed replica count",
+        "Functional tests: a draft whose preview fails offers no approval; the full-size view opens before approving; node scripts/verify.mjs story passes"
+      ],
+      "priority": 57,
+      "passes": false,
+      "notes": "Size S. Recorded 2026-10-17 with ARV-142a under the owner's standing decision (low-severity follow-ups wait for Phase 3 unless needed before the pilot; the owner can pull one back).",
+      "dependsOn": [
+        "ARV-142a"
+      ]
     }
   ]
 }

@@ -4,6 +4,7 @@
 	import { _ } from 'svelte-i18n';
 	import { toast } from 'svelte-sonner';
 	import CredentialReveal from '$lib/components/pages/devices/CredentialReveal.svelte';
+	import AdvertisingLibrary from '$lib/components/pages/displays/AdvertisingLibrary.svelte';
 	import AdvertisingPanel from '$lib/components/pages/displays/AdvertisingPanel.svelte';
 	import DisplayForm from '$lib/components/pages/displays/DisplayForm.svelte';
 	import ConfirmButton from '$lib/components/shared/ConfirmButton.svelte';
@@ -38,6 +39,10 @@
 	const canDelete = $derived(auth.can('Display.Delete'));
 	const canViewAdvertising = $derived(auth.can('AdvertisingPolicy.View'));
 	const canEditAdvertising = $derived(auth.can('AdvertisingPolicy.Edit'));
+	/** ARV-142a: the site's advertisement library, while its policy allows advertising. */
+	const canViewMedia = $derived(auth.can('Advertising.View') || auth.can('Advertising.Manage'));
+	const canManageMedia = $derived(auth.can('Advertising.Manage'));
+	const canApproveMedia = $derived(auth.can('Advertising.Approve'));
 
 	function failed(reason: string): void {
 		toast.error($_('displays.messages.failed', { values: { reason } }));
@@ -333,6 +338,9 @@
 				await refresh();
 			}}
 		/>
+		{#if advertising.allowed && canViewMedia}
+			<AdvertisingLibrary {siteCode} canManage={canManageMedia} canApprove={canApproveMedia} />
+		{/if}
 	{/if}
 	<p class="flex items-center gap-1.5 text-xs text-muted-foreground">
 		<KeyRound class="size-3.5" aria-hidden="true" />

@@ -251,6 +251,20 @@ export function accounts() {
 		advertisingAdmin: account('e2e.advadmin', ['SystemAdministrator'], false, true, ['*']),
 		advertisingManager: account('e2e.advmanager', ['TerminalDutyManager'], false, false, ['*']),
 		advertisingWebAdmin: account('e2e.advwebadmin', ['SystemAdministrator'], false, true, ['*']),
+		// ARV-142a: the advertisement library of a site of its own. The administrator creates the site, turns advertising on and
+		// creates its displays (second factor); a duty manager uploads with a password only; a second duty manager approves
+		// (second factor: approving is critical); a duty manager of E2E2 only sees nothing of the site.
+		mediaAdmin: account('e2e.mediaadmin', ['SystemAdministrator'], false, true, ['*']),
+		mediaManager: account('e2e.mediamanager', ['TerminalDutyManager'], false, false, ['*']),
+		mediaApprover: account('e2e.mediaapprover', ['TerminalDutyManager'], false, true, ['*']),
+		mediaElsewhere: account('e2e.mediaelse', ['TerminalDutyManager'], false, false, ['E2E2']),
+		// Two more duty managers for the upload attacks and the details probes: each person may attempt 30 uploads in 10 minutes.
+		mediaAttacker: account('e2e.mediaattack', ['TerminalDutyManager'], false, false, ['*']),
+		mediaProber: account('e2e.mediaprobe', ['TerminalDutyManager'], false, false, ['*']),
+		// ARV-142a: the same roles for the functional suite's library screen (its own accounts: a TOTP code counts once per account).
+		mediaWebAdmin: account('e2e.mediawebadmin', ['SystemAdministrator'], false, true, ['*']),
+		mediaWebManager: account('e2e.mediawebmgr', ['TerminalDutyManager'], false, false, ['*']),
+		mediaWebApprover: account('e2e.mediawebappr', ['TerminalDutyManager'], false, true, ['*']),
 		// ARV-104a: validation campaigns at E2EV. The manager drafts and publishes the site's zone profile and closes campaigns
 		// (both need a second factor); the lead plans and starts them with a password only (closing answers 401 for its second
 		// factor); a second observer of the site, and an observer of E2E1 for the cross-site answers.

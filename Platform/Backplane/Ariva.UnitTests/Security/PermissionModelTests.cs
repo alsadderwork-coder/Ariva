@@ -38,8 +38,8 @@ public sealed class PermissionModelTests
             // View, Capture and Manage. Site configuration (ARV-122a) has one action: Transfer (export and import). Display content
             // (ARV-141) is what the displays say beside the waits: View to see it, Manage to create, change, order, retire and
             // restore it (the story's single management permission). A site's advertising policy (ARV-145) is one setting per site:
-            // View and Edit.
-            .Where(p => p.Entity is not ("SystemInfo" or "LiveQueue" or "Alert" or "ArrivalWave" or "ArrivalWaveLanes" or "BorderDesks" or "AirportDesks" or "Immigration" or "Report" or "DataQuality" or "Validation" or "SiteConfiguration" or "DisplayContent" or "AdvertisingPolicy"))
+            // View and Edit. Advertisements (ARV-142a) are a two-person process: View, Manage (upload, change, retire) and Approve.
+            .Where(p => p.Entity is not ("SystemInfo" or "LiveQueue" or "Alert" or "ArrivalWave" or "ArrivalWaveLanes" or "BorderDesks" or "AirportDesks" or "Immigration" or "Report" or "DataQuality" or "Validation" or "SiteConfiguration" or "DisplayContent" or "AdvertisingPolicy" or "Advertising"))
             .GroupBy(p => p.Entity);
 
         byEntity.Should().AllSatisfy(entity =>
@@ -107,6 +107,28 @@ public sealed class PermissionModelTests
 
         codes.Should().Equal("SiteConfiguration.Transfer");
         nameof(Global.Defaults.Permissions.TransferSiteConfiguration).Should().Be(Global.Defaults.Permissions.TransferSiteConfiguration.Name);
+    }
+
+    [Fact]
+    public void Permissions_Should_BeAdvertisingViewManageAndApproveOnly_When_AdvertisingIsCatalogued()
+    {
+        var codes = Global.Defaults.Permissions.All.Values.Where(p => p.Entity == "Advertising").Select(p => p.Code);
+
+        codes.Should().BeEquivalentTo("Advertising.View", "Advertising.Manage", "Advertising.Approve");
+        nameof(Global.Defaults.Permissions.ManageAdvertising).Should().Be(Global.Defaults.Permissions.ManageAdvertising.Name);
+        nameof(Global.Defaults.Permissions.ApproveAdvertising).Should().Be(Global.Defaults.Permissions.ApproveAdvertising.Name);
+    }
+
+    [Fact]
+    public void ByRole_Should_GrantAdvertisingToDutyManagersAndAdministratorsOnly_When_Seeded()
+    {
+        // ARV-142a: the duty manager runs a site's advertisements airport-side, and two of them make the two people an approval
+        // needs; administrators hold both through the every-permission rule; border, handler and observer roles hold neither.
+        foreach (var permission in new[] { Global.Defaults.Permissions.ViewAdvertising, Global.Defaults.Permissions.ManageAdvertising, Global.Defaults.Permissions.ApproveAdvertising })
+        {
+            RolePermissions.ByRole.Where(r => r.Value.Contains(permission)).Select(r => r.Key)
+                .Should().BeEquivalentTo([RoleCodes.TerminalDutyManager, RoleCodes.SystemAdministrator], permission.Code);
+        }
     }
 
     [Fact]

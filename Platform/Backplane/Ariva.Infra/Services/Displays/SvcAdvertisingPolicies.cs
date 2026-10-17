@@ -73,7 +73,16 @@ internal sealed class SvcAdvertisingPolicies(
     }
 
     public async Task<bool> IsAllowedAsync(string siteCode, CancellationToken ct = default) =>
-        await VisibleSiteAsync(siteCode, ct) && await QueryAsNoTracking<AdvertisingPolicy>().AnyAsync(p => p.SiteCode == siteCode && p.Allowed, ct);
+        await AccessAsync(siteCode, ct) == AdvertisingAccess.Allowed;
+
+    public async Task<AdvertisingAccess> AccessAsync(string siteCode, CancellationToken ct = default)
+    {
+        if (!await VisibleSiteAsync(siteCode, ct))
+            return AdvertisingAccess.NotFound;
+        return await QueryAsNoTracking<AdvertisingPolicy>().AnyAsync(p => p.SiteCode == siteCode && p.Allowed, ct)
+            ? AdvertisingAccess.Allowed
+            : AdvertisingAccess.Off;
+    }
 
     private async Task<bool> VisibleSiteAsync(string siteCode, CancellationToken ct) =>
         !string.IsNullOrWhiteSpace(siteCode) && (await siteScope.GetAsync(ct)).Allows(siteCode) &&

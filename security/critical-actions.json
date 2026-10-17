@@ -14,7 +14,8 @@
     "Close a validation campaign",
     "Recompute validation results",
     "Export or import a site configuration",
-    "Change a site's advertising policy"
+    "Change a site's advertising policy",
+    "Approve an advertisement"
   ],
   "criticalPermissions": [
     "CreateUser",
@@ -30,7 +31,8 @@
     "DeleteAlertRule",
     "CreateDisplay",
     "TransferSiteConfiguration",
-    "EditAdvertisingPolicy"
+    "EditAdvertisingPolicy",
+    "ApproveAdvertising"
   ],
   "routes": [
     {
@@ -244,6 +246,12 @@
       "method": "PUT",
       "route": "/api/v1/admin/sites/{siteCode}/advertising-policy",
       "category": "Change a site's advertising policy"
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/sites/{siteCode}/advertising/media/{id:guid}/approve",
+      "category": "Approve an advertisement"
     }
   ]
 }

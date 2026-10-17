@@ -72,4 +72,19 @@ public interface ISvcAdvertisingPolicies : ISvcScoped
     /// site without a policy and for one outside the caller's sites.
     /// </summary>
     Task<bool> IsAllowedAsync(string siteCode, CancellationToken ct = default);
+
+    /// <summary>
+    /// How an advertising endpoint answers for the site: <see cref="AdvertisingAccess.NotFound"/> for a site outside the
+    /// caller's sites or one that does not exist (404, so existence is not revealed), <see cref="AdvertisingAccess.Off"/> for
+    /// a site whose policy does not allow advertising or that has none (403), else <see cref="AdvertisingAccess.Allowed"/>.
+    /// </summary>
+    Task<AdvertisingAccess> AccessAsync(string siteCode, CancellationToken ct = default);
+}
+
+/// <summary>How an advertising endpoint answers for a site (<see cref="ISvcAdvertisingPolicies.AccessAsync"/>).</summary>
+public enum AdvertisingAccess
+{
+    NotFound,
+    Off,
+    Allowed
 }

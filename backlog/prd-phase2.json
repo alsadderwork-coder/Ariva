@@ -79,16 +79,17 @@
       ]
     },
     {
-      "id": "ARV-142",
-      "title": "[E21] Advertisement media library with safe uploads and approval",
-      "description": "Upload and manage advertisement media (images and short videos) through IFileStorage, typed by their bytes and size-capped, with a two-person approval before anything can play. Epic: Displays and advertising. CWEs to review: CWE-434, CWE-79, CWE-22, CWE-863, CWE-400.",
+      "id": "ARV-142a",
+      "title": "[E21] Advertisement image library with safe uploads and two-person approval",
+      "description": "Upload and manage advertisement images through IFileStorage, typed by their bytes, re-encoded and size-capped, with a two-person approval before anything can play and an authenticated display fetch. Split from ARV-142 on 2026-10-17 (videos follow in ARV-142b). Epic: Displays and advertising. CWEs to review: CWE-434, CWE-79, CWE-22, CWE-863, CWE-400, CWE-120.",
       "acceptanceCriteria": [
-        "Accepted types by content, not extension: PNG, JPEG and WebP images (re-encoded on upload to strip metadata and active content), MP4 (H.264) and WebM videos up to a configured length and size; SVG, HTML, PDF and anything else refused",
+        "Accepted types by content, not extension: PNG, JPEG and WebP images, re-encoded on upload (decoded and written anew) to strip metadata and active content, within a byte size and a pixel limit checked before anything is decoded; SVG, HTML, PDF, animated images, videos (until ARV-142b) and anything else refused",
         "Stored under generated keys only (IFileStorage, never a path from the request), size capped on the endpoint and in the read, the upload rate limit policy applies (ARV-018 pattern)",
-        "Each item has an advertiser name, a campaign, a start and end date, and a status Draft, Approved, Retired; only Approved items within their dates can play; approval needs Advertising.Approve and a different person from the uploader; every change audited",
-        "New permissions Advertising.Manage and Advertising.Approve in the role mapping and security/permission-matrix.json; [SiteScoped]; refused while the site's advertising policy is off (ARV-145)",
+        "Each item has an advertiser name, a campaign, a start and end date (the site's local dates), and a status Draft, Approved, Retired; only Approved items within their dates can play; approval needs Advertising.Approve and a person other than the uploader and the last person who changed the item; a change to an approved item sends it back to Draft; every change audited",
+        "New permissions Advertising.Manage and Advertising.Approve in the role mapping and security/permission-matrix.json; approving is a critical action (step-up MFA, security/critical-actions.json); [SiteScoped]; refused while the site's advertising policy is off (ARV-145)",
         "Advertising endpoints live in Ariva.Api.Main/Controllers/AdminArea/Advertising (namespace ...Advertising) and carry [AdvertisingAllowed] (ARV-145: 403 while the site's policy is off, 404 outside the caller's sites; AdvertisingAllowedTests fails the build otherwise); the media a display player fetches is display-authenticated, so it checks the display's own site and zones with the advertising rule of ARV-145 (AdvertisingPolicyGuard) instead of the filter; every lookup of a media item by id is filtered by the route's siteCode and the caller's sites (another site's item answers 404, IDOR)",
-        "Displays fetch media through an authenticated display endpoint (device credentials, ARV-058), never a public URL; the CSP adds media-src self only",
+        "Displays fetch media through an authenticated display endpoint (display credentials, ARV-058), never a public URL: only an Approved item of the display's own site within its dates, while the display is set to advertising and the ARV-145 rule allows it for the display's zones; anything else answers 404",
+        "A media library on the displays screen: upload with advertiser, campaign and dates, preview, approve and retire, in English and Arabic; the approve action is not offered to the uploader or the last person who changed the item (the server is the authority)",
         "E2E: upload attacks (polyglot, oversize, wrong type, path tricks), approval by the uploader refused, cross-site 404, display fetch without credentials 401",
         "node scripts/verify.mjs web passes (svelte-check, lint, build)",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
@@ -99,10 +100,35 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 4,
-      "passes": false,
-      "notes": "Size M. Owner request 2026-10-06 (Phase 2). Shares upload safety with ARV-092 (malware scanning); if ARV-092 is done first, media goes through its scanner too.",
+      "passes": true,
+      "notes": "Size M. Owner request 2026-10-06 (Phase 2). Shares upload safety with ARV-092 (malware scanning); if ARV-092 is done first, media goes through its scanner too. Split 2026-10-17 (backlog/progress.md): the image path (re-encoding, approval, display fetch, screen) is one session; the video container checks are a second.",
       "dependsOn": [
         "ARV-145"
+      ]
+    },
+    {
+      "id": "ARV-142b",
+      "title": "[E21] Advertisement videos: MP4 (H.264) and WebM within a configured length and size",
+      "description": "Adds short videos to the advertisement library of ARV-142a: typed and checked by their container, length and size capped by configuration, metadata stripped, played by displays and previewed from an object URL of media fetched with credentials. Split from ARV-142 on 2026-10-17. Epic: Displays and advertising. CWEs to review: CWE-434, CWE-79, CWE-400, CWE-120.",
+      "acceptanceCriteria": [
+        "Videos accepted by content: MP4 with H.264 video (AAC audio or none) and WebM with VP8, VP9 or AV1 video (Opus or Vorbis audio or none), up to a configured length and size; other codecs, files without a length, truncated files and data after the last top-level box or element refused",
+        "Metadata stripped without moving the media: MP4 user data, meta and uuid boxes become free space; WebM Tags, Attachments and Chapters become Void elements",
+        "Parsing is bounded: every box and element size checked against its parent and the file, nesting depth and element counts capped, nothing allocated from a declared size (CWE-400, CWE-120)",
+        "The library, statuses, approval, permissions, audit and display fetch of ARV-142a apply to videos unchanged; the player and the preview play a video from an object URL of the bytes fetched with credentials, so the CSP gains media-src 'self' blob: and no other source",
+        "E2E: video upload attacks (markup in a free box or after the last box, a polyglot, wrong codec, too long, oversize), approval and display fetch of a video",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": "Size M. Split from ARV-142 on 2026-10-17. Shares upload safety with ARV-092 (malware scanning); if ARV-092 is done first, media goes through its scanner too.",
+      "dependsOn": [
+        "ARV-142a"
       ]
     },
     {
@@ -130,7 +156,8 @@
       "notes": "Size M. Owner request 2026-10-06 (Phase 2).",
       "dependsOn": [
         "ARV-141",
-        "ARV-142"
+        "ARV-142a",
+        "ARV-142b"
       ]
     },
     {

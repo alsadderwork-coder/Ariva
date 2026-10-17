@@ -42,6 +42,14 @@ async function openDisplays(page: Page, siteCode: string): Promise<void> {
 	await page.locator('#displays-site').selectOption(siteCode);
 }
 
+/**
+ * Answers DMO's advertisement library with an empty one: a policy this spec mocks as allowing advertising shows the library
+ * (ARV-142a), which the API refuses with 403 for DMO, whose own policy stays off.
+ */
+async function emptyLibrary(page: Page): Promise<void> {
+	await page.route('**/api/v1/admin/sites/DMO/advertising/media', (route) => route.fulfill({ json: [] }));
+}
+
 test.beforeAll(async () => {
 	const admin = (await signIn(accounts().webAdmin)).accessToken;
 	const created = await call('POST', `${hosts.main}/api/v1/admin/sites`, { token: admin, data: { code: site, name: 'E2E advertising screen' } });
@@ -104,6 +112,7 @@ test('a duty manager sees the policy and its reason but cannot change it', async
 test('the display form offers advertising only where the policy allows every zone the display shows', async ({ page }) => {
 	const guards = await guardPage(page);
 	// DMO's own policy stays off; the screen is shown one that allows advertising except in D-CIT.
+	await emptyLibrary(page);
 	await page.route('**/api/v1/admin/sites/DMO/advertising-policy', (route) =>
 		route.fulfill({
 			json: {
@@ -138,6 +147,7 @@ for (const [label, answer, warning] of [
 	test(`with ${label} the panel warns, in English and Arabic, and the form does not offer advertising`, async ({ page }) => {
 		const guards = await guardPage(page);
 		// DMO's own policy stays off; the screen is shown one the server would refuse to advertise under.
+		await emptyLibrary(page);
 		await page.route('**/api/v1/admin/sites/DMO/advertising-policy', (route) =>
 			route.fulfill({
 				json: Object.assign(
@@ -183,6 +193,7 @@ test('a save refused because another profile was published shows the new version
 		siteCode: 'DMO', allowed: false, excludedZones: [], reason: null, changedOn: null, unpublishedZones: [], displaysFallingBack: [], profileChanged: false,
 		publishedProfileId: published.id, publishedProfileVersion: published.version, confirmedProfileVersion: null, publishedQueueZones: published.zones
 	});
+	await emptyLibrary(page);
 	await page.route('**/api/v1/admin/sites/DMO/advertising-policy', async (route) => {
 		if (route.request().method() === 'GET') return route.fulfill({ json: policy() });
 		const body = route.request().postDataJSON() as Record<string, unknown>;

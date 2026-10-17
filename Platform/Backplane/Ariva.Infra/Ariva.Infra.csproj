@@ -32,6 +32,9 @@
         <PackageReference Include="System.Security.Cryptography.Pkcs" />
         <!-- CSV imports (ARV-123a, lead's approval 2026-10-12): the low-level CsvParser only; no record mapping, dynamic types or class maps -->
         <PackageReference Include="CsvHelper" />
+        <!-- Advertisement images (ARV-142a): decoded and written anew. Private: only Ariva.Api.Main, the one host that takes
+             uploads, and the test projects reference SkiaSharp and its native library; the other hosts ship neither. -->
+        <PackageReference Include="SkiaSharp" PrivateAssets="all" />
     </ItemGroup>
 
     <ItemGroup>

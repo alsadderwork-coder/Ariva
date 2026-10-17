@@ -65,7 +65,7 @@ internal sealed class SvcFloorPlans(
         if (nameError is not null)
             return Result.Error<FloorPlanViewModel>(nameError);
 
-        var bytes = await ReadAtMostAsync(upload.Content, FloorPlan.MaxBytes, ct);
+        var bytes = await UploadReader.ReadAtMostAsync(upload.Content, FloorPlan.MaxBytes, ct);
         if (bytes is null)
             return Result.Error<FloorPlanViewModel>(TopologyErrors.TooLarge);
         var file = FloorPlanFiles.Inspect(bytes);
@@ -154,22 +154,6 @@ internal sealed class SvcFloorPlans(
 
     private async Task<FloorPlan> CurrentAsync(Guid levelId, CancellationToken ct) =>
         await LevelAsync(levelId, ct) is null ? null : await Query<FloorPlan>().FirstOrDefaultAsync(p => p.Level.Id == levelId, ct);
-
-    /// <summary>The bytes, or null when the stream holds more than <paramref name="limit"/>.</summary>
-    private static async Task<byte[]> ReadAtMostAsync(Stream content, long limit, CancellationToken ct)
-    {
-        using var buffer = new MemoryStream();
-        var chunk = new byte[81920];
-        int read;
-        while ((read = await content.ReadAsync(chunk, ct)) > 0)
-        {
-            if (buffer.Length + read > limit)
-                return null;
-            buffer.Write(chunk, 0, read);
-        }
-
-        return buffer.ToArray();
-    }
 
     /// <summary>
     /// The name for display, or null when it carries a path (CWE-22), control characters, invisible format characters of

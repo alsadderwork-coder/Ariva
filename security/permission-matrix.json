@@ -3403,6 +3403,151 @@
     },
     {
       "host": "main",
+      "method": "GET",
+      "route": "/api/v1/admin/sites/{siteCode}/advertising/media",
+      "access": "permission",
+      "permissions": [
+        "ViewAdvertising",
+        "ManageAdvertising"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/sites/{siteCode}/advertising/media",
+      "access": "permission",
+      "permissions": [
+        "ManageAdvertising"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/admin/sites/{siteCode}/advertising/media/{id:guid}",
+      "access": "permission",
+      "permissions": [
+        "ViewAdvertising",
+        "ManageAdvertising"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "PUT",
+      "route": "/api/v1/admin/sites/{siteCode}/advertising/media/{id:guid}",
+      "access": "permission",
+      "permissions": [
+        "ManageAdvertising"
+      ],
+      "body": {
+        "advertiser": "Matrix",
+        "campaign": "Matrix",
+        "startsOn": "2026-11-01",
+        "endsOn": "2026-11-30"
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/admin/sites/{siteCode}/advertising/media/{id:guid}/content",
+      "access": "permission",
+      "permissions": [
+        "ViewAdvertising",
+        "ManageAdvertising"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/sites/{siteCode}/advertising/media/{id:guid}/approve",
+      "access": "permission",
+      "permissions": [
+        "ApproveAdvertising"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
+      },
+      "body": {
+        "reviewed": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/sites/{siteCode}/advertising/media/{id:guid}/retire",
+      "access": "permission",
+      "permissions": [
+        "ManageAdvertising"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/display/advertising/{id:guid}",
+      "access": "device",
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
+      }
+    },
+    {
+      "host": "main",
       "method": "POST",
       "route": "/api/v1/admin/sites/{siteCode}/device-imports/preview",
       "access": "permission",

@@ -1151,6 +1151,52 @@
 			"saved": "Advertising policy saved"
 		}
 	},
+	"advertisingMedia": {
+		"title": "Advertisement library",
+		"description": "Images this site's split displays may show while advertising is allowed. An item plays only once approved by a second person, and only within its days at the site; a change sends an approved item back to draft.",
+		"loading": "Loading the advertisement library",
+		"none": "No advertisements at this site yet",
+		"previewAlt": "Advertisement of {advertiser}: {campaign}",
+		"dates": "{first} to {last}",
+		"size": "{width} by {height} pixels",
+		"uploadedBy": "Uploaded by {name}",
+		"approvedBy": "approved by {name}",
+		"playing": "Playing at the site today",
+		"status": {
+			"Draft": "Draft, waiting for approval",
+			"Approved": "Approved",
+			"Retired": "Retired"
+		},
+		"fields": {
+			"file": "Image (PNG, JPEG or WebP, at most 10 MB)",
+			"advertiser": "Advertiser",
+			"campaign": "Campaign",
+			"startsOn": "First day",
+			"endsOn": "Last day"
+		},
+		"hints": {
+			"file": "The image is checked by its content and written anew without its metadata; animated images, SVG, PDF and other files are refused. Days are the site's local days.",
+			"backToDraft": "This item is approved: saving a change sends it back to draft, and it stops playing until another person approves it."
+		},
+		"actions": {
+			"upload": "Upload as draft",
+			"approve": "Approve",
+			"change": "Change",
+			"save": "Save",
+			"cancel": "Cancel",
+			"retire": "Retire",
+			"confirmRetire": "Retire: it never plays again"
+		},
+		"messages": {
+			"uploaded": "Advertisement uploaded as a draft",
+			"changed": "Advertisement saved",
+			"changedBackToDraft": "Advertisement saved and back to draft for a second approval",
+			"approved": "Advertisement approved",
+			"retired": "Advertisement retired",
+			"tooLarge": "The image is larger than 10 MB.",
+			"failed": "The advertisement library could not be updated: {reason}"
+		}
+	},
 	"slides": {
 		"title": "Display instructions",
 		"description": "Short instructions the passenger displays show beside the waits, in each of their languages",
