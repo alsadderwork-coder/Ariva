@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
-import { accounts, call, claimsOf, developmentSigningKey, headerOf, signIn, signToken, totpCode, type Account } from '../support/accounts';
+import { accounts, call, claimsOf, developmentSigningKey, headerOf, signIn, signToken, unusedTotpCode, type Account } from '../support/accounts';
 import { guardPage } from '../support/browser-guards';
 import { hosts } from '../support/hosts';
 import { xssPayloads } from '../support/payloads';
@@ -20,7 +20,10 @@ const site = `AD${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
 const injected = 'img[src="x"], [onerror], [onload], iframe, svg[onload]';
 const reason = `${xssPayloads[1]} airport operator letter AO-WEB-145`;
 
-/** Signs in with the second factor 20 minutes old, so saving the policy asks for a fresh code. */
+/**
+ * Signs in with the second factor 20 minutes old, so saving the policy asks for a fresh code. Each code is one this
+ * account has not used (a retry of the serial group signs in again, and a code counts once).
+ */
 async function signInAged(page: Page, account: Account): Promise<void> {
 	await ownAddress(page);
 	await page.route('**/api/auth/login', async (route) => {
@@ -32,7 +35,7 @@ async function signInAged(page: Page, account: Account): Promise<void> {
 		return route.fulfill({ response, json: body });
 	});
 	await page.goto('/login');
-	await fillSignIn(page, account, totpCode(account.totpSecret!, -1));
+	await fillSignIn(page, account, await unusedTotpCode(account.totpSecret!));
 	await expect(page.getByRole('heading', { level: 1 })).toHaveText('Live operations');
 }
 
@@ -80,7 +83,7 @@ test('a system administrator allows advertising with a reason after a second fac
 	// The second factor is 20 minutes old, so a fresh code is asked before the change is sent again.
 	const dialog = page.getByTestId('step-up-dialog');
 	await expect(dialog).toBeVisible();
-	await page.locator('#step-up-code').fill(totpCode(account.totpSecret!));
+	await page.locator('#step-up-code').fill(await unusedTotpCode(account.totpSecret!));
 	await dialog.getByRole('button', { name: 'Confirm' }).click();
 	await expect(panel).toHaveAttribute('data-allowed', 'true');
 	await expect(panel).toContainText('Advertising allowed');
@@ -189,18 +192,21 @@ test('a save refused because another profile was published shows the new version
 	const v13 = '0199a000-0000-7000-8000-00000000a013';
 	let published = { id: v12, version: 12, zones: ['D-CIT', 'D-RES', 'D-VIS'] };
 	const sent: Record<string, unknown>[] = [];
+	// What a save kept, read back by the page's refresh after it, as the API does.
+	let saved: Record<string, unknown> | null = null;
 	const policy = () => ({
 		siteCode: 'DMO', allowed: false, excludedZones: [], reason: null, changedOn: null, unpublishedZones: [], displaysFallingBack: [], profileChanged: false,
 		publishedProfileId: published.id, publishedProfileVersion: published.version, confirmedProfileVersion: null, publishedQueueZones: published.zones
 	});
 	await emptyLibrary(page);
 	await page.route('**/api/v1/admin/sites/DMO/advertising-policy', async (route) => {
-		if (route.request().method() === 'GET') return route.fulfill({ json: policy() });
+		if (route.request().method() === 'GET') return route.fulfill({ json: saved ?? policy() });
 		const body = route.request().postDataJSON() as Record<string, unknown>;
 		sent.push(body);
 		if (body.reviewedProfileId !== published.id)
 			return route.fulfill({ status: 409, contentType: 'application/problem+json', json: { status: 409, title: 'Conflict', detail: 'stale' } });
-		return route.fulfill({ json: { ...policy(), allowed: true, reason: body.reason, excludedZones: body.excludedZones, confirmedProfileVersion: published.version } });
+		saved = { ...policy(), allowed: true, reason: body.reason, excludedZones: body.excludedZones, confirmedProfileVersion: published.version };
+		return route.fulfill({ json: saved });
 	});
 	await signInThroughUi(page, accounts().webAdmin);
 	await openDisplays(page, 'DMO');
