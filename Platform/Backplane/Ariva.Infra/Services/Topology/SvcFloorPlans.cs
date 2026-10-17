@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Security.Cryptography;
+using System.Text;
 using Ariva.Core.Domain.InputModels;
 using Ariva.Core.Domain.ViewModels;
 using Ariva.Core.Security;
@@ -60,11 +61,11 @@ internal sealed class SvcFloorPlans(
             return Result.Error<FloorPlanViewModel>(TopologyErrors.UnsupportedFile);
         if (upload.Length > FloorPlan.MaxBytes)
             return Result.Error<FloorPlanViewModel>(TopologyErrors.TooLarge);
-        var fileName = SafeFileName(upload.FileName);
-        if (fileName is null)
-            return Result.Error<FloorPlanViewModel>(TopologyErrors.UnsafeFileName);
+        var (fileName, nameError) = CheckFileName(upload.FileName);
+        if (nameError is not null)
+            return Result.Error<FloorPlanViewModel>(nameError);
 
-        var bytes = await ReadAtMostAsync(upload.Content, FloorPlan.MaxBytes, ct);
+        var bytes = await UploadReader.ReadAtMostAsync(upload.Content, FloorPlan.MaxBytes, ct);
         if (bytes is null)
             return Result.Error<FloorPlanViewModel>(TopologyErrors.TooLarge);
         var file = FloorPlanFiles.Inspect(bytes);
@@ -154,53 +155,32 @@ internal sealed class SvcFloorPlans(
     private async Task<FloorPlan> CurrentAsync(Guid levelId, CancellationToken ct) =>
         await LevelAsync(levelId, ct) is null ? null : await Query<FloorPlan>().FirstOrDefaultAsync(p => p.Level.Id == levelId, ct);
 
-    /// <summary>The bytes, or null when the stream holds more than <paramref name="limit"/>.</summary>
-    private static async Task<byte[]> ReadAtMostAsync(Stream content, long limit, CancellationToken ct)
-    {
-        using var buffer = new MemoryStream();
-        var chunk = new byte[81920];
-        int read;
-        while ((read = await content.ReadAsync(chunk, ct)) > 0)
-        {
-            if (buffer.Length + read > limit)
-                return null;
-            buffer.Write(chunk, 0, read);
-        }
-
-        return buffer.ToArray();
-    }
+    /// <summary>
+    /// The name for display, or null when it carries a path (CWE-22), control characters, invisible format characters of
+    /// any plane, such as a right-to-left override that would make <c>plan[RLO]gvs.png</c> read as another name, or more than 200
+    /// code points (<see cref="CheckFileName"/>). The site configuration import (ARV-122a) applies it again to every floor
+    /// plan's name.
+    /// </summary>
+    internal static string SafeFileName(string name) => CheckFileName(name).Name;
 
     /// <summary>
-    /// The name for display, or null when it carries a path (CWE-22), control characters, or invisible format characters
-    /// such as a right-to-left override that would make <c>plan[RLO]gvs.png</c> read as another name.
+    /// The trimmed name, or the fixed reason it is refused (ARV-153, CWE-120): a name that is unsafe as above, or longer
+    /// than the column takes (<see cref="FloorPlan.MaxFileNameLength"/> code points; PostgreSQL counts each combining mark
+    /// and each surrogate pair once). Refused rather than cut, as the site configuration import refuses it: nothing is
+    /// stored, and nothing reaches the insert that the column would refuse. A blank name becomes "floor-plan".
     /// </summary>
-    private static string SafeFileName(string name)
+    internal static (string Name, string Error) CheckFileName(string name)
     {
         if (string.IsNullOrWhiteSpace(name))
-            return "floor-plan";
-        if (name.Contains('/') || name.Contains('\\') || name.Contains("..", StringComparison.Ordinal) || name.Contains(':') ||
-            name.Any(c => char.IsControl(c) || CharUnicodeInfo.GetUnicodeCategory(c) == UnicodeCategory.Format) || HasLoneSurrogate(name))
-        {
-            return null;
-        }
+            return ("floor-plan", null);
+        // One rule in Ariva.Core (ARV-162): paths, then a lone surrogate, control or format character judged per code point,
+        // so the invisible ones outside the basic plane are refused too: tag characters (U+E0001, U+E0020 to U+E007F),
+        // shorthand format controls (U+1BCA0 to U+1BCA3), musical formatting (U+1D173 to U+1D17A).
+        if (!FloorPlan.HasSafeFileNameCharacters(name))
+            return (null, TopologyErrors.UnsafeFileName);
 
         var trimmed = name.Trim();
-        var info = new StringInfo(trimmed);
-        // Cut by text element, so no surrogate pair or combining sequence is split.
-        return info.LengthInTextElements <= 200 ? trimmed : info.SubstringByTextElements(0, 200);
-    }
-
-    private static bool HasLoneSurrogate(string text)
-    {
-        for (var i = 0; i < text.Length; i++)
-        {
-            if (char.IsHighSurrogate(text[i]) && i + 1 < text.Length && char.IsLowSurrogate(text[i + 1]))
-                i++;
-            else if (char.IsSurrogate(text[i]))
-                return true;
-        }
-
-        return false;
+        return FloorPlan.FileNameFits(trimmed) ? (trimmed, null) : (null, TopologyErrors.FileNameTooLong);
     }
 
     private static string Summary(FloorPlan p) =>

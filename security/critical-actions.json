@@ -1,5 +1,5 @@
 {
-  "_comment": "Critical actions (ADR-0026, ARV-010d): each needs a second factor (amr otp or rc) within the last 15 minutes, enforced by [RequiresRecentMfa] on the endpoint. Ariva.UnitTests (CriticalActionsTests) fails when an endpoint carries the attribute but is not listed in routes, when a listed route is not mapped with the attribute, when an endpoint guarded by a permission in criticalPermissions lacks the attribute, or when an attribute allows more than 15 minutes. The story that adds a critical endpoint adds its route here; categories is the list from the PRD that later stories map to routes and permissions.",
+  "_comment": "Critical actions (ADR-0026, ARV-010d): each needs a second factor (amr otp or rc) within the last 15 minutes, enforced by [RequiresRecentMfa] on the endpoint. Ariva.UnitTests (CriticalActionsTests) fails when an endpoint carries the attribute but is not listed in routes, when a listed route is not mapped with the attribute, when an endpoint guarded by a permission in criticalPermissions lacks the attribute, or when an attribute allows more than 15 minutes. The story that adds a critical endpoint adds its route here; categories is the list from the PRD that later stories map to routes and permissions. A route whose body is a multipart upload carries \"body\": \"multipart\" (ARV-123a), so step-up.spec.ts sends it a form: an endpoint that takes a file answers any other content type with 415 at routing, before authorization.",
   "maxAgeMinutes": 15,
   "categories": [
     "Grant or revoke roles",
@@ -10,7 +10,12 @@
     "Create, edit or delete SLA contracts",
     "Delete alert rules",
     "Change outbound endpoints",
-    "Regenerate recovery codes"
+    "Regenerate recovery codes",
+    "Close a validation campaign",
+    "Recompute validation results",
+    "Export or import a site configuration",
+    "Change a site's advertising policy",
+    "Approve an advertisement"
   ],
   "criticalPermissions": [
     "CreateUser",
@@ -24,7 +29,10 @@
     "CreateDevice",
     "PublishZoneProfile",
     "DeleteAlertRule",
-    "CreateDisplay"
+    "CreateDisplay",
+    "TransferSiteConfiguration",
+    "EditAdvertisingPolicy",
+    "ApproveAdvertising"
   ],
   "routes": [
     {
@@ -92,6 +100,20 @@
       "method": "POST",
       "route": "/api/v1/admin/devices/{id:guid}/credential",
       "category": "Create or regenerate integration clients and device credentials"
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/sites/{siteCode}/device-imports/preview",
+      "category": "Create or regenerate integration clients and device credentials",
+      "body": "multipart"
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/sites/{siteCode}/device-imports/commit",
+      "category": "Create or regenerate integration clients and device credentials",
+      "body": "multipart"
     },
     {
       "host": "main",
@@ -194,6 +216,42 @@
       "method": "POST",
       "route": "/api/v1/admin/displays/{id:guid}/credential",
       "category": "Create or regenerate integration clients and device credentials"
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/sites/{siteCode}/validation/campaigns/{id:guid}/close",
+      "category": "Close a validation campaign"
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/sites/{siteCode}/validation/campaigns/{id:guid}/results/revisions",
+      "category": "Recompute validation results"
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/admin/sites/{siteCode}/configuration",
+      "category": "Export or import a site configuration"
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/sites/{siteCode}/configuration",
+      "category": "Export or import a site configuration"
+    },
+    {
+      "host": "main",
+      "method": "PUT",
+      "route": "/api/v1/admin/sites/{siteCode}/advertising-policy",
+      "category": "Change a site's advertising policy"
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/sites/{siteCode}/advertising/media/{id:guid}/approve",
+      "category": "Approve an advertisement"
     }
   ]
 }

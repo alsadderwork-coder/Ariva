@@ -98,11 +98,12 @@
         "node scripts/security/scan.mjs passes with 0 errors",
         "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
         "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "The availability ledger job (Ariva.Api.Cronz) runs under its own database login holding INSERT on availability_minute and INSERT and UPDATE on availability_cursor; the runtime login of every other host loses those rights, so a compromised host cannot record minutes ahead of the job or move a site's cursor past minutes (owner decision 2026-10-10, raised by the ARV-150 security review: the risk dates from ARV-118); an integration test as the runtime login shows both refused",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 103,
       "passes": false,
-      "notes": "",
+      "notes": "2026-10-10: owner folded the ARV-118 availability ledger rights into this story (see the criterion). 2026-10-13 (ARV-171 security review): every host registers every topic's dead-letter producer, because any host can lead the outbox relay and send a kept dead letter; so each per-service Kafka principal needs WRITE on every *.dlq.v1 topic, while READ on dead-letter topics stays with operators and the replay tool.",
       "dependsOn": [
         "ARV-074"
       ]
@@ -146,7 +147,7 @@
       ],
       "priority": 105,
       "passes": false,
-      "notes": "",
+      "notes": " 2026-10-14 (ARV-125a security review, recommendation 3): since ARV-125a the anonymous readiness body says \"Degraded\" (200) while a check is Degraded; the ingress routes \"/\" by prefix, so an outside caller can see that some dependency is Degraded (never which). The public ingress must not route /health/*; probes stay private.",
       "dependsOn": [
         "ARV-074"
       ]
@@ -361,7 +362,7 @@
       ],
       "priority": 115,
       "passes": false,
-      "notes": "",
+      "notes": "ARV-120 (2026-10-11): until handler isolation exists, a handler station manager reads every queue zone of its sites, border lane queues included, through two paths: the live hub's zone snapshots (JoinZone) and the overflow bands read (GET api/v1/sites/{siteCode}/overflow-bands, LiveQueue.View), which gives the same zones as the hub and nothing new. The handler isolation must cover both paths (V8.4.1).",
       "dependsOn": [
         "ARV-074"
       ]
@@ -424,6 +425,43 @@
       "priority": 97,
       "passes": true,
       "notes": "Gate: before the first install outside Dalil.",
+      "dependsOn": []
+    },
+    {
+      "id": "ARV-152",
+      "title": "[ASVS] Secrets never in test reports or artifacts",
+      "description": "From the ARV-104j security review (2026-10-11). Playwright uses an expect's custom message as the step title even when the assertion passes, and the HTML report keeps those titles; `expect(x.status(), await x.text())` therefore copies every answer body into the report. The live rehearsal's sensor registration put 20 device credentials into its report that way (fixed in ARV-104j, with an artifact check on the live-pipeline scopes). The same pattern is in 37 spec files, and CI uploads playwright-report (.github/workflows/ci.yml), so any spec whose successful answer carries a secret (a device credential, a display pairing secret, an integration client secret) leaks it into a CI artifact. Also carried here from the same review: the rehearsal's read-only database access with the runtime login instead of the owner, the observers' roles asserted in the live run, and separation of duties checked on both campaigns. Epic: Security. CWEs to review: CWE-532 (logging), CWE-287, CWE-863. ASVS: V13.3.1.",
+      "acceptanceCriteria": [
+        "A shared E2E helper checks a response's status and puts the answer's body into the message only when the status is wrong; every spec uses it, and a test (or lint rule) fails when a spec passes a response body as an expect message",
+        "The artifact credential check of ARV-104j (`artifactCredentialCheck` in scripts/verify.mjs: plain files, the report's embedded zip and trace zips) also covers integration client secrets (ics_), JWTs and the run's E2E account passwords, runs after every Playwright scope of verify.mjs, and runs in CI before the report is uploaded; CI fails instead of uploading an artifact that holds one",
+        "The live rehearsal's read-only database access uses the runtime login (Database__Username) when it can read zone_outage, availability_minute, queue_bin and queue_minute; otherwise the reason is written in the spec and docs/harness/test-cadence.md",
+        "Before the simulator receives them, the live rehearsal reads the two observer accounts through the admin users API and asserts roles ValidationObserver only and sites DMO only; it checks that the campaign's manager is not among the observers on both campaigns, not only the first",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 117,
+      "passes": false,
+      "notes": "Size S to M. From the ARV-104j security review (required fixes R1 and R2 done in ARV-104j; recommendations 4, 6, 7 and 9 here). Found on 2026-10-12 (the ARV-123b story gate and its security review, a zip-aware scan of the HTML report): full device credentials in 9 report files, response bodies used as step titles, from api/device-auth, api/device-health, api/device-push, api/devices, api/illustrative-site, api/load, api/sensor-emulator, functional/displays and functional/illustrative-site; none from the CSV import specs. Also: every functional spec writes its account's per-run password and its TOTP codes into the report, because `fillSignIn` (tests/support/web-auth.ts) uses `locator.fill`, whose step title carries the value; set those fields so the step title holds no value (for example `locator.evaluate` setting the value and dispatching `input`), and make the report scan (passwords, TOTP codes, ard[kp]_) part of the log-scan gate for every E2E run. Also (ARV-153 review): tests/api/floor-plans.spec.ts lines 56, 72 and 123 pass a response body as the expect message whatever the status (no credential in them today).",
+      "dependsOn": [
+        "ARV-104j"
+      ]
+    },
+    {
+      "id": "ARV-157",
+      "title": "[ASVS] Trojan Source check covers every text file",
+      "description": "Found in the ARV-153 review: scripts/security/scan.mjs maps only code and configuration extensions (.cs, .ts, .js, .mjs, .cjs, .svelte, .json, .yaml, .yml, .conf, .env, .csproj, .props, .targets), and SEC-130 (bidirectional and zero-width characters) runs only on cs, js and svelte. Markdown, SQL, .resx, shell, PowerShell, HTML, CSS and text files are never checked, so a raw U+202E in backlog/progress.md passed the docs gate on 2026-10-12. Scripts 0020_alert_rule.sql (lines 11, 14, 28) and 0022_alert_lifecycle.sql (lines 25 to 27) hold raw bidirectional characters on purpose, inside regex classes that refuse them; they are immutable. CWEs to review: CWE-94 (Trojan Source, CVE-2021-42574).",
+      "acceptanceCriteria": [
+        "SEC-130 runs on every text file the repository tracks (.md, .sql, .json, .yaml, .resx, .sh, .ps1, .html, .css, .txt and the code types), and the scanner self-test proves it fires on each",
+        "The two existing scripts are listed as allowlist entries with their reason and `approvedBy: PENDING: Ahmad` (a human approves them, never an agent); new SQL writes such characters as escapes (`U&'\\202E'` or `E'\\u202E'`)",
+        "docs/security/cwe-controls.md and the security skill describe the wider coverage",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 118,
+      "passes": false,
+      "notes": "Size XS. Owner approval 2026-10-13 (Ahmad, in the session): the two allowlist entries for the raw bidirectional characters in scripts 0020_alert_rule.sql (lines 11, 14, 28) and 0022_alert_lifecycle.sql (lines 25 to 27), inside regex classes that refuse them, are approved; record them with approvedBy: Ahmad and this date, scoped to exactly those lines and SEC-130.",
       "dependsOn": []
     }
   ]

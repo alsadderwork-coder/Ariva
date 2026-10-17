@@ -8,8 +8,10 @@ namespace Ariva.Api.Common.HealthChecks;
 /// <summary>
 /// Kubernetes probe endpoints shared by every Ariva host. The paths match the startup, readiness and
 /// liveness probes in the Helm chart (Platform/Cloud/Ariva.K8s/Helm/Charts/platform/templates).
-/// Readiness runs the health checks tagged <see cref="ReadyTag"/> (the MassTransit bus and Kafka rider, ARV-020; more
-/// dependencies as the backlog adds them) and answers 503 while any is unhealthy, without details (CWE-200).
+/// Readiness runs the health checks tagged <see cref="ReadyTag"/> (the database, Redis, the MassTransit bus and the
+/// <c>kafka</c> check) and answers 503 while any is Unhealthy. While one is Degraded it answers 200 with "Degraded" (the
+/// owner's ARV-125 decision: a Degraded check raises an alert, through <c>ariva.health.status</c>, and does not take the pod
+/// out of the service). The body is a status word and the probe's name only: no check, dependency or detail (CWE-200).
 /// </summary>
 public static class HealthEndpoints
 {
@@ -48,9 +50,12 @@ public static class HealthEndpoints
         if (checks is null)
             return Healthy("readiness");
         var report = await checks.CheckHealthAsync(check => check.Tags.Contains(ReadyTag), ct);
-        return report.Status == HealthStatus.Unhealthy
-            ? Results.Json(new { status = "Unhealthy", probe = "readiness" }, statusCode: StatusCodes.Status503ServiceUnavailable)
-            : Healthy("readiness");
+        return report.Status switch
+        {
+            HealthStatus.Unhealthy => Results.Json(new { status = "Unhealthy", probe = "readiness" }, statusCode: StatusCodes.Status503ServiceUnavailable),
+            HealthStatus.Degraded => Results.Ok(new { status = "Degraded", probe = "readiness" }),
+            _ => Healthy("readiness")
+        };
     }
 
     private static IResult Healthy(string probe) => Results.Ok(new { status = "Healthy", probe });

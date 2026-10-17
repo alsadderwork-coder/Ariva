@@ -37,3 +37,7 @@ AMAN conventions are inherited: Onion architecture (Ariva.Core holds domain and 
 ## Amendment 2026-10-01: hosting
 
 The repository is hosted on GitHub (`github.com/alsadderwork-coder/Ariva`, private), not in Azure DevOps like AMAN. Continuous integration runs on GitHub Actions (`.github/workflows`), dependency updates come from Dependabot, and the backlog is mirrored to GitHub issues. The folder structure, project names and conventions still mirror AMAN; the Azure DevOps pipelines remain for deployments that publish to Dalil Container Registry.
+
+## Amendment 2026-10-15: visibility
+
+The repository is public: the owner confirmed on 2026-10-15 that this is intended (the amendment of 2026-10-01 said private). Everything committed is published, so client material and credentials stay out of the repository. Being public makes rulesets on `main`, environments with required reviewers, CodeQL and secret scanning available on GitHub Free (docs/harness/README.md). The workflows were checked for a public repository on the same day: the `@claude` comment job runs only for owners, members and collaborators, pull requests from forks get no secrets, and the only workflow that may use a self-hosted runner (`release-dev.yml`) runs only on a manual dispatch.

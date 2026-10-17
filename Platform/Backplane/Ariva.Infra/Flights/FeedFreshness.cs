@@ -53,26 +53,35 @@ public sealed record FlightFeedSettings
 
 /// <summary>
 /// Flight feed metrics (meter <c>Ariva.Flights</c>): items applied, unchanged and refused per kind, site and feed; feeds
-/// that went stale and recovered; and, from the last sweep, the feeds stale now (the stale-feed alarm, runbook 3).
+/// that went stale and recovered; and, from the last sweep, the feeds stale now (the stale-feed alarm, runbook 3). Only the
+/// Integration replica that wins a sweep's lock computes the stale total, so it is reported only while that sweep is
+/// fresh (ARV-125a, <see cref="Snapshot"/>'s window); the hosts that register this class without sweeping report nothing.
 /// </summary>
 public sealed class FlightMetrics : IDisposable
 {
     public const string MeterName = "Ariva.Flights";
 
     private readonly Meter _meter;
+    private readonly TimeProvider _time;
     private readonly Counter<long> _items;
     private readonly Counter<long> _wentStale;
     private readonly Counter<long> _recovered;
-    private volatile int _stale;
+    private volatile StaleTotal _stale;
 
-    public FlightMetrics(IMeterFactory meterFactory = null)
+    private sealed record StaleTotal(int Stale, DateTimeOffset At, TimeSpan FreshFor);
+
+    public FlightMetrics(IMeterFactory meterFactory = null, TimeProvider timeProvider = null)
     {
+        _time = timeProvider ?? TimeProvider.System;
         _meter = meterFactory?.Create(MeterName) ?? new Meter(MeterName);
         _items = _meter.CreateCounter<long>("ariva.flights.items", description: "Feed items by kind (legs, events, allocations) and outcome (applied, unchanged, refused)");
         _wentStale = _meter.CreateCounter<long>("ariva.feeds.went_stale", description: "Flight feeds that went stale (silent while flights are due)");
         _recovered = _meter.CreateCounter<long>("ariva.feeds.recovered", description: "Stale flight feeds heard from again, or with no flight due any more");
-        _meter.CreateObservableGauge("ariva.feeds.stale", () => _stale, description: "Flight feeds stale at the last sweep");
+        _meter.CreateObservableGauge("ariva.feeds.stale", ObserveStale, description: "Flight feeds stale at the last sweep");
     }
+
+    /// <summary>This instance's meter (tests listen to it alone).</summary>
+    internal Meter Meter => _meter;
 
     public void Items(string kind, string siteCode, string feed, IReadOnlyList<FlightItemResult> results)
     {
@@ -85,7 +94,14 @@ public sealed class FlightMetrics : IDisposable
 
     public void Recovered(string siteCode, string feed) => _recovered.Add(1, new("site", siteCode), new("feed", feed));
 
-    public void Snapshot(int stale) => _stale = stale;
+    /// <summary>The stale total of a sweep that just ran, reported for <paramref name="freshFor"/> (two sweep intervals).</summary>
+    public void Snapshot(int stale, TimeSpan freshFor) => _stale = new StaleTotal(stale, _time.GetUtcNow(), freshFor);
+
+    private IEnumerable<Measurement<int>> ObserveStale()
+    {
+        var stale = _stale;
+        return stale is not null && _time.GetUtcNow() - stale.At <= stale.FreshFor ? [new Measurement<int>(stale.Stale)] : [];
+    }
 
     public void Dispose() => _meter.Dispose();
 }

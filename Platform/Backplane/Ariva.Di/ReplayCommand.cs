@@ -84,6 +84,10 @@ public static class ReplayCommand
         services.AddSingleton<ISensingArchive, SensingArchive>();
         services.AddSingleton<IDeviceHealthArchive, DeviceHealthArchive>();
         services.AddSingleton<ZoneGeometrySource>();
+        // ARV-148: a replay runs a site under the lateness and push interval the live stream gives it (Stream:Sites).
+        var stream = configuration.GetSection(StreamSettings.SectionName).Get<StreamSettings>() ?? new StreamSettings();
+        var streamProblems = stream.Problems().Concat(stream.ZoneSettingsProblems(new Ariva.Core.Queueing.ZoneProcessorSettings())).ToList();
+        services.AddSingleton(stream);
         services.AddSingleton<ReplayStore>();
         services.AddSingleton<ReplayRunner>();
         await using var provider = services.BuildServiceProvider();
@@ -94,6 +98,7 @@ public static class ReplayCommand
             return await VerifyAsync(provider.GetRequiredService<ReplayStore>(), verifyPath, output, logger, ct);
 
         var (request, outputPath, problems) = Parse(args, $"{Environment.UserName}@{Environment.MachineName}");
+        problems = [.. problems, .. streamProblems];
         if (problems.Count > 0)
         {
             foreach (var problem in problems)

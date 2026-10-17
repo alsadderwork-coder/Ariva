@@ -161,7 +161,8 @@ public sealed class AlertEmailTests(PostgresFixture fixture) : IAsyncDisposable
 
         (await TickAsync(first.AddMinutes(1).AddSeconds(5))).Raised.Should().Be(1);
         var page = await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcAlerts>().SearchAsync(new AlertCriteria { SiteCode = "DMO", ZoneName = zone, Open = true }, Ct));
-        return page.Data.Data.Single();
+        // The alert of this rule: another test's open alert on the same zone (planted, or of another rule) is not this one.
+        return page.Data.Data.Single(a => a.RuleId == rule.Data.Id);
     }
 
     private sealed record Row(string Kind, string Recipient, string Status, int Attempts, string Reason, string Subject, DateTime NextAttemptUtc);
@@ -431,6 +432,152 @@ public sealed class AlertEmailTests(PostgresFixture fixture) : IAsyncDisposable
             await _host.ReadAsync<int>("UPDATE \"user\" SET is_disabled = false WHERE id = @id RETURNING 1", handler);
             await _host.AsCallerAsync(p.Admin, s => s.GetRequiredService<ISvcUsers>().SetSitesAsync(second, new SiteAccessRequest(false, ["DMO"]), Ct));
         }
+    }
+
+    /// <summary>
+    /// ARV-181b2 (CWE-863, data boundary): an open desks below recommendation alert is emailed to border people only, when
+    /// queued and when sent. Raised on two planted interval-0 rows of <c>lane_staffing</c> (2 desks short), it is written to the
+    /// supervisors; queued again as if it had no owner (a rule from before the story, or a row a superuser changed past the
+    /// table's trigger) it is still written to them only, not to every operational role; an email to the duty manager written
+    /// by hand is held back by the sender; and escalated to an airport-side role it writes no email at all.
+    /// </summary>
+    [Fact]
+    public async Task DesksBelowPlan_Should_EmailBorderPeopleOnly_When_QueuedAndWhenSent()
+    {
+        Host();
+        var p = await PeopleAsync();
+        var first = ReferenceReplay.WallOf(53 * 60);
+        var rule = await _host.AsCallerAsync(p.Admin, s => s.GetRequiredService<ISvcAlertRules>().CreateAsync(new AlertRuleRequest("DMO", "Mail desks short", ["A-VIS"],
+            "DesksBelowPlan", "GreaterOrEqual", 1, null, null, 1, 1, "Warning", RoleCodes.BorderShiftSupervisor, null, null, null, true), Ct));
+        rule.HasErrors.Should().BeFalse(string.Join(", ", rule.ErrorMessages ?? []));
+        (await TickAsync(first.AddSeconds(5))).Failed.Should().Be(0);
+        await using (var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync())))
+        {
+            await connection.OpenAsync(Ct);
+            for (var i = 0; i < 2; i++)
+            {
+                await using var insert = new NpgsqlCommand("""
+                    INSERT INTO lane_staffing (zone_key, minute_utc, interval_index, lane, start_utc, minutes, arrivals, recommended, bound, at_limit, shortfall,
+                        wait_recommended, wait_open, no_service_open, backlog_end, gap, lane_gap, queue_minute_utc, queue_now, open_now, open_now_degraded, desks,
+                        target_minutes, busy_cap, throughput_per_desk, throughput_source, computed_utc)
+                    VALUES ('DMO/A-VIS', @minute, 0, 'VIS', @minute, 1, 30, 6, 'Wait', false, NULL, 8, 12, false, NULL, 'None', 'None', @minute, 40, 4, false, 8,
+                        10, 0.85, 0.5, 'Measured', @minute)
+                    """, connection);
+                insert.Parameters.AddWithValue("minute", first.AddMinutes(i - 1));
+                await insert.ExecuteNonQueryAsync(Ct);
+            }
+        }
+
+        (await TickAsync(first.AddMinutes(1).AddSeconds(5))).Raised.Should().Be(1);
+        var alert = (await _host.AsCallerAsync(p.Admin, s => s.GetRequiredService<ISvcAlerts>().SearchAsync(new AlertCriteria { SiteCode = "DMO", RuleCode = rule.Data.Code }, Ct)))
+            .Data.Data.Single();
+        alert.Should().Match<AlertViewModel>(a => a.Metric == "DesksBelowPlan" && a.RaisedValue == 2);
+        (await EmailsAsync(alert.Id)).Select(r => (r.Kind, r.Recipient)).Should().BeEquivalentTo(new[] { ("AlertRaised", Border), ("AlertRaised", BorderUpper) });
+
+        // Queued as an alert without an owner: every operational role for other metrics, the supervisors only for this one. An
+        // alert keeps what was raised (script 0021's trigger), so the row is changed as only a superuser could, past the trigger.
+        (await _host.ReadAsync<int>("SET session_replication_role = replica; UPDATE alert SET owner_role = NULL WHERE id = @id RETURNING 1", alert.Id)).Should().Be(1);
+        await _host.ReadAsync<int>("WITH x AS (DELETE FROM email_message WHERE alert_id = @id RETURNING 1) SELECT 1", alert.Id);
+        var queued = await _host.AsCallerAsync(p.Admin, async s =>
+        {
+            var entity = await s.GetRequiredService<IUnitOfWork>().StorageProvider.GetAsync<Alert>(alert.Id, Ct);
+            var count = await s.GetRequiredService<AlertEmails>().EnqueueAsync(entity, EmailKind.AlertRaised, first.AddMinutes(2), Ct);
+            s.GetRequiredService<IUnitOfWork>().PromiseToCommit();
+            return count;
+        });
+        queued.Should().Be(2);
+        (await EmailsAsync(alert.Id)).Select(r => r.Recipient).Should().BeEquivalentTo([Border, BorderUpper], "never the duty manager or the handler");
+
+        // An email to the duty manager written by hand (or by an older release) is held back by the sender's own check.
+        await _host.ReadAsync<int>("""
+            INSERT INTO email_message (id, kind, alert_id, site_code, recipient, subject, body, status, attempts, created_utc, next_attempt_utc)
+            SELECT gen_random_uuid(), 'AlertRaised', id, site_code, 'terminal.email@ariva.test', '[Ariva] planted', 'planted', 'Pending', 0, raised_utc, raised_utc
+            FROM alert WHERE id = @id RETURNING 1
+            """, alert.Id);
+        await SetAsidePendingAsync(alert.Id);
+        (await SendAsync(first.AddMinutes(3))).Should().Be(new EmailRound(2, 0, 0, 1));
+        _sink.Received.Select(m => m.To.Single()).Should().NotContain(Terminal);
+        (await EmailsAsync(alert.Id)).Single(r => r.Recipient == Terminal).Status.Should().Be("Suppressed");
+
+        // Escalated by the supervisor to an airport-side role (a row changed in the database): no email is written.
+        (await _host.ReadAsync<int>("SET session_replication_role = replica; UPDATE alert SET escalate_to_role = 'TerminalDutyManager' WHERE id = @id RETURNING 1",
+            alert.Id)).Should().Be(1);
+        (await _host.AsCallerAsync(p.Terminal, s => s.GetRequiredService<ISvcAlerts>().EscalateAsync(alert.Id, new AlertActionRequest("Mine"), Ct))).ErrorMessages
+            .Should().Equal(TopologyErrors.NotFound);
+        var escalated = await _host.AsCallerAsync(p.Border, s => s.GetRequiredService<ISvcAlerts>().EscalateAsync(alert.Id, new AlertActionRequest("Over to you"), Ct));
+        escalated.HasErrors.Should().BeFalse(string.Join(", ", escalated.ErrorMessages ?? []));
+        (await EmailsAsync(alert.Id)).Should().NotContain(r => r.Kind == "AlertEscalated");
+        await SetAsidePendingAsync(Guid.Empty);
+    }
+
+    /// <summary>
+    /// ARV-187 (CWE-863, CWE-200; owner decision 2026-10-16): a predicted nowcast alert carries the lane split of the arrival
+    /// wave, so it is emailed to border people only, when queued and when sent. Alerts as a rule from before the story left
+    /// them (planted: no rule check): owned by the duty manager it writes no email, raised or escalated to the duty manager;
+    /// without an owner it is written to the supervisors only, not to every operational role; and an email to the duty
+    /// manager that was already pending at the upgrade is held back by the sender.
+    /// </summary>
+    [Fact]
+    public async Task PredictedNowcast_Should_EmailBorderPeopleOnly_When_QueuedAndWhenSent()
+    {
+        Host();
+        var p = await PeopleAsync();
+        var first = ReferenceReplay.WallOf(57 * 60);
+        var rule = await _host.AsCallerAsync(p.Admin, s => s.GetRequiredService<ISvcAlertRules>().CreateAsync(new AlertRuleRequest("DMO", "Mail wave ahead", ["A-VIS"],
+            "PredictedNowcast", "GreaterThan", 20, null, null, 2, 2, "Warning", RoleCodes.BorderShiftSupervisor, null, null, null, true, LeadMinutes: 30), Ct));
+        rule.HasErrors.Should().BeFalse(string.Join(", ", rule.ErrorMessages ?? []));
+        var dutyOwned = Guid.CreateVersion7();
+        var ownerless = Guid.CreateVersion7();
+        await using (var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync())))
+        {
+            await connection.OpenAsync(Ct);
+            foreach (var (id, zone, owner) in new[] { (dutyOwned, "A-RES", RoleCodes.TerminalDutyManager), (ownerless, "A-CIT", (string)null) })
+            {
+                await using var insert = new NpgsqlCommand("""
+                    INSERT INTO alert (id, site_code, rule_id, rule_code, rule_name, zone_name, device_code, metric, severity, owner_role, escalate_after_minutes,
+                        escalate_to_role, raised_utc, raised_value, predicted_for_utc, state)
+                    VALUES (@id, 'DMO', @rule, @code, 'Mail wave ahead', @zone, NULL, 'PredictedNowcast', 'Warning', @owner, @after, @to, @raised, 48.2, @predictedFor, 'Raised')
+                    """, connection);
+                insert.Parameters.AddWithValue("id", id);
+                insert.Parameters.AddWithValue("rule", rule.Data.Id);
+                insert.Parameters.AddWithValue("code", rule.Data.Code);
+                insert.Parameters.AddWithValue("zone", zone);
+                insert.Parameters.AddWithValue("owner", (object)owner ?? DBNull.Value);
+                insert.Parameters.AddWithValue("after", owner is null ? DBNull.Value : 10);
+                insert.Parameters.AddWithValue("to", (object)owner ?? DBNull.Value);
+                insert.Parameters.AddWithValue("raised", first);
+                insert.Parameters.AddWithValue("predictedFor", first.AddMinutes(30));
+                await insert.ExecuteNonQueryAsync(Ct);
+            }
+        }
+
+        async Task<int> Enqueue(Guid id, EmailKind kind) => await _host.AsCallerAsync(p.Admin, async s =>
+        {
+            var entity = await s.GetRequiredService<IUnitOfWork>().StorageProvider.GetAsync<Alert>(id, Ct);
+            var count = await s.GetRequiredService<AlertEmails>().EnqueueAsync(entity, kind, first, Ct);
+            s.GetRequiredService<IUnitOfWork>().PromiseToCommit();
+            return count;
+        });
+
+        (await Enqueue(dutyOwned, EmailKind.AlertRaised)).Should().Be(0, "the duty manager is not a border role");
+        (await Enqueue(dutyOwned, EmailKind.AlertEscalated)).Should().Be(0, "nor as the escalation role");
+        (await EmailsAsync(dutyOwned)).Should().BeEmpty();
+        (await Enqueue(ownerless, EmailKind.AlertRaised)).Should().Be(2);
+        (await EmailsAsync(ownerless)).Select(r => r.Recipient).Should().BeEquivalentTo([Border, BorderUpper], "never the duty manager or the handler");
+
+        // An email to the duty manager pending from before the upgrade is held back by the sender's own check.
+        await _host.ReadAsync<int>("""
+            INSERT INTO email_message (id, kind, alert_id, site_code, recipient, subject, body, status, attempts, created_utc, next_attempt_utc)
+            SELECT gen_random_uuid(), 'AlertRaised', id, site_code, 'terminal.email@ariva.test', '[Ariva] planted', 'planted', 'Pending', 0, raised_utc, raised_utc
+            FROM alert WHERE id = @id RETURNING 1
+            """, ownerless);
+        await SetAsidePendingAsync(ownerless);
+        (await SendAsync(first.AddMinutes(3))).Should().Be(new EmailRound(2, 0, 0, 1));
+        _sink.Received.Select(m => m.To.Single()).Should().BeEquivalentTo([Border, BorderUpper]);
+        (await EmailsAsync(ownerless)).Single(r => r.Recipient == Terminal).Status.Should().Be("Suppressed");
+        (await _host.AsCallerAsync(p.Terminal, s => s.GetRequiredService<ISvcAlerts>().GetAsync(ownerless, Ct))).ErrorMessages.Should().Equal(TopologyErrors.NotFound);
+        (await _host.AsCallerAsync(p.Terminal, s => s.GetRequiredService<ISvcAlerts>().GetAsync(dutyOwned, Ct))).ErrorMessages.Should().Equal(TopologyErrors.NotFound);
+        await SetAsidePendingAsync(Guid.Empty);
     }
 
     [Fact]

@@ -194,6 +194,13 @@ public static class ArrivalWave
     public const int MaxWindow = 120;
     public const int DefaultWindow = 30;
 
+    /// <summary>
+    /// The longest window <see cref="Project"/> takes (ARV-181a, decision of 2026-10-15): the staffing recommendation's 13
+    /// intervals reach the quarter hour after now plus 3 hours, up to 195 minutes ahead. The arrival-wave API and the
+    /// predicted-breach source keep <see cref="MaxWindow"/>.
+    /// </summary>
+    public const int MaxProjectionWindow = 195;
+
     /// <summary>The alert window of F14: the 20 minutes from now + 5 to now + 25 (the minutes starting at now + 5 to now + 24).</summary>
     public const int AlertFrom = 5;
 
@@ -246,8 +253,8 @@ public static class ArrivalWave
     {
         ArgumentNullException.ThrowIfNull(flights);
         ArgumentNullException.ThrowIfNull(settings);
-        if (windowMinutes is < MinWindow or > MaxWindow)
-            throw new ArgumentOutOfRangeException(nameof(windowMinutes), $"The window is {MinWindow} to {MaxWindow} minutes.");
+        if (windowMinutes is < MinWindow or > MaxProjectionWindow)
+            throw new ArgumentOutOfRangeException(nameof(windowMinutes), $"The window is {MinWindow} to {MaxProjectionWindow} minutes.");
         var minute = Floor(now);
         var horizon = windowMinutes + settings.DelayMinutes + Spread.Count;
         var curve = new LaneCounts[horizon];

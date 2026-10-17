@@ -4,6 +4,14 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 - No environment deploys the "latest" tag.
 - Production never seeds the fictional demo airport (ARV-019).
 - The MQTT transport always has its TLS secret (ARV-024): device credentials never cross the network in clear.
+- The validation reader login (ARV-104g1) comes from a secret named by validationReader.secretName, and production
+  requires it (optional false), so the pilot's ground-truth proof always has its reader.
+- The retention periods (ARV-111a, migration.retention) are whole numbers of days within their bounds (the same bounds as
+  RetentionSettings in Ariva.Infra), and no other key is given.
+- The monitoring thresholds (ARV-125b) are in range: minutes 1 to 1440, a severity of warning or critical, usedPercent
+  1 to 99, share above 0 and at most 1, criticalDays below warningDays (both 1 to 365), records 0 or more, claims,
+  services and namespaces Kubernetes names, namespaceLabel namespace or exported_namespace, channels and the monitoring
+  environment plain names; every rule source has its values and no values name an unknown rule.
 */ -}}
 {{- if and (eq .Values.environment "k8s-prd") (or (empty .Values.buildNumber) (eq (toString .Values.buildNumber) "trunk")) }}
 {{- fail "k8s-prd needs an explicit buildNumber (for example --set buildNumber=main-20261001.3); trunk and empty are not allowed" }}
@@ -26,5 +34,106 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- end }}
 {{- if not (regexMatch "^sha256:[0-9a-f]{64}$" (toString $digest)) }}
 {{- fail (printf "imageDigests.%s must be a sha256 digest" $service) }}
+{{- end }}
+{{- end }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]{0,251}[a-z0-9])?$" (toString (.Values.validationReader.secretName | default ""))) }}
+{{- fail "validationReader.secretName must name the validation reader login's secret (keys username and password; ARV-104g1)" }}
+{{- end }}
+{{- if not (kindIs "bool" .Values.validationReader.optional) }}
+{{- fail "validationReader.optional must be true or false" }}
+{{- end }}
+{{- if and (eq .Values.environment "k8s-prd") .Values.validationReader.optional }}
+{{- fail "k8s-prd needs the validation reader secret: set validationReader.optional false (ARV-104g1)" }}
+{{- end }}
+{{- $retention := (.Values.migration | default dict).retention | default dict }}
+{{- $retentionBounds := dict "rawSensingDays" (list 7 3650) "deskZoneReadingDays" (list 2 90) "laneStaffingDays" (list 90 3650) "alertEmailDays" (list 30 3650) "integrationCallDays" (list 30 3650) "reportDeliveryDays" (list 30 3650) }}
+{{- if not (kindIs "map" $retention) }}
+{{- fail "migration.retention must be a map of retention periods in days (ARV-111a)" }}
+{{- end }}
+{{- range $key, $_ := $retention }}
+{{- if not (hasKey $retentionBounds $key) }}
+{{- fail (printf "migration.retention.%s is not a retention period (ARV-111a); the periods are %s" $key (keys $retentionBounds | sortAlpha | join ", ")) }}
+{{- end }}
+{{- end }}
+{{- range $key, $range := $retentionBounds }}
+{{- $value := index $retention $key }}
+{{- $number := or (kindIs "float64" $value) (kindIs "int64" $value) (kindIs "int" $value) }}
+{{- if or (not $number) (lt (float64 $value) (float64 (index $range 0))) (gt (float64 $value) (float64 (index $range 1))) (ne (float64 $value) (float64 (int $value))) }}
+{{- fail (printf "migration.retention.%s must be a whole number of days from %d to %d (ARV-111a)" $key (index $range 0) (index $range 1)) }}
+{{- end }}
+{{- end }}
+{{- with .Values.monitoring }}
+{{- if not (kindIs "bool" .enabled) }}
+{{- fail "monitoring.enabled must be true or false" }}
+{{- end }}
+{{- range $channel := (.channels | default list) }}
+{{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}$" (toString $channel)) }}
+{{- fail (printf "monitoring.channels: %q is not a plain SigNoz channel name (letters, digits, spaces, _ . -)" (toString $channel)) }}
+{{- end }}
+{{- end }}
+{{- if not (regexMatch "^[A-Za-z0-9]([A-Za-z0-9._-]{0,61}[A-Za-z0-9])?$" (toString (.environment | default $.Values.environment))) }}
+{{- fail "monitoring.environment (or environment when it is empty) must be a plain name: letters, digits and . _ - (the hosts' deployment.environment)" }}
+{{- end }}
+{{- $sources := list }}
+{{- range $path, $_ := $.Files.Glob "files/monitoring/alerts/*.json" }}{{ $sources = append $sources (base $path | trimSuffix ".json") }}{{ end }}
+{{- range $key, $settings := (.alerts | default dict) }}
+{{- if not (has $key $sources) }}
+{{- fail (printf "monitoring.alerts.%s names no rule in files/monitoring/alerts" $key) }}
+{{- end }}
+{{- if not (kindIs "map" $settings) }}
+{{- fail (printf "monitoring.alerts.%s must be a map of settings" $key) }}
+{{- end }}
+{{- if and (hasKey $settings "enabled") (not (kindIs "bool" $settings.enabled)) }}
+{{- fail (printf "monitoring.alerts.%s.enabled must be true or false" $key) }}
+{{- end }}
+{{- range $field, $value := $settings }}
+{{- $number := or (kindIs "float64" $value) (kindIs "int64" $value) (kindIs "int" $value) }}
+{{- if and (eq $field "minutes") (or (not $number) (lt (float64 $value) 1.0) (gt (float64 $value) 1440.0) (ne (float64 $value) (float64 (int $value)))) }}
+{{- fail (printf "monitoring.alerts.%s.minutes must be a whole number from 1 to 1440" $key) }}
+{{- end }}
+{{- if and (eq $field "severity") (not (has (toString $value) (list "warning" "critical"))) }}
+{{- fail (printf "monitoring.alerts.%s.severity must be warning or critical" $key) }}
+{{- end }}
+{{- if and (eq $field "records") (or (not $number) (lt (float64 $value) 0.0) (ne (float64 $value) (float64 (int $value)))) }}
+{{- fail (printf "monitoring.alerts.%s.records must be a whole number, 0 or more" $key) }}
+{{- end }}
+{{- if and (eq $field "usedPercent") (or (not $number) (lt (float64 $value) 1.0) (gt (float64 $value) 99.0)) }}
+{{- fail (printf "monitoring.alerts.%s.usedPercent must be from 1 to 99" $key) }}
+{{- end }}
+{{- if and (eq $field "share") (or (not $number) (le (float64 $value) 0.0) (gt (float64 $value) 1.0)) }}
+{{- fail (printf "monitoring.alerts.%s.share must be above 0 and at most 1" $key) }}
+{{- end }}
+{{- if and (hasSuffix "Days" $field) (or (not $number) (lt (float64 $value) 1.0) (gt (float64 $value) 365.0) (ne (float64 $value) (float64 (int $value)))) }}
+{{- fail (printf "monitoring.alerts.%s.%s must be a whole number of days from 1 to 365" $key $field) }}
+{{- end }}
+{{- if or (eq $field "claims") (eq $field "services") }}
+{{- if or (not (kindIs "slice" $value)) (eq (len $value) 0) }}
+{{- fail (printf "monitoring.alerts.%s.%s must be a list of one or more Kubernetes names" $key $field) }}
+{{- end }}
+{{- range $value }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" (toString .)) }}
+{{- fail (printf "monitoring.alerts.%s.%s: %q is not a Kubernetes name" $key $field (toString .)) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if eq $field "namespaces" }}
+{{- if not (kindIs "slice" $value) }}
+{{- fail (printf "monitoring.alerts.%s.namespaces must be a list of namespaces (empty: the release's namespace)" $key) }}
+{{- end }}
+{{- range $value }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" (toString .)) }}
+{{- fail (printf "monitoring.alerts.%s.namespaces: %q is not a Kubernetes namespace name" $key (toString .)) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if and (eq $field "namespaceLabel") (not (has (toString $value) (list "namespace" "exported_namespace"))) }}
+{{- fail (printf "monitoring.alerts.%s.namespaceLabel must be namespace or exported_namespace" $key) }}
+{{- end }}
+{{- end }}
+{{- if and (hasKey $settings "warningDays") (hasKey $settings "criticalDays") }}
+{{- if ge (float64 $settings.criticalDays) (float64 $settings.warningDays) }}
+{{- fail (printf "monitoring.alerts.%s.criticalDays must be below warningDays" $key) }}
+{{- end }}
+{{- end }}
 {{- end }}
 {{- end }}

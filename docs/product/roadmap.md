@@ -42,7 +42,7 @@ Phase 0 calendar: 9 to 13.5 developer-weeks at half-time is 22 to 32 calendar we
 | Flight data | Schedule-file (SSIM) import | AIDX plus one vendor AODB on a real feed | More vendors |
 | Arrival-wave alert | Only if an AODB feed is already available | Yes | Yes |
 | Lane-mix forecast from API | No | Yes | Yes |
-| Show-up forecasts and staffing recommendation | No | Yes | Yes |
+| Show-up forecasts and staffing recommendation | Indicative recommended open desks per arrivals lane only (ARV-181a, on the immigration screen for border roles since ARV-181b1, and the "Open desks below recommendation" alert for border roles only since ARV-181b2; owner decision 2026-10-15: no roster, break rules, show-up forecast or P90) | Yes | Yes |
 | Airport Operations module (check-in, security, handler tenancy) | No | Yes | Yes |
 | SLA and penalty engine with disputes | No | Yes | Yes |
 | Border-to-airport aggregate feed | No | Yes | Yes |
@@ -198,7 +198,7 @@ Calendar scenario (contract signed April 2027):
 
 Signs the second developer is needed earlier:
 
-- The pilot client insists on lane-mix forecasting or staffing recommendations inside the pilot.
+- The pilot client insists on lane-mix forecasting or staffing recommendations inside the pilot (beyond the indicative recommended open desks the owner added to Phase 1 on 2026-10-15, ARV-181a).
 - AMAN incidents consume more than half of the developer's week for two sprints running.
 - Phase 0 and Phase 1 should overlap to move the pilot earlier.
 

@@ -1,3 +1,5 @@
+using Ariva.Core.Border;
+
 namespace Ariva.Core.Desks;
 
 /// <summary>The state of one desk (F10). Only <see cref="Idle"/> and <see cref="Serving"/> count as open for throughput.</summary>
@@ -32,7 +34,14 @@ public enum DeskSource
     StaffZone,
 
     /// <summary>Rank 4: the service zone in front of the desk (sensor); weak on its own.</summary>
-    ServiceZone
+    ServiceZone,
+
+    /// <summary>
+    /// Not a rank (ARV-149): the lane context of a desk without staff or service zones, the expected service time of the
+    /// lane it serves and the people waiting in its queue (<see cref="DeskLaneContext"/>). It never makes a desk's state
+    /// live or known: only the four sources above do.
+    /// </summary>
+    LaneContext
 }
 
 /// <summary>A desk session state as a login source reports it (AMAN's "on break" is <see cref="Paused"/>).</summary>
@@ -102,8 +111,12 @@ public sealed record DeskSessionChangedSignal(string DeskCode, DateTime TimeUtc,
     public override DeskSource Source => DeskSource.Session;
 }
 
-/// <summary>An occupancy reading of the desk's staff zone (rank 3) or service zone (rank 4).</summary>
-public sealed record DeskZoneReading(string DeskCode, DateTime TimeUtc, DeskSource Zone, int Count) : DeskSignal(DeskCode, TimeUtc)
+/// <summary>
+/// An occupancy reading of the desk's staff zone (rank 3) or service zone (rank 4). <see cref="Degraded"/>: the sensing
+/// pipeline flagged the reading (a corrected or unreliable clock, F11), so the state it supports is Degraded while it is
+/// the zone's latest reading (ARV-116).
+/// </summary>
+public sealed record DeskZoneReading(string DeskCode, DateTime TimeUtc, DeskSource Zone, int Count, bool Degraded = false) : DeskSignal(DeskCode, TimeUtc)
 {
     public override DeskSource Source => Zone;
 }
@@ -114,11 +127,48 @@ public sealed record DeskHeartbeat(string DeskCode, DateTime TimeUtc, DeskSource
     public override DeskSource Source => Of;
 }
 
+/// <summary>
+/// The lane context of a desk without staff or service zones at <see cref="DeskSignal.TimeUtc"/> (F10 rows 5a to 5f,
+/// ARV-149): <see cref="ServiceSeconds"/>, the expected service time per person of the lane it serves (the lane cycle time
+/// of ARV-117d, <see cref="LaneCycle.PerPerson"/>), and <see cref="Waiting"/>, the people in the queue zones it serves;
+/// each null when not known. <see cref="Degraded"/>: a queue length it rests on was degraded (F11). Aggregates only: no
+/// officer, traveller or document identity. It keeps no source alive.
+/// </summary>
+public sealed record DeskLaneContext(string DeskCode, DateTime TimeUtc, double? ServiceSeconds, int? Waiting, bool Degraded = false) : DeskSignal(DeskCode, TimeUtc)
+{
+    /// <summary>The longest expected service time taken, in seconds (contract V1's bound on a service time).</summary>
+    public const double MaxServiceSeconds = ImmigrationRules.MaxSeconds;
+
+    /// <summary>The most people a context may count as waiting (CWE-501, Proposed); more is not a queue.</summary>
+    public const int MaxWaiting = 100_000;
+
+    public override DeskSource Source => DeskSource.LaneContext;
+
+    /// <summary>Whether the values are within bounds (CWE-501): a service time finite, above 0 and at most an hour; 0 to <see cref="MaxWaiting"/> waiting.</summary>
+    public bool WithinBounds => (ServiceSeconds is null || ServiceWithinBounds(ServiceSeconds.Value)) && (Waiting is null || WaitingWithinBounds(Waiting.Value));
+
+    /// <summary>An expected service time in seconds that can be taken: finite, above 0 and at most <see cref="MaxServiceSeconds"/>.</summary>
+    public static bool ServiceWithinBounds(double seconds) => double.IsFinite(seconds) && seconds > 0 && seconds <= MaxServiceSeconds;
+
+    /// <summary>A count of people waiting that can be taken: 0 to <see cref="MaxWaiting"/>.</summary>
+    public static bool WaitingWithinBounds(int waiting) => waiting is >= 0 and <= MaxWaiting;
+}
+
 /// <summary>Settings of the desk state engine (F10; Proposed values to tune in the pilot).</summary>
 public sealed record DeskStateSettings
 {
     /// <summary>T1: staffed without activity this long is Paused (example 3 minutes).</summary>
     public TimeSpan PauseAfter { get; init; } = TimeSpan.FromMinutes(3);
+
+    /// <summary>
+    /// T1 for a desk without a live login source (ARV-116, Proposed): staff presence is then the only evidence that the
+    /// desk is staffed, so a staff zone empty this long (with no transaction in that time) makes it Paused, while a sensor
+    /// dropout shorter than this keeps it open. Null: <see cref="PauseAfter"/>, as before. The desk feed sets 60 seconds.
+    /// </summary>
+    public TimeSpan? SensorPauseAfter { get; init; }
+
+    /// <summary>The T1 that applies: <see cref="PauseAfter"/> with a live login source, <see cref="SensorPauseAfter"/> (if set) without.</summary>
+    public TimeSpan PauseAfterFor(bool loginLive) => loginLive ? PauseAfter : SensorPauseAfter ?? PauseAfter;
 
     /// <summary>T2: staffed with the staff zone empty this long is Closed (example 10 minutes).</summary>
     public TimeSpan CloseAfter { get; init; } = TimeSpan.FromMinutes(10);
@@ -159,6 +209,32 @@ public sealed record DeskStateSettings
     /// <summary>Transactions one completed-interval signal may carry.</summary>
     public int MaxTransactionsPerSignal { get; init; } = 1_000;
 
+    /// <summary>
+    /// k of F10 rows 5b to 5e (ARV-149, Proposed 4, from 2 to 20): a desk without staff or service zones is Paused only after
+    /// a silence of k times its lane's expected service time s (never less than T1, never more than <see cref="MaxTransaction"/>).
+    /// </summary>
+    public double RhythmPauseMultiple { get; init; } = 4;
+
+    /// <summary>
+    /// I of F10 row 5a (ARV-149): the interval one <see cref="DeskTransactionsCompleted"/> covers (AMAN contract V1: one
+    /// minute). A transaction is counted in the interval it ends in and reported at the interval's end, so at a desk serving
+    /// one traveller after another the next interval with a transaction ends at most s + I after the last.
+    /// </summary>
+    public TimeSpan CompletedInterval { get; init; } = TimeSpan.FromSeconds(ImmigrationRules.IntervalSeconds);
+
+    /// <summary>
+    /// P of F10 rows 5b to 5e (ARV-149): max(T1, min(k x s, <see cref="MaxTransaction"/>)), or T1 when the lane's expected
+    /// service time <paramref name="service"/> is not known.
+    /// </summary>
+    public TimeSpan RhythmPauseAfter(TimeSpan? service)
+    {
+        if (!service.HasValue)
+            return PauseAfter;
+        var seconds = service.Value.TotalSeconds * RhythmPauseMultiple;
+        var multiple = double.IsFinite(seconds) && seconds < MaxTransaction.TotalSeconds ? TimeSpan.FromSeconds(seconds) : MaxTransaction;
+        return multiple > PauseAfter ? multiple : PauseAfter;
+    }
+
     /// <summary>The problems with these settings, empty when valid.</summary>
     public IEnumerable<string> Problems()
     {
@@ -166,6 +242,10 @@ public sealed record DeskStateSettings
             yield return "PauseAfter (T1) is above 0 and at most 2 hours.";
         if (CloseAfter <= PauseAfter || CloseAfter > TimeSpan.FromHours(4))
             yield return "CloseAfter (T2) is above PauseAfter (T1) and at most 4 hours.";
+        // No pattern variable in the condition (ARV-069a).
+        var sensorPause = SensorPauseAfter;
+        if (sensorPause.HasValue && (sensorPause.Value < TimeSpan.FromSeconds(10) || sensorPause.Value > PauseAfter))
+            yield return "SensorPauseAfter is from 10 seconds to PauseAfter (T1).";
         if (StaleAfter < TimeSpan.FromSeconds(10) || StaleAfter > TimeSpan.FromHours(1))
             yield return "StaleAfter is from 10 seconds to 1 hour.";
         if (MaxTransaction < TimeSpan.FromMinutes(1) || MaxTransaction > TimeSpan.FromHours(4))
@@ -192,6 +272,10 @@ public sealed record DeskStateSettings
             yield return "MaxZoneCount is from 1 to 10,000.";
         if (MaxTransactionsPerSignal is < 1 or > 1_000_000)
             yield return "MaxTransactionsPerSignal is from 1 to 1,000,000.";
+        if (!double.IsFinite(RhythmPauseMultiple) || RhythmPauseMultiple < 2 || RhythmPauseMultiple > 20)
+            yield return "RhythmPauseMultiple is from 2 to 20.";
+        if (CompletedInterval < TimeSpan.FromSeconds(10) || CompletedInterval > TimeSpan.FromMinutes(15))
+            yield return "CompletedInterval is from 10 seconds to 15 minutes.";
     }
 }
 
@@ -220,7 +304,8 @@ public sealed record DeskMemory
     /// <summary>This memory with <paramref name="source"/> heard at <paramref name="atUtc"/> (never moving it back).</summary>
     public DeskMemory WithHeard(DeskSource source, DateTime atUtc)
     {
-        if (Heard(source) is { } h && h >= atUtc)
+        var heard = Heard(source);
+        if (heard.HasValue && heard.Value >= atUtc)
             return this;
         return source switch
         {
@@ -264,6 +349,29 @@ public sealed record DeskMemory
 
     public DateTime? ServiceReadAt { get; init; }
 
+    /// <summary>The latest staff and service zone readings were flagged by the sensing pipeline (F11, ARV-116); absent in older snapshots, so false.</summary>
+    public bool StaffDegraded { get; init; }
+
+    public bool ServiceDegraded { get; init; }
+
+    /// <summary>
+    /// ARV-149 (a desk without staff or service zones, F10 rows 5a to 5f): the time of the latest lane context taken; null
+    /// before any (absent in older snapshots).
+    /// </summary>
+    public DateTime? LaneContextAt { get; init; }
+
+    /// <summary>ARV-149: the lane's expected service time per person in seconds from that context (null: not known).</summary>
+    public double? LaneServiceSeconds { get; init; }
+
+    /// <summary>ARV-149: the people waiting in the desk's queue zones from that context (null: not known).</summary>
+    public int? QueueWaiting { get; init; }
+
+    /// <summary>ARV-149: since when people have been waiting without a break in the contexts (null: nobody waiting, or not known).</summary>
+    public DateTime? QueueWaitingSince { get; init; }
+
+    /// <summary>ARV-149: a queue length that context rests on was degraded (F11).</summary>
+    public bool QueueDegraded { get; init; }
+
     public static DeskMemory Empty { get; } = new();
 }
 
@@ -279,17 +387,53 @@ public sealed record DeskEvaluation(DeskStatus Status, bool SensorDerived, bool 
 /// wins: (1) every source stale gives Unknown; (2) a live login source whose latest session is a logout gives Closed;
 /// (3) a transaction in progress gives Serving; (3a, Proposed) a live login source on break gives Paused; (4) staffed
 /// with the staff zone empty for T2 and no transaction in that time gives Closed; (5) staffed with no activity for T1
-/// (the staff zone empty and no transaction, or without a staff zone sensor no transaction since T1 or since login)
+/// (the staff zone empty and no transaction, or without a staff zone sensor no transaction since T1 or since login;
+/// without a live login source T1 is <see cref="DeskStateSettings.SensorPauseAfter"/> when set, ARV-116)
 /// gives Paused, where staffed without a live login source means staff present or within T2 of the staff leaving or of
 /// the last transaction (Proposed); (6) without a live login source, staff present and the service zone occupied gives Serving, flagged
 /// as sensor-derived; (7) staffed gives Idle; (8) a live login source not logged in with staff present gives Closed,
 /// recorded as present and not processing; (9) Closed. A configured source that is stale counts as absent, and the
-/// result is flagged Degraded. Pure.
+/// result is flagged Degraded; a staff or service zone counts as configured only once it has been heard (ARV-116).
+/// A desk whose only sources are a login and transactions (no staff or service zone, <see cref="FollowsRhythm"/>), logged in
+/// with both live, takes rows 5a to 5f instead of rows 4 to 7 (ARV-149, Proposed): (5a) transactions keep arriving within its
+/// lane's expected service time s (the last interval with a transaction ended less than min(s + I, P) ago) gives Serving;
+/// with people waiting in its queue, (5b) Serving while the silence since its last activity or the start of the waiting is
+/// under P = max(T1, min(k x s, the longest transaction)), (5c) Paused after it; (5d) nobody waiting gives Idle; with the
+/// queue not known, (5e) Paused after a silence of P, (5f) otherwise Idle. Without a lane context (or a stale one) these are
+/// rows 5 and 7 as before. Pure.
 /// </summary>
 public static class DeskRule
 {
-    public static bool Live(DeskProfile desk, DeskMemory memory, DeskSource source, DateTime atUtc, DeskStateSettings settings) =>
-        desk.Has(source) && memory.Heard(source) is { } heard && heard <= atUtc && atUtc - heard < settings.StaleAfter;
+    public static bool Live(DeskProfile desk, DeskMemory memory, DeskSource source, DateTime atUtc, DeskStateSettings settings)
+    {
+        // No pattern variable in the condition (ARV-069a): a mutant that short-circuits it still compiles.
+        var heard = memory.Heard(source);
+        return desk.Has(source) && heard.HasValue && heard.Value <= atUtc && atUtc - heard.Value < settings.StaleAfter;
+    }
+
+    /// <summary>
+    /// Whether F10 rows 5a to 5f apply to <paramref name="desk"/> (ARV-149): a login and a transaction source and neither a
+    /// staff nor a service zone, so its state comes from AMAN alone. Desks with zones keep rows 4 to 7.
+    /// </summary>
+    public static bool FollowsRhythm(DeskProfile desk) =>
+        desk is not null && desk.HasSession && desk.HasTransactions && !desk.HasStaffZone && !desk.HasServiceZone;
+
+    /// <summary>
+    /// The lane context a desk is judged against at <paramref name="atUtc"/> (ARV-149): the lane's expected service time s,
+    /// the people waiting and whether a degraded queue length decided it; nothing known when the latest context is older
+    /// than T_stale (or newer than the moment), and a value out of bounds counts as not known.
+    /// </summary>
+    public static (TimeSpan? Service, int? Waiting, bool Degraded) Context(DeskMemory memory, DateTime atUtc, DeskStateSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(memory);
+        ArgumentNullException.ThrowIfNull(settings);
+        var at = memory.LaneContextAt;
+        if (!at.HasValue || at.Value > atUtc || atUtc - at.Value >= settings.StaleAfter)
+            return (null, null, false);
+        var waiting = memory.QueueWaiting;
+        var known = waiting.HasValue && DeskLaneContext.WaitingWithinBounds(waiting.Value);
+        return (ServiceOf(memory.LaneServiceSeconds), known ? waiting : null, known && memory.QueueDegraded);
+    }
 
     public static DeskEvaluation Evaluate(DeskProfile desk, DeskMemory memory, DateTime atUtc, DeskStateSettings settings)
     {
@@ -300,13 +444,23 @@ public static class DeskRule
         var login = Live(desk, memory, DeskSource.Session, atUtc, settings);
         var staff = Live(desk, memory, DeskSource.StaffZone, atUtc, settings);
         var service = Live(desk, memory, DeskSource.ServiceZone, atUtc, settings);
-        var configured = (desk.HasTransactions ? 1 : 0) + (desk.HasSession ? 1 : 0) + (desk.HasStaffZone ? 1 : 0) + (desk.HasServiceZone ? 1 : 0);
+        // A staff or service zone counts as a source once it has been heard (ARV-116, Proposed): a profile may draw zones
+        // that no sensor covers (to link a queue to its desks), and such a zone must not degrade the desk for good; once
+        // heard, a zone that falls silent is stale like any other source.
+        bool Installed(DeskSource zone)
+        {
+            var heard = memory.Heard(zone);
+            return heard.HasValue && heard.Value <= atUtc;
+        }
+        var configured = (desk.HasTransactions ? 1 : 0) + (desk.HasSession ? 1 : 0) + (desk.HasStaffZone && Installed(DeskSource.StaffZone) ? 1 : 0) +
+                         (desk.HasServiceZone && Installed(DeskSource.ServiceZone) ? 1 : 0);
         var live = (tx ? 1 : 0) + (login ? 1 : 0) + (staff ? 1 : 0) + (service ? 1 : 0);
 
         // Row 1: nothing to go on.
         if (live == 0)
             return new DeskEvaluation(DeskStatus.Unknown, false, false, true);
-        var degraded = live < configured;
+        // A configured source gone stale, or a live zone reading the sensing pipeline flagged (F11), degrades the state.
+        var degraded = live < configured || (staff && memory.StaffDegraded) || (service && memory.ServiceDegraded);
 
         var staffPresent = staff && memory.StaffCount > 0;
 
@@ -315,14 +469,16 @@ public static class DeskRule
             return new DeskEvaluation(DeskStatus.Closed, false, staffPresent, degraded);
 
         // Row 3: a transaction in progress proves Serving (a start without an end, not older than a lost end).
-        if (tx && memory.TransactionSince is { } since && since <= atUtc && atUtc - since < settings.MaxTransaction)
+        var since = memory.TransactionSince;
+        if (tx && since.HasValue && since.Value <= atUtc && atUtc - since.Value < settings.MaxTransaction)
             return new DeskEvaluation(DeskStatus.Serving, false, false, degraded);
 
         // Row 3a (Proposed): the login source's own "on break".
         if (login && memory.Session == DeskSessionSignal.Paused)
             return new DeskEvaluation(DeskStatus.Paused, false, false, degraded);
 
-        var emptyFor = staff && memory.StaffCount == 0 && memory.StaffEmptySince is { } empty && empty <= atUtc ? atUtc - empty : (TimeSpan?)null;
+        var empty = memory.StaffEmptySince;
+        var emptyFor = staff && memory.StaffCount == 0 && empty.HasValue && empty.Value <= atUtc ? atUtc - empty.Value : (TimeSpan?)null;
         var recentTransaction = tx && Within(memory.LastTransaction, atUtc, settings.CloseAfter);
 
         // Staffed: logged in; without a live login source, staff present, or (Proposed) within T2 of the staff leaving
@@ -335,14 +491,20 @@ public static class DeskRule
             // the session counts as activity so that a fresh login is not Paused at once.
             var lastActivity = Max(tx ? memory.LastTransaction : null, login ? memory.SessionSince : null);
 
+            // Rows 5a to 5f (ARV-149, Proposed): a desk with AMAN's sources alone follows its transaction rhythm against the
+            // lane's expected service time and its queue; with no lane context they are rows 5 and 7 as before.
+            if (login && tx && FollowsRhythm(desk))
+                return Rhythm(memory, atUtc, settings, lastActivity, degraded);
+
             // Row 4: staff zone empty for T2, with no transaction in that time (Proposed: rank 1 outranks a missed zone).
             if (emptyFor >= settings.CloseAfter && !Within(lastActivity, atUtc, settings.CloseAfter))
                 return new DeskEvaluation(DeskStatus.Closed, false, false, degraded);
 
-            // Row 5: no activity for T1.
+            // Row 5: no activity for T1 (without a live login source, the shorter sensor T1 when set: ARV-116, Proposed).
+            var pauseAfter = settings.PauseAfterFor(login);
             if (staff
-                    ? emptyFor >= settings.PauseAfter && !Within(lastActivity, atUtc, settings.PauseAfter)
-                    : tx && !Within(lastActivity, atUtc, settings.PauseAfter))
+                    ? emptyFor >= pauseAfter && !Within(lastActivity, atUtc, pauseAfter)
+                    : tx && !Within(lastActivity, atUtc, pauseAfter))
                 return new DeskEvaluation(DeskStatus.Paused, false, false, degraded);
         }
 
@@ -362,6 +524,43 @@ public static class DeskRule
         return new DeskEvaluation(DeskStatus.Closed, false, false, degraded);
     }
 
+    // F10 rows 5a to 5f (ARV-149): a logged-in desk with live session and transaction sources and no staff or service zone.
+    // AMAN's interval statistics report completed transactions only, at the end of the interval they ended in, so the
+    // rhythm is judged from the end of the last interval with a transaction. Not sensor-derived: the login is AMAN's.
+    private static DeskEvaluation Rhythm(DeskMemory memory, DateTime atUtc, DeskStateSettings settings, DateTime? lastActivity, bool degraded)
+    {
+        var context = Context(memory, atUtc, settings);
+        var pause = settings.RhythmPauseAfter(context.Service);
+
+        // Row 5a: transactions keep arriving within the lane's expected service time.
+        if (context.Service.HasValue)
+        {
+            var rhythm = context.Service.Value + settings.CompletedInterval;
+            if (Within(memory.LastTransaction, atUtc, rhythm < pause ? rhythm : pause))
+                return new DeskEvaluation(DeskStatus.Serving, false, false, degraded);
+        }
+
+        if (context.Waiting.HasValue)
+        {
+            var queueDegraded = degraded || context.Degraded;
+            // Row 5d: logged in with nobody waiting.
+            if (context.Waiting.Value == 0)
+                return new DeskEvaluation(DeskStatus.Idle, false, false, queueDegraded);
+
+            // Rows 5b and 5c: people waiting; the silence counts from the last activity or the start of the waiting, so a
+            // desk idle through a quiet spell has P to start once a queue forms.
+            var since = Max(lastActivity, memory.QueueWaitingSince);
+            return new DeskEvaluation(Within(since, atUtc, pause) ? DeskStatus.Serving : DeskStatus.Paused, false, false, queueDegraded);
+        }
+
+        // Rows 5e and 5f: the queue not known; P after the last activity (T1 without s, as row 5 before).
+        return new DeskEvaluation(Within(lastActivity, atUtc, pause) ? DeskStatus.Idle : DeskStatus.Paused, false, false, degraded);
+    }
+
+    // An expected service time from a lane context, or null when absent or out of bounds (a restored snapshot is data, CWE-501).
+    private static TimeSpan? ServiceOf(double? seconds) =>
+        seconds.HasValue && DeskLaneContext.ServiceWithinBounds(seconds.Value) ? TimeSpan.FromSeconds(seconds.Value) : null;
+
     /// <summary>
     /// The earliest moment after <paramref name="afterUtc"/> at which the evaluation could change without a new signal
     /// (a source going stale, T1 or T2 passing, a transaction becoming a lost end), or null when none.
@@ -369,10 +568,12 @@ public static class DeskRule
     public static DateTime? NextChange(DeskProfile desk, DeskMemory memory, DateTime afterUtc, DeskStateSettings settings)
     {
         DateTime? next = null;
+        // No pattern variables in the conditions (ARV-069a): every mutant of them compiles, so Stryker measures this method.
         void Consider(DateTime? at, TimeSpan plus)
         {
-            if (at is not { } t)
+            if (at is null)
                 return;
+            var t = at.Value;
             var candidate = t > DateTime.MaxValue - plus ? DateTime.MaxValue : t + plus;
             if (candidate > afterUtc && (next is null || candidate < next))
                 next = candidate;
@@ -384,10 +585,35 @@ public static class DeskRule
         Consider(memory.StaffEmptySince, settings.PauseAfter);
         Consider(memory.StaffEmptySince, settings.CloseAfter);
         Consider(memory.LastTransaction, settings.PauseAfter);
+        var sensorPause = settings.SensorPauseAfter;
+        if (sensorPause.HasValue)
+        {
+            Consider(memory.StaffEmptySince, sensorPause.Value);
+            Consider(memory.LastTransaction, sensorPause.Value);
+        }
+
         Consider(memory.LastTransaction, settings.CloseAfter);
         Consider(memory.SessionSince, settings.PauseAfter);
         Consider(memory.SessionSince, settings.CloseAfter);
         Consider(memory.TransactionSince, settings.MaxTransaction);
+
+        // ARV-149, rows 5a to 5f: the lane context going stale, the rhythm window and P after each kind of activity, with the
+        // context's expected service time and without it (T1, considered above for the transaction and the login).
+        if (FollowsRhythm(desk))
+        {
+            Consider(memory.LaneContextAt, settings.StaleAfter);
+            Consider(memory.QueueWaitingSince, settings.PauseAfter);
+            var service = ServiceOf(memory.LaneServiceSeconds);
+            if (service.HasValue)
+            {
+                var pause = settings.RhythmPauseAfter(service);
+                Consider(memory.LastTransaction, service.Value + settings.CompletedInterval);
+                Consider(memory.LastTransaction, pause);
+                Consider(memory.SessionSince, pause);
+                Consider(memory.QueueWaitingSince, pause);
+            }
+        }
+
         return next;
     }
 
@@ -395,5 +621,5 @@ public static class DeskRule
 
     // Activity within the last span before atUtc (activity in the future of atUtc counts as now).
     private static bool Within(DateTime? last, DateTime atUtc, TimeSpan span) =>
-        last is { } t && (t >= atUtc || atUtc - t < span);
+        last.HasValue && (last.Value >= atUtc || atUtc - last.Value < span);
 }

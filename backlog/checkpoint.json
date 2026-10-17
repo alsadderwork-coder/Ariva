@@ -1,0 +1,121 @@
+{
+  "commit": "b507ff931c2d117a7c50aa7a10f97edea60fda23",
+  "at": "2026-10-16",
+  "stories": 5,
+  "results": [
+    {
+      "name": "dotnet build",
+      "ok": true,
+      "seconds": 35
+    },
+    {
+      "name": "reference scenario golden up to date",
+      "ok": true,
+      "seconds": 15
+    },
+    {
+      "name": "unit tests",
+      "ok": true,
+      "seconds": 237
+    },
+    {
+      "name": "security scanner self-test",
+      "ok": true,
+      "seconds": 0
+    },
+    {
+      "name": "security scan",
+      "ok": true,
+      "seconds": 1
+    },
+    {
+      "name": "ops tooling self-test (backup and restore wrapper)",
+      "ok": true,
+      "seconds": 1
+    },
+    {
+      "name": "ops database script syntax",
+      "ok": true,
+      "seconds": 0
+    },
+    {
+      "name": "base images pinned",
+      "ok": true,
+      "seconds": 0
+    },
+    {
+      "name": "published runtime check self-test",
+      "ok": true,
+      "seconds": 0
+    },
+    {
+      "name": "offline bundle verifier self-test",
+      "ok": true,
+      "seconds": 10
+    },
+    {
+      "name": "offline bundle builder self-test",
+      "ok": true,
+      "seconds": 9
+    },
+    {
+      "name": "chart security (pod security context, read-only root, TLS, release guards)",
+      "ok": true,
+      "seconds": 12
+    },
+    {
+      "name": "nuget vulnerability audit (fails on high or critical)",
+      "ok": true,
+      "seconds": 26
+    },
+    {
+      "name": "npm audit (web)",
+      "ok": true,
+      "seconds": 1
+    },
+    {
+      "name": "npm audit (e2e)",
+      "ok": true,
+      "seconds": 1
+    },
+    {
+      "name": "docs text rules",
+      "ok": true
+    },
+    {
+      "name": "web svelte-check",
+      "ok": true,
+      "seconds": 14
+    },
+    {
+      "name": "web lint",
+      "ok": true,
+      "seconds": 10
+    },
+    {
+      "name": "web build",
+      "ok": true,
+      "seconds": 37
+    },
+    {
+      "name": "integration tests",
+      "ok": true,
+      "seconds": 1074
+    },
+    {
+      "name": "visual regression (pinned image)",
+      "ok": true,
+      "seconds": 212
+    },
+    {
+      "name": "e2e tests (API and functional)",
+      "ok": true,
+      "seconds": 1225
+    },
+    {
+      "name": "mutation tests (no engine change since f87ea8a869)",
+      "ok": true,
+      "skipped": true
+    }
+  ]
+}

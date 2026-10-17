@@ -1,6 +1,6 @@
 # Use runtime-deps for self-contained deployment
 
-FROM mcr.microsoft.com/dotnet/runtime-deps:10.0.12@sha256:099f6f87ed745377dd27bd722f0d1a352bca71b4fddaabfd75e7c064bcaa82da AS base
+FROM mcr.microsoft.com/dotnet/runtime-deps:10.0.13@sha256:da5846024d0008b48259b53a8953d39381fe5b7ec99ef1449ba4ba927f201490 AS base
 
 # OS security fixes published after Microsoft built the base image (Trivy gate in images.yml). The digest pins the
 # starting point; Dependabot moves it forward when Microsoft rebuilds.
@@ -11,7 +11,10 @@ RUN apt-get update \
 WORKDIR /app
 EXPOSE 8080
 
-FROM mcr.microsoft.com/dotnet/sdk:10.0.103@sha256:e362a8dbcd691522456da26a5198b8f3ca1d7641c95624fadc5e3e82678bd08a AS build
+# The SDK that bundles the runtime-deps version above: a self-contained publish ships the runtime packs of the SDK's own
+# runtime, whatever the base says (SDK 10.0.402 bundles 10.0.13; 10.0.103 bundled 10.0.3). MCR publishes patches of the
+# newest feature band only, so the band moves with the runtime (ARV-184).
+FROM mcr.microsoft.com/dotnet/sdk:10.0.402@sha256:0d99ebf1ccad15037b5c98c9fe8979d6b8dbac23812feae2277a0b277b5c5ffa AS build
 WORKDIR /src
 
 # Copy Directory.Packages.props for Central Package Management
@@ -42,10 +45,19 @@ WORKDIR /src/Platform/Backplane/Ariva.Api.Ingest
 RUN --mount=type=cache,id=nuget,sharing=locked,target=/root/.nuget/packages \
     dotnet publish "Ariva.Api.Ingest.csproj" -r linux-x64 -c Release -o /app/publish -p:PublishTrimmed=false -p:PublishReadyToRun=false --self-contained true
 
+# ARV-184 (CWE-1395): check what ships, not what was asked for. Fails the build unless both runtime packs in the publish
+# output are the runtime-deps version (10.0.13 or later) and System.Security.Cryptography.Pkcs.dll and the SignalR
+# assemblies are at or above the file version of the release that fixed their advisories (scripts/published-runtime.mjs;
+# scripts/base-images.mjs holds --runtime to the runtime-deps tag). The final stage copies the checked output only.
+FROM node:22.23.3-alpine3.24@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 AS checked
+COPY ["scripts/published-runtime.mjs", "/check/"]
+COPY --from=publish /app/publish /app/publish
+RUN node /check/published-runtime.mjs --check /app/publish --runtime 10.0.13
+
 # Final stage
 FROM base AS final
 WORKDIR /app
-COPY --from=publish /app/publish .
+COPY --from=checked /app/publish .
 
 # Create non-root user for security
 RUN groupadd -r -g 10001 nonroot \

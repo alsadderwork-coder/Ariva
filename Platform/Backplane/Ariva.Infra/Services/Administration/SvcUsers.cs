@@ -55,7 +55,7 @@ internal sealed class SvcUsers(
         // The sites in the same request: a site-limited administrator gives at least one of its own (a sites-less
         // account is administrable by all-sites administrators only, so it would be beyond its creator at once).
         var siteCodes = (request.SiteCodes ?? []).Distinct(StringComparer.Ordinal).ToList();
-        var sitesProblem = await SitesProblemAsync(request.AllSites, siteCodes, ct);
+        var sitesProblem = await SitesProblemAsync(request.AllSites, siteCodes, ct) ?? ObserverSitesProblem(request.AllSites, roles);
         if (sitesProblem is not null)
             return Result.Error<UserCreatedViewModel>(sitesProblem);
         if (!request.AllSites && siteCodes.Count == 0 && !(await siteScope.GetAsync(ct)).AllSites)
@@ -98,6 +98,15 @@ internal sealed class SvcUsers(
             return AdministrationErrors.UnknownSite;
         return null;
     }
+
+    /// <summary>
+    /// The site access check of the role (ARV-104a, first security review, 2026-10-08): an account whose only role is Validation
+    /// observer is bound to named sites and never given every site (<see cref="RoleCodes.NeedsNamedSites"/>). Checked after
+    /// the caller's own scope, so a site-limited administrator still gets its 403 first. Role grants and revokes apply the
+    /// same rule (<see cref="SvcRoleAssignment"/>).
+    /// </summary>
+    internal static string ObserverSitesProblem(bool allSites, IEnumerable<string> roles) =>
+        allSites && RoleCodes.NeedsNamedSites(roles) ? AdministrationErrors.ObserverNeedsNamedSites : null;
 
     /// <summary>
     /// A name is shown on screens and in the audit trail: no control, invisible or broken characters (CWE-117, CWE-79),
@@ -211,7 +220,7 @@ internal sealed class SvcUsers(
         var codes = (request?.SiteCodes ?? []).Distinct(StringComparer.Ordinal).ToList();
         var allSites = request?.AllSites == true;
 
-        var sitesProblem = await SitesProblemAsync(allSites, codes, ct);
+        var sitesProblem = await SitesProblemAsync(allSites, codes, ct) ?? ObserverSitesProblem(allSites, user.Roles.Select(r => r.RoleCode));
         if (sitesProblem is not null)
             return Result.Error<UserViewModel>(sitesProblem);
 

@@ -287,7 +287,15 @@
 			{#if report.alerts.length === 0}
 				<p class="px-4 py-6 text-sm text-muted-foreground">{$_('reports.noAlerts')}</p>
 			{:else}
-				<div class="max-h-[28rem] overflow-auto">
+				<!-- The table scrolls inside its card once a day has many rows, so its region takes the keyboard focus (WCAG 2.1.1, axe
+				     scrollable-region-focusable), named by the heading above it. -->
+				<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+				<div
+					class="max-h-[28rem] overflow-auto focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+					role="region"
+					aria-labelledby="report-alerts-title"
+					tabindex="0"
+				>
 					<table class="w-full text-sm" data-testid="report-alerts">
 						<thead class="sticky top-0 bg-muted text-xs text-muted-foreground">
 							<tr>
@@ -357,7 +365,15 @@
 			{#if report.devices.length === 0}
 				<p class="px-4 py-6 text-sm text-muted-foreground">{$_('reports.noDevices')}</p>
 			{:else}
-				<div class="max-h-[28rem] overflow-auto">
+				<!-- The table scrolls inside its card once a day has many rows, so its region takes the keyboard focus (WCAG 2.1.1, axe
+				     scrollable-region-focusable), named by the heading above it. -->
+				<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+				<div
+					class="max-h-[28rem] overflow-auto focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+					role="region"
+					aria-labelledby="report-devices-title"
+					tabindex="0"
+				>
 					<table class="w-full text-sm" data-testid="report-devices">
 						<thead class="sticky top-0 bg-muted text-xs text-muted-foreground">
 							<tr>

@@ -39,6 +39,12 @@ public sealed class DatabaseSettings
 
     public NHibernateSettings NHibernate { get; init; } = new();
 
+    /// <summary>
+    /// Database:Retention (ARV-111a): the retention periods the migration job applies per environment (hypertable policies and
+    /// the relational periods the Cronz retention job reads). Hosts never apply them.
+    /// </summary>
+    public RetentionSettings Retention { get; init; } = new();
+
     /// <summary>False when no separate migration login is configured or it is the same login as the hosts'.</summary>
     public bool UsesSeparateRuntimeLogin =>
         !string.IsNullOrWhiteSpace(Migration.Username) &&

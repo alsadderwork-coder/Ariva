@@ -1,6 +1,8 @@
 using System.Globalization;
 using Ariva.Core.Domain.Components;
 using Ariva.Core.Domain.Enums;
+using Ariva.Core.Security;
+using Ariva.Core.Services.Alerting;
 
 namespace Ariva.Core.Domain.Entities;
 
@@ -166,19 +168,44 @@ public sealed record AlertRuleValues(
     bool Enabled,
     int? LeadMinutes = null)
 {
-    /// <summary>The largest threshold per unit: minutes for waits, people for queue length, desks for desks below plan.</summary>
+    /// <summary>
+    /// The largest threshold per unit: minutes for waits, people for queue length and the conservation residual, desks
+    /// for desks below plan, percent for track completion, minutes of a bin (at most a day) for occupancy out of range.
+    /// </summary>
     public static double MaxThreshold(AlertMetric metric) => metric switch
     {
         AlertMetric.Nowcast or AlertMetric.BinP90 or AlertMetric.PredictedNowcast => 600,
-        AlertMetric.QueueLength => 100_000,
+        AlertMetric.QueueLength or AlertMetric.ConservationResidual => 100_000,
         AlertMetric.DesksBelowPlan => 1_000,
+        AlertMetric.TrackCompletion => 100,
+        AlertMetric.OccupancyOutOfRange => 1_440,
         _ => 0
     };
 
     /// <summary>Metrics that are true or false, compared with <see cref="AlertComparator.IsTrue"/> and no threshold.</summary>
     public static bool IsCondition(AlertMetric metric) => metric is AlertMetric.OverflowOccupied or AlertMetric.SensorOffline;
 
-    private static bool IsRole(string code) => RoleCodes.All.Any(r => string.Equals(r, code, StringComparison.Ordinal));
+    /// <summary>
+    /// The continuous health checks of a queue zone's bins (F18, ARV-114b): judged per queue zone on its stored
+    /// <c>zone_health_bin</c> rows, so a rule on one watches queue zones only.
+    /// </summary>
+    public static bool IsHealthCheck(AlertMetric metric) =>
+        metric is AlertMetric.ConservationResidual or AlertMetric.TrackCompletion or AlertMetric.OccupancyOutOfRange;
+
+    /// <summary>
+    /// Metrics judged per queue zone only, so a rule on one watches queue zones only: the health checks (stored per queue
+    /// zone, ARV-114b) and open desks below recommendation (stored per lane, a queue zone, in <c>lane_staffing</c>; ARV-181b2).
+    /// </summary>
+    public static bool WatchesQueueZonesOnly(AlertMetric metric) => IsHealthCheck(metric) || metric == AlertMetric.DesksBelowPlan;
+
+    /// <summary>
+    /// Border metrics that count a shortfall, so a rule on one fires at or above its threshold (ARV-181b2): open desks below
+    /// recommendation only. The predicted nowcast, border data since ARV-187, keeps all four comparators and may watch an
+    /// overflow zone (which takes its queue's arrivals); only its roles and channels are border-only.
+    /// </summary>
+    public static bool FiresAboveOnly(AlertMetric metric) => metric == AlertMetric.DesksBelowPlan;
+
+    private static bool IsRole(string code) => RoleCodes.AlertRoles.Any(r => string.Equals(r, code, StringComparison.Ordinal));
 
     public IReadOnlyList<string> Problems()
     {
@@ -233,6 +260,28 @@ public sealed record AlertRuleValues(
         if (!string.IsNullOrWhiteSpace(EscalationContact) &&
             (EscalationContact.Trim().Length > AlertRule.MaxContactLength || !DisplayText.IsClean(EscalationContact.Trim())))
             problems.Add($"An escalation contact is at most {AlertRule.MaxContactLength} characters without control or invisible characters.");
+        problems.AddRange(BorderProblems());
+        return problems;
+    }
+
+    /// <summary>
+    /// ARV-181b2 and ARV-187 (CWE-863, CWE-200, data boundary): a rule on a border-only metric (<see cref="BorderAlerts"/>:
+    /// open desks below recommendation and the predicted nowcast) belongs to a border role, never to no one (no owner means
+    /// every alert role, airport-side included), and escalates to a border role or to no role; a rule on open desks below
+    /// recommendation also fires above its threshold (desks short, <see cref="FiresAboveOnly"/>). Checked here, so a create,
+    /// an update, a backtest, a preview and an import all refuse such a rule alike, and the evaluation never judges a stored
+    /// one that fails it.
+    /// </summary>
+    private List<string> BorderProblems()
+    {
+        var problems = new List<string>();
+        if (!BorderAlerts.IsBorderOnly(Metric))
+            return problems;
+        var escalatesElsewhere = EscalateToRole is not null && !BorderAlerts.IsBorderRole(EscalateToRole);
+        if (!BorderAlerts.IsBorderRole(OwnerRole) || escalatesElsewhere)
+            problems.Add(AlertRuleErrors.BorderRolesOnly);
+        if (FiresAboveOnly(Metric) && Comparator is not (AlertComparator.GreaterThan or AlertComparator.GreaterOrEqual))
+            problems.Add(AlertRuleErrors.BorderComparator);
         return problems;
     }
 }

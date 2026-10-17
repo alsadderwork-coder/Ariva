@@ -1,5 +1,6 @@
 using Ariva.Core;
 using Ariva.Core.Domain.InputModels;
+using Ariva.Core.Domain.Entities;
 using Ariva.Core.Services;
 using Ariva.Core.Services.Administration;
 using Ariva.Core.Services.Displays;
@@ -102,6 +103,28 @@ public sealed class DisplayServiceTests(PostgresFixture fixture) : IAsyncDisposa
     }
 
     [Fact]
+    public async Task Display_Should_KeepEveryLabelAndMessage_When_TheyOutgrowTheDefaultColumnWidth()
+    {
+        var admin = await AdminAsync("it.display.long.admin");
+        var manager = await ManagerAsync(admin, "it.display.long.manager");
+        string[] languages = ["ar", "en", "pt", "sw"];
+        var label = (string lang, string zone) => $"{lang} {zone} ".PadRight(Core.Domain.Entities.Display.MaxLabelLength, lang == "ar" ? 'ب' : 'x');
+        var entries = new[] { "A-CRW", "A-CIT", "A-RES", "A-VIS" }
+            .Select(zone => new DisplayEntryRequest(zone, languages.ToDictionary(l => l, l => label(l, zone))))
+            .ToList();
+        var fallback = languages.ToDictionary(l => l, l => $"{l} ".PadRight(Core.Domain.Entities.Display.MaxMessageLength, l == "ar" ? 'ب' : 'y'));
+        var request = Request("LONG-1", languages: languages) with { Entries = entries, Fallback = fallback };
+
+        var created = await _host.AsCallerAsync(manager, s => Displays(s).CreateAsync(request, Ct));
+        created.HasErrors.Should().BeFalse(string.Join(", ", created.ErrorMessages ?? []));
+        (await _host.ReadAsync<int>("SELECT length(entries) FROM display WHERE code = 'LONG-1' AND deleted_on IS NULL")).Should().BeGreaterThan(1000,
+            "the entries outgrow NHibernate's default string width");
+        var stored = await _host.AsCallerAsync(manager, s => Displays(s).GetAsync(created.Data.Display.Id, Ct));
+        stored.Data.Entries.Select(e => e.Labels["sw"]).Should().Equal(entries.Select(e => e.Labels["sw"]), "every label comes back whole");
+        stored.Data.Fallback.Should().BeEquivalentTo(fallback, "every message comes back whole");
+    }
+
+    [Fact]
     public async Task Display_Should_ShowOnlyQueueZonesOfItsSitesPublishedProfile_When_Created()
     {
         var admin = await AdminAsync("it.display.zones.admin");
@@ -121,6 +144,11 @@ public sealed class DisplayServiceTests(PostgresFixture fixture) : IAsyncDisposa
         (await _host.AsCallerAsync(elsewhere, s => Displays(s).GetAsync(dmo.Id, Ct))).ErrorMessages.Should().Equal(TopologyErrors.NotFound);
         (await _host.AsCallerAsync(elsewhere, s => Displays(s).SearchAsync("DMO", Ct))).Data.Should().BeEmpty();
         (await _host.AsCallerAsync(elsewhere, s => Displays(s).NewCredentialAsync(dmo.Id, Ct))).ErrorMessages.Should().Equal(TopologyErrors.NotFound);
+        // ARV-140: the layout is changed through the update, so another site's manager cannot split this site's public screen.
+        (await _host.AsCallerAsync(elsewhere, s => Displays(s).UpdateAsync(dmo.Id, Request("ZN-7") with { Layout = "Split", QueueShare = 70 }, Ct)))
+            .ErrorMessages.Should().Equal(TopologyErrors.NotFound);
+        (await _host.ReadAsync<string>("SELECT layout || ' ' || queue_share FROM display WHERE code = 'ZN-7' AND deleted_on IS NULL")).Should().Be("Full 60",
+            "nothing of the refused change is kept");
         (await _host.AsCallerAsync(elsewhere, s => Displays(s).DeleteAsync(dmo.Id, Ct))).ErrorMessages.Should().Equal(TopologyErrors.NotFound);
         (await _host.AsCallerAsync(manager, s => Displays(s).SearchAsync("DMO", Ct))).Data.Should().Contain(d => d.Code == "ZN-7");
     }
@@ -162,6 +190,64 @@ public sealed class DisplayServiceTests(PostgresFixture fixture) : IAsyncDisposa
         (await _host.AsCallerAsync(null, s => Board(s).GetAsync(created.Display.Id, renewed.Display.CredentialPrefix, Ct))).HasErrors.Should().BeTrue();
         (await _host.AsCallerAsync(manager, s => Displays(s).DeleteAsync(other.Display.Id, Ct))).Data.Should().BeTrue();
         (await _host.AsCallerAsync(null, s => Board(s).FindAsync("PL-2", other.Credential, Ct))).Should().BeNull("deleted");
+    }
+
+    [Fact]
+    public async Task Layout_Should_RoundTripAuditedAndReachTheBoard_When_ADisplayIsSplit()
+    {
+        var admin = await AdminAsync("it.display.layout.admin");
+        var manager = await ManagerAsync(admin, "it.display.layout.manager");
+        var created = await _host.AsCallerAsync(manager, s => Displays(s).CreateAsync(Request("LAY-1"), Ct));
+        created.Data.Display.Should().Match<DisplayViewModel>(d => d.Layout == "Full" && d.QueueShare == 60 && d.SecondRegion == "Instructions",
+            "a request without a layout keeps the full queue view");
+        var id = created.Data.Display.Id;
+
+        var split = await _host.AsCallerAsync(manager, s => Displays(s).UpdateAsync(id, Request("LAY-1") with { Orientation = "Portrait", Layout = "Split", QueueShare = 70 }, Ct));
+        split.HasErrors.Should().BeFalse(string.Join(", ", split.ErrorMessages ?? []));
+        split.Data.Should().Match<DisplayViewModel>(d => d.Layout == "Split" && d.QueueShare == 70 && d.SecondRegion == "Instructions" && d.Orientation == "Portrait");
+        (await _host.ReadAsync<string>("SELECT layout || ' ' || queue_share || ' ' || second_region FROM display WHERE code = 'LAY-1' AND deleted_on IS NULL"))
+            .Should().Be("Split 70 Instructions");
+        var audit = await _host.ReadAsync<string>(
+            "SELECT coalesce(before_summary, '') || ' => ' || coalesce(after_summary, '') FROM audit_entry WHERE target_id = @id AND action = 'Display.Updated'", id);
+        audit.Should().Contain("\"layout\":\"Full\"").And.Contain("\"layout\":\"Split\"").And.Contain("\"queueShare\":70", "a layout change is audited before and after");
+
+        // The board a running player polls carries the layout, so the change reaches it at its next poll.
+        var credential = (await _host.AsCallerAsync(manager, s => Displays(s).NewCredentialAsync(id, Ct))).Data.Credential;
+        var player = await _host.AsCallerAsync(null, s => Board(s).FindAsync("LAY-1", credential, Ct));
+        var board = await _host.AsCallerAsync(null, s => Board(s).GetAsync(player.Id, player.CredentialPrefix, Ct));
+        board.Data.Should().Match<DisplayBoardViewModel>(b => b.Layout == "Split" && b.QueueShare == 70 && b.SecondRegion == "Instructions" && b.Orientation == "Portrait");
+
+        (await _host.AsCallerAsync(manager, s => Displays(s).UpdateAsync(id, Request("LAY-1") with { Layout = "Split", SecondRegion = "Advertising" }, Ct)))
+            .ErrorMessages.Should().Equal([DisplayErrors.AdvertisingOff], "the site has no advertising policy, so advertising is off (ARV-145)");
+        (await _host.AsCallerAsync(manager, s => Displays(s).UpdateAsync(id, Request("LAY-1") with { Layout = "split" }, Ct))).HasErrors.Should().BeTrue(
+            "a layout is named exactly");
+        (await _host.AsCallerAsync(manager, s => Displays(s).UpdateAsync(id, Request("LAY-1") with { Layout = "Split", QueueShare = 80 }, Ct))).HasErrors.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("advertising", "RT-2A")]
+    [InlineData("a queue share of 40 percent", "RT-2B")]
+    [InlineData("an unknown layout", "RT-2C")]
+    public async Task RuntimeRole_Should_NotStoreALayoutTheEntityRefuses_When_ItWritesOneDirectly(string change, string code)
+    {
+        var admin = await AdminAsync($"it.display.layout.sql.admin.{code}");
+        var manager = await ManagerAsync(admin, $"it.display.layout.sql.manager.{code}");
+        await _host.AsCallerAsync(manager, s => Displays(s).CreateAsync(Request(code), Ct));
+        await using var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync()));
+        await connection.OpenAsync(Ct);
+        await using var transaction = await connection.BeginTransactionAsync(Ct);
+        await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_runtime", connection, transaction))
+            await role.ExecuteNonQueryAsync(Ct);
+        await using var command = change switch
+        {
+            "advertising" => new NpgsqlCommand("UPDATE display SET second_region = 'Advertising' WHERE code = 'RT-2A'", connection, transaction),
+            "a queue share of 40 percent" => new NpgsqlCommand("UPDATE display SET queue_share = 40 WHERE code = 'RT-2B'", connection, transaction),
+            _ => new NpgsqlCommand("UPDATE display SET layout = 'Mosaic' WHERE code = 'RT-2C'", connection, transaction)
+        };
+        var update = () => command.ExecuteNonQueryAsync(Ct);
+        (await update.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be("23514",
+            "script 0055 checks what the entity checks, and script 0057 the site's advertising policy (none: off)");
+        await transaction.RollbackAsync(Ct);
     }
 
     [Fact]

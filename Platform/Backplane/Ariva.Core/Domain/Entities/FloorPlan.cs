@@ -9,6 +9,39 @@ public class FloorPlan : BaseSoftDeletableEntity<FloorPlan>, ISiteBound
 {
     public const long MaxBytes = 20L * 1024 * 1024;
 
+    /// <summary>
+    /// The longest file name kept (ARV-153): the column is varchar(200), and PostgreSQL counts code points, not text
+    /// elements, so one letter with 300 combining marks is 301 characters to it however short it looks.
+    /// </summary>
+    public const int MaxFileNameLength = 200;
+
+    /// <summary>The fixed refusal of a name longer than <see cref="MaxFileNameLength"/> code points (TopologyErrors.FileNameTooLong).</summary>
+    public const string FileNameTooLongMessage = "The file name is at most 200 characters, each accent or other combining mark counted as one.";
+
+    /// <summary>
+    /// True when a file name fits the column: none, or at most <see cref="MaxFileNameLength"/> code points (a surrogate
+    /// pair counts once, each combining mark once). Checked on its UTF-16 length first, so a long text is never walked.
+    /// </summary>
+    public static bool FileNameFits(string name) =>
+        name is null || (name.Length <= 2 * MaxFileNameLength && name.EnumerateRunes().Count() <= MaxFileNameLength);
+
+    /// <summary>
+    /// True when a file name holds no path and nothing a reader cannot see (ARV-018, ARV-153; one rule since ARV-162): no
+    /// slash, backslash, <c>..</c> or colon, and no lone surrogate, control or format character, each judged per code point
+    /// (<see cref="Components.DisplayText.IsClean"/>), so a tag character outside the basic plane is refused like a
+    /// right-to-left override. The upload, the site configuration import and export and the pre-pilot check all call it.
+    /// </summary>
+    public static bool HasSafeFileNameCharacters(string name) =>
+        name is not null && !name.Contains('/') && !name.Contains('\\') && !name.Contains("..", StringComparison.Ordinal) && !name.Contains(':') &&
+        Components.DisplayText.IsClean(name);
+
+    /// <summary>
+    /// A file name the floor plan rules take (ARV-162): blank (the upload stores "floor-plan" instead), or safe characters
+    /// (<see cref="HasSafeFileNameCharacters"/>) and at most <see cref="MaxFileNameLength"/> code points after trimming.
+    /// </summary>
+    public static bool IsSafeFileName(string name) =>
+        string.IsNullOrWhiteSpace(name) || (HasSafeFileNameCharacters(name) && FileNameFits(name.Trim()));
+
     protected FloorPlan()
     {
     }
@@ -21,6 +54,9 @@ public class FloorPlan : BaseSoftDeletableEntity<FloorPlan>, ISiteBound
         ArgumentException.ThrowIfNullOrWhiteSpace(contentType);
         if (sizeBytes is <= 0 or > MaxBytes)
             throw new ArgumentOutOfRangeException(nameof(sizeBytes), sizeBytes, "A floor plan is at most 20 MB.");
+        // The last line before the column: a name that does not fit is refused here, never at the insert (ARV-153).
+        if (!FileNameFits(originalFileName))
+            throw new ArgumentException(FileNameTooLongMessage, nameof(originalFileName));
         Level = level;
         SiteCode = level.SiteCode;
         StorageKey = storageKey;

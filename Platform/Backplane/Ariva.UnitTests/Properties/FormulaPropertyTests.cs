@@ -48,14 +48,155 @@ public sealed class FormulaPropertyTests
     // F4
     private static readonly Gen<FloorPoint> Point = Gen.Select(Gen.Double[-50, 50], Gen.Double[-50, 50]).Select((x, y) => new FloorPoint(x, y));
 
+    /// <summary>
+    /// ARV-161: the segment properties run at least 10,000 cases in every build (the order dependence at exact touches
+    /// showed only on some seeds); a deep run (ARIVA_FUZZ_ITERATIONS) raises them with the others.
+    /// </summary>
+    private static readonly int SegmentIter = Math.Max(10_000, Iter);
+
+    /// <summary>The seed that found the order dependence of ARV-161: two segments sharing an end at the origin.</summary>
+    private const string SharedEndSeed = "cCcbgdLcNjA6";
+
+    /// <summary>All eight ways to pass two segments (either first, each in either direction) give one answer.</summary>
+    private static void SameInEveryOrder(FloorPoint p1, FloorPoint p2, FloorPoint q1, FloorPoint q2)
+    {
+        var crosses = Geometry.SegmentsIntersect(p1, p2, q1, q2);
+        Geometry.SegmentsIntersect(p2, p1, q1, q2).Should().Be(crosses);
+        Geometry.SegmentsIntersect(p1, p2, q2, q1).Should().Be(crosses);
+        Geometry.SegmentsIntersect(p2, p1, q2, q1).Should().Be(crosses);
+        Geometry.SegmentsIntersect(q1, q2, p1, p2).Should().Be(crosses);
+        Geometry.SegmentsIntersect(q2, q1, p1, p2).Should().Be(crosses);
+        Geometry.SegmentsIntersect(q1, q2, p2, p1).Should().Be(crosses);
+        Geometry.SegmentsIntersect(q2, q1, p2, p1).Should().Be(crosses);
+    }
+
     [Fact]
     public void F4_SegmentsIntersect_Should_NotDependOnOrderOrDirection()
     {
-        Gen.Select(Point, Point, Point, Point).Sample((p1, p2, q1, q2) =>
+        Gen.Select(Point, Point, Point, Point).Sample(SameInEveryOrder, iter: SegmentIter);
+    }
+
+    /// <summary>The generator and property above, on the seed that failed before ARV-161 (the concrete points are a row of GeometryTests).</summary>
+    [Fact]
+    public void F4_SegmentsIntersect_Should_NotDependOnOrderOrDirection_When_TheSeedIsTheOneThatFoundARV161()
+    {
+        Gen.Select(Point, Point, Point, Point).Sample(SameInEveryOrder, seed: SharedEndSeed, iter: 1);
+    }
+
+    [Fact]
+    public void F4_SegmentsIntersect_Should_FindATouch_When_AnEndIsPlacedOnTheOtherSegment()
+    {
+        Gen.Select(Point, Point, Gen.Double[0, 1], Point).Sample((p1, p2, t, q2) =>
         {
-            var crosses = Geometry.SegmentsIntersect(p1, p2, q1, q2);
-            Geometry.SegmentsIntersect(q1, q2, p1, p2).Should().Be(crosses);
-            Geometry.SegmentsIntersect(p2, p1, q2, q1).Should().Be(crosses);
+            var q1 = new FloorPoint(p1.X + (t * (p2.X - p1.X)), p1.Y + (t * (p2.Y - p1.Y)));
+            SameInEveryOrder(p1, p2, q1, q2);
+            Geometry.SegmentsIntersect(p1, p2, q1, q2).Should().BeTrue("an end on the other segment touches it, whatever the rounding");
+        }, iter: SegmentIter);
+    }
+
+    [Fact]
+    public void F4_SegmentsIntersect_Should_TouchWithinACentimetre_AndNotBeyond_When_ASegmentIsMovedSideways()
+    {
+        // The tolerance is a distance in metres whatever the segments' length: a cross product compared with it directly
+        // would fail here for long or short segments.
+        Gen.Select(Point, Point, Gen.Double[0, 0.0095], Gen.Double[0.0105, 1]).Sample((p1, p2, near, far) =>
+        {
+            var length = Geometry.Length(p1, p2);
+            if (length < 0.05)
+                return;
+            var (nx, ny) = (-(p2.Y - p1.Y) / length, (p2.X - p1.X) / length);
+            FloorPoint Moved(FloorPoint p, double by) => new(p.X + (by * nx), p.Y + (by * ny));
+            Geometry.SegmentsIntersect(p1, p2, Moved(p1, near), Moved(p2, near)).Should().BeTrue("{0} m beside it is within a centimetre", near);
+            Geometry.SegmentsIntersect(p1, p2, Moved(p1, -near), Moved(p2, -near)).Should().BeTrue("{0} m beside it is within a centimetre", near);
+            Geometry.SegmentsIntersect(p1, p2, Moved(p1, far), Moved(p2, far)).Should().BeFalse("{0} m beside it is beyond a centimetre", far);
+            Geometry.SegmentsIntersect(p1, p2, Moved(p1, -far), Moved(p2, -far)).Should().BeFalse("{0} m beside it is beyond a centimetre", far);
+        }, iter: SegmentIter);
+    }
+
+    /// <summary>
+    /// A point of a 10 cm grid by its integers (x 0.1 m, which binary cannot hold exactly): a small grid gives shared ends,
+    /// ends on the other segment and collinear overlaps; a larger one ends within a centimetre of a long segment.
+    /// </summary>
+    private static readonly Gen<(int X, int Y)> GridPoint = Gen.Frequency(
+        (1, Gen.Select(Gen.Int[-4, 4], Gen.Int[-4, 4])),
+        (1, Gen.Select(Gen.Int[-40, 40], Gen.Int[-40, 40])));
+
+    private static FloorPoint OnTheGrid((int X, int Y) g) => new(g.X * 0.1, g.Y * 0.1);
+
+    private static long GridCross((int X, int Y) o, (int X, int Y) a, (int X, int Y) b) =>
+        ((long)(a.X - o.X) * (b.Y - o.Y)) - ((long)(a.Y - o.Y) * (b.X - o.X));
+
+    private static long GridDot((int X, int Y) o, (int X, int Y) a, (int X, int Y) b) =>
+        ((long)(a.X - o.X) * (b.X - o.X)) + ((long)(a.Y - o.Y) * (b.Y - o.Y));
+
+    /// <summary>Closer than a centimetre (0.1 grid unit) to the segment a-b, exactly.</summary>
+    private static bool GridNear((int X, int Y) r, (int X, int Y) a, (int X, int Y) b)
+    {
+        var squared = GridDot(a, b, b);
+        var along = GridDot(a, b, r);
+        if (squared == 0 || along <= 0)
+            return r == a;
+        if (along >= squared)
+            return r == b;
+        var cross = GridCross(a, b, r);
+        return 100 * cross * cross < squared;
+    }
+
+    private static bool GridWithin((int X, int Y) a, (int X, int Y) b, (int X, int Y) r) =>
+        Math.Min(a.X, b.X) <= r.X && r.X <= Math.Max(a.X, b.X) && Math.Min(a.Y, b.Y) <= r.Y && r.Y <= Math.Max(a.Y, b.Y);
+
+    /// <summary>
+    /// The exact answer in integers: the segments meet, or an end is closer than a centimetre to the other segment. Null
+    /// when an end is exactly a centimetre from the other's line, where either answer is right.
+    /// </summary>
+    private static bool? GridAnswer((int X, int Y) p1, (int X, int Y) p2, (int X, int Y) q1, (int X, int Y) q2)
+    {
+        (int X, int Y)[][] ends = [[p1, q1, q2], [p2, q1, q2], [q1, p1, p2], [q2, p1, p2]];
+        if (ends.Any(e => GridDot(e[1], e[2], e[2]) > 0 && 100 * GridCross(e[1], e[2], e[0]) * GridCross(e[1], e[2], e[0]) == GridDot(e[1], e[2], e[2])))
+            return null;
+        var d1 = Math.Sign(GridCross(q1, q2, p1));
+        var d2 = Math.Sign(GridCross(q1, q2, p2));
+        var d3 = Math.Sign(GridCross(p1, p2, q1));
+        var d4 = Math.Sign(GridCross(p1, p2, q2));
+        var meet = (d1 * d2 < 0 && d3 * d4 < 0) ||
+                   (d1 == 0 && GridWithin(q1, q2, p1)) || (d2 == 0 && GridWithin(q1, q2, p2)) ||
+                   (d3 == 0 && GridWithin(p1, p2, q1)) || (d4 == 0 && GridWithin(p1, p2, q2));
+        return meet || ends.Any(e => GridNear(e[0], e[1], e[2]));
+    }
+
+    [Fact]
+    public void F4_SegmentsIntersect_Should_GiveTheExactAnswer_When_ThePointsAreOnADecimetreGrid()
+    {
+        Gen.Select(GridPoint, GridPoint, GridPoint, GridPoint).Sample((p1, p2, q1, q2) =>
+        {
+            if (GridAnswer(p1, p2, q1, q2) is not { } expected)
+                return;
+            SameInEveryOrder(OnTheGrid(p1), OnTheGrid(p2), OnTheGrid(q1), OnTheGrid(q2));
+            Geometry.SegmentsIntersect(OnTheGrid(p1), OnTheGrid(p2), OnTheGrid(q1), OnTheGrid(q2)).Should().Be(expected,
+                "integer arithmetic says so for {0} {1} and {2} {3} (decimetres)", p1, p2, q1, q2);
+        }, iter: SegmentIter);
+    }
+
+    /// <summary>Rings of 3 to 7 corners on a small 10 cm grid, simple or not: corners on other edges and edges along each other are common.</summary>
+    private static readonly Gen<FloorPoint[]> GridRing = Gen.Select(Gen.Int[0, 6], Gen.Int[0, 6]).Select((x, y) => new FloorPoint(x * 0.1, y * 0.1)).Array[3, 7];
+
+    [Fact]
+    public void F4_IsSimplePolygonAndOverlaps_Should_NotDependOnWhereARingStartsOrItsDirection()
+    {
+        Gen.Select(GridRing, GridRing, Gen.Int[0, 6]).Sample((ring, other, shift) =>
+        {
+            var k = shift % ring.Length;
+            FloorPoint[] rotated = [.. ring.Skip(k), .. ring.Take(k)];
+            var reversed = ring.Reverse().ToArray();
+            var simple = Geometry.IsSimplePolygon(ring);
+            Geometry.IsSimplePolygon(rotated).Should().Be(simple);
+            Geometry.IsSimplePolygon(reversed).Should().Be(simple);
+            if (!simple || !Geometry.IsSimplePolygon(other))
+                return;
+            var overlaps = Geometry.Overlaps(ring, other);
+            Geometry.Overlaps(other, ring).Should().Be(overlaps);
+            Geometry.Overlaps(rotated, other).Should().Be(overlaps);
+            Geometry.Overlaps(reversed, other.Reverse().ToArray()).Should().Be(overlaps);
         }, iter: Iter);
     }
 

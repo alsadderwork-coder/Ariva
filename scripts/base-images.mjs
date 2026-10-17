@@ -10,7 +10,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const SKIP = ['node_modules', '.git', 'bin', 'obj', 'fixtures', 'build', '.svelte-kit'];
+// .private holds client material that nothing lists or reads (owner decision 2026-10-09, ARV-139c).
+const SKIP = ['node_modules', '.git', 'bin', 'obj', 'fixtures', 'build', '.svelte-kit', '.private'];
 
 /**
  * The version line each base image follows, and how to recognise a full version tag of it. A line may have several
@@ -20,7 +21,9 @@ const SKIP = ['node_modules', '.git', 'bin', 'obj', 'fixtures', 'build', '.svelt
 const LINES = {
 	'mcr.microsoft.com/dotnet/runtime-deps': { patterns: [/^10\.0\.\d+$/], list: 'mcr' },
 	'mcr.microsoft.com/dotnet/aspnet': { patterns: [/^10\.0\.\d+$/], list: 'mcr' },
-	'mcr.microsoft.com/dotnet/sdk': { patterns: [/^10\.0\.1\d\d$/], list: 'mcr' },
+	// Any feature band (ARV-184): MCR publishes patches of the newest band only (the 1xx tags stopped at 10.0.103, which bundles
+	// runtime 10.0.3), and a self-contained publish ships the SDK's own runtime, so the band moves with the runtime.
+	'mcr.microsoft.com/dotnet/sdk': { patterns: [/^10\.0\.\d{3}$/], list: 'mcr' },
 	nginx: { patterns: [/^1\.30\.\d+-alpine\d+\.\d+$/], list: 'hub', hubName: 'library/nginx', hubFilter: '1.30.' },
 	// Alpine for the web image; Debian slim for the dev container (ARV-076), whose glibc base runs its node binary.
 	node: { patterns: [/^22\.\d+\.\d+-alpine\d+\.\d+$/, /^22\.\d+\.\d+-bookworm-slim$/], list: 'hub', hubName: 'library/node', hubFilter: '22.' },
@@ -101,6 +104,58 @@ export function devcontainerProblems(dockerfile, config) {
 	return problems;
 }
 
+/**
+ * ARV-184 (CWE-1395): a Dockerfile on runtime-deps publishes self-contained, so what it ships is the SDK's runtime pack, not
+ * the base's. It must check the publish output with scripts/published-runtime.mjs, giving --runtime its runtime-deps tag, in a
+ * named stage, and its final stage must copy from that stage only. Problems for a Dockerfile text (none without runtime-deps).
+ */
+export function publishedRuntimeProblems(dockerfile) {
+	const base = dockerfile.match(/^\s*FROM\s+mcr\.microsoft\.com\/dotnet\/runtime-deps:([^@\s]+)@/m)?.[1];
+	if (!base) return [];
+	const stages = dockerfile.split(/^(?=\s*FROM\s)/m).filter((stage) => /^\s*FROM\s/.test(stage))
+		.map((body) => ({ name: body.match(/^\s*FROM\s+\S+\s+AS\s+(\S+)/i)?.[1]?.toLowerCase(), body }));
+	const problems = [];
+	const checks = stages.filter((stage) => /^\s*RUN\s+node\s+\/check\/published-runtime\.mjs\s+--check\s+\/app\/publish\s+--runtime\s+\S+\s*$/m.test(stage.body));
+	if (checks.length !== 1) return [`one stage must run "node /check/published-runtime.mjs --check /app/publish --runtime ${base}" (found ${checks.length})`];
+	const checked = checks[0];
+	const runtime = checked.body.match(/--runtime\s+(\S+)/)[1];
+	if (runtime !== base) problems.push(`the published runtime check uses --runtime ${runtime}; it must be the runtime-deps tag ${base}, with the SDK that bundles it`);
+	if (!/^\s*COPY\s+.*scripts\/published-runtime\.mjs.*\/check\/\S*\s*$/m.test(checked.body)) problems.push('the check stage must copy scripts/published-runtime.mjs to /check/');
+	if (!checked.name) problems.push('the check stage must be named (FROM ... AS checked)');
+	const final = stages.at(-1);
+	const sources = [...final.body.matchAll(/^\s*COPY\s+--from=(\S+)/gim)].map((m) => m[1].toLowerCase());
+	if (final === checked || !checked.name || !sources.includes(checked.name) || sources.some((source) => source !== checked.name)) {
+		problems.push(`the final stage must copy the app from the check stage only (copies from: ${sources.join(', ') || 'nothing'})`);
+	}
+	return problems;
+}
+
+function selfTestPublishedRuntime() {
+	const digest = '@sha256:' + '0'.repeat(64);
+	const good = `FROM mcr.microsoft.com/dotnet/runtime-deps:10.0.13${digest} AS base\nFROM mcr.microsoft.com/dotnet/sdk:10.0.402${digest} AS build\nFROM build AS publish\nRUN dotnet publish -o /app/publish\nFROM node:22.23.3-alpine3.24${digest} AS checked\nCOPY ["scripts/published-runtime.mjs", "/check/"]\nCOPY --from=publish /app/publish /app/publish\nRUN node /check/published-runtime.mjs --check /app/publish --runtime 10.0.13\nFROM base AS final\nCOPY --from=checked /app/publish .\nUSER 10001\n`;
+	const cases = [
+		['good', good, []],
+		['no runtime-deps base', 'FROM node:22.23.3-alpine3.24\nCOPY . .\n', []],
+		['no check stage', good.replace(/^RUN node \/check.*$/m, 'RUN true'), ['one stage must run']],
+		['stale --runtime', good.replace('--runtime 10.0.13', '--runtime 10.0.12'), ['--runtime 10.0.12; it must be the runtime-deps tag 10.0.13']],
+		['base moved alone', good.replace('runtime-deps:10.0.13', 'runtime-deps:10.0.14'), ['must be the runtime-deps tag 10.0.14']],
+		['script not copied', good.replace('COPY ["scripts/published-runtime.mjs", "/check/"]\n', ''), ['must copy scripts/published-runtime.mjs']],
+		['final ships the unchecked output', good.replace('COPY --from=checked /app/publish .', 'COPY --from=publish /app/publish .'), ['from the check stage only (copies from: publish)']],
+		['final copies from both', good.replace('COPY --from=checked /app/publish .', 'COPY --from=checked /app/publish .\nCOPY --from=build /src/x .'), ['copies from: checked, build']],
+		['unnamed check stage', good.replace(' AS checked', '').replace('--from=checked', '--from=2'), ['must be named']]
+	];
+	const failures = [];
+	for (const [name, text, expected] of cases) {
+		const found = publishedRuntimeProblems(text).join('\n');
+		if (!expected.length && found) failures.push(`${name}: expected clean, got ${found}`);
+		for (const fragment of expected) if (!found.includes(fragment)) failures.push(`${name}: did not report "${fragment}" (got: ${found || 'nothing'})`);
+	}
+	if (failures.length) {
+		console.error(`base images: published runtime self-test failed:\n  ${failures.join('\n  ')}`);
+		process.exit(1);
+	}
+}
+
 /** JSON with // comments (devcontainer.json). Comments start a line or follow a comma, a bracket or a brace. */
 function parseJsonc(text) {
 	return JSON.parse(text.split(/\r?\n/).map((line) => line.replace(/^\s*\/\/.*$/, '')).join('\n'));
@@ -122,10 +177,97 @@ function selfTestDevcontainer() {
 	}
 }
 
+/**
+ * ARV-127: the jobs of one workflow that can sign as it and run a package manager. A job can sign when its permissions give
+ * it the OIDC token (id-token: write, or write-all), or when it has no permissions of its own and the workflow's do. An
+ * install script or a build plugin in such a job could ask for the token and sign what it likes (images.yml builds inside
+ * docker, which has no access to the token). Only run steps are read: a package manager started by a uses: action, by bun
+ * or corepack, or through a node_modules/.bin path is not seen. Job keys are expected two spaces under jobs:, as in every
+ * workflow here; a workflow indented otherwise is not read.
+ */
+export function signingJobProblems(text) {
+	const code = text.replace(/\r\n/g, '\n').split('\n').map((line) => (/^\s*#/.test(line) ? '' : line.replace(/\s#\s.*$/, ''))).join('\n');
+	const jobsAt = code.search(/^jobs:\s*$/m);
+	if (jobsAt < 0) return [];
+	const signs = (block, indent) => {
+		const lines = block.split('\n');
+		const at = lines.findIndex((line) => new RegExp(`^ {${indent}}permissions:`).test(line));
+		if (at < 0) return null;
+		const inline = lines[at].slice(indent + 'permissions:'.length).trim();
+		if (inline) return /^["']?write-all["']?$/.test(inline) || /id-token["']?:\s*["']?write\b/.test(inline);
+		const body = [];
+		for (const line of lines.slice(at + 1)) {
+			if (line.trim() === '') continue;
+			if (line.match(/^ */)[0].length <= indent) break;
+			body.push(line);
+		}
+		return body.some((line) => /^\s+["']?id-token["']?:\s*["']?write\b/.test(line));
+	};
+	const runBodies = (job) => {
+		const lines = job.split('\n');
+		const bodies = [];
+		for (let i = 0; i < lines.length; i++) {
+			const step = lines[i].match(/^(\s*)(-\s+)?run:\s*(.*)$/);
+			if (!step) continue;
+			const indent = step[1].length + (step[2] ? step[2].length : 0);
+			if (step[3] && !/^[|>][-+]?$/.test(step[3])) {
+				bodies.push(step[3]);
+				continue;
+			}
+			for (const line of lines.slice(i + 1)) {
+				if (line.trim() === '') continue;
+				if (line.match(/^ */)[0].length <= indent) break;
+				bodies.push(line);
+			}
+		}
+		return bodies.join('\n');
+	};
+	const workflowSigns = signs(code.slice(0, jobsAt), 0) === true;
+	const problems = [];
+	for (const job of code.slice(jobsAt).split(/\n(?= {2}[A-Za-z0-9_-]+:[ \t]*$)/m).slice(1)) {
+		const name = job.match(/^ {2}([A-Za-z0-9_-]+):/)?.[1];
+		const own = signs(job, 4);
+		if ((own ?? workflowSigns) && /(^|[\s;&|(`'"])(npm|npx|yarn|pnpm)(\s|$)/m.test(runBodies(job))) {
+			problems.push(`job ${name} can sign (id-token: write${own === null ? ', from the workflow' : ''}) and runs a package manager; build in another job`);
+		}
+	}
+	return problems;
+}
+
+function selfTestSigningJobs() {
+	const job = (name, permissions, run) => `  ${name}:\n    runs-on: ubuntu-24.04\n${permissions}    steps:\n      - uses: actions/setup-node@x # v7\n        with:\n          cache: npm\n${run}`;
+	const block = (run) => `      - name: step\n        run: |\n          ${run}\n`;
+	const signing = '    permissions:\n      contents: read\n      id-token: write\n';
+	const cases = [
+		['job id-token, npm', `on: push\njobs:\n${job('build', signing, block('npm ci'))}`, ['job build can sign']],
+		['job write-all, pnpm', `on: push\njobs:\n${job('build', '    permissions: write-all\n', block('pnpm install'))}`, ['job build can sign']],
+		['job flow map, npx', `on: push\njobs:\n${job('build', '    permissions: { id-token: write }\n', '      - run: npx vite build\n')}`, ['job build can sign']],
+		['quoted values, npm', `on: push\njobs:\n${job('build', '    permissions:\n      "id-token": "write"\n', block('npm ci'))}${job('all', "    permissions: 'write-all'\n", block('npm ci'))}`, ['job build can sign', 'job all can sign']],
+		['workflow id-token, yarn', `on: push\npermissions:\n  id-token: write\njobs:\n${job('web', '', block('cd web && yarn build'))}`, ['job web can sign (id-token: write, from the workflow)']],
+		['workflow write-all, npm', `on: push\npermissions: write-all\njobs:\n${job('web', '', block('npm run build'))}`, ['job web can sign (id-token: write, from the workflow)']],
+		['job narrows the workflow', `on: push\npermissions:\n  id-token: write\njobs:\n${job('web', '    permissions:\n      contents: read\n', block('npm ci'))}`, []],
+		['npm only in a job that cannot sign', `on: push\npermissions:\n  contents: read\njobs:\n${job('web', '', block('npm ci'))}${job('sign', signing, block('cosign sign-blob x'))}`, []],
+		['npm only in comments and the cache input', `on: push\njobs:\n${job('sign', signing, '      # npm ci would go here\n      - run: cosign sign-blob x # not npm ci\n')}`, []]
+	];
+	const failures = [];
+	for (const [name, text, expected] of cases) {
+		const found = signingJobProblems(text).join('\n');
+		if (!expected.length && found) failures.push(`${name}: expected clean, got ${found}`);
+		for (const fragment of expected) if (!found.includes(fragment)) failures.push(`${name}: did not report "${fragment}" (got: ${found || 'nothing'})`);
+	}
+	if (failures.length) {
+		console.error(`base images: signing job self-test failed:\n  ${failures.join('\n  ')}`);
+		process.exit(1);
+	}
+}
+
 function check() {
 	const problems = [];
 	let count = 0;
+	let runtimeChecked = 0;
 	selfTestDevcontainer();
+	selfTestPublishedRuntime();
+	selfTestSigningJobs();
 	const devDockerfile = path.join(ROOT, '.devcontainer', 'Dockerfile');
 	const devConfig = path.join(ROOT, '.devcontainer', 'devcontainer.json');
 	if (fs.existsSync(devConfig)) {
@@ -134,6 +276,9 @@ function check() {
 		}
 	}
 	for (const file of dockerfiles()) {
+		const runtimeProblems = publishedRuntimeProblems(fs.readFileSync(file, 'utf8'));
+		for (const problem of runtimeProblems) problems.push(`${path.relative(ROOT, file)}: ${problem}`);
+		if (/^\s*FROM\s+mcr\.microsoft\.com\/dotnet\/runtime-deps:/m.test(fs.readFileSync(file, 'utf8')) && !runtimeProblems.length) runtimeChecked++;
 		for (const from of fromLines(file)) {
 			count++;
 			const where = `${path.relative(ROOT, file)}:${from.line}`;
@@ -152,14 +297,26 @@ function check() {
 			}
 		}
 	}
-	// ARV-002: the GitHub dev release renders and applies with CI's Helm, as the Azure DevOps release does.
+	// ARV-002: the GitHub dev release renders and applies with CI's Helm, as the Azure DevOps release does. ARV-127: so does every
+	// other CI job and the offline bundle, which packages the charts; and every workflow that signs or verifies uses one cosign.
 	{
-		const helmOf = (file) => fs.readFileSync(path.join(ROOT, '.github', 'workflows', file), 'utf8').match(/setup-helm@[^\n]*\n\s*with:\s*\n\s*version:\s*v(\d+\.\d+\.\d+)/)?.[1];
-		const releaseFile = path.join(ROOT, '.github', 'workflows', 'release-dev.yml');
-		if (fs.existsSync(releaseFile)) {
-			const ci = helmOf('ci.yml');
-			const release = helmOf('release-dev.yml');
-			if (!release || release !== ci) problems.push(`.github/workflows/release-dev.yml: Helm ${release ?? 'not found'} must be CI's Helm (${ci ?? 'not found in ci.yml'})`);
+		const workflow = (file) => {
+			const full = path.join(ROOT, '.github', 'workflows', file);
+			return fs.existsSync(full) ? fs.readFileSync(full, 'utf8') : null;
+		};
+		const helmsOf = (text) => [...text.matchAll(/setup-helm@[^\n]*\n\s*with:\s*\n\s*version:\s*v(\d+\.\d+\.\d+)/g)].map((m) => m[1]);
+		const ci = helmsOf(workflow('ci.yml') ?? '')[0];
+		for (const file of ['ci.yml', 'release-dev.yml', 'offline-bundle.yml']) {
+			const text = workflow(file);
+			if (text === null) continue;
+			const helms = helmsOf(text);
+			if (helms.length === 0 || helms.some((version) => version !== ci)) problems.push(`.github/workflows/${file}: Helm ${helms.join(', ') || 'not found'} must be CI's Helm (${ci ?? 'not found in ci.yml'})`);
+		}
+		const cosigns = ['images.yml', 'release-dev.yml', 'offline-bundle.yml'].flatMap((file) => [...(workflow(file) ?? '').matchAll(/cosign-release:\s*'?(v[\d.]+)'?/g)].map((m) => `${file} ${m[1]}`));
+		if (new Set(cosigns.map((entry) => entry.split(' ')[1])).size > 1) problems.push(`the workflows must use one cosign release: ${cosigns.join(', ')}`);
+		// ARV-127: no job that can sign as its workflow runs a package manager (signingJobProblems).
+		for (const file of fs.readdirSync(path.join(ROOT, '.github', 'workflows')).filter((name) => /\.ya?ml$/.test(name))) {
+			for (const problem of signingJobProblems(workflow(file))) problems.push(`.github/workflows/${file}: ${problem}`);
 		}
 	}
 	// ARV-062: the cluster's TimescaleDB runs the image the developers, the integration tests and CI run, pinned by digest.
@@ -191,7 +348,7 @@ function check() {
 		console.error('Run the base-images workflow (Actions, base-images, Run workflow) to get pinned lines.');
 		process.exit(1);
 	}
-	console.log(`base images: ${count} FROM lines pinned by version and digest; dev container non-root and unprivileged.`);
+	console.log(`base images: ${count} FROM lines pinned by version and digest; dev container non-root and unprivileged; ${runtimeChecked} runtime-deps images check their published runtime against their base.`);
 }
 
 async function tagsFor(image) {
@@ -251,6 +408,10 @@ async function resolve(write) {
 			const index = LINES[from.image]?.patterns.findIndex((pattern) => pattern.test(from.tag)) ?? -1;
 			const next = latest[`${from.image}#${index}`];
 			if (next) text = text.replace(from.ref, next);
+			// ARV-184: the published runtime check follows the runtime-deps tag (the image build then proves the SDK bundles it).
+			if (next && from.image === 'mcr.microsoft.com/dotnet/runtime-deps') {
+				text = text.replace(/(published-runtime\.mjs --check \S+ --runtime )\S+/, `$1${next.split('@')[0].slice(from.image.length + 1)}`);
+			}
 			if (next && from.image === 'mcr.microsoft.com/playwright') {
 				const visual = fs.readFileSync(VISUAL_BROWSER, 'utf8');
 				fs.writeFileSync(VISUAL_BROWSER, visual.replace(/image = 'mcr\.microsoft\.com\/playwright@sha256:[0-9a-f]{64}'/, `image = '${next.replace(/:v[^@]+@/, '@')}'`));

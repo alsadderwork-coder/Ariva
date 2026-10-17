@@ -6,7 +6,7 @@ import { hosts, type HostName } from './hosts';
 // security/permission-matrix.json (ARV-009): every endpoint and the status each caller gets. Ariva.UnitTests checks it
 // against the hosts and the role seed; the E2E suites read the same rows so both sides test one specification.
 
-export type Caller = 'anonymous' | 'BorderShiftSupervisor' | 'TerminalDutyManager' | 'HandlerStationManager' | 'SystemAdministrator';
+export type Caller = 'anonymous' | 'BorderShiftSupervisor' | 'TerminalDutyManager' | 'HandlerStationManager' | 'SystemAdministrator' | 'ValidationObserver';
 
 export interface MatrixRow {
 	host: string;

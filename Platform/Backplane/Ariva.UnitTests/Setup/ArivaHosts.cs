@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Hosting;
 
 namespace Ariva.UnitTests.Setup;
 
@@ -148,6 +149,8 @@ internal sealed class ArivaWebApplicationFactory<TEntryPoint>(string environment
     : WebApplicationFactory<TEntryPoint>
     where TEntryPoint : class
 {
+    private readonly TaskCompletionSource _startGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     private string DevelopmentKeyDirectory { get; } = Path.Combine(Path.GetTempPath(), "ariva-unit-tests", Guid.NewGuid().ToString("N"));
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -198,5 +201,77 @@ internal sealed class ArivaWebApplicationFactory<TEntryPoint>(string environment
         builder.UseSetting("Auth:Tokens:PublicKeyPaths:1", string.Empty);
 
         configure?.Invoke(builder);
+
+        // Last, so it wraps whatever lifetime the host and the test leave registered (see CreateHost).
+        builder.ConfigureServices(services => GatedHostLifetime.Hold(services, _startGate.Task));
+    }
+
+    /// <summary>
+    /// ARV-156: the host's own start waits until the factory is listening for it. The host's entry point builds the host,
+    /// hands it to the factory and goes straight on into <c>RunAsync</c>, while the factory's start (DeferredHost.StartAsync)
+    /// resolves <see cref="IHostApplicationLifetime"/> from the host's services before it waits for that start. A start that
+    /// fails (a host refusing its configuration) disposes those services in <c>RunAsync</c>; on a loaded machine that came
+    /// first, and the test saw "Cannot access a disposed object. Object name: 'IServiceProvider'" instead of the start's own
+    /// exception. Here the factory's start subscribes first (it returns at its first wait), then the gate opens, so a failed
+    /// start always surfaces as its own exception. The factory never uses Kestrel, so the base method's Kestrel port step has
+    /// nothing to do.
+    /// </summary>
+    protected override IHost CreateHost(IHostBuilder builder)
+    {
+        try
+        {
+            var host = builder.Build();
+            var started = host.StartAsync();
+            _startGate.TrySetResult();
+            started.GetAwaiter().GetResult();
+            return host;
+        }
+        finally
+        {
+            // Whatever happened, even a build that failed, nothing is left waiting at the gate.
+            _startGate.TrySetResult();
+        }
+    }
+}
+
+/// <summary>
+/// ARV-156: the host's lifetime, holding the start (<see cref="IHostLifetime.WaitForStartAsync"/>, the first step of a
+/// host's start, before the start-up validators and the hosted services) until the gate opens.
+/// </summary>
+/// <param name="inner">The lifetime the host registered (ConsoleLifetime).</param>
+/// <param name="ownsInner">Whether this wrapper created the inner lifetime, and so disposes it.</param>
+/// <param name="gate">Completes when the factory is listening for the start.</param>
+internal sealed class GatedHostLifetime(IHostLifetime inner, bool ownsInner, Task gate) : IHostLifetime, IDisposable
+{
+    /// <summary>Replaces the registered <see cref="IHostLifetime"/> with itself around it.</summary>
+    /// <param name="services">The host's services.</param>
+    /// <param name="gate">Completes when the factory is listening for the start.</param>
+    public static void Hold(IServiceCollection services, Task gate)
+    {
+        var registered = services.Where(d => d.ServiceType == typeof(IHostLifetime) && !d.IsKeyedService).ToList();
+        if (registered.Count == 0)
+            throw new InvalidOperationException("The host registers no IHostLifetime to hold.");
+        foreach (var descriptor in registered)
+            services.Remove(descriptor);
+
+        var lifetime = registered[^1];
+        services.AddSingleton<IHostLifetime>(provider => lifetime.ImplementationInstance is IHostLifetime instance
+            ? new GatedHostLifetime(instance, false, gate)
+            : new GatedHostLifetime((IHostLifetime)(lifetime.ImplementationFactory?.Invoke(provider) ??
+                                                    ActivatorUtilities.CreateInstance(provider, lifetime.ImplementationType!)), true, gate));
+    }
+
+    public async Task WaitForStartAsync(CancellationToken cancellationToken)
+    {
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await inner.WaitForStartAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken) => inner.StopAsync(cancellationToken);
+
+    public void Dispose()
+    {
+        if (ownsInner)
+            (inner as IDisposable)?.Dispose();
     }
 }

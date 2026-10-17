@@ -33,7 +33,7 @@ export const lockoutSeconds = 5;
 /** Failed sign-ins that lock an account (Auth:Lockout:Threshold, ADR-0026). */
 export const lockoutThreshold = 10;
 
-export type RoleCode = 'BorderShiftSupervisor' | 'TerminalDutyManager' | 'HandlerStationManager' | 'SystemAdministrator';
+export type RoleCode = 'BorderShiftSupervisor' | 'TerminalDutyManager' | 'HandlerStationManager' | 'SystemAdministrator' | 'ValidationObserver';
 
 export interface Account {
 	userName: string;
@@ -103,6 +103,30 @@ export function totpCode(secretBase32: string, offsetSteps = 0, at = Date.now())
 	return String(binary % 1_000_000).padStart(6, '0');
 }
 
+/**
+ * A code the server has not yet accepted in this run. The server takes a step only once and only after the last one it
+ * took (CWE-287 replay guard), allowing one step of skew; a sign-in repeated within a step (`--repeat-each`) therefore
+ * uses the next step, and waits for the step boundary only when that would be two steps ahead. Playwright starts a
+ * new worker process per test here, so the last step is kept in a file named by a hash of the run seed and the secret
+ * (the secret itself is never written).
+ */
+export async function unusedTotpCode(secretBase32: string): Promise<string> {
+	const name = crypto.createHash('sha256').update(`${process.env.ARIVA_E2E_ACCOUNT_SEED ?? ''}:${secretBase32}`).digest('hex');
+	// Kept in the suite's own output folder (git-ignored), owner-only, never following a planted link.
+	const dir = path.join(here, '..', '..', 'test-results', '.totp');
+	fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+	const file = path.join(dir, name.slice(0, 32));
+	const stored = fs.existsSync(file) && !fs.lstatSync(file).isSymbolicLink() ? Number(fs.readFileSync(file, 'utf8')) : Number.NaN;
+	const now = Math.floor(Date.now() / 1000 / 30);
+	// A stored step more than two steps ahead of the clock is not ours to wait for: ignore it.
+	const last = Number.isInteger(stored) && stored <= now + 2 ? stored : Number.NaN;
+	const step = Number.isFinite(last) ? Math.max(now, last + 1) : now;
+	if (step > now + 1) await new Promise((resolve) => setTimeout(resolve, (step - 1) * 30_000 - Date.now() + 100));
+	if (fs.existsSync(file)) fs.rmSync(file);
+	fs.writeFileSync(file, String(step), { mode: 0o600, flag: 'wx' });
+	return totpCode(secretBase32, 0, step * 30_000);
+}
+
 /** Every account, keyed by purpose. */
 export function accounts() {
 	return {
@@ -110,6 +134,8 @@ export function accounts() {
 		TerminalDutyManager: account('e2e.terminal', ['TerminalDutyManager'], false, false, ['E2E2']),
 		HandlerStationManager: account('e2e.handler', ['HandlerStationManager'], false, false, ['E2E1', 'E2E2']),
 		SystemAdministrator: account('e2e.admin', ['SystemAdministrator'], false, false, ['*']),
+		// ARV-104a: the validation observer of the permission matrix and of validation.spec.ts, at the validation site E2EV.
+		ValidationObserver: account('e2e.observer', ['ValidationObserver'], false, false, ['E2EV']),
 		pending: account('e2e.pending', [], true),
 		changer: account('e2e.changer', [], true),
 		lockout: account('e2e.lockout', []),
@@ -190,6 +216,17 @@ export function accounts() {
 		webRules: account('e2e.webrules', ['BorderShiftSupervisor'], false, true, ['DMO']),
 		// ARV-058: sets up passenger displays at the demo airport through the screen (creating needs a second factor).
 		webDisplays: account('e2e.webdisplays', ['TerminalDutyManager'], false, true, ['DMO']),
+		// ARV-141: plants the slides spec's display (a critical action, so a fresh second factor); its own account, since a TOTP
+		// code counts once per account and the displays spec signs webDisplays in with the previous step.
+		slidesDisplays: account('e2e.slidesdisp', ['TerminalDutyManager'], false, true, ['DMO']),
+		// ARV-181b2: the open desks below recommendation suite's supervisor and duty manager at the demo airport, each with a
+		// second factor so that a delete reaches the rule service (it answers 204 for the border, 404 for the duty manager);
+		// accounts of their own, because a TOTP code counts once per account.
+		desksBorder: account('e2e.desksborder', ['BorderShiftSupervisor'], false, true, ['DMO']),
+		desksTerminal: account('e2e.desksterminal', ['TerminalDutyManager'], false, true, ['DMO']),
+		// ARV-187: the same for the predicted-breach suite (predicted nowcast rules are border data), its own accounts again.
+		predBorder: account('e2e.predborder', ['BorderShiftSupervisor'], false, true, ['DMO']),
+		predTerminal: account('e2e.predterminal', ['TerminalDutyManager'], false, true, ['DMO']),
 		// ARV-059: administers accounts through the Users and access screen (creating, resets and role grants need a second
 		// factor); the second is limited to the demo airport, to show that the screen and the server keep it there.
 		webUsers: account('e2e.webusers', ['SystemAdministrator'], false, true, ['*']),
@@ -200,7 +237,92 @@ export function accounts() {
 		breakGlassAdmin: account('e2e.bgadmin', ['SystemAdministrator'], false, true, ['*']),
 		// ARV-060: the scheduled report's recipients at the demo airport (their own addresses, so no other suite's mail mixes in).
 		reportBorder: account('e2e.reportborder', ['BorderShiftSupervisor'], false, false, ['DMO']),
-		reportTerminal: account('e2e.reportterminal', ['TerminalDutyManager'], false, false, ['DMO'])
+		reportTerminal: account('e2e.reportterminal', ['TerminalDutyManager'], false, false, ['DMO']),
+		// ARV-118: an administrator of one site (E2E3, created by the seed, no airport: UTC) who keeps its operating calendar.
+		calendarAdmin: account('e2e.calendaradmin', ['SystemAdministrator'], false, false, ['E2E3']),
+		// ARV-139a: creates an AUH-TA and a DMO display to read the illustrative flag on their boards (creating needs a second factor).
+		// Every site, so the account seed never creates AUH-TA itself (only the illustrative seed may).
+		illustrativeAdmin: account('e2e.illusadmin', ['SystemAdministrator'], false, true, ['*']),
+		// ARV-139a: the same for the functional suite's passenger display players (its own account: a TOTP code counts once per account).
+		illustrativeWebAdmin: account('e2e.illuswebadmin', ['SystemAdministrator'], false, true, ['*']),
+		// ARV-145: the advertising policy of AUH-TA (every site, so the account seed never creates AUH-TA itself). The
+		// administrator changes it and creates displays (both need a second factor); the duty manager reads it and edits displays
+		// with a password only; the functional suite's administrator has its own account (a TOTP code counts once per account).
+		advertisingAdmin: account('e2e.advadmin', ['SystemAdministrator'], false, true, ['*']),
+		advertisingManager: account('e2e.advmanager', ['TerminalDutyManager'], false, false, ['*']),
+		advertisingWebAdmin: account('e2e.advwebadmin', ['SystemAdministrator'], false, true, ['*']),
+		// ARV-142a: the advertisement library of a site of its own. The administrator creates the site, turns advertising on and
+		// creates its displays (second factor); a duty manager uploads with a password only; a second duty manager approves
+		// (second factor: approving is critical); a duty manager of E2E2 only sees nothing of the site.
+		mediaAdmin: account('e2e.mediaadmin', ['SystemAdministrator'], false, true, ['*']),
+		mediaManager: account('e2e.mediamanager', ['TerminalDutyManager'], false, false, ['*']),
+		mediaApprover: account('e2e.mediaapprover', ['TerminalDutyManager'], false, true, ['*']),
+		mediaElsewhere: account('e2e.mediaelse', ['TerminalDutyManager'], false, false, ['E2E2']),
+		// Two more duty managers for the upload attacks and the details probes: each person may attempt 30 uploads in 10 minutes.
+		mediaAttacker: account('e2e.mediaattack', ['TerminalDutyManager'], false, false, ['*']),
+		mediaProber: account('e2e.mediaprobe', ['TerminalDutyManager'], false, false, ['*']),
+		// ARV-142a: the same roles for the functional suite's library screen (its own accounts: a TOTP code counts once per account).
+		mediaWebAdmin: account('e2e.mediawebadmin', ['SystemAdministrator'], false, true, ['*']),
+		mediaWebManager: account('e2e.mediawebmgr', ['TerminalDutyManager'], false, false, ['*']),
+		mediaWebApprover: account('e2e.mediawebappr', ['TerminalDutyManager'], false, true, ['*']),
+		// ARV-104a: validation campaigns at E2EV. The manager drafts and publishes the site's zone profile and closes campaigns
+		// (both need a second factor); the lead plans and starts them with a password only (closing answers 401 for its second
+		// factor); a second observer of the site, and an observer of E2E1 for the cross-site answers.
+		validationManager: account('e2e.valmanager', ['BorderShiftSupervisor'], false, true, ['E2EV']),
+		validationLead: account('e2e.vallead', ['TerminalDutyManager'], false, false, ['E2EV']),
+		validationObserver2: account('e2e.observer2', ['ValidationObserver'], false, false, ['E2EV']),
+		validationObserverElsewhere: account('e2e.observerx', ['ValidationObserver'], false, false, ['E2E1']),
+		// A duty manager who is also an observer (owner decision 2026-10-08): it never counts for a campaign it created or started.
+		validationDual: account('e2e.valdual', ['TerminalDutyManager', 'ValidationObserver'], false, false, ['E2EV']),
+		// ARV-104c: the observer tablet's functional suite at a site of its own (E2EO), apart from validation.spec.ts's E2EV.
+		// The manager publishes the site's zone profile (a second factor), the lead plans and starts campaigns, the observer
+		// counts and times tracers, and a duty manager who is also an observer starts a campaign and is refused on it (403).
+		webValidationManager: account('e2e.webvalmanager', ['BorderShiftSupervisor'], false, true, ['E2EO']),
+		webValidationLead: account('e2e.webvallead', ['TerminalDutyManager'], false, false, ['E2EO']),
+		webObserver: account('e2e.webobserver', ['ValidationObserver'], false, false, ['E2EO']),
+		// The next observer on the same tablet: signs in after webObserver signed out with bins unsent (security review M1).
+		webObserver2: account('e2e.webobserver2', ['ValidationObserver'], false, false, ['E2EO']),
+		webValidationDual: account('e2e.webvaldual', ['TerminalDutyManager', 'ValidationObserver'], false, false, ['E2EO']),
+		// ARV-104h: the campaign screens' functional suite at a site of its own (E2EW). The border shift supervisor plans,
+		// starts and closes campaigns (a second factor: closing is critical), the duty manager reads them without desks, and the
+		// observer sends the ground truth through the API.
+		webCampaignSupervisor: account('e2e.webcampsup', ['BorderShiftSupervisor'], false, true, ['E2EW']),
+		webCampaignDuty: account('e2e.webcampduty', ['TerminalDutyManager'], false, false, ['E2EW']),
+		webCampaignObserver: account('e2e.webcampobs', ['ValidationObserver'], false, false, ['E2EW']),
+		// ARV-104i: the simulator's validation rehearsal at a site of its own (E2ER). The border shift supervisor publishes the
+		// profile and plans, starts and closes campaigns (a second factor); the simulator signs in as the two observers through
+		// the normal sign-in (the first with its authenticator, so a TOTP code goes with its password); a border shift supervisor
+		// who also holds the observer role starts a campaign and is refused on it when the simulator signs in as it.
+		rehearsalManager: account('e2e.rehmanager', ['BorderShiftSupervisor'], false, true, ['E2ER']),
+		rehearsalObserver1: account('e2e.rehobs1', ['ValidationObserver'], false, true, ['E2ER']),
+		rehearsalObserver2: account('e2e.rehobs2', ['ValidationObserver'], false, false, ['E2ER']),
+		rehearsalDual: account('e2e.rehdual', ['BorderShiftSupervisor', 'ValidationObserver'], false, false, ['E2ER']),
+		// ARV-104j: the rehearsal against the live pipeline at the demo airport (tests/rehearsal). The border shift supervisor
+		// plans, starts and closes the campaigns (closing needs a second factor); the simulator signs in as the two observers
+		// through the normal sign-in (the first with its authenticator), neither of which plans or starts a campaign.
+		liveRehearsalManager: account('e2e.livemanager', ['BorderShiftSupervisor'], false, true, ['DMO']),
+		liveObserver1: account('e2e.liveobs1', ['ValidationObserver'], false, true, ['DMO']),
+		liveObserver2: account('e2e.liveobs2', ['ValidationObserver'], false, false, ['DMO']),
+		// ARV-122a: exports and imports site configurations (both critical: a second factor). The second is an administrator
+		// of E2XS only (a site no other suite uses), for the answers about a site out of reach.
+		siteConfigAdmin: account('e2e.siteconfadmin', ['SystemAdministrator'], false, true, ['*']),
+		siteConfigScopedAdmin: account('e2e.siteconfscoped', ['SystemAdministrator'], false, true, ['E2XS']),
+		// ARV-123a: CSV imports of devices (both steps critical: a second factor) and desk code mappings. A second
+		// administrator replays the first one's preview token; the third holds E2XI only (a site no other suite uses).
+		csvImportAdmin: account('e2e.csvimport', ['SystemAdministrator'], false, true, ['*']),
+		csvImportOtherAdmin: account('e2e.csvimport2', ['SystemAdministrator'], false, true, ['*']),
+		csvImportScopedAdmin: account('e2e.csvimportscoped', ['SystemAdministrator'], false, true, ['E2XI']),
+		// ARV-123b: the CSV import screens' functional suite builds sites of its own (CIW and a random tail) and imports
+		// devices through the screen, which needs a second factor; its own account, since a TOTP code counts once per account.
+		webCsvImport: account('e2e.webcsvimport', ['SystemAdministrator'], false, true, ['*']),
+		// ARV-128: the release smoke suite (tests/smoke). The smoke project signs in as e2e.smoke and the deployed smoke config's
+		// run against this stack (api/smoke-config.spec.ts) as e2e.smokecfg: Handler station managers (the least privileged
+		// existing role, owner decision 2026-10-15), with an authenticator as every account in a deployed environment, at the
+		// smoke site E2SM only (a TOTP code counts once per account, so one account each). e2e.smokeadmin gives E2SM its zone
+		// profile, the test device and the display in global setup (critical: a second factor).
+		smoke: account('e2e.smoke', ['HandlerStationManager'], false, true, ['E2SM']),
+		smokeConfig: account('e2e.smokecfg', ['HandlerStationManager'], false, true, ['E2SM']),
+		smokeAdmin: account('e2e.smokeadmin', ['SystemAdministrator'], false, true, ['*'])
 	} as const;
 }
 

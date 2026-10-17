@@ -52,13 +52,14 @@ The predicted wait for someone joining now: `W_now = (Q + 1) / mu`.
 | Symbol | Meaning |
 |---|---|
 | Q | Queue length now (occupancy of the queue zone including the overflow band) |
-| mu | Throughput: a blend of staffed-desk throughput `n_open / c` (desks idle or serving, divided by recent mean cycle time) and the measured exit rate over the last m minutes (Proposed m = 5, blend 0.5) |
+| mu | Throughput: a blend of staffed-desk throughput `n_open / c` (desks idle or serving, divided by c, the recent time per person at a desk) and the measured exit rate over the last m minutes (Proposed m = 5, blend 0.5) |
 
 - Example: 29 queuing, 6 desks open, cycle time 1.5 minutes: mu = 4.0 per minute, nowcast 7.5 minutes, displayed as "5 to 10 min".
 - Fast-track lanes sharing desks use their share of the desks (merge ratio). E-gates use `(gates in service / cycle time) x (1 - reject rate)`.
 - No staffed desk: the nowcast is null ("no service"), never zero or infinite.
 - Displays: 5-minute bands with hysteresis (the band changes only when the nowcast moves 5 minutes from the reference value); "under 5 min" below 5; a widened band when degraded; a neutral message when stale or no service. Never a realised number.
 - Accuracy target for the pilot: median error against the later realised wait within 2 minutes for waits under 20 minutes.
+- Cycle time at AMAN sites (ARV-117d, Proposed; the method accepted by the owner on 2026-10-07, the walk-up gap to re-measure on pilot data): c is the time a desk spends per person, from AMAN's one-minute desk statistics: the officers' mean service time per transaction times the transactions, over the travel documents (people) processed. Before this change Ariva took AMAN's start-to-start cycle per transaction: a family processed together is one transaction, so the throughput read about 20 percent low (1.25 people per transaction on the reference day), and after a quiet spell the time a desk waited for the next passenger counted as service. What operators will see: **published waits at AMAN sites drop**, most after a lull and where families travel together; on the reference evening (Ariva's own simulator, not field data) the published wait's average overstatement fell from 1.85 minutes to 0.31 minutes. Where AMAN's statistics carry no documents the nowcast uses the exit rate alone and is shown as an estimate; statistics outside the contract's bounds are left out and the wait is shown as a band. The walk-up time between one passenger leaving and the next arriving at the desk is no longer in c, so in the field the published wait may read slightly low where that gap is long; the pilot measures it (to confirm with AMAN, [pilot-to-confirm](../docs/product/pilot-to-confirm.md) TC-84). Sites without AMAN are unchanged.
 
 ### Throughput
 
@@ -76,9 +77,21 @@ Share of time a desk is staffed and in use, from the desk state machine (F10). S
 | `Closed` (logout, or staff absent beyond T2, example 10 minutes) | No |
 | `Unknown` (all signals stale) | No; bins flagged `Degraded` |
 
+Desks with AMAN's session and transactions alone (no staff or service zone; ARV-149, Proposed for the KPI annex, the owner's decision of 2026-10-10). AMAN reports completed transactions only, a minute at a time, so such a desk's state follows its transaction rhythm against its lane's expected service time s (AMAN's mean service time per document over the lane's desks, as the nowcast uses it) and the queue it serves (formulas F10, rows 5a to 5f):
+
+| Logged in, and | State |
+|---|---|
+| a transaction ended within s plus one minute (AMAN's interval) | `Serving` |
+| people waiting in its queue, and no transaction (nor the start of the waiting) for less than P | `Serving` |
+| people waiting, and silent for P or longer | `Paused` |
+| nobody waiting in its queue | `Idle`, however long it is silent |
+| its queue not measured, and silent for P or longer | `Paused`; otherwise `Idle` |
+
+P is 4 times s, at least 3 minutes (T1) and at most 30 minutes: 6 minutes for a 1.5-minute visitors' lane, 3 minutes for a citizens' lane. Before ARV-149 such a desk was never `Serving` and turned `Paused` 3 minutes after its last transaction, also with nobody to serve, so it was counted as closed in empty halls and between slow transactions (desk-state agreement 0.129 in the live rehearsal of 2026-10-10). Desks with staff or service zones are unchanged; desk states remain border data, shown to border roles only.
+
 Proposed reporting: staffed share = (idle + serving + paused minutes) / interval; serving share = serving minutes / staffed minutes. The exact utilisation definition used in reports is To confirm with the product owner.
 
-Service and cycle times (from AMAN `DeskIntervalStats` at AMAN sites, sensors elsewhere): service time is transaction start to end; cycle time is start to next start and includes the walk-up gap; cycle time sets throughput. AMAN separates approaches (a family of four is one) from documents (four).
+Service and cycle times (from AMAN `DeskIntervalStats` at AMAN sites, sensors elsewhere): service time is transaction start to end; cycle time is start to next start and includes the walk-up gap; cycle time sets throughput. AMAN separates approaches (a family of four is one) from documents (four). The published nowcast at AMAN sites takes the mean service time per document (ARV-117d, Nowcast above), since AMAN's cycle also counts the time a desk waits after a quiet spell.
 
 ### E-gate reject rate (F12)
 
@@ -86,13 +99,14 @@ Service and cycle times (from AMAN `DeskIntervalStats` at AMAN sites, sensors el
 
 ### Overflow minutes
 
-Minutes in a bin during which the overflow band is occupied (occupancy above zero raises `OverflowDetected`). A contract KPI option in the prototype; the exact counting rule (per minute with any occupancy) is To confirm.
+Minutes in a bin during which an overflow band of the queue is occupied (occupancy above zero raises `OverflowDetected`). A contract KPI option in the prototype. Ariva counts a minute when any band of the queue held anyone in it (the highest reading of the minute above zero); a minute without a band reading is not observed. This rule (TC-19) was accepted by the product owner on 2026-10-06 and is implemented since ARV-115: the stream stores each band's occupancy per minute (`overflow_minute`) and the overflow minutes per 15-minute bin (`overflow_bin_15m`). A band whose sensor stays silent beyond the 2-minute freshness window is Unknown (neither occupied nor empty) and adds no minute until it reports again. A contract may still choose another KPI.
 
 ### Abandonment and track completion (F6, F18)
 
 - Abandonment rate: tracks that left the queue without crossing the exit line / tracks that entered.
 - Track completion rate: tracks that exited / tracks that entered; target at least 90 percent. Fragmentation biases waits low.
 - Conservation residual: (entries minus exits) minus the change in occupancy over an interval; should be 0.
+- Since ARV-114b these checks raise alarms and flag data: a final bin whose track completion is below 90 percent (Proposed) is `Degraded` (F11), and alert rules can watch the conservation residual (people), the track completion (percent) and the minutes outside a zone's physical capacity per queue and bin (Administration guide, section 8). A health-check alarm is a reason to re-validate the zone (section 8 below).
 
 ### Forecast P50 and P90 (F15, v1)
 
@@ -102,6 +116,23 @@ Monte Carlo runs of the backlog recursion `Q(k+1) = max(0, Q(k) + A(k) - C(k))` 
 
 Predicted arrivals per hall or lane over now plus 5 to now plus 25 minutes, from on-blocks (8 to 15 minutes delay, spread over about 12 minutes) and lane demand. Compared with a threshold or with staffed capacity (threshold To confirm).
 
+### Weekly summary (ARV-119, Proposed)
+
+The figures of a site's local week, Monday to Sunday in the airport's time zone (167 or 169 hours when the clock changes). Ariva computes them on request; the weekly report that lays them out, its downloads, schedules and delivery come with the Insight report tool (ARV-146). Exact rules: formulas, "Weekly summary figures".
+
+| Figure | How it is computed |
+|---|---|
+| Lane waits per day | Passengers, waits, P50 and P90 per lane and local day, from the day's minute histograms merged (F7), the same as that day's daily report; every local hour as well |
+| Peak hours | Per lane and day, the hour with the highest P90 among hours with at least 20 waits (the daily report's rule); per lane over the week the same; the site's ten worst lane-hours of the week |
+| Alerts and time to acknowledge | Alerts raised in the week that the reader's roles see, by severity, rule and day; minutes from raised to acknowledged over acknowledged alerts only (P50, P90, mean, longest); alerts never acknowledged counted apart, still open or closed |
+| Device uptime | The share of the week so far with no recorded outage of the device, as in the daily report |
+| Data quality | Stored 15-minute bins by status and quality (Degraded for track completion alone apart); track completion over final bins from the summed tracks (never an average of bin rates) and the bins below 90 percent; the conservation residual's size; minutes outside a physical capacity |
+| Overflow minutes | Per lane and day, minutes in which any band of the queue held anyone (TC-19) |
+| Availability | The availability ledger's minutes per local day and for the week, with both ratios (section 8) |
+| Time in each desk state | Seconds closed, idle, serving, paused and unknown, per lane and per desk, per day and week; no utilisation figure until its definition is agreed (TC-45) |
+
+Per-desk figures are border data: only border shift supervisors and administrators (`BorderDesks.View`) get desk rows. Other readers get lane totals, each day and the week only where at least three desks were open in it (idle, serving or paused; a closed desk does not count), and a lane's days all or none, so no figure is one or two desks' own and none can be worked out from the others. Check-in and security lanes go to readers with `AirportDesks.View` only. Data quality and availability need `DataQuality.View`. A week before a site's data, or partly before it, lists those days empty (no percentile rather than zero).
+
 ## 3. Provisional and final
 
 A bin is **final** when all of these hold, and **provisional** otherwise (F6):
@@ -110,7 +141,7 @@ A bin is **final** when all of these hold, and **provisional** otherwise (F6):
 2. Every track that entered in the bin has an outcome: exited, abandoned, fragmented, or censored (still unresolved after T_censor, Proposed 120 minutes).
 3. The zone's data quality for the bin is known (an outage over an entry or exit line makes the bin `Unknown`; it still becomes final, with that flag).
 
-A bin with censored tracks above 5 percent of its entries is flagged `Degraded` (Proposed). Reports show provisional bins marked as such. SLA evaluation uses final bins only. Late events and recomputations create a new revision of a bin; earlier revisions are kept and each records its profile version.
+A bin with censored tracks above 5 percent of its entries is flagged `Degraded` (Proposed), and so is a final bin whose track completion (tracks exited over tracks that entered) is below 90 percent (Proposed, ARV-114b; a bin without tracks has no rate and is not flagged by it; a provisional bin is not judged, since its open tracks are people still queuing). Reports show provisional bins marked as such. SLA evaluation uses final bins only. Late events and recomputations create a new revision of a bin; earlier revisions are kept and each records its profile version.
 
 ## 4. SLA evaluation (F17, v1)
 
@@ -146,6 +177,24 @@ Reference contract (prototype, not contractual): P90 per 15-minute bin at most 1
 
 Rules: provisional breaches are shown but never counted; disputes apply to final breached bins only; when a dispute resolves, the evaluation is recomputed as a new revision; every evaluation records the contract version, the zone profile version per bin and the evidence pack hash. Penalty-grade data requires T3 tracks, or T1 counts validated against manual counts for that zone profile version.
 
+### Overflow minutes as a penalty KPI (Proposed)
+
+Proposed on 2026-10-07; each point is To confirm per contract (pilot list TC-78 to TC-82). Full rule: F17.
+
+- **Who is penalised**: the ground handler operating the zone's counters, not the airline. Reports list the flights checking in during each breached bin, so the handler can settle with its airlines.
+- **Which zones**: those the contract names. Immigration, emigration and e-gate zones are never in a penalty contract; they are reported and alerted only.
+- **Attribution**: from the AODB counter allocations overlapping the bin. One handler on the zone's counters: the bin is theirs. Two or more handlers, an unresolved counter code, or no allocation: manual review, never split automatically.
+- **Observation floor**: a bin needs at least the contract's minimum of observed minutes (Proposed 12 of 15). Below it the bin is a sensor outage, excluded and reported, never a clean bin.
+- **Staffed to plan**: a breached bin is excluded when every counter of the agreed staffing plan was open.
+- **A breach** is a 15-minute bin whose overflow minutes exceed the threshold; a long overflow is several breached bins.
+
+| Case | Result |
+|---|---|
+| 9 overflow minutes, 15 observed, threshold 5, one handler | Breach, attributed to that handler |
+| Same, 11 minutes observed, floor 12 | Excluded (sensor outage) |
+| Same, counters of two handlers allocated | Manual review, not counted |
+| Same, every planned counter open | Excluded (staffed to plan) |
+
 ## 5. Exclusions
 
 Types from the prototype; the allowed set is defined per contract (To confirm):
@@ -156,6 +205,7 @@ Types from the prototype; the allowed set is defined per contract (To confirm):
 | `SensorOutage` | A sensor outage over the zone lasted more than 5 minutes in the bin |
 | `ClosedOnAirportInstruction` | Counters were closed on the airport's instruction |
 | `FlightDisruption` | A flight disruption outside the handler's control |
+| `StaffedToPlan` | Every counter of the agreed staffing plan was open (Proposed, overflow minutes) |
 | `UpheldDispute` | The handler's dispute on the bin was upheld |
 
 An exclusion overlaps a bin when it starts before the bin ends and ends after the bin starts. Sensor outage exclusions are evidenced by the device health history, which is kept for the dispute window.
@@ -196,9 +246,61 @@ Retention of evidence packs: at least the contract's dispute and audit periods (
 | Realised-wait absolute error | Within the larger of 1 minute or 10 percent of the true wait |
 | Realised-wait bias | Within plus or minus 5 percent |
 | Track completion | At least 90 percent |
-| Desk-state agreement with observer log | At least 95 percent of observed minutes |
+| Desk-state agreement with observer log | At least 95 percent of observed minutes, each at its desk's level (ARV-149a): full state with a staff or service zone, open or not open without one |
 | Nowcast error against later realised wait | Median within 2 minutes for waits under 20 minutes |
 | Availability during the pilot | 99 percent of operating hours |
 | Ground-truth proof | Nowcast error with and without AMAN inputs, side by side; no target |
 
 See [Commissioning and calibration](07-Commissioning-and-Calibration.md) for the campaign.
+
+### How the comparison is computed (F18, ARV-104e, Proposed)
+
+Ariva compares a campaign's ground truth with what it stored, under the campaign's zone profile version only. Every result carries that version. The rules below are proposals pending the product owner and the client's KPI annex (`../docs/product/decisions.md`).
+
+- **What is compared**: only items whose stored results are final, of the campaign's version and of `Good` quality, with no sensor outage over their time. Items in `Degraded` or `Unknown` bins (a bin with no stored result is `Unknown`), provisional bins, bins of another version and tracers whose entry minute holds no realised wait are listed apart with their counts, never dropped; their values are shown where Ariva has them.
+- **Latest revision only**: a stored bin, a stored minute or a count is read at its latest revision. When that revision holds a value that cannot be (a negative count, more people leaving than entering) or two rows of it disagree, the result is listed as unusable and treated as missing: an earlier revision never takes its place. A line and bin whose counts include an observer's unusable latest correction is not judged (the other observers' counts of it are set aside with it), and a line whose stored crossings cannot be used has no system count rather than 0. A time recorded without its UTC marker counts as a value that cannot be. Counts of bins and tracers who joined outside the campaign's planned days are left out, two tracer runs from one observer with the same label and join time are both left out, and a tablet batch holding a run that cannot be is left out whole.
+- **Sensor outages**: an outage still open counts to the end of the comparison. An outage record whose times cannot be read makes the whole queue unknown for the campaign (rather than being ignored), and the other queues keep their results.
+- **Count accuracy, per line and 15-minute bin**: `1 - |N_system - N_manual| / N_manual`, never below 0 (a system count above twice the manual count shows 0), with the absolute error always shown. An entry or overflow entry line is compared on people crossing in, an exit line on people crossing out, a count line on both. Two observers of the same line and bin count as the mean of their latest counts, and their difference is shown. A manual count of 0 has no accuracy: the absolute error stands instead, without a verdict. A line passes when every compared bin reaches 95 percent; its lowest and pooled accuracy are shown. Example: 96 counted by Ariva against 100 counted by hand is 96 percent.
+- **Which system wait a tracer is compared with**: the final realised wait of the people who entered the same queue at the tracer's join time (the tablet's time corrected by its clock offset), read from the stored minutes: each minute's mean wait is placed at the middle of the minute and the value at the join time lies on the straight line between the two minutes around it. Example: minutes with mean waits of 8 and 10 minutes, and a tracer who joined a quarter of the way from the first minute's middle to the second's: 8.5 minutes. The neighbouring minute is used only when its own stored results are final and `Good` (for example not in a degraded bin or under a sensor outage); otherwise the join minute's own mean is used alone. A sensor outage in the join minute, even before the tracer joined, sets the tracer apart.
+- **Wait error and bias, per queue**: error = system wait minus tracer wait, within tolerance when its size is at most the larger of 1 minute and 10 percent of the tracer's wait (8 minutes against 8.9 passes; 20 against 22.5 fails). Bias = the sum of the errors over the sum of the tracers' waits, positive when Ariva overstates; target within plus or minus 5 percent. The wait criterion passes when every compared tracer is within tolerance (the annex may set a share instead). A tracer who left without being served (abandoned) has no error and no part in the bias: abandoned tracers are counted apart, beside the abandonment Ariva recorded in the same bins.
+- **Clock offsets**: for each observer (an account id, never a name), the lowest, median and highest offset of its tablet's batches; a batch more than 5 seconds from its observer's median is flagged (a stale clock reading or a tablet whose time was changed). The report also shows the wait error and bias with every offset 2 seconds lower and higher, so a reader sees how much the clock correction matters.
+- **Track completion, per queue**: tracks that exited over tracks that entered, summed over the campaign days' `Good` bins (never an average of bin rates); target at least 90 percent. Only queues measured by sensors that track people (T3) have tracks; elsewhere there is no value. Since ARV-114b a final bin below 90 percent is `Degraded` for that very reason, so this criterion still counts a final bin below the target whatever its own flag says (left out, exactly the failing bins would vanish and the criterion could never fail); a sensor outage over the bin still sets it apart (Proposed). The other criteria (count accuracy, the wait error and bias, the nowcast error) judge such a bin too when its own track completion is the only reason it is `Degraded`, which Ariva stores with the bin; a bin `Degraded` for another cause as well is left out, as any `Degraded` bin (Proposed, decided as the fail-closed choice in the ARV-114b security review). Results frozen before ARV-114b keep their figures until recomputed.
+- **Pass and fail are per line and per queue, not the campaign's acceptance**: each line's and queue's pass or fail judges only the bins and tracers that could be compared, so one compared bin beside nine degraded ones can pass a line. They are not acceptance verdicts on their own: the campaign's verdict per criterion (ARV-104g) requires the campaign's targets of compared items (bins per line, tracer runs), otherwise it shows no data, and it shows the share of items excluded. Every line and queue result gives its compared and excluded counts for this.
+
+### Desk-state agreement and nowcast error (F18, ARV-104f, Proposed)
+
+The same comparison adds the last two pilot criteria and the ground-truth proof. As above, every result carries the zone profile version, results that cannot be used are listed and never replaced by an earlier revision, and the rules are proposals pending the product owner and the KPI annex (`../docs/product/decisions.md`, ARV-104f entry).
+
+- **Which state Ariva showed for a desk minute**: the state the desk spent most of the minute in. Seconds Ariva did not account for count as `Unknown`; when `Unknown` ties with another state the minute is `Unknown`; a tie between two known states goes to the more active one (serving, idle, paused, closed). Example: 40 seconds serving and 20 idle is serving; 30 serving and 30 unknown is unknown.
+- **Desk-state agreement**: observed minutes in which Ariva's state equals the observer's, over observed minutes; target at least 95 percent, per desk and over all desks of the campaign. A minute Ariva shows as `Unknown`, or for which it stored nothing usable, counts as a disagreement. Minutes from a degraded desk feed count like the others and are shown apart. Example: 19 agreeing minutes of 20 is 95 percent, a pass; 18 of 20 is a fail.
+- **Two levels (ARV-149a, the owner's decision of 2026-10-10)**: a desk with a staff or service zone in the zone profile in force at the minute is judged on its full state (closed, idle, serving, paused), as above. A desk without one takes its state from AMAN alone, which reports each desk's completed transactions per minute but not when within the minutes the work fell, so it cannot tell serving from idle desk by desk; such a desk is judged open (idle or serving) against not open (paused or closed). The level comes from Ariva's own record (the zone profile version in force at the minute), never from the observer; a desk whose zones changed during the campaign is judged minute by minute, and the minute in which a new version was published is judged on the full state; a minute with no profile in force, or a desk whose record cannot be read, is judged on the full state. The target stays 95 percent, pooled over every minute at its own level. Beside it, without a target, Ariva shows serving against idle for those desks (of the minutes both the observer and Ariva call open, how often they name the same state) and the level each desk was judged at. Example: an observer logs a desk without zones serving for 20 minutes while Ariva shows it idle: open against open, 20 of 20 agree at the throughput level (a pass), and serving against idle is 0 of 20. Results frozen before ARV-149a read as judged on the full state, which they were. The KPI annex states it: 95 percent on the full state needs a staff or service zone at each desk (a line of the bill of quantities); a site whose desks have none commits to the throughput level.
+- **Observers and corrections**: each observer's state is their latest entry (the last correction, if they corrected it). Two observers of the same desk and minute count once; if they recorded different states the minute is set aside (the observation itself is uncertain) and counted. Because setting minutes aside could hide Ariva's mistakes (a second observer contradicting only the minutes Ariva got wrong would lift 16 of 20 to 16 of 16), Ariva also shows the strict agreement, with every minute set aside counted as a disagreement, and the campaign result (ARV-104g) uses it or caps the share set aside. A correction that cannot be read leaves that minute out for every observer. Beside the agreement Ariva shows whether it got "counted for throughput" right (idle or serving against paused or closed), which is what the wait estimate needs, and a table of which state was taken for which.
+- **Nowcast error**: the wait Ariva predicted at the end of each minute is compared with the average wait the people who joined in the next minute actually had (final values only). The criterion is the median of the absolute errors over minutes whose actual wait was under 20 minutes; target within 2 minutes. Example: predictions of 7.5, 8, 9, 10 and 12 minutes against actual waits of 8, 8, 10, 13 and 12 give errors of 0.5, 0, 1, 3 and 0 minutes, a median of 0.5, a pass. Minutes with actual waits of 20 minutes or more, minutes without service (no prediction, with the reason), and minutes whose data was degraded, unknown, provisional or of another profile version are shown apart with their counts. Minutes where Ariva said there was no service while people still joined and waited under 20 minutes are counted separately, because the campaign result (ARV-104g) counts them against the prediction or caps their share. A prediction so large it is not a real wait counts as an error of a billion minutes, a fail. A prediction Ariva itself marked as an estimate (for example from exit counts alone) is judged like the others and also shown apart.
+- **Ground-truth proof**: the same error for the sensor-only prediction Ariva computes beside the published one without AMAN's inputs (never shown elsewhere), side by side, with the minutes each covers and both on exactly the minutes both could be judged; the sensor-only minutes that used the sensor cycle time are shown apart. No target.
+- **Who sees what**: desk-state results are border data (a desk and a minute could be matched with AMAN's records): only border roles of the site see them, never airport roles or the border-to-airport feed. The sensor-only prediction's figures appear only in the validation results.
+
+### Availability (F18, ARV-118, Proposed)
+
+Availability = available operating minutes / operating minutes, per local day, per week (Monday to Sunday) and over a range; no value when there are no operating minutes. Proposed pending the owner and the client's KPI annex (TC-83).
+
+- **Operating minute**: inside the site's operating hours (the site operating calendar, [Administration guide](11-Administration-Guide.md) section 2b) and outside an announced maintenance window. A window counts only when it was recorded before it started; a site without a calendar is open around the clock.
+- **From the site's first publication** (ARV-150, the owner's decision of 2026-10-10): a site's minutes count from the first whole minute at or after its zone profile is first published. The minutes before it are not operating minutes; the minute before the sensors' first push counts (as `MissingMinute`); publishing a new version of the profile does not restart the count. Two exceptions: a site published before Cronz (the job host) first ran for it, or while Cronz was down, starts at the minute Cronz first decides for it (that downtime is left out; downtime after the start counts, as `Unobserved`); and a first publication stored more than 60 seconds ahead of Cronz's clock is not trusted, so the site's minutes count from Cronz's first decision as `NoPublishedZones` until the profile takes effect.
+- **Available minute**: every queue zone of the site's published zone profile had a live state younger than 150 seconds that had reached the minute (trailing real time by at most 180 seconds), and its minute is stored.
+- **Not available**: the ledger records why: `StaleZone` (no fresh live state), `MissingMinute` (no stored minute), `StreamLag` (the live state behind), `NoPublishedZones`, and `NotObservedLive` for minutes decided after downtime of the job host (counted as not available: what cannot be proven live is not claimed).
+- **Where**: `GET api/v1/sites/{siteCode}/availability?from=yyyy-MM-dd&to=yyyy-MM-dd` (local dates, at most 92 days; border shift supervisors, terminal duty managers and administrators). Each day, week and the total give the minutes recorded, operating, available, unavailable, unobserved, in maintenance and closed, the minutes per reason and two ratios; the answer repeats the pilot target (0.99).
+- **Two ratios**: `availability` leaves maintenance minutes out of both sides (maintenance is not operating time); `availabilityMaintenanceAsUnavailable` counts them as operating and not available. A site could otherwise raise the first figure by declaring maintenance in advance over hours it expects to be weak, so both are reported side by side. Until the client decides (TC-83), read the pilot result against both; the KPI annex should either cap the maintenance minutes a site may declare per month or use the stricter ratio.
+
+Example: a day open 06:00 to 22:00 (960 operating minutes) with a 60-minute announced maintenance window has 900 operating minutes; 891 available minutes give 0.99, and 891 of 960 (0.928) as the stricter ratio.
+
+### Campaign verdicts (F18, ARV-104g2, Proposed)
+
+A campaign's results give one verdict per pilot criterion: pass, fail or no data. The per-line, per-queue and per-desk verdicts above judge only the items that could be compared; the campaign verdict also needs enough of them. The rules are proposals pending the product owner and the client's KPI annex (`../docs/product/decisions.md`, ARV-104g2 entry).
+
+- **Enough compared items, otherwise no data**: the campaign's own targets set how many (planned with the campaign, 20 bins per line and 30 tracer runs as placeholders until the annex agrees them). Count accuracy needs that many compared bins on every line in the campaign; the wait error and the bias need that many compared tracer runs over all queues; track completion needs that many `Good` bins on every queue of the campaign (a queue that recorded no track at all leaves the result at no data while another queue tracks people, since Ariva cannot tell a queue without tracking sensors from a tracker that failed; plan track completion on tracking queues); the desk-state agreement and the nowcast error need as many compared minutes as the bins per line hold (20 bins, 300 minutes). A line or queue below its count shows no data even when its compared items failed (its own fail stays visible beside it). Availability needs at least one operating minute.
+- **Pass and fail**: a criterion judged per line or queue fails when any line or queue with enough compared items fails, shows no data when any lacks them, and passes otherwise. The others are judged once over the campaign.
+- **Items set aside count against Ariva (strict, the default)**: a desk minute whose observers disagree, or whose observer entry cannot be read, counts as a disagreement (the strict agreement: 16 agreeing of 20 observed is 0.80, a fail, even when a second observer contradicts only the 4 wrong minutes); a minute whose published prediction gave no number while the next minute's entrants waited under 20 minutes counts as an error beyond the target in the median. The alternative the owner may choose is a cap: the figure over compared items, failing when more than 5 percent were set aside. Either way the share set aside is shown for every criterion.
+- **Needs review**: the results flag what a person should check before relying on them: sensor outage records the comparison could not use (they could hide degraded bins), stored results that were refused or contradicted each other, placeholder targets, a campaign still running, results not final yet, a sensor-only prediction that could not be read, queues that recorded no track, and minutes after which people's waits are known but with no published prediction at all.
+- **Beside the verdicts**: availability over the campaign's planned days (the ledger above), the calibration records of the queues' devices (method, sample, measured accuracy and wait error, verdict and date; never the notes or who recorded them), the zone profile version and its geometry hash, and the published prediction's coverage: the planned minutes after which people's waits are known, and how many of them had a published prediction.
+- **Size**: a campaign of 50 queues over 31 days holds about 2.2 million stored minutes, more than the comparison takes at once; it is compared one queue at a time and pooled, which gives exactly the result of comparing everything at once (proved by tests). One computation per campaign runs at a time, within a timeout. Since ARV-104g a campaign holds at most 400 zone-days (queues times planned days, for example 12 queues for 31 days or 50 for 8) and one computation runs at a time on the API host, so that a computation (about 200 MB at that bound) fits beside sign-in and the live screens; the results list no minute, only counts per queue and desk.
+- **Not in scope**: track completion is "not in scope" when no queue counted tracks (not tracked, or every tracker silent); the results then also raise the review flag for queues without tracks.
+- **Frozen at close (ARV-104g)**: when the campaign closes its results are frozen as revision 1 with a SHA-256 hash of the stored document; later reads return exactly that document, and a recomputation (a validation manager with a second factor and a reason) adds revision 2, 3 and so on without changing the earlier ones. Each reader gets the sections its role allows: desk-state results only border roles, every observer's runs and offsets the site's validation managers, the nowcast without AMAN inputs only Validation.View holders.

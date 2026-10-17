@@ -2,6 +2,7 @@ using System.Data;
 using Ariva.Core.Alerting;
 using Ariva.Core.Domain.Entities;
 using Ariva.Core.Domain.Enums;
+using Ariva.Core.Security;
 using Ariva.Infra.Live;
 using Ariva.Infra.Services.Administration;
 using Microsoft.Extensions.DependencyInjection;
@@ -150,11 +151,20 @@ public sealed class AlertEvaluation(IServiceScopeFactory scopes, AlertEvaluation
 /// ended, a device's up to the last minute that has ended, at most the catch-up per tick. A new target (a new or
 /// re-enabled rule, a zone added, a device commissioned) starts at the present: history is for the backtest. An edit of
 /// the rule restarts its counts (an open alert stays and clears under the new values, unless the metric changed, which
-/// resolves it); a target that left the rule has its open alert resolved and its state dropped.
+/// resolves it); a target that left the rule has its open alert resolved and its state dropped. A stored border rule that
+/// fails its metric's rule checks is not evaluated (ARV-181b2, ARV-187): its open alerts are withdrawn, its states dropped,
+/// and one warning per values version names it (<see cref="NotEvaluatedWarnings"/>).
 /// </summary>
 internal sealed class AlertRuleTick(IUnitOfWork unitOfWork, ICurrentUser currentUser, AlertInputs inputs, AuditTrail audit, IAlertNotices notices,
-    Ariva.Infra.Notifications.AlertEmails emails)
+    Ariva.Infra.Notifications.AlertEmails emails, NotEvaluatedWarnings warnings, ILogger<AlertRuleTick> logger)
 {
+    /// <summary>
+    /// Why a stored border rule is not evaluated, the warning's fixed reason (CWE-117: no value of the rule is logged). One
+    /// text for both border metrics (ARV-187): no border owner, an airport-side escalation role, or for open desks below
+    /// recommendation a comparator below.
+    /// </summary>
+    public const string BorderReason = "it fails the rule checks of its border metric";
+
     /// <summary>The most alerts one tick escalates (the rest at the next).</summary>
     public const int MaxEscalationsPerTick = 500;
 
@@ -249,8 +259,19 @@ internal sealed class AlertRuleTick(IUnitOfWork unitOfWork, ICurrentUser current
         Begin();
         var rule = await Storage.GetAsync<AlertRule>(ruleId, ct);
         if (rule is null || rule.IsDeleted || !rule.Enabled)
+        {
+            warnings.Forget(ruleId);
             return new AlertRuleTickResult(0, 0, 0, 0);
+        }
+
         var values = rule.Values();
+        // ARV-181b2 and ARV-187 (CWE-863, CWE-200): a stored rule on a border-only metric that fails the rule checks (no
+        // owner or an airport-side owner or escalation role, or for open desks below recommendation a comparator below: one
+        // from before those stories or changed in the database) is never judged, so it raises nothing for anyone; its open
+        // alerts are withdrawn and every output channel filters such alerts by metric besides.
+        if (BorderAlerts.IsBorderOnly(values.Metric) && values.Problems().Count > 0)
+            return await NotEvaluatedAsync(ruleId, rule, now, BorderReason, ct);
+        warnings.Forget(ruleId);
         var version = rule.ValuesHash();
         // The last minute that has ended.
         var ended = AlertInputs.Minute(now).AddMinutes(-1);
@@ -274,9 +295,21 @@ internal sealed class AlertRuleTick(IUnitOfWork unitOfWork, ICurrentUser current
         }
 
         var byTarget = states.ToDictionary(s => (s.ZoneName, s.DeviceCode));
-        var latest = values.Metric == AlertMetric.SensorOffline
-            ? null
-            : await inputs.LatestMinutesAsync(rule.SiteCode, [.. targets.Select(t => t.ZoneName).Distinct(StringComparer.Ordinal)], ended, ct);
+        var zoneNames = targets.Select(t => t.ZoneName).Distinct(StringComparer.Ordinal).ToList();
+        var latest = values.Metric switch
+        {
+            AlertMetric.SensorOffline => null,
+            // ARV-115: overflow rules run on the bands' own minutes, which an overflow zone has without a queue minute of its own.
+            AlertMetric.OverflowOccupied => await inputs.LatestOverflowMinutesAsync(rule.SiteCode, zoneNames, ended, ct),
+            // ARV-114b: a health-check rule waits for each zone's latest ended bin to settle, so it judges what a backtest would.
+            AlertMetric.ConservationResidual or AlertMetric.TrackCompletion or AlertMetric.OccupancyOutOfRange =>
+                await inputs.LatestHealthMinutesAsync(rule.SiteCode, values.Metric, zoneNames, ended, ct),
+            // ARV-181b2: open desks below recommendation runs on the minutes the staffing job computed, up to each lane's latest.
+            AlertMetric.DesksBelowPlan => await inputs.LatestStaffingMinutesAsync(rule.SiteCode, zoneNames, ended, ct),
+            _ => await inputs.LatestMinutesAsync(rule.SiteCode, zoneNames, ended, ct)
+        };
+        if (latest is null && AlertRuleValues.IsHealthCheck(values.Metric))
+            return Skipped(rule, targets.Count, withdrawn, now);
         var plan = new List<(AlertTarget Target, AlertRuleState State, DateTime From, DateTime To)>();
         foreach (var target in targets)
         {
@@ -319,10 +352,20 @@ internal sealed class AlertRuleTick(IUnitOfWork unitOfWork, ICurrentUser current
                 plan.Add((target, state, from, upTo));
         }
 
+        // Targets are read in clusters of nearby windows (each at most the catch-up long), so a target far behind the others
+        // never stretches one read over the months between them for every target (ARV-114b, CWE-120).
+        var seriesByKey = new Dictionary<string, AlertTargetSeries>(StringComparer.Ordinal);
+        foreach (var cluster in AlertInputs.Clusters(plan, p => p.From, TimeSpan.FromMinutes(maxCatchUpMinutes)))
+        {
+            var series = await inputs.ReadAsync(rule.SiteCode, values, [.. cluster.Select(p => p.Target)], cluster.Min(p => p.From), cluster.Max(p => p.To), ct);
+            if (series is null)
+                return Skipped(rule, plan.Count, withdrawn, now);
+            foreach (var read in series)
+                seriesByKey[read.Target.Key] = read;
+        }
+
         if (plan.Count > 0)
         {
-            var series = await inputs.ReadAsync(rule.SiteCode, values, [.. plan.Select(p => p.Target)], plan.Min(p => p.From), plan.Max(p => p.To), ct);
-            var seriesByKey = series.ToDictionary(s => s.Target.Key, StringComparer.Ordinal);
             foreach (var (target, state, from, to) in plan)
             {
                 var minutes = seriesByKey.TryGetValue(target.Key, out var s) ? s.Minutes.Where(m => m.MinuteUtc > from && m.MinuteUtc <= to) : [];
@@ -365,6 +408,51 @@ internal sealed class AlertRuleTick(IUnitOfWork unitOfWork, ICurrentUser current
         Announce(now);
         unitOfWork.PromiseToCommit();
         return new AlertRuleTickResult(plan.Count, raised, cleared, withdrawn);
+    }
+
+    /// <summary>
+    /// A rule whose inputs are beyond their read bound this tick (<see cref="AlertInputs.MaxHealthRows"/> for the health
+    /// checks, <see cref="AlertInputs.MaxStaffingRows"/> for open desks below recommendation; CWE-120): its targets keep their
+    /// states, so the next tick tries again from the same minutes; what the tick already changed (new targets, withdrawn
+    /// alerts) is kept. One warning names the site and the rule code only.
+    /// </summary>
+    private AlertRuleTickResult Skipped(AlertRule rule, int targets, int withdrawn, DateTime now)
+    {
+        logger.LogWarning("Alert evaluation of site {Site} rule {Rule}: its stored inputs exceed the rows one read takes; the rule is not evaluated this tick",
+            rule.SiteCode, rule.Code);
+        Announce(now);
+        unitOfWork.PromiseToCommit();
+        return new AlertRuleTickResult(targets, 0, 0, withdrawn);
+    }
+
+    /// <summary>
+    /// A stored rule the evaluation does not judge (ARV-181b2, ARV-187): no input is read; its open alerts are resolved as
+    /// withdrawn with the rule (lead decision P4: left open, housekeeping would escalate them) and its targets' states
+    /// dropped, so it starts at the present once it is repaired. One warning per rule and values version in this host
+    /// (lead decision P3, <see cref="NotEvaluatedWarnings"/>) names the site, the rule code and a fixed reason only
+    /// (CWE-117: no value of the rule is logged).
+    /// </summary>
+    private async Task<AlertRuleTickResult> NotEvaluatedAsync(Guid ruleId, AlertRule rule, DateTime now, string reason, CancellationToken ct)
+    {
+        var withdrawn = 0;
+        var open = await Storage.ExecuteSqlAsync<IdRow>("""SELECT id AS "Id" FROM alert WHERE rule_id = :rule AND state <> 'Resolved'""",
+            new Dictionary<string, object> { ["rule"] = ruleId }, ct);
+        foreach (var row in open)
+            if (await LockedAsync(row.Id, ct) is { IsOpen: true } alert)
+            {
+                alert.Resolve(AlertResolution.RuleWithdrawn, now, AlertEvaluation.SystemUserName);
+                Changed(alert);
+                withdrawn++;
+            }
+
+        foreach (var state in await Storage.Query<AlertRuleState>().Where(s => s.RuleId == ruleId).ToListAsync(ct))
+            await Storage.DeleteAsync(state, ct);
+        await Storage.FlushAsync(ct);
+        if (warnings.ShouldWarn(ruleId, rule.ValuesHash()))
+            logger.LogWarning("Alert evaluation of site {Site} rule {Rule}: not evaluated, {Reason}", rule.SiteCode, rule.Code, reason);
+        Announce(now);
+        unitOfWork.PromiseToCommit();
+        return new AlertRuleTickResult(0, 0, 0, withdrawn);
     }
 
     private sealed class IdRow

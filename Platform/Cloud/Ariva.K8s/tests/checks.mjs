@@ -1,5 +1,15 @@
 // Pure checks over rendered Kubernetes manifests; chart-security.mjs feeds them helm template output.
 // Each finding names the object and the rule, so a failing render points straight at the template to fix.
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+/** ARV-125b: what the SigNoz rules and dashboards may read (shared with MonitoringRulesTests in Ariva.UnitTests). */
+export const MONITORING = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'monitoring.json'), 'utf8'));
+const MONITORING_LABELS = new Set(Object.values(MONITORING.labels).flat());
+const MONITORING_FORBIDDEN = new RegExp(MONITORING.forbidden, 'i');
+const MONITORING_EXCEPTIONS = new Set(MONITORING.forbiddenExceptions);
+const MONITORING_CONFIG_MAPS = new Set(['ariva-monitoring-alerts', 'ariva-monitoring-dashboards']);
 
 const WORKLOADS = new Set(['Deployment', 'StatefulSet', 'DaemonSet', 'Job', 'CronJob']);
 
@@ -54,8 +64,93 @@ function dotnetEnvironmentOf(container, docs) {
 	return fromSources;
 }
 
+/**
+ * The value a container's environment gives a variable: its own env over envFrom ConfigMaps (the last definition wins in
+ * each). Undefined when nothing names it, null when it comes from somewhere the check cannot read (a Secret, a valueFrom).
+ */
+function envValueOf(container, docs, name) {
+	const own = (container.env ?? []).findLast((variable) => variable.name === name);
+	if (own) return own.valueFrom ? null : own.value;
+	let fromSources;
+	for (const source of container.envFrom ?? []) {
+		if (source.prefix) continue;
+		if (source.secretRef) {
+			fromSources = null;
+			continue;
+		}
+		const map = docs.find((doc) => doc?.kind === 'ConfigMap' && doc.metadata?.name === source.configMapRef?.name);
+		if (map?.data?.[name] !== undefined) fromSources = map.data[name];
+	}
+	return fromSources;
+}
+
+/**
+ * ARV-165: an API host stops within its 50 s shutdown timeout (the message bus gets 35 s, and a stop during a message's
+ * retries needs up to 25 s), then disposes and exits, so its pod's grace period is at least 60 s, and the host is told the
+ * value (Hosting__GracePeriodSeconds) so it can refuse a shutdown timeout that would not fit. ARV-176: likewise its startup
+ * probe's allowance (Hosting__StartupAllowanceSeconds), so it can refuse consumer waits at start that would not fit.
+ */
+const MIN_GRACE_SECONDS = 60;
+
+/**
+ * ARV-176: the least time a startup probe gives a container before the kubelet restarts it: initialDelaySeconds plus
+ * periodSeconds times (failureThreshold - 1), with Kubernetes' defaults (0, 10, 3). The prober's ticks are not aligned
+ * with the container's start, so the restart comes between this and one period later; the host must fit the earlier.
+ */
+export function startupAllowance(probe) {
+	return Number(probe.initialDelaySeconds ?? 0) + Number(probe.periodSeconds ?? 10) * (Number(probe.failureThreshold ?? 3) - 1);
+}
+
 /** Environment variable names that hold credentials: their values come from secrets, never from the manifest (CWE-798). */
 const SECRET_ENV = /(PASSWORD|PASSWD|SECRET|TOKEN|PRIVATE_?KEY|API_?KEY)/i;
+
+/**
+ * ARV-104g1 (CWE-269): the validation reader login, the only login that reads the shadow nowcast, reaches api-main (the
+ * validation service) and the database-migration job (which creates it) and no other workload, by name and from its secret.
+ */
+const READER_ENV = /^Database__ValidationReader__/;
+const READER_WORKLOADS = new Set(['Deployment/api-main-deployment', 'Job/database-migration']);
+const isReaderSecret = (name) => /validation-reader/i.test(String(name ?? ''));
+
+/** The workload's references to a secret that looks like the reader's: env, envFrom and volumes. */
+function readerSecretReferences(pod) {
+	const containers = [...(pod.initContainers ?? []), ...(pod.containers ?? [])];
+	return [
+		...containers.flatMap((container) => (container.env ?? []).map((variable) => variable.valueFrom?.secretKeyRef?.name)),
+		...containers.flatMap((container) => (container.envFrom ?? []).map((source) => source.secretRef?.name)),
+		...(pod.volumes ?? []).map((volume) => volume.secret?.secretName),
+		...(pod.volumes ?? []).flatMap((volume) => (volume.projected?.sources ?? []).map((source) => source.secret?.name))
+	].filter(isReaderSecret);
+}
+
+/** Findings for the reader login's variables in one workload (see READER_ENV). */
+function readerLoginFindings(doc, id, pod, environment) {
+	const findings = [];
+	const containers = [...(pod.initContainers ?? []), ...(pod.containers ?? [])];
+	const allowed = READER_WORKLOADS.has(id);
+	if (!allowed && (containers.some((container) => (container.env ?? []).some((variable) => READER_ENV.test(variable.name ?? ''))) || readerSecretReferences(pod).length > 0)) {
+		findings.push(`${id}: only api-main-deployment and the database-migration job may get the validation reader login (ARV-104g1)`);
+	}
+	for (const container of containers) {
+		for (const variable of container.env ?? []) {
+			if (READER_ENV.test(variable.name ?? '') && !variable.valueFrom?.secretKeyRef) {
+				findings.push(`${id} container ${container.name}: ${variable.name}: the validation reader login comes from its secret (secretKeyRef), never a literal`);
+			}
+		}
+	}
+	if (!allowed) return findings;
+	// The main container carries both values from one secret, keys username and password; production never marks it optional.
+	const main = containers.find((container) => DOTNET_IMAGES.has(imageName(container.image ?? ''))) ?? containers[0] ?? {};
+	const ref = (name) => (main.env ?? []).find((variable) => variable.name === name)?.valueFrom?.secretKeyRef;
+	const user = ref('Database__ValidationReader__Username');
+	const password = ref('Database__ValidationReader__Password');
+	if (!user || !password || user.key !== 'username' || password.key !== 'password' || !user.name || user.name !== password.name) {
+		findings.push(`${id}: must get the validation reader login (Database__ValidationReader__Username and Password, keys username and password) from one secret (ARV-104g1)`);
+	} else if (environment === 'k8s-prd' && (user.optional === true || password.optional === true)) {
+		findings.push(`${id}: k8s-prd must not mark the validation reader secret optional (ARV-104g1)`);
+	}
+	return findings;
+}
 
 function labelsMatch(selector, labels) {
 	const wanted = Object.entries(selector?.matchLabels ?? {});
@@ -67,6 +162,156 @@ function imageTag(image) {
 	const lastSlash = withoutDigest.lastIndexOf('/');
 	const colon = withoutDigest.indexOf(':', lastSlash + 1);
 	return colon === -1 ? '' : withoutDigest.slice(colon + 1);
+}
+
+/** Every node of a JSON value, depth first. */
+function* walk(node) {
+	if (node === null || typeof node !== 'object') return;
+	yield node;
+	for (const child of Array.isArray(node) ? node : Object.values(node)) yield* walk(child);
+}
+
+/** The queries of a rule or dashboard: the rules' builder, formula and PromQL queries and the dashboards' builder queries. */
+function* monitoringQueries(json) {
+	for (const node of walk(json)) {
+		if (Array.isArray(node)) continue;
+		if (typeof node.type === 'string' && node.spec && typeof node.spec === 'object' && !Array.isArray(node.spec)) yield { type: node.type, spec: node.spec };
+		if (node.kind === 'signoz/BuilderQuery' && node.spec) yield { type: 'builder_query', spec: node.spec };
+	}
+}
+
+/** The label keys a rule or dashboard filters, groups or prints by (the same reading as MonitoringRulesTests). */
+export function monitoringLabels(json) {
+	const keys = [];
+	const filterKeys = /([A-Za-z_][A-Za-z0-9_.]*)\s*(?:=|!=|<=|>=|<|>|\bNOT\s+IN\b|\bIN\b|\bNOT\s+LIKE\b|\bLIKE\b|\bCONTAINS\b|\bEXISTS\b|\bREGEXP\b)/gi;
+	for (const { spec } of monitoringQueries(json)) {
+		const filter = spec.filter?.expression;
+		if (typeof filter === 'string') for (const match of filter.matchAll(filterKeys)) keys.push(match[1]);
+		for (const group of spec.groupBy ?? []) if (group?.name) keys.push(group.name);
+		if (typeof spec.legend === 'string') for (const match of spec.legend.matchAll(/\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}/g)) keys.push(match[1]);
+		if (typeof spec.query === 'string') {
+			for (const match of spec.query.matchAll(/\b(?:by|without|on|ignoring|group_left|group_right)\s*\(([^)]*)\)/g)) {
+				keys.push(...match[1].split(',').map((key) => key.trim().replace(/"/g, '')).filter(Boolean));
+			}
+			for (const match of spec.query.matchAll(/[{,]\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:=~|!~|!=|=)/g)) keys.push(match[1]);
+		}
+	}
+	for (const group of json?.notificationSettings?.groupBy ?? []) keys.push(group);
+	for (const text of Object.values(json?.annotations ?? {})) {
+		for (const match of String(text).matchAll(/\{\{\s*\$([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}/g)) if (!['value', 'threshold'].includes(match[1])) keys.push(match[1]);
+	}
+	return keys;
+}
+
+/** The monitoring environment the chart allows (templates/validate.yaml): a plain name. */
+const MONITORING_ENVIRONMENT = /^[A-Za-z0-9]([A-Za-z0-9._-]{0,61}[A-Za-z0-9])?$/;
+
+/**
+ * ARV-125b: every query of a rule or dashboard reads its own release only, so one SigNoz may take several environments and
+ * clusters: an Ariva metric through a filter that starts with deployment.environment = '<environment>' (and holds no OR),
+ * an external builder metric within k8s.namespace.name IN [...], and a PromQL query within a namespace or
+ * exported_namespace matcher.
+ */
+function monitoringScopeFindings(json, where, environment) {
+	const findings = [];
+	const scope = `deployment.environment = '${environment}'`;
+	for (const { type, spec } of monitoringQueries(json)) {
+		if (type === 'builder_query') {
+			const filter = String(spec.filter?.expression ?? '');
+			for (const metric of (spec.aggregations ?? []).map((aggregation) => aggregation?.metricName).filter((name) => typeof name === 'string')) {
+				if (metric.startsWith('ariva.')) {
+					if (!(filter === scope || filter.startsWith(`${scope} AND `)) || /\bOR\b/i.test(filter)) findings.push(`${where}: reads ${metric} without the filter ${scope}`);
+				} else if (!/\bk8s\.namespace\.name IN \['[a-z0-9-]+'(, '[a-z0-9-]+')*\]/.test(filter) || /\bOR\b/i.test(filter)) {
+					findings.push(`${where}: reads ${metric} outside a namespace filter (k8s.namespace.name IN [...])`);
+				}
+			}
+		} else if (type === 'promql' && !/\{(?:[^}]*,)?\s*(?:namespace|exported_namespace)=~?"[a-z0-9|-]+"/.test(String(spec.query ?? ''))) {
+			findings.push(`${where}: a PromQL query reads no namespace (a namespace or exported_namespace matcher)`);
+		}
+	}
+	return findings;
+}
+
+/** Keys that look like a credential or a secret wherever they appear in a monitoring object (CWE-532). */
+const CREDENTIAL_KEY = /(password|passwd|secret|token|api.?key|authorization|credential|cookie)/i;
+
+/**
+ * ARV-125b: findings for one monitoring ConfigMap: every value parses as JSON; a rule is SigNoz v5 / v2alpha1, has a
+ * severity (each threshold named warning or critical, and its severity label one of them), a runbook link into wiki 10 and a
+ * resolved number for every threshold; a dashboard is SigNoz's v6 format with one query per panel; no token, no Helm
+ * leftover, no credential; every label key on the allowlist and none naming a person, a credential or a document; every
+ * query scoped to the release (monitoringScopeFindings).
+ */
+function monitoringFindings(doc, id) {
+	const findings = [];
+	const alerts = doc.metadata?.name === 'ariva-monitoring-alerts';
+	const environment = doc.metadata?.annotations?.['ariva.dalil.tech/environment'];
+	const scoped = MONITORING_ENVIRONMENT.test(String(environment ?? ''));
+	if (!scoped) findings.push(`${id}: has no environment annotation (ariva.dalil.tech/environment, a plain name)`);
+	for (const [key, text] of Object.entries(doc.data ?? {})) {
+		const where = `${id} ${key}`;
+		if (/\$\{|<no value>|\{\{\s*\./.test(String(text))) findings.push(`${where}: holds an unresolved token or a Helm leftover`);
+		if (/SIGNOZ-API-KEY|:\/\/[^/\s"]*:[^/\s"]*@/i.test(String(text))) findings.push(`${where}: carries a credential (an API key header or a URL with a password)`);
+		let json;
+		try {
+			json = JSON.parse(text);
+		} catch (error) {
+			findings.push(`${where}: is not valid JSON (${error.message})`);
+			continue;
+		}
+		for (const node of walk(json)) {
+			if (Array.isArray(node)) continue;
+			for (const name of Object.keys(node)) if (CREDENTIAL_KEY.test(name)) findings.push(`${where}: field ${name} looks like a credential; monitoring objects carry none`);
+		}
+		if (scoped) findings.push(...monitoringScopeFindings(json, where, environment));
+		for (const label of monitoringLabels(json)) {
+			if (MONITORING_FORBIDDEN.test(label) && !MONITORING_EXCEPTIONS.has(label)) findings.push(`${where}: queries the label ${label}, which may hold a secret or a person identifier`);
+			if (!MONITORING_LABELS.has(label)) findings.push(`${where}: queries the label ${label}, which is not on the allowlist (tests/monitoring.json)`);
+		}
+		if (alerts) {
+			if (json.version !== 'v5' || json.schemaVersion !== 'v2alpha1') findings.push(`${where}: is not a SigNoz rule of version v5 and schemaVersion v2alpha1`);
+			const thresholds = json.condition?.thresholds?.spec ?? [];
+			if (thresholds.length === 0) findings.push(`${where}: has no threshold`);
+			for (const threshold of thresholds) {
+				if (!MONITORING.severities.includes(threshold.name)) findings.push(`${where}: threshold ${threshold.name} is not a severity (${MONITORING.severities.join(', ')})`);
+				if (typeof threshold.target !== 'number' || !Number.isFinite(threshold.target)) findings.push(`${where}: a threshold has no resolved number`);
+				if (!Array.isArray(threshold.channels)) findings.push(`${where}: a threshold's channels are not a list`);
+			}
+			if (json.labels?.severity !== undefined && !thresholds.some((threshold) => threshold.name === json.labels.severity)) {
+				findings.push(`${where}: severity label ${json.labels.severity} is no threshold's name`);
+			}
+			if (!String(json.annotations?.runbook ?? '').startsWith(MONITORING.runbook)) findings.push(`${where}: has no runbook link into ${MONITORING.runbook}`);
+			if (!/^\d+m$/.test(String(json.evaluation?.spec?.evalWindow ?? ''))) findings.push(`${where}: has no evaluation window in minutes`);
+			if (json.condition?.alertOnAbsent && !(Number.isInteger(json.condition.absentFor) && json.condition.absentFor > 0)) {
+				findings.push(`${where}: alerts on absent data without a resolved absentFor`);
+			}
+		} else {
+			if (json.schemaVersion !== 'v6') findings.push(`${where}: is not a SigNoz dashboard of schemaVersion v6`);
+			const panels = Object.entries(json.spec?.panels ?? {});
+			if (panels.length === 0) findings.push(`${where}: has no panel`);
+			for (const [panelId, panel] of panels) {
+				if ((panel?.spec?.queries ?? []).length !== 1) findings.push(`${where}: panel ${panelId} needs exactly one query`);
+			}
+		}
+	}
+	return findings;
+}
+
+/**
+ * ARV-125b: the criterion rules a render lacks. Every rule of tests/monitoring.json must be a key of ariva-monitoring-alerts
+ * (hostDown once per host, as hostDown-<host>), but for amanFeedStale, which is off unless the render turns it on.
+ */
+export function missingMonitoringRules(docs, { amanFeedStale = false } = {}) {
+	const alerts = docs.find((doc) => doc?.kind === 'ConfigMap' && doc.metadata?.name === 'ariva-monitoring-alerts');
+	if (!alerts) return ['ConfigMap/ariva-monitoring-alerts: not rendered'];
+	const keys = Object.keys(alerts.data ?? {}).map((key) => key.replace(/\.json$/, ''));
+	const missing = MONITORING.criterionRules
+		.filter((rule) => rule !== 'amanFeedStale' || amanFeedStale)
+		.filter((rule) => !keys.some((key) => key === rule || key.startsWith(`${rule}-`)))
+		.map((rule) => `ConfigMap/ariva-monitoring-alerts: rule ${rule} is missing`);
+	if (!amanFeedStale && keys.includes('amanFeedStale')) missing.push('ConfigMap/ariva-monitoring-alerts: amanFeedStale is rendered although it is off');
+	if (!docs.some((doc) => doc?.kind === 'ConfigMap' && doc.metadata?.name === 'ariva-monitoring-dashboards')) missing.push('ConfigMap/ariva-monitoring-dashboards: not rendered');
+	return missing;
 }
 
 /**
@@ -113,6 +358,35 @@ export function checkManifests(docs, { environment }) {
 			if (/^api-[a-z]+-deployment$/.test(doc.metadata?.name ?? '') && !secretVolumes.some((name) => name.includes('token-public'))) {
 				findings.push(`${id}: API pods must mount the token public keys`);
 			}
+			if (doc.kind === 'Deployment' && /^api-[a-z]+-deployment$/.test(doc.metadata?.name ?? '')) {
+				const grace = Number(pod.terminationGracePeriodSeconds);
+				if (!(grace >= MIN_GRACE_SECONDS)) {
+					findings.push(`${id}: an API pod needs terminationGracePeriodSeconds of at least ${MIN_GRACE_SECONDS} (the hosts' stop budget, ARV-165)`);
+				} else {
+					for (const container of (pod.containers ?? []).filter((c) => DOTNET_IMAGES.has(imageName(c.image ?? '')))) {
+						if (String(envValueOf(container, docs, 'Hosting__GracePeriodSeconds')) !== String(grace)) {
+							findings.push(`${id} container ${container.name}: must set Hosting__GracePeriodSeconds to the pod's terminationGracePeriodSeconds (${grace})`);
+						}
+					}
+				}
+				// ARV-176: the host's start holds its web server while its consumers wait for their topics and readiness, so it
+				// is told its startup probe's allowance and refuses waits that would not fit. The allowance is the probe's worst
+				// case: the kubelet's prober ticks every periodSeconds from before the container starts and skips the ticks
+				// within initialDelaySeconds of its start, so the first counted tick can come at initialDelaySeconds and the
+				// failureThreshold-th failure, which restarts the container, periodSeconds times (failureThreshold - 1) later
+				// (a refused connection fails at once, so the probe's timeout adds nothing).
+				for (const container of (pod.containers ?? []).filter((c) => DOTNET_IMAGES.has(imageName(c.image ?? '')))) {
+					const probe = container.startupProbe;
+					if (!probe) {
+						findings.push(`${id} container ${container.name}: an API host needs a startupProbe (the hosts' start budget, ARV-176)`);
+						continue;
+					}
+					const allowance = startupAllowance(probe);
+					if (String(envValueOf(container, docs, 'Hosting__StartupAllowanceSeconds')) !== String(allowance)) {
+						findings.push(`${id} container ${container.name}: must set Hosting__StartupAllowanceSeconds to its startup probe's allowance at its worst, initialDelaySeconds plus periodSeconds times (failureThreshold - 1) (${allowance})`);
+					}
+				}
+			}
 			const containers = [...(pod.initContainers ?? []), ...(pod.containers ?? [])];
 			if (containers.length === 0) findings.push(`${id}: no containers`);
 			for (const container of containers) {
@@ -144,6 +418,7 @@ export function checkManifests(docs, { environment }) {
 					}
 				}
 			}
+			findings.push(...readerLoginFindings(doc, id, pod, environment));
 			// ARV-062: a stateful workload (the database) only accepts traffic a NetworkPolicy allows.
 			if (doc.kind === 'StatefulSet') {
 				const podLabels = doc.spec?.template?.metadata?.labels ?? {};
@@ -163,6 +438,12 @@ export function checkManifests(docs, { environment }) {
 					if (env.POSTGRES_HOST_AUTH_METHOD) findings.push(`${id} container ${container.name}: POSTGRES_HOST_AUTH_METHOD must not be set; every TCP login uses scram-sha-256`);
 				}
 			}
+		}
+
+		// ARV-125b (CWE-269, CWE-532): the monitoring objects are ConfigMaps of rules and dashboards, and nothing more.
+		if (doc.metadata?.labels?.['app.kubernetes.io/component'] === 'monitoring' || MONITORING_CONFIG_MAPS.has(doc.metadata?.name)) {
+			if (doc.kind !== 'ConfigMap') findings.push(`${id}: a monitoring object must be a ConfigMap (no Job, Secret, ServiceAccount or RBAC)`);
+			else findings.push(...monitoringFindings(doc, id));
 		}
 
 		// ARV-062: a script that creates a database login never makes it a superuser.

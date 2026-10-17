@@ -4,8 +4,9 @@ using Microsoft.AspNetCore.Mvc;
 namespace Ariva.Api.Main.Controllers.AdminArea.Topology;
 
 /// <summary>
-/// Maps topology and device results: 404 not found, 409 duplicate, in use, not a draft or a retired device, 403 deployment-wide, 400 otherwise. When
-/// there are several errors (a draft's publishing problems) all of them go in <c>problems</c>.
+/// Maps topology and device results: 404 not found, 409 duplicate, in use, not a draft or a retired device, 403 deployment-wide
+/// and border-only alert rules (ARV-181b2, <see cref="Ariva.Core.Services.Alerting.AlertRuleErrors.BorderOnly"/>) and an
+/// approval by the person who uploaded or last changed an advertisement (ARV-142a), 400 otherwise. When there are several errors (a draft's publishing problems) all of them go in <c>problems</c>.
 /// </summary>
 internal static class TopologyAnswers
 {
@@ -25,8 +26,12 @@ internal static class TopologyAnswers
         {
             TopologyErrors.NotFound => (StatusCodes.Status404NotFound, "Not found"),
             TopologyErrors.DeploymentWide => (StatusCodes.Status403Forbidden, "Not allowed"),
+            Ariva.Core.Services.Alerting.AlertRuleErrors.BorderOnly => (StatusCodes.Status403Forbidden, "Not allowed"),
+            _ when Ariva.Core.Services.Displays.AdvertisingMediaErrors.Forbidden.Contains(first) => (StatusCodes.Status403Forbidden, "Not allowed"),
             _ when TopologyErrors.Conflicts.Contains(first) || ZoneProfileErrors.Conflicts.Contains(first) || Ariva.Core.Services.Sensing.DeviceErrors.Conflicts.Contains(first) ||
-                   Ariva.Core.Services.Alerting.AlertErrors.Conflicts.Contains(first) || Ariva.Core.Services.Displays.DisplayErrors.Conflicts.Contains(first) => (StatusCodes.Status409Conflict, "Conflict"),
+                   Ariva.Core.Services.Alerting.AlertErrors.Conflicts.Contains(first) || Ariva.Core.Services.Displays.DisplayErrors.Conflicts.Contains(first) ||
+                   Ariva.Core.Services.Displays.AdvertisingPolicyErrors.Conflicts.Contains(first) ||
+                   Ariva.Core.Services.Displays.AdvertisingMediaErrors.Conflicts.Contains(first) => (StatusCodes.Status409Conflict, "Conflict"),
             _ => (StatusCodes.Status400BadRequest, "Not valid")
         };
         var problem = controller.Problem(statusCode: status, title: title, detail: status == StatusCodes.Status404NotFound ? null : first);

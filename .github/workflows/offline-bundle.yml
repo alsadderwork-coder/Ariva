@@ -1,0 +1,163 @@
+# Offline install bundle for a site without access to the public registries (ARV-127; wiki/04 section 12). Run by hand from
+# the version tag v<version> (or main, labelled with a version), after the images workflow pushed and signed that build at
+# the same commit. Two jobs:
+#   bundle  reads only: takes the seven Ariva images once cosign verifies this repository's images workflow signed them at
+#           this commit, copies them by digest with their signatures and SBOM attestations, adds TimescaleDB by the digest
+#           its chart pins, the packaged charts and the Helmfile, copies the web build out of the signed web image (no npm
+#           runs here), and writes the checksum manifest. It cannot sign.
+#   sign    the only job that can sign as this workflow (id-token): it runs no build, no npm and no code of the bundle, only
+#           cosign sign-blob on the manifest and the repository's verifier, as the site's connected machine will run it.
+# The verified bundle is kept as the ariva-offline-<version> artifact (90 days, the most GitHub keeps one for a public
+# repository: archive it in Dalil's release store). Nothing is pushed anywhere and no cluster is touched. The dry run of
+# every pull request is in ci.yml (web job).
+#
+# Signature: the manifest's Fulcio certificate names this workflow, the ref, the commit and the trigger; a site verifies it
+# with scripts/offline/verify.mjs from the repository at the release tag, which requires all four.
+name: offline-bundle
+
+on:
+  workflow_dispatch:
+    inputs:
+      build:
+        description: Image tag the images workflow gave the build, at this commit (for example v1.2.0-57 or main-41)
+        required: true
+        type: string
+      version:
+        description: Release version the bundle carries (for example 1.2.0); from a tag it must be the tag without its v
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: offline-bundle
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  BUILD: ${{ inputs.build }}
+  VERSION: ${{ inputs.version }}
+
+jobs:
+  bundle:
+    name: Bundle ${{ inputs.version }} (${{ inputs.build }})
+    # From a version tag or main only: the signer identities verify.mjs accepts.
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: read # pulling the signed images and their referrers from GHCR
+    env:
+      REGISTRY: ghcr.io/${{ github.repository_owner }}/ariva
+      ORAS_VERSION: 1.3.0
+      ORAS_SHA256: 6cdc692f929100feb08aa8de584d02f7bcc30ec7d88bc2adc2054d782db57c64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the inputs
+        run: |
+          [[ "$BUILD" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { echo "::error::build must be an image tag such as v1.2.0-57"; exit 1; }
+          [[ "$VERSION" =~ ^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,6}(-[0-9A-Za-z.-]{1,64})?$ ]] || { echo "::error::version must be a release version such as 1.2.0"; exit 1; }
+          if [[ "$GITHUB_REF" == refs/tags/* && "$GITHUB_REF_NAME" != "v$VERSION" ]]; then
+            echo "::error::run from the tag $GITHUB_REF_NAME, the version must be ${GITHUB_REF_NAME#v}"; exit 1
+          fi
+          echo "OUT=$RUNNER_TEMP/ariva-offline-$VERSION" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.19.0 # CI's Helm (scripts/base-images.mjs --check keeps them equal)
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: 'v3.0.6'
+      - name: ORAS (checksum verified)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/oras.tgz" "https://github.com/oras-project/oras/releases/download/v$ORAS_VERSION/oras_${ORAS_VERSION}_linux_amd64.tar.gz"
+          echo "$ORAS_SHA256  $RUNNER_TEMP/oras.tgz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/oras.tgz" -C "$RUNNER_TEMP/bin" oras
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Registry login (read only)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # cosign, ORAS and docker read the Docker credentials this writes.
+        run: echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: Build the bundle (images verified at this commit, web build from the signed web image)
+        run: |
+          node scripts/offline/bundle.mjs --version "$VERSION" --build "$BUILD" --registry "$REGISTRY" --repository "$GITHUB_REPOSITORY" \
+            --out "$OUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: offline-bundle-unsigned
+          path: ${{ env.OUT }}
+          retention-days: 1
+          compression-level: 0 # image layers are compressed already
+          if-no-files-found: error
+
+  sign:
+    name: Sign and verify ${{ inputs.version }}
+    needs: bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # The only job that can sign as this workflow. Keep it free of builds and package managers: every step here runs with
+    # the job's OIDC token in reach (scripts/base-images.mjs --check refuses npm, npx, yarn or pnpm in a job like this).
+    permissions:
+      contents: read
+      packages: read # the verifier checks each image's signature and attestation in GHCR
+      id-token: write # keyless signature of manifest.json: the job's OIDC token gets a short-lived Fulcio certificate
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Where the bundle goes
+        run: echo "OUT=$RUNNER_TEMP/ariva-offline-$VERSION" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: 'v3.0.6'
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: offline-bundle-unsigned
+          path: ${{ env.OUT }}
+      - name: Sign the manifest (keyless)
+        run: cosign sign-blob --yes --bundle "$OUT/manifest.json.sigstore.json" "$OUT/manifest.json" > /dev/null
+      - name: Registry login (read only)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: Verify the bundle as the site's connected machine will
+        run: |
+          from_main=()
+          [ "$GITHUB_REF" = refs/heads/main ] && from_main=(--from-main)
+          node scripts/offline/verify.mjs "$OUT" --version "$VERSION" "${from_main[@]}" --repository "$GITHUB_REPOSITORY" | tee "$RUNNER_TEMP/verify.txt"
+      - name: Summary
+        run: |
+          {
+            echo "## Offline bundle $VERSION ($BUILD)"
+            echo
+            echo "Artifact \`ariva-offline-$VERSION\`, verified. For the release notes and the check inside the site (wiki 04 section 12):"
+            echo
+            echo '```'
+            grep -A2 '^Record these' "$RUNNER_TEMP/verify.txt" | tail -n 2
+            echo '```'
+            echo
+            echo '| Image | Digest |'
+            echo '|---|---|'
+            jq -r '.images[] | "| \(.source):\(.tag) | `\(.digest)` |"' "$OUT/manifest.json"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ariva-offline-${{ env.VERSION }}
+          path: ${{ env.OUT }}
+          retention-days: 90
+          compression-level: 0
+          if-no-files-found: error

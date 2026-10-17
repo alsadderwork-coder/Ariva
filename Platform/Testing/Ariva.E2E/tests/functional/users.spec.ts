@@ -180,7 +180,7 @@ test('an administrator cannot change its own account on the screen, and the API 
 	await expect(panel.getByTestId('own-account')).toContainText('This is your own account');
 	await expect(panel.getByLabel('Name', { exact: true })).toHaveAttribute('readonly', '');
 	await expect(panel.getByTestId('save-profile')).toHaveCount(0);
-	for (const role of ['BorderShiftSupervisor', 'TerminalDutyManager', 'HandlerStationManager', 'SystemAdministrator'])
+	for (const role of ['BorderShiftSupervisor', 'TerminalDutyManager', 'HandlerStationManager', 'SystemAdministrator', 'ValidationObserver'])
 		await expect(panel.locator(`[data-role="${role}"]`), role).toBeDisabled();
 	await expect(panel.getByRole('radio', { name: 'Every site' })).toBeDisabled();
 	await expect(panel.getByTestId('save-sites')).toHaveCount(0);

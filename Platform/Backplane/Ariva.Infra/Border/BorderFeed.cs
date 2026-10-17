@@ -22,19 +22,27 @@ public sealed record BorderFeedSettings
     }
 }
 
-/// <summary>The immigration feed's metrics (meter Ariva.Border): records by contract, transport and outcome, and records of unmapped codes.</summary>
+/// <summary>
+/// The immigration feed's metrics (meter Ariva.Border): records by contract, transport and outcome, and records of
+/// unmapped codes per site. Exported since ARV-125a; the AMAN feed alert (ARV-125b) watches <c>ariva.border.feed.records</c>
+/// whose outcome is not refused.
+/// </summary>
 public sealed class BorderMetrics : IDisposable
 {
     public const string MeterName = "Ariva.Border";
-    private readonly Meter _meter = new(MeterName);
+    private readonly Meter _meter;
     private readonly Counter<long> _records;
     private readonly Counter<long> _unmapped;
 
-    public BorderMetrics()
+    public BorderMetrics(IMeterFactory meterFactory = null)
     {
+        _meter = meterFactory?.Create(MeterName) ?? new Meter(MeterName);
         _records = _meter.CreateCounter<long>("ariva.border.feed.records", description: "Immigration records received, by contract, feed kind and outcome");
         _unmapped = _meter.CreateCounter<long>("ariva.border.feed.unmapped", description: "Immigration records whose desk or gate code has no AMAN desk code mapping");
     }
+
+    /// <summary>This instance's meter (tests listen to it alone).</summary>
+    internal Meter Meter => _meter;
 
     public void Record(string contract, string feedKind, string outcome) =>
         _records.Add(1, new("contract", contract), new("feed_kind", feedKind), new("outcome", outcome));

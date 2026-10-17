@@ -9,7 +9,8 @@ import { hosts } from '../support/hosts';
 // over its own token exchange, and Ariva applies the legs as that client's feed; its ACRIS answer needs its API key.
 // The mock AMAN Integration API exchanges client id, secret and a TOTP code for a token, once per step, and serves what
 // the emulated AMAN published to a caller with the token and a current code. Feed controls need the control scope, and
-// client secrets never come back out of the simulator.
+// client secrets never come back out of the simulator. ARV-139b: the AUH-TA scenario has its own emulated AODB (airport
+// AUH, site AUH-TA) with its own client, registered for AUH-TA only; AMAN plays DMO only (AUH-TA has no AMAN codes).
 
 test.skip(!databaseAvailable, 'the emulators write to the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true) and need the DMO demo seed');
 test.describe.configure({ mode: 'serial' });
@@ -98,6 +99,45 @@ test('the emulated AODB pushes the demo schedule to Ariva as AIDX with its own c
 	]);
 	expect(calls.length).toBeGreaterThan(0);
 	expect(calls.every((c) => c.status === 200)).toBe(true);
+});
+
+test('the AUH-TA AODB pushes the AUH-TA arrivals to Ariva as AIDX with its own client', async () => {
+	const created = await call('POST', `${hosts.main}/api/v1/admin/integration-clients`, {
+		token: admin,
+		data: {
+			name: 'E2E emulated AODB AUH-TA',
+			kind: 'Aodb',
+			scopes: ['flights:write'],
+			siteCodes: ['AUH-TA'],
+			allowedNetworks: ['127.0.0.0/8', '::1/128', '10.0.0.0/8']
+		}
+	});
+	expect(created.status(), await created.text()).toBe(201);
+	const credentials = await created.json();
+	fs.appendFileSync(integrationSeedsFile, credentials.totpSecret + '\n' + credentials.clientSecret + '\n');
+	const client = { clientId: credentials.client.clientId, clientSecret: credentials.clientSecret, totpSecret: credentials.totpSecret, perRequestTotp: false };
+
+	// Only the simulator's other scenario sites take a site AODB client, and an unknown one is never echoed.
+	const refused = await call('PUT', `${feeds}/clients`, { headers: operator, data: { aodbSites: { '<b>DMO</b>': client } } });
+	expect(refused.status()).toBe(400);
+	expect(await refused.text()).not.toContain('<b>');
+	expect((await call('PUT', `${feeds}/clients`, { headers: operator, data: { aodbSites: { DMO: client } } })).status()).toBe(400);
+
+	const loaded = await call('PUT', `${feeds}/clients`, { headers: operator, data: { aodbSites: { 'AUH-TA': client } } });
+	expect(loaded.status(), await loaded.text()).toBe(200);
+	expect(await loaded.text()).not.toContain(credentials.clientSecret);
+
+	const played = await call('POST', `${feeds}/play`, { headers: operator, data: { minute: 1110 } });
+	expect(played.status(), await played.text()).toBe(200);
+	const auh = ((await played.json()).aodbSites as { scenarioSite: string }[]).find((a) => a.scenarioSite === 'AUH-TA');
+	expect(auh, JSON.stringify(auh)).toMatchObject({ arivaSite: 'AUH-TA', airport: 'AUH', aidxConfigured: true, failures: 0, lastStatus: 200 });
+	expect((auh as unknown as { legsPushed: number }).legsPushed).toBeGreaterThan(20);
+
+	const feed = 'api-' + String(credentials.client.clientId).slice(3).toLowerCase();
+	const rows = await query<{ n: string }>(`SELECT count(*) AS n FROM flight_leg WHERE site_code = 'AUH-TA' AND lower(feed) = $1`, [feed]);
+	expect(Number(rows[0].n), 'the AUH-TA arrivals are in Ariva as the client feed').toBeGreaterThan(20);
+	const elsewhere = await query<{ n: string }>(`SELECT count(*) AS n FROM flight_leg WHERE site_code <> 'AUH-TA' AND lower(feed) = $1`, [feed]);
+	expect(Number(elsewhere[0].n), 'an AUH-TA client writes AUH-TA only').toBe(0);
 });
 
 test('the emulated AODB serves ACRIS flights only with its key', async () => {

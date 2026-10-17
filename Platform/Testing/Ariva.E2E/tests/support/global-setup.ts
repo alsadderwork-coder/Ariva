@@ -3,6 +3,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { breakGlassFile, databaseAvailable, integrationSeedsFile } from './accounts';
+import { refuseADatabaseWithTheDevelopmentOnlySite } from './development-site';
+import { refuseHostsNotOfThisRun } from './local-hosts';
+import { provisionSmokeSite, smokeStack } from './smoke-site';
 
 // ARV-010c: the break-glass account exists only through the installer command, so the run creates it the way an
 // installer does (Ariva.Api.Main --create-break-glass) once the hosts are up, writing the credential to a git-ignored
@@ -12,11 +15,25 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const mainProject = path.resolve(here, '..', '..', '..', '..', 'Backplane', 'Ariva.Api.Main');
 
 export default async function globalSetup() {
+	// ARV-128 (security review recommendation 3): before anything is written, every host is a vm-local host of this run, not a
+	// deployed host behind a port-forward or tunnel on a local port (local-hosts.ts).
+	await refuseHostsNotOfThisRun();
 	if (!databaseAvailable) return;
+	// ARV-139c (CWE-200): a database that holds the development-only site, or that this check cannot match to the hosts',
+	// stops the run before any test (development-site.ts).
+	await refuseADatabaseWithTheDevelopmentOnlySite();
 
 	fs.mkdirSync(path.dirname(breakGlassFile), { recursive: true });
 	// ARV-042: the run's integration client seeds, collected afresh for the log scan.
 	fs.rmSync(integrationSeedsFile, { force: true });
+	createBreakGlass();
+
+	// ARV-128: the smoke site, its test device and display, for the smoke project (values in this process's environment,
+	// which the workers inherit).
+	if (smokeStack) await provisionSmokeSite();
+}
+
+function createBreakGlass(): void {
 	for (const flag of ['--create-break-glass', '--rotate-break-glass']) {
 		fs.rmSync(breakGlassFile, { force: true });
 		const result = spawnSync(

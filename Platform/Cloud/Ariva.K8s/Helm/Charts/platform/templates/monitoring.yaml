@@ -1,0 +1,111 @@
+{{- /*
+System monitoring (ARV-125b): SigNoz alert rules and dashboards as two ConfigMaps that an operator imports into the site's
+SigNoz (wiki/10 section 1; SigNoz v0.146.0: POST /api/v2/rules and POST /api/v2/dashboards with an Editor's API key). The
+chart holds no SigNoz address, key or notification secret, and creates nothing but these ConfigMaps (no Job, no RBAC).
+
+The rule sources in files/monitoring/alerts/<key>.json carry tokens that the values of monitoring.alerts.<key> replace:
+  "${key.field}"  (a whole JSON value, quoted in the source) becomes the value as JSON (a number, a string, a list);
+  ${key.field}    (inside a string) becomes the value as text; a list becomes a SigNoz filter list such as ['a', 'b'];
+  derived tokens: ${key.seconds} is key.minutes times 60, ${key.<x>Seconds} is key.<x>Days times 86400, and
+                  ${key.<list>Pattern} is a list joined with | for a PromQL matcher (the values are Kubernetes names);
+  an empty namespaces list is the release's namespace;
+  "${channels}"   becomes monitoring.channels (names of SigNoz notification channels);
+  ${environment}  becomes monitoring.environment, or the release's environment when it is empty: every query of an Ariva
+                  metric, in the rules and the dashboards, reads that deployment.environment only, so one SigNoz may take
+                  several environments (the external disk and certificate rules are scoped by namespace instead);
+  ${service}      is set for a rule whose values hold a services list: the rule is rendered once per service.
+A rule whose values say enabled false is left out. A token left unresolved, or a source without values, fails the render.
+templates/validate.yaml checks every value before it reaches a rule.
+*/ -}}
+{{- if .Values.monitoring.enabled }}
+{{- $alerts := .Values.monitoring.alerts | default dict }}
+{{- $channels := .Values.monitoring.channels | default list }}
+{{- $environment := toString (.Values.monitoring.environment | default .Values.environment) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ariva-monitoring-alerts
+  labels:
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: monitoring
+    ariva.dalil.tech/monitoring: alerts
+  annotations:
+    ariva.dalil.tech/signoz-version: "v0.146.0"
+    ariva.dalil.tech/signoz-rule-schema: "v5, schemaVersion v2alpha1"
+    ariva.dalil.tech/environment: {{ $environment | quote }}
+data:
+{{- range $path, $_ := .Files.Glob "files/monitoring/alerts/*.json" }}
+{{- $key := base $path | trimSuffix ".json" }}
+{{- $settings := get $alerts $key }}
+{{- if not $settings }}
+{{- fail (printf "monitoring.alerts.%s is missing: every rule in files/monitoring/alerts has its values" $key) }}
+{{- end }}
+{{- if ne (toString (get $settings "enabled")) "false" }}
+{{- $text := $.Files.Get $path }}
+{{- range $field, $value := $settings }}
+{{- if and (eq $field "namespaces") (empty $value) }}
+{{- $value = list $.Release.Namespace }}
+{{- end }}
+{{- $token := printf "%s.%s" $key $field }}
+{{- $text = replace (printf "\"${%s}\"" $token) (toJson $value) $text }}
+{{- $plain := toString $value }}
+{{- if kindIs "slice" $value }}
+{{- $quoted := list }}
+{{- range $value }}{{ $quoted = append $quoted (printf "'%s'" (toString .)) }}{{ end }}
+{{- $plain = printf "[%s]" (join ", " $quoted) }}
+{{- $text = replace (printf "${%s.%sPattern}" $key $field) (join "|" $value) $text }}
+{{- end }}
+{{- $text = replace (printf "${%s}" $token) $plain $text }}
+{{- if eq $field "minutes" }}
+{{- $text = replace (printf "\"${%s.seconds}\"" $key) (toString (mul (int $value) 60)) $text }}
+{{- $text = replace (printf "${%s.seconds}" $key) (toString (mul (int $value) 60)) $text }}
+{{- end }}
+{{- if hasSuffix "Days" $field }}
+{{- $derived := printf "%s.%sSeconds" $key (trimSuffix "Days" $field) }}
+{{- $text = replace (printf "\"${%s}\"" $derived) (toString (mul (int $value) 86400)) $text }}
+{{- $text = replace (printf "${%s}" $derived) (toString (mul (int $value) 86400)) $text }}
+{{- end }}
+{{- end }}
+{{- $text = replace "\"${channels}\"" (toJson $channels) $text }}
+{{- $text = replace "${environment}" $environment $text }}
+{{- if hasKey $settings "services" }}
+{{- range $service := get $settings "services" }}
+{{- $rendered := replace "${service}" (toString $service) $text }}
+{{- if contains "${" $rendered }}
+{{- fail (printf "files/monitoring/alerts/%s.json: a token has no value in monitoring.alerts.%s" $key $key) }}
+{{- end }}
+  {{ printf "%s-%s.json" $key $service }}: |
+{{ $rendered | indent 4 }}
+{{- end }}
+{{- else }}
+{{- if contains "${" $text }}
+{{- fail (printf "files/monitoring/alerts/%s.json: a token has no value in monitoring.alerts.%s" $key $key) }}
+{{- end }}
+  {{ base $path }}: |
+{{ $text | indent 4 }}
+{{- end }}
+{{- end }}
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ariva-monitoring-dashboards
+  labels:
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: monitoring
+    ariva.dalil.tech/monitoring: dashboards
+  annotations:
+    ariva.dalil.tech/signoz-version: "v0.146.0"
+    ariva.dalil.tech/signoz-dashboard-schema: "v6"
+    ariva.dalil.tech/environment: {{ $environment | quote }}
+data:
+{{- range $path, $_ := .Files.Glob "files/monitoring/dashboards/*.json" }}
+{{- $text := replace "${environment}" $environment ($.Files.Get $path) }}
+{{- if contains "${" $text }}
+{{- fail (printf "files/monitoring/dashboards/%s: a token has no value" (base $path)) }}
+{{- end }}
+  {{ base $path }}: |
+{{ $text | indent 4 }}
+{{- end }}
+{{- end }}

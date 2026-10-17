@@ -25,9 +25,11 @@ public sealed class BinAccumulatorTests
 
     private sealed class Pipeline(TimeSpan? lateness = null, BinSettings settings = null)
     {
+        // On the receive clock (no push interval, the engine's rule before ARV-148): these cases are about bins, stepped at
+        // the times they name; the event-time watermark has its own tests (QueueEngineWatermarkTests).
         public QueueStateEngine Engine { get; } = new(Geometry, new QueueEngineSettings
         {
-            Lateness = lateness ?? TimeSpan.Zero, HandoverWindow = TimeSpan.FromSeconds(30)
+            Lateness = lateness ?? TimeSpan.Zero, HandoverWindow = TimeSpan.FromSeconds(30), PushInterval = TimeSpan.Zero
         });
 
         public BinAccumulator Bins { get; } = new("A-VIS", 12, settings);
@@ -399,6 +401,90 @@ public sealed class BinAccumulatorTests
             create.Should().NotThrow();
         else
             create.Should().Throw<ArgumentException>();
+    }
+
+    #endregion
+
+    #region Degraded by track completion alone (F11, ARV-114b)
+
+    /// <summary>
+    /// Ten tracks enter the 18:00 bin from 18:01; the first eight exit at 18:04, the other two walk back out over the entry
+    /// line at 18:03 (abandoned): track completion 0.8, below F11's 0.90, and nothing else wrong unless a case adds it.
+    /// </summary>
+    private static Pipeline LowCompletion(BinSettings settings = null, bool degradedInput = false, BinQuality? mark = null)
+    {
+        var p = new Pipeline(settings: settings);
+        for (var i = 0; i < 10; i++)
+        {
+            p.Offer(In(1 + i * 0.01, $"t{i}", degraded: degradedInput && i == 0));
+            p.Offer(i < 8 ? Out(4 + i * 0.01, $"t{i}") : new QueueCrossing("A-VIS entry", CrossingDirection.Out, $"t{i}", At(3 + i * 0.01)));
+        }
+
+        if (mark is { } quality)
+            p.Bins.Mark(At(5), At(6), quality);
+        p.Advance(30);
+        return p;
+    }
+
+    [Fact]
+    public void Flag_Should_BeSet_When_TrackCompletionAloneMakesAFinalBinDegraded()
+    {
+        var bin = LowCompletion().Latest(0);
+
+        bin.Should().Match<BinResult>(b => b.Status == BinStatus.Final && b.Quality == BinQuality.Degraded && b.Abandoned == 2 && b.Censored == 0);
+        bin.DegradedByCompletionOnly.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("an outage marked over the bin", BinQuality.Degraded)]
+    [InlineData("a line without coverage (Unknown)", BinQuality.Unknown)]
+    [InlineData("a degraded input", BinQuality.Degraded)]
+    [InlineData("more waits than the bin keeps exactly", BinQuality.Degraded)]
+    public void Flag_Should_StayFalse_When_AnotherCauseDegradesTheBinToo(string cause, BinQuality quality)
+    {
+        var p = cause switch
+        {
+            "an outage marked over the bin" => LowCompletion(mark: BinQuality.Degraded),
+            "a line without coverage (Unknown)" => LowCompletion(mark: BinQuality.Unknown),
+            "a degraded input" => LowCompletion(degradedInput: true),
+            _ => LowCompletion(new BinSettings { MaxExactWaitsPerBin = 5 })
+        };
+        var bin = p.Latest(0);
+
+        bin.Should().Match<BinResult>(b => b.Status == BinStatus.Final && b.Quality == quality, cause);
+        bin.DegradedByCompletionOnly.Should().BeFalse("{0} sets the bin apart in the validation comparison, completion or not", cause);
+    }
+
+    [Fact]
+    public void Flag_Should_StayFalse_When_TheOpenBinBoundFinalisesABinWithItsTracksStillOpen()
+    {
+        var p = new Pipeline(settings: new BinSettings { MaxOpenBins = 3 });
+        p.Offer(In(1, "never"));
+        for (var k = 1; k < 8; k++)
+            p.Offer(In(k * 15 + 1, "p" + k), Out(k * 15 + 2, "p" + k));
+
+        p.Advance(8 * 15);
+
+        p.Latest(0).Should().Match<BinResult>(b => b.Status == BinStatus.Final && b.Open == 1 && b.Quality == BinQuality.Degraded && !b.DegradedByCompletionOnly,
+            "forced final with its one track open (completion 0): Degraded by the bound, not by its completion alone");
+    }
+
+    [Fact]
+    public void Revisions_Should_AddARevision_When_ARecomputationChangesOnlyTheCompletionFlag()
+    {
+        // Live: the bin is Degraded for its completion alone. The recomputation over the archive learns of an outage over it:
+        // the same counts and the same quality, but Degraded for another cause too, so the comparison must set it apart.
+        var live = LowCompletion();
+        var recomputed = LowCompletion(mark: BinQuality.Degraded);
+        live.Latest(0).DegradedByCompletionOnly.Should().BeTrue();
+        recomputed.Latest(0).Should().Match<BinResult>(b => b.Quality == BinQuality.Degraded && !b.DegradedByCompletionOnly);
+        recomputed.Latest(0).Entries.Should().Be(live.Latest(0).Entries);
+
+        var revisions = BinRevisions.Next(live.Published, recomputed.Published, "an outage over the bin replayed from the archive");
+
+        revisions.Should().ContainSingle().Which.Should().Match<BinResult>(b =>
+            b.StartUtc == At(0) && b.Revision == 2 && b.Quality == BinQuality.Degraded && !b.DegradedByCompletionOnly);
+        BinRevisions.Next(live.Published, LowCompletion().Published, "the same inputs again").Should().BeEmpty();
     }
 
     #endregion

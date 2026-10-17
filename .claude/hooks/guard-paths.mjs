@@ -16,6 +16,8 @@ if (!isInside(target, PROJECT_DIR) && !isTempOrClaudeHome(target)) deny(`Writes 
 const rel = path.relative(PROJECT_DIR, target).replace(/\\/g, '/');
 const base = path.basename(target).toLowerCase();
 
+if (/(^|\/)\.private(\/|$)/i.test(rel)) deny('The .private folder holds client material (owner decision 2026-10-09, ARV-139c): agents never read or write it.');
+
 if (/^\.env(\.|$)/.test(base) || /\.(pfx|p12|pem|key|jks|kdbx)$/.test(base) || base === 'id_rsa' || base === 'kubeconfig') {
   deny('Secret material never goes into the repository. Use Kubernetes secrets or user secrets.');
 }

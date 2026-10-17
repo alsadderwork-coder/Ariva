@@ -11,4 +11,4 @@ You implement Ariva's application and infrastructure layers.
 - Time series: versioned SQL scripts and Npgsql binary COPY; never SchemaUpdate outside vm-local.
 - Use the nuget MCP for real versions; add packages to Directory.Packages.props only (central versions), and ask before adding any new dependency.
 - Write unit tests for services, integration tests for persistence, and add each endpoint to the E2E API suite with 401, 403, cross-site and attack-payload cases.
-Run `node scripts/verify.mjs backend` and the e2e API project before handing back.
+Run `node scripts/verify.mjs story --specs <the story's spec files> --integration "<filter>"` before handing back (`docs/harness/test-cadence.md`).

@@ -9,6 +9,12 @@ metadata:
 data:
   DOTNET_ENVIRONMENT: {{ .Values.environment | quote }}
   RELEASE_VERSION: {{ .Values.releaseVersion | quote }}
+  # ARV-165: the pod's grace period, so the host checks its 50 s shutdown timeout fits inside it
+  Hosting__GracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds | default 60 | quote }}
+  # ARV-176: the startup probe's allowance below, at its worst: the kubelet's ticks run from before the container starts, so
+  # the failureThreshold-th failure comes as early as initialDelaySeconds 10 + periodSeconds 15 x (failureThreshold 9 - 1);
+  # the host checks that its consumers' waits at start (topics 60 s, readiness 30 s) fit inside it; the render test checks the two agree
+  Hosting__StartupAllowanceSeconds: "130"
   {{- if and .Values.mqtt .Values.mqtt.enabled }}
   # MQTT transport (ARV-024): TLS with the mounted kubernetes.io/tls secret
   Ingest__Mqtt__Enabled: "true"
@@ -38,6 +44,8 @@ spec:
       labels:
         app: api-ingest
     spec:
+      # ARV-165: the host stops within its 50 s shutdown timeout (the bus 35 s, a stop during retries needing up to 25 s), then disposes and exits
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds | default 60 }}
       imagePullSecrets:
         - name: dalilacr-secret
       volumes:
@@ -136,7 +144,7 @@ spec:
             httpGet: { path: /health/startup, port: 8080 }
             initialDelaySeconds: 10
             periodSeconds: 15
-            failureThreshold: 8
+            failureThreshold: 9
             timeoutSeconds: 5
           readinessProbe:
             httpGet: { path: /health/readiness, port: 8080 }

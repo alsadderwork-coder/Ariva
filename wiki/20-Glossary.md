@@ -37,7 +37,7 @@ A short version of Ariva's ubiquitous language. The authoritative glossary, with
 | Show-up curve | How long before departure passengers reach a departure process, learned per segment |
 | Arrival wave | The burst of arriving passengers reaching the immigration hall after flights go on-block |
 | Backtest | A rule evaluated on stored minutes of a past range, to see how often and when it would have fired; the same evaluation as the live alerts |
-| Predicted breach | An alert raised before a queue passes its threshold, from the nowcast projected over the next 15 to 60 minutes with the arrival wave |
+| Predicted breach | An alert raised before a queue passes its threshold, from the nowcast projected over the next 15 to 60 minutes with the arrival wave. Border data since ARV-187 (a lane's projection is its share of the arrival wave): for border shift supervisors and administrators only |
 | Calibration | Fixing a sensor's position and orientation and proving its counting accuracy; recorded as a calibration record |
 | Coverage footprint | The rectangle a downward-facing sensor tracks at the tracking plane; vendor tables are authoritative |
 | Evidence pack | The sealed bundle behind an SLA evaluation, with a SHA-256 content hash |
@@ -67,6 +67,8 @@ A short version of Ariva's ubiquitous language. The authoritative glossary, with
 | Backlog | Passengers still waiting at the end of an interval in the forecast recursion |
 | Forecast run | One execution of the forecast with its model version and input snapshot |
 | Staffing plan | Desks per lane per interval, recommended and accepted |
+| Recommended open desks (indicative) | The pilot's staffing recommendation: per arrivals lane and 15 minutes for the next 3 hours, the fewest open desks that keep the predicted wait within the lane's target and each desk at most 85 percent busy, from the queue now, the arrival wave and the measured throughput per open desk; no roster or break rules; border data |
+| Throughput per open desk | Passengers an open desk of a lane serves per minute, measured from the lane's exits over its open desk-minutes while people wait for every open desk, or configured per lane category at commissioning |
 | Contract | The agreement evaluated for SLA and penalties: party, KPIs, thresholds, windows, exclusions, penalty schedule |
 | Allowance | Breached bins per evaluation window that carry no penalty |
 | Evaluation | The result of applying a contract to final bins in a window |

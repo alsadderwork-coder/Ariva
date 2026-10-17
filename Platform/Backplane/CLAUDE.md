@@ -38,7 +38,7 @@ Load the `aman-conventions` skill for the full pattern set; this file is the sho
 ## Messaging and streaming
 
 - Events name their topic with `[KafkaTopic(KafkaTopics.X)]` (one event type per topic). Aggregates raise domain events and the unit of work writes them to the outbox; never publish from inside a transaction. Hosts declare consumers with `RegisterArivaServices(configuration, m => m.Consume<TMessage, TConsumer>(KafkaTopics.X, "purpose"))`; the consumer does not commit (the inbox filter does) and must tolerate redelivery (ARV-020).
-- Publish through `ISvcMessageBus` (MassTransit 8 Kafka Rider implementation in Ariva.Infra; domain events go through the NHibernate outbox, consumers through the inbox and dead-letter filters; ADR-0018). Topic names come from `KafkaTopics` constants (`ariva.<context>.<event>.v1`); never build topic names from input.
+- Publish through `ISvcMessageBus` (Ariva's own Confluent producer in Ariva.Infra, one per host, `KafkaProduce`; domain events go through the NHibernate outbox; consumers are MassTransit 8 Kafka Rider topic endpoints behind the inbox and dead-letter filters; ADR-0018 as amended by ARV-167). Topic names come from `KafkaTopics` constants (`ariva.<context>.<event>.v1`); never build topic names from input (the producer refuses any topic that is not Ariva's own or a dead-letter topic).
 - Consumers: `EnableAutoOffsetStore = false`, `StoreOffset` only after the effect is persisted (at-least-once), idempotent handlers keyed by `SourceEventId` or event id. Partition sensing events by zone id.
 - The queue state engine in `Ariva.Core` is pure (no I/O): stream workers feed it events and persist its outputs. Load the `kafka-streaming` skill.
 

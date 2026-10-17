@@ -48,6 +48,25 @@ test("another site's code answers 404 without data, like an unknown one", async 
 	}
 	expect((await call('PUT', `${hosts.main}/api/v1/admin/sites/E2E1`, { token: terminal.accessToken, data: { name: 'Taken' } })).status()).toBe(403);
 });
+test('a site name with control or invisible characters is refused with a fixed text and changes nothing (ARV-159)', async () => {
+	const admin = (await signIn(accounts().SystemAdministrator)).accessToken;
+	const fixed = 'The site name is at most 200 characters, without control, invisible or broken characters.';
+	const before = (await (await call('GET', `${sitesUrl}/E2E1`, { token: admin })).json()).name;
+	for (const name of ['E2E \u202Eevil', 'E2E\u200BA', 'E2E \u{E0041}', 'E2E\u0007']) {
+		for (const [method, url] of [
+			['POST', `${hosts.main}/api/v1/admin/sites`],
+			['PUT', `${hosts.main}/api/v1/admin/sites/E2E1`]
+		] as const) {
+			const response = await call(method, url, { token: admin, data: method === 'POST' ? { code: 'ZZNAME', name } : { name } });
+			expect(response.status(), `${method} ${url.replace(hosts.main, '')}`).toBe(400);
+			const body = await response.text();
+			expect(body.includes(fixed), 'the fixed text').toBe(true);
+			expect(body.includes(name), 'the answer does not repeat the name').toBe(false);
+		}
+	}
+	expect((await call('GET', `${sitesUrl}/ZZNAME`, { token: admin })).status(), 'nothing created').toBe(404);
+	expect((await (await call('GET', `${sitesUrl}/E2E1`, { token: admin })).json()).name, 'nothing renamed').toBe(before);
+});
 
 test('site access is granted only by a stepped-up administrator within its own sites', async () => {
 	// Own accounts: narrowing access ends the user's sessions, which must not hit accounts other tests use in parallel.

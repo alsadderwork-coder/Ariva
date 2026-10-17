@@ -80,6 +80,9 @@ public static class SimulationScopes
 
     /// <summary>Rate limit of minutes played at once on the feed emulators, per key (ARV-029): 60 a minute.</summary>
     public const string PlayLimit = "simulation.play";
+
+    /// <summary>Rate limit of validation truth reads, per key (ARV-104i): Simulation:Validation:TruthReadsPerMinute.</summary>
+    public const string TruthLimit = "simulation.truth";
 }
 
 /// <summary>

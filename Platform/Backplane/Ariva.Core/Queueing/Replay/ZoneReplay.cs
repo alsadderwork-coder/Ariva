@@ -14,11 +14,14 @@ namespace Ariva.Core.Queueing.Replay;
 /// </summary>
 public static class ZoneReplay
 {
-    /// <summary>The extra time after the range's end the engine is stepped to, so that the range's bins become final.</summary>
+    /// <summary>
+    /// The extra time after the range's end the engine is stepped to, so that the range's bins become final: with no
+    /// events after the end the zone's clock is the push interval behind the reference (ARV-148), so it counts too.
+    /// </summary>
     public static TimeSpan Settle(ZoneProcessorSettings settings)
     {
         ArgumentNullException.ThrowIfNull(settings);
-        return settings.Engine.CensorAfter + settings.Engine.Lateness + settings.Bins.BinLength + TimeSpan.FromMinutes(1);
+        return settings.Engine.CensorAfter + settings.Engine.Lateness + settings.Engine.PushInterval + settings.Bins.BinLength + TimeSpan.FromMinutes(1);
     }
 
     /// <summary>SHA-256 of the settings as JSON: a replay under other settings is a different replay.</summary>

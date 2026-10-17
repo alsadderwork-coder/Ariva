@@ -18,7 +18,9 @@
     <!-- ASP.NET Core and Microsoft Extensions, .NET 10 -->
     <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.12" />
     <PackageVersion Include="Microsoft.AspNetCore.OpenApi" Version="10.0.12" />
-    <PackageVersion Include="Microsoft.AspNetCore.SignalR.Protocols.MessagePack" Version="10.0.12" />
+    <!-- 10.0.13 (nuget.org, 13 October 2026) fixes GHSA-86xp-94pg-8r6r (Moderate, affected 10.0.0 to 10.0.12) and brings
+         Microsoft.AspNetCore.SignalR.Common 10.0.13, which fixes GHSA-334f-vvp4-7g6p (High, same range) (ARV-184) -->
+    <PackageVersion Include="Microsoft.AspNetCore.SignalR.Protocols.MessagePack" Version="10.0.13" />
     <PackageVersion Include="Microsoft.AspNetCore.SignalR.StackExchangeRedis" Version="10.0.12" />
     <PackageVersion Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="10.0.12" />
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.12" />
@@ -40,7 +42,12 @@
     <PackageVersion Include="ClosedXML" Version="0.104.2" />
     <PackageVersion Include="ConfigurationSubstitutor" Version="1.5.1" />
     <PackageVersion Include="Cronos" Version="0.11.1" />
+    <!-- CsvHelper: Ariva.Infra's CSV imports (ARV-123a), the low-level CsvParser only (docs/product/decisions.md) -->
     <PackageVersion Include="CsvHelper" Version="33.1.0" />
+    <!-- SkiaSharp (MIT): advertisement images decoded and written anew (ARV-142a). The managed library is in Ariva.Infra; the
+         Linux native library only in Ariva.Api.Main, the one host that takes uploads, and the test projects. -->
+    <PackageVersion Include="SkiaSharp" Version="4.153.1" />
+    <PackageVersion Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.153.1" />
     <PackageVersion Include="Fluentx" Version="6.1.9" />
     <PackageVersion Include="Handlebars.Net" Version="2.1.6" />
     <PackageVersion Include="Humanizer.Core" Version="3.0.1" />
@@ -49,8 +56,16 @@
     <PackageVersion Include="MessagePack" Version="3.1.7" />
     <PackageVersion Include="Polly" Version="8.6.5" />
     <PackageVersion Include="PuppeteerSharp" Version="20.2.5" />
+    <!-- IANA to Windows zone mapping carried in the library: the hosts run with invariant globalization (no ICU) -->
+    <PackageVersion Include="TimeZoneConverter" Version="7.2.0" />
     <!-- System / BCL, .NET 10 -->
     <PackageVersion Include="System.Threading.Channels" Version="10.0.12" />
+    <!-- MimeKit (under MailKit) asks for System.Security.Cryptography.Pkcs 10.0.0 or later; 10.0.13 (nuget.org, 13 October 2026)
+         fixes GHSA-846f-f764-76mx (High) and GHSA-2fmv-rv2c-59x7 (Moderate), both affecting 10.0.0 to 10.0.12. Ariva.Infra, the
+         only project whose graph brings it, references it directly, so every project above it resolves 10.0.13 without
+         transitive pinning of the whole list. The hosts' self-contained runtime pack carries its own copy: the image build
+         checks the published file (scripts/published-runtime.mjs, ARV-184). -->
+    <PackageVersion Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />
     <!-- Microsoft.CodeAnalysis -->
     <PackageVersion Include="Microsoft.CodeAnalysis.Common" Version="4.14.0" />
     <!-- ML.NET (forecasting) -->

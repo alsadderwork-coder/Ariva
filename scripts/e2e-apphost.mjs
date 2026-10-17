@@ -54,7 +54,7 @@ const base32 = (bytes) => {
 const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ariva-e2e-apphost-'));
 fs.chmodSync(work, 0o700);
 const hostFile = path.join(work, 'hosts.json');
-const passwords = { owner: secret(), runtime: secret(), readonly: secret(), redis: secret(), simulator: secret() };
+const passwords = { owner: secret(), runtime: secret(), readonly: secret(), validationReader: secret(), redis: secret(), simulator: secret() };
 
 // The run's values, as playwright.config.ts draws them when they are not set; both Playwright passes and the hosts see these.
 const run = {
@@ -62,12 +62,17 @@ const run = {
 	ARIVA_E2E_ACCOUNT_SEED: secret(),
 	ARIVA_E2E_KEY_DIR: path.join(work, 'keys'),
 	ARIVA_E2E_SIMULATION_KEY: 'sim-e2e-' + secret(),
+	// ARV-104i's read-only simulator key: drawn here too, so the simulator the AppHost starts holds the digest of the key the
+	// suite uses (global setup's host check and the read scope's tests ask with it; ARV-128 found it missing).
+	ARIVA_E2E_SIMULATION_READ_KEY: 'sim-e2e-read-' + secret(),
 	ARIVA_E2E_MOCK_AMAN_SECRET: 'aman-e2e-' + secret(),
 	ARIVA_E2E_MOCK_AMAN_SEED: base32(randomBytes(20)),
 	ARIVA_E2E_MOCK_AMAN_PULL_SECRET: 'aman-pull-' + secret(),
 	ARIVA_E2E_MOCK_AMAN_PULL_SEED: base32(randomBytes(20)),
 	ARIVA_E2E_ACRIS_KEY: 'acris-e2e-' + secret(),
 	ARIVA_E2E_CRONZ_KEY: 'cronz-e2e-' + secret(),
+	// ARV-104g1: the validation reader login api-main gets (the same value as the AppHost's parameter below).
+	ARIVA_E2E_VALIDATION_READER_PASSWORD: passwords.validationReader,
 	// The AppHost's containers, for the tests themselves (database checks, Kafka and Redis suites).
 	ARIVA_E2E_SCHEMA_UPDATE: 'true',
 	ARIVA_E2E_KAFKA_BOOTSTRAP: `localhost:${ports.kafka}`,
@@ -130,6 +135,7 @@ try {
 				'Parameters__database-owner-password': passwords.owner,
 				'Parameters__database-runtime-password': passwords.runtime,
 				'Parameters__database-readonly-password': passwords.readonly,
+				'Parameters__database-validation-reader-password': passwords.validationReader,
 				'Parameters__redis-password': passwords.redis,
 				'Parameters__simulation-operator-key': passwords.simulator
 			},

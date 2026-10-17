@@ -1,0 +1,74 @@
+{
+  "alert": "Ingress certificate expiring (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "The certificate cert-manager manages in the release's namespaces that ends soonest (the ingress certificate among them) ends soon, from cert-manager's metric scraped by the site collector (external, ARV-125b).",
+  "ruleType": "promql_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "promql",
+      "panelType": "graph",
+      "unit": "s",
+      "queries": [
+        {
+          "type": "promql",
+          "spec": {
+            "name": "A",
+            "query": "min(certmanager_certificate_expiration_timestamp_seconds{${ingressCertificateExpiry.namespaceLabel}=~\"${ingressCertificateExpiry.namespacesPattern}\"}) - time()",
+            "legend": "soonest certificate"
+          }
+        }
+      ]
+    },
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "warning",
+          "op": "below",
+          "matchType": "last",
+          "target": "${ingressCertificateExpiry.warningSeconds}",
+          "channels": "${channels}"
+        },
+        {
+          "name": "critical",
+          "op": "below",
+          "matchType": "last",
+          "target": "${ingressCertificateExpiry.criticalSeconds}",
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "15m",
+      "frequency": "5m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [],
+    "renotify": {
+      "enabled": true,
+      "interval": "4h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "ingressCertificateExpiry",
+    "environment": "${environment}"
+  },
+  "annotations": {
+    "summary": "A cert-manager certificate expiring",
+    "description": "The certificate cert-manager manages in the namespaces ${ingressCertificateExpiry.namespaces} that ends soonest ends in {{$value}} seconds (warning at ${ingressCertificateExpiry.warningDays} days, critical at ${ingressCertificateExpiry.criticalDays}); see kubectl -n <namespace> get certificate.",
+    "runbook": "wiki/10-Operations-Runbook.md#49-certificate-expiry"
+  },
+  "disabled": false
+}

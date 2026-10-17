@@ -181,6 +181,35 @@ public static class Global
             public static Permission EditDisplay { get; } = new("Display", PermissionAction.Edit);
             public static Permission DeleteDisplay { get; } = new("Display", PermissionAction.Delete);
 
+            /// <summary>
+            /// Instruction slides of the passenger displays (ARV-141): see them, and manage them (create, change, order,
+            /// retire and restore). The words reach every display of the site, so managing them is its own permission.
+            /// </summary>
+            public static Permission ViewDisplayContent { get; } = new("DisplayContent", PermissionAction.View);
+
+            public static Permission ManageDisplayContent { get; } = new("DisplayContent", PermissionAction.Manage);
+
+            /// <summary>
+            /// A site's advertising policy (ARV-145): whether its displays may show advertising and in which zones it stays off.
+            /// The roles that manage displays see it; changing it is a critical action (step-up MFA), audited with the reason,
+            /// and held by the system administrator only (owner decision 2026-10-16; the role seed's every-permission rule).
+            /// </summary>
+            public static Permission ViewAdvertisingPolicy { get; } = new("AdvertisingPolicy", PermissionAction.View);
+
+            public static Permission EditAdvertisingPolicy { get; } = new("AdvertisingPolicy", PermissionAction.Edit);
+
+            /// <summary>
+            /// Advertisements (ARV-142a): the media library of a site whose advertising policy allows advertising. View sees the
+            /// library; Manage sees it too and uploads, changes and retires items; Approve approves a draft, which only a person
+            /// other than its uploader and the last person who changed it may do, and is a critical permission (every endpoint it
+            /// guards asks for a second factor). Only approved items within their dates ever play.
+            /// </summary>
+            public static Permission ViewAdvertising { get; } = new("Advertising", PermissionAction.View);
+
+            public static Permission ManageAdvertising { get; } = new("Advertising", PermissionAction.Manage);
+
+            public static Permission ApproveAdvertising { get; } = new("Advertising", PermissionAction.Approve);
+
             #endregion
 
             #region Reports (E9)
@@ -194,6 +223,45 @@ public static class Global
             public static Permission CreateReportSchedule { get; } = new("ReportSchedule", PermissionAction.Create);
             public static Permission EditReportSchedule { get; } = new("ReportSchedule", PermissionAction.Edit);
             public static Permission DeleteReportSchedule { get; } = new("ReportSchedule", PermissionAction.Delete);
+
+            #endregion
+
+            #region Data quality (E12)
+
+            /// <summary>
+            /// The continuous health checks of the queue zones of a site (ARV-114a, F18): conservation residual, track completion
+            /// and occupancy against physical capacity per bin. Zone-level counts only, no desk data.
+            /// </summary>
+            public static Permission ViewDataQuality { get; } = new("DataQuality", PermissionAction.View);
+
+            #endregion
+
+            #region Validation tooling (E13)
+
+            /// <summary>
+            /// Validation campaigns of a site (ARV-104a, F18): their scope, days, progress and every observer's manual counts.
+            /// Line-level counts only, no desk data and no person beyond the observers' Ariva user ids.
+            /// </summary>
+            public static Permission ViewValidation { get; } = new("Validation", PermissionAction.View);
+
+            /// <summary>
+            /// Ground truth (ARV-104a): the running campaigns of the caller's sites with their lines, and the caller's own manual
+            /// counts, recorded and corrected (a correction is a new revision with a reason). The validation observer's only permission.
+            /// </summary>
+            public static Permission CaptureValidation { get; } = new("Validation", PermissionAction.Capture);
+
+            /// <summary>Creates and starts validation campaigns (ARV-104a); closing one is a critical action (step-up MFA), audited.</summary>
+            public static Permission ManageValidation { get; } = new("Validation", PermissionAction.Manage);
+
+            #endregion
+
+            #region Site onboarding (E15)
+
+            /// <summary>
+            /// Exports a site's configuration as a bundle and imports a bundle into an empty site (ARV-122a). Both are critical
+            /// actions (step-up MFA), audited; held by the system administrator only (the role seed's every-permission rule).
+            /// </summary>
+            public static Permission TransferSiteConfiguration { get; } = new("SiteConfiguration", PermissionAction.Transfer);
 
             #endregion
 

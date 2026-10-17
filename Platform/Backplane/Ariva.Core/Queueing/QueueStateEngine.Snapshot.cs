@@ -72,11 +72,32 @@ public sealed record QueueEngineState
     public long Sequence { get; init; }
     public long Order { get; init; }
     public DateTime WatermarkUtc { get; init; }
+
+    /// <summary>
+    /// The zone's event clock (ARV-148, zone snapshot version 9): the latest event time accepted, each at most the reference
+    /// it arrived with. Null in a snapshot written before, which restores with the clock at the latest of its watermark and
+    /// the events it holds (the clock then catches up with the next events, and the watermark never moves back).
+    /// </summary>
+    public DateTime? ClockUtc { get; init; }
+
     public DateTime CursorUtc { get; init; }
     public bool ResidualSuspect { get; init; }
 
+    /// <summary>
+    /// The instant of an occupancy reading whose empty-queue check (F5) still waits for the rest of that instant's events,
+    /// because a full step ended inside it (ARV-114d): one tick after <see cref="WatermarkUtc"/>, where the step stopped.
+    /// Null when no check is pending; a snapshot written before has none (that engine ran the check when the step filled).
+    /// </summary>
+    public DateTime? PendingAnchorUtc { get; init; }
+
     // What happened since the last step (an Offer can process events when the buffer is full).
     public IReadOnlyList<MovementCount> Movements { get; init; } = [];
+    /// <summary>Line crossings since the last step (ARV-113); a snapshot written before has none.</summary>
+    public IReadOnlyList<LineMovement> Lines { get; init; } = [];
+    /// <summary>Occupancy samples at minute boundaries since the last step (ARV-114a); a snapshot written before has none.</summary>
+    public IReadOnlyList<OccupancySample> OccupancySamples { get; init; } = [];
+    /// <summary>Occupancy readings per zone and minute since the last step (ARV-114a); a snapshot written before has none.</summary>
+    public IReadOnlyList<ZoneReadingMinute> Readings { get; init; } = [];
     public IReadOnlyList<RealisedWait> Waits { get; init; } = [];
     public IReadOnlyList<EntrantResolution> Resolutions { get; init; } = [];
     public IReadOnlyList<long> Counters { get; init; } = [];
@@ -93,7 +114,7 @@ public sealed partial class QueueStateEngine
     public QueueEngineState Capture() => new()
     {
         QueueZone = _geometry.QueueZone,
-        Buffer = [.. _buffer.UnorderedItems.OrderBy(i => i.Priority.Time).ThenBy(i => i.Priority.Sequence)
+        Buffer = [.. _buffer.UnorderedItems.OrderBy(i => i.Priority, DueOrder.Instance)
             .Select(i => new QueueBufferedState(QueueInputState.From(i.Element.Input), i.Element.Ahead, i.Priority.Sequence))],
         Held = [.. _held.Select(e => new QueueEntrantState(e.EntryUtc, e.TrackKey, e.Group, e.Degraded, e.Method, e.Order, e.LastSeenUtc))],
         ResolvedTracks = [.. _resolvedOrder],
@@ -103,9 +124,14 @@ public sealed partial class QueueStateEngine
         Sequence = _sequence,
         Order = _order,
         WatermarkUtc = _watermark,
+        ClockUtc = _clock,
         CursorUtc = _cursor,
         ResidualSuspect = _residualSuspect,
-        Movements = [.. _movements.OrderBy(m => m.Key).Select(m => new MovementCount(m.Key, m.Value.In, m.Value.Out, m.Value.DegradedIn, m.Value.DegradedOut))],
+        PendingAnchorUtc = _anchorDueUtc,
+        Movements = Movements(),
+        Lines = LineMovements(),
+        OccupancySamples = [.. _samples],
+        Readings = ReadingMinutes(),
         Waits = [.. _waits],
         Resolutions = [.. _resolutions],
         Counters = [_late, _future, _invalid, _unknown, _duplicates, _reverse, _unmatched, _negative, _bufferFull, _forced, _tooManyDevices],
@@ -133,14 +159,16 @@ public sealed partial class QueueStateEngine
             (state.ResolvedTracks?.Count ?? 0) > s.MaxRememberedTracks || (state.Occupancy?.Count ?? 0) > 1 + geometry.OverflowZones.Count ||
             (state.Handovers?.Count ?? 0) > 2 * s.MaxOpenEntrants + 1024 || (state.Counters?.Count ?? 0) != 11 ||
             (state.LateByMinute?.Count ?? 0) > MaxLateMinutes ||
-            (state.Movements?.Count ?? 0) + (state.Waits?.Count ?? 0) + (state.Resolutions?.Count ?? 0) > s.MaxStepRecords + s.MaxBufferedEvents)
+            (state.Movements?.Count ?? 0) + (state.Lines?.Count ?? 0) + (state.Waits?.Count ?? 0) + (state.Resolutions?.Count ?? 0) +
+            (state.OccupancySamples?.Count ?? 0) + (state.Readings?.Count ?? 0) > s.MaxStepRecords + s.MaxBufferedEvents)
             throw new InvalidDataException("The queue engine snapshot exceeds the engine's bounds.");
 
         foreach (var (input, ahead, sequence) in state.Buffer ?? [])
         {
             if (input is null)
                 throw new InvalidDataException("The queue engine snapshot has an empty input.");
-            engine._buffer.Enqueue((input.ToInput(), ahead), (QueueInputState.Utc(input.TimeUtc), sequence));
+            var restored = input.ToInput();
+            engine._buffer.Enqueue((restored, ahead), new Due(QueueInputState.Utc(input.TimeUtc), InputKey.Of(restored, geometry), sequence));
             if (ahead)
                 engine._aheadBuffered++;
         }
@@ -172,8 +200,11 @@ public sealed partial class QueueStateEngine
 
         foreach (var (zone, count, at, degraded) in state.Occupancy ?? [])
         {
-            if (zone is not null)
-                engine._occupancy[zone] = (count, QueueInputState.Utc(at), degraded);
+            if (zone is null)
+                continue;
+            if (count is < 0 or > Sensing.CanonicalEventRules.MaxOccupancy)
+                throw new InvalidDataException("The queue engine snapshot has a zone occupancy out of the canonical bounds.");
+            engine._occupancy[zone] = (count, QueueInputState.Utc(at), degraded);
         }
 
         foreach (var (key, seen, deadline) in state.Handovers ?? [])
@@ -183,10 +214,71 @@ public sealed partial class QueueStateEngine
         engine._sequence = state.Sequence;
         engine._order = state.Order;
         engine._watermark = QueueInputState.Utc(state.WatermarkUtc);
+        // Every held event that was not ahead of its reference moved the clock to its time (CWE-501: a snapshot cannot set the
+        // clock behind what it holds). A snapshot written before ARV-148 has no clock: it starts at the latest of the
+        // watermark and those events, and catches up with the next ones.
+        var held = DateTime.MinValue;
+        foreach (var (input, ahead, _) in state.Buffer ?? [])
+        {
+            var time = QueueInputState.Utc(input.TimeUtc);
+            if (!ahead && time > held)
+                held = time;
+        }
+
+        var before = held > engine._watermark ? held : engine._watermark;
+        engine._clock = state.ClockUtc.HasValue ? QueueInputState.Utc(state.ClockUtc.Value) : before;
+        if (held > engine._clock)
+            throw new InvalidDataException("The queue engine snapshot holds an event after its clock.");
+        // The watermark moves only once an event has set the clock, so a moved watermark with an unset clock is not a state
+        // the engine writes (CWE-501).
+        if (engine._clock == DateTime.MinValue && engine._watermark != DateTime.MinValue)
+            throw new InvalidDataException("The queue engine snapshot has a watermark but no clock.");
+
         engine._cursor = QueueInputState.Utc(state.CursorUtc);
         engine._residualSuspect = state.ResidualSuspect;
+        if (state.PendingAnchorUtc is { } pending)
+            engine._anchorDueUtc = PendingAnchor(engine, QueueInputState.Utc(pending));
         foreach (var m in (state.Movements ?? []).Where(m => m is not null))
-            engine._movements[QueueInputState.Utc(m.MinuteUtc)] = (m.Entries, m.Exits, m.DegradedEntries, m.DegradedExits);
+        {
+            if (m.TrackedEntries < 0 || m.TrackedEntries > m.Entries)
+                throw new InvalidDataException("The queue engine snapshot has more tracked entries than entries in a minute.");
+            engine._movements[QueueInputState.Utc(m.MinuteUtc)] = (m.Entries, m.Exits, m.DegradedEntries, m.DegradedExits, m.TrackedEntries);
+        }
+
+        // Health inputs (ARV-114a), checked as the engine writes them (CWE-501, CWE-120): whole plausible minutes, the
+        // queue's own zones, readings within the canonical bounds, samples within the queue's bound, each minute (and
+        // zone) once.
+        var sampled = new HashSet<DateTime>();
+        foreach (var o in (state.OccupancySamples ?? []).Where(o => o is not null))
+        {
+            var at = QueueInputState.Utc(o.AtUtc);
+            if (!LineCounts.IsMinute(at) || o.Count < 0 || o.Count > geometry.MaxQueueOccupancy)
+                throw new InvalidDataException("The queue engine snapshot has an occupancy sample off a minute boundary or out of bounds.");
+            if (!sampled.Add(at))
+                throw new InvalidDataException("The queue engine snapshot has an occupancy sample of a minute twice.");
+            engine._samples.Add(o with { AtUtc = at });
+        }
+
+        foreach (var r in (state.Readings ?? []).Where(r => r is not null))
+        {
+            var minute = QueueInputState.Utc(r.MinuteUtc);
+            if (!geometry.CountsInQueue(r.ZoneName) || !LineCounts.IsMinute(minute) || r.Min < 0 || r.Min > r.Max || r.Max > Sensing.CanonicalEventRules.MaxOccupancy)
+                throw new InvalidDataException("The queue engine snapshot has an occupancy reading of another zone, off a minute or out of bounds.");
+            if (!engine._readings.TryAdd((minute, r.ZoneName), (r.Min, r.Max)))
+                throw new InvalidDataException("The queue engine snapshot has a zone's readings of a minute twice.");
+        }
+        foreach (var l in (state.Lines ?? []).Where(l => l is not null))
+        {
+            // The same checks as LineCounts.Restore (CWE-501, CWE-120): the zone's line with its role, counts that are not
+            // negative, an aligned plausible UTC minute, and each line minute once.
+            var role = geometry.RoleOf(l.LineName);
+            var minute = QueueInputState.Utc(l.MinuteUtc);
+            if (role == QueueLineRole.Unknown || role != l.Role || l.In < 0 || l.Out < 0 || !LineCounts.IsMinute(minute))
+                throw new InvalidDataException("The queue engine snapshot counts a line that is not the zone's, a negative count or an unaligned minute.");
+            if (!engine._lines.TryAdd((minute, l.LineName), (l.Role, l.In, l.Out)))
+                throw new InvalidDataException("The queue engine snapshot counts a line minute twice.");
+        }
+
         engine._waits.AddRange((state.Waits ?? []).Where(w => w is not null).Select(w => w with { EntryUtc = QueueInputState.Utc(w.EntryUtc), ExitUtc = QueueInputState.Utc(w.ExitUtc) }));
         engine._resolutions.AddRange((state.Resolutions ?? []).Where(r => r is not null).Select(r => r with { EntryUtc = QueueInputState.Utc(r.EntryUtc), ResolvedUtc = QueueInputState.Utc(r.ResolvedUtc) }));
         var c = state.Counters;
@@ -199,5 +291,23 @@ public sealed partial class QueueStateEngine
         engine._beyondHorizon = state.BeyondHorizon;
         engine._more = state.More;
         return engine;
+    }
+
+    /// <summary>
+    /// A pending empty-queue check from a snapshot (ARV-114d), checked as the engine leaves one (CWE-501): only a full step
+    /// that stopped inside an instant carries it, so it is that instant. It is a plausible UTC time, aligned with where
+    /// the step stopped (exactly one tick after the watermark, never at or before it, where every event of the instant
+    /// was applied and the check has run, nor any later, where none of them was), the time of the last processed event,
+    /// and the time of an occupancy reading of the queue the engine holds (the reading that set it). Anything else is
+    /// refused, so a snapshot cannot make the engine drop people at an instant of its choosing.
+    /// </summary>
+    private static DateTime PendingAnchor(QueueStateEngine engine, DateTime at)
+    {
+        if (!ZoneProcessor.Plausible(at) || at.AddTicks(-1) != engine._watermark || at != engine._cursor ||
+            !engine._occupancy.Any(o => engine._geometry.CountsInQueue(o.Key) && o.Value.AtUtc == at) ||
+            // The event that stopped the step is still buffered, so the earliest buffered event is at the instant.
+            !engine._buffer.TryPeek(out _, out var first) || first.Time != at)
+            throw new InvalidDataException("The queue engine snapshot has a pending empty-queue check where no full step leaves one.");
+        return at;
     }
 }

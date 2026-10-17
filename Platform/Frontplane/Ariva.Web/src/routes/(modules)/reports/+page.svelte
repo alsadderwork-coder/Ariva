@@ -6,6 +6,7 @@
 	import DailyReportView from '$lib/components/pages/reports/DailyReportView.svelte';
 	import ScheduleForm from '$lib/components/pages/reports/ScheduleForm.svelte';
 	import ConfirmButton from '$lib/components/shared/ConfirmButton.svelte';
+	import IllustrativeBanner from '$lib/components/shared/IllustrativeBanner.svelte';
 	import SimplePageHeader from '$lib/components/shared/SimplePageHeader.svelte';
 	import StatusBadge from '$lib/components/shared/StatusBadge.svelte';
 	import { auth } from '$lib/core/auth.svelte';
@@ -187,6 +188,8 @@
 		{/if}
 	{/snippet}
 </SimplePageHeader>
+
+<IllustrativeBanner site={siteList.find((s) => s.code === siteCode)} />
 
 {#if !canView}
 	<section class="rounded-xl border bg-card p-6" data-testid="no-access">

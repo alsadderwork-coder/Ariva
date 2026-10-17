@@ -3,7 +3,7 @@
 ## One-time setup on the developer machine (Windows)
 
 1. Clone Ariva next to AMAN: `git clone https://github.com/alsadderwork-coder/Ariva.git D:\DevOps\Ariva`, with AMAN at `D:\DevOps\Aman` (agents read AMAN as reference through `additionalDirectories`; hooks block writes to it).
-2. Install: .NET 10 SDK, Node 22 or later, Docker Desktop (or Rancher Desktop) for Testcontainers and Compose, Git, the GitHub CLI (`winget install GitHub.cli`, then `gh auth login`), Claude Code, ralph-tui (`npm i -g ralph-tui` or as you installed it for AMAN), and `uv` for the Python-based MCP servers (`winget install astral-sh.uv`).
+2. Install: .NET 10 SDK, Node 22 or later, Docker Desktop (or Rancher Desktop) for Testcontainers and Compose, Git, the OpenSSH client 8.1 or later (`ssh-keygen`, built into Windows 10 and later and Git for Windows; the backup tooling's self-test in `verify security` signs and verifies with it, ARV-126), the GitHub CLI (`winget install GitHub.cli`, then `gh auth login`), Claude Code, ralph-tui (`npm i -g ralph-tui` or as you installed it for AMAN), and `uv` for the Python-based MCP servers (`winget install astral-sh.uv`).
 3. `npx playwright install chromium` once.
 4. Environment variables: `GITHUB_PERSONAL_ACCESS_TOKEN` for the github MCP server (fine-grained token for `alsadderwork-coder/Ariva` only: Contents, Issues, Pull requests and Actions read and write, Metadata read; no Administration). Optional: `ARIVA_DEV_DATABASE_URI` for the read-only dev database MCP (`node scripts/dev-up.mjs` prints it with the generated password), `CONTEXT7_API_KEY` if you have a Context7 key (add a header in `.mcp.json`), `SHADCN_MCP_URL` for the shadcn.io Pro MCP server (the full URL including `?token=`; it is a secret, so keep it in `.claude/settings.local.json` under `env` or your shell, never in `.mcp.json`).
 5. Open the folder in Claude Code; approve the project MCP servers when asked (they are listed in `.claude/settings.json` under `enabledMcpjsonServers`).
@@ -13,8 +13,9 @@
 `.devcontainer/` gives a Linux workspace where every gate runs: open the repository in a Codespace (or "Reopen in Container" with the Dev Containers extension), wait for the post-create step, then `node scripts/verify.mjs all --with-integration`.
 
 - Image (`.devcontainer/Dockerfile`): built only from images pinned by version and digest, with nothing downloaded during its own build. The docker-outside-of-docker feature then adds the Docker CLI 29.4.3 from Docker's signed apt repository, pinned by version, not by digest.
-  - The .NET 10.0.103 SDK, the one the host images build with.
+  - The .NET 10.0.402 SDK (runtime 10.0.13), the one the host images build with (ARV-184).
   - Node 22.
+  - The OpenSSH client (`ssh-keygen`) of the Playwright base image, which the backup tooling's self-test needs (ARV-126).
   - The Playwright 1.63.0 image as the base. It brings Chromium for Ariva.E2E's @playwright/test and its libraries, and it is the same image the visual baselines render in (`scripts/visual-browser.mjs`).
   - uv, for the semgrep and postgres-dev MCP servers.
   - The Docker CLI with Compose.
@@ -69,7 +70,7 @@ ralph-tui run --prd backlog/prd-phase0.json
 ```
 Each iteration starts a fresh Claude Code session on the highest-priority story whose dependencies pass, follows CLAUDE.md ("How to work a story"), runs the gates, gets the security-reviewer verdict, logs to `backlog/progress.md`, sets `passes: true` and commits. Agents may push the `ralph/` or `story/` branch and open a pull request (`gh pr create`); the `ci` workflow runs the same gates, the `claude` workflow posts a security review, and you merge. Pushing `main`, force pushes and repository settings stay with you.
 
-**Guard rails (always on):** default-deny permissions in `.claude/settings.json`; hooks block pushes other than story branches, force pushes, cluster changes, destructive git and SQL, writes to AMAN, secrets in the repo, self-approved security exceptions and dashes in docs; every edited file is security-scanned immediately; the Stop hook runs the quick gate.
+**Guard rails (always on):** default-deny permissions in `.claude/settings.json`; hooks block pushes other than story branches, force pushes, cluster changes, destructive git and SQL, writes to AMAN, secrets in the repo, self-approved security exceptions and dashes in docs; agents never read, list, copy or write the git-ignored client material folder at the repository root (permission deny rules for Read, Edit and Write, and the Bash and path guards refuse any command or path naming it; owner decision 2026-10-09, ARV-139c; and, since 2026-10-10, the Bash guard also refuses recursive searches that start at the repository root or above it (grep -r, rgrep, find, ls -R, git grep --no-index, and rg told to ignore .gitignore), which would walk that folder without naming it: name the project folders to search, or use the Grep tool, which skips git-ignored folders. `.claude/hooks/root-search.mjs` reads the command as a shell splits it (quotes, escapes, comments, subshells, substitutions, `sh -c`, `eval`, heredocs a shell reads, wrappers such as `setsid` or `timeout`, a redirection's target) and guards against accidents, not an adversary; its self-test, `.claude/hooks/root-search.test.mjs`, runs in the quick gate. The gates' own walks (the docs text rules, the full security scan, the base image check) skip the folder too); every edited file is security-scanned immediately; the Stop hook runs the quick gate.
 
 ## When a loop gets stuck
 - A story fails its gates three iterations in a row: stop the loop, run `/grill-pbi` on it, split it in `backlog/generate.py`, regenerate (`python backlog/generate.py`, which keeps recorded `passes` and `notes`).
@@ -77,8 +78,8 @@ Each iteration starts a fresh Claude Code session on the highest-priority story 
 
 ## GitHub repository settings (one time, by the owner)
 
-- Visibility: private (set 2026-10-01). It was public for about an hour after creation; anyone who cloned it then keeps a copy, so treat anything in that first commit as disclosed.
+- Visibility: public, confirmed as intended by the owner on 2026-10-15 (it had been set private on 2026-10-01). Everything committed is published: client material stays out of the repository (`.private/` is git-ignored), and so do credentials.
 - Actions secrets: `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) or `ANTHROPIC_API_KEY` for the `claude` workflow; install the Claude GitHub App on the repository so the workflow can comment.
-- Optional variable `ENABLE_CODEQL=true` once GitHub Code Security (Advanced Security) is licensed; CodeQL, secret scanning and dependency review need it on private repositories.
-- Branch protection or a ruleset on `main` (require the `ci` checks and one review, block force pushes and deletions) needs GitHub Pro or a Team organisation for a private repository; on GitHub Free the harness hooks are the only guard, so move the repository to a Dalil organisation on Team when the team grows.
+- Variable `ENABLE_CODEQL=true`: CodeQL, secret scanning (with push protection) and dependency review are free on a public repository, so they can be turned on now (Settings, Code security).
+- A ruleset on `main` (require the `ci` checks and one review, block force pushes and deletions) is available on GitHub Free for a public repository; until the owner sets one, the harness hooks are the only guard.
 - Dependabot alerts and security updates: on (free on private repositories).

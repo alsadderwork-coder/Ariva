@@ -145,10 +145,24 @@ public sealed class DeviceStatusBatch : SensingBatch
     }
 }
 
-/// <summary>The partition key of a zone's sensor events: the site and the owning queue zone's name.</summary>
+/// <summary>
+/// The partition key of a zone's sensor events: the site and the owning queue zone's name. Every event keyed by zone
+/// (the sensing batches, device health, ZoneHealthChanged, OverflowDetected) uses it, and service, staff and overflow
+/// zones share their queue zone's key, so only a queue zone's name is ever part of a key.
+/// </summary>
 public static class ZoneKeys
 {
     public static string For(string siteCode, string queueZoneName) => $"{siteCode}/{queueZoneName}";
+
+    /// <summary>
+    /// Whether the zone key of <paramref name="queueZoneName"/> at <paramref name="siteCode"/> fits a message key
+    /// (<see cref="MessageKeys"/>: at most 200 characters as PostgreSQL counts them, ARV-114c).
+    /// </summary>
+    public static bool Fits(string siteCode, string queueZoneName) =>
+        !string.IsNullOrEmpty(siteCode) && !string.IsNullOrEmpty(queueZoneName) && MessageKeys.Fits(For(siteCode, queueZoneName));
+
+    /// <summary>The longest queue zone name, in characters, whose key fits at a site (site codes are ASCII: one character each).</summary>
+    public static int MaxQueueZoneNameLength(string siteCode) => MessageKeys.MaxLength - (siteCode?.Length ?? 0) - 1;
 }
 
 /// <summary>

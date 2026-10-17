@@ -8,7 +8,8 @@ public sealed record DisplayEntryRequest([Required, MaxLength(200)] string Zone,
 
 /// <summary>
 /// A passenger display as a request (ARV-058). The site and code are given on creation and never change; the credential
-/// is the server's, returned once on creation and on a new credential.
+/// is the server's, returned once on creation and on a new credential. The layout (ARV-140) is optional: a request without
+/// it keeps the full queue view, with the default share and instructions in the second region.
 /// </summary>
 public sealed record DisplayRequest(
     [MaxLength(17)] string SiteCode,
@@ -22,7 +23,10 @@ public sealed record DisplayRequest(
     [Range(60, 1800)] int StaleSeconds,
     [Required, MaxLength(12)] IReadOnlyList<DisplayEntryRequest> Entries,
     [Required] IReadOnlyDictionary<string, string> Fallback,
-    bool Enabled = true);
+    bool Enabled = true,
+    [MaxLength(16)] string Layout = "Full",
+    [Range(50, 75)] int QueueShare = 60,
+    [MaxLength(16)] string SecondRegion = "Instructions");
 
 public sealed record DisplayEntryViewModel(string Zone, IReadOnlyDictionary<string, string> Labels);
 
@@ -41,6 +45,9 @@ public sealed record DisplayViewModel(
     IReadOnlyList<DisplayEntryViewModel> Entries,
     IReadOnlyDictionary<string, string> Fallback,
     bool Enabled,
+    string Layout,
+    int QueueShare,
+    string SecondRegion,
     string CredentialPrefix,
     DateTime? CredentialIssuedOn,
     DateTime? CreatedOn,
@@ -57,6 +64,9 @@ public static class DisplayErrors
     public const string StaysInSite = "A display stays in its site and keeps its code.";
     public const string InvalidCode = "A display code is 1 to 16 upper case letters or digits, with single hyphens inside.";
     public const string TooMany = "A site has at most 200 displays.";
+
+    /// <summary>The site's advertising policy (ARV-145) does not allow advertising on this display: off for the site, or one of its zones excluded.</summary>
+    public const string AdvertisingOff = "Advertising is off for this display's site or for one of its zones; the second region shows instructions.";
 
     public static readonly IReadOnlySet<string> Conflicts = new HashSet<string>(StringComparer.Ordinal) { DuplicateCode };
 }
@@ -86,7 +96,13 @@ public sealed record DisplayBoardEntryViewModel(
     string NoService,
     double? AgeSeconds);
 
-/// <summary>What a player shows (ARV-058): the display's settings and its entries' latest nowcasts.</summary>
+/// <summary>
+/// What a player shows (ARV-058): the display's settings and its entries' latest nowcasts. <paramref name="Illustrative"/>:
+/// the display's site is an illustrative demo site (ARV-139a), so the player shows the "Illustrative, not surveyed" banner.
+/// The layout (ARV-140) comes with every answer, so a change reaches a running player at its next poll, without a restart.
+/// So do the instruction slides that apply to the display (ARV-141): the pinned one, shown under the waits, and the ones the
+/// second region rotates.
+/// </summary>
 public sealed record DisplayBoardViewModel(
     string Code,
     string Name,
@@ -97,7 +113,13 @@ public sealed record DisplayBoardViewModel(
     int StaleSeconds,
     IReadOnlyDictionary<string, string> Fallback,
     IReadOnlyList<DisplayBoardEntryViewModel> Entries,
-    DateTime ServerUtc);
+    DateTime ServerUtc,
+    bool Illustrative = false,
+    string Layout = "Full",
+    int QueueShare = 60,
+    string SecondRegion = "Instructions",
+    DisplayBoardSlideViewModel PinnedSlide = null,
+    IReadOnlyList<DisplayBoardSlideViewModel> Slides = null);
 
 /// <summary>A display player that presented its display's code and credential (ARV-058).</summary>
 public sealed record DisplayPlayer(Guid Id, string Code, string SiteCode, string CredentialPrefix);

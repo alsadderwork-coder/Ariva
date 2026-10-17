@@ -19,7 +19,9 @@ public static class StreamExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
         var settings = configuration.GetSection(StreamSettings.SectionName).Get<StreamSettings>() ?? new StreamSettings();
-        var problems = settings.Problems().ToList();
+        // ARV-148: the zone settings every site runs under too (the worker's are the defaults), so a host with a site the
+        // engine would refuse does not start.
+        var problems = settings.Problems().Concat(settings.ZoneSettingsProblems(new Ariva.Core.Queueing.ZoneProcessorSettings())).ToList();
         if (problems.Count > 0)
             throw new InvalidOperationException(string.Join(" ", problems));
         services.AddSingleton(settings);
@@ -27,6 +29,8 @@ public static class StreamExtensions
         services.AddSingleton<StreamStore>();
         services.AddSingleton<ZoneGeometrySource>();
         services.AddSingleton<DeskTermSource>();
+        // ARV-125a: the worker's consumer lag (meter Ariva.Stream).
+        services.TryAddSingleton<StreamMetrics>();
         var kafka = configuration.GetSection(KafkaSettings.SectionName).Get<KafkaSettings>() ?? new KafkaSettings();
         if (settings.Enabled && kafka.Enabled)
             services.AddHostedService<QueueStreamWorker>();

@@ -86,11 +86,16 @@ test('a duty manager draws a queue zone and its lines, checks the draft and publ
 	await page.getByLabel('Corner 2, x in metres').press('Tab');
 	// ARV-057: the queue of the visitors' lane, for the immigration screen's waits per lane.
 	await page.getByTestId('zone-details').getByLabel('Lane').selectOption('VIS');
+	// ARV-114a: the snake's physical capacity, which the stream checks occupancy against.
+	const capacity = page.getByTestId('zone-details').getByLabel('Physical capacity (people)');
+	await capacity.fill('150');
 	await page.getByTestId('save-zone').click();
 	await expect(page.getByText('Snake Z saved.')).toBeVisible();
 
 	// Drag the third corner on the plan; letting go saves it.
 	const handle = page.getByTestId('vertex-handle').nth(2);
+	// Saving scrolled the details panel's button into view; a mouse drag needs the handle itself on screen.
+	await handle.scrollIntoViewIfNeeded();
 	const box = (await handle.boundingBox())!;
 	await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
 	await page.mouse.down();
@@ -99,6 +104,15 @@ test('a duty manager draws a queue zone and its lines, checks the draft and publ
 	await expect(page.getByText('Snake Z saved.').first()).toBeVisible();
 	const cornerThree = Number(await page.getByLabel('Corner 3, x in metres').inputValue());
 	expect(cornerThree, 'the dragged corner moved right').toBeGreaterThan(32);
+
+	// Above 5,000 people is refused before it is sent (the server refuses it too); its toast is closed so that it
+	// covers nothing on the plan.
+	await capacity.fill('6000');
+	await page.getByTestId('save-zone').click();
+	const refused = page.getByRole('listitem').filter({ hasText: 'The physical capacity is a whole number from 1 to 5,000, or empty.' });
+	await expect(refused).toBeVisible();
+	await refused.getByRole('button', { name: 'Close toast' }).click();
+	await capacity.fill('150');
 
 	// The check names what is missing.
 	await page.getByTestId('validate').click();
@@ -156,9 +170,12 @@ test('a duty manager draws a queue zone and its lines, checks the draft and publ
 	const history = (await (await call('GET', `${api}/zone-profiles?siteCode=E2EZ`, { token })).json()) as { id: string; status: string }[];
 	const live = history.find((p) => p.status === 'Published')!;
 	const profile = await (await call('GET', `${api}/zone-profiles/${live.id}`, { token })).json();
-	const snake = (profile.zones as { name: string; polygon: string; laneCategory: string | null }[]).find((z) => z.name === 'Snake Z')!;
+	const snake = (profile.zones as { name: string; polygon: string; laneCategory: string | null; physicalCapacity: number | null }[]).find(
+		(z) => z.name === 'Snake Z'
+	)!;
 	expect(snake.polygon.split(',')[1].split(' ').map(Number)).toEqual([36, 18]);
 	expect(snake.laneCategory, 'the lane went with the published version').toBe('VIS');
+	expect(snake.physicalCapacity, 'the capacity went with the published version').toBe(150);
 	const entry = (profile.lines as { name: string; endX: number }[]).find((l) => l.name === 'In Z')!;
 	expect(entry.endX).toBe(35);
 	allowStatuses(guards, 400, 401, 404);

@@ -10,6 +10,7 @@
 	import PublishPanel from '$lib/components/pages/zones/PublishPanel.svelte';
 	import ZoneCanvas, { type Selected } from '$lib/components/pages/zones/ZoneCanvas.svelte';
 	import ZoneDetails from '$lib/components/pages/zones/ZoneDetails.svelte';
+	import IllustrativeBanner from '$lib/components/shared/IllustrativeBanner.svelte';
 	import SimplePageHeader from '$lib/components/shared/SimplePageHeader.svelte';
 	import { auth } from '$lib/core/auth.svelte';
 	import * as topology from '$lib/core/topology';
@@ -37,6 +38,8 @@
 	let lineEdits = $state<Record<string, [Point, Point]>>({});
 	let zoneName = $state('');
 	let zoneLane = $state('');
+	/** The selected zone's physical capacity as typed (ARV-114a); empty for none. */
+	let zoneCapacity = $state<string | number>('');
 	/** Bumped after every saved change, so the publish panel asks for a fresh check. */
 	let revision = $state(0);
 
@@ -86,6 +89,7 @@
 		const zone = next?.kind === 'zone' ? profile?.zones.find((z) => z.id === next.id) : undefined;
 		zoneName = zone?.name ?? '';
 		zoneLane = zone?.laneCategory ?? '';
+		zoneCapacity = zone?.physicalCapacity ?? '';
 	}
 
 	async function loadHistory(prefer?: string): Promise<void> {
@@ -192,11 +196,15 @@
 		if (!zone || !profile) return;
 		const chosen = selected?.kind === 'zone' && selected.id === id;
 		const name = chosen ? zoneName.trim() : zone.name;
+		// An empty capacity clears it (0); the server refuses anything but 0 to 5,000 as well.
+		const physicalCapacity = chosen ? zones.capacityOf(zoneCapacity) : (zone.physicalCapacity ?? 0);
+		if (physicalCapacity === null) return failed($_('zones.capacityInvalid'));
 		const result = await zones.updateZone(profile.profile.id, id, {
 			name,
 			polygon: zones.formatPolygon(pointsOf(zone)),
 			// An empty lane clears it; the server keeps the lane when the field is absent.
-			laneCategory: (chosen ? zoneLane : zone.laneCategory) ?? ''
+			laneCategory: (chosen ? zoneLane : zone.laneCategory) ?? '',
+			physicalCapacity
 		});
 		if (result.hasErrors || !result.data) return failed(result.errorMessages[0] ?? '');
 		delete zoneEdits[id];
@@ -330,6 +338,8 @@
 		</div>
 	{/snippet}
 </SimplePageHeader>
+
+<IllustrativeBanner site={siteList.find((s) => s.code === siteCode)} />
 
 <div class="mb-4 flex flex-wrap items-end gap-3">
 	<div class="flex flex-col gap-1">
@@ -479,17 +489,20 @@
 							{editable}
 							dirty={!!zoneEdits[selectedZone.id] ||
 								zoneName.trim() !== selectedZone.name ||
-								zoneLane !== (selectedZone.laneCategory ?? '')}
+								zoneLane !== (selectedZone.laneCategory ?? '') ||
+								String(zoneCapacity ?? '') !== String(selectedZone.physicalCapacity ?? '')}
 							width={level.widthMetres}
 							depth={level.depthMetres}
 							bind:name={zoneName}
 							bind:lane={zoneLane}
+							bind:capacity={zoneCapacity}
 							onPoints={(points) => (zoneEdits[selectedZone.id] = points)}
 							onSave={() => saveZone(selectedZone.id)}
 							onRevert={() => {
 								delete zoneEdits[selectedZone.id];
 								zoneName = selectedZone.name;
 								zoneLane = selectedZone.laneCategory ?? '';
+								zoneCapacity = selectedZone.physicalCapacity ?? '';
 							}}
 							onDelete={() => deleteZone(selectedZone)}
 						/>

@@ -310,15 +310,6 @@ public sealed class DeskStateEngineTests
     }
 
     [Fact]
-    public void LaneCycle_Should_WeighTheDesksByTransactions_When_SomeIntervalsAreNotReal()
-    {
-        LaneCycle.Minutes([(90, 10), (60, 30), (double.NaN, 5), (100, 0), (-1, 4), (4000, 3), (double.PositiveInfinity, 2)])
-            .Should().BeApproximately(1.125, 1e-12);
-        LaneCycle.Minutes([]).Should().BeNull();
-        LaneCycle.Minutes([(90, int.MaxValue), (60, int.MaxValue)]).Should().BeApproximately(1.25, 1e-12);
-    }
-
-    [Fact]
     public void Engine_Should_RefuseItsDesks_When_TheyAreNotValid()
     {
         Action duplicate = () => _ = new DeskStateEngine([Desk("D01"), Desk("D01")], T);

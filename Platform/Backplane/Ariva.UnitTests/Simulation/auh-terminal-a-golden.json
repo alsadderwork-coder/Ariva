@@ -1,0 +1,16 @@
+{
+    "_comment": "ARV-139b: SHA-256 fingerprints of every output family of the illustrative AUH Terminal A arrivals evening (site AUH-TA, seed 9304; AuhTerminalAScenarioTests.Fingerprint): the schedule, roster, per-minute run, servers, alerts, 15-minute bins, live states and a forecast with a staffing recommendation. Same seed, same values on every platform. Update only after reviewing the change in the scenario's outputs, with the human's approval (first values written 2026-10-07, review pending).",
+    "site": "AUH-TA",
+    "seed": 9304,
+    "fingerprints": {
+        "schedule": "dc019d5ed0f941fbfc0e7533148b8ea23ed9b6ddf1840ebe90c87d4df7d6f74c",
+        "roster": "9052cd097426c876c15f2fe9ca513f7b9a7ce9d47ff2232892ee39e601104f30",
+        "run": "c157812be0ff90d8d8e76e337c393a082ee1cf86688f05094e9df8014dd59c25",
+        "servers": "d890a682cdba563b6796bbda566dda2c08246ef7fd0a2bc03c774d493d414721",
+        "alerts": "2ec657994f92df69a766f3edbdcc7a91d19f6cda87c752142d71a74e6da1a59e",
+        "bins": "8448de537db478a88cec2b901918fbc65adf7443aeef5659e932385dc2d5420c",
+        "states": "b2f92f9b860651c10512a88b1621240679311b018ce4d096a58c229eb3bc8b1f",
+        "forecast": "35f350688158c9004347efa5b4a45b75ba1e5923c584e6bd8d4ab9543e02441e",
+        "alertCount": "6"
+    }
+}

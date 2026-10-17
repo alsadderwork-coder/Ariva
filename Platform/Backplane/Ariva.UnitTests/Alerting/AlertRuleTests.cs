@@ -2,6 +2,7 @@ using System.Text.Json;
 using Ariva.Core;
 using Ariva.Core.Domain.Entities;
 using Ariva.Core.Domain.Enums;
+using Ariva.Core.Services.Alerting;
 using Ariva.Infra.Services.Seed;
 using Ariva.Simulation.Api.Scenarios.Engine;
 using FluentAssertions;
@@ -84,12 +85,66 @@ public sealed class AlertRuleTests
         { "long clear", Nowcast() with { ClearAfterMinutes = 121 } },
         { "unknown owner role", Nowcast() with { OwnerRole = "Root" } },
         { "owner role in other case", Nowcast() with { OwnerRole = "bordershiftsupervisor" } },
+        // ARV-104a (CWE-269, CWE-863): the validation observer holds no alert permission, so it never owns an alert rule nor is
+        // escalated to; alert_rule (script 0020) accepts the four alert roles only.
+        { "validation observer as owner", Nowcast() with { OwnerRole = RoleCodes.ValidationObserver } },
         { "unknown escalation role", Nowcast() with { EscalateToRole = "Everyone" } },
+        { "validation observer as escalation role", Nowcast() with { EscalateToRole = RoleCodes.ValidationObserver } },
         { "escalation without minutes", Nowcast() with { EscalateAfterMinutes = null } },
         { "escalation beyond a day", Nowcast() with { EscalateAfterMinutes = 1441 } },
         { "contact with a newline", Nowcast() with { EscalationContact = "Duty\nofficer" } },
-        { "long contact", Nowcast() with { EscalationContact = new string('c', 101) } }
+        { "long contact", Nowcast() with { EscalationContact = new string('c', 101) } },
+        // ARV-114b: the health checks are numbers in their own units, never conditions, gates or predictions.
+        { "track completion above 100 percent", Health(AlertMetric.TrackCompletion) with { Threshold = 100.5, ClearThreshold = null } },
+        { "track completion clear above 100 percent", Health(AlertMetric.TrackCompletion) with { ClearThreshold = 101 } },
+        { "track completion cleared below its threshold", Health(AlertMetric.TrackCompletion) with { ClearThreshold = 80 } },
+        { "residual beyond 100,000 people", Health(AlertMetric.ConservationResidual) with { Comparator = AlertComparator.GreaterThan, Threshold = 100_001, ClearThreshold = null } },
+        { "negative residual threshold", Health(AlertMetric.ConservationResidual) with { Comparator = AlertComparator.GreaterThan, Threshold = -5, ClearThreshold = null } },
+        { "occupancy minutes beyond a day", Health(AlertMetric.OccupancyOutOfRange) with { Comparator = AlertComparator.GreaterThan, Threshold = 1441, ClearThreshold = null } },
+        { "a health check compared with IsTrue", Health(AlertMetric.OccupancyOutOfRange) with { Comparator = AlertComparator.IsTrue, Threshold = null, ClearThreshold = null } },
+        { "a health check without a threshold", Health(AlertMetric.ConservationResidual) with { Threshold = null, ClearThreshold = null } },
+        { "a minimum queue on a health check", Health(AlertMetric.TrackCompletion) with { MinQueueLength = 10 } },
+        { "a lead time on a health check", Health(AlertMetric.TrackCompletion) with { LeadMinutes = 30 } },
+        { "an undefined metric next to the health checks", Health(AlertMetric.TrackCompletion) with { Metric = (AlertMetric)10 } },
+        { "a NaN completion threshold", Health(AlertMetric.TrackCompletion) with { Threshold = double.NaN, ClearThreshold = null } },
+        { "an infinite residual threshold", Health(AlertMetric.ConservationResidual) with { Comparator = AlertComparator.GreaterThan, Threshold = double.PositiveInfinity, ClearThreshold = null } },
+        { "a negative infinite occupancy threshold", Health(AlertMetric.OccupancyOutOfRange) with { Comparator = AlertComparator.GreaterThan, Threshold = double.NegativeInfinity, ClearThreshold = null } },
+        { "a NaN clear threshold on a health check", Health(AlertMetric.TrackCompletion) with { ClearThreshold = double.NaN } },
+        { "an infinite clear threshold on a health check", Health(AlertMetric.TrackCompletion) with { ClearThreshold = double.PositiveInfinity } },
+        { "a negative infinite clear threshold on a health check", Health(AlertMetric.ConservationResidual) with { Comparator = AlertComparator.GreaterThan, Threshold = 5, ClearThreshold = double.NegativeInfinity } }
     };
+
+    /// <summary>A track completion rule as the story's example: below 90 percent, cleared at 95 (ARV-114b).</summary>
+    private static AlertRuleValues Health(AlertMetric metric) => new("Track completion below 90 percent", ["A-VIS"], metric, AlertComparator.LessThan, 90, null, 95, 1, 1,
+        AlertSeverity.Warning, RoleCodes.BorderShiftSupervisor, null, null, null, false, true);
+
+    [Theory]
+    [InlineData(AlertMetric.ConservationResidual, AlertComparator.GreaterThan, 5.0, 100_000.0)]
+    [InlineData(AlertMetric.TrackCompletion, AlertComparator.LessThan, 90.0, 100.0)]
+    [InlineData(AlertMetric.OccupancyOutOfRange, AlertComparator.GreaterOrEqual, 1.0, 1_440.0)]
+    public void HealthChecks_Should_BeTypedNumbersInTheirUnits_When_ARuleUsesOne(AlertMetric metric, AlertComparator comparator, double threshold, double max)
+    {
+        var values = Health(metric) with { Comparator = comparator, Threshold = threshold, ClearThreshold = null };
+
+        values.Problems().Should().BeEmpty();
+        AlertRuleValues.MaxThreshold(metric).Should().Be(max);
+        AlertRuleValues.IsHealthCheck(metric).Should().BeTrue();
+        AlertRuleValues.IsCondition(metric).Should().BeFalse();
+        (values with { Threshold = max }).Problems().Should().BeEmpty("the unit's bound is allowed");
+        (values with { Threshold = max + 0.001 }).Problems().Should().ContainSingle().Which.Should().Contain($"from 0 to {max}");
+        new Core.Domain.Entities.AlertRule("DMO", 1, values).Values().Should().BeEquivalentTo(values);
+        Enum.GetNames<AlertMetric>().Should().Contain(metric.ToString(), "stored and sent by its exact name");
+    }
+
+    [Fact]
+    public void HealthChecks_Should_BeTheThreeF18Checks_When_EveryMetricIsListed()
+    {
+        Enum.GetValues<AlertMetric>().Where(AlertRuleValues.IsHealthCheck).Should()
+            .Equal(AlertMetric.ConservationResidual, AlertMetric.TrackCompletion, AlertMetric.OccupancyOutOfRange);
+        Enum.GetValues<AlertMetric>().Should().OnlyContain(m => AlertRuleValues.IsCondition(m) || AlertRuleValues.MaxThreshold(m) > 0,
+            "every number metric has a unit and a bound (script 0051 repeats them)");
+        Health(AlertMetric.TrackCompletion).Problems().Should().BeEmpty("below 90 percent, cleared at 95: the clear threshold lies above a rule that fires below");
+    }
 
     [Theory]
     [MemberData(nameof(Refused))]
@@ -98,6 +153,22 @@ public sealed class AlertRuleTests
         values.Problems().Should().NotBeEmpty(why);
         var create = () => new Core.Domain.Entities.AlertRule("DMO", 1, values);
         create.Should().Throw<ArgumentException>(why);
+    }
+
+    [Theory]
+    [InlineData(RoleCodes.BorderShiftSupervisor)]
+    [InlineData(RoleCodes.TerminalDutyManager)]
+    [InlineData(RoleCodes.HandlerStationManager)]
+    [InlineData(RoleCodes.SystemAdministrator)]
+    public void Rule_Should_AcceptTheRole_When_ItIsOneOfTheFourAlertRoles(string role)
+    {
+        // ARV-104a: the alert roles are exactly the four that alert_rule accepts (script 0020); the validation observer is not one.
+        RoleCodes.AlertRoles.Should().BeEquivalentTo(
+            [RoleCodes.BorderShiftSupervisor, RoleCodes.TerminalDutyManager, RoleCodes.HandlerStationManager, RoleCodes.SystemAdministrator]);
+        RoleCodes.AlertRoles.Should().NotContain(RoleCodes.ValidationObserver);
+
+        (Nowcast() with { OwnerRole = role }).Problems().Should().BeEmpty();
+        (Nowcast() with { EscalateToRole = role }).Problems().Should().BeEmpty();
     }
 
     [Theory]
@@ -126,6 +197,130 @@ public sealed class AlertRuleTests
         typeof(Core.Domain.InputModels.AlertRuleRequest).GetProperties().Where(p => p.PropertyType == typeof(string)).Select(p => p.Name)
             .Should().BeEquivalentTo(["SiteCode", "Name", "Metric", "Comparator", "Severity", "OwnerRole", "EscalateToRole", "EscalationContact"],
                 "free text is the name and the contact only; the rest are names checked against closed lists");
+    }
+
+    /// <summary>A rule on open desks below recommendation as the plan's example: two or more desks short for 3 minutes, owned by the border (ARV-181b2).</summary>
+    private static AlertRuleValues DesksShort(string owner = RoleCodes.BorderShiftSupervisor, string escalateTo = null) =>
+        new("Desks short", ["A-VIS"], AlertMetric.DesksBelowPlan, AlertComparator.GreaterOrEqual, 2, null, null, 3, 2, AlertSeverity.Warning, owner,
+            escalateTo is null ? null : 10, escalateTo, null, false, true);
+
+    public static TheoryData<string, AlertRuleValues, string> BorderRefused => new()
+    {
+        { "no owner (every alert role)", DesksShort(owner: null), AlertRuleErrors.BorderRolesOnly },
+        { "the terminal duty manager as owner", DesksShort(owner: RoleCodes.TerminalDutyManager), AlertRuleErrors.BorderRolesOnly },
+        { "the handler station manager as owner", DesksShort(owner: RoleCodes.HandlerStationManager), AlertRuleErrors.BorderRolesOnly },
+        { "the validation observer as owner", DesksShort(owner: RoleCodes.ValidationObserver), AlertRuleErrors.BorderRolesOnly },
+        { "an owner in another case", DesksShort(owner: "bordershiftsupervisor"), AlertRuleErrors.BorderRolesOnly },
+        { "escalated to the terminal duty manager", DesksShort(escalateTo: RoleCodes.TerminalDutyManager), AlertRuleErrors.BorderRolesOnly },
+        { "escalated to the handler station manager", DesksShort(owner: RoleCodes.SystemAdministrator, escalateTo: RoleCodes.HandlerStationManager), AlertRuleErrors.BorderRolesOnly },
+        { "fires below", DesksShort() with { Comparator = AlertComparator.LessThan }, AlertRuleErrors.BorderComparator },
+        { "fires at or below", DesksShort() with { Comparator = AlertComparator.LessOrEqual }, AlertRuleErrors.BorderComparator },
+        { "compared as a condition", DesksShort() with { Comparator = AlertComparator.IsTrue, Threshold = null }, AlertRuleErrors.BorderComparator },
+        { "a threshold beyond 1,000 desks", DesksShort() with { Threshold = 1_001 }, "The threshold of DesksBelowPlan is from 0 to 1000." },
+        { "a minimum queue", DesksShort() with { MinQueueLength = 5 }, "A minimum queue length (0 to 100,000 people) applies to the nowcast only." },
+        { "a lead time", DesksShort() with { LeadMinutes = 30 }, "A predicted nowcast looks 15 to 60 minutes ahead; other metrics take no lead time." }
+    };
+
+    /// <summary>
+    /// ARV-181b2 (CWE-863, data boundary): a rule on open desks below recommendation belongs to a border role, never to no one
+    /// (every alert role), escalates to a border role or none, and fires above its threshold; the entity refuses anything else,
+    /// so a create, an update, a backtest and an import refuse it alike.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(BorderRefused))]
+    public void Rule_Should_BeRefused_When_OpenDesksBelowRecommendationLeavesTheBorder(string why, AlertRuleValues values, string problem)
+    {
+        values.Problems().Should().Contain(problem, why);
+        var create = () => new Core.Domain.Entities.AlertRule("DMO", 6, values);
+        create.Should().Throw<ArgumentException>(why);
+    }
+
+    [Theory]
+    [InlineData(RoleCodes.BorderShiftSupervisor, null, AlertComparator.GreaterOrEqual)]
+    [InlineData(RoleCodes.BorderShiftSupervisor, RoleCodes.SystemAdministrator, AlertComparator.GreaterThan)]
+    [InlineData(RoleCodes.SystemAdministrator, RoleCodes.BorderShiftSupervisor, AlertComparator.GreaterOrEqual)]
+    [InlineData(RoleCodes.SystemAdministrator, null, AlertComparator.GreaterThan)]
+    public void Rule_Should_AcceptOpenDesksBelowRecommendation_When_ItBelongsToABorderRoleAndFiresAbove(string owner, string escalateTo, AlertComparator comparator)
+    {
+        var values = DesksShort(owner, escalateTo) with { Comparator = comparator, ClearThreshold = 1 };
+
+        values.Problems().Should().BeEmpty();
+        new Core.Domain.Entities.AlertRule("DMO", 6, values).Values().Should().BeEquivalentTo(values);
+        AlertRuleValues.WatchesQueueZonesOnly(AlertMetric.DesksBelowPlan).Should().BeTrue("the recommendation is stored per lane, a queue zone");
+        (values with { Threshold = 1_000 }).Problems().Should().BeEmpty("the unit's bound is allowed");
+        (values with { Threshold = 0, ClearThreshold = null }).Problems().Should().BeEmpty("0 desks short and above: a rule that fires on any minute with a value");
+    }
+
+    /// <summary>A predicted nowcast rule (ARV-187): above 15 minutes within 30 minutes ahead for 2 minutes, owned by the border.</summary>
+    private static AlertRuleValues PredictedBreach(string owner = RoleCodes.BorderShiftSupervisor, string escalateTo = null) =>
+        new("Wave ahead", ["A-VIS"], AlertMetric.PredictedNowcast, AlertComparator.GreaterThan, 15, null, null, 2, 2, AlertSeverity.Warning, owner,
+            escalateTo is null ? null : 10, escalateTo, null, false, true, 30);
+
+    public static TheoryData<string, AlertRuleValues> PredictedRefused => new()
+    {
+        { "no owner (every alert role)", PredictedBreach(owner: null) },
+        { "the terminal duty manager as owner", PredictedBreach(owner: RoleCodes.TerminalDutyManager) },
+        { "the handler station manager as owner", PredictedBreach(owner: RoleCodes.HandlerStationManager) },
+        { "the validation observer as owner", PredictedBreach(owner: RoleCodes.ValidationObserver) },
+        { "an owner in another case", PredictedBreach(owner: "bordershiftsupervisor") },
+        { "escalated to the terminal duty manager", PredictedBreach(escalateTo: RoleCodes.TerminalDutyManager) },
+        { "escalated to the handler station manager", PredictedBreach(owner: RoleCodes.SystemAdministrator, escalateTo: RoleCodes.HandlerStationManager) },
+        { "no owner, firing below", PredictedBreach(owner: null) with { Comparator = AlertComparator.LessThan } }
+    };
+
+    /// <summary>
+    /// ARV-187 (CWE-863, CWE-200, data boundary; owner decision 2026-10-16): a predicted nowcast rule is border data, so it
+    /// belongs to a border role, never to no one, and escalates to a border role or none; the entity refuses anything else
+    /// with the one border roles text, so a create, an update, a backtest, a preview and an import refuse it alike, and the
+    /// evaluation never judges a stored one.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(PredictedRefused))]
+    public void Rule_Should_BeRefused_When_APredictedNowcastLeavesTheBorder(string why, AlertRuleValues values)
+    {
+        values.Problems().Should().Contain(AlertRuleErrors.BorderRolesOnly, why)
+            .And.NotContain(AlertRuleErrors.BorderComparator, why + ": the roles only, never the comparator (lead decision P2)");
+        var create = () => new Core.Domain.Entities.AlertRule("DMO", 6, values);
+        create.Should().Throw<ArgumentException>(why);
+    }
+
+    /// <summary>
+    /// ARV-187 (lead decision P2): a predicted nowcast rule owned by a border role keeps all four comparators, its lead of 15
+    /// to 60 minutes and its overflow zones; only its roles and channels became border-only. Open desks below recommendation
+    /// alone fires above only and watches queue zones only.
+    /// </summary>
+    [Theory]
+    [InlineData(RoleCodes.BorderShiftSupervisor, null, AlertComparator.GreaterThan, 15)]
+    [InlineData(RoleCodes.BorderShiftSupervisor, RoleCodes.SystemAdministrator, AlertComparator.GreaterOrEqual, 60)]
+    [InlineData(RoleCodes.SystemAdministrator, RoleCodes.BorderShiftSupervisor, AlertComparator.LessThan, 15)]
+    [InlineData(RoleCodes.SystemAdministrator, null, AlertComparator.LessOrEqual, 60)]
+    public void Rule_Should_AcceptAPredictedNowcast_When_ItBelongsToABorderRole(string owner, string escalateTo, AlertComparator comparator, int lead)
+    {
+        var below = comparator is AlertComparator.LessThan or AlertComparator.LessOrEqual;
+        var values = PredictedBreach(owner, escalateTo) with { Comparator = comparator, LeadMinutes = lead, ClearThreshold = below ? 20 : 10, Zones = ["A-VIS", "A-OV"] };
+
+        values.Problems().Should().BeEmpty();
+        new Core.Domain.Entities.AlertRule("DMO", 6, values).Values().Should().BeEquivalentTo(values);
+        AlertRuleValues.WatchesQueueZonesOnly(AlertMetric.PredictedNowcast).Should().BeFalse("an overflow zone takes its queue zone's arrivals");
+        AlertRuleValues.FiresAboveOnly(AlertMetric.PredictedNowcast).Should().BeFalse();
+    }
+
+    [Fact]
+    public void FiresAboveOnly_Should_HoldForOpenDesksBelowRecommendationOnly_When_EveryMetricIsChecked()
+    {
+        Enum.GetValues<AlertMetric>().Where(AlertRuleValues.FiresAboveOnly).Should().Equal(AlertMetric.DesksBelowPlan);
+        Enum.GetValues<AlertMetric>().Where(AlertRuleValues.FiresAboveOnly).Should().OnlyContain(m => Ariva.Core.Security.BorderAlerts.IsBorderOnly(m),
+            "the border comparator check is one of the border checks");
+    }
+
+    [Fact]
+    public void BorderChecks_Should_LeaveOtherMetricsAlone_When_TheirRolesAreAirportSide()
+    {
+        Enum.GetValues<AlertMetric>().Where(AlertRuleValues.WatchesQueueZonesOnly).Should()
+            .Equal(AlertMetric.DesksBelowPlan, AlertMetric.ConservationResidual, AlertMetric.TrackCompletion, AlertMetric.OccupancyOutOfRange);
+        (Nowcast() with { OwnerRole = null }).Problems().Should().BeEmpty("a wait rule may still belong to every alert role");
+        (Nowcast() with { OwnerRole = RoleCodes.TerminalDutyManager, EscalateToRole = RoleCodes.HandlerStationManager }).Problems().Should().BeEmpty();
+        (Nowcast() with { Comparator = AlertComparator.LessThan, ClearThreshold = 20, MinQueueLength = null }).Problems().Should().BeEmpty();
     }
 
     [Fact]

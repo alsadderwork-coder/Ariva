@@ -9,8 +9,9 @@ using Microsoft.Extensions.Options;
 
 namespace Ariva.Simulation.Api.Emulators.Sensors;
 
-/// <summary>One emulated device as the status shows it (never its credential).</summary>
+/// <summary>One emulated device as the status shows it (never its credential); <see cref="Site"/> is its scenario site (ARV-139b).</summary>
 public sealed record EmulatedDeviceStatus(
+    string Site,
     string Sensor,
     string Zone,
     string QueueZone,
@@ -35,11 +36,12 @@ public sealed record SensorEmulatorStatus(
     IReadOnlyList<EmulatedDeviceStatus> Devices);
 
 /// <summary>
-/// The sensor emulator (ARV-028): plays the simulated day as device traffic to Ingest, authenticated as registered
+/// The sensor emulator (ARV-028): plays the simulated days as device traffic to Ingest, authenticated as registered
 /// devices. A demo clock runs at a chosen speed (demo minutes per wall minute); each time a demo minute completes,
-/// every configured device pushes that minute (<see cref="SensorTraffic"/>), minute by minute and in order. Controls:
-/// start (optionally at a minute, with a speed and a stop minute), pause, speed, jump and, through the scenario, the
-/// seed. Sensors offline in the scenario (S-17 from 18:20 to 18:30) send nothing.
+/// every configured device pushes that minute of its own site's day (<see cref="SensorTraffic"/>; ARV-139b: DMO and
+/// AUH-TA play the same demo minute), minute by minute and in order. Controls: start (optionally at a minute, with a
+/// speed and a stop minute), pause, speed, jump and, through the scenario, each site's seed. Sensors offline in their
+/// scenario (DMO: S-17 from 18:20 to 18:30; AUH-TA: Q-RES-04 from 18:25 to 18:35) send nothing.
 /// </summary>
 public sealed class SensorEmulator : BackgroundService
 {
@@ -56,6 +58,7 @@ public sealed class SensorEmulator : BackgroundService
     private readonly ILogger<SensorEmulator> _logger;
     private readonly SemaphoreSlim _tick = new(1, 1);
     private readonly SinkPump[] _sinks;
+    private readonly FeedTime _feedTime;
 
     private Device[] _devices;
     private bool _running;
@@ -64,11 +67,13 @@ public sealed class SensorEmulator : BackgroundService
     private double _speed = 1;
     private int _nextMinute;
     private int? _untilMinute;
+    private DateTime? _playedDayStart;
 
     public SensorEmulator(ScenarioEngine engine, IHttpClientFactory http, IOptionsMonitor<SensorEmulatorSettings> settings, TimeProvider time,
-        ILogger<SensorEmulator> logger, IEnumerable<IDemoMinuteSink> sinks = null)
+        ILogger<SensorEmulator> logger, IEnumerable<IDemoMinuteSink> sinks = null, FeedTime feedTime = null)
     {
         _sinks = [.. (sinks ?? []).Select(sink => new SinkPump(sink, Dropped))];
+        _feedTime = feedTime;
         ArgumentNullException.ThrowIfNull(settings);
         _engine = engine;
         _http = http;
@@ -94,9 +99,22 @@ public sealed class SensorEmulator : BackgroundService
     }
 
     private static Device[] ToDevices(IReadOnlyList<EmulatedDeviceSettings> devices) =>
-        [.. (devices ?? []).Select(d => new Device(d, SensorTraffic.Sensor(d.Sensor)))];
+        [.. (devices ?? []).Select(d => new Device(d, SensorTraffic.Sensor(d.Site ?? ScenarioEngine.ReferenceSite, d.Sensor)))];
 
     #region Controls
+
+    /// <summary>
+    /// ARV-104i: the UTC instant of the scenario day's 00:00 on which the last minute played at speed 1 was laid (null when the last
+    /// minute played ran faster, or none was played): a validation rehearsal against the live pipeline lays its truth on it.
+    /// </summary>
+    public DateTime? PlayedDayStartUtc
+    {
+        get
+        {
+            lock (_gate)
+                return _playedDayStart;
+        }
+    }
 
     /// <summary>The demo minute now (fractional), from the anchor and the speed.</summary>
     private double DemoNow(DateTimeOffset now) =>
@@ -116,8 +134,8 @@ public sealed class SensorEmulator : BackgroundService
             var minute = DemoNow(now);
             return new SensorEmulatorStatus(_running, Math.Round(minute, 3), ScenarioMath.Clock(Math.Floor(minute)), _speed, _nextMinute, _untilMinute,
                 !string.IsNullOrEmpty(_settings.CurrentValue.IngestUrl),
-                [.. _devices.Select(d => new EmulatedDeviceStatus(d.Sensor.Id, d.Sensor.Zone, SensorTraffic.QueueZoneOf(d.Sensor.Zone), d.Dialect,
-                    SensorTraffic.RoleOf(d.Sensor), Interlocked.Read(ref d.Pushes), Interlocked.Read(ref d.Expected), Interlocked.Read(ref d.Accepted),
+                [.. _devices.Select(d => new EmulatedDeviceStatus(d.Sensor.SiteCode, d.Sensor.Id, d.Sensor.Zone, d.Sensor.QueueZone, d.Dialect,
+                    d.Sensor.Role, Interlocked.Read(ref d.Pushes), Interlocked.Read(ref d.Expected), Interlocked.Read(ref d.Accepted),
                     Interlocked.Read(ref d.Failures), d.LastStatus, d.LastError))]);
         }
     }
@@ -138,6 +156,8 @@ public sealed class SensorEmulator : BackgroundService
                 _nextMinute = m;
                 foreach (var d in _devices)
                     Reset(d);
+                // The feeds lay the new run on real time even when its first minute follows the last one played.
+                _feedTime?.Restart();
             }
 
             _untilMinute = untilMinute;
@@ -184,6 +204,7 @@ public sealed class SensorEmulator : BackgroundService
             _nextMinute = minute;
             if (_untilMinute is { } until && until <= minute)
                 _untilMinute = null;
+            _feedTime?.Restart();
             _logger.LogInformation("Sensor emulator jumped to demo minute {Minute} by {Operator}", minute, by);
         }
 
@@ -289,6 +310,10 @@ public sealed class SensorEmulator : BackgroundService
                 }
 
                 DateTime WallOf(double demoMinute) => (wallAnchor + TimeSpan.FromMinutes((demoMinute - demoAnchor) / speed)).UtcDateTime;
+                // ARV-104i: at speed 1 the pushes lay the day on real time from this instant (its 00:00), which a validation rehearsal
+                // against the live pipeline uses; faster, the day does not follow real time and no rehearsal can match it.
+                lock (_gate)
+                    _playedDayStart = speed == 1 ? WallOf(0) : null;
                 // Every other emulator on the demo clock (AODB, AMAN, immigration) gets the same minute in order, played by its
                 // own pump so that a slow partner (Kafka, Ariva's API) never holds the sensors back.
                 foreach (var sink in _sinks)
@@ -366,12 +391,13 @@ public sealed class SensorEmulator : BackgroundService
         var settings = _settings.CurrentValue;
         if (string.IsNullOrEmpty(settings.IngestUrl) || devices.Length == 0)
             return;
-        var day = _engine.CurrentDay;
+        // Each site's day as it is now (a re-run replaces a day as a whole; a push reads only what a run leaves fixed).
+        var days = devices.Select(d => d.Sensor.SiteCode).Distinct(StringComparer.Ordinal).ToDictionary(site => site, _engine.DayOf, StringComparer.Ordinal);
         var sent = _time.GetUtcNow().UtcDateTime;
         var client = _http.CreateClient(HttpClientName);
         await Parallel.ForEachAsync(devices, new ParallelOptions { MaxDegreeOfParallelism = settings.Concurrency, CancellationToken = ct }, async (device, token) =>
         {
-            var push = SensorTraffic.Build(day, device.Sensor, device.Dialect, minute, Interlocked.Increment(ref device.PackageId), wallOf, sent);
+            var push = SensorTraffic.Build(days[device.Sensor.SiteCode], device.Sensor, device.Dialect, minute, Interlocked.Increment(ref device.PackageId), wallOf, sent);
             if (push is null)
                 return;
             await SendAsync(client, device, push, token);

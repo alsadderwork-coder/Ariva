@@ -2,6 +2,7 @@ using System.Data;
 using Ariva.Core;
 using Ariva.Core.Domain.Entities;
 using Ariva.Core.Domain.Enums;
+using Ariva.Core.Security;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -15,7 +16,9 @@ namespace Ariva.Infra.Notifications;
 /// its escalation role. Only if email is on and the alert's rule notifies by email. A person is someone enabled, not a
 /// break-glass account, holding the role and the alert's site, with a valid address (others are skipped). One email per
 /// alert, kind and address; an address that already had <see cref="EmailSettings.MaxPerRecipientPerHour"/> alert emails
-/// in the last hour gets the next ones held back (Suppressed), not queued.
+/// in the last hour gets the next ones held back (Suppressed), not queued. An alert on a border-only metric
+/// (<see cref="BorderAlerts"/>, ARV-181b2 and ARV-187) is written to the people of border roles only, whatever its owner and escalation
+/// roles say: none when neither is a border role.
 /// </summary>
 public sealed class AlertEmails(IUnitOfWork unitOfWork, EmailSettings settings, EmailTemplates templates, ILogger<AlertEmails> logger)
 {
@@ -41,6 +44,9 @@ public sealed class AlertEmails(IUnitOfWork unitOfWork, EmailSettings settings, 
         string[] roles = kind == EmailKind.AlertRaised
             ? alert.OwnerRole is { } owner ? [owner] : OperationalRoles
             : alert.EscalateToRole is { } to ? [to] : [];
+        // ARV-181b2, ARV-187: an alert on a border-only metric is written to the people of border roles only, whatever its owner and
+        // escalation roles say (the sender checks it again before each send).
+        roles = [.. BorderAlerts.Audience(alert.Metric, roles)];
         if (roles.Length == 0)
             return 0;
 
@@ -113,8 +119,10 @@ public sealed record EmailRound(int Sent, int Failed, int Retrying, int Withheld
 /// claims at most what that limit leaves with <c>FOR UPDATE SKIP LOCKED</c>, sends, and marks each sent, to retry after
 /// a growing delay, or given up after <see cref="EmailSettings.MaxAttempts"/>. A row is data from the database, not an
 /// instruction (CWE-501): it is sent only while its recipient is still an enabled person (not break-glass) holding the
-/// alert's site and the role the email is for; otherwise it is held back. The reason kept for a failure names the
-/// error type, never the message or the server's reply. Delivery is at least once.
+/// alert's site and the role the email is for (for an alert on a border-only metric, a border role: <see cref="BorderAlerts"/>,
+/// ARV-181b2, so a row written before that story, by hand or for an alert changed in the database is held back too);
+/// otherwise it is held back. The reason kept for a failure names the error type, never the message or the server's
+/// reply. Delivery is at least once.
 /// </summary>
 public sealed class EmailSender(IUnitOfWork unitOfWork, IEmailTransport transport, EmailSettings settings)
 {
@@ -146,11 +154,18 @@ public sealed class EmailSender(IUnitOfWork unitOfWork, IEmailTransport transpor
                 WHERE lower(u.email) = lower(m.recipient) AND NOT u.is_disabled AND NOT u.is_break_glass AND (u.all_sites OR s.site_code IS NOT NULL)
                   AND ((m.kind = 'AlertRaised' AND (r.role_code = a.owner_role
                         OR (a.owner_role IS NULL AND r.role_code IN ('BorderShiftSupervisor', 'TerminalDutyManager', 'HandlerStationManager'))))
-                    OR (m.kind = 'AlertEscalated' AND r.role_code = a.escalate_to_role))) AS "Eligible"
+                    OR (m.kind = 'AlertEscalated' AND r.role_code = a.escalate_to_role))
+                  AND (a.metric NOT IN (:borderMetrics) OR r.role_code IN (:borderRoles))) AS "Eligible"
             FROM email_message m JOIN alert a ON a.id = m.alert_id
             WHERE m.status = 'Pending' AND m.next_attempt_utc <= :now
             ORDER BY m.created_utc LIMIT :limit FOR UPDATE OF m SKIP LOCKED
-            """, new Dictionary<string, object> { ["now"] = now, ["limit"] = budget }, ct);
+            """, new Dictionary<string, object>
+        {
+            ["now"] = now,
+            ["limit"] = budget,
+            ["borderMetrics"] = BorderAlerts.MetricNames,
+            ["borderRoles"] = BorderAlerts.Roles
+        }, ct);
         if (due.Count == 0)
             return new EmailRound(0, 0, 0);
         var emails = new List<EmailMessage>();

@@ -21,6 +21,13 @@ namespace Ariva.Infra.Services.Alerting;
 /// rule to nor escalate it to a role they do not hold, nor change or remove such a role on an existing rule. Codes
 /// R-001, R-002 and so on are given per site in order, under a lock, deleted rules keeping theirs. Every change is
 /// audited with the rule's values before and after.
+/// <para>
+/// ARV-181b2 and ARV-187 (CWE-862, CWE-863, CWE-200): a rule on a border-only metric (<see cref="BorderAlerts"/>: open
+/// desks below recommendation, and the predicted nowcast, whose values carry the lane split of the arrival wave) is border
+/// data. A caller without <c>ArrivalWaveLanes.View</c> is refused 403 (<see cref="AlertRuleErrors.BorderOnly"/>) when it
+/// creates one, changes a rule to one or backtests (previews) one, and never finds one otherwise: search leaves such rules
+/// out, and get, update and delete answer like a rule that does not exist.
+/// </para>
 /// </summary>
 internal sealed class SvcAlertRules(
     IUnitOfWork unitOfWork,
@@ -56,6 +63,14 @@ internal sealed class SvcAlertRules(
         }
 
         var query = QueryAsNoTracking<AlertRule>().WithinSites(await siteScope.GetAsync(ct)).Where(r => r.DeletedOn == null);
+        // ARV-181b2, ARV-187: rules on a border-only metric (each of them) are left out for a caller without
+        // ArrivalWaveLanes.View (counted nowhere).
+        if (!await SeesBorderAsync(ct))
+        {
+            foreach (var border in BorderAlerts.Metrics)
+                query = query.Where(r => r.Metric != border);
+        }
+
         if (!string.IsNullOrWhiteSpace(criteria.SiteCode))
             query = query.Where(r => r.SiteCode == criteria.SiteCode);
         if (metric is { } m)
@@ -86,8 +101,9 @@ internal sealed class SvcAlertRules(
         if (request is null || string.IsNullOrWhiteSpace(request.SiteCode) || !(await siteScope.GetAsync(ct)).Allows(request.SiteCode) ||
             !await QueryAsNoTracking<Site>().AnyAsync(s => s.Code == request.SiteCode, ct))
             return Result.Error<AlertRuleViewModel>(TopologyErrors.UnknownSite);
-        if (Enum.TryParse<AlertMetric>(request.Metric, ignoreCase: false, out var metric) && Enum.IsDefined(metric) &&
-            AlertRuleErrors.NotEvaluatedMetrics.Contains(metric))
+        if (await RefusesBorderAsync(request.Metric, ct))
+            return Result.Error<AlertRuleViewModel>(AlertRuleErrors.BorderOnly);
+        if (TryParse<AlertMetric>(request.Metric, out var metric) && AlertRuleErrors.NotEvaluatedMetrics.Contains(metric))
             return Result.Error<AlertRuleViewModel>(AlertRuleErrors.NotEvaluated);
         var (values, problems) = await CheckAsync(request.SiteCode, request, null, ct);
         if (problems.Count > 0)
@@ -115,6 +131,9 @@ internal sealed class SvcAlertRules(
             return Result.Error<AlertRuleViewModel>(TopologyErrors.NotFound);
         if (!string.IsNullOrWhiteSpace(request.SiteCode) && !string.Equals(request.SiteCode, rule.SiteCode, StringComparison.Ordinal))
             return Result.Error<AlertRuleViewModel>("A rule stays in its site.");
+        // ARV-181b2: a visible rule is not on a border-only metric unless the caller sees border data; changing it to one is refused.
+        if (await RefusesBorderAsync(request.Metric, ct))
+            return Result.Error<AlertRuleViewModel>(AlertRuleErrors.BorderOnly);
         var (values, problems) = await CheckAsync(rule.SiteCode, request, rule, ct);
         if (problems.Count > 0)
             return Result.Error<AlertRuleViewModel>(problems);
@@ -143,6 +162,11 @@ internal sealed class SvcAlertRules(
         if (rule is null || string.IsNullOrWhiteSpace(rule.SiteCode) || !(await siteScope.GetAsync(ct)).Allows(rule.SiteCode) ||
             !await QueryAsNoTracking<Site>().AnyAsync(s => s.Code == rule.SiteCode, ct))
             return Result.Error<AlertBacktestViewModel>(TopologyErrors.UnknownSite);
+        // ARV-181b2, ARV-187: a backtest of a border-only metric shows the lanes' staffing against their recommendation, or
+        // a lane queue stepped with its share of the arrival wave (the lane split could be solved from its peaks); refused
+        // before the range is checked, so nothing about the stored minutes is answered.
+        if (await RefusesBorderAsync(rule.Metric, ct))
+            return Result.Error<AlertBacktestViewModel>(AlertRuleErrors.BorderOnly);
         var now = UtcNow;
         var (from, to) = (request.FromUtc, request.ToUtc);
         if (from.Kind != DateTimeKind.Utc || to.Kind != DateTimeKind.Utc || to <= from || to - from > MaxBacktest || to > now || from < now - BacktestHistory)
@@ -159,6 +183,8 @@ internal sealed class SvcAlertRules(
         var end = AlertInputs.Minute(to);
         var targets = await inputs.TargetsAsync(rule.SiteCode, values, ct);
         var series = await inputs.ReadAsync(rule.SiteCode, values, targets, start, end, ct);
+        if (series is null)
+            return Result.Error<AlertBacktestViewModel>(AlertRuleErrors.BacktestTooLarge);
         var alerts = new List<AlertBacktestAlert>();
         foreach (var target in series)
         {
@@ -203,10 +229,14 @@ internal sealed class SvcAlertRules(
         var known = await Query<Zone>()
             .Where(z => z.Profile.SiteCode == siteCode && z.Profile.Status == ZoneProfileStatus.Published && zones.Contains(z.Name) &&
                         (z.Kind == ZoneKind.Queue || z.Kind == ZoneKind.Overflow))
-            .Select(z => z.Name)
+            .Select(z => new { z.Name, z.Kind })
             .ToListAsync(ct);
-        if (known.Distinct(StringComparer.Ordinal).Count() != zones.Count)
+        if (known.Select(z => z.Name).Distinct(StringComparer.Ordinal).Count() != zones.Count)
             problems.Add(AlertRuleErrors.UnknownZones);
+        // ARV-114b: the health checks are stored per queue zone (an overflow band's readings are part of its queue's checks);
+        // ARV-181b2: the staffing recommendation per lane, a queue zone.
+        else if (AlertRuleValues.WatchesQueueZonesOnly(values.Metric) && known.Any(z => z.Kind != ZoneKind.Queue))
+            problems.Add(AlertRuleErrors.QueueZonesOnly);
 
         // A role the caller does not hold can be neither given nor taken away: an unchanged role is fine, a changed one
         // must be held before and after. A rule without an owner belongs to every role of the site (Alert.IsFor), so
@@ -233,11 +263,26 @@ internal sealed class SvcAlertRules(
         return (values, problems);
     }
 
+    // A rule in the caller's sites that is not deleted and, on a border-only metric, only for a caller who sees border data:
+    // any other answers like one that does not exist (ARV-181b2, ARV-187: a terminal duty manager neither reads nor deletes
+    // it, its own predicted-nowcast rules from before ARV-187 included).
     private async Task<AlertRule> VisibleAsync(Guid id, CancellationToken ct)
     {
         var rule = id == Guid.Empty ? null : await GetAsync<AlertRule>(id, ct);
-        return rule is null || rule.IsDeleted || !(await siteScope.GetAsync(ct)).Allows(rule.SiteCode) ? null : rule;
+        if (rule is null || rule.IsDeleted || !(await siteScope.GetAsync(ct)).Allows(rule.SiteCode))
+            return null;
+        return BorderAlerts.IsBorderOnly(rule.Metric) && !await SeesBorderAsync(ct) ? null : rule;
     }
+
+    /// <summary>Whether the caller receives border alerts and rules: it holds <c>ArrivalWaveLanes.View</c> (ARV-181b2).</summary>
+    private async Task<bool> SeesBorderAsync(CancellationToken ct) => BorderAlerts.Receives(await callerRoles.GetAsync(ct));
+
+    /// <summary>
+    /// Whether a request names a border-only metric (by its exact name, as <see cref="CheckAsync"/> reads it) and the caller
+    /// does not see border data (ARV-181b2: 403, before any other check of the values).
+    /// </summary>
+    private async Task<bool> RefusesBorderAsync(string metric, CancellationToken ct) =>
+        TryParse<AlertMetric>(metric, out var parsed) && BorderAlerts.IsBorderOnly(parsed) && !await SeesBorderAsync(ct);
 
     private Task LockAsync(string siteCode, CancellationToken ct) =>
         ExecuteCommandAsync<LockRow>("""SELECT 1 AS "Value" FROM (SELECT pg_advisory_xact_lock(37, hashtext(:site))) l""",

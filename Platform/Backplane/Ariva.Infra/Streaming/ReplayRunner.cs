@@ -24,7 +24,8 @@ public sealed record ReplayRecord(Guid Id, DateTime CreatedOn, string RequestedB
 /// <summary>
 /// The golden replay over the archive (ARV-036): for each queue zone of the request, the archived sensing batches and
 /// device health reports of the range, in the stream's order, through <see cref="ZoneReplay"/> under the profile version
-/// it names (or the published one) and the stream's settings, into one <see cref="ReplayLedger"/>. The run is recorded in
+/// it names (or the published one) and the stream's settings (the site's lateness and push interval, ARV-148), into one
+/// <see cref="ReplayLedger"/>. The run is recorded in
 /// replay_run (append-only) with the chains' heads, so an exported replay can be checked against it later. Input is
 /// checked before anything is read: a valid site code, zone names as the topology allows, at most 64 zones, a UTC range
 /// of at most 31 days, and at most <see cref="MaxEventsPerZone"/> archived events per zone held in memory.
@@ -35,7 +36,8 @@ public class ReplayRunner(
     ZoneGeometrySource geometries,
     ReplayStore store,
     ZoneProcessorSettings settings = null,
-    ILogger<ReplayRunner> logger = null)
+    ILogger<ReplayRunner> logger = null,
+    StreamSettings stream = null)
 {
     public const int MaxZones = 64;
     /// <summary>
@@ -89,8 +91,10 @@ public class ReplayRunner(
         if (zones.Count is 0 or > MaxZones)
             throw new InvalidOperationException($"A replay covers 1 to {MaxZones} queue zones; the profile version has {zones.Count}.");
 
+        // ARV-148: the site's lateness and push interval, as the live stream runs the site (Stream:Sites).
+        var siteSettings = stream?.ZoneSettingsFor(request.SiteCode, _settings) ?? _settings;
         var manifest = new ReplayManifest(ReplayManifest.CurrentFormat, request.SiteCode, zones, request.FromUtc, request.ToUtc, profile.Version, EngineVersion,
-            ZoneReplay.SettingsHash(_settings));
+            ZoneReplay.SettingsHash(siteSettings));
         var ledger = new ReplayLedger(manifest, export);
         var counters = new Dictionary<string, ZoneProcessorCounters>(StringComparer.Ordinal);
         foreach (var zone in zones)
@@ -114,7 +118,7 @@ public class ReplayRunner(
             }
 
             var key = ZoneKeys.For(request.SiteCode, zone);
-            counters[key] = ZoneReplay.Run(ledger, key, geometry.Geometry, geometry.ProfileVersion, _settings,
+            counters[key] = ZoneReplay.Run(ledger, key, geometry.Geometry, geometry.ProfileVersion, siteSettings,
                 ReplayInput.InOrder(ArchivedBatch.Group(rows), reports), request.FromUtc, request.ToUtc);
             _logger.LogInformation("Replayed zone {Zone}: {Events} archived events, {Reports} health reports", key, rows.Count, reports.Count);
         }

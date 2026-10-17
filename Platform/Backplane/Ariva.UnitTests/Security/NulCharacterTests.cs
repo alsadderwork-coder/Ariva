@@ -37,10 +37,19 @@ public sealed class NulCharacterTests
     [Theory]
     [InlineData("""{"Name":"Arrivals\u0000hall","Tags":null}""")]
     [InlineData("""{"Name":"ok","Tags":{"a":"\u0000"}}""")]
-    [InlineData("""{"Name":5,"Tags":null}""")]
-    public void Converter_Should_Refuse_When_AStringHoldsANulOrIsNotAString(string json)
+    public void Converter_Should_Refuse_When_AStringHoldsANul(string json)
     {
         var read = () => JsonSerializer.Deserialize<Named>(json, Options);
+
+        // ARV-104b: an InputFormatterException, the framework's mark of a safe message, so the fixed text survives
+        // AllowInputFormatterExceptionMessages false.
+        read.Should().Throw<Microsoft.AspNetCore.Mvc.Formatters.InputFormatterException>().WithMessage(NulRejectingStringConverter.NulMessage);
+    }
+
+    [Fact]
+    public void Converter_Should_Refuse_When_AValueIsNotAString()
+    {
+        var read = () => JsonSerializer.Deserialize<Named>("""{"Name":5,"Tags":null}""", Options);
 
         read.Should().Throw<JsonException>();
     }

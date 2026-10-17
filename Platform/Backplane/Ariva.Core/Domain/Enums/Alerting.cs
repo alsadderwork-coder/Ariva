@@ -18,15 +18,41 @@ public enum AlertMetric
     /// <summary>A device of the zone is offline (true or false).</summary>
     SensorOffline,
 
-    /// <summary>Desks open below the accepted staffing plan, in desks.</summary>
+    /// <summary>
+    /// Open desks below recommendation, in desks (F16, ARV-181b2): the indicative recommendation of a lane's current interval
+    /// (interval 0 of <c>lane_staffing</c>) minus the desks open now by desk state, at least 0; no value for a minute the job
+    /// did not compute, a row that fails the read-back check, a gap, or an open count unknown or degraded. Border data: its
+    /// rules and alerts reach holders of <c>ArrivalWaveLanes.View</c> only (<see cref="Ariva.Core.Security.BorderAlerts"/>).
+    /// </summary>
     DesksBelowPlan,
 
     /// <summary>
     /// The highest nowcast wait a queue zone is projected to reach within the rule's lead time (15 to 60 minutes), in
     /// minutes: the queue now, stepped with the arrival-wave projection (F14, ARV-047) and what the desks clear at the
-    /// current throughput (ARV-038). A predicted breach, not a measurement.
+    /// current throughput (ARV-038). A predicted breach, not a measurement. Border data since ARV-187: a lane queue is
+    /// stepped with its share of the arrival wave, so its rules, backtests, previews and alerts reach holders of
+    /// <c>ArrivalWaveLanes.View</c> only (<see cref="Ariva.Core.Security.BorderAlerts"/>).
     /// </summary>
-    PredictedNowcast
+    PredictedNowcast,
+
+    /// <summary>
+    /// The size of a queue zone's conservation residual (F18, ARV-114a) in its latest ended bin, in people:
+    /// |(entries - exits) - (Occ(end) - Occ(start))|, judged once the bin's two boundaries are measured (ARV-114b).
+    /// </summary>
+    ConservationResidual,
+
+    /// <summary>
+    /// The track completion of a queue zone's latest ended bin (F18, ARV-114a), in percent: tracks exited over tracks
+    /// entered, judged once the bin is final (every track resolved); the same rate makes the bin Degraded below F11's
+    /// threshold (ARV-114b).
+    /// </summary>
+    TrackCompletion,
+
+    /// <summary>
+    /// The minutes of a queue zone's latest ended bin whose occupancy readings left 0 to the zone's physical capacity
+    /// (F18 occupancy sanity, ARV-114a), in minutes; judged once the bin has ended, for a zone checked against a capacity (ARV-114b).
+    /// </summary>
+    OccupancyOutOfRange
 }
 
 /// <summary>Where an alert is in its life (glossary Alert); ARV-038 raises and resolves, ARV-039 acknowledges and escalates.</summary>

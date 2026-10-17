@@ -25,12 +25,30 @@ public static partial class TopologyCodes
         return code;
     }
 
+    /// <summary>The longest site or topology name, after trimming (the columns are varchar(200)).</summary>
+    public const int MaxNameLength = 200;
+
+    /// <summary>The fixed text for a name that holds a character people cannot see or a broken one; it never repeats the name.</summary>
+    public const string UnsafeNameMessage = "A name holds no control characters, invisible format characters or broken characters.";
+
+    /// <summary>
+    /// A site or topology name as the entities take it (ARV-159): 1 to <see cref="MaxNameLength"/> characters after
+    /// trimming, judged per code point by the display text rule (<see cref="Components.DisplayText.IsClean"/>), so no
+    /// control character, no invisible format character of any plane (a right-to-left override, a zero-width space, a tag
+    /// character) and no lone surrogate. Letters and marks of every script are names (Arabic with its vowel marks
+    /// included); line breaks are not.
+    /// </summary>
+    public static bool IsName(string name) =>
+        !string.IsNullOrWhiteSpace(name) && name.Trim() is { Length: <= MaxNameLength } trimmed && Components.DisplayText.IsClean(trimmed);
+
     internal static string RequireName(string name, string paramName)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name, paramName);
         var trimmed = name.Trim();
-        if (trimmed.Length > 200)
+        if (trimmed.Length > MaxNameLength)
             throw new ArgumentException("A name is at most 200 characters.", paramName);
+        if (!Components.DisplayText.IsClean(trimmed))
+            throw new ArgumentException(UnsafeNameMessage, paramName);
         return trimmed;
     }
 
@@ -100,7 +118,7 @@ public class Airport : BaseSoftDeletableEntity<Airport>
     {
         if (icaoCode is not null && !TopologyCodes.IsIcao(icaoCode))
             throw new ArgumentException("An ICAO code is four upper case letters.", nameof(icaoCode));
-        if (string.IsNullOrWhiteSpace(timeZoneId) || !TimeZoneInfo.TryFindSystemTimeZoneById(timeZoneId, out _))
+        if (!SiteTimeZones.IsIana(timeZoneId))
             throw new ArgumentException("Unknown time zone.", nameof(timeZoneId));
         IcaoCode = icaoCode;
         Name = TopologyCodes.RequireName(name, nameof(name));

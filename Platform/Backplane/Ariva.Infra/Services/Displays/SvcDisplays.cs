@@ -13,9 +13,16 @@ namespace Ariva.Infra.Services.Displays;
 /// Passenger displays (ARV-058). A display is created in one of the caller's sites and stays there with its code; reads
 /// and writes outside the caller's sites answer like a display that does not exist (CWE-863). Its entries must be queue
 /// zones of the site's published profile. The player's credential is made here, shown once and kept as a prefix and a
-/// hash; every change is audited without it.
+/// hash; every change is audited without it. A display is saved with advertising in its second region only while the
+/// site's advertising policy allows it for every zone it shows (ARV-145), under the policy's site lock.
 /// </summary>
-internal sealed class SvcDisplays(IUnitOfWork unitOfWork, ICurrentUser currentUser, TimeProvider timeProvider, ISiteScope siteScope, AuditTrail audit)
+internal sealed class SvcDisplays(
+    IUnitOfWork unitOfWork,
+    ICurrentUser currentUser,
+    TimeProvider timeProvider,
+    ISiteScope siteScope,
+    AuditTrail audit,
+    AdvertisingPolicyGuard advertising)
     : SvcBase(unitOfWork, currentUser, timeProvider), ISvcDisplays
 {
     private const string Target = "Display";
@@ -105,16 +112,18 @@ internal sealed class SvcDisplays(IUnitOfWork unitOfWork, ICurrentUser currentUs
     private async Task<(DisplayValues Values, IReadOnlyList<string> Problems)> CheckAsync(string siteCode, DisplayRequest request, CancellationToken ct)
     {
         var problems = new List<string>();
-        if (!Enum.TryParse<DisplayOrientation>(request.Orientation, ignoreCase: false, out var orientation) ||
-            !string.Equals(orientation.ToString(), request.Orientation, StringComparison.Ordinal))
-        {
+        if (!Exactly<DisplayOrientation>(request.Orientation, out var orientation))
             problems.Add("Orientation is Landscape or Portrait.");
+        if (!Exactly<DisplayLayout>(request.Layout ?? nameof(DisplayLayout.Full), out var layout))
+            problems.Add("A layout is Full or Split.");
+        if (!Exactly<DisplaySecondRegion>(request.SecondRegion ?? nameof(DisplaySecondRegion.Instructions), out var secondRegion))
+            problems.Add("The second region shows Instructions or Advertising.");
+        if (problems.Count > 0)
             return (null, problems);
-        }
 
         var values = new DisplayValues(request.Name, request.Location, orientation, request.Languages ?? [], request.BandMinutes, request.HysteresisMinutes,
             request.StaleSeconds, (request.Entries ?? []).Select(e => e is null ? null : new DisplayEntry(e.Zone, e.Labels)).ToList(),
-            request.Fallback, request.Enabled);
+            request.Fallback, request.Enabled, layout, request.QueueShare, secondRegion);
         problems.AddRange(values.Problems());
         if (problems.Count > 0)
             return (values, problems);
@@ -126,8 +135,14 @@ internal sealed class SvcDisplays(IUnitOfWork unitOfWork, ICurrentUser currentUs
             .ToListAsync(ct);
         if (known.Distinct(StringComparer.Ordinal).Count() != zones.Count)
             problems.Add(DisplayErrors.UnknownZones);
+        else if (values.SecondRegion == DisplaySecondRegion.Advertising && !await advertising.AllowsAsync(await advertising.LockAsync(siteCode, ct), zones, ct))
+            problems.Add(DisplayErrors.AdvertisingOff);
         return (values, problems);
     }
+
+    /// <summary>An enum value by its exact name, as stored (never a number or another casing).</summary>
+    private static bool Exactly<TEnum>(string text, out TEnum value) where TEnum : struct, Enum =>
+        Enum.TryParse(text, ignoreCase: false, out value) && string.Equals(value.ToString(), text, StringComparison.Ordinal) && Enum.IsDefined(value);
 
     private async Task<Display> VisibleAsync(Guid id, CancellationToken ct)
     {
@@ -137,6 +152,6 @@ internal sealed class SvcDisplays(IUnitOfWork unitOfWork, ICurrentUser currentUs
 
     internal static DisplayViewModel View(Display d) =>
         new(d.Id.GetValueOrDefault(), d.SiteCode, d.Code, d.Name, d.Location, d.Orientation.ToString(), d.LanguageList, d.BandMinutes, d.HysteresisMinutes,
-            d.StaleSeconds, d.EntryList.Select(e => new DisplayEntryViewModel(e.Zone, e.Labels)).ToList(), d.FallbackMap, d.Enabled, d.CredentialPrefix,
-            d.CredentialIssuedOn, d.CreatedOn, d.ModifiedOn);
+            d.StaleSeconds, d.EntryList.Select(e => new DisplayEntryViewModel(e.Zone, e.Labels)).ToList(), d.FallbackMap, d.Enabled, d.Layout.ToString(),
+            d.QueueShare, d.SecondRegion.ToString(), d.CredentialPrefix, d.CredentialIssuedOn, d.CreatedOn, d.ModifiedOn);
 }

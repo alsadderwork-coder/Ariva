@@ -39,6 +39,21 @@ export interface Zone {
 	areaSquareMetres: number;
 	/** The lane category whose queue this queue zone is (ARV-057), or null. */
 	laneCategory: string | null;
+	/** The people a queue zone or overflow band holds at most (ARV-114a), or null. */
+	physicalCapacity: number | null;
+}
+
+/** The largest physical capacity a zone may have (ARV-114a). */
+export const maxPhysicalCapacity = 5000;
+
+/**
+ * The capacity to send for a field value: 0 clears it (empty field), 1 to 5,000 sets it, and anything else is
+ * refused here (null) before the server would refuse it.
+ */
+export function capacityOf(value: string | number | null | undefined): number | null {
+	if (value === null || value === undefined || String(value).trim() === '') return 0;
+	const n = Number(value);
+	return Number.isInteger(n) && n >= 1 && n <= maxPhysicalCapacity ? n : null;
 }
 
 /** The lane categories a queue zone can be the queue of (the reference set; a site may configure others). */
@@ -151,7 +166,7 @@ export function addZone(
 export function updateZone(
 	id: string,
 	zoneId: string,
-	zone: { name: string; polygon: string; laneCategory: string }
+	zone: { name: string; polygon: string; laneCategory: string; physicalCapacity: number }
 ): Promise<Result<Zone>> {
 	return ids([id, zoneId], () => Api.put<Zone>(`${base}/${id}/zones/${zoneId}`, zone));
 }

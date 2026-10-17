@@ -10,7 +10,8 @@ namespace Ariva.Infra.Services.Administration;
 
 /// <summary>
 /// Sites (ARV-012). Reads return only the caller's sites, and a site outside them answers exactly like one that does
-/// not exist (CWE-863, no existence oracle). Creating and renaming are audited.
+/// not exist (CWE-863, no existence oracle). Creating and renaming are audited. A name follows the topology name rule
+/// (ARV-159): no control, invisible format or broken character, judged per code point.
 /// </summary>
 internal sealed class SvcSites(IUnitOfWork unitOfWork, ICurrentUser currentUser, TimeProvider timeProvider, ISiteScope scope, AuditTrail audit)
     : SvcBase(unitOfWork, currentUser, timeProvider), ISvcSites
@@ -42,6 +43,8 @@ internal sealed class SvcSites(IUnitOfWork unitOfWork, ICurrentUser currentUser,
             return Result.Error<SiteViewModel>(AdministrationErrors.BeyondOwnSites);
         if (request is null || !Site.IsValidCode(request.Code) || string.IsNullOrWhiteSpace(request.Name))
             return Result.Error<SiteViewModel>(AdministrationErrors.UnknownSite);
+        if (!TopologyCodes.IsName(request.Name))
+            return Result.Error<SiteViewModel>(AdministrationErrors.InvalidSiteName);
         if (await Query<Site>().AnyAsync(s => s.Code == request.Code, ct))
             return Result.Error<SiteViewModel>(AdministrationErrors.SiteTaken);
 
@@ -57,8 +60,13 @@ internal sealed class SvcSites(IUnitOfWork unitOfWork, ICurrentUser currentUser,
         if (site is null)
             return Result.Error<SiteViewModel>(AdministrationErrors.NotFound);
 
+        // ARV-159: the entity's rule, answered as a fixed text (400) instead of an exception; a stored name that breaks it
+        // stays until a rename with a clean one.
+        if (!TopologyCodes.IsName(request?.Name))
+            return Result.Error<SiteViewModel>(AdministrationErrors.InvalidSiteName);
+
         var before = $"code={site.Code}; name={site.Name}";
-        site.Rename(request?.Name);
+        site.Rename(request.Name);
         await UpdateAsync(site, ct);
         await audit.RecordAsync(AuditActions.SiteUpdated, AuditActions.SiteTarget, site.Id, site.Code, before, $"code={site.Code}; name={site.Name}", ct);
         return new Result<SiteViewModel>(View(site));
@@ -71,5 +79,5 @@ internal sealed class SvcSites(IUnitOfWork unitOfWork, ICurrentUser currentUser,
         return await Query<Site>().FirstOrDefaultAsync(s => s.Code == code, ct);
     }
 
-    private static SiteViewModel View(Site site) => new(site.Code, site.Name, site.CreatedOn);
+    private static SiteViewModel View(Site site) => new(site.Code, site.Name, site.CreatedOn, site.IsIllustrative);
 }

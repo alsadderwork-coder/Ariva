@@ -8,12 +8,30 @@ using Microsoft.Extensions.Options;
 
 namespace Ariva.Simulation.Api.Emulators;
 
-/// <summary>The three emulated systems' Ariva integration clients (AMAN, the mock immigration system, the AODB).</summary>
-public sealed class FeedClients(ArivaIntegrationClient aman, ArivaIntegrationClient immigration, ArivaIntegrationClient aodb)
+/// <summary>
+/// The emulated systems' Ariva integration clients (AMAN, the mock immigration system, the reference site's AODB) and
+/// ARV-139b's AODB client of each other scenario site (AUH-TA), by site code.
+/// </summary>
+public sealed class FeedClients(ArivaIntegrationClient aman, ArivaIntegrationClient immigration, ArivaIntegrationClient aodb,
+    IReadOnlyDictionary<string, ArivaIntegrationClient> aodbSites = null)
 {
     public ArivaIntegrationClient Aman { get; } = aman;
     public ArivaIntegrationClient Immigration { get; } = immigration;
     public ArivaIntegrationClient Aodb { get; } = aodb;
+    public IReadOnlyDictionary<string, ArivaIntegrationClient> AodbSites { get; } = aodbSites ?? new Dictionary<string, ArivaIntegrationClient>();
+}
+
+/// <summary>The emulated AODBs: the reference site's (DMO) and one per other scenario site (ARV-139b: AUH-TA).</summary>
+public sealed class AodbEmulators(AodbEmulator reference, IReadOnlyList<AodbEmulator> sites)
+{
+    public AodbEmulator Reference { get; } = reference;
+
+    /// <summary>The other scenario sites' AODBs, in site order.</summary>
+    public IReadOnlyList<AodbEmulator> Sites { get; } = sites;
+
+    /// <summary>The AODB of a scenario site, or null.</summary>
+    public AodbEmulator Of(string site) =>
+        site == Reference.ScenarioSite ? Reference : Sites.FirstOrDefault(a => string.Equals(a.ScenarioSite, site, StringComparison.Ordinal));
 }
 
 /// <summary>The emulated border systems: AMAN and the mock immigration system.</summary>
@@ -69,10 +87,13 @@ public static class FeedEmulatorExtensions
                 return client;
             }
 
+            var aodb = provider.GetRequiredService<IOptionsMonitor<AodbEmulatorSettings>>().CurrentValue;
             return new FeedClients(
                 Client("aman", provider.GetRequiredService<IOptionsMonitor<AmanEmulatorSettings>>().CurrentValue.Client),
                 Client("immigration", provider.GetRequiredService<IOptionsMonitor<ImmigrationEmulatorSettings>>().CurrentValue.Client),
-                Client("aodb", provider.GetRequiredService<IOptionsMonitor<AodbEmulatorSettings>>().CurrentValue.Client));
+                Client("aodb", aodb.Client),
+                ScenarioEngine.SiteCodes.Where(site => site != ScenarioEngine.ReferenceSite).ToDictionary(site => site,
+                    site => Client("aodb-" + site.ToLowerInvariant(), aodb.Sites.GetValueOrDefault(site)?.Client ?? new IntegrationClientSettings()), StringComparer.Ordinal));
         });
         services.AddSingleton(provider =>
         {
@@ -93,9 +114,29 @@ public static class FeedEmulatorExtensions
         services.AddSingleton(provider => new AodbEmulator(provider.GetRequiredService<ScenarioEngine>(), provider.GetRequiredService<FeedTime>(),
             provider.GetRequiredService<IOptionsMonitor<AodbEmulatorSettings>>(), provider.GetRequiredService<IOptionsMonitor<ArivaTargetSettings>>(),
             provider.GetRequiredService<FeedClients>().Aodb, provider.GetRequiredService<TimeProvider>(), provider.GetRequiredService<ILogger<AodbEmulator>>()));
+        // ARV-139b: every other scenario site has its own AODB (airport and Ariva site its own: AUH and AUH-TA) with its own
+        // client, so a refused call on one site never drops the other's token. AMAN plays the reference site only: AUH-TA
+        // has no AMAN desk codes and its counters' states come from their staff and service zones (ARV-116).
+        services.AddSingleton(provider =>
+        {
+            var engine = provider.GetRequiredService<ScenarioEngine>();
+            var clients = provider.GetRequiredService<FeedClients>();
+            var settings = provider.GetRequiredService<IOptionsMonitor<AodbEmulatorSettings>>();
+            var logger = provider.GetRequiredService<ILoggerFactory>().CreateLogger("Ariva.Simulation.Aodb");
+            var sites = ScenarioEngine.SiteCodes.Where(site => site != ScenarioEngine.ReferenceSite).Select(site =>
+            {
+                var airport = ScenarioEngine.AirportOf(site);
+                return new AodbEmulator(engine, site, provider.GetRequiredService<FeedTime>(),
+                    () => new AodbTarget(airport, site, !string.IsNullOrEmpty(settings.CurrentValue.AcrisKeySha256)), clients.AodbSites[site],
+                    provider.GetRequiredService<TimeProvider>(), logger);
+            }).ToList();
+            return new AodbEmulators(provider.GetRequiredService<AodbEmulator>(), sites);
+        });
         services.AddSingleton<IDemoMinuteSink>(provider => provider.GetRequiredService<BorderFeeds>().Aman);
         services.AddSingleton<IDemoMinuteSink>(provider => provider.GetRequiredService<BorderFeeds>().Immigration);
         services.AddSingleton<IDemoMinuteSink>(provider => provider.GetRequiredService<AodbEmulator>());
+        foreach (var site in ScenarioEngine.SiteCodes.Where(site => site != ScenarioEngine.ReferenceSite))
+            services.AddSingleton<IDemoMinuteSink>(provider => provider.GetRequiredService<AodbEmulators>().Of(site));
 
         services.AddAuthentication()
             .AddScheme<AuthenticationSchemeOptions, MockAmanTokenHandler>(MockPartnerSchemes.AmanToken, displayName: null, configureOptions: null)

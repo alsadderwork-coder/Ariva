@@ -1,6 +1,7 @@
 using System.Globalization;
 using Ariva.Core;
 using Ariva.Core.Reports;
+using Ariva.Core.Security;
 using Ariva.Infra.Services.Foundation;
 
 namespace Ariva.Infra.Services.Reports;
@@ -8,8 +9,9 @@ namespace Ariva.Infra.Services.Reports;
 /// <summary>
 /// Reads one site's local day for the daily report (ARV-060) and builds it (<see cref="DailyReports"/>): the stored
 /// minutes of its queue zones with their histograms, the alerts raised that day that the given roles see (the same rule
-/// as the alert screens: the owner role, the escalation role once escalated, or an administrator), and the outages of
-/// its devices. The caller decides who may read the site; this class only reads.
+/// as the alert screens: the owner role, the escalation role once escalated, or an administrator; an alert on a
+/// border-only metric only for roles holding <c>ArrivalWaveLanes.View</c>, <see cref="BorderAlerts"/>, ARV-181b2 and ARV-187), and the
+/// outages of its devices. The caller decides who may read the site; this class only reads.
 /// </summary>
 internal sealed class ReportReader(IUnitOfWork unitOfWork) : SvcDb(unitOfWork)
 {
@@ -20,7 +22,7 @@ internal sealed class ReportReader(IUnitOfWork unitOfWork) : SvcDb(unitOfWork)
             SELECT a.time_zone_id AS "Value" FROM terminal t JOIN airport a ON a.id = t.airport_id
             WHERE t.site_code = :site AND t.deleted_on IS NULL AND a.deleted_on IS NULL ORDER BY a.iata_code LIMIT 1
             """, new Dictionary<string, object> { ["site"] = siteCode }, ct);
-        return zones.Count > 0 && TimeZoneInfo.TryFindSystemTimeZoneById(zones[0].Value, out var zone) ? zone : TimeZoneInfo.Utc;
+        return zones.Count > 0 && SiteTimeZones.TryFind(zones[0].Value, out var zone) ? zone : TimeZoneInfo.Utc;
     }
 
     public async Task<bool> SiteExistsAsync(string siteCode, CancellationToken ct) =>
@@ -59,12 +61,15 @@ internal sealed class ReportReader(IUnitOfWork unitOfWork) : SvcDb(unitOfWork)
             .ToList();
 
         var admin = Enumerable.Contains(roles, RoleCodes.SystemAdministrator, StringComparer.Ordinal);
+        // ARV-181b2, ARV-187: alerts on a border-only metric only for roles holding ArrivalWaveLanes.View, whatever their owner and
+        // escalation roles (the on-demand report, its CSV and the scheduled deliveries all read here with their reader's roles).
         var alerts = await ExecuteSqlAsync<AlertRow>("""
             SELECT rule_code AS "RuleCode", rule_name AS "RuleName", zone_name AS "ZoneName", device_code AS "DeviceCode", severity AS "Severity",
                    state AS "State", raised_utc AS "RaisedUtc", COALESCE(cleared_utc, resolved_utc) AS "ClearedUtc"
             FROM alert
             WHERE site_code = :site AND raised_utc >= :from AND raised_utc < :to
               AND (:admin OR owner_role IS NULL OR owner_role IN (:roles) OR (escalated_utc IS NOT NULL AND escalate_to_role IN (:roles)))
+              AND (:border OR metric NOT IN (:borderMetrics))
             ORDER BY raised_utc LIMIT 5000
             """, new Dictionary<string, object>
         {
@@ -73,7 +78,9 @@ internal sealed class ReportReader(IUnitOfWork unitOfWork) : SvcDb(unitOfWork)
             ["to"] = to,
             ["admin"] = admin,
             // An empty IN list is not valid SQL; a role code that cannot exist stands in for "none".
-            ["roles"] = roles.Count > 0 ? roles.ToList() : ["-"]
+            ["roles"] = roles.Count > 0 ? roles.ToList() : ["-"],
+            ["border"] = BorderAlerts.Receives(roles),
+            ["borderMetrics"] = BorderAlerts.MetricNames
         }, ct);
 
         var outages = await ExecuteSqlAsync<OutageRow>("""

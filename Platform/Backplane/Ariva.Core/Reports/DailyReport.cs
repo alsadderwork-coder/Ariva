@@ -234,7 +234,8 @@ public static class DailyReports
         return pairs;
     }
 
-    private static DeviceUptime Uptime(ReportDevice device, DateTime from, DateTime to, DateTime now)
+    /// <summary>A device's uptime over [from, to) clipped at now (the weekly summary, ARV-119, uses it for its week).</summary>
+    internal static DeviceUptime Uptime(ReportDevice device, DateTime from, DateTime to, DateTime now)
     {
         var end = to < now ? to : now;
         var spans = device.Outages

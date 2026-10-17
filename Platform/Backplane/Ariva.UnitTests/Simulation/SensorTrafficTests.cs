@@ -35,12 +35,17 @@ public sealed class SensorTrafficTests
         return DemoTopologySeed.BuildProfile(arrivals, departures);
     });
 
-    /// <summary>The names Ingest checks for a device of this queue zone: the queue, the overflow bands feeding it, and their lines.</summary>
-    private static HashSet<string> NamesOf(string queueZone)
+    /// <summary>
+    /// The names Ingest checks for a device of this queue zone: the queue, the overflow bands feeding it, and their lines;
+    /// for a desk zone sensor (ARV-116) also its desks' staff and service zones, which a profile with desk zones has (the
+    /// demo's v12 has none, so those sensors are not registered in the demo).
+    /// </summary>
+    private static HashSet<string> NamesOf(string queueZone, SensorDef sensor = null)
     {
         var queue = Profile.Value.Zones.Single(z => z.Kind == ZoneKind.Queue && z.Name == queueZone);
         var zones = Profile.Value.Zones.Where(z => z == queue || z.QueueZone == queue).ToList();
-        return [.. zones.Select(z => z.Name), .. Profile.Value.Lines.Where(l => l.Zone is not null && zones.Contains(l.Zone)).Select(l => l.Name)];
+        var desks = sensor is null ? [] : SensorTraffic.DesksOf(sensor).SelectMany(d => new[] { SensorTraffic.StaffZoneOf(d), SensorTraffic.ServiceZoneOf(d) });
+        return [.. zones.Select(z => z.Name), .. Profile.Value.Lines.Where(l => l.Zone is not null && zones.Contains(l.Zone)).Select(l => l.Name), .. desks];
     }
 
     private static MappedPush Map(SensorPush push, EmulatedDialect dialect)
@@ -69,7 +74,7 @@ public sealed class SensorTrafficTests
     {
         var sensor = SensorTraffic.Sensor(sensorId);
         var queueZone = SensorTraffic.QueueZoneOf(sensor.Zone);
-        var names = NamesOf(queueZone);
+        var names = NamesOf(queueZone, sensor);
 
         for (var minute = 1080; minute < 1140; minute++)
         {
@@ -168,5 +173,47 @@ public sealed class SensorTrafficTests
 
         b.Json.Should().Be(a.Json);
         a.Crossings.Should().BeGreaterThan(0, "the Visitors wave is arriving at 18:05");
+    }
+
+    [Fact]
+    public void Roles_Should_GiveTheVisitorsDesksToS18ToS20_When_TheSensorsAreListed()
+    {
+        // ARV-116: the fourth to sixth sensors over the arrivals Visitors hall report five Visitors desks each.
+        var deskSensors = ScenarioModel.Sensors.Where(s => SensorTraffic.RoleOf(s) == SensorRole.DeskZones).ToList();
+
+        deskSensors.Select(s => s.Id).Should().Equal("S-18", "S-19", "S-20");
+        deskSensors.SelectMany(SensorTraffic.DesksOf).Should().Equal(ScenarioModel.Queues[ScenarioModel.Q("A-VIS")].Servers, "every Visitors desk once, in order");
+        deskSensors.Should().OnlyContain(s => SensorTraffic.DesksOf(s).Count == SensorTraffic.DesksPerSensor);
+        SensorTraffic.RoleOf(SensorTraffic.Sensor("S-16")).Should().Be(SensorRole.Heartbeat);
+        SensorTraffic.RoleOf(SensorTraffic.Sensor("S-17")).Should().Be(SensorRole.Heartbeat, "S-17's outage stays a heartbeat sensor's");
+        ScenarioModel.Sensors.Where(s => s.Zone != "A-VIS").Should().OnlyContain(s => SensorTraffic.DesksOf(s).Count == 0);
+    }
+
+    [Fact]
+    public void Build_Should_ReportEachDesksZonesFromItsScenarioState_When_ADeskZoneSensorPlaysTheEvening()
+    {
+        var day = Day.Value;
+        var q = ScenarioModel.Q("A-VIS");
+        foreach (var sensor in ScenarioModel.Sensors.Where(s => SensorTraffic.RoleOf(s) == SensorRole.DeskZones))
+        {
+            for (var minute = 1020; minute < 1230; minute++)
+            {
+                var mapped = Map(SensorTraffic.Build(day, sensor, EmulatedDialect.Canonical, minute, minute, WallOf, WallOf(minute + 1)), EmulatedDialect.Canonical);
+                mapped.Crossings.Should().BeEmpty();
+                var readings = mapped.Occupancy.ToDictionary(o => o.ZoneName, o => o);
+                foreach (var server in day.ServerStates(q, minute).Where(s => SensorTraffic.DesksOf(sensor).Contains(s.Id)))
+                {
+                    if (server.State == "unknown")
+                    {
+                        readings.Should().NotContainKey(SensorTraffic.StaffZoneOf(server.Id));
+                        continue;
+                    }
+
+                    readings[SensorTraffic.StaffZoneOf(server.Id)].Count.Should().Be(server.State is "serving" or "idle" ? 1 : 0, "{0} {1} at {2}", server.Id, server.State, minute);
+                    readings[SensorTraffic.ServiceZoneOf(server.Id)].Count.Should().Be(server.State == "serving" ? 1 : 0);
+                    readings[SensorTraffic.StaffZoneOf(server.Id)].TimeUtc.Should().Be(WallOf(minute), "a desk's state holds from its minute's start");
+                }
+            }
+        }
     }
 }

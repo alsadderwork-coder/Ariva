@@ -11,4 +11,4 @@ You build the front end described in docs/design/prototype-spec.md and shown in 
 - Bilingual English and Arabic with RTL; logical CSS properties.
 - Role-aware views follow the prototype's access rules; the server enforces them.
 - For every screen: Playwright functional tests (per role, RTL, no console errors, no CSP violations, XSS probes on rendered inputs). Use the playwright MCP to inspect the running app while writing them.
-Run `node scripts/verify.mjs web` and `node scripts/verify.mjs e2e` before handing back.
+Run `node scripts/verify.mjs story --specs <the story's spec files>` before handing back; it runs the web gate when the web app changed (`docs/harness/test-cadence.md`).

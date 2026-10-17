@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -255,6 +257,65 @@ public sealed class AmanFeedPactTests : IClassFixture<AmanPactFile>
         }
     }
 
+    [Fact]
+    public void WriteLine_Should_KeepEveryLine_When_TwoThreadsWriteAtOnce()
+    {
+        // PactNet writes the verifier's report from the test thread and the message it served from its listener thread.
+        var output = new Collect();
+        var errors = new ConcurrentQueue<Exception>();
+        using var start = new Barrier(2);
+        var threads = new[] { "listener", "verifier" }.Select(name => new Thread(() =>
+        {
+            try
+            {
+                start.SignalAndWait();
+                for (var line = 0; line < 20_000; line++)
+                    output.WriteLine($"{name} {line}");
+            }
+            catch (Exception e)
+            {
+                errors.Enqueue(e);
+            }
+        }) { IsBackground = true }).ToList();
+        threads.ForEach(t => t.Start());
+        threads.ForEach(t => t.Join());
+
+        errors.Should().BeEmpty();
+        var lines = output.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+        lines.Should().HaveCount(40_000).And.OnlyHaveUniqueItems();
+    }
+
+    [Fact]
+    public void DisposeWithTheListenerHeld_Should_DisposeTheVerifierBeforeTheListenerLeavesItsLastLine_When_TheMessageWasSent()
+    {
+        // The order that keeps PactNet's listener thread out of GetContext on a stopped listener: the thread that logged the
+        // message as sent stays in that line until the verifier is disposed, and only then goes back to its loop.
+        var output = new Collect();
+        output.WriteLine("Simulating message with description: a desk session change");
+        using var left = new ManualResetEventSlim();
+        var listener = new Thread(() =>
+        {
+            output.WriteLine("Successfully simulated message with description: a desk session change");
+            left.Set();
+        }) { IsBackground = true };
+        listener.Start();
+        var verifier = new Disposal(left);
+
+        output.DisposeWithTheListenerHeld(verifier);
+
+        verifier.ListenerHadLeft.Should().BeFalse("the listener thread is held in its last line while the verifier stops its listener");
+        listener.Join(TimeSpan.FromSeconds(30)).Should().BeTrue("the listener thread is let go once the verifier is disposed");
+        left.IsSet.Should().BeTrue();
+        output.ToString().Should().Contain("Successfully simulated message");
+    }
+
+    private sealed class Disposal(ManualResetEventSlim listenerLeft) : IDisposable
+    {
+        public bool? ListenerHadLeft { get; private set; }
+
+        public void Dispose() => ListenerHadLeft = listenerLeft.IsSet;
+    }
+
     private static JsonObject Mutate(object record, Action<JsonObject> change)
     {
         var json = JsonSerializer.SerializeToNode(record, record.GetType(), AmanContracts.Json)!.AsObject();
@@ -287,7 +348,7 @@ public sealed class AmanFeedPactTests : IClassFixture<AmanPactFile>
     {
         var topic = AmanFeedPacts.All.Single(i => i.Description == description).Topic;
         var output = new Collect();
-        using var verifier = new PactVerifier(AmanFeedPacts.Provider, new PactVerifierConfig { Outputters = [output], LogLevel = PactLogLevel.Warn });
+        var verifier = new PactVerifier(AmanFeedPacts.Provider, new PactVerifierConfig { Outputters = [output], LogLevel = PactLogLevel.Warn });
         try
         {
             verifier
@@ -308,14 +369,87 @@ public sealed class AmanFeedPactTests : IClassFixture<AmanPactFile>
         {
             throw new PactFailureException($"{failure.Message}{Environment.NewLine}{output}", failure);
         }
+        finally
+        {
+            output.DisposeWithTheListenerHeld(verifier);
+        }
     }
 
+    /// <summary>
+    /// The verifier's output, and the moment its messaging provider stops. PactNet 5.0.1 (its main branch is the same) serves
+    /// the message from a listener thread of its own, which writes to the outputters too: every access takes the lock. That
+    /// thread logs "Successfully simulated message" after it has sent the message, then loops on
+    /// <c>while (server.IsListening) server.GetContext()</c> and catches HttpListenerException only. Disposing the verifier
+    /// stops, then closes, the HttpListener; landing after the thread's IsListening check and before it waits inside
+    /// GetContext, that makes GetContext throw InvalidOperationException or ObjectDisposedException on the thread, nothing
+    /// catches it, and the test host process ends (the run aborts without a failed test). Under load Verify often returns
+    /// before the thread has logged its last line, so the collector holds the thread in that line until the verifier is
+    /// disposed; let go, it finds the listener stopped and leaves its loop.
+    /// </summary>
     private sealed class Collect : IOutput
     {
+        private const string Taken = "Simulating message with description:";
+        private const string Sent = "Successfully simulated message with description:";
+
+        /// <summary>
+        /// A message the listener took but answered with an error has no last line; within this bound the listener is
+        /// waiting inside GetContext again, where disposal ends it with an HttpListenerException it catches.
+        /// </summary>
+        private static readonly TimeSpan SentBound = TimeSpan.FromSeconds(10);
+
+        // A monitor, not System.Threading.Lock: the listener thread waits on it (Monitor.Wait releases it meanwhile).
+        private readonly object _gate = new();
         private readonly StringBuilder _text = new();
+        private bool _taken;
+        private bool _sent;
+        private bool _disposed;
 
-        public void WriteLine(string line) => _text.AppendLine(line);
+        public void WriteLine(string line)
+        {
+            lock (_gate)
+            {
+                _text.AppendLine(line);
+                _taken |= line.StartsWith(Taken, StringComparison.Ordinal);
+                if (!line.StartsWith(Sent, StringComparison.Ordinal))
+                    return;
+                _sent = true;
+                Monitor.PulseAll(_gate);
+                while (!_disposed)
+                    Monitor.Wait(_gate);
+            }
+        }
 
-        public override string ToString() => _text.ToString();
+        /// <summary>
+        /// Called by the test thread once the Pact FFI has returned: waits for the listener's last line if it took the message
+        /// (the listener is then held in it), disposes the verifier, then lets the listener go.
+        /// </summary>
+        public void DisposeWithTheListenerHeld(IDisposable verifier)
+        {
+            lock (_gate)
+            {
+                var waited = Stopwatch.StartNew();
+                for (var left = SentBound; _taken && !_sent && left > TimeSpan.Zero; left = SentBound - waited.Elapsed)
+                    Monitor.Wait(_gate, left);
+            }
+
+            try
+            {
+                verifier.Dispose();
+            }
+            finally
+            {
+                lock (_gate)
+                {
+                    _disposed = true;
+                    Monitor.PulseAll(_gate);
+                }
+            }
+        }
+
+        public override string ToString()
+        {
+            lock (_gate)
+                return _text.ToString();
+        }
     }
 }

@@ -1,0 +1,58 @@
+using Ariva.Infra.Retention;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using TickerQ.Utilities.Base;
+
+namespace Ariva.Api.Cronz.Jobs;
+
+/// <summary>
+/// The relational retention job (ARV-111a), daily at 03:15 UTC: one run of <see cref="RetentionRound"/>, which deletes the alert
+/// emails, Integration API call records and report deliveries older than the periods the migration job set
+/// (<c>Database:Retention</c>), in bounded batches, one replica at a time. A run from the dashboard or a second replica is
+/// harmless: a replica that cannot take the lock skips the run, and a batch deletes only what its period already lets go (the
+/// runtime login cannot move the time column the purge reads: column grants on email_message and report_delivery, no UPDATE
+/// on integration_call).
+/// TimescaleDB drops old hypertable chunks itself (its retention policies, also set by the migration job).
+/// </summary>
+public sealed class RetentionJobs(RetentionRound round, RetentionJobSettings settings, ILogger<RetentionJobs> logger)
+{
+    /// <summary>The function name the dashboard shows and runs.</summary>
+    public const string Purge = "RelationalRetention";
+
+    [TickerFunction(Purge, "0 15 3 * * *")]
+    public async Task PurgeAsync(TickerFunctionContext context, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        if (!settings.Enabled)
+            return;
+        var run = await round.RunAsync(ct);
+        if (run.HeldElsewhere)
+        {
+            logger.LogInformation("Retention ({Type}): another replica is running it; skipped", context.Type);
+            return;
+        }
+
+        var failed = run.DataSets.Count(d => d.Failed);
+        var unset = run.DataSets.Count(d => d.Days is null);
+        if (failed > 0 || unset > 0)
+            logger.LogWarning("Retention ({Type}): {Rows} rows deleted; {Failed} data sets failed, {Unset} without a period", context.Type, run.Deleted, failed, unset);
+        else
+            logger.LogInformation("Retention ({Type}): {Rows} rows deleted over {DataSets} data sets", context.Type, run.Deleted, run.DataSets.Count);
+    }
+}
+
+/// <summary>Registers the retention job's settings (<c>Cronz:Retention</c>, checked at start) and its round.</summary>
+public static class RetentionJobsRegistration
+{
+    public static IServiceCollection AddArivaRetentionJob(this IServiceCollection services, IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configuration);
+        var settings = configuration.GetSection(RetentionJobSettings.SectionName).Get<RetentionJobSettings>() ?? new RetentionJobSettings();
+        var problems = settings.Problems().ToList();
+        if (problems.Count > 0)
+            throw new InvalidOperationException(string.Join(" ", problems));
+        services.TryAddSingleton(settings);
+        services.TryAddSingleton<RetentionRound>();
+        return services;
+    }
+}

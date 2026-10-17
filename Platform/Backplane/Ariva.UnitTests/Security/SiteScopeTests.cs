@@ -19,14 +19,33 @@ namespace Ariva.UnitTests.Security;
 [Collection(HostCollection.Name)]
 public sealed class SiteScopeTests
 {
+    /// <summary>Ariva.Simulation.Api, whose site references are checked on their own (ARV-104i).</summary>
+    private static readonly Assembly Simulator = typeof(Ariva.Simulation.Api._IAssemblyMark).Assembly;
+
     #region Architecture
 
     [Fact]
     public void Actions_Should_BeSiteScoped_When_TheyTakeASiteReference()
     {
-        var violations = Unscoped(ArivaAssemblies.Hosts.SelectMany(assembly => assembly.GetTypes()));
+        var violations = Unscoped(ArivaAssemblies.Hosts.Where(assembly => assembly != Simulator).SelectMany(assembly => assembly.GetTypes()));
 
         violations.Should().BeEmpty("an action with a site, airport or terminal reference must carry [SiteScoped] (CWE-863)");
+    }
+
+    /// <summary>
+    /// ARV-104i, on purpose: the simulator has no site access of its own (operator keys, not Ariva users) and holds no Ariva data
+    /// per site, so [SiteScoped] does not apply to it. Its one site reference is the Ariva site a validation rehearsal captures
+    /// for, which it only forwards to Ariva.Api.Main, where each observer account's own site access applies (a site the account
+    /// does not have answers 404, reported as SiteNotVisible; <c>ValidationEmulatorEndpointTests</c>). Any other site reference
+    /// in the simulator fails here and needs the same reasoning.
+    /// </summary>
+    [Fact]
+    public void SimulatorActions_Should_NameOnlyTheArivaSiteTheirObserversCaptureFor_When_TheyTakeASiteReference()
+    {
+        // Every site reference of every unscoped action, not only the first: a second one in the request would fail here.
+        var violations = UnscopedReferences(Simulator.GetTypes()).Select(v => $"{v.Action}({string.Join(", ", v.References)})");
+
+        violations.Should().Equal("ValidationEmulatorController.Rehearse(SiteCode)");
     }
 
     [Fact]
@@ -59,9 +78,13 @@ public sealed class SiteScopeTests
     /// An Integration API action ([IntegrationScope], ARV-042) is checked against the client's sites by the scope handler,
     /// which reads only the <c>{siteCode}</c> route token: it may name a site there and nowhere else.
     /// </summary>
-    public static List<string> Unscoped(IEnumerable<Type> types)
+    public static List<string> Unscoped(IEnumerable<Type> types) =>
+        [.. UnscopedReferences(types).Select(v => $"{v.Action}({v.References[0]})")];
+
+    /// <summary>Like <see cref="Unscoped"/>, with every site reference of each action (parameters, request model properties, route).</summary>
+    public static List<(string Action, List<string> References)> UnscopedReferences(IEnumerable<Type> types)
     {
-        var violations = new List<string>();
+        var violations = new List<(string Action, List<string> References)>();
         foreach (var controller in types.Where(t => typeof(ControllerBase).IsAssignableFrom(t) && !t.IsAbstract))
         {
             var controllerScoped = controller.GetCustomAttribute<SiteScopedAttribute>(inherit: true) is not null;
@@ -82,7 +105,7 @@ public sealed class SiteScopeTests
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList();
                 if (references.Count > 0)
-                    violations.Add($"{controller.Name}.{action.Name}({references[0]})");
+                    violations.Add(($"{controller.Name}.{action.Name}", references));
             }
         }
 

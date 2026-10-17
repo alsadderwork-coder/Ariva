@@ -55,8 +55,51 @@ public sealed class DisplayTests
         { "a label too long", Values(entries: [new DisplayEntry("A-CIT", Text(("ar", "س"), ("en", new string('x', 81))))]) },
         { "a missing message", Values(fallback: Text(("en", "Please follow the signs"))) },
         { "labels in emoji past the stored room", Values(languages: Four, entries: [.. Enumerable.Range(1, 12).Select(i => new DisplayEntry($"Z{i}", All(Emoji(40))))], fallback: All("x")) },
-        { "messages in emoji past the stored room", Values(languages: Four, entries: [new DisplayEntry("A-CIT", All("x"))], fallback: All(Emoji(100))) }
+        { "messages in emoji past the stored room", Values(languages: Four, entries: [new DisplayEntry("A-CIT", All("x"))], fallback: All(Emoji(100))) },
+        { "a queue share under half the screen", Values() with { Layout = DisplayLayout.Split, QueueShare = 49 } },
+        { "a queue share over three quarters", Values() with { Layout = DisplayLayout.Split, QueueShare = 76 } },
+        { "a queue share out of range in a full layout too", Values() with { QueueShare = 0 } },
+        { "an undefined layout", Values() with { Layout = (DisplayLayout)7 } },
+        { "an undefined second region", Values() with { SecondRegion = (DisplaySecondRegion)7 } }
     };
+
+    [Fact]
+    public void Layout_Should_StayTheFullQueueView_When_ADisplayIsGivenNoLayout()
+    {
+        var display = new Display("DMO", "ARR-A", Values());
+        display.Layout.Should().Be(DisplayLayout.Full, "displays made before ARV-140 keep today's view");
+        display.QueueShare.Should().Be(DisplayValues.DefaultQueueShare);
+        display.SecondRegion.Should().Be(DisplaySecondRegion.Instructions);
+    }
+
+    [Theory]
+    [InlineData(DisplayValues.MinQueueShare)]
+    [InlineData(DisplayValues.DefaultQueueShare)]
+    [InlineData(DisplayValues.MaxQueueShare)]
+    public void Layout_Should_BeKeptAndAudited_When_ADisplayIsSplit(int share)
+    {
+        var display = new Display("DMO", "ARR-A", Values());
+        var before = display.AuditSummary();
+        display.Set(Values() with { Orientation = DisplayOrientation.Portrait, Layout = DisplayLayout.Split, QueueShare = share });
+
+        display.Layout.Should().Be(DisplayLayout.Split);
+        display.QueueShare.Should().Be(share);
+        display.Values().Should().Match<DisplayValues>(v => v.Layout == DisplayLayout.Split && v.QueueShare == share && v.SecondRegion == DisplaySecondRegion.Instructions,
+            "the stored layout reads back");
+        before.Should().Contain("\"layout\":\"Full\"");
+        display.AuditSummary().Should().Contain("\"layout\":\"Split\"").And.Contain($"\"queueShare\":{share}").And.Contain("\"secondRegion\":\"Instructions\"",
+            "the audit trail shows a layout change before and after");
+    }
+
+    [Fact]
+    public void Advertising_Should_BeAValidSetting_When_OnlyTheSitesPolicyCanTellWhetherItIsShown()
+    {
+        // ARV-145: whether a display may advertise is its site's advertising policy (the display service, script 0057 and
+        // the board check it); the value alone is a valid setting and reads back.
+        var advertising = Values() with { Layout = DisplayLayout.Split, SecondRegion = DisplaySecondRegion.Advertising };
+        advertising.Problems().Should().BeEmpty();
+        new Display("DMO", "ARR-A", advertising).AuditSummary().Should().Contain("\"secondRegion\":\"Advertising\"");
+    }
 
     private static readonly string[] Four = ["ar", "en", "pt", "sw"];
 

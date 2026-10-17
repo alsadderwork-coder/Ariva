@@ -159,6 +159,105 @@ public sealed class ZoneProfileTests
 
     #endregion
 
+    #region Zone keys (ARV-114c)
+
+    // Site DMO-T1 has 6 characters: with the slash, a queue zone name of 193 characters makes a key of exactly 200.
+    private const string Site = "DMO-T1";
+
+    /// <summary>A character outside the basic plane: two UTF-16 units, one character to PostgreSQL.</summary>
+    private const string Astral = "\U0001F6EB";
+
+    private static string Name(int asciiCharacters, int astralCharacters = 0) =>
+        string.Concat(Enumerable.Repeat(Astral, astralCharacters)) + new string('q', asciiCharacters);
+
+    [Fact]
+    public void AddZone_Should_AcceptAQueueZone_When_ItsZoneKeyIsExactly200Characters()
+    {
+        var name = Name(193);
+
+        var zone = new ZoneProfile(Site, "Draft").AddZone(name, ZoneKind.Queue, NewLevel(), Rect(1, 1, 4, 4));
+
+        zone.Name.Should().Be(name);
+        Ariva.Core.Sensing.ZoneKeys.For(Site, zone.Name).Should().HaveLength(200);
+        Ariva.Core.Sensing.ZoneKeys.MaxQueueZoneNameLength(Site).Should().Be(193);
+    }
+
+    [Fact]
+    public void AddZone_Should_RefuseAQueueZoneWithoutRepeatingItsName_When_ItsZoneKeyIs201Characters()
+    {
+        var profile = new ZoneProfile(Site, "Draft");
+        var name = Name(194);
+
+        var add = () => profile.AddZone(name, ZoneKind.Queue, NewLevel(), Rect(1, 1, 4, 4));
+
+        add.Should().Throw<ArgumentException>()
+            .Which.Message.Should().StartWith(ZoneProfile.QueueZoneNameTooLong(Site)).And.Contain("at most 193 characters").And.NotContain(name);
+        profile.Zones.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void AddZone_Should_CountCharactersAsPostgresDoes_When_TheNameHasCharactersOutsideTheBasicPlane()
+    {
+        // 7 astral characters and 186 letters: 200 UTF-16 units (the name rule's limit) but 193 characters, a key of 200.
+        var fits = Name(186, astralCharacters: 7);
+        // 6 astral characters and 188 letters: 200 UTF-16 units again, but 194 characters, a key of 201.
+        var over = Name(188, astralCharacters: 6);
+        fits.Length.Should().Be(200);
+        over.Length.Should().Be(200);
+        var profile = new ZoneProfile(Site, "Draft");
+
+        profile.AddZone(fits, ZoneKind.Queue, NewLevel(), Rect(1, 1, 4, 4)).Name.Should().Be(fits);
+        var add = () => profile.AddZone(over, ZoneKind.Queue, NewLevel(), Rect(10, 1, 4, 4));
+
+        add.Should().Throw<ArgumentException>().WithMessage(ZoneProfile.QueueZoneNameTooLong(Site) + "*");
+        Ariva.Core.Messaging.MessageKeys.Fits(Ariva.Core.Sensing.ZoneKeys.For(Site, fits)).Should().BeTrue();
+    }
+
+    [Fact]
+    public void RenameZone_Should_RefuseAQueueZoneNameAndKeepTheOldOne_When_ItsZoneKeyWouldExceed200Characters()
+    {
+        var (profile, _, queue) = Publishable();
+
+        var rename = () => profile.RenameZone(queue, Name(194));
+
+        rename.Should().Throw<ArgumentException>().WithMessage(ZoneProfile.QueueZoneNameTooLong(Site) + "*");
+        queue.Name.Should().Be("Snake A");
+        profile.RenameZone(queue, Name(193));
+        queue.Name.Should().HaveLength(193);
+    }
+
+    [Fact]
+    public void AddZone_Should_AcceptLongOverflowServiceAndStaffNames_When_OnlyTheQueueZoneNameIsInTheKey()
+    {
+        // Hanging zones share their queue zone's key (OverflowDetected carries the band's name in its payload, not its key).
+        var (profile, level, queue) = Publishable();
+
+        foreach (var (kind, x) in new[] { (ZoneKind.Overflow, 40.0), (ZoneKind.Service, 46.0), (ZoneKind.Staff, 52.0) })
+        {
+            var name = $"{kind} " + Name(200 - kind.ToString().Length - 1);
+            var zone = profile.AddZone(name, kind, level, Rect(x, 30, 4, 4), queue);
+            profile.RenameZone(zone, name.Replace('q', 'r'));
+            zone.Name.Should().HaveLength(200);
+        }
+    }
+
+    [Fact]
+    public void Validate_Should_NameAQueueZoneWhoseKeyIsTooLong_When_ADraftCopiesItFromAnEarlierVersion()
+    {
+        // A version published before ARV-114c may hold such a name; its next draft cannot be published until it is renamed.
+        var (profile, level, queue) = Publishable();
+        typeof(Zone).GetProperty(nameof(Zone.Name))!.SetValue(queue, Name(194));
+
+        var problems = profile.Validate(Levels(level));
+
+        problems.Should().ContainSingle().Which.Should().EndWith(ZoneProfile.QueueZoneNameTooLong(Site));
+        profile.Publish(1, Levels(level), "e2e.admin", Now).Should().HaveCount(1);
+        profile.Status.Should().Be(ZoneProfileStatus.Draft);
+    }
+
+    #endregion
+
+
     #region Lines
 
     [Theory]
@@ -381,6 +480,63 @@ public sealed class ZoneProfileTests
         copy.LaneCategory.Should().BeNull();
     }
 
+    [Theory]
+    [InlineData(1, true)]
+    [InlineData(190, true)]
+    [InlineData(5_000, true)]
+    [InlineData(0, false)]
+    [InlineData(-5, false)]
+    [InlineData(5_001, false)]
+    [InlineData(int.MaxValue, false)]
+    public void SetZoneCapacity_Should_AcceptOneToFiveThousandPeople_When_Set(int capacity, bool valid)
+    {
+        // ARV-114a: the occupancy sanity check of F18 needs the zone's physical capacity.
+        var (profile, _, queue) = Publishable();
+
+        var set = () => profile.SetZoneCapacity(queue, capacity);
+
+        if (valid)
+        {
+            set.Should().NotThrow();
+            queue.PhysicalCapacity.Should().Be(capacity);
+        }
+        else
+        {
+            set.Should().Throw<ArgumentOutOfRangeException>().Which.Message.Should().StartWith("A physical capacity is 1 to 5,000 people.");
+            queue.PhysicalCapacity.Should().BeNull();
+        }
+    }
+
+    [Fact]
+    public void SetZoneCapacity_Should_KeepTheHashAndThePublishedVersion_When_SetOnQueuesAndBands()
+    {
+        var (profile, level, queue) = Publishable();
+        var hash = profile.ComputeGeometryHash();
+        var band = profile.Zones.Single(z => z.Kind == ZoneKind.Overflow);
+        profile.SetZoneCapacity(queue, 190);
+        profile.SetZoneCapacity(band, 60);
+
+        profile.ComputeGeometryHash().Should().Be(hash, "a capacity changes no count or wait, so F22's hash stays ariva-zone-profile-v1");
+        profile.ComputeGeometryHash().Should().Be(ReferenceHash);
+        var service = profile.AddZone("Desk 1", ZoneKind.Service, level, Rect(40, 10, 2, 2), queue);
+        profile.Invoking(p => p.SetZoneCapacity(service, 5)).Should().Throw<InvalidOperationException>("only queue zones and overflow bands hold a queue");
+        profile.RemoveZone(service);
+
+        profile.Publish(12, Levels(level), "admin", Now);
+        profile.GeometryHash.Should().Be(ReferenceHash);
+        profile.Invoking(p => p.SetZoneCapacity(queue, 200)).Should().Throw<InvalidOperationException>("a published version never changes");
+        profile.Invoking(p => p.SetZoneCapacity(queue, null)).Should().Throw<InvalidOperationException>();
+        queue.PhysicalCapacity.Should().Be(190);
+
+        var draft = profile.CreateDraft("v13");
+        var copy = draft.Zones.Single(z => z.Kind == ZoneKind.Queue);
+        copy.PhysicalCapacity.Should().Be(190, "a draft keeps the capacities");
+        draft.Zones.Single(z => z.Kind == ZoneKind.Overflow).PhysicalCapacity.Should().Be(60);
+        draft.SetZoneCapacity(copy, null);
+        copy.PhysicalCapacity.Should().BeNull();
+        queue.PhysicalCapacity.Should().Be(190, "the published version is untouched");
+    }
+
     [Fact]
     public void Retire_Should_OnlyRetireAPublishedVersion_When_Called()
     {
@@ -394,6 +550,67 @@ public sealed class ZoneProfileTests
         profile.Status.Should().Be(ZoneProfileStatus.Retired);
         var again = () => profile.Retire(Now.AddDays(2));
         again.Should().Throw<InvalidOperationException>();
+    }
+
+    #endregion
+
+    #region Portable geometry hash (ARV-122a)
+
+    private const string PortableReferenceHash = "a32ba7a122c54c0fc9a5e8deabb146b21be26383ed766dab6eb34ce5ca4fb527";
+
+    private static Dictionary<Guid, string> LevelNames(Level level) => new() { [level.Id!.Value] = ZoneProfile.PortableLevelName(level.Terminal.Code, level.Code) };
+
+    [Fact]
+    public void PortableGeometryHash_Should_StayTheSameAcrossReleases_When_TheReferenceProfileIsHashed()
+    {
+        // ariva-zone-profile-portable-v1 (formulas F22): v1's text with the level named T1/L0 instead of its id; recomputed
+        // independently in Python (the same script reproduces v1's reference hash).
+        var (profile, level, _) = Publishable();
+
+        profile.ComputePortableGeometryHash(LevelNames(level), new Dictionary<Guid, string>()).Should().Be(PortableReferenceHash);
+        profile.ComputeGeometryHash().Should().Be(ReferenceHash, "F22 v1 is unchanged (owner decision 2026-10-11)");
+    }
+
+    [Fact]
+    public void PortableGeometryHash_Should_NameADeskByItsCheckpointAndCode_When_AServiceZoneNamesADesk()
+    {
+        var (profile, level, queue) = Publishable();
+        var deskId = Guid.Parse("0199a000-0000-7000-8000-00000000d001");
+        profile.AddZone("Service A", ZoneKind.Service, level, Rect(40, 10, 2, 2), queue, deskId);
+
+        profile.ComputePortableGeometryHash(LevelNames(level), new Dictionary<Guid, string> { [deskId] = ZoneProfile.PortableDeskName("IMM", "D01") })
+            .Should().Be("fdbe688e554dfad6f291b6be56591ec2f25e79fbdcf54653dbbfc11a78876131");
+        profile.ComputePortableGeometryHash(LevelNames(level), new Dictionary<Guid, string>()).Should().BeNull("a desk the profile names must be named");
+    }
+
+    [Fact]
+    public void PortableGeometryHash_Should_BeEqualAtAnotherSiteWithOtherIds_When_TheGeometryAndCodesAreTheSame()
+    {
+        var (source, sourceLevel, _) = Publishable();
+        var otherLevel = new Airport("AUH", null, "Abu Dhabi", "Asia/Dubai").AddTerminal("T1", "Terminal 1", "AUH-COPY").AddLevel("L0", "Arrivals", 0, 60, 40);
+        otherLevel.Id = Guid.Parse("0199a000-0000-7000-8000-0000000c0de2");
+        var copy = new ZoneProfile("AUH-COPY", "Copy");
+        var queue = copy.AddZone("Snake A", ZoneKind.Queue, otherLevel, Rect(10, 10, 24, 12));
+        copy.AddLine("Entry A", LineRole.Entry, otherLevel, new FloorPoint(10, 12), new FloorPoint(10, 16), queue);
+        copy.AddLine("Exit A", LineRole.Exit, otherLevel, new FloorPoint(30, 22), new FloorPoint(34, 22), queue);
+        var overflow = copy.AddZone("Overflow A", ZoneKind.Overflow, otherLevel, Rect(10, 4, 24, 6), queue);
+        copy.AddLine("Overflow entry A", LineRole.OverflowEntry, otherLevel, new FloorPoint(10, 5), new FloorPoint(10, 9), overflow);
+        copy.AddLine("Count hall", LineRole.Count, otherLevel, new FloorPoint(40, 0), new FloorPoint(40, 40));
+
+        copy.ComputeGeometryHash().Should().NotBe(source.ComputeGeometryHash(), "v1 names the level by its id, which differs");
+        copy.ComputePortableGeometryHash(LevelNames(otherLevel), new Dictionary<Guid, string>())
+            .Should().Be(source.ComputePortableGeometryHash(LevelNames(sourceLevel), new Dictionary<Guid, string>()));
+    }
+
+    [Fact]
+    public void PortableGeometryHash_Should_ChangeOrBeNull_When_ALevelIsNamedOtherwiseOrNotAtAll()
+    {
+        var (profile, level, _) = Publishable();
+
+        profile.ComputePortableGeometryHash(new Dictionary<Guid, string> { [level.Id!.Value] = "T1/L1" }, new Dictionary<Guid, string>())
+            .Should().NotBe(PortableReferenceHash);
+        profile.ComputePortableGeometryHash(new Dictionary<Guid, string>(), new Dictionary<Guid, string>()).Should().BeNull();
+        profile.Invoking(p => p.ComputePortableGeometryHash(null, new Dictionary<Guid, string>())).Should().Throw<ArgumentNullException>();
     }
 
     #endregion

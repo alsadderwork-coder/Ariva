@@ -32,4 +32,15 @@
             <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
         </Content>
     </ItemGroup>
+    <!-- SkiaSharp (ARV-142a, advertisement images) brings native libraries for 13 Linux runtimes, three Windows ones (each with
+         about 95 MB of native debug symbols) and macOS. A build without a runtime identifier (development and tests) keeps
+         the runtimes Ariva builds and runs on (linux-x64, linux-arm64, win-x64, osx) without the symbols; a publish for one
+         runtime (the images: linux-x64) takes that runtime's library only, so this target does not run for it. -->
+    <Target Name="ArivaTrimSkiaSharpNativeAssets" AfterTargets="ResolvePackageAssets" Condition="'$(RuntimeIdentifier)' == ''">
+        <ItemGroup>
+            <_ArivaSkiaSharpNative Include="@(RuntimeTargetsCopyLocalItems)" Condition="$([System.String]::Copy('%(NuGetPackageId)').StartsWith('SkiaSharp.NativeAssets'))" />
+            <_ArivaSkiaSharpDropped Include="@(_ArivaSkiaSharpNative)" Condition="'%(Extension)' == '.pdb' Or ('%(RuntimeIdentifier)' != 'linux-x64' And '%(RuntimeIdentifier)' != 'linux-arm64' And '%(RuntimeIdentifier)' != 'win-x64' And '%(RuntimeIdentifier)' != 'osx')" />
+            <RuntimeTargetsCopyLocalItems Remove="@(_ArivaSkiaSharpDropped)" />
+        </ItemGroup>
+    </Target>
 </Project>

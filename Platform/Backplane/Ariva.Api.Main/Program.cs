@@ -30,6 +30,9 @@ args = TopicProvisioning.WithoutFlag(args);
 var breakGlassArgs = args;
 var breakGlass = BreakGlassCommand.IsRequested(args);
 args = BreakGlassCommand.WithoutFlags(args);
+// --check-stored-names (ARV-159): the read-only pre-pilot check of stored names, never configuration.
+var checkStoredNames = StoredNameCheckCommand.IsRequested(args);
+args = StoredNameCheckCommand.WithoutFlag(args);
 
 var environment = ArivaEnvironment.Resolve(args, AppContext.BaseDirectory);
 
@@ -74,6 +77,12 @@ if (breakGlass)
     return await BreakGlassCommand.RunAsync(builder.Configuration, builder.Environment.EnvironmentName, breakGlassArgs, Console.Out);
 }
 
+// Operator command: lists stored names that the name rule refuses, read-only, before a pilot (ARV-159).
+if (checkStoredNames)
+{
+    return await StoredNameCheckCommand.RunAsync(builder.Configuration, Console.Out);
+}
+
 #endregion
 
 #region Logging, Hosting and Telemetry
@@ -89,6 +98,8 @@ builder.AddAppServiceDefaults();
 
 // Main consumes device health reports into heartbeats (ARV-025).
 builder.Services.RegisterArivaServices(builder.Configuration, messaging => messaging.ConsumeDeviceHealth());
+// Main runs the validation service (ARV-104g1): the only host allowed the validation reader login outside vm-local.
+builder.Services.AddArivaValidationReaderHost();
 
 // Security baseline (docs/security/cwe-controls.md): default deny (fallback policy, Ariva.Deny answers challenges),
 // ES256 access tokens from Ariva.Api.Main with permissions from stored grants (ARV-010a), input limits, rate limiting,
@@ -101,11 +112,17 @@ builder.Services.AddArivaOpenApi(builder.Configuration, builder.Environment.Envi
 // Ariva.Api.Main signs users in and issues tokens (ADR-0026); the other hosts only validate them.
 builder.Services.AddArivaTokenIssuing(builder.Configuration, builder.Environment.EnvironmentName);
 
+// Validation results (ARV-104g2 service, ARV-104g endpoints): settings, the host-wide single-flight of computations, the
+// site-scoped service, the background freeze of closed campaigns and the results' request timeout policy.
+builder.Services.AddArivaValidationResults(builder.Configuration);
+
 // Integration clients (ARV-042): administrators register the systems that call the Integration API.
 builder.Services.AddArivaIntegrationClients();
 builder.Services.AddArivaOutboundEndpoints(builder.Configuration, builder.Environment.EnvironmentName);
 builder.Services.AddArivaFlightSchedules(builder.Configuration);
 builder.Services.AddArivaArrivalWave(builder.Configuration);
+// ARV-181a: the indicative staffing recommendation Ariva.Api.Cronz stores each minute (border data, ArrivalWaveLanes.View).
+builder.Services.AddArivaStaffingRecommendations(builder.Configuration);
 
 // Demo Airport (DMO) topology and zone profile v12 in vm-local and k8s-demo; refused outside dev and demo (ARV-019).
 builder.Services.AddArivaDemoSeed(builder.Configuration, builder.Environment.EnvironmentName);
@@ -152,6 +169,8 @@ app.UseSessionValidation();
 app.UsePendingScope();
 // AMAN: UseSessionContext
 app.UseAuthorization();
+// Request timeouts after routing and authorization: only endpoints with a policy ([RequestTimeout], the validation results) get one.
+app.UseRequestTimeouts();
 
 #endregion
 

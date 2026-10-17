@@ -107,11 +107,24 @@ public sealed class ArrivalWaveTests
 
     [Theory]
     [InlineData(4)]
-    [InlineData(121)]
+    [InlineData(196)]
     public void Project_Should_RefuseTheWindow_When_OutOfBounds(int minutes)
     {
         var project = () => ArrivalWave.Project([], Now, minutes, ArrivalWaveSettings.Default);
         project.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public void Project_Should_ReachTheStaffingPlansEnd_When_TheWindowIs195()
+    {
+        // ARV-181a: the staffing plan's 13 intervals reach up to 195 minutes ahead; the API and the predicted-breach source keep 120.
+        var wave = ArrivalWave.Project([Flight(onBlock: Now.AddMinutes(185), aman: OneLane(100))], Now, ArrivalWave.MaxProjectionWindow, Ten);
+
+        ArrivalWave.MaxProjectionWindow.Should().Be(195);
+        ArrivalWave.MaxWindow.Should().Be(120);
+        wave.Minutes.Should().HaveCount(195 + 10 + 12);
+        wave.Minutes.Sum(m => m.Lanes.Total).Should().BeApproximately(100, 1e-9);
+        wave.Minutes.First(m => m.Lanes.Total > 0).MinuteUtc.Should().Be(Now.AddMinutes(195));
     }
 
     [Fact]

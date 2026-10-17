@@ -25,7 +25,10 @@
 			"topology": "Topology",
 			"zones": "Zones",
 			"devices": "Devices",
-			"users": "Users and access"
+			"users": "Users and access",
+			"validationCapture": "Validation capture",
+			"validationCampaigns": "Validation campaigns",
+			"displaySlides": "Display instructions"
 		}
 	},
 	"shell": {
@@ -147,7 +150,48 @@
 			"label": "Predicted hall arrivals per minute"
 		},
 		"noAccess": "Your role has no live operations view. Ask an administrator for a role at your site.",
-		"estimateHint": "Estimate from the exit rate only (desk states not known): a wider margin"
+		"estimateHint": "Estimate from the exit rate only (desk states not known): a wider margin",
+		"overflow": {
+			"inUse": "Overflow in use",
+			"band": "{band}: {people} people at {time}",
+			"hint": "An overflow band of this queue held people in its latest minute with a reading (within the last {minutes} min).",
+			"refused": "Overflow bands are not marked: the site's zone profile has more bands than one answer holds (500)."
+		},
+		"quality": {
+			"title": "Data quality",
+			"zoneTitle": "Data quality: {zone}",
+			"description": "Health checks of each 15-minute bin over the last 2 hours, newest first (formulas F18). Targets: conservation residual 0, track completion at least 90 %, no minute outside the zone's capacity.",
+			"hallDescription": "Health checks of the latest 15-minute bin of each lane's queue (formulas F18). Targets: conservation residual 0, track completion at least 90 %, no minute outside the zone's capacity.",
+			"columns": {
+				"bin": "Bin",
+				"residual": "Conservation residual",
+				"completion": "Track completion",
+				"occupancy": "Occupancy range"
+			},
+			"status": {
+				"Final": "Final",
+				"Provisional": "Provisional"
+			},
+			"residual": {
+				"notMeasured": "Not measured",
+				"value": "{value} people",
+				"hint": "People counted in or out that the occupancy at the bin's two ends does not show"
+			},
+			"completion": {
+				"noTracks": "No tracks",
+				"value": "{percent} ({exited} of {entered})",
+				"soFar": "{percent} so far ({exited} of {entered})"
+			},
+			"occupancy": {
+				"notChecked": "No capacity set",
+				"within": "Within capacity ({checked} min)",
+				"outside": "{minutes} of {checked} min outside"
+			},
+			"none": "No health bins in the last 2 hours",
+			"noBin": "No bin yet",
+			"failed": "The data quality could not be read",
+			"loading": "Loading the data quality…"
+		}
 	},
 	"errors": {
 		"notFound": {
@@ -221,7 +265,8 @@
 				"BorderShiftSupervisor": "Border shift supervisor",
 				"TerminalDutyManager": "Terminal duty manager",
 				"HandlerStationManager": "Handler station manager",
-				"SystemAdministrator": "System administrator"
+				"SystemAdministrator": "System administrator",
+				"ValidationObserver": "Validation observer"
 			},
 			"signOutFailed": "Ariva could not end your session on the server. Sign out again when the network is back, or close the browser."
 		},
@@ -430,7 +475,10 @@
 		"unsaved": "Save or undo the changes on the plan first: publishing takes the saved draft.",
 		"lane": "Lane",
 		"noLane": "No lane",
-		"laneHint": "The lane category whose queue this is: the immigration screen shows its wait for that lane."
+		"laneHint": "The lane category whose queue this is: the immigration screen shows its wait for that lane.",
+		"capacity": "Physical capacity (people)",
+		"capacityHint": "Optional, 1 to 5,000: the most people the area holds. The stream flags minutes whose occupancy is above it.",
+		"capacityInvalid": "The physical capacity is a whole number from 1 to 5,000, or empty."
 	},
 	"devices": {
 		"title": "Devices",
@@ -564,10 +612,150 @@
 		"planLabel": "Floor plan with the queue zones and the devices' coverage",
 		"assumed": "assumed",
 		"zonesHealth": "Queue zone sensing",
-		"heartbeat": "A device is offline after {seconds} s without a heartbeat."
+		"heartbeat": "A device is offline after {seconds} s without a heartbeat.",
+		"healthAlarms": {
+			"title": "Health-check alarms",
+			"description": "Open alarms of the continuous health checks per queue zone: conservation residual, track completion and occupancy range. You see the alarms your role is responsible for.",
+			"none": "No open health-check alarm at this site",
+			"noZone": "Without a zone",
+			"bin": "bin {time}",
+			"raised": "raised {time}",
+			"more": "The site has more open alerts than one page: the newest 500 are read.",
+			"failed": "The alarms could not be read"
+		}
+	},
+	"csvImport": {
+		"devices": {
+			"action": "Import devices",
+			"title": "Import devices from a CSV file",
+			"description": "The device list of the as-built pack, for site {site}. Each row is checked as registering it would be, and nothing is registered until you commit; then every row is, or none.",
+			"limits": "UTF-8 CSV, at most 1 MB and 500 devices. Both steps need a code from your authenticator app if you have not entered one in the last 15 minutes.",
+			"commit": "{count, plural, one {Register # device} other {Register # devices}}",
+			"committed": "{count, plural, one {# device registered in Commissioning.} other {# devices registered in Commissioning.}}"
+		},
+		"mappings": {
+			"action": "Import mappings",
+			"title": "Import desk code mappings from a CSV file",
+			"description": "AMAN desk and gate codes and AODB counter codes for any desk of site {site}, not only this one. Nothing is created until you commit; then every row is, or none.",
+			"limits": "UTF-8 CSV, at most 1 MB and 10,000 mappings.",
+			"commit": "{count, plural, one {Create # mapping} other {Create # mappings}}",
+			"committed": "{count, plural, one {# desk code mapping created.} other {# desk code mappings created.}}"
+		},
+		"file": "CSV file",
+		"choose": "Choose a file",
+		"noFile": "No file chosen",
+		"header": "Header row: exact names, in any order",
+		"optional": "Optional:",
+		"preview": "Check the file",
+		"previewing": "Checking every row of the file.",
+		"committing": "Importing the file.",
+		"cancel": "Cancel",
+		"close": "Close",
+		"fileProblems": {
+			"notCsv": "Choose a .csv file (comma separated text).",
+			"empty": "The file is empty.",
+			"tooLarge": "The file is larger than 1 MB: split it into smaller files."
+		},
+		"summary": "{rows, plural, one {# row} other {# rows}}: {passing} pass, {refused, plural, =0 {nothing refused} one {# refusal} other {# refusals}}.",
+		"sha": "File SHA-256:",
+		"ready": "Every row passes. Commit before {time}: the check holds only for this file, this site and you.",
+		"refused": "{count, plural, one {# refusal} other {# refusals}}: fix the file and check it again. Nothing can be imported while a row is refused.",
+		"nothingToImport": "Nothing to import.",
+		"refusals": "Refused ({count})",
+		"firstOf": "The first {shown} of {count} are listed.",
+		"passing": "Rows that pass ({count})",
+		"rowsFirstOf": "The first {shown} of {count} rows that pass are listed.",
+		"noPassing": "No row passes yet.",
+		"wholeRow": "Whole row",
+		"columns": {
+			"row": "Row",
+			"column": "Column",
+			"reason": "Reason",
+			"code": "Code",
+			"family": "Family",
+			"model": "Model",
+			"terminal": "Terminal",
+			"level": "Level",
+			"queueZone": "Queue zone",
+			"system": "System",
+			"externalCode": "Their code",
+			"checkpoint": "Checkpoint",
+			"desk": "Desk"
+		},
+		"credentials": {
+			"title": "{count, plural, one {The new device's credential} other {The # new devices' credentials}}",
+			"warning": "Shown this once and never again: Ariva keeps only a hash of each. Copy them now and install each on its device. A lost credential is replaced from the device's panel, never recovered. Once they are installed, clear the clipboard or copy something else over it.",
+			"device": "Device",
+			"credential": "Credential",
+			"copy": "Copy",
+			"copyFor": "Copy the credential of {code}",
+			"copyAll": "Copy all as CSV",
+			"copied": "Copied. Paste it where it belongs, then copy something else.",
+			"copyFailed": "Copying failed. Select the credentials and copy them yourself.",
+			"confirm": "I have copied every credential",
+			"confirmFirst": "Confirm that you have copied the credentials first: they will not be shown again."
+		},
+		"failures": {
+			"secondFactor": "Importing devices needs a fresh second factor: check the file again and confirm with your authenticator code.",
+			"forbidden": "You do not hold the permission for this import.",
+			"notFound": "The site was not found among your sites.",
+			"busy": "Another upload is running on the server. Try again in a moment.",
+			"unreachable": "Ariva could not be reached. Try again.",
+			"refused": "The request was refused before it was sent: choose the file again.",
+			"atRow": "Row {row}: {reason}"
+		},
+		"notes": {
+			"devicesArriveCommissioning": "The devices arrived in Commissioning, each with a new credential shown this once: install it on the device and calibrate it."
+		},
+		"reasons": {
+			"fileRequired": "Choose a CSV file.",
+			"fileTooLarge": "A CSV import file is at most 1 MB.",
+			"notUtf8": "The file is not UTF-8 text (a byte order mark is optional; UTF-16 and UTF-32 are refused).",
+			"noHeader": "The file has no header row.",
+			"noRows": "The file has no rows after its header.",
+			"cellBeyondParserBound": "A cell of the file is far longer than any column takes, so the file is refused.",
+			"deviceHeader": "The header names each column once, by its exact name: code, family, model, transport, dialect, clockSource, terminal, level, x, y, mountingHeightMetres, orientationDegrees and queueZone, and optionally mappingName, footprintLengthMetres, footprintWidthMetres and footprintRadiusMetres.",
+			"mappingHeader": "The header names each column once, by its exact name: externalSystem, externalCode, checkpoint and desk.",
+			"tooManyDeviceRows": "A device import takes at most 500 rows.",
+			"tooManyMappingRows": "A desk code mapping import takes at most 10,000 rows.",
+			"previewTokenNotValid": "The check of the file is missing: check the file again.",
+			"notThePreview": "The file, the site or the user is not the check's, or the check is older than 15 minutes: check the file again.",
+			"rowsRefused": "The file no longer passes its checks: check it again to see the refused rows.",
+			"wrongCellCount": "The row does not have one cell for each column of the header.",
+			"badQuotes": "The row is not valid CSV: a quote inside a cell that is not quoted, or text after a closing quote.",
+			"required": "This cell is required.",
+			"tooLong": "A cell is at most 200 characters.",
+			"formulaPrefix": "A cell may not start with =, +, -, @, a tab or a carriage return (a spreadsheet would run it as a formula); a minus is read only as the sign of a number.",
+			"controlCharacter": "A cell may not hold a line break or another control character.",
+			"notANumber": "A number is digits with an optional leading minus sign and an optional decimal point, such as -0.5 or 12.",
+			"outOfRange": "The number is outside its column's range: x and y from -1 to 2001 m, mounting height 0 to 100 m (2 to 20 m to register), orientation 0 to 360 degrees, footprints 0 to 1000 m.",
+			"code": "A code is 1 to 16 upper case letters or digits, with single hyphens inside.",
+			"deviceCodeRepeated": "The device code appears on an earlier row of the file.",
+			"levelNotFound": "The site has no live level with this terminal and level code.",
+			"levelAmbiguous": "The site has two terminals with this code at different airports, so the level cannot be told apart.",
+			"registrationRefused": "Registering refuses this row (for example a mounting height outside 2 to 20 m, a position outside the level, or a model with an invisible character).",
+			"unknownSystem": "Unknown external system: Aman or Aodb.",
+			"externalCode": "An external code is 1 to 32 letters, digits or . _ / - characters.",
+			"mappingTaken": "A live mapping of this system already uses the external code, or the desk, at the site.",
+			"mappingRepeated": "The external code, or the desk, appears on an earlier row of the file for the same system.",
+			"deskNotFound": "The site has no live desk with this checkpoint and desk code.",
+			"mappingDoesNotFitDesk": "An Aman code maps an immigration desk or e-gate, an Aodb code a check-in counter.",
+			"mappingRefused": "The desk code mapping service refuses this row.",
+			"zoneNotFound": "The queue zone is not in the site's published zone profile or its draft.",
+			"zoneOnAnotherLevel": "The queue zone is on another level than the device.",
+			"outOfReach": "The device's footprint does not reach its queue zone; move it over the zone.",
+			"unknownFamily": "Unknown device family.",
+			"unknownTransport": "Unknown transport.",
+			"unsupportedTransport": "Ariva does not support this transport yet: register the device with HTTPS push or MQTT.",
+			"unknownDialect": "Unknown dialect.",
+			"unknownClockSource": "Unknown clock source.",
+			"unknownMapping": "The declarative dialect needs a mapping from the catalogue shipped with Ariva; other dialects take none.",
+			"duplicate": "A record with that code already exists here."
+		}
 	},
 	"alertRules": {
 		"notEvaluated": "Not evaluated yet",
+		"notEvaluatedBorder": "Not evaluated: fix its border settings",
 		"title": "Alert rules",
 		"description": "The rules that drive every alert, with a preview of when they would have fired",
 		"listTitle": "Rules",
@@ -603,7 +791,8 @@
 			"noZones": "This site has no published queue zones yet.",
 			"zonesRequired": "Choose at least one zone.",
 			"noOwner": "Every role of the site",
-			"noRole": "None"
+			"noRole": "None",
+			"borderOwner": "Choose the Border shift supervisor or the system administrator as owner: a rule on border data belongs to a border role."
 		},
 		"fields": {
 			"name": "Name",
@@ -629,12 +818,20 @@
 			"minQueueLength": "Only fire when at least this many people are queuing.",
 			"leadMinutes": "15 to 60 minutes ahead, from the arrival wave of landing flights.",
 			"escalation": "Unacknowledged alerts go to the role or contact after this.",
-			"condition": "This metric is true or false: the rule fires while it is true."
+			"condition": "This metric is true or false: the rule fires while it is true.",
+			"desksBelowPlan": "Border data: how many desks each arrivals lane is short of the current quarter hour's indicative recommendation. The rule and its alerts reach the Border shift supervisor and the system administrator only.",
+			"predictedNowcast": "Border data: the wait expected at the lead time, from the queue now and its lane's share of the arrival wave. The rule and its alerts reach the Border shift supervisor and the system administrator only."
+		},
+		"healthHints": {
+			"ConservationResidual": "People counted in or out that the occupancy does not show, in the zone's latest ended 15-minute bin (0 when every person is accounted for). Queue zones only.",
+			"TrackCompletion": "Share of tracked people who entered in the zone's latest final bin and were seen to exit, in percent. Below 90 percent marks the bin Degraded. Queue zones only.",
+			"OccupancyOutOfRange": "Minutes of the zone's latest ended bin with a reading above a zone's physical capacity (set in the zone profile). Queue zones only."
 		},
 		"units": {
 			"minutes": "minutes",
 			"people": "people",
 			"desks": "desks",
+			"percent": "percent",
 			"condition": ""
 		},
 		"metrics": {
@@ -644,7 +841,10 @@
 			"QueueLength": "Queue length",
 			"SensorOffline": "Sensor offline",
 			"OverflowOccupied": "Overflow occupied",
-			"DesksBelowPlan": "Desks below plan"
+			"DesksBelowPlan": "Open desks below recommendation",
+			"ConservationResidual": "Conservation residual",
+			"TrackCompletion": "Track completion",
+			"OccupancyOutOfRange": "Occupancy out of range"
 		},
 		"comparators": {
 			"GreaterThan": "Above",
@@ -758,7 +958,71 @@
 			"Closed": "Closed",
 			"Unknown": "Unknown"
 		},
-		"served": "{count} served"
+		"served": "{count} served",
+		"staffing": {
+			"title": "Recommended open desks",
+			"indicative": "Indicative",
+			"description": "Per arrivals lane and quarter hour for the next 3 hours: the fewest open desks that keep the predicted wait within the lane's target with no desk too busy. From the flight schedule or AODB and each lane's measured throughput per open desk; no roster, shift or break rules.",
+			"settings": "Target wait {target} min; each desk at most {cap} busy.",
+			"computedAt": "Computed at {time}.",
+			"departures": "Recommended open desks cover the arrivals hall only in this version: departures need show-up forecasts, which come later.",
+			"loading": "Loading the recommendation…",
+			"noLanes": "The site's published zone profile has no arrivals lane queue.",
+			"refused": "The site has more arrivals lanes than one answer holds (100), so no recommendation is shown.",
+			"failed": "The recommendation could not be read. It is read again every minute.",
+			"nextHours": "Next 3 hours",
+			"nextHoursFor": "Next 3 hours, {lane} ({zone})",
+			"nowTo": "Now to {time}",
+			"atLimit": "All {desks} desks, short by {short}",
+			"outOfReach": "All {desks} desks, target out of reach",
+			"over120": "Over 120 min",
+			"noService": "No desk open",
+			"unknown": "Not known",
+			"short": "Short by {count}",
+			"spare": "Spare {count}",
+			"matches": "Matches",
+			"openUnknown": "Open count not known",
+			"openNowHint": "Open now counts the desks open by their desk states (idle or serving), the figure the wait estimate uses; Desks open in the lanes table counts AMAN's desk sessions.",
+			"degraded": "Approximate: a desk state is degraded",
+			"summaryCaption": "Each arrivals lane in the current quarter hour",
+			"caption": "{lane} ({zone}), next 3 hours by quarter hour, computed at {time}.",
+			"captionSettings": "Target wait {target} min, each desk at most {cap} busy.",
+			"captionCycle": "{cycle} min per passenger at a desk ({source}).",
+			"columns": {
+				"lane": "Lane",
+				"openNow": "Open now (desk states)",
+				"recommendedNow": "Recommended now",
+				"difference": "Difference",
+				"waitOpenNow": "Predicted wait, desks open now",
+				"waitRecommended": "Predicted wait, recommended",
+				"details": "Details",
+				"from": "From",
+				"arrivals": "Arrivals",
+				"recommended": "Recommended desks",
+				"waitOpenNowCount": "Predicted wait, {count} open now",
+				"reason": "Why none"
+			},
+			"reasons": {
+				"NoQueueLength": "No queue length now",
+				"NoThroughput": "No throughput measured or set",
+				"FlightWithoutPassengers": "A flight without a passenger figure",
+				"BacklogUnknown": "Queue not known: earlier arrivals missing",
+				"ArrivalsTruncated": "Too many arriving flights to read",
+				"NoDesks": "No desk in service",
+				"NoLaneDemand": "No arrivals forecast for this lane",
+				"ArrivalsOutOfRange": "Arrivals out of range",
+				"Stale": "No recent recommendation"
+			},
+			"bounds": {
+				"Wait": "for the wait",
+				"Busy": "for the busy cap",
+				"Both": "for both"
+			},
+			"sources": {
+				"Measured": "measured",
+				"Fallback": "set at commissioning"
+			}
+		}
 	},
 	"displays": {
 		"title": "Passenger displays",
@@ -812,12 +1076,19 @@
 			"label": "Label ({language})",
 			"fallback": "Message when the data is stale",
 			"fallbackIn": "Message ({language})",
-			"enabled": "Enabled"
+			"enabled": "Enabled",
+			"layoutGroup": "Screen layout",
+			"layout": "Layout",
+			"queueShare": "Queue region (% of the screen)",
+			"secondRegion": "Second region"
 		},
 		"hints": {
 			"hysteresis": "The band changes only when the wait leaves it by this much.",
 			"stale": "Older data shows the message instead of a number.",
-			"order": "Shown in this order: {order}"
+			"order": "Shown in this order: {order}",
+			"queueShare": "Between 50 and 75. The queues come first in the reading order of the board's first language, and on top on a portrait screen.",
+			"secondRegion": "Advertising is off for this site or for one of these zones (the site's advertising policy).",
+			"secondRegionAllowed": "The site's advertising policy allows advertising for these zones."
 		},
 		"orientations": {
 			"Landscape": "Landscape",
@@ -832,6 +1103,178 @@
 		"messages": {
 			"saved": "Display {code} saved.",
 			"deleted": "Display {code} deleted.",
+			"failed": "That did not work: {reason}"
+		},
+		"layouts": {
+			"Full": "Full screen queues",
+			"Split": "Split screen"
+		},
+		"secondRegions": {
+			"Instructions": "Instructions",
+			"Advertising": "Advertising"
+		},
+		"layoutSummary": {
+			"Full": "Full screen",
+			"Split": "Split screen, queues {share}%"
+		},
+		"advertisingShown": "Second region: advertising",
+		"advertisingFallsBack": "Second region: advertising is off, instructions shown"
+	},
+	"advertising": {
+		"title": "Advertising policy",
+		"description": "Whether this site's split displays may show advertising in their second region. Off unless a system administrator allows it; displays showing an excluded zone always show instructions.",
+		"allowed": "Advertising allowed",
+		"off": "Advertising off",
+		"excluded": "Off in these zones: {zones}",
+		"lastChange": "Last change {when}: {reason}",
+		"unpublished": "No longer queue zones of the published profile, so advertising is off on every display of this site until the policy is updated: {zones}",
+		"fallingBack": "Set to advertising and showing instructions because of this policy: {displays}",
+		"profileChanged": "Zone profile version {current} has been published since this policy was saved against version {confirmed}, so advertising is off on every display of this site until a system administrator checks the excluded zones in the new version (their names and outlines) and saves the policy again.",
+		"profileChangedFirst": "Zone profile version {current} has been published since this policy was saved, so advertising is off on every display of this site until a system administrator checks the excluded zones in it (their names and outlines) and saves the policy again.",
+		"noZones": "The site has no published queue zones.",
+		"reviewing": "You are confirming the excluded zones against zone profile version {version}: check their names and outlines in it before saving.",
+		"noProfile": "The site has no published zone profile, so no display can show advertising yet.",
+		"fields": {
+			"allowed": "Allow advertising on this site's displays",
+			"excluded": "Zones where advertising stays off",
+			"reason": "Reason: who authorised the change, and their reference"
+		},
+		"hints": {
+			"reason": "10 to 500 characters: the authority or operator that authorised it and their reference, for example Border authority letter BA-2026-17 (no personal names). The audit log keeps it with your name and the time."
+		},
+		"actions": {
+			"change": "Change",
+			"save": "Save policy",
+			"cancel": "Cancel"
+		},
+		"messages": {
+			"saved": "Advertising policy saved"
+		}
+	},
+	"advertisingMedia": {
+		"title": "Advertisement library",
+		"description": "Images this site's split displays may show while advertising is allowed. An item plays only once approved by a second person, and only within its days at the site; a change sends an approved item back to draft.",
+		"loading": "Loading the advertisement library",
+		"none": "No advertisements at this site yet",
+		"previewAlt": "Advertisement of {advertiser}: {campaign}",
+		"dates": "{first} to {last}",
+		"size": "{width} by {height} pixels",
+		"uploadedBy": "Uploaded by {name}",
+		"approvedBy": "approved by {name}",
+		"playing": "Playing at the site today",
+		"status": {
+			"Draft": "Draft, waiting for approval",
+			"Approved": "Approved",
+			"Retired": "Retired"
+		},
+		"fields": {
+			"file": "Image (PNG, JPEG or WebP, at most 10 MB)",
+			"advertiser": "Advertiser",
+			"campaign": "Campaign",
+			"startsOn": "First day",
+			"endsOn": "Last day"
+		},
+		"hints": {
+			"file": "The image is checked by its content and written anew without its metadata; animated images, SVG, PDF and other files are refused. Days are the site's local days.",
+			"backToDraft": "This item is approved: saving a change sends it back to draft, and it stops playing until another person approves it."
+		},
+		"actions": {
+			"upload": "Upload as draft",
+			"approve": "Approve",
+			"change": "Change",
+			"save": "Save",
+			"cancel": "Cancel",
+			"retire": "Retire",
+			"confirmRetire": "Retire: it never plays again"
+		},
+		"messages": {
+			"uploaded": "Advertisement uploaded as a draft",
+			"changed": "Advertisement saved",
+			"changedBackToDraft": "Advertisement saved and back to draft for a second approval",
+			"approved": "Advertisement approved",
+			"retired": "Advertisement retired",
+			"tooLarge": "The image is larger than 10 MB.",
+			"failed": "The advertisement library could not be updated: {reason}"
+		}
+	},
+	"slides": {
+		"title": "Display instructions",
+		"description": "Short instructions the passenger displays show beside the waits, in each of their languages",
+		"listTitle": "Instruction slides",
+		"none": "No instruction slides at this site yet",
+		"orderHint": "Split displays rotate the active slides that apply to them in this order; a pinned slide shows under the waits instead.",
+		"position": "Position {position}",
+		"active": "Active",
+		"retired": "Retired",
+		"pinned": "Pinned under the waits",
+		"seconds": "{seconds} s on screen",
+		"appliesTo": {
+			"Site": "Every display of the site",
+			"Zone": "Displays showing {targets}",
+			"Display": "Displays {targets}"
+		},
+		"columns": {
+			"order": "Order",
+			"slide": "Slide",
+			"scope": "Shown on",
+			"status": "Status",
+			"actions": "Actions"
+		},
+		"actions": {
+			"add": "New slide",
+			"create": "Create the slide",
+			"save": "Save",
+			"cancel": "Cancel",
+			"edit": "Edit",
+			"retire": "Retire",
+			"restore": "Restore",
+			"up": "Move slide {position} up",
+			"down": "Move slide {position} down",
+			"preview": "Preview"
+		},
+		"form": {
+			"createTitle": "New instruction slide",
+			"editTitle": "Edit slide {position}",
+			"scope": "Shown on",
+			"zones": "Queue zones",
+			"displays": "Displays",
+			"icon": "Icon",
+			"duration": "Seconds on screen",
+			"pinned": "Pin under the waits instead of rotating",
+			"words": "Words",
+			"wordsHint": "Plain text only, in at least one language; never name a person, since displays are public. A display shows the languages it has; a slide without any of them is not shown there.",
+			"titleIn": "Title ({language})",
+			"bodyIn": "Text ({language}, optional)",
+			"noZones": "This site has no published queue zones yet.",
+			"noDisplays": "This site has no displays yet."
+		},
+		"scopes": {
+			"Site": "Every display of the site",
+			"Zone": "Displays showing these queue zones",
+			"Display": "These displays"
+		},
+		"icons": {
+			"Information": "Information",
+			"Passport": "Passport",
+			"EGate": "E-gate",
+			"HatAndGlasses": "Hat and glasses",
+			"Fingerprint": "Fingerprint",
+			"Family": "Family",
+			"Accessibility": "Accessibility",
+			"Baggage": "Baggage",
+			"NoPhone": "No phone",
+			"FollowSigns": "Follow the signs"
+		},
+		"preview": {
+			"title": "Preview",
+			"description": "As a display shows it, in each language: left to right, and right to left for Arabic.",
+			"empty": "Type a title to see the preview."
+		},
+		"messages": {
+			"saved": "Slide {position} saved.",
+			"retired": "Slide {position} retired: no display shows it.",
+			"restored": "Slide {position} restored.",
+			"moved": "The order is saved.",
 			"failed": "That did not work: {reason}"
 		}
 	},
@@ -872,7 +1315,8 @@
 			"BorderShiftSupervisor": "Border shift supervisor",
 			"TerminalDutyManager": "Terminal duty manager",
 			"HandlerStationManager": "Handler station manager",
-			"SystemAdministrator": "System administrator"
+			"SystemAdministrator": "System administrator",
+			"ValidationObserver": "Validation observer"
 		},
 		"status": {
 			"active": "Active",
@@ -1055,6 +1499,580 @@
 			"edit": "Edit",
 			"delete": "Delete",
 			"confirmDelete": "Delete this schedule"
+		}
+	},
+	"site": {
+		"illustrative": {
+			"title": "Illustrative, not surveyed.",
+			"detail": "{site} is modelled on a real airport from public information only; its layout, counts and positions are assumptions, not a survey."
+		}
+	},
+	"validation": {
+		"title": "Validation capture",
+		"description": "Count people crossing a line in 15-minute bins, time tracers and log desk states minute by minute for a running validation campaign. Each bin, run and desk log is sent to Ariva as soon as it ends.",
+		"site": "Site",
+		"noSites": "Your account has no site. Ask an administrator to give you the site you observe.",
+		"loading": "Loading the running campaigns…",
+		"refresh": "Refresh",
+		"campaigns": {
+			"title": "Running campaigns",
+			"intro": "Choose the campaign you are observing for. Only running campaigns of your site are listed.",
+			"none": "No campaign is running at this site. The campaign manager starts it; then refresh.",
+			"days": "Planned days (site local): {days}",
+			"scope": "{lines, plural, one {# line} other {# lines}}, {zones, plural, one {# queue zone} other {# queue zones}}",
+			"change": "Change campaign",
+			"notToday": "Today ({today}, site local time) is not a planned day of this campaign: Ariva refuses counts and runs outside its planned days.",
+			"desks": "{desks, plural, one {# desk} other {# desks}} to log"
+		},
+		"clock": {
+			"title": "Ariva's clock",
+			"time": "{time}, site local time ({zone}). Line counts and desk logs keep to Ariva's clock, not the tablet's.",
+			"tabletTime": "{time}, site local time ({zone}), on the tablet's own clock.",
+			"unknown": "Ariva's clock has not been read on this screen, so line counts and desk logs follow the tablet's clock. Set the tablet's date and time to automatic.",
+			"lost": "The tablet's clock changed (set by hand or from the network, or the tablet slept), so Ariva's clock is being read again. Until it is, nothing is counted or logged and no bin is closed; the desk minutes logged before are kept, and the line bin being counted will not be sent.",
+			"implausible": "The tablet's clock is more than 15 minutes from Ariva's. Set the tablet's date and time to automatic: until the difference is under 15 minutes, nothing is counted or logged and no bin is closed.",
+			"tabletAhead": "The tablet's clock is {minutes} min {seconds} s ahead of Ariva's. Set the tablet's date and time to automatic; line counts and desk logs keep to Ariva's clock.",
+			"tabletBehind": "The tablet's clock is {minutes} min {seconds} s behind Ariva's. Set the tablet's date and time to automatic; line counts and desk logs keep to Ariva's clock."
+		},
+		"tabs": {
+			"label": "Capture",
+			"tally": "Line tally",
+			"tracers": "Tracers",
+			"desks": "Desk log"
+		},
+		"outbox": {
+			"title": "Not sent yet",
+			"waiting": "{count, plural, one {# bin, run or desk log is} other {# bins, runs and desk logs are}} not sent yet. They are kept on this screen only (nothing is stored on the tablet): keep the screen open and send them again once the connection is back.",
+			"sending": "Sending…",
+			"retry": "Send again now",
+			"refused": "Ariva refused this {kind, select, count {bin} desks {desk log} other {tracer run}}: {reason}",
+			"ownCampaign": "You created or started this campaign, so you cannot count for it: its counts and runs come from other observers. Nothing was recorded.",
+			"clock": "Ariva refused the run because the tablet's clock is more than 5 minutes off. Set the tablet's date and time to automatic (from the network), then time the tracer again; this run cannot be sent.",
+			"discard": "Dismiss",
+			"binLabel": "{line}, bin {bin}",
+			"runLabel": "{code} in {zone}",
+			"offline": "No connection to Ariva; it will be sent again.",
+			"unavailable": "Ariva could not take it now (HTTP {status}); it will be sent again.",
+			"deskLabel": "Desk log, bin {bin} ({desks, plural, one {# desk} other {# desks}})"
+		},
+		"leave": {
+			"title": "Unsent work on this screen",
+			"description": "A tally, a tracer run or a desk log is in progress, or something is not sent yet. Leaving this screen loses it.",
+			"stay": "Stay",
+			"leave": "Leave anyway"
+		},
+		"tally": {
+			"chooseLine": "Choose the line you count",
+			"chooseLineHint": "Stand where you see the whole line. Tap In for each person crossing into the queue and Out for each person crossing out. A bin is sent when it ends.",
+			"lineRole": "{role} line, {zone}",
+			"start": "Start counting",
+			"counting": "Counting {line}",
+			"bin": "Bin {start} to {end}",
+			"binHint": "Ariva's clock, site local time; ends in {left}",
+			"partBin": "Part bin: counting did not cover the whole bin from {start}, so it is not sent. Counts are sent from the {next} bin.",
+			"held": "Waiting for Ariva's clock: In and Out count nothing until it is read again, and this bin will not be sent.",
+			"in": "In",
+			"out": "Out",
+			"inCount": "In, {count} so far",
+			"outCount": "Out, {count} so far",
+			"undoIn": "Undo one In",
+			"undoOut": "Undo one Out",
+			"stop": "Stop counting",
+			"stopConfirm": "Stop and drop this bin",
+			"skippedPart": "The bin from {start} was a part bin and was not sent.",
+			"skippedStopped": "Counting stopped; the bin from {start} was not complete and was not sent.",
+			"sent": "Bin {start} to {end} sent: {in} in, {out} out.",
+			"roles": {
+				"Entry": "Entry",
+				"Exit": "Exit",
+				"OverflowEntry": "Overflow entry",
+				"Count": "Count"
+			}
+		},
+		"history": {
+			"title": "Your counts for this line",
+			"empty": "No count recorded for this line yet.",
+			"caption": "Your counts for {line}, newest bin first, in site local time",
+			"columns": {
+				"bin": "Bin",
+				"in": "In",
+				"out": "Out",
+				"revision": "Revision",
+				"reason": "Reason",
+				"actions": "Actions"
+			},
+			"correct": "Correct",
+			"correctLabel": "Correct the count of bin {bin}"
+		},
+		"correction": {
+			"title": "Correct bin {bin}",
+			"in": "People in",
+			"out": "People out",
+			"reason": "Reason",
+			"reasonHint": "Say what was wrong, for example a missed group. Never name a person.",
+			"save": "Save correction",
+			"cancel": "Cancel",
+			"saved": "Correction saved as revision {revision}.",
+			"invalid": "Enter whole numbers from 0 to 10,000 and a reason of 1 to 200 characters.",
+			"failed": "The correction was not saved: {reason}",
+			"unknown": "Ariva did not answer, so this correction may or may not be saved. Send again sends it as it is (it is never saved twice), or Cancel and check your counts.",
+			"sendAgain": "Send again",
+			"keyReused": "Ariva already holds another correction sent with this form's key, so this one was not saved. Your counts are shown again: correct the latest revision if it is still wrong."
+		},
+		"tracers": {
+			"clockTitle": "Tablet clock",
+			"offset": "{sign}{seconds} s against Ariva's clock, measured at {time}",
+			"notMeasured": "Not measured yet: Ariva measures the tablet's clock with each run sent and corrects the run's times.",
+			"offsetLarge": "The tablet's clock is more than a minute off. Set its date and time to automatic; beyond 5 minutes Ariva refuses the runs.",
+			"joinTitle": "A tracer joins the queue",
+			"code": "Tracer code",
+			"codeHint": "The label on the campaign's roster, T-01 to T-999. Never type a name.",
+			"zone": "Queue zone",
+			"join": "Join",
+			"problems": {
+				"code": "A tracer code is T, a hyphen and 2 or 3 digits (T-01 to T-999); never a name.",
+				"zone": "Choose the queue zone the tracer joins.",
+				"active": "This tracer is already in a queue; record their exit first."
+			},
+			"activeTitle": "In the queue",
+			"activeEmpty": "No tracer is in a queue.",
+			"joinedAt": "Joined at {time}, {zone}",
+			"elapsed": "Waiting {time}",
+			"exit": "Exit",
+			"exitLabel": "{code} exits, served",
+			"abandon": "Left unserved",
+			"abandonLabel": "{code} left without being served",
+			"cancel": "Cancel run",
+			"cancelConfirm": "Drop this run",
+			"tooLong": "Longer than 3 hours: Ariva refuses this run. Cancel it.",
+			"recordedTitle": "Your recorded runs",
+			"recordedEmpty": "No run recorded yet.",
+			"recordedCaption": "Your tracer runs, latest join first, in site local time (Ariva's clock)",
+			"columns": {
+				"code": "Tracer",
+				"zone": "Zone",
+				"joined": "Joined",
+				"wait": "Wait",
+				"outcome": "Outcome",
+				"offset": "Clock offset"
+			},
+			"served": "Served",
+			"abandoned": "Abandoned",
+			"sent": "{code}'s run sent: {wait} in {zone}."
+		},
+		"failed": "Could not load: {reason}",
+		"open": "Open validation capture",
+		"desks": {
+			"chooseTitle": "Choose the desks you watch",
+			"chooseHint": "Choose up to 20 desks you can see from where you stand. Each minute, tap what each desk is doing: Serving, Idle, Paused or Closed. Each 15-minute bin is sent when it ends.",
+			"chosen": "{count, plural, =0 {No desk chosen} one {# desk chosen} other {# desks chosen}} (at most {max})",
+			"chooseAll": "Choose all",
+			"clear": "Clear",
+			"start": "Start logging",
+			"logging": "Logging {count, plural, one {# desk} other {# desks}}",
+			"bin": "Bin {start} to {end} (Ariva's clock, site local time); sent when it ends, in {left}",
+			"binHeld": "Bin {start} to {end} (Ariva's clock, site local time); sent when it ends",
+			"minutes": "Minutes of this bin",
+			"minuteNow": "{time}, now",
+			"minuteEnded": "{time}, ended",
+			"minuteLater": "{time}, not yet",
+			"minuteSent": "{time}, already sent",
+			"target": "Tap the state each desk shows in minute {start} to {end}.",
+			"held": "Waiting for Ariva's clock: taps are not placed until it is read again.",
+			"earlier": "You are filling in minute {time}, an earlier minute of this bin.",
+			"backToNow": "Back to now",
+			"notLogged": "Not logged yet",
+			"notObserved": "Not observed",
+			"stateOf": "{desk}, minute {time}",
+			"strip": "{desk}, this bin",
+			"legend": "Desk states",
+			"stop": "Stop logging",
+			"stopConfirm": "Stop and send the minutes that have ended",
+			"stopped": "Logging stopped. The minutes before {time} are sent; the minute in progress was not.",
+			"sent": "Desk log for {start} to {end} sent: {count, plural, one {# desk minute} other {# desk minutes}}.",
+			"ownCampaign": "You created or started this campaign, so you cannot log desks for it: its desk logs come from other observers. Nothing was recorded.",
+			"deskRole": "Desk states are border data: Ariva takes no desk log from this account, because it also holds an airport role. Nothing was recorded.",
+			"states": {
+				"Serving": "Serving",
+				"Idle": "Idle",
+				"Paused": "Paused",
+				"Closed": "Closed"
+			},
+			"history": {
+				"title": "Your desk log",
+				"empty": "No desk state recorded yet.",
+				"hint": "Each minute you sent is shown in site local time. Tap a minute to correct it.",
+				"bin": "Bin",
+				"binOption": "{start} to {end}",
+				"caption": "Your desk states from {start} to {end}, site local time",
+				"desk": "Desk",
+				"cellLabel": "Correct {desk} at {time}: {state}, revision {revision}",
+				"corrections": "Corrections in this bin",
+				"columns": {
+					"desk": "Desk",
+					"minute": "Minute",
+					"state": "State",
+					"revision": "Revision",
+					"reason": "Reason"
+				},
+				"forbidden": "Desk states are border data: Ariva does not show them to this account, because it also holds an airport role.",
+				"failed": "Could not load your desk log: {reason}"
+			},
+			"correction": {
+				"title": "Correct {desk} at {time}",
+				"recorded": "Recorded: {state} (revision {revision})",
+				"state": "The state the desk really showed",
+				"reasonHint": "Say what was wrong, for example a tap on the wrong desk. Never name a person: the reason is kept beside the desk and the minute.",
+				"invalid": "Choose the state the desk really showed (not the one recorded) and give a reason of 1 to 200 characters.",
+				"keyReused": "Ariva already holds another correction sent with this form's key, so this one was not saved. Your desk log is shown again: correct the latest revision if it is still wrong."
+			}
+		}
+	},
+	"validationCampaigns": {
+		"title": "Validation campaigns",
+		"description": "Plan, start and close the campaigns that check a site's numbers against manual counts, timed tracers and desk logs, and read their results.",
+		"site": "Site",
+		"noSites": "Your account has no site. Ask an administrator for the sites you manage.",
+		"loading": "Loading…",
+		"failed": "Could not load: {reason}",
+		"noValue": "None",
+		"list": {
+			"title": "Campaigns",
+			"intro": "The campaigns of the site, newest first. Open one for its progress, every observer's counts and its results.",
+			"search": "Search by name",
+			"status": "Status",
+			"allStatuses": "All statuses",
+			"none": "No campaign at this site yet.",
+			"noneMatching": "No campaign matches the search.",
+			"caption": "Validation campaigns of {site}, newest first",
+			"columns": {
+				"name": "Campaign",
+				"status": "Status",
+				"version": "Profile version",
+				"days": "Planned days",
+				"scope": "Scope",
+				"created": "Planned on"
+			},
+			"scope": "{zones, plural, one {# queue zone} other {# queue zones}}, {lines, plural, one {# line} other {# lines}}",
+			"days": "{count, plural, one {# day} other {# days}} from {first}",
+			"new": "New campaign",
+			"more": "Showing the newest {shown} of {total} campaigns: search by name to find older ones."
+		},
+		"statuses": {
+			"Planned": "Planned",
+			"Running": "Running",
+			"Closed": "Closed"
+		},
+		"form": {
+			"title": "Plan a campaign",
+			"intro": "A campaign checks the site's published zone profile version shown below: the queue zones, the lines observers count, the local days and the targets. It starts as planned; start it once the observers are ready.",
+			"name": "Campaign name",
+			"nameHint": "Name the place and the period, for example Arrivals hall A, pilot week 1. Never name a person: every manager, administrator and observer of the site sees the name.",
+			"version": "Zone profile version",
+			"versionValue": "Published version v{version}, geometry hash {hash}",
+			"loadingProfile": "Loading the published zone profile…",
+			"noProfile": "This site has no published zone profile version. Publish one on the Zones screen first.",
+			"zones": "Queue zones",
+			"zonesHint": "The queue zones whose numbers the campaign checks: 1 to 50.",
+			"noZones": "The published version has no queue zone.",
+			"lines": "Lines to count",
+			"linesHint": "Entry, exit, overflow entry and count lines of the chosen queue zones and their overflow bands: at most 200.",
+			"linesNone": "Choose a queue zone to see its lines.",
+			"allLines": "Choose every line",
+			"lineLabel": "{line} ({role}, {zone})",
+			"days": "Planned days (site local dates)",
+			"daysHint": "1 to 31 days, from 31 days back to a year ahead. Plan at least five operating days, two of them peak days.",
+			"dayInput": "Day to add",
+			"addDay": "Add day",
+			"removeDay": "Remove {day}",
+			"noDays": "No day chosen yet.",
+			"zoneDays": "{zoneDays} zone-days of at most {max} (queue zones times days).",
+			"targets": "Targets",
+			"targetsHint": "Leave them empty until the pilot's KPI annex sets them: Ariva then records the placeholders ({bins} bins per line, {runs} tracer runs) and marks them as placeholders.",
+			"binsPerLine": "Bins per line",
+			"tracerRuns": "Tracer runs",
+			"desks": "Border desks to log",
+			"desksHint": "Staffed immigration and emigration desks in service. Desk states are border data: only border roles and administrators see the desks of a campaign.",
+			"noDesks": "This site has no staffed border desk in service.",
+			"deskLabel": "{checkpoint} {desk}",
+			"create": "Plan campaign",
+			"cancel": "Cancel",
+			"problems": {
+				"name": "Give the campaign a name of 1 to 200 characters.",
+				"zones": "Choose 1 to 50 queue zones.",
+				"lines": "Choose at most 200 lines.",
+				"days": "Choose 1 to 31 days, from 31 days back to a year ahead.",
+				"zoneDays": "Queue zones times days may be at most 400: choose fewer zones or days.",
+				"targets": "Bins per line is a whole number from 1 to 2,976 and tracer runs from 0 to 1,000; or leave them empty.",
+				"desks": "Choose at most 100 desks."
+			},
+			"created": "Campaign planned. Start it when the observers are ready."
+		},
+		"detail": {
+			"back": "All campaigns",
+			"loading": "Loading the campaign…",
+			"notFound": "This campaign does not exist at this site, or your account cannot see it.",
+			"facts": "Campaign facts",
+			"profile": "Zone profile",
+			"profileValue": "v{version}, {status}",
+			"profileStatus": {
+				"Published": "still published",
+				"Retired": "retired"
+			},
+			"geometry": "Geometry hash",
+			"timeZone": "Site time zone",
+			"days": "Planned days",
+			"targets": "Targets",
+			"targetsValue": "{bins} bins per line, {runs} tracer runs",
+			"placeholder": "Placeholders until the KPI annex sets them",
+			"planned": "Planned",
+			"started": "Started",
+			"closed": "Closed",
+			"notYet": "Not yet",
+			"start": "Start campaign",
+			"startHint": "Observers count, time tracers and log desks only while the campaign runs.",
+			"startedToast": "Campaign started: observers can capture for it now.",
+			"notStarted": "The campaign was not started: {reason}",
+			"close": "Close campaign",
+			"closeTitle": "Close this campaign?",
+			"closeText": "Nothing is captured or corrected afterwards, and the results are frozen with a content hash. Closing needs a code from your authenticator app if you have not given one in the last 15 minutes.",
+			"closeConfirm": "Close for good",
+			"closeCancel": "Keep it open",
+			"closedToast": "Campaign closed. Its results are frozen at the first read.",
+			"notClosed": "The campaign was not closed: {reason}",
+			"stepUpNeeded": "The campaign was not closed: closing needs a fresh code from your authenticator app.",
+			"tabs": {
+				"label": "Campaign",
+				"progress": "Progress",
+				"counts": "Counts",
+				"results": "Results"
+			}
+		},
+		"progress": {
+			"linesTitle": "Bins captured per line",
+			"linesIntro": "A bin is captured once any observer has sent a count for it. The target is {target} bins per line.",
+			"linesCaption": "Bins captured per line against the target",
+			"columns": {
+				"line": "Line",
+				"role": "Role",
+				"zone": "Queue zone",
+				"bins": "Bins captured",
+				"share": "Of the target"
+			},
+			"binsValue": "{captured} of {target}",
+			"noLines": "The campaign counts no line.",
+			"tracersTitle": "Tracers by wait range",
+			"tracersIntro": "Tracer runs per queue zone by the wait Ariva measured, so that short and long waits are both covered. Runs left unserved are counted apart: they have no wait to compare.",
+			"tracersCaption": "Tracer runs per queue zone and wait range",
+			"runsTarget": "{timed} timed runs of the target {target}",
+			"zone": "Queue zone",
+			"ranges": {
+				"r0": "Under 5 min",
+				"r1": "5 to 10 min",
+				"r2": "10 to 20 min",
+				"r3": "20 to 30 min",
+				"r4": "30 min and longer"
+			},
+			"abandoned": "Left unserved",
+			"timed": "Timed runs",
+			"total": "Every zone",
+			"truncated": "Only the first {shown} of {total} runs are counted here.",
+			"loadingRuns": "Loading the tracer runs…",
+			"desksTitle": "Desk logs",
+			"desksIntro": "Minutes observed per border desk, by any observer.",
+			"desksCaption": "Minutes observed per border desk",
+			"deskColumns": {
+				"desk": "Desk",
+				"minutes": "Minutes observed"
+			},
+			"noDesks": "This campaign has no desk to log."
+		},
+		"counts": {
+			"title": "Counts",
+			"intro": "Every observer's counts per line and 15-minute bin, newest bin first, in site local time. A correction is the next revision; its reason says what was wrong.",
+			"names": "Reasons and campaign names never name a person. If one does, ask the observer to correct the count with a reason that does not.",
+			"line": "Line",
+			"allLines": "Every line",
+			"every": "Show every revision",
+			"caption": "Counts of the campaign, newest bin first",
+			"columns": {
+				"line": "Line",
+				"bin": "Bin",
+				"observer": "Observer",
+				"in": "In",
+				"out": "Out",
+				"revision": "Revision",
+				"reason": "Reason",
+				"recorded": "Recorded"
+			},
+			"observerHint": "Observers are shown by the start of their Ariva account id, never by name.",
+			"current": "Current",
+			"corrected": "Corrected",
+			"none": "No count yet.",
+			"previous": "Previous",
+			"next": "Next",
+			"page": "Page {page} of {pages}"
+		},
+		"results": {
+			"loading": "Computing the results…",
+			"busy": "Ariva is busy computing results; try again in a moment.",
+			"retry": "Try again",
+			"failed": "The results could not be read: {reason}",
+			"frozenTitle": "Frozen results",
+			"revision": "Revision {number} of {revisions}",
+			"frozenAt": "Frozen on {time}",
+			"hash": "Content hash (SHA-256)",
+			"hashHint": "The hash of the stored results document: an auditor can check that what is shown is exactly what was frozen.",
+			"recomputed": "Recomputed because: {reason}",
+			"reasonHint": "A recomputation reason says what changed, never who: if one names a person, recompute again with a reason that does not.",
+			"revisionPick": "Revision",
+			"liveTitle": "Results so far",
+			"live": "Not frozen: computed now from what is stored, and they may still change. The results are frozen when the campaign closes.",
+			"computed": "Computed on {time}",
+			"problem": {
+				"InvalidScope": "Nothing was compared: the campaign's scope does not match the stored results.",
+				"InputTooLarge": "Nothing was compared: the campaign holds more rows than one computation may read."
+			},
+			"criteriaTitle": "Pilot criteria",
+			"criteriaCaption": "Each pilot criterion's value against its target and the verdict",
+			"columns": {
+				"criterion": "Criterion",
+				"value": "Value",
+				"target": "Target",
+				"verdict": "Verdict",
+				"compared": "Compared",
+				"excluded": "Excluded"
+			},
+			"criteria": {
+				"CountAccuracy": "Count accuracy per 15-minute bin, each line",
+				"WaitError": "Realised-wait error within tolerance",
+				"WaitBias": "Realised-wait bias",
+				"TrackCompletion": "Track completion",
+				"DeskStateAgreement": "Desk-state agreement",
+				"NowcastError": "Nowcast error, median for waits under 20 min",
+				"Availability": "Availability during the campaign"
+			},
+			"atLeast": "At least {value}",
+			"within": "Within plus or minus {value}",
+			"atMost": "At most {value} min",
+			"minutesValue": "{value} min",
+			"verdicts": {
+				"Pass": "Pass",
+				"Fail": "Fail",
+				"NoData": "No data"
+			},
+			"reasons": {
+				"Met": "Target met",
+				"NotMet": "Target missed",
+				"TooFewJudged": "Too few compared",
+				"NotInScope": "Not in scope",
+				"ExcludedShareAboveCap": "Too many excluded",
+				"NotCompared": "Nothing compared",
+				"ZonesWithoutTracks": "A zone counted no track"
+			},
+			"comparedValue": "{judged} of {required}",
+			"excludedValue": "{excluded} ({share})",
+			"reviewTitle": "Check these before relying on the results",
+			"review": {
+				"QualityIntervalsLeftOut": "Some quality intervals could not be placed, so bins they should have degraded may stand as good.",
+				"UnusableRows": "Some stored rows were refused or conflicting; their keys are left out of the comparison.",
+				"PlaceholderTargets": "The targets are the placeholders, not agreed for this campaign (KPI annex).",
+				"CampaignNotClosed": "The campaign is not closed: more ground truth may still arrive.",
+				"ProvisionalResults": "Some compared items wait for stored results that are not final yet.",
+				"ProofNotRead": "The nowcast without AMAN inputs was not read, so the ground-truth proof is missing.",
+				"ZonesWithoutTracks": "A queue zone in scope counted no track all campaign.",
+				"NowcastMissing": "Some planned minutes had no published nowcast at all."
+			},
+			"linesTitle": "Count accuracy per line",
+			"linesCaption": "Count accuracy per line over the campaign",
+			"linesColumns": {
+				"zone": "Queue zone",
+				"line": "Line",
+				"compared": "Compared bins",
+				"excluded": "Excluded bins",
+				"lowest": "Lowest accuracy",
+				"pooled": "Pooled accuracy",
+				"verdict": "Verdict"
+			},
+			"noLines": "No line was compared.",
+			"tracersTitle": "Tracer waits per queue zone",
+			"tracersCaption": "Tracer wait error and bias per queue zone",
+			"tracersColumns": {
+				"zone": "Queue zone",
+				"runs": "Runs",
+				"compared": "Compared",
+				"within": "Within tolerance",
+				"bias": "Bias",
+				"meanError": "Mean error",
+				"largestError": "Largest error",
+				"abandoned": "Left unserved",
+				"errorVerdict": "Error verdict",
+				"biasVerdict": "Bias verdict"
+			},
+			"everyZone": "Every zone",
+			"noTracers": "No tracer run was recorded.",
+			"tracksTitle": "Track completion per queue zone",
+			"tracksCaption": "Track completion per queue zone over its good bins",
+			"tracksColumns": {
+				"zone": "Queue zone",
+				"goodBins": "Good bins",
+				"excludedBins": "Excluded bins",
+				"entered": "Tracks entered",
+				"exited": "Tracks exited",
+				"rate": "Completion",
+				"verdict": "Verdict"
+			},
+			"desksTitle": "Desk-state agreement per desk",
+			"desksCaption": "Desk-state agreement per border desk",
+			"desksColumns": {
+				"desk": "Desk",
+				"minutes": "Observed minutes",
+				"judged": "Judged",
+				"agreeing": "Agreeing",
+				"agreement": "Agreement",
+				"strict": "Strict agreement",
+				"excluded": "Excluded",
+				"servingIdle": "Serving against Idle (no target)",
+				"level": "Judged at",
+				"verdict": "Verdict"
+			},
+			"deskLevels": {
+				"FullState": "Full state",
+				"Throughput": "Open or not open",
+				"Mixed": "Both (zones changed)"
+			},
+			"deskLevelsNote": "A desk with a staff or service zone is judged on its full state (Closed, Idle, Serving, Paused). A desk without one takes its state from AMAN alone and is judged open (Idle or Serving) against not open (Paused or Closed); Serving against Idle is shown beside it with no target. The target is the same for both.",
+			"everyDesk": "Every desk",
+			"noDesks": "No desk minute was observed.",
+			"proofTitle": "Ground-truth proof: the nowcast with and without AMAN",
+			"proofIntro": "The published nowcast beside the nowcast computed without AMAN inputs, as median absolute errors in minutes against the waits people then had. No target: it shows what AMAN adds. Each side counts its own judged minutes; the same-minutes columns compare both on the minutes both judged.",
+			"proofCaption": "Nowcast error per queue zone with and without AMAN inputs",
+			"proofNotRead": "The nowcast without AMAN inputs could not be read on this installation, so the ground-truth proof is missing.",
+			"proofColumns": {
+				"zone": "Queue zone",
+				"published": "Published: minutes, median error",
+				"shadow": "Without AMAN: minutes, median error",
+				"both": "Same minutes",
+				"bothPublished": "Published median",
+				"bothShadow": "Without AMAN median"
+			},
+			"minutesAndError": "{minutes} min judged, {error}",
+			"calibrationsTitle": "Calibration records",
+			"calibrationsCaption": "Calibration records of the devices in scope",
+			"calibrationsColumns": {
+				"device": "Device",
+				"zone": "Queue zone",
+				"method": "Method",
+				"sample": "Sample",
+				"accuracy": "Count accuracy",
+				"waitError": "Wait error",
+				"threshold": "Threshold",
+				"result": "Result",
+				"performed": "Performed"
+			},
+			"calibrationPassed": "Passed",
+			"calibrationFailed": "Failed",
+			"noCalibrations": "No calibration record for the devices in scope."
 		}
 	}
 }

@@ -1,0 +1,108 @@
+{
+  "alert": "Ariva devices offline (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "The share of monitored devices that are Offline is above the threshold for the whole window (ARV-125b).",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "unit": "percentunit",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "disabled": true,
+            "aggregations": [
+              {
+                "metricName": "ariva.devices.offline",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}'"
+            },
+            "groupBy": []
+          }
+        },
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "B",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "disabled": true,
+            "aggregations": [
+              {
+                "metricName": "ariva.devices.monitored",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}'"
+            },
+            "groupBy": []
+          }
+        },
+        {
+          "type": "builder_formula",
+          "spec": {
+            "name": "F1",
+            "expression": "A / B",
+            "legend": "share offline"
+          }
+        }
+      ]
+    },
+    "selectedQueryName": "F1",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${devicesOffline.severity}",
+          "op": "above",
+          "matchType": "all_the_times",
+          "target": "${devicesOffline.share}",
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "${devicesOffline.minutes}m",
+      "frequency": "1m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [],
+    "renotify": {
+      "enabled": true,
+      "interval": "4h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "devicesOffline",
+    "environment": "${environment}",
+    "severity": "${devicesOffline.severity}"
+  },
+  "annotations": {
+    "summary": "Devices offline",
+    "description": "A share of {{$value}} of the monitored devices has been Offline for ${devicesOffline.minutes} minutes (threshold ${devicesOffline.share}).",
+    "runbook": "wiki/10-Operations-Runbook.md#41-sensor-offline"
+  },
+  "disabled": false
+}

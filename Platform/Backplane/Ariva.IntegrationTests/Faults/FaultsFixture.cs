@@ -58,6 +58,9 @@ public sealed class FaultsFixture : IAsyncLifetime
     /// <summary>Kafka through the proxy (bootstrap and the advertised listener).</summary>
     public string KafkaBootstrap => string.Create(CultureInfo.InvariantCulture, $"{Host}:{_toxiproxy.GetMappedPublicPort(KafkaProxyPort)}");
 
+    /// <summary>Kafka over the container's own listener, not the proxy, for reading the broker's view while the proxy is down.</summary>
+    public string KafkaDirectBootstrap => _kafka.GetBootstrapAddress();
+
     public async ValueTask InitializeAsync()
     {
         _network = new NetworkBuilder().WithName("ariva-faults-" + Guid.NewGuid().ToString("N")[..8]).Build();
@@ -90,8 +93,7 @@ public sealed class FaultsFixture : IAsyncLifetime
             .WithNetworkAliases("postgres")
             .Build();
         _redis = new RedisBuilder().WithImage("redis:8.2-alpine").WithNetwork(_network).WithNetworkAliases("redis").Build();
-        _kafka = new KafkaBuilder()
-            .WithImage("confluentinc/cp-kafka:7.6.1")
+        _kafka = KafkaContainers.Builder()
             .WithNetwork(_network)
             .WithNetworkAliases("kafka")
             .WithListener(string.Create(CultureInfo.InvariantCulture, $"{Host}:{kafkaListener}"))

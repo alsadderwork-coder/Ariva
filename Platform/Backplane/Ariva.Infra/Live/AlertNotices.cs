@@ -3,6 +3,7 @@ using Ariva.Core;
 using Ariva.Core.Domain.Components;
 using Ariva.Core.Domain.Entities;
 using Ariva.Core.Domain.Enums;
+using Ariva.Core.Security;
 using Ariva.Infra.Caching;
 using Ariva.Infra.Messaging;
 using StackExchange.Redis;
@@ -41,12 +42,18 @@ public sealed record AlertNotice(
 
     /// <summary>
     /// The roles whose screens are told: its owner role, and its escalation role once escalated, and always the
-    /// administrators; every operational role of the site when it has no owner role (as <see cref="Alert.IsFor"/>).
+    /// administrators; every operational role of the site when it has no owner role (as <see cref="Alert.IsFor"/>). A notice
+    /// of a border-only metric (<see cref="BorderAlerts"/>: open desks below recommendation since ARV-181b2, the predicted
+    /// nowcast since ARV-187) goes to the border roles among those only, whatever its
+    /// owner and escalation roles say (none when neither is one, and the administrators always).
     /// </summary>
-    public IReadOnlyList<string> Audience() =>
-        OwnerRole is null
-            ? RoleCodes.All
+    public IReadOnlyList<string> Audience()
+    {
+        IReadOnlyList<string> roles = OwnerRole is null
+            ? RoleCodes.AlertRoles
             : [.. new[] { OwnerRole, Escalated ? EscalateToRole : null, RoleCodes.SystemAdministrator }.Where(r => r is not null).Distinct(StringComparer.Ordinal)];
+        return BorderAlerts.Audience(Metric, roles);
+    }
 
     /// <summary>Whether a notice read back from Redis is plausible enough to send to a screen (CWE-501).</summary>
     public static bool Plausible(AlertNotice n) =>
@@ -58,7 +65,7 @@ public sealed record AlertNotice(
 
     private static bool Text(string value, int max) => !string.IsNullOrWhiteSpace(value) && value.Length <= max && DisplayText.IsClean(value);
 
-    private static bool Role(string role) => role is null || Enumerable.Contains(RoleCodes.All, role, StringComparer.Ordinal);
+    private static bool Role(string role) => role is null || Enumerable.Contains(RoleCodes.AlertRoles, role, StringComparer.Ordinal);
 
     private static bool Named<T>(string value) where T : struct, Enum => value is not null && Enumerable.Contains(Enum.GetNames<T>(), value, StringComparer.Ordinal);
 }

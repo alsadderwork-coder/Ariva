@@ -11,6 +11,12 @@
         <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
     </PropertyGroup>
 
+    <!-- ARV-139c: the development-only NBJ-BC1 seed and its tests exist in Debug builds only (Ariva.Infra.csproj); a Release
+         run proves its absence instead (NbjSiteScopeTests). -->
+    <PropertyGroup Label="Development-only seed" Condition="'$(Configuration)' == 'Debug'">
+        <DefineConstants>$(DefineConstants);ARIVA_DEV_SEED</DefineConstants>
+    </PropertyGroup>
+
     <ItemGroup>
         <PackageReference Include="AutoFixture" />
         <!-- The Ariva.AppHost model, built in process (ARV-066) -->
@@ -18,6 +24,9 @@
         <PackageReference Include="Bogus" />
         <!-- Property-based tests of the formulas and parsers (ARV-070) -->
         <PackageReference Include="CsCheck" />
+        <!-- The advertisement image re-encoder (ARV-142a) with its Linux native library, as Ariva.Api.Main ships it -->
+        <PackageReference Include="SkiaSharp" />
+        <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" />
         <PackageReference Include="coverlet.collector">
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>

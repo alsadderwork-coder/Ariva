@@ -4,7 +4,7 @@ As of 1 October 2026. Owner: Ahmad (architect and product owner). Delivery model
 
 ## The answer
 
-Ariva is a private GitHub repository (`github.com/alsadderwork-coder/Ariva`, local clone `D:\DevOps\Ariva`) that mirrors AMAN's layout, conventions and look, with a Claude Code harness that lets agents build it story by story under hard gates. Phase 0 (demo core, October 2026 to April 2027) is 68 stories in 11 epics (ARV-010 split in four), plus 11 engineering-quality stories (E11) that can be interleaved; each is sized for one agent session, ordered by dependency, and run through ralph-tui exactly as AMAN's `.ralph-tui` is configured. Every story must pass the build with security analyzers, unit tests, a 14-CWE security gate, API end-to-end, Playwright functional and accessibility tests, plus a security-reviewer verdict, before it can be marked done. Agents branch each story from `main`, push it, and fast-forward `main` once the gates and the review pass (no merge commits, no force pushes); GitHub Actions runs the same gates; a human releases.
+Ariva is a public GitHub repository (the owner's decision of 2026-10-15; `github.com/alsadderwork-coder/Ariva`, local clone `D:\DevOps\Ariva`) that mirrors AMAN's layout, conventions and look, with a Claude Code harness that lets agents build it story by story under hard gates. Phase 0 (demo core, October 2026 to April 2027) is 68 stories in 11 epics (ARV-010 split in four), plus 11 engineering-quality stories (E11) that can be interleaved; each is sized for one agent session, ordered by dependency, and run through ralph-tui exactly as AMAN's `.ralph-tui` is configured. Every story must pass the build with security analyzers, unit tests, a 14-CWE security gate, API end-to-end, Playwright functional and accessibility tests, plus a security-reviewer verdict, before it can be marked done. Agents branch each story from `main`, push it, and fast-forward `main` once the gates and the review pass (no merge commits, no force pushes); GitHub Actions runs the same gates; a human releases.
 
 What already exists and passes in the build environment: the full solution skeleton (16 projects build with 0 warnings), a security baseline (default deny, headers, limits, rate limiting, safe errors, trusted proxies, CORS allowlist, CSP, non-root containers), the web shell in Aman.Web's design system, 70 end-to-end, functional and accessibility tests passing, GitHub Actions (CI gate, Trivy, Semgrep, SBOM, CodeQL switch, Claude review, images) with Dependabot, unit tests compiled against stand-ins (they run for real in story ARV-001), the security gate at 0 errors, architecture and domain docs with 25 ADRs, and a 21-page wiki.
 
@@ -110,7 +110,7 @@ Hardware procurement and installation, vendor SDK and documentation access (Xovi
 | Unverifiable vendor details | Sensor stories require vendor sources or explicit "unverified" labels before certification |
 | Cost and pacing of autonomous loops | `maxIterations` 20 per run, one story per iteration, daily human review |
 | MassTransit v8 maintenance ends after 2026 | Bus stays behind `ISvcMessageBus` in Ariva.Infra; outbox, inbox and dead letters are Ariva code; decide v9 licence or Confluent swap before go-live (ADR-0018) |
-| No branch protection on a private repository under GitHub Free | Hooks deny pushes to main and force pushes; move the repository to a Dalil organisation on GitHub Team to enforce rulesets and required checks |
+| No branch protection on `main` until the owner sets a ruleset | Hooks deny pushes to main and force pushes; since the repository is public (2026-10-15), a ruleset with required checks is available on GitHub Free |
 | The repository was public for about an hour after creation | Treat that content as disclosed; nothing secret was in it, but AMAN weakness notes were; AMAN fixes are on the hardening branch |
 
 ## Decisions taken on 1 October 2026
@@ -119,7 +119,7 @@ Hardware procurement and installation, vendor SDK and documentation access (Xovi
 2. ADR-0018: MassTransit 8.5 with the Kafka Rider (AMAN parity), with Ariva-owned outbox, inbox and dead letters.
 3. AMAN integration-auth weaknesses: fixed on a local AMAN branch, ready for review.
 4. Trademark: pre-check run; result above.
-5. Repository: GitHub (private), Actions, Dependabot, GitHub issues through `/sync-issues`.
+5. Repository: GitHub (public since the owner's decision of 2026-10-15), Actions, Dependabot, GitHub issues through `/sync-issues`.
 6. Design: Aman.Web's design system.
 7. Commits: automatic; agents push story branches and open pull requests.
 
@@ -127,5 +127,5 @@ Hardware procurement and installation, vendor SDK and documentation access (Xovi
 
 1. The product name, after the manual UAE, WIPO, EUIPO and USPTO searches.
 2. Rotate the GitHub token shared in chat, and install the Claude GitHub App (direct pushes from Claude, review workflow).
-3. GitHub plan: Team organisation (branch rules, required checks) and Code Security (CodeQL, secret scanning) for the private repository.
+3. GitHub plan: rulesets, required checks, CodeQL and secret scanning are free on the public repository (2026-10-15); a Team organisation helps only for managing the team.
 4. Release target for images: GHCR from Actions, Dalil Container Registry through Azure DevOps, or both.

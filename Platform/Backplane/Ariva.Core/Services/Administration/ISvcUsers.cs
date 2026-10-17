@@ -16,10 +16,20 @@ public static class AdministrationErrors
     public const string InvalidCriteria = "The search criteria are not valid.";
     public const string UnknownSite = "Unknown site.";
     public const string SiteTaken = "That site code is already in use.";
+
+    /// <summary>ARV-159: a site name breaks the topology name rule (400); the text never repeats the name.</summary>
+    public const string InvalidSiteName = "The site name is at most 200 characters, without control, invisible or broken characters.";
+
     public const string BeyondOwnSites = "You cannot grant access to sites you cannot access yourself.";
     public const string SitesRequired = "Give the account at least one of your sites.";
     public const string InvalidDisplayName = "The name is at most 200 characters, without control, invisible or broken characters.";
     public const string InvalidEmail = "The email must be one plain address (name@example.org), without a display name, spaces or line breaks.";
+
+    /// <summary>
+    /// ARV-104a (first security review, 2026-10-08): an account whose only role is Validation observer is bound to named sites, so a
+    /// creation, a site change, a grant or a revoke that would leave it with every site is refused (400).
+    /// </summary>
+    public const string ObserverNeedsNamedSites = "An account whose only role is Validation observer is given named sites, never every site.";
 
     /// <summary>Errors that mean "not allowed" (403) rather than "not valid" (400).</summary>
     public static readonly IReadOnlySet<string> Forbidden = new HashSet<string>(StringComparer.Ordinal) { OwnAccount, AboveOwnRole, BeyondOwnSites };

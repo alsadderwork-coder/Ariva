@@ -4,8 +4,8 @@ import { hosts } from '../support/hosts';
 
 // ARV-018: floor plans per level. PNG, JPEG and SVG only, typed by their bytes; SVG is sanitised (scripts, event
 // attributes, foreignObject and external references removed) and served under a sandboxing CSP; 20 MB limit (413);
-// file names with a path are refused (CWE-22) and the stored name is always generated. The seed binds e2e.border to
-// E2E1 and e2e.terminal to E2E2.
+// file names with a path are refused (CWE-22), and longer than 200 code points too (ARV-153); the stored name is always
+// generated. The seed binds e2e.border to E2E1 and e2e.terminal to E2E2.
 
 test.skip(!databaseAvailable, 'floor plans need the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true)');
 test.describe.configure({ mode: 'serial' });
@@ -99,6 +99,23 @@ test('HTML dressed as an image, unsafe names and oversized uploads are refused',
 	const oversized = await call('POST', levelUrl, { token: admin, form: upload(big, 'big.png', 'image/png') });
 	expect(oversized.status(), 'oversized upload').toBe(413);
 	expect((await (await call('GET', levelUrl, { token: admin })).json()).contentType, 'the SVG plan is still current').toBe('image/svg+xml');
+});
+
+test('a name of one letter and 300 combining marks answers 201 or 400, never 500, and a refusal stores nothing', async () => {
+	// ARV-153: PostgreSQL counts the 200-character name column in code points, so this name (one text element, 305 code
+	// points) once failed the insert at the commit with a 500. It is refused before anything is stored.
+	const before = await (await call('GET', levelUrl, { token: admin })).json();
+	const response = await call('POST', levelUrl, { token: admin, form: upload(png, `a${'\u0301'.repeat(300)}.png`, 'image/png') });
+	const status = response.status();
+	const text = await response.text();
+	expect([201, 400], status === 201 || status === 400 ? 'combining marks' : text).toContain(status);
+	const after = await (await call('GET', levelUrl, { token: admin })).json();
+	if (status === 400) {
+		expect(after.id, 'nothing is stored on a refusal').toBe(before.id);
+		expect(text.includes('\u0301'), 'the name is not echoed').toBe(false);
+	} else {
+		expect([...after.originalFileName].length, 'a stored name fits the column').toBeLessThanOrEqual(200);
+	}
 });
 
 test('calibration, site scoping and delete', async () => {

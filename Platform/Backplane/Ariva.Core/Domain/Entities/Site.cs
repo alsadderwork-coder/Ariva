@@ -17,19 +17,33 @@ public partial class Site : BaseAuditableEntity<Site>
     {
         if (!IsValidCode(code))
             throw new ArgumentException("A site code is 2 to 8 upper case letters or digits, optionally followed by a hyphen and 1 to 8 more.", nameof(code));
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
         Code = code;
-        Name = name.Trim();
+        Name = TopologyCodes.RequireName(name, nameof(name));
     }
 
     public virtual string Code { get; protected set; }
     public virtual string Name { get; protected set; }
 
-    public virtual void Rename(string name)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        Name = name.Trim();
-    }
+    /// <summary>
+    /// "Illustrative, not surveyed" (ARV-139a): a demo site modelled on a real airport from public information only, whose
+    /// geometry, counts and positions are assumptions. The web shell and the site's passenger displays show a banner
+    /// while it is set. Only the demo seeds set it, through <see cref="CreateIllustrative"/> (CWE-269): no request model
+    /// carries it, no method changes it, and the runtime database role cannot update the column (script 0046).
+    /// </summary>
+    public virtual bool IsIllustrative { get; protected set; }
+
+    /// <summary>
+    /// A new site flagged <see cref="IsIllustrative"/>. For the demo seeds only (Ariva.Infra/Services/Seed); a unit test
+    /// fails when any other source calls it.
+    /// </summary>
+    public static Site CreateIllustrative(string code, string name) => new(code, name) { IsIllustrative = true };
+
+    /// <summary>
+    /// A new name, with the rule of every topology name (ARV-159, <see cref="TopologyCodes.IsName"/>): trimmed, at most 200
+    /// characters, no control, invisible format or broken character judged per code point. A stored name that breaks it
+    /// is kept until the site is renamed.
+    /// </summary>
+    public virtual void Rename(string name) => Name = TopologyCodes.RequireName(name, nameof(name));
 
     public static bool IsValidCode(string code) => code is not null && CodePattern().IsMatch(code);
 

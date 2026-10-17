@@ -1,6 +1,7 @@
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Options;
@@ -65,6 +66,25 @@ internal static class SimulationSecurity
         services.AddRateLimiter(limiter =>
         {
             limiter.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+            // A refused caller learns when to come back (each window is a minute).
+            limiter.OnRejected = (context, _) =>
+            {
+                context.HttpContext.Response.Headers.RetryAfter = context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter)
+                    ? ((int)Math.Ceiling(retryAfter.TotalSeconds)).ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    : "60";
+                return ValueTask.CompletedTask;
+            };
+            // ARV-104i: the validation truth (up to 360 minutes of every queue and desk of a scenario site) per key.
+            limiter.AddPolicy(SimulationScopes.TruthLimit, context =>
+            {
+                var perMinute = context.RequestServices.GetRequiredService<IOptionsMonitor<Emulators.Validation.ValidationEmulatorSettings>>().CurrentValue.TruthReadsPerMinute;
+                return RateLimitPartition.GetFixedWindowLimiter(context.User.Identity?.Name ?? "anonymous", _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = perMinute,
+                    Window = TimeSpan.FromMinutes(1),
+                    QueueLimit = 0
+                });
+            });
             limiter.AddPolicy(SimulationScopes.PlayLimit, context => RateLimitPartition.GetFixedWindowLimiter(context.User.Identity?.Name ?? "anonymous",
                 _ => new FixedWindowRateLimiterOptions { PermitLimit = 60, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
             limiter.AddPolicy(SimulationScopes.RerunLimit, context =>
@@ -96,6 +116,47 @@ internal static class SimulationSecurity
 
     #endregion
 
+    #region Binding
+
+    /// <summary>
+    /// Model binding messages that never quote the value sent (ASP.NET Core's defaults repeat a query or route value that failed
+    /// to bind; CWE-501, CWE-79), as Ariva's hosts set them since ARV-104b.
+    /// </summary>
+    public static void ConfigureBinding(MvcOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        var messages = options.ModelBindingMessageProvider;
+        // Field names come from the controllers' parameters and request models, never from the caller.
+        messages.SetAttemptedValueIsInvalidAccessor((_, field) => $"The value is not valid for {field}.");
+        messages.SetNonPropertyAttemptedValueIsInvalidAccessor(_ => "The value is not valid.");
+        messages.SetValueIsInvalidAccessor(_ => "The value is invalid.");
+        messages.SetValueMustNotBeNullAccessor(_ => "The value is invalid.");
+    }
+
+    /// <summary>
+    /// The 400 answer of a request that failed to bind, without the body's paths: System.Text.Json names the member where a body
+    /// failed (<c>$['&lt;script&gt;']</c>), so every key starting with <c>$</c> becomes <c>body</c> (CWE-501, CWE-79; as Ariva's
+    /// hosts since ARV-104b). The messages are the binding messages above, which quote no value.
+    /// </summary>
+    public static IActionResult ProblemWithoutBodyPaths(ActionContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        var errors = new Dictionary<string, string[]>(StringComparer.Ordinal);
+        foreach (var (key, entry) in context.ModelState)
+        {
+            if (entry.Errors.Count == 0)
+                continue;
+            var name = key.StartsWith('$') ? "body" : key;
+            var messages = entry.Errors.Select(e => string.IsNullOrEmpty(e.ErrorMessage) ? "The value is not valid." : e.ErrorMessage);
+            errors[name] = errors.TryGetValue(name, out var earlier) ? [.. earlier, .. messages] : [.. messages];
+        }
+
+        var problem = new ValidationProblemDetails(errors) { Status = StatusCodes.Status400BadRequest, Title = "One or more validation errors occurred." };
+        return new BadRequestObjectResult(problem) { ContentTypes = { "application/problem+json" } };
+    }
+
+    #endregion
+
     #region Middlewares
 
     /// <summary>Adds the security headers, error handling, routing, authentication and authorization.</summary>
@@ -122,7 +183,12 @@ internal static class SimulationSecurity
             });
             return next(context);
         });
-        app.UseExceptionHandler();
+        // A request Kestrel refuses while its body is read (413 over the body limit) keeps its status, as in Ariva's hosts
+        // (ErrorHandlingExtensions); anything else is a 500 without details.
+        app.UseExceptionHandler(new ExceptionHandlerOptions
+        {
+            StatusCodeSelector = exception => exception is Microsoft.AspNetCore.Http.BadHttpRequestException badRequest ? badRequest.StatusCode : StatusCodes.Status500InternalServerError
+        });
         app.UseStatusCodePages();
         app.UseRouting();
         app.UseAuthentication();

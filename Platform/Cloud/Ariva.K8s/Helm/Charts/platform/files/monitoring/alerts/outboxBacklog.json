@@ -1,0 +1,79 @@
+{
+  "alert": "Ariva outbox backlog (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "The oldest outbox row not yet sent is older than the threshold: Kafka is away or the relay is stuck (ARV-125b).",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "unit": "s",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "ariva.outbox.oldest_unsent_age",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}'"
+            },
+            "groupBy": []
+          }
+        }
+      ]
+    },
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${outboxBacklog.severity}",
+          "op": "above",
+          "matchType": "last",
+          "target": "${outboxBacklog.seconds}",
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "5m",
+      "frequency": "1m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [],
+    "renotify": {
+      "enabled": true,
+      "interval": "4h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "outboxBacklog",
+    "environment": "${environment}",
+    "severity": "${outboxBacklog.severity}"
+  },
+  "annotations": {
+    "summary": "Outbox rows waiting",
+    "description": "The oldest unsent outbox row is {{$value}} seconds old, more than ${outboxBacklog.minutes} minutes.",
+    "runbook": "wiki/10-Operations-Runbook.md#45a-outbox-backlog-and-dead-letters-arv-020"
+  },
+  "disabled": false
+}

@@ -16,15 +16,31 @@ const screens = [
 	{ name: 'devices', path: '/devices', signedIn: true },
 	{ name: 'alert rules', path: '/alert-rules', signedIn: true },
 	{ name: 'immigration', path: '/immigration', signedIn: true },
+	// The border view (ARV-181b1): the staffing panel shows for ArrivalWaveLanes.View holders only; checked once it has read.
+	{
+		name: 'immigration, border (staffing panel)',
+		path: '/immigration',
+		signedIn: true,
+		account: () => accounts().webBorder,
+		ready: '[data-testid="staffing"][data-state="ready"]'
+	},
 	{ name: 'passenger displays', path: '/displays', signedIn: true },
 	{ name: 'reports', path: '/reports', signedIn: true },
 	// An administrator's screen: the duty manager would see the no-access message.
-	{ name: 'users and access', path: '/users', signedIn: true, account: () => accounts().webAdmin }
+	{ name: 'users and access', path: '/users', signedIn: true, account: () => accounts().webAdmin },
+	// The observer tablet (ARV-104c): the campaign list; validation-capture.spec.ts checks the tally and tracer views.
+	{ name: 'validation capture', path: '/validation/capture', signedIn: true, account: () => accounts().webObserver },
+	// The campaign screens (ARV-104h): the campaign list; validation-campaigns.spec.ts checks a campaign's results view.
+	{ name: 'validation campaigns', path: '/validation', signedIn: true }
 ];
-/** Opens the screen and waits for its heading (a signed-in screen first takes a token from the refresh cookie). */
-async function open(page: Page, path: string): Promise<void> {
+/**
+ * Opens the screen and waits for its heading (a signed-in screen first takes a token from the refresh cookie), and for the
+ * part of it named by `ready` when the screen has one that loads after the heading.
+ */
+async function open(page: Page, path: string, ready?: string): Promise<void> {
 	await page.goto(path);
 	await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+	if (ready) await expect(page.locator(ready)).toBeVisible();
 }
 
 const tags = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'];
@@ -46,14 +62,14 @@ for (const screen of screens) {
 
 		test('light mode, English', async ({ page }) => {
 			await page.emulateMedia({ colorScheme: 'light' });
-			await open(page, screen.path);
+			await open(page, screen.path, 'ready' in screen ? screen.ready : undefined);
 			await page.waitForLoadState('networkidle');
 			await expectNoViolations(page);
 		});
 
 		test('dark mode, English', async ({ page }) => {
 			await page.emulateMedia({ colorScheme: 'dark' });
-			await open(page, screen.path);
+			await open(page, screen.path, 'ready' in screen ? screen.ready : undefined);
 			await page.waitForLoadState('networkidle');
 			await expect(page.locator('html')).toHaveClass(/\bdark\b/);
 			await expectNoViolations(page);
@@ -61,7 +77,7 @@ for (const screen of screens) {
 
 		test('light mode, Arabic', async ({ page }) => {
 			await page.emulateMedia({ colorScheme: 'light' });
-			await open(page, screen.path);
+			await open(page, screen.path, 'ready' in screen ? screen.ready : undefined);
 			await page.getByTestId('language-toggle').click();
 			await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
 			await expectNoViolations(page);
@@ -69,7 +85,7 @@ for (const screen of screens) {
 
 		test('collapsed sidebar', async ({ page }) => {
 			test.skip(!screen.signedIn, 'the sign-in page has no sidebar');
-			await open(page, screen.path);
+			await open(page, screen.path, 'ready' in screen ? screen.ready : undefined);
 			await page.getByTestId('sidebar-toggle').click();
 			await expect(page.getByTestId('app-sidebar')).toHaveAttribute('data-state', 'collapsed');
 			await expectNoViolations(page);

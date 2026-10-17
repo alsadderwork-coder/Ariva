@@ -228,6 +228,9 @@ public sealed class IntegrationMetrics : IDisposable
         _lockouts = _meter.CreateCounter<long>("ariva.integration.lockouts", description: "Integration clients locked after consecutive failures");
     }
 
+    /// <summary>This instance's meter (tests listen to it alone).</summary>
+    internal Meter Meter => _meter;
+
     public void Exchange(string outcome) => _exchanges.Add(1, new KeyValuePair<string, object>("outcome", outcome));
 
     public void LockedOut() => _lockouts.Add(1);

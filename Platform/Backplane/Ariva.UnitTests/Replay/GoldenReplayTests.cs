@@ -9,9 +9,9 @@ namespace Ariva.UnitTests.Replay;
 /// <summary>
 /// ARV-036: the golden replay of the reference evening (seed 9303) from the archive's form of Ingest's output. It
 /// reproduces the scripted events: the arrivals Visitors nowcast passes 15 minutes at 18:05; S-17 is out from 18:20 until
-/// it is heard again at 18:31 and the Visitors zone is degraded meanwhile; Handler B's island C breaches in the 19:00,
-/// 19:15 and 19:30 bins. The same records give the same output hash on every run, the hash is the reviewed golden value,
-/// and the exported replay is tamper-evident.
+/// 18:30, the minute its push at 18:31 covers (ARV-148), and the Visitors zone is degraded meanwhile; Handler B's island C
+/// breaches in the 19:00, 19:15 and 19:30 bins. The zones run on event time (ARV-148). The same records give the same
+/// output hash on every run, the hash is the reviewed golden value, and the exported replay is tamper-evident.
 /// </summary>
 public sealed class GoldenReplayTests
 {
@@ -34,7 +34,9 @@ public sealed class GoldenReplayTests
         var first = live.First(l => l.NowcastMinutes > 15);
 
         Clock(first.MinuteUtc).Should().Be("18:05");
-        live.Should().OnlyContain(l => l.MinuteUtc >= ReferenceReplay.From.AddMinutes(-1) && l.MinuteUtc < ReferenceReplay.To + ZoneReplay.Settle(new ZoneProcessorSettings()));
+        // The zone's first watermark is the first push's latest event (17:01) less the 90-second lateness (ARV-148), so its
+        // first live minute is 16:58.
+        live.Should().OnlyContain(l => l.MinuteUtc >= ReferenceReplay.From.AddMinutes(-2) && l.MinuteUtc < ReferenceReplay.To + ZoneReplay.Settle(new ZoneProcessorSettings()));
     }
 
     [Fact]
@@ -43,15 +45,17 @@ public sealed class GoldenReplayTests
         var visitors = Of("A-VIS");
 
         visitors.Outages.Should().ContainSingle().Which.Should().Be(
-            new DeviceOutage("DMO/A-VIS", "S-17", ReferenceReplay.WallOf(1100), ReferenceReplay.WallOf(1111)),
-            "S-17 last reported for 18:19 at 18:20 and next for 18:30 at 18:31");
+            new DeviceOutage("DMO/A-VIS", "S-17", ReferenceReplay.WallOf(1100), ReferenceReplay.WallOf(1110)),
+            "S-17 last reported for 18:19 at 18:20 and next for 18:30 at 18:31: that push covers 18:30, so the outage ends there (ARV-148)");
         var degraded = visitors.Live.Where(l => l.LengthDegraded).Select(l => Clock(l.MinuteUtc)).ToList();
         degraded.Should().NotBeEmpty();
-        degraded.Should().OnlyContain(m => string.CompareOrdinal(m, "18:20") >= 0 && string.CompareOrdinal(m, "18:30") <= 0,
+        degraded.Should().OnlyContain(m => string.CompareOrdinal(m, "18:20") >= 0 && string.CompareOrdinal(m, "18:30") < 0,
             "the zone is degraded live only while S-17 is out");
-        degraded.Last().Should().Be("18:30");
+        degraded.Last().Should().Be("18:29");
+        // F4 of ARV-104j: the bin after the outage is judged again; only 18:15 holds outage minutes.
         var marked = visitors.Bins.Where(b => b.Status == BinStatus.Final && b.Quality == BinQuality.Degraded).Select(b => Clock(b.StartUtc)).Distinct().ToList();
-        marked.Should().Equal("18:15", "18:30");
+        marked.Should().Equal("18:15");
+        visitors.Bins.Where(b => b.Status == BinStatus.Final && Clock(b.StartUtc) == "18:30").Should().ContainSingle().Which.Quality.Should().Be(BinQuality.Good);
         Of("CI-C").Outages.Should().BeEmpty();
     }
 
@@ -61,7 +65,156 @@ public sealed class GoldenReplayTests
         var finals = Of("CI-C").Bins.Where(b => b.Status == BinStatus.Final).GroupBy(b => b.StartUtc).Select(g => g.Last()).ToList();
 
         finals.Where(b => b.Waits.P90Minutes > 15).Select(b => Clock(b.StartUtc)).Should().Equal("19:00", "19:15", "19:30");
-        finals.Where(b => b.StartUtc < ReferenceReplay.To).Should().HaveCount(14, "every bin of the range becomes final");
+        finals.Where(b => b.StartUtc >= ReferenceReplay.From && b.StartUtc < ReferenceReplay.To).Should().HaveCount(14, "every bin of the range becomes final");
+    }
+
+    [Theory]
+    [InlineData("A-VIS")]
+    [InlineData("CI-C")]
+    public void Replay_Should_CountEveryLineMinuteAsTheZoneMinutes_When_TheEveningIsReplayed(string zone)
+    {
+        var outputs = Of(zone);
+        var minutes = outputs.Minutes.GroupBy(m => m.StartUtc).ToDictionary(g => g.Key, g => g.Last());
+
+        // ARV-113: each line's closed minutes, once each, from Ariva's own counts; the entry line's ins and the exit line's
+        // outs are the zone's entries and exits of the same minute (the reference evening has no duplicate crossings).
+        outputs.Lines.Should().NotBeEmpty();
+        outputs.Lines.Should().OnlyContain(l => l.Source == LineCountSource.Ariva);
+        outputs.Lines.GroupBy(l => (l.LineName, l.MinuteUtc)).Should().OnlyContain(g => g.Count() == 1, "a closed line minute is released once");
+        outputs.Lines.Select(l => (l.LineName, l.Role)).Distinct().Should().BeEquivalentTo([(zone + " entry", QueueLineRole.Entry), (zone + " exit", QueueLineRole.Exit)]);
+        var entries = outputs.Lines.Where(l => l.Role == QueueLineRole.Entry).ToDictionary(l => l.MinuteUtc, l => l.In);
+        var exits = outputs.Lines.Where(l => l.Role == QueueLineRole.Exit).ToDictionary(l => l.MinuteUtc, l => l.Out);
+        foreach (var (start, minute) in minutes)
+        {
+            entries.GetValueOrDefault(start).Should().Be(minute.Entries, $"the entry line's ins at {Clock(start)} are the zone's entries");
+            exits.GetValueOrDefault(start).Should().Be(minute.Exits, $"the exit line's outs at {Clock(start)} are the zone's exits");
+        }
+
+        entries.Values.Sum().Should().Be(minutes.Values.Sum(m => m.Entries)).And.BePositive();
+        exits.Values.Sum().Should().Be(minutes.Values.Sum(m => m.Exits)).And.BePositive();
+    }
+
+    [Theory]
+    [InlineData("A-VIS")]
+    [InlineData("CI-C")]
+    public void Replay_Should_CheckTheHealthOfEveryBin_When_TheEveningIsReplayed(string zone)
+    {
+        var outputs = Of(zone);
+
+        // ARV-114a: one health row with every bin result, for the same bin, revision and status, with its counts.
+        outputs.Health.Should().HaveSameCount(outputs.Bins);
+        outputs.Health.Zip(outputs.Bins).Should().OnlyContain(p => p.First.StartUtc == p.Second.StartUtc && p.First.Revision == p.Second.Revision &&
+            p.First.Status == p.Second.Status && p.First.Entries == p.Second.Entries && p.First.Exits == p.Second.Exits);
+        // The bins of the range (the zone's first watermark, 16:59:30, also publishes the empty 16:45 bin before it).
+        var finals = outputs.Health.Where(h => h.Status == BinStatus.Final && h.StartUtc >= ReferenceReplay.From && h.StartUtc < ReferenceReplay.To)
+            .GroupBy(h => h.StartUtc).Select(g => g.Last()).ToList();
+        finals.Should().HaveCount(14);
+
+        // The emulator's occupancy is always its entries minus its exits and every passenger is a track that exits, so the
+        // evening conserves people, completes every track and keeps within the snake's capacity (A-VIS 190, CI-C 70).
+        var measured = finals.Where(h => h.ConservationResidual is not null).ToList();
+        measured.Should().HaveCount(13, "the first bin starts before the first occupancy reading");
+        measured.Should().OnlyContain(h => h.ConservationResidual == 0);
+        finals.Where(h => h.Entries > 0).Should().OnlyContain(h => h.TrackCompletionRate == 1 && h.TracksEntered == h.Entries && h.TracksOpen == 0 && h.TracksCensored == 0);
+        outputs.Health.Where(h => h.Entries == 0).Should().NotBeEmpty().And.OnlyContain(h => h.TrackCompletionRate == null && h.TracksOpen == 0,
+            "a bin without entries (the settling bins after the range at least) has no rate");
+        finals.Should().OnlyContain(h => h.MinutesOutsideCapacity == 0 && h.CapacityMinutes == h.OccupancyMinutes);
+        finals.Skip(1).Should().OnlyContain(h => h.OccupancyMinutes == 15);
+    }
+
+    [Fact]
+    public void Replay_Should_GiveTheVisitorsWaveItsHealth_When_The1800BinIsFinal()
+    {
+        var bin = Of("A-VIS").Health.Last(h => Clock(h.StartUtc) == "18:00" && h.Status == BinStatus.Final);
+
+        bin.Should().BeEquivalentTo(new
+        {
+            Entries = 243L, Exits = 108L, OccupancyStart = 10, OccupancyEnd = 145, ConservationResidual = 0L, TracksEntered = 243L, TracksExited = 243L,
+            TrackCompletionRate = 1.0, OccupancyMinutes = 15, CapacityMinutes = 15, MinutesOutsideCapacity = 0, ZoneProfileVersion = 12
+        });
+    }
+
+    [Fact]
+    public void Replay_Should_CountMinutesAboveCapacity_When_IslandCIsGivenASmallerCapacity()
+    {
+        var geometry = ReferenceReplay.GeometryOf("CI-C") with { Capacities = new Dictionary<string, int>(StringComparer.Ordinal) { ["CI-C"] = 40 } };
+        var health = new List<ZoneHealthBin>();
+        var capturing = new ReplayLedger(ReferenceReplay.Manifest(new ZoneProcessorSettings()), new CapturingTextWriter(health));
+
+        ZoneReplay.Run(capturing, "DMO/CI-C", geometry, ReferenceReplay.ProfileVersion, new ZoneProcessorSettings(), ReferenceReplay.InputsOf("CI-C"),
+            ReferenceReplay.From, ReferenceReplay.To);
+
+        var finals = health.Where(h => h.Status == BinStatus.Final).GroupBy(h => h.StartUtc).ToDictionary(g => Clock(g.Key), g => g.Last());
+        finals["19:15"].MinutesOutsideCapacity.Should().BePositive("Handler B's island holds up to 59 people then, above 40");
+        finals["19:30"].MinutesOutsideCapacity.Should().BePositive();
+        finals["18:00"].MinutesOutsideCapacity.Should().Be(0);
+        finals.Values.Should().OnlyContain(h => h.MinutesOutsideCapacity <= h.CapacityMinutes && h.CapacityMinutes <= h.OccupancyMinutes);
+    }
+
+    [Fact]
+    public void Replay_Should_KeepEveryEarlierOutput_When_TheHealthRowsAreLeftOut()
+    {
+        // ARV-114a appends the health rows to each drain; leaving them out must give back the golden of every other output
+        // exactly (the ARV-113 head until ARV-148 moved the stream to event time; replay-golden.json records both).
+        var without = new ReplayLedger(ReferenceReplay.Manifest(new ZoneProcessorSettings()));
+        foreach (var line in Golden.Value.Export.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            using var document = JsonDocument.Parse(line);
+            var root = document.RootElement;
+            if (root.GetProperty("kind").GetString() == "out" && root.GetProperty("type").GetString() != "health")
+                without.Output(root.GetProperty("zone").GetString(), root.GetProperty("type").GetString(), root.GetProperty("record").Clone());
+        }
+
+        var hashes = without.End();
+
+        hashes.OutputHead.Should().Be("185bb1314cf53d6853fdcbbcadc0da691b865654e2cb9670e20518a1c4970963");
+        hashes.Outputs.Should().Be(3042);
+    }
+
+    [Fact]
+    public void Replay_Should_KeepItsGoldenHashUnchanged_When_NoBandIsEverOccupied()
+    {
+        // ARV-115: the reference evening's snakes never fill (A-VIS peaks at 145 of 190), and its devices are the queue
+        // leads only, so no band reports: no overflow output joins the chain and the golden hash stays as approved.
+        Of("A-VIS").Overflow.Should().BeEmpty();
+        Of("A-VIS").OverflowChanges.Should().BeEmpty();
+        Of("CI-C").Overflow.Should().BeEmpty();
+        Golden.Value.Export.Should().NotContain("\"type\":\"overflow");
+    }
+
+    [Fact]
+    public void Replay_Should_KeepItsGoldenHashUnchanged_When_TheShadowNowcastIsComputed()
+    {
+        // ARV-117: a replay has no desk term (F8: live only), so every replayed minute's shadow nowcast is the published
+        // nowcast, and the ledger never serialises it: the chain and the golden hash stay as approved.
+        var settings = new ZoneProcessorSettings();
+        foreach (var name in ReferenceReplay.Zones)
+        {
+            var zone = new ZoneProcessor("DMO/" + name, ReferenceReplay.GeometryOf(name), ReferenceReplay.ProfileVersion, settings);
+            foreach (var input in ReferenceReplay.InputsOf(name))
+                zone.Offer(input.ToBatch(), ReferenceReplay.To);
+            zone.Finish(ReferenceReplay.To, ReferenceReplay.To + ZoneReplay.Settle(settings));
+            var live = zone.Drain().Live;
+
+            live.Should().NotBeEmpty().And.OnlyContain(l => l.Shadow == new ShadowNowcast(l.NowcastMinutes, l.NoService, l.NowcastDegraded));
+            live.Select(l => l with { Shadow = null }).Should().Equal(Of(name).Live, "the ledger holds the same live rows, without the shadow");
+        }
+
+        Golden.Value.Export.Should().NotContainEquivalentOf("shadow");
+    }
+
+    /// <summary>Reads the health rows of a replay back from its export.</summary>
+    private sealed class CapturingTextWriter(List<ZoneHealthBin> health) : TextWriter
+    {
+        public override System.Text.Encoding Encoding => System.Text.Encoding.UTF8;
+
+        public override void Write(string value)
+        {
+            using var document = JsonDocument.Parse(value);
+            var root = document.RootElement;
+            if (root.GetProperty("kind").GetString() == "out" && root.GetProperty("type").GetString() == "health")
+                health.Add(JsonSerializer.Deserialize<ZoneHealthBin>(root.GetProperty("record").GetRawText(), ReplayLedger.Json)!);
+        }
     }
 
     [Fact]

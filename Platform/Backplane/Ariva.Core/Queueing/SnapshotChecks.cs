@@ -68,6 +68,27 @@ public static class SnapshotChecks
         Times(e.EarliestLateUtc);
         if (e.WatermarkUtc > state.ReferenceUtc && state.ReferenceUtc != DateTime.MinValue)
             bad++;
+        // The pending empty-queue check (ARV-114d): only a snapshot of version 8 or later carries one, only for a zone that
+        // has stepped, and at an event it processed (never after its clock). The engine's Restore checks that it is where a
+        // full step stops.
+        if (e.PendingAnchorUtc is { } pending)
+        {
+            if (state.Version < ZoneProcessorState.PendingAnchorSinceVersion)
+                yield return $"A snapshot before version {ZoneProcessorState.PendingAnchorSinceVersion} carries no pending empty-queue check.";
+            Time(pending);
+            if (state.ReferenceUtc == DateTime.MinValue || pending > state.ReferenceUtc)
+                bad++;
+        }
+        // The engine's event clock (ARV-148, written from version 9 on): never ahead of the zone's receive clock, since each
+        // event counts at most up to the reference it arrived with, and set once the watermark has moved (the first event
+        // sets it). The engine's Restore checks it against the events held.
+        if (e.ClockUtc.HasValue)
+        {
+            Time(e.ClockUtc.Value);
+            if (e.ClockUtc.Value > state.ReferenceUtc || (e.ClockUtc.Value == DateTime.MinValue && e.WatermarkUtc != DateTime.MinValue))
+                bad++;
+        }
+
         Count(e.Sequence);
         Count(e.Order);
         Count(e.Reanchors);
@@ -128,6 +149,7 @@ public static class SnapshotChecks
                 Count(m.Exits);
                 Count(m.DegradedEntries);
                 Count(m.DegradedExits);
+                Count(m.TrackedEntries);
             }
         }
 
@@ -253,6 +275,27 @@ public static class SnapshotChecks
             {
                 Set(r.FromUtc);
                 Set(r.ToUtc);
+            }
+        }
+
+        // Remembered batches (ARV-168): only a snapshot of version 10 or later carries them, within the largest bound a zone
+        // may be set to; ZoneProcessor.Restore checks them against the zone's own bounds, watermark and receive clock.
+        if (state.RecentBatches is { Count: > 0 } remembered)
+        {
+            if (state.Version < ZoneProcessorState.RecentBatchesSinceVersion)
+                yield return $"A snapshot before version {ZoneProcessorState.RecentBatchesSinceVersion} remembers no batches.";
+            if (remembered.Count > ZoneProcessorSettings.MaxRememberedBatchesLimit)
+            {
+                yield return "The snapshot remembers more batches than a zone keeps.";
+                yield break;
+            }
+
+            foreach (var b in remembered)
+            {
+                if (b is null || !DeviceCodes.IsValid(b.DeviceCode) || b.BatchId == Guid.Empty)
+                    bad++;
+                else
+                    Set(b.UntilUtc);
             }
         }
 

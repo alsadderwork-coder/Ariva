@@ -4,6 +4,8 @@
 	import { _ } from 'svelte-i18n';
 	import FormField from '$lib/components/shared/FormField.svelte';
 	import SelectField from '$lib/components/shared/SelectField.svelte';
+	import * as advertisingApi from '$lib/core/advertising';
+	import type { AdvertisingPolicy } from '$lib/core/advertising';
 	import * as displays from '$lib/core/displays';
 	import type { Display, DisplayEntry, DisplayRequest } from '$lib/core/displays';
 
@@ -13,11 +15,13 @@
 		editing: Display | null;
 		/** Queue zones of the site's published zone profile. */
 		zoneNames: string[];
+		/** The site's advertising policy (ARV-145), or null when the caller cannot see it (advertising then cannot be chosen). */
+		advertising?: AdvertisingPolicy | null;
 		onSubmit: (request: DisplayRequest) => Promise<string[]>;
 		onCancel: () => void;
 	}
 
-	let { siteCode, editing, zoneNames, onSubmit, onCancel }: Props = $props();
+	let { siteCode, editing, zoneNames, advertising = null, onSubmit, onCancel }: Props = $props();
 
 	const start = untrack(() => editing);
 	let code = $state(start?.code ?? '');
@@ -36,6 +40,17 @@
 	);
 	let fallback = $state<Record<string, string>>(start ? { ...start.fallback } : {});
 	let enabled = $state(start?.enabled ?? true);
+	/** ARV-140: the screen layout; a display without one keeps the full queue view. */
+	let layout = $state<string>(start?.layout ?? 'Full');
+	let queueShare = $state<number | string>(start?.queueShare ?? displays.queueShare.default);
+	let secondRegion = $state<string>(start?.secondRegion ?? 'Instructions');
+	/** Whether the site's policy allows advertising for every zone this display shows; the server checks it again. */
+	const advertisingAllowed = $derived(
+		advertisingApi.allowsDisplayOf(
+			advertising,
+			entries.map((e) => e.zone)
+		)
+	);
 	let problems = $state<string[]>([]);
 	let busy = $state(false);
 
@@ -67,7 +82,10 @@
 			staleSeconds: Number(staleSeconds),
 			entries: entries.map((e) => ({ zone: e.zone, labels: pick(e.labels) })),
 			fallback: pick(fallback),
-			enabled
+			enabled,
+			layout,
+			queueShare: Number(queueShare),
+			secondRegion
 		});
 		busy = false;
 	}
@@ -149,6 +167,57 @@
 			max={1800}
 		/>
 	</div>
+
+	<fieldset class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" data-testid="display-layout">
+		<legend class="mb-1 text-xs font-medium">{$_('displays.fields.layoutGroup')}</legend>
+		<SelectField
+			id="display-layout"
+			label={$_('displays.fields.layout')}
+			bind:value={layout}
+			options={displays.layouts.map((l) => ({ value: l, label: $_(`displays.layouts.${l}`) }))}
+		/>
+		{#if layout === 'Split'}
+			<FormField
+				id="display-share"
+				type="number"
+				label={$_('displays.fields.queueShare')}
+				hint={$_('displays.hints.queueShare')}
+				bind:value={queueShare}
+				required
+				min={displays.queueShare.min}
+				max={displays.queueShare.max}
+			/>
+			<!-- Advertising can be chosen only where the site's advertising policy allows it for every zone shown (ARV-145). -->
+			<div class="flex min-w-0 flex-col gap-1">
+				<label for="display-second" class="text-xs font-medium"
+					>{$_('displays.fields.secondRegion')}</label
+				>
+				<select
+					id="display-second"
+					name="display-second"
+					bind:value={secondRegion}
+					aria-describedby="display-second-hint"
+					class="h-9 min-w-0 rounded-md border border-input bg-background px-2 text-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+				>
+					{#each displays.secondRegions as region (region)}
+						<option value={region} disabled={region === 'Advertising' && !advertisingAllowed}
+							>{$_(`displays.secondRegions.${region}`)}</option
+						>
+					{/each}
+				</select>
+				<p
+					id="display-second-hint"
+					class="text-xs text-muted-foreground"
+					data-testid="display-second-hint"
+					data-allowed={advertisingAllowed}
+				>
+					{advertisingAllowed
+						? $_('displays.hints.secondRegionAllowed')
+						: $_('displays.hints.secondRegion')}
+				</p>
+			</div>
+		{/if}
+	</fieldset>
 
 	<fieldset class="flex flex-col gap-1.5">
 		<legend class="text-xs font-medium">{$_('displays.fields.languages')}</legend>

@@ -7,6 +7,10 @@ import { hosts, kafkaAvailable } from '../support/hosts';
 // emulator expected. Ingest answers 202 only once a push's events are written to Kafka, so the accepted counts are the
 // events that reached the sensing topics. S-17 is offline from 18:20 and sends half the minutes. The controls need the
 // operator key's control scope; device credentials never come back out of the simulator.
+// ARV-139b: the same for the AUH-TA scenario as the illustrative seed's own sensors, which it leaves in Commissioning
+// without a credential: an administrator issues each a credential (POST devices/{id}/credential, which needs a recent
+// second factor) and records its calibration through the devices API, exactly as an installer would; the emulator then
+// plays them for site AUH-TA. Q-RES-04 is offline from 18:25 and sends half the minutes of 18:20 to 18:30.
 
 test.skip(!databaseAvailable, 'the emulator run needs the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true) and the DMO demo seed');
 test.describe.configure({ mode: 'serial' });
@@ -24,6 +28,7 @@ const plan: Device[] = [
 ];
 const credentials: { sensor: string; dialect: string; credential: string }[] = [];
 const registeredIds: string[] = [];
+const seededIds: string[] = [];
 let adminToken = '';
 
 test.beforeAll(async () => {
@@ -60,10 +65,12 @@ test.beforeAll(async () => {
 	}
 });
 
-// Leave no working credential behind, in the simulator or in Ariva, when the suite runs against a shared environment.
+// Leave no working credential behind, in the simulator or in Ariva, when the suite runs against a shared environment. The
+// seeded AUH-TA sensors stay (the demo plays them); their credentials are rotated once more and the new ones dropped.
 test.afterAll(async () => {
 	await call('PUT', `${sensors}/devices`, { headers: operator, data: { devices: [] } });
 	for (const id of registeredIds) await call('POST', `${admin}/devices/${id}/retire`, { token: adminToken });
+	for (const id of seededIds) await call('POST', `${admin}/devices/${id}/credential`, { token: adminToken });
 });
 
 test('the controls need the control scope', async () => {
@@ -101,4 +108,68 @@ test('a 10-minute accelerated run reaches Ingest event for event', async () => {
 	}
 	expect(bySensor['S-15'].acceptedEvents, 'the Visitors wave crosses the lines').toBeGreaterThan(20);
 	expect(bySensor['S-50'].acceptedEvents, 'Xovis: two line intervals and the occupancy a minute').toBe(30);
+});
+
+test('the seeded AUH-TA sensors play the AUH-TA evening once issued a credential and calibrated', async () => {
+	test.skip(!kafkaAvailable, 'an accepted push needs Kafka (ARIVA_E2E_KAFKA_BOOTSTRAP)');
+	test.setTimeout(120_000);
+	// The visitors' queue lead, its band's lead and a desk sensor over IC-20 to IC-23; the residents' lead and Q-RES-04.
+	const auhPlan = ['Q-VIS-01', 'O-VIS-01', 'D-VIS-01', 'Q-RES-01', 'Q-RES-04'];
+	const listed = await (await call('GET', `${admin}/devices?siteCode=AUH-TA&pageSize=200`, { token: adminToken })).json();
+	const seeded = new Map<string, { id: string; state: string }>(((listed.data ?? listed) as { code: string; id: string; state: string }[]).map((d) => [d.code, d]));
+	expect(seeded.size, 'the illustrative seed placed its 84 sensors').toBe(84);
+
+	const auhCredentials: { site: string; sensor: string; dialect: string; credential: string }[] = [];
+	for (const sensor of auhPlan) {
+		const device = seeded.get(sensor);
+		expect(device, sensor).toBeDefined();
+		seededIds.push(device!.id);
+		const issued = await call('POST', `${admin}/devices/${device!.id}/credential`, { token: adminToken });
+		expect(issued.status(), await issued.text()).toBe(200);
+		const calibrations = await (await call('GET', `${admin}/devices/${device!.id}/calibrations`, { token: adminToken })).json();
+		if (((calibrations.data ?? calibrations) as unknown[]).length === 0) {
+			const calibrated = await call('POST', `${admin}/devices/${device!.id}/calibrations`, {
+				token: adminToken,
+				data: { method: 'ManualCountTally', sampleSize: 200, countingAccuracyPercent: 97, waitTimeErrorMinutes: 0.3 }
+			});
+			expect(calibrated.status(), await calibrated.text()).toBe(201);
+		}
+		auhCredentials.push({ site: 'AUH-TA', sensor, dialect: 'Canonical', credential: (await issued.json()).credential });
+	}
+
+	// A credential Ariva did not issue is refused before it reaches Ingest; a DMO sensor code is not an AUH-TA sensor.
+	const forged = await call('PUT', `${sensors}/devices`, { headers: operator, data: { devices: [{ site: 'AUH-TA', sensor: 'Q-VIS-01', dialect: 'Canonical', credential: 'letmein' }] } });
+	expect(forged.status()).toBe(400);
+	const crossed = await call('PUT', `${sensors}/devices`, { headers: operator, data: { devices: [{ ...auhCredentials[0], sensor: 'S-15' }] } });
+	expect(crossed.status()).toBe(400);
+
+	const loaded = await call('PUT', `${sensors}/devices`, { headers: operator, data: { devices: auhCredentials } });
+	expect(loaded.status(), await loaded.text()).toBe(200);
+	expect(await loaded.text()).not.toContain('ardk_');
+	const started = await call('POST', `${sensors}/start`, { headers: operator, data: { minute: 1100, speed: 60, untilMinute: 1110 } });
+	expect(started.status(), await started.text()).toBe(200);
+
+	let status = await (await call('GET', sensors, { headers: operator })).json();
+	for (let i = 0; i < 60 && status.running; i++) {
+		await new Promise((resolve) => setTimeout(resolve, 500));
+		status = await (await call('GET', sensors, { headers: operator })).json();
+	}
+	expect(status.running).toBe(false);
+	expect(JSON.stringify(status)).not.toContain('ardk_');
+	const bySensor = Object.fromEntries(status.devices.map((d: { sensor: string }) => [d.sensor, d]));
+	for (const device of status.devices) {
+		expect(device.site, device.sensor).toBe('AUH-TA');
+		expect(device.failures, `${device.sensor}: ${device.lastError}`).toBe(0);
+		expect(device.acceptedEvents, device.sensor).toBe(device.expectedEvents);
+	}
+	expect(bySensor['Q-RES-04'].pushes, 'Q-RES-04 is offline from 18:25').toBe(5);
+	expect(bySensor['Q-VIS-01'].pushes).toBe(10);
+	expect(bySensor['Q-VIS-01'].acceptedEvents, 'the visitors wave crosses the lines').toBeGreaterThan(20);
+	expect(bySensor['D-VIS-01'].acceptedEvents, 'the counters staff and service zones each minute').toBeGreaterThan(10);
+	expect(bySensor['O-VIS-01'].role).toBe('OverflowLead');
+
+	const health = await (await call('GET', `${admin}/devices?siteCode=AUH-TA&pageSize=200`, { token: adminToken })).json();
+	const states = new Map(((health.data ?? health) as { code: string; state: string }[]).map((d) => [d.code, d.state]));
+	for (const sensor of auhPlan) expect(states.get(sensor), `${sensor} is calibrated`).not.toBe('Commissioning');
+	expect(states.get('Q-VIS-02'), 'a sensor the run did not touch stays as the seed left it').toBe('Commissioning');
 });

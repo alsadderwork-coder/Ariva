@@ -56,6 +56,7 @@ Ports marked "check the vendor datasheet" depend on the device family. Rows mark
 | 22 | Administrators | Kubernetes API, Cronz TickerQ dashboard | Kubernetes API port per cluster; TCP 443 | Operations | Restrict to the management network |
 | 23 | Dalil support tooling | Health telemetry | Mechanism To confirm (for example a customer-approved VPN) | Device status, lag, error rates only; never operational data | To confirm per customer |
 | 24 | Admission controller (only with the optional image signature policy, wiki 04 section 6.5), or the release verifier's machine | Sigstore public services: the TUF trust root (`tuf-repo-cdn.sigstore.dev`) and Rekor (`rekor.sigstore.dev`) | TCP 443, HTTPS | Verifying keyless image signatures (ARV-073) | Optional; air-gapped sites verify before mirroring |
+| 25 | The connected machine that verifies an offline bundle (outside the site, wiki 04 section 12.3) | Sigstore public services (as row 24) and the image registry (`ghcr.io`) | TCP 443, HTTPS | The bundle manifest's signature, each image's signature and SBOM attestation (ARV-127) | Air-gapped sites only; nothing inside the site connects out |
 
 Notes:
 

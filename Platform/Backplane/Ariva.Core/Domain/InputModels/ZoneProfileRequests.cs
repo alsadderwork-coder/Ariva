@@ -19,14 +19,18 @@ public sealed record AddZoneRequest(
     [Required, MaxLength(Entities.Zone.PolygonLength)] string Polygon,
     Guid? QueueZoneId = null,
     Guid? DeskId = null,
-    [MaxLength(4)] string LaneCategory = null);
+    [MaxLength(4)] string LaneCategory = null,
+    [Range(0, Entities.Zone.MaxPhysicalCapacity)] int? PhysicalCapacity = null);
 
-/// <summary>Renames and reshapes a zone; it stays on its level.</summary>
-/// <summary>A zone's new name and shape; <c>LaneCategory</c> null keeps its lane, an empty string clears it (ARV-057).</summary>
+/// <summary>
+/// A zone's new name and shape; it stays on its level. <c>LaneCategory</c> null keeps its lane, an empty string clears it
+/// (ARV-057); <c>PhysicalCapacity</c> null keeps it, 0 clears it, 1 to 5,000 sets it (ARV-114a, queue zones and overflow bands).
+/// </summary>
 public sealed record UpdateZoneRequest(
     [Required, MaxLength(200)] string Name,
     [Required, MaxLength(Entities.Zone.PolygonLength)] string Polygon,
-    [MaxLength(4)] string LaneCategory = null);
+    [MaxLength(4)] string LaneCategory = null,
+    [Range(0, Entities.Zone.MaxPhysicalCapacity)] int? PhysicalCapacity = null);
 
 public sealed record AddLineRequest(
     [Required, MaxLength(200)] string Name,

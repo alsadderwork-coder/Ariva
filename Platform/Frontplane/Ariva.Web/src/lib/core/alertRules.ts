@@ -17,10 +17,79 @@ export const metrics = [
 	'QueueLength',
 	'SensorOffline',
 	'OverflowOccupied',
-	'DesksBelowPlan'
+	'DesksBelowPlan',
+	'ConservationResidual',
+	'TrackCompletion',
+	'OccupancyOutOfRange'
 ] as const;
-/** Metrics the evaluation cannot judge yet: offered only when editing a rule that already uses one (the server refuses new ones). */
-export const notEvaluated: ReadonlySet<string> = new Set(['OverflowOccupied', 'DesksBelowPlan']);
+/**
+ * The continuous health checks of a queue zone's bins (F18, ARV-114b): judged per queue zone, so a rule on one watches
+ * queue zones only (the server refuses overflow zones for them).
+ */
+export const healthChecks: ReadonlySet<string> = new Set([
+	'ConservationResidual',
+	'TrackCompletion',
+	'OccupancyOutOfRange'
+]);
+/**
+ * Metrics the evaluation cannot judge yet (AlertRuleErrors.NotEvaluatedMetrics): offered only when editing a rule that
+ * already uses one (the server refuses new ones), and marked "not evaluated" in the list. Empty since ARV-181b2, when
+ * DesksBelowPlan became evaluated (OverflowOccupied left with ARV-115); kept for a metric added before its inputs exist.
+ */
+export const notEvaluated: ReadonlySet<string> = new Set<string>();
+/**
+ * The metrics whose rules and alerts are border data (Ariva.Core BorderAlerts.Metrics): open desks below recommendation
+ * (ARV-181b2) and, since ARV-187, the predicted nowcast (a lane queue stepped with its share of the arrival wave, from
+ * which the lane split could be solved). The form offers them only to holders of {@link borderPermission}, owned by a
+ * border role (never no owner) and escalated to a border role or none; open desks below recommendation also fires above
+ * ({@link aboveOnly}) and watches queue zones only. Hiding them is a convenience: the server refuses every other caller
+ * (403) and every other value (400), and hides such rules (404).
+ */
+export const borderOnly: ReadonlySet<string> = new Set(['DesksBelowPlan', 'PredictedNowcast']);
+/** The permission whose holders create, change, preview and see border-only rules (BorderAlerts.Receives). */
+export const borderPermission = 'ArrivalWaveLanes.View';
+/**
+ * The border roles (BorderAlerts.Roles): the alert roles holding ArrivalWaveLanes.View that are not airport-side. A
+ * border-only rule belongs to one of them and escalates to one of them or to no role (AlertRuleErrors.BorderRolesOnly).
+ */
+export const borderRoles: readonly string[] = ['BorderShiftSupervisor', 'SystemAdministrator'];
+/**
+ * The border metrics that count a shortfall, so a rule on one fires above (AlertRuleValues.FiresAboveOnly,
+ * AlertRuleErrors.BorderComparator): open desks below recommendation only. The predicted nowcast keeps all four
+ * comparators (ARV-187).
+ */
+export const aboveOnly: ReadonlySet<string> = new Set(['DesksBelowPlan']);
+/** The comparators of a rule on an {@link aboveOnly} metric. */
+export const aboveComparators: readonly string[] = ['GreaterThan', 'GreaterOrEqual'];
+/**
+ * Whether a rule on the metric watches queue zones only (AlertRuleValues.WatchesQueueZonesOnly): the health checks
+ * (stored per queue zone, ARV-114b) and open desks below recommendation (a recommendation per lane, a queue zone;
+ * ARV-181b2). The predicted nowcast, border data since ARV-187, may watch an overflow zone (which takes its queue's
+ * arrivals), so it is not listed here: listing it would drop a saved rule's overflow zones from the form.
+ */
+export function watchesQueueZonesOnly(metric: string): boolean {
+	return healthChecks.has(metric) || metric === 'DesksBelowPlan';
+}
+
+/**
+ * Whether a saved rule on a border-only metric fails the border checks (AlertRuleValues' BorderProblems), so the
+ * evaluation never judges it (ARV-181b2, ARV-187 P3): an owner that is not a border role (no owner included), an
+ * escalation to a role that is not a border role, or for an {@link aboveOnly} metric a comparator that does not fire
+ * above. Such a rule comes from before ARV-187 (a predicted nowcast rule of an airport-side role) or from a row changed in
+ * the database; only a border caller sees it, and saving it with border choices repairs it. A marker only: the server
+ * decides.
+ */
+export function failsBorderRules(
+	rule: Pick<AlertRule, 'metric' | 'comparator' | 'ownerRole' | 'escalateToRole'>
+): boolean {
+	if (!borderOnly.has(rule.metric)) return false;
+	const isBorderRole = (role: string | null): boolean => !!role && borderRoles.includes(role);
+	return (
+		!isBorderRole(rule.ownerRole) ||
+		(!!rule.escalateToRole && !isBorderRole(rule.escalateToRole)) ||
+		(aboveOnly.has(rule.metric) && !aboveComparators.includes(rule.comparator))
+	);
+}
 export const comparators = ['GreaterThan', 'GreaterOrEqual', 'LessThan', 'LessOrEqual'] as const;
 export const severities = ['Info', 'Warning', 'Critical'] as const;
 /** The roles a rule can belong to or escalate to (RoleCodes); administrators are not an owner of operational alerts. */
@@ -34,7 +103,7 @@ export const operationalRoles = [
 export const roleCodes = [...operationalRoles, 'SystemAdministrator'] as const;
 
 export type Metric = (typeof metrics)[number];
-export type Unit = 'minutes' | 'people' | 'desks' | 'condition';
+export type Unit = 'minutes' | 'people' | 'desks' | 'percent' | 'condition';
 
 /** The limits the server applies (AlertRuleValues), so the form refuses what the server would. */
 export const limits = {
@@ -51,9 +120,12 @@ export const limits = {
 export function unitOf(metric: string): Unit {
 	switch (metric) {
 		case 'QueueLength':
+		case 'ConservationResidual':
 			return 'people';
 		case 'DesksBelowPlan':
 			return 'desks';
+		case 'TrackCompletion':
+			return 'percent';
 		case 'SensorOffline':
 		case 'OverflowOccupied':
 			return 'condition';
@@ -62,7 +134,14 @@ export function unitOf(metric: string): Unit {
 	}
 }
 
+/** The largest threshold the server takes for a metric (AlertRuleValues.MaxThreshold). */
 export function maxThreshold(metric: string): number {
+	switch (metric) {
+		case 'TrackCompletion':
+			return 100;
+		case 'OccupancyOutOfRange':
+			return 1_440;
+	}
 	const unit = unitOf(metric);
 	return unit === 'people' ? 100_000 : unit === 'desks' ? 1_000 : unit === 'minutes' ? 600 : 0;
 }

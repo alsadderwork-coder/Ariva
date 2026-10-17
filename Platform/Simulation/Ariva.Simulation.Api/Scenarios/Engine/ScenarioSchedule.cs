@@ -169,18 +169,29 @@ internal sealed class ScenarioSchedule
         return schedule;
     }
 
+    /// <summary>A schedule of the given flights (a site's own draw, ARV-139b), sorted as the reference sorts.</summary>
+    public static ScenarioSchedule Of(IEnumerable<ArrivalFlight> arrivals, IEnumerable<DepartureFlight> departures)
+    {
+        var schedule = new ScenarioSchedule { Arrivals = [.. arrivals ?? []], Departures = [.. departures ?? []] };
+        schedule.Sort();
+        return schedule;
+    }
+
     /// <summary>
     /// Adds ad-hoc flights. Each draws from its own stream (seed plus flight ID), so existing flights never shift.
-    /// Invalid entries are skipped, as in the reference.
+    /// Invalid entries are skipped, as in the reference; so are departures at a site without them (ARV-139b).
     /// </summary>
-    public void AddAdhoc(uint seed, IReadOnlyList<AdhocFlight> flights)
+    public void AddAdhoc(uint seed, IReadOnlyList<AdhocFlight> flights, ScenarioSite site = null)
     {
+        site ??= ScenarioSites.Dmo;
         foreach (var x in flights ?? [])
         {
             if (x is null || string.IsNullOrEmpty(x.Id) || string.IsNullOrEmpty(x.Code) || (x.Direction != "arr" && x.Direction != "dep"))
                 continue;
+            if (x.Direction == "dep" && !site.HasDepartures)
+                continue;
             var r = new Mulberry32(ScenarioMath.Mix32(seed ^ ScenarioMath.StrHash(x.Id)));
-            var mix = x.Mix ?? ScenarioModel.BaseMix;
+            var mix = x.Mix ?? site.BaseMix;
             var load = ScenarioMath.Clamp(x.Load is > 0 or < 0 ? x.Load.Value : 0.8, 0.3, 1);
             var actual = ScenarioMath.Clamp(ScenarioMath.Round((load + (r.Next() - 0.5) * 0.04) * 100) / 100, 0.3, 1);
             var seats = ScenarioMath.RoundToInt(x.Seats is > 0 or < 0 ? x.Seats.Value : 180);

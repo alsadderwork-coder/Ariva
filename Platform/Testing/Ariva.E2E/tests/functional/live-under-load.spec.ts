@@ -9,16 +9,53 @@ import { allowStatuses, databaseAvailable, signInThroughUi } from '../support/we
 // ARV-071: the live operations screen while the hub carries forty other screens on the same zone and the zone's
 // snapshot changes five times a second (Stream announces once a minute; this is the burst a replay or a restart
 // would send). The screen ends on the last snapshot and stays connected, and every other screen received the
-// snapshots. A site of its own, so no other suite's zones move. Ariva.Api.Stream is not in the E2E run: the test
-// writes and announces the snapshots in Redis as Stream does.
+// snapshots. A site of its own, so no other suite's zones move. Ariva.Api.Stream is not in the E2E run: the tests
+// write and announce the snapshots in Redis as Stream does.
+// The screen opens on the demo airport and the tests then choose the load site. When that choice landed while the
+// demo airport was still loading, the screen used to watch nothing on the load site (2026-10-07): the first load keyed
+// the demo airport's zones with the load site's code, and a watch made while the hub connection was still opening was
+// overtaken by the earlier one. The last two tests hold each of those moments open and prove the screen still ends on
+// the site chosen.
 
 test.skip(!databaseAvailable, 'the live screen needs the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true)');
+// One load site for the file, provisioned once (its administrator's TOTP code is accepted once per step).
+test.describe.configure({ mode: 'serial' });
 
 const redisUrl = process.env.ARIVA_E2E_REDIS_URL;
 const instance = process.env.ARIVA_E2E_REDIS_INSTANCE || 'ariva:';
 const separator = '\u001e';
 const others = 40;
 const announcements = 50;
+
+let loadSite: { site: string; zone: string } | undefined;
+
+test.beforeAll(async () => {
+	if (!redisUrl) return;
+	const { site, zone } = await provisionLoadSite(accounts().loadWebAdmin, 'LW');
+	loadSite = { site, zone };
+});
+
+/** A snapshot as Stream writes it, for the minute before this one. */
+function snapshotOf(zoneKey: string, queueLength: number, nowcastMinutes: number) {
+	return {
+		zoneKey,
+		minuteUtc: new Date(Math.floor(Date.now() / 60_000) * 60_000 - 60_000).toISOString(),
+		queueLength,
+		lengthFromSensors: true,
+		lengthDegraded: false,
+		nowcastMinutes,
+		throughputPerMinute: 6,
+		noService: null,
+		nowcastDegraded: false,
+		publishedUtc: new Date().toISOString()
+	};
+}
+
+/** Keeps the zone's snapshot and announces it, as Stream does after a checkpoint. */
+async function publish(redis: ReturnType<typeof createClient>, snapshot: ReturnType<typeof snapshotOf>): Promise<void> {
+	await redis.set(`${instance}live:zone:${snapshot.zoneKey}`, JSON.stringify(snapshot), { EX: 3600 });
+	await redis.publish(`${instance}live:zones`, JSON.stringify(snapshot));
+}
 
 interface Screen {
 	socket: WebSocket;
@@ -59,7 +96,7 @@ test('the live screen keeps up with a burst of snapshots while forty other scree
 	test.skip(!redisUrl, "the live hub needs the run's Redis (ARIVA_E2E_REDIS_URL)");
 	test.setTimeout(180_000);
 	const guards = await guardPage(page);
-	const { site, zone } = await provisionLoadSite(accounts().loadWebAdmin, 'LW');
+	const { site, zone } = loadSite!;
 	const zoneKey = `${site}/${zone}`;
 	const tokens = await screenSessions(accounts().loadScreen, others);
 	const screens = await Promise.all(Array.from({ length: others }, (_, i) => screen(tokens[i % tokens.length], zoneKey)));
@@ -72,23 +109,9 @@ test('the live screen keeps up with a burst of snapshots while forty other scree
 		await expect(row).toBeVisible();
 		await expect(page.getByTestId('live-state')).toHaveAttribute('data-state', 'connected');
 
-		const minute = new Date(Math.floor(Date.now() / 60_000) * 60_000 - 60_000);
 		for (let i = 1; i <= announcements; i++) {
 			const last = i === announcements;
-			const snapshot = {
-				zoneKey,
-				minuteUtc: minute.toISOString(),
-				queueLength: last ? 88 : 20 + i,
-				lengthFromSensors: true,
-				lengthDegraded: false,
-				nowcastMinutes: last ? 12.4 : 5 + i / 10,
-				throughputPerMinute: 6,
-				noService: null,
-				nowcastDegraded: false,
-				publishedUtc: new Date().toISOString()
-			};
-			await redis.set(`${instance}live:zone:${zoneKey}`, JSON.stringify(snapshot), { EX: 3600 });
-			await redis.publish(`${instance}live:zones`, JSON.stringify(snapshot));
+			await publish(redis, snapshotOf(zoneKey, last ? 88 : 20 + i, last ? 12.4 : 5 + i / 10));
 			await new Promise((r) => setTimeout(r, 200));
 		}
 
@@ -104,6 +127,88 @@ test('the live screen keeps up with a burst of snapshots while forty other scree
 		await guards.expectClean();
 	} finally {
 		for (const s of screens) s.socket.close();
+		await redis.quit();
+	}
+});
+
+test('a site chosen while the live connection is still opening is the site the screen watches', async ({ page }) => {
+	test.skip(!redisUrl, "the live hub needs the run's Redis (ARIVA_E2E_REDIS_URL)");
+	const guards = await guardPage(page);
+	const { site, zone } = loadSite!;
+	const zoneKey = `${site}/${zone}`;
+	// The first negotiation (the demo airport's watch) waits until the load site's zones are on screen and its own
+	// watch has been asked for.
+	let open = () => {};
+	const opening = new Promise<void>((resolve) => (open = resolve));
+	let negotiations = 0;
+	await page.route(
+		(url) => url.pathname.endsWith('/hubs/live/negotiate'),
+		async (route) => {
+			if (negotiations++ === 0) await opening;
+			await route.continue();
+		}
+	);
+	const redis = createClient({ url: redisUrl });
+	await redis.connect();
+	try {
+		await publish(redis, snapshotOf(zoneKey, 31, 6.1));
+		await signInThroughUi(page, accounts().loadScreen);
+		await expect.poll(() => negotiations).toBe(1);
+		await page.locator('#live-site').selectOption(site);
+		const row = page.locator(`[data-testid="zone-row"][data-zone="${zone}"]`);
+		await expect(row).toBeVisible();
+		open();
+
+		// The connection opens on the zones asked for last: the kept snapshot on joining, then each new one.
+		await expect(row).toContainText('6.1');
+		await publish(redis, snapshotOf(zoneKey, 32, 6.2));
+		await expect(row).toContainText('6.2');
+		await expect(page.getByTestId('zone-row')).toHaveCount(1);
+		await expect(page.getByTestId('live-state')).toHaveAttribute('data-state', 'connected');
+		allowStatuses(guards, 404);
+		await guards.expectClean();
+	} finally {
+		open();
+		await redis.quit();
+	}
+});
+
+test("a site chosen while the first site's zones are still loading is the site the screen shows and watches", async ({ page }) => {
+	test.skip(!redisUrl, "the live hub needs the run's Redis (ARIVA_E2E_REDIS_URL)");
+	const guards = await guardPage(page);
+	const { site, zone } = loadSite!;
+	const zoneKey = `${site}/${zone}`;
+	// The first zone profile read (the demo airport's published profile) answers only after the load site is shown.
+	let answer = () => {};
+	const answering = new Promise<void>((resolve) => (answer = resolve));
+	let profileReads = 0;
+	const isProfileRead = (url: URL) => /\/api\/v1\/admin\/zone-profiles\/[0-9a-f-]{36}$/i.test(url.pathname);
+	await page.route(isProfileRead, async (route) => {
+		if (profileReads++ === 0) await answering;
+		await route.continue();
+	});
+	const redis = createClient({ url: redisUrl });
+	await redis.connect();
+	try {
+		await publish(redis, snapshotOf(zoneKey, 41, 7.1));
+		await signInThroughUi(page, accounts().loadScreen);
+		await expect.poll(() => profileReads).toBe(1);
+		await page.locator('#live-site').selectOption(site);
+		const row = page.locator(`[data-testid="zone-row"][data-zone="${zone}"]`);
+		await expect(row).toContainText('7.1');
+		const late = page.waitForResponse((response) => isProfileRead(new URL(response.url())));
+		answer();
+		await (await late).finished();
+
+		// The demo airport's late answer changes nothing: the load site's zone alone, still watched.
+		await publish(redis, snapshotOf(zoneKey, 42, 7.2));
+		await expect(row).toContainText('7.2');
+		await expect(page.getByTestId('zone-row')).toHaveCount(1);
+		await expect(page.getByTestId('live-state')).toHaveAttribute('data-state', 'connected');
+		allowStatuses(guards, 404);
+		await guards.expectClean();
+	} finally {
+		answer();
 		await redis.quit();
 	}
 });

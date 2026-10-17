@@ -4,10 +4,15 @@
 	import { _ } from 'svelte-i18n';
 	import { toast } from 'svelte-sonner';
 	import CredentialReveal from '$lib/components/pages/devices/CredentialReveal.svelte';
+	import AdvertisingLibrary from '$lib/components/pages/displays/AdvertisingLibrary.svelte';
+	import AdvertisingPanel from '$lib/components/pages/displays/AdvertisingPanel.svelte';
 	import DisplayForm from '$lib/components/pages/displays/DisplayForm.svelte';
 	import ConfirmButton from '$lib/components/shared/ConfirmButton.svelte';
+	import IllustrativeBanner from '$lib/components/shared/IllustrativeBanner.svelte';
 	import SimplePageHeader from '$lib/components/shared/SimplePageHeader.svelte';
 	import StatusBadge from '$lib/components/shared/StatusBadge.svelte';
+	import * as advertisingApi from '$lib/core/advertising';
+	import type { AdvertisingPolicy } from '$lib/core/advertising';
 	import { auth } from '$lib/core/auth.svelte';
 	import * as displays from '$lib/core/displays';
 	import type { Display, DisplayRequest } from '$lib/core/displays';
@@ -19,6 +24,8 @@
 	let siteCode = $state('');
 	let list = $state<Display[]>([]);
 	let zoneNames = $state<string[]>([]);
+	/** ARV-145: the site's advertising policy, for the roles that see it (off when it cannot be read). */
+	let advertising = $state<AdvertisingPolicy | null>(null);
 	let loading = $state(true);
 	let form = $state<{ key: number; editing: Display | null } | null>(null);
 	let formKey = 0;
@@ -30,6 +37,12 @@
 	const canCreate = $derived(auth.can('Display.Create'));
 	const canEdit = $derived(auth.can('Display.Edit'));
 	const canDelete = $derived(auth.can('Display.Delete'));
+	const canViewAdvertising = $derived(auth.can('AdvertisingPolicy.View'));
+	const canEditAdvertising = $derived(auth.can('AdvertisingPolicy.Edit'));
+	/** ARV-142a: the site's advertisement library, while its policy allows advertising. */
+	const canViewMedia = $derived(auth.can('Advertising.View') || auth.can('Advertising.Manage'));
+	const canManageMedia = $derived(auth.can('Advertising.Manage'));
+	const canApproveMedia = $derived(auth.can('Advertising.Approve'));
 
 	function failed(reason: string): void {
 		toast.error($_('displays.messages.failed', { values: { reason } }));
@@ -39,12 +52,14 @@
 		form = null;
 		issued = null;
 		loading = true;
-		const [found, profiles] = await Promise.all([
+		const [found, profiles, policy] = await Promise.all([
 			displays.search(siteCode),
-			zonesApi.history(siteCode)
+			zonesApi.history(siteCode),
+			canViewAdvertising ? advertisingApi.get(siteCode) : Promise.resolve(null)
 		]);
 		if (found.hasErrors) failed(found.errorMessages.join(' '));
 		list = found.data ?? [];
+		advertising = policy?.data ?? null;
 		const published = (profiles.data ?? []).find((p) => p.status === 'Published');
 		const zones = published ? ((await zonesApi.get(published.id)).data?.zones ?? []) : [];
 		zoneNames = zones
@@ -74,8 +89,12 @@
 	}
 
 	async function refresh(): Promise<void> {
-		const found = await displays.search(siteCode);
+		const [found, policy] = await Promise.all([
+			displays.search(siteCode),
+			canViewAdvertising ? advertisingApi.get(siteCode) : Promise.resolve(null)
+		]);
 		list = found.data ?? list;
+		if (policy?.data) advertising = policy.data;
 	}
 
 	async function renew(display: Display): Promise<void> {
@@ -156,6 +175,8 @@
 	{/snippet}
 </SimplePageHeader>
 
+<IllustrativeBanner site={siteList.find((s) => s.code === siteCode)} />
+
 <div class="flex flex-col gap-4">
 	{#if issued}
 		<div class="flex flex-col gap-2">
@@ -171,6 +192,7 @@
 				{siteCode}
 				editing={form.editing}
 				{zoneNames}
+				{advertising}
 				onSubmit={submit}
 				onCancel={() => (form = null)}
 			/>
@@ -219,7 +241,21 @@
 											hysteresis: display.hysteresisMinutes,
 											stale: display.staleSeconds
 										}
-									})}</td
+									})}
+									<div class="text-muted-foreground" data-testid="display-layout-summary">
+										{display.layout === 'Split'
+											? $_('displays.layoutSummary.Split', {
+													values: { share: display.queueShare }
+												})
+											: $_('displays.layoutSummary.Full')}
+									</div>
+									{#if display.layout === 'Split' && display.secondRegion === 'Advertising'}
+										<div class="text-muted-foreground" data-testid="display-advertising">
+											{advertising?.displaysFallingBack.includes(display.code)
+												? $_('displays.advertisingFallsBack')
+												: $_('displays.advertisingShown')}
+										</div>
+									{/if}</td
 								>
 								<td class="px-4 py-2 font-mono text-xs">{display.credentialPrefix ?? ''}…</td>
 								<td class="px-4 py-2">
@@ -292,6 +328,20 @@
 			</div>
 		{/if}
 	</section>
+	{#if advertising && siteCode}
+		<AdvertisingPanel
+			{siteCode}
+			policy={advertising}
+			canEdit={canEditAdvertising}
+			onChanged={async (policy) => {
+				advertising = policy;
+				await refresh();
+			}}
+		/>
+		{#if advertising.allowed && canViewMedia}
+			<AdvertisingLibrary {siteCode} canManage={canManageMedia} canApprove={canApproveMedia} />
+		{/if}
+	{/if}
 	<p class="flex items-center gap-1.5 text-xs text-muted-foreground">
 		<KeyRound class="size-3.5" aria-hidden="true" />
 		{$_('displays.credentialNote')}

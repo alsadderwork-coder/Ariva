@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { accounts, call, databaseAvailable, login, totpCode } from '../support/accounts';
 import { hosts, kafkaAvailable } from '../support/hosts';
+import { dmoSensors, prepareDmoSensors, type EmulatedSensor } from '../support/demo-sensors';
 import { signInThroughUi } from '../support/web-auth';
 
 // ARV-064: the scripted demo. The simulator plays the reference day (seed 9303, the fictional Demo International Airport
@@ -13,6 +14,12 @@ import { signInThroughUi } from '../support/web-auth';
 //   18:20 to 18:30 sensor S-17 over the arrivals hall is offline: R-003 names it, and the device goes Offline;
 //   19:10          handler B's check-in island C (CI-C) after a shift change: the 15-minute bins breach the 15-minute
 //                  P90 target and R-004 fires for the handler station manager, once the bin has ended.
+// ARV-139b: the illustrative AUH Terminal A arrivals evening (AUH-TA, seed 9304) plays on the same clock, with the seed's own
+// sensors issued a credential and calibrated here through the devices API (the seed leaves them in Commissioning without
+// one) and the scenario's three rules given to the site through the alert rules API:
+//   18:12          the visitor wave during the shift handover: A-VIS passes 15 minutes under the illustrative banner;
+//   18:25 to 18:35 Q-RES-04 over the residents' queue is offline: R-003 names it and the device goes Offline;
+//   19:13          the smart gate fault meets the hub wave: A-EG spills into its band A-EG-OV and R-002 fires.
 // The run takes the evening in real time (about two hours); ARIVA_DEMO_START and ARIVA_DEMO_END (demo minutes, 1060 is
 // 17:40) shorten it, and an event outside the range is skipped. Run it alone: ARIVA_E2E_DEMO=1 npx playwright test
 // --project=demo, or node scripts/verify.mjs demo. The runbook is wiki/10-Operations-Runbook.md, section 4.11.
@@ -26,38 +33,26 @@ const admin = `${hosts.main}/api/v1/admin`;
 const sensors = `${hosts.simulation}/api/v1/simulation/sensors`;
 const operator = { Authorization: `Bearer ${process.env.ARIVA_E2E_SIMULATION_KEY ?? ''}` };
 
-/**
- * The scenario's counting sensors (ScenarioModel.cs): the lead sensor of each of the 16 queues and of the three overflow
- * bands, which Ariva adds to their queue, so that every queue on the screens is live; plus S-17, a second sensor over the
- * arrivals Visitors hall that only reports its health, for the 18:20 outage. Check-in islands C and D report in the Xovis
- * dialect, the rest in the canonical one. ARIVA_DEMO_SENSORS=events keeps only the sensors of the three events.
- */
-const everySensor = [
-	{ sensor: 'S-01', zone: 'SEC-N', level: 'DEP', dialect: 'Canonical' },
-	{ sensor: 'S-06', zone: 'SEC-S', level: 'DEP', dialect: 'Canonical' },
-	{ sensor: 'S-11', zone: 'SEC-N', level: 'DEP', dialect: 'Canonical' },
-	{ sensor: 'S-12', zone: 'A-CRW', level: 'ARR', dialect: 'Canonical' },
-	{ sensor: 'S-13', zone: 'A-CIT', level: 'ARR', dialect: 'Canonical' },
-	{ sensor: 'S-15', zone: 'A-VIS', level: 'ARR', dialect: 'Canonical' },
-	{ sensor: 'S-17', zone: 'A-VIS', level: 'ARR', dialect: 'Canonical' },
-	{ sensor: 'S-21', zone: 'A-RES', level: 'ARR', dialect: 'Canonical' },
-	{ sensor: 'S-23', zone: 'A-EG', level: 'ARR', dialect: 'Canonical' },
-	// The A-VIS queue includes its overflow band A-OV: without the band's lead sensor the queue has no full sensor
-	// reading and its length is only the engine's estimate, which R-001 does not judge.
-	{ sensor: 'S-25', zone: 'A-VIS', level: 'ARR', dialect: 'Canonical' },
-	{ sensor: 'S-27', zone: 'D-CRW', level: 'DEP', dialect: 'Canonical' },
-	{ sensor: 'S-28', zone: 'D-CIT', level: 'DEP', dialect: 'Canonical' },
-	{ sensor: 'S-30', zone: 'D-RES', level: 'DEP', dialect: 'Canonical' },
-	{ sensor: 'S-32', zone: 'D-VIS', level: 'DEP', dialect: 'Canonical' },
-	{ sensor: 'S-37', zone: 'D-EG', level: 'DEP', dialect: 'Canonical' },
-	{ sensor: 'S-39', zone: 'D-VIS', level: 'DEP', dialect: 'Canonical' },
-	{ sensor: 'S-40', zone: 'CI-A', level: 'DEP', dialect: 'Canonical' },
-	{ sensor: 'S-45', zone: 'CI-B', level: 'DEP', dialect: 'Canonical' },
-	{ sensor: 'S-50', zone: 'CI-C', level: 'DEP', dialect: 'Xovis' },
-	{ sensor: 'S-55', zone: 'CI-D', level: 'DEP', dialect: 'Xovis' }
-] as const;
+/** The DMO sensors (tests/support/demo-sensors.ts); ARIVA_DEMO_SENSORS=events keeps only the sensors of the three events. */
+const everySensor = dmoSensors;
 const eventSensors = ['S-15', 'S-17', 'S-25', 'S-13', 'S-21', 'S-50', 'S-55'];
 const plan = process.env.ARIVA_DEMO_SENSORS === 'events' ? everySensor.filter((s) => eventSensors.includes(s.sensor)) : everySensor;
+
+/** AUH-TA's sensors for its three events (AuhTerminalALayout.cs): the visitors' queue and band leads and desk sensors, the residents' lead and Q-RES-04, the smart gates' queue and band leads. */
+const auhSensors = ['Q-VIS-01', 'O-VIS-01', 'D-VIS-01', 'D-VIS-02', 'D-VIS-03', 'D-VIS-04', 'D-VIS-05', 'Q-RES-01', 'Q-RES-04', 'Q-EG-01', 'O-EG-01'];
+const auhQueues = ['A-CRW', 'A-DIP', 'A-CIT', 'A-RES', 'A-GCC', 'A-VIS', 'A-TRF', 'A-EG'];
+/** The AUH-TA scenario's seeded rules (ScenarioSite SeedRules) as Ariva rules, as scripts/demo-local.mjs gives them. */
+const auhRules = [
+	{ name: 'Nowcast above 15 min', zones: auhQueues, metric: 'Nowcast', comparator: 'GreaterThan', threshold: 15, minQueueLength: 10, clearThreshold: 12,
+		sustainMinutes: 1, clearAfterMinutes: 1, severity: 'Critical', ownerRole: 'BorderShiftSupervisor', escalateAfterMinutes: 10, escalateToRole: null,
+		escalationContact: 'Border operations duty officer', notifyByEmail: false, enabled: true },
+	{ name: 'Overflow band occupied', zones: auhQueues, metric: 'OverflowOccupied', comparator: 'IsTrue', threshold: null, minQueueLength: null,
+		clearThreshold: null, sustainMinutes: 3, clearAfterMinutes: 3, severity: 'Warning', ownerRole: null, escalateAfterMinutes: 15, escalateToRole: null,
+		escalationContact: null, notifyByEmail: false, enabled: true },
+	{ name: 'Sensor offline', zones: [...auhQueues, 'A-VIS-OV', 'A-EG-OV'], metric: 'SensorOffline', comparator: 'IsTrue', threshold: null, minQueueLength: null,
+		clearThreshold: null, sustainMinutes: 1, clearAfterMinutes: 1, severity: 'Warning', ownerRole: null, escalateAfterMinutes: 15, escalateToRole: null,
+		escalationContact: 'Systems', notifyByEmail: false, enabled: true }
+];
 
 const clock = (minute: number) => `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
 
@@ -86,9 +81,10 @@ async function waitForDemoMinute(minute: number): Promise<void> {
 
 /**
  * Re-checks a screen condition every 20 seconds until it holds or the time runs out. The screens update live, so the
- * page is only reloaded every five minutes, as a safety net.
+ * page is only reloaded every five minutes, as a safety net; <afterReload> puts back what the reload forgets (the site
+ * chosen, for AUH-TA).
  */
-async function eventually(page: Page, check: () => Promise<boolean>, minutes: number, what: string): Promise<void> {
+async function eventually(page: Page, check: () => Promise<boolean>, minutes: number, what: string, afterReload?: () => Promise<void>): Promise<void> {
 	const until = Date.now() + minutes * 60_000;
 	let reloaded = Date.now();
 	for (;;) {
@@ -97,6 +93,7 @@ async function eventually(page: Page, check: () => Promise<boolean>, minutes: nu
 		await new Promise((resolve) => setTimeout(resolve, 20_000));
 		if (Date.now() - reloaded > 5 * 60_000) {
 			await page.reload();
+			if (afterReload) await afterReload();
 			reloaded = Date.now();
 		}
 	}
@@ -114,68 +111,47 @@ test.afterEach(async ({ page }, info) => {
 	if (info.status !== info.expectedStatus) await info.attach('screen', { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
 });
 
-/** The wait (nowcast minutes) a zone row shows in its third column. */
+/**
+ * The wait (nowcast minutes) a zone row shows in its third column. An estimate carries a marker before the number (the
+ * nowcast from the exit rate alone, as at AUH-TA, which has no AMAN cycle time), so the first number is read.
+ */
 async function shownWait(page: Page, zone: string): Promise<number> {
 	const text = (await page.locator(`[data-testid="zone-row"][data-zone="${zone}"] td`).nth(1).textContent().catch(() => '')) ?? '';
-	const value = Number(text.trim().replace(/,/g, ''));
+	const value = Number(text.replace(/,/g, '').match(/\d+(\.\d+)?/)?.[0] ?? '0');
 	return Number.isFinite(value) ? value : 0;
 }
 
 test.beforeAll(async () => {
 	test.setTimeout(30 * 60_000);
 	token = await signInAdmin();
-	const profiles = await (await call('GET', `${admin}/zone-profiles?siteCode=DMO`, { token })).json();
-	expect(profiles.length, 'the DMO demo seed has published its zone profile').toBeGreaterThan(0);
-	const profile = await (await call('GET', `${admin}/zone-profiles/${profiles[0].id}`, { token })).json();
-	const levels = await (await call('GET', `${admin}/levels?siteCode=DMO`, { token })).json();
-	const levelId = (code: string) => (levels.data ?? levels).find((l: { code: string }) => l.code === code).id as string;
-	const centre = (name: string) => {
-		const zone = profile.zones.find((z: { name: string }) => z.name === name);
-		const points: number[][] = typeof zone.polygon === 'string'
-			? zone.polygon.split(',').map((p: string) => p.trim().split(' ').map(Number))
-			: zone.polygon.map((p: { x: number; y: number }) => [p.x, p.y]);
-		return { x: points.reduce((s, p) => s + p[0], 0) / points.length, y: points.reduce((s, p) => s + p[1], 0) / points.length };
-	};
-
-	// Each sensor is a DMO device under its own code, so R-003 names S-17. A device from an earlier run is reused with a new
-	// credential (a calibrated device cannot be deleted and its code stays taken).
-	const credentials: { sensor: string; dialect: string; credential: string }[] = [];
-	const existing = await (await call('GET', `${admin}/devices?siteCode=DMO&pageSize=200`, { token })).json();
-	const known = new Map<string, { id: string; state: string }>(((existing.data ?? existing) as { code: string; id: string; state: string }[]).map((d) => [d.code, d]));
-	for (const device of plan) {
-		let id: string;
-		let credential: string;
-		const found = known.get(device.sensor);
-		if (found && found.state !== 'Retired') {
-			id = found.id;
-			const rotated = await call('POST', `${admin}/devices/${id}/credential`, { token });
-			expect(rotated.status(), await rotated.text()).toBe(200);
-			credential = (await rotated.json()).credential;
-		} else {
-			const { x, y } = centre(device.zone);
-			const registered = await call('POST', `${admin}/devices`, {
-				token,
-				data: {
-					code: device.sensor, family: 'StereoVision', model: 'PC2SE', transport: 'HttpsPush', dialect: device.dialect, clockSource: 'Ntp',
-					placement: { levelId: levelId(device.level), x, y, mountingHeightMetres: 5, orientationDegrees: 0, queueZoneName: device.zone }
-				}
-			});
-			expect(registered.status(), await registered.text()).toBe(201);
-			const body = await registered.json();
-			id = body.device.id;
-			credential = body.credential;
-		}
-		// Commissioned: Stream counts only calibrated devices, and only they are watched for silence (R-003).
-		const calibrations = await (await call('GET', `${admin}/devices/${id}/calibrations`, { token })).json();
+	// Each sensor is a DMO device under its own code, so R-003 names S-17 (tests/support/demo-sensors.ts).
+	const credentials: EmulatedSensor[] = await prepareDmoSensors(token, plan);
+	// AUH-TA: the seed's own sensors, each issued a credential and calibrated (an installer's steps), and its three rules once.
+	const seeded = await (await call('GET', `${admin}/devices?siteCode=AUH-TA&pageSize=200`, { token })).json();
+	const auhDevices = new Map<string, { id: string }>(((seeded.data ?? seeded) as { code: string; id: string }[]).map((d) => [d.code, d]));
+	for (const sensor of auhSensors) {
+		const device = auhDevices.get(sensor);
+		expect(device, `the illustrative seed placed ${sensor}`).toBeDefined();
+		const issued = await call('POST', `${admin}/devices/${device!.id}/credential`, { token });
+		expect(issued.status(), await issued.text()).toBe(200);
+		const calibrations = await (await call('GET', `${admin}/devices/${device!.id}/calibrations`, { token })).json();
 		if (((calibrations.data ?? calibrations) as unknown[]).length === 0) {
-			const calibrated = await call('POST', `${admin}/devices/${id}/calibrations`, {
+			const calibrated = await call('POST', `${admin}/devices/${device!.id}/calibrations`, {
 				token,
 				data: { method: 'ManualCountTally', sampleSize: 200, countingAccuracyPercent: 97, waitTimeErrorMinutes: 0.3 }
 			});
 			expect(calibrated.status(), await calibrated.text()).toBe(201);
 		}
-		credentials.push({ sensor: device.sensor, dialect: device.dialect, credential });
+		credentials.push({ site: 'AUH-TA', sensor, dialect: 'Canonical', credential: (await issued.json()).credential } as (typeof credentials)[number]);
 	}
+	const rules = await (await call('GET', `${admin}/alert-rules?siteCode=AUH-TA`, { token })).json();
+	if (((rules.data ?? rules) as unknown[]).length === 0) {
+		for (const rule of auhRules) {
+			const created = await call('POST', `${admin}/alert-rules`, { token, data: { siteCode: 'AUH-TA', ...rule } });
+			expect(created.status(), await created.text()).toBe(201);
+		}
+	}
+
 	const loaded = await call('PUT', `${sensors}/devices`, { headers: operator, data: { devices: credentials } });
 	expect(loaded.status(), await loaded.text()).toBe(200);
 	// Ingest keeps device records for a minute: let it see the calibrations before the first push.
@@ -198,6 +174,19 @@ test.afterAll(async () => {
 	await call('PUT', `${sensors}/devices`, { headers: operator, data: { devices: [] } });
 });
 
+/** Chooses AUH-TA on the live screen, under its illustrative banner (a reload goes back to the first site). */
+async function chooseAuh(page: Page): Promise<void> {
+	await page.locator('select:has(option[value="AUH-TA"])').first().selectOption('AUH-TA');
+	await expect(page.getByTestId('illustrative-banner')).toBeVisible();
+	await expect(page.getByTestId('live-state')).toHaveAttribute('data-state', 'connected');
+}
+
+/** Signs in as the web administrator (every site) and chooses AUH-TA. */
+async function auhScreen(page: Page): Promise<void> {
+	await signInThroughUi(page, accounts().webAdmin);
+	await chooseAuh(page);
+}
+
 test('18:05: the visitor wave passes 15 minutes on A-VIS and R-001 reaches the border shift supervisor', async ({ page }) => {
 	test.skip(start > 1085 || end < 1092, 'the range leaves out 18:05');
 	const frames = record(page);
@@ -215,6 +204,17 @@ test('18:05: the visitor wave passes 15 minutes on A-VIS and R-001 reaches the b
 	await page.screenshot({ path: test.info().outputPath('18-05-visitor-wave.png'), fullPage: true });
 });
 
+test('18:12 (AUH-TA): the visitor wave passes 15 minutes on A-VIS under the illustrative banner', async ({ page }) => {
+	test.skip(start > 1090 || end < 1097, 'the range leaves out 18:12');
+	await waitForDemoMinute(1092);
+	await auhScreen(page);
+	await eventually(page, async () => (await shownWait(page, 'A-VIS')) > 15, 8, 'the AUH-TA A-VIS nowcast above 15 minutes', () => chooseAuh(page));
+	const alert = page.locator('[data-testid="alert"][data-rule="R-001"]').filter({ hasText: 'A-VIS' });
+	await eventually(page, async () => (await alert.count()) > 0, 6, 'R-001 for AUH-TA A-VIS', () => chooseAuh(page));
+	await expect(page.getByTestId('illustrative-banner')).toBeVisible();
+	await page.screenshot({ path: test.info().outputPath('auh-18-12-visitor-wave.png'), fullPage: true });
+});
+
 test('18:20 to 18:30: sensor S-17 is offline, R-003 names it and the device goes Offline', async ({ page }) => {
 	test.skip(start > 1100 || end < 1106, 'the range leaves out 18:20');
 	await waitForDemoMinute(1103);
@@ -226,6 +226,36 @@ test('18:20 to 18:30: sensor S-17 is offline, R-003 names it and the device goes
 	const health = await (await call('GET', `${admin}/devices/health?siteCode=DMO`, { token: await signInAdmin() })).json();
 	const s17 = ((health.devices ?? health.data ?? health) as { code: string; state: string }[]).find((d) => d.code === 'S-17');
 	expect(s17?.state, 'S-17 in the device health overview').toBe('Offline');
+});
+
+test('18:25 to 18:35 (AUH-TA): Q-RES-04 is offline and the device goes Offline', async ({ page }) => {
+	test.skip(start > 1105 || end < 1111, 'the range leaves out 18:25');
+	await waitForDemoMinute(1108);
+	await auhScreen(page);
+	const alert = page.locator('[data-testid="alert"][data-rule="R-003"]').filter({ hasText: 'Q-RES-04' });
+	await eventually(page, async () => (await alert.count()) > 0, 6, 'R-003 for Q-RES-04', () => chooseAuh(page));
+	const health = await (await call('GET', `${admin}/devices/health?siteCode=AUH-TA`, { token: await signInAdmin() })).json();
+	const device = ((health.devices ?? health.data ?? health) as { code: string; state: string }[]).find((d) => d.code === 'Q-RES-04');
+	expect(device?.state, 'Q-RES-04 in the device health overview').toBe('Offline');
+});
+
+test('19:13 (AUH-TA): the smart gates spill into A-EG-OV and R-002 fires', async ({ page }) => {
+	test.skip(start > 1150 || end < 1160, 'the range leaves out 19:13');
+	await waitForDemoMinute(1156);
+	// R-002 is raised three minutes after the band fills (about 19:16) and clears with it (about 19:29): look it up in the
+	// site's alerts, whatever its state by now, then on the screen while it is still open.
+	const adminToken = await signInAdmin();
+	const raised = async () =>
+		((await (await call('GET', `${hosts.main}/api/v1/alerts?siteCode=AUH-TA&ruleCode=R-002&zoneName=A-EG`, { token: adminToken })).json()).data ?? []) as {
+			state: string;
+		}[];
+	await expect.poll(async () => (await raised()).length, { timeout: 8 * 60_000, intervals: [20_000] }).toBeGreaterThan(0);
+	await auhScreen(page);
+	if ((await raised()).some((a) => a.state !== 'Resolved')) {
+		const alert = page.locator('[data-testid="alert"][data-rule="R-002"]').filter({ hasText: 'A-EG' });
+		await eventually(page, async () => (await alert.count()) > 0, 3, 'R-002 for AUH-TA A-EG on screen', () => chooseAuh(page));
+	}
+	await page.screenshot({ path: test.info().outputPath('auh-19-13-smart-gate-overflow.png'), fullPage: true });
 });
 
 test('19:10: check-in island C breaches its 15-minute P90 and R-004 reaches the handler station manager', async ({ page }) => {

@@ -1,5 +1,6 @@
 using Ariva.Core.Alerting;
 using Ariva.Core.Domain.Enums;
+using Ariva.Core.Security;
 
 namespace Ariva.Core.Domain.Entities;
 
@@ -115,11 +116,19 @@ public class Alert : EntityBase<Alert>, ISiteBound
     public virtual IReadOnlySet<string> ResponsibleRoles =>
         OwnerRole is null ? null : new HashSet<string>(new[] { OwnerRole, EscalatedUtc is not null ? EscalateToRole : null }.Where(r => r is not null), StringComparer.Ordinal);
 
-    /// <summary>Whether a caller holding these roles sees the alert and may act on it.</summary>
+    /// <summary>
+    /// Whether a caller holding these roles sees the alert and may act on it. An alert on a border-only metric
+    /// (<see cref="BorderAlerts"/>: open desks below recommendation since ARV-181b2, the predicted nowcast since ARV-187) is
+    /// for a caller holding <c>ArrivalWaveLanes.View</c> only, whatever its owner and escalation roles say (a row from before
+    /// those stories or changed in the database included), before the administrator's and the no-owner rule.
+    /// </summary>
     public virtual bool IsFor(IEnumerable<string> roles)
     {
-        var held = (roles ?? []).ToHashSet(StringComparer.Ordinal);
-        return held.Contains(RoleCodes.SystemAdministrator) || ResponsibleRoles is not { } responsible || responsible.Overlaps(held);
+        var held = (roles ?? []).Where(r => r is not null).ToHashSet(StringComparer.Ordinal);
+        if (BorderAlerts.IsBorderOnly(Metric) && !BorderAlerts.Receives(held))
+            return false;
+        var responsible = ResponsibleRoles;
+        return held.Contains(RoleCodes.SystemAdministrator) || responsible is null || responsible.Overlaps(held);
     }
 
     /// <summary>

@@ -1,0 +1,89 @@
+# Ariva releases from an offline install bundle (ARV-127; wiki/04 section 12). scripts/offline/bundle.mjs copies this file
+# into the bundle as helm/helmfile.yaml.gotmpl, next to the packaged charts (charts/) and the values files (values/: the
+# environment values of the platform chart, the database chart's values, images.yaml with the bundle's build number, release
+# version and image digests, and timescaledb-image.yaml with the chart's TimescaleDB tag and digest). Same releases and
+# environments as helmfile-k8s.yaml.gotmpl; chart-security.mjs renders both from a staged bundle and requires the same objects.
+# Install only a bundle that scripts/offline/verify.mjs passed without --dry-run (wiki/04 section 12.3).
+#
+#   helmfile -f helm/helmfile.yaml.gotmpl -e prd --state-values-set mirror=<registry>[/<path>] \
+#     [--state-values-set siteValues=<absolute path>] [--state-values-set databaseValues=<absolute path>] template
+#
+# State values:
+#   mirror          required: the site's registry mirror the bundle's images were copied to, host[:port][/path] in lower
+#                   case; Ariva's images under <mirror>/ariva, TimescaleDB under <mirror>/timescale/timescaledb-ha.
+#   siteValues      the site's values file for the platform release (domain, ingresses, clusterName, otel, image credentials)
+#   databaseValues  the site's values file for the TimescaleDB release (storage, resources)
+#   timescaledb     false where PostgreSQL with TimescaleDB is provided another way, as in helmfile-k8s.yaml.gotmpl
+# The image repository, tags and digests come from the bundle and win over a site file: the pods pull exactly the images the
+# bundle's verification checked. It refuses to render unless images.yaml pins all seven Ariva digests, so a dry run's bundle
+# (which pins none) cannot be installed.
+
+environments:
+  dev:
+    values:
+      - valuesFile: values-k8s-dev.yaml
+        timescaledb: true
+  demo:
+    values:
+      - valuesFile: values-k8s-demo.yaml
+        timescaledb: true
+  prd:
+    values:
+      - valuesFile: values-k8s-prd.yaml
+        timescaledb: true
+  localk8s:
+    values:
+      - valuesFile: values-localk8s.yaml
+        timescaledb: true
+
+helmDefaults:
+  kubeContext: default
+
+---
+{{- $mirror := .Values | get "mirror" "" }}
+{{- if not (regexMatch "^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?(:[0-9]{1,5})?(/[a-z0-9]([a-z0-9._-]{0,126}[a-z0-9])?){0,3}$" $mirror) }}
+{{- fail "set the state value mirror to the site's registry mirror that holds the bundle's images (host[:port][/path], lower case)" }}
+{{- end }}
+{{- $images := readFile "values/images.yaml" | fromYaml }}
+{{- range $service := list "api-main" "api-ingest" "api-stream" "api-cronz" "api-integration" "simulation" "web" }}
+{{- if not (regexMatch "^sha256:[0-9a-f]{64}$" (index ($images.imageDigests | default dict) $service | toString)) }}
+{{- fail (printf "values/images.yaml pins no digest for %s: a dry run bundle cannot be installed (install only a bundle verify.mjs passed without --dry-run)" $service) }}
+{{- end }}
+{{- end }}
+
+releases:
+
+  # TimescaleDB (single node, ARV-062), its image from the mirror under the digest the chart pins.
+  - name: timescaledb
+    chart: ./charts/ariva-timescaledb.tgz
+    installed: {{ .Values.timescaledb }}
+    wait: true
+    timeout: 900
+    values:
+      - ./values/timescaledb.yaml
+      {{- with .Values | get "databaseValues" "" }}
+      - {{ . | quote }}
+      {{- end }}
+      # last, so the chart's pinned tag and digest win over the site's file
+      - ./values/timescaledb-image.yaml
+    set:
+      - name: image.repository
+        value: {{ printf "%s/timescale/timescaledb-ha" $mirror | quote }}
+
+  # Ariva platform: api hosts, simulation and web, with the migration and Kafka topics jobs as hooks
+  - name: ariva-platform
+    chart: ./charts/ariva-platform.tgz
+    {{- if .Values.timescaledb }}
+    needs:
+      - timescaledb
+    {{- end }}
+    values:
+      - ./values/{{ .Values.valuesFile }}
+      {{- with .Values | get "siteValues" "" }}
+      - {{ . | quote }}
+      {{- end }}
+      # last, so the bundle's release version, build number and digests win over the site's file
+      - ./values/images.yaml
+    set:
+      - name: imageRepository
+        value: {{ printf "%s/ariva" $mirror | quote }}

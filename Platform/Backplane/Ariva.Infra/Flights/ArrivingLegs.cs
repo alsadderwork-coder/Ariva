@@ -87,13 +87,17 @@ public static class ArrivingLegs
 /// The arrival wave for predicted-breach rules (ARV-038 <see cref="IArrivalWaveSource"/>, ARV-047): a queue zone's
 /// projected arrivals per minute are the hall arrivals (F14) of the lane categories it serves, each lane shared equally
 /// among the site's queue zones that serve it. A queue zone serves the lane categories of the desks its service zones
-/// stand at (the site's published zone profiles; an overflow zone takes its queue zone's). A zone serving no lane has
-/// no projection (null), so its predicted rules have nothing to judge. Minutes are projected from the current minute
+/// stand at (the site's published zone profiles; an overflow zone takes its queue zone's), counting only desks of an
+/// Immigration checkpoint on the queue zone's level (ARV-191): an emigration queue, or a queue linked to desks of another
+/// level, neither shares a lane nor receives the arrivals wave. A zone serving no lane has no projection (null), so its
+/// predicted rules have nothing to judge. Minutes are projected from the current minute
 /// with the longest window (<see cref="ArrivalWave.MaxWindow"/>); earlier minutes have no projection, so a predicted
 /// value needs every minute after it to be from now on: a backtest finds none, except at most for its last minute when it
 /// ends at the current minute. The e-gate rejects join their manual lane (ARV-049, F12, <see cref="EgateCoupling"/>):
 /// r measured from AMAN's e-gate intervals over the window (<see cref="EgateRejects"/>), times the e-gate eligible
-/// arrivals a lag earlier. One read per site and lifetime (a scope: one evaluation tick).
+/// arrivals a lag earlier. One read per site and lifetime (a scope: one evaluation tick). The result is a lane queue's
+/// share of the arrival wave, which is border data (ArrivalWaveLanes.View): it is read only by the predicted nowcast's
+/// evaluation and backtest (<c>AlertInputs</c>), whose rules and alerts are border-only since ARV-187.
 /// </summary>
 public sealed class ProjectedArrivalWave(IUnitOfWork unitOfWork, TimeProvider timeProvider, ArrivalWaveSettings settings, EgateCouplingSettings coupling)
     : IArrivalWaveSource
@@ -139,12 +143,22 @@ public sealed class ProjectedArrivalWave(IUnitOfWork unitOfWork, TimeProvider ti
     {
         if (_lanes.TryGetValue(siteCode, out var known))
             return known;
+        // ARV-191: a queue zone (q, the zone itself or the queue zone of an overflow band) takes a lane only through the desks
+        // of an Immigration checkpoint on its own level, the arrivals hall as the staffing recommendation scopes its lanes
+        // (a queue zone on a level with an Immigration checkpoint, Staffing/StaffingInputs.cs). Border desks of every kind
+        // carry lane categories, emigration desks included: without this scope a departures queue standing at lane-coded
+        // emigration desks would count in the lane's sharing (dividing an arrivals queue's share, which under-predicts its
+        // breach) and be judged on the arrivals wave itself. A desk of another level links no queue either, as the desk
+        // term's match keeps a queue's desks on its level.
         var rows = await unitOfWork.StorageProvider.ExecuteSqlAsync<ZoneLaneRow>("""
             SELECT DISTINCT t.name AS "Zone", t.kind AS "Kind", d.lane_category_codes AS "Codes"
               FROM zone_profile p
               JOIN zone t ON t.profile_id = p.id AND t.kind IN ('Queue', 'Overflow')
-              JOIN zone s ON s.profile_id = p.id AND s.queue_zone_id = COALESCE(CASE WHEN t.kind = 'Overflow' THEN t.queue_zone_id END, t.id) AND s.desk_id IS NOT NULL
+              JOIN zone q ON q.profile_id = p.id AND q.id = COALESCE(CASE WHEN t.kind = 'Overflow' THEN t.queue_zone_id END, t.id)
+              JOIN zone s ON s.profile_id = p.id AND s.queue_zone_id = q.id AND s.desk_id IS NOT NULL
               JOIN desk d ON d.id = s.desk_id AND d.site_code = p.site_code AND d.deleted_on IS NULL
+              JOIN checkpoint c ON c.id = d.checkpoint_id AND c.site_code = p.site_code AND c.deleted_on IS NULL AND c.kind = 'Immigration'
+                               AND c.level_id = q.level_id
              WHERE p.site_code = :site AND p.status = 'Published' AND d.lane_category_codes IS NOT NULL
             """, new Dictionary<string, object> { ["site"] = siteCode }, ct);
         var lanes = rows

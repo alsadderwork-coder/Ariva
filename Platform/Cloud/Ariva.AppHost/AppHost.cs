@@ -7,8 +7,12 @@ using Ariva.AppHost;
 
 var builder = DistributedApplication.CreateBuilder(args);
 var settings = AppHostSettings.From(builder.Configuration);
+// ARV-139c (CWE-200): a run with the development-only site refuses the E2E and scripted-demo combinations, and takes only
+// the demo accounts' sign-in variables (AppHostSettings.EnsureConsistent, ReadAccounts).
+settings.EnsureConsistent();
 var repository = Path.GetFullPath(Path.Combine(builder.AppHostDirectory, "..", "..", ".."));
 var hostEnvironment = settings.ReadHostEnvironment();
+var mainAccounts = settings.ReadAccounts();
 
 #region Secrets
 
@@ -17,6 +21,8 @@ static GenerateParameterDefault Password() => new() { MinLength = 32, Special = 
 var ownerPassword = builder.AddParameter("database-owner-password", Password(), secret: true, persist: true);
 var runtimePassword = builder.AddParameter("database-runtime-password", Password(), secret: true, persist: true);
 var readonlyPassword = builder.AddParameter("database-readonly-password", Password(), secret: true, persist: true);
+// ARV-104g1: the validation reader login, the only login that reads the shadow nowcast; api-main alone gets it.
+var validationReaderPassword = builder.AddParameter("database-validation-reader-password", Password(), secret: true, persist: true);
 var redisPassword = builder.AddParameter("redis-password", Password(), secret: true, persist: true);
 // The simulator's operator key (Bearer, read and control scopes): shown in the dashboard's parameters; the simulator
 // keeps only its SHA-256, as in every environment (ARV-027).
@@ -36,10 +42,12 @@ var timescale = builder.AddPostgres("timescaledb", builder.AddParameter("databas
     // The read-only role for the postgres-dev MCP (deploy/local/postgres-init), run once on a new data directory.
     .WithInitFiles(Path.Combine(repository, "deploy", "local", "postgres-init"))
     .WithLifetime(settings.Persistent ? ContainerLifetime.Persistent : ContainerLifetime.Session);
-if (!string.IsNullOrWhiteSpace(settings.DatabaseVolume))
+if (!string.IsNullOrWhiteSpace(settings.DatabaseVolumeForRun))
 {
-    // The HA image keeps its data under /home/postgres/pgdata, not the official image's path.
-    timescale.WithVolume(settings.DatabaseVolume, "/home/postgres/pgdata");
+    // The HA image keeps its data under /home/postgres/pgdata, not the official image's path. A run with the
+    // development-only site mounts the volume's separate twin (ARV-139c): Aspire recreates the persistent container when
+    // its volume changes, so the usual volume, which the scripted demo presents, never holds that site's rows.
+    timescale.WithVolume(settings.DatabaseVolumeForRun, "/home/postgres/pgdata");
 }
 
 var kafka = builder.AddKafka("kafka", settings.KafkaPort);
@@ -59,7 +67,9 @@ var database = timescale.Resource.PrimaryEndpoint;
 var broker = kafka.Resource.PrimaryEndpoint;
 var mail = smtp.GetEndpoint("smtp");
 
-IResourceBuilder<ProjectResource> Host<TProject>(string name) where TProject : IProjectMetadata, new()
+// validationService: the host of the validation service (api-main), the only one given the validation reader login (ARV-104g1);
+// it migrates first and creates the login (script 0049). The other hosts never see it.
+IResourceBuilder<ProjectResource> Host<TProject>(string name, bool validationService = false) where TProject : IProjectMetadata, new()
 {
     var host = Ariva(builder.AddProject<TProject>(name))
         .WithEnvironment("Database__Host", ReferenceExpression.Create($"{database.Property(EndpointProperty.Host)}"))
@@ -84,7 +94,24 @@ IResourceBuilder<ProjectResource> Host<TProject>(string name) where TProject : I
         .WithEnvironment("Email__Smtp__AllowInsecure", "true")
         // Ready means the host's own dependencies answer (HealthExtensions), not just that it listens.
         .WithHttpHealthCheck("/health/readiness");
-    return Overrides(host, name);
+    if (validationService)
+    {
+        host.WithEnvironment("Database__ValidationReader__Username", "ariva_validation")
+            .WithEnvironment("Database__ValidationReader__Password", validationReaderPassword);
+    }
+
+    Overrides(host, name);
+    if (name == "api-main")
+    {
+        // ARV-139c (CWE-200): after the host variables file, so that nothing but the AppHost's own switch decides. The demo
+        // accounts of a run with the development-only site (sign-in variables only), then the seed setting: false in every
+        // run, whatever the shell or appsettings.local.json says, and true only with run-ariva.ps1's switch.
+        foreach (var (key, value) in mainAccounts)
+            host.WithEnvironment(key, value);
+        host.WithEnvironment("Seed__NbjSite", settings.NbjSite ? "true" : "false");
+    }
+
+    return host;
 }
 
 // What every Ariva process gets, after the variables Aspire adds to a project (later callbacks win).
@@ -98,7 +125,8 @@ static IResourceBuilder<ProjectResource> Ariva(IResourceBuilder<ProjectResource>
     .WithEnvironment("OTEL_DOTNET_EXPERIMENTAL_ASPNETCORE_DISABLE_URL_QUERY_REDACTION", "false")
     .WithEnvironment("OTEL_DOTNET_EXPERIMENTAL_HTTPCLIENT_DISABLE_URL_QUERY_REDACTION", "false");
 
-// The E2E suite's settings for this resource, applied last (AppHost:HostEnvironmentFile).
+// The E2E suite's settings for this resource (AppHost:HostEnvironmentFile), applied after the AppHost's own wiring; only
+// api-main's development-only site variables come later (ARV-139c).
 IResourceBuilder<T> Overrides<T>(IResourceBuilder<T> resource, string name) where T : IResourceWithEnvironment
 {
     if (hostEnvironment.TryGetValue(name, out var variables))
@@ -111,7 +139,7 @@ IResourceBuilder<T> Overrides<T>(IResourceBuilder<T> resource, string name) wher
 }
 
 // Main migrates the schema at startup in vm-local; the others start once it is ready, so only one host migrates.
-var main = Host<Projects.Ariva_Api_Main>("api-main").WaitFor(timescale).WaitFor(kafka).WaitFor(redis).WaitFor(smtp);
+var main = Host<Projects.Ariva_Api_Main>("api-main", validationService: true).WaitFor(timescale).WaitFor(kafka).WaitFor(redis).WaitFor(smtp);
 var ingest = Host<Projects.Ariva_Api_Ingest>("api-ingest").WaitFor(main);
 if (settings.Stream)
     Host<Projects.Ariva_Api_Stream>("api-stream").WaitFor(main);

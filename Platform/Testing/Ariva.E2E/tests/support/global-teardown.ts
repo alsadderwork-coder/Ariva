@@ -12,7 +12,9 @@ const patterns: { name: string; re: RegExp }[] = [
 	{ name: 'JWT', re: /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*/ },
 	{ name: 'access_token value', re: /access_token=(?!\[REDACTED\])[^&\s"\\]+/i },
 	// ARV-042: an integration client secret (ics_ and 43 base64url characters) never reaches a log.
-	{ name: 'integration client secret', re: /\bics_[A-Za-z0-9_-]{43}\b/ }
+	{ name: 'integration client secret', re: /\bics_[A-Za-z0-9_-]{43}\b/ },
+	// ARV-104j review: a device credential (ardk_) or display pairing secret (ardp_) never reaches a log either.
+	{ name: 'device or display credential', re: /(?<![A-Za-z0-9_-])ard[kp]_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/ }
 ];
 
 // ARV-097: MassTransit logs what it reports to its usage telemetry endpoint, or that the report failed. Either line
@@ -84,8 +86,10 @@ export default async function globalTeardown() {
 		labelled.push({ label: 'changed password', value: changedPassword() }, { label: 'first-sign-in password', value: webFirstPassword() });
 	}
 	const secrets: string[] = [];
-	// The simulator's operator key and the mock partners' secrets (ARV-027 to ARV-029) never reach Ariva's host logs either.
-	for (const name of ['ARIVA_E2E_SIMULATION_KEY', 'ARIVA_E2E_MOCK_AMAN_SECRET', 'ARIVA_E2E_MOCK_AMAN_SEED', 'ARIVA_E2E_MOCK_AMAN_PULL_SECRET', 'ARIVA_E2E_MOCK_AMAN_PULL_SEED', 'ARIVA_E2E_ACRIS_KEY']) {
+	// The simulator's operator key and the mock partners' secrets (ARV-027 to ARV-029) never reach Ariva's host logs either, nor
+	// the validation reader login's password (ARV-104g1), which Ariva.Api.Main passes to the migration's login function.
+	for (const name of ['ARIVA_E2E_SIMULATION_KEY', 'ARIVA_E2E_SIMULATION_READ_KEY', 'ARIVA_E2E_MOCK_AMAN_SECRET', 'ARIVA_E2E_MOCK_AMAN_SEED', 'ARIVA_E2E_MOCK_AMAN_PULL_SECRET', 'ARIVA_E2E_MOCK_AMAN_PULL_SEED', 'ARIVA_E2E_ACRIS_KEY',
+		'ARIVA_E2E_VALIDATION_READER_PASSWORD']) {
 		if (process.env[name]) secrets.push(process.env[name]!);
 	}
 	// The break-glass credential printed by the installer command (ARV-010c) must never reach a host log either.

@@ -89,6 +89,15 @@ test('a border shift supervisor sees each lane, the desks and the e-gates of the
 	const redis = createClient({ url: redisUrl });
 	await redis.connect();
 	try {
+		// The simulator keeps adding e-gate attempts and the screen loads its figures once a minute, so a count on the screen
+		// lies between a read taken before the page loaded and one taken after it was checked (an exact match raced: 39 on
+		// the screen, 40 a moment later from the API).
+		const token = (await signIn(accounts().webBorder)).accessToken;
+		const arrivalsNow = async () => {
+			const view = await (await call('GET', api(), { token })).json();
+			return { view, hall: view.halls.find((h: { kind: string }) => h.kind === 'Immigration') };
+		};
+		const before = (await arrivalsNow()).hall.eGates;
 		await signInThroughUi(page, accounts().webBorder);
 		await page.getByTestId('app-sidebar').getByRole('link', { name: 'Immigration' }).click();
 		await expect(page.getByRole('heading', { level: 1 })).toHaveText('Immigration');
@@ -122,15 +131,18 @@ test('a border shift supervisor sees each lane, the desks and the e-gates of the
 		for (const lane of ['CIT', 'RES', 'VIS', 'CRW']) await expect(page.locator(`[data-testid="lane-row"][data-lane="${lane}"]`)).toBeVisible();
 
 		// The server's figures, as the screen shows them.
-		const token = (await signIn(accounts().webBorder)).accessToken;
-		const view = await (await call('GET', api(), { token })).json();
-		const arrivals = view.halls.find((h: { kind: string }) => h.kind === 'Immigration');
+		await expect(page.getByTestId('egate-attempts')).toHaveText(/^\d+$/);
+		const shownAttempts = Number(await page.getByTestId('egate-attempts').textContent());
+		const shownReads = Number(await page.locator('[data-testid="rejects"] [data-reject="documentRead"] span').last().textContent());
+		const { view, hall: arrivals } = await arrivalsNow();
 		expect(view.desksIncluded).toBe(true);
 		expect(arrivals.desks.find((d: { desk: string }) => d.desk === 'AR-02')).toMatchObject({ lane: 'CIT' });
 		expect(arrivals.desks.find((d: { desk: string }) => d.desk === 'AR-02').transactions).toBeGreaterThanOrEqual(4);
 		expect(arrivals.eGates.attempts).toBeGreaterThanOrEqual(20);
-		await expect(page.getByTestId('egate-attempts')).toHaveText(String(arrivals.eGates.attempts));
-		await expect(page.locator('[data-testid="rejects"] [data-reject="documentRead"]')).toContainText(String(arrivals.eGates.rejects.documentRead));
+		expect(shownAttempts).toBeGreaterThanOrEqual(before.attempts);
+		expect(shownAttempts).toBeLessThanOrEqual(arrivals.eGates.attempts);
+		expect(shownReads).toBeGreaterThanOrEqual(before.rejects.documentRead);
+		expect(shownReads).toBeLessThanOrEqual(arrivals.eGates.rejects.documentRead);
 		await expect(page.getByTestId('extra-load')).toContainText('desk-minutes');
 		await expect(page.locator('[data-testid="desk"][data-desk="AR-02"]')).toBeVisible();
 		await expect(page.locator('[data-testid="gate"][data-gate="AG-1"]')).toBeVisible();

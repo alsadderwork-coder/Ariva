@@ -62,21 +62,23 @@ public sealed record AmanMinute(
 /// <item>A desk session changes when the scenario's desk opens, pauses or closes (closed or out of service is Closed,
 /// paused is Paused, anything else Opened), with the lane it serves. The first minute of a run states every desk that
 /// is not closed, as a feed joining mid-day would.</item>
-/// <item>Each desk with an open or paused session reports the interval that just closed: the people the scenario's lane
-/// processed that minute, shared between its active desks by their speed; documents are people, transactions are
-/// approaches (families of 1.25 on average); service and cycle times follow from the lane's service time.</item>
+/// <item>Each desk with an open or paused session reports the interval that just closed (ARV-117c,
+/// <see cref="AmanDeskProcess"/>): the scenario's served people, shared between the lane's active desks by their speed,
+/// worked through by each desk as discrete transactions (families of 1.25 people on average; documents are people);
+/// the transactions completed in the interval, their documents, mean and P90 service time, and mean cycle time (previous
+/// start to start, in open time). A paused desk reports an empty interval.</item>
 /// <item>Each e-gate in service reports its attempts, accepted and rejected with the scenario's reject rate, rejects split by
 /// coarse category and suppressed: a category with fewer than 3 rejects goes to Other.</item>
 /// <item>Each inbound flight's lane demand is computed from API data two hours before its scheduled arrival (booked
 /// passengers) and again 30 minutes before (boarded), split by the carrier's mix; e-gate eligible are 40 % of citizens
 /// and residents, transfers are excluded.</item>
 /// </list>
-/// Counts are whole numbers: a fractional share is rounded up with a deterministic probability (its fraction), so the
-/// feed adds up to the scenario on average. Times come from <see cref="FeedTime"/>.
+/// E-gate counts are whole numbers: a fractional share is rounded up with a deterministic probability (its fraction), so
+/// the feed adds up to the scenario on average; desk counts add up to the scenario through the desks' transactions.
+/// Times come from <see cref="FeedTime"/>.
 /// </summary>
 public static class AmanFeed
 {
-    private const double FamilySize = 1.25;
     private const double EgateShare = 0.40;
     private const int SmallCell = 3;
 
@@ -143,9 +145,6 @@ public static class AmanFeed
     {
         var now = day.ServerStates(q, minute);
         var before = day.ServerStates(q, minute - 1);
-        var served = day.D[q][minute + ScenarioModel.Pre];
-        var active = now.Where(s => s.State is "serving" or "idle" or "unknown").ToList();
-        var speed = active.Sum(s => 1 / Math.Max(s.Svc, 1));
         for (var k = 0; k < now.Count; k++)
         {
             var code = AmanCodes.Of(now[k].Id);
@@ -160,12 +159,10 @@ public static class AmanFeed
 
             if (state is null)
                 continue;
-            var share = state == DeskSessionState.Opened && speed > 0 ? served * (1 / Math.Max(now[k].Svc, 1)) / speed : 0;
-            var documents = Whole(share, tag, code, minute, 1);
-            var transactions = documents == 0 ? 0 : Math.Clamp(Whole(documents / FamilySize, tag, code, minute, 2), 1, documents);
-            var service = transactions == 0 ? 0 : Math.Round(now[k].Svc * documents / transactions, 1);
-            desks.Add(new DeskIntervalStats(siteCode, code, at, 60, transactions, documents, service, Math.Round(service * 1.6, 1),
-                transactions == 0 ? 0 : Math.Round(60.0 / transactions, 1), lane, $"{tag}-dk-{code}-{minute.ToString("D4", CultureInfo.InvariantCulture)}"));
+            // ARV-117c: what the desk completed in the interval, from the scenario's served passengers as transactions.
+            var figures = state == DeskSessionState.Opened ? AmanDeskProcess.Of(day, q, k, minute) : DeskIntervalFigures.Empty;
+            desks.Add(new DeskIntervalStats(siteCode, code, at, 60, figures.Transactions, figures.Documents, figures.MeanServiceSeconds, figures.P90ServiceSeconds,
+                figures.MeanCycleSeconds, lane, $"{tag}-dk-{code}-{minute.ToString("D4", CultureInfo.InvariantCulture)}"));
         }
     }
 

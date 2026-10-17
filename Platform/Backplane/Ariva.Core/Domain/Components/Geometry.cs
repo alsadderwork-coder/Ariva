@@ -55,17 +55,37 @@ public static class Geometry
         return Length(p, new FloorPoint(a.X + (t * dx), a.Y + (t * dy)));
     }
 
-    /// <summary>True when the closed segments p1-p2 and q1-q2 touch or cross (collinear overlaps included).</summary>
+    /// <summary>
+    /// True when the closed segments p1-p2 and q1-q2 touch or cross (collinear overlaps included). An end of one segment
+    /// closer than <see cref="Tolerance"/> to the other segment touches it, so an exact touch is a touch whatever the
+    /// rounding. The answer is the same for every order of the two segments and direction of either (ARV-161). Zone
+    /// validity (<see cref="IsSimplePolygon"/>) and a device footprint's reach (<see cref="Overlaps"/>) use it; counting
+    /// line crossings from tracks does not (F4's own side-of-line rule, docs/domain/formulas.md).
+    /// </summary>
     public static bool SegmentsIntersect(FloorPoint p1, FloorPoint p2, FloorPoint q1, FloorPoint q2)
     {
-        var d1 = Cross(q1, q2, p1);
-        var d2 = Cross(q1, q2, p2);
-        var d3 = Cross(p1, p2, q1);
-        var d4 = Cross(p1, p2, q2);
-        if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0)))
+        // Order independence by construction (ARV-161): each segment's ends are put in a fixed order, then the two segments,
+        // so all eight orders and directions of the arguments reach the arithmetic below as the same four points, bit for
+        // bit, and round alike. The answer is then a function of the unordered pair of unordered segments.
+        var (a1, a2) = Ordered(p1, p2);
+        var (b1, b2) = Ordered(q1, q2);
+        var first = Compare(a1, b1);
+        if (first > 0 || (first == 0 && Compare(a2, b2) > 0))
+            (a1, a2, b1, b2) = (b1, b2, a1, a2);
+
+        // A touch: an end closer than Tolerance to the other segment (a shared end, an end on the other segment, a
+        // collinear overlap, a segment of no length lying on the other). A distance in metres, compared with a length.
+        if (DistanceToSegment(a1, b1, b2) < Tolerance || DistanceToSegment(a2, b1, b2) < Tolerance ||
+            DistanceToSegment(b1, a1, a2) < Tolerance || DistanceToSegment(b2, a1, a2) < Tolerance)
+        {
             return true;
-        return (d1 == 0 && OnSegment(q1, q2, p1)) || (d2 == 0 && OnSegment(q1, q2, p2)) ||
-               (d3 == 0 && OnSegment(p1, p2, q1)) || (d4 == 0 && OnSegment(p1, p2, q2));
+        }
+
+        // Otherwise only a proper crossing: each segment's ends on opposite sides of the other's line, each at least
+        // Tolerance from it, where the sign of a cross product is never in doubt. An end closer than that to the other's
+        // line counts as on it (Side 0); with no touch above, such segments cannot cross, because the part of the segment
+        // between that end and a crossing would pass within Tolerance of an end of the other segment.
+        return Side(b1, b2, a1) * Side(b1, b2, a2) < 0 && Side(a1, a2, b1) * Side(a1, a2, b2) < 0;
     }
 
     /// <summary>
@@ -92,7 +112,9 @@ public static class Geometry
 
     /// <summary>
     /// True when two rings share any area or boundary point: an edge of one touches an edge of the other, or one lies
-    /// inside the other. Used to check that a sensor's coverage footprint reaches its zone (ARV-021).
+    /// inside the other. Used to check that a sensor's coverage footprint reaches its zone (ARV-021). Edges touch as
+    /// <see cref="SegmentsIntersect"/> says (within <see cref="Tolerance"/>), so rings that only touch overlap, in any vertex
+    /// order (ARV-161).
     /// </summary>
     public static bool Overlaps(IReadOnlyList<FloorPoint> first, IReadOnlyList<FloorPoint> second)
     {
@@ -112,7 +134,9 @@ public static class Geometry
 
     /// <summary>
     /// A simple polygon: at least three distinct vertices, no repeated vertex, non-zero area, and no two edges touching
-    /// except neighbours at their shared vertex.
+    /// except neighbours at their shared vertex. Edges that are not neighbours touch as <see cref="SegmentsIntersect"/>
+    /// says, so a vertex on, or closer than <see cref="Tolerance"/> to, an edge that is not its own is refused, in any vertex
+    /// order (ARV-161).
     /// </summary>
     public static bool IsSimplePolygon(IReadOnlyList<FloorPoint> ring)
     {
@@ -215,7 +239,32 @@ public static class Geometry
     private static double Dot(FloorPoint a, FloorPoint shared, FloorPoint b) =>
         ((a.X - shared.X) * (b.X - shared.X)) + ((a.Y - shared.Y) * (b.Y - shared.Y));
 
-    private static bool OnSegment(FloorPoint a, FloorPoint b, FloorPoint p) =>
-        Math.Min(a.X, b.X) - 1e-12 <= p.X && p.X <= Math.Max(a.X, b.X) + 1e-12 &&
-        Math.Min(a.Y, b.Y) - 1e-12 <= p.Y && p.Y <= Math.Max(a.Y, b.Y) + 1e-12;
+    /// <summary>
+    /// The side of the line through a and b that r lies on: 1 to the left, -1 to the right, 0 when r is closer than
+    /// <see cref="Tolerance"/> to the line (or a and b are one point). The cross product is a length squared (twice the
+    /// triangle's area), so it is compared with Tolerance times the length of a-b: the point's distance to the line
+    /// against a length. A NaN cross product gives 0.
+    /// </summary>
+    private static int Side(FloorPoint a, FloorPoint b, FloorPoint r)
+    {
+        var cross = ((b.X - a.X) * (r.Y - a.Y)) - ((b.Y - a.Y) * (r.X - a.X));
+        if (Math.Abs(cross) < Tolerance * Length(a, b))
+            return 0;
+        return cross > 0 ? 1 : cross < 0 ? -1 : 0;
+    }
+
+    /// <summary>The ends of a segment in a fixed order (by X, then Y); negative zero is made zero so equal ends are equal bits.</summary>
+    private static (FloorPoint, FloorPoint) Ordered(FloorPoint a, FloorPoint b)
+    {
+        a = new FloorPoint(a.X + 0.0, a.Y + 0.0);
+        b = new FloorPoint(b.X + 0.0, b.Y + 0.0);
+        return Compare(a, b) <= 0 ? (a, b) : (b, a);
+    }
+
+    /// <summary>A total order on points: X, then Y (<see cref="double.CompareTo(double)"/>, which also orders NaN).</summary>
+    private static int Compare(FloorPoint a, FloorPoint b)
+    {
+        var byX = a.X.CompareTo(b.X);
+        return byX != 0 ? byX : a.Y.CompareTo(b.Y);
+    }
 }

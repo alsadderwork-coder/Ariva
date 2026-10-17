@@ -15,7 +15,8 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..', '..');
-const SKIP_DIRS = new Set(['node_modules', 'bin', 'obj', '.git', '.svelte-kit', 'build', 'dist', 'test-results', 'playwright-report', '.verify', 'prototype', 'fixtures']);
+// .private holds client material that nothing reads, not even a gate (owner decision 2026-10-09, ARV-139c).
+const SKIP_DIRS = new Set(['node_modules', 'bin', 'obj', '.git', '.svelte-kit', 'build', 'dist', 'test-results', 'playwright-report', '.verify', 'prototype', 'fixtures', '.private']);
 const EXT_LANG = {
   '.cs': 'cs', '.csproj': 'msbuild', '.props': 'msbuild', '.targets': 'msbuild',
   '.ts': 'js', '.js': 'js', '.mjs': 'js', '.cjs': 'js', '.svelte': 'svelte',
@@ -319,8 +320,10 @@ function listFiles(dir, acc = []) {
 
 function changedFiles() {
   try {
-    const out = execFileSync('git', ['status', '--porcelain'], { cwd: ROOT, encoding: 'utf8' });
-    return out.split(/\r?\n/).filter(Boolean).map(l => l.slice(3).trim().replace(/^"|"$/g, ''))
+    // Every untracked file, not just its new folder (a folder entry is not a file and would be dropped); a rename
+    // ("old -> new") is scanned under its new path.
+    const out = execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: ROOT, encoding: 'utf8' });
+    return out.split(/\r?\n/).filter(Boolean).map(l => l.slice(3).trim().split(' -> ').pop().replace(/^"|"$/g, ''))
       .map(f => path.join(ROOT, f)).filter(f => fs.existsSync(f) && fs.statSync(f).isFile() && langOf(f));
   } catch { return listFiles(ROOT); }
 }

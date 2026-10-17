@@ -11,7 +11,8 @@ namespace Ariva.Infra.Services.Administration;
 /// <summary>
 /// Role grants (ARV-011, CWE-269). An administrator cannot change its own roles, cannot grant or revoke a role ranked
 /// above its own, cannot touch an account outside its own sites, and cannot take SystemAdministrator from the last
-/// active holder. Every grant and revoke is audited in
+/// active holder. A grant or revoke that would leave an account with every site and the Validation observer role alone is
+/// refused (ARV-104a, <see cref="SvcUsers.ObserverSitesProblem"/>). Every grant and revoke is audited in
 /// the same transaction and evicts the user's cached permissions after commit; a revoke also ends the user's sessions.
 /// The endpoints are critical actions, so the caller has proved a second factor within 15 minutes.
 /// </summary>
@@ -39,6 +40,8 @@ internal sealed class SvcRoleAssignment(
         var (user, error) = await CheckAsync(userId, roleCode, ct);
         if (error is not null)
             return Result.Error<UserViewModel>(error);
+        if (SvcUsers.ObserverSitesProblem(user.AllSites, [.. user.Roles.Select(r => r.RoleCode), roleCode]) is { } sites)
+            return Result.Error<UserViewModel>(sites);
 
         var before = AuditTrail.Summary(user);
         var grant = user.Grant(roleCode, CurrentUser.Id, UtcNow);
@@ -62,6 +65,8 @@ internal sealed class SvcRoleAssignment(
 
         if (roleCode == RoleCodes.SystemAdministrator && await guards.IsLastAdministratorAsync(userId, ct))
             return Result.Error<UserViewModel>(AdministrationErrors.LastAdministrator);
+        if (SvcUsers.ObserverSitesProblem(user.AllSites, user.Roles.Select(r => r.RoleCode).Where(r => r != roleCode)) is { } sites)
+            return Result.Error<UserViewModel>(sites);
 
         var before = AuditTrail.Summary(user);
         var grant = user.Revoke(roleCode);

@@ -1,6 +1,7 @@
 // PreToolUse guard for Bash and PowerShell commands.
 // Blocks destructive, shared-environment and supply-chain actions; humans run those.
-import { readInput, deny, ask } from './lib.mjs';
+import { readInput, deny, ask, PROJECT_DIR } from './lib.mjs';
+import { rootSearch } from './root-search.mjs';
 
 const input = await readInput();
 const cmd = String(input?.tool_input?.command || '');
@@ -17,9 +18,17 @@ const rules = [
   [/\b(npm\s+publish|dotnet\s+nuget\s+push|docker\s+push)\b/i, 'Publishing artifacts is done by the pipeline.'],
   [/\b(npm\s+install|npm\s+i)\s+(-g|--global)\b/i, 'Global installs change the developer machine; ask the human.'],
   [/(\.\.[\\/]Aman|DevOps[\\/]+Aman)[^\s]*.*(>|\btee\b|sed\s+-i|\bmv\b|\bcp\b|\brm\b|Set-Content|Out-File|Remove-Item)|(>|\btee\b|sed\s+-i|\bmv\b|\bcp\b|\brm\b|Set-Content|Out-File|Remove-Item).*(\.\.[\\/]Aman|DevOps[\\/]+Aman)/i, 'The AMAN repository is read-only reference material for Ariva agents.'],
-  [/\bgit\s+-C\s+\S*Aman\S*\s+(commit|checkout|switch|reset|clean|stash|merge|pull|push)\b/i, 'The AMAN repository is read-only reference material for Ariva agents.']
+  [/\bgit\s+-C\s+\S*Aman\S*\s+(commit|checkout|switch|reset|clean|stash|merge|pull|push)\b/i, 'The AMAN repository is read-only reference material for Ariva agents.'],
+  [/(^|[\s"'=:;,(\/\\])\.private([\/\\\s"';|&)]|$)/i, 'The .private folder holds client material (owner decision 2026-10-09, ARV-139c): agents never read, list, copy or write it.']
 ];
 for (const [re, why] of rules) if (re.test(c)) deny(why);
+
+// Recursive searches from the repository root (or above it) walk the git-ignored client material folder without naming it
+// (owner decision 2026-10-10): root-search.mjs reads the command as a shell would split it.
+// A parser failure refuses the command rather than skipping the checks below.
+let rootWalk;
+try { rootWalk = rootSearch(cmd, input?.cwd, PROJECT_DIR); } catch (e) { rootWalk = `The root search guard could not read this command (${e?.message}); split it into simpler commands.`; }
+if (rootWalk) deny(rootWalk);
 
 // git push: only story branches, only to origin, never forced, never main or trunk. Humans merge pull requests.
 for (const push of c.matchAll(/\bgit\s+push\b([^;&|]*)/gi)) {

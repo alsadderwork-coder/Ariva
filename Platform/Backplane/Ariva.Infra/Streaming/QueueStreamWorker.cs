@@ -43,6 +43,72 @@ public sealed class StreamSettings
     /// </summary>
     public int DeskTermSeconds { get; init; } = 15;
 
+    /// <summary>
+    /// The allowed lateness of every site's queue zones, in seconds (ARV-148, formulas F5): a zone's watermark is its
+    /// latest event time less this, and an event at or behind the watermark is late. At least the push interval, since a
+    /// push carries events up to that old; 90 by default (a one-minute push interval and the 30 seconds allowed before for
+    /// transport and device clocks). A site may set its own in <see cref="Sites"/>.
+    /// </summary>
+    public int LatenessSeconds { get; init; } = 90;
+
+    /// <summary>
+    /// The sensors' push interval, in seconds (ARV-148): a push covers this long before its receive time, so a device's
+    /// outage ends at the start of the minute its first push after it covers, and a zone whose devices send no events moves
+    /// on with Ariva's receive clock less this. 60 by default; 0 makes the zones run on the receive clock.
+    /// </summary>
+    public int PushIntervalSeconds { get; init; } = 60;
+
+    /// <summary>A site's own lateness and push interval, by site code (either may be left out); at most 500 sites.</summary>
+    public Dictionary<string, StreamSiteSettings> Sites { get; init; } = new(StringComparer.Ordinal);
+
+    /// <summary>Sites with settings of their own at most.</summary>
+    public const int MaxSites = 500;
+
+    /// <summary>The lateness and push interval of <paramref name="siteCode"/>: its own where set, the defaults otherwise.</summary>
+    public (int LatenessSeconds, int PushIntervalSeconds) TimingOf(string siteCode)
+    {
+        StreamSiteSettings site = null;
+        if (siteCode is not null && Sites is not null)
+            Sites.TryGetValue(siteCode, out site);
+        return (site?.LatenessSeconds ?? LatenessSeconds, site?.PushIntervalSeconds ?? PushIntervalSeconds);
+    }
+
+    /// <summary>
+    /// The zone settings for a site's queue zones: <paramref name="baseline"/> with the site's lateness and push interval
+    /// (ARV-148), so the live stream and a replay of the site run under the same settings.
+    /// </summary>
+    public ZoneProcessorSettings ZoneSettingsFor(string siteCode, ZoneProcessorSettings baseline)
+    {
+        ArgumentNullException.ThrowIfNull(baseline);
+        var (lateness, push) = TimingOf(siteCode);
+        return baseline with
+        {
+            Engine = (baseline.Engine ?? new QueueEngineSettings()) with { Lateness = TimeSpan.FromSeconds(lateness), PushInterval = TimeSpan.FromSeconds(push) }
+        };
+    }
+
+    /// <summary>
+    /// The problems of the zone settings each site runs under (ARV-148): <paramref name="baseline"/> with the default timing
+    /// and with every valid site's own, checked once at start so that no site's settings refuse a zone in the middle of
+    /// the stream (a push interval at or above the device silence limit, for one). Site keys that are not site codes are
+    /// skipped here (<see cref="Problems"/> reports them).
+    /// </summary>
+    public IEnumerable<string> ZoneSettingsProblems(ZoneProcessorSettings baseline)
+    {
+        ArgumentNullException.ThrowIfNull(baseline);
+        foreach (var problem in ZoneSettingsFor(null, baseline).Problems())
+            yield return $"Stream: {problem}";
+        if (Sites is null || Sites.Count > MaxSites)
+            yield break;
+        foreach (var code in Sites.Keys)
+        {
+            if (!Ariva.Core.Domain.Entities.Site.IsValidCode(code))
+                continue;
+            foreach (var problem in ZoneSettingsFor(code, baseline).Problems())
+                yield return $"Stream:Sites:{code}: {problem}";
+        }
+    }
+
     public IEnumerable<string> Problems()
     {
         if (MaxZones is < 1 or > 100_000)
@@ -57,7 +123,50 @@ public sealed class StreamSettings
             yield return "Stream:MaxMergeBytes is from 1 MB to 1 GB.";
         if (DeskTermSeconds is < 0 or > 600)
             yield return "Stream:DeskTermSeconds is from 0 (off) to 600.";
+        foreach (var problem in TimingProblems("Stream", LatenessSeconds, PushIntervalSeconds))
+            yield return problem;
+        if ((Sites?.Count ?? 0) > MaxSites)
+        {
+            yield return $"Stream:Sites names at most {MaxSites} sites.";
+            yield break;
+        }
+
+        foreach (var (code, site) in Sites ?? [])
+        {
+            // A site code as the topology allows it (CWE-501: configuration is still input to the engine's settings).
+            if (!Ariva.Core.Domain.Entities.Site.IsValidCode(code))
+            {
+                yield return "Stream:Sites has a key that is not a site code (2 to 8 upper case letters or digits, an optional hyphen and 1 to 8 more).";
+                continue;
+            }
+
+            var (lateness, push) = TimingOf(code);
+            foreach (var problem in TimingProblems($"Stream:Sites:{code}", lateness, push))
+                yield return problem;
+        }
     }
+
+    private static IEnumerable<string> TimingProblems(string section, int lateness, int push)
+    {
+        var latenessValid = lateness is >= 0 and <= 1_800;
+        var pushValid = push is >= 0 and <= 600;
+        if (!latenessValid)
+            yield return $"{section}:LatenessSeconds is from 0 to 1,800.";
+        if (!pushValid)
+            yield return $"{section}:PushIntervalSeconds is from 0 to 600.";
+        if (latenessValid && pushValid && lateness < push)
+            yield return $"{section}:LatenessSeconds is at least its PushIntervalSeconds ({push}): a push carries events up to that old.";
+    }
+}
+
+/// <summary>A site's own stream timing (<c>Stream:Sites:&lt;code&gt;</c>, ARV-148); a value left out takes the default.</summary>
+public sealed class StreamSiteSettings
+{
+    /// <summary>The site's allowed lateness, in seconds (at least its push interval).</summary>
+    public int? LatenessSeconds { get; init; }
+
+    /// <summary>The push interval of the site's sensors, in seconds.</summary>
+    public int? PushIntervalSeconds { get; init; }
 }
 
 /// <summary>
@@ -92,7 +201,9 @@ public sealed class QueueStreamWorker(
     ILogger<QueueStreamWorker> logger,
     Ariva.Infra.Live.ILiveSnapshotStore live = null,
     ZoneProcessorSettings zoneSettings = null,
-    DeskTermSource deskTerms = null) : BackgroundService
+    DeskTermSource deskTerms = null,
+    StreamMetrics metrics = null,
+    KafkaProducerMetrics producerMetrics = null) : BackgroundService
 {
     public const string Purpose = "queue-engine";
 
@@ -144,7 +255,8 @@ public sealed class QueueStreamWorker(
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var problems = settings.Problems().Concat(_zoneSettings.Problems()).ToList();
+        // ARV-148: every site's zone settings are checked here, before any zone is created with them.
+        var problems = settings.Problems().Concat(_zoneSettings.Problems()).Concat(settings.ZoneSettingsProblems(_zoneSettings)).ToList();
         if (problems.Count > 0)
             throw new InvalidOperationException(string.Join(" ", problems));
         return Task.Factory.StartNew(() => Loop(stoppingToken), stoppingToken, TaskCreationOptions.LongRunning, TaskScheduler.Default).Unwrap();
@@ -187,6 +299,7 @@ public sealed class QueueStreamWorker(
         var every = TimeSpan.FromSeconds(Math.Max(1, kafka.Consumers.CheckpointSeconds));
         var paused = new List<TopicPartition>();
         var next = timeProvider.GetUtcNow() + every;
+        var nextLag = timeProvider.GetUtcNow();
         try
         {
             while (!ct.IsCancellationRequested)
@@ -195,7 +308,7 @@ public sealed class QueueStreamWorker(
                 var full = false;
                 if (result?.Message is not null)
                 {
-                    await HoldAsync(result);
+                    await HoldAsync(result, ct);
                     full = await ReleaseAsync(consumer, ct);
                 }
                 else
@@ -206,6 +319,14 @@ public sealed class QueueStreamWorker(
                 }
 
                 await RefreshDeskTermsAsync(ct);
+
+                // ARV-125a: the lag is measured whether or not a checkpoint succeeds, so a worker held back by its database
+                // shows a growing lag.
+                if (metrics is not null && timeProvider.GetUtcNow() >= nextLag)
+                {
+                    nextLag = timeProvider.GetUtcNow() + every;
+                    ReportLag(consumer, every);
+                }
 
                 if (full || (timeProvider.GetUtcNow() >= next && _positions.Count > 0))
                 {
@@ -245,8 +366,42 @@ public sealed class QueueStreamWorker(
         }
         finally
         {
+            metrics?.Clear();
             consumer.Close();
         }
+    }
+
+    /// <summary>
+    /// ARV-125a: the records behind the end of each topic for the partitions this instance owns: the high watermark the
+    /// consumer last fetched (else the one last asked of the broker) less the next offset to read (else the consumer's
+    /// position). No broker call.
+    /// </summary>
+    private void ReportLag(IConsumer<string, byte[]> consumer, TimeSpan every)
+    {
+        var partitions = new List<(string Topic, long High, long Next)>();
+        try
+        {
+            foreach (var tp in consumer.Assignment)
+            {
+                var high = consumer.GetWatermarkOffsets(tp).High;
+                var known = high != Offset.Unset ? high.Value : _watermarks.TryGetValue((tp.Topic, tp.Partition.Value), out var asked) ? asked.High : -1;
+                long next = -1;
+                if (_consumed.TryGetValue((tp.Topic, tp.Partition.Value), out var consumed))
+                    next = consumed;
+                else if (consumer.Position(tp) is var position && position != Offset.Unset)
+                    next = position.Value;
+                partitions.Add((tp.Topic, known, next));
+            }
+        }
+        catch (KafkaException e)
+        {
+            // A measurement never stops the worker (a rebalance in progress, for example): the last one expires instead.
+            logger.LogDebug(e, "Queue stream lag not measured");
+            return;
+        }
+
+        // Reported for a minute (at least 12 intervals), longer than a checkpoint the database holds to its command timeout.
+        metrics.Report(GroupId, StreamMetrics.LagByTopic(partitions), TimeSpan.FromSeconds(Math.Max(60, every.TotalSeconds * 12)));
     }
 
     /// <summary>
@@ -350,7 +505,7 @@ public sealed class QueueStreamWorker(
     }
 
     /// <summary>Reads and checks one record and holds it for the merge; an unreadable one is dead-lettered and held as a gap.</summary>
-    private async Task HoldAsync(ConsumeResult<string, byte[]> result)
+    private async Task HoldAsync(ConsumeResult<string, byte[]> result, CancellationToken ct)
     {
         _records++;
         var partition = result.Partition.Value;
@@ -373,7 +528,7 @@ public sealed class QueueStreamWorker(
         }
         catch (Exception e) when (e is JsonException or InvalidDataException or NotSupportedException or ArgumentException)
         {
-            await DeadLetterAsync(result, e);
+            await DeadLetterAsync(result, e, ct);
             batch = null;
         }
 
@@ -641,6 +796,8 @@ public sealed class QueueStreamWorker(
             return null;
         }
 
+        // ARV-148: the zone runs under its site's lateness and push interval (Stream:Sites), as a replay of the site does.
+        var siteSettings = settings.ZoneSettingsFor(batch.SiteCode, _zoneSettings);
         ZoneProcessor zone = null;
         try
         {
@@ -648,7 +805,7 @@ public sealed class QueueStreamWorker(
             if (state is not null && state.ProfileVersion == geometry.ProfileVersion)
             {
                 var notAfter = timeProvider.GetUtcNow().UtcDateTime.AddSeconds(settings.MaxAheadSeconds);
-                zone = ZoneProcessor.Restore(batch.ZoneKey, geometry.Geometry, geometry.ProfileVersion, _zoneSettings, state, notAfter);
+                zone = ZoneProcessor.Restore(batch.ZoneKey, geometry.Geometry, geometry.ProfileVersion, siteSettings, state, notAfter);
             }
             else if (state is not null)
             {
@@ -662,7 +819,7 @@ public sealed class QueueStreamWorker(
             zone = null;
         }
 
-        zone ??= new ZoneProcessor(batch.ZoneKey, geometry.Geometry, geometry.ProfileVersion, _zoneSettings);
+        zone ??= new ZoneProcessor(batch.ZoneKey, geometry.Geometry, geometry.ProfileVersion, siteSettings);
         _zones[batch.ZoneKey] = (zone, partition, timeProvider.GetUtcNow().UtcDateTime);
         return zone;
     }
@@ -700,7 +857,7 @@ public sealed class QueueStreamWorker(
         _nextDeskTerms = now.AddSeconds(settings.DeskTermSeconds);
         try
         {
-            var terms = await deskTerms.LoadAsync([.. _zones.Keys], _zoneSettings.ExitWindowMinutes, ct);
+            var terms = await deskTerms.LoadAsync([.. _zones.Keys], _zoneSettings.ExitWindowMinutes, _zoneSettings.SensorCycle, ct);
             foreach (var (key, (zone, _, _)) in _zones)
                 zone.UseDesks(terms.GetValueOrDefault(key));
         }
@@ -754,7 +911,7 @@ public sealed class QueueStreamWorker(
         if (live is not null)
         {
             var now = timeProvider.GetUtcNow().UtcDateTime;
-            var latest = outputs.Where(o => o.Live.Count > 0).Select(o => Ariva.Infra.Live.LiveZoneSnapshot.From(System.Linq.Enumerable.MaxBy(o.Live, l => l.MinuteUtc), now)).ToList();
+            var latest = outputs.Where(o => o.Live.Count > 0).Select(o => LiveMinuteSnapshots.From(System.Linq.Enumerable.MaxBy(o.Live, l => l.MinuteUtc), now)).ToList();
             try
             {
                 await live.PublishAsync(latest, ct);
@@ -778,14 +935,16 @@ public sealed class QueueStreamWorker(
             states.Count, outputs.Sum(o => o.Count), _records, _deadLettered, _failedBatches, _wrongPartition, _forcedReleases);
     }
 
-    private Task DeadLetterAsync(ConsumeResult<string, byte[]> result, Exception error)
+    // ARV-166: a dead letter is retried until the broker takes it or the worker stops; a stop leaves the record unreleased,
+    // so its position is not saved and it is read again (and dead-lettered then) after restart.
+    private Task DeadLetterAsync(ConsumeResult<string, byte[]> result, Exception error, CancellationToken ct)
     {
         var headers = (result.Message.Headers ?? [])
             .Select(h => new KeyValuePair<string, string>(h.Key, h.GetValueBytes() is { } bytes ? System.Text.Encoding.UTF8.GetString(bytes) : null));
         var letter = DeadLetters.Create(result.Topic, result.Partition.Value, result.Offset.Value, result.Message.Key, result.Message.Value, headers, GroupId,
             error, timeProvider.GetUtcNow().UtcDateTime);
         logger.LogError("Unreadable record at {Topic} partition {Partition} offset {Offset}; sent to the dead-letter topic", result.Topic, result.Partition.Value, result.Offset.Value);
-        return SendAsync(letter, CancellationToken.None);
+        return SendAsync(letter, ct);
     }
 
     // A held batch that cannot be applied: its value is serialised again from what was read (the raw bytes are not kept).
@@ -796,23 +955,36 @@ public sealed class QueueStreamWorker(
         return SendAsync(letter, ct);
     }
 
-    // A dead letter the broker refuses is tried again (2, 4 ... 30 seconds) and holds the partition until it is accepted.
+    // A dead letter the broker refuses is tried again (2, 4 ... 30 seconds; each attempt ends within the produce bound,
+    // ARV-166) and holds the partition until it is accepted or the worker stops.
+    // ARV-125a: counted once, sent, or failed when the worker stops first (the record is read again after restart).
     private async Task SendAsync(DeadLetter letter, CancellationToken ct)
     {
         _deadLettered++;
-        for (var attempt = 1; ; attempt++)
+        try
         {
-            try
+            for (var attempt = 1; ; attempt++)
             {
-                await deadLetters.SendAsync(letter, ct);
-                return;
+                try
+                {
+                    await deadLetters.SendAsync(letter, ct);
+                    producerMetrics?.DeadLetter(letter, KafkaProducerMetrics.SentOutcome);
+                    return;
+                }
+                catch (Exception e) when (!ct.IsCancellationRequested && e is not OperationCanceledException)
+                {
+                    var wait = TimeSpan.FromSeconds(Math.Min(30, Math.Pow(2, Math.Min(attempt, 5))));
+                    logger.LogError(e, "Dead letter for {Topic} partition {Partition} offset {Offset} not accepted (attempt {Attempt}); retrying in {Wait}",
+                        letter.Topic, letter.Partition, letter.Offset, attempt, wait);
+                    await Task.Delay(wait, timeProvider, ct);
+                }
             }
-            catch (Exception e) when (!ct.IsCancellationRequested && e is not OperationCanceledException)
-            {
-                var wait = TimeSpan.FromSeconds(Math.Min(30, Math.Pow(2, Math.Min(attempt, 5))));
-                logger.LogError(e, "Dead letter for {Topic} offset {Offset} not accepted (attempt {Attempt}); retrying in {Wait}", letter.Topic, letter.Offset, attempt, wait);
-                await Task.Delay(wait, timeProvider, ct);
-            }
+        }
+        catch (Exception)
+        {
+            // A stop (or a failure that stops the worker) before the broker took it: not sent, read again after restart.
+            producerMetrics?.DeadLetter(letter, KafkaProducerMetrics.FailedOutcome);
+            throw;
         }
     }
 }

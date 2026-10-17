@@ -14,7 +14,8 @@ namespace Ariva.Infra.Sensing;
 /// and device as Ingest writes them, received within the archive's window; others are skipped and counted. A report is
 /// archived once (its event id and receive time). Every value is a parameter; no SQL is built from input (CWE-89).
 /// </summary>
-public sealed class DeviceHealthArchive(DatabaseSettings database, TimeProvider timeProvider, ILogger<DeviceHealthArchive> logger = null) : IDeviceHealthArchive
+public sealed class DeviceHealthArchive(DatabaseSettings database, TimeProvider timeProvider, ILogger<DeviceHealthArchive> logger = null,
+    SensingArchiveMetrics metrics = null) : IDeviceHealthArchive
 {
     private static readonly TimeSpan MaxLate = TimeSpan.FromDays(3) + TimeSpan.FromHours(1);
     private static readonly TimeSpan MaxAhead = TimeSpan.FromHours(1);
@@ -24,9 +25,15 @@ public sealed class DeviceHealthArchive(DatabaseSettings database, TimeProvider 
     {
         ArgumentNullException.ThrowIfNull(reports);
         var now = timeProvider.GetUtcNow().UtcDateTime;
-        var usable = reports.Where(r => r is not null && Usable(r, now)).GroupBy(r => r.Id).Select(g => g.First()).ToList();
-        if (usable.Count < reports.Count)
-            _logger.LogWarning("Device health archive skipped {Count} reports out of bounds", reports.Count - usable.Count);
+        var inBounds = reports.Where(r => r is not null && Usable(r, now)).ToList();
+        var usable = inBounds.GroupBy(r => r.Id).Select(g => g.First()).ToList();
+        if (inBounds.Count < reports.Count)
+        {
+            // ARV-159: the reports out of bounds, logged and counted (a repeat of a report in the same list is no skip).
+            _logger.LogWarning("Device health archive skipped {Count} reports out of bounds", reports.Count - inBounds.Count);
+            metrics?.Skipped(SensingArchiveMetrics.HealthReportKind, reports.Count - inBounds.Count);
+        }
+
         if (usable.Count == 0)
             return 0;
 

@@ -18,6 +18,15 @@ export type BoardLanguage = (typeof boardLanguages)[number];
 
 export const limits = { entries: 12, label: 80, message: 200, name: 200 } as const;
 
+/**
+ * A display's layout (ARV-140): the full queue view, or a split screen whose queue region comes first in the reading order
+ * and keeps its share (50 to 75 percent); the second region shows instructions, or advertising where the site's advertising
+ * policy allows it for every zone the display shows (ARV-145; the server checks it, and the board falls back to instructions).
+ */
+export const layouts = ['Full', 'Split'] as const;
+export const secondRegions = ['Instructions', 'Advertising'] as const;
+export const queueShare = { min: 50, max: 75, default: 60 } as const;
+
 export interface DisplayEntry {
 	zone: string;
 	labels: Record<string, string>;
@@ -37,6 +46,9 @@ export interface Display {
 	entries: DisplayEntry[];
 	fallback: Record<string, string>;
 	enabled: boolean;
+	layout: 'Full' | 'Split' | string;
+	queueShare: number;
+	secondRegion: 'Instructions' | 'Advertising' | string;
 	credentialPrefix: string | null;
 	credentialIssuedOn: string | null;
 	createdOn: string | null;
@@ -56,6 +68,9 @@ export interface DisplayRequest {
 	entries: DisplayEntry[];
 	fallback: Record<string, string>;
 	enabled: boolean;
+	layout: string;
+	queueShare: number;
+	secondRegion: string;
 }
 
 export interface Issued {
@@ -113,6 +128,62 @@ export interface Board {
 	fallback: Record<string, string>;
 	entries: BoardEntry[];
 	serverUtc: string;
+	/** The display's site is an illustrative demo site (ARV-139a): the board shows the "Illustrative, not surveyed" note. */
+	illustrative?: boolean;
+	/** ARV-140: Full or Split; a board from a server before ARV-140 has none and keeps the full view. */
+	layout?: string;
+	queueShare?: number;
+	secondRegion?: string;
+	/** ARV-141: the slide shown under the waits, if one applies to the display. */
+	pinnedSlide?: BoardSlide | null;
+	/** ARV-141: the slides the second region rotates, in the site's order; none means the default instructions. */
+	slides?: BoardSlide[];
+}
+
+/** An instruction slide as the player gets it (ARV-141): its icon's name, its time on screen, its words per display language. */
+export interface BoardSlide {
+	position: number;
+	icon: string;
+	durationSeconds: number;
+	texts: { language: string; title: string; body: string | null }[];
+}
+
+/** The default instructions of the second region, per language (static/board/instructions.json; ARV-141 makes them configurable). */
+export interface Instructions {
+	title: string;
+	steps: string[];
+}
+
+/**
+ * The second region's instructions, fetched on their own (a constant path of this web app, never a URL from the page), so
+ * that the second region failing to load never touches the queue region. Null when they cannot be read.
+ */
+export async function instructions(): Promise<Record<string, Instructions> | null> {
+	try {
+		const response = await fetch('/board/instructions.json', {
+			headers: { Accept: 'application/json' },
+			credentials: 'omit'
+		});
+		if (!response.ok) return null;
+		const body = (await response.json()) as unknown;
+		if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+		// Only the board's own languages are read, so no other key (such as __proto__) is ever assigned.
+		const result: Record<string, Instructions> = {};
+		for (const [language, value] of Object.entries(body as Record<string, unknown>)) {
+			if (!(boardLanguages as readonly string[]).includes(language)) continue;
+			const entry = value as { title?: unknown; steps?: unknown };
+			if (
+				typeof entry?.title === 'string' &&
+				Array.isArray(entry.steps) &&
+				entry.steps.every((step) => typeof step === 'string')
+			)
+				result[language] = { title: entry.title, steps: entry.steps as string[] };
+		}
+		// Nothing usable is a failure to load, so the region shows its quiet empty panel.
+		return Object.keys(result).length > 0 ? result : null;
+	} catch {
+		return null;
+	}
 }
 
 /** What the player learns from one board request: the board, or that its credential was refused, or nothing new. */

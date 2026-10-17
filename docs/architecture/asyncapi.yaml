@@ -227,7 +227,10 @@ channels:
   flowOverflowDetected:
     address: "ariva.flow.overflow-detected.v1"
     title: "ariva.flow.overflow-detected.v1"
-    description: "Reserved: declared in KafkaTopics and provisioned, with no producer or consumer yet. An overflow band filled (planned)."
+    description: "An overflow band of a queue zone became occupied, emptied or unknown (silent beyond the occupancy freshness window), decided per closed minute by the queue engine (ARV-115); written to the outbox in the stream's checkpoint transaction."
+    messages:
+      OverflowDetected:
+        $ref: "#/components/messages/OverflowDetected"
     bindings:
       kafka:
         topic: "ariva.flow.overflow-detected.v1"
@@ -823,6 +826,13 @@ operations:
     description: "Produced by api-main through the transactional outbox or directly (Ingest); value is the event as JSON, key as below."
     messages:
       - $ref: "#/channels/topologyZoneProfileActivated/messages/ZoneProfilePublished"
+  apiStreamSendsFlowOverflowDetected:
+    action: "send"
+    channel:
+      $ref: "#/channels/flowOverflowDetected"
+    description: "Produced by api-stream through the transactional outbox or directly (Ingest); value is the event as JSON, key as below."
+    messages:
+      - $ref: "#/channels/flowOverflowDetected/messages/OverflowDetected"
   apiIntegrationSendsFlightChanged:
     action: "send"
     channel:
@@ -1122,6 +1132,31 @@ components:
           key:
             type: "string"
             description: "The site code; compacted, so the latest value per site is the active profile."
+          bindingVersion: "0.5.0"
+    OverflowDetected:
+      name: "OverflowDetected"
+      title: "OverflowDetected"
+      summary: "An overflow band of a queue zone became occupied, emptied or unknown (silent beyond the occupancy freshness window), decided per closed minute by the queue engine (ARV-115); written to the outbox in the stream's checkpoint transaction."
+      contentType: "application/json"
+      payload:
+        $ref: "#/components/schemas/OverflowDetected"
+      headers:
+        type: "object"
+        description: "Set by the outbox and the bus: the event's class name and schema version, and the correlation and causation ids when there are any."
+        properties:
+          ariva-event-type:
+            type: "string"
+          ariva-event-version:
+            type: "string"
+          ariva-correlation-id:
+            type: "string"
+          ariva-causation-id:
+            type: "string"
+      bindings:
+        kafka:
+          key:
+            type: "string"
+            description: "The zone key <site>/<queue zone name> (ZoneKeys.For): every record of a zone stays on one partition, in order."
           bindingVersion: "0.5.0"
     FlightChanged:
       name: "FlightChanged"
@@ -2030,6 +2065,71 @@ components:
             - "null"
       title: "ZoneProfilePublished"
       x-ariva-type: "Ariva.Core.Domain.Events.ZoneProfilePublished"
+    OverflowDetected:
+      type:
+        - "object"
+        - "null"
+      properties:
+        siteCode:
+          type:
+            - "string"
+            - "null"
+        queueZoneName:
+          type:
+            - "string"
+            - "null"
+        bandName:
+          type:
+            - "string"
+            - "null"
+        state:
+          enum:
+            - "Occupied"
+            - "Emptied"
+            - "Unknown"
+        minuteUtc:
+          type: "string"
+          format: "date-time"
+        occupiedSinceUtc:
+          type:
+            - "string"
+            - "null"
+          format: "date-time"
+        peakOccupancy:
+          type:
+            - "string"
+            - "integer"
+          pattern: "^-?(?:0|[1-9]\\d*)$"
+        zoneProfileVersion:
+          type:
+            - "string"
+            - "integer"
+          pattern: "^-?(?:0|[1-9]\\d*)$"
+        id:
+          type: "string"
+          format: "uuid"
+        occurredOn:
+          type: "string"
+          format: "date-time"
+        eventType:
+          type:
+            - "string"
+            - "null"
+        version:
+          type:
+            - "string"
+            - "integer"
+          pattern: "^-?(?:0|[1-9]\\d*)$"
+        correlationId:
+          type:
+            - "string"
+            - "null"
+        causationId:
+          type:
+            - "string"
+            - "null"
+      title: "OverflowDetected"
+      x-ariva-type: "Ariva.Core.Domain.Events.OverflowDetected"
     FlightChanged:
       type:
         - "object"

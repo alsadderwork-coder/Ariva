@@ -163,15 +163,52 @@ public sealed class LiveHubTests
 
         notice.Audience().Should().BeEquivalentTo(RoleCodes.BorderShiftSupervisor, RoleCodes.SystemAdministrator);
         (notice with { Escalated = true }).Audience().Should().BeEquivalentTo(RoleCodes.BorderShiftSupervisor, RoleCodes.TerminalDutyManager, RoleCodes.SystemAdministrator);
-        (notice with { OwnerRole = null }).Audience().Should().BeEquivalentTo(RoleCodes.All, "no owner: every role of the site");
+        // No owner: every alert role of the site, named here so a change to RoleCodes.AlertRoles cannot widen it unnoticed; the
+        // validation observer holds no alert permission and never receives one (ARV-104a, CWE-269, CWE-863).
+        var unowned = (notice with { OwnerRole = null }).Audience();
+        unowned.Should().BeEquivalentTo(
+            [RoleCodes.BorderShiftSupervisor, RoleCodes.TerminalDutyManager, RoleCodes.HandlerStationManager, RoleCodes.SystemAdministrator]);
+        unowned.Should().NotContain(RoleCodes.ValidationObserver);
+        (notice with { Escalated = true }).Audience().Should().NotContain(RoleCodes.ValidationObserver);
         AlertNotice.Plausible(notice).Should().BeTrue();
         foreach (var bad in new[]
                  {
                      notice with { SiteCode = "dmo" }, notice with { RuleName = "x\u202E" }, notice with { OwnerRole = "Root" }, notice with { State = "Raised,Resolved" },
+                     notice with { OwnerRole = RoleCodes.ValidationObserver }, notice with { EscalateToRole = RoleCodes.ValidationObserver },
                      notice with { RaisedValue = double.NaN }, notice with { RaisedValue = 2e9 }, notice with { DeviceCode = "s 17" }, notice with { AlertId = Guid.Empty },
                      notice with { ZoneName = new string('z', 201) }, notice with { RuleCode = "X-1" }
                  })
             AlertNotice.Plausible(bad).Should().BeFalse(bad.ToString());
+    }
+
+    /// <summary>The border-only metrics by their stored names (ARV-181b2, ARV-187), pinned by <c>BorderAlertsTests</c>.</summary>
+    public static TheoryData<string> BorderMetrics => [.. Ariva.Core.Security.BorderAlerts.MetricNames];
+
+    /// <summary>
+    /// ARV-181b2 and ARV-187 (CWE-863, CWE-200, data boundary): a notice of open desks below recommendation or of the
+    /// predicted nowcast reaches the alert groups of border roles only (the border shift supervisor and the administrator),
+    /// whatever its owner and escalation roles say: without an owner (a rule from before the story, or a row changed in the
+    /// database) it is not every alert role, owned by the terminal duty manager it reaches the administrator alone, and
+    /// escalated to an airport-side role it leaves that role out.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(BorderMetrics))]
+    public void Notices_Should_ReachBorderRolesOnly_When_TheMetricIsBorderOnly(string borderMetric)
+    {
+        var notice = new AlertNotice(Guid.NewGuid(), "DMO", "R-006", "Border alert", "A-VIS", null, borderMetric, "Warning", "Raised",
+            new DateTime(2026, 10, 15, 10, 9, 0, DateTimeKind.Utc), 3, RoleCodes.BorderShiftSupervisor, null, false, null, new DateTime(2026, 10, 15, 10, 9, 1, DateTimeKind.Utc));
+
+        AlertNotice.Plausible(notice).Should().BeTrue();
+        notice.Audience().Should().Equal(RoleCodes.BorderShiftSupervisor, RoleCodes.SystemAdministrator);
+        (notice with { OwnerRole = null }).Audience().Should().Equal([RoleCodes.BorderShiftSupervisor, RoleCodes.SystemAdministrator], "no owner is not every alert role");
+        (notice with { OwnerRole = RoleCodes.TerminalDutyManager }).Audience().Should().Equal([RoleCodes.SystemAdministrator], "a changed row's airport-side owner is left out");
+        (notice with { OwnerRole = RoleCodes.HandlerStationManager, EscalateToRole = RoleCodes.TerminalDutyManager, Escalated = true }).Audience()
+            .Should().Equal([RoleCodes.SystemAdministrator], "an airport-side escalation role is left out");
+        (notice with { EscalateToRole = RoleCodes.TerminalDutyManager, Escalated = true }).Audience()
+            .Should().Equal([RoleCodes.BorderShiftSupervisor, RoleCodes.SystemAdministrator]);
+        foreach (var metric in Enum.GetNames<Ariva.Core.Domain.Enums.AlertMetric>().Where(m => !Ariva.Core.Security.BorderAlerts.IsBorderOnly(m)))
+            (notice with { Metric = metric, OwnerRole = null }).Audience().Should().Contain(RoleCodes.TerminalDutyManager, metric + " stays every alert role's without an owner");
+        Enum.GetNames<Ariva.Core.Domain.Enums.AlertMetric>().Count(m => !Ariva.Core.Security.BorderAlerts.IsBorderOnly(m)).Should().Be(8, "two border metrics of ten");
     }
 
     [Fact]
@@ -293,7 +330,7 @@ public sealed class LiveHubTests
 
         RedisLiveSnapshots.Read("{not json").Should().BeNull();
         RedisLiveSnapshots.Read(new string('x', RedisLiveSnapshots.MaxBytes + 1)).Should().BeNull();
-        LiveZoneSnapshot.From(new QueueLiveMinute("DMO/A-VIS", Visitors.MinuteUtc, 61, true, false, 15.4, 4.0, NoServiceReason.NothingOpen, false), Visitors.PublishedUtc)
+        Ariva.Infra.Streaming.LiveMinuteSnapshots.From(new QueueLiveMinute("DMO/A-VIS", Visitors.MinuteUtc, 61, true, false, 15.4, 4.0, NoServiceReason.NothingOpen, false), Visitors.PublishedUtc)
             .NoService.Should().Be("NothingOpen");
     }
 

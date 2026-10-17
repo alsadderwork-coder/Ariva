@@ -3,6 +3,8 @@ using System.Security.Cryptography;
 using System.Text;
 using Ariva.Core.Domain.Components;
 using Ariva.Core.Domain.Enums;
+using Ariva.Core.Messaging;
+using Ariva.Core.Sensing;
 
 namespace Ariva.Core.Domain.Entities;
 
@@ -70,7 +72,8 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
         {
             var copy = new Zone(draft, zone.Name, zone.Kind, zone.LevelId, zone.Points, zone.QueueZone is null ? null : map[zone.QueueZone], zone.DeskId)
             {
-                LaneCategory = zone.LaneCategory
+                LaneCategory = zone.LaneCategory,
+                PhysicalCapacity = zone.PhysicalCapacity
             };
             draft.Zones.Add(copy);
             map[zone] = copy;
@@ -106,6 +109,7 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
         var trimmed = TopologyCodes.RequireName(name, nameof(name));
         if (Zones.Any(z => string.Equals(z.Name, trimmed, StringComparison.OrdinalIgnoreCase)))
             throw new InvalidOperationException($"Zone {trimmed} already exists here.");
+        RequireKeyable(kind, trimmed, nameof(name));
         CheckLink(kind, queueZone, level.Id.GetValueOrDefault());
         if (deskId is not null && kind is not (ZoneKind.Service or ZoneKind.Staff))
             throw new InvalidOperationException("Only service and staff zones name a desk.");
@@ -125,7 +129,7 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
         var points = Zone.RequirePolygon(polygon, level);
         var stranded = Lines.Where(l => l.Zone == own && l.Role != LineRole.Count && Geometry.EdgeContaining(points, l.Start, l.End) < 0).ToList();
         if (stranded.Count > 0)
-            throw new InvalidOperationException($"Line {stranded[0].Name} would no longer lie on the zone's edge; move or remove it first.");
+            throw new InvalidOperationException($"Line {Label(stranded[0].Name)} would no longer lie on the zone's edge; move or remove it first.");
         own.SetPoints(points);
     }
 
@@ -136,6 +140,7 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
         var trimmed = TopologyCodes.RequireName(name, nameof(name));
         if (Zones.Any(z => z != own && string.Equals(z.Name, trimmed, StringComparison.OrdinalIgnoreCase)))
             throw new InvalidOperationException($"Zone {trimmed} already exists here.");
+        RequireKeyable(own.Kind, trimmed, nameof(name));
         own.Rename(trimmed);
     }
 
@@ -161,13 +166,35 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
         own.LaneCategory = laneCategory;
     }
 
+    /// <summary>
+    /// Sets the physical capacity of a queue zone or overflow band in people (ARV-114a, 1 to <see cref="Zone.MaxPhysicalCapacity"/>),
+    /// or clears it with null. The stream checks the zone's occupancy readings against it (F18 occupancy sanity). Not part
+    /// of the geometry hash (F22 unchanged): it changes no count or wait. A published version keeps its value.
+    /// </summary>
+    public virtual void SetZoneCapacity(Zone zone, int? capacity)
+    {
+        EnsureDraft();
+        var own = Own(zone);
+        if (capacity is null)
+        {
+            own.PhysicalCapacity = null;
+            return;
+        }
+
+        if (own.Kind is not (ZoneKind.Queue or ZoneKind.Overflow))
+            throw new InvalidOperationException("Only a queue zone or an overflow band has a physical capacity.");
+        if (capacity is < 1 or > Zone.MaxPhysicalCapacity)
+            throw new ArgumentOutOfRangeException(nameof(capacity), capacity, "A physical capacity is 1 to 5,000 people.");
+        own.PhysicalCapacity = capacity;
+    }
+
     /// <summary>Removes a zone and its lines; refused while other zones hang off it.</summary>
     public virtual IReadOnlyList<Line> RemoveZone(Zone zone)
     {
         EnsureDraft();
         var own = Own(zone);
         if (Zones.Any(z => z.QueueZone == own))
-            throw new InvalidOperationException($"Zones hang off {own.Name}; remove them first.");
+            throw new InvalidOperationException($"Zones hang off {Label(own.Name)}; remove them first.");
         var lines = Lines.Where(l => l.Zone == own).ToList();
         foreach (var line in lines)
             Lines.Remove(line);
@@ -210,13 +237,13 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
             case LineRole.OverflowEntry when own?.Kind != ZoneKind.Overflow:
                 throw new InvalidOperationException("An overflow entry line belongs to an overflow zone.");
             case LineRole.Exit when Lines.Any(l => l.Zone == own && l.Role == LineRole.Exit):
-                throw new InvalidOperationException($"Zone {own.Name} already has its exit line.");
+                throw new InvalidOperationException($"Zone {Label(own.Name)} already has its exit line.");
         }
 
         if (own is not null && own.LevelId != level.Id)
             throw new InvalidOperationException("A line lies on its zone's level.");
         if (role != LineRole.Count && Geometry.EdgeContaining(own.Points, a, b) < 0)
-            throw new InvalidOperationException($"Line {trimmed} must lie on an edge of zone {own.Name}.");
+            throw new InvalidOperationException($"Line {trimmed} must lie on an edge of zone {Label(own.Name)}.");
 
         var line = new Line(this, trimmed, role, own, level.Id.GetValueOrDefault(), a, b);
         Lines.Add(line);
@@ -237,7 +264,10 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
     /// <summary>
     /// What stops this draft from being published: no zones; a queue zone without an entry line or without exactly one
     /// exit line; an overflow zone without its overflow entry line; a hanging zone whose queue zone is missing; geometry
-    /// outside its level (levels may have shrunk since the zone was drawn).
+    /// outside its level (levels may have shrunk since the zone was drawn). And what a draft copied from an older version
+    /// may carry (ARV-162): a profile, zone or line name the name rule now refuses (ARV-159), or a zone outline that touches
+    /// or crosses itself by the rule of ARV-161; such a name is named escaped (<see cref="DisplayText.Escape"/>), never as
+    /// stored.
     /// </summary>
     public virtual IReadOnlyList<string> Validate(IReadOnlyDictionary<Guid, Level> levels)
     {
@@ -245,43 +275,59 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
         var problems = new List<string>();
         if (Zones.Count == 0)
             problems.Add("The profile has no zones.");
+        if (!TopologyCodes.IsName(Name))
+            problems.Add($"The profile's name {Label(Name)} {UnsafeNameProblem} rename the draft.");
 
         foreach (var zone in Zones.OrderBy(z => z.Name, StringComparer.Ordinal))
         {
+            var label = Label(zone.Name);
+            if (!TopologyCodes.IsName(zone.Name))
+                problems.Add($"Zone {label}: its name {UnsafeNameProblem} rename the zone.");
             if (!levels.TryGetValue(zone.LevelId, out var level) || level.IsDeleted)
             {
-                problems.Add($"Zone {zone.Name}: its level no longer exists.");
+                problems.Add($"Zone {label}: its level no longer exists.");
                 continue;
             }
 
             if (zone.Points.Any(p => !level.Contains(p.X, p.Y)))
-                problems.Add($"Zone {zone.Name}: a vertex lies outside level {level.Code}.");
+                problems.Add($"Zone {label}: a vertex lies outside level {level.Code}.");
+            // ARV-162: an outline drawn before ARV-161 may touch itself by today's rule; it is moved before publishing.
+            if (!Geometry.IsSimplePolygon(zone.Points))
+                problems.Add($"Zone {label}: {OutlineNotSimple}");
 
             var lines = Lines.Where(l => l.Zone == zone).ToList();
             switch (zone.Kind)
             {
                 case ZoneKind.Queue:
                     if (!lines.Any(l => l.Role == LineRole.Entry))
-                        problems.Add($"Zone {zone.Name}: a queue zone needs at least one entry line.");
+                        problems.Add($"Zone {label}: a queue zone needs at least one entry line.");
                     if (lines.Count(l => l.Role == LineRole.Exit) != 1)
-                        problems.Add($"Zone {zone.Name}: a queue zone needs exactly one exit line.");
+                        problems.Add($"Zone {label}: a queue zone needs exactly one exit line.");
                     break;
                 case ZoneKind.Overflow:
                     if (!lines.Any(l => l.Role == LineRole.OverflowEntry))
-                        problems.Add($"Zone {zone.Name}: an overflow zone needs an overflow entry line.");
+                        problems.Add($"Zone {label}: an overflow zone needs an overflow entry line.");
                     break;
             }
 
             if (zone.Kind != ZoneKind.Queue && (zone.QueueZone is null || !Zones.Contains(zone.QueueZone)))
-                problems.Add($"Zone {zone.Name}: it must hang off a queue zone.");
+                problems.Add($"Zone {label}: it must hang off a queue zone.");
+            // A draft copied from a version published before ARV-114c may hold such a name; it is renamed before publishing.
+            if (zone.Kind == ZoneKind.Queue && !ZoneKeys.Fits(SiteCode, zone.Name))
+                problems.Add($"Zone {label}: {QueueZoneNameTooLong(SiteCode)}");
         }
+
+        // ARV-162: a line copied from an older version may carry a name the rule now refuses; lines have no rename, so it
+        // is removed and added again.
+        foreach (var line in Lines.Where(l => !TopologyCodes.IsName(l.Name)).OrderBy(l => l.Name, StringComparer.Ordinal))
+            problems.Add($"Line {Label(line.Name)}: its name {UnsafeNameProblem} remove the line and add it again with a clean name.");
 
         foreach (var line in Lines.Where(l => l.Zone is null).OrderBy(l => l.Name, StringComparer.Ordinal))
         {
             if (!levels.TryGetValue(line.LevelId, out var level) || level.IsDeleted)
-                problems.Add($"Line {line.Name}: its level no longer exists.");
+                problems.Add($"Line {Label(line.Name)}: its level no longer exists.");
             else if (!level.Contains(line.Start.X, line.Start.Y) || !level.Contains(line.End.X, line.End.Y))
-                problems.Add($"Line {line.Name}: it lies outside level {level.Code}.");
+                problems.Add($"Line {Label(line.Name)}: it lies outside level {level.Code}.");
         }
 
         return problems;
@@ -352,12 +398,86 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(text.ToString())));
     }
 
+    /// <summary>The first line of the portable geometry hash's text (ARV-122a, formulas F22).</summary>
+    public const string PortableHashPrefix = "ariva-zone-profile-portable-v1";
+
+    /// <summary>
+    /// The portable geometry hash (ARV-122a, owner decision 2026-10-11, formulas F22): the text of
+    /// <see cref="ComputeGeometryHash"/> with its own first line, a level named by <c>terminal/level</c> codes instead of
+    /// its id and a desk by <c>checkpoint/desk</c> codes instead of its id, so the same geometry on the same codes gives
+    /// the same hash at another site or in another database. Computed on request, never stored; F22 v1 is unchanged and
+    /// stays the hash a published version keeps. Null when a level or desk the profile names has no name in the maps.
+    /// </summary>
+    public virtual string ComputePortableGeometryHash(IReadOnlyDictionary<Guid, string> levelNames, IReadOnlyDictionary<Guid, string> deskNames)
+    {
+        ArgumentNullException.ThrowIfNull(levelNames);
+        ArgumentNullException.ThrowIfNull(deskNames);
+        var text = new StringBuilder(PortableHashPrefix).Append('\n');
+        foreach (var zone in Zones.OrderBy(z => z.Name, StringComparer.Ordinal))
+        {
+            if (!levelNames.TryGetValue(zone.LevelId, out var level))
+                return null;
+            string desk = null;
+            if (zone.DeskId is { } deskId && !deskNames.TryGetValue(deskId, out desk))
+                return null;
+            text.Append(CultureInfo.InvariantCulture, $"zone|{zone.Name}|{zone.Kind}|{level}|{zone.QueueZone?.Name}|{desk}|{Geometry.FormatRing(zone.Points)}\n");
+        }
+
+        foreach (var line in Lines.OrderBy(l => l.Name, StringComparer.Ordinal))
+        {
+            if (!levelNames.TryGetValue(line.LevelId, out var level))
+                return null;
+            text.Append(CultureInfo.InvariantCulture, $"line|{line.Name}|{line.Role}|{line.Zone?.Name}|{level}|{line.Start}|{line.End}\n");
+        }
+
+        return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(text.ToString())));
+    }
+
+    /// <summary>A level's name in the portable hash: its terminal's code, a slash and its own code (codes hold no slash or bar).</summary>
+    public static string PortableLevelName(string terminalCode, string levelCode) => $"{terminalCode}/{levelCode}";
+
+    /// <summary>A desk's name in the portable hash: its checkpoint's code (unique in the site), a slash and its own code.</summary>
+    public static string PortableDeskName(string checkpointCode, string deskCode) => $"{checkpointCode}/{deskCode}";
+
     #endregion
 
     private void EnsureDraft()
     {
         if (Status != ZoneProfileStatus.Draft)
             throw new InvalidOperationException("A published or retired zone profile never changes; create a draft from it.");
+    }
+
+    /// <summary>The problem of a stored name the name rule refuses (ARV-162); the sentence ends with what to do.</summary>
+    public const string UnsafeNameProblem = "holds a control, invisible format or broken character (shown escaped);";
+
+    /// <summary>The problem of a stored zone outline that is no longer a simple polygon (ARV-162, the rule of ARV-161).</summary>
+    public const string OutlineNotSimple =
+        "its outline touches or crosses itself (a vertex within 1 cm of an edge it does not end, or two edges meeting); move its vertices.";
+
+    /// <summary>
+    /// A stored zone or line name as a message may show it (ARV-162): as stored when it keeps the name rule and holds no
+    /// backslash, else escaped (<see cref="DisplayText.Escape"/>), so an override or an invisible character of a legacy name
+    /// never reaches a reader, and a clean name that merely spells an escape (a backslash, then u202E) is shown with its
+    /// backslash doubled and cannot pass for an escaped one.
+    /// </summary>
+    public static string Label(string name) => TopologyCodes.IsName(name) && !name.Contains('\\') ? name : DisplayText.Escape(name);
+
+    /// <summary>
+    /// Why a queue zone name is refused at <paramref name="siteCode"/> (ARV-114c). The name itself is not repeated: the
+    /// request that sent it is answered without reflecting it.
+    /// </summary>
+    public static string QueueZoneNameTooLong(string siteCode) =>
+        $"A queue zone name at site {siteCode} is at most {ZoneKeys.MaxQueueZoneNameLength(siteCode)} characters: its events are keyed by the site code, a slash and the zone name, which together hold at most {MessageKeys.MaxLength} characters.";
+
+    /// <summary>
+    /// A queue zone's name is part of the key of every event of the zone (<see cref="ZoneKeys"/>), which a Kafka key and the
+    /// outbox's <c>message_key</c> must hold (<see cref="MessageKeys"/>); service, staff and overflow zones share their queue
+    /// zone's key, so their names are bound by the name rule only (ARV-114c).
+    /// </summary>
+    private void RequireKeyable(ZoneKind kind, string name, string paramName)
+    {
+        if (kind == ZoneKind.Queue && !ZoneKeys.Fits(SiteCode, name))
+            throw new ArgumentException(QueueZoneNameTooLong(SiteCode), paramName);
     }
 
     private Zone Own(Zone zone) =>
@@ -417,6 +537,12 @@ public class Zone : EntityBase<Zone>
 
     /// <summary>The lane category whose queue this queue zone is (CIT, RES, VIS, CRW, EG ...), or null (ARV-057).</summary>
     public virtual string LaneCategory { get; protected internal set; }
+
+    /// <summary>The largest physical capacity a zone may have, in people.</summary>
+    public const int MaxPhysicalCapacity = 5_000;
+
+    /// <summary>The people a queue zone or overflow band holds at most, or null when not given (ARV-114a, F18 occupancy sanity).</summary>
+    public virtual int? PhysicalCapacity { get; protected internal set; }
 
     /// <summary>Stored vertices: "x y,x y,..." in metres at millimetre precision.</summary>
     [System.ComponentModel.DataAnnotations.MaxLength(PolygonLength)]

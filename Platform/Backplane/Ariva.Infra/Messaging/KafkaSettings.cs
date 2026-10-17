@@ -44,6 +44,8 @@ public sealed class KafkaSettings
 
     public ConsumerSettings Consumers { get; init; } = new();
 
+    public ProducerSettings Producer { get; init; } = new();
+
     /// <summary>Kafka's own limit is enforced on the producer too (ADR-0018): 1 MB.</summary>
     public const int MaxMessageBytes = 1_048_576;
 }
@@ -96,6 +98,40 @@ public sealed class OutboxRelaySettings
 
     /// <summary>A row this many attempts old is logged as an error on every further failure, for the alert.</summary>
     public int StuckAfterAttempts { get; init; } = 10;
+
+    /// <summary>
+    /// The longest a relay pass produces while it holds its transaction, its leader lock and its claimed rows (ARV-166):
+    /// a send still waiting then fails as a broker failure and the pass ends and commits. Each produce ends within 45
+    /// seconds anyway (<c>KafkaProduce.SendTimeout</c>); this also bounds a pass of many slow sends.
+    /// </summary>
+    public int PassSeconds { get; init; } = 60;
+
+    public const int MinBrokerRetrySeconds = 1;
+    public const int MaxBrokerRetrySeconds = 30;
+
+    /// <summary>
+    /// When a send fails because the broker is unavailable (its message timeout, all brokers down, a transport error, a
+    /// full producer queue, the producer's own bound or the pass's, the producer in its fatal gap or stopping), the row is
+    /// tried again after this many seconds and its attempts are not counted (ARV-165), so after an outage every key
+    /// resumes within this wait of the broker's return instead of the row's grown backoff (up to five minutes). From
+    /// <see cref="MinBrokerRetrySeconds"/> to <see cref="MaxBrokerRetrySeconds"/>; a host with another value does not
+    /// start. Any other failure keeps the exponential backoff.
+    /// </summary>
+    public int BrokerRetrySeconds { get; init; } = 5;
+}
+
+/// <summary>The host's own producer (ARV-167).</summary>
+public sealed class ProducerSettings
+{
+    public const int MinRecreateSeconds = 5;
+    public const int MaxRecreateSeconds = 3600;
+
+    /// <summary>
+    /// After a fatal client error the producer is recreated in place, at most once in this many seconds (counted from the
+    /// previous client's creation); sends in between fail at once (ARV-167). From <see cref="MinRecreateSeconds"/> to
+    /// <see cref="MaxRecreateSeconds"/>; a host with another value does not start.
+    /// </summary>
+    public int RecreateSeconds { get; init; } = 30;
 }
 
 /// <summary>Endpoint defaults (ADR-0018).</summary>
@@ -110,6 +146,18 @@ public sealed class ConsumerSettings
     /// <summary>Parallel lanes per endpoint, split by key so order holds per key.</summary>
     public int ConcurrentMessageLimit { get; init; } = 8;
 
-    /// <summary>How long a host waits at start for the topics it consumes to exist before starting the bus anyway.</summary>
-    public int StartWaitSeconds { get; init; } = 300;
+    /// <summary>
+    /// How long a host waits at start for the Ariva topics it consumes to exist before it connects the consumers whose
+    /// topics do (ARV-176: AMAN's feed topics are never waited for, and a topic that is still missing is connected when it
+    /// appears). 60 seconds; the connected consumers then get at most 30 seconds more to be ready. The host's start holds
+    /// its web server, so the two waits must fit in the pod's startup allowance with a margin
+    /// (<c>Hosting:StartupAllowanceSeconds</c>, checked at start).
+    /// </summary>
+    public int StartWaitSeconds { get; init; } = 60;
+
+    /// <summary>
+    /// How often a host looks for a consumed topic that did not exist, to start its consumer when it appears without a
+    /// restart (ARV-176). From 1 to 300.
+    /// </summary>
+    public int TopicWatchSeconds { get; init; } = 10;
 }

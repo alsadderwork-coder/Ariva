@@ -48,6 +48,17 @@ public sealed class BinRevisionValuesTests
     }
 
     [Fact]
+    public void SameValues_Should_BeFalse_When_OnlyTheCompletionOnlyFlagChanged()
+    {
+        // ARV-114b: a recomputation that finds another cause of Degraded keeps the quality but must clear the flag.
+        var flagged = Bin with { Quality = BinQuality.Degraded, DegradedByCompletionOnly = true };
+
+        flagged.SameValues(flagged with { DegradedByCompletionOnly = false }).Should().BeFalse();
+        (flagged with { DegradedByCompletionOnly = false }).SameValues(flagged).Should().BeFalse();
+        flagged.SameValues(flagged with { Revision = 2 }).Should().BeTrue();
+    }
+
+    [Fact]
     public void SameValues_Should_IgnoreTheRevisionItsReasonAndLateEvents_AndRefuseNothing()
     {
         Bin.SameValues(Bin with { Revision = 2, RevisionReason = "late events", LateEvents = 40, Waits = Waits with { Histogram = [.. Waits.Histogram] } })

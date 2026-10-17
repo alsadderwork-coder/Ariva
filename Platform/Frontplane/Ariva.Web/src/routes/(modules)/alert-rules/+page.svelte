@@ -5,6 +5,7 @@
 	import { toast } from 'svelte-sonner';
 	import RuleForm from '$lib/components/pages/alert-rules/RuleForm.svelte';
 	import ConfirmButton from '$lib/components/shared/ConfirmButton.svelte';
+	import IllustrativeBanner from '$lib/components/shared/IllustrativeBanner.svelte';
 	import SimplePageHeader from '$lib/components/shared/SimplePageHeader.svelte';
 	import StatusBadge, { type StatusTone } from '$lib/components/shared/StatusBadge.svelte';
 	import * as rules from '$lib/core/alertRules';
@@ -18,6 +19,8 @@
 	let siteCode = $state('');
 	let list = $state<AlertRule[]>([]);
 	let zoneNames = $state<string[]>([]);
+	/** The queue zones alone: health-check rules watch queue zones only (ARV-114b). */
+	let queueZoneNames = $state<string[]>([]);
 	let loading = $state(true);
 	/** The open form: a new rule (editing null) or a saved one; the key makes a fresh form for each start. */
 	let form = $state<{ key: number; editing: AlertRule | null; initial: AlertRuleRequest } | null>(
@@ -39,6 +42,17 @@
 	/** Owners the caller may give: their own operational roles, or every one for an administrator. */
 	const roles = $derived(
 		rules.operationalRoles.filter((r) => isAdministrator || (auth.user?.roles ?? []).includes(r))
+	);
+	/**
+	 * ARV-181b2, ARV-187: open desks below recommendation and the predicted nowcast are border data, offered to holders of
+	 * ArrivalWaveLanes.View only and given to border roles only (their own, or both for an administrator). Hiding them is a
+	 * convenience: the server refuses others 403 and leaves their rules out of this list. A listed border rule that fails
+	 * the border checks (a predicted nowcast rule of an airport-side role from before ARV-187) is not evaluated, and the
+	 * list says so.
+	 */
+	const seesBorderAlerts = $derived(auth.can(rules.borderPermission));
+	const borderRoles = $derived(
+		rules.borderRoles.filter((r) => isAdministrator || (auth.user?.roles ?? []).includes(r))
 	);
 
 	function failed(reason: string): void {
@@ -82,6 +96,10 @@
 		const zones = published ? ((await zonesApi.get(published.id)).data?.zones ?? []) : [];
 		zoneNames = zones
 			.filter((z) => z.kind === 'Queue' || z.kind === 'Overflow')
+			.map((z) => z.name)
+			.sort((a, b) => a.localeCompare(b));
+		queueZoneNames = zones
+			.filter((z) => z.kind === 'Queue')
 			.map((z) => z.name)
 			.sort((a, b) => a.localeCompare(b));
 		loading = false;
@@ -192,6 +210,8 @@
 	{/snippet}
 </SimplePageHeader>
 
+<IllustrativeBanner site={siteList.find((s) => s.code === siteCode)} />
+
 <div class="flex flex-col gap-4">
 	{#if form}
 		{#key form.key}
@@ -199,8 +219,11 @@
 				editing={form.editing}
 				initial={form.initial}
 				{zoneNames}
+				{queueZoneNames}
 				{roles}
+				{borderRoles}
 				allowNoOwner={isAdministrator}
+				{seesBorderAlerts}
 				{canPreview}
 				onSaved={saved}
 				onCancel={() => (form = null)}
@@ -272,21 +295,25 @@
 										>
 											{rule.enabled ? $_('alertRules.enabled') : $_('alertRules.disabled')}
 										</button>
-										{#if rule.enabled && rules.notEvaluated.has(rule.metric)}
-											<span data-testid="not-evaluated" class="ms-1.5"
-												><StatusBadge tone="warning" label={$_('alertRules.notEvaluated')} /></span
-											>
-										{/if}
 									{:else}
 										<StatusBadge
 											tone={rule.enabled ? 'success' : 'neutral'}
 											label={rule.enabled ? $_('alertRules.enabled') : $_('alertRules.disabled')}
 										/>
-										{#if rule.enabled && rules.notEvaluated.has(rule.metric)}
-											<span data-testid="not-evaluated" class="ms-1.5"
-												><StatusBadge tone="warning" label={$_('alertRules.notEvaluated')} /></span
-											>
-										{/if}
+									{/if}
+									{#if rule.enabled && rules.notEvaluated.has(rule.metric)}
+										<span data-testid="not-evaluated" class="ms-1.5"
+											><StatusBadge tone="warning" label={$_('alertRules.notEvaluated')} /></span
+										>
+									{/if}
+									<!-- ARV-187 P3: a border rule failing the border checks is never evaluated; editing it repairs it. -->
+									{#if rule.enabled && rules.failsBorderRules(rule)}
+										<span data-testid="not-evaluated-border" class="ms-1.5"
+											><StatusBadge
+												tone="warning"
+												label={$_('alertRules.notEvaluatedBorder')}
+											/></span
+										>
 									{/if}
 								</td>
 								<td class="px-4 py-2">

@@ -52,11 +52,15 @@ test('an administrator builds an airport down to its desks, edits a desk, maps i
 	await page.getByTestId('add-airport').click();
 	await page.getByLabel('IATA code').fill(iata);
 	await page.getByTestId('create-airport').getByLabel('Name', { exact: true }).fill(`E2E web ${iata}`);
-	await page.getByLabel('Time zone (IANA)').fill('Asia/Amman');
+	// The zone is chosen from the IANA list (grouped by area, with the UTC offset), never typed.
+	const zone = page.getByTestId('create-airport').getByRole('combobox', { name: 'Time zone (IANA)' });
+	await expect(zone.locator('optgroup[label="Asia"] option[value="Asia/Amman"]')).toHaveCount(1);
+	await zone.selectOption('Asia/Amman');
 	await page.getByTestId('create-airport').getByRole('button', { name: 'Create' }).click();
 	await column(page, 'airport')
 		.getByRole('button', { name: new RegExp(`^${iata}\\b`) })
 		.click();
+	await expect(page.getByTestId('edit-airport').getByRole('combobox', { name: 'Time zone (IANA)' })).toHaveValue('Asia/Amman');
 
 	await page.getByTestId('add-terminal').click();
 	await page.getByTestId('create-terminal').getByLabel('Code').fill('T7');

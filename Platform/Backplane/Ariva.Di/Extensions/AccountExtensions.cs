@@ -73,7 +73,12 @@ public static class AccountExtensions
         services.TryAddSingleton<Ariva.Core.Services.Storage.IFileStorage, Ariva.Infra.Storage.LocalDiskFileStorage>();
         services.TryAddScoped<Ariva.Core.Services.Topology.ISvcFloorPlans, Ariva.Infra.Services.Topology.SvcFloorPlans>();
         services.TryAddScoped<Ariva.Core.Services.Topology.ISvcZoneProfiles, Ariva.Infra.Services.Topology.SvcZoneProfiles>();
+        // Site configuration export and import (ARV-122a): Ariva.Api.Main only, like the rest of the administration.
+        services.TryAddScoped<Ariva.Core.Services.Topology.ISvcSiteConfiguration, Ariva.Infra.Services.Topology.SvcSiteConfiguration>();
         services.TryAddScoped<Ariva.Core.Services.Sensing.ISvcDevices, Ariva.Infra.Services.Sensing.SvcDevices>();
+        // CSV imports of devices and desk code mappings (ARV-123a): through the registration and mapping services above.
+        services.TryAddScoped<Ariva.Core.Services.Imports.ISvcDeviceImports, Ariva.Infra.Services.Sensing.SvcDeviceImports>();
+        services.TryAddScoped<Ariva.Core.Services.Imports.ISvcDeskCodeMappingImports, Ariva.Infra.Services.Topology.SvcDeskCodeMappingImports>();
         // The declarative device mappings shipped with Ariva (ARV-024); the registry checks names against them.
         services.TryAddSingleton<Ariva.Core.Services.Sensing.IDeviceMappingCatalog>(Ariva.Infra.Sensing.Declarative.DeclarativeMappingCatalog.Embedded);
         services.TryAddScoped<Ariva.Core.Services.Sensing.ISvcDeviceGateway, Ariva.Infra.Services.Sensing.SvcDeviceGateway>();
@@ -89,14 +94,36 @@ public static class AccountExtensions
         services.TryAddScoped<Ariva.Core.Services.Alerting.ISvcAlertRules, Ariva.Infra.Services.Alerting.SvcAlertRules>();
         services.TryAddScoped<Ariva.Core.Services.Displays.ISvcDisplays, Ariva.Infra.Services.Displays.SvcDisplays>();
         services.TryAddScoped<Ariva.Core.Services.Displays.ISvcDisplayBoard, Ariva.Infra.Services.Displays.SvcDisplayBoard>();
+        services.TryAddScoped<Ariva.Core.Services.Displays.ISvcInstructionSlides, Ariva.Infra.Services.Displays.SvcInstructionSlides>();
+        services.TryAddScoped<Ariva.Infra.Services.Displays.AdvertisingPolicyGuard>();
+        services.TryAddScoped<Ariva.Core.Services.Displays.ISvcAdvertisingPolicies, Ariva.Infra.Services.Displays.SvcAdvertisingPolicies>();
+        // Advertisement library (ARV-142a): images re-encoded on upload, two-person approval, the display fetch.
+        services.TryAddScoped<Ariva.Core.Services.Displays.ISvcAdvertisingMedia, Ariva.Infra.Services.Displays.SvcAdvertisingMedia>();
+        services.TryAddSingleton<Ariva.Infra.Services.Displays.AdvertisingUploadWindow>();
         // Reports (ARV-060): the daily report and its schedules; deliveries run in Ariva.Api.Cronz (AddArivaReportDeliveries).
         services.TryAddScoped<Ariva.Infra.Services.Reports.ReportReader>();
         services.TryAddScoped<Ariva.Core.Services.Reports.ISvcReports, Ariva.Infra.Services.Reports.SvcReports>();
         services.TryAddScoped<Ariva.Core.Services.Reports.ISvcReportSchedules, Ariva.Infra.Services.Reports.SvcReportSchedules>();
+        // The weekly summary's figures (ARV-119): no endpoint yet; the report tool integration (ARV-146) hands them on.
+        services.TryAddScoped<Ariva.Infra.Services.Quality.AvailabilityLedgerReader>();
+        services.TryAddScoped<Ariva.Infra.Services.Reports.WeeklySummaryReader>();
+        services.TryAddScoped<Ariva.Core.Services.Reports.ISvcWeeklySummary, Ariva.Infra.Services.Reports.SvcWeeklySummary>();
+        // Data quality (ARV-114a): the stored health checks of the queue zones (F18), read only.
+        services.TryAddScoped<Ariva.Core.Services.Quality.ISvcZoneHealth, Ariva.Infra.Services.Quality.SvcZoneHealth>();
+        // Availability (ARV-118): the site operating calendar and the ledger's read; the ledger itself runs in Ariva.Api.Cronz.
+        services.TryAddScoped<Ariva.Core.Services.Quality.ISvcSiteCalendar, Ariva.Infra.Services.Quality.SvcSiteCalendar>();
+        services.TryAddScoped<Ariva.Core.Services.Quality.ISvcAvailability, Ariva.Infra.Services.Quality.SvcAvailability>();
+        // Validation campaigns and manual count capture (ARV-104a): Ariva.Api.Main only.
+        services.TryAddScoped<Ariva.Core.Services.Validation.ISvcValidationCampaigns, Ariva.Infra.Services.Validation.SvcValidationCampaigns>();
+        services.TryAddScoped<Ariva.Core.Services.Validation.ISvcValidationCapture, Ariva.Infra.Services.Validation.SvcValidationCapture>();
+        // Tracer runs and desk observer logs (ARV-104b): Ariva.Api.Main only.
+        services.TryAddScoped<Ariva.Core.Services.Validation.ISvcTracerRuns, Ariva.Infra.Services.Validation.SvcTracerRuns>();
+        services.TryAddScoped<Ariva.Core.Services.Validation.ISvcDeskObservations, Ariva.Infra.Services.Validation.SvcDeskObservations>();
         // ARV-038: the stored minutes rules are judged on, and the arrival wave (ARV-047).
         services.AddArivaArrivalWaveSource(configuration);
         services.TryAddScoped<Ariva.Infra.Alerting.AlertInputs>();
         services.TryAddScoped<Ariva.Infra.Alerting.AlertRuleTick>();
+        services.TryAddSingleton<Ariva.Infra.Alerting.NotEvaluatedWarnings>();
         // Alert emails are written with the alert change (ARV-040).
         services.AddArivaEmailOutbox(configuration);
         // Alerts (ARV-039); their notices come from AddArivaCaching (Redis, or nothing without it).

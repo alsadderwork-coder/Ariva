@@ -62,6 +62,7 @@ public sealed partial class DeskStateEngine
     private readonly Dictionary<string, Desk> _desks = new(StringComparer.Ordinal);
     private readonly List<Desk> _order = [];
     private DateTime _watermark;
+    private int _stepLimit;
     private long _sequence;
     private int _buffered;
     private long _accepted, _late, _superseded, _future, _invalid, _unknownDesk, _bufferFull, _tooLate, _skippedMinutes;
@@ -124,7 +125,9 @@ public sealed partial class DeskStateEngine
         ArgumentNullException.ThrowIfNull(signal);
         if (referenceUtc.Kind != DateTimeKind.Utc)
             throw new ArgumentException("The reference time is UTC.", nameof(referenceUtc));
-        if (signal.DeskCode is null || !_desks.TryGetValue(signal.DeskCode, out var desk))
+        // The out variable is declared before the condition (ARV-069a): a mutant that short-circuits it still compiles.
+        Desk desk = null;
+        if (signal.DeskCode is null || !_desks.TryGetValue(signal.DeskCode, out desk))
         {
             _unknownDesk++;
             return;
@@ -178,6 +181,8 @@ public sealed partial class DeskStateEngine
         DeskSessionChangedSignal s => profile.HasSession && Enum.IsDefined(s.State),
         DeskHeartbeat h => Enum.IsDefined(h.Of) && profile.Has(h.Of),
         DeskTransactionStarted or DeskTransactionEnded => profile.HasTransactions,
+        // ARV-149: only a desk that follows the transaction rhythm takes a lane context, and only within its bounds (CWE-501).
+        DeskLaneContext l => DeskRule.FollowsRhythm(profile) && l.WithinBounds,
         _ => false
     };
 
@@ -186,10 +191,20 @@ public sealed partial class DeskStateEngine
     /// the transitions and the minutes closed. When the step reaches <see cref="DeskStateSettings.MaxStepRecords"/> it
     /// ends early with <see cref="DeskStep.More"/>; call again to continue.
     /// </summary>
-    public DeskStep Advance(DateTime referenceUtc)
+    public DeskStep Advance(DateTime referenceUtc) => Advance(referenceUtc, _settings.MaxStepRecords);
+
+    /// <summary>
+    /// As <see cref="Advance(DateTime)"/>, with a step of at most <paramref name="maxRecords"/> records (transitions and
+    /// minutes together, never more than <see cref="DeskStateSettings.MaxStepRecords"/>), so that a caller with its own
+    /// budget (the desk feed's minutes per read, CWE-120) takes exactly what the budget leaves; the rest follows on the
+    /// next call (<see cref="DeskStep.More"/>).
+    /// </summary>
+    public DeskStep Advance(DateTime referenceUtc, int maxRecords)
     {
         if (referenceUtc.Kind != DateTimeKind.Utc)
             throw new ArgumentException("The reference time is UTC.", nameof(referenceUtc));
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxRecords, 1);
+        _stepLimit = Math.Min(maxRecords, _settings.MaxStepRecords);
         var target = Minus(referenceUtc, _settings.Lateness);
         if (target > _watermark)
             _watermark = target;
@@ -209,8 +224,14 @@ public sealed partial class DeskStateEngine
     }
 
     /// <summary>The state of a desk at its current time, or null for an unknown desk code.</summary>
-    public DeskEvaluation Status(string deskCode) =>
-        deskCode is not null && _desks.TryGetValue(deskCode, out var desk) ? desk.Current : null;
+    public DeskEvaluation Status(string deskCode)
+    {
+        // The out variable is declared before the condition (ARV-069a): a mutant that short-circuits it still compiles.
+        Desk desk = null;
+        if (deskCode is null || !_desks.TryGetValue(deskCode, out desk))
+            return null;
+        return desk.Current;
+    }
 
     /// <summary>The desks of a lane at the engine's current time (F8 n_open; any Unknown desk makes the lane Degraded).</summary>
     public LaneDesks Lane(string lane)
@@ -258,17 +279,20 @@ public sealed partial class DeskStateEngine
             desk.Cursor = resume;
         }
 
-        while (desk.Pending.TryPeek(out var item, out _) && item.Signal.TimeUtc <= target)
+        // The out variables are declared before the loops' conditions (ARV-069a).
+        (DeskSignal Signal, bool Ahead) item = default;
+        (DeskSignal Signal, bool Ahead) same = default;
+        while (desk.Pending.TryPeek(out item, out _) && item.Signal.TimeUtc <= target)
         {
             var signal = item.Signal;
             if (signal.TimeUtc > desk.Cursor && !Move(desk, signal.TimeUtc, transitions, minutes))
                 return false;
-            if (transitions.Count + minutes.Count >= _settings.MaxStepRecords)
+            if (transitions.Count + minutes.Count >= _stepLimit)
                 return false;
 
             // Every signal of the same moment is applied before the state is read, so that no zero-length state shows.
             var moment = signal.TimeUtc;
-            while (desk.Pending.TryPeek(out var same, out _) && same.Signal.TimeUtc <= moment)
+            while (desk.Pending.TryPeek(out same, out _) && same.Signal.TimeUtc <= moment)
             {
                 desk.Pending.Dequeue();
                 _buffered--;
@@ -291,14 +315,16 @@ public sealed partial class DeskStateEngine
     {
         while (desk.Cursor < to)
         {
-            if (transitions.Count + minutes.Count >= _settings.MaxStepRecords)
+            if (transitions.Count + minutes.Count >= _stepLimit)
                 return false;
             Refresh(desk, transitions);
             var floor = Floor(desk.Cursor);
             var minuteEnd = floor.Ticks <= DateTime.MaxValue.Ticks - TimeSpan.TicksPerMinute ? floor.AddMinutes(1) : DateTime.MaxValue;
             var next = minuteEnd < to ? minuteEnd : to;
-            if (DeskRule.NextChange(desk.Profile, desk.Memory, desk.Cursor, _settings) is { } change && change < next)
-                next = change;
+            // No pattern variable in the condition (ARV-069a).
+            var change = DeskRule.NextChange(desk.Profile, desk.Memory, desk.Cursor, _settings);
+            if (change.HasValue && change.Value < next)
+                next = change.Value;
             var span = (next - desk.Cursor).Ticks;
             var e = desk.Current;
             desk.Ticks[(int)e.Status] += span;
@@ -343,13 +369,16 @@ public sealed partial class DeskStateEngine
     {
         var m = desk.Memory;
         var t = signal.TimeUtc;
-        var staffWasStale = m.StaffHeard is not { } sh || t - sh >= _settings.StaleAfter;
+        // No pattern variable is declared in a condition of this method (ARV-069a): each value is read into a local first.
+        var staffHeard = m.StaffHeard;
+        var staffWasStale = !staffHeard.HasValue || t - staffHeard.Value >= _settings.StaleAfter;
         switch (signal)
         {
             case DeskHeartbeat:
                 break;
             case DeskSessionChangedSignal s:
-                if (m.SessionSignalAt is { } at && at > t)
+                var sessionAt = m.SessionSignalAt;
+                if (sessionAt.HasValue && sessionAt.Value > t)
                 {
                     _superseded++;
                     break;
@@ -363,7 +392,8 @@ public sealed partial class DeskStateEngine
                 break;
             case DeskTransactionStarted:
                 m = m with { LastTransaction = Later(m.LastTransaction, t) };
-                if (m.TransactionSignalAt is { } ts && ts > t)
+                var startedAt = m.TransactionSignalAt;
+                if (startedAt.HasValue && startedAt.Value > t)
                 {
                     _superseded++;
                     break;
@@ -374,7 +404,8 @@ public sealed partial class DeskStateEngine
             case DeskTransactionEnded:
                 desk.Transactions = desk.Transactions == int.MaxValue ? int.MaxValue : desk.Transactions + 1;
                 m = m with { LastTransaction = Later(m.LastTransaction, t) };
-                if (m.TransactionSignalAt is { } te && te > t)
+                var endedAt = m.TransactionSignalAt;
+                if (endedAt.HasValue && endedAt.Value > t)
                 {
                     _superseded++;
                     break;
@@ -388,7 +419,8 @@ public sealed partial class DeskStateEngine
                     m = m with { LastTransaction = Later(m.LastTransaction, t) };
                 break;
             case DeskZoneReading { Zone: DeskSource.StaffZone } z:
-                if (m.StaffReadAt is { } sr && sr > t)
+                var staffReadAt = m.StaffReadAt;
+                if (staffReadAt.HasValue && staffReadAt.Value > t)
                 {
                     _superseded++;
                     break;
@@ -399,51 +431,51 @@ public sealed partial class DeskStateEngine
                 var continuing = !staffWasStale && m.StaffCount == 0 && m.StaffEmptySince is not null;
                 var left = z.Count == 0 && (continuing ? m.StaffLeft : !staffWasStale && m.StaffCount > 0);
                 var emptySince = z.Count > 0 ? null : continuing ? m.StaffEmptySince : t;
-                m = m with { StaffCount = z.Count, StaffReadAt = t, StaffEmptySince = emptySince, StaffLeft = left };
+                m = m with { StaffCount = z.Count, StaffReadAt = t, StaffEmptySince = emptySince, StaffLeft = left, StaffDegraded = z.Degraded };
                 break;
             case DeskZoneReading z:
-                if (m.ServiceReadAt is { } vr && vr > t)
+                var serviceReadAt = m.ServiceReadAt;
+                if (serviceReadAt.HasValue && serviceReadAt.Value > t)
                 {
                     _superseded++;
                     break;
                 }
 
-                m = m with { ServiceCount = z.Count, ServiceReadAt = t };
+                m = m with { ServiceCount = z.Count, ServiceReadAt = t, ServiceDegraded = z.Degraded };
+                break;
+            case DeskLaneContext l:
+                // ARV-149: the latest context wins; an older one arriving late is superseded. No variable is declared in
+                // these conditions (ARV-069a).
+                var contextAt = m.LaneContextAt;
+                if (contextAt.HasValue && contextAt.Value > t)
+                {
+                    _superseded++;
+                    break;
+                }
+
+                // The waiting stretch goes on while each context in time says people wait; it starts again after a context
+                // with nobody waiting, an unknown queue or a gap of T_stale.
+                var waitedBefore = contextAt.HasValue && t - contextAt.Value < _settings.StaleAfter && m.QueueWaiting > 0 && m.QueueWaitingSince.HasValue;
+                var waitingNow = l.Waiting > 0;
+                m = m with
+                {
+                    LaneContextAt = t,
+                    LaneServiceSeconds = l.ServiceSeconds,
+                    QueueWaiting = l.Waiting,
+                    QueueDegraded = l.Degraded,
+                    QueueWaitingSince = waitingNow ? (waitedBefore ? m.QueueWaitingSince : t) : null
+                };
                 break;
         }
 
         desk.Memory = m.WithHeard(signal.Source, t);
     }
 
-    private static DateTime? Later(DateTime? a, DateTime b) => a is { } x && x > b ? x : b;
+    private static DateTime? Later(DateTime? a, DateTime b) => a.HasValue && a.Value > b ? a.Value : b;
 
     private static DateTime Floor(DateTime t) => new(t.Ticks - t.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc);
 
     private static DateTime Plus(DateTime t, TimeSpan d) => t > DateTime.MaxValue - d ? DateTime.MaxValue : t + d;
 
     private static DateTime Minus(DateTime t, TimeSpan d) => t < DateTime.MinValue + d ? DateTime.MinValue : t - d;
-}
-
-/// <summary>
-/// The lane cycle time from per-desk interval statistics (F10, Proposed): the transaction-weighted mean of the desks'
-/// mean cycle times, c_lane = sum(cycle seconds x transactions) / sum(transactions) / 60, in minutes. Intervals with
-/// no transactions or a cycle time that is not real (not finite, not positive, or above an hour) are left out.
-/// </summary>
-public static class LaneCycle
-{
-    public static double? Minutes(IEnumerable<(double MeanCycleSeconds, int Transactions)> intervals)
-    {
-        ArgumentNullException.ThrowIfNull(intervals);
-        double weighted = 0;
-        long transactions = 0;
-        foreach (var (cycle, count) in intervals)
-        {
-            if (count <= 0 || !double.IsFinite(cycle) || cycle <= 0 || cycle > 3600)
-                continue;
-            weighted += cycle * count;
-            transactions += count;
-        }
-
-        return transactions > 0 ? weighted / transactions / 60 : null;
-    }
 }

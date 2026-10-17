@@ -33,9 +33,13 @@ public sealed class PermissionModelTests
     {
         var byEntity = Global.Defaults.Permissions.All.Values
             // View-only entities: nothing is created, edited, searched or deleted through them (the system information
-            // endpoint; the live queue stream of ARV-035; the arrival-wave projection of ARV-047; the border desk states of ARV-055; the daily report of ARV-060, computed from stored data). Alerts (ARV-039) are raised by the evaluation and never
-            // deleted: people view, search and act on them (Edit) only.
-            .Where(p => p.Entity is not ("SystemInfo" or "LiveQueue" or "Alert" or "ArrivalWave" or "ArrivalWaveLanes" or "BorderDesks" or "AirportDesks" or "Immigration" or "Report"))
+            // endpoint; the live queue stream of ARV-035; the arrival-wave projection of ARV-047; the border desk states of ARV-055; the daily report of ARV-060, computed from stored data; the zone health checks of ARV-114a, computed by the stream). Alerts (ARV-039) are raised by the evaluation and never
+            // deleted: people view, search and act on them (Edit) only. Validation (ARV-104a) is a process with its own actions:
+            // View, Capture and Manage. Site configuration (ARV-122a) has one action: Transfer (export and import). Display content
+            // (ARV-141) is what the displays say beside the waits: View to see it, Manage to create, change, order, retire and
+            // restore it (the story's single management permission). A site's advertising policy (ARV-145) is one setting per site:
+            // View and Edit. Advertisements (ARV-142a) are a two-person process: View, Manage (upload, change, retire) and Approve.
+            .Where(p => p.Entity is not ("SystemInfo" or "LiveQueue" or "Alert" or "ArrivalWave" or "ArrivalWaveLanes" or "BorderDesks" or "AirportDesks" or "Immigration" or "Report" or "DataQuality" or "Validation" or "SiteConfiguration" or "DisplayContent" or "AdvertisingPolicy" or "Advertising"))
             .GroupBy(p => p.Entity);
 
         byEntity.Should().AllSatisfy(entity =>
@@ -74,6 +78,7 @@ public sealed class PermissionModelTests
     [InlineData(RoleCodes.BorderShiftSupervisor)]
     [InlineData(RoleCodes.TerminalDutyManager)]
     [InlineData(RoleCodes.HandlerStationManager)]
+    [InlineData(RoleCodes.ValidationObserver)]
     public void ByRole_Should_GrantNoUserRoleOrIntegrationAdministration_When_RoleIsOperational(string role)
     {
         RolePermissions.ByRole[role].Should().NotContain(p => p.Entity == "User" || p.Entity == "Role" || p.Entity == "IntegrationClient",
@@ -85,6 +90,105 @@ public sealed class PermissionModelTests
     {
         RolePermissions.HandlerStationManager.Should().NotContain(p => p.Entity == "ZoneProfile" && p.Action != PermissionAction.View && p.Action != PermissionAction.Search);
         RolePermissions.HandlerStationManager.Should().NotContain(p => p.Entity == "Device");
+    }
+
+    [Fact]
+    public void Permissions_Should_BeValidationViewCaptureAndManage_When_ValidationIsCatalogued()
+    {
+        var codes = Global.Defaults.Permissions.All.Values.Where(p => p.Entity == "Validation").Select(p => p.Code);
+
+        codes.Should().BeEquivalentTo("Validation.View", "Validation.Capture", "Validation.Manage");
+    }
+
+    [Fact]
+    public void Permissions_Should_BeSiteConfigurationTransferOnly_When_SiteConfigurationIsCatalogued()
+    {
+        var codes = Global.Defaults.Permissions.All.Values.Where(p => p.Entity == "SiteConfiguration").Select(p => p.Code);
+
+        codes.Should().Equal("SiteConfiguration.Transfer");
+        nameof(Global.Defaults.Permissions.TransferSiteConfiguration).Should().Be(Global.Defaults.Permissions.TransferSiteConfiguration.Name);
+    }
+
+    [Fact]
+    public void Permissions_Should_BeAdvertisingViewManageAndApproveOnly_When_AdvertisingIsCatalogued()
+    {
+        var codes = Global.Defaults.Permissions.All.Values.Where(p => p.Entity == "Advertising").Select(p => p.Code);
+
+        codes.Should().BeEquivalentTo("Advertising.View", "Advertising.Manage", "Advertising.Approve");
+        nameof(Global.Defaults.Permissions.ManageAdvertising).Should().Be(Global.Defaults.Permissions.ManageAdvertising.Name);
+        nameof(Global.Defaults.Permissions.ApproveAdvertising).Should().Be(Global.Defaults.Permissions.ApproveAdvertising.Name);
+    }
+
+    [Fact]
+    public void ByRole_Should_GrantAdvertisingToDutyManagersAndAdministratorsOnly_When_Seeded()
+    {
+        // ARV-142a: the duty manager runs a site's advertisements airport-side, and two of them make the two people an approval
+        // needs; administrators hold both through the every-permission rule; border, handler and observer roles hold neither.
+        foreach (var permission in new[] { Global.Defaults.Permissions.ViewAdvertising, Global.Defaults.Permissions.ManageAdvertising, Global.Defaults.Permissions.ApproveAdvertising })
+        {
+            RolePermissions.ByRole.Where(r => r.Value.Contains(permission)).Select(r => r.Key)
+                .Should().BeEquivalentTo([RoleCodes.TerminalDutyManager, RoleCodes.SystemAdministrator], permission.Code);
+        }
+    }
+
+    [Fact]
+    public void ByRole_Should_GrantSiteConfigurationTransferToAdministratorsOnly_When_Seeded()
+    {
+        // ARV-122a: exporting and importing a whole site's configuration is the system administrator's (the every-permission rule).
+        RolePermissions.ByRole.Where(r => r.Value.Contains(Global.Defaults.Permissions.TransferSiteConfiguration)).Select(r => r.Key)
+            .Should().Equal(RoleCodes.SystemAdministrator);
+    }
+
+    [Fact]
+    public void ByRole_Should_GrantTheObserverCaptureOnly_When_Seeded()
+    {
+        // ARV-104a: capture only, at its own sites (site access, not the role); no operational screen, topology, report or
+        // campaign management (CWE-269, CWE-863).
+        RolePermissions.ValidationObserver.Should().Equal(Global.Defaults.Permissions.CaptureValidation);
+        RolePermissions.For([RoleCodes.ValidationObserver]).Should().NotContain(p =>
+            p.Entity == "LiveQueue" || p.Entity == "Immigration" || p.Entity == "Site" || p.Entity == "ZoneProfile" || p.Entity == "Report" || p.Action == PermissionAction.Manage);
+        RoleHierarchy.Rank(RoleCodes.ValidationObserver).Should().Be(RoleHierarchy.Rank(RoleCodes.HandlerStationManager), "it ranks with the operational roles");
+    }
+
+    [Theory]
+    [InlineData(RoleCodes.BorderShiftSupervisor, true, false, true)]
+    [InlineData(RoleCodes.TerminalDutyManager, true, false, true)]
+    [InlineData(RoleCodes.HandlerStationManager, false, false, false)]
+    [InlineData(RoleCodes.SystemAdministrator, true, false, true)]
+    [InlineData(RoleCodes.ValidationObserver, false, true, false)]
+    public void ByRole_Should_GrantValidationPermissions_When_Seeded(string role, bool view, bool capture, bool manage)
+    {
+        var granted = RolePermissions.ByRole[role];
+
+        granted.Contains(Global.Defaults.Permissions.ViewValidation).Should().Be(view);
+        granted.Contains(Global.Defaults.Permissions.CaptureValidation).Should().Be(capture, "only the validation observer captures (owner decision 2026-10-08)");
+        granted.Contains(Global.Defaults.Permissions.ManageValidation).Should().Be(manage);
+    }
+
+    [Fact]
+    public void ByRole_Should_GiveAdministratorsEveryPermissionButCaptureAndAuditWrites_When_Seeded()
+    {
+        // ARV-104a, owner decision 2026-10-08: the ground truth stays independent of anyone who configures the system, so the
+        // "every permission" rule leaves out Validation.Capture; only the ValidationObserver role holds it.
+        var missing = Global.Defaults.Permissions.All.Values.Except(RolePermissions.SystemAdministrator).Select(p => p.Code);
+
+        missing.Should().BeEquivalentTo("AuditEntry.Create", "AuditEntry.Edit", "AuditEntry.Delete", "Validation.Capture");
+        RolePermissions.ByRole.Where(r => r.Value.Contains(Global.Defaults.Permissions.CaptureValidation)).Select(r => r.Key)
+            .Should().Equal(RoleCodes.ValidationObserver);
+    }
+
+    [Theory]
+    [InlineData(true, RoleCodes.ValidationObserver)]
+    [InlineData(true, RoleCodes.ValidationObserver, RoleCodes.ValidationObserver)]
+    [InlineData(false)]
+    [InlineData(false, RoleCodes.TerminalDutyManager)]
+    [InlineData(false, RoleCodes.ValidationObserver, RoleCodes.TerminalDutyManager)]
+    [InlineData(false, RoleCodes.SystemAdministrator, RoleCodes.ValidationObserver)]
+    public void NeedsNamedSites_Should_HoldForTheObserverRoleAlone_When_RolesAreGiven(bool expected, params string[] roles)
+    {
+        // ARV-104a, first security review (2026-10-08): an account whose only role is the validation observer never reaches every site.
+        RoleCodes.NeedsNamedSites(roles).Should().Be(expected);
+        RoleCodes.NeedsNamedSites(null).Should().BeFalse();
     }
 
     [Fact]

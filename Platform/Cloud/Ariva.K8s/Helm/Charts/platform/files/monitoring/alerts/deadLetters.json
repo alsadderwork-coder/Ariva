@@ -1,0 +1,99 @@
+{
+  "alert": "Ariva dead letters (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "Messages a consumer could not apply after its retries went to a dead-letter topic, were kept in the outbox, or failed (ARV-125b).",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "ariva.kafka.dead_letters",
+                "timeAggregation": "increase",
+                "spaceAggregation": "sum"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}'"
+            },
+            "groupBy": [
+              {
+                "name": "topic",
+                "fieldContext": "attribute",
+                "fieldDataType": "string"
+              },
+              {
+                "name": "group",
+                "fieldContext": "attribute",
+                "fieldDataType": "string"
+              },
+              {
+                "name": "outcome",
+                "fieldContext": "attribute",
+                "fieldDataType": "string"
+              }
+            ],
+            "legend": "{{topic}} {{group}} {{outcome}}"
+          }
+        }
+      ]
+    },
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${deadLetters.severity}",
+          "op": "above",
+          "matchType": "in_total",
+          "target": 0,
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "${deadLetters.minutes}m",
+      "frequency": "1m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [
+      "topic",
+      "group",
+      "outcome"
+    ],
+    "renotify": {
+      "enabled": true,
+      "interval": "4h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "deadLetters",
+    "environment": "${environment}",
+    "severity": "${deadLetters.severity}"
+  },
+  "annotations": {
+    "summary": "Dead letters on {{$topic}}",
+    "description": "{{$value}} dead letters ({{$outcome}}) of {{$group}} from {{$topic}} in the last ${deadLetters.minutes} minutes.",
+    "runbook": "wiki/10-Operations-Runbook.md#45a-outbox-backlog-and-dead-letters-arv-020"
+  },
+  "disabled": false
+}

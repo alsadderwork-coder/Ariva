@@ -198,6 +198,11 @@ class AuthState {
 		return this.token !== null;
 	}
 
+	/** The signed-in account's id (the token's subject), for display and ownership decisions only; null when signed out. */
+	get subject(): string | null {
+		return this.token === null ? null : subjectOf(this.token);
+	}
+
 	/** True when the user holds the permission ("Entity.Action"). */
 	can(permission: string): boolean {
 		return this.user?.permissions.includes(permission) ?? false;

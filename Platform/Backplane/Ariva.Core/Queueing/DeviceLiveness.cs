@@ -2,8 +2,9 @@ namespace Ariva.Core.Queueing;
 
 /// <summary>
 /// A period a device of a queue zone was out (ARV-036): silent for longer than the zone's silence limit, or reporting
-/// itself offline. From the end of the minute the device was last heard in (or the minute it reported offline) to the
-/// minute it was heard again; <see cref="Closed"/> is false only for a period still open when a replay ended.
+/// itself offline. From the minute the device was last heard in (or the minute it reported offline) to the start of the
+/// minute its first push after it covers (ARV-148: the minute the push interval before that push's receive time falls
+/// in); <see cref="Closed"/> is false only for a period still open when a replay ended.
 /// </summary>
 public sealed record DeviceOutage(string ZoneKey, string DeviceCode, DateTime FromUtc, DateTime ToUtc, bool Closed = true);
 
@@ -17,11 +18,13 @@ public sealed record RecentOutageState(string DeviceCode, DateTime FromUtc, Date
 /// Which devices of a queue zone are out (ARV-036), from what the zone's own record stream says: every sensing batch and
 /// device health report of a commissioned device means it was heard at the batch's receive time, and a health report
 /// may say the device is offline. A device heard before and silent for longer than the silence limit is out from the
-/// minute it was last heard in, until it is heard again online. Pure and driven by the zone's reference clock only, so a
-/// replay of the same records gives the same outages. A device silent beyond the forget limit is treated as removed: its
-/// outage ends there and it is no longer tracked.
+/// minute it was last heard in, until it is heard again online: the outage ends at the start of the minute that push
+/// covers (the minute the push interval before its receive time falls in, ARV-148), so the minute after an outage is
+/// judged again. Pure and driven by the zone's reference clock only, so a replay of the same records gives the same
+/// outages. A device silent beyond the forget limit is treated as removed: its outage ends there and it is no longer
+/// tracked.
 /// </summary>
-internal sealed class DeviceLiveness(TimeSpan silence, TimeSpan forget, int maxDevices)
+internal sealed class DeviceLiveness(TimeSpan silence, TimeSpan forget, int maxDevices, TimeSpan pushInterval)
 {
     private sealed class Device
     {
@@ -37,9 +40,13 @@ internal sealed class DeviceLiveness(TimeSpan silence, TimeSpan forget, int maxD
 
     private static DateTime MinuteOf(DateTime t) => new(t.Ticks - t.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc);
 
+    /// <summary>The start of the minute a push received at <paramref name="atUtc"/> covers: the push interval before it.</summary>
+    private DateTime CoveredFrom(DateTime atUtc) => MinuteOf(atUtc > DateTime.MinValue + pushInterval ? atUtc - pushInterval : DateTime.MinValue);
+
     /// <summary>
-    /// The device was heard at <paramref name="atUtc"/>; returns the outage this ends, if any, and where its bins still
-    /// need marking (the part after the marks made while it was open).
+    /// The device was heard at <paramref name="atUtc"/>; returns the outage this ends, if any (at the start of the minute
+    /// the push covers, and at least a minute after it began), and where its bins still need marking (the part after the
+    /// marks made while it was open).
     /// </summary>
     public (DeviceOutage Outage, DateTime MarkFromUtc)? Heard(string zoneKey, string code, DateTime atUtc, bool online)
     {
@@ -60,7 +67,9 @@ internal sealed class DeviceLiveness(TimeSpan silence, TimeSpan forget, int maxD
 
         if (device.OutSince is not { } from)
             return null;
-        var to = MinuteOf(atUtc);
+        // F4 of ARV-104j: the push after the outage covers the minute the push interval before its receive time, so the
+        // outage ends at that minute's start, not at the minute the push arrived in.
+        var to = CoveredFrom(atUtc);
         if (to <= from)
             to = from.AddMinutes(1);
         var markFrom = device.MarkedThrough is { } marked && marked > from ? marked : from;
@@ -102,21 +111,29 @@ internal sealed class DeviceLiveness(TimeSpan silence, TimeSpan forget, int maxD
     }
 
     /// <summary>
-    /// The open outages whose bins should be marked through <paramref name="referenceUtc"/>, each from where its last
-    /// mark ended: at most once every <paramref name="every"/> per device, so the marks (and the recomputations of final
-    /// bins they ask for) are few and do not repeat.
+    /// The open outages whose bins should be marked through <paramref name="throughUtc"/> (ARV-148: the start of the
+    /// minute the push interval before the receive clock falls in, where an outage ending now would end at the earliest),
+    /// each from where its last mark ended: once per new minute per device, so the marks never reach a minute the device's
+    /// next push may still cover, and a bin is marked before it can become final (the zone keeps bins after that minute
+    /// provisional), so only the first mark of an outage can ask for a recomputation.
     /// </summary>
-    public IEnumerable<(DateTime FromUtc, DateTime ToUtc)> MarksDue(DateTime referenceUtc, TimeSpan every)
+    public IEnumerable<(DateTime FromUtc, DateTime ToUtc)> MarksDue(DateTime throughUtc)
     {
         foreach (var device in _devices.Values)
         {
-            if (device.OutSince is not { } from || referenceUtc <= from)
+            // Nullable values are read through HasValue and Value, never pattern variables of a condition (ARV-069a), so
+            // every mutant of these conditions compiles.
+            if (device.OutSince is null)
                 continue;
-            if (device.MarkedThrough is { } marked && referenceUtc - marked < every)
+            var from = device.OutSince.Value;
+            if (throughUtc <= from)
                 continue;
-            var start = device.MarkedThrough is { } through && through > from ? through : from;
-            device.MarkedThrough = referenceUtc;
-            yield return (start, referenceUtc);
+            var marked = device.MarkedThrough;
+            if (marked.HasValue && throughUtc <= marked.Value)
+                continue;
+            var start = marked.HasValue && marked.Value > from ? marked.Value : from;
+            device.MarkedThrough = throughUtc;
+            yield return (start, throughUtc);
         }
     }
 
@@ -160,11 +177,14 @@ internal sealed class DeviceLiveness(TimeSpan silence, TimeSpan forget, int maxD
         var ended = new List<(DeviceOutage, DateTime)>();
         foreach (var (code, device) in _devices)
         {
-            if (device.OutSince is not { } from)
+            // As in MarksDue: no pattern variables in the conditions (ARV-069a).
+            if (device.OutSince is null)
                 continue;
+            var from = device.OutSince.Value;
             if (from < end)
             {
-                ended.Add((new DeviceOutage(zoneKey, code, from, end, false), device.MarkedThrough is { } m && m > from ? m : from));
+                var marked = device.MarkedThrough;
+                ended.Add((new DeviceOutage(zoneKey, code, from, end, false), marked.HasValue && marked.Value > from ? marked.Value : from));
                 Remember(new RecentOutageState(code, from, end));
             }
 

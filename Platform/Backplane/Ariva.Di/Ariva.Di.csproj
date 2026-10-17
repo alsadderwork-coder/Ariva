@@ -1,5 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+    <!-- ARV-139c: the development-only NBJ-BC1 seed exists in Debug builds only (Ariva.Infra.csproj removes its files otherwise). -->
+    <PropertyGroup Label="Development-only seed" Condition="'$(Configuration)' == 'Debug'">
+        <DefineConstants>$(DefineConstants);ARIVA_DEV_SEED</DefineConstants>
+    </PropertyGroup>
+
     <ItemGroup>
         <Compile Include="..\..\..\GlobalSuppressions.cs" Link="GlobalSuppressions.cs" />
     </ItemGroup>

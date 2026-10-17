@@ -3,12 +3,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, devices } from '@playwright/test';
-import { databaseAvailable, developmentUserEnvironment, keyDirectory, lockoutSeconds, refreshGraceSeconds } from './tests/support/accounts';
+import { accounts, databaseAvailable, developmentUserEnvironment, keyDirectory, lockoutSeconds, refreshGraceSeconds } from './tests/support/accounts';
 import { hosts, smtp4dev, streamUrl, webUrl } from './tests/support/hosts';
+import { nonLocalTargets } from './tests/support/local-target';
+import { provisionedVariables, smokeSite, smokeStack } from './tests/support/smoke-site';
+import { structureProblems } from './tests/smoke/support/guard';
 
 // Ariva API end-to-end and functional tests. See README.md.
 //   api          Playwright's request fixture against the running .NET hosts, no browser
 //   functional   Chromium against the production build of Ariva.Web served by `vite preview`
+//   smoke        the read-only release smoke suite (ARV-128, tests/smoke) against this local stack; a deployed environment
+//                runs the same specs through playwright.smoke.config.ts
 // The web servers below start smtp4dev, build the backend once (first .NET entry), start Ariva.Api.Main, Ariva.Api.Integration,
 // Ariva.Api.Ingest and Ariva.Simulation.Api with `dotnet run --no-build` on their launchSettings ports, then build
 // and preview the web app. Playwright starts them one after another and waits for each health URL.
@@ -41,8 +46,36 @@ const zap = process.env.ARIVA_E2E_ZAP === '1';
 // to Ingest, Ariva.Api.Stream (started only in this mode) computes the queues, snapshots and alerts, and Ariva.Api.Main
 // takes device heartbeats from Kafka. It runs in real time and alone: ARIVA_E2E_DEMO=1 --project=demo.
 const demo = process.env.ARIVA_E2E_DEMO === '1';
+// ARV-104j: the validation rehearsal against the live pipeline (tests/rehearsal) runs on the same hosts as the demo, Stream
+// included: the reference evening plays through Ingest, Stream and Cronz, the simulator's observers capture through the capture
+// API, and the campaigns are closed and their results frozen. In real time and alone: ARIVA_E2E_REHEARSAL=1 --project=rehearsal.
+const rehearsal = process.env.ARIVA_E2E_REHEARSAL === '1';
+/** The whole pipeline (Ariva.Api.Stream started, Main on Kafka): the demo and the rehearsal against it. */
+const livePipeline = demo || rehearsal;
 
 const project = (relative: string) => path.join(repositoryRoot, 'Platform', relative);
+
+// ARV-128 (TC-56): these suites write, attack and load, so every target they call or write to is on this machine. A
+// deployed environment gets the read-only smoke suite instead (npm run test:smoke, playwright.smoke.config.ts). Only the
+// names of the refused targets are printed: a Redis address can carry its password.
+const remoteTargets = nonLocalTargets(
+	{
+		...hosts,
+		stream: streamUrl,
+		web: webUrl,
+		smtp4dev: smtp4dev.url,
+		redis: process.env.ARIVA_E2E_REDIS_URL,
+		kafka: process.env.ARIVA_E2E_KAFKA_BOOTSTRAP,
+		database: databaseAvailable ? process.env.Database__Host : undefined
+	},
+	{ kafka: 'bootstrap', database: 'host' }
+);
+if (remoteTargets.length > 0) {
+	throw new Error(
+		`ARV-128: the E2E suites write, attack and load, so they run only against this machine; refused for ${remoteTargets.join(', ')}. ` +
+			'Check a deployed environment with the read-only smoke suite: npm run test:smoke (wiki 04 section 8).'
+	);
+}
 
 // Sign-in (ARV-010a) needs the database; CI always provides one (ci.yml starts PostgreSQL), so a CI run without it is
 // a configuration error rather than a reason to skip the account tests.
@@ -62,6 +95,9 @@ process.env.ARIVA_E2E_KEY_DIR ||= keyDirectory;
 // One simulator operator key per run (ARV-027, ARV-028): the simulator gets only its SHA-256, the tests the key.
 process.env.ARIVA_E2E_SIMULATION_KEY ||= 'sim-e2e-' + crypto.randomBytes(24).toString('base64url');
 const simulationKeyDigest = crypto.createHash('sha256').update(process.env.ARIVA_E2E_SIMULATION_KEY).digest('hex');
+// ARV-104i: a second operator key with the read scope only, so the control endpoints' 403 is proven end to end.
+process.env.ARIVA_E2E_SIMULATION_READ_KEY ||= 'sim-e2e-read-' + crypto.randomBytes(24).toString('base64url');
+const simulationReadKeyDigest = crypto.createHash('sha256').update(process.env.ARIVA_E2E_SIMULATION_READ_KEY).digest('hex');
 // ARV-029: one client of the mock AMAN Integration API per run; the simulator gets the secret's SHA-256 and the seed.
 process.env.ARIVA_E2E_MOCK_AMAN_SECRET ||= 'aman-e2e-' + crypto.randomBytes(24).toString('base64url');
 process.env.ARIVA_E2E_MOCK_AMAN_SEED ||= base32Of(crypto.randomBytes(20));
@@ -72,6 +108,33 @@ process.env.ARIVA_E2E_MOCK_AMAN_PULL_SEED ||= base32Of(crypto.randomBytes(20));
 process.env.ARIVA_E2E_ACRIS_KEY ||= 'acris-e2e-' + crypto.randomBytes(24).toString('base64url');
 // ARV-060: the TickerQ dashboard of Ariva.Api.Cronz takes this key (the host keeps only its SHA-256).
 process.env.ARIVA_E2E_CRONZ_KEY ||= 'cronz-e2e-' + crypto.randomBytes(24).toString('base64url');
+// ARV-104g1: the validation reader login's password for this run (Ariva.Api.Main only; see validationReaderEnvironment).
+process.env.ARIVA_E2E_VALIDATION_READER_PASSWORD ||= 'reader-e2e-' + crypto.randomBytes(24).toString('base64url');
+
+// ARV-128: the smoke project reads its target and credentials from ARIVA_SMOKE_* only, as against a deployed environment.
+// Here they are this stack's: the addresses and the smoke account now, the zone, the test device and the display from
+// global setup (tests/support/smoke-site.ts) once the hosts are up. Values left from a deployed run in the shell are
+// dropped in the runner, before global setup; the workers inherit the runner's.
+if (smokeStack) {
+	if (!process.env.TEST_WORKER_INDEX) for (const name of [...provisionedVariables, 'ARIVA_SMOKE_UNAVAILABLE']) delete process.env[name];
+	const smokeAccount = accounts().smoke;
+	Object.assign(process.env, {
+		ARIVA_SMOKE_BASE_URL: webUrl,
+		ARIVA_SMOKE_MAIN_URL: hosts.main,
+		ARIVA_SMOKE_INGEST_URL: hosts.ingest,
+		ARIVA_SMOKE_INTEGRATION_URL: hosts.integration,
+		ARIVA_SMOKE_USERNAME: smokeAccount.userName,
+		ARIVA_SMOKE_PASSWORD: smokeAccount.password,
+		ARIVA_SMOKE_TOTP_SECRET: smokeAccount.totpSecret!,
+		ARIVA_SMOKE_SITE: smokeSite
+	});
+	// Without a database nobody signs in and global setup provisions nothing: the smoke specs skip, as the sign-in suites do.
+	if (!databaseAvailable) process.env.ARIVA_SMOKE_UNAVAILABLE = 'the smoke suite needs the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true)';
+	// A smoke spec imports from tests/smoke/support only (tests/smoke/support/guard.ts), here as in the smoke config.
+	const smokeDir = path.join(here, 'tests', 'smoke');
+	const problems = structureProblems(fs.readdirSync(smokeDir).filter((name) => name.endsWith('.spec.ts')).map((name) => path.join(smokeDir, name)));
+	if (problems.length > 0) throw new Error(`ARV-128: a smoke spec may import from tests/smoke/support only; refused:\n${problems.join('\n')}`);
+}
 
 function base32Of(bytes: Buffer): string {
 	const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
@@ -95,6 +158,19 @@ function base32Of(bytes: Buffer): string {
  */
 function outboundLabEnvironment(): Record<string, string> {
 	return { Integration__Outbound__AllowLoopback: 'true', Integration__Outbound__LabHosts__0: '127.0.0.1' };
+}
+
+/**
+ * ARV-104g1: the validation reader login, the only login that reads the shadow nowcast, given to Ariva.Api.Main alone (it
+ * hosts the validation service), as the chart does in the clusters. Main migrates the run's database at startup (vm-local)
+ * and so creates or updates the login (script 0049); the other hosts never get it, and every host checks at startup that its
+ * runtime login (Database__Username, never a superuser or the owner) can read no value of the shadow nowcast.
+ */
+function validationReaderEnvironment(): Record<string, string> {
+	return {
+		Database__ValidationReader__Username: 'ariva_validation',
+		Database__ValidationReader__Password: process.env.ARIVA_E2E_VALIDATION_READER_PASSWORD!
+	};
 }
 
 function dotnetHost(projectPath: string, healthUrl: string, buildFirst = false, extraEnvironment: Record<string, string> = {}) {
@@ -189,10 +265,15 @@ function smtpEnvironment(): Record<string, string> {
 const hostServers = {
 	'api-main': dotnetHost(project('Backplane/Ariva.Api.Main'), `${hosts.main}/health/readiness`, true, {
 		...(databaseAvailable ? developmentUserEnvironment() : {}),
+		...(databaseAvailable ? validationReaderEnvironment() : {}),
 		...redisEnvironment(),
 		...outboundLabEnvironment(),
 		// ARV-064: Main records device heartbeats from ariva.device.health.v1, so the demo's devices stay Online.
-		...(demo ? kafkaEnvironment() : {})
+		...(livePipeline ? kafkaEnvironment() : {}),
+		// ARV-139c (CWE-200): this run's api-main never seeds the development-only NBJ-BC1 site, even where the owner's shell
+		// or appsettings.local.json turns it on (NbjSiteScopeTests). The pin cannot remove a site an earlier run seeded into
+		// the same database: global setup stops the run on such a database (tests/support/global-setup.ts).
+		Seed__NbjSite: 'false'
 	}),
 	'api-integration': dotnetHost(project('Backplane/Ariva.Api.Integration'), `${hosts.integration}/health/readiness`, false, {
 		...smtpEnvironment(),
@@ -217,12 +298,19 @@ const hostServers = {
 	}),
 	// ARV-060: TickerQ runs the scheduled reports and mails them through the run's smtp4dev; the dashboard is on with
 	// the run's key so reports.spec.ts can run the delivery job on demand.
+	// ARV-118: the availability ledger reads the run's Redis snapshots; a 30-second grace lets availability.spec.ts see a
+	// minute decided within two runs of the job.
 	'api-cronz': dotnetHost(project('Backplane/Ariva.Api.Cronz'), `${hosts.cronz}/health/readiness`, false, {
 		...smtpEnvironment(),
+		...redisEnvironment(),
+		// ARV-104j: the live pipeline writes a minute's live part about two minutes after it ends (one-minute sensor pushes,
+		// Stream's 30-second lateness), so with the whole pipeline the ledger keeps the production grace (120 seconds); 30
+		// seconds would decide every minute before Stream had it (StreamLag and MissingMinute on every minute).
+		...(livePipeline ? {} : { Availability__GraceSeconds: '30' }),
 		Cronz__Dashboard__Enabled: 'true',
 		Cronz__Dashboard__KeySha256: crypto.createHash('sha256').update(process.env.ARIVA_E2E_CRONZ_KEY).digest('hex')
 	}),
-	...(demo
+	...(livePipeline
 		? {
 				'api-stream': dotnetHost(project('Backplane/Ariva.Api.Stream'), `${streamUrl}/health/readiness`, false, {
 					...kafkaEnvironment(),
@@ -235,12 +323,24 @@ const hostServers = {
 		Simulation__Control__Keys__0__Sha256: simulationKeyDigest,
 		Simulation__Control__Keys__0__Scopes__0: 'read',
 		Simulation__Control__Keys__0__Scopes__1: 'control',
+		Simulation__Control__Keys__1__Name: 'e2e-reader',
+		Simulation__Control__Keys__1__Sha256: simulationReadKeyDigest,
+		Simulation__Control__Keys__1__Scopes__0: 'read',
 		// The sensor emulator pushes to the Ingest under test; plain HTTP only over loopback.
 		Simulation__Sensors__IngestUrl: hosts.ingest,
 		Simulation__Sensors__AllowInsecureTransport: /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/.test(hosts.ingest) ? 'true' : 'false',
 		// ARV-029: the AODB, AMAN and immigration emulators call the Integration host under test.
 		Simulation__Ariva__IntegrationUrl: hosts.integration,
-		Simulation__Ariva__AllowInsecureTransport: /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/.test(hosts.integration) ? 'true' : 'false',
+		// ARV-104i: the validation observers sign in to the Ariva.Api.Main under test and use its capture API (loopback too).
+		Simulation__Ariva__MainUrl: hosts.main,
+		// Five rehearsals a run of validation-rehearsal.spec.ts (more with a retry); the limit itself (10 a minute per key by
+		// default) is tested in ValidationEmulatorEndpointTests.
+		Simulation__Validation__RehearsalsPerMinute: '30',
+		// The control test reads the truth twice per hostile payload with the read key; the limit itself (60 a minute per key by
+		// default) is tested in ValidationEmulatorEndpointTests.
+		Simulation__Validation__TruthReadsPerMinute: '300',
+		Simulation__Ariva__AllowInsecureTransport:
+			[hosts.integration, hosts.main].some((url) => /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/.test(url)) ? 'true' : 'false',
 		Simulation__Aman__Kafka__BootstrapServers: process.env.ARIVA_E2E_KAFKA_BOOTSTRAP ?? '',
 		Simulation__Aman__Mock__Clients__0__ClientId: 'e2e-aman-connector',
 		Simulation__Aman__Mock__Clients__0__SecretSha256: crypto.createHash('sha256').update(process.env.ARIVA_E2E_MOCK_AMAN_SECRET).digest('hex'),
@@ -270,7 +370,12 @@ export default defineConfig({
 	retries: isCi ? 1 : 0,
 	workers: isCi ? 2 : undefined,
 	timeout: 30_000,
-	reporter: [['list'], ['html', { outputFolder: 'playwright-report', open: 'never' }]],
+	reporter: [
+		['list'],
+		['html', { outputFolder: 'playwright-report', open: 'never' }],
+		// ARV-128: last, after the HTML report is written: the smoke credentials of this run never reach the report or the output.
+		...(smokeStack ? [['./tests/smoke/support/artifact-reporter.ts', { folders: [path.join(here, 'playwright-report')] }] as [string, object]] : [])
+	],
 	use: {
 		trace: 'retain-on-failure'
 	},
@@ -322,6 +427,20 @@ export default defineConfig({
 					}
 				]
 			: []),
+		...(rehearsal
+			? [
+					{
+						name: 'rehearsal',
+						testDir: './tests/rehearsal',
+						fullyParallel: false,
+						retries: 0,
+						// The rehearsed evening in real time (about two hours by default), with the setup, the rehearsals and a margin.
+						timeout: 4 * 60 * 60_000,
+						// API calls only: a trace would carry the sign-ins and the device credentials.
+						use: { trace: 'off' as const }
+					}
+				]
+			: []),
 		...(zap
 			? [
 					{
@@ -348,7 +467,29 @@ export default defineConfig({
 				locale: 'en-US',
 				launchOptions: { executablePath: chromiumExecutable }
 			}
-		}
+		},
+		...(smokeStack
+			? [
+					{
+						// ARV-128: the release smoke suite against this stack, with its credentials from ARIVA_SMOKE_* (set above and in
+						// global setup). The probes (tests/smoke/probes) run only through tests/api/smoke-guard.spec.ts.
+						name: 'smoke',
+						testDir: './tests/smoke',
+						testMatch: /[\\/]tests[\\/]smoke[\\/][a-z0-9-]+\.spec\.ts$/,
+						fullyParallel: false,
+						use: {
+							...devices['Desktop Chrome'],
+							baseURL: webUrl,
+							locale: 'en-US',
+							launchOptions: { executablePath: chromiumExecutable },
+							// As in the smoke config: a trace holds every header and typed value, a screenshot or video the screens.
+							trace: 'off' as const,
+							screenshot: 'off' as const,
+							video: 'off' as const
+						}
+					}
+				]
+			: [])
 	],
 	webServer: [
 		{

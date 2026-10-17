@@ -185,6 +185,30 @@ public sealed class DeskRuleTests
         DeskRule.NextChange(Aman, DeskMemory.Empty, T, Settings).Should().BeNull();
     }
 
+    // ARV-069a: NextChange was in Stryker's safe mode; each threshold it considers is tested on its own here, so dropping
+    // one is noticed. Every memory holds a single instant at T, and the answer is the first threshold after afterUtc.
+    public static TheoryData<string, DeskMemory, int, int?, int> Thresholds => new()
+    {
+        // case, memory, minutes after T, sensor-only T1 in minutes (null: none), expected minutes after T
+        { "staff zone empty, sensor-only T1", new DeskMemory { StaffEmptySince = T }, 0, 1, 1 },
+        { "last transaction, sensor-only T1", new DeskMemory { LastTransaction = T }, 0, 1, 1 },
+        { "last transaction, T1", new DeskMemory { LastTransaction = T }, 0, null, 3 },
+        { "last transaction, T2 once T1 passed", new DeskMemory { LastTransaction = T }, 3, null, 10 },
+        { "logged in, T1", new DeskMemory { SessionSince = T }, 0, null, 3 },
+        { "logged in, T2 once T1 passed", new DeskMemory { SessionSince = T }, 3, null, 10 },
+        { "transaction open, its longest duration", new DeskMemory { TransactionSince = T }, 0, null, 30 },
+        { "staff zone empty, T2 once the sensor-only T1 passed", new DeskMemory { StaffEmptySince = T }, 1, 1, 3 }
+    };
+
+    [Theory]
+    [MemberData(nameof(Thresholds))]
+    public void NextChange_Should_GiveEachThreshold_When_ItIsTheOnlyOneAhead(string because, DeskMemory memory, int afterMinutes, int? sensorPauseMinutes, int expectedMinutes)
+    {
+        var settings = Settings with { SensorPauseAfter = sensorPauseMinutes is { } m ? TimeSpan.FromMinutes(m) : null };
+
+        DeskRule.NextChange(Aman, memory, T.AddMinutes(afterMinutes), settings).Should().Be(T.AddMinutes(expectedMinutes), because);
+    }
+
     [Theory]
     [InlineData(0, 10)]
     [InlineData(5, 4)]

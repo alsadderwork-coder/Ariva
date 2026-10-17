@@ -384,8 +384,13 @@ public sealed class FakeDisplays : Ariva.Core.Services.Displays.ISvcDisplays, Ar
         services.Replace(ServiceDescriptor.Scoped<Ariva.Core.Services.Displays.ISvcDisplayBoard, FakeDisplays>());
     }
 
-    public static void RegisterAdmin(IServiceCollection services) =>
+    public static void RegisterAdmin(IServiceCollection services)
+    {
         services.Replace(ServiceDescriptor.Scoped<Ariva.Core.Services.Displays.ISvcDisplays, FakeDisplays>());
+        services.Replace(ServiceDescriptor.Scoped<Ariva.Core.Services.Displays.ISvcInstructionSlides, FakeInstructionSlides>());
+        services.Replace(ServiceDescriptor.Scoped<Ariva.Core.Services.Displays.ISvcAdvertisingPolicies, FakeAdvertisingPolicies>());
+        services.Replace(ServiceDescriptor.Scoped<Ariva.Core.Services.Displays.ISvcAdvertisingMedia, FakeAdvertisingMedia>());
+    }
 
     public Task<Fluentx.Result<IReadOnlyList<Ariva.Core.Services.Displays.DisplayViewModel>>> SearchAsync(string siteCode, CancellationToken ct = default) =>
         Task.FromResult(new Fluentx.Result<IReadOnlyList<Ariva.Core.Services.Displays.DisplayViewModel>>((IReadOnlyList<Ariva.Core.Services.Displays.DisplayViewModel>)[]));
@@ -410,6 +415,85 @@ public sealed class FakeDisplays : Ariva.Core.Services.Displays.ISvcDisplays, Ar
     Task<Fluentx.Result<Ariva.Core.Services.Displays.DisplayBoardViewModel>> Ariva.Core.Services.Displays.ISvcDisplayBoard.GetAsync(Guid displayId, string credentialPrefix,
         CancellationToken ct) =>
         Missing<Ariva.Core.Services.Displays.DisplayBoardViewModel>();
+
+    private static Task<Fluentx.Result<T>> Missing<T>() =>
+        Task.FromResult(Fluentx.Result.Error<T>(Ariva.Core.Services.Topology.TopologyErrors.NotFound));
+}
+
+/// <summary>Instruction slides (ARV-141) without a database: every site and slide is unknown, the list is empty.</summary>
+public sealed class FakeInstructionSlides : Ariva.Core.Services.Displays.ISvcInstructionSlides
+{
+    public Task<Fluentx.Result<IReadOnlyList<Ariva.Core.Services.Displays.InstructionSlideViewModel>>> SearchAsync(string siteCode, CancellationToken ct = default) =>
+        Task.FromResult(new Fluentx.Result<IReadOnlyList<Ariva.Core.Services.Displays.InstructionSlideViewModel>>((IReadOnlyList<Ariva.Core.Services.Displays.InstructionSlideViewModel>)[]));
+
+    public Task<Fluentx.Result<Ariva.Core.Services.Displays.InstructionSlideViewModel>> GetAsync(Guid id, CancellationToken ct = default) =>
+        Missing<Ariva.Core.Services.Displays.InstructionSlideViewModel>();
+
+    public Task<Fluentx.Result<Ariva.Core.Services.Displays.InstructionSlideViewModel>> CreateAsync(Ariva.Core.Services.Displays.InstructionSlideRequest request,
+        CancellationToken ct = default) =>
+        Task.FromResult(Fluentx.Result.Error<Ariva.Core.Services.Displays.InstructionSlideViewModel>(Ariva.Core.Services.Topology.TopologyErrors.UnknownSite));
+
+    public Task<Fluentx.Result<Ariva.Core.Services.Displays.InstructionSlideViewModel>> UpdateAsync(Guid id, Ariva.Core.Services.Displays.InstructionSlideRequest request,
+        CancellationToken ct = default) =>
+        Missing<Ariva.Core.Services.Displays.InstructionSlideViewModel>();
+
+    public Task<Fluentx.Result<Ariva.Core.Services.Displays.InstructionSlideViewModel>> RetireAsync(Guid id, CancellationToken ct = default) =>
+        Missing<Ariva.Core.Services.Displays.InstructionSlideViewModel>();
+
+    public Task<Fluentx.Result<Ariva.Core.Services.Displays.InstructionSlideViewModel>> RestoreAsync(Guid id, CancellationToken ct = default) =>
+        Missing<Ariva.Core.Services.Displays.InstructionSlideViewModel>();
+
+    public Task<Fluentx.Result<IReadOnlyList<Ariva.Core.Services.Displays.InstructionSlideViewModel>>> ReorderAsync(string siteCode,
+        Ariva.Core.Services.Displays.InstructionSlideOrderRequest request, CancellationToken ct = default) =>
+        Task.FromResult(Fluentx.Result.Error<IReadOnlyList<Ariva.Core.Services.Displays.InstructionSlideViewModel>>(Ariva.Core.Services.Topology.TopologyErrors.UnknownSite));
+
+    private static Task<Fluentx.Result<T>> Missing<T>() =>
+        Task.FromResult(Fluentx.Result.Error<T>(Ariva.Core.Services.Topology.TopologyErrors.NotFound));
+}
+
+/// <summary>Advertising policies (ARV-145) without a database: every site is unknown, and advertising is off everywhere.</summary>
+public sealed class FakeAdvertisingPolicies : Ariva.Core.Services.Displays.ISvcAdvertisingPolicies
+{
+    public Task<Fluentx.Result<Ariva.Core.Services.Displays.AdvertisingPolicyViewModel>> GetAsync(string siteCode, CancellationToken ct = default) =>
+        Task.FromResult(Fluentx.Result.Error<Ariva.Core.Services.Displays.AdvertisingPolicyViewModel>(Ariva.Core.Services.Topology.TopologyErrors.NotFound));
+
+    public Task<Fluentx.Result<Ariva.Core.Services.Displays.AdvertisingPolicyViewModel>> ChangeAsync(string siteCode,
+        Ariva.Core.Services.Displays.AdvertisingPolicyRequest request, CancellationToken ct = default) =>
+        Task.FromResult(Fluentx.Result.Error<Ariva.Core.Services.Displays.AdvertisingPolicyViewModel>(Ariva.Core.Services.Topology.TopologyErrors.NotFound));
+
+    public Task<bool> IsAllowedAsync(string siteCode, CancellationToken ct = default) => Task.FromResult(false);
+
+    public Task<Ariva.Core.Services.Displays.AdvertisingAccess> AccessAsync(string siteCode, CancellationToken ct = default) =>
+        Task.FromResult(Ariva.Core.Services.Displays.AdvertisingAccess.NotFound);
+}
+
+/// <summary>The advertisement library (ARV-142a) without a database: every site and item is unknown.</summary>
+public sealed class FakeAdvertisingMedia : Ariva.Core.Services.Displays.ISvcAdvertisingMedia
+{
+    public Task<Fluentx.Result<IReadOnlyList<Ariva.Core.Services.Displays.AdvertisingMediaViewModel>>> ListAsync(string siteCode, CancellationToken ct = default) =>
+        Missing<IReadOnlyList<Ariva.Core.Services.Displays.AdvertisingMediaViewModel>>();
+
+    public Task<Fluentx.Result<Ariva.Core.Services.Displays.AdvertisingMediaViewModel>> GetAsync(string siteCode, Guid id, CancellationToken ct = default) =>
+        Missing<Ariva.Core.Services.Displays.AdvertisingMediaViewModel>();
+
+    public Task<Fluentx.Result<Ariva.Core.Services.Displays.AdvertisingMediaContent>> OpenAsync(string siteCode, Guid id, CancellationToken ct = default) =>
+        Missing<Ariva.Core.Services.Displays.AdvertisingMediaContent>();
+
+    public Task<Fluentx.Result<Ariva.Core.Services.Displays.AdvertisingMediaViewModel>> UploadAsync(string siteCode, Ariva.Core.Services.Displays.AdvertisingMediaUpload upload,
+        CancellationToken ct = default) => Missing<Ariva.Core.Services.Displays.AdvertisingMediaViewModel>();
+
+    public Task<Fluentx.Result<Ariva.Core.Services.Displays.AdvertisingMediaViewModel>> ChangeAsync(string siteCode, Guid id,
+        Ariva.Core.Services.Displays.ChangeAdvertisingMediaRequest request, CancellationToken ct = default) => Missing<Ariva.Core.Services.Displays.AdvertisingMediaViewModel>();
+
+    public Task<Fluentx.Result<Ariva.Core.Services.Displays.AdvertisingMediaViewModel>> ApproveAsync(string siteCode, Guid id,
+        Ariva.Core.Services.Displays.ApproveAdvertisingMediaRequest request, CancellationToken ct = default) =>
+        Missing<Ariva.Core.Services.Displays.AdvertisingMediaViewModel>();
+
+    public Task<Fluentx.Result<Ariva.Core.Services.Displays.AdvertisingMediaViewModel>> RetireAsync(string siteCode, Guid id, CancellationToken ct = default) =>
+        Missing<Ariva.Core.Services.Displays.AdvertisingMediaViewModel>();
+
+    public Task<Fluentx.Result<Ariva.Core.Services.Displays.AdvertisingMediaContent>> OpenForDisplayAsync(Guid displayId, string credentialPrefix, Guid id,
+        CancellationToken ct = default) => Missing<Ariva.Core.Services.Displays.AdvertisingMediaContent>();
 
     private static Task<Fluentx.Result<T>> Missing<T>() =>
         Task.FromResult(Fluentx.Result.Error<T>(Ariva.Core.Services.Topology.TopologyErrors.NotFound));

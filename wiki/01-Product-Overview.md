@@ -9,7 +9,7 @@ Ariva measures queues at border control, e-gates, check-in and security with ano
 | Measure | Sensors report anonymous track samples or counts. Ariva applies its own versioned zones and lines to them, computes crossings, queue lengths and desk states | Queue length, crossings, desk state, data-quality flag |
 | Compute waits | Realised wait per passenger (exit time minus entry time) attributed to the 15-minute bin of entry; nowcast for someone joining now from queue length and staffed-desk throughput | Realised wait per bin (provisional, then final); nowcast |
 | Predict | Arrival-wave forecast from on-blocks and lane demand; from v1, show-up forecasts and Monte Carlo waits | Predicted hall arrivals, P50 and P90 waits |
-| Decide | Alert rules on nowcasts and forecasts; from v1, staffing recommendations | Alerts with owner role and escalation; recommended desks per interval |
+| Decide | Alert rules on nowcasts and forecasts; in the pilot, indicative recommended open desks per arrivals lane (ARV-181a); from v1, staffing recommendations against the roster | Alerts with owner role and escalation; recommended desks per interval |
 | Inform | Live dashboards, passenger display boards, reports, outbound APIs | Banded nowcast on screens, CSV and (v1) PDF reports |
 | Evaluate (v1) | Contracts applied to final bins with exclusions, disputes and evidence packs | Evaluations, penalty notices, sealed evidence packs |
 
@@ -53,12 +53,13 @@ Role codes are fixed in `Ariva.Core/RoleCodes.cs` and never renamed once shipped
 
 | Role (code) | Module and deployment | Sees | Does not see | Creates or decides |
 |---|---|---|---|---|
-| Border shift supervisor (`BorderShiftSupervisor`) | Border, border deployment | Immigration lanes and desks (interval aggregates), e-gates, arrival-wave strip, border alerts, devices and zones of the immigration halls | Check-in and handler data; any officer identity (officer analytics open in AMAN) | Alert rules and roster overrides for immigration queues; immigration zones and sensors; scheduled reports within its view |
-| Terminal duty manager (`TerminalDutyManager`) | Airport Operations, airport deployment | Everything airport-side; border waits as lane-level aggregates only; the arrival wave as flight and minute totals (no lane split) | Border desk-level data, track data, officer identity | Alert rules, roster overrides, zones and sensors airport-side; SLA contracts and exclusions; ad-hoc flights; counter allocations; displays; scheduled reports; decides disputes |
+| Border shift supervisor (`BorderShiftSupervisor`) | Border, border deployment | Immigration lanes and desks (interval aggregates), e-gates, arrival-wave strip, border alerts (with the open desks below recommendation and predicted-breach alerts, which carry the lane split; ARV-181b2, ARV-187), devices and zones of the immigration halls, and their data-quality checks (ARV-114a) | Check-in and handler data; any officer identity (officer analytics open in AMAN) | Alert rules and roster overrides for immigration queues; immigration zones and sensors; scheduled reports within its view |
+| Terminal duty manager (`TerminalDutyManager`) | Airport Operations, airport deployment | Everything airport-side, including the data-quality checks of its zones (ARV-114a); border waits as lane-level aggregates only, with live-wait alerts on them; the arrival wave as flight and minute totals (no lane split) | Border desk-level data, track data, officer identity; predicted-breach and open desks below recommendation rules and alerts (border data, ARV-181b2, ARV-187) | Alert rules, roster overrides, zones and sensors airport-side; SLA contracts and exclusions; ad-hoc flights; counter allocations; displays; scheduled reports; decides disputes |
 | Handler station manager (`HandlerStationManager`) | Airport Operations, airport deployment (handler tenant) | Its own counters, waits, SLA evaluations and disputes | Other handlers, security, immigration | Roster overrides and counter allocations for its own islands; raises disputes; scheduled reports within its view |
 | System administrator (`SystemAdministrator`) | Any deployment | Configuration, users, integrations, audit log | Operational data beyond what configuration needs (To confirm per site) | Users and role grants, integration clients, outbound endpoints, devices, licence. Critical functions require step-up MFA |
+| Validation observer (`ValidationObserver`, ARV-104a, ARV-104b) | Either deployment, during a validation campaign; desk logs only in the border deployment, and not by an account that also holds an airport role | The running validation campaigns of its own sites, their lines, queue zones and border desks in scope, and its own manual counts, tracer runs and desk states | Every operational screen, topology, reports, other observers' counts, runs and desk states, campaign management | Manual counts per line and 15-minute bin, tracer runs (campaign labels, never names) and per-minute desk states, and corrections of its own counts and desk states (new revisions with a reason) |
 
-A border deployment user cannot hold an airport role, and the reverse; the deployment kind enforces it.
+A border deployment user cannot hold an airport role, and the reverse; the deployment kind enforces it. The validation observer belongs to neither module: it counts for a validation campaign in either deployment. Validation campaigns are read, planned, started and closed by border shift supervisors, terminal duty managers and administrators of the site (closing needs step-up MFA); only validation observers capture, never the account that planned or started the campaign.
 
 ## Screens
 
@@ -76,7 +77,7 @@ The prototype defines the target screens. Phase per screen comes from the roadma
 | Access and data boundary | Users, roles, what each role sees, audit log | Core | MVP (Phase 1 epic Authentication, roles and audit) |
 | Check-in and handlers | Islands by handler, counter state, waits per island, SLA compliance per bin | Airport Operations | v1 |
 | SLA and penalties | Contract card, evaluation table, exclusions, disputes, evidence pack | Airport Operations (licensing To confirm) | v1 |
-| Forecast and staffing | Demand per lane, recommended desks against the roster, predicted P90 under plan and recommendation | Core | v1 |
+| Forecast and staffing | Demand per lane, recommended desks against the roster, predicted P90 under plan and recommendation (the pilot has an indicative version for the arrivals hall: recommended open desks per lane for the next 3 hours, from the flight schedule and measured desk throughput, with no roster or break rules; ARV-181a, owner decision 2026-10-15) | Core | v1 |
 | What-if simulation | Planning scenarios | Core | v2 |
 
 Screen details per role are in [User guide](12-User-Guide.md).

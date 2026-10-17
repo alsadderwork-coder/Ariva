@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
 using Ariva.Core.Sensing;
 using Ariva.Core.Services.Sensing;
@@ -27,30 +28,48 @@ public sealed class DeviceHealthSettings
 
 /// <summary>
 /// Device health metrics (meter <c>Ariva.Devices</c>): heartbeats lost, recoveries and zones that became degraded, per
-/// site; and, from the last sweep, devices offline and degraded and zones degraded.
+/// site; and, from the last sweep, devices monitored (ARV-125a: commissioned devices whose health is watched, Online,
+/// Degraded or Offline), offline and degraded, and zones degraded. Only the replica of Ariva.Api.Main that wins a sweep's
+/// lock computes the totals, so they are reported only while that sweep is fresh (<see cref="Snapshot"/>'s window): the
+/// other hosts, which register this class without sweeping, and a replica that has not won a sweep lately report nothing,
+/// and a dashboard takes the largest of the copies, never their sum.
 /// </summary>
 public sealed class DeviceHealthMetrics : IDisposable
 {
     public const string MeterName = "Ariva.Devices";
 
     private readonly Meter _meter;
+    private readonly TimeProvider _time;
     private readonly Counter<long> _lost;
     private readonly Counter<long> _recovered;
     private readonly Counter<long> _zonesDegraded;
-    private volatile Totals _totals = new(0, 0, 0);
+    private readonly Counter<long> _zonesNotKeyable;
+    private readonly ConcurrentDictionary<string, byte> _notKeyable = new(StringComparer.Ordinal);
+    private volatile Totals _totals;
 
-    private sealed record Totals(int Offline, int Degraded, int Zones);
+    /// <summary>Zones remembered as warned about; beyond this many (never in practice) each further one warns every time.</summary>
+    internal const int MaxRememberedZones = 1_000;
 
-    public DeviceHealthMetrics(IMeterFactory meterFactory = null)
+    private sealed record Totals(int Monitored, int Offline, int Degraded, int Zones, DateTimeOffset At, TimeSpan FreshFor);
+
+    public DeviceHealthMetrics(IMeterFactory meterFactory = null, TimeProvider timeProvider = null)
     {
+        _time = timeProvider ?? TimeProvider.System;
         _meter = meterFactory?.Create(MeterName) ?? new Meter(MeterName);
         _lost = _meter.CreateCounter<long>("ariva.devices.heartbeat_lost", description: "Commissioned devices marked Offline after missing their heartbeat");
         _recovered = _meter.CreateCounter<long>("ariva.devices.recovered", description: "Offline devices heard from again");
         _zonesDegraded = _meter.CreateCounter<long>("ariva.zones.degraded", description: "Queue zones that became Degraded");
-        _meter.CreateObservableGauge("ariva.devices.offline", () => _totals.Offline, description: "Commissioned devices Offline at the last sweep");
-        _meter.CreateObservableGauge("ariva.devices.degraded", () => _totals.Degraded, description: "Commissioned devices Degraded at the last sweep");
-        _meter.CreateObservableGauge("ariva.zones.degraded_now", () => _totals.Zones, description: "Queue zones Degraded at the last sweep");
+        _zonesNotKeyable = _meter.CreateCounter<long>("ariva.zones.not_keyable",
+            description: "Queue zone assessments skipped because the zone key is longer than a message key may be (ARV-114c)");
+        _meter.CreateObservableGauge("ariva.devices.monitored", () => Fresh(t => t.Monitored),
+            description: "Commissioned devices whose health is watched (Online, Degraded or Offline) at the last sweep");
+        _meter.CreateObservableGauge("ariva.devices.offline", () => Fresh(t => t.Offline), description: "Commissioned devices Offline at the last sweep");
+        _meter.CreateObservableGauge("ariva.devices.degraded", () => Fresh(t => t.Degraded), description: "Commissioned devices Degraded at the last sweep");
+        _meter.CreateObservableGauge("ariva.zones.degraded_now", () => Fresh(t => t.Zones), description: "Queue zones Degraded at the last sweep");
     }
+
+    /// <summary>This instance's meter (tests listen to it alone).</summary>
+    internal Meter Meter => _meter;
 
     public void HeartbeatLost(string site) => _lost.Add(1, new KeyValuePair<string, object>("site", site));
 
@@ -58,9 +77,31 @@ public sealed class DeviceHealthMetrics : IDisposable
 
     public void ZoneDegraded(string site) => _zonesDegraded.Add(1, new KeyValuePair<string, object>("site", site));
 
-    public void Snapshot(int offline, int degraded, int zones) => _totals = new Totals(offline, degraded, zones);
+    /// <summary>
+    /// Counts a zone whose health is not assessed because its key does not fit a message key (ARV-114c); true the first
+    /// time this process sees the zone, so the caller warns once per zone instead of on every sweep.
+    /// </summary>
+    public bool ZoneNotKeyable(string site, string zoneKey)
+    {
+        _zonesNotKeyable.Add(1, new KeyValuePair<string, object>("site", site));
+        if (_notKeyable.ContainsKey(zoneKey))
+            return false;
+        return _notKeyable.Count >= MaxRememberedZones || _notKeyable.TryAdd(zoneKey, 0);
+    }
 
-    public (int Offline, int Degraded, int Zones) Current => (_totals.Offline, _totals.Degraded, _totals.Zones);
+    /// <summary>The totals of a sweep that just ran, reported for <paramref name="freshFor"/> (two sweep intervals).</summary>
+    public void Snapshot(int monitored, int offline, int degraded, int zones, TimeSpan freshFor) =>
+        _totals = new Totals(monitored, offline, degraded, zones, _time.GetUtcNow(), freshFor);
+
+    /// <summary>The last sweep's totals (zeros before the first), fresh or not.</summary>
+    public (int Monitored, int Offline, int Degraded, int Zones) Current =>
+        _totals is { } t ? (t.Monitored, t.Offline, t.Degraded, t.Zones) : (0, 0, 0, 0);
+
+    private IEnumerable<Measurement<int>> Fresh(Func<Totals, int> value)
+    {
+        var totals = _totals;
+        return totals is not null && _time.GetUtcNow() - totals.At <= totals.FreshFor ? [new Measurement<int>(value(totals))] : [];
+    }
 
     public void Dispose() => _meter.Dispose();
 }

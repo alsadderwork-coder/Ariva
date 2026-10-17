@@ -8,7 +8,7 @@ Ariva integrates with any airport operational database (AODB) and any immigratio
 |---|---|---|---|
 | Inbound push, generic | HTTPS JSON, Integration API v1 | Any AODB or immigration system that can call a REST API | `Ariva.Api.Integration` |
 | Inbound push, standards | HTTPS AIDX 22.1 XML on `/api/v1/aodb/aidx` | AODBs that emit AIDX | `Ariva.Api.Integration` |
-| Inbound stream | Kafka topics `aman.feed.*.v1` | AMAN when Ariva and AMAN share a cluster or a bridged cluster | `Ariva.Api.Integration` |
+| Inbound stream | Kafka topics `aman.feed.*.v1` | AMAN when Ariva and AMAN share a cluster or a bridged cluster | `Ariva.Api.Integration` (the four topics, `desk-session-changed`, `desk-interval-stats`, `egate-interval-stats` and `inbound-flight-lane-demand`, must exist before go-live; AMAN creates them; a missing one is logged and alerted on and its consumer starts when it appears, without stopping the others, ARV-176) |
 | Outbound pull | HTTPS to a registered `OutboundEndpoint` | ACRIS flight APIs, AMAN Integration API, vendor AODB REST APIs | `Ariva.Api.Integration` (scheduled by `Ariva.Api.Cronz`) |
 | File import | SSIM file upload (schedule fallback) | Any airport, when no live feed exists | `Ariva.Api.Main` |
 

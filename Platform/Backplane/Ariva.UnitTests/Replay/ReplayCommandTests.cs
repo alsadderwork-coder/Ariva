@@ -1,5 +1,6 @@
 using Ariva.Di;
 using FluentAssertions;
+using Microsoft.Extensions.Configuration;
 
 namespace Ariva.UnitTests.Replay;
 
@@ -64,6 +65,26 @@ public sealed class ReplayCommandTests
         var args = Good.Concat(Enumerable.Range(0, 64).Select(i => $"--replay-zone=Z{i}")).ToArray();
 
         ReplayCommand.Parse(args, "ops").Problems.Should().Contain(p => p.Contains("64", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("Stream:Sites:dmo:LatenessSeconds=90")]
+    [InlineData("Stream:LatenessSeconds=30")]
+    [InlineData("Stream:Sites:DMO:PushIntervalSeconds=180", "Stream:Sites:DMO:LatenessSeconds=300")]
+    public async Task RunAsync_Should_RefuseToReplay_When_TheStreamSettingsAreNotValid(params string[] settings)
+    {
+        // ARV-148: a replay runs a site under the stream's lateness and push interval (Stream:Sites), so it refuses what the
+        // stream refuses (exit code 2, bad arguments) before it reads or writes anything.
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(settings.Select(s => s.Split('=', 2)).Select(p => new KeyValuePair<string, string>(p[0], p[1])))
+            .Build();
+        using var output = new StringWriter();
+        string[] args = [.. Good.Where(a => !a.StartsWith("--replay-output=", StringComparison.Ordinal))];
+
+        var code = await ReplayCommand.RunAsync(configuration, args, output, TestContext.Current.CancellationToken);
+
+        code.Should().Be(2);
+        output.ToString().Should().BeEmpty("nothing was replayed");
     }
 
     [Fact]
