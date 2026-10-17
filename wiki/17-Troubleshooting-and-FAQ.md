@@ -63,6 +63,8 @@ Symptom, likely cause, check, fix. For longer incident procedures see the [Opera
 | Split board shows the queues on the "wrong" side | The side follows the display's first language: left for English first, right for Arabic first; on a portrait screen the queues are on top | Language order setting | Put the language the board should read in first |
 | Split board's second region empty | The instructions file did not load (the queues are unaffected) | The player can reach `/board/instructions.json` on the display VLAN | Fix the network path; the region fills at the next reload |
 | A slide does not show on a display | Retired, aimed at other zones or displays, pinned (it shows under the waits), or written in none of the display's languages | The slide's row on Display instructions; the display's languages and queues | Restore it, widen where it shows, or add words in one of the display's languages |
+| A display set to advertising shows instructions | The site's advertising policy is off, or one of the display's queue zones is excluded (ARV-145); or no advertising content exists yet (ARV-142, ARV-143) | The Advertising policy panel on Passenger displays: its state, excluded zones and the displays it lists as showing instructions | A system administrator changes the policy (with a reason and a second factor), or the display is set back to Instructions |
+| Saving a display answers "Advertising is off for this display's site or for one of its zones" | The display is set to advertising while the policy does not allow it for every zone it shows | The Advertising policy panel | Set the second region to Instructions, or have a system administrator allow advertising for those zones |
 
 ## FAQ
 

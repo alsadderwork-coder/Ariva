@@ -528,7 +528,7 @@ public sealed class SiteConfigurationTransferTests
             d.Layout == DisplayLayout.Full && d.QueueShare == DisplayValues.DefaultQueueShare && d.SecondRegion == DisplaySecondRegion.Instructions,
             "a bundle exported before ARV-140 has no layout and keeps the full queue view");
         SiteConfigurationTransfer.Plan("DST", content with { Displays = [row with { Layout = "Split", SecondRegion = "Advertising" }] }, Target(), "ZZZ")
-            .ErrorMessages.Should().Equal([SiteConfigurationErrors.InvalidDisplays], "no site allows advertising before its policy exists (ARV-145)");
+            .ErrorMessages.Should().Equal([SiteConfigurationErrors.AdvertisingDisplays], "a new site starts with advertising off and its policy never travels (ARV-145)");
     }
 
     [Fact]

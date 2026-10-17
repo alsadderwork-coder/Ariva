@@ -3363,6 +3363,46 @@
     },
     {
       "host": "main",
+      "method": "GET",
+      "route": "/api/v1/admin/sites/{siteCode}/advertising-policy",
+      "access": "permission",
+      "permissions": [
+        "ViewAdvertisingPolicy"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "PUT",
+      "route": "/api/v1/admin/sites/{siteCode}/advertising-policy",
+      "access": "permission",
+      "permissions": [
+        "EditAdvertisingPolicy"
+      ],
+      "body": {
+        "allowed": true,
+        "excludedZones": [],
+        "reason": "Matrix: authorised by nobody",
+        "reviewedProfileId": null
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 403,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 401,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
       "method": "POST",
       "route": "/api/v1/admin/sites/{siteCode}/device-imports/preview",
       "access": "permission",

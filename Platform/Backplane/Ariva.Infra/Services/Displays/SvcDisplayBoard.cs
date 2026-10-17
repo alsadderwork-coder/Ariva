@@ -14,9 +14,11 @@ namespace Ariva.Infra.Services.Displays;
 /// same hash); a deleted, disabled or unknown display and a wrong credential are the same miss. The board carries each
 /// entry's queue zone's latest live snapshot (Redis, as the live hub reads it) with its age by this server's clock; the
 /// player turns it into a band, keeps it within the hysteresis and shows the neutral message once it is older than the
-/// display's stale threshold. Nothing but the board's own labels, messages and numbers goes out.
+/// display's stale threshold. Nothing but the board's own labels, messages and numbers goes out. The second region is the
+/// one the site's advertising policy allows now (ARV-145): a display set to advertising shows instructions where it does not.
 /// </summary>
-internal sealed class SvcDisplayBoard(IUnitOfWork unitOfWork, ILiveSnapshotStore snapshots, TimeProvider timeProvider) : ISvcDisplayBoard
+internal sealed class SvcDisplayBoard(IUnitOfWork unitOfWork, ILiveSnapshotStore snapshots, TimeProvider timeProvider, AdvertisingPolicyGuard advertising)
+    : ISvcDisplayBoard
 {
     private static readonly string NoDisplayHash = new('0', 64);
 
@@ -59,9 +61,15 @@ internal sealed class SvcDisplayBoard(IUnitOfWork unitOfWork, ILiveSnapshotStore
             .Take(InstructionSlide.MaxSlidesPerSite)
             .ToListAsync(ct);
         var (pinned, rotation) = InstructionSlides.ForDisplay(slides, display);
+        // ARV-145: advertising only while the site's policy allows it for every zone the display shows, read on every refresh,
+        // so a display falls back to instructions with the next board after the policy or the published profile changes.
+        var secondRegion = display.SecondRegion;
+        if (secondRegion == DisplaySecondRegion.Advertising && !await advertising.AllowsAsync(display.SiteCode, display.EntryList.Select(e => e.Zone), ct))
+            secondRegion = DisplaySecondRegion.Instructions;
+
         return new Result<DisplayBoardViewModel>(new DisplayBoardViewModel(display.Code, display.Name, display.Orientation.ToString(), display.LanguageList,
             display.BandMinutes, display.HysteresisMinutes, display.StaleSeconds, display.FallbackMap, entries, now, illustrative, display.Layout.ToString(),
-            display.QueueShare, display.SecondRegion.ToString(), pinned is null ? null : Slide(pinned), rotation.Select(Slide).ToList()));
+            display.QueueShare, secondRegion.ToString(), pinned is null ? null : Slide(pinned), rotation.Select(Slide).ToList()));
     }
 
     /// <summary>A slide as the player gets it: its icon's name, its time on screen and its words in the display's languages.</summary>

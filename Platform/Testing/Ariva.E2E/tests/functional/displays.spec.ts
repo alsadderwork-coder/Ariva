@@ -311,10 +311,10 @@ test('a layout is a display setting: the share and the second region are checked
 		const response = await call('PUT', `${api}/${id}`, { token, data: { ...request, ...changes } });
 		expect(response.status(), label).toBe(400);
 	}
-	// Advertising is refused with its reason until the site's advertising policy (ARV-145).
+	// Advertising is refused with its reason: DMO's advertising policy is off (ARV-145; no spec turns it on).
 	const advertising = await call('PUT', `${api}/${id}`, { token, data: { ...request, layout: 'Split', secondRegion: 'Advertising' } });
 	expect(advertising.status()).toBe(400);
-	expect(await advertising.text()).toContain('Advertising is off for every site');
+	expect(await advertising.text()).toContain("Advertising is off for this display's site or for one of its zones");
 
 	// The station manager has no display permission, so the layout is closed to them like every other setting.
 	const handler = (await signIn(accounts().webHandler)).accessToken;

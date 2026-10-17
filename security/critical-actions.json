@@ -13,7 +13,8 @@
     "Regenerate recovery codes",
     "Close a validation campaign",
     "Recompute validation results",
-    "Export or import a site configuration"
+    "Export or import a site configuration",
+    "Change a site's advertising policy"
   ],
   "criticalPermissions": [
     "CreateUser",
@@ -28,7 +29,8 @@
     "PublishZoneProfile",
     "DeleteAlertRule",
     "CreateDisplay",
-    "TransferSiteConfiguration"
+    "TransferSiteConfiguration",
+    "EditAdvertisingPolicy"
   ],
   "routes": [
     {
@@ -236,6 +238,12 @@
       "method": "POST",
       "route": "/api/v1/admin/sites/{siteCode}/configuration",
       "category": "Export or import a site configuration"
+    },
+    {
+      "host": "main",
+      "method": "PUT",
+      "route": "/api/v1/admin/sites/{siteCode}/advertising-policy",
+      "category": "Change a site's advertising policy"
     }
   ]
 }

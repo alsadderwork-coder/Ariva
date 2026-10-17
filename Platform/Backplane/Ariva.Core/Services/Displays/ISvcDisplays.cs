@@ -65,6 +65,9 @@ public static class DisplayErrors
     public const string InvalidCode = "A display code is 1 to 16 upper case letters or digits, with single hyphens inside.";
     public const string TooMany = "A site has at most 200 displays.";
 
+    /// <summary>The site's advertising policy (ARV-145) does not allow advertising on this display: off for the site, or one of its zones excluded.</summary>
+    public const string AdvertisingOff = "Advertising is off for this display's site or for one of its zones; the second region shows instructions.";
+
     public static readonly IReadOnlySet<string> Conflicts = new HashSet<string>(StringComparer.Ordinal) { DuplicateCode };
 }
 

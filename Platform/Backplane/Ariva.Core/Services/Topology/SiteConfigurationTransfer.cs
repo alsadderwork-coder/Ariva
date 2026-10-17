@@ -331,6 +331,8 @@ public static class SiteConfigurationTransfer
                 row.SecondRegion is null ? DisplaySecondRegion.Instructions : SiteConfigurationRules.ParseKind<DisplaySecondRegion>(row.SecondRegion).GetValueOrDefault())));
             if (built is not null)
                 return Result.Error<SiteConfigurationPlan>(built);
+            if (display.SecondRegion == DisplaySecondRegion.Advertising)
+                return Result.Error<SiteConfigurationPlan>(SiteConfigurationErrors.AdvertisingDisplays);
             if (display.EntryList.Any(e => !queues.Contains(e.Zone)))
                 return Result.Error<SiteConfigurationPlan>(SiteConfigurationErrors.DisplayZonesNotInProfile);
             displays.Add(display);

@@ -431,6 +431,23 @@
       "dependsOn": [
         "ARV-191"
       ]
+    },
+    {
+      "id": "ARV-193",
+      "title": "[E21] Advertising policy panel resets on a site or profile change",
+      "description": "From round 5 of the ARV-145 security review (advisories, not blocking). The advertising policy panel keeps its form (allowed, excluded zones, reason) when the screen's site changes or a refresh brings a newer zone profile while the form is open: a save for site B can carry site A's selections, and a newer profile's zones replace the offered list without a notice (the server checks everything and answers 409 for a stale review, so nothing is misrepresented). The board's advertising check also drops a null zone before the rule, where the view and script 0057 refuse it (not reachable: a display never stores a null zone).",
+      "acceptanceCriteria": [
+        "The panel is keyed by the site (`{#key siteCode}` in src/routes/(modules)/displays/+page.svelte), so changing site closes the form",
+        "The reviewed profile id is taken when the form opens, so a profile published while it is open is refused by the server (409) and shown with the panel's notice, never switched silently",
+        "AdvertisingPolicyGuard.AllowsAsync passes a null zone to the rule (refused), as the view and the trigger do",
+        "Functional tests: site change with the form open; a refresh bringing a newer profile while editing; node scripts/verify.mjs story passes"
+      ],
+      "priority": 56,
+      "passes": false,
+      "notes": "Size XS. Recorded 2026-10-17 with ARV-145 under the owner's standing decision (low-severity follow-ups wait for Phase 3 unless needed before the pilot; the owner can pull one back).",
+      "dependsOn": [
+        "ARV-145"
+      ]
     }
   ]
 }

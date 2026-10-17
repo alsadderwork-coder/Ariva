@@ -60,8 +60,7 @@ public sealed class DisplayTests
         { "a queue share over three quarters", Values() with { Layout = DisplayLayout.Split, QueueShare = 76 } },
         { "a queue share out of range in a full layout too", Values() with { QueueShare = 0 } },
         { "an undefined layout", Values() with { Layout = (DisplayLayout)7 } },
-        { "an undefined second region", Values() with { SecondRegion = (DisplaySecondRegion)7 } },
-        { "advertising before any site allows it", Values() with { Layout = DisplayLayout.Split, SecondRegion = DisplaySecondRegion.Advertising } }
+        { "an undefined second region", Values() with { SecondRegion = (DisplaySecondRegion)7 } }
     };
 
     [Fact]
@@ -93,10 +92,13 @@ public sealed class DisplayTests
     }
 
     [Fact]
-    public void Advertising_Should_BeRefusedWithItsReason_When_NoSiteHasAnAdvertisingPolicyYet()
+    public void Advertising_Should_BeAValidSetting_When_OnlyTheSitesPolicyCanTellWhetherItIsShown()
     {
+        // ARV-145: whether a display may advertise is its site's advertising policy (the display service, script 0057 and
+        // the board check it); the value alone is a valid setting and reads back.
         var advertising = Values() with { Layout = DisplayLayout.Split, SecondRegion = DisplaySecondRegion.Advertising };
-        advertising.Problems().Should().Equal(DisplayValues.AdvertisingOff);
+        advertising.Problems().Should().BeEmpty();
+        new Display("DMO", "ARR-A", advertising).AuditSummary().Should().Contain("\"secondRegion\":\"Advertising\"");
     }
 
     private static readonly string[] Four = ["ar", "en", "pt", "sw"];

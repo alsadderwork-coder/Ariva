@@ -218,7 +218,7 @@ public sealed class DisplayServiceTests(PostgresFixture fixture) : IAsyncDisposa
         board.Data.Should().Match<DisplayBoardViewModel>(b => b.Layout == "Split" && b.QueueShare == 70 && b.SecondRegion == "Instructions" && b.Orientation == "Portrait");
 
         (await _host.AsCallerAsync(manager, s => Displays(s).UpdateAsync(id, Request("LAY-1") with { Layout = "Split", SecondRegion = "Advertising" }, Ct)))
-            .ErrorMessages.Should().Equal(DisplayValues.AdvertisingOff);
+            .ErrorMessages.Should().Equal([DisplayErrors.AdvertisingOff], "the site has no advertising policy, so advertising is off (ARV-145)");
         (await _host.AsCallerAsync(manager, s => Displays(s).UpdateAsync(id, Request("LAY-1") with { Layout = "split" }, Ct))).HasErrors.Should().BeTrue(
             "a layout is named exactly");
         (await _host.AsCallerAsync(manager, s => Displays(s).UpdateAsync(id, Request("LAY-1") with { Layout = "Split", QueueShare = 80 }, Ct))).HasErrors.Should().BeTrue();
@@ -245,7 +245,8 @@ public sealed class DisplayServiceTests(PostgresFixture fixture) : IAsyncDisposa
             _ => new NpgsqlCommand("UPDATE display SET layout = 'Mosaic' WHERE code = 'RT-2C'", connection, transaction)
         };
         var update = () => command.ExecuteNonQueryAsync(Ct);
-        (await update.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be("23514", "script 0055 checks what the entity checks");
+        (await update.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be("23514",
+            "script 0055 checks what the entity checks, and script 0057 the site's advertising policy (none: off)");
         await transaction.RollbackAsync(Ct);
     }
 

@@ -380,7 +380,7 @@ The three health checks (ARV-114b) are judged on the bins the stream stored (`zo
 | Fallback message | In each language |
 | Layout | Full (the queues fill the screen, the default) or Split (ARV-140) |
 | Queue region share | Split only: 50 to 75 percent of the screen, 60 by default; the queues keep this share whatever the second region shows |
-| Second region | Split only: Instructions (what to have ready, follow the signs, ask staff, in each of the display's languages). Advertising is listed but refused until the site's advertising policy allows it (ARV-145) |
+| Second region | Split only: Instructions (what to have ready, follow the signs, ask staff, in each of the display's languages), or Advertising where the site's advertising policy allows it for every queue zone the display shows (see Advertising policy below) |
 
 A split display puts the queues first in the reading order of its first language: on the left with English first, on the right with Arabic first, and on top on a portrait screen; the second region takes the rest. The second region loads its content separately, so if it fails the queues are unaffected and the region stays empty. A layout change reaches running players at their next poll (within about 10 seconds), with no restart, and is audited with the other settings (`Display.Updated`, layout, share and second region before and after). A site configuration export carries the layout; an older bundle without it imports as Full.
 
@@ -397,6 +397,25 @@ The Display instructions screen (`/display-slides`, `DisplayContent.View` to see
 | Words | A title (up to 80 characters) and an optional text (up to 240) in English, Arabic, Portuguese or Swahili, at least one; plain text only, without line breaks, control or invisible characters |
 
 A split display's second region rotates the active slides that apply to it in the site's order, each for its seconds on screen, with the words in the display's own languages (a slide in none of them is not shown there); without any it shows the default instructions. The pinned slide shows under the waits in either layout. Slides reach the players only through their display-authenticated board, at the next poll. A slide is retired rather than deleted (restore brings it back), and every change is audited (`InstructionSlide.Created`, `Updated`, `Retired`, `Restored`, and `Moved` for each slide a new order moves, with its place before and after); a slide whose words and targets would not fit one audit entry whole is refused. One creation or reorder runs at a time per site. The demo seed adds a starter set of arrivals instructions at DMO and AUH-TA (passport at the photo page, e-gates for residents and GCC nationals, hats and glasses, families, phones) for the arrival queue zones; their Arabic, Portuguese and Swahili wording is To confirm by a native reviewer before a pilot.
+
+### Advertising policy (ARV-145)
+
+Many border authorities do not allow commercial advertising in arrivals and immigration halls, so advertising is off for every site until a system administrator allows it. The policy is a panel on the Passenger displays screen and `api/v1/admin/sites/{siteCode}/advertising-policy`:
+
+| Field | Notes |
+|---|---|
+| Allowed | Whether the site's split displays may show advertising in their second region. Off for a site that never had a policy |
+| Excluded zones | Up to 20 published queue zones of the site (for example the immigration hall's) where advertising stays off even when the site allows it: a display showing any of them shows instructions |
+| Reason | Required for every change, 10 to 500 characters on one line: who authorised it (the border authority or the airport operator) and their reference, for example "Border authority letter BA-2026-17" |
+
+Who may do what: terminal duty managers and border shift supervisors see the policy (`AdvertisingPolicy.View`, with their display permissions); only system administrators change it (`AdvertisingPolicy.Edit`), and changing it is a critical action that asks for a second factor in the last 15 minutes (owner decision 2026-10-16: no second sign-off by a border role). Every change is audited as `AdvertisingPolicy.Changed` with the administrator, the time and the whole policy before and after, reason included; a change whose excluded zones and reason would not fit one audit entry whole is refused. The runtime database role cannot delete a policy: turning advertising off is a change like any other.
+
+What it does:
+
+- A display can be set to Advertising (or keep it while its zones change) only while the policy allows it for every zone it shows; the display service and the database (script 0057) both refuse otherwise. A site configuration import refuses displays set to Advertising: a new site starts with advertising off, and the policy never travels in a bundle.
+- A display set to Advertising before the policy was turned off, or before one of its zones was excluded, keeps the setting but its board shows instructions from the next poll (within about 10 seconds). The panel lists these displays under "showing instructions because of this policy", and the displays list marks them. To edit such a display, set its second region back to Instructions.
+- A change of the policy is judged against the site's published zone profile: the form shows which version the excluded zones are being confirmed against and offers that version's queue zones (read with it), and a save that allows advertising is refused (409, "Another zone profile has been published since you reviewed this policy") when another version was published while the administrator was reviewing; the panel then shows the new version to review. Duty managers and supervisors can publish new profiles, in which zones can be renamed, moved, dropped or added (an excluded name could even be given to another zone), so once another profile is published no display of the site shows advertising (each falls back to instructions at its next poll) until a system administrator saves the policy again, after checking the excluded zones against the new profile. The panel says so, and lists any excluded zone that is no longer a published queue zone.
+- Advertising endpoints (the media library and playlists of ARV-142 and ARV-143) live in `Controllers/AdminArea/Advertising` and carry `[AdvertisingAllowed]`: they answer 403 for a site whose policy does not allow advertising, and 404 for a site outside the caller's sites. A unit test boots every host and fails the build when an endpoint whose route names advertising, or whose controller lives in an Advertising namespace, lacks it. Until that content exists, a display allowed to advertise shows instructions.
 
 Each display is a kiosk URL on the display VLAN. Boards never show a realised wait. Whether an existing signage estate (for example Samsung MagicInfo) can show web content is To confirm on site.
 

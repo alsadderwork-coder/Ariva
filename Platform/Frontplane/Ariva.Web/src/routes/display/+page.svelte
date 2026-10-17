@@ -284,8 +284,10 @@
 		>
 			{@render queueView(board)}
 		</section>
+		<!-- ARV-145: the region the site's advertising policy allows now; the player shows instructions until advertising content exists (ARV-143). -->
 		<aside
 			data-testid="board-second-region"
+			data-second-region={board.secondRegion}
 			use:fit={{ watch: [board.languages, secondLoaded], scale: 1.6 }}
 			class={[
 				'min-h-0 min-w-0 flex-1 overflow-hidden border-white/15',

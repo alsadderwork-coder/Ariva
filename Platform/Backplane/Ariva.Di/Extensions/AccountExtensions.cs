@@ -95,6 +95,8 @@ public static class AccountExtensions
         services.TryAddScoped<Ariva.Core.Services.Displays.ISvcDisplays, Ariva.Infra.Services.Displays.SvcDisplays>();
         services.TryAddScoped<Ariva.Core.Services.Displays.ISvcDisplayBoard, Ariva.Infra.Services.Displays.SvcDisplayBoard>();
         services.TryAddScoped<Ariva.Core.Services.Displays.ISvcInstructionSlides, Ariva.Infra.Services.Displays.SvcInstructionSlides>();
+        services.TryAddScoped<Ariva.Infra.Services.Displays.AdvertisingPolicyGuard>();
+        services.TryAddScoped<Ariva.Core.Services.Displays.ISvcAdvertisingPolicies, Ariva.Infra.Services.Displays.SvcAdvertisingPolicies>();
         // Reports (ARV-060): the daily report and its schedules; deliveries run in Ariva.Api.Cronz (AddArivaReportDeliveries).
         services.TryAddScoped<Ariva.Infra.Services.Reports.ReportReader>();
         services.TryAddScoped<Ariva.Core.Services.Reports.ISvcReports, Ariva.Infra.Services.Reports.SvcReports>();

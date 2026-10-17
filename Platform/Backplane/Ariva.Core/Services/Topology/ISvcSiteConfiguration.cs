@@ -61,6 +61,12 @@ public static class SiteConfigurationErrors
     public const string AlertRuleZonesNotInProfile = "An alert rule of the bundle names a zone the imported zone profile does not have as a queue zone or overflow band (health checks and open desks below recommendation: queue zones only).";
     public const string InvalidDisplays = "The displays part of the bundle is not valid.";
     public const string DisplayZonesNotInProfile = "A display of the bundle shows a zone that is not a queue zone of the imported zone profile.";
+
+    /// <summary>
+    /// A site starts with advertising off (ARV-145) and its advertising policy never travels in a bundle: it is decided for
+    /// each site by a system administrator, with the reason. So a display set to advertising is refused rather than changed.
+    /// </summary>
+    public const string AdvertisingDisplays = "A display of the bundle shows advertising, which is off for a new site; set its second region to Instructions, import, then allow advertising for the site.";
     public const string DisplayCodeTaken = "A display code of the bundle is already used by a live display here; display codes are unique across the deployment.";
     public const string DeviceOnRemovedLevel = "A device of the site hangs on a level that no longer exists; move or retire it first.";
     public const string ReferencesOutsideProfile = "A device, alert rule or display names a zone the published zone profile does not have; change it, or publish a profile with that zone, first.";

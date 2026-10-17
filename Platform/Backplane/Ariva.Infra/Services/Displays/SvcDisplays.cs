@@ -13,9 +13,16 @@ namespace Ariva.Infra.Services.Displays;
 /// Passenger displays (ARV-058). A display is created in one of the caller's sites and stays there with its code; reads
 /// and writes outside the caller's sites answer like a display that does not exist (CWE-863). Its entries must be queue
 /// zones of the site's published profile. The player's credential is made here, shown once and kept as a prefix and a
-/// hash; every change is audited without it.
+/// hash; every change is audited without it. A display is saved with advertising in its second region only while the
+/// site's advertising policy allows it for every zone it shows (ARV-145), under the policy's site lock.
 /// </summary>
-internal sealed class SvcDisplays(IUnitOfWork unitOfWork, ICurrentUser currentUser, TimeProvider timeProvider, ISiteScope siteScope, AuditTrail audit)
+internal sealed class SvcDisplays(
+    IUnitOfWork unitOfWork,
+    ICurrentUser currentUser,
+    TimeProvider timeProvider,
+    ISiteScope siteScope,
+    AuditTrail audit,
+    AdvertisingPolicyGuard advertising)
     : SvcBase(unitOfWork, currentUser, timeProvider), ISvcDisplays
 {
     private const string Target = "Display";
@@ -128,6 +135,8 @@ internal sealed class SvcDisplays(IUnitOfWork unitOfWork, ICurrentUser currentUs
             .ToListAsync(ct);
         if (known.Distinct(StringComparer.Ordinal).Count() != zones.Count)
             problems.Add(DisplayErrors.UnknownZones);
+        else if (values.SecondRegion == DisplaySecondRegion.Advertising && !await advertising.AllowsAsync(await advertising.LockAsync(siteCode, ct), zones, ct))
+            problems.Add(DisplayErrors.AdvertisingOff);
         return (values, problems);
     }
 

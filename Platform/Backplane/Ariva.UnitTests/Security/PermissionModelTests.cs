@@ -37,8 +37,9 @@ public sealed class PermissionModelTests
             // deleted: people view, search and act on them (Edit) only. Validation (ARV-104a) is a process with its own actions:
             // View, Capture and Manage. Site configuration (ARV-122a) has one action: Transfer (export and import). Display content
             // (ARV-141) is what the displays say beside the waits: View to see it, Manage to create, change, order, retire and
-            // restore it (the story's single management permission).
-            .Where(p => p.Entity is not ("SystemInfo" or "LiveQueue" or "Alert" or "ArrivalWave" or "ArrivalWaveLanes" or "BorderDesks" or "AirportDesks" or "Immigration" or "Report" or "DataQuality" or "Validation" or "SiteConfiguration" or "DisplayContent"))
+            // restore it (the story's single management permission). A site's advertising policy (ARV-145) is one setting per site:
+            // View and Edit.
+            .Where(p => p.Entity is not ("SystemInfo" or "LiveQueue" or "Alert" or "ArrivalWave" or "ArrivalWaveLanes" or "BorderDesks" or "AirportDesks" or "Immigration" or "Report" or "DataQuality" or "Validation" or "SiteConfiguration" or "DisplayContent" or "AdvertisingPolicy"))
             .GroupBy(p => p.Entity);
 
         byEntity.Should().AllSatisfy(entity =>

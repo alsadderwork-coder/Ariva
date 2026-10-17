@@ -189,6 +189,15 @@ public static class Global
 
             public static Permission ManageDisplayContent { get; } = new("DisplayContent", PermissionAction.Manage);
 
+            /// <summary>
+            /// A site's advertising policy (ARV-145): whether its displays may show advertising and in which zones it stays off.
+            /// The roles that manage displays see it; changing it is a critical action (step-up MFA), audited with the reason,
+            /// and held by the system administrator only (owner decision 2026-10-16; the role seed's every-permission rule).
+            /// </summary>
+            public static Permission ViewAdvertisingPolicy { get; } = new("AdvertisingPolicy", PermissionAction.View);
+
+            public static Permission EditAdvertisingPolicy { get; } = new("AdvertisingPolicy", PermissionAction.Edit);
+
             #endregion
 
             #region Reports (E9)

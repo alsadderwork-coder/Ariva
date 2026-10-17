@@ -42,12 +42,13 @@ public static class RolePermissions
     /// <summary>
     /// Passenger displays (ARV-058): the duty manager sets them up airport-side, the border shift supervisor in the
     /// immigration halls (a border deployment has no duty manager); handlers do not. The same roles manage what the displays
-    /// say beside the waits, the instruction slides (ARV-141).
+    /// say beside the waits, the instruction slides (ARV-141), and see the site's advertising policy (ARV-145), which only the
+    /// system administrator changes.
     /// </summary>
     private static readonly Permission[] Displays =
     [
         Permissions.ViewDisplay, Permissions.SearchDisplay, Permissions.CreateDisplay, Permissions.EditDisplay, Permissions.DeleteDisplay,
-        Permissions.ViewDisplayContent, Permissions.ManageDisplayContent
+        Permissions.ViewDisplayContent, Permissions.ManageDisplayContent, Permissions.ViewAdvertisingPolicy
     ];
 
     /// <summary>

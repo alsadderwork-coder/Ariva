@@ -56,6 +56,7 @@
     "0053_lane_staffing.sql": "a63a7e5853b4eaf13e6728c29082f8ef3b0bd6392bc7f83221a363d822674f40",
     "0054_retention_period.sql": "a78d2fee7ef866b2bfeed91a809db3deecd2cc9f760a71bb0f08c1db79c3178d",
     "0055_display_layout.sql": "b9ee1cbfb5a065df102a65675d5a5c5096b9b6ce9efa5dc62fa7ab8c519e8204",
-    "0056_instruction_slide.sql": "eb0f2155454ef3087e07bbfbb53010e77366d4674e0d61c6c96f9d8284cd0a3b"
+    "0056_instruction_slide.sql": "eb0f2155454ef3087e07bbfbb53010e77366d4674e0d61c6c96f9d8284cd0a3b",
+    "0057_advertising_policy.sql": "eddd7b15fc8632d607c6ae465c8e08dae10a2cd34ba1e673a686e964f7b93f6d"
   }
 }

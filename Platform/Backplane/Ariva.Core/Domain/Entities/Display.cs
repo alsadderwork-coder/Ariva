@@ -10,7 +10,8 @@ namespace Ariva.Core.Domain.Entities;
 /// the nowcast leaves it by the hysteresis; a degraded nowcast shows a band twice as wide; a nowcast older than the stale
 /// threshold shows the display's neutral message instead of a number. The player authenticates with the display's own
 /// credential (stored as a prefix and a SHA-256, like a device's), never as a user. ARV-140: a display can split its screen;
-/// the queue region then comes first in the reading order and keeps its share, and the second region shows instructions.
+/// the queue region then comes first in the reading order and keeps its share, and the second region shows instructions, or
+/// advertising where the site's advertising policy allows it for every zone the display shows (ARV-145).
 /// </summary>
 public class Display : BaseSoftDeletableEntity<Display>, ISiteBound
 {
@@ -177,12 +178,6 @@ public sealed record DisplayValues(
     public const int MaxQueueShare = 75;
     public const int DefaultQueueShare = 60;
 
-    /// <summary>
-    /// Until the site's advertising policy exists (ARV-145, off by default), no display may show advertising: every path that
-    /// sets a display (the API, a site configuration import) refuses it here.
-    /// </summary>
-    public const string AdvertisingOff = "Advertising is off for every site until its advertising policy allows it; the second region shows instructions.";
-
     private static bool Clean(string text, int max) =>
         !string.IsNullOrWhiteSpace(text) && text.Trim().Length <= max && DisplayText.IsClean(text.Trim());
 
@@ -199,10 +194,10 @@ public sealed record DisplayValues(
             problems.Add("A layout is Full or Split.");
         if (QueueShare is < MinQueueShare or > MaxQueueShare)
             problems.Add($"The queue region takes {MinQueueShare} to {MaxQueueShare} percent of the screen.");
+        // Whether advertising may be shown is the site's advertising policy (ARV-145), which the display service and the
+        // database check: a value alone cannot tell.
         if (!Enum.IsDefined(SecondRegion))
             problems.Add("The second region shows Instructions or Advertising.");
-        else if (SecondRegion == DisplaySecondRegion.Advertising)
-            problems.Add(AdvertisingOff);
         var languages = Languages ?? [];
         if (languages.Count is 0 or > 4 || languages.Distinct(StringComparer.Ordinal).Count() != languages.Count ||
             languages.Any(l => !Enumerable.Contains(Display.SupportedLanguages, l, StringComparer.Ordinal)))

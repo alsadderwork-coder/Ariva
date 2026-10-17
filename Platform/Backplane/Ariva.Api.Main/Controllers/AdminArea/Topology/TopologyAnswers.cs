@@ -28,7 +28,8 @@ internal static class TopologyAnswers
             TopologyErrors.DeploymentWide => (StatusCodes.Status403Forbidden, "Not allowed"),
             Ariva.Core.Services.Alerting.AlertRuleErrors.BorderOnly => (StatusCodes.Status403Forbidden, "Not allowed"),
             _ when TopologyErrors.Conflicts.Contains(first) || ZoneProfileErrors.Conflicts.Contains(first) || Ariva.Core.Services.Sensing.DeviceErrors.Conflicts.Contains(first) ||
-                   Ariva.Core.Services.Alerting.AlertErrors.Conflicts.Contains(first) || Ariva.Core.Services.Displays.DisplayErrors.Conflicts.Contains(first) => (StatusCodes.Status409Conflict, "Conflict"),
+                   Ariva.Core.Services.Alerting.AlertErrors.Conflicts.Contains(first) || Ariva.Core.Services.Displays.DisplayErrors.Conflicts.Contains(first) ||
+                   Ariva.Core.Services.Displays.AdvertisingPolicyErrors.Conflicts.Contains(first) => (StatusCodes.Status409Conflict, "Conflict"),
             _ => (StatusCodes.Status400BadRequest, "Not valid")
         };
         var problem = controller.Problem(statusCode: status, title: title, detail: status == StatusCodes.Status404NotFound ? null : first);

@@ -20,8 +20,8 @@ export const limits = { entries: 12, label: 80, message: 200, name: 200 } as con
 
 /**
  * A display's layout (ARV-140): the full queue view, or a split screen whose queue region comes first in the reading order
- * and keeps its share (50 to 75 percent); the second region shows instructions. Advertising waits for the site's advertising
- * policy (ARV-145), so the server refuses it for now.
+ * and keeps its share (50 to 75 percent); the second region shows instructions, or advertising where the site's advertising
+ * policy allows it for every zone the display shows (ARV-145; the server checks it, and the board falls back to instructions).
  */
 export const layouts = ['Full', 'Split'] as const;
 export const secondRegions = ['Instructions', 'Advertising'] as const;

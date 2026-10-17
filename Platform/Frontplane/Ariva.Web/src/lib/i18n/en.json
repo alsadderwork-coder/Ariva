@@ -1087,7 +1087,8 @@
 			"stale": "Older data shows the message instead of a number.",
 			"order": "Shown in this order: {order}",
 			"queueShare": "Between 50 and 75. The queues come first in the reading order of the board's first language, and on top on a portrait screen.",
-			"secondRegion": "Advertising stays off until the site's advertising policy allows it."
+			"secondRegion": "Advertising is off for this site or for one of these zones (the site's advertising policy).",
+			"secondRegionAllowed": "The site's advertising policy allows advertising for these zones."
 		},
 		"orientations": {
 			"Landscape": "Landscape",
@@ -1110,11 +1111,44 @@
 		},
 		"secondRegions": {
 			"Instructions": "Instructions",
-			"Advertising": "Advertising (not available)"
+			"Advertising": "Advertising"
 		},
 		"layoutSummary": {
 			"Full": "Full screen",
 			"Split": "Split screen, queues {share}%"
+		},
+		"advertisingShown": "Second region: advertising",
+		"advertisingFallsBack": "Second region: advertising is off, instructions shown"
+	},
+	"advertising": {
+		"title": "Advertising policy",
+		"description": "Whether this site's split displays may show advertising in their second region. Off unless a system administrator allows it; displays showing an excluded zone always show instructions.",
+		"allowed": "Advertising allowed",
+		"off": "Advertising off",
+		"excluded": "Off in these zones: {zones}",
+		"lastChange": "Last change {when}: {reason}",
+		"unpublished": "No longer queue zones of the published profile, so advertising is off on every display of this site until the policy is updated: {zones}",
+		"fallingBack": "Set to advertising and showing instructions because of this policy: {displays}",
+		"profileChanged": "Zone profile version {current} has been published since this policy was saved against version {confirmed}, so advertising is off on every display of this site until a system administrator checks the excluded zones in the new version (their names and outlines) and saves the policy again.",
+		"profileChangedFirst": "Zone profile version {current} has been published since this policy was saved, so advertising is off on every display of this site until a system administrator checks the excluded zones in it (their names and outlines) and saves the policy again.",
+		"noZones": "The site has no published queue zones.",
+		"reviewing": "You are confirming the excluded zones against zone profile version {version}: check their names and outlines in it before saving.",
+		"noProfile": "The site has no published zone profile, so no display can show advertising yet.",
+		"fields": {
+			"allowed": "Allow advertising on this site's displays",
+			"excluded": "Zones where advertising stays off",
+			"reason": "Reason: who authorised the change, and their reference"
+		},
+		"hints": {
+			"reason": "10 to 500 characters: the authority or operator that authorised it and their reference, for example Border authority letter BA-2026-17 (no personal names). The audit log keeps it with your name and the time."
+		},
+		"actions": {
+			"change": "Change",
+			"save": "Save policy",
+			"cancel": "Cancel"
+		},
+		"messages": {
+			"saved": "Advertising policy saved"
 		}
 	},
 	"slides": {

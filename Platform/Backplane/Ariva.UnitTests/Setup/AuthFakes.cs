@@ -388,6 +388,7 @@ public sealed class FakeDisplays : Ariva.Core.Services.Displays.ISvcDisplays, Ar
     {
         services.Replace(ServiceDescriptor.Scoped<Ariva.Core.Services.Displays.ISvcDisplays, FakeDisplays>());
         services.Replace(ServiceDescriptor.Scoped<Ariva.Core.Services.Displays.ISvcInstructionSlides, FakeInstructionSlides>());
+        services.Replace(ServiceDescriptor.Scoped<Ariva.Core.Services.Displays.ISvcAdvertisingPolicies, FakeAdvertisingPolicies>());
     }
 
     public Task<Fluentx.Result<IReadOnlyList<Ariva.Core.Services.Displays.DisplayViewModel>>> SearchAsync(string siteCode, CancellationToken ct = default) =>
@@ -447,6 +448,19 @@ public sealed class FakeInstructionSlides : Ariva.Core.Services.Displays.ISvcIns
 
     private static Task<Fluentx.Result<T>> Missing<T>() =>
         Task.FromResult(Fluentx.Result.Error<T>(Ariva.Core.Services.Topology.TopologyErrors.NotFound));
+}
+
+/// <summary>Advertising policies (ARV-145) without a database: every site is unknown, and advertising is off everywhere.</summary>
+public sealed class FakeAdvertisingPolicies : Ariva.Core.Services.Displays.ISvcAdvertisingPolicies
+{
+    public Task<Fluentx.Result<Ariva.Core.Services.Displays.AdvertisingPolicyViewModel>> GetAsync(string siteCode, CancellationToken ct = default) =>
+        Task.FromResult(Fluentx.Result.Error<Ariva.Core.Services.Displays.AdvertisingPolicyViewModel>(Ariva.Core.Services.Topology.TopologyErrors.NotFound));
+
+    public Task<Fluentx.Result<Ariva.Core.Services.Displays.AdvertisingPolicyViewModel>> ChangeAsync(string siteCode,
+        Ariva.Core.Services.Displays.AdvertisingPolicyRequest request, CancellationToken ct = default) =>
+        Task.FromResult(Fluentx.Result.Error<Ariva.Core.Services.Displays.AdvertisingPolicyViewModel>(Ariva.Core.Services.Topology.TopologyErrors.NotFound));
+
+    public Task<bool> IsAllowedAsync(string siteCode, CancellationToken ct = default) => Task.FromResult(false);
 }
 
 /// <summary>Reports (ARV-060) without a database: every site and schedule is unknown, the schedule list is empty.</summary>

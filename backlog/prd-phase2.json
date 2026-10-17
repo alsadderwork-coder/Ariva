@@ -72,8 +72,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 3,
-      "passes": false,
-      "notes": "Size S. Owner request 2026-10-06 (Phase 2). Blocked on owner: who decides for a border authority's hall (the authority or the airport operator) per site; the default stays off.",
+      "passes": true,
+      "notes": "Size S. Owner request 2026-10-06 (Phase 2). Owner decision 2026-10-16: a SystemAdministrator with step-up decides per site and the audit keeps who authorised it (the border authority or the airport operator) as the reason; zone exclusions for halls such as immigration; no second sign-off by a border role; the default stays off.",
       "dependsOn": [
         "ARV-140"
       ]
@@ -87,6 +87,7 @@
         "Stored under generated keys only (IFileStorage, never a path from the request), size capped on the endpoint and in the read, the upload rate limit policy applies (ARV-018 pattern)",
         "Each item has an advertiser name, a campaign, a start and end date, and a status Draft, Approved, Retired; only Approved items within their dates can play; approval needs Advertising.Approve and a different person from the uploader; every change audited",
         "New permissions Advertising.Manage and Advertising.Approve in the role mapping and security/permission-matrix.json; [SiteScoped]; refused while the site's advertising policy is off (ARV-145)",
+        "Advertising endpoints live in Ariva.Api.Main/Controllers/AdminArea/Advertising (namespace ...Advertising) and carry [AdvertisingAllowed] (ARV-145: 403 while the site's policy is off, 404 outside the caller's sites; AdvertisingAllowedTests fails the build otherwise); the media a display player fetches is display-authenticated, so it checks the display's own site and zones with the advertising rule of ARV-145 (AdvertisingPolicyGuard) instead of the filter; every lookup of a media item by id is filtered by the route's siteCode and the caller's sites (another site's item answers 404, IDOR)",
         "Displays fetch media through an authenticated display endpoint (device credentials, ARV-058), never a public URL; the CSP adds media-src self only",
         "E2E: upload attacks (polyglot, oversize, wrong type, path tricks), approval by the uploader refused, cross-site 404, display fetch without credentials 401",
         "node scripts/verify.mjs web passes (svelte-check, lint, build)",
@@ -112,6 +113,7 @@
         "A playlist has items (advertisement or instruction slide), each with a duration (5 to 60 s, videos play to their length up to a cap), an order and an optional weight; a schedule assigns playlists to displays or groups by day of week and time window in the site's time zone, stored in UTC",
         "Rule: when the zone's queue is above a configured wait band (for example Long), region B can switch to instructions only (operator choice per display), so passengers see guidance when it matters most",
         "Instructions are the fallback whenever no playlist applies, an item fails to load, or advertising is turned off",
+        "Playlist and schedule endpoints follow the ARV-145 convention (Controllers/AdminArea/Advertising, [AdvertisingAllowed]); a display receives advertising items only while the advertising rule of ARV-145 allows it for the display (the site allows it, saved against the published zone profile, none of its zones excluded), read on every refresh; every lookup of a playlist or schedule by id is filtered by the route's siteCode and the caller's sites (another site's answers 404, IDOR)",
         "Display players receive the resolved playlist through their refresh path and keep a bounded local cache (count and bytes) so playback continues through a short network loss",
         "Admin screens to build playlists and schedules with a timeline preview; permission Advertising.Manage; [SiteScoped]",
         "Unit tests for schedule resolution (overlaps, time zone and daylight saving where the site has it, empty schedule), API E2E and Playwright tests",

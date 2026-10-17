@@ -245,6 +245,12 @@ export function accounts() {
 		illustrativeAdmin: account('e2e.illusadmin', ['SystemAdministrator'], false, true, ['*']),
 		// ARV-139a: the same for the functional suite's passenger display players (its own account: a TOTP code counts once per account).
 		illustrativeWebAdmin: account('e2e.illuswebadmin', ['SystemAdministrator'], false, true, ['*']),
+		// ARV-145: the advertising policy of AUH-TA (every site, so the account seed never creates AUH-TA itself). The
+		// administrator changes it and creates displays (both need a second factor); the duty manager reads it and edits displays
+		// with a password only; the functional suite's administrator has its own account (a TOTP code counts once per account).
+		advertisingAdmin: account('e2e.advadmin', ['SystemAdministrator'], false, true, ['*']),
+		advertisingManager: account('e2e.advmanager', ['TerminalDutyManager'], false, false, ['*']),
+		advertisingWebAdmin: account('e2e.advwebadmin', ['SystemAdministrator'], false, true, ['*']),
 		// ARV-104a: validation campaigns at E2EV. The manager drafts and publishes the site's zone profile and closes campaigns
 		// (both need a second factor); the lead plans and starts them with a password only (closing answers 401 for its second
 		// factor); a second observer of the site, and an observer of E2E1 for the cross-site answers.
