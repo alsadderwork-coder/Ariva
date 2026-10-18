@@ -23,13 +23,13 @@ const id = (n: number) => `00000000-0000-4000-8000-${n.toString(16).padStart(12,
 /** A log whose plays each last a second, started a second apart by the server's clock; `n` plays, ended completed. */
 function filled(log: PlayLog, n: number, from = 0): void {
 	for (let i = from; i < from + n; i++) {
-		log.start(id(i), serverStart + i * 1000, i * 1000);
+		log.start(id(i), serverStart + i * 1000, i * 1000, 1);
 		log.end(true, i * 1000 + 1000);
 	}
 }
 
 test('the bounds and the timing are those the server takes', () => {
-	expect(playLimits).toEqual({ queue: 500, batch: 100, durationMilliseconds: 125_000, minimumDurationMilliseconds: 1_000 });
+	expect(playLimits).toEqual({ queue: 500, batch: 100, durationMilliseconds: 125_000, minimumDurationMilliseconds: 1_000, slotToleranceMilliseconds: 2_000 });
 	expect(playTiming).toEqual({ everyMilliseconds: 60_000, soonestMilliseconds: 12_000, everySeconds: { min: 12, max: 60 } });
 	// Six batches a minute at the soonest: the server's rate per display.
 	expect(60_000 / playTiming.soonestMilliseconds).toBeLessThanOrEqual(6);
@@ -39,7 +39,7 @@ test('the bounds and the timing are those the server takes', () => {
 test("a play starts by the server's clock, to the millisecond, and lasts the time it was on screen", () => {
 	const log = new PlayLog(minute, 0);
 	// The server's clock says 09:30:12.345 when the image shows; the page's monotonic clock reads 5,000.25 then.
-	log.start(id(1), serverStart + 12_345, 5_000.25);
+	log.start(id(1), serverStart + 12_345, 5_000.25, 5);
 	expect(log.playing).toBe(id(1));
 	const play = log.end(true, 9_987.9);
 	expect(play).toEqual({ mediaId: id(1), startedUtc: '2026-10-18T09:30:12.345Z', durationMilliseconds: 4_988, completed: true });
@@ -48,7 +48,7 @@ test("a play starts by the server's clock, to the millisecond, and lasts the tim
 	expect(log.queued).toBe(1);
 
 	// At most 125 seconds, however long it stayed; never negative.
-	log.start(id(2), serverStart, 0);
+	log.start(id(2), serverStart, 0, 120);
 	expect(log.end(true, 400_000)!.durationMilliseconds).toBe(125_000);
 	expect(playDuration(10, 5)).toBe(0);
 	expect(playDuration(0, Number.NaN)).toBe(0);
@@ -59,13 +59,13 @@ test('completed at the slot end, interrupted otherwise; a new play cuts the one 
 	const log = new PlayLog(minute, 0);
 	expect(log.end(true, 1_000), 'nothing on screen').toBeNull();
 
-	log.start(id(1), serverStart, 0);
+	log.start(id(1), serverStart, 0, 5);
 	log.end(true, 5_000);
-	log.start(id(2), serverStart + 5_000, 5_000);
+	log.start(id(2), serverStart + 5_000, 5_000, 5);
 	log.end(false, 7_500);
-	log.start(id(3), serverStart + 10_000, 10_000);
+	log.start(id(3), serverStart + 10_000, 10_000, 5);
 	// Another advertisement shows before the first went: the first is cut short then.
-	log.start(id(4), serverStart + 12_000, 12_000);
+	log.start(id(4), serverStart + 12_000, 12_000, 5);
 	log.end(true, 17_000);
 	// Ended twice: one play.
 	log.end(true, 18_000);
@@ -78,23 +78,39 @@ test('completed at the slot end, interrupted otherwise; a new play cuts the one 
 		[id(4), 5_000, true]
 	]);
 
-	// Nothing starts for an id that is not a GUID, or a server time that is not one.
+	// Nothing starts for an id that is not a GUID, a server time that is not one, or a slot that is not a length.
 	const strict = new PlayLog(minute, 0);
-	strict.start('../../etc/passwd', serverStart, 0);
-	strict.start('<img src=x onerror=alert(1)>', serverStart, 0);
-	strict.start(id(5), Number.NaN, 0);
-	strict.start(id(6), Number.POSITIVE_INFINITY, 0);
+	strict.start('../../etc/passwd', serverStart, 0, 5);
+	strict.start('<img src=x onerror=alert(1)>', serverStart, 0, 5);
+	strict.start(id(5), Number.NaN, 0, 5);
+	strict.start(id(6), Number.POSITIVE_INFINITY, 0, 5);
+	strict.start(id(7), serverStart, 0, 0);
+	strict.start(id(8), serverStart, 0, Number.NaN);
 	expect(strict.end(true, 1_000)).toBeNull();
 	expect(strict.queued).toBe(0);
 });
 
+test('a play is completed only when it was on screen for its slot, as the server judges it', () => {
+	const log = new PlayLog(minute, 0);
+	// The image came 3 seconds into its 5-second slot: 2 seconds on screen at the slot's end, cut short.
+	log.start(id(1), serverStart + 3_000, 3_000, 5);
+	expect(log.end(true, 5_000)).toMatchObject({ durationMilliseconds: 2_000, completed: false });
+	// 1.5 seconds late: within the 2 seconds the server allows, completed.
+	log.start(id(2), serverStart + 6_500, 6_500, 5);
+	expect(log.end(true, 10_000)).toMatchObject({ durationMilliseconds: 3_500, completed: true });
+	// The whole slot, cut short at its very end, is not completed.
+	log.start(id(3), serverStart + 10_000, 10_000, 5);
+	expect(log.end(false, 15_000)).toMatchObject({ durationMilliseconds: 5_000, completed: false });
+	expect(log.queued).toBe(3);
+});
+
 test('less than a second on screen is no play: nothing is reported, as the server refuses it', () => {
 	const log = new PlayLog(minute, 0);
-	log.start(id(1), serverStart, 0);
+	log.start(id(1), serverStart, 0, 5);
 	expect(log.end(false, 999), 'cut short within its first second').toBeNull();
-	log.start(id(2), serverStart + 1_000, 1_000);
+	log.start(id(2), serverStart + 1_000, 1_000, 5);
 	// Another advertisement at once cuts it short within the second too.
-	log.start(id(3), serverStart + 1_400, 1_400);
+	log.start(id(3), serverStart + 1_400, 1_400, 5);
 	expect(log.end(true, 2_400)!.durationMilliseconds, 'a second exactly is a play').toBe(1_000);
 	expect(log.queued).toBe(1);
 	expect(log.take(minute)!.map((play) => play.mediaId)).toEqual([id(3)]);

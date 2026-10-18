@@ -137,12 +137,15 @@
 		playsDropped = log.dropped;
 	}
 
-	/** ARV-144: an advertisement is on screen; its start is by the server's clock, to the millisecond. */
-	function playStarted(mediaId: string): void {
+	/**
+	 * ARV-144: an advertisement is on screen in a slot of `slotSeconds`; its start is by the server's clock, to the
+	 * millisecond.
+	 */
+	function playStarted(mediaId: string, slotSeconds: number): void {
 		const server = board
 			? advertisingPlayer.serverNow(board.serverUtc, lastOk, Date.now())
 			: Date.now();
-		log.start(mediaId, server, performance.now());
+		log.start(mediaId, server, performance.now(), slotSeconds);
 		syncPlays();
 	}
 

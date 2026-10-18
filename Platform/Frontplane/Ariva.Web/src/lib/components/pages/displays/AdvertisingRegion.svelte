@@ -17,10 +17,11 @@
 	 * an item that fails to load or play (tried again at its next turn). Text only; nothing here builds a URL from the board.
 	 *
 	 * ARV-144: it tells the page when an advertisement is on screen (`onplaystart`: its image has loaded, or its video plays, in
-	 * its slot; never while its bytes are on their way or for a slide) and when it goes (`onplayend`): completed at its slot's
-	 * end, cut short when the wait rule pauses, the board goes stale, the plan runs out or changes, advertising stops, the item
-	 * fails after it showed, or the region or the page goes. An item that fails before it shows is no play. The page keeps the
-	 * plays and reports them with the display's credential, which this component never sees.
+	 * its slot, with the slot's seconds; never while its bytes are on their way or for a slide) and when it goes (`onplayend`):
+	 * at its slot's end (completed when it was on screen for the slot, which the play log judges), or cut short when the wait
+	 * rule pauses, the board goes stale, the plan runs out or changes, advertising stops, the item fails after it showed, or
+	 * the region or the page goes. An item that fails before it shows is no play. The page keeps the plays and reports them
+	 * with the display's credential, which this component never sees.
 	 */
 	let {
 		plan,
@@ -51,7 +52,7 @@
 		load: (mediaId: string, signal: AbortSignal) => Promise<Blob | null>;
 		onchanged?: () => void;
 		/** ARV-144: an advertisement is on screen in its slot. */
-		onplaystart?: (mediaId: string) => void;
+		onplaystart?: (mediaId: string, slotSeconds: number) => void;
 		/** ARV-144: the advertisement on screen has gone: at its slot's end (completed) or cut short. */
 		onplayend?: (completed: boolean) => void;
 	} = $props();
@@ -298,7 +299,7 @@
 		if (!player.isPlayableMedia(item) || item.mediaId !== shown.id) return;
 		playedSlot = shown.slot;
 		onScreen = shown;
-		onplaystart?.(shown.id);
+		onplaystart?.(shown.id, item.seconds);
 	}
 
 	/** ARV-144: the advertisement on screen goes; nothing happens when none is. */

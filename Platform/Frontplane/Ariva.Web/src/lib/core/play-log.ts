@@ -3,12 +3,14 @@
  * rules outside the browser (tests/api/advertising-play-log.spec.ts).
  *
  * A play is one advertisement (never a slide) on screen in its slot: it starts when its image has loaded or its video plays
- * (not while its bytes are on their way, when the region shows the instructions), and it ends at the slot's end (completed)
- * or when it is cut short (interrupted: the wait rule, a stale board, the plan's end or change, advertising turned off, the
- * item failing after it showed, the page going). Its start is by the server's clock as the player keeps it from its boards
- * (the board's serverUtc plus the time since it came), given by the caller; its length is measured on the page's monotonic
- * clock (performance.now, also given by the caller), so a screen whose own clock is changed meanwhile still reports the time
- * the advertisement was really on screen.
+ * (not while its bytes are on their way, when the region shows the instructions), and it ends at the slot's end or when it
+ * is cut short (interrupted: the wait rule, a stale board, the plan's end or change, advertising turned off, the item failing
+ * after it showed, the page going). It is completed only when it ended at the slot's end and was on screen for the slot, as
+ * the server judges it (`playLimits.slotToleranceMilliseconds` either way): an advertisement whose bytes came late in its
+ * slot was on screen for less of it, so it is reported as cut short. Its start is by the server's clock as the player keeps
+ * it from its boards (the board's serverUtc plus the time since it came), given by the caller; its length is measured on the
+ * page's monotonic clock (performance.now, also given by the caller), so a screen whose own clock is changed meanwhile still
+ * reports the time the advertisement was really on screen.
  *
  * Plays wait in memory only, never in any storage: at most `playLimits.queue`, the oldest out first when it is full (counted
  * in `dropped`). A batch of at most `playLimits.batch` goes every `playTiming.everyMilliseconds`, and sooner when a whole
@@ -32,7 +34,9 @@ export const playLimits = {
 	/** The longest play the server takes: a slot's ceiling of 120 seconds and a little for the player's timing. */
 	durationMilliseconds: 125_000,
 	/** The shortest: less than a second on screen is no play, and the server refuses it. */
-	minimumDurationMilliseconds: 1_000
+	minimumDurationMilliseconds: 1_000,
+	/** A completed play was on screen for its slot within this much: the server refuses one shorter as completed. */
+	slotToleranceMilliseconds: 2_000
 } as const;
 
 /** When batches go. */
@@ -108,7 +112,12 @@ export function playDuration(startedAt: number, endedAt: number): number {
 export class PlayLog {
 	private readonly waiting: Play[] = [];
 	private flight: Play[] | null = null;
-	private current: { mediaId: string; startedUtc: number; at: number } | null = null;
+	private current: {
+		mediaId: string;
+		startedUtc: number;
+		at: number;
+		slotMilliseconds: number;
+	} | null = null;
 	private lastTurn: number;
 	private lastFailed = false;
 	private halted = false;
@@ -160,21 +169,29 @@ export class PlayLog {
 	}
 
 	/**
-	 * An advertisement is on screen: its play starts now (`serverNow` by the server's clock, `now` on the monotonic clock). One
-	 * already on screen ends first, cut short. Nothing starts for an id that is not a GUID or a server time that is not one.
+	 * An advertisement is on screen in a slot of `slotSeconds`: its play starts now (`serverNow` by the server's clock, `now`
+	 * on the monotonic clock). One already on screen ends first, cut short. Nothing starts for an id that is not a GUID, a
+	 * server time that is not one, or a slot that is not a positive number of seconds.
 	 */
-	start(mediaId: string, serverNow: number, now: number): void {
+	start(mediaId: string, serverNow: number, now: number, slotSeconds: number): void {
 		this.end(false, now);
 		if (typeof mediaId !== 'string' || !guid.test(mediaId)) return;
 		if (!Number.isFinite(serverNow) || Math.abs(serverNow) > 8.64e15) return;
-		this.current = { mediaId, startedUtc: serverNow, at: now };
+		if (!Number.isFinite(slotSeconds) || slotSeconds <= 0) return;
+		this.current = {
+			mediaId,
+			startedUtc: serverNow,
+			at: now,
+			slotMilliseconds: slotSeconds * 1000
+		};
 	}
 
 	/**
-	 * The advertisement on screen has gone: at its slot's end (`completed`) or cut short. Null when none was on screen, or when
-	 * it was on screen for less than a second (no play: nothing is reported).
+	 * The advertisement on screen has gone: at its slot's end (`slotEnded`) or cut short. Completed only at the slot's end and
+	 * when it was on screen for the slot (within the server's tolerance). Null when none was on screen, or when it was on
+	 * screen for less than a second (no play: nothing is reported).
 	 */
-	end(completed: boolean, now: number): Play | null {
+	end(slotEnded: boolean, now: number): Play | null {
 		const shown = this.current;
 		if (!shown) return null;
 		this.current = null;
@@ -184,7 +201,9 @@ export class PlayLog {
 			mediaId: shown.mediaId,
 			startedUtc: new Date(shown.startedUtc).toISOString(),
 			durationMilliseconds,
-			completed: completed === true
+			completed:
+				slotEnded === true &&
+				durationMilliseconds >= shown.slotMilliseconds - playLimits.slotToleranceMilliseconds
 		};
 		this.add(play);
 		return play;

@@ -611,10 +611,15 @@ interface SentPlay {
 }
 
 test("proof of play: the plays shown go in one batch, started by the server's clock, for their time on screen, completed or cut short", async ({ browser }) => {
-	test.setTimeout(150_000);
+	test.setTimeout(180_000);
 	await plays(share);
-	// Every board says the plan ends 12.5 seconds after the first one's server time: A and B play their 5-second slots, and A
-	// again is cut short about 2.5 seconds into its slot by the plan's end (by the server's clock).
+	// Until both images are held, the boards play B then A, which fetches them however slowly their bytes come. The board after
+	// that brings the playlist's own order (A, B, A), a changed plan, so the player starts again at its first place with the
+	// bytes in memory, and every board from then on ends the plan 12.5 seconds after that board's server time: A and B play
+	// their 5-second slots, and A again is cut short about 2.5 seconds into its slot (by the server's clock). The plays before
+	// it are reported too, and one whose image came late in its slot is cut short, not completed. Anchored on the first board
+	// instead, an image whose bytes came late left time for fewer plays, and the server refused it as completed (CI, 2026-10-18).
+	let warm = false;
 	let anchor: number | null = null;
 	const player = await openPlayer(
 		browser,
@@ -625,13 +630,18 @@ test("proof of play: the plays shown go in one batch, started by the server's cl
 					const response = await route.fetch();
 					if (response.status() !== 200) return route.fulfill({ response });
 					const body = await response.json();
-					anchor ??= Date.parse(body.serverUtc);
-					if (body.advertising) body.advertising.untilUtc = new Date(anchor + 12_500).toISOString();
+					if (body.advertising && !warm) {
+						body.advertising.order = [1, 0];
+						body.advertising.untilUtc = new Date(Date.parse(body.serverUtc) + 60_000).toISOString();
+					} else if (body.advertising) {
+						anchor ??= Date.parse(body.serverUtc);
+						body.advertising.untilUtc = new Date(anchor + 12_500).toISOString();
+					}
 					return route.fulfill({ response, json: body });
 				}
 			),
-		// The player's turn shortened to 25 seconds (it holds the parameter to 12 to 60); without it, a minute.
-		'&playsEvery=25'
+		// The player's turn at 60 seconds (it holds the parameter to 12 to 60), after the plan's end.
+		'&playsEvery=60'
 	);
 	try {
 		const { page, guards } = player;
@@ -639,14 +649,16 @@ test("proof of play: the plays shown go in one batch, started by the server's cl
 		const region = page.getByTestId('board-advertising');
 		const posted = page.waitForResponse(
 			(response) => new URL(response.url()).pathname === '/api/v1/display/plays' && response.request().method() === 'POST',
-			{ timeout: 60_000 }
+			{ timeout: 90_000 }
 		);
-		await expect(region).toHaveAttribute('data-state', 'playing', { timeout: 20_000 });
-		await expect(board).toHaveAttribute('data-plays-sent', '0');
+		await expect(region).toHaveAttribute('data-cached', '2', { timeout: 30_000 });
+		warm = true;
+		await expect.poll(() => anchor, { timeout: 15_000, message: 'the board after the warm-up starts the plan again' }).not.toBeNull();
 		await expect(region).toHaveAttribute('data-reason', 'expired', { timeout: 25_000 });
-		// Three plays wait for the player's turn, in memory only.
-		await expect(board).toHaveAttribute('data-plays-queued', '3', { timeout: 5_000 });
+		// The plays wait for the player's turn, in memory only.
 		await expect(board).toHaveAttribute('data-plays-sent', '0');
+		const queued = Number(await board.getAttribute('data-plays-queued'));
+		expect(queued, 'the warm-up plays and the three after it').toBeGreaterThanOrEqual(3);
 		const storage = await page.evaluate(() => JSON.stringify([{ ...localStorage }, { ...sessionStorage }]));
 		expect(storage, 'no play in web storage').not.toContain(imageA);
 
@@ -666,28 +678,30 @@ test("proof of play: the plays shown go in one batch, started by the server's cl
 
 		const sent = request.postDataJSON() as { plays: SentPlay[] };
 		expect(Object.keys(sent)).toEqual(['plays']);
-		expect(sent.plays.map((play) => play.mediaId), 'the advertisements shown, in order').toEqual([imageA, imageB, imageA]);
+		expect(sent.plays).toHaveLength(queued);
 		for (const play of sent.plays) {
 			expect(Object.keys(play).sort()).toEqual(['completed', 'durationMilliseconds', 'mediaId', 'startedUtc']);
 			expect(play.startedUtc, 'UTC with milliseconds').toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
 			expect(Number.isInteger(play.durationMilliseconds)).toBe(true);
+			expect(play.completed && play.durationMilliseconds < 3_000, 'completed only when it filled its 5-second slot').toBe(false);
 		}
-		expect(await response.json(), 'the server took them all').toEqual({ accepted: 3, duplicates: 0, refused: 0 });
+		expect(await response.json(), 'the server took them all, the warm-up plays included').toEqual({ accepted: queued, duplicates: 0, refused: 0 });
 
-		// Started by the server's clock: from the first board's server time on, a slot apart; each slot's time on screen.
-		const [first, second, third] = sent.plays;
-		const starts = sent.plays.map((play) => Date.parse(play.startedUtc));
-		expect(starts[0] - anchor!, 'the first image showed once its bytes came').toBeGreaterThanOrEqual(0);
-		expect(starts[0] - anchor!).toBeLessThan(4_000);
-		expect(starts[1] - starts[0]).toBeGreaterThan(3_000);
+		// From the restart on: started by the server's clock, a slot apart; each slot's time on screen.
+		const after = sent.plays.filter((play) => Date.parse(play.startedUtc) >= anchor!);
+		expect(after.map((play) => play.mediaId), 'the advertisements shown after the restart, in order').toEqual([imageA, imageB, imageA]);
+		const [first, second, third] = after;
+		const starts = after.map((play) => Date.parse(play.startedUtc));
+		expect(starts[0] - anchor!, 'A was held: it showed as the plan started again').toBeLessThan(1_000);
+		expect(starts[1] - starts[0]).toBeGreaterThan(4_000);
 		expect(starts[1] - starts[0]).toBeLessThan(6_000);
 		expect(starts[2] - starts[1], 'B played its whole slot').toBeGreaterThan(4_000);
 		expect(starts[2] - starts[1]).toBeLessThan(6_000);
-		expect(first.completed, 'A played to its slot end').toBe(true);
-		expect(first.durationMilliseconds).toBeGreaterThan(3_000);
+		expect(first.completed, 'A played its whole slot').toBe(true);
+		expect(first.durationMilliseconds).toBeGreaterThan(4_000);
 		expect(first.durationMilliseconds).toBeLessThanOrEqual(6_000);
 		expect(Math.abs(starts[0] + first.durationMilliseconds - starts[1]), 'A was on screen until B showed').toBeLessThan(750);
-		expect(second.completed, 'B played to its slot end').toBe(true);
+		expect(second.completed, 'B played its whole slot').toBe(true);
 		expect(second.durationMilliseconds).toBeGreaterThan(4_000);
 		expect(second.durationMilliseconds).toBeLessThanOrEqual(6_000);
 		expect(Math.abs(starts[1] + second.durationMilliseconds - starts[2])).toBeLessThan(750);
@@ -695,23 +709,23 @@ test("proof of play: the plays shown go in one batch, started by the server's cl
 		expect(third.durationMilliseconds).toBeGreaterThan(1_000);
 		expect(third.durationMilliseconds).toBeLessThan(4_800);
 		const cut = starts[2] + third.durationMilliseconds - anchor!;
-		expect(cut, `cut ${cut} ms after the first board, at the plan's end (12.5 s; the player looks once a second)`).toBeGreaterThan(12_000);
-		expect(cut).toBeLessThan(15_000);
+		expect(cut, `cut ${cut} ms after the restart, at the plan's end (12.5 s; the player looks once a second)`).toBeGreaterThan(12_000);
+		expect(cut).toBeLessThan(14_500);
 
-		// What the region showed: the same three advertisements, the last until the plan ran out.
-		const shown = slotsOf(await playbackLog(page)).filter((s) => s.media.size > 0);
+		// What the region showed after the restart: the same three advertisements, the last until the plan ran out.
+		const shown = slotsOf(await playbackLog(page)).filter((s) => s.media.size > 0 && s.start >= anchor!);
 		expect(shown.map((s) => [...s.media])).toEqual([[imageA], [imageB], [imageA]]);
 		expect([...shown[2].reasons]).toContain('expired');
 
 		// Answered for: nothing waits, nothing was dropped.
-		await expect(board).toHaveAttribute('data-plays-sent', '3');
+		await expect(board).toHaveAttribute('data-plays-sent', String(queued));
 		await expect(board).toHaveAttribute('data-plays-queued', '0');
 		await expect(board).toHaveAttribute('data-plays-dropped', '0');
 
 		// The same batch again counts once: the server already has every play.
 		const again = await call('POST', `${hosts.main}/api/v1/display/plays?code=${display}`, { headers: { 'X-Ariva-Display-Key': credential }, data: sent });
 		expect(again.status(), await again.text()).toBe(200);
-		expect(await again.json()).toEqual({ accepted: 0, duplicates: 3, refused: 0 });
+		expect(await again.json()).toEqual({ accepted: 0, duplicates: queued, refused: 0 });
 		await expect(page.locator(injected)).toHaveCount(0);
 		await guards.expectClean();
 	} finally {
