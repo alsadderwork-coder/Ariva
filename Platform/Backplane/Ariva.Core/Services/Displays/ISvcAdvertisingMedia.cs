@@ -4,8 +4,9 @@ using Fluentx;
 namespace Ariva.Core.Services.Displays;
 
 /// <summary>
-/// An upload to a site's advertisement library (ARV-142a): the file as sent (its type is read from its bytes, never from
-/// its name or the declared content type), its declared length, its name for people to recognise it, and the item's details.
+/// An upload to a site's advertisement library (ARV-142a, videos ARV-142b): the file as sent (its type is read from its
+/// bytes, never from its name or the declared content type), its declared length, its name for people to recognise it,
+/// and the item's details.
 /// </summary>
 public sealed record AdvertisingMediaUpload(Stream Content, long Length, string FileName, string Advertiser, string Campaign, DateOnly StartsOn, DateOnly EndsOn);
 
@@ -26,7 +27,8 @@ public sealed record ApproveAdvertisingMediaRequest([Required, MaxLength(64)] st
 /// An item of the library as the API shows it. <c>Playable</c> says whether it may play on the site's local day now
 /// (approved and within its dates); <c>CanApprove</c> whether the caller may approve it (a draft that the caller neither
 /// uploaded nor last changed; the endpoint still asks for <c>Advertising.Approve</c> and a second factor);
-/// <c>ReviewToken</c> what an approval of what is shown here names.
+/// <c>ReviewToken</c> what an approval of what is shown here names; <c>DurationMilliseconds</c> a video's length (null for
+/// an image).
 /// </summary>
 public sealed record AdvertisingMediaViewModel(
     Guid Id,
@@ -49,7 +51,8 @@ public sealed record AdvertisingMediaViewModel(
     DateTime? RetiredOn,
     bool Playable,
     bool CanApprove,
-    string ReviewToken);
+    string ReviewToken,
+    int? DurationMilliseconds = null);
 
 /// <summary>An item's stored file: its bytes, type and hash, for the preview and the display fetch.</summary>
 public sealed record AdvertisingMediaContent(Stream Content, string ContentType, string Sha256);
@@ -60,7 +63,25 @@ public static class AdvertisingMediaErrors
     public const string UnsupportedFile =
         "The file is not a PNG, JPEG or WebP image that can be read whole, or it is animated or larger than 3,840 pixels a side or 8,294,400 pixels in all (3,840 by 2,160).";
 
+    /// <summary>400: a file that starts like an MP4 or a WebM video but is not one the library takes (ARV-142b).</summary>
+    public const string UnsupportedVideo =
+        "The video is not an MP4 with H.264 video (AAC sound or none) or a WebM with VP8, VP9 or AV1 video (Opus or Vorbis sound or none), " +
+        "with one picture of at most 3,840 pixels a side and 8,294,400 pixels in all, a known length, nothing after its end, and neither fragmented nor encrypted.";
+
+    /// <summary>413: an image larger than the library takes.</summary>
     public const string TooLarge = "The file is larger than 10 MB.";
+
+    private const string TooLargePrefix = "The file is larger than ";
+
+    /// <summary>413: a file larger than the library takes (an image at most 10 MB, a video at most the size set for this installation).</summary>
+    public static string TooLargeFor(long maxBytes) => $"{TooLargePrefix}{maxBytes / (1024 * 1024)} MB.";
+
+    /// <summary>Whether a refusal is one of the too-large answers (413).</summary>
+    public static bool IsTooLarge(string message) =>
+        message is not null && message.StartsWith(TooLargePrefix, StringComparison.Ordinal) && message.EndsWith(" MB.", StringComparison.Ordinal);
+
+    /// <summary>400: a video longer than the length set for this installation (ARV-142b).</summary>
+    public static string TooLong(int maxSeconds) => $"The video is longer than {maxSeconds} seconds.";
     public const string UnsafeFileName = "The file name holds a path, control or invisible characters, or more than 200 characters.";
     public const string Required = "An item's details are required: the advertiser, the campaign and the first and last day.";
 

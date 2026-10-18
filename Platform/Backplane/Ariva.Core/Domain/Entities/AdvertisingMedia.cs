@@ -8,8 +8,9 @@ using Ariva.Core.Domain.Enums;
 namespace Ariva.Core.Domain.Entities;
 
 /// <summary>
-/// An advertisement of a site's media library (ARV-142a, wiki 11 section 9): an image decoded and written anew on upload,
-/// kept in file storage under a generated key, with who advertises, the campaign and the site's local dates it may play.
+/// An advertisement of a site's media library (ARV-142a and ARV-142b, wiki 11 section 9): an image decoded and written anew
+/// on upload, or a video whose container was checked and stripped of its metadata, kept in file storage under a generated
+/// key, with who advertises, the campaign and the site's local dates it may play.
 /// It plays only once approved, and only by a person other than the one who uploaded it and the one who last changed it
 /// (two people, CWE-863); a change to an approved item sends it back to draft, so nothing that plays was seen by one person
 /// only, and an approval names what its approver reviewed (<see cref="ReviewToken"/>), so it never lands on details changed
@@ -31,6 +32,15 @@ public class AdvertisingMedia : BaseAuditableEntity<AdvertisingMedia>, ISiteBoun
     public const int MaxSide = 3840;
 
     public const long MaxPixels = 8_294_400;
+
+    /// <summary>
+    /// The largest video any installation takes (ARV-142b): <c>Advertising:Videos:MaxMegabytes</c> sets the size taken, at
+    /// most this; the upload endpoint's request limit is this plus the form's framing.
+    /// </summary>
+    public const long MaxVideoBytes = 100L * 1024 * 1024;
+
+    /// <summary>The longest video any installation takes; <c>Advertising:Videos:MaxSeconds</c> sets the length taken, at most this.</summary>
+    public const int MaxVideoSeconds = 120;
 
     public const int MaxNameLength = 120;
 
@@ -61,6 +71,7 @@ public class AdvertisingMedia : BaseAuditableEntity<AdvertisingMedia>, ISiteBoun
         Sha256 = file.Sha256;
         WidthPixels = file.WidthPixels;
         HeightPixels = file.HeightPixels;
+        DurationMilliseconds = file.DurationMilliseconds;
         OriginalFileName = string.IsNullOrWhiteSpace(file.OriginalFileName) ? null : file.OriginalFileName.Trim();
         UploadedById = uploaderId;
         Status = AdvertisingMediaStatus.Draft;
@@ -84,6 +95,9 @@ public class AdvertisingMedia : BaseAuditableEntity<AdvertisingMedia>, ISiteBoun
 
     public virtual int WidthPixels { get; protected set; }
     public virtual int HeightPixels { get; protected set; }
+
+    /// <summary>A video's length, as its container states it (rounded up to the millisecond); null for an image.</summary>
+    public virtual int? DurationMilliseconds { get; protected set; }
 
     /// <summary>The uploaded file's name, for people to recognise it; never a path or a storage key.</summary>
     [MaxLength(FloorPlan.MaxFileNameLength)]
@@ -200,7 +214,7 @@ public class AdvertisingMedia : BaseAuditableEntity<AdvertisingMedia>, ISiteBoun
     public virtual string AuditSummary() =>
         JsonSerializer.Serialize(new
         {
-            SiteCode, ContentType, SizeBytes, Sha256, WidthPixels, HeightPixels, Advertiser, Campaign, StartsOn, EndsOn,
+            SiteCode, ContentType, SizeBytes, Sha256, WidthPixels, HeightPixels, DurationMilliseconds, Advertiser, Campaign, StartsOn, EndsOn,
             Status = Status.ToString(), UploadedById, ChangedById, ApprovedById
         }, Display.Json);
 
@@ -250,8 +264,19 @@ public sealed record AdvertisingMediaDetails(string Advertiser, string Campaign,
         !string.IsNullOrWhiteSpace(text) && text.Trim().Length <= AdvertisingMedia.MaxNameLength && DisplayText.IsClean(text.Trim());
 }
 
-/// <summary>The stored file of an item, as the re-encoder wrote it (ARV-142a).</summary>
-public sealed record AdvertisingMediaFile(string StorageKey, string ContentType, long SizeBytes, string Sha256, int WidthPixels, int HeightPixels, string OriginalFileName)
+/// <summary>
+/// The stored file of an item: an image as the re-encoder wrote it (ARV-142a), or a video as its container check left it,
+/// with its length (ARV-142b).
+/// </summary>
+public sealed record AdvertisingMediaFile(
+    string StorageKey,
+    string ContentType,
+    long SizeBytes,
+    string Sha256,
+    int WidthPixels,
+    int HeightPixels,
+    string OriginalFileName,
+    int? DurationMilliseconds = null)
 {
     /// <summary>The image types an item may hold, by content type, with the extension of their storage keys.</summary>
     public static IReadOnlyDictionary<string, string> ImageTypes { get; } = new Dictionary<string, string>(StringComparer.Ordinal)
@@ -261,18 +286,32 @@ public sealed record AdvertisingMediaFile(string StorageKey, string ContentType,
         ["image/webp"] = "webp"
     };
 
+    /// <summary>The video types an item may hold (ARV-142b), by content type, with the extension of their storage keys.</summary>
+    public static IReadOnlyDictionary<string, string> VideoTypes { get; } = new Dictionary<string, string>(StringComparer.Ordinal)
+    {
+        ["video/mp4"] = "mp4",
+        ["video/webm"] = "webm"
+    };
+
+    public bool IsVideo => ContentType is not null && VideoTypes.ContainsKey(ContentType);
+
     public IReadOnlyList<string> Problems()
     {
         var problems = new List<string>();
-        if (ContentType is null || !ImageTypes.TryGetValue(ContentType, out var extension) || !IsStorageKey(StorageKey, extension))
-            problems.Add("The file is a PNG, JPEG or WebP image under a generated key.");
-        if (SizeBytes is <= 0 or > AdvertisingMedia.MaxImageBytes)
-            problems.Add("The file is not empty and at most 10 MB.");
+        var video = IsVideo;
+        if (ContentType is null || !(video ? VideoTypes : ImageTypes).TryGetValue(ContentType, out var extension) || !IsStorageKey(StorageKey, extension))
+            problems.Add("The file is a PNG, JPEG or WebP image, or an MP4 or WebM video, under a generated key.");
+        if (!video && SizeBytes is <= 0 or > AdvertisingMedia.MaxImageBytes)
+            problems.Add("An image is not empty and at most 10 MB.");
+        if (video && SizeBytes is <= 0 or > AdvertisingMedia.MaxVideoBytes)
+            problems.Add("A video is not empty and at most 100 MB.");
+        if (video ? DurationMilliseconds is not (> 0 and <= AdvertisingMedia.MaxVideoSeconds * 1000) : DurationMilliseconds is not null)
+            problems.Add($"A video lasts at most {AdvertisingMedia.MaxVideoSeconds} seconds; an image has no length.");
         if (Sha256 is not { Length: 64 } || !Sha256.All(char.IsAsciiHexDigitLower))
             problems.Add("The file's SHA-256 is 64 lower-case hex characters.");
         if (WidthPixels is <= 0 or > AdvertisingMedia.MaxSide || HeightPixels is <= 0 or > AdvertisingMedia.MaxSide ||
             (long)WidthPixels * HeightPixels > AdvertisingMedia.MaxPixels)
-            problems.Add($"An image is at most {AdvertisingMedia.MaxSide} pixels a side and {AdvertisingMedia.MaxPixels} pixels in all (3,840 by 2,160).");
+            problems.Add($"A picture is at most {AdvertisingMedia.MaxSide} pixels a side and {AdvertisingMedia.MaxPixels} pixels in all (3,840 by 2,160).");
         if (!FloorPlan.IsSafeFileName(OriginalFileName))
             problems.Add("The file name holds no path, no control or invisible characters, and at most 200 characters.");
         return problems;

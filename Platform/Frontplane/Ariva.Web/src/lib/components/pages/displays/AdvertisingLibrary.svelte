@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Check, Images, Pencil, Upload } from '@lucide/svelte';
+	import { Check, Film, Images, Pencil, Upload } from '@lucide/svelte';
 	import { onDestroy, untrack } from 'svelte';
 	import { _ } from 'svelte-i18n';
 	import { toast } from 'svelte-sonner';
@@ -10,15 +10,17 @@
 	import type { AdvertisingMedia, MediaDetails, MediaStatus } from '$lib/core/advertising-media';
 
 	/**
-	 * A site's advertisement library on the displays screen (ARV-142a), shown while the site's advertising policy allows
-	 * advertising to the holders of Advertising.View or Advertising.Manage. Managers upload an image (the server types it
-	 * by its bytes and writes it anew) with who advertises, the campaign and its days, change those details (an approved
+	 * A site's advertisement library on the displays screen (ARV-142a, videos ARV-142b), shown while the site's advertising
+	 * policy allows advertising to the holders of Advertising.View or Advertising.Manage. Managers upload an image (the
+	 * server types it by its bytes and writes it anew) or a video (the server checks its container and strips its
+	 * metadata) with who advertises, the campaign and its days, change those details (an approved
 	 * item goes back to draft) and retire items; approvers approve a draft they neither uploaded nor last changed, with a
 	 * second factor (Api.ts opens the step-up dialog), naming the item as the list showed it (its review token: the server
 	 * refuses the approval when the item changed since, and the list is read again). The server decides every one of these;
 	 * the buttons only follow it.
-	 * Previews are fetched with the user's token and shown through object URLs, revoked when the list changes. Every word
-	 * is shown as text.
+	 * Previews are fetched with the user's token and shown through object URLs, revoked when the list changes: images for
+	 * the newest items as the list loads, a video only when asked (it can be 100 MB), played muted in a video element from
+	 * its object URL (media-src blob:). Every word is shown as text.
 	 */
 	interface Props {
 		siteCode: string;
@@ -28,7 +30,7 @@
 
 	let { siteCode, canManage, canApprove }: Props = $props();
 
-	/** The most previews fetched at once: the newest items, retired ones left out. */
+	/** The most image previews fetched at once: the newest images, retired ones left out (videos load when asked). */
 	const maxPreviews = 40;
 
 	let items = $state<AdvertisingMedia[]>([]);
@@ -78,12 +80,50 @@
 					values: { reason: result.errorMessages.join(' ') }
 				})
 			);
-		for (const item of items.filter((i) => i.status !== 'Retired').slice(0, maxPreviews)) {
+		const images = items.filter((i) => i.status !== 'Retired' && !media.isVideoType(i.contentType));
+		for (const item of images.slice(0, maxPreviews)) {
 			const blob = await media.content(code, item.id);
 			if (mine !== generation) return;
 			if (!blob.hasErrors && blob.data instanceof Blob)
 				previews = { ...previews, [item.id]: URL.createObjectURL(blob.data) };
 		}
+	}
+
+	/** The videos being fetched now: a second click waits for the first fetch rather than leaking its object URL. */
+	const fetching = new Set<string>();
+
+	/** Fetches one video with the user's token for its preview; a later list or another site drops it. */
+	async function loadVideo(item: AdvertisingMedia): Promise<void> {
+		if (previews[item.id] || fetching.has(item.id)) return;
+		fetching.add(item.id);
+		const mine = generation;
+		const code = siteCode;
+		const blob = await media.content(code, item.id).finally(() => fetching.delete(item.id));
+		if (mine !== generation) return;
+		if (blob.hasErrors || !(blob.data instanceof Blob)) {
+			toast.error(
+				$_('advertisingMedia.messages.failed', {
+					values: { reason: blob.errorMessages.join(' ') }
+				})
+			);
+			return;
+		}
+		previews = { ...previews, [item.id]: URL.createObjectURL(blob.data) };
+	}
+
+	/** The length in seconds, to a tenth (2,008 ms shows as 2). */
+	function seconds(milliseconds: number): number {
+		return Math.round(milliseconds / 100) / 10;
+	}
+
+	function tooLarge(chosenFile: File): string | null {
+		if (media.isVideoType(chosenFile.type))
+			return chosenFile.size > media.limits.maxVideoBytes
+				? $_('advertisingMedia.messages.tooLargeVideo')
+				: null;
+		return chosenFile.size > media.limits.maxBytes
+			? $_('advertisingMedia.messages.tooLarge')
+			: null;
 	}
 
 	$effect(() => {
@@ -103,15 +143,16 @@
 	function chosen(event: Event): void {
 		const input = event.currentTarget as HTMLInputElement;
 		file = input.files?.[0] ?? null;
-		problems =
-			file && file.size > media.limits.maxBytes ? [$_('advertisingMedia.messages.tooLarge')] : [];
+		const problem = file ? tooLarge(file) : null;
+		problems = problem ? [problem] : [];
 	}
 
 	async function submit(event: SubmitEvent): Promise<void> {
 		event.preventDefault();
 		if (busy || !file) return;
-		if (file.size > media.limits.maxBytes) {
-			problems = [$_('advertisingMedia.messages.tooLarge')];
+		const problem = tooLarge(file);
+		if (problem) {
+			problems = [problem];
 			return;
 		}
 		busy = true;
@@ -330,7 +371,32 @@
 						<div
 							class="flex size-24 shrink-0 items-center justify-center overflow-hidden rounded-md border bg-muted"
 						>
-							{#if previews[item.id]}
+							{#if media.isVideoType(item.contentType)}
+								{#if previews[item.id]}
+									<video
+										src={previews[item.id]}
+										controls
+										muted
+										playsinline
+										preload="metadata"
+										aria-label={$_('advertisingMedia.videoLabel', {
+											values: { advertiser: item.advertiser, campaign: item.campaign }
+										})}
+										class="max-h-full max-w-full object-contain"
+										data-testid="media-video"
+									></video>
+								{:else}
+									<button
+										type="button"
+										data-testid="media-load-video"
+										onclick={() => loadVideo(item)}
+										class="flex size-full flex-col items-center justify-center gap-1 text-xs text-muted-foreground hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+									>
+										<Film class="size-6" aria-hidden="true" />
+										{$_('advertisingMedia.actions.loadVideo')}
+									</button>
+								{/if}
+							{:else if previews[item.id]}
 								<img
 									src={previews[item.id]}
 									alt={$_('advertisingMedia.previewAlt', {
@@ -358,6 +424,11 @@
 								{$_('advertisingMedia.size', {
 									values: { width: item.widthPixels, height: item.heightPixels }
 								})}
+								{#if item.durationMilliseconds}{' · '}<span data-testid="media-length"
+										>{$_('advertisingMedia.length', {
+											values: { seconds: seconds(item.durationMilliseconds) }
+										})}</span
+									>{/if}
 								{#if item.originalFileName}{' · '}<span class="font-mono break-all"
 										>{item.originalFileName}</span
 									>{/if}

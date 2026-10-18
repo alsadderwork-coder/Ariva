@@ -19,8 +19,12 @@ public sealed class AdvertisingMediaTests
     private static readonly DateOnly Last = new(2026, 11, 30);
 
     private static AdvertisingMediaFile File(string key = "0123456789abcdef0123456789abcdef.png", string type = "image/png", long size = 1024,
-        string sha = null, int width = 1920, int height = 1080, string name = "summer.png") =>
-        new(key, type, size, sha ?? new string('a', 64), width, height, name);
+        string sha = null, int width = 1920, int height = 1080, string name = "summer.png", int? duration = null) =>
+        new(key, type, size, sha ?? new string('a', 64), width, height, name, duration);
+
+    private static AdvertisingMediaFile Video(string extension = "mp4", string type = "video/mp4", long size = 5 * 1024 * 1024, int? duration = 15_000,
+        int width = 1920, int height = 1080) =>
+        File($"0123456789abcdef0123456789abcdef.{extension}", type, size, width: width, height: height, name: "spot.mp4", duration: duration);
 
     private static AdvertisingMediaDetails Details(string advertiser = "Gulf Air", string campaign = "Winter sun", DateOnly? first = null, DateOnly? last = null) =>
         new(advertiser, campaign, first ?? First, last ?? Last);
@@ -206,6 +210,45 @@ public sealed class AdvertisingMediaTests
         ((Action)(() => item.Retire(Now))).Should().Throw<InvalidOperationException>().WithMessage(AdvertisingMediaRules.RetiredMessage);
         ((Action)(() => item.ChangeDetails(Details(), Changer))).Should().Throw<InvalidOperationException>().WithMessage(AdvertisingMediaRules.RetiredMessage);
         ((Action)(() => item.Approve(Changer, "someone", Now, item.ReviewToken()))).Should().Throw<InvalidOperationException>();
+    }
+
+    [Fact]
+    public void File_Should_TakeAVideoWithItsLength_When_ItIsAnMp4OrAWebmWithinTheCeilings()
+    {
+        Video().Problems().Should().BeEmpty();
+        Video("webm", "video/webm").Problems().Should().BeEmpty();
+        Video(size: AdvertisingMedia.MaxVideoBytes).Problems().Should().BeEmpty("a video takes up to 100 MB, an image 10");
+        Video(duration: AdvertisingMedia.MaxVideoSeconds * 1000).Problems().Should().BeEmpty();
+        Video(width: 3840, height: 2160).Problems().Should().BeEmpty("a 4K screen");
+        Video().IsVideo.Should().BeTrue();
+        File().IsVideo.Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("mp4", "video/mp4", AdvertisingMedia.MaxVideoBytes + 1, 15_000, "larger than any installation takes")]
+    [InlineData("mp4", "video/mp4", 0L, 15_000, "empty")]
+    [InlineData("mp4", "video/mp4", 1024L, null, "a video without a length")]
+    [InlineData("mp4", "video/mp4", 1024L, 0, "a length of nothing")]
+    [InlineData("mp4", "video/mp4", 1024L, AdvertisingMedia.MaxVideoSeconds * 1000 + 1, "longer than any installation takes")]
+    [InlineData("webm", "video/mp4", 1024L, 15_000, "the key's extension is not the type's")]
+    [InlineData("mov", "video/quicktime", 1024L, 15_000, "QuickTime is not an advertisement type")]
+    [InlineData("mkv", "video/x-matroska", 1024L, 15_000, "Matroska is not taken, WebM is")]
+    public void File_Should_BeRefused_When_AVideoBreaksARule(string extension, string type, long size, int? duration, string reason) =>
+        Video(extension, type, size, duration).Problems().Should().NotBeEmpty(reason);
+
+    [Fact]
+    public void File_Should_BeRefused_When_AnImageHasALength() =>
+        File(duration: 15_000).Problems().Should().ContainSingle("an image has no length");
+
+    [Fact]
+    public void Constructor_Should_KeepAVideosLength_When_ItIsUploaded()
+    {
+        var item = new AdvertisingMedia("AUH-TA", Video(duration: 15_250), Details(), Uploader);
+
+        item.DurationMilliseconds.Should().Be(15_250);
+        item.ContentType.Should().Be("video/mp4");
+        item.AuditSummary().Should().Contain("\"durationMilliseconds\":15250");
+        new AdvertisingMedia("AUH-TA", File(), Details(), Uploader).DurationMilliseconds.Should().BeNull();
     }
 
     [Fact]

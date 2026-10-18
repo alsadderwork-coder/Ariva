@@ -82,6 +82,11 @@
             <Link>appsettings.base.k8s-prd.json</Link>
             <CopyToOutputDirectory>Always</CopyToOutputDirectory>
         </Content>
+        <!-- ARV-142b: the advertisement video fixtures (Platform/Testing/Media/README.md says how they were made). -->
+        <Content Include="..\..\Testing\Media\*.mp4;..\..\Testing\Media\*.webm">
+            <Link>Media\%(Filename)%(Extension)</Link>
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </Content>
     </ItemGroup>
 
     <ItemGroup>

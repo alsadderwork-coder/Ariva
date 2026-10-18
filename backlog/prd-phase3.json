@@ -464,6 +464,35 @@
       "dependsOn": [
         "ARV-142a"
       ]
+    },
+    {
+      "id": "ARV-195",
+      "title": "[E17] Per-request minimum body rates set over HTTP/1.x only",
+      "description": "From round 2 of the ARV-142b security review (not blocking for ARV-142b, outside its scope). Kestrel takes a per-request minimum body data rate only on HTTP/1.x: on HTTP/2 and HTTP/3 setting one throws, so the device push endpoint (Ariva.Api.Ingest PushController, which sets 1 KB a second) would answer every push over HTTP/2 with 500. Not reachable today (the hosts listen on cleartext behind the ingress, which forwards HTTP/1.1); it would be the day TLS terminates on Kestrel. ARV-142b's AdvertisingUploadLimitAttribute already checks the protocol.",
+      "acceptanceCriteria": [
+        "Every place that sets IHttpMinRequestBodyDataRateFeature.MinDataRate sets it only for HTTP/1.0 and HTTP/1.1 requests (HttpProtocol.IsHttp10 or IsHttp11); an architecture test finds any other",
+        "Unit tests: a push over HTTP/1.1 gets its rate; over HTTP/2 and HTTP/3 (a feature that throws like Kestrel's) nothing throws",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "security-reviewer verdict PASS recorded in backlog/progress.md"
+      ],
+      "priority": 58,
+      "passes": false,
+      "notes": "Size XS. Recorded 2026-10-17 with ARV-142b under the owner's standing decision (low-severity follow-ups wait for Phase 3 unless needed before the pilot; the owner can pull one back).",
+      "dependsOn": []
+    },
+    {
+      "id": "ARV-196",
+      "title": "[E17] E2E airports and sites created with codes that cannot collide",
+      "description": "Seen in the ARV-142b story gate (2026-10-18): tests/api/validation-rehearsal.spec.ts was flaky on a 409 when ensureScope created an airport with three random letters that another spec had already taken. About 20 specs and support files (load-site.ts, smoke-site.ts, device-auth, devices, device-push, device-health, floor-plans, zones, validation, csv imports, site configuration, topology) create airports with random IATA codes from Math.random or randomLetters, so any of them can collide as the E2E database fills.",
+      "acceptanceCriteria": [
+        "One E2E helper creates an airport (and where needed a site) and retries with a fresh code on 409, or draws codes that cannot collide within a run; every spec and support file uses it",
+        "A spec that asserts a duplicate answers 409 (topology.spec.ts) keeps asserting it",
+        "node scripts/verify.mjs e2e passes twice in a row without a flaky test from this cause"
+      ],
+      "priority": 59,
+      "passes": false,
+      "notes": "Size S. Recorded 2026-10-18 with ARV-142b under the owner's standing decision (low-severity follow-ups wait for Phase 3 unless needed before the pilot; the owner can pull one back). Not this story's code: it passed on its retry.",
+      "dependsOn": []
     }
   ]
 }

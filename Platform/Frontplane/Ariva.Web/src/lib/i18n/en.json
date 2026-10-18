@@ -1153,12 +1153,14 @@
 	},
 	"advertisingMedia": {
 		"title": "Advertisement library",
-		"description": "Images this site's split displays may show while advertising is allowed. An item plays only once approved by a second person, and only within its days at the site; a change sends an approved item back to draft.",
+		"description": "Images and short videos this site's split displays may show while advertising is allowed. An item plays only once approved by a second person, and only within its days at the site; a change sends an approved item back to draft.",
 		"loading": "Loading the advertisement library",
 		"none": "No advertisements at this site yet",
 		"previewAlt": "Advertisement of {advertiser}: {campaign}",
 		"dates": "{first} to {last}",
 		"size": "{width} by {height} pixels",
+		"length": "{seconds} seconds",
+		"videoLabel": "Video advertisement of {advertiser}: {campaign}",
 		"uploadedBy": "Uploaded by {name}",
 		"approvedBy": "approved by {name}",
 		"playing": "Playing at the site today",
@@ -1168,14 +1170,14 @@
 			"Retired": "Retired"
 		},
 		"fields": {
-			"file": "Image (PNG, JPEG or WebP, at most 10 MB)",
+			"file": "Image (PNG, JPEG or WebP, at most 10 MB) or video (MP4 or WebM)",
 			"advertiser": "Advertiser",
 			"campaign": "Campaign",
 			"startsOn": "First day",
 			"endsOn": "Last day"
 		},
 		"hints": {
-			"file": "The image is checked by its content and written anew without its metadata; animated images, SVG, PDF and other files are refused. Days are the site's local days.",
+			"file": "Images are checked by their content and written anew without their metadata; animated images, SVG, PDF and other files are refused. Videos are MP4 with H.264 or WebM with VP8, VP9 or AV1, within the length and size this installation takes, and are kept without their metadata. Days are the site's local days.",
 			"backToDraft": "This item is approved: saving a change sends it back to draft, and it stops playing until another person approves it."
 		},
 		"actions": {
@@ -1185,7 +1187,8 @@
 			"save": "Save",
 			"cancel": "Cancel",
 			"retire": "Retire",
-			"confirmRetire": "Retire: it never plays again"
+			"confirmRetire": "Retire: it never plays again",
+			"loadVideo": "Load the video"
 		},
 		"messages": {
 			"uploaded": "Advertisement uploaded as a draft",
@@ -1194,7 +1197,8 @@
 			"approved": "Advertisement approved",
 			"retired": "Advertisement retired",
 			"tooLarge": "The image is larger than 10 MB.",
-			"failed": "The advertisement library could not be updated: {reason}"
+			"failed": "The advertisement library could not be updated: {reason}",
+			"tooLargeVideo": "The video is larger than 100 MB, more than any installation takes."
 		}
 	},
 	"slides": {

@@ -3,6 +3,7 @@ import { accounts, call, signIn, unusedTotpCode } from '../support/accounts';
 import { guardPage } from '../support/browser-guards';
 import { hosts } from '../support/hosts';
 import { provisionLoadSite, secondFactorSignIn } from '../support/load-site';
+import { videoFixture } from '../support/media';
 import { xssPayloads } from '../support/payloads';
 import { allowStatuses, databaseAvailable, signInThroughUi } from '../support/web-auth';
 
@@ -12,7 +13,8 @@ import { allowStatuses, databaseAvailable, signInThroughUi } from '../support/we
 // with its preview and no approve button on its own upload; a second duty manager, signed in with a second factor,
 // approves it and it plays; a change sends it back to draft after a warning; retiring asks on the page. Too large a file
 // and a refused file are explained on the form. The library is not on the screen of a site whose policy is off, and the
-// screen mirrors in Arabic.
+// screen mirrors in Arabic. ARV-142b: a video shows its length, loads its preview only when asked and plays it from an
+// object URL (media-src blob:) without a CSP violation.
 
 test.skip(!databaseAvailable, 'needs the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true)');
 test.describe.configure({ mode: 'serial' });
@@ -113,6 +115,37 @@ test('too large a file and a refused file are explained on the form, without an 
 	await expect(row(page, 'Refused poster')).toHaveCount(0);
 	await expect(page.locator(injected)).toHaveCount(0);
 	allowStatuses(guards, 400);
+	await guards.expectClean();
+});
+
+test('a duty manager uploads a video; it shows its length, loads only when asked and plays from an object URL; Arabic too', async ({ page }) => {
+	const guards = await guardPage(page);
+	await signInThroughUi(page, accounts().mediaWebManager);
+	await openDisplays(page, site);
+	const library = page.getByTestId('advertising-library');
+
+	await library.getByTestId('media-file').setInputFiles({ name: 'spring.webm', mimeType: 'video/webm', buffer: videoFixture('vp9-opus.webm') });
+	await library.getByTestId('media-advertiser').fill('Gulf Air');
+	await library.getByTestId('media-campaign').fill('Spring video');
+	await library.getByTestId('media-upload').click();
+
+	const video = row(page, 'Spring video');
+	await expect(video).toHaveAttribute('data-status', 'Draft');
+	await expect(video).toContainText('160 by 90 pixels');
+	await expect(video.getByTestId('media-length')).toHaveText('2 seconds');
+	await expect(video.getByTestId('media-video'), 'a video loads only when asked').toHaveCount(0);
+	await video.getByTestId('media-load-video').click();
+	const player = video.getByTestId('media-video');
+	await expect(player).toHaveAttribute('src', /^blob:/);
+	await expect
+		.poll(() => player.evaluate((element: HTMLVideoElement) => element.readyState), { message: 'its metadata is read from the object URL' })
+		.toBeGreaterThanOrEqual(1);
+	expect(await player.evaluate((element: HTMLVideoElement) => Math.round(element.duration))).toBe(2);
+
+	await page.getByTestId('language-toggle').click();
+	await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
+	await expect(video.getByTestId('media-length')).toHaveText('2 ثانية');
+	await expect(player).toHaveAttribute('aria-label', 'إعلان فيديو Gulf Air: Spring video');
 	await guards.expectClean();
 });
 

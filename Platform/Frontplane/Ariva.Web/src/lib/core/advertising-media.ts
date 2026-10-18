@@ -1,22 +1,39 @@
 import { Api, fail, type Result } from './Api';
 
 /**
- * A site's advertisement library (ARV-142a): images typed by their bytes and written anew by the server, each with who
- * advertises, the campaign and the site's local days it may play. An item plays only once approved, by a person other than
+ * A site's advertisement library (ARV-142a, videos ARV-142b): images typed by their bytes and written anew by the server,
+ * and MP4 or WebM videos whose containers it checked and stripped of their metadata, each with who advertises, the
+ * campaign and the site's local days it may play. An item plays only once approved, by a person other than
  * the one who uploaded it and the one who last changed it; approving asks for a second factor (Api.ts opens the step-up
  * dialog). Every call answers 403 while the site's advertising policy is off. Holders of Advertising.Manage upload, change
- * and retire; holders of Advertising.Approve approve. The image is fetched with the user's token and shown through an
- * object URL (img-src blob:); nothing here ever builds a URL from an item's text.
+ * and retire; holders of Advertising.Approve approve. The file is fetched with the user's token and shown through an
+ * object URL (img-src blob: for an image, media-src blob: for a video); nothing here ever builds a URL from an item's text.
  */
 
 const site = /^[A-Z0-9]{2,8}(-[A-Z0-9]{1,8})?$/;
 const guid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 const date = /^\d{4}-\d{2}-\d{2}$/;
 
-export const limits = { maxBytes: 10 * 1024 * 1024, maxName: 120, maxDays: 731 } as const;
+/**
+ * maxBytes is an image's limit; maxVideoBytes the most any installation takes for a video (the installation's own size and
+ * length, at most 100 MB and 120 seconds, are the server's to apply).
+ */
+export const limits = {
+	maxBytes: 10 * 1024 * 1024,
+	maxVideoBytes: 100 * 1024 * 1024,
+	maxName: 120,
+	maxDays: 731
+} as const;
 
 /** The types the server takes; anything else is refused there whatever this says. */
-export const accept = 'image/png,image/jpeg,image/webp';
+export const accept = 'image/png,image/jpeg,image/webp,video/mp4,video/webm';
+
+const videoTypes = new Set(['video/mp4', 'video/webm']);
+
+/** Whether a type (an item's, or a chosen file's as the browser guesses it) is a video type the library takes. */
+export function isVideoType(contentType: string | null | undefined): boolean {
+	return videoTypes.has(contentType ?? '');
+}
 
 export type MediaStatus = 'Draft' | 'Approved' | 'Retired';
 
@@ -28,6 +45,8 @@ export interface AdvertisingMedia {
 	sha256: string;
 	widthPixels: number;
 	heightPixels: number;
+	/** A video's length (null for an image). */
+	durationMilliseconds: number | null;
 	originalFileName: string | null;
 	advertiser: string;
 	campaign: string;
@@ -114,7 +133,7 @@ export function retire(siteCode: string, id: string): Promise<Result<Advertising
 	return checked(siteCode, id, () => Api.post<AdvertisingMedia>(path(siteCode, id, 'retire')));
 }
 
-/** The stored image, fetched with the user's token, for an object URL the caller revokes. */
+/** The stored image or video, fetched with the user's token, for an object URL the caller revokes. */
 export function content(siteCode: string, id: string): Promise<Result<Blob>> {
 	return checked(siteCode, id, () =>
 		Api.get<Blob>(path(siteCode, id, 'content'), { responseType: 'blob' })

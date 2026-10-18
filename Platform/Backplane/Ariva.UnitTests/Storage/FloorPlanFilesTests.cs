@@ -208,6 +208,10 @@ public sealed class FloorPlanFilesTests
     [InlineData("0199a0000000700080000000000000a1.png/../../etc/passwd", false)]
     [InlineData("0199A0000000700080000000000000A1.png", false)]
     [InlineData("0199a0000000700080000000000000a1.exe", false)]
+    [InlineData("0199a0000000700080000000000000a1.mp4", true)]
+    [InlineData("0199a0000000700080000000000000a1.webm", true)]
+    [InlineData("0199a0000000700080000000000000a1.mov", false)]
+    [InlineData("0199a0000000700080000000000000a1.mp4.html", false)]
     [InlineData("/etc/passwd", false)]
     [InlineData(null, false)]
     public void IsValidKey_Should_AcceptOnlyGeneratedKeys_When_Checked(string key, bool valid)

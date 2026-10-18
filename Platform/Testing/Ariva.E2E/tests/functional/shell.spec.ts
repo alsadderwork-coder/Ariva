@@ -13,6 +13,8 @@ const requiredDirectives = [
 	"style-src 'self'",
 	// blob: shows a floor plan fetched with the user's token (ARV-053); nothing else is added.
 	"img-src 'self' data: blob:;",
+	// blob: plays an advertisement video fetched with credentials (ARV-142b); no other media source.
+	"media-src 'self' blob:;",
 	"connect-src 'self'",
 	"object-src 'none'",
 	"base-uri 'self'",

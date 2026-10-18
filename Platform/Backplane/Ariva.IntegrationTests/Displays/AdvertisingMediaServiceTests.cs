@@ -27,6 +27,9 @@ namespace Ariva.IntegrationTests.Displays;
 /// that does not exist (IDOR); a retired item stays retired; a display fetches only what may play on it now. The database
 /// holds the same rules for the runtime role (the two-person check, an approved item's details, the file and the uploader,
 /// a retired item, no delete), and an approval waits for a change of the same item in progress and judges what it left.
+/// ARV-142b with script 0059: an MP4 or WebM video is kept as checked, stripped of its metadata, with its length; a video
+/// of another codec, longer or larger than the installation takes or with data after its end stores nothing; a display
+/// fetches an approved video like an image; and the database holds a video's length and its ceilings.
 /// Its own database, so DMO's advertising policy here never reaches the other displays tests.
 /// </summary>
 [Collection(PostgresCollection.Name)]
@@ -79,6 +82,18 @@ public sealed class AdvertisingMediaServiceTests(PostgresFixture fixture) : IAsy
         return ~crc;
     }
 
+    private static byte[] Fixture(string name) => File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "Media", name));
+
+    /// <summary>The MP4 fixture with its movie's length set (its timescale is 1,000 a second).</summary>
+    private static byte[] Mp4Lasting(uint milliseconds)
+    {
+        var bytes = Fixture("h264-aac.mp4");
+        var header = bytes.AsSpan().IndexOf("mvhd"u8) + 4;
+        BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(header + 12)).Should().Be(1000u, "ffmpeg's movie timescale");
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(header + 16), milliseconds);
+        return bytes;
+    }
+
     private static AdvertisingMediaUpload Upload(byte[] bytes, string name = "winter.png", DateOnly? first = null, DateOnly? last = null, long? length = null,
         string advertiser = "Gulf Air") =>
         new(new MemoryStream(bytes), length ?? bytes.Length, name, advertiser, "Winter sun", first ?? First, last ?? Last);
@@ -119,9 +134,10 @@ public sealed class AdvertisingMediaServiceTests(PostgresFixture fixture) : IAsy
         return user;
     }
 
-    private async Task<AdvertisingMediaViewModel> UploadedAsync(Guid caller, string site = "DMO", DateOnly? first = null, DateOnly? last = null)
+    private async Task<AdvertisingMediaViewModel> UploadedAsync(Guid caller, string site = "DMO", DateOnly? first = null, DateOnly? last = null,
+        byte[] bytes = null, string name = "winter.png")
     {
-        var result = await _host.AsCallerAsync(caller, s => Media(s).UploadAsync(site, Upload(Png(), first: first, last: last), Ct));
+        var result = await _host.AsCallerAsync(caller, s => Media(s).UploadAsync(site, Upload(bytes ?? Png(), name, first: first, last: last), Ct));
         result.HasErrors.Should().BeFalse(string.Join(", ", result.ErrorMessages ?? []));
         return result.Data;
     }
@@ -160,20 +176,91 @@ public sealed class AdvertisingMediaServiceTests(PostgresFixture fixture) : IAsy
             created.Data.Id)).Should().StartWith($"{manager} DMO ").And.Contain("\"status\":\"Draft\"").And.Contain("Gulf Air");
     }
 
-    public static TheoryData<string, string, byte[], string, long?> Refused => new()
+    /// <summary>
+    /// The refused uploads, each file named by a key (<see cref="Content"/>) and made in the test: theory data is held and
+    /// serialised per case, and rows of 20 MB stop the shared collection's later results from being reported.
+    /// </summary>
+    public static TheoryData<string, string, string, string, long?> Refused => new()
     {
-        { "an SVG", AdvertisingMediaErrors.UnsupportedFile, Encoding.UTF8.GetBytes("<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>"), "a.png", null },
-        { "a page", AdvertisingMediaErrors.UnsupportedFile, Encoding.UTF8.GetBytes("<html><script>alert(1)</script></html>"), "a.png", null },
-        { "declared larger than 10 MB", AdvertisingMediaErrors.TooLarge, Png(), "a.png", AdvertisingMedia.MaxImageBytes + 1 },
-        { "more bytes than declared", AdvertisingMediaErrors.TooLarge, [.. Png(), .. new byte[AdvertisingMedia.MaxImageBytes]], "a.png", 100 },
-        { "a path in the name", AdvertisingMediaErrors.UnsafeFileName, Png(), "../../etc/a.png", null },
-        { "a right-to-left override in the name", AdvertisingMediaErrors.UnsafeFileName, Png(), "ad\u202Egnp.exe", null }
+        { "an SVG", AdvertisingMediaErrors.UnsupportedFile, "svg", "a.png", null },
+        { "a page", AdvertisingMediaErrors.UnsupportedFile, "page", "a.png", null },
+        { "declared larger than any file the library takes", AdvertisingMediaErrors.TooLargeFor(20 * 1024 * 1024), "png", "a.png", (20 * 1024 * 1024) + 1 },
+        { "an image of more than 10 MB, declared smaller", AdvertisingMediaErrors.TooLarge, "png and 10 MB", "a.png", 100 },
+        { "more bytes than any file the library takes", AdvertisingMediaErrors.TooLargeFor(20 * 1024 * 1024), "png and 20 MB", "a.png", 100 },
+        { "an HEVC video", AdvertisingMediaErrors.UnsupportedVideo, "hevc", "spot.mp4", null },
+        { "a video with a page after its end", AdvertisingMediaErrors.UnsupportedVideo, "mp4 and a page", "spot.mp4", null },
+        { "a truncated video", AdvertisingMediaErrors.UnsupportedVideo, "webm cut short", "spot.webm", null },
+        { "a video longer than 30 seconds", AdvertisingMediaErrors.TooLong(30), "mp4 of 30.001 s", "spot.mp4", null },
+        { "a video of more than 20 MB", AdvertisingMediaErrors.TooLargeFor(20 * 1024 * 1024), "mp4 and 20 MB", "spot.mp4", null },
+        { "a path in the name", AdvertisingMediaErrors.UnsafeFileName, "png", "../../etc/a.png", null },
+        { "a right-to-left override in the name", AdvertisingMediaErrors.UnsafeFileName, "png", "ad\u202Egnp.exe", null }
     };
+
+    private static byte[] Content(string key) => key switch
+    {
+        "svg" => Encoding.UTF8.GetBytes("<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>"),
+        "page" => Encoding.UTF8.GetBytes("<html><script>alert(1)</script></html>"),
+        "png" => Png(),
+        "png and 10 MB" => [.. Png(), .. new byte[AdvertisingMedia.MaxImageBytes]],
+        "png and 20 MB" => [.. Png(), .. new byte[20 * 1024 * 1024]],
+        "hevc" => Hevc(),
+        "mp4 and a page" => [.. Fixture("h264-aac.mp4"), .. Encoding.UTF8.GetBytes("<html><script>alert(1)</script></html>")],
+        "webm cut short" => Fixture("vp9-opus.webm")[..^10],
+        "mp4 of 30.001 s" => Mp4Lasting(30_001),
+        "mp4 and 20 MB" => [.. Fixture("h264-aac.mp4"), .. FreeBox(20 * 1024 * 1024)],
+        _ => throw new ArgumentOutOfRangeException(nameof(key), key, "Not a refused upload of this class.")
+    };
+
+    private static byte[] Hevc()
+    {
+        // The sample entry's type, after the sample description (the file type box names avc1 among its brands too).
+        var bytes = Fixture("h264-aac.mp4");
+        var description = bytes.AsSpan().IndexOf("stsd"u8);
+        "hvc1"u8.CopyTo(bytes.AsSpan(description + bytes.AsSpan(description).IndexOf("avc1"u8)));
+        return bytes;
+    }
+
+    private static byte[] FreeBox(int size)
+    {
+        var box = new byte[size];
+        BinaryPrimitives.WriteUInt32BigEndian(box, (uint)size);
+        "free"u8.CopyTo(box.AsSpan(4));
+        return box;
+    }
+
+    [Theory]
+    [InlineData("h264-aac.mp4", "video/mp4", "mp4", 2000)]
+    [InlineData("vp9-opus.webm", "video/webm", "webm", 2008)]
+    public async Task Upload_Should_KeepTheVideoStrippedOfItsMetadataAsAnAuditedDraft_When_ItIsAnMp4OrAWebm(string name, string type, string extension, int length)
+    {
+        var manager = await ManagerAsync($"it.media.video.{extension}");
+        var original = Fixture(name);
+        var created = await _host.AsCallerAsync(manager, s => Media(s).UploadAsync("DMO", Upload(original, name), Ct));
+
+        created.HasErrors.Should().BeFalse(string.Join(", ", created.ErrorMessages ?? []));
+        created.Data.Should().Match<AdvertisingMediaViewModel>(m => m.ContentType == type && m.WidthPixels == 160 && m.HeightPixels == 90 &&
+            m.DurationMilliseconds == length && m.SizeBytes == original.Length && m.Status == "Draft");
+        (await _host.ReadAsync<string>("SELECT storage_key FROM advertising_media WHERE id = @id", created.Data.Id))
+            .Should().MatchRegex($"^[0-9a-f]{{32}}\\.{extension}$");
+        (await _host.ReadAsync<int>("SELECT duration_milliseconds FROM advertising_media WHERE id = @id", created.Data.Id)).Should().Be(length);
+
+        var stored = await _host.AsCallerAsync(manager, s => Media(s).OpenAsync("DMO", created.Data.Id, Ct));
+        stored.Data.ContentType.Should().Be(type);
+        using var buffer = new MemoryStream();
+        await stored.Data.Content.CopyToAsync(buffer, Ct);
+        await stored.Data.Content.DisposeAsync();
+        Encoding.Latin1.GetString(buffer.ToArray()).Should().NotContain("Fixture title", "the metadata is stripped");
+        buffer.Length.Should().Be(original.Length, "without moving the media");
+        Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(buffer.ToArray())).Should().Be(created.Data.Sha256, "the hash of what is stored");
+        (await _host.ReadAsync<string>("SELECT after_summary FROM audit_entry WHERE action = 'AdvertisingMedia.Uploaded' AND target_id = @id", created.Data.Id))
+            .Should().Contain($"\"durationMilliseconds\":{length}").And.Contain(type);
+    }
 
     [Theory]
     [MemberData(nameof(Refused))]
-    public async Task Upload_Should_StoreNothing_When_TheFileOrItsNameIsRefused(string reason, string error, byte[] bytes, string name, long? length)
+    public async Task Upload_Should_StoreNothing_When_TheFileOrItsNameIsRefused(string reason, string error, string content, string name, long? length)
     {
+        var bytes = Content(content);
         var manager = await ManagerAsync($"it.media.refused.{Math.Abs(reason.GetHashCode(StringComparison.Ordinal)) % 100000}");
         var before = await _host.ReadAsync<long>("SELECT count(*) FROM advertising_media");
 
@@ -334,6 +421,14 @@ public sealed class AdvertisingMediaServiceTests(PostgresFixture fixture) : IAsy
         }
 
         (await ServedAsync(playing.Id, advertising)).Should().BeTrue();
+        // A video plays like an image (ARV-142b): served with its own type once approved.
+        var video = await UploadedAsync(uploader, bytes: Fixture("av1.webm"), name: "spot.webm");
+        (await ServedAsync(video.Id, advertising)).Should().BeFalse("a video draft");
+        (await _host.AsCallerAsync(approver, s => Media(s).ApproveAsync("DMO", video.Id, new ApproveAdvertisingMediaRequest(video.ReviewToken), Ct)))
+            .HasErrors.Should().BeFalse();
+        var served = await _host.AsCallerAsync(null, s => Media(s).OpenForDisplayAsync(advertising.Id, advertising.Prefix, video.Id, Ct));
+        served.Data.ContentType.Should().Be("video/webm");
+        await served.Data.Content.DisposeAsync();
         (await ServedAsync(draft.Id, advertising)).Should().BeFalse("a draft");
         (await ServedAsync(future.Id, advertising)).Should().BeFalse("before its first day");
         (await ServedAsync(theirs.Id, advertising)).Should().BeFalse("another site's approved item");
@@ -372,8 +467,22 @@ public sealed class AdvertisingMediaServiceTests(PostgresFixture fixture) : IAsy
         { "retired with another approval", "UPDATE advertising_media SET status = 'Retired', retired_on = now(), approved_by_id = gen_random_uuid(), approved_by = 'x', approved_on = now() WHERE id = @id" },
         { "retired with its details changed", "UPDATE advertising_media SET status = 'Retired', retired_on = now(), campaign = 'Other' WHERE id = @id" },
         { "its creator replaced", "UPDATE advertising_media SET created_by = 'someone else' WHERE id = @id" },
-        { "its creation time moved", "UPDATE advertising_media SET created_on = created_on - interval '1 day' WHERE id = @id" }
+        { "its creation time moved", "UPDATE advertising_media SET created_on = created_on - interval '1 day' WHERE id = @id" },
+        { "an image given a length", "UPDATE advertising_media SET duration_milliseconds = 15000 WHERE id = @id" },
+        { "inserted as a video without a length", InsertAs("'video/mp4'", "'.mp4'", "size_bytes", "NULL") },
+        { "inserted as an image with a length", InsertAs("content_type", "'.png'", "size_bytes", "15000") },
+        { "inserted as a video of more than 100 MB", InsertAs("'video/mp4'", "'.mp4'", "104857601", "15000") },
+        { "inserted as a video longer than 120 seconds", InsertAs("'video/webm'", "'.webm'", "size_bytes", "120001") },
+        { "inserted as a QuickTime video", InsertAs("'video/quicktime'", "'.mov'", "size_bytes", "15000") },
+        { "inserted as an MP4 under a WebM key", InsertAs("'video/mp4'", "'.webm'", "size_bytes", "15000") }
     };
+
+    /// <summary>A draft copy of the item under a new id and key, written by the runtime role as another type, size or length (ARV-142b).</summary>
+    private static string InsertAs(string type, string extension, string size, string duration) =>
+        "INSERT INTO advertising_media (id, site_code, storage_key, content_type, size_bytes, sha256, width_pixels, height_pixels, duration_milliseconds, " +
+        "advertiser, campaign, starts_on, ends_on, status, uploaded_by_id, changed_by_id) " +
+        "SELECT gen_random_uuid(), site_code, md5(random()::text) || " + extension + ", " + type + ", " + size + ", sha256, width_pixels, height_pixels, " +
+        duration + ", advertiser, campaign, starts_on, ends_on, 'Draft', uploaded_by_id, uploaded_by_id FROM advertising_media WHERE id = @id";
 
     /// <summary>A copy of the item under a new id and key, written by the runtime role with the given state and people.</summary>
     private static string InsertCopy(string stateAndPeople) =>
@@ -434,6 +543,31 @@ public sealed class AdvertisingMediaServiceTests(PostgresFixture fixture) : IAsy
                 runtime.Connection, runtime.Transaction);
             command.Parameters.AddWithValue("id", approved.Id);
             command.Parameters.AddWithValue("changer", approver);
+            (await command.ExecuteNonQueryAsync(Ct)).Should().Be(1);
+        }
+    }
+
+    [Fact]
+    public async Task Database_Should_KeepAVideosLength_When_TheRuntimeRoleWrites()
+    {
+        var uploader = await ManagerAsync("it.media.rt.video");
+        var video = await UploadedAsync(uploader, bytes: Fixture("h264-aac.mp4"), name: "spot.mp4");
+
+        await using (var runtime = await RuntimeAsync())
+        {
+            await using var command = new NpgsqlCommand("UPDATE advertising_media SET duration_milliseconds = 1 WHERE id = @id", runtime.Connection, runtime.Transaction);
+            command.Parameters.AddWithValue("id", video.Id);
+            var writing = () => command.ExecuteNonQueryAsync(Ct);
+            (await writing.Should().ThrowAsync<PostgresException>("a video's length is kept like its file")).Which.SqlState.Should().Be("23514");
+        }
+
+        // A draft copy as the service writes one is taken: the checks hold the ceilings, not less.
+        await using (var runtime = await RuntimeAsync())
+        {
+#pragma warning disable CA2100 // a literal statement from the helper above
+            await using var command = new NpgsqlCommand(InsertAs("'video/mp4'", "'.mp4'", "104857600", "120000"), runtime.Connection, runtime.Transaction);
+#pragma warning restore CA2100
+            command.Parameters.AddWithValue("id", video.Id);
             (await command.ExecuteNonQueryAsync(Ct)).Should().Be(1);
         }
     }

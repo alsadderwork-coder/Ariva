@@ -104,6 +104,9 @@ export function cspDirectives(env = loadArivaEnv()) {
 		'style-src-attr': ['unsafe-hashes', SVELTEKIT_ANNOUNCER_STYLE_HASH],
 		// blob: shows a floor plan the app fetched with the user's token (ARV-053); an <img> never runs a plan's script.
 		'img-src': ['self', 'data:', 'blob:'],
+		// blob: plays an advertisement video the app fetched with the user's or the display's credentials (ARV-142b); no
+		// other origin serves media.
+		'media-src': ['self', 'blob:'],
 		'font-src': ['self'],
 		'connect-src': ['self', .../** @type {any[]} */ (apiOrigins(env))],
 		'object-src': ['none'],

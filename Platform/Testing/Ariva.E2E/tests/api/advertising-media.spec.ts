@@ -1,8 +1,10 @@
 import crypto from 'node:crypto';
+import http from 'node:http';
 import { expect, test } from '@playwright/test';
 import { accounts, call, databaseAvailable, signIn } from '../support/accounts';
 import { hosts } from '../support/hosts';
 import { provisionLoadSite, randomLetters, secondFactorSignIn } from '../support/load-site';
+import { box, lasting, live, renamed, videoFixture, withCodec } from '../support/media';
 import { sqlInjectionPayloads, xssPayloads } from '../support/payloads';
 
 // ARV-142a: the advertisement library of sites of its own (fresh codes each run, so no other spec shares them). Images are
@@ -13,6 +15,10 @@ import { sqlInjectionPayloads, xssPayloads } from '../support/payloads';
 // site's advertising policy is off and 404 outside the caller's sites; another site's item answers 404 under this site's
 // route (IDOR). A display fetches an item with its own credential only: an approved item of its own site within its dates
 // while it is set to advertising and the policy allows it.
+// ARV-142b: MP4 (H.264) and WebM (VP8, VP9, AV1) videos are typed by their container and kept without their metadata, with
+// their length; markup in free space is zeroed, and data after the end, polyglots, other codecs, fragmented, live, truncated,
+// too long (over 30 seconds) and too large (over 20 MB, the installation's defaults) videos are refused. An approved video
+// plays on a display like an image.
 
 test.skip(!databaseAvailable, 'needs the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true)');
 test.describe.configure({ mode: 'serial' });
@@ -72,6 +78,9 @@ let approver: string;
 let elsewhere: string;
 let attacker: string;
 let prober: string;
+let videoMaker: string;
+let videoAttacker: string;
+let pathProber: string;
 const displays: Record<'advertising' | 'instructions', { id: string; code: string; credential: string }> = {} as never;
 
 async function upload(token: string, content: Buffer | string, fileName: string, type: string, details: Details = {}, at = site) {
@@ -112,6 +121,71 @@ async function allow(code: string) {
 	expect(changed.status(), await changed.text()).toBe(200);
 }
 
+/**
+ * Streams a video upload offering `offered` bytes of file, without a declared length (chunked) or, with `declared`, with
+ * its whole length in Content-Length and `Expect: 100-continue`, writing the body only when the server asks for it. It
+ * stops writing once the server answers: what was sent by then shows where the server stopped reading. A server that
+ * answers before taking the whole body closes the connection, and a write can fail before the answer is read (a plain
+ * fetch fails with EPIPE); the result then has status 0 and `closed`.
+ */
+function streamUpload(token: string, offered: number, declared = false): Promise<{ status: number; body: string; sent: number; closed: boolean }> {
+	const boundary = `ariva${crypto.randomBytes(8).toString('hex')}`;
+	const field = (name: string, value: string) => `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`;
+	const head = Buffer.from(
+		field('advertiser', 'Gulf Air') +
+			field('campaign', 'Streamed') +
+			field('startsOn', day(0)) +
+			field('endsOn', day(30)) +
+			`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="spot.mp4"\r\nContent-Type: video/mp4\r\n\r\n`
+	);
+	const tail = Buffer.from(`\r\n--${boundary}--\r\n`);
+	const headers: Record<string, string> = { Authorization: `Bearer ${token}`, 'Content-Type': `multipart/form-data; boundary=${boundary}` };
+	if (declared) {
+		headers['Content-Length'] = String(head.length + offered + tail.length);
+		headers['Expect'] = '100-continue';
+	}
+	return new Promise((resolve) => {
+		let sent = 0;
+		let answered = false;
+		let settled = false;
+		const settle = (result: { status: number; body: string; sent: number; closed: boolean }) => {
+			if (settled) return;
+			settled = true;
+			request.destroy();
+			resolve(result);
+		};
+		const request = http.request(mediaUrl(site), { method: 'POST', headers }, (response) => {
+			answered = true;
+			const chunks: Buffer[] = [];
+			response.on('data', (chunk: Buffer) => chunks.push(chunk));
+			response.on('end', () => settle({ status: response.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8'), sent, closed: false }));
+		});
+		request.on('error', () => {
+			if (!answered) settle({ status: 0, body: '', sent, closed: true });
+		});
+		const chunk = Buffer.alloc(256 * 1024);
+		const pump = () => {
+			while (!answered && sent < offered) {
+				const part = chunk.subarray(0, Math.min(chunk.length, offered - sent));
+				sent += part.length;
+				if (!request.write(part)) {
+					request.once('drain', pump);
+					return;
+				}
+			}
+			if (!answered) request.end(tail);
+		};
+		const send = () => {
+			request.write(head);
+			pump();
+		};
+		if (declared) {
+			request.on('continue', send);
+			request.flushHeaders();
+		} else send();
+	});
+}
+
 async function fetchAsDisplay(id: string, display: { code: string; credential: string }, key = display.credential) {
 	return fetch(displayFetchUrl(id, display.code), {
 		headers: { 'X-Ariva-Display-Key': key }
@@ -132,6 +206,9 @@ test.beforeAll(async () => {
 	elsewhere = (await signIn(accounts().mediaElsewhere)).accessToken;
 	attacker = (await signIn(accounts().mediaAttacker)).accessToken;
 	prober = (await signIn(accounts().mediaProber)).accessToken;
+	videoMaker = (await signIn(accounts().mediaVideos)).accessToken;
+	videoAttacker = (await signIn(accounts().mediaVideoAttacker)).accessToken;
+	pathProber = (await signIn(accounts().mediaPaths)).accessToken;
 	for (const secondRegion of ['Advertising', 'Instructions'] as const) {
 		const code = `AD-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
 		const made = await call('POST', `${hosts.main}/api/v1/admin/displays`, {
@@ -213,7 +290,6 @@ test('upload attacks are refused without an echo: wrong types, polyglots, oversi
 		['HTML', markup, 'ad.jpg', 'image/jpeg'],
 		['PDF', '%PDF-1.7\n1 0 obj << /Type /Catalog /OpenAction << /JS (alert(1)) >> >> endobj', 'ad.png', 'image/png'],
 		['GIF', Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64'), 'ad.gif', 'image/gif'],
-		['MP4 (videos come with ARV-142b)', Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from('ftypisom'), Buffer.alloc(12)]), 'ad.mp4', 'video/mp4'],
 		['a PNG signature over a page', Buffer.concat([png.subarray(0, 8), Buffer.from(markup)]), 'ad.png', 'image/png'],
 		['a JPEG signature over a script', Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from(markup)]), 'ad.jpg', 'image/jpeg'],
 		['a truncated PNG', png.subarray(0, 40), 'ad.png', 'image/png'],
@@ -239,7 +315,7 @@ test('upload attacks are refused without an echo: wrong types, polyglots, oversi
 		'ad\u202Egnp.png',
 		'a'.repeat(201) + '.png'
 	]) {
-		const response = await upload(attacker, png, fileName, 'image/png');
+		const response = await upload(pathProber, png, fileName, 'image/png');
 		expect(response.status(), fileName).toBe(400);
 		const text = await response.text();
 		expect(text).toContain('The file name holds a path');
@@ -251,6 +327,113 @@ test('upload attacks are refused without an echo: wrong types, polyglots, oversi
 		list.every((item: { originalFileName: string | null }) => !item.originalFileName?.includes('/')),
 		'no stored name carries a path'
 	).toBe(true);
+});
+
+test('a video is typed by its container, kept without its metadata and with its length, and plays on a display once approved', async () => {
+	for (const [name, type, length] of [
+		['h264-aac.mp4', 'video/mp4', 2000],
+		['vp9-opus.webm', 'video/webm', 2008]
+	] as const) {
+		const original = videoFixture(name);
+		// Declared as something else: the container decides.
+		const created = await upload(videoMaker, original, name, 'application/octet-stream');
+		expect(created.status(), await created.text()).toBe(201);
+		const item = await created.json();
+		expect(item, name).toMatchObject({
+			contentType: type,
+			widthPixels: 160,
+			heightPixels: 90,
+			durationMilliseconds: length,
+			sizeBytes: original.length,
+			status: 'Draft'
+		});
+		const content = await fetch(`${mediaUrl(site, item.id)}/content`, { headers: { Authorization: `Bearer ${videoMaker}` } });
+		expect(content.status).toBe(200);
+		expect(content.headers.get('content-type')).toBe(type);
+		expect(content.headers.get('content-security-policy')).toContain('sandbox');
+		expect(content.headers.get('x-content-type-options')).toBe('nosniff');
+		const bytes = Buffer.from(await content.arrayBuffer());
+		expect(bytes.length, 'the media is not moved').toBe(original.length);
+		expect(bytes.toString('latin1'), 'the title in its metadata is gone').not.toContain('Fixture title');
+		expect(crypto.createHash('sha256').update(bytes).digest('hex')).toBe(item.sha256);
+	}
+
+	// Markup hidden in free space at the end: taken, the free space zeroed.
+	const hidden = await upload(
+		videoMaker,
+		Buffer.concat([videoFixture('h264-aac.mp4'), box('free', markup), box('uuid', Buffer.concat([Buffer.alloc(16), Buffer.from(markup)]))]),
+		'spot.mp4',
+		'video/mp4'
+	);
+	expect(hidden.status(), await hidden.text()).toBe(201);
+	const zeroed = await fetch(`${mediaUrl(site, (await hidden.json()).id)}/content`, { headers: { Authorization: `Bearer ${videoMaker}` } });
+	expect(Buffer.from(await zeroed.arrayBuffer()).toString('latin1')).not.toContain('<script');
+
+	// Approved by a second person with a second factor, a video plays on the display like an image.
+	const spot = await upload(videoMaker, videoFixture('av1.webm'), 'spot.webm', 'video/webm');
+	expect(spot.status(), await spot.text()).toBe(201);
+	const video = await spot.json();
+	expect((await fetchAsDisplay(video.id, displays.advertising)).status, 'a draft').toBe(404);
+	const approved = await approve(site, video.id, approver);
+	expect(approved.status(), await approved.text()).toBe(200);
+	expect((await approved.json()).status).toBe('Approved');
+	const shown = await fetchAsDisplay(video.id, displays.advertising);
+	expect(shown.status).toBe(200);
+	expect(shown.headers.get('content-type')).toBe('video/webm');
+	expect(shown.headers.get('content-security-policy')).toContain('sandbox');
+	expect(shown.headers.get('cache-control')).toContain('no-store');
+	expect((await fetchAsDisplay(video.id, displays.instructions)).status, 'a display set to instructions').toBe(404);
+});
+
+test('video upload attacks are refused without an echo: data after the end, polyglots, other codecs, fragmented, live, too long and too large', async () => {
+	const mp4 = videoFixture('h264-aac.mp4');
+	const webm = videoFixture('vp9-opus.webm');
+	const refused: [string, Buffer][] = [
+		['a page after the last box', Buffer.concat([mp4, Buffer.from(markup)])],
+		['a page after the last element', Buffer.concat([webm, Buffer.from(markup)])],
+		['an MP4 signature over a page', Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from('ftypisom'), Buffer.alloc(12), Buffer.from(markup)])],
+		['an MP4 file type box and nothing else', Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from('ftypisom'), Buffer.alloc(12)])],
+		['a WebM signature over a page', Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.from(markup)])],
+		['HEVC', withCodec(mp4, 'hvc1')],
+		['a movie fragment', renamed(mp4, 'free', 'moof')],
+		['a live WebM of unknown size', live(webm)],
+		['a truncated MP4', mp4.subarray(0, mp4.length - 10)],
+		['a truncated WebM', webm.subarray(0, webm.length / 2)]
+	];
+	for (const [name, content] of refused) {
+		const response = await upload(videoAttacker, content, 'spot.mp4', 'video/mp4');
+		expect(response.status(), name).toBe(400);
+		const text = await response.text();
+		expect(text, name).toContain('The video is not an MP4 with H.264 video');
+		expect(text, `${name}: nothing sent is echoed`).not.toContain('<script');
+	}
+
+	const tooLong = await upload(videoAttacker, lasting(mp4, 30_001), 'spot.mp4', 'video/mp4');
+	expect(tooLong.status(), 'over 30 seconds').toBe(400);
+	expect(await tooLong.text()).toContain('The video is longer than 30 seconds.');
+
+	const tooLarge = await upload(videoAttacker, Buffer.concat([mp4, box('free', Buffer.alloc(20 * 1024 * 1024))]), 'spot.mp4', 'video/mp4');
+	expect(tooLarge.status(), 'over 20 MB').toBe(413);
+	expect(await tooLarge.text()).toContain('The file is larger than 20 MB.');
+	// Sent without a length (chunked), a body is cut off where the installation's limit is, not at the endpoint's 100 MB.
+	// Each try proves the cut-off (the server stops reading near 20 MB); a write can fail before the answer is read, so
+	// up to three tries are made for the answer itself. A body cut off in the filter never reaches the service, so the
+	// tries cost no upload attempts.
+	const before = (await (await call('GET', mediaUrl(site), { token: videoAttacker })).json()).length;
+	let streamed = await streamUpload(videoAttacker, 60 * 1024 * 1024);
+	for (let attempt = 1; attempt < 3 && streamed.closed; attempt++) {
+		expect(streamed.sent, 'the server closed the connection near 20 MB').toBeLessThan(40 * 1024 * 1024);
+		streamed = await streamUpload(videoAttacker, 60 * 1024 * 1024);
+	}
+	expect(streamed.status, streamed.body).toBe(413);
+	expect(streamed.body).toContain('The file is larger than 20 MB.');
+	expect(streamed.sent, 'the server stopped reading near 20 MB, not at the 100 MB ceiling').toBeLessThan(40 * 1024 * 1024);
+	expect((await (await call('GET', mediaUrl(site), { token: videoAttacker })).json()).length, 'nothing is stored').toBe(before);
+	// Declared larger than the installation takes, a body is refused before its form is read (the endpoint's ceiling is 100 MB).
+	const declared = await streamUpload(videoAttacker, 25 * 1024 * 1024, true);
+	expect(declared.status, declared.body).toBe(413);
+	expect(declared.body).toContain('The file is larger than 20 MB.');
+	expect(declared.sent, 'answered before any of the body was asked for').toBe(0);
 });
 
 test('details are bounded plain text: markup is kept as text, control and invisible characters and bad dates are refused', async () => {

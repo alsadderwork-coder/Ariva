@@ -11,8 +11,9 @@ using Microsoft.AspNetCore.RateLimiting;
 namespace Ariva.Api.Main.Controllers.AdminArea.Advertising;
 
 /// <summary>
-/// A site's advertisement library (ARV-142a, wiki 11 section 9): images typed by their bytes and written anew on upload,
-/// each with its advertiser, campaign and the site's local days it may play. Only approved items play, and the approver is
+/// A site's advertisement library (ARV-142a and ARV-142b, wiki 11 section 9): images typed by their bytes and written anew
+/// on upload, and MP4 or WebM videos whose containers are checked and stripped of their metadata, each with its advertiser,
+/// campaign and the site's local days it may play. Only approved items play, and the approver is
 /// never the person who uploaded or last changed the item. Every action acts only while the site's advertising policy
 /// allows advertising (<see cref="AdvertisingAllowedAttribute"/>: 403 while it is off, 404 alike for a site outside the
 /// caller's sites and one that does not exist); an item of another site answers 404 under this site's route. Every change is
@@ -24,8 +25,12 @@ namespace Ariva.Api.Main.Controllers.AdminArea.Advertising;
 [AdvertisingAllowed]
 public sealed class AdvertisingMediaController(ISvcAdvertisingMedia media) : ControllerBase
 {
-    /// <summary>The body may carry the 10 MB file, the details and the multipart framing.</summary>
-    private const long MaxRequestBytes = AdvertisingMedia.MaxImageBytes + (64 * 1024);
+    /// <summary>
+    /// The body may carry the largest video any installation takes (100 MB), the details and the multipart framing;
+    /// <see cref="AdvertisingUploadLimitAttribute"/> lowers it to what this installation takes before the form is read, and
+    /// the service holds the file to that on its declared length and again in the read.
+    /// </summary>
+    private const long MaxRequestBytes = AdvertisingMedia.MaxVideoBytes + AdvertisingUploadLimitAttribute.Framing;
 
     /// <summary>
     /// For the image itself: no script, no fetches, no framing, a sandbox so a browser that opens it directly treats it as an
@@ -47,7 +52,7 @@ public sealed class AdvertisingMediaController(ISvcAdvertisingMedia media) : Con
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> Get(string siteCode, Guid id, CancellationToken ct) => TopologyAnswers.Ok(this, await media.GetAsync(siteCode, id, ct));
 
-    /// <summary>The stored image (as written anew), for the library's preview; never cached, never framed.</summary>
+    /// <summary>The stored image (as written anew) or video (as checked), for the library's preview; never cached, never framed.</summary>
     [HttpGet("{id:guid}/content")]
     [Permission(nameof(Global.Defaults.Permissions.ViewAdvertising), nameof(Global.Defaults.Permissions.ManageAdvertising))]
     [ProducesResponseType(StatusCodes.Status200OK)]
@@ -59,11 +64,12 @@ public sealed class AdvertisingMediaController(ISvcAdvertisingMedia media) : Con
         return result.HasErrors ? TopologyAnswers.Ok(this, result) : MediaFile(this, result.Data);
     }
 
-    /// <summary>Uploads an image as a draft. Form fields: file, advertiser, campaign, startsOn and endsOn ("yyyy-MM-dd", the site's local days).</summary>
+    /// <summary>Uploads an image or a video as a draft. Form fields: file, advertiser, campaign, startsOn and endsOn ("yyyy-MM-dd", the site's local days).</summary>
     [HttpPost]
     [Permission(nameof(Global.Defaults.Permissions.ManageAdvertising))]
     [EnableRateLimiting(RateLimitingExtensions.UploadPolicy)]
     [RequestSizeLimit(MaxRequestBytes)]
+    [AdvertisingUploadLimit]
     [RequestFormLimits(MultipartBodyLengthLimit = MaxRequestBytes, ValueLengthLimit = 1024, ValueCountLimit = 16)]
     [ProducesResponseType<AdvertisingMediaViewModel>(StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
@@ -77,13 +83,11 @@ public sealed class AdvertisingMediaController(ISvcAdvertisingMedia media) : Con
     {
         if (file is null)
             return Problem(statusCode: StatusCodes.Status400BadRequest, title: "Not valid", detail: AdvertisingMediaErrors.UnsupportedFile);
-        if (file.Length > AdvertisingMedia.MaxImageBytes)
-            return Problem(statusCode: StatusCodes.Status413PayloadTooLarge, title: "Too large", detail: AdvertisingMediaErrors.TooLarge);
 
         await using var content = file.OpenReadStream();
         var result = await media.UploadAsync(siteCode, new AdvertisingMediaUpload(content, file.Length, file.FileName, advertiser, campaign, startsOn, endsOn), ct);
-        if (result.HasErrors && result.ErrorMessages.Contains(AdvertisingMediaErrors.TooLarge))
-            return Problem(statusCode: StatusCodes.Status413PayloadTooLarge, title: "Too large", detail: AdvertisingMediaErrors.TooLarge);
+        if (result.HasErrors && result.ErrorMessages.FirstOrDefault(AdvertisingMediaErrors.IsTooLarge) is { } tooLarge)
+            return Problem(statusCode: StatusCodes.Status413PayloadTooLarge, title: "Too large", detail: tooLarge);
         if (result.HasErrors && result.ErrorMessages.Contains(AdvertisingMediaErrors.TooManyUploads))
         {
             Response.Headers.RetryAfter = "60";

@@ -47,6 +47,11 @@
     </ItemGroup>
 
     <ItemGroup>
+        <!-- ARV-142b: the advertisement video fixtures (Platform/Testing/Media/README.md says how they were made). -->
+        <Content Include="..\..\Testing\Media\*.mp4;..\..\Testing\Media\*.webm">
+            <Link>Media\%(Filename)%(Extension)</Link>
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </Content>
         <Content Include="..\Ariva.Api.Common\appsettings.base.json">
             <Link>appsettings.base.json</Link>
             <CopyToOutputDirectory>Always</CopyToOutputDirectory>

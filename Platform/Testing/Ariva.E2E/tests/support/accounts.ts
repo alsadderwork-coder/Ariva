@@ -261,6 +261,12 @@ export function accounts() {
 		// Two more duty managers for the upload attacks and the details probes: each person may attempt 30 uploads in 10 minutes.
 		mediaAttacker: account('e2e.mediaattack', ['TerminalDutyManager'], false, false, ['*']),
 		mediaProber: account('e2e.mediaprobe', ['TerminalDutyManager'], false, false, ['*']),
+		// ARV-142b: duty managers for the video uploads, the video attacks and the path tricks in names: each person may
+		// attempt 30 uploads in 10 minutes, and a retry of the serial group attempts every upload again, so no account
+		// spends more than 15 in one attempt.
+		mediaVideos: account('e2e.mediavideo', ['TerminalDutyManager'], false, false, ['*']),
+		mediaVideoAttacker: account('e2e.mediavattack', ['TerminalDutyManager'], false, false, ['*']),
+		mediaPaths: account('e2e.mediapaths', ['TerminalDutyManager'], false, false, ['*']),
 		// ARV-142a: the same roles for the functional suite's library screen (its own accounts: a TOTP code counts once per account).
 		mediaWebAdmin: account('e2e.mediawebadmin', ['SystemAdministrator'], false, true, ['*']),
 		mediaWebManager: account('e2e.mediawebmgr', ['TerminalDutyManager'], false, false, ['*']),

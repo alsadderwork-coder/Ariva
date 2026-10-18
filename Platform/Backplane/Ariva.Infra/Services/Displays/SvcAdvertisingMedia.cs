@@ -8,15 +8,19 @@ using Ariva.Infra.Services.Administration;
 using Ariva.Infra.Services.Foundation;
 using Ariva.Infra.Services.Reports;
 using Ariva.Infra.Storage;
+using Microsoft.Extensions.Options;
 using NHibernate.Linq;
 
 namespace Ariva.Infra.Services.Displays;
 
 /// <summary>
-/// The advertisement library (ARV-142a). Every call names a site of the caller (another answers like a site that does not
-/// exist) and every item is looked up by its id and that site together, so another site's item answers 404 (CWE-863,
-/// IDOR). An upload is read to at most 10 MB, decoded and written anew (<see cref="AdvertisingImages"/>), stored under a
-/// generated key and recorded as a draft, each person's attempts counted first (<see cref="AdvertisingUploadWindow"/>);
+/// The advertisement library (ARV-142a, videos ARV-142b). Every call names a site of the caller (another answers like a
+/// site that does not exist) and every item is looked up by its id and that site together, so another site's item answers
+/// 404 (CWE-863, IDOR). An upload is read to at most the larger of 10 MB and the video size set for the installation
+/// (<see cref="AdvertisingVideoSettings"/>); a video's container is checked and stripped of its metadata in place
+/// (<see cref="AdvertisingVideos"/>) and its length held to the setting, any other file is an image decoded and written
+/// anew (<see cref="AdvertisingImages"/>). The file is stored under a generated key and recorded as a draft, each person's
+/// attempts counted first (<see cref="AdvertisingUploadWindow"/>);
 /// changing, approving and retiring lock the item's row first, and an approval names the review token of what its approver
 /// was shown, so it never lands on details changed after the approver read them (security review). The display fetch serves
 /// only what may play on that display now. Every change is audited.
@@ -30,7 +34,8 @@ internal sealed class SvcAdvertisingMedia(
     AuditTrail audit,
     ReportReader sites,
     AdvertisingPolicyGuard advertising,
-    AdvertisingUploadWindow uploads)
+    AdvertisingUploadWindow uploads,
+    IOptions<AdvertisingVideoSettings> videoSettings)
     : SvcBase(unitOfWork, currentUser, timeProvider), ISvcAdvertisingMedia
 {
     private const string Target = "AdvertisingMedia";
@@ -69,8 +74,10 @@ internal sealed class SvcAdvertisingMedia(
             return Result.Error<AdvertisingMediaViewModel>(AdvertisingMediaErrors.TooManyUploads);
         if (upload?.Content is null)
             return Result.Error<AdvertisingMediaViewModel>(AdvertisingMediaErrors.UnsupportedFile);
-        if (upload.Length > AdvertisingMedia.MaxImageBytes)
-            return Result.Error<AdvertisingMediaViewModel>(AdvertisingMediaErrors.TooLarge);
+        var videos = videoSettings.Value;
+        var largest = Math.Max(AdvertisingMedia.MaxImageBytes, videos.MaxBytes);
+        if (upload.Length > largest)
+            return Result.Error<AdvertisingMediaViewModel>(AdvertisingMediaErrors.TooLargeFor(largest));
         var details = new AdvertisingMediaDetails(upload.Advertiser, upload.Campaign, upload.StartsOn, upload.EndsOn);
         var problems = details.Problems();
         if (problems.Count > 0)
@@ -79,12 +86,12 @@ internal sealed class SvcAdvertisingMedia(
         if (!FloorPlan.IsSafeFileName(upload.FileName))
             return Result.Error<AdvertisingMediaViewModel>(AdvertisingMediaErrors.UnsafeFileName);
 
-        var bytes = await UploadReader.ReadAtMostAsync(upload.Content, AdvertisingMedia.MaxImageBytes, ct);
+        var bytes = await UploadReader.ReadAtMostAsync(upload.Content, largest, ct, upload.Length);
         if (bytes is null)
-            return Result.Error<AdvertisingMediaViewModel>(AdvertisingMediaErrors.TooLarge);
-        var image = await AdvertisingImages.ReencodeAsync(bytes, ct);
-        if (image is null)
-            return Result.Error<AdvertisingMediaViewModel>(AdvertisingMediaErrors.UnsupportedFile);
+            return Result.Error<AdvertisingMediaViewModel>(AdvertisingMediaErrors.TooLargeFor(largest));
+        var (stored, refusal) = await StoredFileAsync(bytes, videos, ct);
+        if (refusal is not null)
+            return Result.Error<AdvertisingMediaViewModel>(refusal);
 
         // Advisory lock class 1421, one per site's library: uploads of one site count its items one at a time.
         await ExecuteCommandAsync<LockRow>("""SELECT 1 AS "Value" FROM (SELECT pg_advisory_xact_lock(1421, hashtext(:site))) l""",
@@ -92,13 +99,13 @@ internal sealed class SvcAdvertisingMedia(
         if (await Query<AdvertisingMedia>().CountAsync(m => m.SiteCode == siteCode, ct) >= AdvertisingMedia.MaxItemsPerSite)
             return Result.Error<AdvertisingMediaViewModel>(AdvertisingMediaErrors.LibraryFull);
 
-        var file = new AdvertisingMediaFile($"{Guid.CreateVersion7():N}.{image.Extension}", image.ContentType, image.Bytes.Length,
-            Convert.ToHexStringLower(SHA256.HashData(image.Bytes)), image.WidthPixels, image.HeightPixels,
-            string.IsNullOrWhiteSpace(upload.FileName) ? null : upload.FileName.Trim());
+        var file = new AdvertisingMediaFile($"{Guid.CreateVersion7():N}.{stored.Extension}", stored.ContentType, stored.Bytes.Length,
+            Convert.ToHexStringLower(SHA256.HashData(stored.Bytes)), stored.WidthPixels, stored.HeightPixels,
+            string.IsNullOrWhiteSpace(upload.FileName) ? null : upload.FileName.Trim(), stored.DurationMilliseconds);
         var item = new AdvertisingMedia(siteCode, file, details, uploader);
         var key = item.StorageKey;
         RegisterPostRollbackAction(() => storage.DeleteAsync(key));
-        await using (var content = new MemoryStream(image.Bytes, writable: false))
+        await using (var content = new MemoryStream(stored.Bytes, writable: false))
             await storage.SaveAsync(key, content, ct);
         await SaveAsync(item, ct);
         await audit.RecordAsync($"{Target}.Uploaded", Target, item.Id, siteCode, null, item.AuditSummary(), ct);
@@ -184,6 +191,33 @@ internal sealed class SvcAdvertisingMedia(
         return await ContentAsync(item, ct);
     }
 
+    /// <summary>
+    /// What is stored of an upload: a video (its container starts the file) checked and stripped in place, at most the size
+    /// and length set for the installation; anything else an image decoded and written anew, at most 10 MB. The refusal
+    /// otherwise.
+    /// </summary>
+    private static async Task<(StoredFile File, string Refusal)> StoredFileAsync(byte[] bytes, AdvertisingVideoSettings videos, CancellationToken ct)
+    {
+        if (AdvertisingVideos.LooksLikeVideo(bytes))
+        {
+            if (bytes.Length > videos.MaxBytes)
+                return (null, AdvertisingMediaErrors.TooLargeFor(videos.MaxBytes));
+            var video = AdvertisingVideos.Check(bytes);
+            if (video is null)
+                return (null, AdvertisingMediaErrors.UnsupportedVideo);
+            if (video.DurationMilliseconds > videos.MaxSeconds * 1000L)
+                return (null, AdvertisingMediaErrors.TooLong(videos.MaxSeconds));
+            return (new StoredFile(video.ContentType, video.Extension, bytes, video.WidthPixels, video.HeightPixels, (int)video.DurationMilliseconds), null);
+        }
+
+        if (bytes.Length > AdvertisingMedia.MaxImageBytes)
+            return (null, AdvertisingMediaErrors.TooLarge);
+        var image = await AdvertisingImages.ReencodeAsync(bytes, ct);
+        return image is null
+            ? (null, AdvertisingMediaErrors.UnsupportedFile)
+            : (new StoredFile(image.ContentType, image.Extension, image.Bytes, image.WidthPixels, image.HeightPixels, null), null);
+    }
+
     private async Task<Result<AdvertisingMediaContent>> ContentAsync(AdvertisingMedia item, CancellationToken ct)
     {
         var stream = item is null ? null : await storage.OpenReadAsync(item.StorageKey, ct);
@@ -219,7 +253,10 @@ internal sealed class SvcAdvertisingMedia(
     private AdvertisingMediaViewModel View(AdvertisingMedia m, DateOnly today) =>
         new(m.Id.GetValueOrDefault(), m.SiteCode, m.ContentType, m.SizeBytes, m.Sha256, m.WidthPixels, m.HeightPixels, m.OriginalFileName, m.Advertiser,
             m.Campaign, m.StartDate, m.EndDate, m.Status.ToString(), m.CreatedBy, m.CreatedOn, m.ApprovedBy, m.ApprovedOn, m.RetiredOn, m.CanPlayOn(today),
-            m.CanBeApprovedBy(CurrentUser.Id), m.ReviewToken());
+            m.CanBeApprovedBy(CurrentUser.Id), m.ReviewToken(), m.DurationMilliseconds);
+
+    /// <summary>The bytes to store and what they hold.</summary>
+    private sealed record StoredFile(string ContentType, string Extension, byte[] Bytes, int WidthPixels, int HeightPixels, int? DurationMilliseconds);
 
     private sealed class LockRow
     {

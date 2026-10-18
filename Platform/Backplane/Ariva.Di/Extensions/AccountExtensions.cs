@@ -100,6 +100,11 @@ public static class AccountExtensions
         // Advertisement library (ARV-142a): images re-encoded on upload, two-person approval, the display fetch.
         services.TryAddScoped<Ariva.Core.Services.Displays.ISvcAdvertisingMedia, Ariva.Infra.Services.Displays.SvcAdvertisingMedia>();
         services.TryAddSingleton<Ariva.Infra.Services.Displays.AdvertisingUploadWindow>();
+        // The videos the library takes (ARV-142b): a size and a length within the ceilings every installation keeps.
+        services.AddOptions<Ariva.Infra.Services.Displays.AdvertisingVideoSettings>()
+            .Bind(configuration.GetSection(Ariva.Infra.Services.Displays.AdvertisingVideoSettings.SectionName))
+            .Validate(s => s.IsValid, "Advertising:Videos:MaxMegabytes is from 1 to 100 and MaxSeconds from 1 to 120.")
+            .ValidateOnStart();
         // Reports (ARV-060): the daily report and its schedules; deliveries run in Ariva.Api.Cronz (AddArivaReportDeliveries).
         services.TryAddScoped<Ariva.Infra.Services.Reports.ReportReader>();
         services.TryAddScoped<Ariva.Core.Services.Reports.ISvcReports, Ariva.Infra.Services.Reports.SvcReports>();
