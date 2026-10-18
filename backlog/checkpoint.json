@@ -1,12 +1,12 @@
 {
-  "commit": "6af81461aa607d3c7a7670b81a722384720122d8",
+  "commit": "d70b3536142acd7e435c9ad10b4dab12418e9a12",
   "at": "2026-10-18",
-  "stories": 5,
+  "stories": 3,
   "results": [
     {
       "name": "dotnet build",
       "ok": true,
-      "seconds": 122
+      "seconds": 127
     },
     {
       "name": "reference scenario golden up to date",
@@ -16,7 +16,7 @@
     {
       "name": "unit tests",
       "ok": true,
-      "seconds": 234
+      "seconds": 206
     },
     {
       "name": "security scanner self-test",
@@ -66,7 +66,7 @@
     {
       "name": "nuget vulnerability audit (fails on high or critical)",
       "ok": true,
-      "seconds": 23
+      "seconds": 25
     },
     {
       "name": "npm audit (web)",
@@ -76,7 +76,7 @@
     {
       "name": "npm audit (e2e)",
       "ok": true,
-      "seconds": 0
+      "seconds": 1
     },
     {
       "name": "docs text rules",
@@ -85,35 +85,35 @@
     {
       "name": "web svelte-check",
       "ok": true,
-      "seconds": 11
+      "seconds": 12
     },
     {
       "name": "web lint",
       "ok": true,
-      "seconds": 8
+      "seconds": 9
     },
     {
       "name": "web build",
       "ok": true,
-      "seconds": 30
+      "seconds": 31
     },
     {
       "name": "integration tests",
       "ok": true,
-      "seconds": 842
+      "seconds": 908
     },
     {
       "name": "visual regression (pinned image)",
       "ok": true,
-      "seconds": 174
+      "seconds": 188
     },
     {
       "name": "e2e tests (API and functional)",
       "ok": true,
-      "seconds": 1058
+      "seconds": 1221
     },
     {
-      "name": "mutation tests (no engine change since b507ff931c)",
+      "name": "mutation tests (no engine change since 6af81461aa)",
       "ok": true,
       "skipped": true
     }
