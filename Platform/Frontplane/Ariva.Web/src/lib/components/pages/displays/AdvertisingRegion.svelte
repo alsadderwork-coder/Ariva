@@ -168,7 +168,7 @@
 		const timer = setTimeout(() => advance(shownSlot), seconds * 1000);
 		return () => {
 			clearTimeout(timer);
-			gone(false);
+			gone(false, shownSlot);
 		};
 	});
 
@@ -204,7 +204,7 @@
 	function advance(fromSlot: number): void {
 		if (fromSlot !== slot || !current) return;
 		// The slot ran to its end: its advertisement played its whole slot.
-		gone(true);
+		gone(true, fromSlot);
 		own = null;
 		place = (place + 1) % current.order.length;
 		slot++;
@@ -276,7 +276,7 @@
 	function mediaFailed(failedAt: number, id: string): void {
 		if (destroyed || failedAt !== slot) return;
 		// Failing after it showed cuts its play short; failing before it showed was no play.
-		gone(false);
+		gone(false, failedAt);
 		failedSlot = failedAt;
 		cache.drop(id);
 		if (own?.id === id) own = null;
@@ -298,13 +298,20 @@
 		if (destroyed || shown.slot !== slot || shown.slot === playedSlot || !showing) return;
 		if (!player.isPlayableMedia(item) || item.mediaId !== shown.id) return;
 		playedSlot = shown.slot;
+		// After a plan change the new slot's image may show before the old slot is torn down: the page's play log then ends
+		// the old play, cut short, as this one starts (PlayLog.start).
 		onScreen = shown;
 		onplaystart?.(shown.id, item.seconds);
 	}
 
-	/** ARV-144: the advertisement on screen goes; nothing happens when none is. */
-	function gone(completed: boolean): void {
+	/**
+	 * ARV-144: the advertisement on screen goes; nothing happens when none is, or when it belongs to another slot than
+	 * `fromSlot` (when given). A slot that ends never ends the next slot's play: a browser that already holds an image's bytes
+	 * may show it, and so start its play, before the slot that ended is torn down (Chromium 153 does).
+	 */
+	function gone(completed: boolean, fromSlot?: number): void {
 		if (!onScreen) return;
+		if (fromSlot !== undefined && onScreen.slot !== fromSlot) return;
 		onScreen = null;
 		onplayend?.(completed);
 	}

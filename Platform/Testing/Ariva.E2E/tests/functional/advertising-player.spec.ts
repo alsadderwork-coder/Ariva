@@ -642,6 +642,40 @@ test("a plan stops when its end passes by the server's clock, without a newer bo
 	}
 });
 
+/**
+ * Makes this browser show an image it has already loaded the way Chromium 153 does (CI): a blob: URL that loaded once is
+ * complete, with its size, the moment an img is given it again, so the region's image starts its play while the slot that
+ * ended is still being torn down. Chromium 141 (this repository's local browser) loads it again first; without this its
+ * runs would not cover the case that lost plays on CI (2026-10-18). Applied before the page's own scripts run.
+ */
+async function showLoadedImagesAtOnce(page: Page): Promise<void> {
+	await page.addInitScript(() => {
+		const loaded = new Set<string>();
+		document.addEventListener(
+			'load',
+			(event) => {
+				const image = event.target;
+				if (image instanceof HTMLImageElement && image.src.startsWith('blob:')) loaded.add(image.src);
+			},
+			true
+		);
+		const complete = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'complete')!;
+		const width = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'naturalWidth')!;
+		Object.defineProperty(HTMLImageElement.prototype, 'complete', {
+			configurable: true,
+			get(this: HTMLImageElement) {
+				return loaded.has(this.src) || complete.get!.call(this);
+			}
+		});
+		Object.defineProperty(HTMLImageElement.prototype, 'naturalWidth', {
+			configurable: true,
+			get(this: HTMLImageElement) {
+				return loaded.has(this.src) ? Math.max(1, width.get!.call(this)) : width.get!.call(this);
+			}
+		});
+	});
+}
+
 /** One play as the player sends it (ARV-144). */
 interface SentPlay {
 	mediaId: string;
@@ -665,8 +699,9 @@ test("proof of play: the plays shown go in one batch, started by the server's cl
 	const boards: number[] = [];
 	const player = await openPlayer(
 		browser,
-		(page) =>
-			page.route(
+		async (page) => {
+			await showLoadedImagesAtOnce(page);
+			return page.route(
 				(url) => url.pathname === '/api/v1/display/board',
 				async (route) => {
 					const response = await route.fetch();
@@ -687,7 +722,8 @@ test("proof of play: the plays shown go in one batch, started by the server's cl
 					}
 					return route.fulfill({ response, json: body });
 				}
-			),
+			);
+		},
 		// The player's turn at 60 seconds (it holds the parameter to 12 to 60), after the plan's end.
 		'&playsEvery=60'
 	);
