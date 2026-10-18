@@ -23,6 +23,7 @@ These periods are migration-job parameters (`Database:Retention`; in the cluster
 | `AlertEmailDays` | `email_message` (never a Pending email) | 180 days | 30 to 3,650 | Proposed, TC-67 |
 | `IntegrationCallDays` | `integration_call` | 400 days | 30 to 3,650 | Proposed, TC-68 |
 | `ReportDeliveryDays` | `report_delivery` | 400 days | 30 to 3,650 | Proposed, TC-66 |
+| `AdvertisingPlayDays` | `advertising_play` | 400 days | 30 to 3,650 | Proposed, ARV-144 (a year's campaigns and their comparison) |
 
 ## Objects
 
@@ -113,6 +114,7 @@ These periods are migration-job parameters (`Database:Retention`; in the cluster
 | `desk_zone_reading` | Hypertable | Desk measurement | None: staff and service zone counts per desk. Desk-level border data, no API reads it | `Database:Retention:DeskZoneReadingDays`, default 7 days (Proposed) | `Database:Retention` (migration job, TimescaleDB retention policy); script 0040 created it with 7 days | Border (Ariva.Api.Stream) |
 | `desk_sensor_minute` | Hypertable | Desk measurement | None: seconds per desk state from the desk's zones alone. Desk-level border data | Indefinite (as `desk_minute`; To confirm) | Script 0044 | Border (Ariva.Api.Stream) |
 | `lane_staffing` | Hypertable | Staffing | None, aggregates only: per arrivals lane and minute the 13 intervals of the next 3 hours (zone keys, lane codes, counts, recommended desks, waits). Border data (the lane split of the arrival wave) | `Database:Retention:LaneStaffingDays`, default 90 days (the alert backtest's history) | `Database:Retention` (migration job, TimescaleDB retention policy); script 0053 created it with 90 days | Staffing (Ariva.Api.Cronz) |
+| `advertising_play` | Hypertable | Operational state | None: per advertisement a passenger display played, when it started, how long it was on screen, whether it played its whole slot, the display, its site and the playlist (ids only); no passenger data and nothing about who was near the screen | `Database:Retention:AdvertisingPlayDays`, default 400 days (a year's campaigns, Proposed) | `Database:Retention` (migration job, TimescaleDB retention policy); script 0062 created it with 400 days | Displays (Ariva.Api.Main) |
 
 ### Flights
 

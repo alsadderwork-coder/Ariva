@@ -102,6 +102,8 @@ public static class AccountExtensions
         // Advertising playlists and schedules (ARV-143a): Ariva.Api.Main only, like the library.
         services.TryAddScoped<Ariva.Core.Services.Displays.ISvcAdvertisingPlaylists, Ariva.Infra.Services.Displays.SvcAdvertisingPlaylists>();
         services.TryAddScoped<Ariva.Core.Services.Displays.ISvcAdvertisingSchedules, Ariva.Infra.Services.Displays.SvcAdvertisingSchedules>();
+        services.TryAddScoped<Ariva.Core.Services.Displays.ISvcAdvertisingPlays, Ariva.Infra.Services.Displays.SvcAdvertisingPlays>();
+        services.TryAddScoped<Ariva.Core.Services.Displays.ISvcAdvertisingFigures, Ariva.Infra.Services.Displays.SvcAdvertisingFigures>();
         services.TryAddSingleton<Ariva.Infra.Services.Displays.AdvertisingUploadWindow>();
         // The videos the library takes (ARV-142b): a size and a length within the ceilings every installation keeps.
         services.AddOptions<Ariva.Infra.Services.Displays.AdvertisingVideoSettings>()

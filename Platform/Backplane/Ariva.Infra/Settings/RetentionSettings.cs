@@ -15,7 +15,7 @@ public sealed record RelationalRetentionPeriod(string DataSet, int Days);
 /// login after the versioned scripts and
 /// <list type="bullet">
 /// <item>sets the TimescaleDB retention policy of each hypertable in <see cref="Hypertables()"/> to it, replacing the value the
-/// script that created the table gave (scripts 0017, 0019, 0040 and 0053 are immutable; their values are the defaults here),
+/// script that created the table gave (scripts 0017, 0019, 0040, 0053 and 0062 are immutable; their values are the defaults here),
 /// only when it differs, so a second run changes nothing;</item>
 /// <item>writes each relational period in <see cref="DataSets()"/> to <c>retention_period</c> (script 0054), a table the runtime
 /// role may read but never write, which the Cronz retention job's database function reads: the runtime login can delete
@@ -75,6 +75,12 @@ public sealed class RetentionSettings
     /// <summary><c>lane_staffing</c> (script 0053's 90 days).</summary>
     public int LaneStaffingDays { get; init; } = 90;
 
+    /// <summary>
+    /// <c>advertising_play</c>, the proof of play (ARV-144, script 0062's 400 days): a year's campaigns and their comparison
+    /// with the year before's last month. The installation's value for its sites (Proposed, decisions.md 2026-10-18 ARV-144).
+    /// </summary>
+    public int AdvertisingPlayDays { get; init; } = 400;
+
     /// <summary><c>email_message</c>: the record of who was told what, with staff email addresses (TC-67, Proposed 180 days).</summary>
     public int AlertEmailDays { get; init; } = 180;
 
@@ -95,7 +101,8 @@ public sealed class RetentionSettings
         new("sensing_batch", RawSensingDays),
         new("device_health_event", RawSensingDays),
         new("desk_zone_reading", DeskZoneReadingDays),
-        new("lane_staffing", LaneStaffingDays)
+        new("lane_staffing", LaneStaffingDays),
+        new("advertising_play", AdvertisingPlayDays)
     ];
 
     /// <summary>The relational data sets the Cronz retention job thins, with their periods (names as script 0054 accepts them).</summary>
@@ -121,6 +128,8 @@ public sealed class RetentionSettings
             yield return Range(nameof(DeskZoneReadingDays), MinDeskZoneReadingDays, MaxDeskZoneReadingDays);
         if (LaneStaffingDays is < MinLaneStaffingDays or > MaxDays)
             yield return Range(nameof(LaneStaffingDays), MinLaneStaffingDays, MaxDays);
+        if (AdvertisingPlayDays is < MinRelationalDays or > MaxDays)
+            yield return Range(nameof(AdvertisingPlayDays), MinRelationalDays, MaxDays);
         if (AlertEmailDays is < MinRelationalDays or > MaxDays)
             yield return Range(nameof(AlertEmailDays), MinRelationalDays, MaxDays);
         if (IntegrationCallDays is < MinRelationalDays or > MaxDays)

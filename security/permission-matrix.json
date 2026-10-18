@@ -3817,6 +3817,20 @@
     {
       "host": "main",
       "method": "POST",
+      "route": "/api/v1/display/plays",
+      "access": "device",
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 401,
+        "TerminalDutyManager": 401,
+        "HandlerStationManager": 401,
+        "SystemAdministrator": 401,
+        "ValidationObserver": 401
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
       "route": "/api/v1/admin/sites/{siteCode}/device-imports/preview",
       "access": "permission",
       "permissions": [

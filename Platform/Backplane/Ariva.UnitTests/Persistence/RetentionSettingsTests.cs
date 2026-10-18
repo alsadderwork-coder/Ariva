@@ -36,6 +36,7 @@ public sealed partial class RetentionSettingsTests
         settings.AlertEmailDays.Should().Be(180, "Proposed, TC-67");
         settings.IntegrationCallDays.Should().Be(400, "Proposed, TC-68");
         settings.ReportDeliveryDays.Should().Be(400, "Proposed, TC-66");
+        settings.AdvertisingPlayDays.Should().Be(400, "script 0062, Proposed with ARV-144");
         settings.Problems().Should().BeEmpty();
     }
 
@@ -83,7 +84,9 @@ public sealed partial class RetentionSettingsTests
         { nameof(RetentionSettings.IntegrationCallDays), 0 },
         { nameof(RetentionSettings.IntegrationCallDays), -400 },
         { nameof(RetentionSettings.ReportDeliveryDays), 29 },
-        { nameof(RetentionSettings.ReportDeliveryDays), 10_000 }
+        { nameof(RetentionSettings.ReportDeliveryDays), 10_000 },
+        { nameof(RetentionSettings.AdvertisingPlayDays), 29 },
+        { nameof(RetentionSettings.AdvertisingPlayDays), 3_651 }
     };
 
     [Theory]
@@ -100,9 +103,9 @@ public sealed partial class RetentionSettingsTests
     public void Problems_Should_BeEmpty_When_EveryPeriodIsAtItsBounds()
     {
         Bind(("RawSensingDays", "7"), ("DeskZoneReadingDays", "2"), ("LaneStaffingDays", "90"), ("AlertEmailDays", "30"), ("IntegrationCallDays", "30"),
-            ("ReportDeliveryDays", "30")).Problems().Should().BeEmpty();
+            ("ReportDeliveryDays", "30"), ("AdvertisingPlayDays", "30")).Problems().Should().BeEmpty();
         Bind(("RawSensingDays", "3650"), ("DeskZoneReadingDays", "90"), ("LaneStaffingDays", "3650"), ("AlertEmailDays", "3650"), ("IntegrationCallDays", "3650"),
-            ("ReportDeliveryDays", "3650")).Problems().Should().BeEmpty();
+            ("ReportDeliveryDays", "3650"), ("AdvertisingPlayDays", "3650")).Problems().Should().BeEmpty();
     }
 
     [Fact]
@@ -190,7 +193,8 @@ public sealed partial class RetentionSettingsTests
             ["LaneStaffingDays"] = "90",
             ["AlertEmailDays"] = "180",
             ["IntegrationCallDays"] = "400",
-            ["ReportDeliveryDays"] = "400"
+            ["ReportDeliveryDays"] = "400",
+            ["AdvertisingPlayDays"] = "400"
         }, "values.yaml repeats RetentionSettings' defaults");
     }
 
@@ -204,7 +208,7 @@ public sealed partial class RetentionSettingsTests
 
         var settings = Bind([.. values.Select(v => (v.Key, v.Value))]);
 
-        values.Should().HaveCount(6, $"{file}: the six periods");
+        values.Should().HaveCount(7, $"{file}: the seven periods");
         settings.Problems().Should().BeEmpty(file);
     }
 

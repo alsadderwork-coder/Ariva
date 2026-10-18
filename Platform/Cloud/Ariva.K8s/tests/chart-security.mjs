@@ -111,7 +111,7 @@ function retentionFindings(docs, valuesFile) {
 	const env = Object.fromEntries((job.spec?.template?.spec?.containers?.[0]?.env ?? []).map((variable) => [variable.name, variable.value]));
 	const findings = [];
 	const expected = retentionValues(valuesFile);
-	for (const key of ['rawSensingDays', 'deskZoneReadingDays', 'laneStaffingDays', 'alertEmailDays', 'integrationCallDays', 'reportDeliveryDays']) {
+	for (const key of ['rawSensingDays', 'deskZoneReadingDays', 'laneStaffingDays', 'alertEmailDays', 'integrationCallDays', 'reportDeliveryDays', 'advertisingPlayDays']) {
 		const name = `Database__Retention__${key[0].toUpperCase()}${key.slice(1)}`;
 		if (expected[key] === undefined) findings.push(`${valuesFile}: migration.retention.${key} has no value`);
 		else if (env[name] !== String(expected[key])) findings.push(`Job/database-migration: ${name} is ${env[name]}, not migration.retention.${key} (${expected[key]})`);

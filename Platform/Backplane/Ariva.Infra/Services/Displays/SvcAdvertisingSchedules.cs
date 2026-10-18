@@ -114,7 +114,7 @@ internal sealed class SvcAdvertisingSchedules(
         var active = playlists.Values.Where(p => p.Status == InstructionStatus.Active).Select(p => p.Id.GetValueOrDefault()).ToHashSet();
         var zone = await sites.TimeZoneAsync(siteCode, ct);
         var localNow = TimeZoneInfo.ConvertTimeFromUtc(UtcNow, zone);
-        var from = LocalMidnightUtc(localNow.Date, zone);
+        var from = AdvertisingSchedules.LocalMidnightUtc(DateOnly.FromDateTime(localNow), zone);
         var segments = AdvertisingSchedules.Timeline(schedules, active, siteCode, display.Code, display.EntryList.Select(e => e.Zone).ToList(), zone, from, TimelineDays);
 
         string Local(DateTime utc) => TimeZoneInfo.ConvertTimeFromUtc(utc, zone).ToString("yyyy-MM-dd'T'HH:mm", CultureInfo.InvariantCulture);
@@ -124,14 +124,6 @@ internal sealed class SvcAdvertisingSchedules(
             display.SecondRegion.ToString()));
     }
 
-    /// <summary>The instant the site's local day starts: midnight, or the first local minute after it when the clocks skip midnight.</summary>
-    private static DateTime LocalMidnightUtc(DateTime localDate, TimeZoneInfo zone)
-    {
-        var local = DateTime.SpecifyKind(localDate, DateTimeKind.Unspecified);
-        while (zone.IsInvalidTime(local))
-            local = local.AddMinutes(1);
-        return TimeZoneInfo.ConvertTimeToUtc(local, zone);
-    }
 
     private async Task<Result<AdvertisingScheduleViewModel>> ChangeStatusAsync(string siteCode, Guid id, InstructionStatus status, string action, CancellationToken ct)
     {

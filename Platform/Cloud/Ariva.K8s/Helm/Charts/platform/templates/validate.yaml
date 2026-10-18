@@ -46,7 +46,7 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- fail "k8s-prd needs the validation reader secret: set validationReader.optional false (ARV-104g1)" }}
 {{- end }}
 {{- $retention := (.Values.migration | default dict).retention | default dict }}
-{{- $retentionBounds := dict "rawSensingDays" (list 7 3650) "deskZoneReadingDays" (list 2 90) "laneStaffingDays" (list 90 3650) "alertEmailDays" (list 30 3650) "integrationCallDays" (list 30 3650) "reportDeliveryDays" (list 30 3650) }}
+{{- $retentionBounds := dict "rawSensingDays" (list 7 3650) "deskZoneReadingDays" (list 2 90) "laneStaffingDays" (list 90 3650) "alertEmailDays" (list 30 3650) "integrationCallDays" (list 30 3650) "reportDeliveryDays" (list 30 3650) "advertisingPlayDays" (list 30 3650) }}
 {{- if not (kindIs "map" $retention) }}
 {{- fail "migration.retention must be a map of retention periods in days (ARV-111a)" }}
 {{- end }}

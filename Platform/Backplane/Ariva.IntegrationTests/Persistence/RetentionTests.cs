@@ -47,19 +47,20 @@ public sealed class RetentionTests(PostgresFixture fixture)
     public async Task MigrationJob_Should_SetEveryPeriodOnceAndPutTheDefaultsBack_When_RunWithAndWithoutParameters()
     {
         (await MigrateAsync(("RawSensingDays", "30"), ("DeskZoneReadingDays", "3"), ("LaneStaffingDays", "120"), ("AlertEmailDays", "31"),
-            ("IntegrationCallDays", "45"), ("ReportDeliveryDays", "60"))).Should().Be(0);
+            ("IntegrationCallDays", "45"), ("ReportDeliveryDays", "60"), ("AdvertisingPlayDays", "200"))).Should().Be(0);
 
         var first = await PoliciesAsync();
         first.ToDictionary(p => p.Key, p => p.Value.Days).Should().BeEquivalentTo(new Dictionary<string, int>
         {
-            ["sensing_event"] = 30, ["sensing_batch"] = 30, ["device_health_event"] = 30, ["desk_zone_reading"] = 3, ["lane_staffing"] = 120
+            ["sensing_event"] = 30, ["sensing_batch"] = 30, ["device_health_event"] = 30, ["desk_zone_reading"] = 3, ["lane_staffing"] = 120,
+            ["advertising_play"] = 200
         }, "every hypertable's policy is the configured period, raw events and device health together");
         (await PeriodsAsync()).Should().BeEquivalentTo(new Dictionary<string, int> { ["email_message"] = 31, ["integration_call"] = 45, ["report_delivery"] = 60 });
         var setOn = await ScalarAsync<DateTime>(Admin, "SELECT max(set_on) FROM retention_period");
 
         // A second release with the same values changes nothing: the policies keep their jobs and the periods their time.
         (await MigrateAsync(("RawSensingDays", "30"), ("DeskZoneReadingDays", "3"), ("LaneStaffingDays", "120"), ("AlertEmailDays", "31"),
-            ("IntegrationCallDays", "45"), ("ReportDeliveryDays", "60"))).Should().Be(0);
+            ("IntegrationCallDays", "45"), ("ReportDeliveryDays", "60"), ("AdvertisingPlayDays", "200"))).Should().Be(0);
         (await PoliciesAsync()).Should().BeEquivalentTo(first, "an unchanged policy is left alone");
         (await ScalarAsync<DateTime>(Admin, "SELECT max(set_on) FROM retention_period")).Should().Be(setOn);
 
@@ -68,7 +69,8 @@ public sealed class RetentionTests(PostgresFixture fixture)
         var defaults = await PoliciesAsync();
         defaults.ToDictionary(p => p.Key, p => p.Value.Days).Should().BeEquivalentTo(new Dictionary<string, int>
         {
-            ["sensing_event"] = 90, ["sensing_batch"] = 90, ["device_health_event"] = 90, ["desk_zone_reading"] = 7, ["lane_staffing"] = 90
+            ["sensing_event"] = 90, ["sensing_batch"] = 90, ["device_health_event"] = 90, ["desk_zone_reading"] = 7, ["lane_staffing"] = 90,
+            ["advertising_play"] = 400
         });
         defaults["sensing_event"].Job.Should().NotBe(first["sensing_event"].Job, "a changed policy is replaced, in the job's transaction");
         defaults.Values.Select(p => p.Job).Should().OnlyHaveUniqueItems("one retention policy per hypertable");

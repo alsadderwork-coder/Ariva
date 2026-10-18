@@ -66,6 +66,8 @@ spec:
               value: {{ .Values.migration.retention.deskZoneReadingDays | quote }}
             - name: Database__Retention__LaneStaffingDays
               value: {{ .Values.migration.retention.laneStaffingDays | quote }}
+            - name: Database__Retention__AdvertisingPlayDays
+              value: {{ .Values.migration.retention.advertisingPlayDays | quote }}
             - name: Database__Retention__AlertEmailDays
               value: {{ .Values.migration.retention.alertEmailDays | quote }}
             - name: Database__Retention__IntegrationCallDays

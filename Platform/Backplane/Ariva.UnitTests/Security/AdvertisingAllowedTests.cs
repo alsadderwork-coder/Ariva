@@ -21,8 +21,9 @@ namespace Ariva.UnitTests.Security;
 /// (nothing revealed), 403 for
 /// a site whose policy is off or missing and for an action without a site. Every advertising endpoint of the booted hosts
 /// carries it (the media library and playlists, ARV-142a and ARV-143: a route naming advertising, or a controller in an
-/// <c>Advertising</c> namespace), except the policy itself and the display fetch of ARV-142a, which is display-authenticated
-/// and applies the advertising rule to the display instead (it must carry <see cref="DisplayAuthenticatedAttribute"/>).
+/// <c>Advertising</c> namespace), except the policy itself and the display endpoints: the media fetch of ARV-142a and the proof
+/// of play of ARV-144, which are display-authenticated and apply the advertising rule to the display instead (they must carry
+/// <see cref="DisplayAuthenticatedAttribute"/> and no user permission).
 /// </summary>
 [Collection(HostCollection.Name)]
 public sealed class AdvertisingAllowedTests
@@ -70,19 +71,21 @@ public sealed class AdvertisingAllowedTests
         violations.Should().BeEmpty("an advertising endpoint acts only for a site whose policy allows advertising (ARV-145, CWE-862)");
     }
 
-    [Fact]
-    public async Task DisplayFetch_Should_BeDisplayAuthenticatedOnly_When_ItIsExemptFromTheFilter()
+    [Theory]
+    [InlineData(typeof(Ariva.Api.Main.Controllers.OpsArea.Displays.DisplayAdvertisingController), "only a display player fetches advertising media (ARV-142a)")]
+    [InlineData(typeof(Ariva.Api.Main.Controllers.OpsArea.Displays.DisplayPlaysController), "only a display player reports its plays (ARV-144)")]
+    public async Task DisplayEndpoints_Should_BeDisplayAuthenticatedOnly_When_TheyAreExemptFromTheFilter(Type controller, string reason)
     {
         await using var app = ArivaHosts.Create(ArivaHosts.Main);
         var endpoints = app.Services.GetRequiredService<EndpointDataSource>().Endpoints.OfType<RouteEndpoint>()
-            .Where(e => e.Metadata.GetMetadata<ControllerActionDescriptor>()?.ControllerTypeInfo.AsType() == typeof(Ariva.Api.Main.Controllers.OpsArea.Displays.DisplayAdvertisingController))
+            .Where(e => e.Metadata.GetMetadata<ControllerActionDescriptor>()?.ControllerTypeInfo.AsType() == controller)
             .ToList();
 
         endpoints.Should().NotBeEmpty();
         endpoints.Should().AllSatisfy(e =>
         {
-            e.Metadata.GetMetadata<DisplayAuthenticatedAttribute>().Should().NotBeNull("only a display player fetches advertising media (ARV-142a)");
-            e.Metadata.GetOrderedMetadata<PermissionAttribute>().Should().BeEmpty("no user permission reaches the display fetch");
+            e.Metadata.GetMetadata<DisplayAuthenticatedAttribute>().Should().NotBeNull(reason);
+            e.Metadata.GetOrderedMetadata<PermissionAttribute>().Should().BeEmpty("no user permission reaches a display endpoint");
         });
     }
 
@@ -97,6 +100,8 @@ public sealed class AdvertisingAllowedTests
         { "api/v1/admin/sites/{siteCode}/advertising/media", typeof(Ariva.Api.Main.Controllers.AdminArea.Advertising.AdvertisingMediaController), true },
         { "api/v1/display/advertising/{id:guid}", typeof(Ariva.Api.Main.Controllers.OpsArea.Displays.DisplayAdvertisingController), false },
         { "api/v1/display/advertising/{id:guid}", typeof(AdvertisingAllowedTests), true },
+        { "api/v1/display/plays", typeof(Ariva.Api.Main.Controllers.OpsArea.Displays.DisplayPlaysController), false },
+        { "api/v1/display/advertising-plays", typeof(Ariva.Api.Main.Controllers.OpsArea.Displays.DisplayPlaysController), false },
         { "api/v1/admin/display-slides", typeof(Ariva.Api.Main.Controllers.AdminArea.DisplaySlides.DisplaySlidesController), false }
     };
 
@@ -112,14 +117,15 @@ public sealed class AdvertisingAllowedTests
 
     /// <summary>
     /// An advertising endpoint: its route names advertising, or its controller lives in an <c>Advertising</c> namespace (the
-    /// convention for ARV-142a and ARV-143, whatever their routes say). Exempt by their types only: the policy itself, and the
-    /// display fetch (display-authenticated, <see cref="DisplayFetch_Should_BeDisplayAuthenticatedOnly_When_ItIsExemptFromTheFilter"/>).
+    /// convention for ARV-142a and ARV-143, whatever their routes say). Exempt by their types only: the policy itself, the
+    /// display fetch and the proof of play (display-authenticated, <see cref="DisplayEndpoints_Should_BeDisplayAuthenticatedOnly_When_TheyAreExemptFromTheFilter"/>).
     /// </summary>
     private static bool IsAdvertising(RouteEndpoint endpoint)
     {
         var controller = endpoint.Metadata.GetMetadata<ControllerActionDescriptor>()?.ControllerTypeInfo;
         if (controller?.AsType() == typeof(Ariva.Api.Main.Controllers.AdminArea.Sites.SiteAdvertisingPolicyController) ||
-            controller?.AsType() == typeof(Ariva.Api.Main.Controllers.OpsArea.Displays.DisplayAdvertisingController))
+            controller?.AsType() == typeof(Ariva.Api.Main.Controllers.OpsArea.Displays.DisplayAdvertisingController) ||
+            controller?.AsType() == typeof(Ariva.Api.Main.Controllers.OpsArea.Displays.DisplayPlaysController))
             return false;
         return (endpoint.RoutePattern.RawText ?? string.Empty).Contains("advertising", StringComparison.OrdinalIgnoreCase) ||
                (controller?.Namespace ?? string.Empty).Split('.').Contains("Advertising", StringComparer.Ordinal);

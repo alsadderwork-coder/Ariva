@@ -199,7 +199,7 @@ public static class AdvertisingSchedules
     public sealed record Segment(DateTime FromUtc, DateTime ToUtc, AdvertisingSchedule Schedule);
 
     /// <summary>A schedule that targets the display, read once: its days, window and specificity.</summary>
-    private sealed record Candidate(AdvertisingSchedule Schedule, IReadOnlyList<DayOfWeek> Days, OperatingInterval Window, int Specificity);
+    internal sealed record Candidate(AdvertisingSchedule Schedule, IReadOnlyList<DayOfWeek> Days, OperatingInterval Window, int Specificity);
 
     public static AdvertisingSchedule Resolve(IEnumerable<AdvertisingSchedule> schedules, IReadOnlySet<Guid> activePlaylists, string siteCode,
         string displayCode, IReadOnlyCollection<string> zones, DateTime local) =>
@@ -211,7 +211,10 @@ public static class AdvertisingSchedules
     /// merged into stretches with one outcome each.
     /// </summary>
     public static IReadOnlyList<Segment> Timeline(IEnumerable<AdvertisingSchedule> schedules, IReadOnlySet<Guid> activePlaylists,
-        string siteCode, string displayCode, IReadOnlyCollection<string> zones, TimeZoneInfo zone, DateTime fromUtc, int days)
+        string siteCode, string displayCode, IReadOnlyCollection<string> zones, TimeZoneInfo zone, DateTime fromUtc, int days) =>
+        Stretches(Candidates(schedules, activePlaylists, siteCode, displayCode, zones), zone, fromUtc, days);
+
+    private static IReadOnlyList<Segment> Stretches(List<Candidate> candidates, TimeZoneInfo zone, DateTime fromUtc, int days)
     {
         ArgumentNullException.ThrowIfNull(zone);
         if (fromUtc.Kind != DateTimeKind.Utc)
@@ -220,13 +223,14 @@ public static class AdvertisingSchedules
             throw new ArgumentOutOfRangeException(nameof(days), "A timeline covers 1 to 14 days.");
         var start = new DateTime(fromUtc.Ticks - (fromUtc.Ticks % TimeSpan.TicksPerMinute), DateTimeKind.Utc);
         var end = start.AddDays(days);
-        var candidates = Candidates(schedules, activePlaylists, siteCode, displayCode, zones);
+        if (candidates.Count == 0)
+            return [new Segment(start, end, null)];
         var segments = new List<Segment>();
         var current = Pick(candidates, TimeZoneInfo.ConvertTimeFromUtc(start, zone));
         var since = start;
         for (var instant = start.AddMinutes(1); instant < end; instant = instant.AddMinutes(1))
         {
-            var applies = candidates.Count == 0 ? null : Pick(candidates, TimeZoneInfo.ConvertTimeFromUtc(instant, zone));
+            var applies = Pick(candidates, TimeZoneInfo.ConvertTimeFromUtc(instant, zone));
             if (ReferenceEquals(applies, current))
                 continue;
             segments.Add(new Segment(since, instant, current));
@@ -276,12 +280,45 @@ public static class AdvertisingSchedules
     public static DateTime NextLocalMidnightUtc(DateTime nowUtc, TimeZoneInfo zone)
     {
         ArgumentNullException.ThrowIfNull(zone);
-        var local = DateTime.SpecifyKind(TimeZoneInfo.ConvertTimeFromUtc(nowUtc, zone).Date.AddDays(1), DateTimeKind.Unspecified);
-        while (zone.IsInvalidTime(local))
-            local = local.AddMinutes(1);
-        var utc = TimeZoneInfo.ConvertTimeToUtc(local, zone);
+        var utc = LocalMidnightUtc(DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(nowUtc, zone)).AddDays(1), zone);
         return utc > nowUtc ? utc : nowUtc.AddMinutes(1);
     }
+
+    /// <summary>The instant a local day of the site starts: midnight, or the first minute after it when the clocks skip midnight.</summary>
+    public static DateTime LocalMidnightUtc(DateOnly day, TimeZoneInfo zone)
+    {
+        ArgumentNullException.ThrowIfNull(zone);
+        var local = day.ToDateTime(TimeOnly.MinValue, DateTimeKind.Unspecified);
+        while (zone.IsInvalidTime(local))
+            local = local.AddMinutes(1);
+        return TimeZoneInfo.ConvertTimeToUtc(local, zone);
+    }
+
+    /// <summary>
+    /// A display's candidate schedules read once (ARV-144): which applies at any local moment, for as many moments as needed,
+    /// without reading every schedule's targets and days again. <see cref="Key"/> names the candidates, so displays with the
+    /// same ones share one timeline.
+    /// </summary>
+    public sealed class Prepared
+    {
+        private readonly List<Candidate> _candidates;
+
+        private Prepared(List<Candidate> candidates) => _candidates = candidates;
+
+        internal static Prepared Of(List<Candidate> candidates) => new(candidates);
+
+        public string Key => string.Join(',', _candidates.Select(c => c.Schedule.Id.GetValueOrDefault().ToString("N")).Order(StringComparer.Ordinal));
+
+        /// <summary>The schedule that applies at a local moment, or null (instructions).</summary>
+        public AdvertisingSchedule At(DateTime local) => _candidates.Count == 0 ? null : Pick(_candidates, local);
+
+        /// <summary>What applies from <paramref name="fromUtc"/> for <paramref name="days"/> days (see <see cref="Timeline"/>).</summary>
+        public IReadOnlyList<Segment> Timeline(TimeZoneInfo zone, DateTime fromUtc, int days) => Stretches(_candidates, zone, fromUtc, days);
+    }
+
+    public static Prepared Prepare(IEnumerable<AdvertisingSchedule> schedules, IReadOnlySet<Guid> activePlaylists, string siteCode, string displayCode,
+        IReadOnlyCollection<string> zones) =>
+        Prepared.Of(Candidates(schedules, activePlaylists, siteCode, displayCode, zones));
 
     private static List<Candidate> Candidates(IEnumerable<AdvertisingSchedule> schedules, IReadOnlySet<Guid> activePlaylists, string siteCode,
         string displayCode, IReadOnlyCollection<string> zones)

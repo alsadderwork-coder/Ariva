@@ -46,6 +46,7 @@ migration:
     alertEmailDays: 180
     integrationCallDays: 400
     reportDeliveryDays: 400
+    advertisingPlayDays: 400
 
 # Ingress definitions
 ingresses:

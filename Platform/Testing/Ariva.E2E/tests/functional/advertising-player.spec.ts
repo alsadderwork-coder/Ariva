@@ -19,6 +19,8 @@ import { allowStatuses, databaseAvailable, signInThroughUi } from '../support/we
 // tried again at its next turn. A network loss plays on from the cache until the board goes stale. A draft never plays, a
 // plan stops at its end by the server's clock, the display form sets the wait rule, and turning the site's advertising off
 // shows instructions at the next board, lets the cached bytes go and fetches nothing more.
+// ARV-144: the player reports the plays of the advertisements it showed (start by the server's clock, time on screen,
+// completed or cut short) in a batch with its own credential, and the server takes them once.
 
 test.skip(!databaseAvailable, 'needs the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true)');
 test.describe.configure({ mode: 'serial' });
@@ -313,8 +315,11 @@ interface Player {
 	close: () => Promise<void>;
 }
 
-/** A 1920 by 1080 screen with no user session, at the player's address with the display's credential in the fragment. */
-async function openPlayer(browser: Browser, before?: (page: Page) => Promise<unknown>): Promise<Player> {
+/**
+ * A 1920 by 1080 screen with no user session, at the player's address with the display's credential in the fragment; `query`
+ * adds to the address's query (the proof of play test shortens the player's turn with `&playsEvery=20`).
+ */
+async function openPlayer(browser: Browser, before?: (page: Page) => Promise<unknown>, query = ''): Promise<Player> {
 	const context = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
 	const page = await context.newPage();
 	const guards = await guardPage(page);
@@ -325,7 +330,7 @@ async function openPlayer(browser: Browser, before?: (page: Page) => Promise<unk
 		if (path.startsWith(mediaPath)) media.push(path.slice(mediaPath.length));
 	});
 	if (before) await before(page);
-	await page.goto(`${webUrl}/display?code=${display}#key=${encodeURIComponent(credential)}`);
+	await page.goto(`${webUrl}/display?code=${display}${query}#key=${encodeURIComponent(credential)}`);
 	await expect(page, 'the credential leaves the address bar').not.toHaveURL(/#key=/);
 	return { page, guards, media, close: () => context.close() };
 }
@@ -597,6 +602,123 @@ test("a plan stops when its end passes by the server's clock, without a newer bo
 	}
 });
 
+/** One play as the player sends it (ARV-144). */
+interface SentPlay {
+	mediaId: string;
+	startedUtc: string;
+	durationMilliseconds: number;
+	completed: boolean;
+}
+
+test("proof of play: the plays shown go in one batch, started by the server's clock, for their time on screen, completed or cut short", async ({ browser }) => {
+	test.setTimeout(150_000);
+	await plays(share);
+	// Every board says the plan ends 12.5 seconds after the first one's server time: A and B play their 5-second slots, and A
+	// again is cut short about 2.5 seconds into its slot by the plan's end (by the server's clock).
+	let anchor: number | null = null;
+	const player = await openPlayer(
+		browser,
+		(page) =>
+			page.route(
+				(url) => url.pathname === '/api/v1/display/board',
+				async (route) => {
+					const response = await route.fetch();
+					if (response.status() !== 200) return route.fulfill({ response });
+					const body = await response.json();
+					anchor ??= Date.parse(body.serverUtc);
+					if (body.advertising) body.advertising.untilUtc = new Date(anchor + 12_500).toISOString();
+					return route.fulfill({ response, json: body });
+				}
+			),
+		// The player's turn shortened to 25 seconds (it holds the parameter to 12 to 60); without it, a minute.
+		'&playsEvery=25'
+	);
+	try {
+		const { page, guards } = player;
+		const board = page.getByTestId('board');
+		const region = page.getByTestId('board-advertising');
+		const posted = page.waitForResponse(
+			(response) => new URL(response.url()).pathname === '/api/v1/display/plays' && response.request().method() === 'POST',
+			{ timeout: 60_000 }
+		);
+		await expect(region).toHaveAttribute('data-state', 'playing', { timeout: 20_000 });
+		await expect(board).toHaveAttribute('data-plays-sent', '0');
+		await expect(region).toHaveAttribute('data-reason', 'expired', { timeout: 25_000 });
+		// Three plays wait for the player's turn, in memory only.
+		await expect(board).toHaveAttribute('data-plays-queued', '3', { timeout: 5_000 });
+		await expect(board).toHaveAttribute('data-plays-sent', '0');
+		const storage = await page.evaluate(() => JSON.stringify([{ ...localStorage }, { ...sessionStorage }]));
+		expect(storage, 'no play in web storage').not.toContain(imageA);
+
+		// One batch at the turn, with the display's credential in its header only.
+		const response = await posted;
+		const request = response.request();
+		expect(response.status(), await response.text()).toBe(200);
+		const url = new URL(request.url());
+		expect([...url.searchParams.keys()]).toEqual(['code']);
+		expect(url.searchParams.get('code')).toBe(display);
+		expect(request.url()).not.toContain(encodeURIComponent(credential));
+		const headers = await request.allHeaders();
+		expect(headers['x-ariva-display-key']).toBe(credential);
+		expect(headers.authorization).toBeUndefined();
+		expect(headers.cookie).toBeUndefined();
+		expect(headers['content-type']).toContain('application/json');
+
+		const sent = request.postDataJSON() as { plays: SentPlay[] };
+		expect(Object.keys(sent)).toEqual(['plays']);
+		expect(sent.plays.map((play) => play.mediaId), 'the advertisements shown, in order').toEqual([imageA, imageB, imageA]);
+		for (const play of sent.plays) {
+			expect(Object.keys(play).sort()).toEqual(['completed', 'durationMilliseconds', 'mediaId', 'startedUtc']);
+			expect(play.startedUtc, 'UTC with milliseconds').toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+			expect(Number.isInteger(play.durationMilliseconds)).toBe(true);
+		}
+		expect(await response.json(), 'the server took them all').toEqual({ accepted: 3, duplicates: 0, refused: 0 });
+
+		// Started by the server's clock: from the first board's server time on, a slot apart; each slot's time on screen.
+		const [first, second, third] = sent.plays;
+		const starts = sent.plays.map((play) => Date.parse(play.startedUtc));
+		expect(starts[0] - anchor!, 'the first image showed once its bytes came').toBeGreaterThanOrEqual(0);
+		expect(starts[0] - anchor!).toBeLessThan(4_000);
+		expect(starts[1] - starts[0]).toBeGreaterThan(3_000);
+		expect(starts[1] - starts[0]).toBeLessThan(6_000);
+		expect(starts[2] - starts[1], 'B played its whole slot').toBeGreaterThan(4_000);
+		expect(starts[2] - starts[1]).toBeLessThan(6_000);
+		expect(first.completed, 'A played to its slot end').toBe(true);
+		expect(first.durationMilliseconds).toBeGreaterThan(3_000);
+		expect(first.durationMilliseconds).toBeLessThanOrEqual(6_000);
+		expect(Math.abs(starts[0] + first.durationMilliseconds - starts[1]), 'A was on screen until B showed').toBeLessThan(750);
+		expect(second.completed, 'B played to its slot end').toBe(true);
+		expect(second.durationMilliseconds).toBeGreaterThan(4_000);
+		expect(second.durationMilliseconds).toBeLessThanOrEqual(6_000);
+		expect(Math.abs(starts[1] + second.durationMilliseconds - starts[2])).toBeLessThan(750);
+		expect(third.completed, "A again was cut short by the plan's end").toBe(false);
+		expect(third.durationMilliseconds).toBeGreaterThan(1_000);
+		expect(third.durationMilliseconds).toBeLessThan(4_800);
+		const cut = starts[2] + third.durationMilliseconds - anchor!;
+		expect(cut, `cut ${cut} ms after the first board, at the plan's end (12.5 s; the player looks once a second)`).toBeGreaterThan(12_000);
+		expect(cut).toBeLessThan(15_000);
+
+		// What the region showed: the same three advertisements, the last until the plan ran out.
+		const shown = slotsOf(await playbackLog(page)).filter((s) => s.media.size > 0);
+		expect(shown.map((s) => [...s.media])).toEqual([[imageA], [imageB], [imageA]]);
+		expect([...shown[2].reasons]).toContain('expired');
+
+		// Answered for: nothing waits, nothing was dropped.
+		await expect(board).toHaveAttribute('data-plays-sent', '3');
+		await expect(board).toHaveAttribute('data-plays-queued', '0');
+		await expect(board).toHaveAttribute('data-plays-dropped', '0');
+
+		// The same batch again counts once: the server already has every play.
+		const again = await call('POST', `${hosts.main}/api/v1/display/plays?code=${display}`, { headers: { 'X-Ariva-Display-Key': credential }, data: sent });
+		expect(again.status(), await again.text()).toBe(200);
+		expect(await again.json()).toEqual({ accepted: 0, duplicates: 3, refused: 0 });
+		await expect(page.locator(injected)).toHaveCount(0);
+		await guards.expectClean();
+	} finally {
+		await player.close();
+	}
+});
+
 test('the wait rule: a nowcast at the pause minutes shows instructions, held within the hysteresis, and advertising resumes below it', async ({ browser }) => {
 	test.skip(!redisUrl, 'needs the run Redis to plant the nowcasts');
 	test.setTimeout(180_000);
@@ -703,10 +825,12 @@ test('a network loss: the items play on from the cache until the board goes stal
 			}
 		);
 		const lost = Date.now();
-		// 25 seconds without the network: both images play on from the cache. The last good board is at most 10 seconds
-		// older, so this stays well within the display's 60 seconds, after which the board is stale and its plan has run out
-		// (the server sends a plan's end at most the display's stale threshold after its own clock).
-		await page.waitForTimeout(25_000);
+		// 28 seconds without the network: both images play on from the cache. Four 5-second slots both start and end within
+		// it whatever the phase (a slot that began just before the loss is not counted, so 25 seconds left only a few
+		// milliseconds for the fourth to end under load). The last good board is at most 10 seconds older, so this stays well
+		// within the display's 60 seconds, after which the board is stale and its plan has run out (the server sends a plan's
+		// end at most the display's stale threshold after its own clock).
+		await page.waitForTimeout(28_000);
 		const during = slotsOf(await playbackLog(page)).filter((s) => s.start >= lost && s.end !== null);
 		expect(during.length).toBeGreaterThanOrEqual(4);
 		for (const s of during) expect([...s.states], `place ${s.place} played on`).toEqual(['playing']);

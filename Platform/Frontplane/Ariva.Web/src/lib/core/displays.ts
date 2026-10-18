@@ -1,5 +1,6 @@
 import { Api, fail, type Result } from './Api';
 import { Endpoints } from './Endpoints';
+import type { Play, PlaysAnswer } from './play-log';
 
 /**
  * The passenger display API (ARV-058). Administration (settings, a new player credential, delete) goes through the
@@ -291,5 +292,63 @@ export async function advertisement(
 		return blob.size > 0 && blob.size <= maxAdvertisementBytes ? { blob } : { failed: true };
 	} catch {
 		return { failed: true };
+	}
+}
+
+/** What the player learns from one batch of plays: the server's status (null when no answer came) and, on a 200, its counts. */
+export interface PlaysResult {
+	status: number | null;
+	answer: PlaysAnswer | null;
+}
+
+const count = (value: unknown): number =>
+	typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : 0;
+
+/**
+ * One batch of the player's proof of play (ARV-144): 1 to 100 plays in the body, the display's code in the query and its
+ * credential in the header, no user token and no cookie; the path is this API's own. The status decides what becomes of the
+ * plays (play-log.ts). `keepalive` lets the request outlive the page as it goes (the browser may still drop it).
+ */
+export async function plays(
+	code: string,
+	credential: string,
+	batch: Play[],
+	keepalive = false
+): Promise<PlaysResult> {
+	if (!codePattern.test(code) || !credential || batch.length < 1 || batch.length > 100)
+		return { status: null, answer: null };
+	try {
+		const response = await fetch(
+			`${Endpoints.main.baseUrl}/api/v1/display/plays?code=${encodeURIComponent(code)}`,
+			{
+				method: 'POST',
+				headers: {
+					Accept: 'application/json',
+					'Content-Type': 'application/json',
+					'X-Ariva-Display-Key': credential
+				},
+				body: JSON.stringify({ plays: batch }),
+				credentials: 'omit',
+				cache: 'no-store',
+				keepalive
+			}
+		);
+		if (response.status !== 200) {
+			await response.body?.cancel().catch(() => undefined);
+			return { status: response.status, answer: null };
+		}
+		const body = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+		return {
+			status: 200,
+			answer: body
+				? {
+						accepted: count(body.accepted),
+						duplicates: count(body.duplicates),
+						refused: count(body.refused)
+					}
+				: null
+		};
+	} catch {
+		return { status: null, answer: null };
 	}
 }

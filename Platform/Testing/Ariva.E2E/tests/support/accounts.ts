@@ -283,6 +283,11 @@ export function accounts() {
 		boardAdmin: account('e2e.boardadmin', ['SystemAdministrator'], false, true, ['*']),
 		boardManager: account('e2e.boardmgr', ['TerminalDutyManager'], false, false, ['*']),
 		boardApprover: account('e2e.boardappr', ['TerminalDutyManager'], false, true, ['*']),
+		// ARV-144: proof of play through the API at sites of their own: the administrator (sites, policy, displays), a duty manager
+		// (uploads, plans) and a second duty manager who approves (second factor).
+		playsAdmin: account('e2e.playsadmin', ['SystemAdministrator'], false, true, ['*']),
+		playsManager: account('e2e.playsmgr', ['TerminalDutyManager'], false, false, ['*']),
+		playsApprover: account('e2e.playsappr', ['TerminalDutyManager'], false, true, ['*']),
 		// ARV-143a: the Advertising screen (functional/advertising-plans.spec.ts) at sites of its own. The administrator creates the
 		// sites, turns advertising on for one, creates the display and the slide and approves the image (second factor); a duty
 		// manager plans on the screen with a password only and uploads the two images.

@@ -15,6 +15,12 @@
 	 * a slide shows as SlideView does. The region shows the display's instructions (SecondRegion, kept loaded) when there is
 	 * no plan, the board is stale, the plan has run out by the server's clock or the wait rule pauses it, and for the slot of
 	 * an item that fails to load or play (tried again at its next turn). Text only; nothing here builds a URL from the board.
+	 *
+	 * ARV-144: it tells the page when an advertisement is on screen (`onplaystart`: its image has loaded, or its video plays, in
+	 * its slot; never while its bytes are on their way or for a slide) and when it goes (`onplayend`): completed at its slot's
+	 * end, cut short when the wait rule pauses, the board goes stale, the plan runs out or changes, advertising stops, the item
+	 * fails after it showed, or the region or the page goes. An item that fails before it shows is no play. The page keeps the
+	 * plays and reports them with the display's credential, which this component never sees.
 	 */
 	let {
 		plan,
@@ -25,7 +31,9 @@
 		rtl,
 		slides = [],
 		load,
-		onchanged
+		onchanged,
+		onplaystart,
+		onplayend
 	}: {
 		/** The board's plan, or null (instructions). */
 		plan: BoardAdvertising | null;
@@ -42,6 +50,10 @@
 		/** Fetches one advertisement with the display's credential; null when it cannot play now. */
 		load: (mediaId: string, signal: AbortSignal) => Promise<Blob | null>;
 		onchanged?: () => void;
+		/** ARV-144: an advertisement is on screen in its slot. */
+		onplaystart?: (mediaId: string) => void;
+		/** ARV-144: the advertisement on screen has gone: at its slot's end (completed) or cut short. */
+		onplayend?: (completed: boolean) => void;
 	} = $props();
 
 	type Media = BoardAdvertisingItem & { mediaId: string; contentType: string };
@@ -57,6 +69,10 @@
 	let playingKey = '';
 	let wasRunning = false;
 	let destroyed = false;
+	/** ARV-144: the advertisement on screen, by its slot, from the moment it shows until it goes. */
+	let onScreen: { slot: number; id: string } | null = null;
+	/** The last slot a play started in: a slot is one play at most, even when its video plays again after a stall. */
+	let playedSlot = -1;
 
 	/** Bumped when the cache changes, so the URL on screen is read again. */
 	let version = $state(0);
@@ -142,13 +158,17 @@
 		});
 	});
 
-	// Each slot: show the place's item, fetch the next one ahead, and move on at the slot's end.
+	// Each slot: show the place's item, fetch the next one ahead, and move on at the slot's end. Leaving a slot any other way
+	// (the plan stops, pauses or changes, or the region goes) cuts its advertisement's play short (ARV-144).
 	$effect(() => {
 		const shownSlot = slot;
 		if (!key || !running) return;
 		const seconds = untrack(() => begin(shownSlot));
 		const timer = setTimeout(() => advance(shownSlot), seconds * 1000);
-		return () => clearTimeout(timer);
+		return () => {
+			clearTimeout(timer);
+			gone(false);
+		};
 	});
 
 	// An item larger than the cache lets its URL go once its slot is over (and when the region goes).
@@ -182,6 +202,8 @@
 
 	function advance(fromSlot: number): void {
 		if (fromSlot !== slot || !current) return;
+		// The slot ran to its end: its advertisement played its whole slot.
+		gone(true);
 		own = null;
 		place = (place + 1) % current.order.length;
 		slot++;
@@ -252,6 +274,8 @@
 	/** An image or a video that cannot be shown: instructions for the rest of its slot, and a new fetch at its next turn. */
 	function mediaFailed(failedAt: number, id: string): void {
 		if (destroyed || failedAt !== slot) return;
+		// Failing after it showed cuts its play short; failing before it showed was no play.
+		gone(false);
 		failedSlot = failedAt;
 		cache.drop(id);
 		if (own?.id === id) own = null;
@@ -260,20 +284,48 @@
 	}
 
 	onDestroy(() => {
+		gone(false);
 		destroyed = true;
 		release();
 	});
 
-	/** An image's failure belongs to the slot it was shown in. */
+	/**
+	 * ARV-144: the advertisement of `shown` is on screen (its image loaded, its video playing): its play starts, once per slot,
+	 * and only while that slot is the one playing it.
+	 */
+	function appeared(shown: { slot: number; id: string }): void {
+		if (destroyed || shown.slot !== slot || shown.slot === playedSlot || !showing) return;
+		if (!player.isPlayableMedia(item) || item.mediaId !== shown.id) return;
+		playedSlot = shown.slot;
+		onScreen = shown;
+		onplaystart?.(shown.id);
+	}
+
+	/** ARV-144: the advertisement on screen goes; nothing happens when none is. */
+	function gone(completed: boolean): void {
+		if (!onScreen) return;
+		onScreen = null;
+		onplayend?.(completed);
+	}
+
+	/** An image shows once it has loaded; its failure belongs to the slot it was shown in. */
 	function picture(node: HTMLImageElement, shown: { slot: number; id: string }) {
 		const failure = () => mediaFailed(shown.slot, shown.id);
+		const loaded = () => appeared(shown);
 		node.addEventListener('error', failure);
-		return { destroy: () => node.removeEventListener('error', failure) };
+		node.addEventListener('load', loaded);
+		if (node.complete && node.naturalWidth > 0) loaded();
+		return {
+			destroy: () => {
+				node.removeEventListener('error', failure);
+				node.removeEventListener('load', loaded);
+			}
+		};
 	}
 
 	/**
-	 * A video plays muted, without controls or loop, from the start of its slot; leaving the slot stops it and lets its
-	 * decoder go. A refusal to play (other than being stopped) is a failure like an error.
+	 * A video plays muted, without controls or loop, from the start of its slot, and shows once it plays; leaving the slot
+	 * stops it and lets its decoder go. A refusal to play (other than being stopped) is a failure like an error.
 	 */
 	function playback(node: HTMLVideoElement, shown: { slot: number; id: string }) {
 		node.defaultMuted = true;
@@ -281,7 +333,9 @@
 		node.loop = false;
 		node.controls = false;
 		const failure = () => mediaFailed(shown.slot, shown.id);
+		const playing = () => appeared(shown);
 		node.addEventListener('error', failure);
+		node.addEventListener('playing', playing);
 		node.play()?.catch((error: unknown) => {
 			const name = error instanceof DOMException ? error.name : '';
 			if (name === 'NotAllowedError' || name === 'NotSupportedError') failure();
@@ -289,15 +343,22 @@
 		return {
 			destroy: () => {
 				node.removeEventListener('error', failure);
+				node.removeEventListener('playing', playing);
 				node.pause();
 				node.removeAttribute('src');
 				node.load();
 			}
 		};
 	}
+
+	/** The page goes: the advertisement on screen is cut short (the page sends what it holds), and everything is let go. */
+	function leaving(): void {
+		gone(false);
+		release();
+	}
 </script>
 
-<svelte:window onpagehide={() => release()} />
+<svelte:window onpagehide={leaving} />
 
 <div
 	data-testid="board-advertising"

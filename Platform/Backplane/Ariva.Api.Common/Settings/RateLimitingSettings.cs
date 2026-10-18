@@ -22,6 +22,13 @@ public sealed class RateLimitingSettings
     public FixedWindowSettings Device { get; set; } = new() { PermitLimit = 600, WindowSeconds = 60 };
 
     /// <summary>
+    /// The <c>display-plays</c> policy for the proof of play batches of the display players (ARV-144), partitioned like the
+    /// board's by the presented credential. Default 6 batches per minute per display: a player sends one a minute, and its
+    /// retries; at 100 plays a batch, at most 600 plays a minute reach the schedule check and the database.
+    /// </summary>
+    public FixedWindowSettings DisplayPlays { get; set; } = new() { PermitLimit = 6, WindowSeconds = 60 };
+
+    /// <summary>
     /// The <c>integration-auth</c> policy for the integration token exchange (ARV-042): 20 a minute per client address
     /// (the 5 a minute per client are counted in the database).
     /// </summary>

@@ -45,6 +45,9 @@ public static class RateLimitingExtensions
     /// <summary>Named policy for display players (ARV-058): per presented credential, else per address, at the device rate.</summary>
     public const string DisplayPolicy = "display";
 
+    /// <summary>Named policy for display players' proof of play batches (ARV-144): per presented credential, a few a minute.</summary>
+    public const string DisplayPlaysPolicy = "display-plays";
+
     /// <summary>Named policy for the integration token exchange (ARV-042): a fixed window per client address.</summary>
     public const string IntegrationAuthPolicy = "integration-auth";
 
@@ -91,7 +94,7 @@ public static class RateLimitingExtensions
         services
             .AddOptions<RateLimitingSettings>()
             .Bind(configuration.GetSection(RateLimitingSettings.SectionName))
-            .Validate(settings => settings.Global.IsValid && settings.Auth.IsValid && settings.Device.IsValid && settings.IntegrationAuth.IsValid &&
+            .Validate(settings => settings.Global.IsValid && settings.Auth.IsValid && settings.Device.IsValid && settings.DisplayPlays.IsValid && settings.IntegrationAuth.IsValid &&
                                 settings.IntegrationBatch.IsValid && settings.IntegrationAidx.IsValid && settings.IntegrationClient.IsValid &&
                                 settings.ValidationResults.IsValid,
                 $"{RateLimitingSettings.SectionName} limits need a positive PermitLimit and WindowSeconds and a QueueLimit of zero or more.")
@@ -115,6 +118,9 @@ public static class RateLimitingExtensions
                     RateLimitPartition.GetFixedWindowLimiter(Ariva.Api.Common.Security.DeviceAuthentication.RateLimitPartition(context), _ => ToLimiterOptions(limits.Device)));
                 options.AddPolicy(DisplayPolicy, context =>
                     RateLimitPartition.GetFixedWindowLimiter(Ariva.Api.Common.Security.DisplayAuthentication.RateLimitPartition(context), _ => ToLimiterOptions(limits.Device)));
+                options.AddPolicy(DisplayPlaysPolicy, context =>
+                    RateLimitPartition.GetFixedWindowLimiter(Ariva.Api.Common.Security.DisplayAuthentication.RateLimitPartition(context),
+                        _ => ToLimiterOptions(limits.DisplayPlays)));
                 options.AddPolicy(UploadPolicy, _ =>
                     RateLimitPartition.GetConcurrencyLimiter(UploadPolicy, _ => new ConcurrencyLimiterOptions
                     {

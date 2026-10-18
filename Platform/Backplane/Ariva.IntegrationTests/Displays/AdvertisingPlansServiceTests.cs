@@ -1,5 +1,6 @@
 using System.Text;
 using Ariva.Core;
+using Ariva.Core.Advertising;
 using Ariva.Core.Domain.Entities;
 using Ariva.Core.Domain.InputModels;
 using Ariva.Core.Services;
@@ -12,7 +13,9 @@ using Ariva.Infra.Services.Seed;
 using Ariva.IntegrationTests.Security;
 using Ariva.IntegrationTests.Setup;
 using FluentAssertions;
+using Fluentx;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Npgsql;
 using SkiaSharp;
 
@@ -38,7 +41,10 @@ public sealed class AdvertisingPlansServiceTests(PostgresFixture fixture) : IAsy
 
     private static readonly DateOnly Last = new(2026, 10, 31);
 
-    private readonly AccountsHost _host = new(fixture, database: TestDatabase.AdvertisingPlans);
+    /// <summary>The hosts' log entries (each test's host logs here; a test reads the entries of its own display).</summary>
+    private static readonly CapturedLogs Logs = new();
+
+    private readonly AccountsHost _host = new(fixture, database: TestDatabase.AdvertisingPlans, configure: services => services.AddSingleton<ILoggerProvider>(Logs));
 
     public ValueTask DisposeAsync() => _host.DisposeAsync();
 
@@ -527,6 +533,310 @@ public sealed class AdvertisingPlansServiceTests(PostgresFixture fixture) : IAsy
         }
     }
 
+    private static ISvcAdvertisingPlays Plays(IServiceProvider s) => s.GetRequiredService<ISvcAdvertisingPlays>();
+
+    private DateTime Now => _host.Clock.GetUtcNow().UtcDateTime;
+
+    private async Task<Result<AdvertisingPlaysViewModel>> RecordAsync(DisplayPlayer player, params AdvertisingPlayRequest[] plays) =>
+        await _host.AsCallerAsync(null, s => Plays(s).RecordAsync(player.Id, player.CredentialPrefix, new AdvertisingPlaysRequest(plays), Ct));
+
+    [Fact]
+    public async Task Record_Should_TakeEachScheduledPlayOnceAndRefuseTheRest_When_ADisplayReportsABatch()
+    {
+        var admin = await AdminAsync();
+        var manager = await ManagerAsync("it.plans.plays", "DMO", "PLN2");
+        var approver = await ManagerAsync("it.plans.plays.second", "DMO", "PLN2");
+        var shown = await ApprovedAsync(manager, approver);
+        var elsewhere = await ApprovedAsync(manager, approver);
+        var theirs = (await MediaAsync(manager, "PLN2")).Id;
+        var playlist = await CreatedPlaylistAsync(manager, "DMO", Playlist("Played bank", Item("Media", shown.Id)));
+        var other = await CreatedPlaylistAsync(manager, "DMO", Playlist("Other bank", Item("Media", elsewhere.Id)));
+        var player = await PlayerAsync(admin, "PLN-PLY");
+        var second = await PlayerAsync(admin, "PLN-PL2");
+        (await _host.AsCallerAsync(manager, s => Schedules(s).CreateAsync("DMO", Schedule(playlist.Id, "Display", ["PLN-PLY"]), Ct))).HasErrors.Should().BeFalse();
+        (await _host.AsCallerAsync(manager, s => Schedules(s).CreateAsync("DMO", Schedule(other.Id, "Display", ["PLN-PL2"]), Ct))).HasErrors.Should().BeFalse();
+        var started = Now.AddMinutes(-5);
+
+        var batch = await RecordAsync(player,
+            new AdvertisingPlayRequest(shown.Id, started, 10_000, true),
+            new AdvertisingPlayRequest(shown.Id, started, 10_000, true),
+            new AdvertisingPlayRequest(shown.Id, started.AddSeconds(10), 4_000, false),
+            new AdvertisingPlayRequest(elsewhere.Id, started, 10_000, true),
+            new AdvertisingPlayRequest(theirs, started, 10_000, true),
+            new AdvertisingPlayRequest(shown.Id, Now.AddMinutes(5), 1_000, true),
+            new AdvertisingPlayRequest(shown.Id, Now.AddDays(-2), 10_000, true),
+            new AdvertisingPlayRequest(shown.Id, DateTime.SpecifyKind(started, DateTimeKind.Unspecified), 10_000, true));
+
+        batch.HasErrors.Should().BeFalse(string.Join(", ", batch.ErrorMessages ?? []));
+        batch.Data.Should().Be(new AdvertisingPlaysViewModel(2, 1, 5),
+            "two plays taken (the same play twice counts once); another display's advertisement, another site's, a future, an old and a local time refused");
+        (await RecordAsync(player, new AdvertisingPlayRequest(shown.Id, started, 10_000, true))).Data.Should().Be(new AdvertisingPlaysViewModel(0, 1, 0),
+            "a batch sent again counts once");
+        (await RecordAsync(second, new AdvertisingPlayRequest(elsewhere.Id, started, 10_000, true))).Data.Accepted.Should().Be(1, "the other display's own advertisement");
+        (await _host.ReadAsync<long>("SELECT count(*) FROM advertising_play WHERE display_id = @id", player.Id)).Should().Be(2);
+        (await _host.ReadAsync<string>("SELECT string_agg(playlist_id::text || ':' || duration_ms || ':' || completed, ',' ORDER BY started_utc) FROM advertising_play WHERE display_id = @id",
+            player.Id)).Should().Be($"{playlist.Id}:10000:true,{playlist.Id}:4000:false");
+
+        (await _host.AsCallerAsync(null, s => Plays(s).RecordAsync(player.Id, "WRONGPREFIX12", new AdvertisingPlaysRequest([new(shown.Id, started, 1, true)]), Ct)))
+            .ErrorMessages.Should().Equal(TopologyErrors.NotFound);
+        (await _host.AsCallerAsync(null, s => Plays(s).RecordAsync(player.Id, player.CredentialPrefix, new AdvertisingPlaysRequest([]), Ct)))
+            .ErrorMessages.Should().Equal(AdvertisingPlays.TooMany);
+        var oversized = Enumerable.Range(0, AdvertisingPlays.MaxBatch + 1).Select(i => new AdvertisingPlayRequest(shown.Id, started.AddSeconds(-i), 1, true)).ToList();
+        (await _host.AsCallerAsync(null, s => Plays(s).RecordAsync(player.Id, player.CredentialPrefix, new AdvertisingPlaysRequest(oversized), Ct)))
+            .ErrorMessages.Should().Equal(AdvertisingPlays.TooMany);
+    }
+
+    [Fact]
+    public async Task Record_Should_RefusePlaysTheDisplayCouldNotHaveShown_When_TheyBreakTheirSlotOverlapOrThePolicy()
+    {
+        var admin = await AdminAsync();
+        var manager = await ManagerAsync("it.plans.plays.rules");
+        var approver = await ManagerAsync("it.plans.plays.rules.second");
+        var shown = await ApprovedAsync(manager, approver);
+        var tomorrow = await ApprovedAsync(manager, approver, new DateOnly(2026, 10, 2), Last);
+        var playlist = await CreatedPlaylistAsync(manager, "DMO", Playlist("Rules bank", Item("Media", shown.Id, 10), Item("Media", tomorrow.Id, 10)));
+        var player = await PlayerAsync(admin, "PLN-RUL");
+        var instructions = await PlayerAsync(admin, "PLN-RIN", secondRegion: "Instructions");
+        (await _host.AsCallerAsync(manager, s => Schedules(s).CreateAsync("DMO", Schedule(playlist.Id, "Display", ["PLN-RUL", "PLN-RIN"]), Ct))).HasErrors.Should().BeFalse();
+        var started = Now.AddMinutes(-20);
+
+        var batch = await RecordAsync(player,
+            new AdvertisingPlayRequest(shown.Id, started, 10_000, true),
+            new AdvertisingPlayRequest(shown.Id, started.AddSeconds(5), 4_000, false),
+            new AdvertisingPlayRequest(shown.Id, started.AddSeconds(30), 15_000, false),
+            new AdvertisingPlayRequest(shown.Id, started.AddSeconds(60), 5_000, true),
+            new AdvertisingPlayRequest(tomorrow.Id, started.AddSeconds(90), 10_000, true),
+            new AdvertisingPlayRequest(shown.Id, started.AddSeconds(120), 9_500, true));
+
+        batch.Data.Should().Be(new AdvertisingPlaysViewModel(2, 0, 4),
+            "taken: a play and one within its slot's tolerance; refused: one on screen with the first, one longer than its slot, one completed in half its slot, one before its dates");
+
+        // Against what is stored: a later batch claiming screen time already played is refused; one that only touches it is taken.
+        (await RecordAsync(player, new AdvertisingPlayRequest(shown.Id, started.AddSeconds(3), 10_000, true), new AdvertisingPlayRequest(shown.Id, started.AddSeconds(10), 10_000, true)))
+            .Data.Should().Be(new AdvertisingPlaysViewModel(1, 0, 1));
+
+        // As the board: a display set to instructions, or a site whose policy is off, played no advertising (ARV-145).
+        (await RecordAsync(instructions, new AdvertisingPlayRequest(shown.Id, started, 10_000, true))).Data.Should().Be(new AdvertisingPlaysViewModel(0, 0, 1),
+            "a display set to instructions, though a schedule names it");
+        var policies = (Func<IServiceProvider, ISvcAdvertisingPolicies>)(s => s.GetRequiredService<ISvcAdvertisingPolicies>());
+        var reviewed = (await _host.AsCallerAsync(admin, s => policies(s).GetAsync("DMO", Ct))).Data.PublishedProfileId;
+        var late = new AdvertisingPlayRequest(shown.Id, started.AddSeconds(200), 10_000, true);
+        try
+        {
+            (await _host.AsCallerAsync(admin, s => policies(s).ChangeAsync("DMO",
+                new AdvertisingPolicyRequest(false, [], "Airport operator letter AO-IT-144, paused", reviewed), Ct))).HasErrors.Should().BeFalse();
+            (await RecordAsync(player, late)).Data.Should().Be(new AdvertisingPlaysViewModel(0, 0, 1), "a plan is never itself permission to advertise");
+        }
+        finally
+        {
+            (await _host.AsCallerAsync(admin, s => policies(s).ChangeAsync("DMO",
+                new AdvertisingPolicyRequest(true, [], "Airport operator letter AO-IT-143a, commercial team", reviewed), Ct))).HasErrors.Should().BeFalse();
+        }
+
+        (await RecordAsync(player, late)).Data.Should().Be(new AdvertisingPlaysViewModel(1, 0, 0), "allowed again");
+        (await _host.ReadAsync<string>("""
+            SELECT string_agg(extract(epoch FROM p.started_utc - f.first)::int || ':' || p.duration_ms, ',' ORDER BY p.started_utc)
+              FROM advertising_play p, (SELECT min(started_utc) AS first FROM advertising_play WHERE display_id = @id) f
+             WHERE p.display_id = @id
+            """, player.Id)).Should().Be("0:10000,10:10000,120:9500,200:10000", "seconds after the first play, and how long each lasted");
+        (await _host.ReadAsync<long>("SELECT count(*) FROM advertising_play WHERE display_id = @id", instructions.Id)).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Record_Should_TakeOnePlayOfTheAirtime_When_PlaysAreShortNestedOrSentAtOnce()
+    {
+        var admin = await AdminAsync();
+        var manager = await ManagerAsync("it.plans.plays.stack");
+        var approver = await ManagerAsync("it.plans.plays.stack.second");
+        var shown = await ApprovedAsync(manager, approver);
+        var playlist = await CreatedPlaylistAsync(manager, "DMO", Playlist("Stacked bank", Item("Media", shown.Id, 10)));
+        var player = await PlayerAsync(admin, "PLN-STK");
+        (await _host.AsCallerAsync(manager, s => Schedules(s).CreateAsync("DMO", Schedule(playlist.Id, "Display", ["PLN-STK"]), Ct))).HasErrors.Should().BeFalse();
+        var started = Now.AddMinutes(-30);
+        (await RecordAsync(player, new AdvertisingPlayRequest(shown.Id, started, 10_000, true))).Data.Should().Be(new AdvertisingPlaysViewModel(1, 0, 0));
+        var before = Logs.Entries.Count;
+
+        // A second inside the stored play, ten plays of a second a millisecond apart, and less than a second on screen.
+        var stacked = Enumerable.Range(0, 10).Select(i => new AdvertisingPlayRequest(shown.Id, started.AddSeconds(20).AddMilliseconds(i), 1_000, false));
+        var batch = await RecordAsync(player, [new AdvertisingPlayRequest(shown.Id, started.AddSeconds(3), 1_000, false), .. stacked,
+            new AdvertisingPlayRequest(shown.Id, started.AddSeconds(40), 999, false)]);
+
+        batch.Data.Should().Be(new AdvertisingPlaysViewModel(1, 0, 11), "one second of the ten; the nested and the sub-second plays refused");
+
+        // The refusal is a security event naming the display, its site and the counts, never a value of the body.
+        var refused = Logs.Entries.Skip(before).Where(e => e.EventId.Id == 9126 && Equals(e.Values.GetValueOrDefault("DisplayId"), (Guid?)player.Id)).ToList();
+        refused.Should().ContainSingle().Which.Should().Match<LogEntry>(e => e.Level == LogLevel.Warning && e.EventId.Name == "SecurityEvent.DisplayPlaysRefused" &&
+            Equals(e.Values["SiteCode"], "DMO") && Equals(e.Values["Refused"], 11) && Equals(e.Values["Accepted"], 1));
+        var written = string.Join("\n", refused.Select(e => e.Message + " " + string.Join(" ", e.Values.Values)));
+        written.Should().NotContain(shown.Id.ToString()).And.NotContain(shown.Id.ToString("N")).And.NotContain(started.ToString("O", System.Globalization.CultureInfo.InvariantCulture)[..16],
+            "the advertisement and the start the display sent are not logged");
+
+        // Two batches at once claiming the same airtime: the display's lock lets one through, the other sees it stored.
+        for (var round = 0; round < 5; round++)
+        {
+            var at = started.AddMinutes(2 + round);
+            var answers = await Task.WhenAll(
+                RecordAsync(player, new AdvertisingPlayRequest(shown.Id, at, 10_000, true)),
+                RecordAsync(player, new AdvertisingPlayRequest(shown.Id, at.AddSeconds(2), 10_000, true)));
+            answers.Sum(a => a.Data.Accepted).Should().Be(1, $"round {round}");
+            answers.Sum(a => a.Data.Refused).Should().Be(1, $"round {round}");
+        }
+
+        (await _host.ReadAsync<long>("""
+            SELECT count(*) FROM advertising_play a JOIN advertising_play b
+                ON a.display_id = b.display_id AND a.started_utc < b.started_utc AND b.started_utc < a.started_utc + a.duration_ms * interval '1 millisecond' - interval '1 second'
+             WHERE a.display_id = @id
+            """, player.Id)).Should().Be(0, "no stored plays of the display were on screen together");
+        (await _host.ReadAsync<long>("SELECT count(*) FROM advertising_play WHERE display_id = @id", player.Id)).Should().Be(7);
+
+        // Every play taken: no security event.
+        var quiet = Logs.Entries.Count;
+        (await RecordAsync(player, new AdvertisingPlayRequest(shown.Id, started.AddMinutes(10), 10_000, true))).Data.Should().Be(new AdvertisingPlaysViewModel(1, 0, 0));
+        Logs.Entries.Skip(quiet).Should().NotContain(e => e.EventId.Id == 9126);
+    }
+
+    [Fact]
+    public async Task Database_Should_RefuseTheRuntimeRole_When_ItChangesOrRemovesAPlay()
+    {
+        await using var runtime = await RuntimeAsync();
+        foreach (var (reason, sql) in new[]
+                 {
+                     ("a play changed", "UPDATE advertising_play SET duration_ms = 1"),
+                     ("a play deleted", "DELETE FROM advertising_play"),
+                     ("the plays truncated", "TRUNCATE advertising_play")
+                 })
+        {
+            await using var save = new NpgsqlCommand("SAVEPOINT play", runtime.Connection, runtime.Transaction);
+            await save.ExecuteNonQueryAsync(Ct);
+#pragma warning disable CA2100 // literal statements from the array above
+            await using var command = new NpgsqlCommand(sql, runtime.Connection, runtime.Transaction);
+#pragma warning restore CA2100
+            var writing = () => command.ExecuteNonQueryAsync(Ct);
+            (await writing.Should().ThrowAsync<PostgresException>(reason)).Which.SqlState.Should().Be("42501", reason);
+            await using var back = new NpgsqlCommand("ROLLBACK TO SAVEPOINT play", runtime.Connection, runtime.Transaction);
+            await back.ExecuteNonQueryAsync(Ct);
+        }
+
+        foreach (var (reason, sql) in new[]
+                 {
+                     ("longer than any slot", "INSERT INTO advertising_play VALUES (now(), 'DMO', gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 125001, true, now())"),
+                     ("shorter than a second", "INSERT INTO advertising_play VALUES (now(), 'DMO', gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 999, false, now())"),
+                     ("received before it started", "INSERT INTO advertising_play VALUES (now(), 'DMO', gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 1000, true, now() - interval '6 seconds')"),
+                     ("received more than a day after", "INSERT INTO advertising_play VALUES (now() - interval '25 hours', 'DMO', gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 1000, true, now())")
+                 })
+        {
+            await using var save = new NpgsqlCommand("SAVEPOINT play", runtime.Connection, runtime.Transaction);
+            await save.ExecuteNonQueryAsync(Ct);
+#pragma warning disable CA2100 // literal statements from the array above
+            await using var forged = new NpgsqlCommand(sql, runtime.Connection, runtime.Transaction);
+#pragma warning restore CA2100
+            var inserting = () => forged.ExecuteNonQueryAsync(Ct);
+            (await inserting.Should().ThrowAsync<PostgresException>(reason)).Which.SqlState.Should().Be("23514", reason);
+            await using var back = new NpgsqlCommand("ROLLBACK TO SAVEPOINT play", runtime.Connection, runtime.Transaction);
+            await back.ExecuteNonQueryAsync(Ct);
+        }
+    }
+
+    [Fact]
+    public async Task Database_Should_RefuseTheRuntimeRole_When_ItChangesAPlayThroughItsChunk()
+    {
+        // A chunk holds the plays (a hypertable of 7 days a chunk): one is written as the owner, at the wall clock's time.
+        await using (var owner = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync())))
+        {
+            await owner.OpenAsync(Ct);
+            await using var play = new NpgsqlCommand(
+                "INSERT INTO advertising_play VALUES (now(), 'DMO', gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 1000, true, now())", owner);
+            await play.ExecuteNonQueryAsync(Ct);
+        }
+
+        await using var runtime = await RuntimeAsync();
+        foreach (var (reason, sql) in new[]
+                 {
+                     ("a play changed through its chunk", "DO $$ BEGIN EXECUTE format('UPDATE %s SET duration_ms = 1', (SELECT c FROM show_chunks('advertising_play') AS c LIMIT 1)); END $$"),
+                     ("a play deleted through its chunk", "DO $$ BEGIN EXECUTE format('DELETE FROM %s', (SELECT c FROM show_chunks('advertising_play') AS c LIMIT 1)); END $$"),
+                     ("a chunk truncated", "DO $$ BEGIN EXECUTE format('TRUNCATE %s', (SELECT c FROM show_chunks('advertising_play') AS c LIMIT 1)); END $$")
+                 })
+        {
+            await using var save = new NpgsqlCommand("SAVEPOINT chunk", runtime.Connection, runtime.Transaction);
+            await save.ExecuteNonQueryAsync(Ct);
+#pragma warning disable CA2100 // literal statements from the array above
+            await using var command = new NpgsqlCommand(sql, runtime.Connection, runtime.Transaction);
+#pragma warning restore CA2100
+            var writing = () => command.ExecuteNonQueryAsync(Ct);
+            (await writing.Should().ThrowAsync<PostgresException>(reason)).Which.SqlState.Should().Be("42501", reason);
+            await using var back = new NpgsqlCommand("ROLLBACK TO SAVEPOINT chunk", runtime.Connection, runtime.Transaction);
+            await back.ExecuteNonQueryAsync(Ct);
+        }
+    }
+
+    [Fact]
+    public async Task Figures_Should_CountThePlaysAgainstTheAirtimeThePlansScheduled_When_ADayIsRead()
+    {
+        var admin = await AdminAsync();
+        var manager = await ManagerAsync("it.plans.figures");
+        var approver = await ManagerAsync("it.plans.figures.second");
+        var first = await ApprovedAsync(manager, approver);
+        var second = await ApprovedAsync(manager, approver);
+        var playlist = await CreatedPlaylistAsync(manager, "DMO", Playlist("Counted bank", Item("Media", first.Id, 10), Item("Media", second.Id, 30)));
+        var player = await PlayerAsync(admin, "PLN-FIG");
+        (await _host.AsCallerAsync(manager, s => Schedules(s).CreateAsync("DMO", Schedule(playlist.Id, "Display", ["PLN-FIG"]), Ct))).HasErrors.Should().BeFalse();
+        var started = Now.AddMinutes(-10);
+        (await RecordAsync(player,
+                new AdvertisingPlayRequest(first.Id, started, 10_000, true),
+                new AdvertisingPlayRequest(second.Id, started.AddSeconds(10), 30_000, true),
+                new AdvertisingPlayRequest(first.Id, started.AddSeconds(40), 6_000, false)))
+            .Data.Accepted.Should().Be(3);
+        var day = new DateOnly(2026, 10, 1);
+
+        var figures = await _host.AsCallerAsync(manager, s => s.GetRequiredService<ISvcAdvertisingFigures>().ReadAsync("DMO", day, day, Ct));
+
+        figures.HasErrors.Should().BeFalse(string.Join(", ", figures.ErrorMessages ?? []));
+        figures.Data.TimeZone.Should().Be("Asia/Dubai");
+        var rows = figures.Data.Rows.Where(r => r.DisplayCode == "PLN-FIG").ToList();
+        // The whole local day (24 hours) the playlist applied to the display: a cycle of 10 + 30 seconds, so the first
+        // advertisement was scheduled a quarter of it (6 hours) and the second three quarters (18 hours).
+        rows.Select(r => (r.Day, r.MediaId, r.Plays, r.CompletedPlays, r.AirtimeSeconds, r.ScheduledSeconds)).Should().BeEquivalentTo(new[]
+        {
+            (day, first.Id, 2, 1, 16.0, 21_600.0),
+            (day, second.Id, 1, 1, 30.0, 64_800.0)
+        });
+        rows.Single(r => r.MediaId == first.Id).Should().Match<AdvertisingFigureRowViewModel>(r =>
+            r.Advertiser == "Gulf Air" && r.Campaign == "Winter sun" && r.DeliveredShare == Math.Round(16.0 / 21_600, 4));
+        figures.Data.ByDisplay.Single(f => f.Key == "PLN-FIG").Should().Match<AdvertisingFigureViewModel>(f =>
+            f.Plays == 3 && f.CompletedPlays == 2 && f.AirtimeSeconds == 46 && f.ScheduledSeconds == 86_400);
+        figures.Data.ByDay.Should().ContainSingle().Which.Key.Should().Be("2026-10-01");
+        figures.Data.ByCampaign.Select(f => f.Key).Should().Contain("Gulf Air: Winter sun");
+        figures.Data.ByAdvertiser.Select(f => f.Key).Should().Contain("Gulf Air");
+
+        (await _host.AsCallerAsync(manager, s => s.GetRequiredService<ISvcAdvertisingFigures>().ReadAsync("DMO", day, day.AddDays(-1), Ct))).ErrorMessages
+            .Should().Equal(AdvertisingFiguresErrors.Range);
+        (await _host.AsCallerAsync(manager, s => s.GetRequiredService<ISvcAdvertisingFigures>().ReadAsync("DMO", day, day.AddDays(31), Ct))).ErrorMessages
+            .Should().Equal(AdvertisingFiguresErrors.Range);
+        (await _host.AsCallerAsync(manager, s => s.GetRequiredService<ISvcAdvertisingFigures>().ReadAsync("DMO", day, day.AddDays(1), Ct))).ErrorMessages
+            .Should().Equal([AdvertisingFiguresErrors.Range], "2 October has not begun at DMO");
+        (await _host.AsCallerAsync(manager, s => s.GetRequiredService<ISvcAdvertisingFigures>().ReadAsync("DMO", DateOnly.MinValue, DateOnly.MinValue, Ct))).ErrorMessages
+            .Should().Equal([AdvertisingFiguresErrors.Range], "older than any play is kept");
+        (await _host.AsCallerAsync(manager, s => s.GetRequiredService<ISvcAdvertisingFigures>().ReadAsync("DMO", DateOnly.MaxValue, DateOnly.MaxValue, Ct))).ErrorMessages
+            .Should().Equal([AdvertisingFiguresErrors.Range]);
+        var outsider = await ManagerAsync("it.plans.figures.outsider", "PLN2");
+        (await _host.AsCallerAsync(outsider, s => s.GetRequiredService<ISvcAdvertisingFigures>().ReadAsync("DMO", day, day, Ct))).ErrorMessages
+            .Should().Equal(TopologyErrors.NotFound);
+        foreach (var (name, temporary, disabled) in new[] { ("it.plans.figures.disabled", false, true), ("it.plans.figures.pending", true, false) })
+        {
+            var refusedUser = await _host.CreateUserAsync(name, temporary: temporary, disabled: disabled, roles: [RoleCodes.TerminalDutyManager]);
+            await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcUsers>().SetSitesAsync(refusedUser, new SiteAccessRequest(false, ["DMO"]), Ct));
+            (await _host.AsCallerAsync(refusedUser, s => s.GetRequiredService<ISvcAdvertisingFigures>().ReadAsync("DMO", day, day, Ct))).ErrorMessages
+                .Should().Equal([TopologyErrors.NotFound], disabled ? "a disabled account of the site's duty managers" : "a pending account (its password still to change)");
+        }
+
+        var border = await _host.CreateUserAsync("it.plans.figures.border", roles: [RoleCodes.BorderShiftSupervisor]);
+        await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcUsers>().SetSitesAsync(border, new SiteAccessRequest(false, ["DMO"]), Ct));
+        (await _host.AsCallerAsync(border, s => s.GetRequiredService<ISvcAdvertisingFigures>().ReadAsync("DMO", day, day, Ct))).ErrorMessages
+            .Should().Equal([TopologyErrors.NotFound], "a role of the site that does not view advertising, answered as a site that does not exist");
+        (await _host.AsCallerAsync(manager, s => s.GetRequiredService<ISvcAdvertisingFigures>().ReadAsync("<script>", day, day, Ct))).ErrorMessages
+            .Should().Equal(TopologyErrors.NotFound);
+    }
+
     public static TheoryData<string, string> RuntimeRefusals => new()
     {
         { "another site's advertisement", "UPDATE advertising_playlist SET items = '[{\"kind\":\"Media\",\"id\":\"' || (SELECT id FROM advertising_media WHERE site_code = 'PLN2' LIMIT 1) || '\",\"seconds\":10,\"weight\":1}]' WHERE id = @id" },
@@ -664,5 +974,41 @@ public sealed class AdvertisingPlansServiceTests(PostgresFixture fixture) : IAsy
         await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_runtime", connection, transaction))
             await role.ExecuteNonQueryAsync(Ct);
         return new Runtime(connection, transaction);
+    }
+
+    /// <summary>A log entry as written: its event, level, message and structured values.</summary>
+    private sealed record LogEntry(EventId EventId, LogLevel Level, string Message, IReadOnlyDictionary<string, object> Values);
+
+    private sealed class CapturedLogs : ILoggerProvider, ILogger
+    {
+        private readonly List<LogEntry> _entries = [];
+
+        public IReadOnlyList<LogEntry> Entries
+        {
+            get
+            {
+                lock (_entries)
+                    return [.. _entries];
+            }
+        }
+
+        public ILogger CreateLogger(string categoryName) => this;
+
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception, Func<TState, Exception, string> formatter)
+        {
+            var values = state is IEnumerable<KeyValuePair<string, object>> pairs
+                ? pairs.GroupBy(p => p.Key, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.Last().Value, StringComparer.Ordinal)
+                : new Dictionary<string, object>(StringComparer.Ordinal);
+            lock (_entries)
+                _entries.Add(new LogEntry(eventId, logLevel, formatter(state, exception), values));
+        }
+
+        public void Dispose()
+        {
+        }
     }
 }

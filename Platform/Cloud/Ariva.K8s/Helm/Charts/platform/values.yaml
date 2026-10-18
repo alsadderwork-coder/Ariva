@@ -61,6 +61,7 @@ migration:
     alertEmailDays: 180       # email_message, with staff email addresses (TC-67); 30 to 3650
     integrationCallDays: 400  # integration_call, the Integration API call record (TC-68); 30 to 3650
     reportDeliveryDays: 400   # report_delivery (TC-66); 30 to 3650
+    advertisingPlayDays: 400  # advertising_play, the proof of play (ARV-144, Proposed); 30 to 3650
 
 # Validation reader login (ARV-104g1): the only database login that reads the shadow nowcast (a member of
 # ariva_validation_reader and nothing else, created and updated by the migration job, script 0049). Its name and password

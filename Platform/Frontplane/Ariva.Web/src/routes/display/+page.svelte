@@ -4,6 +4,7 @@
 	import { nextBand, type Band } from '$lib/core/bands';
 	import * as displays from '$lib/core/displays';
 	import type { Board } from '$lib/core/displays';
+	import * as playLog from '$lib/core/play-log';
 	import AdvertisingRegion from '$lib/components/pages/displays/AdvertisingRegion.svelte';
 	import SlideView from '$lib/components/pages/displays/SlideView.svelte';
 	import ar from '$lib/i18n/board/ar.json';
@@ -30,6 +31,11 @@
 	 * advertisement fetched with this page's credential by the GUID the board gives; the instructions are the fallback. The
 	 * wait rule is judged here on each good board, and the plan stops when the board goes stale or its end passes by the
 	 * server's clock (the board's serverUtc plus the time since it arrived).
+	 *
+	 * ARV-144: the page keeps the plays the second region reports (play-log.ts: in memory only, at most 500) and sends them in
+	 * batches with this page's credential, one request at a time, every minute (sooner when a whole batch waits); never while
+	 * the board is refused, and not after a 401 until a good board comes back. As the page goes it tries once more with fetch
+	 * keepalive. The `playsEvery` query parameter (whole seconds, held to 12 to 60) shortens the turn for the functional test.
 	 */
 	const dictionaries: Record<string, Record<string, string>> = { en, ar, pt, sw };
 	const rtl = new Set(['ar']);
@@ -45,6 +51,11 @@
 	let now = $state(Date.now());
 	let timer: ReturnType<typeof setInterval> | undefined;
 	let clock: ReturnType<typeof setInterval> | undefined;
+	/** ARV-144: the plays shown and not yet answered for; set again with the page's turn when it mounts. */
+	let log = new playLog.PlayLog();
+	let playsQueued = $state(0);
+	let playsSent = $state(0);
+	let playsDropped = $state(0);
 
 	const languages = $derived(board?.languages ?? ['en']);
 	const split = $derived(!refused && board?.layout === 'Split');
@@ -91,6 +102,8 @@
 		// A failed request keeps the last board until it goes stale.
 		if ('failed' in answer) return;
 		refused = false;
+		// ARV-144: a good board lets the plays go again after a 401.
+		log.resume();
 		const next = answer.board;
 		bands = next.entries.map((entry, index) => {
 			const fresh =
@@ -117,9 +130,53 @@
 		return 'blob' in answer ? answer.blob : null;
 	}
 
+	/** ARV-144: what tests read of the plays (data-plays-*). */
+	function syncPlays(): void {
+		playsQueued = log.queued;
+		playsSent = log.sent;
+		playsDropped = log.dropped;
+	}
+
+	/** ARV-144: an advertisement is on screen; its start is by the server's clock, to the millisecond. */
+	function playStarted(mediaId: string): void {
+		const server = board
+			? advertisingPlayer.serverNow(board.serverUtc, lastOk, Date.now())
+			: Date.now();
+		log.start(mediaId, server, performance.now());
+		syncPlays();
+	}
+
+	/** ARV-144: the advertisement on screen has gone; a whole batch waiting may go at once. */
+	function playEnded(completed: boolean): void {
+		log.end(completed, performance.now());
+		syncPlays();
+		void sendPlays();
+	}
+
+	/** ARV-144: sends the next batch when its turn has come: one request at a time, never while the board is refused. */
+	async function sendPlays(): Promise<void> {
+		if (refused || !code || !credential) return;
+		const batch = log.take(performance.now());
+		if (!batch) return;
+		syncPlays();
+		const answer = await displays.plays(code, credential, batch);
+		log.settle(answer.status);
+		syncPlays();
+	}
+
+	/** ARV-144: the page goes: the play on screen is cut short and what is held goes once more, with keepalive. */
+	function pageGoes(): void {
+		log.end(false, performance.now());
+		syncPlays();
+		if (refused || !code || !credential) return;
+		const last = log.final();
+		if (last.length > 0) void displays.plays(code, credential, last, true);
+	}
+
 	onMount(() => {
 		const params = new URLSearchParams(location.search);
 		code = params.get('code') ?? '';
+		log = new playLog.PlayLog(playLog.sendEvery(params.get('playsEvery')), performance.now());
 		const fragment = new URLSearchParams(location.hash.slice(1));
 		const fromAddress = fragment.get('key');
 		try {
@@ -136,7 +193,10 @@
 		}
 		void poll();
 		timer = setInterval(() => void poll(), pollMs);
-		clock = setInterval(() => (now = Date.now()), 1000);
+		clock = setInterval(() => {
+			now = Date.now();
+			void sendPlays();
+		}, 1000);
 	});
 
 	onDestroy(() => {
@@ -198,6 +258,8 @@
 	<title>{board?.name ?? 'Ariva'}</title>
 	<meta name="robots" content="noindex" />
 </svelte:head>
+
+<svelte:window onpagehide={pageGoes} />
 
 {#snippet queueView(current: Board)}
 	<header
@@ -293,6 +355,9 @@
 		data-layout="Split"
 		data-orientation={board.orientation}
 		data-state={boardStale ? 'stale' : 'live'}
+		data-plays-queued={playsQueued}
+		data-plays-sent={playsSent}
+		data-plays-dropped={playsDropped}
 		dir={direction}
 		class={[
 			'flex h-screen w-screen overflow-hidden bg-[#0b1220] text-white',
@@ -328,6 +393,8 @@
 					slides={board.slides ?? []}
 					load={advertisement}
 					onchanged={() => secondLoaded++}
+					onplaystart={playStarted}
+					onplayend={playEnded}
 				/>
 				{#snippet failed()}
 					<div data-testid="board-second" data-state="failed" class="h-full w-full"></div>
@@ -342,6 +409,9 @@
 		data-layout="Full"
 		data-orientation={board?.orientation ?? 'Landscape'}
 		data-state={refused ? 'refused' : boardStale ? 'stale' : 'live'}
+		data-plays-queued={playsQueued}
+		data-plays-sent={playsSent}
+		data-plays-dropped={playsDropped}
 		use:fit={{ watch: [board, bands, refused, boardStale] }}
 		class="flex h-screen w-screen flex-col overflow-hidden bg-[#0b1220] text-white"
 	>
