@@ -23,6 +23,12 @@ public sealed class DatabaseSettings
     public bool UseEncryption { get; init; }
 
     /// <summary>
+    /// The PEM file of the internal CA that issued the database server's certificate (ARV-082a): with <see cref="UseEncryption"/>
+    /// the server is verified against this CA alone, never the system store. Required in k8s-prd (<see cref="ProductionTransportProblem"/>).
+    /// </summary>
+    public string RootCertificate { get; init; } = string.Empty;
+
+    /// <summary>
     /// Lets NHibernate SchemaUpdate change the schema at startup. Only appsettings.base.vm-local.json sets it; a unit
     /// test fails the build if any other environment does. Production schema comes from versioned scripts (ARV-006).
     /// </summary>
@@ -56,6 +62,20 @@ public sealed class DatabaseSettings
         return configuration.GetSection(SectionName).Get<DatabaseSettings>() ?? new DatabaseSettings();
     }
 
+    /// <summary>
+    /// Why this configuration is not fit for k8s-prd, or null (ARV-082a, CWE-319, CWE-295): every connection to PostgreSQL uses
+    /// TLS, verified against the internal CA in <see cref="RootCertificate"/>, which must be there. Never names the password.
+    /// </summary>
+    public string ProductionTransportProblem(Func<string, bool> fileExists)
+    {
+        ArgumentNullException.ThrowIfNull(fileExists);
+        if (!UseEncryption)
+            return "Database:UseEncryption must be true in k8s-prd: every connection to PostgreSQL uses TLS.";
+        if (string.IsNullOrWhiteSpace(RootCertificate))
+            return "Database:RootCertificate must name the internal CA's PEM file in k8s-prd: the server is verified against it, not the system store.";
+        return fileExists(RootCertificate) ? null : "Database:RootCertificate names a file that does not exist: mount the database CA secret.";
+    }
+
     /// <summary>The hosts' connection: the runtime login, DML only once the migration job has run.</summary>
     public string BuildConnectionString() => Build(Username, Password, "ariva");
 
@@ -77,7 +97,15 @@ public sealed class DatabaseSettings
             SslMode = UseEncryption ? SslMode.VerifyFull : SslMode.Disable,
             ApplicationName = applicationName
         };
+        ApplyRootCertificate(builder);
         return builder.ConnectionString;
+    }
+
+    /// <summary>With TLS, the server is verified against the pinned internal CA when one is named (every login's connection).</summary>
+    internal void ApplyRootCertificate(NpgsqlConnectionStringBuilder builder)
+    {
+        if (UseEncryption && !string.IsNullOrWhiteSpace(RootCertificate))
+            builder.RootCertificate = RootCertificate;
     }
 }
 

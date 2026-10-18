@@ -153,6 +153,20 @@ internal sealed class ArivaWebApplicationFactory<TEntryPoint>(string environment
 
     private string DevelopmentKeyDirectory { get; } = Path.Combine(Path.GetTempPath(), "ariva-unit-tests", Guid.NewGuid().ToString("N"));
 
+    /// <summary>A CA certificate (PEM) in the host's own temporary folder, for the pinned database CA no in-process host connects with.</summary>
+    private string TestDatabaseCa()
+    {
+        Directory.CreateDirectory(DevelopmentKeyDirectory);
+        var path = Path.Combine(DevelopmentKeyDirectory, "database-ca.crt");
+        using var key = System.Security.Cryptography.ECDsa.Create(System.Security.Cryptography.ECCurve.NamedCurves.nistP256);
+        var request = new System.Security.Cryptography.X509Certificates.CertificateRequest("CN=Ariva test database CA", key,
+            System.Security.Cryptography.HashAlgorithmName.SHA256);
+        request.CertificateExtensions.Add(new System.Security.Cryptography.X509Certificates.X509BasicConstraintsExtension(true, false, 0, true));
+        using var ca = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow.AddDays(1));
+        File.WriteAllText(path, ca.ExportCertificatePem());
+        return path;
+    }
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment(environment);
@@ -161,6 +175,9 @@ internal sealed class ArivaWebApplicationFactory<TEntryPoint>(string environment
         // (cluster environments). Persistence is covered by Ariva.IntegrationTests against a real PostgreSQL.
         builder.UseSetting("Database:AllowSchemaUpdate", "false");
         builder.UseSetting("Database:VerifySchemaOnStartup", "false");
+        // The cluster environments pin the database's internal CA (ARV-082a) and a k8s-prd host refuses to start without the
+        // file; nothing connects here, so a test CA of the host's own stands in for the mounted secret.
+        builder.UseSetting("Database:RootCertificate", TestDatabaseCa());
         // Nor a database readiness check, which would answer 503 here: the probes' authorization is what these hosts
         // test; the check itself is covered by ServiceDefaultsTests (ARV-066).
         builder.ConfigureServices(services => services.PostConfigure<HealthCheckServiceOptions>(options =>

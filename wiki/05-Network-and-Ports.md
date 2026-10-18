@@ -92,8 +92,9 @@ Examples from the formula tests: offsets 620, 610 and 630 ms are stable and corr
 | Ingress to pods, pod to pod | HTTP inside the cluster (Service port 80 to container port 8080) | Mutual TLS or network policies between services (D5) |
 | Sensors to Ingest | Specified: HTTPS push, MQTT over TLS with the device credential (client certificates optional, pinned) | As specified |
 | Services to Kafka | Plaintext `kafka:9092` in the current settings | TLS and per-service ACLs (CWE-269 control); configuration To confirm |
-| Services to PostgreSQL | `Database:UseEncryption` is `false` in the committed settings | Encrypted connections in production |
-| Services to Redis | Plain `redis:6379` | TLS To confirm |
+| Services to PostgreSQL | k8s-prd: TLS 1.2 or later, verified against the internal CA in `Database:RootCertificate` (ARV-082a); the TimescaleDB chart serves TLS from `timescaledb-tls` (its TLS 1.2 suites ECDHE with AES-GCM or ChaCha20-Poly1305 only) and accepts TCP connections over TLS only. Plain in dev and demo | As built |
+| Services to Redis | k8s-prd: `ssl=true`, verified against the internal CA in `Redis:CaCertificatePath` (ARV-082a); the site's Redis must serve TLS. Plain in dev and demo | As built; the Redis server's TLS is the site's (Ariva ships no Redis) |
+| Services to the OTLP collector | k8s-prd: https only (the chart and every host refuse a plain endpoint, ARV-082a) | As built |
 | Outbound integrations | HTTPS only (HTTP only for allowlisted lab hosts); optional client certificate and pinned CA per endpoint | As specified |
 | Border to airport feed | Not built | HTTPS with mutual TLS (Proposed) |
 

@@ -27,6 +27,9 @@ public static class CachingExtensions
 
         var redis = RedisSettings.From(configuration);
         var environment = configuration["Application:Environment"] ?? "unset";
+        // ARV-082a (CWE-319, CWE-295): in production Redis is reached over TLS verified against the pinned internal CA, or the host does not start.
+        if (environment == "k8s-prd" && redis.ProductionTransportProblem(File.Exists) is { } problem)
+            throw new InvalidOperationException(problem);
         var minutes = int.TryParse(configuration["Cache:FusionCacheInMinutes"], out var configured) && configured > 0 ? configured : 5;
 
         var builder = services

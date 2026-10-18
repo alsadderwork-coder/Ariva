@@ -2,7 +2,10 @@
 #StatefulSet: one PostgreSQL 17 with TimescaleDB. Runs as the image's postgres user (uid 1000) with a read-only root
 #filesystem; the data, the socket directory, /tmp and /dev/shm are the only writable paths (CWE-269). Local socket
 #connections use peer authentication and every TCP connection, loopback included, needs a password (scram-sha-256),
-#so a port-forward to the pod gets no password-free access.
+#so a port-forward to the pod gets no password-free access. With tls.enabled (ARV-082a) every TCP connection must also use
+#TLS (TLS 1.2 at least): the server's certificate and key come from the secret tls.secretName and its pg_hba.conf from the
+#ConfigMap timescaledb-hba.
+{{- $tls := .Values.tls | default dict }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -21,6 +24,11 @@ spec:
       labels:
         app: timescaledb
         {{- include "ariva-timescaledb.labels" . | nindent 8 }}
+      {{- if $tls.enabled }}
+      annotations:
+        # hba_file is read at start (and on a reload): a changed pg_hba.conf restarts the pod
+        checksum/pg-hba: {{ include (print $.Template.BasePath "/hba-configmap.yaml") . | sha256sum }}
+      {{- end }}
     spec:
       automountServiceAccountToken: false
       enableServiceLinks: false
@@ -50,6 +58,32 @@ spec:
           configMap:
             name: timescaledb-init
             defaultMode: 0555
+        {{- if $tls.enabled }}
+        # The server certificate and key (ARV-082a), mounted straight from the kubernetes.io/tls secret. PostgreSQL refuses
+        # a key file that its own user owns unless the mode is 0600 or less, and one that root owns unless the mode is 0640
+        # or less (no group write, nothing for others). The kubelet writes secret files as root; with fsGroup 1000 it gives
+        # them group 1000 and adds group read. Mode 0440 therefore leaves root the owner, lets the postgres user
+        # (uid 1000, group 1000) read the key through its group and gives others nothing: PostgreSQL accepts the file as
+        # mounted. So no init step copies the key: no second copy in an emptyDir, no root init container, nothing written
+        # under the read-only root filesystem, and a renewed certificate reaches the mount in place. 0444 would be refused
+        # ("has group or world access") and the server would not start; without fsGroup the file would stay root's alone,
+        # unreadable, with the same result. Only tls.crt and tls.key are projected (cert-manager's ca.crt is not needed
+        # here).
+        - name: tls
+          secret:
+            secretName: {{ $tls.secretName | quote }}
+            defaultMode: 0440
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+        # pg_hba.conf while TLS is on (hba-configmap.yaml); read only by the server
+        - name: hba
+          configMap:
+            name: timescaledb-hba
+            defaultMode: 0444
+        {{- end }}
       containers:
         - name: timescaledb
           image: {{ include "ariva-timescaledb.image" . | quote }}
@@ -59,6 +93,26 @@ spec:
             capabilities:
               drop: ["ALL"]
             readOnlyRootFilesystem: true
+          {{- if $tls.enabled }}
+          # TLS on every TCP connection (ARV-082a). The image's entrypoint passes these to the server it starts once to
+          # initialise an empty volume as well as to the server itself, and settings on the command line win over
+          # postgresql.conf and ALTER SYSTEM, so they hold on a new and on an existing volume alike.
+          args:
+            - "postgres"
+            - "-c"
+            - "ssl=on"
+            - "-c"
+            - "ssl_cert_file=/etc/ariva/postgresql-tls/tls.crt"
+            - "-c"
+            - "ssl_key_file=/etc/ariva/postgresql-tls/tls.key"
+            - "-c"
+            - {{ printf "ssl_min_protocol_version=%s" $tls.minProtocolVersion | quote }}
+            # TLS 1.2 suites: ECDHE key exchange with AEAD only (V12.1.2); TLS 1.3 suites are not set here and stay OpenSSL's AEAD set
+            - "-c"
+            - "ssl_ciphers=ECDHE+AESGCM:ECDHE+CHACHA20:!aNULL"
+            - "-c"
+            - "hba_file=/etc/ariva/postgresql-hba/pg_hba.conf"
+          {{- end }}
           ports:
             - name: postgres
               containerPort: 5432
@@ -98,6 +152,14 @@ spec:
               mountPath: /docker-entrypoint-initdb.d/100_ariva_owner.sh
               subPath: 100_ariva_owner.sh
               readOnly: true
+            {{- if $tls.enabled }}
+            - name: tls
+              mountPath: /etc/ariva/postgresql-tls
+              readOnly: true
+            - name: hba
+              mountPath: /etc/ariva/postgresql-hba
+              readOnly: true
+            {{- end }}
           # pg_isready needs no login. The first start initialises the volume; crash recovery after an unclean stop
           # can take minutes, so the startup probe allows ten.
           startupProbe:

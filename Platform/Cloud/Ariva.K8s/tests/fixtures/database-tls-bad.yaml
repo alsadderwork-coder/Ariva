@@ -1,0 +1,109 @@
+# ARV-082a: TimescaleDB servers whose TLS breaks the rules, parsed as Kubernetes reads them (YAML 1.1). Expected secret:
+# timescaledb-tls.
+# tls-flags: ssl off, the certificate from another secret, a world-readable key, TLS 1.1 allowed.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: tls-flags }
+spec:
+  template:
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, fsGroup: 1000, seccompProfile: { type: RuntimeDefault } }
+      volumes:
+        - { name: other, secret: { secretName: other-tls } }
+        - { name: tls, secret: { secretName: timescaledb-tls, defaultMode: 0444 } }
+        - { name: hba, configMap: { name: strict-hba } }
+      containers:
+        - name: db
+          args: ["postgres", "-c", "ssl=off", "-c", "ssl_cert_file=/etc/other/tls.crt", "-c", "ssl_key_file=/etc/tls/tls.key",
+            "-c", "ssl_min_protocol_version=TLSv1.1", "-c", "hba_file=/etc/hba/pg_hba.conf"]
+          volumeMounts:
+            - { name: other, mountPath: /etc/other, readOnly: true }
+            - { name: tls, mountPath: /etc/tls, readOnly: true }
+            - { name: hba, mountPath: /etc/hba, readOnly: true }
+          env: [{ name: POSTGRES_PASSWORD, valueFrom: { secretKeyRef: { name: db, key: password } } }]
+---
+# tls-hba: the flags right but for PostgreSQL's default TLS 1.2 cipher list (weaker than ECDHE with AEAD), and a
+# pg_hba.conf that takes TCP without TLS, trusts the socket and hostssl, includes a file and never rejects hostnossl.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: tls-hba }
+spec:
+  template:
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, fsGroup: 1000, seccompProfile: { type: RuntimeDefault } }
+      volumes:
+        - { name: tls, secret: { secretName: timescaledb-tls, defaultMode: 0440 } }
+        - { name: hba, configMap: { name: loose-hba } }
+      containers:
+        - name: db
+          args: ["postgres", "-c", "ssl=on", "-c", "ssl_cert_file=/etc/tls/tls.crt", "-c", "ssl_key_file=/etc/tls/tls.key",
+            "-c", "ssl_min_protocol_version=TLSv1.2", "-c", "ssl_ciphers=HIGH:MEDIUM:+3DES:!aNULL", "-c", "hba_file=/etc/hba/pg_hba.conf"]
+          volumeMounts:
+            - { name: tls, mountPath: /etc/tls, readOnly: true }
+            - { name: hba, mountPath: /etc/hba, readOnly: true }
+          env: [{ name: POSTGRES_PASSWORD, valueFrom: { secretKeyRef: { name: db, key: password } } }]
+---
+# tls-key: the key file from the certificate's key, no ssl_ciphers, no hba_file (the volume's own pg_hba.conf), no fsGroup.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: tls-key }
+spec:
+  template:
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, seccompProfile: { type: RuntimeDefault } }
+      volumes:
+        - { name: tls, secret: { secretName: timescaledb-tls, defaultMode: 0440, items: [{ key: tls.crt, path: tls.crt }, { key: tls.crt, path: server.key }] } }
+      containers:
+        - name: db
+          args: ["postgres", "--ssl=on", "--ssl-cert-file=/etc/tls/tls.crt", "-cssl_key_file=/etc/tls/server.key", "-c", "ssl_min_protocol_version=TLSv1.3"]
+          volumeMounts:
+            - { name: tls, mountPath: /etc/tls, readOnly: true }
+          env: [{ name: POSTGRES_PASSWORD, valueFrom: { secretKeyRef: { name: db, key: password } } }]
+---
+# tls-reject-all: a pg_hba.conf that takes no TCP connection at all.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: tls-reject-all }
+spec:
+  template:
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, fsGroup: 1000, seccompProfile: { type: RuntimeDefault } }
+      volumes:
+        - { name: tls, secret: { secretName: timescaledb-tls, defaultMode: 0400 } }
+        - { name: hba, configMap: { name: closed-hba, items: [{ key: closed, path: pg_hba.conf }] } }
+      containers:
+        - name: db
+          args: ["postgres", "-c", "ssl=on", "-c", "ssl_cert_file=/etc/tls/tls.crt", "-c", "ssl_key_file=/etc/tls/tls.key",
+            "-c", "ssl_min_protocol_version=TLSv1.2", "-c", "ssl_ciphers=ECDHE+AESGCM:ECDHE+CHACHA20:!aNULL", "-c", "hba_file=/etc/hba/pg_hba.conf"]
+          volumeMounts:
+            - { name: tls, mountPath: /etc/tls, readOnly: true }
+            - { name: hba, mountPath: /etc/hba, readOnly: true }
+          env: [{ name: POSTGRES_PASSWORD, valueFrom: { secretKeyRef: { name: db, key: password } } }]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: strict-hba }
+data:
+  pg_hba.conf: |
+    local     all  all        peer
+    hostnossl all  all  all   reject
+    hostssl   all  all  all   scram-sha-256
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: loose-hba }
+data:
+  pg_hba.conf: |
+    local     all  all             trust
+    host      all  all  all        scram-sha-256
+    hostssl   all  all  all        trust
+    hostnogssenc all all 10.0.0.0 255.0.0.0 md5
+    include_if_exists extra.conf
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: closed-hba }
+data:
+  closed: |
+    local     all  all        peer
+    hostnossl all  all  all   reject

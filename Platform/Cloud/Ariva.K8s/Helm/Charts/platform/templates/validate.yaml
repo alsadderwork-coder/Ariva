@@ -12,6 +12,10 @@ Release guards. Renders nothing; fails the render when a rule is broken.
   1 to 99, share above 0 and at most 1, criticalDays below warningDays (both 1 to 365), records 0 or more, claims,
   services and namespaces Kubernetes names, namespaceLabel namespace or exported_namespace, channels and the monitoring
   environment plain names; every rule source has its values and no values name an unknown rule.
+- The servers' CA secrets (ARV-082a, databaseCaSecretName and redisCaSecretName; empty means the default name) are
+  Kubernetes secret names.
+- Production sends telemetry over TLS only (ARV-082a): in k8s-prd a set otel.endpoint starts with https:// (empty turns
+  OTLP export off).
 */ -}}
 {{- if and (eq .Values.environment "k8s-prd") (or (empty .Values.buildNumber) (eq (toString .Values.buildNumber) "trunk")) }}
 {{- fail "k8s-prd needs an explicit buildNumber (for example --set buildNumber=main-20261001.3); trunk and empty are not allowed" }}
@@ -44,6 +48,15 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- end }}
 {{- if and (eq .Values.environment "k8s-prd") .Values.validationReader.optional }}
 {{- fail "k8s-prd needs the validation reader secret: set validationReader.optional false (ARV-104g1)" }}
+{{- end }}
+{{- range $key, $name := dict "databaseCaSecretName" (.Values.databaseCaSecretName | default "ariva-database-ca") "redisCaSecretName" (.Values.redisCaSecretName | default "ariva-redis-ca") }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]{0,251}[a-z0-9])?$" (toString $name)) }}
+{{- fail (printf "%s must be a Kubernetes secret name (a secret with the key ca.crt; ARV-082a)" $key) }}
+{{- end }}
+{{- end }}
+{{- $otelEndpoint := toString ((.Values.otel | default dict).endpoint | default "") }}
+{{- if and (eq .Values.environment "k8s-prd") (ne $otelEndpoint "") (not (regexMatch "^(?i)https://[^\\s]+$" $otelEndpoint)) }}
+{{- fail "k8s-prd sends telemetry over TLS only: otel.endpoint must be an https:// URL (or stay empty to turn OTLP export off; ARV-082a)" }}
 {{- end }}
 {{- $retention := (.Values.migration | default dict).retention | default dict }}
 {{- $retentionBounds := dict "rawSensingDays" (list 7 3650) "deskZoneReadingDays" (list 2 90) "laneStaffingDays" (list 90 3650) "alertEmailDays" (list 30 3650) "integrationCallDays" (list 30 3650) "reportDeliveryDays" (list 30 3650) "advertisingPlayDays" (list 30 3650) }}

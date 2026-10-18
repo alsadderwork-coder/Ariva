@@ -260,6 +260,26 @@ spec:
           securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
           volumeMounts: [{ name: tmp, mountPath: /tmp }]
 ---
+# ARV-082a: the servers' CAs mounted wrong: the database CA writable and from a secret projecting every key, the Redis CA
+# from an emptyDir. (The other API hosts and the jobs above mount neither.)
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: api-cronz-deployment }
+spec:
+  template:
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+        - { name: database-ca, secret: { secretName: timescaledb-tls, optional: true } }
+        - { name: redis-ca, emptyDir: {} }
+      containers:
+        - name: app
+          image: registry.example/api-cronz:main-20261001.1
+          env: [{ name: DOTNET_ENVIRONMENT, value: k8s-prd }]
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }, { name: database-ca, mountPath: /app/secrets/database-ca }, { name: redis-ca, mountPath: /app/secrets/redis-ca, readOnly: true }]
+---
 # ARV-125b: monitoring objects that break the rules.
 apiVersion: v1
 kind: ConfigMap

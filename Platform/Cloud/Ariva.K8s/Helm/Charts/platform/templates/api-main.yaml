@@ -63,6 +63,7 @@ spec:
             secretName: {{ .Values.kafkaCaSecretName | default "ariva-kafka-ca" }}
             optional: true
             defaultMode: 0444
+        {{- include "ariva-platform.serverCaVolumes" . | nindent 8 }}
         # Writable scratch space; the root filesystem is read-only (CWE-269). 128Mi: multipart uploads over 64 KB are
         # buffered here (one 20 MB floor plan at a time, ARV-018)
         - name: tmp
@@ -116,6 +117,7 @@ spec:
             - name: kafka-ca
               mountPath: /app/secrets/kafka-ca
               readOnly: true
+            {{- include "ariva-platform.serverCaMounts" . | nindent 12 }}
             - name: tmp
               mountPath: /tmp
             - name: files

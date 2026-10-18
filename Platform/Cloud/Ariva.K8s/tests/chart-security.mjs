@@ -12,6 +12,11 @@
 // ARV-111a: the migration job carries each environment's retention periods (migration.retention) as Database__Retention__*, and a
 // period out of range, not a whole number, unknown or missing fails to render.
 // ARV-127: the offline bundle's Helmfile renders the same objects as helmfile-k8s, every image from the site's mirror by digest.
+// ARV-082a: the five API hosts and the migration and topics jobs, and only they, mount the database and Redis CAs (ca.crt only,
+// read-only) where the hosts read them in k8s-prd; production refuses an OTLP endpoint that is not https; TimescaleDB renders
+// without TLS by default and in dev, demo and localk8s, and with TLS in prd (ssl on, the certificate and a key PostgreSQL
+// accepts from tls.secretName, TLS 1.2 at least, pg_hba.conf taking TCP over TLS only), which no site file and no state value
+// turns off.
 //   node Platform/Cloud/Ariva.K8s/tests/chart-security.mjs              needs helm 3 on PATH (or HELM=path)
 //   node Platform/Cloud/Ariva.K8s/tests/chart-security.mjs --self-test  checks the rules against fixtures, no helm
 // Without helm the test is skipped locally and fails in CI (CI=true).
@@ -22,7 +27,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseAllDocuments } from 'yaml';
-import { checkManifests, missingMonitoringRules } from './checks.mjs';
+import { checkManifests, DATABASE_TLS12_CIPHERS, databaseTlsFindings, missingMonitoringRules, serverCaSecrets } from './checks.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const chart = path.resolve(here, '..', 'Helm', 'Charts', 'platform');
@@ -32,6 +37,38 @@ const helmfile = process.env.HELMFILE || 'helmfile';
 const helmfileState = path.resolve(here, '..', 'Helm', 'helmfile-k8s.yaml.gotmpl');
 
 const parse = (text) => parseAllDocuments(text).map((doc) => doc.toJS()).filter(Boolean);
+// As Kubernetes reads a manifest (YAML 1.1: a file mode such as 0440 is octal), for the checks that read file modes.
+const parseAsKubernetes = (text) => parseAllDocuments(text, { version: '1.1' }).map((doc) => doc.toJS()).filter(Boolean);
+const fixture = (name) => fs.readFileSync(path.join(here, 'fixtures', name), 'utf8');
+
+/** ARV-082a: rules of databaseTlsFindings that did not fire on the TLS fixtures, or a good fixture that produced findings. */
+function databaseTlsSelfTest() {
+	const failures = [];
+	const good = parseAsKubernetes(fixture('database-tls-good.yaml'));
+	const bad = parseAsKubernetes(fixture('database-tls-bad.yaml'));
+	const clean = [...checkManifests(good, { environment: 'k8s-prd' }), ...databaseTlsFindings(good, { tls: true }),
+		...databaseTlsFindings(parseAsKubernetes(fixture('good.yaml')), { tls: false })];
+	if (clean.length) failures.push(`the good TLS fixtures produced findings:\n   ${clean.join('\n   ')}`);
+	const findings = databaseTlsFindings(bad, { tls: true });
+	const expected = [
+		'tls-flags container db: ssl is not on', 'tls-flags container db: ssl_cert_file does not come from the secret timescaledb-tls',
+		'tls-flags container db: PostgreSQL refuses the key file as mounted (mode 0444)', 'tls-flags container db: ssl_min_protocol_version must be TLSv1.2 or TLSv1.3, not TLSv1.1',
+		'tls-hba container db hba_file: the local socket must keep peer authentication, not trust', 'tls-hba container db hba_file: pg_hba.conf accepts TCP connections without TLS (host all all all scram-sha-256)',
+		'pg_hba.conf accepts TCP connections without TLS (hostnogssenc all all 10.0.0.0 255.0.0.0 md5)', 'tls-hba container db hba_file: hostssl must use scram-sha-256 or cert, not trust',
+		'tls-hba container db hba_file: pg_hba.conf must not include other files', 'tls-hba container db hba_file: pg_hba.conf must reject every TCP connection without TLS',
+		'tls-key container db: ssl_key_file does not come from the secret timescaledb-tls (key tls.key)', "tls-key container db: hba_file must be the release's pg_hba.conf",
+		'tls-reject-all container db hba_file: pg_hba.conf takes no TCP connection over TLS',
+		// V12.1.2: TLS 1.2 with ECDHE and AEAD only, not PostgreSQL's default list and not left unset.
+		`tls-hba container db: ssl_ciphers must be ${DATABASE_TLS12_CIPHERS} (TLS 1.2 with ECDHE and AEAD only, V12.1.2), not HIGH:MEDIUM:+3DES:!aNULL`,
+		`tls-key container db: ssl_ciphers must be ${DATABASE_TLS12_CIPHERS} (TLS 1.2 with ECDHE and AEAD only, V12.1.2), not unset`
+	];
+	const missing = expected.filter((rule) => !findings.some((finding) => finding.includes(rule)));
+	// The same server rendered for a release without TLS, or for another secret, is caught too.
+	if (!databaseTlsFindings(good, { tls: false }).some((finding) => finding.includes('although TLS is off'))) missing.push('TLS settings where TLS is off');
+	if (!databaseTlsFindings(good, { tls: true, secretName: 'site-db-tls' }).some((finding) => finding.includes('ssl_key_file does not come from the secret site-db-tls'))) missing.push('the key from another secret than tls.secretName');
+	if (missing.length) failures.push(`TLS rules that did not fire: ${missing.join(', ')}`);
+	return { failures, count: expected.length + 2 };
+}
 
 function selfTest() {
 	const good = checkManifests(parse(fs.readFileSync(path.join(here, 'fixtures', 'good.yaml'), 'utf8')), { environment: 'k8s-prd' });
@@ -48,6 +85,10 @@ function selfTest() {
 		'terminationGracePeriodSeconds of at least 60', 'must set Hosting__GracePeriodSeconds',
 		'needs a startupProbe', 'must set Hosting__StartupAllowanceSeconds',
 		"api-ingest-deployment container app: must set Hosting__StartupAllowanceSeconds to its startup probe's allowance at its worst, initialDelaySeconds plus periodSeconds times (failureThreshold - 1) (115)",
+		// ARV-082a: the servers' CAs.
+		'Job/kafka-topics container kafka-topics: must mount the database CA at /app/secrets/database-ca', 'Job/database-migration container database-migration: must mount the Redis CA at /app/secrets/redis-ca',
+		'Deployment/api-main-deployment container app: must mount the database CA', 'must mount the database CA read-only and whole', 'the database CA volume must project only ca.crt',
+		'the Redis CA at /app/secrets/redis-ca must come from a secret',
 		// ARV-125b: the monitoring ConfigMaps.
 		'holds an unresolved token', 'queries the label user_id, which may hold a secret or a person identifier', 'queries the label client_secret',
 		'queries the label email', 'not on the allowlist', 'threshold page is not a severity', 'has no resolved number', 'has no runbook link',
@@ -62,13 +103,15 @@ function selfTest() {
 	if (!absent.some((finding) => finding.includes('rule hostDown is missing')) || absent.some((finding) => finding.includes('rule kafkaUnavailable is missing'))) {
 		missing.push('missingMonitoringRules names the absent rules and only them');
 	}
-	if (good.length || missing.length) {
+	const tls = databaseTlsSelfTest();
+	if (good.length || missing.length || tls.failures.length) {
 		console.error('chart-security self-test FAILED');
 		if (good.length) console.error('  good fixture produced findings:\n   ' + good.join('\n   '));
 		if (missing.length) console.error('  rules that did not fire on the bad fixture: ' + missing.join(', '));
+		for (const failure of tls.failures) console.error(`  ${failure}`);
 		process.exit(1);
 	}
-	console.log(`chart-security self-test: ${expected.length} rules fire on the bad fixture, the good fixture is clean.`);
+	console.log(`chart-security self-test: ${expected.length} rules fire on the bad fixture and ${tls.count} TimescaleDB TLS rules on the TLS fixtures; the good fixtures are clean.`);
 }
 
 function helmAvailable() {
@@ -115,6 +158,26 @@ function retentionFindings(docs, valuesFile) {
 		const name = `Database__Retention__${key[0].toUpperCase()}${key.slice(1)}`;
 		if (expected[key] === undefined) findings.push(`${valuesFile}: migration.retention.${key} has no value`);
 		else if (env[name] !== String(expected[key])) findings.push(`Job/database-migration: ${name} is ${env[name]}, not migration.retention.${key} (${expected[key]})`);
+	}
+	return findings;
+}
+
+/** ARV-082a: the workloads that run an Ariva .NET host against PostgreSQL and Redis, and only they, mount the servers' CAs. */
+const SERVER_CA_WORKLOADS = ['Deployment/api-main-deployment', 'Deployment/api-ingest-deployment', 'Deployment/api-stream-deployment',
+	'Deployment/api-cronz-deployment', 'Deployment/api-integration-deployment', 'Job/database-migration', 'Job/kafka-topics'];
+
+/** ARV-082a: the servers' CAs reach exactly SERVER_CA_WORKLOADS (checkManifests checks each mount), from the given secrets. */
+function serverCaReach(docs, names = { 'database-ca': 'ariva-database-ca', 'redis-ca': 'ariva-redis-ca' }) {
+	const found = serverCaSecrets(docs);
+	const findings = [];
+	const reached = Object.keys(found).sort();
+	if (reached.join(',') !== [...SERVER_CA_WORKLOADS].sort().join(',')) {
+		findings.push(`the servers' CAs reach ${reached.join(', ') || 'no workload'}, not exactly the five API hosts and the migration and topics jobs`);
+	}
+	for (const [id, secrets] of Object.entries(found)) {
+		for (const [volume, name] of Object.entries(names)) {
+			if (secrets[volume] !== name) findings.push(`${id}: ${volume} comes from the secret ${secrets[volume]}, not ${name}`);
+		}
 	}
 	return findings;
 }
@@ -166,6 +229,8 @@ for (const env of environments) {
 	if (readers.join(',') !== 'Deployment/api-main-deployment,Job/database-migration') findings.push(`the validation reader login reaches ${readers.join(', ') || 'no workload'}, not exactly api-main-deployment and the database-migration job`);
 	// ARV-111a: the migration job applies this environment's retention periods.
 	findings.push(...retentionFindings(docs, env.file));
+	// ARV-082a: the servers' CAs reach exactly the five API hosts and the two jobs, from the default secrets.
+	findings.push(...serverCaReach(docs));
 	const workloads = docs.filter((doc) => doc?.kind === 'Deployment').length;
 	const ingresses = docs.filter((doc) => doc?.kind === 'Ingress').length;
 	const monitoring = (name) => Object.keys(docs.find((doc) => doc?.kind === 'ConfigMap' && doc.metadata?.name === name)?.data ?? {}).length;
@@ -174,6 +239,7 @@ for (const env of environments) {
 		console.error(`FAIL ${env.file}:\n  ${findings.join('\n  ')}`);
 	} else {
 		console.log(`PASS ${env.file}: ${workloads} deployments, ${ingresses} ingresses, validation reader login in api-main and the migration job only, ` +
+			'database and Redis CAs in the five API hosts and the two jobs only, ' +
 			`retention periods ${Object.values(retentionValues(env.file)).join('/')} days in the migration job, ` +
 			`${monitoring('ariva-monitoring-alerts')} alert rules and ${monitoring('ariva-monitoring-dashboards')} dashboards`);
 	}
@@ -188,12 +254,37 @@ for (const env of environments) {
 		const docs = parse(result.stdout);
 		const findings = checkManifests(docs, { environment: 'k8s-prd' });
 		if (!docs.some((doc) => doc?.kind === 'StatefulSet')) findings.push('timescaledb: no StatefulSet rendered');
+		// ARV-082a: TLS is off unless a release turns it on.
+		findings.push(...databaseTlsFindings(parseAsKubernetes(result.stdout), { tls: false }));
 		if (findings.length) {
 			failed = true;
 			console.error(`FAIL timescaledb:\n  ${findings.join('\n  ')}`);
 		} else {
-			console.log(`PASS timescaledb: ${docs.filter((doc) => doc?.kind === 'StatefulSet').length} statefulset, ${docs.filter((doc) => doc?.kind === 'NetworkPolicy').length} network policy`);
+			console.log(`PASS timescaledb: ${docs.filter((doc) => doc?.kind === 'StatefulSet').length} statefulset, ${docs.filter((doc) => doc?.kind === 'NetworkPolicy').length} network policy, no TLS by default`);
 		}
+	}
+}
+
+// ARV-082a: TimescaleDB with TLS: the defaults (secret timescaledb-tls, TLS 1.2 at least), and a site's secret with TLS 1.3.
+for (const [label, sets, secretName, floor] of [
+	['timescaledb with tls.enabled', ['tls.enabled=true'], 'timescaledb-tls', 'TLSv1.2'],
+	['timescaledb with TLS from a site secret and TLS 1.3', ['tls.enabled=true', 'tls.secretName=site-db-tls', 'tls.minProtocolVersion=TLSv1.3'], 'site-db-tls', 'TLSv1.3']
+]) {
+	const result = renderDatabase(sets);
+	const findings = [];
+	if (result.status !== 0) findings.push(`template failed\n${result.stderr}`);
+	else {
+		findings.push(...checkManifests(parse(result.stdout), { environment: 'k8s-prd' }), ...databaseTlsFindings(parseAsKubernetes(result.stdout), { tls: true, secretName }));
+		if (!result.stdout.includes(`"ssl_min_protocol_version=${floor}"`)) findings.push(`ssl_min_protocol_version is not ${floor}`);
+		// V12.1.2: the server container passes the TLS 1.2 suites, ECDHE with AEAD only, as one -c argument.
+		const args = parseAsKubernetes(result.stdout).find((doc) => doc?.kind === 'StatefulSet')?.spec?.template?.spec?.containers?.[0]?.args ?? [];
+		if (!args.some((word, index) => word === `ssl_ciphers=${DATABASE_TLS12_CIPHERS}` && args[index - 1] === '-c')) findings.push(`the server is not given -c ssl_ciphers=${DATABASE_TLS12_CIPHERS}`);
+	}
+	if (findings.length) {
+		failed = true;
+		console.error(`FAIL ${label}:\n  ${findings.join('\n  ')}`);
+	} else {
+		console.log(`PASS ${label}: ssl on, certificate and key from ${secretName} as PostgreSQL accepts them, ${floor} at least, TLS 1.2 suites ${DATABASE_TLS12_CIPHERS}, pg_hba.conf takes TCP over TLS only`);
 	}
 }
 
@@ -202,7 +293,13 @@ for (const [label, sets] of [
 	['the latest database image', ['image.tag=latest']],
 	['database passwords without a secret', ['existingSecret=']],
 	['the superuser as the migration login', ['migrationLogin=postgres']],
-	['a migration login that is not an identifier', ['migrationLogin=ariva; drop']]
+	['a migration login that is not an identifier', ['migrationLogin=ariva; drop']],
+	// ARV-082a: TLS needs its secret by name and a floor of TLS 1.2 at least.
+	['database TLS without a secret name', ['tls.enabled=true', 'tls.secretName=']],
+	['a database TLS secret name that is not a Kubernetes name', ['tls.enabled=true', 'tls.secretName=Db_TLS']],
+	['database TLS with TLS 1.1 as the floor', ['tls.enabled=true', 'tls.minProtocolVersion=TLSv1.1']],
+	['a tls.enabled that is not true or false', ['tls.enabled=yes']],
+	['the database tls values removed', ['tls=null']]
 ]) {
 	if (renderDatabase(sets).status === 0) {
 		failed = true;
@@ -212,7 +309,7 @@ for (const [label, sets] of [
 	}
 }
 
-for (const [label, file, sets] of [
+for (const [label, file, sets, message] of [
 	['production without a build number', 'values-k8s-prd.yaml', []],
 	['production with trunk', 'values-k8s-prd.yaml', ['buildNumber=trunk']],
 	['the latest tag', 'values-k8s-dev.yaml', ['buildNumber=latest']],
@@ -251,14 +348,47 @@ for (const [label, file, sets] of [
 	['a disk namespaces value that is not a list', 'values-k8s-dev.yaml', ['monitoring.alerts.disk.namespaces=ariva']],
 	['a disk rule without its namespaces', 'values-k8s-dev.yaml', ['monitoring.alerts.disk.namespaces=null']],
 	['a certificate namespace that is a PromQL pattern', 'values-k8s-dev.yaml', ['monitoring.alerts.ingressCertificateExpiry.namespaces={.*}']],
-	['a certificate namespace label other than namespace or exported_namespace', 'values-k8s-dev.yaml', ['monitoring.alerts.ingressCertificateExpiry.namespaceLabel=job']]
+	['a certificate namespace label other than namespace or exported_namespace', 'values-k8s-dev.yaml', ['monitoring.alerts.ingressCertificateExpiry.namespaceLabel=job']],
+	// ARV-082a: production sends telemetry over TLS only; the servers' CA secrets are Kubernetes names.
+	['production with an http OTLP endpoint', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1', 'otel.endpoint=http://otel.example:4317'], 'otel.endpoint must be an https:// URL'],
+	['production with an OTLP endpoint without a scheme', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1', 'otel.endpoint=otel.example:4317'], 'otel.endpoint must be an https:// URL'],
+	['a database CA secret name that is not a Kubernetes name', 'values-k8s-dev.yaml', ['databaseCaSecretName=Database_CA'], 'databaseCaSecretName must be a Kubernetes secret name'],
+	['a Redis CA secret name that is not a Kubernetes name', 'values-k8s-dev.yaml', ['redisCaSecretName=redis ca'], 'redisCaSecretName must be a Kubernetes secret name']
 ]) {
 	const result = render(file, sets);
 	if (result.status === 0) {
 		failed = true;
 		console.error(`FAIL release guard: rendering ${label} must fail but succeeded`);
+	} else if (message && !result.stderr.includes(message)) {
+		failed = true;
+		console.error(`FAIL release guard: rendering ${label} failed for another reason than "${message}"\n${result.stderr}`);
 	} else {
 		console.log(`PASS release guard: ${label} is refused`);
+	}
+}
+
+// ARV-082a: an https OTLP endpoint renders in production and reaches every host; the rule is production's, so dev keeps
+// http; the servers' CA secret names reach exactly the five API hosts and the two jobs.
+{
+	const findings = [];
+	const https = render('values-k8s-prd.yaml', ['buildNumber=main-20261001.1', 'otel.endpoint=https://otel.example:4317']);
+	if (https.status !== 0) findings.push(`production with an https OTLP endpoint: template failed\n${https.stderr}`);
+	else {
+		const docs = parse(https.stdout);
+		findings.push(...checkManifests(docs, { environment: 'k8s-prd' }));
+		const endpoints = docs.filter((doc) => /^api-[a-z]+-deployment$/.test(doc?.metadata?.name ?? '')).map((doc) =>
+			(doc.spec.template.spec.containers[0].env ?? []).find((variable) => variable.name === 'OTEL_EXPORTER_OTLP_ENDPOINT')?.value);
+		if (endpoints.length !== 5 || endpoints.some((value) => value !== 'https://otel.example:4317')) findings.push(`the https OTLP endpoint does not reach the five hosts (${endpoints.join(', ')})`);
+	}
+	if (render('values-k8s-dev.yaml', ['otel.endpoint=http://otel.example:4317']).status !== 0) findings.push('dev with an http OTLP endpoint was refused; the rule is production\'s');
+	const named = render('values-k8s-dev.yaml', ['databaseCaSecretName=site-db-ca', 'redisCaSecretName=site-redis-ca']);
+	if (named.status !== 0) findings.push(`the servers' CA secret names set: template failed\n${named.stderr}`);
+	else findings.push(...serverCaReach(parse(named.stdout), { 'database-ca': 'site-db-ca', 'redis-ca': 'site-redis-ca' }));
+	if (findings.length) {
+		failed = true;
+		console.error(`FAIL servers' CAs and telemetry:\n  ${findings.join('\n  ')}`);
+	} else {
+		console.log('PASS servers\' CAs and telemetry: an https OTLP endpoint in production on every host, http still allowed in dev, the CA secret names reach the five API hosts and the two jobs');
 	}
 }
 
@@ -337,11 +467,24 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 		if (!docs.some((doc) => doc?.kind === 'StatefulSet' && doc.metadata?.name === 'timescaledb')) findings.push('the timescaledb release is not installed');
 		if (!docs.some((doc) => doc?.kind === 'Job' && doc.metadata?.name === 'kafka-topics')) findings.push('the kafka-topics job is not rendered');
 		findings.push(...missingMonitoringRules(docs), ...monitoringEnvironment(docs, contextEnvironment));
+		// ARV-082a: TimescaleDB with TLS in prd only (state value timescaledbTls), from the chart's default secret.
+		const tls = environment === 'prd';
+		findings.push(...databaseTlsFindings(parseAsKubernetes(result.stdout), { tls }), ...serverCaReach(docs));
 		if (findings.length) {
 			failed = true;
 			console.error(`FAIL helmfile -e ${environment}:\n  ${findings.join('\n  ')}`);
 		} else {
-			console.log(`PASS helmfile -e ${environment}: ${docs.length} objects, database and topics job included`);
+			console.log(`PASS helmfile -e ${environment}: ${docs.length} objects, database and topics job included, TimescaleDB ${tls ? 'with TLS' : 'without TLS'}`);
+		}
+	}
+	// ARV-082a: prd refuses TimescaleDB without TLS.
+	{
+		const attempt = template('prd', ['--state-values-set', 'buildNumber=main-20261001.1', '--state-values-set', 'timescaledbTls=false']);
+		if (attempt.status === 0 || !attempt.stderr.includes('prd runs TimescaleDB with TLS')) {
+			failed = true;
+			console.error(`FAIL release guard: helmfile -e prd with timescaledbTls false must fail but ${attempt.status === 0 ? 'succeeded' : `failed otherwise\n${attempt.stderr}`}`);
+		} else {
+			console.log('PASS release guard: helmfile -e prd with timescaledbTls false is refused');
 		}
 	}
 	// ARV-002: the GitHub dev release (.github/workflows/release-dev.yml) deploys from GHCR, pins every image by the digest
@@ -433,15 +576,22 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 			const unset = offline('prd');
 			if (unset.status === 0 || !unset.stderr.includes("set the state value mirror")) findings.push('-e prd without a mirror rendered');
 			if (offline('prd', ['--state-values-set', 'mirror=https://registry.example.local']).status === 0) findings.push('a mirror with a scheme rendered');
+			// ARV-082a: prd refuses TimescaleDB without TLS here too.
+			const withoutTls = offline('prd', ['--state-values-set', `mirror=${mirror}`, '--state-values-set', 'timescaledbTls=false']);
+			if (withoutTls.status === 0 || !withoutTls.stderr.includes('prd runs TimescaleDB with TLS')) findings.push('-e prd with timescaledbTls false rendered');
 			const site = path.join(staged, 'site.yaml');
-			fs.writeFileSync(site, `otel:\n  endpoint: "http://otel.offline-site.local:4317"\nimageRepository: other.example/ariva\nimageDigests:\n  api-main: "${digestOf('planted')}"\nbuildNumber: planted\n`);
+			// ARV-082a: production sends telemetry over TLS only, so the site's endpoint is https.
+			fs.writeFileSync(site, `otel:\n  endpoint: "https://otel.offline-site.local:4317"\nimageRepository: other.example/ariva\nimageDigests:\n  api-main: "${digestOf('planted')}"\nbuildNumber: planted\n`);
 			const database = path.join(staged, 'database.yaml');
-			fs.writeFileSync(database, `persistence:\n  size: 77Gi\nimage:\n  tag: planted\n  digest: "${digestOf('planted')}"\n`);
+			// ARV-082a: a site file that tries to turn the database's TLS off in prd.
+			fs.writeFileSync(database, `persistence:\n  size: 77Gi\nimage:\n  tag: planted\n  digest: "${digestOf('planted')}"\ntls:\n  enabled: false\n`);
 			const withSite = offline('prd', ['--state-values-set', `mirror=${mirror}`, '--state-values-set', `siteValues=${site}`, '--state-values-set', `databaseValues=${database}`]);
 			if (withSite.status !== 0) findings.push(`-e prd with site values: template failed\n${withSite.stderr}`);
 			else {
-				if (!withSite.stdout.includes('http://otel.offline-site.local:4317')) findings.push('siteValues did not reach the platform release');
+				if (!withSite.stdout.includes('https://otel.offline-site.local:4317')) findings.push('siteValues did not reach the platform release');
 				if (!withSite.stdout.includes('77Gi')) findings.push('databaseValues did not reach the TimescaleDB release');
+				const tlsFindings = databaseTlsFindings(parseAsKubernetes(withSite.stdout), { tls: true });
+				if (tlsFindings.length) findings.push(`a site databaseValues file turned the TimescaleDB TLS off in prd:\n    ${tlsFindings.join('\n    ')}`);
 				if (/other\.example|planted/.test(withSite.stdout) || withSite.stdout.includes(digestOf('planted').slice(7)) || !withSite.stdout.includes(`${mirror}/ariva/api-main:v1.2.0-57@${digestOf('api-main')}`)) {
 					findings.push('a site values file moved an image away from the bundle\'s repository, build or digest');
 				}
@@ -467,7 +617,7 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 			failed = true;
 			console.error(`FAIL offline bundle Helmfile:\n  ${findings.join('\n  ')}`);
 		} else {
-			console.log('PASS offline bundle Helmfile: the same objects as helmfile-k8s in every environment, every image from the mirror by digest, no render without a mirror or with a dry run\'s unpinned images, site values reach their release without moving an image');
+			console.log('PASS offline bundle Helmfile: the same objects as helmfile-k8s in every environment, every image from the mirror by digest, no render without a mirror or with a dry run\'s unpinned images, site values reach their release without moving an image or turning the database TLS off in prd, prd refused without TLS');
 		}
 	}
 }

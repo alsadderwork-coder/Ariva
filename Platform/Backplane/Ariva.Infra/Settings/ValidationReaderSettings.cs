@@ -128,7 +128,7 @@ internal sealed partial class ValidationReaderSettings
         if (!IsConfigured)
             throw new InvalidOperationException($"The validation reader login is not configured ({SectionName}).");
 
-        return new NpgsqlConnectionStringBuilder
+        var builder = new NpgsqlConnectionStringBuilder
         {
             Host = database.Host,
             Port = database.Port,
@@ -138,7 +138,9 @@ internal sealed partial class ValidationReaderSettings
             SslMode = database.UseEncryption ? SslMode.VerifyFull : SslMode.Disable,
             ApplicationName = ApplicationName,
             MaxPoolSize = MaxPoolSize
-        }.ConnectionString;
+        };
+        database.ApplyRootCertificate(builder);
+        return builder.ConnectionString;
     }
 
     // Equal passwords defeat the separation of the logins; compared in constant time like every secret (CWE-208).

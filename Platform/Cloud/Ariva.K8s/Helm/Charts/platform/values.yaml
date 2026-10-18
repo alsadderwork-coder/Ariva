@@ -43,6 +43,16 @@ tokenSigningSecretName: ariva-token-signing
 integrationTokenPublicSecretName: ariva-integration-token-public
 integrationTokenSigningSecretName: ariva-integration-token-signing
 
+# Server CAs of the hosts' database and Redis connections (ARV-082a): each a secret with the key ca.crt (PEM), the CA that
+# issued the TimescaleDB server certificate (the timescaledb release's tls.secretName, for example the site's internal CA
+# through cert-manager) or the Redis server certificate, created out of band like the other secrets. Only ca.crt is
+# mounted, read-only, at /app/secrets/database-ca and /app/secrets/redis-ca in the five API pods and the migration and
+# topics jobs (not the web pod or the simulator). Optional for the chart, as the Kafka CA: in k8s-prd every host verifies
+# the servers against them (Database:RootCertificate, Redis:CaCertificatePath) and refuses to start without the files;
+# dev and demo run without them. Kubernetes secret names (validate.yaml).
+databaseCaSecretName: ariva-database-ca
+redisCaSecretName: ariva-redis-ca
+
 # Schema migration Job (ARV-006): api-main --migrate as a Helm hook before each upgrade. The migration login comes
 # from Database:Migration in base-appsettings-secret; hosts use the DML-only runtime login.
 migration:
@@ -114,7 +124,8 @@ mqtt:
 # apiMainCpuLimit: 1000m
 # apiMainMemLimit: 1000Mi
 
-# OpenTelemetry export (rendered by the ariva-platform.otelEnv helper).
+# OpenTelemetry export (rendered by the ariva-platform.otelEnv helper). Empty endpoint: no OTLP export. k8s-prd sends
+# telemetry over TLS only: the chart refuses an endpoint there that does not start with https:// (ARV-082a, validate.yaml).
 otel:
   endpoint: ""
   protocol: grpc

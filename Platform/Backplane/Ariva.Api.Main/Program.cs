@@ -144,8 +144,12 @@ var signalR = builder.Services.AddSignalR(options =>
     .AddArivaHubSessions();
 var redisSettings = Ariva.Infra.Caching.RedisSettings.From(builder.Configuration);
 if (redisSettings.Enabled)
-    signalR.AddStackExchangeRedis(redisSettings.ConnectionString, options => options.Configuration.ChannelPrefix =
-        StackExchange.Redis.RedisChannel.Literal(redisSettings.InstanceName + "signalr"));
+    signalR.AddStackExchangeRedis(options =>
+    {
+        // The cache's options (ARV-082a: TLS pinned to the internal CA in production), on a connection and channel prefix of the hub's own.
+        options.Configuration = redisSettings.Options();
+        options.Configuration.ChannelPrefix = StackExchange.Redis.RedisChannel.Literal(redisSettings.InstanceName + "signalr");
+    });
 builder.Services.AddScoped<Ariva.Infra.Live.LiveZoneDirectory>();
 builder.Services.AddHostedService<Ariva.Api.Main.Hubs.LiveRelay>();
 

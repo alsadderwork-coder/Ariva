@@ -47,6 +47,7 @@ spec:
             secretName: {{ .Values.kafkaCaSecretName | default "ariva-kafka-ca" }}
             optional: true
             defaultMode: 0444
+        {{- include "ariva-platform.serverCaVolumes" . | nindent 8 }}
         # Writable scratch space; the root filesystem is read-only (CWE-269)
         - name: tmp
           emptyDir:
@@ -99,6 +100,7 @@ spec:
             - name: kafka-ca
               mountPath: /app/secrets/kafka-ca
               readOnly: true
+            {{- include "ariva-platform.serverCaMounts" . | nindent 12 }}
             - name: tmp
               mountPath: /tmp
             - name: dataprotection-certificate

@@ -3,6 +3,8 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 - The image is pinned by digest and never "latest" (CWE-494).
 - Passwords come from an existing secret, never from values (CWE-798).
 - The names are plain PostgreSQL identifiers, and the migration login is never the superuser (CWE-269).
+- TLS (ARV-082a, CWE-319): tls is a map and tls.enabled true or false; when on, tls.secretName names a Kubernetes secret
+  (the certificate and key never come from values) and tls.minProtocolVersion is TLSv1.2 or TLSv1.3.
 */ -}}
 {{- if not (regexMatch "^sha256:[0-9a-f]{64}$" (toString .Values.image.digest)) }}
 {{- fail "image.digest must be a sha256 digest; the TimescaleDB image is pinned by tag and digest" }}
@@ -20,4 +22,18 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- end }}
 {{- if has (toString .Values.migrationLogin) (list "postgres" "ariva_migration" "ariva_runtime") }}
 {{- fail "migrationLogin must be a login of its own, not the superuser or one of Ariva's roles" }}
+{{- end }}
+{{- if not (kindIs "map" .Values.tls) }}
+{{- fail "tls must be a map with enabled, secretName and minProtocolVersion (ARV-082a)" }}
+{{- end }}
+{{- if not (kindIs "bool" .Values.tls.enabled) }}
+{{- fail "tls.enabled must be true or false" }}
+{{- end }}
+{{- if .Values.tls.enabled }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]{0,251}[a-z0-9])?$" (toString (.Values.tls.secretName | default ""))) }}
+{{- fail "tls.enabled needs tls.secretName: a kubernetes.io/tls secret (tls.crt, tls.key) created before the release; the certificate and key never go in values (ARV-082a)" }}
+{{- end }}
+{{- if not (has (toString .Values.tls.minProtocolVersion) (list "TLSv1.2" "TLSv1.3")) }}
+{{- fail "tls.minProtocolVersion must be TLSv1.2 or TLSv1.3 (ARV-082a)" }}
+{{- end }}
 {{- end }}

@@ -152,6 +152,198 @@ function readerLoginFindings(doc, id, pod, environment) {
 	return findings;
 }
 
+/**
+ * ARV-082a: the servers' CAs. Every workload that runs an Ariva .NET host against PostgreSQL and Redis (the API hosts and
+ * the migration and topics jobs, which build the same host) mounts each CA, read-only and whole (a subPath mount never sees
+ * a renewed CA), at the path the hosts read in k8s-prd (Database:RootCertificate, Redis:CaCertificatePath), from a secret
+ * volume that projects ca.crt only, so a secret that also holds a private key never brings it into the pod.
+ */
+export const SERVER_CA_MOUNTS = [
+	{ volume: 'database-ca', label: 'database', path: '/app/secrets/database-ca' },
+	{ volume: 'redis-ca', label: 'Redis', path: '/app/secrets/redis-ca' }
+];
+export const isServerCaWorkload = (id) => /^Deployment\/api-[a-z]+-deployment$/.test(id) || id === 'Job/database-migration' || id === 'Job/kafka-topics';
+
+function serverCaFindings(id, pod) {
+	const findings = [];
+	for (const container of pod.containers ?? []) {
+		const cid = `${id} container ${container.name}`;
+		for (const { label, path: mountPath } of SERVER_CA_MOUNTS) {
+			const mount = (container.volumeMounts ?? []).find((candidate) => candidate.mountPath === mountPath);
+			if (!mount) {
+				findings.push(`${cid}: must mount the ${label} CA at ${mountPath} (ARV-082a)`);
+				continue;
+			}
+			if (mount.readOnly !== true || mount.subPath) findings.push(`${cid}: must mount the ${label} CA read-only and whole (no subPath) at ${mountPath}`);
+			const secret = (pod.volumes ?? []).find((volume) => volume.name === mount.name)?.secret;
+			if (!secret?.secretName) {
+				findings.push(`${cid}: the ${label} CA at ${mountPath} must come from a secret`);
+				continue;
+			}
+			const items = secret.items ?? [];
+			if (items.length !== 1 || items[0].key !== 'ca.crt' || items[0].path !== 'ca.crt') {
+				findings.push(`${cid}: the ${label} CA volume must project only ca.crt (items), so a secret with a private key never brings it`);
+			}
+		}
+	}
+	return findings;
+}
+
+/** ARV-082a: the secret names behind the servers' CA mounts of each workload that has one, by workload id. */
+export function serverCaSecrets(docs) {
+	const found = {};
+	for (const doc of docs) {
+		if (!doc || !WORKLOADS.has(doc.kind)) continue;
+		const pod = podSpecOf(doc) ?? {};
+		const names = {};
+		for (const { volume: name, path: mountPath } of SERVER_CA_MOUNTS) {
+			const mounted = [...(pod.initContainers ?? []), ...(pod.containers ?? [])].some((container) => (container.volumeMounts ?? []).some((mount) => mount.name === name || mount.mountPath === mountPath));
+			const secretName = (pod.volumes ?? []).find((volume) => volume.name === name)?.secret?.secretName;
+			if (mounted || secretName) names[name] = secretName ?? null;
+		}
+		if (Object.keys(names).length) found[`${doc.kind}/${doc.metadata?.name}`] = names;
+	}
+	return found;
+}
+
+/** ARV-082a (V12.1.2): the TimescaleDB server's TLS 1.2 suites, ECDHE with AEAD only (TLS 1.3 suites are OpenSSL's AEAD set). */
+export const DATABASE_TLS12_CIPHERS = 'ECDHE+AESGCM:ECDHE+CHACHA20:!aNULL';
+
+/** A file mode as Kubernetes reads it: a number from a manifest parsed as YAML 1.1 (0440 is octal there), or an octal string. */
+const fileMode = (value) => (typeof value === 'string' ? parseInt(value, 8) : Number(value));
+
+/** The server settings a PostgreSQL container's command line gives: -c name=value, -cname=value and --name=value. */
+function postgresSettings(container) {
+	const words = [...(container.command ?? []), ...(container.args ?? [])].map(String);
+	const settings = {};
+	words.forEach((word, index) => {
+		const pair = word === '-c' ? words[index + 1] : word.startsWith('-c') ? word.slice(2) : word.startsWith('--') ? word.slice(2) : undefined;
+		const match = /^([A-Za-z_][A-Za-z0-9_.-]*)=(.*)$/.exec(pair ?? '');
+		if (match) settings[match[1].toLowerCase().replace(/-/g, '_')] = match[2];
+	});
+	return settings;
+}
+
+/** The volume, key and mode behind a file path in a container (the deepest mount that holds it), or undefined. */
+function mountedFile(pod, container, file) {
+	const mounts = [...(container.volumeMounts ?? [])].sort((a, b) => String(b.mountPath).length - String(a.mountPath).length);
+	for (const mount of mounts) {
+		const base = String(mount.mountPath ?? '').replace(/\/+$/, '');
+		let relative;
+		if (mount.subPath) {
+			if (file !== base) continue;
+			relative = mount.subPath;
+		} else if (file.startsWith(`${base}/`)) {
+			relative = file.slice(base.length + 1);
+		} else {
+			continue;
+		}
+		const volume = (pod.volumes ?? []).find((candidate) => candidate.name === mount.name);
+		const source = volume?.secret ?? volume?.configMap;
+		if (!source) return { volume };
+		const item = source.items ? source.items.find((candidate) => candidate.path === relative) : { key: relative };
+		if (!item) return { volume };
+		return { volume, key: item.key, mode: item.mode ?? source.defaultMode ?? 0o644 };
+	}
+	return undefined;
+}
+
+/**
+ * ARV-082a: findings for a pg_hba.conf that takes TCP connections over TLS only: the local socket keeps peer; every TCP line
+ * other than hostssl rejects (host, hostnossl, hostgssenc and hostnogssenc can all take a connection without TLS); hostssl
+ * uses scram-sha-256 or cert; hostnossl all all all reject is there; nothing is included from elsewhere.
+ */
+function hbaFindings(text, where) {
+	const findings = [];
+	let rejectsPlain = false;
+	let takesTls = false;
+	const lines = String(text).split('\n').map((line) => line.replace(/#.*$/, '').trim()).filter(Boolean).map((line) => line.split(/\s+/));
+	for (const fields of lines) {
+		const [type, database, user, address] = fields;
+		if (/^include/.test(type)) {
+			findings.push(`${where}: pg_hba.conf must not include other files (${type})`);
+			continue;
+		}
+		if (type === 'local') {
+			if (fields[3] !== 'peer') findings.push(`${where}: the local socket must keep peer authentication, not ${fields[3]}`);
+			continue;
+		}
+		if (!['host', 'hostssl', 'hostnossl', 'hostgssenc', 'hostnogssenc'].includes(type)) {
+			findings.push(`${where}: pg_hba.conf line of unknown type ${type}`);
+			continue;
+		}
+		const separateMask = address && !address.includes('/') && /^[0-9a-f.:]+$/i.test(address) && /^[0-9a-f.:]+$/i.test(fields[4] ?? '');
+		const method = fields[separateMask ? 5 : 4];
+		if (type === 'hostssl') {
+			if (!['scram-sha-256', 'cert', 'reject'].includes(method)) findings.push(`${where}: hostssl must use scram-sha-256 or cert, not ${method}`);
+			if (method !== 'reject') takesTls = true;
+		} else if (method !== 'reject') {
+			findings.push(`${where}: pg_hba.conf accepts TCP connections without TLS (${fields.join(' ')})`);
+		}
+		if (type === 'hostnossl' && database === 'all' && user === 'all' && address === 'all' && method === 'reject') rejectsPlain = true;
+	}
+	if (!rejectsPlain) findings.push(`${where}: pg_hba.conf must reject every TCP connection without TLS (hostnossl all all all reject)`);
+	if (!takesTls) findings.push(`${where}: pg_hba.conf takes no TCP connection over TLS (no hostssl line)`);
+	return findings;
+}
+
+/**
+ * ARV-082a: the TimescaleDB server's TLS, for every StatefulSet that runs PostgreSQL (POSTGRES_PASSWORD), from docs parsed
+ * as Kubernetes reads them (YAML 1.1, so a mode such as 0440 is octal). With tls on: ssl on; ssl_cert_file and ssl_key_file
+ * from the secret secretName (keys tls.crt and tls.key); a key file PostgreSQL accepts as the kubelet writes it (root owns
+ * it, fsGroup gives the postgres user group read, so the mode allows no group write and nothing for others: 0640 at most);
+ * ssl_min_protocol_version TLSv1.2 or TLSv1.3; ssl_ciphers exactly DATABASE_TLS12_CIPHERS (V12.1.2); hba_file the release's
+ * pg_hba.conf from a ConfigMap, TCP over TLS only (hbaFindings). With tls off: no ssl, ssl_* or hba_file setting at all.
+ */
+export function databaseTlsFindings(docs, { tls, secretName = 'timescaledb-tls' }) {
+	const findings = [];
+	for (const doc of docs) {
+		if (doc?.kind !== 'StatefulSet') continue;
+		const id = `${doc.kind}/${doc.metadata?.name ?? '?'}`;
+		const pod = podSpecOf(doc) ?? {};
+		for (const container of pod.containers ?? []) {
+			if (!(container.env ?? []).some((variable) => variable.name === 'POSTGRES_PASSWORD')) continue;
+			const cid = `${id} container ${container.name}`;
+			const settings = postgresSettings(container);
+			const on = /^(on|true|yes|1)$/i.test(String(settings.ssl ?? ''));
+			if (!tls) {
+				const set = Object.keys(settings).filter((name) => name === 'ssl' || name.startsWith('ssl_') || name === 'hba_file');
+				if (set.length) findings.push(`${cid}: renders TLS settings (${set.join(', ')}) although TLS is off for this release`);
+				continue;
+			}
+			if (!on) findings.push(`${cid}: ssl is not on; every TCP connection must be encrypted (ARV-082a)`);
+			for (const [setting, key] of [['ssl_cert_file', 'tls.crt'], ['ssl_key_file', 'tls.key']]) {
+				const file = settings[setting] ? mountedFile(pod, container, settings[setting]) : undefined;
+				if (!file?.volume?.secret || file.volume.secret.secretName !== secretName || file.key !== key) {
+					findings.push(`${cid}: ${setting} does not come from the secret ${secretName} (key ${key})`);
+					continue;
+				}
+				if (setting === 'ssl_key_file') {
+					const mode = fileMode(file.mode);
+					if (!(Number(pod.securityContext?.fsGroup) > 0) || !Number.isInteger(mode) || (mode & 0o037) !== 0) {
+						findings.push(`${cid}: PostgreSQL refuses the key file as mounted (mode ${Number.isInteger(mode) ? '0' + mode.toString(8) : file.mode}): root owns it, so it needs fsGroup for group read and at most u=rw,g=r (0640)`);
+					}
+				}
+			}
+			const floor = String(settings.ssl_min_protocol_version ?? '');
+			if (!['TLSv1.2', 'TLSv1.3'].includes(floor)) findings.push(`${cid}: ssl_min_protocol_version must be TLSv1.2 or TLSv1.3, not ${floor || 'unset'}`);
+			if (on && settings.ssl_ciphers !== DATABASE_TLS12_CIPHERS) {
+				findings.push(`${cid}: ssl_ciphers must be ${DATABASE_TLS12_CIPHERS} (TLS 1.2 with ECDHE and AEAD only, V12.1.2), not ${settings.ssl_ciphers ?? 'unset'}`);
+			}
+			const hbaPath = String(settings.hba_file ?? '');
+			const hba = hbaPath ? mountedFile(pod, container, hbaPath) : undefined;
+			const map = hba?.volume?.configMap ? docs.find((other) => other?.kind === 'ConfigMap' && other.metadata?.name === hba.volume.configMap.name) : undefined;
+			const text = map?.data?.[hba?.key];
+			if (typeof text !== 'string') {
+				findings.push(`${cid}: hba_file must be the release's pg_hba.conf from a ConfigMap (${hbaPath || 'hba_file unset'})`);
+				continue;
+			}
+			findings.push(...hbaFindings(text, `${cid} hba_file`));
+		}
+	}
+	return findings;
+}
+
 function labelsMatch(selector, labels) {
 	const wanted = Object.entries(selector?.matchLabels ?? {});
 	return wanted.every(([key, value]) => labels?.[key] === value);
@@ -419,6 +611,8 @@ export function checkManifests(docs, { environment }) {
 				}
 			}
 			findings.push(...readerLoginFindings(doc, id, pod, environment));
+			// ARV-082a: the hosts that verify PostgreSQL and Redis in k8s-prd find the servers' CAs where they look.
+			if (isServerCaWorkload(id)) findings.push(...serverCaFindings(id, pod));
 			// ARV-062: a stateful workload (the database) only accepts traffic a NetworkPolicy allows.
 			if (doc.kind === 'StatefulSet') {
 				const podLabels = doc.spec?.template?.metadata?.labels ?? {};

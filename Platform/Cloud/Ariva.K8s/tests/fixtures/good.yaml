@@ -11,13 +11,15 @@ spec:
         - { name: token-public, secret: { secretName: ariva-token-public } }
         - { name: integration-token-public, secret: { secretName: ariva-integration-token-public } }
         - { name: integration-token-signing, secret: { secretName: ariva-integration-token-signing, defaultMode: 0400 } }
+        - { name: database-ca, secret: { secretName: ariva-database-ca, optional: true, defaultMode: 0444, items: [{ key: ca.crt, path: ca.crt }] } }
+        - { name: redis-ca, secret: { secretName: ariva-redis-ca, optional: true, defaultMode: 0444, items: [{ key: ca.crt, path: ca.crt }] } }
       containers:
         - name: app
           image: registry.example/api-integration:main-20261001.1
           envFrom: [{ configMapRef: { name: api-main-configmap } }]
           startupProbe: { httpGet: { path: /health/startup, port: 8080 }, initialDelaySeconds: 10, periodSeconds: 15, failureThreshold: 9 }
           securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
-          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+          volumeMounts: [{ name: tmp, mountPath: /tmp }, { name: database-ca, mountPath: /app/secrets/database-ca, readOnly: true }, { name: redis-ca, mountPath: /app/secrets/redis-ca, readOnly: true }]
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -93,12 +95,16 @@ spec:
   template:
     spec:
       securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+        - { name: database-ca, secret: { secretName: ariva-database-ca, optional: true, defaultMode: 0444, items: [{ key: ca.crt, path: ca.crt }] } }
+        - { name: redis-ca, secret: { secretName: ariva-redis-ca, optional: true, defaultMode: 0444, items: [{ key: ca.crt, path: ca.crt }] } }
       containers:
         - name: kafka-topics
           image: registry.example/api-main:main-20261001.1
           env: [{ name: DOTNET_ENVIRONMENT, value: k8s-prd }]
           securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
-          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+          volumeMounts: [{ name: tmp, mountPath: /tmp }, { name: database-ca, mountPath: /app/secrets/database-ca, readOnly: true }, { name: redis-ca, mountPath: /app/secrets/redis-ca, readOnly: true }]
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -114,6 +120,10 @@ spec:
   template:
     spec:
       securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+        - { name: database-ca, secret: { secretName: ariva-database-ca, optional: true, defaultMode: 0444, items: [{ key: ca.crt, path: ca.crt }] } }
+        - { name: redis-ca, secret: { secretName: ariva-redis-ca, optional: true, defaultMode: 0444, items: [{ key: ca.crt, path: ca.crt }] } }
       containers:
         - name: database-migration
           image: registry.example/api-main:main-20261001.1
@@ -123,7 +133,7 @@ spec:
             - { name: Database__ValidationReader__Username, valueFrom: { secretKeyRef: { name: ariva-validation-reader, key: username, optional: false } } }
             - { name: Database__ValidationReader__Password, valueFrom: { secretKeyRef: { name: ariva-validation-reader, key: password, optional: false } } }
           securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
-          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+          volumeMounts: [{ name: tmp, mountPath: /tmp }, { name: database-ca, mountPath: /app/secrets/database-ca, readOnly: true }, { name: redis-ca, mountPath: /app/secrets/redis-ca, readOnly: true }]
 ---
 # ARV-125b: a monitoring pair as the chart renders it (one rule, one dashboard).
 apiVersion: v1

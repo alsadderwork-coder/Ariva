@@ -1,0 +1,50 @@
+# ARV-082a: a TimescaleDB server with TLS as the chart renders it (tls.enabled true), parsed as Kubernetes reads it (YAML 1.1).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: database }
+spec:
+  template:
+    metadata: { labels: { app: database } }
+    spec:
+      automountServiceAccountToken: false
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000, seccompProfile: { type: RuntimeDefault } }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+        - { name: tls, secret: { secretName: timescaledb-tls, defaultMode: 0440, items: [{ key: tls.crt, path: tls.crt }, { key: tls.key, path: tls.key }] } }
+        - { name: hba, configMap: { name: database-hba, defaultMode: 0444 } }
+      containers:
+        - name: db
+          image: registry.example/postgres:17@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          args: ["postgres", "-c", "ssl=on", "-c", "ssl_cert_file=/etc/ariva/postgresql-tls/tls.crt", "-c", "ssl_key_file=/etc/ariva/postgresql-tls/tls.key",
+            "-c", "ssl_min_protocol_version=TLSv1.2", "-c", "ssl_ciphers=ECDHE+AESGCM:ECDHE+CHACHA20:!aNULL", "-c", "hba_file=/etc/ariva/postgresql-hba/pg_hba.conf"]
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            - { name: tls, mountPath: /etc/ariva/postgresql-tls, readOnly: true }
+            - { name: hba, mountPath: /etc/ariva/postgresql-hba, readOnly: true }
+          env:
+            - { name: POSTGRES_DB, value: ariva }
+            - { name: POSTGRES_PASSWORD, valueFrom: { secretKeyRef: { name: db, key: password } } }
+            - { name: POSTGRES_INITDB_ARGS, value: "--auth-local=peer --auth-host=scram-sha-256" }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: database }
+spec:
+  podSelector: { matchLabels: { app: database } }
+  policyTypes: [Ingress]
+  ingress: [{ from: [{ podSelector: {} }] }]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: database-hba }
+data:
+  pg_hba.conf: |
+    # TYPE    DATABASE     USER  ADDRESS       METHOD
+    local     all          all                 peer
+    local     replication  all                 peer
+    hostnossl all          all   all           reject
+    hostnossl replication  all   all           reject
+    hostssl   all          all   all           scram-sha-256
+    hostssl   replication  all   127.0.0.1     255.255.255.255  scram-sha-256
+    hostssl   replication  all   ::1/128       scram-sha-256

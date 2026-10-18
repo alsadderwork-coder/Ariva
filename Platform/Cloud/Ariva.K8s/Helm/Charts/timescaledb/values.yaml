@@ -48,6 +48,31 @@ migrationLogin: ariva
 #   migration-password  the migration login; must equal Database:Migration:Password in base-appsettings-secret
 existingSecret: timescaledb-credentials
 
+# Encrypted connections (ARV-082a, CWE-319). Off by default; the Helmfiles turn it on for prd (state value timescaledbTls),
+# where every host verifies the server and refuses to start without its CA.
+# When on, PostgreSQL runs with ssl on, the certificate and key of secretName and ssl_min_protocol_version, and reads the
+# chart's pg_hba.conf (ConfigMap timescaledb-hba, through hba_file) instead of the one initdb wrote into the data volume, so
+# it holds on an existing volume too: every TCP connection, loopback included, uses TLS and scram-sha-256 (hostssl), the
+# rest is rejected (hostnossl reject); the local socket keeps peer authentication.
+# secretName: a kubernetes.io/tls secret (tls.crt with the chain, tls.key) created in the namespace before the release,
+#   never in values. Ideally issued by the site's internal CA through cert-manager, with the names the hosts connect to:
+#     apiVersion: cert-manager.io/v1
+#     kind: Certificate
+#     metadata: { name: timescaledb-tls }
+#     spec:
+#       secretName: timescaledb-tls
+#       issuerRef: { kind: ClusterIssuer, name: <the site's internal CA issuer> }
+#       dnsNames: [timescaledb, timescaledb.<namespace>.svc, timescaledb.<namespace>.svc.cluster.local]
+#       privateKey: { algorithm: ECDSA, size: 256, rotationPolicy: Always }
+#   The platform's ariva-database-ca secret (key ca.crt) then holds that CA's certificate. The pod does not start until the
+#   secret exists. A renewed certificate reaches the mount in place; the server loads it on a reload
+#   (SELECT pg_reload_conf() as the superuser over the socket) or a restart.
+# minProtocolVersion: the oldest TLS version accepted, TLSv1.2 or TLSv1.3.
+tls:
+  enabled: false
+  secretName: timescaledb-tls
+  minProtocolVersion: TLSv1.2
+
 # Only pods in the release namespace may connect (CWE-284). Add peers, for example a backup job or a metrics
 # exporter in another namespace, as NetworkPolicy "from" entries. Needs a CNI that enforces NetworkPolicy.
 networkPolicy:

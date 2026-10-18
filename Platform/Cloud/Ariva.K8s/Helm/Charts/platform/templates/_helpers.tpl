@@ -75,6 +75,47 @@ Usage: {{ include "ariva-platform.image" (list . "api-main") }}
 {{- end }}
 
 {{/*
+The servers' CAs (ARV-082a): the CA that issued the TimescaleDB server certificate and the one that issued the Redis
+server certificate, each a secret with the PEM key ca.crt (values databaseCaSecretName and redisCaSecretName), for the
+workloads that run an Ariva .NET host against PostgreSQL and Redis: the five API hosts and the migration and Kafka topics
+jobs (they build the same host). Not the web pod or the simulator. In k8s-prd every host verifies the server against them
+(Database:RootCertificate /app/secrets/database-ca/ca.crt, Redis:CaCertificatePath /app/secrets/redis-ca/ca.crt) and
+refuses to start without the file; the secrets stay optional here, as kafka-ca, so dev and demo run without them. Only
+ca.crt is projected (items), so a secret that also holds a private key (a reused kubernetes.io/tls secret) never brings it
+into a host pod. The chart test requires both mounts, read-only, in exactly these workloads.
+Usage: {{- include "ariva-platform.serverCaVolumes" . | nindent 8 }} and {{- include "ariva-platform.serverCaMounts" . | nindent 12 }}
+*/}}
+{{- define "ariva-platform.serverCaVolumes" -}}
+# TimescaleDB server CA (ARV-082a): PEM ca.crt; k8s-prd hosts verify the database against it
+- name: database-ca
+  secret:
+    secretName: {{ .Values.databaseCaSecretName | default "ariva-database-ca" }}
+    optional: true
+    defaultMode: 0444
+    items:
+      - key: ca.crt
+        path: ca.crt
+# Redis server CA (ARV-082a): PEM ca.crt; k8s-prd hosts verify Redis against it
+- name: redis-ca
+  secret:
+    secretName: {{ .Values.redisCaSecretName | default "ariva-redis-ca" }}
+    optional: true
+    defaultMode: 0444
+    items:
+      - key: ca.crt
+        path: ca.crt
+{{- end }}
+
+{{- define "ariva-platform.serverCaMounts" -}}
+- name: database-ca
+  mountPath: /app/secrets/database-ca
+  readOnly: true
+- name: redis-ca
+  mountPath: /app/secrets/redis-ca
+  readOnly: true
+{{- end }}
+
+{{/*
 The validation reader login (ARV-104g1): name and password from the secret validationReader.secretName (keys username and
 password), for api-main (the validation service) and the database-migration job (which creates the login) only; the chart
 test fails if another workload gets them. optional follows validationReader.optional (false in k8s-prd, validate.yaml).

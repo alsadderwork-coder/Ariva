@@ -7,33 +7,45 @@
 # timescaledb: install the Ariva TimescaleDB release (Charts/timescaledb, ARV-062). Set it to false for a site whose
 # PostgreSQL with TimescaleDB is provided another way (an operator with replication, or the customer's own server) and
 # point Database:Host at it; the platform release then has no dependency on it.
+# timescaledbTls: run that release with TLS (ARV-082a; Charts/timescaledb tls.enabled, TLS 1.2 at least, TCP over TLS
+# only). On in prd, where every host verifies the server against the ariva-database-ca secret and refuses to start without
+# it; prd refuses to render with it off. Off elsewhere, where a site's own values may still turn tls.enabled on. With it on,
+# create the kubernetes.io/tls secret timescaledb-tls in the namespace first (Charts/timescaledb/values.yaml).
 environments:
   dev:
     values:
       - valuesFile: values-k8s-dev.yaml
         timescaledb: true
+        timescaledbTls: false
   demo:
     values:
       - valuesFile: values-k8s-demo.yaml
         timescaledb: true
+        timescaledbTls: false
   prd:
     values:
       - valuesFile: values-k8s-prd.yaml
         timescaledb: true
+        timescaledbTls: true
   localk8s:
     values:
       - valuesFile: values-localk8s.yaml
         timescaledb: true
+        timescaledbTls: false
 
 helmDefaults:
   kubeContext: default
 
 ---
+{{- if and (eq .Environment.Name "prd") .Values.timescaledb (not (.Values | get "timescaledbTls" false)) }}
+{{- fail "prd runs TimescaleDB with TLS: the hosts verify the server and refuse to start without it (state value timescaledbTls true; ARV-082a)" }}
+{{- end }}
 
 releases:
 
   # TimescaleDB (single node, ARV-062). Applied first and waited for: the platform's migration job connects to it.
-  # Needs the timescaledb-credentials secret (superuser-password, migration-password) in the namespace beforehand.
+  # Needs the timescaledb-credentials secret (superuser-password, migration-password) in the namespace beforehand, and with
+  # timescaledbTls the timescaledb-tls secret (tls.crt, tls.key).
   - name: timescaledb
     chart: ./Charts/timescaledb
     installed: {{ .Values.timescaledb }}
@@ -41,6 +53,12 @@ releases:
     timeout: 900
     values:
       - ./Charts/timescaledb/values.yaml
+    {{- if .Values | get "timescaledbTls" false }}
+    # set, so that no values file turns TLS off (ARV-082a)
+    set:
+      - name: tls.enabled
+        value: true
+    {{- end }}
 
   # Ariva platform: api hosts, simulation and web, with the migration and Kafka topics jobs as hooks
   - name: ariva-platform

@@ -28,4 +28,27 @@ public sealed record OtlpSettings(bool Enabled, Uri Endpoint, bool UseHttp)
             Uri.TryCreate(endpointText, UriKind.Absolute, out var endpoint) ? endpoint : new Uri(DefaultEndpoint),
             protocol.StartsWith("http", StringComparison.OrdinalIgnoreCase));
     }
+
+    /// <summary>Why this export is not fit for k8s-prd, or null (ARV-082a, CWE-319): with OTLP on, the collector is reached over https.</summary>
+    public string ProductionTransportProblem() =>
+        Enabled && Endpoint.Scheme != Uri.UriSchemeHttps
+            ? "The OTLP endpoint must be https in k8s-prd (Otlp:Endpoint or OTEL_EXPORTER_OTLP_ENDPOINT): traces, metrics and logs cross the network encrypted."
+            : null;
+
+    /// <summary>
+    /// In production telemetry crosses the network encrypted, or the host does not start (as Kafka, PostgreSQL and Redis): the
+    /// endpoint the exporters use, and the OTEL_EXPORTER_OTLP_ENDPOINT variable too when it is set, since some exporters (the
+    /// Serilog OTLP sink) read it after Ariva's own setting.
+    /// </summary>
+    public static void EnsureProductionTransport(IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        if (configuration["Application:Environment"] != "k8s-prd")
+            return;
+        if (From(configuration).ProductionTransportProblem() is { } problem)
+            throw new InvalidOperationException(problem);
+        var variable = configuration["OTEL_EXPORTER_OTLP_ENDPOINT"];
+        if (!string.IsNullOrWhiteSpace(variable) && (!Uri.TryCreate(variable, UriKind.Absolute, out var endpoint) || endpoint.Scheme != Uri.UriSchemeHttps))
+            throw new InvalidOperationException("OTEL_EXPORTER_OTLP_ENDPOINT must be https in k8s-prd: traces, metrics and logs cross the network encrypted.");
+    }
 }

@@ -22,6 +22,7 @@ public static class PersistenceExtensions
         ArgumentNullException.ThrowIfNull(configuration);
 
         var settings = DatabaseSettings.FromConfiguration(configuration);
+        EnsureProductionTransport(settings, configuration);
         services.AddSingleton(settings);
         // ARV-104g1: the validation reader login (Database:ValidationReader), apart from the runtime login. Configured in the
         // clusters for api-main and the migration job only; held by the validation service, the migrator and the guard.
@@ -46,6 +47,16 @@ public static class PersistenceExtensions
         services.AddHostedService<ValidationReaderGuard>();
 
         return services;
+    }
+
+    /// <summary>
+    /// ARV-082a (CWE-319, CWE-295): in production every connection to PostgreSQL uses TLS verified against the pinned internal
+    /// CA, or the host (and the migration job, which builds it) does not start.
+    /// </summary>
+    internal static void EnsureProductionTransport(DatabaseSettings settings, IConfiguration configuration)
+    {
+        if (configuration["Application:Environment"] == "k8s-prd" && settings.ProductionTransportProblem(File.Exists) is { } problem)
+            throw new InvalidOperationException(problem);
     }
 
     /// <summary>

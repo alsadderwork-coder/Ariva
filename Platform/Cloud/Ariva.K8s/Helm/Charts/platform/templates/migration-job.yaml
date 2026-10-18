@@ -31,6 +31,7 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 64Mi
+        {{- include "ariva-platform.serverCaVolumes" . | nindent 8 }}
         - name: appsettings-base-volume
           secret:
             secretName: base-appsettings-secret
@@ -77,6 +78,7 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- include "ariva-platform.serverCaMounts" . | nindent 12 }}
             - name: appsettings-base-volume
               mountPath: /app/appsettings.base.{{ .Values.environment }}.json
               subPath: appsettings.base.{{ .Values.environment }}.json

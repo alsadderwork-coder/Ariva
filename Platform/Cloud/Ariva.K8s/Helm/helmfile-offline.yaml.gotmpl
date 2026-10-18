@@ -14,6 +14,8 @@
 #   siteValues      the site's values file for the platform release (domain, ingresses, clusterName, otel, image credentials)
 #   databaseValues  the site's values file for the TimescaleDB release (storage, resources)
 #   timescaledb     false where PostgreSQL with TimescaleDB is provided another way, as in helmfile-k8s.yaml.gotmpl
+#   timescaledbTls  TimescaleDB with TLS (ARV-082a), as in helmfile-k8s.yaml.gotmpl: true in prd, which refuses it off; a
+#                   site file cannot turn it off there (the release sets tls.enabled); create timescaledb-tls first
 # The image repository, tags and digests come from the bundle and win over a site file: the pods pull exactly the images the
 # bundle's verification checked. It refuses to render unless images.yaml pins all seven Ariva digests, so a dry run's bundle
 # (which pins none) cannot be installed.
@@ -23,18 +25,22 @@ environments:
     values:
       - valuesFile: values-k8s-dev.yaml
         timescaledb: true
+        timescaledbTls: false
   demo:
     values:
       - valuesFile: values-k8s-demo.yaml
         timescaledb: true
+        timescaledbTls: false
   prd:
     values:
       - valuesFile: values-k8s-prd.yaml
         timescaledb: true
+        timescaledbTls: true
   localk8s:
     values:
       - valuesFile: values-localk8s.yaml
         timescaledb: true
+        timescaledbTls: false
 
 helmDefaults:
   kubeContext: default
@@ -49,6 +55,9 @@ helmDefaults:
 {{- if not (regexMatch "^sha256:[0-9a-f]{64}$" (index ($images.imageDigests | default dict) $service | toString)) }}
 {{- fail (printf "values/images.yaml pins no digest for %s: a dry run bundle cannot be installed (install only a bundle verify.mjs passed without --dry-run)" $service) }}
 {{- end }}
+{{- end }}
+{{- if and (eq .Environment.Name "prd") .Values.timescaledb (not (.Values | get "timescaledbTls" false)) }}
+{{- fail "prd runs TimescaleDB with TLS: the hosts verify the server and refuse to start without it (state value timescaledbTls true; ARV-082a)" }}
 {{- end }}
 
 releases:
@@ -69,6 +78,11 @@ releases:
     set:
       - name: image.repository
         value: {{ printf "%s/timescale/timescaledb-ha" $mirror | quote }}
+      {{- if .Values | get "timescaledbTls" false }}
+      # set, so that no site file turns TLS off (ARV-082a)
+      - name: tls.enabled
+        value: true
+      {{- end }}
 
   # Ariva platform: api hosts, simulation and web, with the migration and Kafka topics jobs as hooks
   - name: ariva-platform

@@ -69,6 +69,7 @@ public static class ServiceDefaultsExtensions
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(options);
 
+        OtlpSettings.EnsureProductionTransport(configuration);
         var otlp = OtlpSettings.From(configuration);
         if (!otlp.Enabled)
             return services;

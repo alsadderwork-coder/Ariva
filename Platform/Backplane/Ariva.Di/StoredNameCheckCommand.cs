@@ -34,7 +34,10 @@ public static class StoredNameCheckCommand
         var logger = loggers.CreateLogger(typeof(StoredNameCheckCommand));
         try
         {
-            var result = await new StoredNameCheck(DatabaseSettings.FromConfiguration(configuration)).RunAsync(ct);
+            var settings = DatabaseSettings.FromConfiguration(configuration);
+            // ARV-082a: as every host, never a plain or unpinned connection in production.
+            Extensions.PersistenceExtensions.EnsureProductionTransport(settings, configuration);
+            var result = await new StoredNameCheck(settings).RunAsync(ct);
             await output.WriteAsync(Format(result));
             return result.Findings.Count == 0 ? 0 : Found;
         }

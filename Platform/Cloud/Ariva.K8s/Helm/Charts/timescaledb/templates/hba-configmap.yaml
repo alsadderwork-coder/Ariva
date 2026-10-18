@@ -1,0 +1,26 @@
+{{- if (.Values.tls | default dict).enabled }}
+---
+#ConfigMap: the server's pg_hba.conf while TLS is on (ARV-082a), read through hba_file (statefulset.yaml) instead of the
+#one initdb wrote into the data volume, so it applies to an existing volume as well as to a new one. The local socket keeps
+#what initdb set (peer, for the superuser's administration and the first start's scripts). Every TCP connection, loopback
+#and the probes included, must use TLS: hostssl with scram-sha-256 takes it, hostnossl rejects the rest, and no "host" line
+#exists that would take a connection without TLS. Replication over TCP stays limited to loopback, as before. The first
+#matching line wins.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: timescaledb-hba
+  labels:
+    app: timescaledb
+    {{- include "ariva-timescaledb.labels" . | nindent 4 }}
+data:
+  pg_hba.conf: |
+    # TYPE    DATABASE     USER  ADDRESS       METHOD
+    local     all          all                 peer
+    local     replication  all                 peer
+    hostnossl all          all   all           reject
+    hostnossl replication  all   all           reject
+    hostssl   all          all   all           scram-sha-256
+    hostssl   replication  all   127.0.0.1/32  scram-sha-256
+    hostssl   replication  all   ::1/128       scram-sha-256
+{{- end }}

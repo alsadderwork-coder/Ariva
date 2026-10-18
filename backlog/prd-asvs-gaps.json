@@ -65,13 +65,13 @@
       ]
     },
     {
-      "id": "ARV-082",
-      "title": "[ASVS] Encrypted backend connections in production",
-      "description": "Production talks to PostgreSQL, Redis and the pods without TLS. Enforce TLS on every backend connection in k8s-prd, with pinned internal CAs. ASVS 5.0: V12.3.1, V12.3.3, V12.3.4. Effort M.",
+      "id": "ARV-082a",
+      "title": "[ASVS] Encrypted database, Redis and telemetry connections in production",
+      "description": "Split from ARV-082 (2026-10-18). Production talks to PostgreSQL and Redis without TLS and could export telemetry in clear. In k8s-prd every host refuses to start without TLS to PostgreSQL, Redis and the OTLP collector, PostgreSQL and Redis are verified against a pinned internal CA, and the TimescaleDB chart serves TLS. ASVS 5.0: V12.3.1, V12.3.3, V12.3.4. Effort M.",
       "acceptanceCriteria": [
         "A k8s-prd host refuses to start with Database:UseEncryption false, a Redis connection string without ssl=true, or a non-HTTPS OTLP endpoint (as Kafka already does)",
         "PostgreSQL and Redis verify against a pinned internal CA (RootCertificate, sslCaPath), not the system store",
-        "The ingress reaches the pods over TLS with a cluster CA (backend-protocol HTTPS) or a service mesh with mutual TLS is documented and tested",
+        "The TimescaleDB chart serves TLS from a certificate secret and refuses connections without it when TLS is on; k8s-prd turns it on, and the platform chart mounts the database and Redis CAs in every host and job",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "node scripts/security/scan.mjs passes with 0 errors",
         "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
@@ -79,10 +79,29 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 102,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Split from ARV-082 on 2026-10-18 so each part is one reviewable change: the backends here, the ingress to the pods in ARV-082b.",
       "dependsOn": [
         "ARV-074"
+      ]
+    },
+    {
+      "id": "ARV-082b",
+      "title": "[ASVS] The ingress reaches the pods over TLS",
+      "description": "Split from ARV-082 (2026-10-18). The ingress controller reaches the pods over plain HTTP, and the hosts' internal addresses (Microservices:*:Internal) are http. In k8s-prd every pod serves TLS with a certificate from a cluster CA, the ingress verifies it, and internal calls use https. ASVS 5.0: V12.3.1, V12.3.3. Effort M.",
+      "acceptanceCriteria": [
+        "The ingress reaches the pods over TLS with a cluster CA (backend-protocol HTTPS) or a service mesh with mutual TLS is documented and tested",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 103,
+      "passes": false,
+      "notes": "Split from ARV-082 on 2026-10-18. Covers every pod the ingress routes to (the API hosts and the web pod's nginx), their probes, the Services' ports and the internal https addresses.",
+      "dependsOn": [
+        "ARV-082a"
       ]
     },
     {
@@ -103,7 +122,7 @@
       ],
       "priority": 103,
       "passes": false,
-      "notes": "2026-10-10: owner folded the ARV-118 availability ledger rights into this story (see the criterion). 2026-10-13 (ARV-171 security review): every host registers every topic's dead-letter producer, because any host can lead the outbox relay and send a kept dead letter; so each per-service Kafka principal needs WRITE on every *.dlq.v1 topic, while READ on dead-letter topics stays with operators and the replay tool.",
+      "notes": "2026-10-10: owner folded the ARV-118 availability ledger rights into this story (see the criterion). 2026-10-13 (ARV-171 security review): every host registers every topic's dead-letter producer, because any host can lead the outbox relay and send a kept dead letter; so each per-service Kafka principal needs WRITE on every *.dlq.v1 topic, while READ on dead-letter topics stays with operators and the replay tool. 2026-10-18 (ARV-082a chart work, pre-existing): the database-migration job does not set automountServiceAccountToken: false, as the kafka-topics job does; it needs no Kubernetes API access.",
       "dependsOn": [
         "ARV-074"
       ]

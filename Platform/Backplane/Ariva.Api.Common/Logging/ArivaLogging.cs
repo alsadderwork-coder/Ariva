@@ -38,6 +38,8 @@ public static class ArivaLogging
         if (!string.IsNullOrWhiteSpace(file))
             logger.WriteTo.File(new JsonFormatter(renderMessage: true), file, shared: true);
 
+        // ARV-082a: in production the logs leave a host over TLS only, to Loki as to the OTLP collector.
+        EnsureProductionTransport(configuration);
         if (bool.TryParse(configuration["Loki:Enabled"], out var loki) && loki && Uri.TryCreate(configuration["Loki:Uri"], UriKind.Absolute, out var lokiUri))
         {
             logger.WriteTo.GrafanaLoki(
@@ -70,6 +72,20 @@ public static class ArivaLogging
         }
 
         return logger;
+    }
+
+    /// <summary>
+    /// ARV-082a (CWE-319): in k8s-prd a host does not start when its logs would cross the network in clear: an enabled Loki
+    /// whose address is not https, or an OTLP endpoint (Otlp:Endpoint or OTEL_EXPORTER_OTLP_ENDPOINT, which the OTLP sink
+    /// reads last) that is not https.
+    /// </summary>
+    public static void EnsureProductionTransport(IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        OtlpSettings.EnsureProductionTransport(configuration);
+        if (configuration["Application:Environment"] == "k8s-prd" && bool.TryParse(configuration["Loki:Enabled"], out var loki) && loki &&
+            (!Uri.TryCreate(configuration["Loki:Uri"], UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps))
+            throw new InvalidOperationException("Loki:Uri must be https in k8s-prd: the logs cross the network encrypted.");
     }
 
     /// <summary>
