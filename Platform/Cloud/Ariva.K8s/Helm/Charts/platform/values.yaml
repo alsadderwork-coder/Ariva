@@ -53,6 +53,42 @@ integrationTokenSigningSecretName: ariva-integration-token-signing
 databaseCaSecretName: ariva-database-ca
 redisCaSecretName: ariva-redis-ca
 
+# Pod TLS (ARV-082b): the ingress reaches the pods over TLS and verifies them. Off by default, so dev, demo and localk8s render
+# plain HTTP as before; k8s-prd turns it on and the chart refuses it off there (validate.yaml, and the Helmfile state value
+# podTls). With it on:
+# - each API host serves HTTPS only, on container port 8443 (named https; no 8080), from its own kubernetes.io/tls secret
+#   (secretNames.<service>), issued by the site's cluster CA for the Service's names (for api-main: api-main-service,
+#   api-main-service.<namespace>.svc and api-main-service.<namespace>.svc.cluster.local). Only tls.crt and tls.key are
+#   projected, mode 0440 (read through the pod's fsGroup 10001), as a whole directory at /app/secrets/pod-tls: Kestrel reloads
+#   a renewed certificate from it, which a subPath mount would never receive;
+# - the web pod's nginx serves TLS on 3443 only, from secretNames.web at /etc/nginx/tls (names web-service and so on); the
+#   ConfigMap web-nginx-listen, mounted over the image's /etc/nginx/listen.d, replaces its plain "listen 3000" with
+#   "listen 3443 ssl" (TLS 1.2 and 1.3, the TLS 1.2 suites ECDHE with AEAD only). nginx reads the certificate when it
+#   starts: a renewed one reaches the web pods at their next restart (every release restarts them);
+# - every Service serves 443 (name https) to its pods' https port, so the internal addresses are https://<service> with no
+#   port; every Ingress proxies HTTPS to port 443 and verifies the pod's certificate against caSecretName under the name
+#   <service>.<namespace>.svc, TLS 1.2 or 1.3, with up to two intermediate CAs between the pod's certificate and the
+#   cluster CA (proxy-ssl-verify-depth 2; OpenSSL counts only the intermediates, so 1 would take one).
+#   caSecretName is a secret in the release's namespace whose only key is ca.crt, the cluster CA (an Opaque secret).
+#   ingress-nginx verifies the pods, and holds the proxy-ssl-protocols floor, only when that secret holds ca.crt: a secret
+#   without it loads without error and the Ingress proxies HTTPS to the pods unverified, silently. Never point caSecretName
+#   at a kubernetes.io/tls secret without ca.crt (the CA's own key pair, or one of the pods' certificates); and keep tls.key
+#   out of it, or ingress-nginx copies that key to the controller and presents it to the pods. validate.yaml refuses both
+#   when the release can see the secret; a render that cannot (helm template, or before the secret exists) does not.
+# Create the secrets out of band (cert-manager or kubectl create secret tls) before the release; the pods wait for them.
+# The simulator serves plain HTTP and calls the hosts over plain HTTP: the chart refuses it, and an Ingress to it, with pod
+# TLS on. Secret names are Kubernetes secret names; empty means the default (validate.yaml).
+podTls:
+  enabled: false
+  caSecretName: ariva-cluster-ca
+  secretNames:
+    api-main: ariva-api-main-tls
+    api-ingest: ariva-api-ingest-tls
+    api-stream: ariva-api-stream-tls
+    api-cronz: ariva-api-cronz-tls
+    api-integration: ariva-api-integration-tls
+    web: ariva-web-tls
+
 # Schema migration Job (ARV-006): api-main --migrate as a Helm hook before each upgrade. The migration login comes
 # from Database:Migration in base-appsettings-secret; hosts use the DML-only runtime login.
 migration:

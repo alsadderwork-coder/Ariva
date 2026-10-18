@@ -167,6 +167,24 @@ internal sealed class ArivaWebApplicationFactory<TEntryPoint>(string environment
         return path;
     }
 
+    /// <summary>
+    /// A pod certificate and its key (PEM) in the host's own temporary folder, for the k8s-prd https endpoint (ARV-082b) that an
+    /// in-process host never binds: the host checks at startup that both files are there.
+    /// </summary>
+    private (string Certificate, string Key) TestPodCertificate()
+    {
+        Directory.CreateDirectory(DevelopmentKeyDirectory);
+        var certificatePath = Path.Combine(DevelopmentKeyDirectory, "pod-tls.crt");
+        var keyPath = Path.Combine(DevelopmentKeyDirectory, "pod-tls.key");
+        using var key = System.Security.Cryptography.ECDsa.Create(System.Security.Cryptography.ECCurve.NamedCurves.nistP256);
+        var request = new System.Security.Cryptography.X509Certificates.CertificateRequest("CN=api-main-service", key,
+            System.Security.Cryptography.HashAlgorithmName.SHA256);
+        using var certificate = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow.AddDays(1));
+        File.WriteAllText(certificatePath, certificate.ExportCertificatePem());
+        File.WriteAllText(keyPath, key.ExportPkcs8PrivateKeyPem());
+        return (certificatePath, keyPath);
+    }
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment(environment);
@@ -178,6 +196,14 @@ internal sealed class ArivaWebApplicationFactory<TEntryPoint>(string environment
         // The cluster environments pin the database's internal CA (ARV-082a) and a k8s-prd host refuses to start without the
         // file; nothing connects here, so a test CA of the host's own stands in for the mounted secret.
         builder.UseSetting("Database:RootCertificate", TestDatabaseCa());
+        // k8s-prd serves https from the mounted pod TLS secret (ARV-082b) and a host refuses to start without its files; the
+        // in-process host binds no port, so a certificate of its own stands in. Other environments declare no endpoint.
+        if (environment == ArivaEnvironment.K8sPrd)
+        {
+            var (certificate, key) = TestPodCertificate();
+            builder.UseSetting("Kestrel:Endpoints:Https:Certificate:Path", certificate);
+            builder.UseSetting("Kestrel:Endpoints:Https:Certificate:KeyPath", key);
+        }
         // Nor a database readiness check, which would answer 503 here: the probes' authorization is what these hosts
         // test; the check itself is covered by ServiceDefaultsTests (ARV-066).
         builder.ConfigureServices(services => services.PostConfigure<HealthCheckServiceOptions>(options =>

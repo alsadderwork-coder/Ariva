@@ -16,6 +16,9 @@
 #   timescaledb     false where PostgreSQL with TimescaleDB is provided another way, as in helmfile-k8s.yaml.gotmpl
 #   timescaledbTls  TimescaleDB with TLS (ARV-082a), as in helmfile-k8s.yaml.gotmpl: true in prd, which refuses it off; a
 #                   site file cannot turn it off there (the release sets tls.enabled); create timescaledb-tls first
+#   podTls          the pods over TLS (ARV-082b), as in helmfile-k8s.yaml.gotmpl: true in prd, which refuses it off; a site
+#                   file cannot turn it off there (the release sets podTls.enabled) but may name the secrets
+#                   (podTls.caSecretName, podTls.secretNames); create them first
 # The image repository, tags and digests come from the bundle and win over a site file: the pods pull exactly the images the
 # bundle's verification checked. It refuses to render unless images.yaml pins all seven Ariva digests, so a dry run's bundle
 # (which pins none) cannot be installed.
@@ -26,21 +29,25 @@ environments:
       - valuesFile: values-k8s-dev.yaml
         timescaledb: true
         timescaledbTls: false
+        podTls: false
   demo:
     values:
       - valuesFile: values-k8s-demo.yaml
         timescaledb: true
         timescaledbTls: false
+        podTls: false
   prd:
     values:
       - valuesFile: values-k8s-prd.yaml
         timescaledb: true
         timescaledbTls: true
+        podTls: true
   localk8s:
     values:
       - valuesFile: values-localk8s.yaml
         timescaledb: true
         timescaledbTls: false
+        podTls: false
 
 helmDefaults:
   kubeContext: default
@@ -58,6 +65,9 @@ helmDefaults:
 {{- end }}
 {{- if and (eq .Environment.Name "prd") .Values.timescaledb (not (.Values | get "timescaledbTls" false)) }}
 {{- fail "prd runs TimescaleDB with TLS: the hosts verify the server and refuse to start without it (state value timescaledbTls true; ARV-082a)" }}
+{{- end }}
+{{- if and (eq .Environment.Name "prd") (not (.Values | get "podTls" false)) }}
+{{- fail "prd serves the pods over TLS: the hosts listen on HTTPS only and the ingress verifies them (state value podTls true; ARV-082b)" }}
 {{- end }}
 
 releases:
@@ -101,3 +111,8 @@ releases:
     set:
       - name: imageRepository
         value: {{ printf "%s/ariva" $mirror | quote }}
+      {{- if .Values | get "podTls" false }}
+      # set, so that no site file turns pod TLS off (ARV-082b)
+      - name: podTls.enabled
+        value: true
+      {{- end }}

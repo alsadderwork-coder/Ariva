@@ -423,17 +423,22 @@ SELECT job_id, hypertable_name, last_run_status, last_successful_finish, next_st
 
 ### 4.9 Certificate expiry
 
-- **Alarm**: `ariva.certificates.expires_in` (section 2a) counts down to the end of the Data Protection certificate in use (every host) and of Ingest's MQTT server certificate; it reads the certificate each pod loaded at start, so a renewed secret shows once the pods have restarted. The ingress certificate and device, partner and border-to-airport certificates are not in it: check them as below, or with the site collector or cert-manager.
+- **Alarm**: `ariva.certificates.expires_in` (section 2a) counts down to the end of the Data Protection certificate in use (every host) and of Ingest's MQTT server certificate; it reads the certificate each pod loaded at start, so a renewed secret shows once the pods have restarted. The ingress certificate and device, partner and border-to-airport certificates are not in it: check them as below, or with the site collector or cert-manager. Neither are the pods' certificates in k8s-prd (`ariva-api-*-tls` and `ariva-web-tls`, ARV-082b): where cert-manager issues them, `ingressCertificateExpiry` covers them too, since it reads every cert-manager certificate of the namespace, but it reads the secret, not the certificate a pod serves. That matters for the web pods, whose nginx keeps the certificate it started with.
 - **Checks**:
 
 ```bash
 echo | openssl s_client -connect <host>:443 -servername <host> 2>/dev/null | openssl x509 -noout -enddate
 kubectl -n "$NAMESPACE" get certificate    # where cert-manager issues it: the ingressCertificateExpiry alert reads these
+# k8s-prd: what a pod serves against what its secret holds (web shown; api-main-service and the others likewise)
+kubectl -n "$NAMESPACE" port-forward svc/web-service 8443:443 &
+echo | openssl s_client -connect localhost:8443 -servername "web-service.$NAMESPACE.svc" 2>/dev/null | openssl x509 -noout -enddate
+kubectl -n "$NAMESPACE" get secret ariva-web-tls -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -noout -enddate
+kill %1
 ```
 
-Also check device client certificates (MQTT), outbound endpoint client certificates, the border-to-airport mutual TLS certificates, and integration partners' pinned CAs.
+Two different dates for the web pod mean the secret was renewed and the pods still serve the old certificate. Also check device client certificates (MQTT), outbound endpoint client certificates, the border-to-airport mutual TLS certificates, and integration partners' pinned CAs.
 
-- **Actions**: renew through the customer's PKI; update the ingress certificate secret or the controller's default certificate; for device certificates, schedule rotation with the local partner outside peaks.
+- **Actions**: renew through the customer's PKI; update the ingress certificate secret or the controller's default certificate; for device certificates, schedule rotation with the local partner outside peaks. Pod certificates (wiki 04 section 6.2): the API hosts serve a renewed `ariva-api-*-tls` by themselves within seconds of the kubelet updating the volume (each pod refuses new connections for up to about 5 seconds while it rebinds; the ingress retries on another pod, but api-cronz and api-integration have one pod each). The web pods take a renewed `ariva-web-tls` only when they restart: run `kubectl -n "$NAMESPACE" rollout restart deployment/web-deployment` after each renewal, or before the old certificate's end at the latest, since the ingress refuses an expired one and the web app's pages then fail with 502. A pod whose certificate the cluster CA in `ariva-cluster-ca` did not issue, or that does not name the pod's Service, fails the ingress's check (502 for that host); a CA secret the controller cannot read gives 503.
 
 ### 4.10 Replaying a time range
 
@@ -520,8 +525,8 @@ If an event does not show:
 - **Symptoms**: `hostDown-<host>` (no health report from any pod of the host), `readinessFailing` (a readiness check Unhealthy, so readiness answers 503 and Kubernetes routes nothing to the pod) or `databaseUnavailable` (the `database` check Unhealthy).
 - **Effect**: a host down stops its part of the system (Ingest: devices get no answer and keep their batches; Stream: no new minutes or alerts; Main: the screens and the administration). A pod not ready keeps running but gets no traffic. The database away makes every host's readiness fail together.
 - **Checks**:
-  1. `kubectl -n "$NAMESPACE" get pods -l app=api-<host>` and `kubectl -n "$NAMESPACE" describe pod <pod>`: restarts, `CrashLoopBackOff`, a failed startup probe, an image that cannot be pulled, a missing secret.
-  2. The host's log since the start: a setting refused at start names itself (`Hosting:ShutdownSeconds`, `Kafka:Consumers:StartWaitSeconds`, the schema version).
+  1. `kubectl -n "$NAMESPACE" get pods -l app=api-<host>` and `kubectl -n "$NAMESPACE" describe pod <pod>`: restarts, `CrashLoopBackOff`, a failed startup probe, an image that cannot be pulled, a missing secret (in k8s-prd also the pod's `ariva-<service>-tls`, which keeps it in ContainerCreating).
+  2. The host's log since the start: a setting refused at start names itself (`Hosting:ShutdownSeconds`, `Kafka:Consumers:StartWaitSeconds`, the schema version, and in k8s-prd `Kestrel:Endpoints`, `SslProtocols`, `ASPNETCORE_URLS` or `preferHostingUrls` when the pod would serve plain HTTP or weak TLS, ARV-082b).
   3. For the database: the TimescaleDB pod, its log and its volume (4.7), and `kubectl -n "$NAMESPACE" exec timescaledb-0 -- pg_isready`; for a database the site provides, its own monitoring.
   4. A host that runs but reports nothing: the OTLP endpoint (`otel.endpoint`) and the collector, since the rule cannot tell a silent host from a stopped one.
 - **Actions**: fix the cause and let Kubernetes restart the pods; never set readiness aside. A Degraded check (Kafka, Redis, the message bus) does not make a host unready: it raises `kafkaUnavailable` or `busDegraded` (4.6).

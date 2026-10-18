@@ -19,6 +19,10 @@ FROM nginx:1.30.5-alpine3.24@sha256:0985e772fb9f729e6fa0980da05fca5d9c468e870eed
 RUN apk upgrade --no-cache
 
 COPY --from=builder /app/build/nginx/default.conf /etc/nginx/conf.d
+# The listener default.conf includes (ARV-082b): plain HTTP on 3000. Root owned and world readable, like default.conf, so
+# nginx (uid 10001) reads it on the read-only root filesystem and cannot change it; with pod TLS the chart mounts its
+# ConfigMap over /etc/nginx/listen.d, which replaces it with the TLS listener on 3443.
+COPY --from=builder /app/build/nginx/listen.d/plain.conf /etc/nginx/listen.d/plain.conf
 COPY --from=builder /app/build /usr/share/nginx/html/web
 
 RUN addgroup -S -g 10001 nonroot \

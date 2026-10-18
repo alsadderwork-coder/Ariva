@@ -116,6 +116,119 @@ Usage: {{- include "ariva-platform.serverCaVolumes" . | nindent 8 }} and {{- inc
 {{- end }}
 
 {{/*
+Pod TLS (ARV-082b; values podTls): "true" when the pods serve TLS to the ingress and to each other, empty otherwise.
+Usage: {{- if include "ariva-platform.podTls" . }}
+*/}}
+{{- define "ariva-platform.podTls" -}}
+{{- if (.Values.podTls | default dict).enabled }}true{{ end -}}
+{{- end }}
+
+{{/*
+The kubernetes.io/tls secret a service serves TLS from (podTls.secretNames.<service>, empty: ariva-<service>-tls).
+Usage: {{ include "ariva-platform.podTlsSecretName" (list . "api-main") }}
+*/}}
+{{- define "ariva-platform.podTlsSecretName" -}}
+{{- $root := index . 0 -}}
+{{- $service := index . 1 -}}
+{{- $names := ($root.Values.podTls | default dict).secretNames | default dict -}}
+{{- index $names $service | default (printf "ariva-%s-tls" $service) -}}
+{{- end }}
+
+{{/*
+The certificate volume of a pod that serves TLS (ARV-082b): its own secret, projecting tls.crt and tls.key only, so a
+ca.crt or anything else the secret holds never reaches the pod; 0440, read by the app user through the pod's fsGroup 10001.
+Mounted as a whole directory (never a subPath): the kubelet swaps a renewed certificate into it and Kestrel reloads it
+without a restart. The chart test requires exactly this mount in every pod that serves TLS.
+Usage: {{- include "ariva-platform.podTlsVolume" (list . "api-main") | nindent 8 }}, inside {{- if include "ariva-platform.podTls" . }}
+*/}}
+{{- define "ariva-platform.podTlsVolume" -}}
+{{- $root := index . 0 -}}
+{{- $service := index . 1 -}}
+# Pod TLS certificate (ARV-082b): tls.crt and tls.key only, read-only, renewed in place
+- name: pod-tls
+  secret:
+    secretName: {{ include "ariva-platform.podTlsSecretName" (list $root $service) | quote }}
+    defaultMode: 0440
+    items:
+      - key: tls.crt
+        path: tls.crt
+      - key: tls.key
+        path: tls.key
+{{- end }}
+
+{{/*
+Why a pod TLS cluster CA secret would leave the ingress unsafe (ARV-082b), or empty when it is fine: given the Secret object
+(as lookup returns it; an empty map when there is none to judge). ingress-nginx writes proxy_ssl_trusted_certificate,
+proxy_ssl_verify, proxy_ssl_verify_depth and proxy_ssl_protocols only when the secret yields a CA file, which needs ca.crt:
+without it the Ingress still proxies HTTPS, unverified and silently. A tls.key beside ca.crt is copied to the controller's
+disk and presented to the pods as a client certificate (a pod's key, or the CA's own). So: ca.crt holding a PEM certificate,
+and no tls.key. validate.yaml calls this with the lookup of podTls.caSecretName; chart-security.mjs renders it with
+stand-in secrets, as helm template cannot fake lookup.
+Usage: {{ include "ariva-platform.podTlsCaRefusal" (lookup "v1" "Secret" .Release.Namespace "ariva-cluster-ca") }}
+*/}}
+{{- define "ariva-platform.podTlsCaRefusal" -}}
+{{- if . -}}
+{{- $data := .data | default dict -}}
+{{- if not (contains "-----BEGIN CERTIFICATE-----" (toString (index $data "ca.crt" | default "") | b64dec)) -}}
+podTls.caSecretName names a secret without ca.crt: the ingress would proxy to the pods without verifying them (ARV-082b); put the cluster CA in it as ca.crt
+{{- else if hasKey $data "tls.key" -}}
+podTls.caSecretName names a secret that also holds tls.key: ingress-nginx would copy that private key to the controller and present it to the pods (ARV-082b); keep only ca.crt in it
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{- define "ariva-platform.podTlsMount" -}}
+- name: pod-tls
+  mountPath: /app/secrets/pod-tls
+  readOnly: true
+{{- end }}
+
+{{/*
+An API host's container ports: 8080 plain HTTP, or with pod TLS 8443 only, named https (ARV-082b; the host listens there
+in k8s-prd, Kestrel:Endpoints:Https). Usage: {{- include "ariva-platform.apiPorts" . | nindent 12 }}
+*/}}
+{{- define "ariva-platform.apiPorts" -}}
+{{- if include "ariva-platform.podTls" . -}}
+- name: https
+  containerPort: 8443
+{{- else -}}
+- containerPort: 8080
+{{- end -}}
+{{- end }}
+
+{{/*
+An API host's probe target: path on 8080, or with pod TLS HTTPS on 8443 (the kubelet does not verify the certificate).
+Usage: {{ include "ariva-platform.apiProbe" (list . "/health/startup") }}
+*/}}
+{{- define "ariva-platform.apiProbe" -}}
+{{- $root := index . 0 -}}
+{{- $path := index . 1 -}}
+{{- if include "ariva-platform.podTls" $root -}}
+httpGet: { path: {{ $path }}, port: 8443, scheme: HTTPS }
+{{- else -}}
+httpGet: { path: {{ $path }}, port: 8080 }
+{{- end -}}
+{{- end }}
+
+{{/*
+An API host's Service ports: 80 to 8080, or with pod TLS 443 (name https) to the pods' https port, so the internal
+addresses are https://<service> with no port (ARV-082b). Usage: {{- include "ariva-platform.apiServicePorts" (list . "api-main") | nindent 4 }}
+*/}}
+{{- define "ariva-platform.apiServicePorts" -}}
+{{- $root := index . 0 -}}
+{{- $service := index . 1 -}}
+{{- if include "ariva-platform.podTls" $root -}}
+- name: https
+  port: 443
+  targetPort: https
+{{- else -}}
+- name: {{ $service }}-service-port
+  port: 80
+  targetPort: 8080
+{{- end -}}
+{{- end }}
+
+{{/*
 The validation reader login (ARV-104g1): name and password from the secret validationReader.secretName (keys username and
 password), for api-main (the validation service) and the database-migration job (which creates the login) only; the chart
 test fails if another workload gets them. optional follows validationReader.optional (false in k8s-prd, validate.yaml).

@@ -218,6 +218,9 @@ public sealed class MqttTransportTests
         MqttExtensions.HttpEndpoints(Config(("http_ports", "8080;8081"))).Should().Equal(new IPEndPoint(IPAddress.Any, 8080), new IPEndPoint(IPAddress.Any, 8081));
         MqttExtensions.HttpEndpoints(Config(("Application:BindingPort", "51002"))).Should().Equal(new IPEndPoint(IPAddress.Any, 51002));
         MqttExtensions.HttpEndpoints(Config()).Should().Equal(new IPEndPoint(IPAddress.Any, 8080));
+        // ARV-082b: k8s-prd declares its https endpoint in Kestrel:Endpoints, which Kestrel binds itself; the image's plain port gives way.
+        MqttExtensions.HttpEndpoints(Config(("Kestrel:Endpoints:Https:Url", "https://*:8443"), ("http_ports", "8080"), ("urls", "http://+:8080")))
+            .Should().BeEmpty("a plain port declared in code would be bound beside the configured https endpoint");
     }
 
     #endregion
@@ -382,7 +385,11 @@ public sealed class MqttTransportTests
         return ((IPEndPoint)listener.LocalEndpoint).Port;
     }
 
-    private static async Task<(WebApplication App, Sink Sink, int Port)> StartAsync()
+    /// <param name="settings">
+    /// Settings in place of the plain test URL, from the listener's certificate and key paths (ARV-082b: a configured https endpoint
+    /// beside the image's HTTP ports); null for the plain URL.
+    /// </param>
+    private static async Task<(WebApplication App, Sink Sink, int Port)> StartAsync(Func<string, string, Dictionary<string, string>> settings = null)
     {
         var directory = Directory.CreateTempSubdirectory("ariva-mqtt-");
         using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
@@ -397,9 +404,9 @@ public sealed class MqttTransportTests
         var port = FreePort();
         var sink = new Sink();
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = "k8s-dev", ContentRootPath = directory.FullName });
+        builder.Configuration.AddInMemoryCollection(settings?.Invoke(certPath, keyPath) ?? new Dictionary<string, string> { ["urls"] = "http://127.0.0.1:" + FreePort() });
         builder.Configuration.AddInMemoryCollection(new Dictionary<string, string>
         {
-            ["urls"] = "http://127.0.0.1:" + FreePort(),
             ["Ingest:Mqtt:Enabled"] = "true",
             ["Ingest:Mqtt:Port"] = port.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ["Ingest:Mqtt:CertificatePath"] = certPath,
@@ -433,6 +440,48 @@ public sealed class MqttTransportTests
 
         measured.Tags.Should().Equal(new Dictionary<string, string> { ["certificate"] = Ariva.Infra.Monitoring.CertificateMetrics.MqttServer });
         measured.Value.Should().BeInRange(TimeSpan.FromDays(1).TotalSeconds - 120, TimeSpan.FromDays(1).TotalSeconds, "the test certificate ends a day after it was made");
+    }
+
+    [Fact]
+    public async Task Listener_Should_LeaveNoPlainPort_When_KestrelEndpointsServeHttps()
+    {
+        // ARV-082b: k8s-prd declares the https endpoint in Kestrel:Endpoints while the image keeps ASPNETCORE_HTTP_PORTS (8080) set.
+        var https = FreePort();
+        var plain = FreePort();
+        string served = null;
+        var (app, _, port) = await StartAsync((certificate, key) =>
+        {
+            served = certificate;
+            return new Dictionary<string, string>
+            {
+                ["Kestrel:Endpoints:Https:Url"] = "https://127.0.0.1:" + https.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["Kestrel:Endpoints:Https:Certificate:Path"] = certificate,
+                ["Kestrel:Endpoints:Https:Certificate:KeyPath"] = key,
+                ["http_ports"] = plain.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            };
+        });
+        await using var _ = app;
+        var ct = TestContext.Current.CancellationToken;
+        using var expected = X509Certificate2.CreateFromPem(await File.ReadAllTextAsync(served, ct));
+
+        using (var tcp = new TcpClient())
+        {
+            await tcp.ConnectAsync(IPAddress.Loopback, https, ct);
+            await using var tls = new System.Net.Security.SslStream(tcp.GetStream());
+            await tls.AuthenticateAsClientAsync(new System.Net.Security.SslClientAuthenticationOptions
+            {
+                TargetHost = "localhost",
+                // The listener's own self-signed certificate, pinned by its hash.
+                RemoteCertificateValidationCallback = (_, certificate, _, _) => certificate is not null && certificate.GetCertHashString() == expected.GetCertHashString()
+            }, ct);
+            tls.IsAuthenticated.Should().BeTrue("the configured https endpoint is bound beside the MQTT listener");
+        }
+
+        using (var mqtt = new TcpClient())
+            await mqtt.ConnectAsync(IPAddress.Loopback, port, ct);
+        using var refused = new TcpClient();
+        var connect = async () => await refused.ConnectAsync(IPAddress.Loopback, plain, ct);
+        (await connect.Should().ThrowAsync<SocketException>()).Which.SocketErrorCode.Should().Be(SocketError.ConnectionRefused, "nothing listens in plain");
     }
 
     private static MqttClientOptions Client(int port, string user, string password, string clientId = "", MqttProtocolVersion version = MqttProtocolVersion.V500, bool tls = true)

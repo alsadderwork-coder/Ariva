@@ -344,6 +344,329 @@ export function databaseTlsFindings(docs, { tls, secretName = 'timescaledb-tls' 
 	return findings;
 }
 
+/**
+ * ARV-082b: pod TLS. The pods the ingress and the hosts reach (the five API hosts and the web pod's nginx, by image) serve
+ * TLS only, from their own certificate; the Services and every Ingress reach them over TLS, and the ingress verifies them.
+ */
+export const POD_TLS = {
+	services: ['api-main', 'api-ingest', 'api-stream', 'api-cronz', 'api-integration', 'web'],
+	/** The TLS container port by kind of image (named https) and the plain ports that must be gone. */
+	ports: { dotnet: 8443, web: 3443 },
+	plainPorts: [8080, 3000],
+	/** Where each kind of image reads its certificate (tls.crt, tls.key): Kestrel in k8s-prd, nginx's tls.conf. */
+	certificates: { dotnet: '/app/secrets/pod-tls', web: '/etc/nginx/tls' },
+	/** The directory the web image's default.conf includes inside its server block (listen.d/*.conf). */
+	webListen: '/etc/nginx/listen.d',
+	caSecretName: 'ariva-cluster-ca',
+	/**
+	 * Up to two intermediate CAs between a pod's certificate and the cluster CA. OpenSSL's verify depth counts the intermediates
+	 * only (neither the leaf nor the trust anchor): 1 already takes the leaf, one intermediate and the root (measured with
+	 * nginx 1.30 as the proxy); 2 leaves room for a site PKI with an issuing CA below a policy CA.
+	 */
+	verifyDepth: 2,
+	/** Kestrel rebinds its endpoint when it reloads a renewed certificate: up to this long without new connections. */
+	rotationGapSeconds: 5
+};
+/** The TLS 1.2 suites every Ariva TLS server allows, ECDHE with AEAD only (V12.1.2): the database's list (ARV-082a). */
+export const TLS12_CIPHERS = DATABASE_TLS12_CIPHERS;
+const TLS_PROTOCOLS = new Set(['TLSv1.2', 'TLSv1.3']);
+const INGRESS_ANNOTATION = 'nginx.ingress.kubernetes.io/';
+const PROBES = ['startupProbe', 'readinessProbe', 'livenessProbe'];
+
+/** dotnet for the five API images, web for the web image, undefined for anything else (the simulator, third parties). */
+function podTlsRole(container) {
+	const name = imageName(container.image ?? '');
+	if (!POD_TLS.services.includes(name)) return undefined;
+	return name === 'web' ? 'web' : 'dotnet';
+}
+
+/** The container port number a probe or a Service's targetPort names: a number as it is, a name through the container's ports. */
+function containerPortNumber(container, port) {
+	if (port === undefined || port === null) return undefined;
+	if (/^\d+$/.test(String(port))) return Number(port);
+	const named = (container.ports ?? []).find((candidate) => candidate.name === port);
+	return named ? Number(named.containerPort) : undefined;
+}
+
+/** The containers that serve HTTP to the Services: those of the TLS images in long-running workloads (not the jobs). */
+function servedContainers(docs) {
+	const served = [];
+	for (const doc of docs) {
+		if (!doc || !['Deployment', 'StatefulSet', 'DaemonSet'].includes(doc.kind)) continue;
+		const pod = podSpecOf(doc) ?? {};
+		for (const container of pod.containers ?? []) {
+			const role = podTlsRole(container);
+			if (role) served.push({ doc, pod, container, role, service: imageName(container.image), id: `${doc.kind}/${doc.metadata?.name ?? '?'}`, labels: doc.spec?.template?.metadata?.labels ?? {} });
+		}
+	}
+	return served;
+}
+
+const selects = (service, labels) => {
+	const wanted = Object.entries(service.spec?.selector ?? {});
+	return wanted.length > 0 && wanted.every(([key, value]) => labels?.[key] === value);
+};
+
+/** The statements of an nginx file as token lists, comments dropped, with a flag for any block. */
+function nginxStatements(text) {
+	const body = String(text).split('\n').map((line) => line.replace(/#.*$/, '')).join('\n');
+	return { blocks: /[{}]/.test(body), statements: body.split(';').map((statement) => statement.trim()).filter(Boolean).map((statement) => statement.split(/\s+/)) };
+}
+
+/** Findings for the certificate a TLS container serves: one whole, read-only directory of tls.crt and tls.key only. */
+function podCertificateFindings(entry, cid, secretNames) {
+	const { pod, container, role, service } = entry;
+	const findings = [];
+	const directory = POD_TLS.certificates[role];
+	const mounts = container.volumeMounts ?? [];
+	const volumeOf = (mount) => (pod.volumes ?? []).find((volume) => volume.name === mount.name);
+	const atDirectory = mounts.filter((mount) => mount.mountPath === directory || String(mount.mountPath).startsWith(`${directory}/`));
+	const secretNamesHere = new Set(atDirectory.map((mount) => volumeOf(mount)?.secret?.secretName).filter(Boolean));
+	// A subPath mount never receives a renewed certificate (the kubelet swaps ..data, a subPath keeps the old file), anywhere
+	// in the pod and wherever it is mounted.
+	const subPath = [...(pod.initContainers ?? []), ...(pod.containers ?? [])].flatMap((other) => other.volumeMounts ?? [])
+		.some((mount) => (mount.subPath || mount.subPathExpr) && (atDirectory.includes(mount) || secretNamesHere.has(volumeOf(mount)?.secret?.secretName)));
+	if (subPath) {
+		findings.push(`${cid}: mounts its certificate with subPath, which never receives a renewed certificate; mount the secret's directory at ${directory}`);
+		return findings;
+	}
+	const mount = atDirectory.find((candidate) => candidate.mountPath === directory);
+	if (!mount) {
+		findings.push(`${cid}: must mount its certificate (tls.crt, tls.key) at ${directory}`);
+		return findings;
+	}
+	if (mount.readOnly !== true) findings.push(`${cid}: must mount its certificate read-only at ${directory}`);
+	const secret = volumeOf(mount)?.secret;
+	if (!secret?.secretName) {
+		findings.push(`${cid}: the certificate at ${directory} must come from a secret`);
+		return findings;
+	}
+	const items = secret.items ?? [];
+	const only = items.length === 2 && ['tls.crt', 'tls.key'].every((key) => items.some((item) => item.key === key && item.path === key));
+	if (!only) findings.push(`${cid}: the certificate volume must project only tls.crt and tls.key (items), so a ca.crt or anything else the secret holds never reaches the pod`);
+	const key = items.find((item) => item.key === 'tls.key');
+	const mode = fileMode(key?.mode ?? secret.defaultMode ?? 0o644);
+	if (!Number.isInteger(mode) || (mode & 0o037) !== 0) {
+		findings.push(`${cid}: the key file's mode ${Number.isInteger(mode) ? '0' + mode.toString(8) : mode} lets others read it or the group write it; at most 0440, read through fsGroup`);
+	}
+	if (!(Number(pod.securityContext?.fsGroup) > 0)) findings.push(`${cid}: the pod needs fsGroup, so the non-root app user reads the root-owned key file`);
+	if (secretNames[service] && secret.secretName !== secretNames[service]) findings.push(`${cid}: serves the certificate of ${secret.secretName}, not ${secretNames[service]}`);
+	return findings;
+}
+
+/** Findings for the web pod's nginx listener: the listen.d directory holds TLS listeners only, as the release renders them. */
+function webListenFindings(entry, cid, docs, expected) {
+	const { pod, container } = entry;
+	const findings = [];
+	const directory = POD_TLS.webListen;
+	const mounts = (container.volumeMounts ?? []).filter((mount) => mount.mountPath === directory || String(mount.mountPath).startsWith(`${directory}/`));
+	if (mounts.some((mount) => mount.subPath || mount.subPathExpr)) {
+		findings.push(`${cid}: mounts its listener with subPath, which leaves the image's plain listen.d/plain.conf in place; mount the ConfigMap over ${directory}`);
+		return findings;
+	}
+	const mount = mounts.find((candidate) => candidate.mountPath === directory);
+	if (!mount) {
+		findings.push(`${cid}: must mount the TLS listener over ${directory}, or the image's plain listener stays`);
+		return findings;
+	}
+	for (const other of mounts.filter((candidate) => candidate !== mount)) findings.push(`${cid}: adds ${other.mountPath} to the listener directory`);
+	const configMap = (pod.volumes ?? []).find((volume) => volume.name === mount.name)?.configMap;
+	const map = configMap ? docs.find((doc) => doc?.kind === 'ConfigMap' && doc.metadata?.name === configMap.name) : undefined;
+	if (!map) {
+		findings.push(`${cid}: the listener at ${directory} must come from a ConfigMap of the release`);
+		return findings;
+	}
+	const files = configMap.items ? configMap.items.map((item) => ({ key: item.key, path: item.path })) : Object.keys(map.data ?? {}).map((key) => ({ key, path: key }));
+	let tlsListeners = 0;
+	let protocols;
+	let ciphers;
+	const certificatePaths = {};
+	for (const { key, path: file } of files.filter((candidate) => String(candidate.path).endsWith('.conf'))) {
+		const where = `${cid} ${directory}/${file}`;
+		const { blocks, statements } = nginxStatements(map.data?.[key] ?? '');
+		if (blocks) findings.push(`${where}: holds a block; the file is included inside default.conf's server block`);
+		for (const [directive, ...args] of statements) {
+			if (directive === 'include') findings.push(`${where}: must not include other files (include ${args.join(' ')})`);
+			if (directive === 'listen') {
+				const port = Number(/(?:^|:)(\d+)$/.exec(args[0] ?? '')?.[1]);
+				if (!args.slice(1).includes('ssl')) {
+					findings.push(`${where}: listens without TLS (listen ${args.join(' ')})`);
+					continue;
+				}
+				tlsListeners += 1;
+				if (port !== expected) findings.push(`${where}: listens on ${args[0]}, not the https port ${expected}`);
+			}
+			if (directive === 'ssl_protocols') protocols = args;
+			if (directive === 'ssl_ciphers') ciphers = args.join(' ');
+			if (directive === 'ssl_certificate' || directive === 'ssl_certificate_key') certificatePaths[directive] = args[0];
+		}
+	}
+	if (tlsListeners === 0) findings.push(`${cid}: the listener directory holds no TLS listener (listen ${expected} ssl)`);
+	if (!protocols?.length || protocols.some((protocol) => !TLS_PROTOCOLS.has(protocol))) findings.push(`${cid}: ssl_protocols must be TLSv1.2 and TLSv1.3 only, not ${protocols?.join(' ') ?? 'unset'}`);
+	if (ciphers !== TLS12_CIPHERS) findings.push(`${cid}: ssl_ciphers must be ${TLS12_CIPHERS} (TLS 1.2 with ECDHE and AEAD only, V12.1.2), not ${ciphers ?? 'unset'}`);
+	// The volumes mounted at or under the certificate directory (podCertificateFindings judges how they are mounted).
+	const certificate = new Set((container.volumeMounts ?? []).filter((candidate) => candidate.mountPath === POD_TLS.certificates.web ||
+		String(candidate.mountPath).startsWith(`${POD_TLS.certificates.web}/`)).map((candidate) => candidate.name));
+	for (const [directive, key] of [['ssl_certificate', 'tls.crt'], ['ssl_certificate_key', 'tls.key']]) {
+		const file = certificatePaths[directive] ? mountedFile(pod, container, certificatePaths[directive]) : undefined;
+		if (!file?.volume?.secret || !certificate.has(file.volume.name) || file.key !== key) {
+			findings.push(`${cid}: ${directive} does not come from the pod's certificate at ${POD_TLS.certificates.web} (key ${key})`);
+		}
+	}
+	return findings;
+}
+
+/**
+ * ARV-082b: findings for pod TLS, from docs parsed as Kubernetes reads them (YAML 1.1, so a mode such as 0440 is octal).
+ * With tls on, for every container of the five API images and the web image in a long-running workload:
+ * - no plain container port (8080, 3000); its TLS port named https (8443 for the API hosts, 3443 for nginx);
+ * - every probe httpGet with scheme HTTPS on that port, and a readiness probe that tolerates one certificate rotation (the
+ *   failures a gap of rotationGapSeconds can cause stay below failureThreshold);
+ * - its certificate mounted read-only as a whole directory (never a subPath, which a renewal never reaches) from a secret
+ *   volume projecting only tls.crt and tls.key, the key at most 0440 and read through fsGroup, from secretNames[service]
+ *   when given;
+ * - the web container's listen.d directory a ConfigMap of TLS listeners on its https port only, with the protocols, the
+ *   TLS 1.2 suites and the certificate and key from its certificate mount.
+ * Every Service that selects such a pod reaches no plain port and serves the https port on 443 only. Every Ingress proxies
+ * HTTPS to port 443 of a Service the render holds, one backend per Ingress, and verifies it: proxy-ssl-verify on,
+ * proxy-ssl-secret <namespace>/<caSecretName>, proxy-ssl-name <service>.<namespace>.svc, proxy-ssl-server-name on,
+ * proxy-ssl-protocols TLS 1.2 and 1.3 only, proxy-ssl-verify-depth 2 at least, a proxy-next-upstream that keeps error and
+ * timeout when it is set, and no annotation value (a snippet) that writes a proxy_ssl, grpc_ssl, *_pass or *_by_lua
+ * directive itself. Whether the CA
+ * secret holds ca.crt is the cluster's to say: validate.yaml judges it through lookup. With tls off, nothing of this is
+ * rendered (the plain layout).
+ */
+export function podTlsFindings(docs, { tls, namespace = 'default', caSecretName = POD_TLS.caSecretName, secretNames = {} }) {
+	const findings = [];
+	const served = servedContainers(docs);
+	const services = docs.filter((doc) => doc?.kind === 'Service');
+	const ingresses = docs.filter((doc) => doc?.kind === 'Ingress');
+	if (!tls) {
+		for (const { container, role, id } of served) {
+			const artefacts = [
+				...(container.ports ?? []).filter((port) => port.name === 'https' || Object.values(POD_TLS.ports).includes(Number(port.containerPort))).map((port) => `port ${port.containerPort}`),
+				...(container.volumeMounts ?? []).filter((mount) => [POD_TLS.certificates[role], POD_TLS.webListen].includes(mount.mountPath)).map((mount) => mount.mountPath),
+				...PROBES.filter((probe) => container[probe]?.httpGet?.scheme === 'HTTPS').map((probe) => `${probe} HTTPS`)
+			];
+			if (artefacts.length) findings.push(`${id} container ${container.name}: renders pod TLS (${artefacts.join(', ')}) although pod TLS is off`);
+		}
+		for (const service of services) {
+			if (served.some((entry) => selects(service, entry.labels)) && (service.spec?.ports ?? []).some((port) => Number(port.port) === 443 || port.targetPort === 'https')) {
+				findings.push(`Service/${service.metadata?.name}: serves 443 or https although pod TLS is off`);
+			}
+		}
+		for (const ingress of ingresses) {
+			const set = Object.keys(ingress.metadata?.annotations ?? {}).filter((key) => key === `${INGRESS_ANNOTATION}backend-protocol` || key.startsWith(`${INGRESS_ANNOTATION}proxy-ssl-`));
+			if (set.length) findings.push(`Ingress/${ingress.metadata?.name}: sets ${set.join(', ')} although pod TLS is off`);
+		}
+		return findings;
+	}
+
+	for (const entry of served) {
+		const { container, role } = entry;
+		const cid = `${entry.id} container ${container.name}`;
+		const expected = POD_TLS.ports[role];
+		for (const port of (container.ports ?? []).filter((candidate) => POD_TLS.plainPorts.includes(Number(candidate.containerPort)))) {
+			findings.push(`${cid}: serves plain HTTP on container port ${port.containerPort}; with pod TLS only ${expected}, named https`);
+		}
+		const https = (container.ports ?? []).find((port) => port.name === 'https');
+		if (!https || Number(https.containerPort) !== expected) findings.push(`${cid}: needs its TLS port ${expected}, named https`);
+		for (const probe of PROBES.filter((name) => container[name])) {
+			const get = container[probe].httpGet;
+			if (!get || get.scheme !== 'HTTPS' || containerPortNumber(container, get.port) !== expected) findings.push(`${cid}: ${probe} must be httpGet with scheme HTTPS on ${expected}`);
+		}
+		const readiness = container.readinessProbe;
+		if (!readiness) findings.push(`${cid}: needs a readinessProbe`);
+		else {
+			const period = Number(readiness.periodSeconds ?? 10);
+			const threshold = Number(readiness.failureThreshold ?? 3);
+			const fallible = Math.floor(POD_TLS.rotationGapSeconds / period) + 1;
+			if (!(threshold > fallible)) {
+				findings.push(`${cid}: readinessProbe must tolerate a certificate rotation (${POD_TLS.rotationGapSeconds} s without new connections fail up to ${fallible} probes every ${period} s; failureThreshold ${threshold} takes the pod out of its Service)`);
+			}
+		}
+		findings.push(...podCertificateFindings(entry, cid, secretNames));
+		if (role === 'web') findings.push(...webListenFindings(entry, cid, docs, expected));
+	}
+
+	for (const service of services) {
+		const sid = `Service/${service.metadata?.name}`;
+		const entry = served.find((candidate) => selects(service, candidate.labels));
+		if (!entry) continue;
+		const expected = POD_TLS.ports[entry.role];
+		for (const port of service.spec?.ports ?? []) {
+			const target = port.targetPort ?? port.port;
+			const resolved = containerPortNumber(entry.container, target);
+			if (resolved === undefined) findings.push(`${sid}: port ${port.port} targets ${target}, which no container port of ${entry.id} answers`);
+			else if (POD_TLS.plainPorts.includes(resolved)) findings.push(`${sid}: port ${port.port} reaches plain HTTP on ${resolved}`);
+			else if ((resolved === expected) !== (Number(port.port) === 443)) {
+				findings.push(`${sid}: port ${port.port} reaches ${resolved}; the pods' https port is served on 443 only (the internal addresses are https://<service> with no port)`);
+			}
+		}
+	}
+
+	for (const ingress of ingresses) {
+		const iid = `Ingress/${ingress.metadata?.name}`;
+		const annotations = ingress.metadata?.annotations ?? {};
+		const get = (name) => annotations[`${INGRESS_ANNOTATION}${name}`];
+		const ingressNamespace = ingress.metadata?.namespace ?? namespace;
+		const backends = [ingress.spec?.defaultBackend, ...(ingress.spec?.rules ?? []).flatMap((rule) => (rule.http?.paths ?? []).map((entry) => entry.backend))]
+			.map((backend) => backend?.service).filter(Boolean);
+		const names = [...new Set(backends.map((backend) => backend.name))];
+		if (get('backend-protocol') !== 'HTTPS') findings.push(`${iid}: must proxy HTTPS to the pods (backend-protocol HTTPS), not ${get('backend-protocol') ?? 'HTTP'}`);
+		if (get('proxy-ssl-verify') !== 'on') findings.push(`${iid}: must verify the pods' certificate (proxy-ssl-verify on)`);
+		const ca = `${ingressNamespace}/${caSecretName}`;
+		if (!get('proxy-ssl-secret')) findings.push(`${iid}: needs proxy-ssl-secret, the cluster CA it verifies the pods against (${ca}); without it ingress-nginx verifies nothing`);
+		else if (get('proxy-ssl-secret') !== ca) findings.push(`${iid}: proxy-ssl-secret is ${get('proxy-ssl-secret')}, not ${ca} (the cluster CA in the Ingress's namespace)`);
+		if (names.length !== 1) findings.push(`${iid}: routes to ${names.join(', ') || 'no service'}; one backend per Ingress, so proxy-ssl-name names it`);
+		else if (get('proxy-ssl-name') !== `${names[0]}.${ingressNamespace}.svc`) findings.push(`${iid}: proxy-ssl-name is ${get('proxy-ssl-name') ?? 'unset'}, not its backend ${names[0]}.${ingressNamespace}.svc`);
+		if (get('proxy-ssl-server-name') !== 'on') findings.push(`${iid}: must send the backend's name (proxy-ssl-server-name on)`);
+		const protocols = String(get('proxy-ssl-protocols') ?? '').split(/\s+/).filter(Boolean);
+		if (!protocols.length || protocols.some((protocol) => !TLS_PROTOCOLS.has(protocol))) findings.push(`${iid}: proxy-ssl-protocols must be TLSv1.2 and TLSv1.3 only, not ${get('proxy-ssl-protocols') ?? 'unset'}`);
+		const depth = Number(get('proxy-ssl-verify-depth'));
+		if (!Number.isInteger(depth) || depth < POD_TLS.verifyDepth) findings.push(`${iid}: proxy-ssl-verify-depth must be at least ${POD_TLS.verifyDepth} (up to two intermediate CAs below the cluster CA), not ${get('proxy-ssl-verify-depth') ?? 'unset (1)'}`);
+		// A snippet (configuration-snippet, server-snippet or any other annotation value) that writes proxy_ssl_*, grpc_ssl_*, a
+		// *_pass directive or a *_by_lua block could turn the verification off or proxy around it; the chart's own write none.
+		for (const [key, value] of Object.entries(annotations)) {
+			const written = /proxy_ssl\w*|grpc_ssl\w*|\w*_pass\b|\w*_by_lua\w*/i.exec(String(value));
+			if (written) findings.push(`${iid}: ${key} writes ${written[0]} itself; with pod TLS only the chart's proxy-ssl annotations configure the proxy to the pods`);
+		}
+		const retry = get('proxy-next-upstream');
+		if (retry !== undefined && !['error', 'timeout'].every((reason) => String(retry).split(/\s+/).includes(reason))) {
+			findings.push(`${iid}: proxy-next-upstream ${retry} drops error or timeout; a pod rebinding a renewed certificate must cost a retry on another pod, not an error`);
+		}
+		for (const backend of backends) {
+			const port = backend.port?.number ?? backend.port?.name;
+			if (!(Number(port) === 443 || port === 'https')) {
+				findings.push(`${iid}: backend ${backend.name} port ${port} is not 443`);
+				continue;
+			}
+			const service = services.find((candidate) => candidate.metadata?.name === backend.name);
+			if (!service) findings.push(`${iid}: routes to ${backend.name}, which the render does not hold`);
+			else if (!(service.spec?.ports ?? []).some((candidate) => Number(candidate.port) === 443 && (port === 'https' ? candidate.name === 'https' : true))) {
+				findings.push(`${iid}: ${backend.name} serves no port 443`);
+			}
+		}
+	}
+	return findings;
+}
+
+/** ARV-082b: the secret behind the pod TLS certificate mount of each workload that has one, by workload id. */
+export function podTlsSecrets(docs) {
+	const found = {};
+	for (const doc of docs) {
+		if (!doc || !WORKLOADS.has(doc.kind)) continue;
+		const pod = podSpecOf(doc) ?? {};
+		for (const container of [...(pod.initContainers ?? []), ...(pod.containers ?? [])]) {
+			for (const mount of container.volumeMounts ?? []) {
+				if (!Object.values(POD_TLS.certificates).includes(mount.mountPath)) continue;
+				found[`${doc.kind}/${doc.metadata?.name}`] = (pod.volumes ?? []).find((volume) => volume.name === mount.name)?.secret?.secretName ?? null;
+			}
+		}
+	}
+	return found;
+}
+
 function labelsMatch(selector, labels) {
 	const wanted = Object.entries(selector?.matchLabels ?? {});
 	return wanted.every(([key, value]) => labels?.[key] === value);

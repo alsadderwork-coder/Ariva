@@ -16,6 +16,19 @@ Release guards. Renders nothing; fails the render when a rule is broken.
   Kubernetes secret names.
 - Production sends telemetry over TLS only (ARV-082a): in k8s-prd a set otel.endpoint starts with https:// (empty turns
   OTLP export off).
+- Pod TLS (ARV-082b, values podTls): enabled is true or false, and true in k8s-prd, where the hosts listen on HTTPS only;
+  caSecretName and every secretNames entry are Kubernetes secret names, and secretNames names only the services that serve
+  TLS. With it on, the simulator (plain HTTP both ways) is off, every Ingress routes to a service that serves TLS, no
+  Ingress sets backend-protocol or a proxy-ssl annotation of its own (the chart sets them), and an Ingress that sets
+  proxy-next-upstream keeps error and timeout in it, so a pod that briefly refuses new connections while it rebinds a
+  renewed certificate (about 5 s) costs a retry on another pod, not an error. No Ingress annotation value (a site's
+  configuration-snippet, server-snippet or any other) writes a proxy_ssl or grpc_ssl directive, a *_pass directive
+  (proxy_pass, grpc_pass, fastcgi_pass and the others) or a *_by_lua block, so no snippet turns the verification off or
+  proxies around it; the chart's own snippets are not values and write none of them.
+- The pod TLS cluster CA (ARV-082b): when the release can see the cluster, the secret podTls.caSecretName in the release's
+  namespace holds ca.crt and no tls.key (ariva-platform.podTlsCaRefusal); without ca.crt ingress-nginx would proxy to the
+  pods unverified, and silently. lookup sees nothing when rendering offline (helm template) or before the secret exists,
+  and the guard then passes: create the secret before the release, whose render against the cluster then judges it.
 */ -}}
 {{- if and (eq .Values.environment "k8s-prd") (or (empty .Values.buildNumber) (eq (toString .Values.buildNumber) "trunk")) }}
 {{- fail "k8s-prd needs an explicit buildNumber (for example --set buildNumber=main-20261001.3); trunk and empty are not allowed" }}
@@ -57,6 +70,58 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- $otelEndpoint := toString ((.Values.otel | default dict).endpoint | default "") }}
 {{- if and (eq .Values.environment "k8s-prd") (ne $otelEndpoint "") (not (regexMatch "^(?i)https://[^\\s]+$" $otelEndpoint)) }}
 {{- fail "k8s-prd sends telemetry over TLS only: otel.endpoint must be an https:// URL (or stay empty to turn OTLP export off; ARV-082a)" }}
+{{- end }}
+{{- $podTls := .Values.podTls }}
+{{- if not (kindIs "map" $podTls) }}
+{{- fail "podTls must be a map: enabled, caSecretName and secretNames (ARV-082b)" }}
+{{- end }}
+{{- if not (kindIs "bool" $podTls.enabled) }}
+{{- fail "podTls.enabled must be true or false (ARV-082b)" }}
+{{- end }}
+{{- if and (eq .Values.environment "k8s-prd") (not $podTls.enabled) }}
+{{- fail "k8s-prd serves the pods over TLS: set podTls.enabled true (ARV-082b); the hosts listen on HTTPS only there" }}
+{{- end }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]{0,251}[a-z0-9])?$" (toString ($podTls.caSecretName | default "ariva-cluster-ca"))) }}
+{{- fail "podTls.caSecretName must be a Kubernetes secret name (a secret with the key ca.crt, the cluster CA; ARV-082b)" }}
+{{- end }}
+{{- $tlsServices := list "api-main" "api-ingest" "api-stream" "api-cronz" "api-integration" "web" }}
+{{- if not (kindIs "map" ($podTls.secretNames | default dict)) }}
+{{- fail "podTls.secretNames must be a map of service to secret name (ARV-082b)" }}
+{{- end }}
+{{- range $service, $name := ($podTls.secretNames | default dict) }}
+{{- if not (has $service $tlsServices) }}
+{{- fail (printf "podTls.secretNames.%s is not a service that serves TLS (%s; ARV-082b)" $service (join ", " $tlsServices)) }}
+{{- end }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]{0,251}[a-z0-9])?$" (toString ($name | default (printf "ariva-%s-tls" $service)))) }}
+{{- fail (printf "podTls.secretNames.%s must be a Kubernetes secret name (a kubernetes.io/tls secret; ARV-082b)" $service) }}
+{{- end }}
+{{- end }}
+{{- if $podTls.enabled }}
+{{- if .Values.simulationEnabled }}
+{{- fail "podTls.enabled needs simulationEnabled false: the simulator serves plain HTTP and calls the hosts over plain HTTP (ARV-082b)" }}
+{{- end }}
+{{- $tlsBackends := list }}
+{{- range $tlsServices }}{{ $tlsBackends = append $tlsBackends (printf "%s-service" .) }}{{ end }}
+{{- $caRefusal := include "ariva-platform.podTlsCaRefusal" (lookup "v1" "Secret" .Release.Namespace (toString ($podTls.caSecretName | default "ariva-cluster-ca"))) }}
+{{- if $caRefusal }}
+{{- fail $caRefusal }}
+{{- end }}
+{{- range $ingress := (.Values.ingresses | default list) }}
+{{- if not (has (toString $ingress.serviceName) $tlsBackends) }}
+{{- fail (printf "ingresses %s: with podTls.enabled an Ingress routes only to a service that serves TLS (%s), not %s (ARV-082b)" (toString $ingress.name) (join ", " $tlsBackends) (toString $ingress.serviceName)) }}
+{{- end }}
+{{- range $key, $value := ($ingress.annotations | default dict) }}
+{{- if or (eq $key "nginx.ingress.kubernetes.io/backend-protocol") (hasPrefix "nginx.ingress.kubernetes.io/proxy-ssl-" $key) }}
+{{- fail (printf "ingresses: %s is set by the chart with podTls.enabled; remove it from the ingress's annotations (ARV-082b)" $key) }}
+{{- end }}
+{{- if regexMatch "(?i)proxy_ssl|grpc_ssl|_pass\\b|_by_lua" (toString $value) }}
+{{- fail (printf "ingresses %s: %s writes a proxy_ssl, grpc_ssl, _pass or _by_lua directive itself; with podTls.enabled only the chart's proxy-ssl annotations configure the proxy to the pods, so no snippet can turn the verification off (ARV-082b)" (toString $ingress.name) $key) }}
+{{- end }}
+{{- if and (eq $key "nginx.ingress.kubernetes.io/proxy-next-upstream") (not (and (has "error" (splitList " " (toString $value))) (has "timeout" (splitList " " (toString $value))))) }}
+{{- fail "ingresses: proxy-next-upstream must keep error and timeout with podTls.enabled, so a pod rebinding a renewed certificate costs a retry, not an error (ARV-082b)" }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- end }}
 {{- $retention := (.Values.migration | default dict).retention | default dict }}
 {{- $retentionBounds := dict "rawSensingDays" (list 7 3650) "deskZoneReadingDays" (list 2 90) "laneStaffingDays" (list 90 3650) "alertEmailDays" (list 30 3650) "integrationCallDays" (list 30 3650) "reportDeliveryDays" (list 30 3650) "advertisingPlayDays" (list 30 3650) }}

@@ -1,3 +1,25 @@
+{{- if include "ariva-platform.podTls" . }}
+---
+#ConfigMap: the web pod's nginx listener with pod TLS (ARV-082b)
+# Mounted over the image's /etc/nginx/listen.d, which default.conf includes inside its one server block: it hides the image's
+# plain listen.d/plain.conf ("listen 3000"), so nginx answers TLS on 3443 and nothing else. TLS 1.2 and 1.3; the TLS 1.2
+# suites ECDHE with AEAD only, the database's list (ARV-082a). nginx reads the certificate when it starts.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-nginx-listen
+  labels:
+    app: web
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+data:
+  tls.conf: |
+    listen 3443 ssl;
+    ssl_certificate /etc/nginx/tls/tls.crt;
+    ssl_certificate_key /etc/nginx/tls/tls.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE+AESGCM:ECDHE+CHACHA20:!aNULL;
+    ssl_session_tickets off;
+{{- end }}
 ---
 #Deployment
 apiVersion: apps/v1
@@ -32,10 +54,25 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 32Mi
+        {{- if include "ariva-platform.podTls" . }}
+        {{- include "ariva-platform.podTlsVolume" (list . "web") | nindent 8 }}
+        # The TLS listener (ARV-082b): the whole directory, so the image's plain listener is hidden
+        - name: nginx-listen
+          configMap:
+            name: web-nginx-listen
+            defaultMode: 0444
+            items:
+              - key: tls.conf
+                path: tls.conf
+        {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
         runAsGroup: 10001
+        {{- if include "ariva-platform.podTls" . }}
+        # Group ownership of the certificate volume, so nginx (uid 10001) reads the 0440 key
+        fsGroup: 10001
+        {{- end }}
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -54,16 +91,37 @@ spec:
               mountPath: /run
             - name: tmp
               mountPath: /tmp
+            {{- if include "ariva-platform.podTls" . }}
+            - name: pod-tls
+              mountPath: /etc/nginx/tls
+              readOnly: true
+            - name: nginx-listen
+              mountPath: /etc/nginx/listen.d
+              readOnly: true
+            {{- end }}
           ports:
+            {{- if include "ariva-platform.podTls" . }}
+            - name: https
+              containerPort: 3443
+            {{- else }}
             - containerPort: 3000
+            {{- end }}
           startupProbe:
+            {{- if include "ariva-platform.podTls" . }}
+            httpGet: { path: /healthz, port: 3443, scheme: HTTPS }
+            {{- else }}
             httpGet: { path: /healthz, port: 3000 }
+            {{- end }}
             initialDelaySeconds: 2
             periodSeconds: 5
             failureThreshold: 12
             timeoutSeconds: 3
           readinessProbe:
+            {{- if include "ariva-platform.podTls" . }}
+            httpGet: { path: /healthz, port: 3443, scheme: HTTPS }
+            {{- else }}
             httpGet: { path: /healthz, port: 3000 }
+            {{- end }}
             initialDelaySeconds: 2
             periodSeconds: 15
             failureThreshold: 4
@@ -76,7 +134,11 @@ spec:
               cpu: {{ .Values.webCpuLimit | default "250m" }}
               memory: {{ .Values.webMemLimit | default "128Mi" }}
           livenessProbe:
+            {{- if include "ariva-platform.podTls" . }}
+            httpGet: { path: /healthz, port: 3443, scheme: HTTPS }
+            {{- else }}
             httpGet: { path: /healthz, port: 3000 }
+            {{- end }}
             initialDelaySeconds: 2
             periodSeconds: 15
             failureThreshold: 8
@@ -123,6 +185,13 @@ spec:
     app: web
   type: ClusterIP
   ports:
+    {{- if include "ariva-platform.podTls" . }}
+    # Pod TLS (ARV-082b): 443 to nginx's TLS listener
+    - name: https
+      port: 443
+      targetPort: https
+    {{- else }}
     - name: web-service-port
       port: 80
       targetPort: 3000
+    {{- end }}

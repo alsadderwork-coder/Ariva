@@ -1,0 +1,122 @@
+# ARV-082b: pods served over TLS as the chart renders them with podTls.enabled in the namespace ariva-site, parsed as
+# Kubernetes reads them (YAML 1.1). Expected secrets: ariva-api-main-tls and ariva-web-tls; the cluster CA ariva-cluster-ca.
+# An API host: HTTPS only on 8443, its certificate as a whole read-only directory, probes HTTPS.
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: api-main-deployment }
+spec:
+  template:
+    metadata: { labels: { app: api-main } }
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, seccompProfile: { type: RuntimeDefault } }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+        - { name: pod-tls, secret: { secretName: ariva-api-main-tls, defaultMode: 0440, items: [{ key: tls.crt, path: tls.crt }, { key: tls.key, path: tls.key }] } }
+      containers:
+        - name: app
+          image: registry.example/ariva/api-main:main-1
+          ports: [{ name: https, containerPort: 8443 }]
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            - { name: pod-tls, mountPath: /app/secrets/pod-tls, readOnly: true }
+          startupProbe: { httpGet: { path: /health/startup, port: 8443, scheme: HTTPS }, initialDelaySeconds: 10, periodSeconds: 15, failureThreshold: 9 }
+          readinessProbe: { httpGet: { path: /health/readiness, port: https, scheme: HTTPS }, periodSeconds: 15, failureThreshold: 4 }
+          livenessProbe: { httpGet: { path: /health/liveness, port: 8443, scheme: HTTPS }, periodSeconds: 15, failureThreshold: 8 }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: api-main-service }
+spec:
+  selector: { app: api-main }
+  ports: [{ name: https, port: 443, targetPort: https }]
+---
+# The same Deployment's migration job image runs no server: a Job is not checked for a TLS port.
+apiVersion: batch/v1
+kind: Job
+metadata: { name: database-migration }
+spec:
+  template:
+    spec:
+      containers: [{ name: database-migration, image: registry.example/ariva/api-main:main-1, args: ["--migrate"] }]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api-main-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+    nginx.ingress.kubernetes.io/proxy-ssl-secret: "ariva-site/ariva-cluster-ca"
+    nginx.ingress.kubernetes.io/proxy-ssl-verify: "on"
+    nginx.ingress.kubernetes.io/proxy-ssl-verify-depth: "2"
+    nginx.ingress.kubernetes.io/proxy-ssl-name: "api-main-service.ariva-site.svc"
+    nginx.ingress.kubernetes.io/proxy-ssl-server-name: "on"
+    nginx.ingress.kubernetes.io/proxy-ssl-protocols: "TLSv1.2 TLSv1.3"
+    nginx.ingress.kubernetes.io/proxy-next-upstream: "error timeout http_502"
+spec:
+  rules:
+    - host: api-main.example
+      http:
+        paths:
+          - { path: /, pathType: Prefix, backend: { service: { name: api-main-service, port: { number: 443 } } } }
+---
+# The web pod: nginx with the TLS listener ConfigMap over listen.d and its certificate at /etc/nginx/tls.
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: web-deployment }
+spec:
+  template:
+    metadata: { labels: { app: web } }
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, seccompProfile: { type: RuntimeDefault } }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+        - { name: pod-tls, secret: { secretName: ariva-web-tls, defaultMode: 0440, items: [{ key: tls.crt, path: tls.crt }, { key: tls.key, path: tls.key }] } }
+        - { name: nginx-listen, configMap: { name: web-nginx-listen, defaultMode: 0444, items: [{ key: tls.conf, path: tls.conf }] } }
+      containers:
+        - name: web-container
+          image: registry.example/ariva/web:main-1
+          ports: [{ name: https, containerPort: 3443 }]
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            - { name: pod-tls, mountPath: /etc/nginx/tls, readOnly: true }
+            - { name: nginx-listen, mountPath: /etc/nginx/listen.d, readOnly: true }
+          readinessProbe: { httpGet: { path: /healthz, port: 3443, scheme: HTTPS }, periodSeconds: 15, failureThreshold: 4 }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: web-nginx-listen }
+data:
+  tls.conf: |
+    # the only listener
+    listen 3443 ssl;
+    ssl_certificate /etc/nginx/tls/tls.crt;
+    ssl_certificate_key /etc/nginx/tls/tls.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE+AESGCM:ECDHE+CHACHA20:!aNULL;
+    ssl_session_tickets off;
+---
+apiVersion: v1
+kind: Service
+metadata: { name: web-service }
+spec:
+  selector: { app: web }
+  ports: [{ name: https, port: 443, targetPort: https }]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+    nginx.ingress.kubernetes.io/proxy-ssl-secret: "ariva-site/ariva-cluster-ca"
+    nginx.ingress.kubernetes.io/proxy-ssl-verify: "on"
+    nginx.ingress.kubernetes.io/proxy-ssl-verify-depth: "3"
+    nginx.ingress.kubernetes.io/proxy-ssl-name: "web-service.ariva-site.svc"
+    nginx.ingress.kubernetes.io/proxy-ssl-server-name: "on"
+    nginx.ingress.kubernetes.io/proxy-ssl-protocols: "TLSv1.3"
+spec:
+  rules:
+    - host: web.example
+      http:
+        paths:
+          - { path: /, pathType: Prefix, backend: { service: { name: web-service, port: { name: https } } } }

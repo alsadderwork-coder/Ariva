@@ -57,7 +57,7 @@ Ariva/
 - Ariva.Web: 51010 (vite dev), 51011 (vite preview)
 - Ariva.Simulation.Api: 51020
 
-In containers every .NET host listens on 8080 and the web image (nginx) on 3000. Every host answers `/health/startup`, `/health/readiness` and `/health/liveness`.
+In containers every .NET host listens on 8080 and the web image (nginx) on 3000, behind Kubernetes Services on 80. In k8s-prd the hosts serve https only on 8443 and nginx TLS only on 3443, behind Services on 443, and the ingress verifies each pod's certificate (ARV-082b). Every host answers `/health/startup`, `/health/readiness` and `/health/liveness`.
 
 ## Build and run
 

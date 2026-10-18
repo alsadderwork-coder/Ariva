@@ -28,7 +28,8 @@ public static class SecurityBaselineExtensions
 
     /// <summary>
     /// Registers default deny authentication and authorization, input limits, rate limiting, ProblemDetails error
-    /// handling, trusted forwarded headers and the CORS allow-list.
+    /// handling, trusted forwarded headers and the CORS allow-list; in k8s-prd it also refuses a configuration that would
+    /// serve plain HTTP or weak TLS and restricts the https cipher suites (ARV-082b, <see cref="PodTransportExtensions"/>).
     /// </summary>
     /// <param name="services">The host's service collection.</param>
     /// <param name="configuration">The host's layered configuration (reads the <c>Security</c> section).</param>
@@ -45,7 +46,8 @@ public static class SecurityBaselineExtensions
             .AddAppRateLimiting(configuration)
             .AddAppErrorHandling()
             .AddAppForwardedHeaders(configuration)
-            .AddAppCors(configuration);
+            .AddAppCors(configuration)
+            .AddAppPodTransport(configuration, hostEnvironment);
     }
 
     #endregion

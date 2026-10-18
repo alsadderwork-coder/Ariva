@@ -29,6 +29,20 @@ metadata:
     nginx.ingress.kubernetes.io/configuration-snippet: |
       error_log /dev/stderr crit;
     {{- end }}
+    {{- if include "ariva-platform.podTls" $ }}
+    # Pod TLS (ARV-082b): HTTPS to the pods, whose certificate must chain to the cluster CA in podTls.caSecretName and name
+    # the backend Service as the pods see it; TLS 1.2 or 1.3; up to two intermediate CAs below the cluster CA (the depth
+    # counts intermediates only). ingress-nginx verifies, and applies these protocols, only when that secret holds ca.crt
+    # (validate.yaml refuses one without it, or with a tls.key, when it can see the secret); it denies the location with
+    # 503 when it cannot read the secret at all.
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+    nginx.ingress.kubernetes.io/proxy-ssl-secret: {{ printf "%s/%s" $.Release.Namespace ($.Values.podTls.caSecretName | default "ariva-cluster-ca") | quote }}
+    nginx.ingress.kubernetes.io/proxy-ssl-verify: "on"
+    nginx.ingress.kubernetes.io/proxy-ssl-verify-depth: "2"
+    nginx.ingress.kubernetes.io/proxy-ssl-name: {{ printf "%s.%s.svc" .serviceName $.Release.Namespace | quote }}
+    nginx.ingress.kubernetes.io/proxy-ssl-server-name: "on"
+    nginx.ingress.kubernetes.io/proxy-ssl-protocols: "TLSv1.2 TLSv1.3"
+    {{- end }}
     {{- range $key, $value := .annotations }}
     {{ $key }}: {{ $value | quote }}
     {{- end }}
@@ -51,6 +65,6 @@ spec:
               service:
                 name: {{ $service }}
                 port:
-                  number: 80
+                  number: {{ if include "ariva-platform.podTls" $ }}443{{ else }}80{{ end }}
           {{- end }}
 {{- end }}

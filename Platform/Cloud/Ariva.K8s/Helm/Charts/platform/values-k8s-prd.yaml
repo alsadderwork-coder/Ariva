@@ -35,6 +35,12 @@ fileStorage:
 imagePullPolicy: IfNotPresent
 simulationEnabled: false
 
+# Pod TLS (ARV-082b; values.yaml): the ingress reaches every pod over TLS and verifies it against the cluster CA. Required in
+# production (the chart refuses it off). Create the cluster CA secret (caSecretName, key ca.crt) and each pod's
+# kubernetes.io/tls secret (secretNames, for the Service's names) in the namespace first; a site may rename them here.
+podTls:
+  enabled: true
+
 # Validation reader login (ARV-104g1; values.yaml): required in production, so the pilot's ground-truth proof always has its
 # reader; create the secret (keys username and password) before the release (wiki/04, section 6.2).
 validationReader:

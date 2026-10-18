@@ -48,6 +48,9 @@ spec:
             optional: true
             defaultMode: 0444
         {{- include "ariva-platform.serverCaVolumes" . | nindent 8 }}
+        {{- if include "ariva-platform.podTls" . }}
+        {{- include "ariva-platform.podTlsVolume" (list . "api-stream") | nindent 8 }}
+        {{- end }}
         # Writable scratch space; the root filesystem is read-only (CWE-269)
         - name: tmp
           emptyDir:
@@ -86,12 +89,15 @@ spec:
               drop: ["ALL"]
             readOnlyRootFilesystem: true
           ports:
-            - containerPort: 8080
+            {{- include "ariva-platform.apiPorts" . | nindent 12 }}
           volumeMounts:
             - name: kafka-ca
               mountPath: /app/secrets/kafka-ca
               readOnly: true
             {{- include "ariva-platform.serverCaMounts" . | nindent 12 }}
+            {{- if include "ariva-platform.podTls" . }}
+            {{- include "ariva-platform.podTlsMount" . | nindent 12 }}
+            {{- end }}
             - name: tmp
               mountPath: /tmp
             - name: dataprotection-certificate
@@ -119,13 +125,13 @@ spec:
             - configMapRef:
                 name: api-stream-configmap
           startupProbe:
-            httpGet: { path: /health/startup, port: 8080 }
+            {{ include "ariva-platform.apiProbe" (list . "/health/startup") }}
             initialDelaySeconds: 10
             periodSeconds: 15
             failureThreshold: 9
             timeoutSeconds: 5
           readinessProbe:
-            httpGet: { path: /health/readiness, port: 8080 }
+            {{ include "ariva-platform.apiProbe" (list . "/health/readiness") }}
             initialDelaySeconds: 2
             periodSeconds: 15
             failureThreshold: 4
@@ -138,7 +144,7 @@ spec:
               cpu: {{ .Values.apiStreamCpuLimit | default "2000m" }}
               memory: {{ .Values.apiStreamMemLimit | default "1500Mi" }}
           livenessProbe:
-            httpGet: { path: /health/liveness, port: 8080 }
+            {{ include "ariva-platform.apiProbe" (list . "/health/liveness") }}
             initialDelaySeconds: 2
             periodSeconds: 15
             failureThreshold: 8
@@ -185,6 +191,4 @@ spec:
     app: api-stream
   type: ClusterIP
   ports:
-    - name: api-stream-service-port
-      port: 80
-      targetPort: 8080
+    {{- include "ariva-platform.apiServicePorts" (list . "api-stream") | nindent 4 }}

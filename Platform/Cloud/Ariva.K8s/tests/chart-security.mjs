@@ -17,6 +17,11 @@
 // without TLS by default and in dev, demo and localk8s, and with TLS in prd (ssl on, the certificate and a key PostgreSQL
 // accepts from tls.secretName, TLS 1.2 at least, pg_hba.conf taking TCP over TLS only), which no site file and no state value
 // turns off.
+// ARV-082b: with podTls.enabled (prd, which refuses it off in the chart and in both Helmfiles) the five API hosts and the web
+// pod serve TLS only (no 8080 or 3000, probes HTTPS, the certificate read-only as a whole directory with only tls.crt and
+// tls.key, nginx's listener a ConfigMap of TLS listeners), every Service serves 443 to https and every Ingress proxies HTTPS
+// and verifies the pods against the cluster CA under the backend's in-cluster name; dev, demo and localk8s stay plain; the web
+// image's default.conf takes its listener from listen.d and the image ships the plain one.
 //   node Platform/Cloud/Ariva.K8s/tests/chart-security.mjs              needs helm 3 on PATH (or HELM=path)
 //   node Platform/Cloud/Ariva.K8s/tests/chart-security.mjs --self-test  checks the rules against fixtures, no helm
 // Without helm the test is skipped locally and fails in CI (CI=true).
@@ -27,7 +32,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseAllDocuments } from 'yaml';
-import { checkManifests, DATABASE_TLS12_CIPHERS, databaseTlsFindings, missingMonitoringRules, serverCaSecrets } from './checks.mjs';
+import { checkManifests, DATABASE_TLS12_CIPHERS, databaseTlsFindings, missingMonitoringRules, POD_TLS, podTlsFindings, podTlsSecrets, serverCaSecrets } from './checks.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const chart = path.resolve(here, '..', 'Helm', 'Charts', 'platform');
@@ -70,6 +75,79 @@ function databaseTlsSelfTest() {
 	return { failures, count: expected.length + 2 };
 }
 
+/** ARV-082b: each case of the bad pod TLS fixture and the one rule it must trip, and nothing else. */
+const POD_TLS_CASES = [
+	['api-plain-port', 'serves plain HTTP on container port 8080'], ['api-wrong-port', 'needs its TLS port 8443, named https'],
+	['api-http-probe', 'readinessProbe must be httpGet with scheme HTTPS on 8443'], ['api-no-readiness', 'needs a readinessProbe'],
+	['api-fragile-readiness', 'readinessProbe must tolerate a certificate rotation'], ['api-no-certificate', 'must mount its certificate (tls.crt, tls.key) at /app/secrets/pod-tls'],
+	['api-writable-certificate', 'must mount its certificate read-only'], ['api-subpath-certificate', 'mounts its certificate with subPath'],
+	['api-subpath-copy', 'mounts its certificate with subPath'], ['api-whole-secret', 'must project only tls.crt and tls.key'],
+	['api-readable-key', "the key file's mode 0444 lets others read it"], ['api-no-fs-group', 'the pod needs fsGroup'],
+	['api-other-secret', 'serves the certificate of ariva-api-cronz-tls, not ariva-api-main-tls'],
+	['svc-plain', 'port 80 reaches plain HTTP on 8080'], ['svc-not-443', "the pods' https port is served on 443 only"],
+	['svc-unknown-target', 'targets http, which no container port of Deployment/base-api answers'],
+	['ing-plain-backend', 'must proxy HTTPS to the pods (backend-protocol HTTPS)'], ['ing-no-verify', 'proxy-ssl-verify on'],
+	['ing-no-ca', 'needs proxy-ssl-secret'], ['ing-other-namespace-ca', 'proxy-ssl-secret is kube-system/ariva-cluster-ca, not ariva-site/ariva-cluster-ca'],
+	['ing-wrong-name', 'not its backend base-api-service.ariva-site.svc'], ['ing-no-sni', 'proxy-ssl-server-name on'],
+	['ing-old-protocols', 'proxy-ssl-protocols must be TLSv1.2 and TLSv1.3 only'], ['ing-shallow-chain', 'proxy-ssl-verify-depth must be at least 2'],
+	['ing-port-80', 'port 80 is not 443'], ['ing-no-retry', 'proxy-next-upstream http_502 drops error or timeout'],
+	['ing-two-backends', 'one backend per Ingress'], ['ing-missing-service', 'routes to gone-service, which the render does not hold'],
+	['ing-snippet-verify-off', 'configuration-snippet writes proxy_ssl_verify itself'], ['ing-snippet-proxy-pass', 'server-snippet writes proxy_pass itself'],
+	['web-plain-port', 'serves plain HTTP on container port 3000'], ['web-plain-listener', 'listens without TLS (listen 3000)'],
+	['web-wrong-port', 'listens on 8443, not the https port 3443'], ['web-old-protocols', 'ssl_protocols must be TLSv1.2 and TLSv1.3 only'],
+	['web-weak-ciphers', 'ssl_ciphers must be'], ['web-foreign-certificate', "ssl_certificate does not come from the pod's certificate"],
+	['web-include', 'must not include other files'], ['web-no-listener', 'must mount the TLS listener over /etc/nginx/listen.d'],
+	['web-listener-subpath', "mounts its listener with subPath, which leaves the image's plain listen.d/plain.conf in place"],
+	['web-subpath-certificate', 'mounts its certificate with subPath']
+];
+
+/** ARV-082b: the pod TLS rules against their fixtures: the good one clean, each bad case tripping exactly its rule. */
+function podTlsSelfTest() {
+	const failures = [];
+	const options = { tls: true, namespace: 'ariva-site', secretNames: { 'api-main': 'ariva-api-main-tls', web: 'ariva-web-tls' } };
+	const good = parseAsKubernetes(fixture('pod-tls-good.yaml'));
+	const clean = [...podTlsFindings(good, options), ...podTlsFindings(parseAsKubernetes(fixture('good.yaml')), { tls: false })];
+	if (clean.length) failures.push(`the good pod TLS fixtures produced findings:\n   ${clean.join('\n   ')}`);
+	const findings = podTlsFindings(parseAsKubernetes(fixture('pod-tls-bad.yaml')), options);
+	const caseOf = (finding) => /^[A-Za-z]+\/([^\s:]+)/.exec(finding)?.[1];
+	for (const [name, rule] of POD_TLS_CASES) {
+		const own = findings.filter((finding) => caseOf(finding) === name);
+		if (own.length !== 1 || !own[0].includes(rule)) failures.push(`pod TLS case ${name} must trip "${rule}" alone, tripped ${own.length ? own.join(' | ') : 'nothing'}`);
+	}
+	const stray = findings.filter((finding) => !POD_TLS_CASES.some(([name]) => caseOf(finding) === name));
+	if (stray.length) failures.push(`pod TLS findings outside the cases (the base objects must be clean):\n   ${stray.join('\n   ')}`);
+	// The good render read as plain, in another namespace or against another CA is caught too.
+	const missing = [];
+	if (!podTlsFindings(good, { tls: false }).some((finding) => finding.includes('although pod TLS is off'))) missing.push('pod TLS objects where it is off');
+	if (!podTlsFindings(good, { ...options, namespace: 'default' }).some((finding) => finding.includes('not its backend api-main-service.default.svc'))) missing.push('proxy-ssl-name of another namespace');
+	if (!podTlsFindings(good, { ...options, caSecretName: 'site-cluster-ca' }).some((finding) => finding.includes('not ariva-site/site-cluster-ca'))) missing.push('a CA other than podTls.caSecretName');
+	if (missing.length) failures.push(`pod TLS rules that did not fire: ${missing.join(', ')}`);
+	return { failures, count: POD_TLS_CASES.length + 3 };
+}
+
+/**
+ * ARV-082b: the web image's half of the listener swap: default.conf takes its listener from listen.d (the directory the chart
+ * mounts its TLS listener over) and declares none itself, the image ships listen.d/plain.conf with "listen 3000;" only, and
+ * the Dockerfile copies it there.
+ */
+function webImageListenFindings() {
+	const web = path.resolve(here, '..', '..', '..', 'Frontplane', 'Ariva.Web');
+	const directives = (file) => fs.readFileSync(path.join(web, file), 'utf8').split('\n').map((line) => line.replace(/#.*$/, '').trim()).filter(Boolean);
+	const findings = [];
+	const conf = directives('static/nginx/default.conf');
+	const include = `include ${POD_TLS.webListen}/*.conf;`;
+	if (conf.some((line) => /^listen\b/.test(line))) findings.push('static/nginx/default.conf declares a listener itself; it comes from listen.d');
+	if (conf.filter((line) => line === include).length !== 1 || !(conf.indexOf('server {') >= 0 && conf.indexOf(include) > conf.indexOf('server {'))) {
+		findings.push(`static/nginx/default.conf must include ${POD_TLS.webListen}/*.conf once, inside its server block`);
+	}
+	const plain = directives('static/nginx/listen.d/plain.conf');
+	if (plain.join(' ') !== 'listen 3000;') findings.push(`static/nginx/listen.d/plain.conf must hold "listen 3000;" only, not ${plain.join(' ')}`);
+	if (!/^COPY --from=builder \/app\/build\/nginx\/listen\.d\/plain\.conf \/etc\/nginx\/listen\.d\/plain\.conf\s*$/m.test(fs.readFileSync(path.join(web, 'Dockerfile'), 'utf8'))) {
+		findings.push(`the web Dockerfile must copy build/nginx/listen.d/plain.conf to ${POD_TLS.webListen}/plain.conf`);
+	}
+	return findings;
+}
+
 function selfTest() {
 	const good = checkManifests(parse(fs.readFileSync(path.join(here, 'fixtures', 'good.yaml'), 'utf8')), { environment: 'k8s-prd' });
 	const bad = checkManifests(parse(fs.readFileSync(path.join(here, 'fixtures', 'bad.yaml'), 'utf8')), { environment: 'k8s-prd' });
@@ -104,22 +182,25 @@ function selfTest() {
 		missing.push('missingMonitoringRules names the absent rules and only them');
 	}
 	const tls = databaseTlsSelfTest();
-	if (good.length || missing.length || tls.failures.length) {
+	const podTls = podTlsSelfTest();
+	const webImage = webImageListenFindings();
+	if (good.length || missing.length || tls.failures.length || podTls.failures.length || webImage.length) {
 		console.error('chart-security self-test FAILED');
 		if (good.length) console.error('  good fixture produced findings:\n   ' + good.join('\n   '));
 		if (missing.length) console.error('  rules that did not fire on the bad fixture: ' + missing.join(', '));
-		for (const failure of tls.failures) console.error(`  ${failure}`);
+		for (const failure of [...tls.failures, ...podTls.failures, ...webImage]) console.error(`  ${failure}`);
 		process.exit(1);
 	}
-	console.log(`chart-security self-test: ${expected.length} rules fire on the bad fixture and ${tls.count} TimescaleDB TLS rules on the TLS fixtures; the good fixtures are clean.`);
+	console.log(`chart-security self-test: ${expected.length} rules fire on the bad fixture, ${tls.count} TimescaleDB TLS rules on the TLS fixtures and ${podTls.count} pod TLS rules ` +
+		`on the pod TLS fixtures (each bad case trips exactly its rule); the good fixtures are clean; the web image takes its listener from ${POD_TLS.webListen}.`);
 }
 
 function helmAvailable() {
 	return spawnSync(helm, ['version', '--short'], { encoding: 'utf8', shell: false }).status === 0;
 }
 
-function render(valuesFile, sets = [], namespace = '') {
-	const args = ['template', 'ariva-platform', chart, '-f', path.join(chart, valuesFile), '--set', 'imageCredentials.password='];
+function render(valuesFile, sets = [], namespace = '', extraFiles = []) {
+	const args = ['template', 'ariva-platform', chart, '-f', path.join(chart, valuesFile), ...extraFiles.flatMap((file) => ['-f', file]), '--set', 'imageCredentials.password='];
 	if (namespace) args.push('--namespace', namespace);
 	for (const set of sets) args.push('--set', set);
 	return spawnSync(helm, args, { encoding: 'utf8', shell: false, maxBuffer: 32 * 1024 * 1024 });
@@ -182,6 +263,30 @@ function serverCaReach(docs, names = { 'database-ca': 'ariva-database-ca', 'redi
 	return findings;
 }
 
+/** ARV-082b: the default certificate secret of each service that serves TLS (values.yaml podTls.secretNames). */
+const POD_TLS_SECRETS = Object.fromEntries(POD_TLS.services.map((service) => [service, `ariva-${service}-tls`]));
+
+/**
+ * ARV-082b: a pod TLS render: podTlsFindings with the given namespace, CA and secrets, the certificates in exactly the five
+ * API Deployments and the web Deployment (no job, no simulator) from those secrets, and each of their Services on 443 to https.
+ */
+function podTlsRender(text, { namespace = 'default', caSecretName = POD_TLS.caSecretName, secretNames = POD_TLS_SECRETS } = {}) {
+	const docs = parseAsKubernetes(text);
+	const findings = podTlsFindings(docs, { tls: true, namespace, caSecretName, secretNames });
+	const reached = podTlsSecrets(docs);
+	const expected = Object.fromEntries(POD_TLS.services.map((service) => [`Deployment/${service}-deployment`, secretNames[service]]));
+	if (JSON.stringify(Object.keys(reached).sort()) !== JSON.stringify(Object.keys(expected).sort())) {
+		findings.push(`the pod certificates reach ${Object.keys(reached).sort().join(', ') || 'no workload'}, not exactly the five API hosts and the web pod`);
+	}
+	for (const [id, name] of Object.entries(reached)) if (expected[id] && name !== expected[id]) findings.push(`${id}: serves the certificate of ${name}, not ${expected[id]}`);
+	for (const service of POD_TLS.services) {
+		const object = docs.find((doc) => doc?.kind === 'Service' && doc.metadata?.name === `${service}-service`);
+		const ports = object?.spec?.ports ?? [];
+		if (ports.length !== 1 || ports[0].port !== 443 || ports[0].name !== 'https' || ports[0].targetPort !== 'https') findings.push(`Service/${service}-service: must serve 443 (https) to the pods' https port and nothing else`);
+	}
+	return findings;
+}
+
 /** ARV-125b: the text of one rule of a render's ariva-monitoring-alerts. */
 function monitoringRule(docs, key) {
 	return docs.find((doc) => doc?.kind === 'ConfigMap' && doc.metadata?.name === 'ariva-monitoring-alerts')?.data?.[key] ?? '';
@@ -231,6 +336,9 @@ for (const env of environments) {
 	findings.push(...retentionFindings(docs, env.file));
 	// ARV-082a: the servers' CAs reach exactly the five API hosts and the two jobs, from the default secrets.
 	findings.push(...serverCaReach(docs));
+	// ARV-082b: production serves every pod over TLS (values-k8s-prd.yaml); the other environments stay plain.
+	const podTls = env.environment === 'k8s-prd';
+	findings.push(...(podTls ? podTlsRender(result.stdout) : podTlsFindings(parseAsKubernetes(result.stdout), { tls: false })));
 	const workloads = docs.filter((doc) => doc?.kind === 'Deployment').length;
 	const ingresses = docs.filter((doc) => doc?.kind === 'Ingress').length;
 	const monitoring = (name) => Object.keys(docs.find((doc) => doc?.kind === 'ConfigMap' && doc.metadata?.name === name)?.data ?? {}).length;
@@ -240,6 +348,7 @@ for (const env of environments) {
 	} else {
 		console.log(`PASS ${env.file}: ${workloads} deployments, ${ingresses} ingresses, validation reader login in api-main and the migration job only, ` +
 			'database and Redis CAs in the five API hosts and the two jobs only, ' +
+			(podTls ? 'every pod, Service and Ingress over TLS with the cluster CA, ' : 'plain HTTP to the pods, ') +
 			`retention periods ${Object.values(retentionValues(env.file)).join('/')} days in the migration job, ` +
 			`${monitoring('ariva-monitoring-alerts')} alert rules and ${monitoring('ariva-monitoring-dashboards')} dashboards`);
 	}
@@ -309,7 +418,16 @@ for (const [label, sets] of [
 	}
 }
 
-for (const [label, file, sets, message] of [
+/** ARV-082b: a values file whose one Ingress (to api-main) carries the given annotation line, in a folder of its own. */
+const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'ariva-chart-values-'));
+process.on('exit', () => fs.rmSync(scratch, { recursive: true, force: true }));
+function ingressValues(annotation) {
+	const file = path.join(scratch, `ingress-${createHash('sha256').update(annotation).digest('hex').slice(0, 12)}.yaml`);
+	fs.writeFileSync(file, `ingresses:\n  - name: api-main\n    comment: test\n    subdomain: api-main-test\n    serviceName: api-main-service\n    annotations:\n      nginx.ingress.kubernetes.io/${annotation}\n`);
+	return file;
+}
+
+for (const [label, file, sets, message, annotation] of [
 	['production without a build number', 'values-k8s-prd.yaml', []],
 	['production with trunk', 'values-k8s-prd.yaml', ['buildNumber=trunk']],
 	['the latest tag', 'values-k8s-dev.yaml', ['buildNumber=latest']],
@@ -353,9 +471,29 @@ for (const [label, file, sets, message] of [
 	['production with an http OTLP endpoint', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1', 'otel.endpoint=http://otel.example:4317'], 'otel.endpoint must be an https:// URL'],
 	['production with an OTLP endpoint without a scheme', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1', 'otel.endpoint=otel.example:4317'], 'otel.endpoint must be an https:// URL'],
 	['a database CA secret name that is not a Kubernetes name', 'values-k8s-dev.yaml', ['databaseCaSecretName=Database_CA'], 'databaseCaSecretName must be a Kubernetes secret name'],
-	['a Redis CA secret name that is not a Kubernetes name', 'values-k8s-dev.yaml', ['redisCaSecretName=redis ca'], 'redisCaSecretName must be a Kubernetes secret name']
+	['a Redis CA secret name that is not a Kubernetes name', 'values-k8s-dev.yaml', ['redisCaSecretName=redis ca'], 'redisCaSecretName must be a Kubernetes secret name'],
+	// ARV-082b: production serves the pods over TLS; the secret names are Kubernetes names, for the services that serve TLS;
+	// with pod TLS the simulator and an Ingress to it are refused, and an Ingress keeps the chart's TLS annotations and retries.
+	['production with pod TLS off', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1', 'podTls.enabled=false'], 'k8s-prd serves the pods over TLS'],
+	['production without the pod TLS values', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1', 'podTls=null'], 'podTls must be a map'],
+	['a podTls.enabled that is not true or false', 'values-k8s-dev.yaml', ['podTls.enabled=yes'], 'podTls.enabled must be true or false'],
+	['a pod certificate secret name that is not a Kubernetes name', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1', 'podTls.secretNames.api-main=Main_TLS'], 'podTls.secretNames.api-main must be a Kubernetes secret name'],
+	['a web certificate secret name that is not a Kubernetes name', 'values-k8s-dev.yaml', ['podTls.secretNames.web=web tls'], 'podTls.secretNames.web must be a Kubernetes secret name'],
+	['a pod certificate for a service that serves no TLS', 'values-k8s-dev.yaml', ['podTls.secretNames.simulation=ariva-simulation-tls'], 'podTls.secretNames.simulation is not a service that serves TLS'],
+	['a cluster CA secret name that is not a Kubernetes name', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1', 'podTls.caSecretName=cluster ca'], 'podTls.caSecretName must be a Kubernetes secret name'],
+	['pod TLS with the simulator', 'values-k8s-dev.yaml', ['podTls.enabled=true'], 'podTls.enabled needs simulationEnabled false'],
+	['pod TLS with an Ingress to the simulator', 'values-k8s-dev.yaml', ['podTls.enabled=true', 'simulationEnabled=false'], 'an Ingress routes only to a service that serves TLS'],
+	['an Ingress with its own backend-protocol under pod TLS', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], 'nginx.ingress.kubernetes.io/backend-protocol is set by the chart', 'backend-protocol: "HTTP"'],
+	['an Ingress with its own proxy-ssl-verify under pod TLS', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], 'nginx.ingress.kubernetes.io/proxy-ssl-verify is set by the chart', 'proxy-ssl-verify: "off"'],
+	['an Ingress whose proxy-next-upstream drops error and timeout under pod TLS', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], 'proxy-next-upstream must keep error and timeout', 'proxy-next-upstream: "http_502 http_503"'],
+	// ARV-082b: no site snippet writes proxy_ssl or proxy_pass, in any annotation and in any case.
+	['a configuration-snippet that turns the verification off under pod TLS', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], 'configuration-snippet writes a proxy_ssl, grpc_ssl, _pass or _by_lua directive itself', 'configuration-snippet: "proxy_ssl_verify off;"'],
+	['a server-snippet that proxies around the TLS backend under pod TLS', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], 'server-snippet writes a proxy_ssl, grpc_ssl, _pass or _by_lua directive itself', 'server-snippet: "location /plain { proxy_pass http://api-main-service:80; }"'],
+	['a location-snippet that trusts the system store under pod TLS', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], 'location-snippet writes a proxy_ssl, grpc_ssl, _pass or _by_lua directive itself', 'location-snippet: "Proxy_SSL_Trusted_Certificate /etc/ssl/certs/ca-certificates.crt;"'],
+	['a configuration-snippet that passes to the pod through gRPC under pod TLS', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], 'configuration-snippet writes a proxy_ssl, grpc_ssl, _pass or _by_lua directive itself', 'configuration-snippet: "grpc_pass grpc://api-main-service:80;"'],
+	['a server-snippet with a Lua block under pod TLS', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], 'server-snippet writes a proxy_ssl, grpc_ssl, _pass or _by_lua directive itself', 'server-snippet: "access_by_lua_block { ngx.exit(200) }"']
 ]) {
-	const result = render(file, sets);
+	const result = render(file, sets, '', annotation ? [ingressValues(annotation)] : []);
 	if (result.status === 0) {
 		failed = true;
 		console.error(`FAIL release guard: rendering ${label} must fail but succeeded`);
@@ -389,6 +527,89 @@ for (const [label, file, sets, message] of [
 		console.error(`FAIL servers' CAs and telemetry:\n  ${findings.join('\n  ')}`);
 	} else {
 		console.log('PASS servers\' CAs and telemetry: an https OTLP endpoint in production on every host, http still allowed in dev, the CA secret names reach the five API hosts and the two jobs');
+	}
+}
+
+// ARV-082b: pod TLS in a site's namespace with the site's secret names, and an Ingress retry list that keeps error and
+// timeout, renders and holds every rule; the rules are production's switch, so dev with the simulator and its Ingress off
+// renders TLS too.
+{
+	const findings = [];
+	const names = { ...POD_TLS_SECRETS, 'api-main': 'site-main-tls', web: 'site-web-tls' };
+	const site = render('values-k8s-prd.yaml', ['buildNumber=main-20261001.1', 'podTls.secretNames.api-main=site-main-tls', 'podTls.secretNames.web=site-web-tls',
+		'podTls.caSecretName=site-cluster-ca'], 'ariva-site', [ingressValues('proxy-next-upstream: "error timeout http_502"')]);
+	if (site.status !== 0) findings.push(`pod TLS with site names: template failed\n${site.stderr}`);
+	else {
+		findings.push(...checkManifests(parse(site.stdout), { environment: 'k8s-prd' }));
+		const docs = parseAsKubernetes(site.stdout);
+		// The site's values file holds one Ingress (to api-main): every pod but its Service checks hold as in production.
+		findings.push(...podTlsRender(site.stdout, { namespace: 'ariva-site', caSecretName: 'site-cluster-ca', secretNames: names }));
+		const ingress = docs.find((doc) => doc?.kind === 'Ingress');
+		if (ingress?.metadata?.annotations?.['nginx.ingress.kubernetes.io/proxy-ssl-secret'] !== 'ariva-site/site-cluster-ca') findings.push('the Ingress does not verify against ariva-site/site-cluster-ca');
+	}
+	// A site snippet that writes neither proxy_ssl nor proxy_pass passes, as the chart's own snippets do in every render above.
+	const dev = render('values-k8s-dev.yaml', ['podTls.enabled=true', 'simulationEnabled=false'], '', [ingressValues('configuration-snippet: "add_header X-Ariva-Site 1;"')]);
+	if (dev.status !== 0) findings.push(`dev with pod TLS and no simulator: template failed\n${dev.stderr}`);
+	else findings.push(...checkManifests(parse(dev.stdout), { environment: 'k8s-dev' }), ...podTlsRender(dev.stdout));
+	if (findings.length) {
+		failed = true;
+		console.error(`FAIL pod TLS with site values:\n  ${findings.join('\n  ')}`);
+	} else {
+		console.log('PASS pod TLS with site values: a site namespace, cluster CA and certificate names reach every pod, Service and Ingress; a retry list with error and timeout renders; dev renders TLS without the simulator, with a site snippet that writes no proxy_ssl or proxy_pass');
+	}
+}
+
+// ARV-082b: the cluster CA guard. validate.yaml fails on ariva-platform.podTlsCaRefusal of the lookup of podTls.caSecretName
+// in the release's namespace. helm template has no cluster, so lookup returns nothing there and the guard passes (as it does
+// before the secret exists); the refusal itself cannot run here, and no value turns the lookup off. Instead: the guard's
+// wiring is read from validate.yaml, and the helper is rendered, in a copy of the chart with one test template, against
+// stand-in secrets shaped as the API returns them (data base64).
+{
+	const findings = [];
+	const validate = fs.readFileSync(path.join(chart, 'templates', 'validate.yaml'), 'utf8');
+	if (!/\{\{- \$caRefusal := include "ariva-platform\.podTlsCaRefusal" \(lookup "v1" "Secret" \.Release\.Namespace \(toString \(\$podTls\.caSecretName \| default "ariva-cluster-ca"\)\)\) \}\}\n\{\{- if \$caRefusal \}\}\n\{\{- fail \$caRefusal \}\}/.test(validate)) {
+		findings.push('validate.yaml does not fail on ariva-platform.podTlsCaRefusal of the lookup of podTls.caSecretName in the release namespace');
+	}
+	const b64 = (text) => Buffer.from(text).toString('base64');
+	const pem = '-----BEGIN CERTIFICATE-----\nMIIBstandin\n-----END CERTIFICATE-----\n';
+	const without = 'without ca.crt: the ingress would proxy to the pods without verifying them';
+	const cases = {
+		'no-secret': [{}, ''],
+		'ca-only': [{ type: 'Opaque', data: { 'ca.crt': b64(pem) } }, ''],
+		'ca-and-certificate': [{ type: 'Opaque', data: { 'ca.crt': b64(pem), 'tls.crt': b64(pem) } }, ''],
+		'tls-without-ca': [{ type: 'kubernetes.io/tls', data: { 'tls.crt': b64(pem), 'tls.key': b64('key') } }, without],
+		'no-data': [{ type: 'Opaque' }, without],
+		'empty-ca': [{ type: 'Opaque', data: { 'ca.crt': '' } }, without],
+		'blank-ca': [{ type: 'Opaque', data: { 'ca.crt': b64(' \n') } }, without],
+		'ca-not-pem': [{ type: 'Opaque', data: { 'ca.crt': b64('not a certificate') } }, without],
+		'ca-not-base64': [{ type: 'Opaque', data: { 'ca.crt': '%%%' } }, without],
+		'tls-with-ca': [{ type: 'kubernetes.io/tls', data: { 'ca.crt': b64(pem), 'tls.crt': b64(pem), 'tls.key': b64('key') } }, 'also holds tls.key']
+	};
+	const copy = fs.mkdtempSync(path.join(os.tmpdir(), 'ariva-chart-ca-'));
+	try {
+		fs.cpSync(chart, path.join(copy, 'platform'), { recursive: true });
+		fs.writeFileSync(path.join(copy, 'platform', 'templates', 'zz-ca-refusal-test.yaml'), 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: ca-refusal-test\ndata:\n' +
+			'{{- range $name, $secret := .Values.caRefusalCases }}\n  {{ $name | quote }}: {{ include "ariva-platform.podTlsCaRefusal" $secret | quote }}\n{{- end }}\n');
+		fs.writeFileSync(path.join(copy, 'cases.json'), JSON.stringify({ caRefusalCases: Object.fromEntries(Object.entries(cases).map(([name, [secret]]) => [name, secret])) }));
+		const result = spawnSync(helm, ['template', 'ariva-platform', path.join(copy, 'platform'), '-f', path.join(chart, 'values-k8s-prd.yaml'), '-f', path.join(copy, 'cases.json'),
+			'--set', 'buildNumber=main-20261001.1', '--show-only', 'templates/zz-ca-refusal-test.yaml'], { encoding: 'utf8', shell: false });
+		if (result.status !== 0) findings.push(`the CA refusal cases: template failed\n${result.stderr}`);
+		else {
+			const judged = parse(result.stdout)[0]?.data ?? {};
+			for (const [name, [, expected]] of Object.entries(cases)) {
+				const message = judged[name] ?? '(not rendered)';
+				if (expected ? !message.includes(expected) : message !== '') findings.push(`CA secret ${name}: judged "${message}", expected ${expected ? `"${expected}"` : 'no refusal'}`);
+			}
+		}
+	} finally {
+		fs.rmSync(copy, { recursive: true, force: true });
+	}
+	if (findings.length) {
+		failed = true;
+		console.error(`FAIL pod TLS cluster CA guard:\n  ${findings.join('\n  ')}`);
+	} else {
+		console.log(`PASS pod TLS cluster CA guard: validate.yaml fails on the lookup of podTls.caSecretName; ${Object.keys(cases).length} stand-in secrets judged ` +
+			'(no ca.crt, an empty, blank, non-PEM or non-base64 ca.crt and a tls.key refused; ca.crt alone or with tls.crt passes; no secret passes, as under helm template, which cannot run lookup)');
 	}
 }
 
@@ -470,11 +691,14 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 		// ARV-082a: TimescaleDB with TLS in prd only (state value timescaledbTls), from the chart's default secret.
 		const tls = environment === 'prd';
 		findings.push(...databaseTlsFindings(parseAsKubernetes(result.stdout), { tls }), ...serverCaReach(docs));
+		// ARV-082b: the pods over TLS in prd only (state value podTls), with the chart's default secrets.
+		findings.push(...(tls ? podTlsRender(result.stdout) : podTlsFindings(parseAsKubernetes(result.stdout), { tls: false })));
 		if (findings.length) {
 			failed = true;
 			console.error(`FAIL helmfile -e ${environment}:\n  ${findings.join('\n  ')}`);
 		} else {
-			console.log(`PASS helmfile -e ${environment}: ${docs.length} objects, database and topics job included, TimescaleDB ${tls ? 'with TLS' : 'without TLS'}`);
+			console.log(`PASS helmfile -e ${environment}: ${docs.length} objects, database and topics job included, TimescaleDB ${tls ? 'with TLS' : 'without TLS'}, ` +
+				`${tls ? 'the pods over TLS' : 'plain HTTP to the pods'}`);
 		}
 	}
 	// ARV-082a: prd refuses TimescaleDB without TLS.
@@ -485,6 +709,16 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 			console.error(`FAIL release guard: helmfile -e prd with timescaledbTls false must fail but ${attempt.status === 0 ? 'succeeded' : `failed otherwise\n${attempt.stderr}`}`);
 		} else {
 			console.log('PASS release guard: helmfile -e prd with timescaledbTls false is refused');
+		}
+	}
+	// ARV-082b: prd refuses the pods without TLS.
+	{
+		const attempt = template('prd', ['--state-values-set', 'buildNumber=main-20261001.1', '--state-values-set', 'podTls=false']);
+		if (attempt.status === 0 || !attempt.stderr.includes('prd serves the pods over TLS')) {
+			failed = true;
+			console.error(`FAIL release guard: helmfile -e prd with podTls false must fail but ${attempt.status === 0 ? 'succeeded' : `failed otherwise\n${attempt.stderr}`}`);
+		} else {
+			console.log('PASS release guard: helmfile -e prd with podTls false is refused');
 		}
 	}
 	// ARV-002: the GitHub dev release (.github/workflows/release-dev.yml) deploys from GHCR, pins every image by the digest
@@ -579,9 +813,14 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 			// ARV-082a: prd refuses TimescaleDB without TLS here too.
 			const withoutTls = offline('prd', ['--state-values-set', `mirror=${mirror}`, '--state-values-set', 'timescaledbTls=false']);
 			if (withoutTls.status === 0 || !withoutTls.stderr.includes('prd runs TimescaleDB with TLS')) findings.push('-e prd with timescaledbTls false rendered');
+			// ARV-082b: and the pods without TLS.
+			const withoutPodTls = offline('prd', ['--state-values-set', `mirror=${mirror}`, '--state-values-set', 'podTls=false']);
+			if (withoutPodTls.status === 0 || !withoutPodTls.stderr.includes('prd serves the pods over TLS')) findings.push('-e prd with podTls false rendered');
 			const site = path.join(staged, 'site.yaml');
 			// ARV-082a: production sends telemetry over TLS only, so the site's endpoint is https.
-			fs.writeFileSync(site, `otel:\n  endpoint: "https://otel.offline-site.local:4317"\nimageRepository: other.example/ariva\nimageDigests:\n  api-main: "${digestOf('planted')}"\nbuildNumber: planted\n`);
+			// ARV-082b: a site file that names the web pod's certificate and tries to turn pod TLS off.
+			fs.writeFileSync(site, `otel:\n  endpoint: "https://otel.offline-site.local:4317"\nimageRepository: other.example/ariva\nimageDigests:\n  api-main: "${digestOf('planted')}"\nbuildNumber: planted\n` +
+				'podTls:\n  enabled: false\n  secretNames:\n    web: site-web-tls\n');
 			const database = path.join(staged, 'database.yaml');
 			// ARV-082a: a site file that tries to turn the database's TLS off in prd.
 			fs.writeFileSync(database, `persistence:\n  size: 77Gi\nimage:\n  tag: planted\n  digest: "${digestOf('planted')}"\ntls:\n  enabled: false\n`);
@@ -592,6 +831,8 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 				if (!withSite.stdout.includes('77Gi')) findings.push('databaseValues did not reach the TimescaleDB release');
 				const tlsFindings = databaseTlsFindings(parseAsKubernetes(withSite.stdout), { tls: true });
 				if (tlsFindings.length) findings.push(`a site databaseValues file turned the TimescaleDB TLS off in prd:\n    ${tlsFindings.join('\n    ')}`);
+				const podTlsSite = podTlsRender(withSite.stdout, { secretNames: { ...POD_TLS_SECRETS, web: 'site-web-tls' } });
+				if (podTlsSite.length) findings.push(`a site values file turned pod TLS off in prd or did not name the web certificate:\n    ${podTlsSite.join('\n    ')}`);
 				if (/other\.example|planted/.test(withSite.stdout) || withSite.stdout.includes(digestOf('planted').slice(7)) || !withSite.stdout.includes(`${mirror}/ariva/api-main:v1.2.0-57@${digestOf('api-main')}`)) {
 					findings.push('a site values file moved an image away from the bundle\'s repository, build or digest');
 				}
@@ -617,7 +858,7 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 			failed = true;
 			console.error(`FAIL offline bundle Helmfile:\n  ${findings.join('\n  ')}`);
 		} else {
-			console.log('PASS offline bundle Helmfile: the same objects as helmfile-k8s in every environment, every image from the mirror by digest, no render without a mirror or with a dry run\'s unpinned images, site values reach their release without moving an image or turning the database TLS off in prd, prd refused without TLS');
+			console.log('PASS offline bundle Helmfile: the same objects as helmfile-k8s in every environment, every image from the mirror by digest, no render without a mirror or with a dry run\'s unpinned images, site values reach their release without moving an image or turning the database TLS or pod TLS off in prd (but name the certificates), prd refused without either TLS');
 		}
 	}
 }

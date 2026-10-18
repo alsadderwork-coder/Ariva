@@ -41,7 +41,9 @@ public static class MqttExtensions
     /// Adds the MQTT listener to Kestrel when enabled: TLS (the operating system's versions) with the configured certificate (client
     /// certificates are optional and checked against a device's pin, not a CA), the packet size limit, then MQTTnet.
     /// Declaring a listener in code replaces the URLs Kestrel would otherwise bind, so the HTTP endpoints are declared
-    /// here too: the configured URLs, else HTTP ports, else Application:BindingPort, else 8080.
+    /// here too (<see cref="HttpEndpoints"/>): none when Kestrel:Endpoints declares the host's endpoints (k8s-prd's https
+    /// endpoint, ARV-082b), which Kestrel binds beside this listener; else the configured URLs, else HTTP ports, else
+    /// Application:BindingPort, else 8080.
     /// </summary>
     public static IWebHostBuilder UseArivaMqttListener(this IWebHostBuilder builder)
     {
@@ -123,6 +125,12 @@ public static class MqttExtensions
     /// <summary>The HTTP endpoints the host would have bound without the MQTT listener.</summary>
     public static IReadOnlyList<IPEndPoint> HttpEndpoints(IConfiguration configuration)
     {
+        ArgumentNullException.ThrowIfNull(configuration);
+        // ARV-082b: Kestrel binds the endpoints in Kestrel:Endpoints together with the ones declared in code, and the URLs and
+        // ports give way to them; declaring the image's plain port (ASPNETCORE_HTTP_PORTS) here would add the listener they leave out.
+        if (configuration.GetSection("Kestrel:Endpoints").GetChildren().Any())
+            return [];
+
         var endpoints = new List<IPEndPoint>();
         foreach (var url in (configuration["urls"] ?? string.Empty).Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {

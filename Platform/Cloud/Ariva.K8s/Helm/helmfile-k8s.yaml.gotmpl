@@ -11,27 +11,35 @@
 # only). On in prd, where every host verifies the server against the ariva-database-ca secret and refuses to start without
 # it; prd refuses to render with it off. Off elsewhere, where a site's own values may still turn tls.enabled on. With it on,
 # create the kubernetes.io/tls secret timescaledb-tls in the namespace first (Charts/timescaledb/values.yaml).
+# podTls: the platform release with pod TLS (ARV-082b; Charts/platform podTls.enabled): every pod serves TLS from its own
+# certificate and the ingress verifies it against the cluster CA. On in prd, which refuses to render with it off; the release
+# sets podTls.enabled, so no values file turns it off there. Off elsewhere. The secrets' names (podTls.caSecretName,
+# podTls.secretNames) come from the platform values file; create the secrets in the namespace first (Charts/platform/values.yaml).
 environments:
   dev:
     values:
       - valuesFile: values-k8s-dev.yaml
         timescaledb: true
         timescaledbTls: false
+        podTls: false
   demo:
     values:
       - valuesFile: values-k8s-demo.yaml
         timescaledb: true
         timescaledbTls: false
+        podTls: false
   prd:
     values:
       - valuesFile: values-k8s-prd.yaml
         timescaledb: true
         timescaledbTls: true
+        podTls: true
   localk8s:
     values:
       - valuesFile: values-localk8s.yaml
         timescaledb: true
         timescaledbTls: false
+        podTls: false
 
 helmDefaults:
   kubeContext: default
@@ -39,6 +47,9 @@ helmDefaults:
 ---
 {{- if and (eq .Environment.Name "prd") .Values.timescaledb (not (.Values | get "timescaledbTls" false)) }}
 {{- fail "prd runs TimescaleDB with TLS: the hosts verify the server and refuse to start without it (state value timescaledbTls true; ARV-082a)" }}
+{{- end }}
+{{- if and (eq .Environment.Name "prd") (not (.Values | get "podTls" false)) }}
+{{- fail "prd serves the pods over TLS: the hosts listen on HTTPS only and the ingress verifies them (state value podTls true; ARV-082b)" }}
 {{- end }}
 
 releases:
@@ -69,10 +80,17 @@ releases:
     {{- end }}
     values:
       - ./Charts/platform/{{ .Values.valuesFile }}
-    {{- if .Values | get "buildNumber" "" }}
+    {{- if or (.Values | get "buildNumber" "") (.Values | get "podTls" false) }}
     set:
+      {{- if .Values | get "buildNumber" "" }}
       - name: buildNumber
         value: {{ .Values.buildNumber | quote }}
+      {{- end }}
+      {{- if .Values | get "podTls" false }}
+      # set, so that no values file turns pod TLS off (ARV-082b)
+      - name: podTls.enabled
+        value: true
+      {{- end }}
     {{- end }}
 
 # Kafka and Redis
