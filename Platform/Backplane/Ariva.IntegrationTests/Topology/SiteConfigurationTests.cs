@@ -581,6 +581,27 @@ public sealed class SiteConfigurationTests(PostgresFixture fixture) : IAsyncDisp
     }
 
     [Fact]
+    public async Task Import_Should_KeepADisplaysAdvertisingWaitRule_When_TheBundleCarriesIt()
+    {
+        var admin = await AdministratorAsync("dw");
+        await SourceAsync(admin, "XCWA", "QWA", displayCode: "CFWR1");
+        var exported = Ok(await _host.AsCallerAsync(admin, s => Configuration(s).ExportAsync("XCWA", Ct)));
+        await DeleteDisplaysAsync(admin, "XCWA");
+        await SiteAsync(admin, "XCWB");
+        await AirportAsync(admin, "QWB");
+        var displays = System.Text.Json.JsonSerializer.Deserialize<List<DisplayPartRow>>(Convert.FromBase64String(exported.Bundle.Parts[SiteConfigurationBundles.Displays]),
+            SiteConfigurationParts.Json)!;
+        displays.Should().OnlyContain(d => d.AdvertisingPauseMinutes == null, "the source display has no wait rule");
+        // ARV-143b: the wait at which advertising gives way is a display setting, carried like the layout.
+        var withRule = Rehashed(exported.Bundle, SiteConfigurationBundles.Displays,
+            SiteConfigurationParts.Write(displays.Select(d => d with { AdvertisingPauseMinutes = 25 }).ToList()));
+
+        Ok(await _host.AsCallerAsync(admin, s => Configuration(s).ImportAsync("XCWB", withRule, "QWB", Ct))).Counts.Displays.Should().Be(1);
+
+        (await _host.ReadAsync<int>("SELECT advertising_pause_minutes FROM display WHERE code = 'CFWR1' AND deleted_on IS NULL")).Should().Be(25);
+    }
+
+    [Fact]
     public async Task Import_Should_RefuseARuleOrDisplay_When_ItNamesAZoneTheImportedDraftLacks()
     {
         var admin = await AdministratorAsync("dz");

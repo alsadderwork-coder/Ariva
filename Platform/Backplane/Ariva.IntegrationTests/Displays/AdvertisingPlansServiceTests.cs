@@ -93,11 +93,12 @@ public sealed class AdvertisingPlansServiceTests(PostgresFixture fixture) : IAsy
         return user;
     }
 
-    private async Task<AdvertisingMediaViewModel> MediaAsync(Guid caller, string site = "DMO", byte[] bytes = null, string name = "winter.png")
+    private async Task<AdvertisingMediaViewModel> MediaAsync(Guid caller, string site = "DMO", byte[] bytes = null, string name = "winter.png", DateOnly? startsOn = null,
+        DateOnly? endsOn = null)
     {
         var bytesToSend = bytes ?? Png();
         var result = await _host.AsCallerAsync(caller, s => s.GetRequiredService<ISvcAdvertisingMedia>().UploadAsync(site,
-            new AdvertisingMediaUpload(new MemoryStream(bytesToSend), bytesToSend.Length, name, "Gulf Air", "Winter sun", First, Last), Ct));
+            new AdvertisingMediaUpload(new MemoryStream(bytesToSend), bytesToSend.Length, name, "Gulf Air", "Winter sun", startsOn ?? First, endsOn ?? Last), Ct));
         result.HasErrors.Should().BeFalse(string.Join(", ", result.ErrorMessages ?? []));
         return result.Data;
     }
@@ -124,6 +125,43 @@ public sealed class AdvertisingPlansServiceTests(PostgresFixture fixture) : IAsy
     private static AdvertisingScheduleRequest Schedule(Guid playlist, string scope = "Site", string[] targets = null, string[] days = null, string opens = "00:00",
         string closes = "24:00") =>
         new(playlist, scope, targets ?? [], days ?? ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"], opens, closes);
+
+    private async Task<AdvertisingMediaViewModel> ApprovedAsync(Guid uploader, Guid approver, DateOnly? startsOn = null, DateOnly? endsOn = null)
+    {
+        var item = await MediaAsync(uploader, startsOn: startsOn, endsOn: endsOn);
+        var approved = await _host.AsCallerAsync(approver, s => s.GetRequiredService<ISvcAdvertisingMedia>().ApproveAsync("DMO", item.Id,
+            new ApproveAdvertisingMediaRequest(item.ReviewToken), Ct));
+        approved.HasErrors.Should().BeFalse(string.Join(", ", approved.ErrorMessages ?? []));
+        return approved.Data;
+    }
+
+    /// <summary>A display of DMO for the board tests: its id and credential prefix, as the player presents them.</summary>
+    private async Task<DisplayPlayer> PlayerAsync(Guid admin, string code, string secondRegion = "Advertising", string layout = "Split", int? pause = null,
+        int stale = 150)
+    {
+        var request = new DisplayRequest("DMO", code, "Arrivals hall", null, "Landscape", ["en", "ar"], 5, 1, stale,
+            [new DisplayEntryRequest("A-CIT", new Dictionary<string, string> { ["en"] = "Citizens", ["ar"] = "المواطنون" })],
+            new Dictionary<string, string> { ["en"] = "Please follow the signs", ["ar"] = "يرجى اتباع اللافتات" }, true, layout, 60, secondRegion, pause);
+        var created = await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcDisplays>().CreateAsync(request, Ct));
+        created.HasErrors.Should().BeFalse(string.Join(", ", created.ErrorMessages ?? []));
+        return new DisplayPlayer(created.Data.Display.Id, code, "DMO", created.Data.Display.CredentialPrefix);
+    }
+
+    /// <summary>The class shares one database: the other tests' DMO schedules would apply to a board test's displays too.</summary>
+    private async Task RetireDmoSchedulesAsync()
+    {
+        await using var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync()));
+        await connection.OpenAsync(Ct);
+        await using var others = new NpgsqlCommand("UPDATE advertising_schedule SET status = 'Retired' WHERE site_code = 'DMO'", connection);
+        await others.ExecuteNonQueryAsync(Ct);
+    }
+
+    private async Task<DisplayBoardViewModel> BoardAsync(DisplayPlayer player)
+    {
+        var board = await _host.AsCallerAsync(null, s => s.GetRequiredService<ISvcDisplayBoard>().GetAsync(player.Id, player.CredentialPrefix, Ct));
+        board.HasErrors.Should().BeFalse(string.Join(", ", board.ErrorMessages ?? []));
+        return board.Data;
+    }
 
     private async Task<string> DisplayAsync(Guid admin, string code, string zone)
     {
@@ -360,6 +398,133 @@ public sealed class AdvertisingPlansServiceTests(PostgresFixture fixture) : IAsy
         (await _host.ReadAsync<long>("SELECT count(*) FROM advertising_schedule WHERE site_code = 'PLN4'")).Should().Be(AdvertisingSchedule.MaxSchedulesPerSite);
         (await _host.AsCallerAsync(manager, s => Schedules(s).CreateAsync("PLN4", Schedule(playlist.Id), Ct))).ErrorMessages
             .Should().Equal(AdvertisingPlanErrors.TooManySchedules);
+    }
+
+    [Fact]
+    public async Task Board_Should_CarryThePlayablePlaylistThatAppliesNow_When_TheSitesPolicyAllowsAdvertising()
+    {
+        var admin = await AdminAsync();
+        await RetireDmoSchedulesAsync();
+        var manager = await ManagerAsync("it.plans.board");
+        var approver = await ManagerAsync("it.plans.board.second");
+        var first = await ApprovedAsync(manager, approver);
+        var second = await ApprovedAsync(manager, approver);
+        var draft = await MediaAsync(manager);
+        var slide = await SlideAsync(admin, title: "Boarding passes ready");
+        var playlist = await CreatedPlaylistAsync(manager, "DMO", Playlist("Board bank", Item("Media", first.Id, 12, 2), Item("Media", draft.Id), Item("Slide", slide, 8),
+            Item("Media", second.Id, 6)));
+        var player = await PlayerAsync(admin, "PLN-BRD", pause: 20);
+        var instructions = await PlayerAsync(admin, "PLN-INS", secondRegion: "Instructions");
+        var full = await PlayerAsync(admin, "PLN-FUL", layout: "Full");
+        (await _host.AsCallerAsync(manager, s => Schedules(s).CreateAsync("DMO", Schedule(playlist.Id, "Display", ["PLN-BRD", "PLN-INS", "PLN-FUL"]), Ct)))
+            .HasErrors.Should().BeFalse();
+
+        var board = await BoardAsync(player);
+
+        board.SecondRegion.Should().Be("Advertising");
+        board.Advertising.Should().NotBeNull();
+        board.Advertising.PlaylistId.Should().Be(playlist.Id);
+        board.Advertising.UntilUtc.Should().Be(_host.Clock.GetUtcNow().UtcDateTime.AddSeconds(150),
+            "no further than the display's board may be shown (its stale threshold), the plan holding till then");
+        board.Advertising.PauseMinutes.Should().Be(20);
+        board.Advertising.Items.Select(i => (i.Kind, i.MediaId, i.ContentType, i.Seconds)).Should().Equal(
+            ("Media", first.Id, "image/png", 12), ("Slide", null, null, 8), ("Media", second.Id, "image/png", 6));
+        board.Advertising.Items[1].Slide.Should().Match<DisplayBoardSlideViewModel>(s => s.DurationSeconds == 8 && s.Texts.Count == 1 &&
+            s.Texts[0].Language == "en" && s.Texts[0].Title == "Boarding passes ready", "a slide in its playlist's slot and the display's languages");
+        board.Advertising.Order.Should().Equal([0, 1, 2, 0], "weights of 2, 1 and 1; the draft never plays");
+        (await BoardAsync(instructions)).Advertising.Should().BeNull("a display set to instructions");
+        (await BoardAsync(full)).Advertising.Should().BeNull("a full board has no second region");
+
+        // An advertisement retired since leaves the playlist and plays no more; a retired playlist stops the plan.
+        (await _host.AsCallerAsync(manager, s => s.GetRequiredService<ISvcAdvertisingMedia>().RetireAsync("DMO", second.Id, Ct))).HasErrors.Should().BeFalse();
+        (await BoardAsync(player)).Advertising.Order.Should().Equal([0, 1, 0]);
+        (await _host.AsCallerAsync(manager, s => Playlists(s).RetireAsync("DMO", playlist.Id, Ct))).HasErrors.Should().BeFalse();
+        (await BoardAsync(player)).Advertising.Should().BeNull("instructions while the playlist is retired");
+        (await _host.AsCallerAsync(manager, s => Playlists(s).RestoreAsync("DMO", playlist.Id, Ct))).HasErrors.Should().BeFalse();
+
+        // The policy is read on every board: turned off, the board carries instructions though the plan is kept.
+        var policies = (Func<IServiceProvider, ISvcAdvertisingPolicies>)(s => s.GetRequiredService<ISvcAdvertisingPolicies>());
+        var reviewed = (await _host.AsCallerAsync(admin, s => policies(s).GetAsync("DMO", Ct))).Data.PublishedProfileId;
+        try
+        {
+            (await _host.AsCallerAsync(admin, s => policies(s).ChangeAsync("DMO",
+                new AdvertisingPolicyRequest(false, [], "Airport operator letter AO-IT-143b, paused", reviewed), Ct))).HasErrors.Should().BeFalse();
+            var off = await BoardAsync(player);
+            off.SecondRegion.Should().Be("Instructions");
+            off.Advertising.Should().BeNull("a plan is never itself permission to advertise");
+        }
+        finally
+        {
+            (await _host.AsCallerAsync(admin, s => policies(s).ChangeAsync("DMO",
+                new AdvertisingPolicyRequest(true, [], "Airport operator letter AO-IT-143a, commercial team", reviewed), Ct))).HasErrors.Should().BeFalse();
+        }
+
+        (await BoardAsync(player)).Advertising.Order.Should().Equal([0, 1, 0], "allowed again, the plan plays again");
+    }
+
+    [Fact]
+    public async Task Board_Should_EndThePlanWhenItsWindowCloses_When_AScheduleCoversPartOfTheDay()
+    {
+        var admin = await AdminAsync();
+        await RetireDmoSchedulesAsync();
+        var manager = await ManagerAsync("it.plans.board.window");
+        var approver = await ManagerAsync("it.plans.board.window.second");
+        var playlist = await CreatedPlaylistAsync(manager, "DMO", Playlist("Lunch bank", Item("Media", (await ApprovedAsync(manager, approver)).Id, 10)));
+        var player = await PlayerAsync(admin, "PLN-WIN", stale: 1800);
+        var draftOnly = await CreatedPlaylistAsync(manager, "DMO", Playlist("Drafts", Item("Media", (await MediaAsync(manager)).Id, 10)));
+        var drafts = await PlayerAsync(admin, "PLN-DRF");
+        // Thursday at DMO: 11:00 to 12:10 local is 07:00 to 08:10 UTC, and the host's clock says 08:00 UTC.
+        (await _host.AsCallerAsync(manager, s => Schedules(s).CreateAsync("DMO", Schedule(playlist.Id, "Display", ["PLN-WIN"], ["Thursday"], "11:00", "12:10"), Ct)))
+            .HasErrors.Should().BeFalse();
+        (await _host.AsCallerAsync(manager, s => Schedules(s).CreateAsync("DMO", Schedule(draftOnly.Id, "Display", ["PLN-DRF"]), Ct))).HasErrors.Should().BeFalse();
+
+        (await BoardAsync(player)).Advertising.UntilUtc.Should().Be(new DateTime(2026, 10, 1, 8, 10, 0, DateTimeKind.Utc),
+            "the window closes at 12:10 local, within the display's 30 minutes ahead");
+        (await BoardAsync(drafts)).Advertising.Should().BeNull("a playlist with nothing that may play today: instructions");
+
+        // Script 0061 holds the wait rule for every writer: 1 to 240 minutes, or none.
+        foreach (var minutes in new[] { 0, 241 })
+        {
+            await using var runtime = await RuntimeAsync();
+            await using var command = new NpgsqlCommand("UPDATE display SET advertising_pause_minutes = @minutes WHERE id = @id", runtime.Connection, runtime.Transaction);
+            command.Parameters.AddWithValue("minutes", minutes);
+            command.Parameters.AddWithValue("id", player.Id);
+            var writing = () => command.ExecuteNonQueryAsync(Ct);
+            (await writing.Should().ThrowAsync<PostgresException>($"{minutes} minutes")).Which.Should().Match<PostgresException>(e =>
+                e.SqlState == "23514" && e.ConstraintName == "ck_display_advertising_pause");
+        }
+    }
+
+    [Fact]
+    public async Task Board_Should_PlayAdvertisementsWithinTheirDatesOnTheSitesLocalDay_When_ItIsNotTheUtcDay()
+    {
+        await RetireDmoSchedulesAsync();
+        var admin = await AdminAsync();
+        var manager = await ManagerAsync("it.plans.board.dates");
+        var approver = await ManagerAsync("it.plans.board.dates.second");
+        // Thursday 1 October at DMO: one advertisement ends that day, one starts the next, one runs throughout.
+        var endsToday = await ApprovedAsync(manager, approver, First, new DateOnly(2026, 10, 1));
+        var startsTomorrow = await ApprovedAsync(manager, approver, new DateOnly(2026, 10, 2), Last);
+        var throughout = await ApprovedAsync(manager, approver);
+        var playlist = await CreatedPlaylistAsync(manager, "DMO", Playlist("Dated bank", Item("Media", endsToday.Id), Item("Media", startsTomorrow.Id),
+            Item("Media", throughout.Id)));
+        var player = await PlayerAsync(admin, "PLN-DAY");
+        (await _host.AsCallerAsync(manager, s => Schedules(s).CreateAsync("DMO", Schedule(playlist.Id, "Display", ["PLN-DAY"]), Ct))).HasErrors.Should().BeFalse();
+
+        (await BoardAsync(player)).Advertising.Items.Select(i => i.MediaId).Should().Equal([endsToday.Id, throughout.Id], "12:00 on 1 October at DMO");
+
+        // 21:00 UTC on 1 October is 01:00 on 2 October at DMO (UTC+4): the site's day has turned, the UTC day has not.
+        _host.Clock.Advance(TimeSpan.FromHours(13));
+        try
+        {
+            var night = await BoardAsync(player);
+            night.Advertising.Items.Select(i => i.MediaId).Should().Equal([startsTomorrow.Id, throughout.Id], "the site's local day, not the UTC day");
+            night.Advertising.Order.Should().Equal([0, 1]);
+        }
+        finally
+        {
+            _host.Clock.Advance(TimeSpan.FromHours(-13));
+        }
     }
 
     public static TheoryData<string, string> RuntimeRefusals => new()

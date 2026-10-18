@@ -10,6 +10,7 @@ public sealed record DisplayEntryRequest([Required, MaxLength(200)] string Zone,
 /// A passenger display as a request (ARV-058). The site and code are given on creation and never change; the credential
 /// is the server's, returned once on creation and on a new credential. The layout (ARV-140) is optional: a request without
 /// it keeps the full queue view, with the default share and instructions in the second region.
+/// <c>AdvertisingPauseMinutes</c> (ARV-143b) is the wait at which advertising gives way to instructions, or none when left out.
 /// </summary>
 public sealed record DisplayRequest(
     [MaxLength(17)] string SiteCode,
@@ -26,7 +27,8 @@ public sealed record DisplayRequest(
     bool Enabled = true,
     [MaxLength(16)] string Layout = "Full",
     [Range(50, 75)] int QueueShare = 60,
-    [MaxLength(16)] string SecondRegion = "Instructions");
+    [MaxLength(16)] string SecondRegion = "Instructions",
+    [Range(1, 240)] int? AdvertisingPauseMinutes = null);
 
 public sealed record DisplayEntryViewModel(string Zone, IReadOnlyDictionary<string, string> Labels);
 
@@ -48,6 +50,7 @@ public sealed record DisplayViewModel(
     string Layout,
     int QueueShare,
     string SecondRegion,
+    int? AdvertisingPauseMinutes,
     string CredentialPrefix,
     DateTime? CredentialIssuedOn,
     DateTime? CreatedOn,
@@ -97,11 +100,32 @@ public sealed record DisplayBoardEntryViewModel(
     double? AgeSeconds);
 
 /// <summary>
+/// One item a display plays in its second region (ARV-143b): an advertisement (<c>Kind</c> Media, fetched by
+/// <c>MediaId</c> with the display's credential from <c>api/v1/display/advertising/{id}</c>, an image or a video by its
+/// <c>ContentType</c>) or an instruction slide (<c>Kind</c> Slide, its words in the display's languages). <c>Seconds</c> is
+/// its slot: the player ends it then, whatever the media holds.
+/// </summary>
+public sealed record DisplayBoardAdvertisingItemViewModel(string Kind, Guid? MediaId, string ContentType, int Seconds, DisplayBoardSlideViewModel Slide);
+
+/// <summary>
+/// The playlist a display plays now (ARV-143b), only while the site's advertising policy allows it for the display (read on
+/// every board): its playable items, one cycle's playing <c>Order</c> (indexes into <c>Items</c>, each as often as its weight),
+/// the instant the plan next changes (<c>UntilUtc</c>: a player without a newer board stops it then), and the wait at which
+/// the display shows instructions instead (<c>PauseMinutes</c>, held with the display's hysteresis; null for none).
+/// </summary>
+public sealed record DisplayBoardAdvertisingViewModel(
+    Guid PlaylistId,
+    DateTime UntilUtc,
+    int? PauseMinutes,
+    IReadOnlyList<DisplayBoardAdvertisingItemViewModel> Items,
+    IReadOnlyList<int> Order);
+
+/// <summary>
 /// What a player shows (ARV-058): the display's settings and its entries' latest nowcasts. <paramref name="Illustrative"/>:
 /// the display's site is an illustrative demo site (ARV-139a), so the player shows the "Illustrative, not surveyed" banner.
 /// The layout (ARV-140) comes with every answer, so a change reaches a running player at its next poll, without a restart.
 /// So do the instruction slides that apply to the display (ARV-141): the pinned one, shown under the waits, and the ones the
-/// second region rotates.
+/// second region rotates. And the playlist the second region plays (ARV-143b), or null: instructions.
 /// </summary>
 public sealed record DisplayBoardViewModel(
     string Code,
@@ -119,7 +143,8 @@ public sealed record DisplayBoardViewModel(
     int QueueShare = 60,
     string SecondRegion = "Instructions",
     DisplayBoardSlideViewModel PinnedSlide = null,
-    IReadOnlyList<DisplayBoardSlideViewModel> Slides = null);
+    IReadOnlyList<DisplayBoardSlideViewModel> Slides = null,
+    DisplayBoardAdvertisingViewModel Advertising = null);
 
 /// <summary>A display player that presented its display's code and credential (ARV-058).</summary>
 public sealed record DisplayPlayer(Guid Id, string Code, string SiteCode, string CredentialPrefix);

@@ -493,6 +493,20 @@
       "passes": false,
       "notes": "Size S. Recorded 2026-10-18 with ARV-142b under the owner's standing decision (low-severity follow-ups wait for Phase 3 unless needed before the pilot; the owner can pull one back). Not this story's code: it passed on its retry.",
       "dependsOn": []
+    },
+    {
+      "id": "ARV-197",
+      "title": "[E21] Display player measures elapsed time on a monotonic clock",
+      "description": "Security review of ARV-143b (Low): the passenger display player measures how old its last good board is, and so whether the board is stale and whether a plan's untilUtc has passed, with Date.now(). If the kiosk's wall clock jumps backwards while it is offline, the board is not counted stale and the plan does not expire until the clock catches up. The queue board's staleness used the same pattern before ARV-143b.",
+      "acceptanceCriteria": [
+        "The player measures the time since its last good board with performance.now() (a monotonic clock), and the server's clock as serverUtc plus that elapsed time",
+        "A Playwright test that moves the page's wall clock back (page.clock) while the network is down still shows the neutral message and instructions once the stale threshold has passed",
+        "node scripts/verify.mjs web passes; the display player functional specs pass"
+      ],
+      "priority": 60,
+      "passes": false,
+      "notes": "Size S. Recorded 2026-10-18 with ARV-143b under the owner's standing decision (low-severity follow-ups wait for Phase 3 unless needed before the pilot; the owner can pull one back).",
+      "dependsOn": []
     }
   ]
 }

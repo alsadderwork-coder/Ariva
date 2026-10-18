@@ -129,7 +129,8 @@ public sealed record AlertRulePartRow(
 
 /// <summary>
 /// A display's settings (ARV-122b); no pairing secret, prefix, hash or pairing state: an imported display is unpaired. The
-/// layout (ARV-140) is optional, so a bundle exported before it imports with the full queue view.
+/// layout (ARV-140) is optional, so a bundle exported before it imports with the full queue view; so is the wait at which
+/// advertising gives way to instructions (ARV-143b), kept with the display though an imported display shows no advertising.
 /// </summary>
 public sealed record DisplayPartRow(
     string Code,
@@ -145,7 +146,8 @@ public sealed record DisplayPartRow(
     bool Enabled,
     string Layout = null,
     int? QueueShare = null,
-    string SecondRegion = null);
+    string SecondRegion = null,
+    int? AdvertisingPauseMinutes = null);
 
 /// <summary>One line of a display: a queue zone by name and its label per language.</summary>
 public sealed record DisplayEntryPartRow(string Zone, IReadOnlyDictionary<string, string> Labels);

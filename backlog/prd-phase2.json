@@ -182,7 +182,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 6,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. Split from ARV-143 on 2026-10-18. Notes carried from ARV-143: Size M. Owner request 2026-10-06 (Phase 2). From ARV-142b: the player fetches each item with the display credential (api/v1/display/advertising/{id}, which serves images and MP4 or WebM videos with their own types) and shows it from an object URL, an image in an img element and a video muted in a video element; the CSP already allows img-src and media-src blob: for this and nothing else. An item's length (durationMilliseconds) is in the library's view model. The length and picture size are what the item's container states (ARV-142b checks that the headers agree but does not decode the media): the player ends each item at its slot's end whatever the media holds.",
       "dependsOn": [
         "ARV-143a"

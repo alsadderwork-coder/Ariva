@@ -255,6 +255,16 @@
 												? $_('displays.advertisingFallsBack')
 												: $_('displays.advertisingShown')}
 										</div>
+										<div
+											class="text-muted-foreground"
+											data-testid="display-advertising-pause-summary"
+										>
+											{display.advertisingPauseMinutes == null
+												? $_('displays.advertisingPauseNever')
+												: $_('displays.advertisingPauseSummary', {
+														values: { minutes: display.advertisingPauseMinutes }
+													})}
+										</div>
 									{/if}</td
 								>
 								<td class="px-4 py-2 font-mono text-xs">{display.credentialPrefix ?? ''}…</td>

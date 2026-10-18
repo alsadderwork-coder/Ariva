@@ -2,7 +2,7 @@
 	interface Props {
 		id: string;
 		label: string;
-		value: string | number;
+		value: string | number | null;
 		type?: 'text' | 'number';
 		required?: boolean;
 		maxlength?: number;
@@ -13,6 +13,8 @@
 		hint?: string;
 		uppercase?: boolean;
 		readonly?: boolean;
+		/** A stable test id on the input. */
+		testid?: string;
 	}
 
 	let {
@@ -28,7 +30,8 @@
 		pattern,
 		hint,
 		uppercase = false,
-		readonly = false
+		readonly = false,
+		testid
 	}: Props = $props();
 </script>
 
@@ -51,6 +54,7 @@
 		spellcheck="false"
 		autocapitalize={uppercase ? 'characters' : 'off'}
 		aria-describedby={hint ? `${id}-hint` : undefined}
+		data-testid={testid}
 		class="h-9 min-w-0 rounded-md border border-input bg-background px-2.5 text-sm read-only:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
 	/>
 	{#if hint}<p id="{id}-hint" class="text-xs text-muted-foreground">{hint}</p>{/if}

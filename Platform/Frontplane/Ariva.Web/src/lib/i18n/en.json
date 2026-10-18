@@ -1081,7 +1081,8 @@
 			"layoutGroup": "Screen layout",
 			"layout": "Layout",
 			"queueShare": "Queue region (% of the screen)",
-			"secondRegion": "Second region"
+			"secondRegion": "Second region",
+			"advertisingPause": "Advertising gives way to instructions at a wait of (minutes, optional)"
 		},
 		"hints": {
 			"hysteresis": "The band changes only when the wait leaves it by this much.",
@@ -1089,7 +1090,8 @@
 			"order": "Shown in this order: {order}",
 			"queueShare": "Between 50 and 75. The queues come first in the reading order of the board's first language, and on top on a portrait screen.",
 			"secondRegion": "Advertising is off for this site or for one of these zones (the site's advertising policy).",
-			"secondRegionAllowed": "The site's advertising policy allows advertising for these zones."
+			"secondRegionAllowed": "The site's advertising policy allows advertising for these zones.",
+			"advertisingPause": "{min} to {max}. When the wait of any queue on the board reaches it, the second region shows instructions until every queue is below it by the hysteresis. Empty: never."
 		},
 		"orientations": {
 			"Landscape": "Landscape",
@@ -1119,7 +1121,9 @@
 			"Split": "Split screen, queues {share}%"
 		},
 		"advertisingShown": "Second region: advertising",
-		"advertisingFallsBack": "Second region: advertising is off, instructions shown"
+		"advertisingFallsBack": "Second region: advertising is off, instructions shown",
+		"advertisingPauseSummary": "Advertising gives way to instructions at a wait of {minutes} minutes",
+		"advertisingPauseNever": "Advertising plays whatever the wait"
 	},
 	"advertising": {
 		"title": "Advertising policy",

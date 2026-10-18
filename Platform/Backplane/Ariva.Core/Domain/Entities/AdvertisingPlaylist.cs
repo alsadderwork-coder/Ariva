@@ -85,6 +85,37 @@ public class AdvertisingPlaylist : BaseAuditableEntity<AdvertisingPlaylist>, ISi
         }, Display.Json);
 
     internal static string ItemsJson(IEnumerable<AdvertisingPlaylistItem> items) => JsonSerializer.Serialize((items ?? []).ToList(), Display.Json);
+
+    /// <summary>
+    /// One cycle of a playlist as a display plays it (ARV-143b): the items' indexes in playing order, each item as many times
+    /// as its weight, so its share of airtime is its weight times its slot. The repeats are spread through the cycle by
+    /// smooth weighted round robin (the item furthest behind its share plays next; the earlier item on a tie), so weights of
+    /// 2 and 1 play A, B, A rather than A, A, B. A cycle holds at most 40 items of weight 10: 400 places.
+    /// </summary>
+    public static IReadOnlyList<int> PlayingOrder(IReadOnlyList<int> weights)
+    {
+        ArgumentNullException.ThrowIfNull(weights);
+        if (weights.Count > MaxItems || weights.Any(w => w is < MinWeight or > MaxWeight))
+            throw new ArgumentException($"A playlist plays 0 to {MaxItems} items of weight {MinWeight} to {MaxWeight}.", nameof(weights));
+        var total = weights.Sum();
+        var credit = new int[weights.Count];
+        var order = new List<int>(total);
+        for (var place = 0; place < total; place++)
+        {
+            var next = 0;
+            for (var i = 0; i < weights.Count; i++)
+            {
+                credit[i] += weights[i];
+                if (credit[i] > credit[next])
+                    next = i;
+            }
+
+            credit[next] -= total;
+            order.Add(next);
+        }
+
+        return order;
+    }
 }
 
 /// <summary>

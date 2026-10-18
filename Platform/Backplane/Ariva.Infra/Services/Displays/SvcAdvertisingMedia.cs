@@ -179,7 +179,8 @@ internal sealed class SvcAdvertisingMedia(
         var display = await QueryAsNoTracking<Display>()
             .Where(d => d.Id == displayId && d.DeletedOn == null && d.Enabled && d.CredentialPrefix == credentialPrefix)
             .FirstOrDefaultAsync(ct);
-        if (display is null || display.SecondRegion != DisplaySecondRegion.Advertising || id == Guid.Empty)
+        // Only a display that can play advertising: split, with its second region set to advertising (as the board, ARV-143b).
+        if (display is null || display.SecondRegion != DisplaySecondRegion.Advertising || display.Layout != DisplayLayout.Split || id == Guid.Empty)
             return Result.Error<AdvertisingMediaContent>(TopologyErrors.NotFound);
         // The display's own site only: an item of another site is not found, whatever its id (IDOR).
         var item = await QueryAsNoTracking<AdvertisingMedia>().Where(m => m.Id == id && m.SiteCode == display.SiteCode).FirstOrDefaultAsync(ct);

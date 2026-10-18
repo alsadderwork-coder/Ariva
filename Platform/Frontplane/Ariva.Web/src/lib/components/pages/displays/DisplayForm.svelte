@@ -44,6 +44,11 @@
 	let layout = $state<string>(start?.layout ?? 'Full');
 	let queueShare = $state<number | string>(start?.queueShare ?? displays.queueShare.default);
 	let secondRegion = $state<string>(start?.secondRegion ?? 'Instructions');
+	/**
+	 * ARV-143b: the wait at which advertising gives way to instructions; empty for never. Kept while the display shows
+	 * instructions, as the server keeps it.
+	 */
+	let pauseMinutes = $state<number | string | null>(start?.advertisingPauseMinutes ?? '');
 	/** Whether the site's policy allows advertising for every zone this display shows; the server checks it again. */
 	const advertisingAllowed = $derived(
 		advertisingApi.allowsDisplayOf(
@@ -85,7 +90,9 @@
 			enabled,
 			layout,
 			queueShare: Number(queueShare),
-			secondRegion
+			secondRegion,
+			advertisingPauseMinutes:
+				pauseMinutes === null || String(pauseMinutes).trim() === '' ? null : Number(pauseMinutes)
 		});
 		busy = false;
 	}
@@ -216,6 +223,22 @@
 						: $_('displays.hints.secondRegion')}
 				</p>
 			</div>
+			{#if secondRegion === 'Advertising'}
+				<!-- ARV-143b: the wait rule; the server checks the range again and the player holds it with the hysteresis. -->
+				<FormField
+					id="display-advertising-pause"
+					testid="display-advertising-pause"
+					type="number"
+					label={$_('displays.fields.advertisingPause')}
+					hint={$_('displays.hints.advertisingPause', {
+						values: { min: displays.advertisingPause.min, max: displays.advertisingPause.max }
+					})}
+					bind:value={pauseMinutes}
+					min={displays.advertisingPause.min}
+					max={displays.advertisingPause.max}
+					step={1}
+				/>
+			{/if}
 		{/if}
 	</fieldset>
 

@@ -191,7 +191,7 @@ public static class SiteConfigurationTransfer
             !string.IsNullOrWhiteSpace(r.EscalationContact), r.NotifyByEmail, r.Enabled, r.LeadMinutes)).ToList();
         var displayRows = displays.Select(d => new DisplayPartRow(d.Code, d.Name, d.Location, d.Orientation.ToString(), [.. d.LanguageList], d.BandMinutes,
             d.HysteresisMinutes, d.StaleSeconds, [.. d.EntryList.Select(e => new DisplayEntryPartRow(e.Zone, e.Labels))], d.FallbackMap, d.Enabled,
-            d.Layout.ToString(), d.QueueShare, d.SecondRegion.ToString())).ToList();
+            d.Layout.ToString(), d.QueueShare, d.SecondRegion.ToString(), d.AdvertisingPauseMinutes)).ToList();
 
         var counts = new SiteConfigurationCountsViewModel(topology.Terminals.Count, topology.Levels.Count, topology.Checkpoints.Count, topology.Desks.Count,
             mappings.Count, profile?.Zones.Count ?? 0, profile?.Lines.Count ?? 0, planRows.Count, deviceRows.Count, ruleRows.Count, displayRows.Count);
@@ -328,7 +328,8 @@ public static class SiteConfigurationTransfer
                 row.StaleSeconds, [.. row.Entries.Select(e => new DisplayEntry(e.Zone, e.Labels))], row.Fallback, row.Enabled,
                 row.Layout is null ? DisplayLayout.Full : SiteConfigurationRules.ParseKind<DisplayLayout>(row.Layout).GetValueOrDefault(),
                 row.QueueShare ?? DisplayValues.DefaultQueueShare,
-                row.SecondRegion is null ? DisplaySecondRegion.Instructions : SiteConfigurationRules.ParseKind<DisplaySecondRegion>(row.SecondRegion).GetValueOrDefault())));
+                row.SecondRegion is null ? DisplaySecondRegion.Instructions : SiteConfigurationRules.ParseKind<DisplaySecondRegion>(row.SecondRegion).GetValueOrDefault(),
+                row.AdvertisingPauseMinutes)));
             if (built is not null)
                 return Result.Error<SiteConfigurationPlan>(built);
             if (display.SecondRegion == DisplaySecondRegion.Advertising)

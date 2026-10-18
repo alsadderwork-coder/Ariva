@@ -238,6 +238,51 @@ public static class AdvertisingSchedules
         return segments;
     }
 
+    /// <summary>The furthest a board looks ahead: a display's longest stale threshold (ARV-058), 30 minutes.</summary>
+    public static readonly TimeSpan MaxHorizon = TimeSpan.FromSeconds(DisplayValues.MaxStale);
+
+    /// <summary>
+    /// What applies to a display at <paramref name="nowUtc"/> and until when (ARV-143b): the first later minute whose outcome
+    /// differs, looked for at most <paramref name="horizon"/> ahead (the display's stale threshold, at most 30 minutes, so a
+    /// board costs at most 30 steps) and never past the site's next local midnight (an advertisement's dates turn then). A
+    /// player that loses the server stops the plan by then, so it never plays one that would have changed, nor one older
+    /// than its board may be.
+    /// </summary>
+    public static (AdvertisingSchedule Schedule, DateTime UntilUtc) Now(IEnumerable<AdvertisingSchedule> schedules, IReadOnlySet<Guid> activePlaylists,
+        string siteCode, string displayCode, IReadOnlyCollection<string> zones, TimeZoneInfo zone, DateTime nowUtc, TimeSpan horizon)
+    {
+        ArgumentNullException.ThrowIfNull(zone);
+        if (nowUtc.Kind != DateTimeKind.Utc)
+            throw new ArgumentException("A board is judged at a UTC instant.", nameof(nowUtc));
+        if (horizon <= TimeSpan.Zero || horizon > MaxHorizon)
+            throw new ArgumentOutOfRangeException(nameof(horizon), "A board looks ahead up to 30 minutes.");
+        var candidates = Candidates(schedules, activePlaylists, siteCode, displayCode, zones);
+        var midnight = NextLocalMidnightUtc(nowUtc, zone);
+        var end = nowUtc + horizon < midnight ? nowUtc + horizon : midnight;
+        if (candidates.Count == 0)
+            return (null, end);
+        var current = Pick(candidates, TimeZoneInfo.ConvertTimeFromUtc(nowUtc, zone));
+        var minute = new DateTime(nowUtc.Ticks - (nowUtc.Ticks % TimeSpan.TicksPerMinute), DateTimeKind.Utc);
+        for (var instant = minute.AddMinutes(1); instant < end; instant = instant.AddMinutes(1))
+        {
+            if (!ReferenceEquals(Pick(candidates, TimeZoneInfo.ConvertTimeFromUtc(instant, zone)), current))
+                return (current, instant);
+        }
+
+        return (current, end);
+    }
+
+    /// <summary>The instant the site's next local day starts: midnight, or the first minute after it when the clocks skip midnight.</summary>
+    public static DateTime NextLocalMidnightUtc(DateTime nowUtc, TimeZoneInfo zone)
+    {
+        ArgumentNullException.ThrowIfNull(zone);
+        var local = DateTime.SpecifyKind(TimeZoneInfo.ConvertTimeFromUtc(nowUtc, zone).Date.AddDays(1), DateTimeKind.Unspecified);
+        while (zone.IsInvalidTime(local))
+            local = local.AddMinutes(1);
+        var utc = TimeZoneInfo.ConvertTimeToUtc(local, zone);
+        return utc > nowUtc ? utc : nowUtc.AddMinutes(1);
+    }
+
     private static List<Candidate> Candidates(IEnumerable<AdvertisingSchedule> schedules, IReadOnlySet<Guid> activePlaylists, string siteCode,
         string displayCode, IReadOnlyCollection<string> zones)
     {

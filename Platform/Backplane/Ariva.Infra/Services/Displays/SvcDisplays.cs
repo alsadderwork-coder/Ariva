@@ -123,7 +123,7 @@ internal sealed class SvcDisplays(
 
         var values = new DisplayValues(request.Name, request.Location, orientation, request.Languages ?? [], request.BandMinutes, request.HysteresisMinutes,
             request.StaleSeconds, (request.Entries ?? []).Select(e => e is null ? null : new DisplayEntry(e.Zone, e.Labels)).ToList(),
-            request.Fallback, request.Enabled, layout, request.QueueShare, secondRegion);
+            request.Fallback, request.Enabled, layout, request.QueueShare, secondRegion, request.AdvertisingPauseMinutes);
         problems.AddRange(values.Problems());
         if (problems.Count > 0)
             return (values, problems);
@@ -153,5 +153,5 @@ internal sealed class SvcDisplays(
     internal static DisplayViewModel View(Display d) =>
         new(d.Id.GetValueOrDefault(), d.SiteCode, d.Code, d.Name, d.Location, d.Orientation.ToString(), d.LanguageList, d.BandMinutes, d.HysteresisMinutes,
             d.StaleSeconds, d.EntryList.Select(e => new DisplayEntryViewModel(e.Zone, e.Labels)).ToList(), d.FallbackMap, d.Enabled, d.Layout.ToString(),
-            d.QueueShare, d.SecondRegion.ToString(), d.CredentialPrefix, d.CredentialIssuedOn, d.CreatedOn, d.ModifiedOn);
+            d.QueueShare, d.SecondRegion.ToString(), d.AdvertisingPauseMinutes, d.CredentialPrefix, d.CredentialIssuedOn, d.CreatedOn, d.ModifiedOn);
 }

@@ -277,11 +277,23 @@ export function accounts() {
 		planAdmin: account('e2e.planadmin', ['SystemAdministrator'], false, true, ['*']),
 		planManager: account('e2e.planmanager', ['TerminalDutyManager'], false, false, ['*']),
 		planElsewhere: account('e2e.planelse', ['TerminalDutyManager'], false, false, ['E2E2']),
+		// ARV-143b: the board's playlist through the API at sites of their own. The administrator creates the sites, turns
+		// advertising on and off and creates the displays (second factor); a duty manager uploads and plans with a password
+		// only; a second duty manager approves the images (second factor: approving is critical).
+		boardAdmin: account('e2e.boardadmin', ['SystemAdministrator'], false, true, ['*']),
+		boardManager: account('e2e.boardmgr', ['TerminalDutyManager'], false, false, ['*']),
+		boardApprover: account('e2e.boardappr', ['TerminalDutyManager'], false, true, ['*']),
 		// ARV-143a: the Advertising screen (functional/advertising-plans.spec.ts) at sites of its own. The administrator creates the
 		// sites, turns advertising on for one, creates the display and the slide and approves the image (second factor); a duty
 		// manager plans on the screen with a password only and uploads the two images.
 		planWebAdmin: account('e2e.planwebadmin', ['SystemAdministrator'], false, true, ['*']),
 		planWebManager: account('e2e.planwebmgr', ['TerminalDutyManager'], false, false, ['*']),
+		// ARV-143b: the display player's advertising (functional/advertising-player.spec.ts) at a site of its own. The administrator
+		// creates the site, allows advertising and turns it off again, creates the display and the slide and approves the images
+		// and the video as the second person (second factor); a duty manager uploads (four items a run), plans, sets the display's
+		// wait rule and edits it on the screen with a password only.
+		playerAdmin: account('e2e.playeradmin', ['SystemAdministrator'], false, true, ['*']),
+		playerManager: account('e2e.playermgr', ['TerminalDutyManager'], false, false, ['*']),
 		// ARV-104a: validation campaigns at E2EV. The manager drafts and publishes the site's zone profile and closes campaigns
 		// (both need a second factor); the lead plans and starts them with a password only (closing answers 401 for its second
 		// factor); a second observer of the site, and an observer of E2E1 for the cross-site answers.

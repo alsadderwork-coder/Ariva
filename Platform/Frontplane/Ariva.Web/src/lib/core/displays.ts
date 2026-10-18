@@ -27,6 +27,12 @@ export const layouts = ['Full', 'Split'] as const;
 export const secondRegions = ['Instructions', 'Advertising'] as const;
 export const queueShare = { min: 50, max: 75, default: 60 } as const;
 
+/**
+ * ARV-143b: the wait, in minutes, at which a display's advertising gives way to instructions (with the display's hysteresis);
+ * none means never. The server applies the same range.
+ */
+export const advertisingPause = { min: 1, max: 240 } as const;
+
 export interface DisplayEntry {
 	zone: string;
 	labels: Record<string, string>;
@@ -49,6 +55,8 @@ export interface Display {
 	layout: 'Full' | 'Split' | string;
 	queueShare: number;
 	secondRegion: 'Instructions' | 'Advertising' | string;
+	/** ARV-143b: the wait at which advertising gives way to instructions, or null for never. */
+	advertisingPauseMinutes: number | null;
 	credentialPrefix: string | null;
 	credentialIssuedOn: string | null;
 	createdOn: string | null;
@@ -71,6 +79,8 @@ export interface DisplayRequest {
 	layout: string;
 	queueShare: number;
 	secondRegion: string;
+	/** ARV-143b: 1 to 240, or null for never. */
+	advertisingPauseMinutes: number | null;
 }
 
 export interface Issued {
@@ -138,6 +148,36 @@ export interface Board {
 	pinnedSlide?: BoardSlide | null;
 	/** ARV-141: the slides the second region rotates, in the site's order; none means the default instructions. */
 	slides?: BoardSlide[];
+	/**
+	 * ARV-143b: the playlist the second region plays now, only while the display is split, set to advertising, the site's
+	 * policy allows it, a schedule applies and at least one item may play; otherwise null (instructions).
+	 */
+	advertising?: BoardAdvertising | null;
+}
+
+/** One item a display plays (ARV-143b): an advertisement fetched by its id, or an instruction slide. */
+export interface BoardAdvertisingItem {
+	kind: 'Media' | 'Slide' | string;
+	/** An advertisement's id (a GUID), fetched with the display's credential; null for a slide. */
+	mediaId: string | null;
+	/** The advertisement's type: image/png, image/jpeg, image/webp, video/mp4 or video/webm; null for a slide. */
+	contentType: string | null;
+	/** The item's slot, 1 to 120 seconds: the player ends it then, whatever its media holds. */
+	seconds: number;
+	/** A slide's icon and words in the display's languages; null for an advertisement. */
+	slide: BoardSlide | null;
+}
+
+/** The plan a display plays now (ARV-143b). */
+export interface BoardAdvertising {
+	playlistId: string;
+	/** When the plan next changes (at most the site's next local midnight): a player without a newer board stops it then. */
+	untilUtc: string;
+	/** The display's wait rule: advertising gives way to instructions at this wait (with the hysteresis); null for none. */
+	pauseMinutes: number | null;
+	items: BoardAdvertisingItem[];
+	/** One cycle: indexes into items, each item as often as its weight, already spread (weights 2 and 1 give [0, 1, 0]). */
+	order: number[];
 }
 
 /** An instruction slide as the player gets it (ARV-141): its icon's name, its time on screen, its words per display language. */
@@ -208,6 +248,47 @@ export async function board(code: string, credential: string): Promise<BoardAnsw
 		if (response.status === 401) return { refused: true };
 		if (!response.ok) return { failed: true };
 		return { board: (await response.json()) as Board };
+	} catch {
+		return { failed: true };
+	}
+}
+
+/** What the player learns from one advertisement request: its bytes, or that it cannot play now. */
+export type AdvertisementAnswer = { blob: Blob } | { failed: true };
+
+/** The most an advertisement may weigh as the player reads it (the server takes videos of at most 100 MB). */
+const maxAdvertisementBytes = 160 * 1024 * 1024;
+
+/**
+ * One advertisement as the player fetches it (ARV-143b): by the GUID its board gives, with the display's code in the query
+ * and its credential in the header, no user token and no cookie; the path is this API's own, never a URL from the board.
+ * The server answers 404 when the item may not play now, the site's policy is off or the display is not set to advertising;
+ * anything but a 200 is a failure, and the player shows instructions for that item's slot.
+ */
+export async function advertisement(
+	code: string,
+	credential: string,
+	mediaId: string,
+	signal?: AbortSignal
+): Promise<AdvertisementAnswer> {
+	if (!codePattern.test(code) || !guid.test(mediaId) || !credential) return { failed: true };
+	try {
+		const response = await fetch(
+			`${Endpoints.main.baseUrl}/api/v1/display/advertising/${mediaId}?code=${encodeURIComponent(code)}`,
+			{
+				headers: { 'X-Ariva-Display-Key': credential },
+				credentials: 'omit',
+				cache: 'no-store',
+				signal
+			}
+		);
+		const length = Number(response.headers.get('content-length') ?? '0');
+		if (response.status !== 200 || length > maxAdvertisementBytes) {
+			await response.body?.cancel().catch(() => undefined);
+			return { failed: true };
+		}
+		const blob = await response.blob();
+		return blob.size > 0 && blob.size <= maxAdvertisementBytes ? { blob } : { failed: true };
 	} catch {
 		return { failed: true };
 	}

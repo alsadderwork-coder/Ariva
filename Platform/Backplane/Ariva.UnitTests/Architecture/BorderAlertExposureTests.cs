@@ -215,10 +215,25 @@ public sealed class BorderAlertExposureTests
     public void DisplayBoard_Should_CarryNoAlertOrStaffingMember_When_Reflected()
     {
         // Passenger displays show nowcasts only (ARV-058): no alert, desk or staffing value reaches a public screen.
-        var names = new[] { typeof(DisplayBoardViewModel), typeof(DisplayBoardEntryViewModel) }.SelectMany(t => t.GetProperties()).Select(p => p.Name).ToList();
+        var names = new[]
+        {
+            typeof(DisplayBoardViewModel), typeof(DisplayBoardEntryViewModel), typeof(DisplayBoardAdvertisingViewModel), typeof(DisplayBoardAdvertisingItemViewModel)
+        }.SelectMany(t => t.GetProperties()).Select(p => p.Name).ToList();
 
         names.Should().NotBeEmpty();
         names.Should().NotContain(n => n.Contains("Alert", StringComparison.OrdinalIgnoreCase) || n.Contains("Staffing", StringComparison.OrdinalIgnoreCase) ||
                                        n.Contains("Desk", StringComparison.OrdinalIgnoreCase) || n.Contains("Recommend", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void DisplayBoard_Should_CarryNoNameOfAPlaylistAdvertiserOrPerson_When_ItPlaysAdvertising()
+    {
+        // ARV-143b: a public screen gets ids, types, slots and the slides' words; never who planned, uploaded or approved what.
+        var names = new[] { typeof(DisplayBoardAdvertisingViewModel), typeof(DisplayBoardAdvertisingItemViewModel) }
+            .SelectMany(t => t.GetProperties()).Select(p => p.Name).ToList();
+
+        names.Should().Equal("PlaylistId", "UntilUtc", "PauseMinutes", "Items", "Order", "Kind", "MediaId", "ContentType", "Seconds", "Slide");
+        names.Should().NotContain(n => new[] { "Name", "Advertiser", "Campaign", "FileName", "CreatedBy", "ApprovedBy", "UploadedBy" }
+            .Any(word => n.Contains(word, StringComparison.OrdinalIgnoreCase)));
     }
 }

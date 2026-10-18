@@ -1,9 +1,10 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
+	import * as advertisingPlayer from '$lib/core/advertising-player';
 	import { nextBand, type Band } from '$lib/core/bands';
 	import * as displays from '$lib/core/displays';
 	import type { Board } from '$lib/core/displays';
-	import SecondRegion from '$lib/components/pages/displays/SecondRegion.svelte';
+	import AdvertisingRegion from '$lib/components/pages/displays/AdvertisingRegion.svelte';
 	import SlideView from '$lib/components/pages/displays/SlideView.svelte';
 	import ar from '$lib/i18n/board/ar.json';
 	import en from '$lib/i18n/board/en.json';
@@ -24,6 +25,11 @@
 	 *
 	 * ARV-141: the board also carries the instruction slides that apply to the display: the second region rotates them, and
 	 * one can be pinned under the waits in either layout. Their words are text, never markup.
+	 *
+	 * ARV-143b: a display set to advertising plays the plan its board carries in the second region (AdvertisingRegion), each
+	 * advertisement fetched with this page's credential by the GUID the board gives; the instructions are the fallback. The
+	 * wait rule is judged here on each good board, and the plan stops when the board goes stale or its end passes by the
+	 * server's clock (the board's serverUtc plus the time since it arrived).
 	 */
 	const dictionaries: Record<string, Record<string, string>> = { en, ar, pt, sw };
 	const rtl = new Set(['ar']);
@@ -48,6 +54,16 @@
 	let secondLoaded = $state(0);
 	/** The whole board is stale when the last good answer is older than the display's stale threshold. */
 	const boardStale = $derived(!board || now - lastOk > (board?.staleSeconds ?? 150) * 1000);
+	/** ARV-143b: the wait rule holds advertising back (judged on each good board, held between them). */
+	let advertisingPaused = $state(false);
+	/** The server's clock: the last board's serverUtc plus the time since it arrived. */
+	const serverClock = $derived(
+		board ? advertisingPlayer.serverNow(board.serverUtc, lastOk, now) : now
+	);
+	/** The plan only while the board says the second region shows advertising; otherwise the instructions. */
+	const advertisingPlan = $derived(
+		board?.secondRegion === 'Advertising' ? (board.advertising ?? null) : null
+	);
 
 	function words(
 		language: string,
@@ -90,8 +106,15 @@
 				entry.degraded
 			);
 		});
+		advertisingPaused = advertisingPlayer.nextPause(advertisingPaused, next);
 		board = next;
 		lastOk = now;
+	}
+
+	/** One advertisement for the second region, fetched with this display's credential (never handed to the component). */
+	async function advertisement(mediaId: string, signal: AbortSignal): Promise<Blob | null> {
+		const answer = await displays.advertisement(code, credential, mediaId, signal);
+		return 'blob' in answer ? answer.blob : null;
 	}
 
 	onMount(() => {
@@ -284,7 +307,7 @@
 		>
 			{@render queueView(board)}
 		</section>
-		<!-- ARV-145: the region the site's advertising policy allows now; the player shows instructions until advertising content exists (ARV-143). -->
+		<!-- ARV-145: the region the site's advertising policy allows now. ARV-143b: it plays the board's plan, with the instructions as the fallback. -->
 		<aside
 			data-testid="board-second-region"
 			data-second-region={board.secondRegion}
@@ -295,10 +318,15 @@
 			]}
 		>
 			<svelte:boundary>
-				<SecondRegion
+				<AdvertisingRegion
+					plan={advertisingPlan}
+					stale={boardStale}
+					paused={advertisingPaused}
+					serverNow={serverClock}
 					languages={board.languages}
 					{rtl}
 					slides={board.slides ?? []}
+					load={advertisement}
 					onchanged={() => secondLoaded++}
 				/>
 				{#snippet failed()}

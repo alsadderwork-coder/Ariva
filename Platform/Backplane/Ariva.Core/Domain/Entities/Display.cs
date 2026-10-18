@@ -75,6 +75,13 @@ public class Display : BaseSoftDeletableEntity<Display>, ISiteBound
     /// <summary>What the second region of a split layout shows.</summary>
     public virtual DisplaySecondRegion SecondRegion { get; protected set; }
 
+    /// <summary>
+    /// The wait, in minutes, at which advertising gives way to instructions (ARV-143b): when the nowcast of any queue zone
+    /// the display shows reaches it, the second region shows instructions until every one is below it by the hysteresis.
+    /// Null: no such rule. Kept, unused, while the display shows no advertising.
+    /// </summary>
+    public virtual int? AdvertisingPauseMinutes { get; protected set; }
+
     /// <summary>The first characters of the player's credential, to find the display and to show administrators.</summary>
     public virtual string CredentialPrefix { get; protected set; }
 
@@ -107,6 +114,7 @@ public class Display : BaseSoftDeletableEntity<Display>, ISiteBound
         Layout = values.Layout;
         QueueShare = values.QueueShare;
         SecondRegion = values.SecondRegion;
+        AdvertisingPauseMinutes = values.AdvertisingPauseMinutes;
     }
 
     /// <summary>A new credential replaces the old one at once.</summary>
@@ -122,14 +130,15 @@ public class Display : BaseSoftDeletableEntity<Display>, ISiteBound
 
     public virtual DisplayValues Values() =>
         new(Name, Location, Orientation, LanguageList, BandMinutes, HysteresisMinutes, StaleSeconds, EntryList, FallbackMap, Enabled, Layout, QueueShare,
-            SecondRegion);
+            SecondRegion, AdvertisingPauseMinutes);
 
     /// <summary>What the audit trail keeps of a display: its values, never its credential.</summary>
     public virtual string AuditSummary() =>
         JsonSerializer.Serialize(new
         {
             Code, SiteCode, Name, Location, Orientation = Orientation.ToString(), Languages, BandMinutes, HysteresisMinutes, StaleSeconds, Enabled,
-            Layout = Layout.ToString(), QueueShare, SecondRegion = SecondRegion.ToString(), Zones = EntryList.Select(e => e.Zone).ToList(), CredentialPrefix
+            Layout = Layout.ToString(), QueueShare, SecondRegion = SecondRegion.ToString(), AdvertisingPauseMinutes, Zones = EntryList.Select(e => e.Zone).ToList(),
+            CredentialPrefix
         }, Json);
 
     /// <summary>
@@ -151,7 +160,10 @@ public sealed record DisplayEntry(string Zone, IReadOnlyDictionary<string, strin
         new(Zone.Trim(), Labels.ToDictionary(p => p.Key, p => p.Value.Trim(), StringComparer.Ordinal));
 }
 
-/// <summary>A display's settings as checked values (ARV-058; the layout, ARV-140, defaults to the full queue view).</summary>
+/// <summary>
+/// A display's settings as checked values (ARV-058; the layout, ARV-140, defaults to the full queue view; the wait at which
+/// advertising gives way to instructions, ARV-143b, to none).
+/// </summary>
 public sealed record DisplayValues(
     string Name,
     string Location,
@@ -165,9 +177,12 @@ public sealed record DisplayValues(
     bool Enabled,
     DisplayLayout Layout = DisplayLayout.Full,
     int QueueShare = DisplayValues.DefaultQueueShare,
-    DisplaySecondRegion SecondRegion = DisplaySecondRegion.Instructions)
+    DisplaySecondRegion SecondRegion = DisplaySecondRegion.Instructions,
+    int? AdvertisingPauseMinutes = null)
 {
     public const int MinBand = 1;
+    public const int MinPauseMinutes = 1;
+    public const int MaxPauseMinutes = 240;
     public const int MaxBand = 30;
     public const int MinStale = 60;
     public const int MaxStale = 1800;
@@ -198,6 +213,8 @@ public sealed record DisplayValues(
         // database check: a value alone cannot tell.
         if (!Enum.IsDefined(SecondRegion))
             problems.Add("The second region shows Instructions or Advertising.");
+        if (AdvertisingPauseMinutes is < MinPauseMinutes or > MaxPauseMinutes)
+            problems.Add($"Advertising gives way to instructions at a wait of {MinPauseMinutes} to {MaxPauseMinutes} minutes, or never.");
         var languages = Languages ?? [];
         if (languages.Count is 0 or > 4 || languages.Distinct(StringComparer.Ordinal).Count() != languages.Count ||
             languages.Any(l => !Enumerable.Contains(Display.SupportedLanguages, l, StringComparer.Ordinal)))
