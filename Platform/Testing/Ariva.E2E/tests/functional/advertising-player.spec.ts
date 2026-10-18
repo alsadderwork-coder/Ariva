@@ -621,6 +621,8 @@ test("proof of play: the plays shown go in one batch, started by the server's cl
 	// instead, an image whose bytes came late left time for fewer plays, and the server refused it as completed (CI, 2026-10-18).
 	let warm = false;
 	let anchor: number | null = null;
+	/** When each board left for the player (its serverUtc), for the timeline a failure prints. */
+	const boards: number[] = [];
 	const player = await openPlayer(
 		browser,
 		(page) =>
@@ -635,6 +637,7 @@ test("proof of play: the plays shown go in one batch, started by the server's cl
 					// board would move it ahead by as much, ending the plan seconds early (CI, 2026-10-18; a late board moving the
 					// clock back is ARV-197's).
 					body.serverUtc = new Date().toISOString();
+					boards.push(Date.parse(body.serverUtc));
 					if (body.advertising && !warm) {
 						body.advertising.order = [1, 0];
 						body.advertising.untilUtc = new Date(Date.parse(body.serverUtc) + 60_000).toISOString();
@@ -694,7 +697,15 @@ test("proof of play: the plays shown go in one batch, started by the server's cl
 
 		// From the restart on: started by the server's clock, a slot apart; each slot's time on screen.
 		const after = sent.plays.filter((play) => Date.parse(play.startedUtc) >= anchor!);
-		expect(after.map((play) => play.mediaId), 'the advertisements shown after the restart, in order').toEqual([imageA, imageB, imageA]);
+		// The boards, every play by its start from the restart, its time on screen and whether it completed, and the region's
+		// slots by this machine's clock: what a failure on a slow runner needs to be read without its trace.
+		const name = (id: string) => (id === imageA ? 'A' : id === imageB ? 'B' : id);
+		const timeline = [
+			...boards.map((at) => `board@${at - anchor!}`),
+			...sent.plays.map((play) => `${name(play.mediaId)}@${Date.parse(play.startedUtc) - anchor!}+${play.durationMilliseconds}${play.completed ? 'c' : 'x'}`),
+			...slotsOf(await playbackLog(page)).map((s) => `slot ${s.slot}@${s.start - anchor!}..${s.end === null ? '' : s.end - anchor!}[${[...s.media].map(name).join(',')}|${[...s.reasons].join(',')}]`)
+		].join(' ');
+		expect(after.map((play) => play.mediaId), `the advertisements shown after the restart, in order: ${timeline}`).toEqual([imageA, imageB, imageA]);
 		const [first, second, third] = after;
 		const starts = after.map((play) => Date.parse(play.startedUtc));
 		expect(starts[0] - anchor!, 'A was held: it showed as the plan started again').toBeLessThan(1_000);
