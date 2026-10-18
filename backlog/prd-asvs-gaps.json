@@ -105,26 +105,69 @@
       ]
     },
     {
-      "id": "ARV-083",
-      "title": "[ASVS] Per-service backend identities and least privilege",
-      "description": "Every host shares one database login, one Kafka principal and one base settings secret. Give each host its own identity with only the grants and secrets it needs. ASVS 5.0: V13.2.1, V13.2.2, V13.3.2, V13.3.1. Effort L.",
+      "id": "ARV-083a",
+      "title": "[ASVS] Per-host database logins with least-privilege grants",
+      "description": "Split from ARV-083. Every host shares one runtime database login. Give each host its own login, member of a role with only the grants it needs, starting with Ingest and Stream, and run the availability ledger job under its own login. ASVS 5.0: V13.2.1, V13.2.2, V13.3.2 (database part). Effort M.",
       "acceptanceCriteria": [
-        "One database login and one Kafka principal per host, with grants limited to the tables and topics each uses, starting with Ingest and Stream; Redis ACL users",
-        "base-appsettings-secret split so each pod mounts only its own credentials; the Kafka password only where Kafka is used",
-        "A chart test fails a pod that mounts another host's credentials",
-        "Secrets are created, rotated and destroyed through a vault or the External Secrets Operator",
+        "One database login per host (api-main, api-ingest, api-stream, api-cronz, api-integration), each a member of its own role with grants limited to the tables and sequences that host reads or writes (derived from the code and checked by a test), created and granted by the versioned scripts and the migration job, never by SchemaUpdate",
+        "The availability ledger job (Ariva.Api.Cronz) runs under its own database login holding INSERT on availability_minute and INSERT and UPDATE on availability_cursor; the runtime login of every other host loses those rights, so a compromised host cannot record minutes ahead of the job or move a site's cursor past minutes (owner decision 2026-10-10, raised by the ARV-150 security review: the risk dates from ARV-118); an integration test as the runtime login shows both refused",
+        "An integration test logs in as each host's login and shows a write it does not need refused (at least: Ingest cannot write configuration tables, Stream cannot write accounts, every host but Cronz cannot write availability_minute or availability_cursor)",
+        "The chart gives each host its own database password secret and the hosts read only their own; the database-migration job sets automountServiceAccountToken: false",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "node scripts/security/scan.mjs passes with 0 errors",
         "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
         "security-reviewer verdict PASS recorded in backlog/progress.md",
-        "The availability ledger job (Ariva.Api.Cronz) runs under its own database login holding INSERT on availability_minute and INSERT and UPDATE on availability_cursor; the runtime login of every other host loses those rights, so a compromised host cannot record minutes ahead of the job or move a site's cursor past minutes (owner decision 2026-10-10, raised by the ARV-150 security review: the risk dates from ARV-118); an integration test as the runtime login shows both refused",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 103,
       "passes": false,
-      "notes": "2026-10-18 (found while documenting ARV-082b): nothing in k8s-prd requires Kafka:SslCaLocation; MessagingExtensions applies the CA only when it is set and checks only for SaslSsl, so a site settings file without it trusts the brokers through librdkafka's default store. Decide with the owner whether a site's brokers always use the internal CA (then refuse to start without the CA file, as ARV-082a does for PostgreSQL and Redis) or may use a public CA (then document which). ASVS V12.3.4 stays Partly for this. 2026-10-10: owner folded the ARV-118 availability ledger rights into this story (see the criterion). 2026-10-13 (ARV-171 security review): every host registers every topic's dead-letter producer, because any host can lead the outbox relay and send a kept dead letter; so each per-service Kafka principal needs WRITE on every *.dlq.v1 topic, while READ on dead-letter topics stays with operators and the replay tool. 2026-10-18 (ARV-082a chart work, pre-existing): the database-migration job does not set automountServiceAccountToken: false, as the kafka-topics job does; it needs no Kubernetes API access.",
+      "notes": "Split from ARV-083 on 2026-10-18 (Effort L, three reviewable parts; the vault part needs the owner's choice of secret store). From ARV-083's notes: the database-migration job does not set automountServiceAccountToken: false (it needs no Kubernetes API access). 2026-10-10: owner folded the ARV-118 availability ledger rights into ARV-083 (now this story).",
       "dependsOn": [
         "ARV-074"
+      ]
+    },
+    {
+      "id": "ARV-083b",
+      "title": "[ASVS] Per-host Kafka principals, Redis ACL users and split settings secrets",
+      "description": "Split from ARV-083. Every host shares one Kafka principal and one base settings secret. Give each host its own Kafka principal with only the topics it uses, a Redis ACL user, and a settings secret holding only its own credentials. ASVS 5.0: V13.2.1, V13.2.2, V13.3.1. Effort M.",
+      "acceptanceCriteria": [
+        "One Kafka principal per host with ACLs limited to the topics it produces and consumes (every host WRITE on every *.dlq.v1 topic, READ on dead-letter topics only for operators and the replay tool), documented for the site's brokers and checked against KafkaTopics and the declared consumers by a test",
+        "Redis ACL users per host with only the commands and key prefixes each uses",
+        "base-appsettings-secret split so each pod mounts only its own credentials; the Kafka password only where Kafka is used",
+        "A chart test fails a pod that mounts another host's credentials",
+        "Decide with the owner whether a site's brokers always use the internal CA: then k8s-prd refuses to start without Kafka:SslCaLocation and its file, as ARV-082a does for PostgreSQL and Redis; otherwise document the public CA case",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 104,
+      "passes": false,
+      "notes": "Split from ARV-083 on 2026-10-18 (Effort L, three reviewable parts; the vault part needs the owner's choice of secret store). 2026-10-13 (ARV-171 security review): every host registers every topic's dead-letter producer, because any host can lead the outbox relay and send a kept dead letter; so each per-service Kafka principal needs WRITE on every *.dlq.v1 topic, while READ on dead-letter topics stays with operators and the replay tool. 2026-10-18 (found while documenting ARV-082b): nothing in k8s-prd requires Kafka:SslCaLocation; MessagingExtensions applies the CA only when it is set and checks only for SaslSsl. ASVS V12.3.4 stays Partly for this.",
+      "dependsOn": [
+        "ARV-083a"
+      ]
+    },
+    {
+      "id": "ARV-083c",
+      "title": "[ASVS] Secrets created, rotated and destroyed through a secret store",
+      "description": "Split from ARV-083. Ariva's secrets are created by hand with kubectl. Create, rotate and destroy them through the site's secret store (a vault or the External Secrets Operator). ASVS 5.0: V13.3.1, V13.3.2. Effort M. Needs the owner's choice of store (Azure Key Vault is postponed with the move to Azure).",
+      "acceptanceCriteria": [
+        "The owner chooses the store and the mechanism (for example the External Secrets Operator with the site's provider); recorded in docs/product/decisions.md",
+        "The chart renders the store's resources for every Ariva secret when a site enables it, with a chart test; plain secrets stay possible for dev and demo",
+        "Rotation and destruction procedures in the operations runbook, with what each host does when its secret changes",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 110,
+      "passes": false,
+      "notes": "Split from ARV-083 on 2026-10-18 (Effort L, three reviewable parts; the vault part needs the owner's choice of secret store).",
+      "dependsOn": [
+        "ARV-083b"
       ]
     },
     {
