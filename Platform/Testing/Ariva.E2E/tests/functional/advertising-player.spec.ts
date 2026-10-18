@@ -193,9 +193,42 @@ async function recordPlayback(page: Page): Promise<void> {
 	await page.addInitScript(() => {
 		const log: Record<string, string | number>[] = [];
 		const errors: string[] = [];
-		const target = window as unknown as { __arivaPlayback: typeof log; __arivaMediaErrors: string[] };
+		const events: string[] = [];
+		const target = window as unknown as { __arivaPlayback: typeof log; __arivaMediaErrors: string[]; __arivaMediaEvents: string[] };
 		target.__arivaPlayback = log;
 		target.__arivaMediaErrors = errors;
+		target.__arivaMediaEvents = events;
+		// What the region's images did, by this machine's clock: each one inserted (and whether the browser already had its
+		// bytes), loaded or failed, with the region's slot then; and each change of the page's play counters. A failure's
+		// timeline prints them (the proof of play test).
+		const slotNow = () => document.querySelector('[data-testid="board-advertising"]')?.getAttribute('data-slot') ?? '';
+		const describe = (image: HTMLImageElement) =>
+			`${image.getAttribute('data-media-id') ?? ''} slot ${slotNow()} complete ${image.complete} width ${image.naturalWidth}`;
+		for (const type of ['load', 'error']) {
+			document.addEventListener(
+				type,
+				(event) => {
+					const element = event.target as HTMLElement | null;
+					if (element?.getAttribute?.('data-testid') === 'board-advertising-image') events.push(`${Date.now()} ${type} ${describe(element as HTMLImageElement)}`);
+				},
+				true
+			);
+		}
+		new MutationObserver((changes) => {
+			for (const change of changes)
+				for (const node of Array.from(change.addedNodes)) {
+					if (!(node instanceof Element)) continue;
+					const images = [node, ...Array.from(node.querySelectorAll('img'))].filter(
+						(element): element is HTMLImageElement =>
+							element instanceof HTMLImageElement && element.getAttribute('data-testid') === 'board-advertising-image'
+					);
+					for (const image of images) {
+						events.push(`${Date.now()} insert ${describe(image)}`);
+						requestAnimationFrame(() => events.push(`${Date.now()} frame ${describe(image)}`));
+					}
+				}
+		}).observe(document, { childList: true, subtree: true });
+		let counters = '';
 		document.addEventListener(
 			'error',
 			(event) => {
@@ -220,12 +253,19 @@ async function recordPlayback(page: Page): Promise<void> {
 			};
 			const last = log.at(-1);
 			if (!last || Object.keys(entry).some((key) => last[key] !== entry[key])) log.push({ ...entry, at: Date.now() });
+			const board = document.querySelector('[data-testid="board"]');
+			const now = `queued ${board?.getAttribute('data-plays-queued') ?? ''} sent ${board?.getAttribute('data-plays-sent') ?? ''}`;
+			if (now !== counters) events.push(`${Date.now()} ${(counters = now)}`);
 		}, 100);
 	});
 }
 
 async function playbackLog(page: Page): Promise<Entry[]> {
 	return page.evaluate(() => [...((window as unknown as { __arivaPlayback?: Entry[] }).__arivaPlayback ?? [])]);
+}
+
+async function mediaEvents(page: Page): Promise<string[]> {
+	return page.evaluate(() => [...((window as unknown as { __arivaMediaEvents?: string[] }).__arivaMediaEvents ?? [])]);
 }
 
 async function mediaErrors(page: Page): Promise<string[]> {
@@ -703,8 +743,12 @@ test("proof of play: the plays shown go in one batch, started by the server's cl
 		const timeline = [
 			...boards.map((at) => `board@${at - anchor!}`),
 			...sent.plays.map((play) => `${name(play.mediaId)}@${Date.parse(play.startedUtc) - anchor!}+${play.durationMilliseconds}${play.completed ? 'c' : 'x'}`),
-			...slotsOf(await playbackLog(page)).map((s) => `slot ${s.slot}@${s.start - anchor!}..${s.end === null ? '' : s.end - anchor!}[${[...s.media].map(name).join(',')}|${[...s.reasons].join(',')}]`)
-		].join(' ');
+			...slotsOf(await playbackLog(page)).map((s) => `slot ${s.slot}@${s.start - anchor!}..${s.end === null ? '' : s.end - anchor!}[${[...s.media].map(name).join(',')}|${[...s.reasons].join(',')}]`),
+			...(await mediaEvents(page)).map((event) => {
+				const [at, ...rest] = event.split(' ');
+				return `${Number(at) - anchor!}:${rest.join(' ').replace(imageA, 'A').replace(imageB, 'B')}`;
+			})
+		].join(' | ');
 		expect(after.map((play) => play.mediaId), `the advertisements shown after the restart, in order: ${timeline}`).toEqual([imageA, imageB, imageA]);
 		const [first, second, third] = after;
 		const starts = after.map((play) => Date.parse(play.startedUtc));
