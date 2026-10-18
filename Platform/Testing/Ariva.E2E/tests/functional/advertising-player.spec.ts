@@ -630,6 +630,11 @@ test("proof of play: the plays shown go in one batch, started by the server's cl
 					const response = await route.fetch();
 					if (response.status() !== 200) return route.fulfill({ response });
 					const body = await response.json();
+					// The board's server time as it reaches the player (this machine's clock): the time the server spends composing it
+					// and this route's own hop would put the player's clock behind by seconds on a slow runner, and the next, quicker
+					// board would move it ahead by as much, ending the plan seconds early (CI, 2026-10-18; a late board moving the
+					// clock back is ARV-197's).
+					body.serverUtc = new Date().toISOString();
 					if (body.advertising && !warm) {
 						body.advertising.order = [1, 0];
 						body.advertising.untilUtc = new Date(Date.parse(body.serverUtc) + 60_000).toISOString();

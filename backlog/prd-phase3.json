@@ -505,7 +505,7 @@
       ],
       "priority": 60,
       "passes": false,
-      "notes": "Size S. Recorded 2026-10-18 with ARV-143b under the owner's standing decision (low-severity follow-ups wait for Phase 3 unless needed before the pilot; the owner can pull one back).",
+      "notes": "Size S. Recorded 2026-10-18 with ARV-143b under the owner's standing decision (low-severity follow-ups wait for Phase 3 unless needed before the pilot; the owner can pull one back). 2026-10-18 (found by the PR #67 proof of play test, ARV-144): the player sets its estimate of the server's clock from each board's serverUtc as the board arrives, so a board that reaches it later than the one before (a slow server or network) moves the estimate back by the difference. A plan that had run out then plays again for those seconds, and the advertisement on screen is reported twice with nearly the same start (the server refuses the overlap, so it is under-reported, never over-claimed). Reproduced with every other board 7 seconds late. Keep the estimate from moving backwards (for example the largest serverUtc offset seen within the last minute), and let the board stamp serverUtc when it is composed rather than when it starts (SvcDisplayBoard reads the clock before its queries).",
       "dependsOn": []
     }
   ]
