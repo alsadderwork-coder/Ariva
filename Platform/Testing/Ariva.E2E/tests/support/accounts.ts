@@ -271,6 +271,17 @@ export function accounts() {
 		mediaWebAdmin: account('e2e.mediawebadmin', ['SystemAdministrator'], false, true, ['*']),
 		mediaWebManager: account('e2e.mediawebmgr', ['TerminalDutyManager'], false, false, ['*']),
 		mediaWebApprover: account('e2e.mediawebappr', ['TerminalDutyManager'], false, true, ['*']),
+		// ARV-143a: advertising playlists and schedules at sites of their own. The administrator creates the sites, turns
+		// advertising on and creates the display and the slide (second factor); a duty manager plans with a password only and
+		// uploads the one image; a duty manager of E2E2 only sees nothing of the sites.
+		planAdmin: account('e2e.planadmin', ['SystemAdministrator'], false, true, ['*']),
+		planManager: account('e2e.planmanager', ['TerminalDutyManager'], false, false, ['*']),
+		planElsewhere: account('e2e.planelse', ['TerminalDutyManager'], false, false, ['E2E2']),
+		// ARV-143a: the Advertising screen (functional/advertising-plans.spec.ts) at sites of its own. The administrator creates the
+		// sites, turns advertising on for one, creates the display and the slide and approves the image (second factor); a duty
+		// manager plans on the screen with a password only and uploads the two images.
+		planWebAdmin: account('e2e.planwebadmin', ['SystemAdministrator'], false, true, ['*']),
+		planWebManager: account('e2e.planwebmgr', ['TerminalDutyManager'], false, false, ['*']),
 		// ARV-104a: validation campaigns at E2EV. The manager drafts and publishes the site's zone profile and closes campaigns
 		// (both need a second factor); the lead plans and starts them with a password only (closing answers 401 for its second
 		// factor); a second observer of the site, and an observer of E2E1 for the cross-site answers.

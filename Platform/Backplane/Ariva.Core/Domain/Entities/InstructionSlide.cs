@@ -160,22 +160,8 @@ public sealed record InstructionSlideValues(
 
     public IReadOnlyList<string> Problems()
     {
-        var problems = new List<string>();
-        if (!Enum.IsDefined(Scope))
-            problems.Add("A slide applies to its Site, a Zone or a Display.");
         var targets = Targets ?? [];
-        if (Scope == InstructionScope.Site && targets.Count > 0)
-            problems.Add("A slide for the whole site names no zone or display.");
-        if (Scope is InstructionScope.Zone or InstructionScope.Display)
-        {
-            if (targets.Count is 0 or > InstructionSlide.MaxTargets)
-                problems.Add($"A slide for zones or displays names 1 to {InstructionSlide.MaxTargets} of them.");
-            else if (targets.Any(t => !Clean(t, InstructionSlide.MaxTargetLength)) ||
-                     (Scope == InstructionScope.Display && targets.Any(t => !TopologyCodes.IsValid(t.Trim()))))
-                problems.Add(Scope == InstructionScope.Zone ? "Every target is a queue zone's name." : "Every target is a display's code.");
-            else if (targets.Select(t => t.Trim()).Distinct(StringComparer.Ordinal).Count() != targets.Count)
-                problems.Add("A slide names each zone or display once.");
-        }
+        var problems = DisplayTargets.Problems("A slide", Scope, targets).ToList();
 
         if (!Enum.IsDefined(Icon))
             problems.Add("The icon is one of the built-in set.");
@@ -205,6 +191,35 @@ public sealed record InstructionSlideValues(
         else if (problems.Count == 0 && InstructionSlide.SummaryOf(new string('X', 17), 1000, InstructionStatus.Retired, Scope,
                      targets.Select(t => t.Trim()), Icon, DurationSeconds, Pinned, texts).Length > AuditEntry.SummaryLength)
             problems.Add(TooLongToAudit);
+        return problems;
+    }
+}
+
+/// <summary>
+/// The displays a slide (ARV-141) or a schedule (ARV-143a) applies to, as checked values: its site (no target), the displays
+/// showing one of 1 to 20 queue zones, or 1 to 20 displays named by code; each named once, plain text.
+/// </summary>
+public static class DisplayTargets
+{
+    public static IReadOnlyList<string> Problems(string what, InstructionScope scope, IReadOnlyList<string> targets)
+    {
+        var problems = new List<string>();
+        if (!Enum.IsDefined(scope))
+            problems.Add($"{what} applies to its Site, a Zone or a Display.");
+        targets ??= [];
+        if (scope == InstructionScope.Site && targets.Count > 0)
+            problems.Add($"{what} for the whole site names no zone or display.");
+        if (scope is InstructionScope.Zone or InstructionScope.Display)
+        {
+            if (targets.Count is 0 or > InstructionSlide.MaxTargets)
+                problems.Add($"{what} for zones or displays names 1 to {InstructionSlide.MaxTargets} of them.");
+            else if (targets.Any(t => string.IsNullOrWhiteSpace(t) || t.Trim().Length > InstructionSlide.MaxTargetLength || !DisplayText.IsClean(t.Trim())) ||
+                     (scope == InstructionScope.Display && targets.Any(t => !TopologyCodes.IsValid(t.Trim()))))
+                problems.Add(scope == InstructionScope.Zone ? "Every target is a queue zone's name." : "Every target is a display's code.");
+            else if (targets.Select(t => t.Trim()).Distinct(StringComparer.Ordinal).Count() != targets.Count)
+                problems.Add($"{what} names each zone or display once.");
+        }
+
         return problems;
     }
 }

@@ -99,6 +99,9 @@ public static class AccountExtensions
         services.TryAddScoped<Ariva.Core.Services.Displays.ISvcAdvertisingPolicies, Ariva.Infra.Services.Displays.SvcAdvertisingPolicies>();
         // Advertisement library (ARV-142a): images re-encoded on upload, two-person approval, the display fetch.
         services.TryAddScoped<Ariva.Core.Services.Displays.ISvcAdvertisingMedia, Ariva.Infra.Services.Displays.SvcAdvertisingMedia>();
+        // Advertising playlists and schedules (ARV-143a): Ariva.Api.Main only, like the library.
+        services.TryAddScoped<Ariva.Core.Services.Displays.ISvcAdvertisingPlaylists, Ariva.Infra.Services.Displays.SvcAdvertisingPlaylists>();
+        services.TryAddScoped<Ariva.Core.Services.Displays.ISvcAdvertisingSchedules, Ariva.Infra.Services.Displays.SvcAdvertisingSchedules>();
         services.TryAddSingleton<Ariva.Infra.Services.Displays.AdvertisingUploadWindow>();
         // The videos the library takes (ARV-142b): a size and a length within the ceilings every installation keeps.
         services.AddOptions<Ariva.Infra.Services.Displays.AdvertisingVideoSettings>()

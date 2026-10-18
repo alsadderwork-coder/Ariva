@@ -35,10 +35,10 @@ test.describe('application shell', () => {
 		await expect(page.getByRole('heading', { level: 1 })).toHaveText(homeHeading.en);
 		const sidebar = page.getByTestId('app-sidebar');
 
-		// The duty manager's ten screens (users and access is an administrator's; validation campaigns since ARV-104h, display
-		// instructions since ARV-141). Since ARV-061 every item of the navigation is built; an item added before its screen
-		// would show as planned again, with its story in the title.
-		await expect(sidebar.getByRole('navigation').getByRole('link')).toHaveCount(10);
+		// The duty manager's eleven screens (users and access is an administrator's; validation campaigns since ARV-104h, display
+		// instructions since ARV-141, advertising since ARV-143a). Since ARV-061 every item of the navigation is built; an item
+		// added before its screen would show as planned again, with its story in the title.
+		await expect(sidebar.getByRole('navigation').getByRole('link')).toHaveCount(11);
 		await expect(sidebar.locator('[aria-disabled="true"]')).toHaveCount(0);
 	});
 

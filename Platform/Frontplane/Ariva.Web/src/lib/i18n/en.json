@@ -28,7 +28,8 @@
 			"users": "Users and access",
 			"validationCapture": "Validation capture",
 			"validationCampaigns": "Validation campaigns",
-			"displaySlides": "Display instructions"
+			"displaySlides": "Display instructions",
+			"advertising": "Advertising"
 		}
 	},
 	"shell": {
@@ -1199,6 +1200,179 @@
 			"tooLarge": "The image is larger than 10 MB.",
 			"failed": "The advertisement library could not be updated: {reason}",
 			"tooLargeVideo": "The video is larger than 100 MB, more than any installation takes."
+		}
+	},
+	"advertisingPlans": {
+		"title": "Advertising",
+		"description": "Playlists of approved advertisements and instruction slides, the schedules that play them on the site's split displays, and each display's week",
+		"loading": "Loading the site's advertising",
+		"noSite": "No site is available to this account.",
+		"off": "Advertising is off for this site; a system administrator allows it on Passenger displays.",
+		"profileChanged": "Another zone profile was published since the advertising policy was saved: no display shows advertising until a system administrator saves the policy again on Passenger displays.",
+		"listSeparator": ", ",
+		"days": {
+			"Monday": "Monday",
+			"Tuesday": "Tuesday",
+			"Wednesday": "Wednesday",
+			"Thursday": "Thursday",
+			"Friday": "Friday",
+			"Saturday": "Saturday",
+			"Sunday": "Sunday"
+		},
+		"messages": {
+			"loadFailed": "The site's advertising could not be read: {reason}",
+			"failed": "The change could not be made: {reason}",
+			"playlistCreated": "Playlist created",
+			"playlistSaved": "Playlist saved",
+			"playlistRetired": "Playlist retired: its schedules stop applying",
+			"playlistRestored": "Playlist restored",
+			"scheduleCreated": "Schedule created",
+			"scheduleSaved": "Schedule saved",
+			"scheduleRetired": "Schedule retired",
+			"scheduleRestored": "Schedule restored"
+		},
+		"playlists": {
+			"title": "Playlists",
+			"description": "Advertisements from the site's library and instruction slides in playing order. A weight from 1 to 10 gives an item a larger share of the airtime.",
+			"none": "No playlists at this site yet",
+			"status": {
+				"Active": "Active",
+				"Retired": "Retired"
+			},
+			"columns": {
+				"name": "Playlist",
+				"status": "Status",
+				"items": "Items",
+				"length": "One pass",
+				"actions": "Actions"
+			},
+			"itemCount": "{count, plural, one {# item} other {# items}}",
+			"totalSeconds": "{seconds} s",
+			"showItems": "Show the items",
+			"notPlayingCount": "{count, plural, one {# item not playing today} other {# items not playing today}}",
+			"kinds": {
+				"Media": "Advertisement",
+				"Video": "Video advertisement",
+				"Slide": "Instruction slide"
+			},
+			"unknownLabel": "An item that can no longer be read",
+			"notPlaying": {
+				"Media": "Not playing today (draft or outside its dates)",
+				"Retired": "Not playing: retired from the library",
+				"Slide": "Not playing: the slide is retired"
+			},
+			"itemSummary": "{kind}, {seconds} s, weight {weight}",
+			"actions": {
+				"edit": "Change",
+				"retire": "Retire",
+				"confirmRetire": "Retire: its schedules stop applying",
+				"restore": "Restore"
+			},
+			"form": {
+				"createTitle": "New playlist",
+				"editTitle": "Change the playlist {name}",
+				"name": "Name",
+				"items": "Items in playing order",
+				"noItems": "No items yet: add advertisements or instruction slides below.",
+				"hint": "An image or a slide stays on screen 5 to 60 seconds; a video plays for its own length. A playlist has 1 to 40 items.",
+				"media": "Advertisement from the library",
+				"chooseMedia": "Choose an advertisement",
+				"mediaOption": "{label}, {status}",
+				"videoOption": "{label}, video of {seconds} s, {status}",
+				"noMedia": "The library has no advertisement left to add.",
+				"slide": "Instruction slide",
+				"chooseSlide": "Choose a slide",
+				"noSlides": "The site has no active instruction slide left to add.",
+				"slidesHidden": "Adding instruction slides needs the permission to see the display instructions.",
+				"add": "Add",
+				"full": "A playlist has at most 40 items.",
+				"positionSuffix": ", item {position}",
+				"seconds": "Seconds",
+				"weight": "Weight",
+				"videoLength": "Video, {seconds} s (its own length)",
+				"up": "Move item {position} up",
+				"down": "Move item {position} down",
+				"remove": "Remove item {position}",
+				"create": "Create the playlist",
+				"save": "Save the playlist",
+				"cancel": "Cancel"
+			}
+		},
+		"schedules": {
+			"title": "Schedules",
+			"description": "When each playlist plays and on which displays. Where schedules overlap, one naming displays wins over one naming zones, which wins over one for all displays; times are the site's local time.",
+			"none": "No schedules at this site yet",
+			"status": {
+				"Active": "Active",
+				"Retired": "Retired"
+			},
+			"columns": {
+				"playlist": "Playlist",
+				"target": "Shown on",
+				"days": "Days",
+				"window": "Hours",
+				"status": "Status",
+				"actions": "Actions"
+			},
+			"target": {
+				"Site": "All displays",
+				"Zone": "Displays showing zones: {targets}",
+				"Display": "Displays: {targets}"
+			},
+			"everyDay": "Every day",
+			"window": "{opens} to {closes}",
+			"windowNextDay": "{opens} to {closes} the next day",
+			"notApplied": "Playlist retired: not applied",
+			"actions": {
+				"edit": "Change",
+				"retire": "Retire",
+				"restore": "Restore"
+			},
+			"form": {
+				"createTitle": "New schedule",
+				"editTitle": "Change the schedule of {name}",
+				"playlist": "Playlist",
+				"choosePlaylist": "Choose a playlist",
+				"noPlaylists": "Create an active playlist first.",
+				"scope": "Shown on",
+				"scopes": {
+					"Site": "All displays",
+					"Zone": "Displays showing queue zones",
+					"Display": "Named displays"
+				},
+				"zones": "Queue zones, separated by commas",
+				"displays": "Display codes, separated by commas",
+				"knownZones": "Queue zones of the site: {names}",
+				"knownDisplays": "Displays of the site: {codes}",
+				"days": "Days",
+				"opens": "Opens",
+				"closes": "Closes",
+				"endOfDay": "Until the end of the day (24:00)",
+				"hint": "Times are the site's local time. A closing time at or before the opening time is on the next day.",
+				"nextDay": "Closes at {closes} on the next day.",
+				"create": "Create the schedule",
+				"save": "Save the schedule",
+				"cancel": "Cancel"
+			}
+		},
+		"timeline": {
+			"title": "Timeline",
+			"description": "What one display plays over the next seven days, from midnight today at the site, as its board will decide it.",
+			"display": "Display",
+			"displayOption": "{code}, {name}",
+			"noDisplays": "The site has no displays yet.",
+			"displaysHidden": "The timeline needs the permission to list the site's displays.",
+			"timeZone": "Local time of the site: {zone}",
+			"loading": "Loading the timeline",
+			"failed": "The timeline could not be read: {reason}",
+			"instructions": "Instructions",
+			"instructionsOnly": "This display is set to show instructions: it plays no advertising whatever the schedules say.",
+			"notAdvertising": "This display does not show advertising now: it has the full screen layout, or the site's advertising policy keeps it on instructions; it shows its instructions whatever the schedules say.",
+			"today": "Today",
+			"dayLabel": "{weekday}, {day}",
+			"dayBar": "{weekday}, {day}: what the display plays",
+			"segment": "{from} to {to}: {name}",
+			"hours": "Hours of the day"
 		}
 	},
 	"slides": {

@@ -8,7 +8,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace Ariva.Api.Common.Security;
 
 /// <summary>
-/// Marks an advertising endpoint (ARV-145; the media library and playlists of ARV-142a and ARV-143 carry it): it acts only
+/// Marks an advertising endpoint (ARV-145; the media library of ARV-142a and the plans of ARV-143a carry it): it acts only
 /// for a site whose advertising policy allows advertising. Before the action runs, the <c>siteCode</c> argument (from the
 /// route or the query) is checked: a value that cannot be a site code, a site outside the caller's sites and a site that
 /// does not exist answer 404 alike (as <see cref="SiteScopedAttribute"/>); a site whose policy does not allow advertising,

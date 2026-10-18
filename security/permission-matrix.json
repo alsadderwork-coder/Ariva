@@ -3535,6 +3535,274 @@
     {
       "host": "main",
       "method": "GET",
+      "route": "/api/v1/admin/sites/{siteCode}/advertising/playlists",
+      "access": "permission",
+      "permissions": [
+        "ViewAdvertising",
+        "ManageAdvertising"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/admin/sites/{siteCode}/advertising/playlists/{id:guid}",
+      "access": "permission",
+      "permissions": [
+        "ViewAdvertising",
+        "ManageAdvertising"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/sites/{siteCode}/advertising/playlists",
+      "access": "permission",
+      "permissions": [
+        "ManageAdvertising"
+      ],
+      "body": {
+        "name": "Matrix",
+        "items": [
+          {
+            "kind": "Media",
+            "id": "0199a000-0000-7000-8000-00000000a1a1",
+            "seconds": 10,
+            "weight": 1
+          }
+        ]
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "PUT",
+      "route": "/api/v1/admin/sites/{siteCode}/advertising/playlists/{id:guid}",
+      "access": "permission",
+      "permissions": [
+        "ManageAdvertising"
+      ],
+      "body": {
+        "name": "Matrix",
+        "items": [
+          {
+            "kind": "Media",
+            "id": "0199a000-0000-7000-8000-00000000a1a1",
+            "seconds": 10,
+            "weight": 1
+          }
+        ]
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/sites/{siteCode}/advertising/playlists/{id:guid}/retire",
+      "access": "permission",
+      "permissions": [
+        "ManageAdvertising"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/sites/{siteCode}/advertising/playlists/{id:guid}/restore",
+      "access": "permission",
+      "permissions": [
+        "ManageAdvertising"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/admin/sites/{siteCode}/advertising/schedules",
+      "access": "permission",
+      "permissions": [
+        "ViewAdvertising",
+        "ManageAdvertising"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/admin/sites/{siteCode}/advertising/schedules/{id:guid}",
+      "access": "permission",
+      "permissions": [
+        "ViewAdvertising",
+        "ManageAdvertising"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/sites/{siteCode}/advertising/schedules",
+      "access": "permission",
+      "permissions": [
+        "ManageAdvertising"
+      ],
+      "body": {
+        "playlistId": "0199a000-0000-7000-8000-00000000a1a1",
+        "scope": "Site",
+        "targets": [],
+        "days": [
+          "Monday"
+        ],
+        "opens": "09:00",
+        "closes": "17:00"
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "PUT",
+      "route": "/api/v1/admin/sites/{siteCode}/advertising/schedules/{id:guid}",
+      "access": "permission",
+      "permissions": [
+        "ManageAdvertising"
+      ],
+      "body": {
+        "playlistId": "0199a000-0000-7000-8000-00000000a1a1",
+        "scope": "Site",
+        "targets": [],
+        "days": [
+          "Monday"
+        ],
+        "opens": "09:00",
+        "closes": "17:00"
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/sites/{siteCode}/advertising/schedules/{id:guid}/retire",
+      "access": "permission",
+      "permissions": [
+        "ManageAdvertising"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/sites/{siteCode}/advertising/schedules/{id:guid}/restore",
+      "access": "permission",
+      "permissions": [
+        "ManageAdvertising"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
+      "route": "/api/v1/admin/sites/{siteCode}/advertising/timeline",
+      "access": "permission",
+      "permissions": [
+        "ViewAdvertising",
+        "ManageAdvertising"
+      ],
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 403,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
+      "method": "GET",
       "route": "/api/v1/display/advertising/{id:guid}",
       "access": "device",
       "expected": {

@@ -25,6 +25,8 @@ const screens = [
 		ready: '[data-testid="staffing"][data-state="ready"]'
 	},
 	{ name: 'passenger displays', path: '/displays', signedIn: true },
+	// Advertising (ARV-143a): at DMO, whose advertising policy is off, the note; advertising-plans.spec.ts checks the sections.
+	{ name: 'advertising', path: '/advertising', signedIn: true, ready: '[data-testid="plans-page"]:not([data-state="loading"])' },
 	{ name: 'reports', path: '/reports', signedIn: true },
 	// An administrator's screen: the duty manager would see the no-access message.
 	{ name: 'users and access', path: '/users', signedIn: true, account: () => accounts().webAdmin },

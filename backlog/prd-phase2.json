@@ -132,17 +132,17 @@
       ]
     },
     {
-      "id": "ARV-143",
-      "title": "[E21] Playlists and scheduling for region B",
-      "description": "Approved advertisements and instruction slides are arranged into playlists with time windows (for example peak arrival banks), item durations and share of airtime, assigned to displays or display groups, with instructions as the fallback whenever nothing is scheduled. Epic: Displays and advertising. CWEs to review: CWE-863, CWE-400.",
+      "id": "ARV-143a",
+      "title": "[E21] Advertising playlists and schedules, with a timeline preview",
+      "description": "Approved advertisements and instruction slides are arranged into playlists, and schedules assign them to a site's displays by day of week and local time window, with instructions as the fallback whenever nothing is scheduled. Split from ARV-143 on 2026-10-18 (backlog/progress.md): this story holds the playlists, the schedules, their resolution and the admin screen; ARV-143b plays them on the displays. Epic: Displays and advertising. CWEs to review: CWE-863, CWE-400, CWE-79, CWE-89.",
       "acceptanceCriteria": [
-        "A playlist has items (advertisement or instruction slide), each with a duration (5 to 60 s, videos play to their length up to a cap), an order and an optional weight; a schedule assigns playlists to displays or groups by day of week and time window in the site's time zone, stored in UTC",
-        "Rule: when the zone's queue is above a configured wait band (for example Long), region B can switch to instructions only (operator choice per display), so passengers see guidance when it matters most",
-        "Instructions are the fallback whenever no playlist applies, an item fails to load, or advertising is turned off",
-        "Playlist and schedule endpoints follow the ARV-145 convention (Controllers/AdminArea/Advertising, [AdvertisingAllowed]); a display receives advertising items only while the advertising rule of ARV-145 allows it for the display (the site allows it, saved against the published zone profile, none of its zones excluded), read on every refresh; every lookup of a playlist or schedule by id is filtered by the route's siteCode and the caller's sites (another site's answers 404, IDOR)",
-        "Display players receive the resolved playlist through their refresh path and keep a bounded local cache (count and bytes) so playback continues through a short network loss",
-        "Admin screens to build playlists and schedules with a timeline preview; permission Advertising.Manage; [SiteScoped]",
-        "Unit tests for schedule resolution (overlaps, time zone and daylight saving where the site has it, empty schedule), API E2E and Playwright tests",
+        "A playlist of a site has an ordered list of items, each an advertisement of the site's library (not retired) or an active instruction slide of the site, with a duration of 5 to 60 seconds (a video's slot is its own length, rounded up, up to the installation's video length setting) and a weight from 1 to 10 (1 by default) that gives its share of airtime; at most 40 items a playlist (so the audit keeps a playlist whole) and 100 playlists a site; a playlist is retired, never deleted",
+        "A schedule assigns a playlist to displays of the site: all the site's displays, the displays that show given queue zones, or named displays (the instruction slides' Site, Zone and Display scopes stand for display groups, which do not exist), on chosen days of the week within a local time window of the site (a window may cross midnight); windows are kept as the site's local days and minutes and resolved against the site's time zone at each instant (instants are UTC), so a window keeps its local hours across daylight saving",
+        "Schedule resolution is pure domain code: at an instant, for a display, the schedule that applies is the most specific (a named display, then a zone, then the site), then the one whose window started last, then the newest; none applies on an empty schedule (instructions)",
+        "Endpoints api/v1/admin/sites/{siteCode}/advertising/playlists, .../schedules and .../timeline in Controllers/AdminArea/Advertising with [SiteScoped] and [AdvertisingAllowed] (ARV-145); Advertising.View or Advertising.Manage reads, Advertising.Manage changes; every lookup by id is filtered by the route's siteCode and the caller's sites (another site's answers 404, IDOR); every change is audited",
+        "A versioned script holds the rules for every writer (CHECKs, the runtime role cannot delete)",
+        "An Advertising admin screen builds playlists and schedules and shows a week's timeline preview per display, in English and Arabic, every word as text",
+        "Unit tests for schedule resolution (overlaps, time zone and daylight saving where the site has it, windows across midnight and the week's end, empty schedule) and the entities; integration tests for the service and the script; API E2E (authorization matrix, IDOR, attack payloads, advertising off) and Playwright tests",
         "node scripts/verify.mjs web passes (svelte-check, lint, build)",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
@@ -152,12 +152,40 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 5,
-      "passes": false,
-      "notes": "Size M. Owner request 2026-10-06 (Phase 2). From ARV-142b: the player fetches each item with the display credential (api/v1/display/advertising/{id}, which serves images and MP4 or WebM videos with their own types) and shows it from an object URL, an image in an img element and a video muted in a video element; the CSP already allows img-src and media-src blob: for this and nothing else. An item's length (durationMilliseconds) is in the library's view model. The length and picture size are what the item's container states (ARV-142b checks that the headers agree but does not decode the media): the player ends each item at its slot's end whatever the media holds.",
+      "passes": true,
+      "notes": "Size M. Split from ARV-143 on 2026-10-18. The criteria's interpretations (scopes for groups, local windows rather than UTC ones, the precedence rule) are recorded as Proposed in docs/product/decisions.md for the owner.",
       "dependsOn": [
         "ARV-141",
         "ARV-142a",
-        "ARV-142b"
+        "ARV-142b",
+        "ARV-145"
+      ]
+    },
+    {
+      "id": "ARV-143b",
+      "title": "[E21] Displays play their scheduled playlist, with instructions as the fallback",
+      "description": "Display players receive the playlist that applies to them now through their refresh path and play it in region B: images and videos fetched with the display's credential, instruction slides as ARV-141 shows them, the weights giving the share of airtime, a bounded local cache for short network losses, and instructions whenever advertising does not apply. Split from ARV-143 on 2026-10-18 (backlog/progress.md). Epic: Displays and advertising. CWEs to review: CWE-863, CWE-400, CWE-79.",
+      "acceptanceCriteria": [
+        "The board carries the display's resolved playlist (ARV-143a: the playlist applying now and when that next changes, its items' ids, kinds and slots, advertisements only those that may play on the site's local day) only while the advertising rule of ARV-145 allows it for the display (the site allows it, saved against the published zone profile, none of its zones excluded), read on every refresh; otherwise the board carries instructions",
+        "The player plays the items in region B: an advertisement fetched with the display credential (api/v1/display/advertising/{id}) and shown from an object URL (an image in an img element, a video muted in a video element), each ended at its slot's end whatever its media holds; an instruction slide as ARV-141 shows it; the weights give each item's share of airtime",
+        "Rule, the operator's choice per display: when the nowcast of any queue zone the display shows reaches a configured number of minutes (the bands are numeric widths, so the 'Long' of the request becomes a threshold in minutes), region B shows instructions only, with the display's hysteresis so it does not flicker",
+        "Instructions are the fallback whenever no playlist applies, an item fails to load or play, or advertising is turned off",
+        "The board checks the site's advertising policy at every refresh (ARV-145: advertising allowed, the display set to advertising, none of its zones excluded) and plays a plan only while it holds: a playlist or schedule is never itself permission to advertise (a plan may be saved in the moment advertising is turned off, since the policy is read without its lock when a plan is written; security review of ARV-143a)",
+        "The player keeps a bounded local cache (count and bytes) of the items' media, so playback continues through a short network loss; the cache never outlives the page",
+        "Unit tests for the board's playlist, API E2E (the playlist only while advertising is allowed, the display's own site only) and Playwright tests (an image, a video, the share of airtime, the wait rule, an item that fails, a network loss, advertising turned off)",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": "Size M. Split from ARV-143 on 2026-10-18. Notes carried from ARV-143: Size M. Owner request 2026-10-06 (Phase 2). From ARV-142b: the player fetches each item with the display credential (api/v1/display/advertising/{id}, which serves images and MP4 or WebM videos with their own types) and shows it from an object URL, an image in an img element and a video muted in a video element; the CSP already allows img-src and media-src blob: for this and nothing else. An item's length (durationMilliseconds) is in the library's view model. The length and picture size are what the item's container states (ARV-142b checks that the headers agree but does not decode the media): the player ends each item at its slot's end whatever the media holds.",
+      "dependsOn": [
+        "ARV-143a"
       ]
     },
     {
@@ -181,7 +209,8 @@
       "passes": false,
       "notes": "Size M. Owner request 2026-10-06 (Phase 2). Owner decision 2026-10-08: report generation (templates, documents, CSV, schedules and delivery) waits for the integration with the Insight report tool used in AMAN and moves to ARV-146; this story keeps what is not report generation.",
       "dependsOn": [
-        "ARV-143"
+        "ARV-143a",
+        "ARV-143b"
       ]
     }
   ]

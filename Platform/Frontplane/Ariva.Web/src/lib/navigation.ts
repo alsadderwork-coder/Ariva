@@ -7,6 +7,7 @@ import {
 	Cpu,
 	FileChartColumn,
 	Map,
+	Megaphone,
 	MonitorPlay,
 	Presentation,
 	ScanLine,
@@ -32,6 +33,8 @@ export interface NavItem {
 	 * only convenience: the server checks every call.
 	 */
 	permission: string;
+	/** Other permissions that show the item too: any one of them, or `permission`, is enough. */
+	alsoFor?: readonly string[];
 }
 
 /** Sidebar navigation, grouped like Aman.Web (Operations, Oversight, Administration). */
@@ -81,6 +84,18 @@ export const navItems: readonly NavItem[] = [
 		ready: true,
 		story: 'ARV-141',
 		permission: 'DisplayContent.View'
+	},
+	{
+		// Advertising playlists, schedules and a display's timeline (ARV-143a): for the holders of Advertising.View or
+		// Advertising.Manage; the screen shows only a note while the site's advertising policy is off.
+		id: 'advertising',
+		href: '/advertising',
+		icon: Megaphone,
+		group: 'operations',
+		ready: true,
+		story: 'ARV-143a',
+		permission: 'Advertising.View',
+		alsoFor: ['Advertising.Manage']
 	},
 	{
 		// The observer tablet (ARV-104c): only the Validation observer role holds Validation.Capture.
@@ -152,7 +167,9 @@ export const navItems: readonly NavItem[] = [
 
 /** The items a user with these permissions may see. */
 export function visibleItems(can: (permission: string) => boolean): NavItem[] {
-	return navItems.filter((item) => can(item.permission));
+	return navItems.filter(
+		(item) => can(item.permission) || (item.alsoFor ?? []).some((permission) => can(permission))
+	);
 }
 
 export const navGroups: readonly NavGroup[] = ['operations', 'oversight', 'administration'];
