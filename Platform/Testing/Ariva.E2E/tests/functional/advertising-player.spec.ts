@@ -236,7 +236,10 @@ async function mediaErrors(page: Page): Promise<string[]> {
  * refusal is set aside; every other console error, page error, dialog and CSP violation still fails the test.
  */
 async function expectCleanButTheRecordersBlobFetches(guards: PageGuards): Promise<void> {
-	const recorder = /^Refused to connect to 'blob:http:\/\/localhost:\d+\/[0-9a-f-]{36}' because it violates the following Content Security Policy directive: "connect-src /;
+	// Chromium words the refusal in two ways ("Refused to connect to ... because it violates", and in later builds
+	// "Connecting to ... violates"); both name a blob: URL of this origin and connect-src, and nothing else is set aside.
+	const recorder =
+		/^(?:Refused to connect to 'blob:http:\/\/localhost:\d+\/[0-9a-f-]{36}' because it violates|Connecting to 'blob:http:\/\/localhost:\d+\/[0-9a-f-]{36}' violates) the following Content Security Policy directive: "connect-src /;
 	expect(guards.dialogs, 'dialogs opened by the page').toEqual([]);
 	expect(guards.pageErrors, 'uncaught page errors').toEqual([]);
 	expect(guards.consoleErrors.filter((message) => !recorder.test(message)), 'console errors and CSP messages').toEqual([]);
