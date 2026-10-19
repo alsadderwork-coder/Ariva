@@ -342,13 +342,12 @@
     {
       "id": "ARV-091",
       "title": "[ASVS] Security event logging",
-      "description": "Sign-in success and failure, logout, failed authorization and refused controls are not logged as security events, log lines lack who and where, and log shipping and protection are not enforced in production. ASVS 5.0: V16.1.1, V16.2.1, V16.2.3, V16.2.5, V16.3.1, V16.3.2, V16.3.3, V16.4.2, V16.4.3. Effort L.",
+      "description": "Failed authorization and refused controls are not logged as security events, log lines lack who and where, sensitive identifiers are logged as they are, and there is no log inventory. ASVS 5.0: V16.1.1, V16.2.1, V16.2.3, V16.2.5, V16.3.2, V16.3.3. Effort M (split 2026-10-19, see notes).",
       "acceptanceCriteria": [
-        "SecurityEvent entries for sign-in success and failure (user or unknown, address, amr), logout, forbidden and challenged outcomes, rate-limit rejections, CSRF and validation refusals",
-        "A request enricher adds user id, session id, client address and trace id to every log event",
-        "A log inventory per layer (apps, nginx, ingress, PostgreSQL, Kafka) with events, format, store, access and retention; the file sink documented or limited to vm-local",
-        "Staff emails, track ids and desk codes masked or hashed per protection level, with tests",
-        "k8s-prd ships logs over TLS by default and refuses to start without a collector; access and retention of logs documented for Loki or the customer SIEM",
+        "SecurityEvent entries (stable EventIds, documented in a security event catalogue) for forbidden and challenged outcomes, rate-limit rejections and validation refusals (model state, strict JSON, repeated query parameters), each with who and where but never the refused input",
+        "A request enricher adds user id, session id (or its hash when the id itself authenticates anything), client address and trace id to every log event written while a request runs",
+        "A log inventory per layer (apps, nginx, ingress, PostgreSQL, Kafka) with events, format, store, access and retention; the file sink limited to vm-local and the test runs, or documented",
+        "Log protection levels written down (omit, mask, hash) and applied: staff emails masked, track ids and desk codes hashed, credentials omitted as today, with tests",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "node scripts/security/scan.mjs passes with 0 errors",
         "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
@@ -357,9 +356,48 @@
       ],
       "priority": 111,
       "passes": false,
-      "notes": "",
+      "notes": "Split 2026-10-19 (Effort L, three reviewable parts, and the owner login freeze): ARV-091a takes production log shipping (TLS by default, refuse to start without a collector, access and retention for Loki or the customer SIEM); ARV-091b takes the sign-in success and failure events (user or unknown, address, amr), logout and the CSRF refusals on refresh, which touch the authentication code the owner froze.",
       "dependsOn": [
         "ARV-074"
+      ]
+    },
+    {
+      "id": "ARV-091a",
+      "title": "[ASVS] Production log shipping over TLS to a collector",
+      "description": "Split from ARV-091. k8s-prd hosts can run with no log collector, and access to and retention of the shipped logs are not written down. ASVS 5.0: V16.4.2, V16.4.3, V16.2.3. Effort S to M.",
+      "acceptanceCriteria": [
+        "k8s-prd ships logs over TLS by default (Loki or OTLP logs) and a host refuses to start without a collector, with a test per host and a chart guard",
+        "Access to and retention of shipped logs documented for Loki and for a customer SIEM, with the go-live record in the security guide",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 111,
+      "passes": false,
+      "notes": "Split from ARV-091 on 2026-10-19.",
+      "dependsOn": [
+        "ARV-091"
+      ]
+    },
+    {
+      "id": "ARV-091b",
+      "title": "[ASVS] Sign-in, logout and refresh security events",
+      "description": "Split from ARV-091 because of the owner login freeze. Sign-in success and failure, logout and CSRF refusals on refresh are not logged as security events. ASVS 5.0: V16.3.1, V16.3.3. Effort S.",
+      "acceptanceCriteria": [
+        "SecurityEvent entries for sign-in success and failure (user or unknown, address, amr), logout and the CSRF refusals on refresh, with tests and no change to the sign-in behaviour",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 111,
+      "passes": false,
+      "notes": "Split from ARV-091 on 2026-10-19 (login freeze: the owner asked for no sign-in, login, password, TOTP or authentication changes for now). Start only when the owner lifts the freeze.",
+      "dependsOn": [
+        "ARV-091"
       ]
     },
     {
