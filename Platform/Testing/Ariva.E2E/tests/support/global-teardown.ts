@@ -14,8 +14,14 @@ const patterns: { name: string; re: RegExp }[] = [
 	// ARV-042: an integration client secret (ics_ and 43 base64url characters) never reaches a log.
 	{ name: 'integration client secret', re: /\bics_[A-Za-z0-9_-]{43}\b/ },
 	// ARV-104j review: a device credential (ardk_) or display pairing secret (ardp_) never reaches a log either.
-	{ name: 'device or display credential', re: /(?<![A-Za-z0-9_-])ard[kp]_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/ }
+	{ name: 'device or display credential', re: /(?<![A-Za-z0-9_-])ard[kp]_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/ },
+	// ARV-091 (ASVS 5.0 V16.2.5): a staff email address is masked in every host log (a***@ariva.e2e), never written whole.
+	{ name: 'staff email address', re: /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{2,}@ariva\.e2e\b/i }
 ];
+
+// ARV-091 (ASVS 5.0 V16.2.5): border-only desk codes the suite sends are hashed in every host log, never written as sent. The
+// unmapped AMAN desk code of aman-feed.spec.ts is logged by Ariva.Api.Integration ("has no AMAN desk code mapping") as a hash.
+const borderDeskCodes = ['NOSUCH9'];
 
 // ARV-097: MassTransit logs what it reports to its usage telemetry endpoint, or that the report failed. Either line
 // means a host tried to call out of the deployment.
@@ -78,6 +84,7 @@ export default async function globalTeardown() {
 
 	// Each secret with a label, so a finding says which credential leaked (never the value itself).
 	const labelled: { label: string; value: string }[] = Object.entries(canary).map(([key, value]) => ({ label: `canary ${key}`, value }));
+	labelled.push(...borderDeskCodes.map((value) => ({ label: 'a border-only desk code sent by the suite (hashed in logs, ARV-091)', value })));
 	if (process.env.ARIVA_E2E_ACCOUNT_SEED) {
 		for (const entry of Object.values(accounts())) {
 			labelled.push({ label: `password of ${entry.userName}`, value: entry.password });
@@ -125,7 +132,7 @@ export default async function globalTeardown() {
 	}
 
 	if (findings.length > 0) {
-		throw new Error(`log scan: credentials reached the host logs (CWE-532):\n${findings.slice(0, 50).join('\n')}`);
+		throw new Error(`log scan: credentials or unprotected personal data reached the host logs (CWE-532):\n${findings.slice(0, 50).join('\n')}`);
 	}
 	if (callsHome.length > 0) {
 		throw new Error(`log scan: a host reported MassTransit usage telemetry (ARV-097):\n${callsHome.slice(0, 50).join('\n')}`);

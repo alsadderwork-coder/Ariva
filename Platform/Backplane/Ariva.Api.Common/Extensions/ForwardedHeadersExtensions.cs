@@ -122,14 +122,16 @@ public static class ForwardedHeadersExtensions
     #region Middlewares
 
     /// <summary>
-    /// Adds the forwarded headers middleware. Call it first, so every later middleware sees the real client.
+    /// Adds the forwarded headers middleware. Call it first, so every later middleware sees the real client. Right after it
+    /// comes the request log context (ARV-091, <see cref="Middlewares.RequestLogContextMiddleware"/>): every log event of the
+    /// request then names that client's address and, once the authorization middleware has decided, the caller.
     /// </summary>
     /// <param name="app">The application builder.</param>
     /// <returns>The same application builder, for chaining.</returns>
     public static IApplicationBuilder UseAppForwardedHeaders(this IApplicationBuilder app)
     {
         ArgumentNullException.ThrowIfNull(app);
-        return app.UseForwardedHeaders();
+        return app.UseForwardedHeaders().UseMiddleware<Middlewares.RequestLogContextMiddleware>();
     }
 
     #endregion

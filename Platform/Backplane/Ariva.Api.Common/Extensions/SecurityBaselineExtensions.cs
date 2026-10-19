@@ -10,7 +10,7 @@ namespace Ariva.Api.Common.Extensions;
 /// one call so no host can miss a control; the middlewares are called one by one in Program.cs because their
 /// order interleaves with the AMAN middlewares that later stories add (request tracking, session context):
 /// <code>
-/// app.UseAppForwardedHeaders();
+/// app.UseAppForwardedHeaders();   // and the request log context (ARV-091): client address, then the caller once authorized
 /// app.UseAppSecurityHeaders();
 /// app.UseErrorHandling();
 /// app.UseRouting();

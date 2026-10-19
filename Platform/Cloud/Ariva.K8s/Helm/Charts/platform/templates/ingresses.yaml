@@ -1,9 +1,10 @@
 {{- /*
 One Ingress per entry of ingresses (values.yaml). The chart's annotations come from ariva-platform.ingressChartAnnotations
 (_helpers.tpl): plain HTTP refused or redirected (plainHttp, ARV-084), the response headers of every host (HSTS, nosniff,
-frame-ancestors 'none', on the ingress's own responses too), the affinity cookie Secure with SameSite=Strict, ModSecurity,
-the live hub's logging (ARV-035) and, with pod TLS (ARV-082b), HTTPS to the pods verified against the cluster CA under the
-backend Service's name. A site's own annotations are added after them: its server-snippet, configuration-snippet and
+frame-ancestors 'none', on the ingress's own responses too), the affinity cookie Secure with SameSite=Strict, ModSecurity
+with its audit log off (ARV-091), the live hub's logging (ARV-035) and /hubs answered 404 on every host without the hub's
+Ingress (ARV-091) and, with pod TLS (ARV-082b), HTTPS to the pods verified against the cluster CA under the backend
+Service's name. A site's own annotations are added after them: its server-snippet, configuration-snippet and
 modsecurity-snippet are appended to the chart's (validate.yaml refuses one that would undo them), and any other key the
 chart sets is refused by validate.yaml, so no Ingress carries a key twice.
 */ -}}
@@ -32,7 +33,8 @@ metadata:
   # (validate.yaml refuses one without it, or with a tls.key, when it can see the secret); it denies the location with 503
   # when it cannot read the secret at all.
   # The live hub (tokenInQuery): its WebSocket carries the access token as access_token in its URL (ARV-035, CWE-598), so no
-  # access log, no ModSecurity audit log and only critical errors, and no log line ever holds the request line with the token.
+  # access log and only critical errors, and no log line ever holds the request line with the token. The ModSecurity audit
+  # log is off on every Ingress (ARV-091), and every other host answers /hubs 404 before any location.
   annotations:
     {{- toYaml $annotations | nindent 4 }}
 spec:

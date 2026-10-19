@@ -60,6 +60,21 @@ Release guards. Renders nothing; fails the render when a rule is broken.
         answers them 404); no annotation sets rewrite-target or use-regex, and no annotation value writes a rewrite directive:
         the 404 is judged on the request's own path, before any rewrite, which could otherwise take another path to /health on
         the pod.
+- Credentials out of the ingress's logs (ARV-091, ASVS 5.0 V16.2.5, CWE-532):
+  - a site's modsecurity-snippet sets no SecRuleEngine, SecAuditEngine, SecAuditLog... or SecDebugLog... setting, no
+    ctl:auditEngine or ctl:auditLogParts, and loads no rules (Include, SecRemoteRules): the chart keeps the ModSecurity audit
+    log off on every Ingress, as it would record the request line and headers (bearer tokens, the refresh cookie) and, with
+    part C, bodies, and the debug log writes the same values at its higher levels; nor does it expand a macro of the
+    request's values (%{REQUEST_HEADERS...}, REQUEST_COOKIES, REQUEST_LINE, REQUEST_URI, REQUEST_BODY, FULL_REQUEST,
+    QUERY_STRING, ARGS, XML, MATCHED_VAR or a TX capture), which a rule's msg or logdata would copy into the error log;
+  - no annotation value writes a modsecurity directive (modsecurity, modsecurity_rules, modsecurity_rules_file ..., its name
+    quoted or not), which could load the controller's modsecurity.conf or turn the audit log back on, or an access_log or
+    error_log directive, which could write the request line with its query string (nginx's combined format) or log the live
+    hub below critical;
+  - tokenInQuery is true or false; an Ingress with tokenInQuery routes /hubs or paths under it only, and an Ingress that
+    routes /hubs (in any case) or a path under it has tokenInQuery: the live hub's URL carries the access token, and the
+    chart's server-snippet answers /hubs 404 on every host without such an Ingress. On that Ingress enable-access-log and
+    enable-opentelemetry are the chart's ("false"), so no site annotation turns them on.
 */ -}}
 {{- if and (eq .Values.environment "k8s-prd") (or (empty .Values.buildNumber) (eq (toString .Values.buildNumber) "trunk")) }}
 {{- fail "k8s-prd needs an explicit buildNumber (for example --set buildNumber=main-20261001.3); trunk and empty are not allowed" }}
@@ -191,8 +206,17 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- if regexMatch "(?i)strict-transport-security|x-content-type-options|content-security-policy|more_clear_headers" (toString $value) }}
 {{- fail (printf "ingresses %s: %s names Strict-Transport-Security, X-Content-Type-Options, Content-Security-Policy or more_clear_headers; the chart sets those headers on every response and no annotation replaces or removes them (ARV-084)" $name $key) }}
 {{- end }}
-{{- if and (eq $key "nginx.ingress.kubernetes.io/modsecurity-snippet") (regexMatch "(?i)Sec(Rule|Audit)Engine" (toString $value)) }}
-{{- fail (printf "ingresses %s: the modsecurity-snippet sets SecRuleEngine or SecAuditEngine, which the chart sets (ARV-084, ARV-035)" $name) }}
+{{- if and (eq $key "nginx.ingress.kubernetes.io/modsecurity-snippet") (regexMatch "(?im)Sec(Rule|Audit)Engine|SecAuditLog|SecDebugLog|SecRemoteRules|ctl:\\s*audit(Engine|LogParts)|^\\s*Include\\s" (toString $value)) }}
+{{- fail (printf "ingresses %s: the modsecurity-snippet sets SecRuleEngine, SecAuditEngine, an audit log setting (SecAuditLog...), a debug log (SecDebugLog...), ctl:auditEngine or ctl:auditLogParts, or loads rules (Include, SecRemoteRules); the chart sets the rule engine and keeps the audit log off on every Ingress, as it would record the request line and headers (bearer tokens, the refresh cookie) and, with part C, bodies (sign-in passwords), and ModSecurity's debug log writes the same values at its higher levels (ARV-084, ARV-035, ARV-091)" $name) }}
+{{- end }}
+{{- if and (eq $key "nginx.ingress.kubernetes.io/modsecurity-snippet") (regexMatch "(?i)%\\{\\s*(REQUEST_(HEADERS|COOKIES|LINE|URI|BODY)|FULL_REQUEST|QUERY_STRING|ARGS|MATCHED_VARS?\\b|XML|TX[.:][0-9])" (toString $value)) }}
+{{- fail (printf "ingresses %s: the modsecurity-snippet expands a macro of the request's values (REQUEST_HEADERS, REQUEST_COOKIES, REQUEST_LINE, REQUEST_URI, REQUEST_BODY, FULL_REQUEST, QUERY_STRING, ARGS, XML, MATCHED_VAR or a TX capture) in a rule; ModSecurity writes a rule's msg and logdata to the controller's error log, so those macros would copy bearer tokens, cookies or the live hub's access_token there (ARV-091)" $name) }}
+{{- end }}
+{{- if regexMatch "(?im)(^|[;{}'])\\s*[\"']?modsecurity(_[a-z_]+)?[\"']?\\s" (toString $value) }}
+{{- fail (printf "ingresses %s: %s writes a modsecurity directive; the chart configures ModSecurity with enable-modsecurity and its modsecurity-snippet only, so no snippet loads the controller's modsecurity.conf (its audit log records bearer tokens and cookies), turns ModSecurity off or re-enables the audit log (ARV-091)" $name $key) }}
+{{- end }}
+{{- if regexMatch "(?im)(^|[;{}'])\\s*[\"']?(access_log|error_log)[\"']?\\s" (toString $value) }}
+{{- fail (printf "ingresses %s: %s writes an access_log or error_log directive; the controller's values and the chart decide what is logged, so no Ingress writes a request line with its query string (on /hubs, the access token) or logs the live hub below critical; to drop an Ingress's access log set enable-access-log \"false\" (ARV-091)" $name $key) }}
 {{- end }}
 {{- if eq $key "nginx.ingress.kubernetes.io/server-snippet" }}{{ $siteServerSnippet = toString $value }}{{ end }}
 {{- end }}
@@ -369,6 +393,20 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- if regexMatch "(?i)^/healthz?(/|$)" (toString .) }}
 {{- fail (printf "ingresses %s: routes %s; the health probes are not routed through the ingress, they stay on the pods' own ports (ARV-085)" $name (toString .)) }}
 {{- end }}
+{{- end }}
+{{- if and (hasKey $ingress "tokenInQuery") (not (kindIs "bool" $ingress.tokenInQuery)) }}
+{{- fail (printf "ingresses %s: tokenInQuery must be true or false (ARV-035)" $name) }}
+{{- end }}
+{{- $hubPaths := list }}
+{{- $otherPaths := list }}
+{{- range ($ingress.paths | default (list "/")) }}
+{{- if regexMatch "(?i)^/hubs(/|$)" (toString .) }}{{ $hubPaths = append $hubPaths (toString .) }}{{ else }}{{ $otherPaths = append $otherPaths (toString .) }}{{ end }}
+{{- end }}
+{{- if and $ingress.tokenInQuery $otherPaths }}
+{{- fail (printf "ingresses %s: tokenInQuery is the live hub's (no access log, no audit log, critical errors only), so its paths are /hubs or under it, not %s; route anything else from an Ingress of its own (ARV-035, ARV-091)" $name (join ", " $otherPaths)) }}
+{{- end }}
+{{- if and (not $ingress.tokenInQuery) $hubPaths }}
+{{- fail (printf "ingresses %s: routes %s without tokenInQuery; the live hub's URL carries the access token, so only an Ingress with tokenInQuery true serves it (no access log, no audit log, critical errors only; ARV-035, ARV-091)" $name (join ", " $hubPaths)) }}
 {{- end }}
 {{- end }}
 {{- $retention := (.Values.migration | default dict).retention | default dict }}

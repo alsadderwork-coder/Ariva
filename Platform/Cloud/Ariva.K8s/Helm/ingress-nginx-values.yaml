@@ -46,5 +46,25 @@ controller:
     # use PROXY protocol, never an L7 proxy that ends TLS before the controller.
     use-forwarded-headers: "false"
     # ModSecurity: the Ariva chart enables it on its own Ingresses (enable-modsecurity and modsecurity-snippet); the controller
-    # loads the module whenever a location enables it, so it stays off for everyone else here.
+    # loads the module whenever a location enables it, so it stays off for everyone else here. Keep it "false" (ARV-091): on,
+    # the controller loads /etc/nginx/modsecurity/modsecurity.conf at the http level, whose audit log records 5xx and 4xx but
+    # 404 with the request line and every request header (bearer tokens, the refresh cookie), and libmodsecurity lets that
+    # level's audit settings override the SecAuditEngine Off of every Ariva Ingress.
     enable-modsecurity: "false"
+    # The access log's format (ARV-091, ASVS 5.0 V16.2.5, CWE-532): ingress-nginx 1.15's default (log-format-upstream in
+    # internal/ingress/controller/config/config.go), except that the request line is written without its query string:
+    # "$request_method $uri $server_protocol" where the default writes "$request". A query string can hold a credential (the
+    # live hub's access_token, a credential sent by mistake) or personal data (a user search's text). $uri is the normalised
+    # path, which nginx escapes in the log as it does $request. The other fields are the default's, in its order. No log format
+    # here may write $request, $request_uri, $args, $query_string, an $arg_ variable, the body, the Authorization header or a
+    # cookie (controllerValuesFindings). nginx still names the full request line in its error log; the Ariva chart keeps the
+    # one URL that carries a credential, /hubs, off every host but the hub's own Ingress, which logs only critical errors.
+    log-format-upstream: '$remote_addr - $remote_user [$time_local] "$request_method $uri $server_protocol" $status $body_bytes_sent "$http_referer" "$http_user_agent" $request_length $request_time [$proxy_upstream_name] [$proxy_alternative_upstream_name] $upstream_addr $upstream_response_length $upstream_response_time $upstream_status $req_id'
+    # Left at the controller's defaults on purpose (ARV-091; controllerValuesFindings refuses the values in brackets):
+    # - error-log-level: notice, or warn, error, crit, alert, emerg (never info, which writes every ModSecurity match with
+    #   the matched input, or debug: ingress-nginx's nginx is built with debug support, which writes every request header);
+    # - log-format-escape-none: off (on, nginx writes control characters unescaped, so a request could forge log lines);
+    # - enable-opentelemetry: off (on, the controller exports a span per request whose http.target holds the query string;
+    #   the chart also keeps it off on the live hub's Ingress, and the Ariva hosts trace themselves with query values redacted);
+    # - main-snippet, http-snippet, server-snippet, location-snippet: none with an access_log, log_format, error_log or
+    #   modsecurity directive (they would get around the format above and the chart's per Ingress guards).

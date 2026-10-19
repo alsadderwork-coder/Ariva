@@ -202,7 +202,8 @@ internal sealed class SvcImmigrationIntake(IUnitOfWork unitOfWork, ICurrentUser 
         metrics.Unmapped(site);
         var logged = LoggedUnmapped.GetOrAdd(site, _ => new ConcurrentDictionary<string, byte>(StringComparer.Ordinal));
         if (logged.Count < MaxLoggedPerSite && logged.TryAdd(code, 0))
-            logger.LogWarning("Border feed code {Code} of site {Site} has no AMAN desk code mapping to a {Kind}; its records are kept apart", code, site, kind);
+            // ARV-091: {DeskCode} is hashed in every log (border-only data; Ariva.Api.Common's LogProtection), never written as sent.
+            logger.LogWarning("Border feed code {DeskCode} of site {Site} has no AMAN desk code mapping to a {Kind}; its records are kept apart", code, site, kind);
         return (NoDesk, mapped is not null
             ? $"The code maps to a {mapped.Kind}, not a {(kind == "EGate" ? "e-gate" : "desk")}; the record is kept apart until the mapping is corrected."
             : "The code has no AMAN desk code mapping at the site; the record is kept apart until one exists.");

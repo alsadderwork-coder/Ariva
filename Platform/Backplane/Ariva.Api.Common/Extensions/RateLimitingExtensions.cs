@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Threading.RateLimiting;
+using Ariva.Api.Common.Logging;
 using Ariva.Api.Common.Settings;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -110,64 +111,55 @@ public static class RateLimitingExtensions
                 options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
                 options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
                     RateLimitPartition.GetFixedWindowLimiter(ClientKey(context), _ => ToLimiterOptions(limits.Global)));
-                options.AddPolicy(AuthPolicy, context =>
-                    RateLimitPartition.GetFixedWindowLimiter(ClientKey(context), _ => ToLimiterOptions(limits.Auth)));
-                options.AddPolicy(IntegrationAuthPolicy, context =>
-                    RateLimitPartition.GetFixedWindowLimiter(ClientKey(context), _ => ToLimiterOptions(limits.IntegrationAuth)));
-                options.AddPolicy(DevicePolicy, context =>
-                    RateLimitPartition.GetFixedWindowLimiter(Ariva.Api.Common.Security.DeviceAuthentication.RateLimitPartition(context), _ => ToLimiterOptions(limits.Device)));
-                options.AddPolicy(DisplayPolicy, context =>
-                    RateLimitPartition.GetFixedWindowLimiter(Ariva.Api.Common.Security.DisplayAuthentication.RateLimitPartition(context), _ => ToLimiterOptions(limits.Device)));
-                options.AddPolicy(DisplayPlaysPolicy, context =>
+                // ARV-091: each named policy logs its own rejections (the policy and the kind of partition, never the key);
+                // OnRejected below is the global limiter's, which the framework calls for its rejections and for none of these.
+                options.AddPolicy(AuthPolicy, Logged(AuthPolicy, AddressKind, context =>
+                    RateLimitPartition.GetFixedWindowLimiter(ClientKey(context), _ => ToLimiterOptions(limits.Auth))));
+                options.AddPolicy(IntegrationAuthPolicy, Logged(IntegrationAuthPolicy, AddressKind, context =>
+                    RateLimitPartition.GetFixedWindowLimiter(ClientKey(context), _ => ToLimiterOptions(limits.IntegrationAuth))));
+                options.AddPolicy(DevicePolicy, Logged(DevicePolicy, DeviceKind, context =>
+                    RateLimitPartition.GetFixedWindowLimiter(Ariva.Api.Common.Security.DeviceAuthentication.RateLimitPartition(context), _ => ToLimiterOptions(limits.Device))));
+                options.AddPolicy(DisplayPolicy, Logged(DisplayPolicy, DisplayKind, context =>
+                    RateLimitPartition.GetFixedWindowLimiter(Ariva.Api.Common.Security.DisplayAuthentication.RateLimitPartition(context), _ => ToLimiterOptions(limits.Device))));
+                options.AddPolicy(DisplayPlaysPolicy, Logged(DisplayPlaysPolicy, DisplayKind, context =>
                     RateLimitPartition.GetFixedWindowLimiter(Ariva.Api.Common.Security.DisplayAuthentication.RateLimitPartition(context),
-                        _ => ToLimiterOptions(limits.DisplayPlays)));
-                options.AddPolicy(UploadPolicy, _ =>
+                        _ => ToLimiterOptions(limits.DisplayPlays))));
+                options.AddPolicy(UploadPolicy, Logged(UploadPolicy, HostKind, _ =>
                     RateLimitPartition.GetConcurrencyLimiter(UploadPolicy, _ => new ConcurrencyLimiterOptions
                     {
                         PermitLimit = 1,
                         QueueLimit = 2,
                         QueueProcessingOrder = QueueProcessingOrder.OldestFirst
-                    }));
-                options.AddPolicy(IntegrationBatchPolicy, _ =>
+                    })));
+                options.AddPolicy(IntegrationBatchPolicy, Logged(IntegrationBatchPolicy, HostKind, _ =>
                     RateLimitPartition.GetConcurrencyLimiter(IntegrationBatchPolicy, _ => new ConcurrencyLimiterOptions
                     {
                         PermitLimit = limits.IntegrationBatch.PermitLimit,
                         QueueLimit = limits.IntegrationBatch.QueueLimit,
                         QueueProcessingOrder = QueueProcessingOrder.OldestFirst
-                    }));
-                options.AddPolicy(IntegrationAidxPolicy, _ =>
+                    })));
+                options.AddPolicy(IntegrationAidxPolicy, Logged(IntegrationAidxPolicy, HostKind, _ =>
                     RateLimitPartition.GetConcurrencyLimiter(IntegrationAidxPolicy, _ => new ConcurrencyLimiterOptions
                     {
                         PermitLimit = limits.IntegrationAidx.PermitLimit,
                         QueueLimit = limits.IntegrationAidx.QueueLimit,
                         QueueProcessingOrder = QueueProcessingOrder.OldestFirst
-                    }));
-                options.AddPolicy(ValidationResultsPolicy, _ =>
+                    })));
+                options.AddPolicy(ValidationResultsPolicy, Logged(ValidationResultsPolicy, HostKind, _ =>
                     RateLimitPartition.GetConcurrencyLimiter(ValidationResultsPolicy, _ => new ConcurrencyLimiterOptions
                     {
                         PermitLimit = limits.ValidationResults.PermitLimit,
                         QueueLimit = limits.ValidationResults.QueueLimit,
                         QueueProcessingOrder = QueueProcessingOrder.OldestFirst
-                    }));
-                options.AddPolicy(BacktestPolicy, _ =>
+                    })));
+                options.AddPolicy(BacktestPolicy, Logged(BacktestPolicy, HostKind, _ =>
                     RateLimitPartition.GetConcurrencyLimiter(BacktestPolicy, _ => new ConcurrencyLimiterOptions
                     {
                         PermitLimit = 2,
                         QueueLimit = 2,
                         QueueProcessingOrder = QueueProcessingOrder.OldestFirst
-                    }));
-                options.OnRejected = (context, _) =>
-                {
-                    // A window limiter's lease says when the window reopens; a concurrency limiter's lease carries no such
-                    // metadata (a permit frees when a request ends), so its 429 says to retry after a fixed delay instead
-                    // (first security review of ARV-104g, M1: the validation-results 429 had no Retry-After).
-                    var seconds = context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter)
-                        ? (int)Math.Ceiling(retryAfter.TotalSeconds)
-                        : ConcurrencyRetryAfterSeconds;
-                    context.HttpContext.Response.Headers.RetryAfter = seconds.ToString(CultureInfo.InvariantCulture);
-
-                    return ValueTask.CompletedTask;
-                };
+                    })));
+                options.OnRejected = (context, _) => Rejected(context, SecurityEvents.GlobalPolicy, AddressKind);
             });
 
         return services;
@@ -193,6 +185,53 @@ public static class RateLimitingExtensions
     #endregion
 
     #region Helpers
+
+    /// <summary>
+    /// A 429 answer (unchanged since ARV-104g: Retry-After from a window limiter's lease, else a fixed delay) and its security
+    /// event (ARV-091), with the policy and the kind of partition only.
+    /// </summary>
+    private static ValueTask Rejected(OnRejectedContext context, string policy, Func<HttpContext, string> partitionKind)
+    {
+        // A window limiter's lease says when the window reopens; a concurrency limiter's lease carries no such
+        // metadata (a permit frees when a request ends), so its 429 says to retry after a fixed delay instead
+        // (first security review of ARV-104g, M1: the validation-results 429 had no Retry-After).
+        var seconds = context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter)
+            ? (int)Math.Ceiling(retryAfter.TotalSeconds)
+            : ConcurrencyRetryAfterSeconds;
+        context.HttpContext.Response.Headers.RetryAfter = seconds.ToString(CultureInfo.InvariantCulture);
+
+        context.HttpContext.RequestServices?.GetService<SecurityEventLog>()?.RateLimited(context.HttpContext, policy, partitionKind);
+        return ValueTask.CompletedTask;
+    }
+
+    /// <summary>A named policy whose rejections are <see cref="Rejected"/>.</summary>
+    private static LoggedPolicy Logged(string policy, Func<HttpContext, string> partitionKind, Func<HttpContext, RateLimitPartition<string>> partitioner) =>
+        new(partitioner, (context, _) => Rejected(context, policy, partitionKind));
+
+    private static string AddressKind(HttpContext context) => SecurityEvents.AddressPartition;
+
+    private static string HostKind(HttpContext context) => SecurityEvents.HostPartition;
+
+    /// <summary>The device policy's partition: the presented credential's hash when it is well formed, else the address; only the kind is kept.</summary>
+    private static string DeviceKind(HttpContext context) =>
+        Ariva.Api.Common.Security.DeviceAuthentication.RateLimitPartition(context).StartsWith("address:", StringComparison.Ordinal)
+            ? SecurityEvents.AddressPartition
+            : SecurityEvents.DeviceCredentialPartition;
+
+    /// <summary>The display policies' partition kind, as <see cref="DeviceKind"/>.</summary>
+    private static string DisplayKind(HttpContext context) =>
+        Ariva.Api.Common.Security.DisplayAuthentication.RateLimitPartition(context).StartsWith("address:", StringComparison.Ordinal)
+            ? SecurityEvents.AddressPartition
+            : SecurityEvents.DisplayCredentialPartition;
+
+    /// <summary>A named policy with its own rejection callback; it partitions exactly as the partitioner it is given.</summary>
+    private sealed class LoggedPolicy(Func<HttpContext, RateLimitPartition<string>> partitioner, Func<OnRejectedContext, CancellationToken, ValueTask> onRejected)
+        : IRateLimiterPolicy<string>
+    {
+        public Func<OnRejectedContext, CancellationToken, ValueTask> OnRejected { get; } = onRejected;
+
+        public RateLimitPartition<string> GetPartition(HttpContext httpContext) => partitioner(httpContext);
+    }
 
     private static string ClientKey(HttpContext context)
     {

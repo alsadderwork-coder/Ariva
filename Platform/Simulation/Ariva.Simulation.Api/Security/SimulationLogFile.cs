@@ -14,6 +14,9 @@ internal sealed class SimulationLogFile : ILoggerProvider
 {
     public const string PathKey = "LogFile:Path";
 
+    /// <summary>The only environment that may write the file.</summary>
+    public const string LocalEnvironment = "vm-local";
+
     #region Fields
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.General);
@@ -37,14 +40,20 @@ internal sealed class SimulationLogFile : ILoggerProvider
 
     #region Methods
 
-    /// <summary>Adds the file to the host's logging when <c>LogFile:Path</c> is set (the host disposes it at shutdown).</summary>
-    public static void AddTo(ILoggingBuilder logging, IConfiguration configuration)
+    /// <summary>
+    /// Adds the file to the host's logging when <c>LogFile:Path</c> is set (the host disposes it at shutdown). As on Ariva's
+    /// hosts (ARV-091), the file is for vm-local only, where the E2E run reads it: in any other environment the setting stops
+    /// the host, so its logs go only to the documented destinations.
+    /// </summary>
+    public static void AddTo(ILoggingBuilder logging, IConfiguration configuration, string environment)
     {
         ArgumentNullException.ThrowIfNull(logging);
         ArgumentNullException.ThrowIfNull(configuration);
         var path = configuration[PathKey];
         if (string.IsNullOrWhiteSpace(path))
             return;
+        if (environment != LocalEnvironment)
+            throw new InvalidOperationException($"{PathKey} is for vm-local only (the E2E run); remove it in {environment ?? "this environment"}.");
         logging.Services.AddSingleton<ILoggerProvider>(_ => new SimulationLogFile(path));
         logging.AddFilter<SimulationLogFile>("Microsoft.AspNetCore.Hosting", LogLevel.Warning);
     }

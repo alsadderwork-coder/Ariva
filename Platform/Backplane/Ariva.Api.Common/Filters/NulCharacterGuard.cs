@@ -1,9 +1,11 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Ariva.Api.Common.Logging;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
 using Microsoft.AspNetCore.Mvc.Formatters;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Ariva.Api.Common.Filters;
 
@@ -26,6 +28,8 @@ public sealed class NulCharacterFilter : IAsyncActionFilter, IOrderedFilter
 
         if (await HoldsNulAsync(context.HttpContext.Request))
         {
+            // ARV-091: the refusal is a security event, without where the character was or the value around it.
+            context.HttpContext.RequestServices?.GetService<SecurityEventLog>()?.NulCharacter(context.HttpContext);
             context.Result = new ObjectResult(new ProblemDetails
             {
                 Status = StatusCodes.Status400BadRequest,

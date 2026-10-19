@@ -994,13 +994,28 @@ export function checkManifests(docs, { environment }) {
 			for (const entry of tls) {
 				if (!entry.secretName) findings.push(`${id}: tls entry without secretName`);
 			}
+			const annotations = doc.metadata?.annotations ?? {};
+			// ARV-091 (ASVS 5.0 V16.2.5, CWE-532): the ModSecurity audit log records the request line and headers (bearer tokens,
+			// the refresh cookie) and, with part C, the body (sign-in passwords), so every Ingress turns it off: its
+			// modsecurity-snippet's last SecAuditEngine is Off (the last one wins in a location) and no rule turns it on per request
+			// (ctl:auditEngine).
+			const modsecurity = String(annotations['nginx.ingress.kubernetes.io/modsecurity-snippet'] ?? '');
+			const engines = [...modsecurity.matchAll(/^\s*SecAuditEngine\s+(\S+)/gim)].map((match) => match[1]);
+			const ctl = [...modsecurity.matchAll(/ctl:\s*auditEngine\s*=\s*([A-Za-z]+)/gi)].map((match) => match[1]).filter((value) => !/^off$/i.test(value));
+			if (!engines.length || !/^off$/i.test(engines[engines.length - 1]) || ctl.length) {
+				findings.push(`${id}: the ingress must turn the ModSecurity audit log off (its modsecurity-snippet ends with SecAuditEngine Off, ` +
+					`not ${engines.length ? engines.join(' then ') : 'unset'}${ctl.length ? `, and no rule sets ctl:auditEngine=${ctl.join(', ')}` : ''}): it records the request line and headers ` +
+					'(bearer tokens, the refresh cookie) and, with part C, the body (passwords)');
+			}
+			// ModSecurity's debug log writes the same request values at its higher levels, to the file it names (stdout included).
+			if (/^\s*SecDebugLog/im.test(modsecurity)) findings.push(`${id}: the modsecurity-snippet sets a ModSecurity debug log (SecDebugLog...), which writes request headers and variables`);
 			// The SignalR hubs take the access token in the URL (ARV-035, CWE-598): an ingress that serves /hubs keeps no
-			// access log, no ModSecurity audit log and only critical errors, and serves nothing else.
+			// access log and only critical errors (and its audit log off, as every Ingress above), and serves nothing else.
 			const paths = (doc.spec?.rules ?? []).flatMap((rule) => (rule.http?.paths ?? []).map((entry) => entry.path));
 			if (paths.some((value) => value === '/hubs' || value?.startsWith('/hubs/'))) {
-				const annotations = doc.metadata?.annotations ?? {};
 				if (annotations['nginx.ingress.kubernetes.io/enable-access-log'] !== 'false') findings.push(`${id}: /hubs carries tokens in its URL; the ingress must disable the access log`);
-				if (!/SecAuditEngine\s+Off/.test(annotations['nginx.ingress.kubernetes.io/modsecurity-snippet'] ?? '')) findings.push(`${id}: /hubs carries tokens in its URL; the ingress must turn the ModSecurity audit log off`);
+				// ARV-091: the ingress's OpenTelemetry module exports the request target with its query string (http.target).
+				if (annotations['nginx.ingress.kubernetes.io/enable-opentelemetry'] !== 'false') findings.push(`${id}: /hubs carries tokens in its URL; the ingress must keep OpenTelemetry off (enable-opentelemetry "false"), whose spans carry the request target with its query string`);
 				if (!/error_log\s+\S+\s+crit;/.test(annotations['nginx.ingress.kubernetes.io/configuration-snippet'] ?? '')) findings.push(`${id}: /hubs carries tokens in its URL; the ingress must log only critical errors`);
 				if (paths.some((value) => !(value === '/hubs' || value?.startsWith('/hubs/')))) findings.push(`${id}: /hubs carries tokens in its URL; serve it from its own ingress`);
 			}
@@ -1287,10 +1302,38 @@ export function ingressHardeningFindings(docs, { environment }) {
 }
 
 /**
+ * ARV-091 (ASVS 5.0 V16.2.5, CWE-532): the controller's access log format. controllerDefault is ingress-nginx 1.15's
+ * log-format-upstream (internal/ingress/controller/config/config.go at controller-v1.15.0), whose "$request" is the request
+ * line with its query string; Ariva's values write requestLine in its place and keep every other field. No format may write
+ * a variable of forbidden (the query string, the body, the Authorization header, the cookies) or one starting with a prefix
+ * of forbiddenPrefixes (one query argument or cookie). nginx variable names are case-insensitive.
+ */
+export const INGRESS_LOG_FORMAT = {
+	controllerDefault: '$remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent" $request_length $request_time [$proxy_upstream_name] [$proxy_alternative_upstream_name] $upstream_addr $upstream_response_length $upstream_response_time $upstream_status $req_id',
+	requestLine: '$request_method $uri $server_protocol',
+	forbidden: ['request', 'request_uri', 'args', 'query_string', 'request_body', 'http_authorization', 'http_cookie'],
+	forbiddenPrefixes: ['arg_', 'cookie_'],
+	/** error-log-level values that write no request headers (info and debug do; ingress-nginx's nginx is built with debug). */
+	errorLevels: ['notice', 'warn', 'error', 'crit', 'alert', 'emerg'],
+	/** The controller's own snippets, in which no log or ModSecurity directive may appear (they would get around the guards). */
+	snippets: ['main-snippet', 'http-snippet', 'server-snippet', 'location-snippet'],
+	/** A log or ModSecurity directive at the start of a statement, its name quoted or not (nginx accepts both). */
+	directive: /(^|[;{}'])\s*["']?(access_log|log_format|error_log|modsecurity(_[a-z_]+)?)["']?\s/im
+};
+
+/** A ConfigMap boolean as ingress-nginx reads it (mapstructure, weakly typed: strconv.ParseBool). */
+const configTrue = (value) => /^(1|t|true)$/i.test(String(value ?? ''));
+
+/**
  * ARV-084: findings for the ingress-nginx controller values the site applies (Helm/ingress-nginx-values.yaml, parsed): snippet
  * annotations allowed from the chart value only, at the Critical risk level; TLS 1.2 and 1.3; Mozilla's intermediate TLS 1.2
  * suites exactly; no session tickets; HSTS of a year with includeSubDomains and no preload; X-Forwarded-* not trusted; every
- * ConfigMap value a string.
+ * ConfigMap value a string. ARV-091: ModSecurity off for the whole controller (on, its http level loads modsecurity.conf, whose
+ * audit settings libmodsecurity lets override every Ingress's SecAuditEngine Off), and an access log format that writes no
+ * query string, body, Authorization header or cookie (INGRESS_LOG_FORMAT), given explicitly (the default writes $request);
+ * error-log-level unset or notice and above, nginx's log escaping kept (no log-format-escape-none), the controller's
+ * OpenTelemetry off (its spans carry the query string), and no access_log, log_format, error_log or modsecurity directive in
+ * the controller's main, http, server or location snippet.
  */
 export function controllerValuesFindings(values) {
 	const findings = [];
@@ -1308,6 +1351,33 @@ export function controllerValuesFindings(values) {
 	if (config['hsts-include-subdomains'] !== 'true') findings.push(`controller.config hsts-include-subdomains is ${config['hsts-include-subdomains'] ?? 'unset'}, not "true"`);
 	if (config['hsts-preload'] !== 'false') findings.push(`controller.config hsts-preload is ${config['hsts-preload'] ?? 'unset'}, not "false"`);
 	if (config['use-forwarded-headers'] !== 'false') findings.push(`controller.config use-forwarded-headers is ${config['use-forwarded-headers'] ?? 'unset'}, not "false": TLS ends at the controller`);
+	if (String(config['enable-modsecurity']) !== 'false') {
+		findings.push(`controller.config enable-modsecurity is ${config['enable-modsecurity'] ?? 'unset'}, not "false": on, the controller loads modsecurity.conf at the http level ` +
+			'(SecAuditEngine RelevantOnly, parts ABIJDEFHZ), and libmodsecurity lets that level\'s audit settings override every Ariva Ingress\'s SecAuditEngine Off');
+	}
+	const format = config['log-format-upstream'];
+	if (format === undefined) findings.push('controller.config log-format-upstream is unset: the controller\'s default writes $request, the request line with its query string');
+	else {
+		const written = [...new Set([...String(format).matchAll(/\$\{?([A-Za-z0-9_]+)\}?/g)].map((match) => match[1].toLowerCase()))];
+		const refused = written.filter((name) => INGRESS_LOG_FORMAT.forbidden.includes(name) || INGRESS_LOG_FORMAT.forbiddenPrefixes.some((prefix) => name.startsWith(prefix)));
+		if (refused.length) {
+			findings.push(`controller.config log-format-upstream writes ${refused.map((name) => `$${name}`).join(', ')}: a query string (the live hub's access_token), ` +
+				`the body, the Authorization header or a cookie; write the request line as "${INGRESS_LOG_FORMAT.requestLine}"`);
+		}
+	}
+	if (config['error-log-level'] !== undefined && !INGRESS_LOG_FORMAT.errorLevels.includes(String(config['error-log-level']))) {
+		findings.push(`controller.config error-log-level is ${config['error-log-level']}, not one of ${INGRESS_LOG_FORMAT.errorLevels.join(', ')} (or unset): ` +
+			'info writes every ModSecurity match with the matched input, and debug every request header and the request line');
+	}
+	if (configTrue(config['log-format-escape-none'])) findings.push(`controller.config log-format-escape-none is ${config['log-format-escape-none']}: it turns off nginx's log escaping, so a request could write control characters and forged lines into the access log`);
+	if (configTrue(config['enable-opentelemetry'])) {
+		findings.push(`controller.config enable-opentelemetry is ${config['enable-opentelemetry']}: the controller's OpenTelemetry module would export a span for every request with its target and query string (http.target), ` +
+			'personal data from every host; the Ariva hosts trace themselves with query values redacted');
+	}
+	for (const key of INGRESS_LOG_FORMAT.snippets) {
+		const match = INGRESS_LOG_FORMAT.directive.exec(String(config[key] ?? ''));
+		if (match) findings.push(`controller.config ${key} writes ${match[2]}: the controller's snippets write no access_log, log_format, error_log or modsecurity directive, which would get around the access log format and the Ingresses' audit log and logging guards`);
+	}
 	for (const [key, value] of Object.entries(config)) if (typeof value !== 'string') findings.push(`controller.config ${key} must be a string (a ConfigMap value), not ${typeof value} ${value}`);
 	return findings;
 }
@@ -1597,7 +1667,7 @@ export function networkValues(values) {
  */
 export const HEALTH_PROBES = {
 	paths: ['/health', '/health/', '/health/startup', '/health/readiness', '/health/liveness', '/HEALTH/READINESS', '/Health/Startup', '/healthz', '/healthz/'],
-	others: ['/', '/api', '/api/health', '/api/v1/sensing/devices/health', '/healthy', '/healthcheck', '/hubs', '/login'],
+	others: ['/', '/api', '/api/health', '/api/v1/sensing/devices/health', '/healthy', '/healthcheck', '/hub', '/login'],
 	route: /^\/healthz?(\/|$)/i
 };
 
@@ -1648,6 +1718,67 @@ export function ingressPrivacyFindings(docs, { environment }) {
 		}
 		const cronz = entries.some((entry) => entry.backend?.service?.name === 'api-cronz-service');
 		if (prd && cronz && !String(allow ?? '').trim()) findings.push(`${id}: the Cronz dashboard has no allowlist-source-range; k8s-prd opens it to the management network only`);
+	}
+	return findings;
+}
+
+/**
+ * ARV-091 (ASVS 5.0 V16.2.5, CWE-532): the live hub's URL carries the access token (access_token), and Ariva.Api.Main reads it
+ * on /hubs, in any case, whatever the host (JwtAuthenticationExtensions). route: the paths of the hub's own Ingress (the one
+ * that logs neither the request nor errors below critical, checkManifests). all: the spellings a host without that Ingress
+ * answers 404; served: what the hub's Ingress takes (nginx matches its location by case); variants: the other spellings,
+ * which its host answers 404; others: paths no host refuses for the hub.
+ */
+export const HUB_PATHS = {
+	route: /^\/hubs(\/|$)/,
+	all: ['/hubs', '/hubs/', '/hubs/live', '/hubs/live/negotiate', '/HUBS/live', '/Hubs', '/hUbS/live/negotiate'],
+	served: ['/hubs', '/hubs/', '/hubs/live', '/hubs/live/negotiate'],
+	variants: ['/HUBS/live', '/Hubs', '/hUbS/live/negotiate'],
+	others: ['/', '/api', '/api/hubs', '/hub', '/hubsx', '/hubs-old', '/HUBSX', '/login']
+};
+
+/**
+ * ARV-091: findings for the live hub's refusal on every Ingress of a render (docs parsed as Kubernetes reads them). A host is the
+ * hub's when one of its Ingresses routes HUB_PATHS.route. Every server-snippet answers 404 (or 403) at the server level, before
+ * any location, over HTTPS after it sets HSTS (so the 404 carries it):
+ * - on a host without the hub, every path of HUB_PATHS.all, so the token never reaches a location whose logs would write it
+ *   (api-main's own host routes / to the same Service as the hub);
+ * - on the hub's host, every path of HUB_PATHS.variants and none of HUB_PATHS.served;
+ * and none of HUB_PATHS.others anywhere.
+ */
+export function hubRefusalFindings(docs) {
+	const findings = [];
+	const ingresses = docs.filter((doc) => doc?.kind === 'Ingress');
+	const hostsOf = (ingress) => [...new Set((ingress.spec?.rules ?? []).map((rule) => rule.host).filter(Boolean))];
+	const servesHub = (ingress) => (ingress.spec?.rules ?? []).some((rule) => (rule.http?.paths ?? []).some((entry) => HUB_PATHS.route.test(String(entry.path ?? ''))));
+	const hubHosts = new Set(ingresses.filter(servesHub).flatMap(hostsOf));
+	for (const ingress of ingresses) {
+		const id = `Ingress/${ingress.metadata?.name}`;
+		let server = [];
+		try {
+			server = nginxTree(ingress.metadata?.annotations?.[`${NGINX}server-snippet`] ?? '');
+		} catch (error) {
+			findings.push(`${id}: server-snippet is not valid nginx (${error.message})`);
+		}
+		const hsts = headerDirectives(server, 'Strict-Transport-Security').find((directive) => directive.kind === 'more_set_headers');
+		const onPath = (uri) => serverValueOnPath(server, hsts?.value ?? '', { scheme: 'https', otherHost: false, uri });
+		const refused = (uri) => ['403', '404'].includes(String(onPath(uri).returned));
+		const hub = hostsOf(ingress).some((host) => hubHosts.has(host));
+		const required = hub ? HUB_PATHS.variants : HUB_PATHS.all;
+		const open = required.filter((uri) => !refused(uri));
+		if (open.length && hub) {
+			findings.push(`${id}: server-snippet does not answer ${open.join(', ')} with 404 at the server level: the host's live hub Ingress takes /hubs in lowercase only ` +
+				'(nginx matches locations by case), so another spelling reaches another location with the access token in its URL (if ($uri ~ "^/(?!hubs(/|$))[Hh][Uu][Bb][Ss](/|$)") { return 404; })');
+		} else if (open.length) {
+			findings.push(`${id}: server-snippet does not answer ${open.join(', ')} with 404 at the server level (if ($uri ~* "^/hubs(/|$)") { return 404; }): the host has no live hub ` +
+				'Ingress, and Ariva.Api.Main reads the access token from the query on /hubs whatever the host, so the token would reach a location that logs it');
+		} else if (hsts && required.some((uri) => !onPath(uri).value)) findings.push(`${id}: server-snippet refuses /hubs before it sets Strict-Transport-Security, so its 404 carries none`);
+		if (hub) {
+			const blocked = HUB_PATHS.served.filter(refused);
+			if (blocked.length) findings.push(`${id}: server-snippet refuses ${blocked.join(', ')}, which the host's live hub serves`);
+		}
+		const overreach = HUB_PATHS.others.filter((uri) => onPath(uri).returned !== undefined);
+		if (overreach.length) findings.push(`${id}: server-snippet refuses ${overreach.join(', ')}, which are not the live hub`);
 	}
 	return findings;
 }

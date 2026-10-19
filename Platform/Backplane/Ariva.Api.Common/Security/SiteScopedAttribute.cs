@@ -1,3 +1,4 @@
+using Ariva.Api.Common.Logging;
 using Ariva.Core.Security;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -39,6 +40,8 @@ public sealed class SiteScopedAttribute : Attribute, IAsyncActionFilter
             // 404, before it reaches a query (ARV-063: ZAP's NUL byte reached PostgreSQL and answered 500).
             if (codes.Any(code => code is not null && !Ariva.Core.Domain.Entities.Site.IsValidCode(code.ToUpperInvariant())))
             {
+                // ARV-091: the refusals are security events, without the code the caller sent.
+                context.HttpContext.RequestServices.GetService<SecurityEventLog>()?.SiteScope(context.HttpContext, SecurityEvents.NotASiteCode);
                 context.Result = NotFound();
                 return;
             }
@@ -46,6 +49,7 @@ public sealed class SiteScopedAttribute : Attribute, IAsyncActionFilter
             var access = await context.HttpContext.RequestServices.GetRequiredService<ISiteScope>().GetAsync(context.HttpContext.RequestAborted);
             if (codes.Any(code => !access.Allows(code)))
             {
+                context.HttpContext.RequestServices.GetService<SecurityEventLog>()?.SiteScope(context.HttpContext, SecurityEvents.OutsideSiteScope);
                 context.Result = NotFound();
                 return;
             }

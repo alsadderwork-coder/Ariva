@@ -58,6 +58,49 @@ spec:
   tls: [{ hosts: [ariva.example], secretName: ariva-tls }]
   rules: [{ host: ariva.example, http: { paths: [{ path: /api }, { path: /hubs }] } }]
 ---
+# ARV-091: the audit log turned back on after the chart's Off.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: bad-audit-relevant
+  annotations:
+    nginx.ingress.kubernetes.io/modsecurity-snippet: |
+      SecRuleEngine On
+      SecAuditEngine Off
+      SecAuditEngine RelevantOnly
+spec:
+  tls: [{ hosts: [ariva.example], secretName: ariva-tls }]
+  rules: [{ host: ariva.example }]
+---
+# ARV-091: ModSecurity's debug log, which writes request headers and variables at its higher levels.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: bad-debug-log
+  annotations:
+    nginx.ingress.kubernetes.io/modsecurity-snippet: |
+      SecRuleEngine On
+      SecAuditEngine Off
+      SecDebugLog /dev/stdout
+      SecDebugLogLevel 9
+spec:
+  tls: [{ hosts: [ariva.example], secretName: ariva-tls }]
+  rules: [{ host: ariva.example }]
+---
+# ARV-091: a rule that turns the audit engine on per request.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: bad-audit-ctl
+  annotations:
+    nginx.ingress.kubernetes.io/modsecurity-snippet: |
+      SecRuleEngine On
+      SecAuditEngine Off
+      SecRule REQUEST_URI "@beginsWith /api/auth" "id:100100,phase:1,pass,nolog,ctl:auditEngine=On"
+spec:
+  tls: [{ hosts: [ariva.example], secretName: ariva-tls }]
+  rules: [{ host: ariva.example }]
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata: { name: api-integration-deployment }

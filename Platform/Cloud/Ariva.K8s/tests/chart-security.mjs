@@ -35,6 +35,11 @@
 // Ingress routes no health probe and its server-snippet answers them 404 at the server level, after HSTS (ingressPrivacyFindings);
 // the Cronz dashboard has its source range in prd; the API hosts get exactly ingressController.podNetworks as their trusted
 // proxies, /14 and /48 at the widest in prd (forwardedHeadersFindings); the release guards refuse a malformed CIDR, peer or port.
+// ARV-091 (ASVS 5.0 V16.2.5, CWE-532): every Ingress keeps the ModSecurity audit log off (checkManifests); every host without the
+// live hub's Ingress answers /hubs 404 in any case at its server level, and the hub's host every other spelling of it
+// (hubRefusalFindings); the controller values keep ModSecurity off for the whole controller and write the access log without
+// the query string (ingress-nginx 1.15's default format otherwise); the release guards refuse a site annotation that turns the
+// audit log back on, writes a modsecurity, access_log or error_log directive, or routes /hubs without tokenInQuery.
 //   node Platform/Cloud/Ariva.K8s/tests/chart-security.mjs              needs helm 3 on PATH (or HELM=path)
 //   node Platform/Cloud/Ariva.K8s/tests/chart-security.mjs --self-test  checks the rules against fixtures, no helm
 // Without helm the test is skipped locally and fails in CI (CI=true).
@@ -45,8 +50,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parse as parseYaml, parseAllDocuments, stringify } from 'yaml';
-import { checkManifests, controllerValuesFindings, DATABASE_TLS12_CIPHERS, databaseTlsFindings, forwardedHeadersFindings, ingressHardeningFindings, INGRESS_HARDENING,
-	ingressPrivacyFindings, missingMonitoringRules, networkPolicyFindings, networkValues, POD_TLS, podTlsFindings, podTlsSecrets, serverCaSecrets, trustsMappedClients } from './checks.mjs';
+import { checkManifests, controllerValuesFindings, DATABASE_TLS12_CIPHERS, databaseTlsFindings, forwardedHeadersFindings, HUB_PATHS, hubRefusalFindings, ingressHardeningFindings, INGRESS_HARDENING,
+	INGRESS_LOG_FORMAT, ingressPrivacyFindings, missingMonitoringRules, networkPolicyFindings, networkValues, POD_TLS, podTlsFindings, podTlsSecrets, serverCaSecrets, trustsMappedClients } from './checks.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const chart = path.resolve(here, '..', 'Helm', 'Charts', 'platform');
@@ -219,7 +224,42 @@ const CONTROLLER_CASES = [
 	['HSTS without subdomains', (v) => { v.controller.config['hsts-include-subdomains'] = 'false'; }, 'hsts-include-subdomains is false'],
 	['HSTS preload', (v) => { v.controller.config['hsts-preload'] = 'true'; }, 'hsts-preload is true'],
 	['forwarded headers trusted', (v) => { v.controller.config['use-forwarded-headers'] = 'true'; }, 'use-forwarded-headers is true'],
-	['a value that is not a string', (v) => { v.controller.config['enable-modsecurity'] = false; }, 'enable-modsecurity must be a string']
+	['a value that is not a string', (v) => { v.controller.config['enable-modsecurity'] = false; }, 'enable-modsecurity must be a string'],
+	// ARV-091: ModSecurity off for the whole controller, and an access log format that writes no query string or credential.
+	['ModSecurity on for every Ingress', (v) => { v.controller.config['enable-modsecurity'] = 'true'; }, 'enable-modsecurity is true, not "false"'],
+	['ModSecurity left to the default', (v) => { delete v.controller.config['enable-modsecurity']; }, 'enable-modsecurity is unset, not "false"'],
+	["the controller's default access log format", (v) => { delete v.controller.config['log-format-upstream']; }, 'log-format-upstream is unset: the controller\'s default writes $request'],
+	['the request line with its query string', (v) => { v.controller.config['log-format-upstream'] = INGRESS_LOG_FORMAT.controllerDefault; }, 'log-format-upstream writes $request:'],
+	['the request line in braces', (v) => { v.controller.config['log-format-upstream'] = v.controller.config['log-format-upstream'].replace(INGRESS_LOG_FORMAT.requestLine, '${request}'); }, 'log-format-upstream writes $request:'],
+	['the request URI', (v) => { v.controller.config['log-format-upstream'] = v.controller.config['log-format-upstream'].replace('$uri', '$request_uri'); }, 'log-format-upstream writes $request_uri:'],
+	['the query string as $args', (v) => { v.controller.config['log-format-upstream'] += ' "$args"'; }, 'log-format-upstream writes $args:'],
+	['the query string as $query_string', (v) => { v.controller.config['log-format-upstream'] += ' $QUERY_STRING'; }, 'log-format-upstream writes $query_string:'],
+	['one query argument', (v) => { v.controller.config['log-format-upstream'] += ' $arg_access_token'; }, 'log-format-upstream writes $arg_access_token:'],
+	['the request body', (v) => { v.controller.config['log-format-upstream'] += ' $request_body'; }, 'log-format-upstream writes $request_body:'],
+	['the Authorization header', (v) => { v.controller.config['log-format-upstream'] += ' "$http_authorization"'; }, 'log-format-upstream writes $http_authorization:'],
+	['the cookies', (v) => { v.controller.config['log-format-upstream'] += ' "$http_cookie" $cookie_ariva_rt'; }, 'log-format-upstream writes $http_cookie, $cookie_ariva_rt:'],
+	// ARV-091, review round 2: no error log below notice, nginx's log escaping kept, the controller's OpenTelemetry off, and no
+	// log or ModSecurity directive in the controller's own snippets (quoted names included).
+	['the error log at debug', (v) => { v.controller.config['error-log-level'] = 'debug'; }, 'error-log-level is debug, not one of notice, warn, error, crit, alert, emerg'],
+	['the error log at info', (v) => { v.controller.config['error-log-level'] = 'info'; }, 'error-log-level is info, not one of'],
+	["nginx's log escaping off", (v) => { v.controller.config['log-format-escape-none'] = 'true'; }, 'log-format-escape-none is true:'],
+	["nginx's log escaping off as a ParseBool value", (v) => { v.controller.config['log-format-escape-none'] = 'T'; }, 'log-format-escape-none is T:'],
+	['OpenTelemetry for every Ingress', (v) => { v.controller.config['enable-opentelemetry'] = 'true'; }, 'enable-opentelemetry is true:'],
+	['OpenTelemetry on as 1', (v) => { v.controller.config['enable-opentelemetry'] = '1'; }, 'enable-opentelemetry is 1:'],
+	["an http-snippet with nginx's combined access log", (v) => { v.controller.config['http-snippet'] = 'client_body_buffer_size 16k;\naccess_log /dev/stdout combined;'; }, 'http-snippet writes access_log:'],
+	['an http-snippet with a log format of its own', (v) => { v.controller.config['http-snippet'] = "log_format site '$request';"; }, 'http-snippet writes log_format:'],
+	['a main-snippet with a debug error log', (v) => { v.controller.config['main-snippet'] = 'error_log /dev/stderr debug;'; }, 'main-snippet writes error_log:'],
+	['a server-snippet with a quoted access_log', (v) => { v.controller.config['server-snippet'] = '"access_log" /dev/stdout;'; }, 'server-snippet writes access_log:'],
+	["a location-snippet loading the controller's modsecurity.conf", (v) => { v.controller.config['location-snippet'] = "'modsecurity_rules_file' /etc/nginx/modsecurity/modsecurity.conf;"; }, 'location-snippet writes modsecurity_rules_file:'],
+	['a location-snippet turning ModSecurity on', (v) => { v.controller.config['location-snippet'] = 'more_set_headers "X-Site: 1"; modsecurity on;'; }, 'location-snippet writes modsecurity:']
+];
+
+/** ARV-091: controller values the rules accept (each alone): the error levels from notice up, the switches off, harmless snippets. */
+const CONTROLLER_ACCEPTED = [
+	(v) => { v.controller.config['error-log-level'] = 'warn'; }, (v) => { v.controller.config['error-log-level'] = 'notice'; }, (v) => { v.controller.config['error-log-level'] = 'crit'; },
+	(v) => { v.controller.config['log-format-escape-none'] = 'false'; }, (v) => { v.controller.config['log-format-escape-json'] = 'true'; },
+	(v) => { v.controller.config['enable-opentelemetry'] = 'false'; },
+	(v) => { v.controller.config['http-snippet'] = 'client_body_buffer_size 16k;'; }, (v) => { v.controller.config['server-snippet'] = 'more_set_headers "X-Site: 1";'; }
 ];
 
 function controllerValuesSelfTest() {
@@ -227,13 +267,22 @@ function controllerValuesSelfTest() {
 	const text = fs.readFileSync(CONTROLLER_VALUES, 'utf8');
 	const shipped = controllerValuesFindings(parseYaml(text));
 	if (shipped.length) failures.push(`Helm/ingress-nginx-values.yaml:\n   ${shipped.join('\n   ')}`);
+	// ARV-091: the shipped format is ingress-nginx 1.15's default with the request line written without its query string, and nothing else changed.
+	const expectedFormat = INGRESS_LOG_FORMAT.controllerDefault.replace('"$request"', `"${INGRESS_LOG_FORMAT.requestLine}"`);
+	if (parseYaml(text).controller?.config?.['log-format-upstream'] !== expectedFormat) failures.push(`Helm/ingress-nginx-values.yaml: log-format-upstream is not ingress-nginx 1.15's default with "${INGRESS_LOG_FORMAT.requestLine}" for "$request" (${expectedFormat})`);
 	for (const [label, change, rule] of CONTROLLER_CASES) {
 		const values = parseYaml(text);
 		change(values);
 		const found = controllerValuesFindings(values);
 		if (found.length !== 1 || !found[0].includes(rule)) failures.push(`controller values with ${label} must trip "${rule}" alone, tripped ${found.length ? found.join(' | ') : 'nothing'}`);
 	}
-	return { failures, count: CONTROLLER_CASES.length };
+	CONTROLLER_ACCEPTED.forEach((change, index) => {
+		const values = parseYaml(text);
+		change(values);
+		const found = controllerValuesFindings(values);
+		if (found.length) failures.push(`accepted controller values ${index} produced findings: ${found.join(' | ')}`);
+	});
+	return { failures, count: CONTROLLER_CASES.length, accepted: CONTROLLER_ACCEPTED.length };
 }
 
 /** Each expected substring matches its own finding, and nothing else was found. */
@@ -354,6 +403,54 @@ function ingressPrivacySelfTest() {
 	return { failures, count: INGRESS_PRIVACY_CASES.length };
 }
 
+/**
+ * The chart's server-snippet for a host (ariva-platform.ingressServerSnippet), as the renders below must carry it: the headers
+ * and the 421 (ARV-084), the probes' 404 (ARV-085), and the live hub's refusal (ARV-091): on a host without the hub's Ingress
+ * /hubs in any case (HUB_REFUSAL), on the hub's host every spelling but the lowercase one (HUB_VARIANT_REFUSAL).
+ */
+const HUB_REFUSAL = 'if ($uri ~* "^/hubs(/|$)") {\n  return 404;\n}\n';
+const HUB_VARIANT_REFUSAL = 'if ($uri ~ "^/(?!hubs(/|$))[Hh][Uu][Bb][Ss](/|$)") {\n  return 404;\n}\n';
+const chartServerSnippet = (host, hub = false) => 'set $ariva_hsts "";\nif ($scheme = https) {\n  set $ariva_hsts "max-age=31536000; includeSubDomains";\n}\n' +
+	'more_set_headers "Strict-Transport-Security: $ariva_hsts";\nmore_set_headers "X-Content-Type-Options: nosniff";\nadd_header Content-Security-Policy "frame-ancestors \'none\'" always;\n' +
+	`if ($host != "${host}") {\n  return 421;\n}\n` + 'if ($uri ~* "^/healthz?(/|$)") {\n  return 404;\n}\n' + (hub ? HUB_VARIANT_REFUSAL : HUB_REFUSAL);
+
+/**
+ * ARV-091: each case of the hub refusal (an Ingress on a host of its own: the hub's host when hub is true, its path /hubs, else
+ * a host without the hub, its path /), the change to the chart's server-snippet, and the one rule it must trip.
+ */
+const HUB_REFUSAL_CASES = [
+	['main-open', false, (text) => text.replace(HUB_REFUSAL, ''), `does not answer ${HUB_PATHS.all.join(', ')} with 404 at the server level (if ($uri ~* "^/hubs(/|$)")`],
+	['main-case-sensitive', false, (text) => text.replace('$uri ~* "^/hubs', '$uri ~ "^/hubs'), `does not answer ${HUB_PATHS.variants.join(', ')} with 404 at the server level (if`],
+	['main-too-wide', false, (text) => text.replace('"^/hubs(/|$)"', '"^/hubs"'), 'refuses /hubsx, /hubs-old, /HUBSX, which are not the live hub'],
+	['main-before-hsts', false, (text) => HUB_REFUSAL + text.replace(HUB_REFUSAL, ''), 'refuses /hubs before it sets Strict-Transport-Security'],
+	['main-redirected', false, (text) => text.replace(HUB_REFUSAL, HUB_REFUSAL.replace('return 404', 'return 301 /')), `does not answer ${HUB_PATHS.all.join(', ')} with 404`],
+	['main-variants-only', false, (text) => text.replace(HUB_REFUSAL, HUB_VARIANT_REFUSAL), `does not answer ${HUB_PATHS.served.join(', ')} with 404 at the server level (if`],
+	['web-variants-open', true, (text) => text.replace(HUB_VARIANT_REFUSAL, ''), `does not answer ${HUB_PATHS.variants.join(', ')} with 404 at the server level: the host's live hub Ingress takes /hubs in lowercase only`],
+	['web-hub-refused', true, (text) => text.replace(HUB_VARIANT_REFUSAL, HUB_REFUSAL), `refuses ${HUB_PATHS.served.join(', ')}, which the host's live hub serves`],
+	['web-variants-before-hsts', true, (text) => HUB_VARIANT_REFUSAL + text.replace(HUB_VARIANT_REFUSAL, ''), 'refuses /hubs before it sets Strict-Transport-Security']
+];
+
+/** ARV-091: an Ingress of the hub refusal cases. */
+const hubIngress = (name, host, paths, serverSnippet) => ({ apiVersion: 'networking.k8s.io/v1', kind: 'Ingress', metadata: { name, annotations: { 'nginx.ingress.kubernetes.io/server-snippet': serverSnippet } },
+	spec: { rules: [{ host, http: { paths: paths.map((value) => ({ path: value, pathType: 'Prefix', backend: { service: { name: 'api-main-service', port: { number: 80 } } } })) } }] } });
+
+/** ARV-091: the hub refusal rules: the chart's text clean on a host with and without the hub, each case tripping exactly its rule. */
+function hubRefusalSelfTest() {
+	const failures = [];
+	const good = [hubIngress('api-main', 'api-main.example', ['/'], chartServerSnippet('api-main.example')),
+		hubIngress('web', 'web.example', ['/'], chartServerSnippet('web.example', true)), hubIngress('web-hubs', 'web.example', ['/hubs'], chartServerSnippet('web.example', true))];
+	const clean = hubRefusalFindings(good);
+	if (clean.length) failures.push(`the chart's server-snippets produced hub refusal findings:\n   ${clean.join('\n   ')}`);
+	const docs = HUB_REFUSAL_CASES.map(([name, hub, change]) => hubIngress(name, `${name}.example`, hub ? ['/hubs'] : ['/'], change(chartServerSnippet(`${name}.example`, hub))));
+	const findings = hubRefusalFindings(docs);
+	for (const [name, hub, change, rule] of HUB_REFUSAL_CASES) {
+		const own = findings.filter((finding) => finding.startsWith(`Ingress/${name}:`));
+		if (change(chartServerSnippet(`${name}.example`, hub)) === chartServerSnippet(`${name}.example`, hub)) failures.push(`hub refusal case ${name} changes nothing`);
+		if (own.length !== 1 || !own[0].includes(rule)) failures.push(`hub refusal case ${name} must trip "${rule}" alone, tripped ${own.length ? own.join(' | ') : 'nothing'}`);
+	}
+	return { failures, count: HUB_REFUSAL_CASES.length };
+}
+
 /** ARV-085: API host Deployments (and a simulator and a job) carrying the given trusted proxy networks, for the cases below. */
 function proxyDocs(networks) {
 	const env = networks.map((value, index) => ({ name: `Security__ForwardedHeaders__KnownNetworks__${index}`, value }));
@@ -418,6 +515,12 @@ function selfTest() {
 		'runAsNonRoot', 'runAsUser', 'seccompProfile', 'hostNetwork', 'allowPrivilegeEscalation', 'privileged',
 		'capabilities.drop', 'readOnlyRootFilesystem', '/tmp', 'latest', 'needs a tls section', 'not covered by tls', 'production must pin',
 		'token signing key', 'integration token signing key', 'integration token key ring', 'needs securityContext.fsGroup', 'token public keys', 'disable the access log', 'audit log off', 'only critical errors', 'its own ingress',
+		// ARV-091: the ModSecurity audit log off on every Ingress, not only the hub's.
+		'Ingress/bad-no-tls: the ingress must turn the ModSecurity audit log off (its modsecurity-snippet ends with SecAuditEngine Off, not unset)',
+		'Ingress/bad-audit-relevant: the ingress must turn the ModSecurity audit log off (its modsecurity-snippet ends with SecAuditEngine Off, not Off then RelevantOnly)',
+		'Ingress/bad-audit-ctl: the ingress must turn the ModSecurity audit log off (its modsecurity-snippet ends with SecAuditEngine Off, not Off, and no rule sets ctl:auditEngine=On)',
+		'Ingress/bad-debug-log: the modsecurity-snippet sets a ModSecurity debug log (SecDebugLog...)',
+		'Ingress/bad-hubs-logged: /hubs carries tokens in its URL; the ingress must keep OpenTelemetry off',
 		'pinned by digest', 'carries a literal value', 'needs a NetworkPolicy', 'automountServiceAccountToken', 'Kafka__ProvisionTopics',
 		'POSTGRES_INITDB_ARGS', 'POSTGRES_HOST_AUTH_METHOD', 'without NOSUPERUSER', 'must set DOTNET_ENVIRONMENT',
 		'Deployment/no-environment', 'Job/argument-overrides', 'Deployment/later-config-map-overrides', 'Deployment/wrong-environment', 'Job/bare-argument-overrides',
@@ -454,7 +557,8 @@ function selfTest() {
 	const network = networkPolicySelfTest();
 	const privacy = ingressPrivacySelfTest();
 	const proxies = forwardedHeadersSelfTest();
-	const others = [...tls.failures, ...podTls.failures, ...webImage, ...hardening.failures, ...controller.failures, ...network.failures, ...privacy.failures, ...proxies.failures];
+	const hubs = hubRefusalSelfTest();
+	const others = [...tls.failures, ...podTls.failures, ...webImage, ...hardening.failures, ...controller.failures, ...network.failures, ...privacy.failures, ...proxies.failures, ...hubs.failures];
 	if (good.length || missing.length || others.length) {
 		console.error('chart-security self-test FAILED');
 		if (good.length) console.error('  good fixture produced findings:\n   ' + good.join('\n   '));
@@ -464,8 +568,10 @@ function selfTest() {
 	}
 	console.log(`chart-security self-test: ${expected.length} rules fire on the bad fixture, ${tls.count} TimescaleDB TLS rules on the TLS fixtures, ${podTls.count} pod TLS rules ` +
 		`on the pod TLS fixtures, ${hardening.count} ingress hardening rules and ${privacy.count} private probe and source range rules on theirs (each bad case trips exactly its rule), ` +
+		`${hubs.count} live hub refusal cases on the chart's server-snippet (each tripping exactly its rule), ` +
 		`${network.count} network policy cases and ${proxies.count} trusted proxy cases each giving exactly their findings; the good fixtures are clean; the web image takes ` +
-		`its listener from ${POD_TLS.webListen}; the shipped controller values (Helm/ingress-nginx-values.yaml) hold every rule and ${controller.count} changes each trip theirs.`);
+		`its listener from ${POD_TLS.webListen}; the shipped controller values (Helm/ingress-nginx-values.yaml) hold every rule, their access log format is ingress-nginx 1.15's ` +
+		`without the query string, ${controller.count} changes each trip theirs and ${controller.accepted} accepted changes trip none.`);
 }
 
 function helmAvailable() {
@@ -525,7 +631,8 @@ function mergedValues(files) {
 
 /**
  * ARV-085: the network findings of a render against its values: the NetworkPolicies (on as the values say, or as the release
- * sets them), the private probes and source ranges of every Ingress, and the API hosts' trusted proxy networks.
+ * sets them), the private probes and source ranges of every Ingress, and the API hosts' trusted proxy networks. ARV-091: and
+ * the live hub's refusal on every host (hubRefusalFindings), refused at the server level like the probes.
  */
 function networkFindings(text, values, environment, { enabled } = {}) {
 	const docs = parseAsKubernetes(text);
@@ -534,7 +641,7 @@ function networkFindings(text, values, environment, { enabled } = {}) {
 	const findings = [];
 	if (environment === 'k8s-prd' && !on) findings.push('k8s-prd renders without its NetworkPolicies');
 	findings.push(...networkPolicyFindings(docs, { enabled: on, environment, values: network }), ...ingressPrivacyFindings(docs, { environment }),
-		...forwardedHeadersFindings(docs, { environment, podNetworks: values.ingressController?.podNetworks ?? [] }));
+		...forwardedHeadersFindings(docs, { environment, podNetworks: values.ingressController?.podNetworks ?? [] }), ...hubRefusalFindings(docs));
 	return findings;
 }
 
@@ -542,8 +649,12 @@ function networkFindings(text, values, environment, { enabled } = {}) {
 function describeNetwork(text, values) {
 	const policies = parseAsKubernetes(text).filter((doc) => doc?.kind === 'NetworkPolicy' && doc.metadata?.name !== 'timescaledb').length;
 	const networks = values.ingressController?.podNetworks ?? [];
+	const docs = parseAsKubernetes(text).filter((doc) => doc?.kind === 'Ingress');
+	const hubHosts = new Set(docs.filter((doc) => (doc.spec?.rules ?? []).some((rule) => (rule.http?.paths ?? []).some((entry) => HUB_PATHS.route.test(String(entry.path ?? ''))))).flatMap((doc) => doc.spec.rules.map((rule) => rule.host)));
+	const otherHosts = new Set(docs.flatMap((doc) => (doc.spec?.rules ?? []).map((rule) => rule.host)).filter((host) => !hubHosts.has(host)));
 	return `${policies ? `${policies} NetworkPolicies (default deny and the firewall matrix's flows)` : 'no NetworkPolicies'}, ` +
-		`${networks.length ? `trusted proxies ${networks.join(', ')}` : "the appsettings' trusted proxies"}, /health refused on every Ingress`;
+		`${networks.length ? `trusted proxies ${networks.join(', ')}` : "the appsettings' trusted proxies"}, /health refused on every Ingress, ` +
+		`/hubs refused on the ${otherHosts.size} hosts without the live hub and its other spellings on the ${hubHosts.size} with it`;
 }
 
 /** ARV-111a: the migration job of a render carries every retention period of its values, as the job reads them. */
@@ -690,7 +801,7 @@ for (const env of environments) {
 		console.log(`PASS ${env.file}: ${workloads} deployments, ${ingresses} ingresses, validation reader login in api-main and the migration job only, ` +
 			'database and Redis CAs in the five API hosts and the two jobs only, ' +
 			(podTls ? 'every pod, Service and Ingress over TLS with the cluster CA, ' : 'plain HTTP to the pods, ') +
-			`HSTS, nosniff and frame-ancestors on every Ingress's responses, plain HTTP ${describeModes(docs)}, ${describeNetwork(result.stdout, values)}, ` +
+			`HSTS, nosniff and frame-ancestors on every Ingress's responses, the ModSecurity audit log off on every Ingress, plain HTTP ${describeModes(docs)}, ${describeNetwork(result.stdout, values)}, ` +
 			`retention periods ${Object.values(retentionValues(env.file)).join('/')} days in the migration job, ` +
 			`${monitoring('ariva-monitoring-alerts')} alert rules and ${monitoring('ariva-monitoring-dashboards')} dashboards`);
 	}
@@ -877,7 +988,56 @@ for (const [label, file, sets, message, annotation] of [
 		'server-snippet: "more_clear_headers X-Content-Type-Options;"'],
 	['a configuration-snippet that adds a policy of its own', 'values-k8s-dev.yaml', [], 'configuration-snippet names Strict-Transport-Security, X-Content-Type-Options, Content-Security-Policy or more_clear_headers',
 		'configuration-snippet: "add_header Content-Security-Policy \\"frame-ancestors *\\" always;"'],
-	['a modsecurity-snippet that turns the rule engine off', 'values-k8s-dev.yaml', [], 'the modsecurity-snippet sets SecRuleEngine or SecAuditEngine', 'modsecurity-snippet: "SecRuleEngine Off"'],
+	['a modsecurity-snippet that turns the rule engine off', 'values-k8s-dev.yaml', [], 'the modsecurity-snippet sets SecRuleEngine, SecAuditEngine', 'modsecurity-snippet: "SecRuleEngine Off"'],
+	// ARV-091: no site annotation turns the ModSecurity audit log back on (in the modsecurity-snippet, by loading the controller's
+	// modsecurity.conf or rules from elsewhere, or through a modsecurity directive in another snippet, a quote-break included),
+	// writes an access_log or error_log of its own, or routes the live hub without tokenInQuery.
+	['a modsecurity-snippet that turns the audit log back on', 'values-k8s-dev.yaml', [], 'the modsecurity-snippet sets SecRuleEngine, SecAuditEngine', 'modsecurity-snippet: "SecAuditEngine RelevantOnly"'],
+	['a modsecurity-snippet that turns the audit log on in production', 'values-k8s-prd.yaml', [PRD], 'the modsecurity-snippet sets SecRuleEngine, SecAuditEngine', 'modsecurity-snippet: "secauditengine On"'],
+	['a modsecurity-snippet that sets the audit log parts', 'values-k8s-dev.yaml', [], 'the modsecurity-snippet sets SecRuleEngine, SecAuditEngine, an audit log setting', 'modsecurity-snippet: "SecAuditLogParts ABIJDEFHZ"'],
+	['a modsecurity-snippet that moves the audit log to standard output', 'values-k8s-dev.yaml', [], 'an audit log setting (SecAuditLog...)', 'modsecurity-snippet: "SecAuditLog /dev/stdout"'],
+	['a modsecurity-snippet rule that turns the audit engine on per request', 'values-k8s-dev.yaml', [], 'ctl:auditEngine or ctl:auditLogParts',
+		{ ingresses: [ingressEntry('api-main', 'api-main-service', 'api-main-test', { annotations: { 'nginx.ingress.kubernetes.io/modsecurity-snippet': 'SecRule REQUEST_URI "@beginsWith /api/auth" "id:100100,phase:1,pass,nolog,ctl:auditEngine=On"' } })] }],
+	["a modsecurity-snippet that includes the controller's modsecurity.conf", 'values-k8s-dev.yaml', [], 'or loads rules (Include, SecRemoteRules)', 'modsecurity-snippet: "Include /etc/nginx/modsecurity/modsecurity.conf"'],
+	['a modsecurity-snippet that loads remote rules', 'values-k8s-dev.yaml', [], 'or loads rules (Include, SecRemoteRules)', 'modsecurity-snippet: "SecRemoteRules key https://rules.example/ariva.conf"'],
+	["a modsecurity-snippet that quotes its way out to the controller's modsecurity.conf", 'values-k8s-dev.yaml', [], 'modsecurity-snippet writes a modsecurity directive',
+		{ ingresses: [ingressEntry('api-main', 'api-main-service', 'api-main-test', { annotations: { 'nginx.ingress.kubernetes.io/modsecurity-snippet': "SecRule ARGS \"@rx x\" \"id:100101,phase:2,pass,nolog\"\n';modsecurity_rules_file /etc/nginx/modsecurity/modsecurity.conf;\nmodsecurity_rules '" } })] }],
+	["a configuration-snippet that loads the controller's modsecurity.conf", 'values-k8s-dev.yaml', [], 'configuration-snippet writes a modsecurity directive', 'configuration-snippet: "modsecurity_rules_file /etc/nginx/modsecurity/modsecurity.conf;"'],
+	['a server-snippet that turns the audit engine on', 'values-k8s-prd.yaml', [PRD], 'server-snippet writes a modsecurity directive', "server-snippet: \"modsecurity_rules 'SecAuditEngine On';\""],
+	['a configuration-snippet that turns ModSecurity off', 'values-k8s-dev.yaml', [], 'configuration-snippet writes a modsecurity directive', 'configuration-snippet: "add_header X-Site 1;\\nmodsecurity off;"'],
+	["a configuration-snippet that logs the request line with nginx's combined format", 'values-k8s-dev.yaml', [], 'configuration-snippet writes an access_log or error_log directive', 'configuration-snippet: "access_log /var/log/nginx/access.log combined;"'],
+	['a server-snippet that logs requests to a file of its own', 'values-k8s-prd.yaml', [PRD], 'server-snippet writes an access_log or error_log directive', 'server-snippet: "client_header_timeout 30s; access_log /tmp/requests.log;"'],
+	['a configuration-snippet that logs the live hub below critical', 'values-k8s-dev.yaml', [], 'configuration-snippet writes an access_log or error_log directive',
+		{ ingresses: [ingressEntry('web-hubs', 'api-main-service', 'web-test', { plainHttp: 'redirect', tokenInQuery: true, paths: ['/hubs'], annotations: { 'nginx.ingress.kubernetes.io/configuration-snippet': 'error_log /dev/stderr info;' } })] }],
+	['a site annotation that turns the live hub\'s access log back on', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/enable-access-log is set by the chart',
+		{ ingresses: [ingressEntry('web-hubs', 'api-main-service', 'web-test', { plainHttp: 'redirect', tokenInQuery: true, paths: ['/hubs'], annotations: { 'nginx.ingress.kubernetes.io/enable-access-log': 'true' } })] }],
+	['an Ingress that routes /hubs without tokenInQuery', 'values-k8s-dev.yaml', [], 'ingresses api-main: routes /hubs without tokenInQuery',
+		{ ingresses: [ingressEntry('api-main', 'api-main-service', 'api-main-test', { paths: ['/hubs'] })] }],
+	['an Ingress that routes the hub in capitals without tokenInQuery', 'values-k8s-prd.yaml', [PRD], 'ingresses web-hubs: routes /HUBS/live without tokenInQuery',
+		{ ingresses: [ingressEntry('web-hubs', 'api-main-service', 'web-test', { paths: ['/api', '/HUBS/live'] })] }],
+	['a tokenInQuery Ingress that routes more than the hub', 'values-k8s-dev.yaml', [], "ingresses api-main: tokenInQuery is the live hub's (no access log, no audit log, critical errors only), so its paths are /hubs or under it, not /",
+		{ ingresses: [ingressEntry('api-main', 'api-main-service', 'api-main-test', { tokenInQuery: true })] }],
+	['a tokenInQuery that is not true or false', 'values-k8s-dev.yaml', [], 'ingresses web-hubs: tokenInQuery must be true or false',
+		{ ingresses: [ingressEntry('web-hubs', 'api-main-service', 'web-test', { plainHttp: 'redirect', tokenInQuery: 'false', paths: ['/hubs'] })] }],
+	// ARV-091, review round 2: no ModSecurity debug log, no rule that copies request values into its msg or logdata, no quoted
+	// directive name, and no OpenTelemetry on the live hub's Ingress.
+	['a modsecurity-snippet that writes a debug log to standard output', 'values-k8s-dev.yaml', [], 'a debug log (SecDebugLog...)', 'modsecurity-snippet: "SecDebugLog /dev/stdout"'],
+	['a modsecurity-snippet that raises the debug log level', 'values-k8s-prd.yaml', [PRD], 'a debug log (SecDebugLog...)', 'modsecurity-snippet: "SecDebugLogLevel 9"'],
+	["a site rule whose msg copies the Authorization header", 'values-k8s-dev.yaml', [], 'the modsecurity-snippet expands a macro of the request\'s values',
+		{ ingresses: [ingressEntry('api-main', 'api-main-service', 'api-main-test', { annotations: { 'nginx.ingress.kubernetes.io/modsecurity-snippet': 'SecRule REQUEST_HEADERS:Authorization "@rx ." "id:100102,phase:1,pass,log,msg:\\\'%{REQUEST_HEADERS.Authorization}\\\'"' } })] }],
+	['a site rule whose logdata copies the matched value', 'values-k8s-dev.yaml', [], 'the modsecurity-snippet expands a macro of the request\'s values',
+		{ ingresses: [ingressEntry('api-main', 'api-main-service', 'api-main-test', { annotations: { 'nginx.ingress.kubernetes.io/modsecurity-snippet': 'SecRule REQUEST_COOKIES "@rx ." "id:100103,phase:1,pass,log,msg:\\\'cookie\\\',logdata:\\\'%{matched_var}\\\'"' } })] }],
+	['a site rule whose logdata copies a capture', 'values-k8s-prd.yaml', [PRD], 'the modsecurity-snippet expands a macro of the request\'s values',
+		{ ingresses: [ingressEntry('api-main', 'api-main-service', 'api-main-test', { annotations: { 'nginx.ingress.kubernetes.io/modsecurity-snippet': 'SecRule REQUEST_HEADERS:Authorization "@rx (Bearer .+)" "id:100104,phase:1,pass,log,capture,msg:\\\'bearer\\\',logdata:\\\'%{TX.1}\\\'"' } })] }],
+	['a site rule whose msg copies the query string', 'values-k8s-dev.yaml', [], 'the modsecurity-snippet expands a macro of the request\'s values',
+		{ ingresses: [ingressEntry('api-main', 'api-main-service', 'api-main-test', { annotations: { 'nginx.ingress.kubernetes.io/modsecurity-snippet': 'SecRule ARGS_GET:access_token "@rx ." "id:100105,phase:1,pass,log,msg:\\\'%{QUERY_STRING}\\\'"' } })] }],
+	['a site rule that saves an argument for a later message', 'values-k8s-dev.yaml', [], 'the modsecurity-snippet expands a macro of the request\'s values',
+		{ ingresses: [ingressEntry('api-main', 'api-main-service', 'api-main-test', { annotations: { 'nginx.ingress.kubernetes.io/modsecurity-snippet': 'SecAction "id:100106,phase:2,pass,nolog,setvar:tx.saved=%{ARGS.password}"' } })] }],
+	['a configuration-snippet with a quoted access_log', 'values-k8s-dev.yaml', [], 'configuration-snippet writes an access_log or error_log directive', 'configuration-snippet: "\\"access_log\\" /dev/stdout combined;"'],
+	['a server-snippet with a quoted error_log', 'values-k8s-prd.yaml', [PRD], 'server-snippet writes an access_log or error_log directive', "server-snippet: \"client_header_timeout 30s; 'error_log' /dev/stderr debug;\""],
+	["a server-snippet with a quoted modsecurity directive", 'values-k8s-dev.yaml', [], 'server-snippet writes a modsecurity directive', "server-snippet: \"'modsecurity_rules_file' /etc/nginx/modsecurity/modsecurity.conf;\""],
+	['a site annotation that turns OpenTelemetry on for the live hub', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/enable-opentelemetry is set by the chart',
+		{ ingresses: [ingressEntry('web-hubs', 'api-main-service', 'web-test', { plainHttp: 'redirect', tokenInQuery: true, paths: ['/hubs'], annotations: { 'nginx.ingress.kubernetes.io/enable-opentelemetry': 'true' } })] }],
 	['the Ingresses of one host with different server-snippets', 'values-k8s-dev.yaml', [], 'the Ingresses of host api-integration-test carry different server-snippet annotations',
 		{ ingresses: [ingressEntry('api-integration', 'api-integration-service', 'api-integration-test', { annotations: { 'nginx.ingress.kubernetes.io/server-snippet': 'client_header_timeout 30s;' } }),
 			ingressEntry('api-integration-feeds', 'api-integration-service', 'api-integration-test', { paths: ['/api/v1/integration/'] })] }],
@@ -1027,24 +1187,29 @@ for (const [label, file, sets, message, annotation] of [
 	const findings = [];
 	const siteServer = 'client_header_timeout 30s;\n';
 	const siteLocation = 'more_set_headers "X-Ariva-Site: 1";\n';
+	// ARV-091: a site's own ModSecurity rule follows the chart's, whose SecAuditEngine Off stays the last word on the audit log.
+	// Its logdata names the matched variable (MATCHED_VAR_NAME), never its value, which validate.yaml would refuse.
+	const siteModsecurity = 'SecRule REQUEST_HEADERS:User-Agent "@contains sqlmap" "id:100200,phase:1,deny,status:403,log,msg:\\\'scanner\\\',logdata:\\\'%{MATCHED_VAR_NAME}\\\'"\n';
+	const chartModsecurity = 'SecRuleEngine On\nSecRule FILES "@rx \\.(exe|dll|bat|cmd|com|msi|sh|ps1|php|jsp|asp|aspx)$" "id:100001,phase:2,deny,status:403,log,msg:\\\'Dangerous file upload blocked\\\'"\nSecAuditEngine Off\n';
 	const site = render('values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], '', [valuesFile({ ingresses: [
-		ingressEntry('api-integration', 'api-integration-service', 'api-integration-test', { annotations: { 'nginx.ingress.kubernetes.io/server-snippet': siteServer, 'nginx.ingress.kubernetes.io/configuration-snippet': siteLocation } }),
+		ingressEntry('api-integration', 'api-integration-service', 'api-integration-test', { annotations: { 'nginx.ingress.kubernetes.io/server-snippet': siteServer, 'nginx.ingress.kubernetes.io/configuration-snippet': siteLocation,
+			'nginx.ingress.kubernetes.io/modsecurity-snippet': siteModsecurity } }),
 		ingressEntry('api-integration-feeds', 'api-integration-service', 'api-integration-test', { paths: ['/api/v1/integration/'], annotations: { 'nginx.ingress.kubernetes.io/server-snippet': siteServer } })
 	] })]);
 	if (site.status !== 0) findings.push(`site snippets: template failed\n${site.stderr}`);
 	else {
 		const docs = parseAsKubernetes(site.stdout);
-		findings.push(...checkManifests(parse(site.stdout), { environment: 'k8s-prd' }), ...ingressHardeningFindings(docs, { environment: 'k8s-prd' }));
-		const chartServer = 'set $ariva_hsts "";\nif ($scheme = https) {\n  set $ariva_hsts "max-age=31536000; includeSubDomains";\n}\nmore_set_headers "Strict-Transport-Security: $ariva_hsts";\n' +
-			'more_set_headers "X-Content-Type-Options: nosniff";\nadd_header Content-Security-Policy "frame-ancestors \'none\'" always;\nif ($host != "api-integration-test.dalilhub.tech") {\n  return 421;\n}\n' +
-			// ARV-085: the probes answered 404 at the server level, after the HSTS value and the 421.
-			'if ($uri ~* "^/healthz?(/|$)") {\n  return 404;\n}\n';
+		findings.push(...checkManifests(parse(site.stdout), { environment: 'k8s-prd' }), ...ingressHardeningFindings(docs, { environment: 'k8s-prd' }), ...hubRefusalFindings(docs));
+		// ARV-085: the probes answered 404 at the server level, after the HSTS value and the 421; ARV-091: then /hubs, as this host has no live hub.
+		const chartServer = chartServerSnippet('api-integration-test.dalilhub.tech');
 		const chartLocation = 'add_header Content-Security-Policy "frame-ancestors \'none\'" always;\nif ($scheme = http) {\n  return 403;\n}\n';
 		for (const ingress of docs.filter((doc) => doc?.kind === 'Ingress')) {
 			const annotations = ingress.metadata.annotations;
 			if (annotations['nginx.ingress.kubernetes.io/server-snippet'] !== chartServer + siteServer) findings.push(`Ingress/${ingress.metadata.name}: the server-snippet is not the chart's followed by the site's`);
 			const expectedLocation = chartLocation + (ingress.metadata.name === 'api-integration-ingress' ? siteLocation : '');
 			if (annotations['nginx.ingress.kubernetes.io/configuration-snippet'] !== expectedLocation) findings.push(`Ingress/${ingress.metadata.name}: the configuration-snippet is not the chart's followed by the site's`);
+			const expectedModsecurity = chartModsecurity + (ingress.metadata.name === 'api-integration-ingress' ? siteModsecurity : '');
+			if (annotations['nginx.ingress.kubernetes.io/modsecurity-snippet'] !== expectedModsecurity) findings.push(`Ingress/${ingress.metadata.name}: the modsecurity-snippet is not the chart's (audit log off) followed by the site's`);
 		}
 	}
 	const dev = render('values-k8s-dev.yaml', [], '', [valuesFile({ ingresses: [ingressEntry('api-ingest', 'api-ingest-service', 'api-ingest-test', { plainHttp: 'redirect' })] })]);
@@ -1059,6 +1224,83 @@ for (const [label, file, sets, message, annotation] of [
 		console.error(`FAIL ingress site snippets and modes:\n  ${findings.join('\n  ')}`);
 	} else {
 		console.log('PASS ingress site snippets and modes: a site\'s server-snippet and configuration-snippet follow the chart\'s on every Ingress of a host and the rules still hold; a machine host may redirect outside production');
+	}
+}
+
+// ARV-091: credentials out of the ingress's logs, on real renders. A host with the live hub (the web host: the app, /api and the
+// hub's own Ingress) answers 404 to every spelling of /hubs but the lowercase one, which its hub Ingress serves; a host without it
+// (api-main's own) answers 404 to /hubs in any case; both server-snippets are exactly the chart's text, and every Ingress keeps
+// the ModSecurity audit log off. Then each change below to a shipped render gives exactly its finding: an Ingress without the
+// audit log off, the audit log turned back on, a rule turning it on per request, a host without the hub not refusing /hubs or
+// refusing it by case only, the hub's host refusing its own hub or leaving another spelling open.
+{
+	const findings = [];
+	const hosts = render('values-k8s-prd.yaml', [PRD], '', [valuesFile({ ingresses: [
+		ingressEntry('api-main', 'api-main-service', 'api-main-test'),
+		ingressEntry('web', 'web-service', 'web-test', { plainHttp: 'redirect' }),
+		ingressEntry('web-api', 'api-main-service', 'web-test', { plainHttp: 'redirect', paths: ['/api'] }),
+		ingressEntry('web-hubs', 'api-main-service', 'web-test', { plainHttp: 'redirect', tokenInQuery: true, paths: ['/hubs'] })
+	] })]);
+	if (hosts.status !== 0) findings.push(`the live hub's host and api-main's: template failed\n${hosts.stderr}`);
+	else {
+		const docs = parseAsKubernetes(hosts.stdout);
+		findings.push(...checkManifests(parse(hosts.stdout), { environment: 'k8s-prd' }), ...ingressHardeningFindings(docs, { environment: 'k8s-prd' }), ...hubRefusalFindings(docs));
+		for (const ingress of docs.filter((doc) => doc?.kind === 'Ingress')) {
+			const host = ingress.spec.rules[0].host;
+			const hub = host.startsWith('web-test.');
+			if (ingress.metadata.annotations['nginx.ingress.kubernetes.io/server-snippet'] !== chartServerSnippet(host, hub)) findings.push(`Ingress/${ingress.metadata.name}: the server-snippet is not the chart's for a host ${hub ? 'with' : 'without'} the live hub`);
+		}
+	}
+	const MODSECURITY = 'nginx.ingress.kubernetes.io/modsecurity-snippet';
+	const SERVER = 'nginx.ingress.kubernetes.io/server-snippet';
+	const annotationsOf = (docs, name) => docs.find((doc) => doc?.kind === 'Ingress' && doc.metadata?.name === name).metadata.annotations;
+	const shipped = {};
+	const environmentOf = { 'values-k8s-dev.yaml': 'k8s-dev', 'values-k8s-demo.yaml': 'k8s-demo', 'values-localk8s.yaml': 'k8s-dev', 'values-k8s-prd.yaml': 'k8s-prd' };
+	const cases = [
+		['values-k8s-dev.yaml', 'api-main-ingress without SecAuditEngine Off', 'manifests', (docs) => { const a = annotationsOf(docs, 'api-main-ingress'); a[MODSECURITY] = a[MODSECURITY].replace('SecAuditEngine Off\n', ''); },
+			['Ingress/api-main-ingress: the ingress must turn the ModSecurity audit log off (its modsecurity-snippet ends with SecAuditEngine Off, not unset)']],
+		['values-k8s-prd.yaml', 'web-hubs-ingress with the audit log turned back on', 'manifests', (docs) => { annotationsOf(docs, 'web-hubs-ingress')[MODSECURITY] += 'SecAuditEngine RelevantOnly\n'; },
+			['Ingress/web-hubs-ingress: the ingress must turn the ModSecurity audit log off (its modsecurity-snippet ends with SecAuditEngine Off, not Off then RelevantOnly)']],
+		['values-k8s-demo.yaml', 'web-hubs-ingress with OpenTelemetry left to the controller', 'manifests', (docs) => { delete annotationsOf(docs, 'web-hubs-ingress')['nginx.ingress.kubernetes.io/enable-opentelemetry']; },
+			['Ingress/web-hubs-ingress: /hubs carries tokens in its URL; the ingress must keep OpenTelemetry off']],
+		['values-k8s-dev.yaml', 'api-main-ingress with a ModSecurity debug log', 'manifests', (docs) => { annotationsOf(docs, 'api-main-ingress')[MODSECURITY] += 'SecDebugLog /dev/stdout\nSecDebugLogLevel 9\n'; },
+			['Ingress/api-main-ingress: the modsecurity-snippet sets a ModSecurity debug log']],
+		['values-k8s-prd.yaml', 'web-api-ingress with a rule that turns the audit engine on', 'manifests',
+			(docs) => { annotationsOf(docs, 'web-api-ingress')[MODSECURITY] += 'SecRule REQUEST_URI "@beginsWith /api/auth" "id:100100,phase:1,pass,nolog,ctl:auditEngine=RelevantOnly"\n'; },
+			['Ingress/web-api-ingress: the ingress must turn the ModSecurity audit log off (its modsecurity-snippet ends with SecAuditEngine Off, not Off, and no rule sets ctl:auditEngine=RelevantOnly)']],
+		['values-k8s-prd.yaml', 'the api-main host not refusing /hubs', 'hubs', (docs) => { const a = annotationsOf(docs, 'api-main-ingress'); a[SERVER] = a[SERVER].replace(HUB_REFUSAL, ''); },
+			[`Ingress/api-main-ingress: server-snippet does not answer ${HUB_PATHS.all.join(', ')} with 404 at the server level`]],
+		['values-k8s-dev.yaml', 'the api-main host refusing /hubs by case only', 'hubs', (docs) => { const a = annotationsOf(docs, 'api-main-ingress'); a[SERVER] = a[SERVER].replace('$uri ~* "^/hubs', '$uri ~ "^/hubs'); },
+			[`Ingress/api-main-ingress: server-snippet does not answer ${HUB_PATHS.variants.join(', ')} with 404 at the server level (if`]],
+		['values-k8s-demo.yaml', 'the ingest host not refusing /hubs', 'hubs', (docs) => { const a = annotationsOf(docs, 'api-ingest-ingress'); a[SERVER] = a[SERVER].replace(HUB_REFUSAL, ''); },
+			[`Ingress/api-ingest-ingress: server-snippet does not answer ${HUB_PATHS.all.join(', ')} with 404 at the server level`]],
+		['values-k8s-dev.yaml', 'the web host refusing its own hub', 'hubs', (docs) => { const a = annotationsOf(docs, 'web-hubs-ingress'); a[SERVER] = a[SERVER].replace(HUB_VARIANT_REFUSAL, HUB_REFUSAL); },
+			[`Ingress/web-hubs-ingress: server-snippet refuses ${HUB_PATHS.served.join(', ')}, which the host's live hub serves`]],
+		['values-localk8s.yaml', 'the web host leaving /HUBS to the web app', 'hubs', (docs) => { const a = annotationsOf(docs, 'web-ingress'); a[SERVER] = a[SERVER].replace(HUB_VARIANT_REFUSAL, ''); },
+			[`Ingress/web-ingress: server-snippet does not answer ${HUB_PATHS.variants.join(', ')} with 404 at the server level: the host's live hub Ingress takes /hubs in lowercase only`]]
+	];
+	for (const [file, label, kind, change, expected] of cases) {
+		if (!shipped[file]) {
+			const result = render(file, file === 'values-k8s-prd.yaml' ? [PRD] : []);
+			if (result.status !== 0) {
+				findings.push(`${file}: template failed\n${result.stderr}`);
+				continue;
+			}
+			shipped[file] = result.stdout;
+		}
+		const docs = kind === 'manifests' ? parse(shipped[file]) : parseAsKubernetes(shipped[file]);
+		const before = kind === 'manifests' ? checkManifests(docs, { environment: environmentOf[file] }) : hubRefusalFindings(docs);
+		if (before.length) findings.push(`${file} as shipped: ${before.join(' | ')}`);
+		change(docs);
+		const found = kind === 'manifests' ? checkManifests(docs, { environment: environmentOf[file] }) : hubRefusalFindings(docs);
+		if (!exactly(found, expected)) findings.push(`${file} with ${label} must give exactly ${expected.join(' | ')}; gave ${found.length ? found.join(' | ') : 'nothing'}`);
+	}
+	if (findings.length) {
+		failed = true;
+		console.error(`FAIL credentials out of the ingress's logs:\n  ${findings.join('\n  ')}`);
+	} else {
+		console.log(`PASS credentials out of the ingress's logs: the web host refuses every spelling of /hubs but its hub's and api-main's host refuses /hubs in any case, both exactly the chart's text, ` +
+			`the audit log off on every Ingress; ${cases.length} changes to the shipped renders each give exactly their finding`);
 	}
 }
 

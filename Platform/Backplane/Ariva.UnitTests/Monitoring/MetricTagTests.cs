@@ -99,7 +99,19 @@ public sealed partial class MetricTagTests
         },
         [typeof(OutboxMetrics)] = m => ((OutboxMetrics)m).Report(new OutboxBacklog(3, DateTime.UtcNow.AddMinutes(-1)), TimeSpan.FromMinutes(1)),
         [typeof(StreamMetrics)] = m => ((StreamMetrics)m).Report("ariva-stream.queue-engine",
-            new Dictionary<string, long> { [KafkaTopics.DeviceZoneOccupancy] = 5 }, TimeSpan.FromMinutes(1))
+            new Dictionary<string, long> { [KafkaTopics.DeviceZoneOccupancy] = 5 }, TimeSpan.FromMinutes(1)),
+        [typeof(Ariva.Api.Common.Logging.SecurityEventMetrics)] = m =>
+        {
+            var security = (Ariva.Api.Common.Logging.SecurityEventMetrics)m;
+            foreach (var kind in Enum.GetValues<Ariva.Api.Common.Logging.SecurityEventKind>())
+            {
+                security.Count(kind, Ariva.Api.Common.Logging.SecurityEventMetrics.Written);
+                security.Count(kind, Ariva.Api.Common.Logging.SecurityEventMetrics.Suppressed);
+                security.Count(kind, Ariva.Api.Common.Logging.SecurityEventMetrics.Failed);
+            }
+
+            security.ProtectionFailed();
+        }
     };
 
     [Fact]

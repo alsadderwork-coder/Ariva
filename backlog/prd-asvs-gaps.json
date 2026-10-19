@@ -121,7 +121,7 @@
       ],
       "priority": 103,
       "passes": false,
-      "notes": "Split from ARV-083 on 2026-10-18 (Effort L, three reviewable parts; the vault part needs the owner's choice of secret store). From ARV-083's notes: the database-migration job does not set automountServiceAccountToken: false (it needs no Kubernetes API access). 2026-10-10: owner folded the ARV-118 availability ledger rights into ARV-083 (now this story).",
+      "notes": "Split from ARV-083 on 2026-10-18 (Effort L, three reviewable parts; the vault part needs the owner's choice of secret store). From ARV-083's notes: the database-migration job does not set automountServiceAccountToken: false (it needs no Kubernetes API access). 2026-10-10: owner folded the ARV-118 availability ledger rights into ARV-083 (now this story). 2026-10-19 (ARV-091 log inventory): the migration job sends the runtime login password in clear to PostgreSQL: SELECT ariva_ensure_runtime_login(@name, @password) (DatabaseMigrator.cs) binds it as a parameter, which the server logs with log_statement all or a duration threshold while log_parameter_max_length is -1, and the function EXECUTEs ALTER ROLE or CREATE ROLE ... PASSWORD %L, whose text a failing EXECUTE prints in the error CONTEXT. When the per-host logins replace this, send a SCRAM-SHA-256 verifier computed in the job (PostgreSQL stores a verifier given as the password as it is), never the password, and keep the advice of docs/security/log-inventory.md (log_statement none or ddl).",
       "dependsOn": [
         "ARV-074"
       ]
@@ -355,7 +355,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 111,
-      "passes": false,
+      "passes": true,
       "notes": "Split 2026-10-19 (Effort L, three reviewable parts, and the owner login freeze): ARV-091a takes production log shipping (TLS by default, refuse to start without a collector, access and retention for Loki or the customer SIEM); ARV-091b takes the sign-in success and failure events (user or unknown, address, amr), logout and the CSRF refusals on refresh, which touch the authentication code the owner froze.",
       "dependsOn": [
         "ARV-074"
@@ -364,9 +364,9 @@
     {
       "id": "ARV-091a",
       "title": "[ASVS] Production log shipping over TLS to a collector",
-      "description": "Split from ARV-091. k8s-prd hosts can run with no log collector, and access to and retention of the shipped logs are not written down. ASVS 5.0: V16.4.2, V16.4.3, V16.2.3. Effort S to M.",
+      "description": "Split from ARV-091. k8s-prd hosts can run with no log collector, the log pseudonym key is optional, and access to and retention of the shipped logs are not written down. ASVS 5.0: V16.4.2, V16.4.3. Effort S to M.",
       "acceptanceCriteria": [
-        "k8s-prd ships logs over TLS by default (Loki or OTLP logs) and a host refuses to start without a collector, with a test per host and a chart guard",
+        "k8s-prd ships logs over TLS by default (Loki or OTLP logs) and a host refuses to start without a collector, with a test per host and a chart guard; the chart supplies Logging__PseudonymKey from a Kubernetes Secret and k8s-prd requires it",
         "Access to and retention of shipped logs documented for Loki and for a customer SIEM, with the go-live record in the security guide",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "node scripts/security/scan.mjs passes with 0 errors",
@@ -395,7 +395,7 @@
       ],
       "priority": 111,
       "passes": false,
-      "notes": "Split from ARV-091 on 2026-10-19 (login freeze: the owner asked for no sign-in, login, password, TOTP or authentication changes for now). Start only when the owner lifts the freeze.",
+      "notes": "Split from ARV-091 on 2026-10-19 (login freeze: the owner asked for no sign-in, login, password, TOTP or authentication changes for now). Start only when the owner lifts the freeze. Since ARV-091 the session_expired 401, the pending account 403 and the per-client integration 429 write the generic SecurityEvent.RequestRefused (9129) from outside the frozen code; ARV-091b gives sign-in, logout and refresh their own events. The generic 9129 lines already appear for sign-in failures, the refresh 401 (routine when the web app loads without a session) and the CSRF 403 on refresh; ARV-091b replaces them with specific events (user or unknown, address, amr) and says how to tell routine refresh 401s from attacks.",
       "dependsOn": [
         "ARV-091"
       ]

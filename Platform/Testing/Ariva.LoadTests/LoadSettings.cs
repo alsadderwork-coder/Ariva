@@ -11,6 +11,12 @@ public sealed record LoadSettings
 {
     public required bool Full { get; init; }
     public required Uri Ingest { get; init; }
+    /// <summary>
+    /// Ariva.Api.Main (ARIVA_LOAD_MAIN_URL): the screens' live hub (/hubs/live) and the displays' boards. The E2E run gives
+    /// Main's own address. Against a Kubernetes deployment, give the web host, which serves /api and /hubs: the api-main
+    /// host and every other ingress host answer /hubs with 404, so the access token in the hub's URL never reaches a logged
+    /// location (ARV-091).
+    /// </summary>
     public required Uri Main { get; init; }
     /// <summary>The queue zone the devices are commissioned for (the push path's zone name).</summary>
     public required string ZoneName { get; init; }

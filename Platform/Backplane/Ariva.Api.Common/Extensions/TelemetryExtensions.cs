@@ -44,7 +44,9 @@ public static class TelemetryExtensions
         // The outbox backlog (ARV-125a).
         Ariva.Infra.Messaging.Outbox.OutboxMetrics.MeterName,
         // The queue stream worker's consumer lag (ARV-125a).
-        Ariva.Infra.Streaming.StreamMetrics.MeterName
+        Ariva.Infra.Streaming.StreamMetrics.MeterName,
+        // Security events by kind and outcome, written or left out by the throttle (ARV-091).
+        SecurityEventMetrics.MeterName
     ];
 
     public static WebApplicationBuilder AddAppServiceDefaults(this WebApplicationBuilder builder)

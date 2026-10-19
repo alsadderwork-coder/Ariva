@@ -1,3 +1,5 @@
+using System.Text.Json;
+using Ariva.Api.Common.Logging;
 using Ariva.Core.Services;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -67,11 +69,24 @@ public static class ControllerExtensions
     /// <summary>
     /// The 400 answer of an invalid model state (<c>[ApiController]</c>), as ASP.NET Core's default builds it (ProblemDetails
     /// from the host's factory, <c>application/problem+json</c>), with the state's JSON paths replaced
-    /// (<see cref="WithoutBodyPaths"/>).
+    /// (<see cref="WithoutBodyPaths"/>). ARV-091: the refusal is a security event, <see cref="SecurityEvents.StrictJsonRefused"/>
+    /// when the JSON reader refused the body (an unknown or repeated member, a number as text, JSON that does not parse; ARV-089),
+    /// <see cref="SecurityEvents.NulCharacterRefused"/> for a NUL character in a JSON string (ARV-063) and
+    /// <see cref="SecurityEvents.InvalidModelRefused"/> otherwise, with no key, message or value of the state.
     /// </summary>
     public static IActionResult ValidationProblemWithoutBodyPaths(ActionContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
+        if (context.HttpContext.RequestServices?.GetService<SecurityEventLog>() is { } events)
+        {
+            if (RefusedByTheJsonReader(context.ModelState))
+                events.StrictJson(context.HttpContext);
+            else if (HoldsNulRefusal(context.ModelState))
+                events.NulCharacter(context.HttpContext);
+            else
+                events.InvalidModel(context.HttpContext);
+        }
+
         var factory = context.HttpContext.RequestServices.GetRequiredService<Microsoft.AspNetCore.Mvc.Infrastructure.ProblemDetailsFactory>();
         var problem = factory.CreateValidationProblemDetails(context.HttpContext, WithoutBodyPaths(context.ModelState));
         ObjectResult result = problem.Status == StatusCodes.Status400BadRequest
@@ -80,6 +95,20 @@ public static class ControllerExtensions
         result.ContentTypes.Add("application/problem+json");
         result.ContentTypes.Add("application/problem+xml");
         return result;
+    }
+
+    /// <summary>True when an error of the state is the JSON reader's own (System.Text.Json's <see cref="JsonException"/>).</summary>
+    public static bool RefusedByTheJsonReader(ModelStateDictionary state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        return state.Values.Any(entry => entry.Errors.Any(error => error.Exception is JsonException));
+    }
+
+    /// <summary>True when an error of the state is the NUL refusal of a JSON string (<see cref="NulRejectingStringConverter"/>, a fixed text).</summary>
+    public static bool HoldsNulRefusal(ModelStateDictionary state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        return state.Values.Any(entry => entry.Errors.Any(error => string.Equals(error.ErrorMessage, NulRejectingStringConverter.NulMessage, StringComparison.Ordinal)));
     }
 
     /// <summary>

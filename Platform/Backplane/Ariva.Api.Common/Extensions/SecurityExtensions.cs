@@ -1,3 +1,4 @@
+using Ariva.Api.Common.Logging;
 using Ariva.Api.Common.Security;
 using Ariva.Core.Services;
 using Ariva.Di.Extensions;
@@ -64,9 +65,14 @@ public static class SecurityExtensions
         services.AddSingleton<IAuthorizationPolicyProvider, PermissionPolicyProvider>();
         services.AddScoped<IAuthorizationHandler, PermissionAuthorizationHandler>();
 
-        // Step-up for critical actions (ARV-010d): [RequiresRecentMfa] and its RFC 9470 401 answer.
+        // Step-up for critical actions (ARV-010d): [RequiresRecentMfa] and its RFC 9470 401 answer. ARV-091: wrapped by the
+        // security event log, which writes each 401 and 403 and hands every decision to the step-up handler unchanged.
         services.AddSingleton<IAuthorizationHandler, RecentMfaHandler>();
-        services.AddSingleton<Microsoft.AspNetCore.Authorization.IAuthorizationMiddlewareResultHandler, StepUpResultHandler>();
+        services.TryAddSingleton<SecurityEventMetrics>();
+        services.TryAddSingleton<SecurityEventLog>();
+        services.AddSingleton<StepUpResultHandler>();
+        services.AddSingleton<Microsoft.AspNetCore.Authorization.IAuthorizationMiddlewareResultHandler>(provider =>
+            new SecurityEventResultHandler(provider.GetRequiredService<StepUpResultHandler>(), provider.GetRequiredService<SecurityEventLog>()));
 
         return services;
     }

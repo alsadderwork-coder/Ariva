@@ -34,8 +34,8 @@ builder.Configuration
     .AddEnvironmentVariables()
     .AddCommandLine(args);
 
-// LogFile:Path, as Ariva's hosts honour it: the E2E run's log scan reads the simulator's lines too (CWE-532).
-SimulationLogFile.AddTo(builder.Logging, builder.Configuration);
+// LogFile:Path, as Ariva's hosts honour it: the E2E run's log scan reads the simulator's lines too (CWE-532); vm-local only (ARV-091).
+SimulationLogFile.AddTo(builder.Logging, builder.Configuration, environment);
 
 #endregion
 

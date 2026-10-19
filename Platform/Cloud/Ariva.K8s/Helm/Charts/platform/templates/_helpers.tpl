@@ -278,7 +278,15 @@ ingress-nginx applies one server-snippet per host.
   as the 421 is: it carries the server's headers, and no location's add_header is involved. $uri is the normalised path
   (percent-decoding, //, /./ and /../ resolved), so /%68ealth or //health are caught as well; the kubelet probes the pods'
   own ports and never passes here.
-Usage: {{ include "ariva-platform.ingressServerSnippet" "api-main-ariva.example.com" }}
+- The live hub's URL carries the access token as access_token (ARV-035), and Ariva.Api.Main reads it on /hubs in any case
+  whatever the host (JwtAuthenticationExtensions). So the token goes only to the hub's own Ingress (tokenInQuery: no access
+  log, no audit log, critical errors only; ARV-091, ASVS 5.0 V16.2.5, CWE-532), refused like the probes, after them:
+  - on a host with no tokenInQuery Ingress (hubHost false: api-main's own host and every machine host), /hubs and anything
+    under it, in any case, answer 404, so https://<api-main host>/hubs/live?access_token=... never reaches a location whose
+    logs would write it;
+  - on the host of the hub (hubHost true: the web host), every spelling of /hubs but the lowercase one answers 404: nginx
+    matches the hub's location by case, so /HUBS/live would reach another location (the web app, or /api) with the token.
+Usage: {{ include "ariva-platform.ingressServerSnippet" (dict "host" "api-main-ariva.example.com" "hubHost" false) }}
 */}}
 {{- define "ariva-platform.ingressServerSnippet" -}}
 set $ariva_hsts "";
@@ -288,12 +296,21 @@ if ($scheme = https) {
 more_set_headers "Strict-Transport-Security: $ariva_hsts";
 more_set_headers "X-Content-Type-Options: nosniff";
 add_header Content-Security-Policy "frame-ancestors 'none'" always;
-if ($host != "{{ . }}") {
+if ($host != "{{ .host }}") {
   return 421;
 }
 if ($uri ~* "^/healthz?(/|$)") {
   return 404;
 }
+{{- if .hubHost }}
+if ($uri ~ "^/(?!hubs(/|$))[Hh][Uu][Bb][Ss](/|$)") {
+  return 404;
+}
+{{- else }}
+if ($uri ~* "^/hubs(/|$)") {
+  return 404;
+}
+{{- end }}
 {{ end }}
 
 {{/*
@@ -317,7 +334,7 @@ error_log /dev/stderr crit;
 {{ end }}
 
 {{/*
-The annotations the chart sets on an ingress (ARV-084, with ARV-035 and ARV-082b), as YAML. ingresses.yaml renders them and
+The annotations the chart sets on an ingress (ARV-084, with ARV-035, ARV-082b and ARV-091), as YAML. ingresses.yaml renders them and
 appends a site's server-snippet, configuration-snippet and modsecurity-snippet to the chart's own; validate.yaml refuses a
 site annotation for any other key here. Usage: {{ include "ariva-platform.ingressChartAnnotations" (list $ $ingress) | fromYaml }}
 - plain HTTP: refuse sets ssl-redirect and force-ssl-redirect false (the configuration-snippet answers 403), redirect sets
@@ -329,6 +346,25 @@ site annotation for any other key here. Usage: {{ include "ariva-platform.ingres
   http level whenever ssl-ciphers is set and has no ConfigMap key for it, so the host's server block turns it off.
 - ModSecurity with the upload rule; its message is in escaped quotes because ingress-nginx wraps the snippet in
   modsecurity_rules '...', where a bare quote ends the string and nginx refuses the whole configuration.
+- The ModSecurity audit log off on every Ingress (ARV-091, ASVS 5.0 V16.2.5, CWE-532): SecAuditEngine Off, last in the
+  snippet, so it wins over anything before it in the location. The controller's modsecurity.conf (ModSecurity's recommended
+  file) audits 5xx and 4xx but 404 with parts ABIJDEFHZ, whose part B is the request line with its query string and every
+  request header (an Authorization bearer token, the refresh cookie); part C, which a site could add, is the request body (a
+  sign-in's password). ingress-nginx 1.15 loads that file in a location only when
+  the location has no modsecurity-snippet, and at the http level when enable-modsecurity is on for the whole controller;
+  libmodsecurity lets the http level's audit settings override a location's, so this Off holds only while the controller
+  values keep enable-modsecurity "false" (Helm/ingress-nginx-values.yaml, checked by controllerValuesFindings). Rule matches
+  still reach the controller's error log as ModSecurity messages: a deny (the upload rule's 403) at error level, with nginx's
+  request line, query string included; other matches at info, which the controller values never log. A site that adds the
+  OWASP CRS (enable-owasp-core-rules; ingress-nginx writes its file after this snippet, and the CRS sets no audit engine but
+  Off) keeps the audit log off and gets one deny line per blocked request (its anomaly score); the CRS's own matches, with
+  excerpts of the matched input (Matched Data ... found within ARGS:...), are info. validate.yaml refuses a site annotation
+  that would turn the audit log back on, write a debug log or copy request values into a rule's message.
+- The live hub's Ingress (tokenInQuery) also keeps no access log, its configuration-snippet logs only critical errors, and
+  OpenTelemetry stays off on it (enable-opentelemetry "false", a key of the chart's, so no site annotation turns it on): the
+  ingress's OpenTelemetry module exports the request target with its query string (http.target), the access token included.
+  With the controller's OpenTelemetry off, as Ariva's values require, ingress-nginx writes nothing for it.
+- hubHost for the server-snippet: true when an Ingress of this host has tokenInQuery (ingressServerSnippet).
 - sourceRanges (ARV-085), when given: allowlist-source-range, the CIDRs joined by commas. ingress-nginx 1.15 reads that name
   (internal/ingress/annotations/ipallowlist) and falls back to whitelist-source-range, its alias, only when it is absent or
   empty; it writes allow for each CIDR and deny all in each of the Ingress's locations, so any other client gets 403.
@@ -337,6 +373,10 @@ site annotation for any other key here. Usage: {{ include "ariva-platform.ingres
 {{- $root := index . 0 -}}
 {{- $ingress := index . 1 -}}
 {{- $host := printf "%s.%s" $ingress.subdomain $root.Values.domain -}}
+{{- $hubHost := false -}}
+{{- range ($root.Values.ingresses | default list) -}}
+{{- if and .tokenInQuery (eq (toString .subdomain) (toString $ingress.subdomain)) }}{{ $hubHost = true }}{{ end -}}
+{{- end -}}
 {{- $plain := include "ariva-platform.ingressPlainHttp" $ingress -}}
 {{- $redirect := ternary "true" "false" (eq $plain "redirect") -}}
 {{- $a := dict -}}
@@ -349,13 +389,13 @@ site annotation for any other key here. Usage: {{ include "ariva-platform.ingres
 {{- $_ := set $a "nginx.ingress.kubernetes.io/session-cookie-secure" "true" -}}
 {{- $_ := set $a "nginx.ingress.kubernetes.io/session-cookie-samesite" "Strict" -}}
 {{- $_ := set $a "nginx.ingress.kubernetes.io/session-cookie-path" "/" -}}
-{{- $_ := set $a "nginx.ingress.kubernetes.io/server-snippet" (include "ariva-platform.ingressServerSnippet" $host) -}}
+{{- $_ := set $a "nginx.ingress.kubernetes.io/server-snippet" (include "ariva-platform.ingressServerSnippet" (dict "host" $host "hubHost" $hubHost)) -}}
 {{- $_ := set $a "nginx.ingress.kubernetes.io/configuration-snippet" (include "ariva-platform.ingressConfigurationSnippet" $ingress) -}}
 {{- $_ := set $a "nginx.ingress.kubernetes.io/enable-modsecurity" "true" -}}
-{{- $modsecurity := "SecRuleEngine On\nSecRule FILES \"@rx \\.(exe|dll|bat|cmd|com|msi|sh|ps1|php|jsp|asp|aspx)$\" \"id:100001,phase:2,deny,status:403,log,msg:\\'Dangerous file upload blocked\\'\"\n" -}}
+{{- $modsecurity := "SecRuleEngine On\nSecRule FILES \"@rx \\.(exe|dll|bat|cmd|com|msi|sh|ps1|php|jsp|asp|aspx)$\" \"id:100001,phase:2,deny,status:403,log,msg:\\'Dangerous file upload blocked\\'\"\nSecAuditEngine Off\n" -}}
 {{- if $ingress.tokenInQuery -}}
-{{- $modsecurity = printf "%sSecAuditEngine Off\n" $modsecurity -}}
 {{- $_ := set $a "nginx.ingress.kubernetes.io/enable-access-log" "false" -}}
+{{- $_ := set $a "nginx.ingress.kubernetes.io/enable-opentelemetry" "false" -}}
 {{- end -}}
 {{- $_ := set $a "nginx.ingress.kubernetes.io/modsecurity-snippet" $modsecurity -}}
 {{- with $ingress.sourceRanges -}}

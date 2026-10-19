@@ -1,4 +1,5 @@
 using System.Collections;
+using Ariva.Api.Common.Logging;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Abstractions;
@@ -55,6 +56,8 @@ public sealed class RepeatedQueryFilter : IResourceFilter, IOrderedFilter
             if (collections.Contains(key))
                 continue;
 
+            // ARV-091: the refusal is a security event, without the key or a value.
+            context.HttpContext.RequestServices?.GetService<SecurityEventLog>()?.RepeatedQuery(context.HttpContext);
             context.Result = Refusal();
             return;
         }

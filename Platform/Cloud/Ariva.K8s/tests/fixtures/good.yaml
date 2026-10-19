@@ -36,7 +36,14 @@ spec:
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
-metadata: { name: good }
+metadata:
+  name: good
+  annotations:
+    # ARV-091: every Ingress keeps the ModSecurity audit log off; a site rule after the chart's Off leaves it off.
+    nginx.ingress.kubernetes.io/modsecurity-snippet: |
+      SecRuleEngine On
+      SecAuditEngine Off
+      SecRule REQUEST_URI "@beginsWith /setup" "id:100200,phase:1,pass,nolog,ctl:auditEngine=Off"
 spec:
   tls: [{ hosts: [ariva.example], secretName: ariva-tls }]
   rules: [{ host: ariva.example }]
@@ -47,6 +54,7 @@ metadata:
   name: good-hubs
   annotations:
     nginx.ingress.kubernetes.io/enable-access-log: "false"
+    nginx.ingress.kubernetes.io/enable-opentelemetry: "false"
     nginx.ingress.kubernetes.io/modsecurity-snippet: |
       SecRuleEngine On
       SecAuditEngine Off
