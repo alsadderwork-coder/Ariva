@@ -483,11 +483,9 @@
     {
       "id": "ARV-093",
       "title": "[ASVS] Web client state and policy tightening",
-      "description": "The CSP allows base-uri 'self', sign-out leaves cached state, the display player keeps its key in sessionStorage, and the cookie prefix choices are not recorded. ASVS 5.0: V3.4.3, V14.3.1, V14.3.3, V3.3.3. Effort S.",
+      "description": "The CSP allows base-uri 'self', and the cookie prefix choices are not recorded. ASVS 5.0: V3.4.3, V3.3.3. Effort S. Split on 2026-10-19: the sign-out clean-up moved to ARV-093a and the display player key to ARV-093b (login freeze).",
       "acceptanceCriteria": [
         "base-uri 'none' in csp.config.js, the nginx fallback and the Cronz page, and base-uri 'none'; object-src 'none' in the API baseline policy",
-        "Sign-out answers Clear-Site-Data cache and storage and loads /login fully",
-        "The display player exchanges its key for a short-lived session token kept in memory, or the sessionStorage use is recorded as an accepted exception",
         "ADR-0026 records why the refresh and hub cookies keep __Secure- with a narrow path",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "node scripts/security/scan.mjs passes with 0 errors",
@@ -497,9 +495,47 @@
       ],
       "priority": 113,
       "passes": false,
-      "notes": "",
+      "notes": "Split on 2026-10-19: ARV-093 keeps the content security policies and the cookie prefix record; ARV-093a (sign-out) and ARV-093b (display player key) wait for the owner to lift the login freeze.",
       "dependsOn": [
         "ARV-074"
+      ]
+    },
+    {
+      "id": "ARV-093a",
+      "title": "[ASVS] Sign-out clears the browser state",
+      "description": "Split from ARV-093 because of the owner login freeze. Sign-out leaves cached responses and storage in the browser and returns to the sign-in page without a full load. ASVS 5.0: V14.3.1. Effort S.",
+      "acceptanceCriteria": [
+        "Sign-out answers Clear-Site-Data cache and storage and loads /login fully, with unit, API and functional tests",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 113,
+      "passes": false,
+      "notes": "Split from ARV-093 on 2026-10-19 (login freeze: the owner asked for no sign-in, login, password, TOTP or authentication changes for now; the logout endpoint and the web app sign-out are part of it). Start only when the owner lifts the freeze.",
+      "dependsOn": [
+        "ARV-093"
+      ]
+    },
+    {
+      "id": "ARV-093b",
+      "title": "[ASVS] Display player key out of sessionStorage",
+      "description": "Split from ARV-093 because of the owner login freeze. The display player keeps its display key in sessionStorage so a reload keeps playing (src/routes/display/+page.svelte). ASVS 5.0: V14.3.3. Effort S.",
+      "acceptanceCriteria": [
+        "The display player exchanges its key for a short-lived session token kept in memory, or the owner accepts the sessionStorage use as a recorded exception (who, why, until when)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 113,
+      "passes": false,
+      "notes": "Split from ARV-093 on 2026-10-19. A token exchange changes how displays authenticate (login freeze); the other way out, an accepted exception, is the owner decision. Start only when the owner lifts the freeze or decides.",
+      "dependsOn": [
+        "ARV-093"
       ]
     },
     {
