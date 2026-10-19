@@ -17,7 +17,9 @@
 // - it accepts TLS 1.0 or TLS 1.1 (offered at OpenSSL security level 0, so a server that would take them does);
 // - it accepts a TLS 1.2 suite other than ECDHE with AES-GCM or ChaCha20-Poly1305 (the Mozilla intermediate list): CBC, RC4,
 //   3DES or NULL suites, or AEAD suites with static RSA or DHE key exchange;
-// - a TLS 1.2 or TLS 1.3 handshake fails, or its certificate does not verify for the host name (no request is sent then);
+// - a TLS 1.2 or TLS 1.3 handshake fails, or its certificate does not verify for the host name (every handshake verifies it,
+//   none skips verification; with a certificate that does not verify the host fails on that alone, and no weaker protocol, suite
+//   or HTTPS request is offered to it);
 // - GET / over HTTPS has no Strict-Transport-Security, more than one, a max-age under a year (31536000), no includeSubDomains,
 //   or preload;
 // - a response the ingress generates itself, the 413 to a POST that announces a body over every proxy-body-size (1 GiB, none
@@ -69,10 +71,19 @@ export function refusedSuites() {
 	return { nonAead: candidates.filter((name) => !aead(name)).map((name) => name.toUpperCase()), noEcdhe: candidates.filter(aead).map((name) => name.toUpperCase()) };
 }
 
+/** The codes OpenSSL and Node give a certificate that does not verify (the handshake itself got that far). */
+const CERTIFICATE_ERRORS = new Set([
+	'CERT_HAS_EXPIRED', 'CERT_NOT_YET_VALID', 'CERT_REVOKED', 'CERT_REJECTED', 'CERT_UNTRUSTED', 'CERT_SIGNATURE_FAILURE',
+	'CERT_CHAIN_TOO_LONG', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN', 'UNABLE_TO_GET_ISSUER_CERT',
+	'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'INVALID_CA', 'PATH_LENGTH_EXCEEDED',
+	'INVALID_PURPOSE', 'HOSTNAME_MISMATCH', 'ERR_TLS_CERT_ALTNAME_INVALID'
+]);
+
 /**
- * One TLS handshake, then closes. Resolves { ok, protocol, cipher, authorized, authorizationError, error }. The certificate is
- * judged (authorized) but never enforced here: these handshakes send no application data, and the HTTP checks below run only
- * when it verified.
+ * One TLS handshake, then closes. Resolves { ok, protocol, cipher, error, certificate }. The certificate is always verified
+ * (against `--ca`, or Node's bundled roots): a certificate that does not verify ends the handshake with certificate set to its
+ * code, so the check judges the certificate first and offers the other protocols and suites only to a host whose certificate
+ * verifies. The handshakes send no application data.
  */
 export function handshake(target, { minVersion, maxVersion, ciphers }) {
 	return new Promise((resolve) => {
@@ -85,13 +96,14 @@ export function handshake(target, { minVersion, maxVersion, ciphers }) {
 		};
 		const socket = tls.connect({
 			host: target.address ?? target.host, port: target.port, servername: target.host, minVersion, maxVersion, ciphers,
-			ca: target.ca, rejectUnauthorized: false, ALPNProtocols: ['http/1.1']
+			ca: target.ca, rejectUnauthorized: true, ALPNProtocols: ['http/1.1']
 		});
 		socket.setTimeout(target.timeoutMs, () => done({ ok: false, error: 'timeout' }));
-		socket.once('secureConnect', () => done({
-			ok: true, protocol: socket.getProtocol(), cipher: socket.getCipher()?.name, authorized: socket.authorized, authorizationError: socket.authorizationError
-		}));
-		socket.once('error', (error) => done({ ok: false, error: error.code ?? error.message }));
+		socket.once('secureConnect', () => done({ ok: true, protocol: socket.getProtocol(), cipher: socket.getCipher()?.name }));
+		socket.once('error', (error) => {
+			const code = error.code ?? error.message;
+			done(CERTIFICATE_ERRORS.has(code) ? { ok: false, certificate: code, error: code } : { ok: false, error: code });
+		});
 	});
 }
 
@@ -162,29 +174,35 @@ export async function checkHost(target, suites = refusedSuites()) {
 		if (result.ok) findings.push(accepted(result));
 		return result;
 	};
-	await offer('TLS 1.0', { minVersion: 'TLSv1', maxVersion: 'TLSv1', ciphers: 'DEFAULT:@SECLEVEL=0' }, (result) => `accepts TLS 1.0 (${result.cipher})`);
-	await offer('TLS 1.1', { minVersion: 'TLSv1.1', maxVersion: 'TLSv1.1', ciphers: 'DEFAULT:@SECLEVEL=0' }, (result) => `accepts TLS 1.1 (${result.cipher})`);
-	// Every refused suite the server takes, one handshake each until it takes none of the rest.
-	for (const [kind, list] of [['without AEAD', suites.nonAead], ['without ECDHE', suites.noEcdhe]]) {
-		let remaining = [...list];
-		while (remaining.length) {
-			const result = await handshake(target, { minVersion: 'TLSv1.2', maxVersion: 'TLSv1.2', ciphers: `${remaining.join(':')}:@SECLEVEL=0` });
-			if (!result.ok || !remaining.includes(result.cipher)) break;
-			findings.push(`accepts the TLS 1.2 suite ${result.cipher} (${kind})`);
-			remaining = remaining.filter((name) => name !== result.cipher);
-		}
-	}
-	const tls12 = await handshake(target, { minVersion: 'TLSv1.2', maxVersion: 'TLSv1.2' });
-	if (!tls12.ok) findings.push(`TLS 1.2 fails (${tls12.error})`);
-	else if (!ALLOWED_TLS12.includes(tls12.cipher)) findings.push(`TLS 1.2 negotiates ${tls12.cipher}, not one of the Mozilla intermediate suites`);
-	else notes.push(`TLS 1.2 ${tls12.cipher}`);
+	// The certificate first: every handshake verifies it, so a host whose certificate does not verify is judged on that alone
+	// (it fails the check) and is offered nothing weaker.
 	const tls13 = await handshake(target, { minVersion: 'TLSv1.3', maxVersion: 'TLSv1.3' });
-	if (!tls13.ok) findings.push(`TLS 1.3 fails (${tls13.error})`);
-	else notes.push(`TLS 1.3 ${tls13.cipher}`);
-	const judged = tls13.ok ? tls13 : tls12;
-	const verified = judged.ok && judged.authorized;
-	if (judged.ok && !judged.authorized) findings.push(`the certificate does not verify for ${target.host} (${judged.authorizationError})`);
+	const tls12 = await handshake(target, { minVersion: 'TLSv1.2', maxVersion: 'TLSv1.2' });
+	const certificate = tls13.certificate ?? tls12.certificate;
+	const verified = certificate === undefined && (tls13.ok || tls12.ok);
+	if (certificate !== undefined) {
+		findings.push(`the certificate does not verify for ${target.host} (${certificate})`);
+		notes.push('no request sent over HTTPS and no weaker protocol or suite offered: the certificate does not verify');
+	} else {
+		if (!tls12.ok) findings.push(`TLS 1.2 fails (${tls12.error})`);
+		else if (!ALLOWED_TLS12.includes(tls12.cipher)) findings.push(`TLS 1.2 negotiates ${tls12.cipher}, not one of the Mozilla intermediate suites`);
+		else notes.push(`TLS 1.2 ${tls12.cipher}`);
+		if (!tls13.ok) findings.push(`TLS 1.3 fails (${tls13.error})`);
+		else notes.push(`TLS 1.3 ${tls13.cipher}`);
+	}
 	if (verified) {
+		await offer('TLS 1.0', { minVersion: 'TLSv1', maxVersion: 'TLSv1', ciphers: 'DEFAULT:@SECLEVEL=0' }, (result) => `accepts TLS 1.0 (${result.cipher})`);
+		await offer('TLS 1.1', { minVersion: 'TLSv1.1', maxVersion: 'TLSv1.1', ciphers: 'DEFAULT:@SECLEVEL=0' }, (result) => `accepts TLS 1.1 (${result.cipher})`);
+		// Every refused suite the server takes, one handshake each until it takes none of the rest.
+		for (const [kind, list] of [['without AEAD', suites.nonAead], ['without ECDHE', suites.noEcdhe]]) {
+			let remaining = [...list];
+			while (remaining.length) {
+				const result = await handshake(target, { minVersion: 'TLSv1.2', maxVersion: 'TLSv1.2', ciphers: `${remaining.join(':')}:@SECLEVEL=0` });
+				if (!result.ok || !remaining.includes(result.cipher)) break;
+				findings.push(`accepts the TLS 1.2 suite ${result.cipher} (${kind})`);
+				remaining = remaining.filter((name) => name !== result.cipher);
+			}
+		}
 		notes.push('certificate verified');
 		const page = await request(target, { secure: true });
 		if (page.error) findings.push(`GET / over HTTPS fails (${page.error})`);
@@ -193,8 +211,6 @@ export async function checkHost(target, suites = refusedSuites()) {
 		if (generated.error) findings.push(`the body limit probe fails (${generated.error})`);
 		else if (generated.status !== 413) findings.push(`a POST announcing ${BODY_PROBE_BYTES} bytes is answered ${generated.status}, not the ingress's 413`);
 		else findings.push(...hstsFindings(generated.headers['strict-transport-security'], 'the ingress\'s 413'), ...generatedHeaderFindings(generated.headers, 'the ingress\'s 413'));
-	} else if (judged.ok) {
-		notes.push('no request sent over HTTPS: the certificate does not verify');
 	}
 	const plain = await request(target, { secure: false });
 	if (plain.error) {
@@ -223,7 +239,7 @@ export async function clientCapabilityFindings() {
 	const ca = issueCertificates();
 	const server = tls.createServer({ key: ca.leaf.key, cert: ca.leaf.cert, minVersion: 'TLSv1', maxVersion: 'TLSv1.3', ciphers: 'ALL:@SECLEVEL=0' });
 	await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-	const target = { host: 'capability.ariva.test', address: '127.0.0.1', port: server.address().port, timeoutMs: 5000 };
+	const target = { host: 'capability.ariva.test', address: '127.0.0.1', port: server.address().port, ca: ca.ca, timeoutMs: 5000 };
 	const findings = [];
 	for (const [label, options] of [
 		['TLS 1.0', { minVersion: 'TLSv1', maxVersion: 'TLSv1', ciphers: 'DEFAULT:@SECLEVEL=0' }],
