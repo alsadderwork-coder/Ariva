@@ -608,11 +608,11 @@
     {
       "id": "ARV-096",
       "title": "[ASVS] Supply chain and resource controls in CI",
-      "description": "No NuGet package source mapping or lock files (the SBOM per release is delivered by ARV-073: a signed CycloneDX attestation on every image), remediation time frames not enforced, and report endpoints have no request timeout or concurrency policy. ASVS 5.0: V15.1.2, V15.2.1, V15.2.2. Effort M.",
+      "description": "No NuGet package source mapping or lock files (the SBOM per release is delivered by ARV-073: a signed CycloneDX attestation on every image), web dev dependencies not audited, and report endpoints have no request timeout or concurrency policy. ASVS 5.0: V15.1.2, V15.2.2. Effort M. Split on 2026-10-19: CI enforcement of the remediation time frames moved to ARV-096a.",
       "acceptanceCriteria": [
         "nuget.config with package source mapping and NuGet lock files (an SBOM attached to each release is delivered by ARV-073)",
         "Third-party images run outside the chart (the Playwright image pinned in Platform/Testing/Ariva.E2E/scripts/visual-browser.mjs) are resolved and checked like the base images (scripts/base-images.mjs)",
-        "CI fails when an open Dependabot or audit finding is older than its severity's time frame; web dev dependencies audited",
+        "Web dev dependencies audited in CI (npm audit without --omit=dev), and the moderate NuGet finding in the tree (MessagePack 2.5.302, GHSA-qhrr-8q5h-9q3h) fixed by pinning a patched version",
         "AddRequestTimeouts defaults and a concurrency policy on on-demand report and CSV endpoints, with tests",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "node scripts/security/scan.mjs passes with 0 errors",
@@ -622,9 +622,30 @@
       ],
       "priority": 116,
       "passes": false,
-      "notes": "",
+      "notes": "Split on 2026-10-19: ARV-096 keeps the package source mapping and lock files, the image check, the dev dependency audit, the MessagePack fix and the request timeouts and concurrency policy; ARV-096a enforces the remediation time frames in CI, which wait for the owner to approve the frames (wiki 13 section 9, Proposed) and need each finding's age from its advisory.",
       "dependsOn": [
         "ARV-074"
+      ]
+    },
+    {
+      "id": "ARV-096a",
+      "title": "[ASVS] Remediation time frames enforced in CI",
+      "description": "Split from ARV-096. The remediation time frames per severity are documented (wiki 13 section 9, Proposed: critical 7 days, high 30, medium 90, low by the next planned release) but nothing enforces them: CI fails only on high and critical audit findings, whatever their age, and passes moderate and low ones forever. ASVS 5.0: V15.2.1. Effort M.",
+      "acceptanceCriteria": [
+        "A CI step reads the NuGet audit, both npm audits and the Trivy results, takes each finding's age from its advisory (the GitHub Advisory Database publication date, or the date a fix was published where known) and fails when an open finding with a fix is older than its severity's frame",
+        "Exceptions are read from a file in security/ with the finding, the reason, the owner's approval and an expiry; an expired or unapproved exception fails the step, and no exception is ever approved by an agent",
+        "Findings without a fix are listed in the job summary and do not fail the step; a test of the step with recorded audit outputs covers each severity, an exception and an expired exception",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 116,
+      "passes": false,
+      "notes": "Split from ARV-096 on 2026-10-19. Needs the owner to approve the frames (wiki 13 section 9) before they fail a build; until then the step can run in report-only mode.",
+      "dependsOn": [
+        "ARV-096"
       ]
     },
     {
