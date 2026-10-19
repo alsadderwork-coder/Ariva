@@ -884,7 +884,7 @@ public sealed class AdvertisingPlansServiceTests(PostgresFixture fixture) : IAsy
     [MemberData(nameof(RuntimeRefusals))]
     public async Task Database_Should_RefuseTheRuntimeRole_When_AWriteBreaksTheRules(string reason, string sql)
     {
-        var manager = await ManagerAsync($"it.plans.rt.{Math.Abs(reason.GetHashCode(StringComparison.Ordinal)) % 100000}", "DMO", "PLN2");
+        var manager = await ManagerAsync($"it.plans.rt.{Guid.NewGuid():N}", "DMO", "PLN2");
         await MediaAsync(manager, "PLN2");
         var playlist = await CreatedPlaylistAsync(manager, "DMO", Playlist("Runtime", Item("Media", (await MediaAsync(manager)).Id)));
 

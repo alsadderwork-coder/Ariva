@@ -261,7 +261,7 @@ public sealed class AdvertisingMediaServiceTests(PostgresFixture fixture) : IAsy
     public async Task Upload_Should_StoreNothing_When_TheFileOrItsNameIsRefused(string reason, string error, string content, string name, long? length)
     {
         var bytes = Content(content);
-        var manager = await ManagerAsync($"it.media.refused.{Math.Abs(reason.GetHashCode(StringComparison.Ordinal)) % 100000}");
+        var manager = await ManagerAsync($"it.media.refused.{Guid.NewGuid():N}");
         var before = await _host.ReadAsync<long>("SELECT count(*) FROM advertising_media");
 
         var result = await _host.AsCallerAsync(manager, s => Media(s).UploadAsync("DMO", Upload(bytes, name, length: length), Ct));
@@ -495,7 +495,7 @@ public sealed class AdvertisingMediaServiceTests(PostgresFixture fixture) : IAsy
     [MemberData(nameof(RuntimeRefusals))]
     public async Task Database_Should_RefuseTheRuntimeRole_When_AWriteBreaksTheTwoPersonRuleOrTheFile(string reason, string sql)
     {
-        var uploader = await ManagerAsync($"it.media.rt.{Math.Abs(reason.GetHashCode(StringComparison.Ordinal)) % 100000}");
+        var uploader = await ManagerAsync($"it.media.rt.{Guid.NewGuid():N}");
         var item = await UploadedAsync(uploader);
 
         await using var runtime = await RuntimeAsync();
