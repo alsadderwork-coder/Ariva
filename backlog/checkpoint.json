@@ -1,22 +1,22 @@
 {
-  "commit": "d70b3536142acd7e435c9ad10b4dab12418e9a12",
-  "at": "2026-10-18",
-  "stories": 3,
+  "commit": "b865b8de17f86797e8bfc4852b389fa47cfcb0dc",
+  "at": "2026-10-19",
+  "stories": 6,
   "results": [
     {
       "name": "dotnet build",
       "ok": true,
-      "seconds": 127
+      "seconds": 145
     },
     {
       "name": "reference scenario golden up to date",
       "ok": true,
-      "seconds": 8
+      "seconds": 12
     },
     {
       "name": "unit tests",
       "ok": true,
-      "seconds": 206
+      "seconds": 284
     },
     {
       "name": "security scanner self-test",
@@ -39,6 +39,11 @@
       "seconds": 0
     },
     {
+      "name": "TLS check self-test (release gate)",
+      "ok": true,
+      "seconds": 1
+    },
+    {
       "name": "base images pinned",
       "ok": true,
       "seconds": 0
@@ -51,22 +56,22 @@
     {
       "name": "offline bundle verifier self-test",
       "ok": true,
-      "seconds": 8
+      "seconds": 9
     },
     {
       "name": "offline bundle builder self-test",
       "ok": true,
-      "seconds": 7
+      "seconds": 8
     },
     {
       "name": "chart security (pod security context, read-only root, TLS, release guards)",
       "ok": true,
-      "seconds": 9
+      "seconds": 25
     },
     {
       "name": "nuget vulnerability audit (fails on high or critical)",
       "ok": true,
-      "seconds": 25
+      "seconds": 24
     },
     {
       "name": "npm audit (web)",
@@ -85,35 +90,35 @@
     {
       "name": "web svelte-check",
       "ok": true,
-      "seconds": 12
+      "seconds": 13
     },
     {
       "name": "web lint",
       "ok": true,
-      "seconds": 9
+      "seconds": 10
     },
     {
       "name": "web build",
       "ok": true,
-      "seconds": 31
+      "seconds": 32
     },
     {
       "name": "integration tests",
       "ok": true,
-      "seconds": 908
+      "seconds": 955
     },
     {
       "name": "visual regression (pinned image)",
       "ok": true,
-      "seconds": 188
+      "seconds": 197
     },
     {
       "name": "e2e tests (API and functional)",
       "ok": true,
-      "seconds": 1221
+      "seconds": 1324
     },
     {
-      "name": "mutation tests (no engine change since 6af81461aa)",
+      "name": "mutation tests (no engine change since d70b353614)",
       "ok": true,
       "skipped": true
     }
