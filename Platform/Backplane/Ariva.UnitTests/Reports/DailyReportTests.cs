@@ -168,4 +168,40 @@ public sealed class DailyReportTests
         ReportCsv.Write(report, ReportCsv.Section.Alerts).Should().Contain(",'@evil,");
         ReportCsv.Write(report, ReportCsv.Section.Devices).Should().Contain("DMO,2026-10-03,S-1,'+A-CIT,100,0,0");
     }
+
+    /// <summary>
+    /// ARV-094 (docs/security/data-classification.md, section 6, item 8; L3 export): the CSV's columns are exactly the documented
+    /// ones, so a note, a contact or a person's name cannot become a column without this test and the page changing.
+    /// </summary>
+    [Fact]
+    public void Csv_Should_WriteExactlyTheDocumentedHeaderRow_When_EachSectionIsWritten()
+    {
+        var report = DailyReports.Build(Input([], [new ReportAlert("R-001", "Wait over target", "A-CIT", null, "Critical", "Raised", Local(9), null)], [new ReportDevice("S-1", "A-CIT", [])]));
+
+        var headers = Enum.GetValues<ReportCsv.Section>().ToDictionary(section => section, section => ReportCsv.Write(report, section).Split("\r\n")[0]);
+
+        headers.Should().BeEquivalentTo(new Dictionary<ReportCsv.Section, string>
+        {
+            [ReportCsv.Section.Hours] = "site,date,hour_start_local,hour_end_local,zone,lane,passengers,waits,p50_wait_min,p90_wait_min,max_queue_length,status,histogram",
+            [ReportCsv.Section.Alerts] = "site,date,rule,rule_name,zone,device,severity,state,raised_local,cleared_local,open_minutes",
+            [ReportCsv.Section.Devices] = "site,date,device,zone,uptime_percent,outage_minutes,outages"
+        }, "every section of the daily CSV and its columns are documented (data classification, section 5.9)");
+    }
+
+    /// <summary>ARV-094: the report's types carry no note, contact, account, address, desk or "done by" member, so no CSV can write one.</summary>
+    [Fact]
+    public void ReportTypes_Should_HaveNoPersonOrFreeTextProperty_When_Reflected()
+    {
+        string[] words = ["Note", "Contact", "User", "Email", "Desk"];
+        Type[] types = [typeof(ReportAlert), typeof(AlertLine), typeof(LaneReport), typeof(LaneHour), typeof(DeviceUptime), typeof(DailyReport)];
+
+        var offending = types
+            .SelectMany(type => type.GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance).Select(property => (Type: type.Name, property.Name)))
+            .Where(member => words.Any(word => member.Name.Contains(word, StringComparison.OrdinalIgnoreCase)) || member.Name.EndsWith("By", StringComparison.Ordinal))
+            .Select(member => $"{member.Type}.{member.Name}")
+            .ToList();
+
+        types.Should().OnlyContain(type => type.GetProperties().Length > 0, "the reflection reads the records' members");
+        offending.Should().BeEmpty("the daily report holds no note, contact, user, email address or desk, and no member named for who did something");
+    }
 }

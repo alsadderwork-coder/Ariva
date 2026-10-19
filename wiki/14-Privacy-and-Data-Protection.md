@@ -4,6 +4,8 @@ For authority technical committees, data protection officers, counsel and Dalil 
 
 This page is not legal advice. Items marked To confirm need counsel's answer for each market.
 
+Ariva's own data (staff accounts, credentials and keys, border data, operational data) is sorted into four protection levels, each with its requirements and controls, in the [data classification](../docs/security/data-classification.md).
+
 ## 1. Anonymity by design
 
 | Measure | Detail |

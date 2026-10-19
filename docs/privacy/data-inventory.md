@@ -1,6 +1,6 @@
 # Data inventory
 
-Every table, hypertable, continuous aggregate and view in which Ariva stores data, for the pilot's data protection impact assessment (DPIA, [wiki 14](../../wiki/14-Privacy-and-Data-Protection.md) section 5, item 2) and for operators (ARV-111a). Each row gives the object's kind, its category, whether it holds personal data, how long it is kept, where that retention is set, and its owner.
+Every table, hypertable, continuous aggregate and view in which Ariva stores data, for the pilot's data protection impact assessment (DPIA, [wiki 14](../../wiki/14-Privacy-and-Data-Protection.md) section 5, item 2) and for operators (ARV-111a). Each row gives the object's kind, its category, whether it holds personal data, how long it is kept, where that retention is set, and its owner. The protection level of each category, with the requirements and controls of each level, is in the [data classification](../security/data-classification.md).
 
 A unit test keeps this page complete: `DataInventoryTests` (Ariva.UnitTests) reads the shipped scripts (`Ariva.Infra/Timescale/Scripts`: every `CREATE TABLE`, `create_hypertable`, continuous aggregate and view), the NHibernate mappings and the script runner's own table, and fails when an object has no row here, when a row names an object that no longer exists, when a row's kind differs from the scripts, or when a configurable retention does not name its parameter. Add the row in the change that adds the table.
 

@@ -144,7 +144,7 @@
       ],
       "priority": 104,
       "passes": false,
-      "notes": "Split from ARV-083 on 2026-10-18 (Effort L, three reviewable parts; the vault part needs the owner's choice of secret store). 2026-10-13 (ARV-171 security review): every host registers every topic's dead-letter producer, because any host can lead the outbox relay and send a kept dead letter; so each per-service Kafka principal needs WRITE on every *.dlq.v1 topic, while READ on dead-letter topics stays with operators and the replay tool. 2026-10-18 (found while documenting ARV-082b): nothing in k8s-prd requires Kafka:SslCaLocation; MessagingExtensions applies the CA only when it is set and checks only for SaslSsl. ASVS V12.3.4 stays Partly for this.",
+      "notes": "Split from ARV-083 on 2026-10-18 (Effort L, three reviewable parts; the vault part needs the owner's choice of secret store). 2026-10-13 (ARV-171 security review): every host registers every topic's dead-letter producer, because any host can lead the outbox relay and send a kept dead letter; so each per-service Kafka principal needs WRITE on every *.dlq.v1 topic, while READ on dead-letter topics stays with operators and the replay tool. 2026-10-18 (found while documenting ARV-082b): nothing in k8s-prd requires Kafka:SslCaLocation; MessagingExtensions applies the CA only when it is set and checks only for SaslSsl. ASVS V12.3.4 stays Partly for this. From ARV-094 (crypto inventory section 5 item 17): every API host mounts the Data Protection certificate and its private key, api-ingest and api-stream included; whether they need it (they protect or unprotect nothing today, To confirm) belongs with the per-pod split of credentials here.",
       "dependsOn": [
         "ARV-083a"
       ]
@@ -553,8 +553,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 114,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Passed 2026-10-19: docs/security/crypto-inventory.md (kept complete by CryptoInventoryTests), key-management.md (NIST SP 800-57 lifecycle, Proposed cryptoperiods for the owner) and data-classification.md (L1 to L4, requirement matrix, control mapping; DataInventoryTests keeps the levels complete), with the missing tests written; V11.1.1, V11.1.2, V14.1.1, V14.1.2 Met, V14.2.4 Partly (ARV-205 to ARV-208, ARV-083b, site records, login freeze); ARV-205 to ARV-212 filed. Story gate PASS, security review PASS (round 2).",
       "dependsOn": [
         "ARV-074"
       ]

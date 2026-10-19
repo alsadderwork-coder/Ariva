@@ -1,5 +1,6 @@
 using System.Net;
 using System.Security.Claims;
+using System.Text.Json;
 using Ariva.Api.Common.Security;
 using Ariva.Core.Domain.Entities;
 using Ariva.Core.Domain.Enums;
@@ -13,6 +14,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.IdentityModel.JsonWebTokens;
+using Microsoft.IdentityModel.Tokens;
 
 namespace Ariva.UnitTests.Security;
 
@@ -152,6 +154,46 @@ public sealed class IntegrationClientTests
             if (Directory.Exists(directory))
                 Directory.Delete(directory, recursive: true);
         }
+    }
+
+    /// <summary>
+    /// ARV-094 (docs/security/data-classification.md, section 3.4): the integration token is L4 and its claims L2, since they
+    /// name a calling system, not a person: exactly the documented names, a subject with the client id's shape, and no name,
+    /// email or role.
+    /// </summary>
+    [Fact]
+    public void Issue_Should_WriteOnlyTheDocumentedClaimNames_When_AClientExchangesItsCredentials()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ariva-unit-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string> { ["Auth:IntegrationTokens:UseDevelopmentKeys"] = "true" }).Build();
+            var settings = IntegrationTokenSettings.From(configuration, Ring(directory, "ariva-users", "token-signing-dev.key"));
+            var ring = new IntegrationTokenKeys(TokenKeys.Load(settings, requireSigningKey: true), settings);
+            var client = Client();
+
+            var (issued, _) = new IntegrationTokenIssuer(ring, TimeProvider.System).Issue(client.ClientId, Guid.NewGuid(), client.TokenVersion, client.Scopes, client.Sites);
+            var token = new JsonWebToken(issued);
+
+            NamesOf(token.EncodedHeader).Should().BeEquivalentTo(["alg", "typ", "kid"], "the same header as the user token");
+            NamesOf(token.EncodedPayload).Should().BeEquivalentTo(["iss", "aud", "iat", "nbf", "exp", "sub", "sid", "ver", "scope", "site"],
+                "the claims are the documented set (section 3.4)");
+            NamesOf(token.EncodedPayload).Should().NotContain(["name", "email", "role"], "the token names a calling system, never a person or a role");
+            token.Subject.Should().Be(client.ClientId).And.MatchRegex("^ic_[a-z2-7]{26}$", "the subject is the public client id");
+            IntegrationClient.IsClientId(token.Subject).Should().BeTrue();
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    /// <summary>The member names of an encoded JWT part (the header or the payload), as the token carries them.</summary>
+    private static List<string> NamesOf(string encodedPart)
+    {
+        using var document = JsonDocument.Parse(Base64UrlEncoder.Decode(encodedPart));
+        return [.. document.RootElement.EnumerateObject().Select(member => member.Name)];
     }
 
     [Theory]

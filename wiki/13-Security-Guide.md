@@ -67,6 +67,8 @@ Ariva.Api.Main takes six kinds of file: floor plans, SSIM schedules, the device 
 
 ## 5. Secrets management
 
+Every key, secret, certificate and algorithm, with its permitted use, storage and rotation, is listed in the [cryptographic inventory](../docs/security/crypto-inventory.md), and how each is owned, held, rotated, revoked and destroyed is the [key management policy](../docs/security/key-management.md) (ARV-094).
+
 | Secret | Where it lives |
 |---|---|
 | Database, Kafka, Redis, SMTP credentials | `appsettings.*.<env>.json` written into Kubernetes secrets by the release pipeline from a secret variable group (or by the customer's process); never in the repository |

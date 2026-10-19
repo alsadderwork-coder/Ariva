@@ -62,6 +62,28 @@ public sealed class AccessTokenTests : IDisposable
         token.GetClaim("scope").Value.Should().Be("pending");
     }
 
+    /// <summary>
+    /// ARV-094 (docs/security/data-classification.md, section 3.4): the token is L4 and its claims L2 and L3, so it carries
+    /// exactly the documented names; roles, permissions, sites, the email address and the display name never travel in it.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Issue_Should_WriteOnlyTheDocumentedHeaderAndClaimNames_When_Issued(bool pending)
+    {
+        var keys = DevelopmentKeys();
+
+        var token = new JsonWebToken(Issuer(keys).Issue(Guid.CreateVersion7(), "officer.one", Guid.CreateVersion7(), Guid.CreateVersion7(), Now.UtcDateTime, ["pwd"], pending));
+
+        string[] claims = ["iss", "aud", "iat", "nbf", "exp", "sub", "sid", "family", "auth_time", "amr", "name"];
+        NamesOf(token.EncodedHeader).Should().BeEquivalentTo(["alg", "typ", "kid"], "the header names the algorithm, the type and the key, nothing more");
+        NamesOf(token.EncodedPayload).Should().BeEquivalentTo(pending ? [.. claims, "scope"] : claims, "the claims are the documented set (section 3.4)");
+        NamesOf(token.EncodedPayload).Should().NotContain(["email", "role", "roles", "permissions", "site", "sites", "given_name", "family_name"],
+            "every host resolves roles, permissions and sites from stored grants, and the token names no address or display name");
+        if (pending)
+            token.GetClaim("scope").Value.Should().Be("pending");
+    }
+
     [Fact]
     public void Issue_Should_Throw_When_HostHasNoSigningKey()
     {
@@ -239,6 +261,13 @@ public sealed class AccessTokenTests : IDisposable
         File.WriteAllText(privatePath, key.ExportPkcs8PrivateKeyPem());
         File.WriteAllText(publicPath, key.ExportSubjectPublicKeyInfoPem());
         return (privatePath, publicPath);
+    }
+
+    /// <summary>The member names of an encoded JWT part (the header or the payload), as the token carries them.</summary>
+    private static List<string> NamesOf(string encodedPart)
+    {
+        using var document = JsonDocument.Parse(Base64UrlEncoder.Decode(encodedPart));
+        return [.. document.RootElement.EnumerateObject().Select(member => member.Name)];
     }
 
     private static Dictionary<string, object> With(Dictionary<string, object> source, string name, object value) =>

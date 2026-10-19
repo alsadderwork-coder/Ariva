@@ -58,6 +58,60 @@ test.describe('signing in', () => {
 		await guards.expectClean();
 	});
 
+	// ARV-094 (docs/security/data-classification.md section 6, item 9; L3 and L4 browser storage): across the app, web storage
+	// holds the sign-in hint and the theme only, and nothing of the session or the person signed in.
+	test('after signing in and opening screens, web storage holds only the sign-in hint and the theme, and no token, user name or email', async ({ page }) => {
+		const guards = await guardPage(page);
+		await ownAddress(page);
+		// Every access token the browser receives: the sign-in's, and the one a full page load takes from the refresh cookie.
+		const tokens: string[] = [];
+		page.on('response', async (response) => {
+			const url = response.url();
+			if ((url.endsWith('/api/auth/login') || url.endsWith('/api/auth/refresh')) && response.status() === 200)
+				tokens.push((await response.json()).accessToken as string);
+		});
+		const account = accounts().webAdmin;
+
+		await page.goto('/login');
+		await fillSignIn(page, account);
+		await expect(page.getByRole('heading', { level: 1 })).toHaveText(homeHeading.en);
+		await page.getByTestId('app-sidebar').getByRole('link', { name: 'Users and access' }).click();
+		await expect(page.getByRole('heading', { level: 1 })).toHaveText('Users and access');
+		await page.getByRole('link', { name: 'Account security' }).click();
+		await expect(page.getByRole('heading', { level: 1 })).toHaveText('Account security');
+		await page.goto('/');
+		await expect(page.getByRole('heading', { level: 1 })).toHaveText(homeHeading.en);
+		await expect.poll(() => tokens.length, 'the sign-in and the refresh of the full load').toBeGreaterThanOrEqual(2);
+
+		// The account's email address as the administration API holds it (a seeded account may have none).
+		const listed = await call('GET', `${hosts.main}/api/v1/admin/users?text=${encodeURIComponent(account.userName)}`, { token: tokens[tokens.length - 1] });
+		expect(listed.status()).toBe(200);
+		const own = ((await listed.json()).data as { userName: string; email: string | null }[]).find((user) => user.userName === account.userName);
+		expect(own, `${account.userName} is listed`).toBeTruthy();
+
+		const storage = await page.evaluate(() => ({
+			local: Object.entries(localStorage),
+			session: Object.entries(sessionStorage),
+			cookie: document.cookie
+		}));
+		const allowedLocal = ['ariva-signed-in', 'ariva-theme-mode'];
+		// The sign-in hint is there, so the storage read ran on the app's own origin after the sign-in.
+		expect(storage.local.map(([key]) => key), 'the sign-in hint').toContain('ariva-signed-in');
+		expect(storage.local.map(([key]) => key).filter((key) => !allowedLocal.includes(key)), 'localStorage keys beyond the sign-in hint and the theme').toEqual([]);
+		expect(storage.session.map(([key]) => key).filter((key) => !key.startsWith('sveltekit:')), 'sessionStorage keys other than the sveltekit: ones').toEqual([]);
+		expect(storage.cookie, 'a readable cookie').not.toContain('__Secure-ariva_rt');
+		const stored = JSON.stringify([...storage.local, ...storage.session]) + storage.cookie;
+		for (const token of tokens) {
+			expect(stored, 'an access token').not.toContain(token);
+			expect(stored, 'an access token signature').not.toContain(token.split('.')[2]);
+		}
+		expect(stored, 'a JWT').not.toMatch(/eyJ[\w-]+\.[\w-]+/);
+		expect(stored, 'the user name').not.toContain(account.userName);
+		if (own?.email) expect(stored, 'the email address').not.toContain(own.email);
+		expect(stored, 'an email address').not.toMatch(/[\w.+-]+@[\w-]+(\.[\w-]+)+/);
+		await guards.expectClean();
+	});
+
 	test('a wrong password shows one message for every reason, as text', async ({ page }) => {
 		const guards = await guardPage(page);
 		await ownAddress(page);

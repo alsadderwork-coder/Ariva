@@ -1,5 +1,7 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Ariva.Api.Common.Logging;
+using Ariva.UnitTests.Setup;
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Serilog;
@@ -468,6 +470,223 @@ public sealed class LogProtectionTests
         var parse = () => JsonDocument.Parse(Rendered(sink.Events.Single()));
         parse.Should().NotThrow();
         Rendered(sink.Events.Single()).Should().NotContain("<script>");
+    }
+
+    #endregion
+
+    #region Templates (ARV-094)
+
+    // docs/security/data-classification.md section 6, item 7 (L3 in logs): free text has no level by name, so no message
+    // template may name a value a person types. Reason stays allowed: the security events use it for fixed words (log
+    // inventory, section 10.2).
+    private static readonly string[] FreeTextNames = ["Note", "Notes", "Comment", "EscalationContact", "Contact", "Body", "Subject", "DisplayName"];
+
+    private static readonly TimeSpan ScanTimeout = TimeSpan.FromSeconds(2);
+
+    /// <summary>A logger call (<c>LogWarning(</c>, <c>Log(</c> and the other levels) or a <c>[LoggerMessage(</c> attribute, up to its open parenthesis.</summary>
+    private static readonly Regex LogCall = new(@"\.Log(?:Trace|Debug|Information|Warning|Error|Critical)?\s*\(|\[\s*LoggerMessage(?:Attribute)?\s*\(",
+        RegexOptions.CultureInvariant, ScanTimeout);
+
+    /// <summary>A message template placeholder: <c>{Name}</c>, <c>{@Name}</c> or <c>{$Name}</c>, with an alignment or a format after it.</summary>
+    private static readonly Regex Placeholder = new(@"\{\s*[@$]?([A-Za-z_][A-Za-z0-9_]*)\s*(?:[,:][^{}]*)?\}", RegexOptions.CultureInvariant, ScanTimeout);
+
+    [Fact]
+    public void Templates_Should_NameNoFreeTextValue_When_TheBackplaneSourcesAreScanned()
+    {
+        var templates = BackplaneSources()
+            .SelectMany(file => TemplatesIn(File.ReadAllText(file)).Select(t => (File: Path.GetRelativePath(RepositoryPaths.Platform, file).Replace(Path.DirectorySeparatorChar, '/'), t.Line, t.Text)))
+            .ToList();
+
+        templates.Should().HaveCountGreaterThan(100, "the scan reads every logger call and [LoggerMessage] of the backplane");
+        templates.Should().Contain(t => t.Text == "Jobs dashboard request refused without the key: {Path}", "a [LoggerMessage] template is read");
+        templates.Should().Contain(t => t.Text.StartsWith("Retention of {DataSet}: {Rows} rows older than {Days} days deleted in {Batches} batches, the most one run takes", StringComparison.Ordinal),
+            "a template on the line after its call is read");
+        var offending = templates
+            .SelectMany(t => PlaceholdersOf(t.Text).Where(name => FreeTextNames.Contains(name, StringComparer.OrdinalIgnoreCase)).Select(name => $"{t.File}:{t.Line} {{{name}}} in \"{t.Text}\""))
+            .ToList();
+
+        offending.Should().BeEmpty("a message template never names free text (notes, comments, contacts, email bodies and subjects, display names): it is L3 and has no level by name");
+    }
+
+    [Fact]
+    public void TemplatesIn_Should_ReadEveryLiteralOfALoggerCall_When_ItSpansLinesOrIsAnAttribute()
+    {
+        var found = TemplatesIn("""""
+            // logger.LogWarning("commented out {Note}");
+            logger.LogInformation("Plain {Zone}", zone);
+            logger.LogWarning(
+                SomeEvent, "Next line {Comment} with a char ')' " +
+                "and a second part {Subject}", Value(")"), '"');
+            logger.Log(LogLevel.Error, @"Verbatim ""{Body}"" text", body);
+            logger.LogError(exception, $"Interpolated {{Contact}} {count}");
+            [LoggerMessage(EventId = 1, Level = LogLevel.Warning,
+                Message = "Attribute {@DisplayName}")]
+            var text = "Not a template {Notes}";
+            logger.LogDebug(""""
+                Raw {EscalationContact:l}
+                """");
+            """"").ToList();
+
+        found.Select(t => t.Text).Should().Equal(
+            "Plain {Zone}",
+            "Next line {Comment} with a char ')' and a second part {Subject}",
+            ")",
+            "Verbatim \"\"{Body}\"\" text",
+            "Interpolated {{Contact}} {count}",
+            "Attribute {@DisplayName}",
+            "\n    Raw {EscalationContact:l}\n    ");
+        found.Select(t => t.Line).Should().Equal(2, 4, 5, 6, 7, 9, 11);
+        found.SelectMany(t => PlaceholdersOf(t.Text)).Should().Equal("Zone", "Comment", "Subject", "Body", "count", "DisplayName", "EscalationContact");
+    }
+
+    /// <summary>The C# sources of the backplane, without bin, obj and the test projects.</summary>
+    private static IEnumerable<string> BackplaneSources()
+    {
+        string[] skip =
+        [
+            $"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", $"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}",
+            $"{Path.DirectorySeparatorChar}Ariva.UnitTests{Path.DirectorySeparatorChar}", $"{Path.DirectorySeparatorChar}Ariva.IntegrationTests{Path.DirectorySeparatorChar}"
+        ];
+        return Directory.EnumerateFiles(Path.Combine(RepositoryPaths.Platform, "Backplane"), "*.cs", SearchOption.AllDirectories)
+            .Where(file => !skip.Any(s => file.Contains(s, StringComparison.Ordinal)))
+            .Order(StringComparer.Ordinal);
+    }
+
+    /// <summary>The placeholder names of a template; an escaped brace (<c>{{</c>, <c>}}</c>) is text.</summary>
+    private static IEnumerable<string> PlaceholdersOf(string template) =>
+        Placeholder.Matches(template.Replace("{{", string.Empty, StringComparison.Ordinal).Replace("}}", string.Empty, StringComparison.Ordinal))
+            .Select(match => match.Groups[1].Value);
+
+    /// <summary>
+    /// The string literals inside each logger call and [LoggerMessage] attribute of a source, from its open parenthesis to
+    /// the one that closes it, with the line the literal starts on. Literals joined by <c>+</c> are one template. Comments
+    /// and character literals are skipped; regular, verbatim, interpolated and raw literals are read as written.
+    /// </summary>
+    private static IEnumerable<(int Line, string Text)> TemplatesIn(string source)
+    {
+        foreach (Match call in LogCall.Matches(source))
+        {
+            var at = call.Index + call.Length - 1;
+            if (InComment(source, call.Index))
+                continue;
+            foreach (var literal in LiteralsOfCall(source, at))
+                yield return literal;
+        }
+    }
+
+    /// <summary>Whether the position is on a line that a // comment has already started.</summary>
+    private static bool InComment(string source, int index)
+    {
+        var lineStart = source.LastIndexOf('\n', Math.Max(index - 1, 0)) + 1;
+        return source.AsSpan(lineStart, index - lineStart).TrimStart().StartsWith("//", StringComparison.Ordinal);
+    }
+
+    private static List<(int Line, string Text)> LiteralsOfCall(string source, int open)
+    {
+        var literals = new List<(int Line, string Text)>();
+        var depth = 0;
+        var joinable = false;
+        var i = open;
+        while (i < source.Length)
+        {
+            var c = source[i];
+            var next = i + 1 < source.Length ? source[i + 1] : '\0';
+            if (c == '/' && next == '/')
+            {
+                i = source.IndexOf('\n', i) is var end and >= 0 ? end : source.Length;
+                continue;
+            }
+
+            if (c == '/' && next == '*')
+            {
+                i = source.IndexOf("*/", i + 2, StringComparison.Ordinal) is var end and >= 0 ? end + 2 : source.Length;
+                continue;
+            }
+
+            if (c == '\'')
+            {
+                i += next == '\\' ? source.IndexOf('\'', i + 3) - i + 1 : 3;
+                continue;
+            }
+
+            var start = i;
+            while (i < source.Length && (source[i] == '$' || source[i] == '@'))
+                i++;
+            if (i < source.Length && source[i] == '"')
+            {
+                var verbatim = source.AsSpan(start, i - start).Contains('@');
+                var (text, after) = ReadLiteral(source, i, verbatim);
+                var line = source.AsSpan(0, start).Count('\n') + 1;
+                if (joinable && literals.Count > 0)
+                    literals[^1] = (literals[^1].Line, literals[^1].Text + text);
+                else
+                    literals.Add((line, text));
+                i = after;
+                joinable = false;
+                var j = i;
+                while (j < source.Length && char.IsWhiteSpace(source[j]))
+                    j++;
+                if (j < source.Length && source[j] == '+')
+                {
+                    joinable = true;
+                    i = j + 1;
+                }
+
+                continue;
+            }
+
+            i = start;
+            if (!char.IsWhiteSpace(c))
+                joinable = false;
+            if (c == '(')
+                depth++;
+            else if (c == ')' && --depth == 0)
+                break;
+            i++;
+        }
+
+        return literals;
+    }
+
+    /// <summary>Reads the literal whose first quote is at <paramref name="quote"/>: its text as written and the index after it.</summary>
+    private static (string Text, int After) ReadLiteral(string source, int quote, bool verbatim)
+    {
+        var quotes = 0;
+        while (quote + quotes < source.Length && source[quote + quotes] == '"')
+            quotes++;
+        if (quotes >= 3 && !verbatim)
+        {
+            var fence = new string('"', quotes);
+            var end = source.IndexOf(fence, quote + quotes, StringComparison.Ordinal);
+            return (source[(quote + quotes)..end], end + quotes);
+        }
+
+        if (quotes == 2 && !verbatim)
+            return (string.Empty, quote + 2);
+        var i = quote + 1;
+        while (i < source.Length)
+        {
+            if (!verbatim && source[i] == '\\')
+            {
+                i += 2;
+                continue;
+            }
+
+            if (source[i] == '"')
+            {
+                if (verbatim && i + 1 < source.Length && source[i + 1] == '"')
+                {
+                    i += 2;
+                    continue;
+                }
+
+                return (source[(quote + 1)..i], i + 1);
+            }
+
+            i++;
+        }
+
+        return (source[(quote + 1)..], source.Length);
     }
 
     #endregion

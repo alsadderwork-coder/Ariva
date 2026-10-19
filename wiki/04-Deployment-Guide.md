@@ -319,7 +319,7 @@ done
 
 Add `simulation` to the loop only where `simulationEnabled` is true (dev and demo).
 
-The Data Protection certificate (RSA 3072 or larger, key usage key encipherment) is created once per deployment and kept in the site's secret store; it is not a TLS server certificate and needs no public CA:
+The Data Protection certificate (an RSA key of 3072 bits or more) is created once per deployment and kept in the site's secret store; it is not a TLS server certificate and needs no public CA. The command below asks for no key usage extension and the hosts check none (`DataProtectionCertificates.RequireStrong` checks the key's type and size only); its key both wraps and signs the key ring ([key management policy](../docs/security/key-management.md), section 4.2):
 
 ```bash
 openssl req -x509 -newkey rsa:3072 -sha256 -days 1825 -nodes \
@@ -362,7 +362,7 @@ Rotation every 90 days, without signing anyone out:
 
 1. Generate the new pair. Update `ariva-token-public` with the new key as `public.pem` and the current one as `previous.pem`, then restart every API deployment so all hosts accept both keys.
 2. Update `ariva-token-signing` with the new `signing.key` and restart `api-main`. New tokens carry the new key id (`kid`); tokens signed before still verify with `previous.pem`.
-3. After the longest token lifetime (15 minutes; with ARV-010b, the refresh lifetime), remove `previous.pem` from `ariva-token-public` and restart the API deployments.
+3. After the access token lifetime (15 minutes: only access tokens are signed; refresh tokens are opaque, ADR-0026 point 7, so they are not affected), remove `previous.pem` from `ariva-token-public` and restart the API deployments.
 
 If the signing key leaks, do the same without waiting in step 3: remove the leaked key from `ariva-token-public` at once. Every token it signed is refused and users sign in again.
 

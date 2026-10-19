@@ -215,4 +215,114 @@ public sealed class AdministrationTests(PostgresFixture fixture) : IAsyncDisposa
 
         (await _host.ReadAsync<long>("SELECT count(*) FROM audit_entry WHERE target_id = @id AND action = 'User.Updated'", target)).Should().Be(1);
     }
+
+    /// <summary>
+    /// ARV-094 (docs/security/data-classification.md section 6, item 5; L3 and L4 at rest and deletion): connected as a runtime
+    /// login, as ariva_ensure_runtime_login creates one for the hosts, nothing deletes or truncates an account, a session, a
+    /// refresh token or a recovery code, and nothing updates, deletes or truncates the Data Protection key ring (scripts 0002
+    /// to 0005). Accounts are disabled and sessions revoked, never deleted.
+    /// </summary>
+    [Fact]
+    public async Task RuntimeLogin_Should_NeverDeleteAccountsSessionsOrRecoveryCodesNorChangeTheKeyRing_When_ItTries()
+    {
+        // A row in every table: an account with a session, its refresh token, its recovery codes, and a key of the ring.
+        var officer = await _host.CreateUserAsync("it.adm.kept", roles: [RoleCodes.TerminalDutyManager]);
+        var session = SessionOf((await _host.LoginAsync("it.adm.kept", Password)).Data.Token.AccessToken);
+        var secret = Base32.Decode((await _host.EnrolAsync(officer, session)).Data.Secret);
+        (await _host.ConfirmAsync(officer, session, Totp.Code(secret, Totp.StepAt(_host.Clock.GetUtcNow())))).HasErrors.Should().BeFalse();
+        var database = await _host.DatabaseAsync();
+        const string login = "it_adm_runtime";
+        var password = "rt-" + Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(12));
+        await using (var admin = new NpgsqlConnection(fixture.ConnectionString(database)))
+        {
+            await admin.OpenAsync(Ct);
+            await using (var key = new NpgsqlCommand("INSERT INTO data_protection_key (friendly_name, xml) VALUES (@name, '<key id=\"it-adm\"/>')", admin))
+            {
+                key.Parameters.AddWithValue("name", "key-it-adm-" + Guid.NewGuid().ToString("N"));
+                await key.ExecuteNonQueryAsync(Ct);
+            }
+
+            await using var ensure = new NpgsqlCommand("SELECT ariva_ensure_runtime_login(@login, @password)", admin);
+            ensure.Parameters.AddWithValue("login", login);
+            ensure.Parameters.AddWithValue("password", password);
+            await ensure.ExecuteNonQueryAsync(Ct);
+        }
+
+        string[] tables = ["\"user\"", "user_session", "refresh_token", "recovery_code", "data_protection_key"];
+        var before = await CountsAsync(database, tables);
+        before.Should().OnlyContain(count => count.Value > 0, "every table holds a row the attempts could remove");
+        (await _host.ReadAsync<bool>("SELECT pg_has_role('it_adm_runtime', 'ariva_runtime', 'MEMBER') AND NOT rolsuper AND NOT rolcreaterole FROM pg_roles WHERE rolname = 'it_adm_runtime'"))
+            .Should().BeTrue("the login is a runtime login, as the hosts use");
+
+        string[] refused =
+        [
+            "DELETE FROM \"user\"", "TRUNCATE \"user\"",
+            "DELETE FROM user_session", "TRUNCATE user_session",
+            "DELETE FROM refresh_token", "TRUNCATE refresh_token",
+            "DELETE FROM recovery_code", "TRUNCATE recovery_code",
+            "UPDATE data_protection_key SET xml = xml", "DELETE FROM data_protection_key", "TRUNCATE data_protection_key"
+        ];
+        await using (var runtime = new NpgsqlConnection(fixture.ConnectionString(database, login, password)))
+        {
+            await runtime.OpenAsync(Ct);
+            foreach (var sql in refused)
+            {
+                await using var transaction = await runtime.BeginTransactionAsync(Ct);
+#pragma warning disable CA2100 // literal statements from the array above
+                await using var command = new NpgsqlCommand(sql, runtime, transaction);
+#pragma warning restore CA2100
+                var change = () => command.ExecuteNonQueryAsync(Ct);
+                (await change.Should().ThrowAsync<PostgresException>(sql)).Which.SqlState.Should().Be("42501", $"permission denied: {sql}");
+                await transaction.RollbackAsync(Ct);
+            }
+        }
+
+        await using (var admin = new NpgsqlConnection(fixture.ConnectionString(database)))
+        {
+            await admin.OpenAsync(Ct);
+            foreach (var table in tables)
+            {
+                string[] privileges = table == "data_protection_key" ? ["DELETE", "TRUNCATE", "UPDATE"] : ["DELETE", "TRUNCATE"];
+                foreach (var privilege in privileges)
+                {
+                    foreach (var role in new[] { "ariva_runtime", login })
+                    {
+                        await using var check = new NpgsqlCommand("SELECT has_table_privilege(@role::name, @table::text, @privilege::text)", admin);
+                        check.Parameters.AddWithValue("role", role);
+                        check.Parameters.AddWithValue("table", table);
+                        check.Parameters.AddWithValue("privilege", privilege);
+                        ((bool)(await check.ExecuteScalarAsync(Ct))!).Should().BeFalse($"{role} holds no {privilege} on {table}");
+                    }
+                }
+            }
+        }
+
+        (await CountsAsync(database, tables)).Should().Equal(before, "no attempt removed or changed a row");
+    }
+
+    /// <summary>The row count of each table, read by the migration login.</summary>
+    private async Task<Dictionary<string, long>> CountsAsync(string database, IEnumerable<string> tables)
+    {
+        var counts = new Dictionary<string, long>(StringComparer.Ordinal);
+        await using var connection = new NpgsqlConnection(fixture.ConnectionString(database));
+        await connection.OpenAsync(Ct);
+        foreach (var table in tables)
+        {
+            var sql = table switch
+            {
+                "\"user\"" => "SELECT count(*) FROM \"user\"",
+                "user_session" => "SELECT count(*) FROM user_session",
+                "refresh_token" => "SELECT count(*) FROM refresh_token",
+                "recovery_code" => "SELECT count(*) FROM recovery_code",
+                "data_protection_key" => "SELECT count(*) FROM data_protection_key",
+                _ => throw new ArgumentOutOfRangeException(nameof(tables), table, "not a table of this test")
+            };
+#pragma warning disable CA2100 // one of the literal statements above
+            await using var command = new NpgsqlCommand(sql, connection);
+#pragma warning restore CA2100
+            counts[table] = (long)(await command.ExecuteScalarAsync(Ct))!;
+        }
+
+        return counts;
+    }
 }

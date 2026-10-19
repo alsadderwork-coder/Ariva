@@ -1,4 +1,6 @@
+using System.Collections.Concurrent;
 using System.Globalization;
+using System.Text;
 using Ariva.Core;
 using Ariva.Core.Domain.InputModels;
 using Ariva.Core.Services.Administration;
@@ -8,8 +10,12 @@ using Ariva.Infra.Security;
 using Ariva.IntegrationTests.Security;
 using Ariva.IntegrationTests.Setup;
 using FluentAssertions;
+using Microsoft.Extensions.Caching.Distributed;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Npgsql;
+using ZiggyCreatures.Caching.Fusion;
 
 namespace Ariva.IntegrationTests.Sensing;
 
@@ -263,5 +269,101 @@ public sealed class DeviceRegistryTests(PostgresFixture fixture) : IAsyncDisposa
 
         await _host.AsCallerAsync(admin, s => Devices(s).RetireAsync(registered.Device.Id, Ct));
         (await _host.AsCallerAsync(null, s => gateway(s).FindByPrefixAsync(rotated.Credential[..DeviceCredentials.PrefixLength], Ct))).Should().BeNull("retired");
+    }
+
+    /// <summary>
+    /// ARV-094 (docs/security/data-classification.md section 6, item 6; L4 caching): the device credential lookup keeps its
+    /// record, which holds the credential hash, in memory only. With the host's FusionCache given a distributed level that
+    /// records every operation, a found device, a second lookup and a miss put no key of the lookup and no copy of the hash
+    /// in it, while an ordinary entry does reach it.
+    /// </summary>
+    [Fact]
+    public async Task Gateway_Should_NeverPutThePrefixKeyOrTheHashInTheDistributedCache_When_ItLooksADeviceUp()
+    {
+        var (admin, level) = await SiteAsync("DVK");
+        var recorder = new RecordingDistributedCache();
+        var cache = _host.Provider.GetRequiredService<IFusionCache>();
+        cache.HasDistributedCache.Should().BeFalse("the test host runs without Redis, so the recorder is the only distributed level");
+        cache.SetupDistributedCache(recorder);
+        var registered = (await _host.AsCallerAsync(admin, s => Devices(s).RegisterAsync(Register("S-1", level), Ct))).Data;
+        var prefix = registered.Credential[..DeviceCredentials.PrefixLength];
+        var hash = DeviceCredentials.Hash(registered.Credential);
+        var gateway = (IServiceProvider s) => s.GetRequiredService<ISvcDeviceGateway>();
+
+        var first = await _host.AsCallerAsync(null, s => gateway(s).FindByPrefixAsync(prefix, Ct));
+        var second = await _host.AsCallerAsync(null, s => gateway(s).FindByPrefixAsync(prefix, Ct));
+        var unknown = await _host.AsCallerAsync(null, s => gateway(s).FindByPrefixAsync("ardk_00000000", Ct));
+
+        first.Should().NotBeNull();
+        first.Code.Should().Be("S-1");
+        first.CredentialHash.Should().Be(hash);
+        second.Code.Should().Be("S-1");
+        unknown.Should().BeNull();
+        recorder.Operations.Should().NotContain(op => op.Key.Contains("devices:prefix:", StringComparison.Ordinal),
+            "the lookup skips the distributed level for reads and writes, hits and misses (SkipDistributedCacheRead, SkipDistributedCacheWrite)");
+        recorder.Operations.Where(op => op.Value is not null).Should().NotContain(op => Encoding.UTF8.GetString(op.Value).Contains(hash, StringComparison.OrdinalIgnoreCase),
+            "no copy of the credential hash reaches Redis");
+
+        // The recorder sees what the host's cache writes to its distributed level, so the absence above is the lookup's.
+        await cache.SetAsync("it:recorder-probe", "probe-value", token: Ct);
+        recorder.Operations.Should().Contain(op => op.Name == "Set" && op.Key.Contains("it:recorder-probe", StringComparison.Ordinal)
+                                                  && Encoding.UTF8.GetString(op.Value).Contains("probe-value", StringComparison.Ordinal));
+    }
+
+    /// <summary>A distributed cache in memory that records the key and the value of every operation on it.</summary>
+    private sealed class RecordingDistributedCache : IDistributedCache
+    {
+        private readonly MemoryDistributedCache _inner = new(Options.Create(new MemoryDistributedCacheOptions()));
+        private readonly ConcurrentQueue<(string Name, string Key, byte[] Value)> _operations = new();
+
+        public IReadOnlyList<(string Name, string Key, byte[] Value)> Operations => [.. _operations];
+
+        public byte[] Get(string key)
+        {
+            _operations.Enqueue(("Get", key, null));
+            return _inner.Get(key);
+        }
+
+        public Task<byte[]> GetAsync(string key, CancellationToken token = default)
+        {
+            _operations.Enqueue(("Get", key, null));
+            return _inner.GetAsync(key, token);
+        }
+
+        public void Set(string key, byte[] value, DistributedCacheEntryOptions options)
+        {
+            _operations.Enqueue(("Set", key, value));
+            _inner.Set(key, value, options);
+        }
+
+        public Task SetAsync(string key, byte[] value, DistributedCacheEntryOptions options, CancellationToken token = default)
+        {
+            _operations.Enqueue(("Set", key, value));
+            return _inner.SetAsync(key, value, options, token);
+        }
+
+        public void Refresh(string key)
+        {
+            _operations.Enqueue(("Refresh", key, null));
+            _inner.Refresh(key);
+        }
+
+        public Task RefreshAsync(string key, CancellationToken token = default)
+        {
+            _operations.Enqueue(("Refresh", key, null));
+            return _inner.RefreshAsync(key, token);
+        }
+
+        public void Remove(string key)
+        {
+            _operations.Enqueue(("Remove", key, null));
+            _inner.Remove(key);
+        }
+
+        public Task RemoveAsync(string key, CancellationToken token = default)
+        {
+            _operations.Enqueue(("Remove", key, null));
+            return _inner.RemoveAsync(key, token);
+        }
     }
 }

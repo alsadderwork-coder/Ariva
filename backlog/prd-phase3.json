@@ -610,6 +610,144 @@
       "passes": false,
       "notes": "Filed 2026-10-19 from the ARV-093 security review (Low; Phase 3 by the owner rule for Low findings).",
       "dependsOn": []
+    },
+    {
+      "id": "ARV-205",
+      "title": "[E17] Outbound calls pinned to TLS 1.2 and 1.3 and the platform suites",
+      "description": "Found in ARV-094 (crypto inventory section 5 item 14, data classification section 6 item 11): OutboundTransport sets no EnabledSslProtocols, so outbound integration calls take the platform defaults for TLS versions and suites.",
+      "acceptanceCriteria": [
+        "OutboundTransport allows TLS 1.2 and 1.3 only and, on Linux, the same cipher suites as the pods (a CipherSuitesPolicy, as PodTransportExtensions sets for the listeners), with tests that a server offering only TLS 1.1 or only a suite outside the list is refused, and the crypto inventory row updated",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 300,
+      "passes": false,
+      "notes": "Filed 2026-10-19 from the ARV-094 documents (Low; Phase 3 by the owner rule for Low findings).",
+      "dependsOn": []
+    },
+    {
+      "id": "ARV-206",
+      "title": "[E17] The ingress refuses a proxy cache",
+      "description": "Found in ARV-094 (data classification section 6 item 13): nothing stops a site annotation or the controller snippets from caching answers at the ingress, where credentialed and L3 or L4 answers would be kept outside Ariva.",
+      "acceptanceCriteria": [
+        "validate.yaml refuses an Ariva Ingress annotation that writes proxy_cache, and the controller values check refuses proxy_cache_path in the http-snippet, each with a fixture case in tests/chart-security.mjs",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 300,
+      "passes": false,
+      "notes": "Filed 2026-10-19 from the ARV-094 documents (Low).",
+      "dependsOn": []
+    },
+    {
+      "id": "ARV-207",
+      "title": "[E17] Key lifecycle: key ring retention, destruction and key-age alerts",
+      "description": "Found in ARV-094 (crypto inventory section 5 items 7 and 9, key management section 6): expired Data Protection keys are never deleted and no rule says when a previous Data Protection certificate is destroyed; only the Data Protection and MQTT certificates report their expiry (ariva.certificates.expires_in), so no key age is recorded or alerted.",
+      "acceptanceCriteria": [
+        "A retention for expired Data Protection keys (Proposed: kept while any stored value may still need them, then deleted by a Cronz job), with the destruction rule for a previous certificate in key-management.md and tests",
+        "A key-age metric or record for every dated key and certificate in the crypto inventory, with the proposed alerts in the log inventory",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 300,
+      "passes": false,
+      "notes": "Filed 2026-10-19 from the ARV-094 documents. A deployment-wide revoke-everything tool (inventory section 5 item 8) would end every session, so it waits for the login freeze and is not part of this story.",
+      "dependsOn": []
+    },
+    {
+      "id": "ARV-208",
+      "title": "[E3] Sensing archive day keys protected at rest",
+      "description": "Found in ARV-094 (crypto inventory section 5 item 12, data classification section 6 item 10): the archive day keys sit in clear in sensing_day_key, so a database backup keeps them beyond their three days and with them the link between that day's pseudonyms and the track ids.",
+      "acceptanceCriteria": [
+        "The owner decides: keep as built and record it, or protect the day keys with Data Protection so a backup holds them wrapped; if protected, a test that the stored bytes do not reproduce a pseudonym and that two archive instances still agree on one pseudonym per track and day",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 300,
+      "passes": false,
+      "notes": "Filed 2026-10-19 from the ARV-094 documents; needs the owner decision first (L2 data, so Low).",
+      "dependsOn": []
+    },
+    {
+      "id": "ARV-209",
+      "title": "[E0] Secret handling in the release tooling",
+      "description": "Found in ARV-094 (crypto inventory section 5 items 19 and 20): the Azure DevOps release passes the registry password as a Helm value, so it is kept in the Helm release record; the vm-local development Data Protection key file is written first and only then made owner-only.",
+      "acceptanceCriteria": [
+        "The Azure DevOps release makes the registry pull secret out of band from a pipeline secret and passes no credential as a Helm value, with a pipeline check that refuses one",
+        "The development key file is created owner-only before its contents are written, with a test",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 300,
+      "passes": false,
+      "notes": "Filed 2026-10-19 from the ARV-094 documents (Low). The Azure DevOps path is optional (CLAUDE.md); the GitHub Actions path is unaffected.",
+      "dependsOn": []
+    },
+    {
+      "id": "ARV-210",
+      "title": "[E1] Device client certificates checked for validity",
+      "description": "Found in ARV-094 (crypto inventory section 5 item 13): device client certificates are trusted by their pin only; their validity period and revocation are not checked, and who issues them per site is To confirm.",
+      "acceptanceCriteria": [
+        "A device certificate outside its validity period is refused, with a test, and the issuing of device certificates per site is recorded in the deployment guide",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 300,
+      "passes": false,
+      "notes": "Filed 2026-10-19 from the ARV-094 documents. Device authentication is under the owner login freeze; start only when it lifts.",
+      "dependsOn": []
+    },
+    {
+      "id": "ARV-211",
+      "title": "[E0] A separate signing key for the Data Protection key ring",
+      "description": "Found in the ARV-094 security review (NIST SP 800-57 Part 1 section 5.2): the Data Protection certificate RSA key both wraps the key ring (RSA-OAEP) and signs each wrapped key (RSA-PSS, OaepGcmXmlEncryption), so one key serves key transport and signature. The transport key must be kept for recovery while a signing key should be retired, and while a previous certificate is configured a key signed with it is still admitted.",
+      "acceptanceCriteria": [
+        "The key ring is signed with a key of its own (or the deviation is accepted by the owner and recorded), with tests that a key signed by a retired signing key is refused while a key wrapped under a previous certificate still unwraps, and the rotation and upgrade steps in wiki 04",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 300,
+      "passes": false,
+      "notes": "Filed 2026-10-19 from the ARV-094 security review; recorded meanwhile as a deviation in key-management.md.",
+      "dependsOn": []
+    },
+    {
+      "id": "ARV-212",
+      "title": "[E17] Ariva secret formats redacted inside log text",
+      "description": "Found in the ARV-094 security review: RedactionEnricher removes Bearer and Basic credentials, JWTs, token query parameters and device and display credentials (ardk_, ardp_) from log text, but not an integration client secret (ics_), a recovery code, a TOTP seed or an outbound key, so one inside exception text would be logged.",
+      "acceptanceCriteria": [
+        "The enricher recognises every credential format Ariva issues or stores (integration client secrets, recovery codes, temporary passwords where recognisable, seeds and outbound keys by their shapes) inside text, with a test per format, and the log inventory and data classification updated",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 300,
+      "passes": false,
+      "notes": "Filed 2026-10-19 from the ARV-094 security review (Low).",
+      "dependsOn": []
     }
   ]
 }

@@ -16,7 +16,9 @@ namespace Ariva.UnitTests.Persistence;
 /// an inventory row for an object that no longer exists. The parser is deliberately plain: one regular expression per kind of
 /// statement (plain materialized views and <c>ALTER ... RENAME TO</c> included), applied in the order the statements appear, and
 /// one inventory row per object, its name in backticks in the first cell. It does not read DROP statements (no shipped script
-/// drops a table): a script that drops one makes this test ask for its row until the parser learns them.
+/// drops a table): a script that drops one makes this test ask for its row until the parser learns them. ARV-094 (ASVS 5.0
+/// V14.1.1): docs/security/data-classification.md section 3.6 gives each category the object rows use one protection level,
+/// L1 to L4, and names no other category.
 /// </summary>
 public sealed partial class DataInventoryTests
 {
@@ -29,6 +31,13 @@ public sealed partial class DataInventoryTests
 
     /// <summary>The cells of an inventory row: the name, kind, category, personal data, retention, where it is set, owner.</summary>
     private const int Columns = 7;
+
+    /// <summary>ARV-094: the page that gives every category of the inventory its protection level (its section 3.6).</summary>
+    private const string Classification = "docs/security/data-classification.md";
+
+    private const string CategoriesHeading = "### 3.6 Data inventory categories";
+
+    private static readonly string[] Levels = ["L1", "L2", "L3", "L4"];
 
     #endregion
 
@@ -169,6 +178,73 @@ public sealed partial class DataInventoryTests
 
     #endregion
 
+    #region Classification (ARV-094)
+
+    [Fact]
+    public void Classification_Should_ListExactlyTheInventoryCategories_When_BothDocumentsAreRead()
+    {
+        // ASVS 5.0 V14.1.1: every category an object row of the inventory uses has a level, and no level is given to a
+        // category no object uses. Exact text: a category spelled another way in one of the two pages fails here.
+        var used = ListedObjects().Values.Select(row => row.Cells[1]).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList();
+        var classified = ClassifiedCategories().Select(c => c.Category).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList();
+
+        used.Should().NotBeEmpty();
+        classified.Should().Equal(used,
+            $"the first column of section 3.6 of {Classification} is the set of categories of the object rows of {Inventory}; " +
+            $"used but not classified: {string.Join(", ", used.Except(classified, StringComparer.Ordinal))}; " +
+            $"classified but not used: {string.Join(", ", classified.Except(used, StringComparer.Ordinal))}");
+    }
+
+    [Fact]
+    public void Classification_Should_ListEachCategoryOnce_When_Read()
+    {
+        var categories = ClassifiedCategories().Select(c => c.Category).ToList();
+
+        categories.Should().NotBeEmpty().And.OnlyHaveUniqueItems($"a category has one level in section 3.6 of {Classification}");
+    }
+
+    [Fact]
+    public void Classification_Should_GiveEachCategoryALevelFromL1ToL4_When_Read()
+    {
+        var classified = ClassifiedCategories();
+
+        classified.Should().NotBeEmpty();
+        foreach (var (category, level) in classified)
+            Levels.Should().Contain(level, $"{category}: the Level cell of section 3.6 of {Classification} is L1, L2, L3 or L4");
+    }
+
+    [Fact]
+    public void ClassifiedCategories_Should_ReadOnlyTheTableOfSection36_When_ThePageHasOtherTables()
+    {
+        // The parser on a page shaped like the real one: a table before the section, the section's table and one after it.
+        var found = ParseCategories("""
+            ### 3.5 Track ids
+
+            | Where | Form | Kept |
+            |---|---|---|
+            | Logs | Hashed | 30 days |
+
+            ### 3.6 Data inventory categories
+
+            Every category of the inventory.
+
+            | Category | Level | Why |
+            |---|---|---|
+            | Accounts | L3 | Staff account data |
+            | Key material | L4 | The day keys |
+
+            ### 3.7 Data outside the database
+
+            | Data | Level | Why |
+            |---|---|---|
+            | Logs and traces | L3 | Every line |
+            """.Split('\n'));
+
+        found.Should().Equal(("Accounts", "L3"), ("Key material", "L4"));
+    }
+
+    #endregion
+
     #region Helpers
 
     private sealed record Row(string Kind, IReadOnlyList<string> Cells);
@@ -242,6 +318,57 @@ public sealed partial class DataInventoryTests
         }
 
         rows.Should().NotBeEmpty($"{Inventory} has its table of objects");
+        return rows;
+    }
+
+    /// <summary>The rows of the table of section 3.6 of the classification page: each category with its level.</summary>
+    private static List<(string Category, string Level)> ClassifiedCategories()
+    {
+        var categories = ParseCategories(File.ReadAllLines(RepositoryPaths.Resolve(Classification)));
+        categories.Should().NotBeEmpty($"section 3.6 of {Classification} has its table of categories");
+        return categories;
+    }
+
+    /// <summary>
+    /// The first table after the section 3.6 heading, without its header and separator rows: its first cell (the category)
+    /// and its second (the level). The table ends at its first line that is not a table row.
+    /// </summary>
+    private static List<(string Category, string Level)> ParseCategories(IEnumerable<string> lines)
+    {
+        var rows = new List<(string Category, string Level)>();
+        var inSection = false;
+        var inTable = false;
+        var header = true;
+        foreach (var raw in lines)
+        {
+            var line = raw.TrimEnd('\r').Trim();
+            if (!inSection)
+            {
+                inSection = line == CategoriesHeading;
+                continue;
+            }
+
+            if (!line.StartsWith('|'))
+            {
+                if (inTable || line.StartsWith('#'))
+                    break;
+                continue;
+            }
+
+            inTable = true;
+            var cells = line.Trim('|').Split('|').Select(c => c.Trim()).ToList();
+            if (header)
+            {
+                cells.Should().StartWith(["Category", "Level"], $"the table of section 3.6 of {Classification} names its columns");
+                header = false;
+                continue;
+            }
+
+            if (cells.All(c => c.Length > 0 && c.Trim('-', ':').Length == 0))
+                continue;
+            rows.Add((cells[0], cells.Count > 1 ? cells[1] : string.Empty));
+        }
+
         return rows;
     }
 
