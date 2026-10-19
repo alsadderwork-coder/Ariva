@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // TLS check of an Ariva site's hosts (ARV-084; the release gate after .github/workflows/release-dev.yml's release, wiki 04).
-// No dependencies beyond Node 22. It reads, it never changes anything: TLS handshakes, GET /, one POST without a body and a
-// plain HTTP GET / per host.
+// No dependencies beyond Node 22. It reads, it never changes anything: TLS handshakes, GET /, GET /health/readiness, one POST
+// without a body and a plain HTTP GET / per host.
 //
 //   node scripts/ops/tls-check.mjs --host <name>[=refuse|redirect] [--host ...] [--ingresses <file>] [--ca <PEM file>]
 //        [--resolve <name>=<address>] [--port 443] [--http-port 80] [--timeout <seconds, 10>] [--summary <file>]
@@ -14,7 +14,8 @@
 // --summary appends a Markdown table (for example $GITHUB_STEP_SUMMARY).
 //
 // A host fails when:
-// - it accepts TLS 1.0 or TLS 1.1 (offered at OpenSSL security level 0, so a server that would take them does);
+// - it accepts TLS 1.0 or TLS 1.1 (offered at OpenSSL security level 0, so a server that would take them does; an answer that
+//   brings a certificate that does not verify, other than the host's main one, counts as accepted, as it does for a suite);
 // - it accepts a TLS 1.2 suite other than ECDHE with AES-GCM or ChaCha20-Poly1305 (the Mozilla intermediate list): CBC, RC4,
 //   3DES or NULL suites, or AEAD suites with static RSA or DHE key exchange;
 // - a TLS 1.2 or TLS 1.3 handshake fails, or its certificate does not verify for the host name (every handshake verifies it,
@@ -25,6 +26,8 @@
 // - a response the ingress generates itself, the 413 to a POST that announces a body over every proxy-body-size (1 GiB, none
 //   sent, refused before any pod sees it), lacks that HSTS, X-Content-Type-Options: nosniff or a Content-Security-Policy with
 //   frame-ancestors 'none';
+// - GET /health/readiness over HTTPS is answered anything but 404 or 403 (the ingress routes the health probes, which stay on
+//   the pods' own ports; ARV-085), or its 404 lacks that HSTS, nosniff or frame-ancestors 'none';
 // - over plain HTTP a refuse host answers a redirect or a success instead of an error (a closed port is a refusal too), a
 //   redirect host does not redirect to https://<host>, or either answers without nosniff and frame-ancestors 'none' or with
 //   Strict-Transport-Security (RFC 6797 section 7.2: HTTPS only).
@@ -53,6 +56,8 @@ const HOST = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z
 const PLAIN_HTTP_ANNOTATION = 'ariva.dalil.tech/plain-http';
 const BODY_PROBE_BYTES = 1024 * 1024 * 1024;
 const FRAME_ANCESTORS = /(^|;)\s*frame-ancestors\s+'none'\s*(;|$)/i;
+/** A health probe path (ARV-085): the chart's server-snippet answers it 404 on every host, before any location. */
+export const HEALTH_PROBE = '/health/readiness';
 
 export class UsageError extends Error {}
 
@@ -111,11 +116,11 @@ export function handshake(target, { minVersion, maxVersion, ciphers }) {
 // HTTP probes
 
 /** One request; resolves { status, headers (name to list of values), location } or { error }. */
-function request(target, { secure, method = 'GET', headers = {} }) {
+function request(target, { secure, method = 'GET', headers = {}, path = '/' }) {
 	return new Promise((resolve) => {
 		const module = secure ? https : http;
 		const options = {
-			host: target.address ?? target.host, port: secure ? target.port : target.httpPort, method, path: '/', agent: false,
+			host: target.address ?? target.host, port: secure ? target.port : target.httpPort, method, path, agent: false,
 			headers: { Host: target.host, 'User-Agent': 'ariva-tls-check', Connection: 'close', ...headers }, timeout: target.timeoutMs
 		};
 		if (secure) Object.assign(options, { servername: target.host, ca: target.ca, rejectUnauthorized: true, minVersion: 'TLSv1.2' });
@@ -169,9 +174,12 @@ function generatedHeaderFindings(headers, where) {
 export async function checkHost(target, suites = refusedSuites()) {
 	const findings = [];
 	const notes = [];
+	// A probe that ends on a certificate error was accepted: the server answered the version and suite offered before the
+	// certificate was judged (only a host presenting another certificate for them can get there, its main one having verified).
 	const offer = async (label, options, accepted) => {
 		const result = await handshake(target, options);
 		if (result.ok) findings.push(accepted(result));
+		else if (result.certificate !== undefined) findings.push(`accepts ${label}, with a certificate that does not verify (${result.certificate})`);
 		return result;
 	};
 	// The certificate first: every handshake verifies it, so a host whose certificate does not verify is judged on that alone
@@ -198,6 +206,11 @@ export async function checkHost(target, suites = refusedSuites()) {
 			let remaining = [...list];
 			while (remaining.length) {
 				const result = await handshake(target, { minVersion: 'TLSv1.2', maxVersion: 'TLSv1.2', ciphers: `${remaining.join(':')}:@SECLEVEL=0` });
+				if (result.certificate !== undefined) {
+					// Which suite it took is lost with the socket: one finding for the rest, and no further offer.
+					findings.push(`accepts a TLS 1.2 suite ${kind} from ${remaining.join(', ')}, with a certificate that does not verify (${result.certificate})`);
+					break;
+				}
 				if (!result.ok || !remaining.includes(result.cipher)) break;
 				findings.push(`accepts the TLS 1.2 suite ${result.cipher} (${kind})`);
 				remaining = remaining.filter((name) => name !== result.cipher);
@@ -211,6 +224,13 @@ export async function checkHost(target, suites = refusedSuites()) {
 		if (generated.error) findings.push(`the body limit probe fails (${generated.error})`);
 		else if (generated.status !== 413) findings.push(`a POST announcing ${BODY_PROBE_BYTES} bytes is answered ${generated.status}, not the ingress's 413`);
 		else findings.push(...hstsFindings(generated.headers['strict-transport-security'], 'the ingress\'s 413'), ...generatedHeaderFindings(generated.headers, 'the ingress\'s 413'));
+		const probe = await request(target, { secure: true, path: HEALTH_PROBE });
+		if (probe.error) findings.push(`GET ${HEALTH_PROBE} over HTTPS fails (${probe.error})`);
+		else if (![403, 404].includes(probe.status)) findings.push(`GET ${HEALTH_PROBE} is answered ${probe.status}, not 404: the ingress routes the health probes, which stay on the pods' own ports`);
+		else {
+			notes.push(`health probes not routed (${probe.status})`);
+			findings.push(...hstsFindings(probe.headers['strict-transport-security'], `GET ${HEALTH_PROBE} (${probe.status})`), ...generatedHeaderFindings(probe.headers, `GET ${HEALTH_PROBE} (${probe.status})`));
+		}
 	}
 	const plain = await request(target, { secure: false });
 	if (plain.error) {
@@ -394,7 +414,7 @@ function certificate({ subject, issuer, publicKey, signingKey, isCa, names, notB
 
 /**
  * A throwaway CA and certificates it issues, valid from an hour ago for a day: leaf (ECDSA P-256, for the names given), rsa
- * (RSA 2048, same names), and on request expired, wrongName and an untrusted one from a CA of its own.
+ * (RSA 2048, same names), expired (ECDSA) and expiredRsa, wrongName, and an untrusted one from a CA of its own.
  */
 export function issueCertificates(names = ['capability.ariva.test']) {
 	const now = Date.now();
@@ -409,6 +429,7 @@ export function issueCertificates(names = ['capability.ariva.test']) {
 	const result = { ca: caCert, leaf: issue('ec'), rsa: issue('rsa') };
 	result.expired = issue('ec', { notBefore: new Date(now - 3 * 86400e3), notAfter: new Date(now - 86400e3) });
 	result.wrongName = issue('ec', { names: ['other.ariva.test'], subject: 'other.ariva.test' });
+	result.expiredRsa = issue('rsa', { notBefore: new Date(now - 3 * 86400e3), notAfter: new Date(now - 86400e3) });
 	const otherKeys = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' });
 	const otherCa = certificate({ subject: 'Another CA', issuer: 'Another CA', publicKey: otherKeys.publicKey, signingKey: otherKeys.privateKey, isCa: true, ...valid });
 	const untrustedKeys = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' });
@@ -426,8 +447,9 @@ const PLAIN_HEADERS = { 'X-Content-Type-Options': 'nosniff', 'Content-Security-P
 
 /**
  * A stand-in for an Ariva host behind its ingress: an https server (protocols, suites and certificate of the case; GET / with
- * the page headers, a POST over the body limit answered by the "ingress" 413 with the generated headers) and a plain http
- * server (refuse: 403; redirect: 308 to https://<host>/), each overridable by the case.
+ * the page headers, GET /health/readiness answered by the "ingress" 404 with the generated headers, a POST over the body limit
+ * answered by the "ingress" 413 with them) and a plain http server (refuse: 403; redirect: 308 to https://<host>/), each
+ * overridable by the case.
  */
 async function standIn(certificates, host, mode, overrides) {
 	const servers = [];
@@ -435,6 +457,11 @@ async function standIn(certificates, host, mode, overrides) {
 	const secure = https.createServer(tlsOptions, (req, res) => {
 		if (req.method === 'POST' && Number(req.headers['content-length']) > 10 * 1024 * 1024 && !overrides.noBodyLimit) {
 			res.writeHead(413, present(SECURE_HEADERS, overrides.generated, { Connection: 'close' }));
+			res.end();
+			return;
+		}
+		if (req.url === HEALTH_PROBE) {
+			res.writeHead(overrides.health?.status ?? 404, present(SECURE_HEADERS, overrides.health?.headers, { Connection: 'close' }));
 			res.end();
 			return;
 		}
@@ -466,7 +493,7 @@ const remove = (name) => ({ [name]: undefined });
 /** Response headers without the ones a case removed (undefined). */
 const present = (...sets) => Object.fromEntries(Object.entries(Object.assign({}, ...sets)).filter(([, value]) => value !== undefined));
 
-/** [name, mode, overrides, the findings expected (substrings, one per finding, in order)] */
+/** [name, mode, overrides, the findings expected (substrings or patterns, one per finding, in order)] */
 function selfTestCases(certificates) {
 	return [
 		['a host that refuses plain HTTP, as the chart serves it', 'refuse', {}, []],
@@ -487,6 +514,11 @@ function selfTestCases(certificates) {
 		['a certificate from another CA', 'refuse', { tls: { key: certificates.untrusted.key, cert: certificates.untrusted.cert } }, ['the certificate does not verify']],
 		['a certificate for another name', 'refuse', { tls: { key: certificates.wrongName.key, cert: certificates.wrongName.cert } }, ['the certificate does not verify for tls-check.ariva.test (ERR_TLS_CERT_ALTNAME_INVALID)']],
 		['an expired certificate', 'refuse', { tls: { key: certificates.expired.key, cert: certificates.expired.cert } }, ['the certificate does not verify for tls-check.ariva.test (CERT_HAS_EXPIRED)']],
+		// The ECDSA certificate verifies for TLS 1.2 and 1.3; TLS 1.0 and the CBC suite can only use the expired RSA one.
+		['an expired certificate behind TLS 1.0 and a CBC suite only', 'refuse', { tls: {
+			key: [certificates.leaf.key, certificates.expiredRsa.key], cert: [certificates.leaf.cert, certificates.expiredRsa.cert], minVersion: 'TLSv1',
+			ciphers: `${ALLOWED_TLS12.filter((name) => name.includes('ECDSA')).join(':')}:ECDHE-RSA-AES128-SHA:@SECLEVEL=0`, secureOptions: crypto.constants.SSL_OP_NO_TLSv1_1 } },
+			['accepts TLS 1.0, with a certificate that does not verify (CERT_HAS_EXPIRED)', /^accepts a TLS 1\.2 suite without AEAD from .*ECDHE-RSA-AES128-SHA\b.*, with a certificate that does not verify \(CERT_HAS_EXPIRED\)$/]],
 		['no HSTS on the page', 'refuse', { page: remove('Strict-Transport-Security') }, ['GET / (404) has no Strict-Transport-Security']],
 		['six months of HSTS', 'refuse', { page: { 'Strict-Transport-Security': 'max-age=15724800; includeSubDomains' } }, ['max-age 15724800, under a year']],
 		['HSTS without includeSubDomains', 'refuse', { page: { 'Strict-Transport-Security': `max-age=${HSTS_MIN_AGE}` } }, ['without includeSubDomains']],
@@ -496,6 +528,10 @@ function selfTestCases(certificates) {
 		['an ingress 413 without nosniff', 'refuse', { generated: remove('X-Content-Type-Options') }, ["the ingress's 413 lacks X-Content-Type-Options: nosniff"]],
 		['an ingress 413 without frame-ancestors', 'refuse', { generated: { 'Content-Security-Policy': "default-src 'none'" } }, ["the ingress's 413 lacks a Content-Security-Policy with frame-ancestors 'none'"]],
 		['no body limit at the ingress', 'refuse', { noBodyLimit: true }, ['is answered 404, not the ingress\'s 413']],
+		['a host that routes its readiness probe', 'refuse', { health: { status: 200, headers: {} } }, ['GET /health/readiness is answered 200, not 404']],
+		['a probe refusal without HSTS', 'redirect', { health: { status: 404, headers: remove('Strict-Transport-Security') } }, ['GET /health/readiness (404) has no Strict-Transport-Security']],
+		['a probe refusal without nosniff', 'refuse', { health: { status: 404, headers: remove('X-Content-Type-Options') } }, ['GET /health/readiness (404) lacks X-Content-Type-Options: nosniff']],
+		['a probe refusal without frame-ancestors', 'refuse', { health: { status: 403, headers: { 'Content-Security-Policy': "default-src 'none'" } } }, ["GET /health/readiness (403) lacks a Content-Security-Policy with frame-ancestors 'none'"]],
 		['a machine host that redirects plain HTTP', 'refuse', { plain: { status: 308, headers: { Location: 'https://tls-check.ariva.test/' } } }, ['answers plain HTTP with a redirect (308']],
 		['a machine host that serves plain HTTP', 'refuse', { plain: { status: 200, headers: {} } }, ['serves plain HTTP (200)']],
 		['a refusal without nosniff', 'refuse', { plain: { status: 403, headers: remove('X-Content-Type-Options') } }, ['plain HTTP 403 lacks X-Content-Type-Options: nosniff']],
@@ -523,7 +559,7 @@ async function selfTest() {
 		const stand = await standIn(certificates, host, mode, overrides);
 		try {
 			const { findings } = await checkHost(stand.target, suites);
-			const matched = expected.length === findings.length && expected.every((rule, index) => findings[index]?.includes(rule));
+			const matched = expected.length === findings.length && expected.every((rule, index) => (typeof rule === 'string' ? findings[index]?.includes(rule) : rule.test(findings[index] ?? '')));
 			if (!matched) failures.push(`${label}: expected ${expected.length ? expected.join(' | ') : 'no finding'}, found ${findings.length ? findings.join(' | ') : 'none'}`);
 		} finally {
 			stand.close();
@@ -557,7 +593,7 @@ async function selfTest() {
 		for (const failure of failures) console.error(`  ${failure}`);
 		return 1;
 	}
-	console.log(`tls-check self-test: ${cases.length} stand-in hosts gave exactly their findings (protocols, suites, certificates, HSTS, the ingress's 413, plain HTTP), ` +
+	console.log(`tls-check self-test: ${cases.length} stand-in hosts gave exactly their findings (protocols, suites, certificates, HSTS, the ingress's 413, the private probes, plain HTTP), ` +
 		`${usage.length + 3} command line and Ingress cases, and this Node (OpenSSL ${process.versions.openssl}) can offer TLS 1.0, TLS 1.1 and suites without AEAD.`);
 	return 0;
 }

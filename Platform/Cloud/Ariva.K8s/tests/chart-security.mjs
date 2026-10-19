@@ -29,6 +29,12 @@
 // redirects in prd, a plainHttp other than refuse or redirect, a host whose Ingresses disagree, a site annotation that sets a
 // key of the chart's, from-to-www-redirect, custom-headers or names the headers; the controller values the site applies
 // (Helm/ingress-nginx-values.yaml) hold TLS 1.2 and 1.3, Mozilla's intermediate suites, HSTS and the snippet settings.
+// ARV-085: with networkPolicies.enabled (prd, which refuses it off in the chart and in both Helmfiles) every Ariva pod is denied
+// by default and gets exactly the firewall matrix's flows, compared with the release's values (networkPolicyFindings); no rule
+// is a wildcard and production opens no network wider than /8 (IPv4) or /16 (IPv6); dev, demo and localk8s render none. Every
+// Ingress routes no health probe and its server-snippet answers them 404 at the server level, after HSTS (ingressPrivacyFindings);
+// the Cronz dashboard has its source range in prd; the API hosts get exactly ingressController.podNetworks as their trusted
+// proxies, /14 and /48 at the widest in prd (forwardedHeadersFindings); the release guards refuse a malformed CIDR, peer or port.
 //   node Platform/Cloud/Ariva.K8s/tests/chart-security.mjs              needs helm 3 on PATH (or HELM=path)
 //   node Platform/Cloud/Ariva.K8s/tests/chart-security.mjs --self-test  checks the rules against fixtures, no helm
 // Without helm the test is skipped locally and fails in CI (CI=true).
@@ -39,8 +45,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parse as parseYaml, parseAllDocuments, stringify } from 'yaml';
-import { checkManifests, controllerValuesFindings, DATABASE_TLS12_CIPHERS, databaseTlsFindings, ingressHardeningFindings, INGRESS_HARDENING, missingMonitoringRules, POD_TLS,
-	podTlsFindings, podTlsSecrets, serverCaSecrets } from './checks.mjs';
+import { checkManifests, controllerValuesFindings, DATABASE_TLS12_CIPHERS, databaseTlsFindings, forwardedHeadersFindings, ingressHardeningFindings, INGRESS_HARDENING,
+	ingressPrivacyFindings, missingMonitoringRules, networkPolicyFindings, networkValues, POD_TLS, podTlsFindings, podTlsSecrets, serverCaSecrets, trustsMappedClients } from './checks.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const chart = path.resolve(here, '..', 'Helm', 'Charts', 'platform');
@@ -230,6 +236,181 @@ function controllerValuesSelfTest() {
 	return { failures, count: CONTROLLER_CASES.length };
 }
 
+/** Each expected substring matches its own finding, and nothing else was found. */
+function exactly(findings, expected) {
+	const left = [...findings];
+	for (const rule of expected) {
+		const index = left.findIndex((finding) => finding.includes(rule));
+		if (index === -1) return false;
+		left.splice(index, 1);
+	}
+	return left.length === 0;
+}
+
+/** ARV-085: a NetworkPolicy of the docs by name, for the cases below. */
+const policy = (docs, name) => docs.find((doc) => doc?.kind === 'NetworkPolicy' && doc.metadata?.name === name);
+const appsOf = (docs, name) => policy(docs, name).spec.podSelector.matchExpressions[0].values;
+const REDIS = '{"podSelector":{"matchLabels":{"app.kubernetes.io/name":"redis"}}}';
+const DATABASE = '{"podSelector":{"matchLabels":{"app":"timescaledb"}}}';
+
+/** ARV-085: each change to the good network policy fixture (a production render) and the findings it must give, no more. */
+const NETWORK_POLICY_CASES = [
+	['the default deny removed', (docs) => docs.splice(docs.indexOf(policy(docs, 'ariva-default-deny')), 1), ['no default deny selects them']],
+	['a pod left out of the default deny', (docs) => appsOf(docs, 'ariva-default-deny').splice(appsOf(docs, 'ariva-default-deny').indexOf('kafka-topics'), 1), ['Job/kafka-topics: no default deny selects them']],
+	['the default deny without Egress', (docs) => { policy(docs, 'ariva-default-deny').spec.policyTypes = ['Ingress']; }, ['no default deny selects them']],
+	['a controller rule without from', (docs) => { delete policy(docs, 'web-from-ingress-controller').spec.ingress[0].from; },
+		['ingress[0] has no from, so it takes connections from everyone', 'Deployment/web-deployment: the policies allow what the firewall matrix does not: in {"everyone":true} TCP/3443',
+			"Deployment/web-deployment: the policies lack the firewall matrix's in"]],
+	['an egress rule without ports', (docs) => { delete policy(docs, 'ariva-redis-egress').spec.egress[0].ports; },
+		['egress[0] has no ports, so it opens every port', `allow what the firewall matrix does not: out ${REDIS} every port`, `lack the firewall matrix's out ${REDIS} TCP/6379`]],
+	['an outbound endpoint open to every address', (docs) => { policy(docs, 'api-integration-outbound-egress').spec.egress[0].to[0].ipBlock.cidr = '0.0.0.0/0'; },
+		['ipBlock cidr: 0.0.0.0/0 is wider than /8', 'allow what the firewall matrix does not: out {"ipBlock":{"cidr":"0.0.0.0/0"}} TCP/443', 'lack the firewall matrix\'s out {"ipBlock":{"cidr":"10.20.30.0/24"}} TCP/443']],
+	['an ipBlock with host bits', (docs) => { policy(docs, 'api-integration-outbound-egress').spec.egress[0].to[0].ipBlock.cidr = '10.20.30.1/24'; },
+		['10.20.30.1/24 is not a network address', 'allow what the firewall matrix does not: out {"ipBlock":{"cidr":"10.20.30.1/24"}}', 'lack the firewall matrix\'s out {"ipBlock":{"cidr":"10.20.30.0/24"}}']],
+	['an except that is not a CIDR', (docs) => { policy(docs, 'api-integration-outbound-egress').spec.egress[1].to[1].ipBlock.except = ['10.21.9.0/33']; },
+		['ipBlock except: 10.21.9.0/33 is not a CIDR', 'allow what the firewall matrix does not: out {"ipBlock":{"cidr":"10.21.0.0/16","except":["10.21.9.0/33"]}}', "lack the firewall matrix's out"]],
+	['Kafka in every namespace', (docs) => { policy(docs, 'ariva-kafka-egress').spec.egress[0].to.push({ namespaceSelector: {} }); },
+		['selects every pod of every namespace', 'allow what the firewall matrix does not: out {"namespaceSelector":{}} TCP/9092']],
+	['an extra database port', (docs) => { policy(docs, 'ariva-database-egress').spec.egress[0].ports.push({ protocol: 'TCP', port: 5433 }); },
+		[`allow what the firewall matrix does not: out ${DATABASE} TCP/5433`]],
+	['the SMTP policy removed', (docs) => docs.splice(docs.indexOf(policy(docs, 'ariva-smtp-egress')), 1),
+		['Deployment/api-cronz-deployment, Deployment/api-integration-deployment: the policies lack the firewall matrix\'s out {"ipBlock":{"cidr":"10.40.1.25/32"}} TCP/465 | out {"ipBlock":{"cidr":"10.40.1.25/32"}} TCP/587']],
+	// Cronz sends the scheduled reports through the relay itself (ARV-060).
+	['the SMTP relay closed to Cronz', (docs) => { const apps = appsOf(docs, 'ariva-smtp-egress'); apps.splice(apps.indexOf('api-cronz'), 1); },
+		['Deployment/api-cronz-deployment: the policies lack the firewall matrix\'s out {"ipBlock":{"cidr":"10.40.1.25/32"}} TCP/465 | out {"ipBlock":{"cidr":"10.40.1.25/32"}} TCP/587']],
+	['DNS for the web pod', (docs) => appsOf(docs, 'ariva-dns-egress').push('web'), ['Deployment/web-deployment: the policies allow what the firewall matrix does not: out']],
+	['the controller to a plain port', (docs) => { policy(docs, 'api-main-from-ingress-controller').spec.ingress[0].ports[0].port = 8080; },
+		['Deployment/api-main-deployment: the policies allow what the firewall matrix does not: in', "Deployment/api-main-deployment: the policies lack the firewall matrix's in"]],
+	['the controller from another namespace', (docs) => { policy(docs, 'api-cronz-from-ingress-controller').spec.ingress[0].from[0].namespaceSelector.matchLabels = { 'kubernetes.io/metadata.name': 'default' }; },
+		['Deployment/api-cronz-deployment: the policies allow what the firewall matrix does not: in', "Deployment/api-cronz-deployment: the policies lack the firewall matrix's in"]],
+	['the database policy selecting TimescaleDB too', (docs) => appsOf(docs, 'ariva-database-egress').push('timescaledb'), ['selects Ariva pods together with StatefulSet/timescaledb']],
+	['MQTT open to every address', (docs) => { policy(docs, 'api-ingest-from-mqtt-sensors').spec.ingress[0].from = [{ ipBlock: { cidr: '0.0.0.0/0' } }]; },
+		['ipBlock cidr: 0.0.0.0/0 is wider than /8', 'allow what the firewall matrix does not: in {"ipBlock":{"cidr":"0.0.0.0/0"}} TCP/8883',
+			'lack the firewall matrix\'s in {"ipBlock":{"cidr":"10.30.0.0/16"}} TCP/8883 | in {"ipBlock":{"cidr":"10.31.0.0/16"}} TCP/8883']],
+	['a job reaching Redis', (docs) => appsOf(docs, 'ariva-redis-egress').push('kafka-topics'), [`Job/kafka-topics: the policies allow what the firewall matrix does not: out ${REDIS} TCP/6379`]],
+	['api-stream reachable from the controller', (docs) => {
+		const copy = structuredClone(policy(docs, 'api-main-from-ingress-controller'));
+		copy.metadata.name = 'api-stream-from-ingress-controller';
+		copy.spec.podSelector.matchLabels.app = 'api-stream';
+		docs.push(copy);
+	}, ['Deployment/api-stream-deployment: the policies allow what the firewall matrix does not: in']]
+];
+
+/** ARV-085: the network policy rules against their fixture: the good render clean, each change giving exactly its findings. */
+function networkPolicySelfTest() {
+	const failures = [];
+	const read = () => parseAsKubernetes(fixture('network-policy-good.yaml'));
+	const values = parseYaml(fixture('network-policy-expected.yaml'));
+	const options = { enabled: true, environment: 'k8s-prd', values };
+	const clean = networkPolicyFindings(read(), options);
+	if (clean.length) failures.push(`the good network policy fixture produced findings:\n   ${clean.join('\n   ')}`);
+	for (const [label, change, expected] of NETWORK_POLICY_CASES) {
+		const docs = read();
+		change(docs);
+		const found = networkPolicyFindings(docs, options);
+		if (!exactly(found, expected)) failures.push(`network policy case ${label} must give exactly ${expected.join(' | ')}; gave ${found.length ? found.join(' | ') : 'nothing'}`);
+	}
+	// Off, every one of the chart's policies is one too many; the prefix rule is production's.
+	const off = networkPolicyFindings(read(), { enabled: false });
+	const chartPolicies = read().filter((doc) => doc?.kind === 'NetworkPolicy' && doc.metadata?.name !== 'timescaledb').length;
+	if (off.length !== chartPolicies || off.some((finding) => !finding.includes('although networkPolicies is off'))) failures.push(`with networkPolicies off the ${chartPolicies} chart policies must each be found, found ${off.length}`);
+	const dev = read();
+	policy(dev, 'api-integration-outbound-egress').spec.egress[0].to[0].ipBlock.cidr = '0.0.0.0/0';
+	if (networkPolicyFindings(dev, { ...options, environment: 'k8s-dev' }).some((finding) => finding.includes('is wider than'))) failures.push('an ipBlock of 0.0.0.0/0 is refused outside k8s-prd (the rule is production\'s)');
+	return { failures, count: NETWORK_POLICY_CASES.length + 2 };
+}
+
+/** ARV-085: each case of the bad ingress privacy fixture (the Ingress's name) and the one rule it must trip in k8s-prd. */
+const INGRESS_PRIVACY_CASES = [
+	['health-routed', 'routes /health/readiness'], ['healthz-routed', 'routes /healthz'],
+	['health-not-refused', 'does not answer /health, /health/, /health/startup'], ['health-case-sensitive', 'does not answer /HEALTH/READINESS, /Health/Startup with 404'],
+	['health-raw-request', 'does not answer /health, /health/'], ['health-before-hsts', 'refuses the probes before it sets Strict-Transport-Security'],
+	['health-too-wide', 'refuses /healthy, /healthcheck, which are not health probes'], ['health-redirected', 'does not answer /health, /health/'],
+	['health-in-location', 'does not answer /health, /health/'], ['whitelist-alias', 'sets whitelist-source-range, the alias'],
+	['allowlist-not-cidr', '192.0.2.0/33 is not a CIDR'], ['allowlist-host-bits', '10.10.0.1/24 is not a network address'],
+	['allowlist-everyone', '0.0.0.0/0 is wider than /8'], ['allowlist-ipv6-everyone', '::/0 is wider than /16'],
+	['cronz-open', 'the Cronz dashboard has no allowlist-source-range'],
+	['rewrite-target-site', 'sets rewrite-target; the probes\' 404 is judged on the request\'s own path'], ['use-regex-site', 'sets use-regex; the probes\' 404 is judged'],
+	['snippet-rewrite', 'configuration-snippet writes a rewrite directive']
+	];
+const PRODUCTION_ONLY_PRIVACY = ['allowlist-everyone', 'allowlist-ipv6-everyone', 'cronz-open'];
+
+/** ARV-085: the private probe and source range rules against their fixtures: the good one clean, each bad case tripping exactly its rule. */
+function ingressPrivacySelfTest() {
+	const failures = [];
+	const good = ingressPrivacyFindings(parseAsKubernetes(fixture('ingress-privacy-good.yaml')), { environment: 'k8s-prd' });
+	if (good.length) failures.push(`the good ingress privacy fixture produced findings:\n   ${good.join('\n   ')}`);
+	const caseOf = (finding) => /^Ingress\/([^\s:]+)/.exec(finding)?.[1];
+	for (const environment of ['k8s-prd', 'k8s-dev']) {
+		const findings = ingressPrivacyFindings(parseAsKubernetes(fixture('ingress-privacy-bad.yaml')), { environment });
+		for (const [name, rule] of INGRESS_PRIVACY_CASES) {
+			const own = findings.filter((finding) => caseOf(finding) === name);
+			const expected = environment === 'k8s-prd' || !PRODUCTION_ONLY_PRIVACY.includes(name) ? 1 : 0;
+			if (own.length !== expected || (expected && !own[0].includes(rule))) failures.push(`ingress privacy case ${name} in ${environment} must trip ${expected ? `"${rule}" alone` : 'nothing'}, tripped ${own.length ? own.join(' | ') : 'nothing'}`);
+		}
+		const stray = findings.filter((finding) => !INGRESS_PRIVACY_CASES.some(([name]) => caseOf(finding) === name));
+		if (stray.length) failures.push(`ingress privacy findings outside the cases:\n   ${stray.join('\n   ')}`);
+	}
+	return { failures, count: INGRESS_PRIVACY_CASES.length };
+}
+
+/** ARV-085: API host Deployments (and a simulator and a job) carrying the given trusted proxy networks, for the cases below. */
+function proxyDocs(networks) {
+	const env = networks.map((value, index) => ({ name: `Security__ForwardedHeaders__KnownNetworks__${index}`, value }));
+	const deployment = (name, image, variables) => ({ kind: 'Deployment', metadata: { name }, spec: { template: { spec: { containers: [{ name: 'app', image, env: structuredClone(variables) }] } } } });
+	return [deployment('api-main-deployment', 'r.example/ariva/api-main:1', env), deployment('api-ingest-deployment', 'r.example/ariva/api-ingest:1', env),
+		deployment('simulation-deployment', 'r.example/ariva/simulation:1', []),
+		{ kind: 'Job', metadata: { name: 'database-migration' }, spec: { template: { spec: { containers: [{ name: 'database-migration', image: 'r.example/ariva/api-main:1', env: [] }] } } } }];
+}
+const envOf = (docs, name) => docs.find((doc) => doc.metadata.name === name).spec.template.spec.containers[0].env;
+const NETWORKS = ['10.244.0.0/16', 'fd00:10::/48'];
+/** ARV-085: trusted proxy networks the hosts take in k8s-prd, at the edges of what they refuse (a /14, IPv6 /64, /78, /96, /110, ::ffff:0:0/112). */
+const ACCEPTED_IPV6 = ['10.244.0.0/14', 'fd00::/64', 'fd00::/78', 'fd00::/96', 'fd00::/110', '::ffff:0:0/112'];
+
+/** ARV-085: each change to the trusted proxies of the API hosts and the findings it must give, no more: [label, environment, networks, change, expected]. */
+const FORWARDED_HEADERS_CASES = [
+	['a host without them', 'k8s-prd', NETWORKS, (docs) => { envOf(docs, 'api-ingest-deployment').length = 0; }, ['api-ingest-deployment container app: Security__ForwardedHeaders__KnownNetworks is unset']],
+	['their order changed', 'k8s-prd', NETWORKS, (docs) => { const env = envOf(docs, 'api-main-deployment'); [env[0].value, env[1].value] = [env[1].value, env[0].value]; }, ['api-main-deployment container app: Security__ForwardedHeaders__KnownNetworks is 0=fd00:10::/48']],
+	['one network more', 'k8s-prd', NETWORKS, (docs) => envOf(docs, 'api-main-deployment').push({ name: 'Security__ForwardedHeaders__KnownNetworks__2', value: '10.0.0.0/8' }), ['not ingressController.podNetworks']],
+	['from a secret', 'k8s-prd', NETWORKS, (docs) => { envOf(docs, 'api-main-deployment')[0] = { name: 'Security__ForwardedHeaders__KnownNetworks__0', valueFrom: { secretKeyRef: { name: 's', key: 'k' } } }; }, ['0=(not a literal)']],
+	['a known proxy', 'k8s-prd', NETWORKS, (docs) => envOf(docs, 'api-main-deployment').push({ name: 'Security__ForwardedHeaders__KnownProxies__0', value: '0.0.0.0' }), ["the chart passes the ingress controller's networks only"]],
+	['the simulator trusting them', 'k8s-prd', NETWORKS, (docs) => envOf(docs, 'simulation-deployment').push({ name: 'Security__ForwardedHeaders__KnownNetworks__0', value: NETWORKS[0] }), ['only the API hosts get the trusted proxy networks']],
+	['a job trusting them', 'k8s-prd', NETWORKS, (docs) => envOf(docs, 'database-migration').push({ name: 'Security__ForwardedHeaders__ForwardLimit', value: '2' }), ['Job/database-migration container database-migration: sets Security__ForwardedHeaders__ForwardLimit']],
+	['production without them', 'k8s-prd', [], () => {}, ["ingressController.podNetworks is empty: k8s-prd needs the ingress controller's pod network"]],
+	['a /13 in production', 'k8s-prd', ['10.0.0.0/13'], () => {}, ['10.0.0.0/13 is wider than /14']],
+	['an IPv6 /47 in production', 'k8s-prd', ['fd00::/47'], () => {}, ['fd00::/47 is wider than /48']],
+	['every address outside production', 'k8s-dev', ['0.0.0.0/0'], () => {}, ['0.0.0.0/0 is wider than /1']],
+	['every IPv6 address outside production', 'k8s-dev', ['::/0'], () => {}, ['::/0 is wider than /1']],
+	['host bits', 'k8s-dev', ['10.244.0.1/16'], () => {}, ['10.244.0.1/16 is not a network address']],
+	// The hosts' rules (ForwardedHeadersExtensions): no address bit after the prefix, and no IPv6 network that trusts IPv4 clients
+	// (IPv4-mapped) wider than a /14, in production.
+	['an address bit after the prefix in production', 'k8s-prd', ['10.244.1.0/16'], () => {}, ['10.244.1.0/16 is not a network address']],
+	['an IPv6 /65 in production', 'k8s-prd', ['fd00:10:244::/65'], () => {}, ['fd00:10:244::/65 trusts IPv4 clients wider than an IPv4 /14']],
+	["Cilium's default IPv6 pool in production", 'k8s-prd', ['10.244.0.0/16', 'fd00::/104'], () => {}, ['fd00::/104 trusts IPv4 clients wider than an IPv4 /14']],
+	['an IPv6 network ending in an IPv4 /8 in production', 'k8s-prd', ['fd00::a00:0/104'], () => {}, ['fd00::a00:0/104 trusts IPv4 clients wider than an IPv4 /14']],
+	['the IPv4-mapped block in production', 'k8s-prd', ['::ffff:0:0/96'], () => {}, ['::ffff:0:0/96 trusts IPv4 clients wider than an IPv4 /14']],
+	['a network holding the IPv4-mapped block in production', 'k8s-prd', ['::/64'], () => {}, ['::/64 trusts IPv4 clients wider than an IPv4 /14']]
+	];
+
+/** ARV-085: the trusted proxy rules: the good hosts clean (in production, and a /13 allowed outside it), each change giving exactly its findings. */
+function forwardedHeadersSelfTest() {
+	const failures = [];
+	const clean = [...forwardedHeadersFindings(proxyDocs(NETWORKS), { environment: 'k8s-prd', podNetworks: NETWORKS }),
+		...forwardedHeadersFindings(proxyDocs(['10.0.0.0/13']), { environment: 'k8s-dev', podNetworks: ['10.0.0.0/13'] }),
+		...forwardedHeadersFindings(proxyDocs([]), { environment: 'k8s-dev', podNetworks: [] }),
+		// The IPv6 prefixes the hosts take in production, at the edges of the refused ranges; and the rule is production's.
+		...forwardedHeadersFindings(proxyDocs(ACCEPTED_IPV6), { environment: 'k8s-prd', podNetworks: ACCEPTED_IPV6 }),
+		...forwardedHeadersFindings(proxyDocs(['fd00::/104']), { environment: 'k8s-dev', podNetworks: ['fd00::/104'] })];
+	if (clean.length) failures.push(`the good trusted proxies produced findings:\n   ${clean.join('\n   ')}`);
+	for (const [label, environment, networks, change, expected] of FORWARDED_HEADERS_CASES) {
+		const docs = proxyDocs(networks);
+		change(docs);
+		const found = forwardedHeadersFindings(docs, { environment, podNetworks: networks });
+		if (!exactly(found, expected)) failures.push(`trusted proxy case ${label} must give exactly ${expected.join(' | ')}; gave ${found.length ? found.join(' | ') : 'nothing'}`);
+	}
+	return { failures, count: FORWARDED_HEADERS_CASES.length };
+}
+
 function selfTest() {
 	const good = checkManifests(parse(fs.readFileSync(path.join(here, 'fixtures', 'good.yaml'), 'utf8')), { environment: 'k8s-prd' });
 	const bad = checkManifests(parse(fs.readFileSync(path.join(here, 'fixtures', 'bad.yaml'), 'utf8')), { environment: 'k8s-prd' });
@@ -244,6 +425,8 @@ function selfTest() {
 		'must not mark the validation reader secret optional',
 		'terminationGracePeriodSeconds of at least 60', 'must set Hosting__GracePeriodSeconds',
 		'needs a startupProbe', 'must set Hosting__StartupAllowanceSeconds',
+		// ARV-085: never the framework's switch that trusts every proxy.
+		'ASPNETCORE_FORWARDEDHEADERS_ENABLED is set',
 		"api-ingest-deployment container app: must set Hosting__StartupAllowanceSeconds to its startup probe's allowance at its worst, initialDelaySeconds plus periodSeconds times (failureThreshold - 1) (115)",
 		// ARV-082a: the servers' CAs.
 		'Job/kafka-topics container kafka-topics: must mount the database CA at /app/secrets/database-ca', 'Job/database-migration container database-migration: must mount the Redis CA at /app/secrets/redis-ca',
@@ -268,15 +451,20 @@ function selfTest() {
 	const webImage = webImageListenFindings();
 	const hardening = ingressHardeningSelfTest();
 	const controller = controllerValuesSelfTest();
-	if (good.length || missing.length || tls.failures.length || podTls.failures.length || webImage.length || hardening.failures.length || controller.failures.length) {
+	const network = networkPolicySelfTest();
+	const privacy = ingressPrivacySelfTest();
+	const proxies = forwardedHeadersSelfTest();
+	const others = [...tls.failures, ...podTls.failures, ...webImage, ...hardening.failures, ...controller.failures, ...network.failures, ...privacy.failures, ...proxies.failures];
+	if (good.length || missing.length || others.length) {
 		console.error('chart-security self-test FAILED');
 		if (good.length) console.error('  good fixture produced findings:\n   ' + good.join('\n   '));
 		if (missing.length) console.error('  rules that did not fire on the bad fixture: ' + missing.join(', '));
-		for (const failure of [...tls.failures, ...podTls.failures, ...webImage, ...hardening.failures, ...controller.failures]) console.error(`  ${failure}`);
+		for (const failure of others) console.error(`  ${failure}`);
 		process.exit(1);
 	}
 	console.log(`chart-security self-test: ${expected.length} rules fire on the bad fixture, ${tls.count} TimescaleDB TLS rules on the TLS fixtures, ${podTls.count} pod TLS rules ` +
-		`on the pod TLS fixtures and ${hardening.count} ingress hardening rules on theirs (each bad case trips exactly its rule); the good fixtures are clean; the web image takes ` +
+		`on the pod TLS fixtures, ${hardening.count} ingress hardening rules and ${privacy.count} private probe and source range rules on theirs (each bad case trips exactly its rule), ` +
+		`${network.count} network policy cases and ${proxies.count} trusted proxy cases each giving exactly their findings; the good fixtures are clean; the web image takes ` +
 		`its listener from ${POD_TLS.webListen}; the shipped controller values (Helm/ingress-nginx-values.yaml) hold every rule and ${controller.count} changes each trip theirs.`);
 }
 
@@ -311,6 +499,51 @@ function monitoringEnvironment(docs, environment) {
 function retentionValues(valuesFile) {
 	const read = (file) => parseAllDocuments(fs.readFileSync(path.join(chart, file), 'utf8'))[0].toJS()?.migration?.retention ?? {};
 	return { ...read('values.yaml'), ...read(valuesFile) };
+}
+
+/**
+ * ARV-085: a release's values as Helm merges them: values.yaml, then each file (the chart's environment file by name, or a path)
+ * or object (what a release sets); maps merge, a list or a value replaces, null removes the key. For the network rules, which
+ * compare a render with its values.
+ */
+function mergedValues(files) {
+	const merge = (base, over) => {
+		if (over === null) return undefined;
+		const map = (value) => value && typeof value === 'object' && !Array.isArray(value);
+		if (!map(base) || !map(over)) return over;
+		const out = { ...base };
+		for (const [key, value] of Object.entries(over)) {
+			const merged = merge(base[key], value);
+			if (merged === undefined) delete out[key];
+			else out[key] = merged;
+		}
+		return out;
+	};
+	const read = (file) => (typeof file === 'object' ? file : parseYaml(fs.readFileSync(path.isAbsolute(file) ? file : path.join(chart, file), 'utf8')) ?? {});
+	return ['values.yaml', ...files].map(read).reduce((a, b) => merge(a, b), {});
+}
+
+/**
+ * ARV-085: the network findings of a render against its values: the NetworkPolicies (on as the values say, or as the release
+ * sets them), the private probes and source ranges of every Ingress, and the API hosts' trusted proxy networks.
+ */
+function networkFindings(text, values, environment, { enabled } = {}) {
+	const docs = parseAsKubernetes(text);
+	const network = networkValues(values);
+	const on = enabled ?? network.networkPolicies.enabled === true;
+	const findings = [];
+	if (environment === 'k8s-prd' && !on) findings.push('k8s-prd renders without its NetworkPolicies');
+	findings.push(...networkPolicyFindings(docs, { enabled: on, environment, values: network }), ...ingressPrivacyFindings(docs, { environment }),
+		...forwardedHeadersFindings(docs, { environment, podNetworks: values.ingressController?.podNetworks ?? [] }));
+	return findings;
+}
+
+/** ARV-085: how a render reads in the PASS lines: its NetworkPolicies and the trusted proxy networks. */
+function describeNetwork(text, values) {
+	const policies = parseAsKubernetes(text).filter((doc) => doc?.kind === 'NetworkPolicy' && doc.metadata?.name !== 'timescaledb').length;
+	const networks = values.ingressController?.podNetworks ?? [];
+	return `${policies ? `${policies} NetworkPolicies (default deny and the firewall matrix's flows)` : 'no NetworkPolicies'}, ` +
+		`${networks.length ? `trusted proxies ${networks.join(', ')}` : "the appsettings' trusted proxies"}, /health refused on every Ingress`;
 }
 
 /** ARV-111a: the migration job of a render carries every retention period of its values, as the job reads them. */
@@ -444,6 +677,9 @@ for (const env of environments) {
 	findings.push(...(podTls ? podTlsRender(result.stdout) : podTlsFindings(parseAsKubernetes(result.stdout), { tls: false })));
 	// ARV-084: every Ingress's headers, plain HTTP and cookie; and the modes this environment's values give each host.
 	findings.push(...ingressHardeningFindings(parseAsKubernetes(result.stdout), { environment: env.environment }), ...plainHttpModes(docs, env.file));
+	// ARV-085: the NetworkPolicies (production only, by default), the private probes, the Cronz source range, the trusted proxies.
+	const values = mergedValues([env.file]);
+	findings.push(...networkFindings(result.stdout, values, env.environment));
 	const workloads = docs.filter((doc) => doc?.kind === 'Deployment').length;
 	const ingresses = docs.filter((doc) => doc?.kind === 'Ingress').length;
 	const monitoring = (name) => Object.keys(docs.find((doc) => doc?.kind === 'ConfigMap' && doc.metadata?.name === name)?.data ?? {}).length;
@@ -454,7 +690,7 @@ for (const env of environments) {
 		console.log(`PASS ${env.file}: ${workloads} deployments, ${ingresses} ingresses, validation reader login in api-main and the migration job only, ` +
 			'database and Redis CAs in the five API hosts and the two jobs only, ' +
 			(podTls ? 'every pod, Service and Ingress over TLS with the cluster CA, ' : 'plain HTTP to the pods, ') +
-			`HSTS, nosniff and frame-ancestors on every Ingress's responses, plain HTTP ${describeModes(docs)}, ` +
+			`HSTS, nosniff and frame-ancestors on every Ingress's responses, plain HTTP ${describeModes(docs)}, ${describeNetwork(result.stdout, values)}, ` +
 			`retention periods ${Object.values(retentionValues(env.file)).join('/')} days in the migration job, ` +
 			`${monitoring('ariva-monitoring-alerts')} alert rules and ${monitoring('ariva-monitoring-dashboards')} dashboards`);
 	}
@@ -540,6 +776,9 @@ function valuesFile(values) {
 	fs.writeFileSync(file, text);
 	return file;
 }
+
+/** A production build number, for the renders of values-k8s-prd.yaml (ARV-002 refuses it without one). */
+const PRD = 'buildNumber=main-20261001.1';
 
 /** ARV-084: an ingresses entry for the guards and the site cases below. */
 const ingressEntry = (name, serviceName, subdomain, more = {}) => ({ name, comment: 'test', subdomain, serviceName, ...more });
@@ -641,7 +880,78 @@ for (const [label, file, sets, message, annotation] of [
 	['a modsecurity-snippet that turns the rule engine off', 'values-k8s-dev.yaml', [], 'the modsecurity-snippet sets SecRuleEngine or SecAuditEngine', 'modsecurity-snippet: "SecRuleEngine Off"'],
 	['the Ingresses of one host with different server-snippets', 'values-k8s-dev.yaml', [], 'the Ingresses of host api-integration-test carry different server-snippet annotations',
 		{ ingresses: [ingressEntry('api-integration', 'api-integration-service', 'api-integration-test', { annotations: { 'nginx.ingress.kubernetes.io/server-snippet': 'client_header_timeout 30s;' } }),
-			ingressEntry('api-integration-feeds', 'api-integration-service', 'api-integration-test', { paths: ['/api/v1/integration/'] })] }]
+			ingressEntry('api-integration-feeds', 'api-integration-service', 'api-integration-test', { paths: ['/api/v1/integration/'] })] }],
+	// ARV-085: production isolates every pod and names the trusted proxies; no network the chart opens is everyone, a CIDR is a
+	// network address, every peer and port is well formed, the hosts' own needs have their peers; the Cronz dashboard has its
+	// source range in production; no Ingress routes the probes or sets the source range annotations itself.
+	['production with the network policies off', 'values-k8s-prd.yaml', [PRD], 'k8s-prd isolates every pod: set networkPolicies.enabled true', { networkPolicies: { enabled: false } }],
+	['production without the network policy values', 'values-k8s-prd.yaml', [PRD, 'networkPolicies=null'], 'networkPolicies must be a map'],
+	['a networkPolicies.enabled that is not true or false', 'values-k8s-dev.yaml', ['networkPolicies.enabled=yes'], 'networkPolicies.enabled must be true or false'],
+	['an unknown network policy setting', 'values-k8s-dev.yaml', [], 'networkPolicies.monitoring is not a setting', { networkPolicies: { monitoring: { to: [] } } }],
+	['production without the trusted proxy networks', 'values-k8s-prd.yaml', [PRD], 'k8s-prd needs ingressController.podNetworks', { ingressController: { podNetworks: [] } }],
+	['production trusting a /13 as the proxy network', 'values-k8s-prd.yaml', [PRD], 'ingressController.podNetworks: 10.0.0.0/13 is wider than /14', { ingressController: { podNetworks: ['10.0.0.0/13'] } }],
+	['production trusting an IPv6 /47 as the proxy network', 'values-k8s-prd.yaml', [PRD], 'ingressController.podNetworks: fd00::/47 is wider than /48', { ingressController: { podNetworks: ['10.244.0.0/16', 'fd00::/47'] } }],
+	['trusting every address as the proxy network', 'values-k8s-dev.yaml', [], 'ingressController.podNetworks: 0.0.0.0/0 is wider than /1', { ingressController: { podNetworks: ['0.0.0.0/0'] } }],
+	['trusting every IPv6 address as the proxy network', 'values-k8s-dev.yaml', [], 'ingressController.podNetworks: ::/0 is wider than /1', { ingressController: { podNetworks: ['::/0'] } }],
+	['a proxy network with host bits', 'values-k8s-dev.yaml', [], '10.244.0.1/16 is not a network address', { ingressController: { podNetworks: ['10.244.0.1/16'] } }],
+	['a proxy network that is not a CIDR', 'values-k8s-dev.yaml', [], 'ingressController.podNetworks: 10.244.0.0 is not a CIDR', { ingressController: { podNetworks: ['10.244.0.0'] } }],
+	['a proxy network list that is not a list', 'values-k8s-dev.yaml', ['ingressController.podNetworks=10.244.0.0/16'], 'ingressController.podNetworks must be a list of CIDRs'],
+	// The hosts' rules, refused before a host would refuse to start: no address bit after the prefix, no IPv6 network that trusts
+	// IPv4 clients wider than a /14 (the IPv4-mapped block, a network holding it, a prefix from /65 to /77 or /97 to /109).
+	...[['10.244.1.0/16', 'is not a network address'], ['fd00:10:244:1::/48', 'is not a network address'], ['fd00:10:244::/65', 'trusts IPv4 clients wider than an IPv4 /14'],
+		['fd00::/77', 'trusts IPv4 clients wider than an IPv4 /14'], ['fd00::/97', 'trusts IPv4 clients wider than an IPv4 /14'], ['fd00::/109', 'trusts IPv4 clients wider than an IPv4 /14'],
+		['fd00::a00:0/104', 'trusts IPv4 clients wider than an IPv4 /14'], ['fd00::/104', 'trusts IPv4 clients wider than an IPv4 /14'], ['::ffff:0:0/96', 'trusts IPv4 clients wider than an IPv4 /14'],
+		['::/64', 'trusts IPv4 clients wider than an IPv4 /14'], ['::/80', 'trusts IPv4 clients wider than an IPv4 /14']]
+		.map(([network, reason]) => [`production trusting ${network}`, 'values-k8s-prd.yaml', [PRD], `ingressController.podNetworks: ${network} ${reason}`, { ingressController: { podNetworks: ['10.244.0.0/16', network] } }]),
+	['an ingress controller selector that selects every pod', 'values-k8s-dev.yaml', [], 'ingressController.podSelector selects everything', { ingressController: { podSelector: { matchLabels: null } } }],
+	['an ingress controller selector of another shape', 'values-k8s-dev.yaml', [], 'ingressController.namespaceSelector has names: a label selector has matchLabels and matchExpressions only',
+		{ ingressController: { namespaceSelector: { names: ['ingress-nginx'] } } }],
+	['production opening an outbound endpoint to every address', 'values-k8s-prd.yaml', [PRD], 'networkPolicies.outbound[0].to[0].ipBlock: 0.0.0.0/0 is wider than /8',
+		{ networkPolicies: { outbound: [{ name: 'aodb', to: [{ ipBlock: { cidr: '0.0.0.0/0' } }], ports: [443] }] } }],
+	['production opening the collector to every IPv6 address', 'values-k8s-prd.yaml', [PRD], 'networkPolicies.otlp.to[0].ipBlock: ::/0 is wider than /16', { networkPolicies: { otlp: { to: [{ ipBlock: { cidr: '::/0' } }] } } }],
+	['production opening half of every address', 'values-k8s-prd.yaml', [PRD], 'networkPolicies.loki.to[0].ipBlock: 0.0.0.0/1 is wider than /8', { networkPolicies: { loki: { to: [{ ipBlock: { cidr: '0.0.0.0/1' } }] } } }],
+	['production reaching every pod of every namespace', 'values-k8s-prd.yaml', [PRD], 'networkPolicies.kafka.to[0] selects every pod of every namespace', { networkPolicies: { kafka: { to: [{ namespaceSelector: {} }] } } }],
+	['an ipBlock with host bits', 'values-k8s-dev.yaml', [], 'networkPolicies.smtp.to[0].ipBlock: 10.40.1.1/24 is not a network address', { networkPolicies: { smtp: { to: [{ ipBlock: { cidr: '10.40.1.1/24' } }] } } }],
+	['an ipBlock except that is not a CIDR', 'values-k8s-dev.yaml', [], 'networkPolicies.smtp.to[0].ipBlock: 10.40.9.0/33 is not a CIDR', { networkPolicies: { smtp: { to: [{ ipBlock: { cidr: '10.40.0.0/16', except: ['10.40.9.0/33'] } }] } } }],
+	['an ipBlock with a selector', 'values-k8s-dev.yaml', [], 'networkPolicies.redis.to[0] gives ipBlock with a selector', { networkPolicies: { redis: { to: [{ ipBlock: { cidr: '10.0.0.0/8' }, podSelector: {} }] } } }],
+	['a peer of another shape', 'values-k8s-dev.yaml', [], 'networkPolicies.redis.to[0] has cidr: a peer has ipBlock, podSelector and namespaceSelector only', { networkPolicies: { redis: { to: [{ cidr: '10.0.0.0/8' }] } } }],
+	['an empty peer', 'values-k8s-dev.yaml', [], 'networkPolicies.redis.to[0] must be a NetworkPolicy peer', { networkPolicies: { redis: { to: [{}] } } }],
+	['a port 0', 'values-k8s-dev.yaml', [], 'networkPolicies.database.ports: 0 is not a port', { networkPolicies: { database: { ports: [0] } } }],
+	['a port above 65535', 'values-k8s-dev.yaml', [], 'networkPolicies.kafka.ports: 70000 is not a port', { networkPolicies: { kafka: { ports: [70000] } } }],
+	['a destination without ports', 'values-k8s-dev.yaml', [], 'networkPolicies.redis.ports must be a list of one or more TCP ports', { networkPolicies: { redis: { ports: [] } } }],
+	['DNS on a port of its own', 'values-k8s-dev.yaml', [], 'networkPolicies.dns.ports is not a setting', { networkPolicies: { dns: { ports: [5353] } } }],
+	['an outbound endpoint without peers', 'values-k8s-dev.yaml', [], 'networkPolicies.outbound[0].to must be a list of one or more peers', { networkPolicies: { outbound: [{ name: 'aodb', to: [], ports: [443] }] } }],
+	['an outbound endpoint without ports', 'values-k8s-dev.yaml', [], 'networkPolicies.outbound[0].ports must be a list of one or more TCP ports', { networkPolicies: { outbound: [{ name: 'aodb', to: [{ ipBlock: { cidr: '10.20.0.0/24' } }] }] } }],
+	['an outbound endpoint without a name', 'values-k8s-dev.yaml', [], 'networkPolicies.outbound[0].name must be a DNS label', { networkPolicies: { outbound: [{ to: [{ ipBlock: { cidr: '10.20.0.0/24' } }], ports: [443] }] } }],
+	['two outbound endpoints of one name', 'values-k8s-dev.yaml', [], 'networkPolicies.outbound[1].name aodb is given twice',
+		{ networkPolicies: { outbound: [{ name: 'aodb', to: [{ ipBlock: { cidr: '10.20.0.0/24' } }], ports: [443] }, { name: 'aodb', to: [{ ipBlock: { cidr: '10.21.0.0/24' } }], ports: [443] }] } }],
+	['the network policies without DNS', 'values-k8s-dev.yaml', [], 'networkPolicies.dns.to is empty: with networkPolicies.enabled the pods could not reach kube-dns', { networkPolicies: { enabled: true, dns: { to: [] } } }],
+	['production without the database peers', 'values-k8s-prd.yaml', [PRD], 'networkPolicies.database.to is empty', { networkPolicies: { database: { to: [] } } }],
+	['production exporting telemetry the policies drop', 'values-k8s-prd.yaml', [PRD, 'otel.endpoint=https://otel.example:4317'], 'otel.endpoint is set but networkPolicies.otlp.to is empty'],
+	['production with MQTT and no sensor networks', 'values-k8s-prd.yaml', [PRD, 'mqtt.enabled=true'], 'mqtt.enabled with networkPolicies.enabled needs networkPolicies.mqttSensors.from'],
+	['an Ingress to a service of no chart under the network policies', 'values-k8s-dev.yaml', [], 'routes to other-service, which is not a service of the chart',
+		{ networkPolicies: { enabled: true }, ingresses: [ingressEntry('other', 'other-service', 'other-test')] }],
+	['production with the Cronz dashboard open to everyone', 'values-k8s-prd.yaml', [PRD], 'k8s-prd opens the Cronz dashboard to the management network only: set its sourceRanges',
+		{ ingresses: [ingressEntry('api-cronz', 'api-cronz-service', 'api-cronz-test', { plainHttp: 'redirect' })] }],
+	['production with the Cronz dashboard behind 0.0.0.0/0', 'values-k8s-prd.yaml', [PRD], 'ingresses api-cronz: sourceRanges: 0.0.0.0/0 is wider than /8',
+		{ ingresses: [ingressEntry('api-cronz', 'api-cronz-service', 'api-cronz-test', { plainHttp: 'redirect', sourceRanges: ['0.0.0.0/0'] })] }],
+	['production with the Cronz dashboard behind ::/0', 'values-k8s-prd.yaml', [PRD], 'ingresses api-cronz: sourceRanges: ::/0 is wider than /16',
+		{ ingresses: [ingressEntry('api-cronz', 'api-cronz-service', 'api-cronz-test', { plainHttp: 'redirect', sourceRanges: ['192.0.2.0/24', '::/0'] })] }],
+	['a source range that is not a CIDR', 'values-k8s-dev.yaml', [], 'ingresses api-main: sourceRanges: 10.10.0.0/40 is not a CIDR', { ingresses: [ingressEntry('api-main', 'api-main-service', 'api-main-test', { sourceRanges: ['10.10.0.0/40'] })] }],
+	['source ranges that are not a list', 'values-k8s-dev.yaml', [], 'ingresses api-main: sourceRanges must be a list of CIDRs', { ingresses: [ingressEntry('api-main', 'api-main-service', 'api-main-test', { sourceRanges: '10.10.0.0/24' })] }],
+	['a site allowlist-source-range', 'values-k8s-dev.yaml', [], "nginx.ingress.kubernetes.io/allowlist-source-range is the chart's: set the entry's sourceRanges instead", 'allowlist-source-range: "10.10.0.0/24"'],
+	['a site whitelist-source-range', 'values-k8s-prd.yaml', [PRD], "nginx.ingress.kubernetes.io/whitelist-source-range is the chart's: set the entry's sourceRanges instead", 'whitelist-source-range: "0.0.0.0/0"'],
+	['an Ingress that routes the readiness probe', 'values-k8s-dev.yaml', [], 'ingresses api-main: routes /health/readiness; the health probes are not routed through the ingress',
+		{ ingresses: [ingressEntry('api-main', 'api-main-service', 'api-main-test', { paths: ['/health/readiness'] })] }],
+	['an Ingress that routes the web probe in capitals', 'values-k8s-dev.yaml', [], 'ingresses web: routes /HEALTHZ', { ingresses: [ingressEntry('web', 'web-service', 'web-test', { plainHttp: 'redirect', paths: ['/HEALTHZ'] })] }],
+	// The 404 is judged on the request's own path, before any rewrite: no site rewrite-target (a fixed target, or captures on a
+	// regex path), no use-regex, no snippet that writes a rewrite directive, in any environment.
+	['a site rewrite-target to the readiness probe', 'values-k8s-prd.yaml', [PRD], 'nginx.ingress.kubernetes.io/rewrite-target is refused: the chart answers the health probes 404', 'rewrite-target: "/health/readiness"'],
+	['a site rewrite-target with captures on a regex path', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/rewrite-target is refused',
+		{ ingresses: [ingressEntry('api-main', 'api-main-service', 'api-main-test', { paths: ['/status(/|$)(.*)'], annotations: { 'nginx.ingress.kubernetes.io/rewrite-target': '/health/$2' } })] }],
+	['a site use-regex', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/use-regex is refused', 'use-regex: "true"'],
+	['a configuration-snippet that rewrites to the probe', 'values-k8s-dev.yaml', [], 'configuration-snippet writes a rewrite directive', 'configuration-snippet: "rewrite ^/status$ /health/readiness break;"'],
+	['a server-snippet that rewrites after a comment', 'values-k8s-prd.yaml', [PRD], 'server-snippet writes a rewrite directive', 'server-snippet: "# site\\nrewrite ^/status$ /health/readiness last;"']
 ]) {
 	const result = render(file, sets, '', annotation ? [typeof annotation === 'string' ? ingressValues(annotation) : valuesFile(annotation)] : []);
 	if (result.status === 0) {
@@ -659,7 +969,8 @@ for (const [label, file, sets, message, annotation] of [
 // http; the servers' CA secret names reach exactly the five API hosts and the two jobs.
 {
 	const findings = [];
-	const https = render('values-k8s-prd.yaml', ['buildNumber=main-20261001.1', 'otel.endpoint=https://otel.example:4317']);
+	// ARV-085: with the NetworkPolicies on (production), the collector's peers go with the endpoint.
+	const https = render('values-k8s-prd.yaml', ['buildNumber=main-20261001.1', 'otel.endpoint=https://otel.example:4317'], '', [valuesFile({ networkPolicies: { otlp: { to: [{ ipBlock: { cidr: '10.60.0.0/24' } }] } } })]);
 	if (https.status !== 0) findings.push(`production with an https OTLP endpoint: template failed\n${https.stderr}`);
 	else {
 		const docs = parse(https.stdout);
@@ -725,7 +1036,9 @@ for (const [label, file, sets, message, annotation] of [
 		const docs = parseAsKubernetes(site.stdout);
 		findings.push(...checkManifests(parse(site.stdout), { environment: 'k8s-prd' }), ...ingressHardeningFindings(docs, { environment: 'k8s-prd' }));
 		const chartServer = 'set $ariva_hsts "";\nif ($scheme = https) {\n  set $ariva_hsts "max-age=31536000; includeSubDomains";\n}\nmore_set_headers "Strict-Transport-Security: $ariva_hsts";\n' +
-			'more_set_headers "X-Content-Type-Options: nosniff";\nadd_header Content-Security-Policy "frame-ancestors \'none\'" always;\nif ($host != "api-integration-test.dalilhub.tech") {\n  return 421;\n}\n';
+			'more_set_headers "X-Content-Type-Options: nosniff";\nadd_header Content-Security-Policy "frame-ancestors \'none\'" always;\nif ($host != "api-integration-test.dalilhub.tech") {\n  return 421;\n}\n' +
+			// ARV-085: the probes answered 404 at the server level, after the HSTS value and the 421.
+			'if ($uri ~* "^/healthz?(/|$)") {\n  return 404;\n}\n';
 		const chartLocation = 'add_header Content-Security-Policy "frame-ancestors \'none\'" always;\nif ($scheme = http) {\n  return 403;\n}\n';
 		for (const ingress of docs.filter((doc) => doc?.kind === 'Ingress')) {
 			const annotations = ingress.metadata.annotations;
@@ -746,6 +1059,104 @@ for (const [label, file, sets, message, annotation] of [
 		console.error(`FAIL ingress site snippets and modes:\n  ${findings.join('\n  ')}`);
 	} else {
 		console.log('PASS ingress site snippets and modes: a site\'s server-snippet and configuration-snippet follow the chart\'s on every Ingress of a host and the rules still hold; a machine host may redirect outside production');
+	}
+}
+
+// ARV-085: the NetworkPolicies with every flow the firewall matrix allows open (production, tests/fixtures/network-policy-values.yaml);
+// dev with them on, where the simulator's flows join; a site's trusted proxy networks reaching the five API hosts in order,
+// IPv6 included; and none of it in dev by default (the environment renders above check that too).
+{
+	const findings = [];
+	const counts = [];
+	const full = path.join(here, 'fixtures', 'network-policy-values.yaml');
+	for (const [label, file, sets, extra, environment] of [
+		['production with every flow', 'values-k8s-prd.yaml', [PRD], [full], 'k8s-prd'],
+		['dev with the network policies and the simulator', 'values-k8s-dev.yaml', [], [valuesFile({ networkPolicies: { enabled: true } })], 'k8s-dev'],
+		['dev with trusted proxies', 'values-k8s-dev.yaml', [], [valuesFile({ ingressController: { podNetworks: ['10.42.0.0/16', 'fd00:42::/56'] } })], 'k8s-dev']
+	]) {
+		const result = render(file, sets, '', extra);
+		if (result.status !== 0) {
+			findings.push(`${label}: template failed\n${result.stderr}`);
+			continue;
+		}
+		const values = mergedValues([file, ...extra]);
+		const found = [...checkManifests(parse(result.stdout), { environment }), ...networkFindings(result.stdout, values, environment)];
+		findings.push(...found.map((finding) => `${label}: ${finding}`));
+		counts.push(`${label}: ${describeNetwork(result.stdout, values)}`);
+		const policies = parseAsKubernetes(result.stdout).filter((doc) => doc?.kind === 'NetworkPolicy').map((doc) => doc.metadata.name);
+		if (label.startsWith('dev with the network') && !['simulation-network', 'ariva-hosts-from-simulation', 'api-integration-to-simulation'].every((name) => policies.includes(name))) {
+			findings.push(`${label}: the simulator's policies are not rendered (${policies.join(', ')})`);
+		}
+		if (label.startsWith('production') && !['api-ingest-from-mqtt-sensors', 'ariva-smtp-egress', 'api-integration-outbound-egress', 'ariva-otlp-egress', 'ariva-loki-egress'].every((name) => policies.includes(name))) {
+			findings.push(`${label}: a flow's policy is not rendered (${policies.join(', ')})`);
+		}
+	}
+	if (findings.length) {
+		failed = true;
+		console.error(`FAIL network policies and trusted proxies:\n  ${findings.join('\n  ')}`);
+	} else {
+		console.log(`PASS network policies and trusted proxies: ${counts.join('; ')}; every Ariva pod denied by default and given exactly the firewall matrix's flows`);
+	}
+}
+
+// ARV-085: the hosts' rule for IPv6 trusted proxy networks (ForwardedHeadersExtensions.TrustsMappedClients, mirrored by
+// trustsMappedClients in checks.mjs) and the chart's (ariva-platform.mappedClientsRefusal in validate.yaml) agree on every prefix
+// from /48 to /128 of six base networks, written in full and with ::, and on IPv4 networks; and production renders the IPv6
+// prefixes the hosts take at the edges of the refused ranges, giving them to the five API hosts in order.
+{
+	const findings = [];
+	const groupsOf = (bits) => Array.from({ length: 8 }, (_, index) => Number((bits >> BigInt(112 - 16 * index)) & 0xffffn).toString(16));
+	const compressed = (bits) => {
+		const groups = groupsOf(bits);
+		let best = [-1, 0];
+		for (let index = 0; index < 8;) {
+			if (groups[index] !== '0') { index += 1; continue; }
+			let end = index;
+			while (end < 8 && groups[end] === '0') end += 1;
+			if (end - index > best[1]) best = [index, end - index];
+			index = end;
+		}
+		return best[1] ? `${groups.slice(0, best[0]).join(':')}::${groups.slice(best[0] + best[1]).join(':')}` : groups.join(':');
+	};
+	const all = (1n << 128n) - 1n;
+	const bases = [0n, 0xfd00n << 112n, 0xffffn << 32n, (0xfd00n << 112n) | 0x0a000000n, (0xffffn << 32n) | 0x0a000000n, (0x20010db8n << 96n) | (0x40n << 80n)];
+	const cases = new Set(['10.244.0.0/16', '10.0.0.0/8', '192.168.0.0/24']);
+	for (const base of bases) {
+		for (let prefix = 48; prefix <= 128; prefix += 1) {
+			const bits = base & (all ^ ((1n << BigInt(128 - prefix)) - 1n));
+			cases.add(`${groupsOf(bits).join(':')}/${prefix}`);
+			cases.add(`${compressed(bits)}/${prefix}`);
+		}
+	}
+	const list = [...cases];
+	const copy = fs.mkdtempSync(path.join(os.tmpdir(), 'ariva-chart-mapped-'));
+	try {
+		fs.cpSync(chart, path.join(copy, 'platform'), { recursive: true });
+		fs.writeFileSync(path.join(copy, 'platform', 'templates', 'zz-mapped-clients-test.yaml'), 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: mapped-clients-test\ndata:\n' +
+			'{{- range $index, $cidr := .Values.mappedCases }}\n  {{ printf "c%d" $index | quote }}: {{ include "ariva-platform.mappedClientsRefusal" $cidr | quote }}\n{{- end }}\n');
+		fs.writeFileSync(path.join(copy, 'cases.json'), JSON.stringify({ mappedCases: list }));
+		const result = spawnSync(helm, ['template', 'ariva-platform', path.join(copy, 'platform'), '-f', path.join(chart, 'values-k8s-prd.yaml'), '-f', path.join(copy, 'cases.json'),
+			'--set', PRD, '--show-only', 'templates/zz-mapped-clients-test.yaml'], { encoding: 'utf8', shell: false, maxBuffer: 16 * 1024 * 1024 });
+		if (result.status !== 0) findings.push(`the mapped client cases: template failed\n${result.stderr}`);
+		else {
+			const judged = parse(result.stdout)[0]?.data ?? {};
+			list.forEach((cidr, index) => {
+				const chartRefuses = Boolean(judged[`c${index}`]);
+				if (chartRefuses !== trustsMappedClients(cidr)) findings.push(`${cidr}: the chart ${chartRefuses ? 'refuses' : 'takes'} it, the hosts ${chartRefuses ? 'take' : 'refuse'} it`);
+			});
+		}
+	} finally {
+		fs.rmSync(copy, { recursive: true, force: true });
+	}
+	const accepted = render('values-k8s-prd.yaml', [PRD], '', [valuesFile({ ingressController: { podNetworks: ACCEPTED_IPV6 } })]);
+	if (accepted.status !== 0) findings.push(`production with the IPv6 prefixes the hosts take: template failed\n${accepted.stderr}`);
+	else findings.push(...networkFindings(accepted.stdout, mergedValues(['values-k8s-prd.yaml', { ingressController: { podNetworks: ACCEPTED_IPV6 } }]), 'k8s-prd'));
+	if (render('values-k8s-dev.yaml', [], '', [valuesFile({ ingressController: { podNetworks: ['fd00::/104'] } })]).status !== 0) findings.push('dev refused fd00::/104; the rule is production\'s, as the hosts\'');
+	if (findings.length) {
+		failed = true;
+		console.error(`FAIL trusted proxy networks as the hosts judge them:\n  ${findings.slice(0, 40).join('\n  ')}`);
+	} else {
+		console.log(`PASS trusted proxy networks as the hosts judge them: the chart and the hosts agree on ${list.length} networks (${list.filter(trustsMappedClients).length} refused as trusting IPv4 clients); production renders ${ACCEPTED_IPV6.join(', ')} to the five API hosts; dev takes fd00::/104`);
 	}
 }
 
@@ -885,12 +1296,15 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 		findings.push(...(tls ? podTlsRender(result.stdout) : podTlsFindings(parseAsKubernetes(result.stdout), { tls: false })));
 		// ARV-084: the Ingresses' headers, plain HTTP and cookie, as the release applies them.
 		findings.push(...ingressHardeningFindings(parseAsKubernetes(result.stdout), { environment: contextEnvironment }));
+		// ARV-085: the NetworkPolicies in prd only (state value networkPolicies, the release sets them on), beside the database's own.
+		const values = mergedValues([{ dev: 'values-k8s-dev.yaml', demo: 'values-k8s-demo.yaml', localk8s: 'values-localk8s.yaml', prd: 'values-k8s-prd.yaml' }[environment]]);
+		findings.push(...networkFindings(result.stdout, values, contextEnvironment, { enabled: tls }));
 		if (findings.length) {
 			failed = true;
 			console.error(`FAIL helmfile -e ${environment}:\n  ${findings.join('\n  ')}`);
 		} else {
 			console.log(`PASS helmfile -e ${environment}: ${docs.length} objects, database and topics job included, TimescaleDB ${tls ? 'with TLS' : 'without TLS'}, ` +
-				`${tls ? 'the pods over TLS' : 'plain HTTP to the pods'}, the Ingresses' headers held and plain HTTP ${describeModes(docs)}`);
+				`${tls ? 'the pods over TLS' : 'plain HTTP to the pods'}, the Ingresses' headers held and plain HTTP ${describeModes(docs)}, ${describeNetwork(result.stdout, values)}`);
 		}
 	}
 	// ARV-082a: prd refuses TimescaleDB without TLS.
@@ -901,6 +1315,17 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 			console.error(`FAIL release guard: helmfile -e prd with timescaledbTls false must fail but ${attempt.status === 0 ? 'succeeded' : `failed otherwise\n${attempt.stderr}`}`);
 		} else {
 			console.log('PASS release guard: helmfile -e prd with timescaledbTls false is refused');
+		}
+	}
+	// ARV-085: prd refuses the pods without their NetworkPolicies, in the Helmfile and, under it, in the chart.
+	{
+		const attempt = template('prd', ['--state-values-set', 'buildNumber=main-20261001.1', '--state-values-set', 'networkPolicies=false']);
+		const overridden = template('prd', ['--state-values-set', 'buildNumber=main-20261001.1', '--set', 'networkPolicies.enabled=false']);
+		if (attempt.status === 0 || !attempt.stderr.includes('prd isolates every pod') || overridden.status === 0 || !overridden.stderr.includes('k8s-prd isolates every pod')) {
+			failed = true;
+			console.error(`FAIL release guard: helmfile -e prd with networkPolicies false must fail\n${attempt.stderr}${overridden.stderr}`);
+		} else {
+			console.log('PASS release guard: helmfile -e prd with networkPolicies false is refused, and so is the chart under it');
 		}
 	}
 	// ARV-082b: prd refuses the pods without TLS.
@@ -1011,11 +1436,16 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 			// ARV-082b: and the pods without TLS.
 			const withoutPodTls = offline('prd', ['--state-values-set', `mirror=${mirror}`, '--state-values-set', 'podTls=false']);
 			if (withoutPodTls.status === 0 || !withoutPodTls.stderr.includes('prd serves the pods over TLS')) findings.push('-e prd with podTls false rendered');
+			// ARV-085: and the pods without their NetworkPolicies.
+			const withoutPolicies = offline('prd', ['--state-values-set', `mirror=${mirror}`, '--state-values-set', 'networkPolicies=false']);
+			if (withoutPolicies.status === 0 || !withoutPolicies.stderr.includes('prd isolates every pod')) findings.push('-e prd with networkPolicies false rendered');
 			const site = path.join(staged, 'site.yaml');
 			// ARV-082a: production sends telemetry over TLS only, so the site's endpoint is https.
 			// ARV-082b: a site file that names the web pod's certificate and tries to turn pod TLS off.
 			fs.writeFileSync(site, `otel:\n  endpoint: "https://otel.offline-site.local:4317"\nimageRepository: other.example/ariva\nimageDigests:\n  api-main: "${digestOf('planted')}"\nbuildNumber: planted\n` +
-				'podTls:\n  enabled: false\n  secretNames:\n    web: site-web-tls\n');
+				'podTls:\n  enabled: false\n  secretNames:\n    web: site-web-tls\n' +
+				// ARV-085: the collector's peers with its endpoint, and an attempt to turn the NetworkPolicies off.
+				'networkPolicies:\n  enabled: false\n  otlp:\n    to:\n      - ipBlock:\n          cidr: 10.60.0.0/24\n');
 			const database = path.join(staged, 'database.yaml');
 			// ARV-082a: a site file that tries to turn the database's TLS off in prd.
 			fs.writeFileSync(database, `persistence:\n  size: 77Gi\nimage:\n  tag: planted\n  digest: "${digestOf('planted')}"\ntls:\n  enabled: false\n`);
@@ -1027,6 +1457,9 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 				const tlsFindings = databaseTlsFindings(parseAsKubernetes(withSite.stdout), { tls: true });
 				if (tlsFindings.length) findings.push(`a site databaseValues file turned the TimescaleDB TLS off in prd:\n    ${tlsFindings.join('\n    ')}`);
 				findings.push(...ingressHardeningFindings(parseAsKubernetes(withSite.stdout), { environment: 'k8s-prd' }).map((finding) => `-e prd with site values: ${finding}`));
+				// ARV-085: the NetworkPolicies stay on whatever the site file says, the collector's peers its own.
+				findings.push(...networkFindings(withSite.stdout, mergedValues(['values-k8s-prd.yaml', site, { podTls: { enabled: true } }]), 'k8s-prd', { enabled: true }).map((finding) => `-e prd with site values: ${finding}`));
+				if (!parseAsKubernetes(withSite.stdout).some((doc) => doc?.kind === 'NetworkPolicy' && doc.metadata?.name === 'ariva-otlp-egress')) findings.push('a site values file did not open its collector');
 				const podTlsSite = podTlsRender(withSite.stdout, { secretNames: { ...POD_TLS_SECRETS, web: 'site-web-tls' } });
 				if (podTlsSite.length) findings.push(`a site values file turned pod TLS off in prd or did not name the web certificate:\n    ${podTlsSite.join('\n    ')}`);
 				if (/other\.example|planted/.test(withSite.stdout) || withSite.stdout.includes(digestOf('planted').slice(7)) || !withSite.stdout.includes(`${mirror}/ariva/api-main:v1.2.0-57@${digestOf('api-main')}`)) {
@@ -1054,7 +1487,7 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 			failed = true;
 			console.error(`FAIL offline bundle Helmfile:\n  ${findings.join('\n  ')}`);
 		} else {
-			console.log('PASS offline bundle Helmfile: the same objects as helmfile-k8s in every environment, the Ingresses\' headers and plain HTTP held, every image from the mirror by digest, no render without a mirror or with a dry run\'s unpinned images, site values reach their release without moving an image or turning the database TLS or pod TLS off in prd (but name the certificates), prd refused without either TLS');
+			console.log('PASS offline bundle Helmfile: the same objects as helmfile-k8s in every environment (the NetworkPolicies included), the Ingresses\' headers and plain HTTP held, every image from the mirror by digest, no render without a mirror or with a dry run\'s unpinned images, site values reach their release without moving an image or turning the database TLS, pod TLS or the NetworkPolicies off in prd (but name the certificates and the collector), prd refused without either TLS or the NetworkPolicies');
 		}
 	}
 }

@@ -931,6 +931,10 @@ export function checkManifests(docs, { environment }) {
 					if (SECRET_ENV.test(variable.name ?? '') && variable.value !== undefined && variable.value !== '') {
 						findings.push(`${cid}: ${variable.name} carries a literal value; credentials come from a secret (valueFrom)`);
 					}
+					// ARV-085 (Platform/Cloud/CLAUDE.md): it clears KnownProxies and KnownIPNetworks and trusts X-Forwarded-* from anyone.
+					if (/^ASPNETCORE_FORWARDEDHEADERS_ENABLED$/i.test(variable.name ?? '')) {
+						findings.push(`${cid}: ${variable.name} is set; it trusts X-Forwarded-For from any peer (Security:ForwardedHeaders names the ingress controller's network)`);
+					}
 				}
 			}
 			findings.push(...readerLoginFindings(doc, id, pod, environment));
@@ -1072,14 +1076,32 @@ export function nginxTree(text) {
 	return readBlock(false);
 }
 
-/** The condition of an nginx if statement as words, without its parentheses: if ($scheme = https) gives [$scheme, =, https]. */
+/**
+ * The condition of an nginx if statement as words, without its parentheses: if ($scheme = https) gives [$scheme, =, https].
+ * A quoted word keeps every character (if ($uri ~* "^/a(/|$)") gives [$uri, ~*, ^/a(/|$)]): only bare parentheses go.
+ */
 function ifCondition(statement) {
-	const words = statement.args.map((arg) => arg.word).filter((word) => word !== ')');
+	const args = statement.args;
+	const closedApart = args.some((arg) => !arg.quoted && arg.word === ')');
+	const words = args.filter((arg) => arg.quoted || (arg.word !== ')' && arg.word !== '(')).map((arg) => ({ ...arg }));
 	if (words.length) {
-		words[0] = words[0].replace(/^\(/, '');
-		words[words.length - 1] = words[words.length - 1].replace(/\)$/, '');
+		if (!words[0].quoted) words[0].word = words[0].word.replace(/^\(/, '');
+		const last = words[words.length - 1];
+		if (!closedApart && !last.quoted) last.word = last.word.replace(/\)$/, '');
 	}
-	return words;
+	return words.map((arg) => arg.word);
+}
+
+/** Whether an nginx regex condition (~, ~*, !~, !~*) holds for a value; undefined for another operator or a regex JS cannot read. */
+function nginxRegexHolds(operator, pattern, value) {
+	if (!['~', '~*', '!~', '!~*'].includes(operator)) return undefined;
+	let regex;
+	try {
+		regex = new RegExp(pattern, operator.endsWith('*') ? 'i' : '');
+	} catch {
+		return undefined;
+	}
+	return operator.startsWith('!') ? !regex.test(value) : regex.test(value);
 }
 
 /** A header directive of a snippet tree (top level only): { kind: more_set_headers or add_header, value, always }. */
@@ -1104,9 +1126,10 @@ function headerDirectives(tree, header) {
 /**
  * The value a server-level header directive takes on one path through the server's rewrite statements: the set and if
  * statements of the snippet run in order for the given scheme, and the host either is the server's or is not (the 421 path);
- * a return ends the path. Unknown conditions are not taken. Returns { value, returned }.
+ * a return ends the path. A $uri regex condition is judged on the given normalised path (default /). Unknown conditions are
+ * not taken. Returns { value, returned }.
  */
-function serverValueOnPath(tree, value, { scheme, otherHost }) {
+function serverValueOnPath(tree, value, { scheme, otherHost, uri = '/' }) {
 	const variables = {};
 	let returned;
 	const run = (statements) => {
@@ -1122,6 +1145,9 @@ function serverValueOnPath(tree, value, { scheme, otherHost }) {
 				else if (left === '$https' && ifCondition(statement).length === 1) taken = scheme === 'https';
 				else if (left === '$host' && operator === '!=') taken = otherHost;
 				else if (left === '$host' && operator === '=') taken = !otherHost;
+				else if (left === '$uri' && operator === '=') taken = right === uri;
+				else if (left === '$uri' && operator === '!=') taken = right !== uri;
+				else if (left === '$uri') taken = nginxRegexHolds(operator, right, uri) ?? false;
 				if (taken) run(statement.block);
 			}
 		}
@@ -1283,5 +1309,391 @@ export function controllerValuesFindings(values) {
 	if (config['hsts-preload'] !== 'false') findings.push(`controller.config hsts-preload is ${config['hsts-preload'] ?? 'unset'}, not "false"`);
 	if (config['use-forwarded-headers'] !== 'false') findings.push(`controller.config use-forwarded-headers is ${config['use-forwarded-headers'] ?? 'unset'}, not "false": TLS ends at the controller`);
 	for (const [key, value] of Object.entries(config)) if (typeof value !== 'string') findings.push(`controller.config ${key} must be a string (a ConfigMap value), not ${typeof value} ${value}`);
+	return findings;
+}
+
+// ---------------------------------------------------------------------------------------------
+// ARV-085: network policies, trusted proxies and private probes
+
+/**
+ * A CIDR as the chart takes it (validate.yaml, ariva-platform.cidrRefusal): an IPv4 address in dotted decimal without leading
+ * zeros, or an IPv6 address in hexadecimal with at most one :: (no zone, no embedded IPv4), then its prefix. Returns
+ * { version, prefix, bits (the address as a BigInt), canonical } (canonical: no bit set after the prefix), or undefined when it
+ * is not a CIDR.
+ */
+export function parseCidr(text) {
+	const match = /^([^/]+)\/(\d{1,3})$/.exec(String(text ?? ''));
+	if (!match) return undefined;
+	const [, address, prefixText] = match;
+	const prefix = Number(prefixText);
+	if (/^\d{1,3}(\.\d{1,3}){3}$/.test(address)) {
+		const parts = address.split('.');
+		if (prefix > 32 || parts.some((part) => Number(part) > 255 || String(Number(part)) !== part)) return undefined;
+		const bits = parts.reduce((value, part) => (value << 8n) | BigInt(part), 0n);
+		return { version: 4, prefix, bits, canonical: (bits & ((1n << BigInt(32 - prefix)) - 1n)) === 0n };
+	}
+	if (!/^[0-9a-f:]+$/i.test(address) || prefix > 128) return undefined;
+	const halves = address.split('::');
+	if (halves.length > 2) return undefined;
+	const groups = (part) => (part === '' ? [] : part.split(':'));
+	const left = groups(halves[0]);
+	const right = halves.length === 2 ? groups(halves[1]) : [];
+	if ([...left, ...right].some((group) => !/^[0-9a-f]{1,4}$/i.test(group))) return undefined;
+	if (halves.length === 1 ? left.length !== 8 : left.length + right.length > 7) return undefined;
+	const all = [...left, ...Array(8 - left.length - right.length).fill('0'), ...right];
+	const bits = all.reduce((value, group) => (value << 16n) | BigInt(parseInt(group, 16)), 0n);
+	return { version: 6, prefix, bits, canonical: (bits & ((1n << BigInt(128 - prefix)) - 1n)) === 0n };
+	}
+
+	/**
+	 * ARV-085: whether an IPv6 trusted proxy network trusts IPv4 clients wider than an IPv4 /14, as the hosts judge it
+	 * (ForwardedHeadersExtensions.TrustsMappedClients, k8s-prd): a dual-stack pod sees an IPv4 client as ::ffff:a.b.c.d, and .NET
+	 * 10's IPNetwork.Contains matches it with the network's last 32 bits under a mask of (prefix mod 32) bits, 32 when that is 0;
+	 * a mask under 14 (prefixes /65 to /77 and /97 to /109 at /48 or longer) is refused, and so is a network of /96 or wider that
+	 * holds the IPv4-mapped block ::ffff:0:0/96. False for IPv4 and for what is not a CIDR.
+	 */
+	export function trustsMappedClients(text) {
+		const cidr = parseCidr(text);
+		if (cidr?.version !== 6) return false;
+		const mask = cidr.prefix % 32 === 0 ? 32 : cidr.prefix % 32;
+		if (mask < NETWORK_PREFIXES.proxies[4]) return true;
+		const all = (1n << 128n) - 1n;
+		const kept = cidr.prefix === 0 ? 0n : all ^ ((1n << BigInt(128 - cidr.prefix)) - 1n);
+		return cidr.prefix <= 96 && ((0xffffn << 32n) & kept) === cidr.bits;
+	}
+
+/**
+ * The shortest prefixes k8s-prd allows (validate.yaml): the trusted proxy networks (Security:ForwardedHeaders:KnownNetworks),
+ * and every other network the chart opens (NetworkPolicy ipBlocks, the Ingresses' source ranges). Elsewhere a trusted proxy
+ * network is never /0, and the others are free.
+ */
+export const NETWORK_PREFIXES = { proxies: { 4: 14, 6: 48 }, open: { 4: 8, 6: 16 }, anyProxy: { 4: 1, 6: 1 } };
+
+/** Findings for one CIDR: not a CIDR, not a network address, or wider than the shortest prefixes given (by IP version). */
+function cidrFindings(text, where, widest) {
+	const cidr = parseCidr(text);
+	if (!cidr) return [`${where}: ${text} is not a CIDR`];
+	if (!cidr.canonical) return [`${where}: ${text} is not a network address (bits set after its prefix)`];
+	if (widest && cidr.prefix < widest[cidr.version]) return [`${where}: ${text} is wider than /${widest[cidr.version]}`];
+	return [];
+}
+
+/** The Ariva pods (by their app label) the NetworkPolicies isolate, and the flows the firewall matrix (wiki/05) gives them. */
+export const NETWORK = {
+	apiHosts: ['api-main', 'api-ingest', 'api-stream', 'api-cronz', 'api-integration'],
+	jobs: ['database-migration', 'kafka-topics'],
+	/** The hosts the simulator calls on their plain port (dev and demo only). */
+	simulatorTargets: ['api-main', 'api-ingest', 'api-integration']
+};
+NETWORK.workloads = [...NETWORK.apiHosts, 'web', 'simulation', ...NETWORK.jobs];
+
+/** The port a pod serves the ingress controller on (ARV-082b): an API host 8443 with pod TLS or 8080, the web pod 3443 or 3000, the simulator 8080. */
+export function servingPort(app, podTls) {
+	if (app === 'web') return podTls ? 3443 : 3000;
+	if (app === 'simulation') return 8080;
+	return podTls ? 8443 : 8080;
+}
+
+/** Whether a label selector (matchLabels, matchExpressions) selects the labels; an empty selector selects everything. */
+function selectorMatches(selector, labels) {
+	if (!selector || typeof selector !== 'object') return false;
+	const own = labels ?? {};
+	for (const [key, value] of Object.entries(selector.matchLabels ?? {})) if (own[key] !== String(value)) return false;
+	for (const expression of selector.matchExpressions ?? []) {
+		const has = Object.hasOwn(own, expression?.key ?? '');
+		const values = (expression?.values ?? []).map(String);
+		if (expression?.operator === 'In') { if (!(has && values.includes(own[expression.key]))) return false; }
+		else if (expression?.operator === 'NotIn') { if (has && values.includes(own[expression.key])) return false; }
+		else if (expression?.operator === 'Exists') { if (!has) return false; }
+		else if (expression?.operator === 'DoesNotExist') { if (has) return false; }
+		else return false;
+	}
+	return true;
+}
+
+const selectsAll = (selector) => !Object.keys(selector?.matchLabels ?? {}).length && !(selector?.matchExpressions ?? []).length;
+
+/** The pods of a render: { app, id, labels, ariva } for every workload (ariva: it runs an image Ariva builds). */
+function podsOf(docs) {
+	return docs.filter((doc) => doc && WORKLOADS.has(doc.kind)).map((doc) => {
+		const template = doc.kind === 'CronJob' ? doc.spec?.jobTemplate?.spec?.template : doc.spec?.template;
+		const pod = template?.spec ?? {};
+		const labels = template?.metadata?.labels ?? {};
+		const ariva = [...(pod.initContainers ?? []), ...(pod.containers ?? [])].some((container) => ARIVA_IMAGES.has(imageName(container.image ?? '')));
+		return { app: labels.app ?? doc.metadata?.name, id: `${doc.kind}/${doc.metadata?.name ?? '?'}`, labels, ariva };
+	});
+}
+
+const canonical = (value) => (Array.isArray(value) ? value.map(canonical)
+	: value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value);
+
+/**
+ * What a peer names in a flow: pod:<app> for each Ariva pod that a podSelector of the release's namespace (no
+ * namespaceSelector) selects, so the simulator's flows read the same however their selectors are written; any other peer
+ * as itself (JSON with sorted keys), as the values give it.
+ */
+function peerNames(peer, pods) {
+	if (peer && typeof peer === 'object' && peer.podSelector && !peer.namespaceSelector && !peer.ipBlock) {
+		const apps = pods.filter((pod) => pod.ariva && selectorMatches(peer.podSelector, pod.labels)).map((pod) => `pod:${pod.app}`);
+		if (apps.length) return [...new Set(apps)];
+	}
+	return [JSON.stringify(canonical(peer))];
+}
+
+const portName = (port) => `${port?.protocol ?? 'TCP'}/${port?.port}${port?.endPort ? `-${port.endPort}` : ''}`;
+
+/** The Ariva workloads the render's Ingresses route to, by app (their backend Services' names without -service). */
+function routedApps(docs) {
+	const names = docs.filter((doc) => doc?.kind === 'Ingress').flatMap((ingress) => [ingress.spec?.defaultBackend,
+		...(ingress.spec?.rules ?? []).flatMap((rule) => (rule.http?.paths ?? []).map((entry) => entry.backend))].map((backend) => backend?.service?.name).filter(Boolean));
+	return [...new Set(names.map((name) => String(name).replace(/-service$/, '')))].filter((app) => NETWORK.workloads.includes(app));
+}
+
+/**
+ * ARV-085: the flows the firewall matrix gives each Ariva pod, from the release's values ({ podTls, simulation, mqtt (its port,
+ * or null when off), networkPolicies, ingressController }) and the render's Ingresses (which pods are routed): a Map of app to
+ * a Set of "in|out <peer> <protocol>/<port>".
+ * - in: the ingress controller to every routed pod on its serving port; the sensor networks to api-ingest's MQTT port; with
+ *   the simulator, the simulator to api-main, api-ingest and api-integration on 8080, and api-integration to the simulator.
+ * - out: DNS (53 UDP and TCP) for every pod but the web pod; the database for the API hosts and the migration job; Kafka for
+ *   the API hosts, the topics job and the simulator; Redis for the API hosts; the OTLP collector for the API hosts and the
+ *   simulator; Loki for the API hosts; the SMTP relay for api-integration and api-cronz (the scheduled reports); each outbound
+ *   endpoint for api-integration; the simulator to the three hosts and api-integration to the simulator.
+ */
+export function expectedNetworkFlows(values, docs) {
+	const pods = podsOf(docs);
+	const np = values.networkPolicies ?? {};
+	const controller = values.ingressController ?? {};
+	const flows = new Map(NETWORK.workloads.map((app) => [app, new Set()]));
+	const add = (apps, direction, peers, ports) => {
+		for (const app of apps) for (const peer of peers ?? []) for (const name of peerNames(peer, pods)) for (const port of ports) flows.get(app).add(`${direction} ${name} ${port}`);
+	};
+	const tcp = (ports) => (ports ?? []).map((port) => `TCP/${port}`);
+	const withSimulation = (apps) => (values.simulation ? [...apps, 'simulation'] : apps);
+	for (const app of routedApps(docs)) {
+		add([app], 'in', [{ namespaceSelector: controller.namespaceSelector, podSelector: controller.podSelector }], [`TCP/${servingPort(app, values.podTls)}`]);
+	}
+	if (values.mqtt) add(['api-ingest'], 'in', np.mqttSensors?.from, [`TCP/${values.mqtt.port}`]);
+	if (values.simulation) {
+		for (const app of NETWORK.simulatorTargets) {
+			flows.get(app).add('in pod:simulation TCP/8080');
+			flows.get('simulation').add(`out pod:${app} TCP/8080`);
+		}
+		flows.get('simulation').add('in pod:api-integration TCP/8080');
+		flows.get('api-integration').add('out pod:simulation TCP/8080');
+	}
+	add(withSimulation([...NETWORK.apiHosts, ...NETWORK.jobs]), 'out', np.dns?.to, ['UDP/53', 'TCP/53']);
+	add([...NETWORK.apiHosts, 'database-migration'], 'out', np.database?.to, tcp(np.database?.ports));
+	add(withSimulation([...NETWORK.apiHosts, 'kafka-topics']), 'out', np.kafka?.to, tcp(np.kafka?.ports));
+	add(NETWORK.apiHosts, 'out', np.redis?.to, tcp(np.redis?.ports));
+	add(withSimulation(NETWORK.apiHosts), 'out', np.otlp?.to, tcp(np.otlp?.ports));
+	add(NETWORK.apiHosts, 'out', np.loki?.to, tcp(np.loki?.ports));
+	add(['api-cronz', 'api-integration'], 'out', np.smtp?.to, tcp(np.smtp?.ports));
+	for (const endpoint of np.outbound ?? []) add(['api-integration'], 'out', endpoint?.to, tcp(endpoint?.ports));
+	return flows;
+}
+
+/**
+ * ARV-085: findings for the NetworkPolicies of a render (docs parsed as Kubernetes reads them), given whether the release has
+ * them on, its environment and its values (expectedNetworkFlows).
+ * Off: no NetworkPolicy selects an Ariva pod. On:
+ * - every Ariva pod is selected by a default deny (policyTypes Ingress and Egress, no rule);
+ * - no rule is a wildcard: every ingress rule has peers (from) and ports, every egress rule peers (to) and ports;
+ * - no policy selects Ariva pods together with others (the database's own policy stays its own);
+ * - in k8s-prd no ipBlock is wider than /8 (IPv4) or /16 (IPv6) or not a network address, and no peer selects every pod of
+ *   every namespace;
+ * - the flows each Ariva pod gets (the union of every policy that selects it) are exactly expectedNetworkFlows'. Findings
+ *   group the pods that share the same extra or missing flows.
+ */
+export function networkPolicyFindings(docs, { enabled, environment, values }) {
+	const findings = [];
+	const pods = podsOf(docs);
+	const arivaPods = pods.filter((pod) => pod.ariva);
+	const policies = docs.filter((doc) => doc?.kind === 'NetworkPolicy');
+	const typesOf = (spec) => spec.policyTypes ?? (spec.egress ? ['Ingress', 'Egress'] : ['Ingress']);
+	if (!enabled) {
+		for (const policy of policies) {
+			const selected = arivaPods.filter((pod) => selectorMatches(policy.spec?.podSelector ?? {}, pod.labels));
+			if (selected.length) findings.push(`NetworkPolicy/${policy.metadata?.name}: selects ${selected.map((pod) => pod.app).join(', ')} although networkPolicies is off`);
+		}
+		return findings;
+	}
+	const prd = environment === 'k8s-prd';
+	for (const policy of policies) {
+		const pid = `NetworkPolicy/${policy.metadata?.name}`;
+		const spec = policy.spec ?? {};
+		const selected = pods.filter((pod) => selectorMatches(spec.podSelector ?? {}, pod.labels));
+		if (selected.some((pod) => pod.ariva) && selected.some((pod) => !pod.ariva)) {
+			findings.push(`${pid}: selects Ariva pods together with ${selected.filter((pod) => !pod.ariva).map((pod) => pod.id).join(', ')}`);
+		}
+		if (!selected.some((pod) => pod.ariva)) continue;
+		for (const [direction, rules, field] of [['ingress', spec.ingress ?? [], 'from'], ['egress', spec.egress ?? [], 'to']]) {
+			rules.forEach((rule, index) => {
+				const where = `${pid}: ${direction}[${index}]`;
+				if (!(rule?.[field] ?? []).length) findings.push(`${where} has no ${field}, so it ${direction === 'ingress' ? 'takes connections from everyone' : 'opens every destination'}`);
+				if (!(rule?.ports ?? []).length) findings.push(`${where} has no ports, so it ${direction === 'ingress' ? 'takes' : 'opens'} every port`);
+				for (const peer of rule?.[field] ?? []) {
+					if (peer?.ipBlock) {
+						for (const [label, cidr] of [['cidr', peer.ipBlock.cidr], ...(peer.ipBlock.except ?? []).map((value) => ['except', value])]) {
+							findings.push(...cidrFindings(cidr, `${where} ipBlock ${label}`, prd && label === 'cidr' ? NETWORK_PREFIXES.open : undefined));
+						}
+					} else if (prd && peer?.namespaceSelector && selectsAll(peer.namespaceSelector) && selectsAll(peer.podSelector)) {
+						findings.push(`${where} selects every pod of every namespace`);
+					}
+				}
+			});
+		}
+	}
+	const expected = expectedNetworkFlows(values ?? {}, docs);
+	const groups = new Map();
+	const group = (key, text, pod) => {
+		if (!groups.has(key)) groups.set(key, { text, pods: [] });
+		groups.get(key).pods.push(pod.id);
+	};
+	for (const pod of arivaPods) {
+		const isolated = { Ingress: false, Egress: false };
+		let defaultDeny = false;
+		const flows = new Set();
+		for (const policy of policies) {
+			const spec = policy.spec ?? {};
+			if (!selectorMatches(spec.podSelector ?? {}, pod.labels)) continue;
+			const types = typesOf(spec);
+			for (const type of types) isolated[type] = true;
+			if (types.includes('Ingress') && types.includes('Egress') && !(spec.ingress ?? []).length && !(spec.egress ?? []).length) defaultDeny = true;
+			for (const [direction, rules, field, type] of [['in', spec.ingress ?? [], 'from', 'Ingress'], ['out', spec.egress ?? [], 'to', 'Egress']]) {
+				if (!types.includes(type)) continue;
+				for (const rule of rules) {
+					const peers = (rule?.[field] ?? []).length ? rule[field] : [{ everyone: true }];
+					const ports = (rule?.ports ?? []).length ? rule.ports.map(portName) : ['every port'];
+					for (const peer of peers) for (const name of peerNames(peer, pods)) for (const port of ports) flows.add(`${direction} ${name} ${port}`);
+				}
+			}
+		}
+		if (!defaultDeny || !isolated.Ingress || !isolated.Egress) group('deny', 'no default deny selects them (a NetworkPolicy with policyTypes Ingress and Egress and no rule)', pod);
+		const wanted = expected.get(pod.app) ?? new Set();
+		const extra = [...flows].filter((flow) => !wanted.has(flow)).sort();
+		const missing = [...wanted].filter((flow) => !flows.has(flow)).sort();
+		if (extra.length) group(`extra ${extra.join(' | ')}`, `the policies allow what the firewall matrix does not: ${extra.join(' | ')}`, pod);
+		if (missing.length) group(`missing ${missing.join(' | ')}`, `the policies lack the firewall matrix's ${missing.join(' | ')}`, pod);
+	}
+	for (const { text, pods: ids } of groups.values()) findings.push(`${ids.join(', ')}: ${text}`);
+	return findings;
+}
+
+/** ARV-085: the network values expectedNetworkFlows reads, from a release's merged values (values.yaml, then its files). */
+export function networkValues(values) {
+	return {
+		podTls: (values?.podTls ?? {}).enabled === true,
+		simulation: values?.simulationEnabled === true,
+		mqtt: values?.mqtt?.enabled ? { port: values.mqtt.port ?? 8883 } : null,
+		networkPolicies: values?.networkPolicies ?? {},
+		ingressController: values?.ingressController ?? {}
+	};
+}
+
+/**
+ * ARV-085 (ASVS 5.0 V13.4.5): the health probes are private. The paths the chart's server-snippet must answer 404 at the
+ * server level, every spelling ASP.NET Core and the web pod's nginx would serve (routing ignores case), and paths it must not.
+ */
+export const HEALTH_PROBES = {
+	paths: ['/health', '/health/', '/health/startup', '/health/readiness', '/health/liveness', '/HEALTH/READINESS', '/Health/Startup', '/healthz', '/healthz/'],
+	others: ['/', '/api', '/api/health', '/api/v1/sensing/devices/health', '/healthy', '/healthcheck', '/hubs', '/login'],
+	route: /^\/healthz?(\/|$)/i
+};
+
+/**
+ * ARV-085: findings for the Ingresses' private probes and source ranges (docs parsed as Kubernetes reads them):
+ * - no Ingress path routes /health, /healthz or anything under them;
+ * - every server-snippet answers each of HEALTH_PROBES.paths 404 (or 403) at the server level, over HTTPS after it sets HSTS (so the
+ *   404 carries it, as the 421 does), and answers none of HEALTH_PROBES.others;
+ * - no Ingress sets rewrite-target or use-regex and no annotation value writes a rewrite directive: the 404 is judged on the
+ *   request's own path, so a rewrite could take another path to /health on the pod;
+ * - allowlist-source-range, when set, is a list of CIDRs (network addresses), in k8s-prd none wider than /8 (IPv4) or /16
+ *   (IPv6); no Ingress sets whitelist-source-range (the alias ingress-nginx reads only without allowlist-source-range);
+ * - in k8s-prd every Ingress to api-cronz-service (the TickerQ dashboard) has allowlist-source-range.
+ */
+export function ingressPrivacyFindings(docs, { environment }) {
+	const findings = [];
+	const prd = environment === 'k8s-prd';
+	for (const ingress of docs.filter((doc) => doc?.kind === 'Ingress')) {
+		const id = `Ingress/${ingress.metadata?.name}`;
+		const annotations = ingress.metadata?.annotations ?? {};
+		const entries = (ingress.spec?.rules ?? []).flatMap((rule) => rule.http?.paths ?? []);
+		const routed = entries.map((entry) => entry.path).filter((value) => HEALTH_PROBES.route.test(String(value ?? '')));
+		if (routed.length) findings.push(`${id}: routes ${routed.join(', ')}; the health probes stay on the pods' own ports`);
+		let server = [];
+		try {
+			server = nginxTree(annotations[`${NGINX}server-snippet`] ?? '');
+		} catch (error) {
+			findings.push(`${id}: server-snippet is not valid nginx (${error.message})`);
+		}
+		const hsts = headerDirectives(server, 'Strict-Transport-Security').find((directive) => directive.kind === 'more_set_headers');
+		const onPath = (uri) => serverValueOnPath(server, hsts?.value ?? '', { scheme: 'https', otherHost: false, uri });
+		const unrefused = HEALTH_PROBES.paths.filter((uri) => !['403', '404'].includes(String(onPath(uri).returned)));
+		if (unrefused.length) findings.push(`${id}: server-snippet does not answer ${unrefused.join(', ')} with 404 at the server level (if ($uri ~* "^/healthz?(/|$)") { return 404; }), so a location of the host can route them to a pod`);
+		else if (hsts && HEALTH_PROBES.paths.some((uri) => !onPath(uri).value)) findings.push(`${id}: server-snippet refuses the probes before it sets Strict-Transport-Security, so its 404 carries none`);
+		const overreach = HEALTH_PROBES.others.filter((uri) => onPath(uri).returned !== undefined);
+		if (overreach.length) findings.push(`${id}: server-snippet refuses ${overreach.join(', ')}, which are not health probes`);
+		// The 404 is judged on the request's own path, before any rewrite: no Ariva Ingress rewrites one.
+		for (const key of ['rewrite-target', 'use-regex']) {
+			if (annotations[`${NGINX}${key}`] !== undefined) findings.push(`${id}: sets ${key}; the probes' 404 is judged on the request's own path, so no Ariva Ingress rewrites one`);
+		}
+		for (const [key, value] of Object.entries(annotations)) {
+			if (/(^|[;{}])\s*rewrite\s/im.test(String(value))) findings.push(`${id}: ${key} writes a rewrite directive, which changes the path after the probes' check`);
+		}
+		if (annotations[`${NGINX}whitelist-source-range`] !== undefined) findings.push(`${id}: sets whitelist-source-range, the alias; the chart writes allowlist-source-range, the name ingress-nginx reads first`);
+		const allow = annotations[`${NGINX}allowlist-source-range`];
+		if (allow !== undefined) {
+			for (const range of String(allow).split(',').map((value) => value.trim())) findings.push(...cidrFindings(range, `${id}: allowlist-source-range`, prd ? NETWORK_PREFIXES.open : undefined));
+		}
+		const cronz = entries.some((entry) => entry.backend?.service?.name === 'api-cronz-service');
+		if (prd && cronz && !String(allow ?? '').trim()) findings.push(`${id}: the Cronz dashboard has no allowlist-source-range; k8s-prd opens it to the management network only`);
+	}
+	return findings;
+}
+
+const KNOWN_NETWORK = /^Security__ForwardedHeaders__KnownNetworks__(\d+)$/;
+
+/**
+ * ARV-085 (ASVS 5.0 V4.1.3): the trusted proxies. Every API host container gets exactly ingressController.podNetworks as
+ * Security__ForwardedHeaders__KnownNetworks__0, __1 ... in order, as literal values, and no other Security__ForwardedHeaders__
+ * variable (no KnownProxies, no ForwardLimit); no other workload gets any. The networks are CIDRs (network addresses), never
+ * /0, and in k8s-prd present, no wider than /14 (IPv4) or /48 (IPv6) and none that trusts IPv4 clients wider than a /14
+ * (trustsMappedClients): the hosts refuse to start on any of these.
+ */
+export function forwardedHeadersFindings(docs, { environment, podNetworks = [] }) {
+	const findings = [];
+	const prd = environment === 'k8s-prd';
+	if (prd && !podNetworks.length) findings.push("ingressController.podNetworks is empty: k8s-prd needs the ingress controller's pod network");
+	podNetworks.forEach((network, index) => {
+		const where = `ingressController.podNetworks[${index}]`;
+		const found = cidrFindings(String(network), where, prd ? NETWORK_PREFIXES.proxies : NETWORK_PREFIXES.anyProxy);
+		if (!found.length && prd && trustsMappedClients(String(network))) {
+			found.push(`${where}: ${network} trusts IPv4 clients wider than an IPv4 /14 (as IPv4-mapped addresses: the mapped block, a network holding it, or a prefix from /65 to /77 or /97 to /109); the hosts refuse it`);
+		}
+		findings.push(...found);
+	});
+	const expected = podNetworks.map(String);
+	for (const doc of docs) {
+		if (!doc || !WORKLOADS.has(doc.kind)) continue;
+		const id = `${doc.kind}/${doc.metadata?.name ?? '?'}`;
+		const pod = podSpecOf(doc) ?? {};
+		const apiHost = doc.kind === 'Deployment' && /^api-[a-z]+-deployment$/.test(doc.metadata?.name ?? '');
+		for (const container of [...(pod.initContainers ?? []), ...(pod.containers ?? [])]) {
+			const cid = `${id} container ${container.name}`;
+			const trusted = (container.env ?? []).filter((variable) => /^Security__ForwardedHeaders__/i.test(variable.name ?? ''));
+			if (!(apiHost && DOTNET_IMAGES.has(imageName(container.image ?? '')))) {
+				if (trusted.length) findings.push(`${cid}: sets ${trusted.map((variable) => variable.name).join(', ')}; only the API hosts get the trusted proxy networks`);
+				continue;
+			}
+			const other = trusted.filter((variable) => !KNOWN_NETWORK.test(variable.name));
+			if (other.length) findings.push(`${cid}: sets ${other.map((variable) => variable.name).join(', ')}; the chart passes the ingress controller's networks only (KnownNetworks)`);
+			const given = trusted.filter((variable) => KNOWN_NETWORK.test(variable.name)).map((variable) => ({ index: Number(KNOWN_NETWORK.exec(variable.name)[1]), value: variable.valueFrom ? null : variable.value }))
+				.sort((a, b) => a.index - b.index);
+			if (given.length !== expected.length || given.some((entry, position) => entry.index !== position || entry.value !== expected[position])) {
+				findings.push(`${cid}: Security__ForwardedHeaders__KnownNetworks is ${given.map((entry) => `${entry.index}=${entry.value ?? '(not a literal)'}`).join(', ') || 'unset'}, not ingressController.podNetworks (${expected.join(', ') || 'none'})`);
+			}
+		}
+	}
 	return findings;
 }

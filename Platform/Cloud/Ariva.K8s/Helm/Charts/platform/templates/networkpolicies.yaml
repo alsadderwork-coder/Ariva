@@ -1,0 +1,251 @@
+{{- /*
+NetworkPolicies (ARV-085, ASVS 5.0 V13.2.5; values networkPolicies and ingressController; wiki/05, the firewall matrix). Every
+Ariva pod, by its app label, denies all traffic in and out (ariva-default-deny); the policies after it allow exactly the
+matrix's flows, each to or from the pods that need it. NetworkPolicies add up, so a pod can do what one of them allows and
+nothing else. No rule here is rendered without its peers and ports: an empty from or to would mean everyone, and empty ports
+every port. validate.yaml checks every peer, port and CIDR of the values; tests/chart-security.mjs compares the flows each
+pod gets with the matrix (networkPolicyFindings).
+- The kubelet's probes need no rule: they come from the pod's own node, which a NetworkPolicy does not block (Kubernetes lists it
+  among what network policies cannot do).
+- DNS, Kafka, Redis, the OTLP collector, Loki, the SMTP relay and the outbound endpoints are the site's: their peers are values.
+- The serving ports: an API host 8443 with pod TLS and 8080 without; the web pod's nginx 3443 or 3000; the simulator 8080.
+*/ -}}
+{{- if (.Values.networkPolicies | default dict).enabled }}
+{{- $np := .Values.networkPolicies }}
+{{- $podTls := include "ariva-platform.podTls" . }}
+{{- $apiHosts := list "api-main" "api-ingest" "api-stream" "api-cronz" "api-integration" }}
+{{- $workloads := concat $apiHosts (list "web" "simulation" "database-migration" "kafka-topics") }}
+{{- $simulation := .Values.simulationEnabled }}
+{{- $simulatorTargets := list "api-main" "api-ingest" "api-integration" }}
+{{- $ports := dict "web" (ternary 3443 3000 (eq $podTls "true")) "simulation" 8080 }}
+{{- range $apiHosts }}{{ $_ := set $ports . (ternary 8443 8080 (eq $podTls "true")) }}{{ end }}
+{{- $routed := list }}
+{{- range (.Values.ingresses | default list) }}
+{{- $app := trimSuffix "-service" (toString .serviceName) }}
+{{- if and (has $app $workloads) (hasKey $ports $app) (not (has $app $routed)) }}{{ $routed = append $routed $app }}{{ end }}
+{{- end }}
+---
+#NetworkPolicy: default deny (ARV-085). Every Ariva pod, the jobs included, takes nothing and sends nothing but what the
+#policies below allow.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ariva-default-deny
+  labels:
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          {{- range $workloads }}
+          - {{ . }}
+          {{- end }}
+  policyTypes: ["Ingress", "Egress"]
+{{- range $app := $routed }}
+---
+#NetworkPolicy: the ingress controller to {{ $app }} on its serving port only (firewall matrix rows 1, 8, 12 to 14, 22 and 26).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $app }}-from-ingress-controller
+  labels:
+    {{- include "ariva-platform.labels" $ | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: {{ $app }}
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            {{- toYaml $.Values.ingressController.namespaceSelector | nindent 12 }}
+          podSelector:
+            {{- toYaml $.Values.ingressController.podSelector | nindent 12 }}
+      ports:
+        - protocol: TCP
+          port: {{ index $ports $app }}
+{{- end }}
+{{- if and .Values.mqtt .Values.mqtt.enabled $np.mqttSensors.from }}
+---
+#NetworkPolicy: the sensor networks to api-ingest's MQTT listener (ARV-024; firewall matrix row 2).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-ingest-from-mqtt-sensors
+  labels:
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: api-ingest
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        {{- toYaml $np.mqttSensors.from | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.mqtt.port | default 8883 }}
+{{- end }}
+{{- $resolvers := concat $apiHosts (list "database-migration" "kafka-topics") }}
+{{- if $simulation }}{{ $resolvers = append $resolvers "simulation" }}{{ end }}
+{{- $kafkaClients := append $apiHosts "kafka-topics" }}
+{{- if $simulation }}{{ $kafkaClients = append $kafkaClients "simulation" }}{{ end }}
+{{- $telemetry := $apiHosts }}
+{{- if $simulation }}{{ $telemetry = append $telemetry "simulation" }}{{ end }}
+{{- range $egress := list
+  (dict "name" "ariva-dns-egress" "comment" "DNS (kube-dns) for every pod that resolves names; the web pod resolves none" "apps" $resolvers "to" $np.dns.to "dns" true)
+  (dict "name" "ariva-database-egress" "comment" "PostgreSQL for the API hosts and the migration job, firewall matrix row 17" "apps" (append $apiHosts "database-migration") "to" $np.database.to "ports" $np.database.ports)
+  (dict "name" "ariva-kafka-egress" "comment" "Kafka for the API hosts, the topics job and the simulator's AMAN feed, rows 7 and 10" "apps" $kafkaClients "to" $np.kafka.to "ports" $np.kafka.ports)
+  (dict "name" "ariva-redis-egress" "comment" "Redis for the API hosts, row 18" "apps" $apiHosts "to" $np.redis.to "ports" $np.redis.ports)
+  (dict "name" "ariva-otlp-egress" "comment" "The OTLP collector for the API hosts and the simulator, row 19" "apps" $telemetry "to" $np.otlp.to "ports" $np.otlp.ports)
+  (dict "name" "ariva-loki-egress" "comment" "Loki for the API hosts, Loki:Uri" "apps" $apiHosts "to" $np.loki.to "ports" $np.loki.ports)
+  (dict "name" "ariva-smtp-egress" "comment" "The SMTP relay for the alert email of api-integration and the scheduled reports of api-cronz, row 15" "apps" (list "api-cronz" "api-integration") "to" $np.smtp.to "ports" $np.smtp.ports) }}
+{{- if $egress.to }}
+---
+#NetworkPolicy: {{ $egress.comment }} (ARV-085).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $egress.name }}
+  labels:
+    {{- include "ariva-platform.labels" $ | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          {{- range $egress.apps }}
+          - {{ . }}
+          {{- end }}
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        {{- toYaml $egress.to | nindent 8 }}
+      ports:
+        {{- if $egress.dns }}
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+        {{- else }}
+        {{- range $egress.ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+        {{- end }}
+{{- end }}
+{{- end }}
+{{- with $np.outbound }}
+---
+#NetworkPolicy: api-integration to its outbound endpoints, each to its own peers and ports (ARV-045; rows 9 and 16).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-integration-outbound-egress
+  labels:
+    {{- include "ariva-platform.labels" $ | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: api-integration
+  policyTypes: ["Egress"]
+  egress:
+    {{- range . }}
+    # {{ .name }}
+    - to:
+        {{- toYaml .to | nindent 8 }}
+      ports:
+        {{- range .ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    {{- end }}
+{{- end }}
+{{- if $simulation }}
+---
+#NetworkPolicy: the simulator (dev and demo only; never in k8s-prd): it pushes sensor data to api-ingest, AODB data to
+#api-integration and calls api-main on their plain ports, and api-integration pulls from its AODB and AMAN emulators.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: simulation-network
+  labels:
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: simulation
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: api-integration
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - to:
+        - podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values:
+                  {{- range $simulatorTargets }}
+                  - {{ . }}
+                  {{- end }}
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+#NetworkPolicy: api-main, api-ingest and api-integration take the simulator's calls on their plain port (dev and demo only).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ariva-hosts-from-simulation
+  labels:
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          {{- range $simulatorTargets }}
+          - {{ . }}
+          {{- end }}
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: simulation
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+#NetworkPolicy: api-integration to the simulator's AODB and AMAN emulators (dev and demo only).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-integration-to-simulation
+  labels:
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: api-integration
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: simulation
+      ports:
+        - protocol: TCP
+          port: 8080
+{{- end }}
+{{- end }}

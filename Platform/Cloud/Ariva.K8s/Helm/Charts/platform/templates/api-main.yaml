@@ -145,6 +145,10 @@ spec:
               subPath: appsettings.service.{{ .Values.environment }}.json
           env:
             {{- include "ariva-platform.otelEnv" . | nindent 12 }}
+            {{- if (.Values.ingressController | default dict).podNetworks }}
+            # The ingress controller's pod network, the only trusted proxies (ARV-085): Security:ForwardedHeaders:KnownNetworks
+            {{- include "ariva-platform.forwardedHeadersEnv" . | nindent 12 }}
+            {{- end }}
             # Kafka SASL password (ARV-020); optional, absent where Kafka is plaintext
             - name: Kafka__SaslPassword
               valueFrom:

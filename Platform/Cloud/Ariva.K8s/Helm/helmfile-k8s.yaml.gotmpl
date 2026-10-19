@@ -15,6 +15,10 @@
 # certificate and the ingress verifies it against the cluster CA. On in prd, which refuses to render with it off; the release
 # sets podTls.enabled, so no values file turns it off there. Off elsewhere. The secrets' names (podTls.caSecretName,
 # podTls.secretNames) come from the platform values file; create the secrets in the namespace first (Charts/platform/values.yaml).
+# networkPolicies: the platform release with its NetworkPolicies (ARV-085; Charts/platform networkPolicies.enabled): every Ariva
+# pod denies all traffic but the firewall matrix's flows. On in prd, which refuses to render with it off; the release sets
+# networkPolicies.enabled, so no values file turns it off there. Off elsewhere. The peers (kube-dns, the database, Kafka, Redis,
+# the collector, the relay, the outbound endpoints) come from the platform values file (Charts/platform/values.yaml).
 environments:
   dev:
     values:
@@ -22,24 +26,28 @@ environments:
         timescaledb: true
         timescaledbTls: false
         podTls: false
+        networkPolicies: false
   demo:
     values:
       - valuesFile: values-k8s-demo.yaml
         timescaledb: true
         timescaledbTls: false
         podTls: false
+        networkPolicies: false
   prd:
     values:
       - valuesFile: values-k8s-prd.yaml
         timescaledb: true
         timescaledbTls: true
         podTls: true
+        networkPolicies: true
   localk8s:
     values:
       - valuesFile: values-localk8s.yaml
         timescaledb: true
         timescaledbTls: false
         podTls: false
+        networkPolicies: false
 
 helmDefaults:
   kubeContext: default
@@ -50,6 +58,9 @@ helmDefaults:
 {{- end }}
 {{- if and (eq .Environment.Name "prd") (not (.Values | get "podTls" false)) }}
 {{- fail "prd serves the pods over TLS: the hosts listen on HTTPS only and the ingress verifies them (state value podTls true; ARV-082b)" }}
+{{- end }}
+{{- if and (eq .Environment.Name "prd") (not (.Values | get "networkPolicies" false)) }}
+{{- fail "prd isolates every pod: default deny and the firewall matrix's flows only (state value networkPolicies true; ARV-085)" }}
 {{- end }}
 
 releases:
@@ -80,7 +91,7 @@ releases:
     {{- end }}
     values:
       - ./Charts/platform/{{ .Values.valuesFile }}
-    {{- if or (.Values | get "buildNumber" "") (.Values | get "podTls" false) }}
+    {{- if or (.Values | get "buildNumber" "") (.Values | get "podTls" false) (.Values | get "networkPolicies" false) }}
     set:
       {{- if .Values | get "buildNumber" "" }}
       - name: buildNumber
@@ -89,6 +100,11 @@ releases:
       {{- if .Values | get "podTls" false }}
       # set, so that no values file turns pod TLS off (ARV-082b)
       - name: podTls.enabled
+        value: true
+      {{- end }}
+      {{- if .Values | get "networkPolicies" false }}
+      # set, so that no values file turns the network policies off (ARV-085)
+      - name: networkPolicies.enabled
         value: true
       {{- end }}
     {{- end }}

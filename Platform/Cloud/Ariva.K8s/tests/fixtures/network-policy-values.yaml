@@ -1,0 +1,46 @@
+# ARV-085: a production site's network values on top of values-k8s-prd.yaml: every flow the firewall matrix allows is open
+# (MQTT sensors, the OTLP collector, Loki, the SMTP relay and two outbound endpoints). tests/chart-security.mjs renders the
+# chart with it and checks the flows (networkPolicyFindings); network-policy-good.yaml is that render, trimmed to what the
+# rules read, and network-policy-expected.yaml the merged values it was rendered with.
+mqtt:
+  enabled: true
+otel:
+  endpoint: https://otel-collector.observability.svc:4317
+networkPolicies:
+  otlp:
+    to:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: observability
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: signoz-otel-collector
+  loki:
+    to:
+      - ipBlock:
+          cidr: 10.50.0.0/24
+    ports: [443]
+  smtp:
+    to:
+      - ipBlock:
+          cidr: 10.40.1.25/32
+  outbound:
+    - name: aodb
+      to:
+        - ipBlock:
+            cidr: 10.20.30.0/24
+      ports: [443]
+    - name: immigration
+      to:
+        - ipBlock:
+            cidr: 2001:db8:40::/48
+        - ipBlock:
+            cidr: 10.21.0.0/16
+            except: [10.21.9.0/24]
+      ports: [443, 8443]
+  mqttSensors:
+    from:
+      - ipBlock:
+          cidr: 10.30.0.0/16
+      - ipBlock:
+          cidr: 10.31.0.0/16

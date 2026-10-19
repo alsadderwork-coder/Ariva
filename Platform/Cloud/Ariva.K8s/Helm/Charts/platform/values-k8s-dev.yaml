@@ -55,7 +55,6 @@ ingresses:
       nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
       nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
       nginx.ingress.kubernetes.io/proxy-body-size: "21m"  # ARV-018: a 20 MB floor plan plus multipart framing
-      nginx.ingress.kubernetes.io/rewrite-target: /
 
   - name: api-ingest
     comment: Ariva API Ingest Ingress (vendor webhooks)
@@ -65,7 +64,6 @@ ingresses:
       nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
       nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
       nginx.ingress.kubernetes.io/proxy-body-size: "10m"
-      nginx.ingress.kubernetes.io/rewrite-target: /
 
   - name: api-cronz
     comment: Ariva API Cronz Ingress (TickerQ dashboard)
@@ -73,13 +71,12 @@ ingresses:
     serviceName: api-cronz-service
     # Plain HTTP redirected to HTTPS (ARV-084): the TickerQ dashboard, opened in a browser. The machine hosts refuse it (the default).
     plainHttp: redirect
+    # Limit the dashboard to the administration network (ARV-085, wiki 04) with its CIDRs, for example
+    # sourceRanges: [10.10.0.0/24] (allowlist-source-range; required in k8s-prd)
     annotations:
-      # Limit the dashboard to the administration network (wiki 04): set the customer's CIDRs, for example
-      # nginx.ingress.kubernetes.io/whitelist-source-range: "10.10.0.0/24"
       nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
       nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
       nginx.ingress.kubernetes.io/proxy-body-size: "10m"
-      nginx.ingress.kubernetes.io/rewrite-target: /
 
   - name: api-integration
     comment: Ariva API Integration Ingress (AODB push)
@@ -89,13 +86,12 @@ ingresses:
       nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
       nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
       nginx.ingress.kubernetes.io/proxy-body-size: "1m"  # ARV-043: the token exchange and the JSON batches take at most 1 MB
-      nginx.ingress.kubernetes.io/rewrite-target: /
 
   - name: api-integration-feeds
     comment: Ariva API Integration feeds (AIDX up to 5 MB; ARV-044)
     subdomain: api-integration-dev-ariva
     serviceName: api-integration-service
-    # No rewrite-target: a path-scoped ingress keeps the request path as it is.
+    # Path-scoped: the request path reaches the pod as it is (no Ingress rewrites a path, ARV-085).
     paths:
       - /api/v1/integration/
     annotations:
@@ -111,7 +107,6 @@ ingresses:
       nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
       nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
       nginx.ingress.kubernetes.io/proxy-body-size: "10m"
-      nginx.ingress.kubernetes.io/rewrite-target: /
 
   - name: web
     comment: Ariva Web Ingress
@@ -121,10 +116,9 @@ ingresses:
     plainHttp: redirect
     annotations:
       nginx.ingress.kubernetes.io/proxy-body-size: "5m"
-      nginx.ingress.kubernetes.io/rewrite-target: /
 
   # ADR-0026: the web app and the API share one host, so the refresh cookie (Path=/api/auth, SameSite=Strict) and
-  # SignalR need no cross-origin calls. A separate Ingress object because the web ingress rewrites every path to /.
+  # SignalR need no cross-origin calls. A separate Ingress object, as its annotations (timeouts, body size) are not the web's.
   - name: web-api
     comment: Ariva API on the web host (/api to Ariva.Api.Main)
     subdomain: dev-ariva

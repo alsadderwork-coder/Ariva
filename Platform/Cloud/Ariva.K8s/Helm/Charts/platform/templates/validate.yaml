@@ -39,6 +39,27 @@ Release guards. Renders nothing; fails the render when a rule is broken.
   certificate for a host the chart's tls section does not list) or custom-headers (a ConfigMap the chart cannot read, whose
   more_set_headers would replace the chart's), and no annotation value names Strict-Transport-Security,
   X-Content-Type-Options, Content-Security-Policy or more_clear_headers, so no site setting replaces or removes the headers.
+- Network policies, trusted proxies and private probes (ARV-085):
+  - ingressController: its namespaceSelector and podSelector are label selectors that select something; podNetworks is a list
+    of CIDRs (network addresses: no address bits after the prefix, so 10.244.1.0/16 is refused), never 0.0.0.0/0 or ::/0,
+    required in k8s-prd and there no wider than /14 (IPv4) or /48 (IPv6), and no IPv6 network that trusts IPv4 clients wider
+    than a /14 (ariva-platform.mappedClientsRefusal: the IPv4-mapped block or a network holding it, a prefix from /65 to /77 or
+    /97 to /109): every API host trusts X-Forwarded-For from these networks alone (Security:ForwardedHeaders:KnownNetworks)
+    and refuses to start on any of these, so the chart refuses what the hosts would.
+  - networkPolicies: enabled is true or false, and true in k8s-prd; no unknown key; dns, database, kafka, redis, otlp, loki
+    and smtp each a list of peers (to) and, but for dns, one or more TCP ports; outbound a list of entries with a unique name
+    (a DNS label), peers (one or more) and ports; mqttSensors.from a list of peers. A peer is an ipBlock (cidr and optional
+    except, valid CIDRs) or a podSelector with an optional namespaceSelector, never both and never empty; in k8s-prd no ipBlock
+    wider than /8 (IPv4) or /16 (IPv6), so never 0.0.0.0/0 or ::/0, and no namespaceSelector selecting every namespace
+    without a podSelector. With it on: dns, database, kafka and redis have peers (the hosts need them); a set otel.endpoint
+    has otlp peers; mqtt.enabled has mqttSensors peers; every Ingress routes to a service of the chart (whose pods the
+    controller may then reach).
+  - ingresses: sourceRanges is a list of CIDRs, required on every Ingress to api-cronz-service in k8s-prd and there no wider
+        than /8 (IPv4) or /16 (IPv6); no annotation sets allowlist-source-range or whitelist-source-range (sourceRanges does); no
+        path routes /health, /healthz or anything under them (the probes stay on the pods' ports; the chart's server-snippet
+        answers them 404); no annotation sets rewrite-target or use-regex, and no annotation value writes a rewrite directive:
+        the 404 is judged on the request's own path, before any rewrite, which could otherwise take another path to /health on
+        the pod.
 */ -}}
 {{- if and (eq .Values.environment "k8s-prd") (or (empty .Values.buildNumber) (eq (toString .Values.buildNumber) "trunk")) }}
 {{- fail "k8s-prd needs an explicit buildNumber (for example --set buildNumber=main-20261001.3); trunk and empty are not allowed" }}
@@ -179,6 +200,176 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- fail (printf "ingresses %s: the Ingresses of host %s carry different server-snippet annotations; ingress-nginx applies one server-snippet per host, so give them all the same (ARV-084)" $name $host) }}
 {{- end }}
 {{- $_ := set $hostServerSnippets $host $siteServerSnippet }}
+{{- end }}
+{{- $prd := eq (toString .Values.environment) "k8s-prd" }}
+{{- $controller := .Values.ingressController }}
+{{- if not (kindIs "map" $controller) }}
+{{- fail "ingressController must be a map: namespaceSelector, podSelector and podNetworks (ARV-085)" }}
+{{- end }}
+{{- range $key := list "namespaceSelector" "podSelector" }}
+{{- $refusal := include "ariva-platform.selectorRefusal" (dict "selector" (index $controller $key) "where" (printf "ingressController.%s" $key)) }}
+{{- if $refusal }}
+{{- fail (printf "%s (ARV-085)" $refusal) }}
+{{- end }}
+{{- if include "ariva-platform.selectsAll" (index $controller $key) }}
+{{- fail (printf "ingressController.%s selects everything; it names the ingress controller's namespace and pods, the only peers the routed pods take connections from (ARV-085)" $key) }}
+{{- end }}
+{{- end }}
+{{- $podNetworks := $controller.podNetworks | default list }}
+{{- if not (kindIs "slice" $podNetworks) }}
+{{- fail "ingressController.podNetworks must be a list of CIDRs (ARV-085)" }}
+{{- end }}
+{{- if and $prd (empty $podNetworks) }}
+{{- fail "k8s-prd needs ingressController.podNetworks, the ingress controller's pod network: the API hosts trust X-Forwarded-For from it alone (Security:ForwardedHeaders:KnownNetworks; ARV-085)" }}
+{{- end }}
+{{- range $podNetworks }}
+{{- $refusal := include "ariva-platform.cidrRefusal" (dict "cidr" . "v4" (ternary 14 1 $prd) "v6" (ternary 48 1 $prd)) }}
+{{- if $refusal }}
+{{- fail (printf "ingressController.podNetworks: %s; the API hosts trust X-Forwarded-For from these networks alone, so %s (ARV-085)" $refusal (ternary "k8s-prd takes an IPv4 prefix of /14 or longer and an IPv6 prefix of /48 or longer" "never 0.0.0.0/0 or ::/0" $prd)) }}
+{{- end }}
+{{- $mapped := include "ariva-platform.mappedClientsRefusal" . }}
+{{- if and $prd $mapped }}
+{{- fail (printf "ingressController.podNetworks: %s; the API hosts refuse to start on it (ARV-085)" $mapped) }}
+{{- end }}
+{{- end }}
+{{- $np := .Values.networkPolicies }}
+{{- if not (kindIs "map" $np) }}
+{{- fail "networkPolicies must be a map: enabled and the peers of each flow (ARV-085)" }}
+{{- end }}
+{{- if not (kindIs "bool" $np.enabled) }}
+{{- fail "networkPolicies.enabled must be true or false (ARV-085)" }}
+{{- end }}
+{{- if and $prd (not $np.enabled) }}
+{{- fail "k8s-prd isolates every pod: set networkPolicies.enabled true (ARV-085); the pods take connections from the ingress controller alone there" }}
+{{- end }}
+{{- $npKeys := list "enabled" "dns" "database" "kafka" "redis" "otlp" "loki" "smtp" "outbound" "mqttSensors" }}
+{{- range $key, $_ := $np }}
+{{- if not (has $key $npKeys) }}
+{{- fail (printf "networkPolicies.%s is not a setting (%s; ARV-085)" $key (join ", " $npKeys)) }}
+{{- end }}
+{{- end }}
+{{- range $name := list "dns" "database" "kafka" "redis" "otlp" "loki" "smtp" }}
+{{- $destination := index $np $name }}
+{{- $allowed := ternary (list "to") (list "to" "ports") (eq $name "dns") }}
+{{- if not (kindIs "map" $destination) }}
+{{- fail (printf "networkPolicies.%s must be a map of %s (ARV-085)" $name (join " and " $allowed)) }}
+{{- end }}
+{{- range $key, $_ := $destination }}
+{{- if not (has $key $allowed) }}
+{{- fail (printf "networkPolicies.%s.%s is not a setting (%s%s; ARV-085)" $name $key (join ", " $allowed) (ternary ": DNS is 53 over UDP and TCP" "" (eq $name "dns"))) }}
+{{- end }}
+{{- end }}
+{{- if not (kindIs "slice" ($destination.to | default list)) }}
+{{- fail (printf "networkPolicies.%s.to must be a list of NetworkPolicy peers (ARV-085)" $name) }}
+{{- end }}
+{{- range $index, $peer := ($destination.to | default list) }}
+{{- $refusal := include "ariva-platform.peerRefusal" (dict "peer" $peer "where" (printf "networkPolicies.%s.to[%d]" $name $index) "prd" $prd) }}
+{{- if $refusal }}
+{{- fail (printf "%s (ARV-085)" $refusal) }}
+{{- end }}
+{{- end }}
+{{- if ne $name "dns" }}
+{{- $refusal := include "ariva-platform.portsRefusal" (dict "ports" $destination.ports "where" (printf "networkPolicies.%s.ports" $name)) }}
+{{- if $refusal }}
+{{- fail (printf "%s (ARV-085)" $refusal) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if not (kindIs "slice" ($np.outbound | default list)) }}
+{{- fail "networkPolicies.outbound must be a list of endpoints: name, to and ports (ARV-085)" }}
+{{- end }}
+{{- $outboundNames := list }}
+{{- range $index, $endpoint := ($np.outbound | default list) }}
+{{- $where := printf "networkPolicies.outbound[%d]" $index }}
+{{- if not (kindIs "map" $endpoint) }}
+{{- fail (printf "%s must be a map of name, to and ports (ARV-085)" $where) }}
+{{- end }}
+{{- range $key, $_ := $endpoint }}
+{{- if not (has $key (list "name" "to" "ports")) }}
+{{- fail (printf "%s.%s is not a setting (name, to, ports; ARV-085)" $where $key) }}
+{{- end }}
+{{- end }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" (toString ($endpoint.name | default ""))) }}
+{{- fail (printf "%s.name must be a DNS label naming the endpoint (ARV-085)" $where) }}
+{{- end }}
+{{- if has (toString $endpoint.name) $outboundNames }}
+{{- fail (printf "%s.name %s is given twice (ARV-085)" $where (toString $endpoint.name)) }}
+{{- end }}
+{{- $outboundNames = append $outboundNames (toString $endpoint.name) }}
+{{- if or (not (kindIs "slice" ($endpoint.to | default list))) (empty $endpoint.to) }}
+{{- fail (printf "%s.to must be a list of one or more peers: an outbound endpoint without peers would open nothing (ARV-085)" $where) }}
+{{- end }}
+{{- range $peerIndex, $peer := $endpoint.to }}
+{{- $refusal := include "ariva-platform.peerRefusal" (dict "peer" $peer "where" (printf "%s.to[%d]" $where $peerIndex) "prd" $prd) }}
+{{- if $refusal }}
+{{- fail (printf "%s (ARV-085)" $refusal) }}
+{{- end }}
+{{- end }}
+{{- $refusal := include "ariva-platform.portsRefusal" (dict "ports" $endpoint.ports "where" (printf "%s.ports" $where)) }}
+{{- if $refusal }}
+{{- fail (printf "%s (ARV-085)" $refusal) }}
+{{- end }}
+{{- end }}
+{{- $sensors := $np.mqttSensors }}
+{{- if or (not (kindIs "map" $sensors)) (without (keys ($sensors | default dict)) "from") (not (kindIs "slice" (($sensors | default dict).from | default list))) }}
+{{- fail "networkPolicies.mqttSensors must be a map whose from is a list of peers, the sensor networks (ARV-085)" }}
+{{- end }}
+{{- range $index, $peer := ($sensors.from | default list) }}
+{{- $refusal := include "ariva-platform.peerRefusal" (dict "peer" $peer "where" (printf "networkPolicies.mqttSensors.from[%d]" $index) "prd" $prd) }}
+{{- if $refusal }}
+{{- fail (printf "%s (ARV-085)" $refusal) }}
+{{- end }}
+{{- end }}
+{{- if $np.enabled }}
+{{- range $name := list "dns" "database" "kafka" "redis" }}
+{{- if empty (index $np $name).to }}
+{{- fail (printf "networkPolicies.%s.to is empty: with networkPolicies.enabled the pods could not reach %s (ARV-085)" $name (index (dict "dns" "kube-dns" "database" "PostgreSQL" "kafka" "Kafka" "redis" "Redis") $name)) }}
+{{- end }}
+{{- end }}
+{{- if and (ne $otelEndpoint "") (empty $np.otlp.to) }}
+{{- fail "otel.endpoint is set but networkPolicies.otlp.to is empty: the hosts' telemetry could not leave the pods; give the collector's peers (ARV-085)" }}
+{{- end }}
+{{- if and .Values.mqtt .Values.mqtt.enabled (empty $sensors.from) }}
+{{- fail "mqtt.enabled with networkPolicies.enabled needs networkPolicies.mqttSensors.from, the sensor networks: no device could connect otherwise (ARV-085)" }}
+{{- end }}
+{{- $chartServices := list "api-main-service" "api-ingest-service" "api-stream-service" "api-cronz-service" "api-integration-service" "web-service" "simulation-service" }}
+{{- range $ingress := (.Values.ingresses | default list) }}
+{{- if not (has (toString $ingress.serviceName) $chartServices) }}
+{{- fail (printf "ingresses %s: routes to %s, which is not a service of the chart; with networkPolicies.enabled the controller reaches the chart's pods only (ARV-085)" (toString $ingress.name) (toString $ingress.serviceName)) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- range $ingress := (.Values.ingresses | default list) }}
+{{- $name := toString $ingress.name }}
+{{- $ranges := $ingress.sourceRanges | default list }}
+{{- if not (kindIs "slice" $ranges) }}
+{{- fail (printf "ingresses %s: sourceRanges must be a list of CIDRs (ARV-085)" $name) }}
+{{- end }}
+{{- range $ranges }}
+{{- $refusal := include "ariva-platform.cidrRefusal" (dict "cidr" . "v4" (ternary 8 0 $prd) "v6" (ternary 16 0 $prd)) }}
+{{- if $refusal }}
+{{- fail (printf "ingresses %s: sourceRanges: %s%s (ARV-085)" $name $refusal (ternary "; k8s-prd allows no source range wider than /8 for IPv4 or /16 for IPv6" "" $prd)) }}
+{{- end }}
+{{- end }}
+{{- if and $prd (eq (toString $ingress.serviceName) "api-cronz-service") (empty $ranges) }}
+{{- fail (printf "ingresses %s: k8s-prd opens the Cronz dashboard to the management network only: set its sourceRanges (ARV-085)" $name) }}
+{{- end }}
+{{- range $key, $value := ($ingress.annotations | default dict) }}
+{{- if has $key (list "nginx.ingress.kubernetes.io/allowlist-source-range" "nginx.ingress.kubernetes.io/whitelist-source-range") }}
+{{- fail (printf "ingresses %s: %s is the chart's: set the entry's sourceRanges instead (ARV-085)" $name $key) }}
+{{- end }}
+{{- if has $key (list "nginx.ingress.kubernetes.io/rewrite-target" "nginx.ingress.kubernetes.io/use-regex") }}
+{{- fail (printf "ingresses %s: %s is refused: the chart answers the health probes 404 on the request's own path, before any rewrite, so a rewrite could take another path to /health on the pod; no Ariva Ingress rewrites or matches by regex (ARV-085)" $name $key) }}
+{{- end }}
+{{- if regexMatch "(?im)(^|[;{}])\\s*rewrite\\s" (toString $value) }}
+{{- fail (printf "ingresses %s: %s writes a rewrite directive: it would change the path after the chart's health probe check, so another path could reach /health on the pod (ARV-085)" $name $key) }}
+{{- end }}
+{{- end }}
+{{- range ($ingress.paths | default list) }}
+{{- if regexMatch "(?i)^/healthz?(/|$)" (toString .) }}
+{{- fail (printf "ingresses %s: routes %s; the health probes are not routed through the ingress, they stay on the pods' own ports (ARV-085)" $name (toString .)) }}
+{{- end }}
+{{- end }}
 {{- end }}
 {{- $retention := (.Values.migration | default dict).retention | default dict }}
 {{- $retentionBounds := dict "rawSensingDays" (list 7 3650) "deskZoneReadingDays" (list 2 90) "laneStaffingDays" (list 90 3650) "alertEmailDays" (list 30 3650) "integrationCallDays" (list 30 3650) "reportDeliveryDays" (list 30 3650) "advertisingPlayDays" (list 30 3650) }}

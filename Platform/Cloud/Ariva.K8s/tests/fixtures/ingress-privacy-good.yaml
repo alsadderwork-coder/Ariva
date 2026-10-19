@@ -1,0 +1,512 @@
+# ARV-085: the Ingresses of a production render (values-k8s-prd.yaml with network-policy-values.yaml): no probe routed, every
+# server-snippet answering the probes 404 after HSTS, the Cronz dashboard behind its source range (tests/chart-security.mjs,
+# ingressPrivacySelfTest; generated, then kept as written).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api-main-ingress
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/backend-protocol: HTTPS
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+    nginx.ingress.kubernetes.io/enable-modsecurity: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/modsecurity-snippet: |
+      SecRuleEngine On
+      SecRule FILES "@rx \.(exe|dll|bat|cmd|com|msi|sh|ps1|php|jsp|asp|aspx)$" "id:100001,phase:2,deny,status:403,log,msg:\'Dangerous file upload blocked\'"
+    nginx.ingress.kubernetes.io/proxy-body-size: 21m
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-ssl-name: api-main-service.default.svc
+    nginx.ingress.kubernetes.io/proxy-ssl-protocols: TLSv1.2 TLSv1.3
+    nginx.ingress.kubernetes.io/proxy-ssl-secret: default/ariva-cluster-ca
+    nginx.ingress.kubernetes.io/proxy-ssl-server-name: on
+    nginx.ingress.kubernetes.io/proxy-ssl-verify: on
+    nginx.ingress.kubernetes.io/proxy-ssl-verify-depth: "2"
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "api-main-ariva.dalilhub.tech") {
+        return 421;
+      }
+      if ($uri ~* "^/healthz?(/|$)") {
+        return 404;
+      }
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-api-main
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - api-main-ariva.dalilhub.tech
+      secretName: ariva-tls
+  rules:
+    - host: api-main-ariva.dalilhub.tech
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api-ingest-ingress
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/backend-protocol: HTTPS
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+    nginx.ingress.kubernetes.io/enable-modsecurity: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/modsecurity-snippet: |
+      SecRuleEngine On
+      SecRule FILES "@rx \.(exe|dll|bat|cmd|com|msi|sh|ps1|php|jsp|asp|aspx)$" "id:100001,phase:2,deny,status:403,log,msg:\'Dangerous file upload blocked\'"
+    nginx.ingress.kubernetes.io/proxy-body-size: 10m
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-ssl-name: api-ingest-service.default.svc
+    nginx.ingress.kubernetes.io/proxy-ssl-protocols: TLSv1.2 TLSv1.3
+    nginx.ingress.kubernetes.io/proxy-ssl-secret: default/ariva-cluster-ca
+    nginx.ingress.kubernetes.io/proxy-ssl-server-name: on
+    nginx.ingress.kubernetes.io/proxy-ssl-verify: on
+    nginx.ingress.kubernetes.io/proxy-ssl-verify-depth: "2"
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "api-ingest-ariva.dalilhub.tech") {
+        return 421;
+      }
+      if ($uri ~* "^/healthz?(/|$)") {
+        return 404;
+      }
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-api-ingest
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - api-ingest-ariva.dalilhub.tech
+      secretName: ariva-tls
+  rules:
+    - host: api-ingest-ariva.dalilhub.tech
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-ingest-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api-cronz-ingress
+  annotations:
+    ariva.dalil.tech/plain-http: redirect
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/allowlist-source-range: 192.0.2.0/24
+    nginx.ingress.kubernetes.io/backend-protocol: HTTPS
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+    nginx.ingress.kubernetes.io/enable-modsecurity: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/modsecurity-snippet: |
+      SecRuleEngine On
+      SecRule FILES "@rx \.(exe|dll|bat|cmd|com|msi|sh|ps1|php|jsp|asp|aspx)$" "id:100001,phase:2,deny,status:403,log,msg:\'Dangerous file upload blocked\'"
+    nginx.ingress.kubernetes.io/proxy-body-size: 10m
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-ssl-name: api-cronz-service.default.svc
+    nginx.ingress.kubernetes.io/proxy-ssl-protocols: TLSv1.2 TLSv1.3
+    nginx.ingress.kubernetes.io/proxy-ssl-secret: default/ariva-cluster-ca
+    nginx.ingress.kubernetes.io/proxy-ssl-server-name: on
+    nginx.ingress.kubernetes.io/proxy-ssl-verify: on
+    nginx.ingress.kubernetes.io/proxy-ssl-verify-depth: "2"
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "api-cronz-ariva.dalilhub.tech") {
+        return 421;
+      }
+      if ($uri ~* "^/healthz?(/|$)") {
+        return 404;
+      }
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-api-cronz
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - api-cronz-ariva.dalilhub.tech
+      secretName: ariva-tls
+  rules:
+    - host: api-cronz-ariva.dalilhub.tech
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-cronz-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api-integration-ingress
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/backend-protocol: HTTPS
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+    nginx.ingress.kubernetes.io/enable-modsecurity: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/modsecurity-snippet: |
+      SecRuleEngine On
+      SecRule FILES "@rx \.(exe|dll|bat|cmd|com|msi|sh|ps1|php|jsp|asp|aspx)$" "id:100001,phase:2,deny,status:403,log,msg:\'Dangerous file upload blocked\'"
+    nginx.ingress.kubernetes.io/proxy-body-size: 1m
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-ssl-name: api-integration-service.default.svc
+    nginx.ingress.kubernetes.io/proxy-ssl-protocols: TLSv1.2 TLSv1.3
+    nginx.ingress.kubernetes.io/proxy-ssl-secret: default/ariva-cluster-ca
+    nginx.ingress.kubernetes.io/proxy-ssl-server-name: on
+    nginx.ingress.kubernetes.io/proxy-ssl-verify: on
+    nginx.ingress.kubernetes.io/proxy-ssl-verify-depth: "2"
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "api-integration-ariva.dalilhub.tech") {
+        return 421;
+      }
+      if ($uri ~* "^/healthz?(/|$)") {
+        return 404;
+      }
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-api-integration
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - api-integration-ariva.dalilhub.tech
+      secretName: ariva-tls
+  rules:
+    - host: api-integration-ariva.dalilhub.tech
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-integration-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api-integration-feeds-ingress
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/backend-protocol: HTTPS
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+    nginx.ingress.kubernetes.io/enable-modsecurity: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/modsecurity-snippet: |
+      SecRuleEngine On
+      SecRule FILES "@rx \.(exe|dll|bat|cmd|com|msi|sh|ps1|php|jsp|asp|aspx)$" "id:100001,phase:2,deny,status:403,log,msg:\'Dangerous file upload blocked\'"
+    nginx.ingress.kubernetes.io/proxy-body-size: 5m
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-ssl-name: api-integration-service.default.svc
+    nginx.ingress.kubernetes.io/proxy-ssl-protocols: TLSv1.2 TLSv1.3
+    nginx.ingress.kubernetes.io/proxy-ssl-secret: default/ariva-cluster-ca
+    nginx.ingress.kubernetes.io/proxy-ssl-server-name: on
+    nginx.ingress.kubernetes.io/proxy-ssl-verify: on
+    nginx.ingress.kubernetes.io/proxy-ssl-verify-depth: "2"
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "api-integration-ariva.dalilhub.tech") {
+        return 421;
+      }
+      if ($uri ~* "^/healthz?(/|$)") {
+        return 404;
+      }
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-api-integration-feeds
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - api-integration-ariva.dalilhub.tech
+      secretName: ariva-tls
+  rules:
+    - host: api-integration-ariva.dalilhub.tech
+      http:
+        paths:
+          - path: /api/v1/integration/
+            pathType: Prefix
+            backend:
+              service:
+                name: api-integration-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web-ingress
+  annotations:
+    ariva.dalil.tech/plain-http: redirect
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/backend-protocol: HTTPS
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+    nginx.ingress.kubernetes.io/enable-modsecurity: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/modsecurity-snippet: |
+      SecRuleEngine On
+      SecRule FILES "@rx \.(exe|dll|bat|cmd|com|msi|sh|ps1|php|jsp|asp|aspx)$" "id:100001,phase:2,deny,status:403,log,msg:\'Dangerous file upload blocked\'"
+    nginx.ingress.kubernetes.io/proxy-body-size: 5m
+    nginx.ingress.kubernetes.io/proxy-ssl-name: web-service.default.svc
+    nginx.ingress.kubernetes.io/proxy-ssl-protocols: TLSv1.2 TLSv1.3
+    nginx.ingress.kubernetes.io/proxy-ssl-secret: default/ariva-cluster-ca
+    nginx.ingress.kubernetes.io/proxy-ssl-server-name: on
+    nginx.ingress.kubernetes.io/proxy-ssl-verify: on
+    nginx.ingress.kubernetes.io/proxy-ssl-verify-depth: "2"
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "ariva.dalilhub.tech") {
+        return 421;
+      }
+      if ($uri ~* "^/healthz?(/|$)") {
+        return 404;
+      }
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-web
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - ariva.dalilhub.tech
+      secretName: ariva-tls
+  rules:
+    - host: ariva.dalilhub.tech
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web-api-ingress
+  annotations:
+    ariva.dalil.tech/plain-http: redirect
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/backend-protocol: HTTPS
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+    nginx.ingress.kubernetes.io/enable-modsecurity: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/modsecurity-snippet: |
+      SecRuleEngine On
+      SecRule FILES "@rx \.(exe|dll|bat|cmd|com|msi|sh|ps1|php|jsp|asp|aspx)$" "id:100001,phase:2,deny,status:403,log,msg:\'Dangerous file upload blocked\'"
+    nginx.ingress.kubernetes.io/proxy-body-size: 21m
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-ssl-name: api-main-service.default.svc
+    nginx.ingress.kubernetes.io/proxy-ssl-protocols: TLSv1.2 TLSv1.3
+    nginx.ingress.kubernetes.io/proxy-ssl-secret: default/ariva-cluster-ca
+    nginx.ingress.kubernetes.io/proxy-ssl-server-name: on
+    nginx.ingress.kubernetes.io/proxy-ssl-verify: on
+    nginx.ingress.kubernetes.io/proxy-ssl-verify-depth: "2"
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "ariva.dalilhub.tech") {
+        return 421;
+      }
+      if ($uri ~* "^/healthz?(/|$)") {
+        return 404;
+      }
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-web-api
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - ariva.dalilhub.tech
+      secretName: ariva-tls
+  rules:
+    - host: ariva.dalilhub.tech
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web-hubs-ingress
+  annotations:
+    ariva.dalil.tech/plain-http: redirect
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/backend-protocol: HTTPS
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      error_log /dev/stderr crit;
+    nginx.ingress.kubernetes.io/enable-access-log: "false"
+    nginx.ingress.kubernetes.io/enable-modsecurity: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/modsecurity-snippet: |
+      SecRuleEngine On
+      SecRule FILES "@rx \.(exe|dll|bat|cmd|com|msi|sh|ps1|php|jsp|asp|aspx)$" "id:100001,phase:2,deny,status:403,log,msg:\'Dangerous file upload blocked\'"
+      SecAuditEngine Off
+    nginx.ingress.kubernetes.io/proxy-body-size: 64k
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-ssl-name: api-main-service.default.svc
+    nginx.ingress.kubernetes.io/proxy-ssl-protocols: TLSv1.2 TLSv1.3
+    nginx.ingress.kubernetes.io/proxy-ssl-secret: default/ariva-cluster-ca
+    nginx.ingress.kubernetes.io/proxy-ssl-server-name: on
+    nginx.ingress.kubernetes.io/proxy-ssl-verify: on
+    nginx.ingress.kubernetes.io/proxy-ssl-verify-depth: "2"
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "ariva.dalilhub.tech") {
+        return 421;
+      }
+      if ($uri ~* "^/healthz?(/|$)") {
+        return 404;
+      }
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-web-hubs
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - ariva.dalilhub.tech
+      secretName: ariva-tls
+  rules:
+    - host: ariva.dalilhub.tech
+      http:
+        paths:
+          - path: /hubs
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443

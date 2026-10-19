@@ -208,7 +208,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 105,
-      "passes": false,
+      "passes": true,
       "notes": " 2026-10-14 (ARV-125a security review, recommendation 3): since ARV-125a the anonymous readiness body says \"Degraded\" (200) while a check is Degraded; the ingress routes \"/\" by prefix, so an outside caller can see that some dependency is Degraded (never which). The public ingress must not route /health/*; probes stay private.",
       "dependsOn": [
         "ARV-074"

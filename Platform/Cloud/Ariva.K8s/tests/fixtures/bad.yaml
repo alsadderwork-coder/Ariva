@@ -46,6 +46,8 @@ spec:
           startupProbe: { httpGet: { path: /health/startup, port: 8080 }, initialDelaySeconds: 10, periodSeconds: 15, failureThreshold: 8 }
           env:
             - { name: Hosting__StartupAllowanceSeconds, value: "130" }
+            # ARV-085: trusts X-Forwarded-For from any peer
+            - { name: ASPNETCORE_FORWARDEDHEADERS_ENABLED, value: "true" }
           securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
           volumeMounts: [{ name: tmp, mountPath: /tmp }]
 ---

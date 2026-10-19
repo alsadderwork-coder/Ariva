@@ -1,0 +1,95 @@
+# ARV-085: the network values network-policy-good.yaml was rendered with (values.yaml, values-k8s-prd.yaml and
+# network-policy-values.yaml merged; networkValues in tests/checks.mjs), from which networkPolicySelfTest computes the expected flows.
+podTls: true
+simulation: false
+mqtt:
+  port: 8883
+networkPolicies:
+  enabled: true
+  dns:
+    to:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        podSelector:
+          matchLabels:
+            k8s-app: kube-dns
+  database:
+    to:
+      - podSelector:
+          matchLabels:
+            app: timescaledb
+    ports:
+      - 5432
+  kafka:
+    to:
+      - podSelector:
+          matchLabels:
+            app.kubernetes.io/name: kafka
+    ports:
+      - 9092
+  redis:
+    to:
+      - podSelector:
+          matchLabels:
+            app.kubernetes.io/name: redis
+    ports:
+      - 6379
+  otlp:
+    to:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: observability
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: signoz-otel-collector
+    ports:
+      - 4317
+      - 4318
+  loki:
+    to:
+      - ipBlock:
+          cidr: 10.50.0.0/24
+    ports:
+      - 443
+  smtp:
+    to:
+      - ipBlock:
+          cidr: 10.40.1.25/32
+    ports:
+      - 587
+      - 465
+  outbound:
+    - name: aodb
+      to:
+        - ipBlock:
+            cidr: 10.20.30.0/24
+      ports:
+        - 443
+    - name: immigration
+      to:
+        - ipBlock:
+            cidr: 2001:db8:40::/48
+        - ipBlock:
+            cidr: 10.21.0.0/16
+            except:
+              - 10.21.9.0/24
+      ports:
+        - 443
+        - 8443
+  mqttSensors:
+    from:
+      - ipBlock:
+          cidr: 10.30.0.0/16
+      - ipBlock:
+          cidr: 10.31.0.0/16
+ingressController:
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: ingress-nginx
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ingress-nginx
+      app.kubernetes.io/component: controller
+  podNetworks:
+    - 10.244.0.0/16

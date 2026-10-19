@@ -5,7 +5,8 @@ namespace Ariva.Api.Common.Settings;
 /// <summary>
 /// Reverse proxies whose <c>X-Forwarded-For</c> and <c>X-Forwarded-Proto</c> headers are trusted, bound from
 /// <c>Security:ForwardedHeaders</c>. Nothing is trusted by default, not even loopback; in Kubernetes list the
-/// ingress controller's pod network so rate limits and logs see the real client address.
+/// ingress controller's pod network so rate limits and logs see the real client address. In k8s-prd the chart supplies it
+/// from a Helm value and a host refuses to start without a narrow network or proxy (ARV-085, ForwardedHeadersExtensions).
 /// </summary>
 public sealed class ForwardedHeadersSettings
 {

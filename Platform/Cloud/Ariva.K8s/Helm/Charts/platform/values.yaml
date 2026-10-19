@@ -89,6 +89,121 @@ podTls:
     api-integration: ariva-api-integration-tls
     web: ariva-web-tls
 
+# The ingress controller (ARV-085): the pods that proxy every request to the hosts and the web app.
+# - namespaceSelector and podSelector select its pods (label selectors, as in a NetworkPolicy peer): with networkPolicies on,
+#   the pods an Ingress routes to take connections from these pods alone. The defaults are the ingress-nginx Helm chart's
+#   pod labels in its usual namespace, ingress-nginx (Kubernetes sets kubernetes.io/metadata.name on every namespace). Both
+#   must select something; a controller on the host network is not a pod the selectors can match: give it a NetworkPolicy of
+#   the site's own.
+# - podNetworks: the controller pods' network, CIDRs (for example the cluster's pod CIDR, 10.244.0.0/16 on AKS with kubenet or
+#   Azure CNI Overlay). Every API host gets them as Security:ForwardedHeaders:KnownNetworks (Security__ForwardedHeaders__
+#   KnownNetworks__0, __1 and so on): the only peers whose X-Forwarded-For and X-Forwarded-Proto it trusts, so rate limits and
+#   logs see the client and not the controller (ASVS 5.0 V4.1.3). The controller sets those headers itself, as it ends TLS
+#   (use-forwarded-headers false in Helm/ingress-nginx-values.yaml). Required in k8s-prd, where the chart refuses an IPv4
+#   prefix shorter than /14 or an IPv6 prefix shorter than /48; never 0.0.0.0/0 or ::/0 anywhere. Empty elsewhere leaves the
+#   hosts' appsettings in force. Network addresses only (no address bits after the prefix, so 10.244.1.0/16 is refused).
+#   k8s-prd also refuses an IPv6 network that would trust IPv4 clients wider than a /14: a dual-stack pod sees an IPv4 client as
+#   ::ffff:a.b.c.d, and .NET matches it against an IPv6 network with a mask of (prefix mod 32) bits, so a prefix from /65 to /77
+#   or /97 to /109 is refused, and so is any network holding the IPv4-mapped block ::ffff:0:0/96 (::/64, ::ffff:0:0/96). Cilium's
+#   default IPv6 pod pool, fd00::/104, is refused by this rule: give a prefix that holds it outside those ranges (fd00::/96, for
+#   example) or the controller's IPv4 pod network. The hosts refuse to start on each of these values; the chart refuses them first.
+ingressController:
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: ingress-nginx
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ingress-nginx
+      app.kubernetes.io/component: controller
+  podNetworks: []
+
+# NetworkPolicies (ARV-085; wiki/05, the firewall matrix): every Ariva pod (the five API hosts, the web pod, the simulator and
+# the migration and topics jobs, by their app label) denies all traffic in and out, and the chart allows exactly the
+# matrix's flows. Off by default, so dev, demo and localk8s render as before: their clusters' Kafka, Redis and controller
+# labels are not fixed in the repository, dev and demo run the simulator, and a local cluster's network may enforce no
+# NetworkPolicy at all (Docker Desktop's does not), where on would prove nothing. k8s-prd turns it on and the chart refuses it
+# off there (validate.yaml, and the Helmfile state value networkPolicies). Needs a CNI that enforces NetworkPolicy (Calico,
+# Cilium, Antrea, the cloud's network policy engine).
+# With it on:
+# - in: the ingress controller (ingressController) to each pod an Ingress routes to, on its serving port only (8443 for an API
+#   host and 3443 for the web pod with podTls, 8080 and 3000 without; 8080 for the simulator); the sensor networks to
+#   api-ingest's MQTT port (mqtt.enabled); in dev and demo, the simulator to api-main, api-ingest and api-integration on 8080
+#   and api-integration to the simulator's AODB and AMAN emulators. api-stream and the jobs take nothing.
+# - out: DNS for every pod but the web pod (which needs nothing); the database for the API hosts and the migration job; Kafka
+#   for the API hosts, the topics job and the simulator (the AMAN feed emulator); Redis for the API hosts; the OTLP collector
+#   for the API hosts and the simulator; Loki for the API hosts; the SMTP relay for api-integration (alert email) and
+#   api-cronz (the scheduled reports, ARV-060); the outbound endpoints (AODB, immigration, AMAN's API, alert gateways) for
+#   api-integration only.
+# - the kubelet's probes need no rule: they come from the pod's own node, and a NetworkPolicy does not block a pod's resident
+#   node (Kubernetes lists it among what network policies cannot do). Where the CNI filters host traffic anyway (a host
+#   firewall), add a NetworkPolicy of the site's own for the nodes' addresses to the probe ports.
+# Every destination is a list of NetworkPolicy peers (to) and TCP ports. A peer is an ipBlock (cidr, optional except), or a
+# podSelector with an optional namespaceSelector (without one, pods of the release's namespace). An empty to opens nothing:
+# the destination stays denied. k8s-prd refuses an ipBlock wider than /8 (IPv4) or /16 (IPv6), 0.0.0.0/0 and ::/0 among
+# them, and a namespaceSelector that selects every namespace with no podSelector. NetworkPolicies add up: a site allows any
+# other flow (a backup job, a metrics scraper) with a NetworkPolicy of its own.
+# The jobs are Helm hooks: on an upgrade they run before the release's objects change, under the previous release's policies.
+networkPolicies:
+  enabled: false
+  # kube-dns (CoreDNS) in kube-system, on 53 UDP and TCP (fixed). With NodeLocal DNSCache add its address, for example
+  # - ipBlock: { cidr: 169.254.20.10/32 }
+  dns:
+    to:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        podSelector:
+          matchLabels:
+            k8s-app: kube-dns
+  # TimescaleDB (Charts/timescaledb, its pods app: timescaledb in this namespace), or the site's PostgreSQL.
+  database:
+    to:
+      - podSelector:
+          matchLabels:
+            app: timescaledb
+    ports: [5432]
+  # Kafka's brokers, every one (a client connects to each broker it is told of), behind Kafka:BootstrapServers; the common
+  # charts' label in this namespace by default. Add the brokers' own ports when they advertise others.
+  kafka:
+    to:
+      - podSelector:
+          matchLabels:
+            app.kubernetes.io/name: kafka
+    ports: [9092]
+  # Redis (Redis:ConnectionString); add 26379 for Sentinel.
+  redis:
+    to:
+      - podSelector:
+          matchLabels:
+            app.kubernetes.io/name: redis
+    ports: [6379]
+  # The OTLP collector (otel.endpoint): gRPC 4317, HTTP 4318. Empty: no export leaves the pods.
+  otlp:
+    to: []
+    ports: [4317, 4318]
+  # Loki (Loki:Uri), when the hosts send logs there.
+  loki:
+    to: []
+    ports: [3100]
+  # The SMTP relay (Email:Smtp): STARTTLS 587 or implicit TLS 465. api-integration (alert email, ARV-040) and api-cronz (the
+  # scheduled reports, ARV-060).
+  smtp:
+    to: []
+    ports: [587, 465]
+  # The outbound endpoints of api-integration (ARV-045, the OutboundEndpoint records): AODB, immigration, AMAN's API, the SMS
+  # gateway and the operations centre's webhooks. One entry each, a name (a DNS label), its peers (the CIDRs the endpoint's
+  # addresses resolve to) and its ports, for example
+  # - name: aodb
+  #   to:
+  #     - ipBlock: { cidr: 10.20.30.0/24 }
+  #   ports: [443]
+  outbound: []
+  # The sensor networks allowed to reach api-ingest's MQTT listener (mqtt.enabled; required with it). The MQTT Service keeps
+  # the device's address (externalTrafficPolicy Local), so the peers are the sensor VLANs, for example
+  # - ipBlock: { cidr: 10.30.0.0/16 }
+  mqttSensors:
+    from: []
+
 # Schema migration Job (ARV-006): api-main --migrate as a Helm hook before each upgrade. The migration login comes
 # from Database:Migration in base-appsettings-secret; hosts use the DML-only runtime login.
 migration:
@@ -226,11 +341,21 @@ imageCredentials:
 
 # Ingress definitions (see templates/ingresses.yaml); environment files provide the list. Each entry: name, comment,
 # subdomain (the host is <subdomain>.<domain>), serviceName, paths (default /), tlsSecretName (default tlsSecretName),
-# tokenInQuery (the live hub, ARV-035), annotations (the site's own) and plainHttp (ARV-084):
+# tokenInQuery (the live hub, ARV-035), annotations (the site's own), sourceRanges (ARV-085) and plainHttp (ARV-084):
+# - sourceRanges: the client networks allowed to reach the Ingress, CIDRs, as ingress-nginx's allowlist-source-range (the
+#   name ingress-nginx 1.15 reads first; whitelist-source-range is its older alias, refused here like the annotation itself:
+#   set sourceRanges). Any other client is answered 403. Required on the Cronz dashboard's Ingress (api-cronz-service) in
+#   k8s-prd, the management network only, and refused there wider than /8 (IPv4) or /16 (IPv6), 0.0.0.0/0 and ::/0 among them.
+#   The controller must see the client's own address: an L4 load balancer that keeps it (externalTrafficPolicy Local) or the
+#   PROXY protocol, never a proxy that rewrites it.
 # - plainHttp: refuse (the default) answers 403 to any request over plain HTTP and never redirects (ASVS 5.0 V4.1.2), for the
 #   machine hosts (api-main, api-ingest, api-integration); redirect sends a browser to HTTPS (308), for the web host and the
 #   Cronz dashboard. The Ingresses of one host share one mode, and in k8s-prd an Ingress to api-main-service,
 #   api-ingest-service or api-integration-service on a host without the web app refuses (validate.yaml).
+# Every Ingress answers 404 to /health, /healthz and anything under them, at its host's server level, before any location
+# (ARV-085): the probes stay private, on the pods' own ports, and no Ingress routes them (validate.yaml refuses such a path).
+# The 404 is judged on the request's own path, so no Ingress rewrites one: validate.yaml refuses the annotations rewrite-target
+# and use-regex and any snippet that writes a rewrite directive (the chart needs none: every path reaches its pod as it is).
 # Every Ingress gets, from the chart: HSTS max-age=31536000; includeSubDomains over HTTPS (no preload), nosniff and
 # Content-Security-Policy frame-ancestors 'none' on every response, the ingress's own (421, the redirect, 403, 413, 502,
 # 503, 504) included; the affinity cookie Secure, SameSite=Strict, Path=/; ssl-prefer-server-ciphers false (Mozilla

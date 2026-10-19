@@ -15,7 +15,8 @@ namespace Ariva.Api.Common.Extensions;
 /// proxy verified arrives URL-encoded in PEM and becomes the connection's client certificate, which pinned devices must
 /// present. The header is honoured only when the connection itself comes from a trusted proxy
 /// (<c>Security:ForwardedHeaders</c>), and is removed from every request, so a caller that reaches the host directly
-/// cannot name a certificate (a certificate is public; naming it is not holding it).
+/// cannot name a certificate (a certificate is public; naming it is not holding it). In k8s-prd those networks are the
+/// ingress controller's pod network alone (ARV-085, <see cref="ForwardedHeadersExtensions.ProductionTrustProblem(IConfiguration)"/>).
 /// </summary>
 public static class ClientCertificateExtensions
 {

@@ -1,0 +1,662 @@
+# ARV-085: a production render with every flow the firewall matrix allows (values-k8s-prd.yaml and network-policy-values.yaml),
+# trimmed to what networkPolicyFindings reads, with the TimescaleDB release beside it (tests/chart-security.mjs, networkPolicySelfTest;
+# generated, then kept as written). network-policy-expected.yaml holds the merged values it was rendered with.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ariva-default-deny
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          - api-main
+          - api-ingest
+          - api-stream
+          - api-cronz
+          - api-integration
+          - web
+          - simulation
+          - database-migration
+          - kafka-topics
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-main-from-ingress-controller
+spec:
+  podSelector:
+    matchLabels:
+      app: api-main
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: controller
+              app.kubernetes.io/name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-ingest-from-ingress-controller
+spec:
+  podSelector:
+    matchLabels:
+      app: api-ingest
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: controller
+              app.kubernetes.io/name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-cronz-from-ingress-controller
+spec:
+  podSelector:
+    matchLabels:
+      app: api-cronz
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: controller
+              app.kubernetes.io/name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-integration-from-ingress-controller
+spec:
+  podSelector:
+    matchLabels:
+      app: api-integration
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: controller
+              app.kubernetes.io/name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: web-from-ingress-controller
+spec:
+  podSelector:
+    matchLabels:
+      app: web
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: controller
+              app.kubernetes.io/name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 3443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-ingest-from-mqtt-sensors
+spec:
+  podSelector:
+    matchLabels:
+      app: api-ingest
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 10.30.0.0/16
+        - ipBlock:
+            cidr: 10.31.0.0/16
+      ports:
+        - protocol: TCP
+          port: 8883
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ariva-dns-egress
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          - api-main
+          - api-ingest
+          - api-stream
+          - api-cronz
+          - api-integration
+          - database-migration
+          - kafka-topics
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ariva-database-egress
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          - api-main
+          - api-ingest
+          - api-stream
+          - api-cronz
+          - api-integration
+          - database-migration
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: timescaledb
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ariva-kafka-egress
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          - api-main
+          - api-ingest
+          - api-stream
+          - api-cronz
+          - api-integration
+          - kafka-topics
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: kafka
+      ports:
+        - protocol: TCP
+          port: 9092
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ariva-redis-egress
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          - api-main
+          - api-ingest
+          - api-stream
+          - api-cronz
+          - api-integration
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ariva-otlp-egress
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          - api-main
+          - api-ingest
+          - api-stream
+          - api-cronz
+          - api-integration
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: signoz-otel-collector
+      ports:
+        - protocol: TCP
+          port: 4317
+        - protocol: TCP
+          port: 4318
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ariva-loki-egress
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          - api-main
+          - api-ingest
+          - api-stream
+          - api-cronz
+          - api-integration
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 10.50.0.0/24
+      ports:
+        - protocol: TCP
+          port: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ariva-smtp-egress
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          - api-cronz
+          - api-integration
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 10.40.1.25/32
+      ports:
+        - protocol: TCP
+          port: 587
+        - protocol: TCP
+          port: 465
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-integration-outbound-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: api-integration
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 10.20.30.0/24
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        - ipBlock:
+            cidr: 2001:db8:40::/48
+        - ipBlock:
+            cidr: 10.21.0.0/16
+            except:
+              - 10.21.9.0/24
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 8443
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-cronz-deployment
+spec:
+  template:
+    metadata:
+      labels:
+        app: api-cronz
+    spec:
+      containers:
+        - name: api-cronz-container
+          image: dalil.azurecr.io/ariva/api-cronz:main-20261001.1
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-ingest-deployment
+spec:
+  template:
+    metadata:
+      labels:
+        app: api-ingest
+    spec:
+      containers:
+        - name: api-ingest-container
+          image: dalil.azurecr.io/ariva/api-ingest:main-20261001.1
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-integration-deployment
+spec:
+  template:
+    metadata:
+      labels:
+        app: api-integration
+    spec:
+      containers:
+        - name: api-integration-container
+          image: dalil.azurecr.io/ariva/api-integration:main-20261001.1
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-main-deployment
+spec:
+  template:
+    metadata:
+      labels:
+        app: api-main
+    spec:
+      containers:
+        - name: api-main-container
+          image: dalil.azurecr.io/ariva/api-main:main-20261001.1
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-stream-deployment
+spec:
+  template:
+    metadata:
+      labels:
+        app: api-stream
+    spec:
+      containers:
+        - name: api-stream-container
+          image: dalil.azurecr.io/ariva/api-stream:main-20261001.1
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-deployment
+spec:
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: web-container
+          image: dalil.azurecr.io/ariva/web:main-20261001.1
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api-main-ingress
+spec:
+  rules:
+    - host: api-main-ariva.dalilhub.tech
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api-ingest-ingress
+spec:
+  rules:
+    - host: api-ingest-ariva.dalilhub.tech
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-ingest-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api-cronz-ingress
+spec:
+  rules:
+    - host: api-cronz-ariva.dalilhub.tech
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-cronz-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api-integration-ingress
+spec:
+  rules:
+    - host: api-integration-ariva.dalilhub.tech
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-integration-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api-integration-feeds-ingress
+spec:
+  rules:
+    - host: api-integration-ariva.dalilhub.tech
+      http:
+        paths:
+          - path: /api/v1/integration/
+            pathType: Prefix
+            backend:
+              service:
+                name: api-integration-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web-ingress
+spec:
+  rules:
+    - host: ariva.dalilhub.tech
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web-api-ingress
+spec:
+  rules:
+    - host: ariva.dalilhub.tech
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web-hubs-ingress
+spec:
+  rules:
+    - host: ariva.dalilhub.tech
+      http:
+        paths:
+          - path: /hubs
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: database-migration
+spec:
+  template:
+    metadata:
+      labels:
+        app: database-migration
+    spec:
+      containers:
+        - name: database-migration
+          image: dalil.azurecr.io/ariva/api-main:main-20261001.1
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kafka-topics
+spec:
+  template:
+    metadata:
+      labels:
+        app: kafka-topics
+    spec:
+      containers:
+        - name: kafka-topics
+          image: dalil.azurecr.io/ariva/api-main:main-20261001.1
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: timescaledb
+spec:
+  template:
+    metadata:
+      labels:
+        app: timescaledb
+    spec:
+      containers:
+        - name: timescaledb
+          image: timescale/timescaledb-ha:pg17-ts2.30@sha256:2fcc39a5d4c8a65f58691ef92c7819df5773db72397b2dd8493f114659b519c2
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: timescaledb
+spec:
+  podSelector:
+    matchLabels:
+      app: timescaledb
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 5432

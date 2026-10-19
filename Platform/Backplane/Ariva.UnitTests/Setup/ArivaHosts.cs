@@ -42,6 +42,9 @@ public static class ArivaHosts
     /// <summary>Every host, including the simulator.</summary>
     public static readonly IReadOnlyList<string> All = [.. Backplane, Simulation];
 
+    /// <summary>The ingress controller's pod network a host started here in k8s-prd trusts for forwarded headers (ARV-085).</summary>
+    public const string ProductionPodNetwork = "10.244.0.0/16";
+
     #endregion
 
     #region Theory data
@@ -203,6 +206,9 @@ internal sealed class ArivaWebApplicationFactory<TEntryPoint>(string environment
             var (certificate, key) = TestPodCertificate();
             builder.UseSetting("Kestrel:Endpoints:Https:Certificate:Path", certificate);
             builder.UseSetting("Kestrel:Endpoints:Https:Certificate:KeyPath", key);
+            // k8s-prd trusts forwarded headers from the ingress controller's pod network only, which the chart passes from a Helm
+            // value (ARV-085), and a host refuses to start without one: a pod network of the test's own stands in.
+            builder.UseSetting($"{Ariva.Api.Common.Settings.ForwardedHeadersSettings.SectionName}:KnownNetworks:0", ArivaHosts.ProductionPodNetwork);
         }
         // Nor a database readiness check, which would answer 503 here: the probes' authorization is what these hosts
         // test; the check itself is covered by ServiceDefaultsTests (ARV-066).

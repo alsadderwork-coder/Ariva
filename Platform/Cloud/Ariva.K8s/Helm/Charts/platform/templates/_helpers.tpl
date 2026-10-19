@@ -272,6 +272,12 @@ ingress-nginx applies one server-snippet per host.
 - Content-Security-Policy frame-ancestors 'none' with add_header always (always: on 4xx and 5xx too). add_header adds to a
   pod's own policy instead of replacing it (both are enforced; the pods already forbid framing), and the configuration-snippet
   repeats it in every location, as nginx drops a server's add_header in a location that has one of its own.
+- The health probes are private (ARV-085, ASVS 5.0 V13.4.5): /health, /healthz and anything under them, in any case, answer 404
+  at the server level, after the HSTS value is set and the 421. The server's rewrite phase runs before nginx picks a location,
+  so no location of any Ingress on the host (prefix, exact, regex) can route them, and the 404 is the server's own response,
+  as the 421 is: it carries the server's headers, and no location's add_header is involved. $uri is the normalised path
+  (percent-decoding, //, /./ and /../ resolved), so /%68ealth or //health are caught as well; the kubelet probes the pods'
+  own ports and never passes here.
 Usage: {{ include "ariva-platform.ingressServerSnippet" "api-main-ariva.example.com" }}
 */}}
 {{- define "ariva-platform.ingressServerSnippet" -}}
@@ -284,6 +290,9 @@ more_set_headers "X-Content-Type-Options: nosniff";
 add_header Content-Security-Policy "frame-ancestors 'none'" always;
 if ($host != "{{ . }}") {
   return 421;
+}
+if ($uri ~* "^/healthz?(/|$)") {
+  return 404;
 }
 {{ end }}
 
@@ -320,6 +329,9 @@ site annotation for any other key here. Usage: {{ include "ariva-platform.ingres
   http level whenever ssl-ciphers is set and has no ConfigMap key for it, so the host's server block turns it off.
 - ModSecurity with the upload rule; its message is in escaped quotes because ingress-nginx wraps the snippet in
   modsecurity_rules '...', where a bare quote ends the string and nginx refuses the whole configuration.
+- sourceRanges (ARV-085), when given: allowlist-source-range, the CIDRs joined by commas. ingress-nginx 1.15 reads that name
+  (internal/ingress/annotations/ipallowlist) and falls back to whitelist-source-range, its alias, only when it is absent or
+  empty; it writes allow for each CIDR and deny all in each of the Ingress's locations, so any other client gets 403.
 */}}
 {{- define "ariva-platform.ingressChartAnnotations" -}}
 {{- $root := index . 0 -}}
@@ -346,6 +358,9 @@ site annotation for any other key here. Usage: {{ include "ariva-platform.ingres
 {{- $_ := set $a "nginx.ingress.kubernetes.io/enable-access-log" "false" -}}
 {{- end -}}
 {{- $_ := set $a "nginx.ingress.kubernetes.io/modsecurity-snippet" $modsecurity -}}
+{{- with $ingress.sourceRanges -}}
+{{- $_ := set $a "nginx.ingress.kubernetes.io/allowlist-source-range" (join "," .) -}}
+{{- end -}}
 {{- if include "ariva-platform.podTls" $root -}}
 {{- $_ := set $a "nginx.ingress.kubernetes.io/backend-protocol" "HTTPS" -}}
 {{- $_ := set $a "nginx.ingress.kubernetes.io/proxy-ssl-secret" (printf "%s/%s" $root.Release.Namespace ($root.Values.podTls.caSecretName | default "ariva-cluster-ca")) -}}
@@ -356,4 +371,213 @@ site annotation for any other key here. Usage: {{ include "ariva-platform.ingres
 {{- $_ := set $a "nginx.ingress.kubernetes.io/proxy-ssl-protocols" "TLSv1.2 TLSv1.3" -}}
 {{- end -}}
 {{- toYaml $a -}}
+{{- end }}
+
+{{/*
+The trusted proxy networks of every API host (ARV-085; values ingressController.podNetworks): the ingress controller's pod
+network as Security:ForwardedHeaders:KnownNetworks, one variable per CIDR in order (__0, __1 ...), the names the hosts bind.
+validate.yaml checks the CIDRs (required in k8s-prd, IPv4 /14 and IPv6 /48 at the widest there, never /0).
+Usage: {{- include "ariva-platform.forwardedHeadersEnv" . | nindent 12 }}, inside {{- if (.Values.ingressController | default dict).podNetworks }}
+*/}}
+{{- define "ariva-platform.forwardedHeadersEnv" -}}
+{{- range $index, $network := ((.Values.ingressController | default dict).podNetworks | default list) }}
+- name: Security__ForwardedHeaders__KnownNetworks__{{ $index }}
+  value: {{ toString $network | quote }}
+{{- end }}
+{{- end }}
+
+{{/*
+Why a CIDR is refused (ARV-085), or empty when it is fine: given a dict of cidr, v4 and v6 (the shortest prefix allowed for an
+IPv4 and an IPv6 network; 0 allows any). A CIDR is an IPv4 address in dotted decimal or an IPv6 address in its hexadecimal
+form (with at most one ::, no zone, no embedded IPv4), then / and the prefix length; its address is the network's (no bit set
+after the prefix), as the hosts (System.Net.IPNetwork) and Kubernetes' strict validation require.
+Usage: {{ include "ariva-platform.cidrRefusal" (dict "cidr" "10.244.0.0/16" "v4" 14 "v6" 48) }}
+*/}}
+{{- define "ariva-platform.cidrRefusal" -}}
+{{- $cidr := toString .cidr -}}
+{{- $v4 := int (.v4 | default 0) -}}
+{{- $v6 := int (.v6 | default 0) -}}
+{{- $octet := "(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])" -}}
+{{- if regexMatch (printf "^(%s\\.){3}%s/([0-9]|[12][0-9]|3[0-2])$" $octet $octet) $cidr -}}
+{{- $parts := splitList "/" $cidr -}}
+{{- $prefix := atoi (index $parts 1) -}}
+{{- $octets := splitList "." (index $parts 0) -}}
+{{- $value := add (mul (atoi (index $octets 0)) 16777216) (mul (atoi (index $octets 1)) 65536) (mul (atoi (index $octets 2)) 256) (atoi (index $octets 3)) -}}
+{{- $block := 1 -}}
+{{- range until (int (sub 32 $prefix)) }}{{ $block = mul $block 2 }}{{ end -}}
+{{- if ne (int (mod $value $block)) 0 -}}
+{{ $cidr }} is not a network address: the bits after its /{{ $prefix }} prefix must be zero
+{{- else if lt $prefix $v4 -}}
+{{ $cidr }} is wider than /{{ $v4 }}
+{{- end -}}
+{{- else if regexMatch "^[0-9A-Fa-f:]+/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$" $cidr -}}
+{{- $parts := splitList "/" $cidr -}}
+{{- $prefix := atoi (index $parts 1) -}}
+{{- $halves := splitList "::" (index $parts 0) -}}
+{{- $left := list -}}
+{{- $right := list -}}
+{{- if ne (index $halves 0) "" }}{{ $left = splitList ":" (index $halves 0) }}{{ end -}}
+{{- if and (eq (len $halves) 2) (ne (index $halves 1) "") }}{{ $right = splitList ":" (index $halves 1) }}{{ end -}}
+{{- $wellFormed := true -}}
+{{- range (concat $left $right) }}{{ if not (regexMatch "^[0-9A-Fa-f]{1,4}$" .) }}{{ $wellFormed = false }}{{ end }}{{ end -}}
+{{- $count := add (len $left) (len $right) -}}
+{{- if or (gt (len $halves) 2) (not $wellFormed) (and (eq (len $halves) 1) (ne (int $count) 8)) (and (eq (len $halves) 2) (gt (int $count) 7)) -}}
+{{ $cidr }} is not a CIDR (an IPv4 or IPv6 network address and its prefix length)
+{{- else -}}
+{{- $groups := $left -}}
+{{- range until (int (sub 8 $count)) }}{{ $groups = append $groups "0" }}{{ end -}}
+{{- $groups = concat $groups $right -}}
+{{- $digits := dict "0" 0 "1" 1 "2" 2 "3" 3 "4" 4 "5" 5 "6" 6 "7" 7 "8" 8 "9" 9 "a" 10 "b" 11 "c" 12 "d" 13 "e" 14 "f" 15 -}}
+{{- $hostBits := false -}}
+{{- range $i, $group := $groups -}}
+{{- $value := 0 -}}
+{{- range (splitList "" (lower $group)) }}{{ $value = add (mul $value 16) (index $digits .) }}{{ end -}}
+{{- $start := mul $i 16 -}}
+{{- if le (int $prefix) (int $start) -}}
+{{- if ne (int $value) 0 }}{{ $hostBits = true }}{{ end -}}
+{{- else if lt (int $prefix) (int (add $start 16)) -}}
+{{- $block := 1 -}}
+{{- range until (int (sub (add $start 16) $prefix)) }}{{ $block = mul $block 2 }}{{ end -}}
+{{- if ne (int (mod $value $block)) 0 }}{{ $hostBits = true }}{{ end -}}
+{{- end -}}
+{{- end -}}
+{{- if $hostBits -}}
+{{ $cidr }} is not a network address: the bits after its /{{ $prefix }} prefix must be zero
+{{- else if lt $prefix $v6 -}}
+{{ $cidr }} is wider than /{{ $v6 }}
+{{- end -}}
+{{- end -}}
+{{- else -}}
+{{ $cidr }} is not a CIDR (an IPv4 or IPv6 network address and its prefix length)
+{{- end -}}
+{{- end }}
+
+{{/*
+Why a label selector of a NetworkPolicy peer is refused (ARV-085), or empty: given a dict of selector and where. A selector is
+a map of matchLabels (a map of strings) and matchExpressions (a list of key, operator In, NotIn, Exists or DoesNotExist, and
+values), nothing else.
+*/}}
+{{- define "ariva-platform.selectorRefusal" -}}
+{{- $selector := .selector -}}
+{{- if not (kindIs "map" $selector) -}}
+{{ .where }} must be a label selector (matchLabels, matchExpressions)
+{{- else if without (keys $selector) "matchLabels" "matchExpressions" -}}
+{{ .where }} has {{ without (keys $selector) "matchLabels" "matchExpressions" | sortAlpha | join ", " }}: a label selector has matchLabels and matchExpressions only
+{{- else if and (hasKey $selector "matchLabels") (not (kindIs "map" $selector.matchLabels)) -}}
+{{ .where }}.matchLabels must be a map of label to value
+{{- else if and (hasKey $selector "matchExpressions") (not (kindIs "slice" $selector.matchExpressions)) -}}
+{{ .where }}.matchExpressions must be a list
+{{- else -}}
+{{- $refusal := "" -}}
+{{- range $label, $value := ($selector.matchLabels | default dict) }}{{ if not (kindIs "string" $value) }}{{ $refusal = printf "%s.matchLabels.%s must be a string" $.where $label }}{{ end }}{{ end -}}
+{{- range ($selector.matchExpressions | default list) }}{{ if or (not (kindIs "map" .)) (not (has (toString (.operator | default "")) (list "In" "NotIn" "Exists" "DoesNotExist"))) (empty (toString (.key | default ""))) }}{{ $refusal = printf "%s.matchExpressions: each is a key, an operator In, NotIn, Exists or DoesNotExist and its values" $.where }}{{ end }}{{ end -}}
+{{- $refusal -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+True ("true") when a label selector selects everything (no matchLabels entry and no matchExpressions), empty otherwise.
+*/}}
+{{- define "ariva-platform.selectsAll" -}}
+{{- if and (empty ((. | default dict).matchLabels | default dict)) (empty ((. | default dict).matchExpressions | default list)) }}true{{ end -}}
+{{- end }}
+
+{{/*
+Why a NetworkPolicy peer of the values is refused (ARV-085), or empty: given a dict of peer, where and prd (k8s-prd). A peer is
+an ipBlock (cidr and optional except, valid CIDRs) or a podSelector with an optional namespaceSelector (both label selectors);
+never both, never empty. In k8s-prd: no ipBlock wider than /8 (IPv4) or /16 (IPv6), so never 0.0.0.0/0 or ::/0, and no
+namespaceSelector that selects every namespace without a podSelector that narrows it.
+*/}}
+{{- define "ariva-platform.peerRefusal" -}}
+{{- $peer := .peer -}}
+{{- $where := .where -}}
+{{- if or (not (kindIs "map" $peer)) (empty $peer) -}}
+{{ $where }} must be a NetworkPolicy peer: an ipBlock, or a podSelector with an optional namespaceSelector
+{{- else if without (keys $peer) "ipBlock" "namespaceSelector" "podSelector" -}}
+{{ $where }} has {{ without (keys $peer) "ipBlock" "namespaceSelector" "podSelector" | sortAlpha | join ", " }}: a peer has ipBlock, podSelector and namespaceSelector only
+{{- else if hasKey $peer "ipBlock" -}}
+{{- if or (hasKey $peer "podSelector") (hasKey $peer "namespaceSelector") -}}
+{{ $where }} gives ipBlock with a selector; a peer is one or the other
+{{- else if or (not (kindIs "map" $peer.ipBlock)) (without (keys ($peer.ipBlock | default dict)) "cidr" "except") (not (kindIs "slice" ($peer.ipBlock.except | default list))) -}}
+{{ $where }}.ipBlock must be a cidr and an optional list except
+{{- else -}}
+{{- $v4 := ternary 8 0 (eq (toString .prd) "true") -}}
+{{- $v6 := ternary 16 0 (eq (toString .prd) "true") -}}
+{{- $refusal := include "ariva-platform.cidrRefusal" (dict "cidr" $peer.ipBlock.cidr "v4" $v4 "v6" $v6) -}}
+{{- range ($peer.ipBlock.except | default list) }}{{ if not $refusal }}{{ $refusal = include "ariva-platform.cidrRefusal" (dict "cidr" . "v4" 0 "v6" 0) }}{{ end }}{{ end -}}
+{{- if $refusal }}{{ $where }}.ipBlock: {{ $refusal }}{{ if eq (toString .prd) "true" }} (k8s-prd opens no destination wider than /8 for IPv4 or /16 for IPv6){{ end }}{{ end -}}
+{{- end -}}
+{{- else -}}
+{{- $refusal := "" -}}
+{{- if hasKey $peer "podSelector" }}{{ $refusal = include "ariva-platform.selectorRefusal" (dict "selector" $peer.podSelector "where" (printf "%s.podSelector" $where)) }}{{ end -}}
+{{- if and (not $refusal) (hasKey $peer "namespaceSelector") }}{{ $refusal = include "ariva-platform.selectorRefusal" (dict "selector" $peer.namespaceSelector "where" (printf "%s.namespaceSelector" $where)) }}{{ end -}}
+{{- if and (not $refusal) (not (hasKey $peer "podSelector")) (not (hasKey $peer "namespaceSelector")) }}{{ $refusal = printf "%s selects nothing" $where }}{{ end -}}
+{{- if and (not $refusal) (eq (toString .prd) "true") (hasKey $peer "namespaceSelector") (include "ariva-platform.selectsAll" $peer.namespaceSelector) (include "ariva-platform.selectsAll" $peer.podSelector) -}}
+{{- $refusal = printf "%s selects every pod of every namespace; k8s-prd names the namespace or the pods" $where -}}
+{{- end -}}
+{{- $refusal -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Why a list of TCP ports of the values is refused (ARV-085), or empty: given a dict of ports and where. One or more whole
+numbers from 1 to 65535.
+*/}}
+{{- define "ariva-platform.portsRefusal" -}}
+{{- if or (not (kindIs "slice" .ports)) (empty .ports) -}}
+{{ .where }} must be a list of one or more TCP ports
+{{- else -}}
+{{- $refusal := "" -}}
+{{- range .ports -}}
+{{- $number := or (kindIs "float64" .) (kindIs "int64" .) (kindIs "int" .) -}}
+{{- if or (not $number) (lt (float64 .) 1.0) (gt (float64 .) 65535.0) (ne (float64 .) (float64 (int .))) -}}
+{{- $refusal = printf "%s: %v is not a port (a whole number from 1 to 65535)" $.where . -}}
+{{- end -}}
+{{- end -}}
+{{- $refusal -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Why an IPv6 trusted proxy network would trust IPv4 clients too widely (ARV-085, the hosts' rule in ForwardedHeadersExtensions,
+k8s-prd), or empty: given a CIDR that ariva-platform.cidrRefusal accepts. A dual-stack pod (Kestrel on https://*:8443) sees an
+IPv4 client as ::ffff:a.b.c.d, and .NET 10's IPNetwork.Contains judges that address against an IPv6 network with IPv4 arithmetic:
+the network's last 32 bits under a mask of (prefix mod 32) bits (32 when that is 0). So a prefix from /65 to /77 or /97 to /109
+(a mask under /14) trusts IPv4 clients wider than a /14: fd00:10:244::/65 trusts 0.0.0.0/1, fd00::a00:0/104 trusts 10.0.0.0/8,
+and Cilium's default IPv6 pool fd00::/104 trusts 0.0.0.0/8. A network of /96 or wider that holds the whole IPv4-mapped block
+::ffff:0:0/96 (::/64, ::/80, ::ffff:0:0/96 itself) trusts every IPv4 client by the addresses it holds. The hosts refuse both
+at start; so does the chart. An IPv4 network is never refused here.
+Usage: {{ include "ariva-platform.mappedClientsRefusal" "fd00:10::/48" }}
+*/}}
+{{- define "ariva-platform.mappedClientsRefusal" -}}
+{{- $cidr := toString . -}}
+{{- if and (contains ":" $cidr) (regexMatch "^[0-9A-Fa-f:]+/[0-9]{1,3}$" $cidr) -}}
+{{- $parts := splitList "/" $cidr -}}
+{{- $prefix := atoi (index $parts 1) -}}
+{{- $mask := mod $prefix 32 | int -}}
+{{- if eq $mask 0 }}{{ $mask = 32 }}{{ end -}}
+{{- $halves := splitList "::" (index $parts 0) -}}
+{{- $left := list -}}
+{{- $right := list -}}
+{{- if ne (index $halves 0) "" }}{{ $left = splitList ":" (index $halves 0) }}{{ end -}}
+{{- if and (eq (len $halves) 2) (ne (index $halves 1) "") }}{{ $right = splitList ":" (index $halves 1) }}{{ end -}}
+{{- $groups := $left -}}
+{{- range until (int (sub 8 (add (len $left) (len $right)))) }}{{ $groups = append $groups "0" }}{{ end -}}
+{{- $groups = concat $groups $right -}}
+{{- $digits := dict "0" 0 "1" 1 "2" 2 "3" 3 "4" 4 "5" 5 "6" 6 "7" 7 "8" 8 "9" 9 "a" 10 "b" 11 "c" 12 "d" 13 "e" 14 "f" 15 -}}
+{{- $values := list -}}
+{{- range $groups -}}
+{{- $value := 0 -}}
+{{- range (splitList "" (lower .)) }}{{ $value = add (mul $value 16) (index $digits .) }}{{ end -}}
+{{- $values = append $values (int $value) -}}
+{{- end -}}
+{{- /* The mapped block's sixth group (bits 80 to 95, 0xffff) under the prefix; the other groups of a network holding it are 0. */ -}}
+{{- $sixth := 0 -}}
+{{- if gt $prefix 80 }}{{ $block := 1 }}{{ range until (int (sub 96 $prefix)) }}{{ $block = mul $block 2 }}{{ end }}{{ $sixth = int (mul (div 65535 $block) $block) }}{{ end -}}
+{{- $holdsMapped := and (le $prefix 96) (eq (index $values 5) $sixth) -}}
+{{- range $i, $value := $values }}{{ if and (ne $i 5) (ne $value 0) }}{{ $holdsMapped = false }}{{ end }}{{ end -}}
+{{- if or (lt $mask 14) $holdsMapped -}}
+{{ $cidr }} trusts IPv4 clients wider than an IPv4 /14: a dual-stack pod sees them as IPv4-mapped addresses (::ffff:a.b.c.d), and .NET matches those against an IPv6 network with a mask of its prefix mod 32 bits, so k8s-prd takes no IPv6 network that holds the IPv4-mapped block ::ffff:0:0/96 and no prefix from /65 to /77 or from /97 to /109
+{{- end -}}
+{{- end -}}
 {{- end }}

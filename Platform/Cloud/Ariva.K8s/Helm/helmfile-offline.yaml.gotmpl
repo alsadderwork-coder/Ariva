@@ -19,6 +19,9 @@
 #   podTls          the pods over TLS (ARV-082b), as in helmfile-k8s.yaml.gotmpl: true in prd, which refuses it off; a site
 #                   file cannot turn it off there (the release sets podTls.enabled) but may name the secrets
 #                   (podTls.caSecretName, podTls.secretNames); create them first
+#   networkPolicies the NetworkPolicies (ARV-085), as in helmfile-k8s.yaml.gotmpl: true in prd, which refuses it off; a site
+#                   file cannot turn them off there (the release sets networkPolicies.enabled) but gives the peers
+#                   (networkPolicies.*, ingressController) and ingressController.podNetworks
 # The image repository, tags and digests come from the bundle and win over a site file: the pods pull exactly the images the
 # bundle's verification checked. It refuses to render unless images.yaml pins all seven Ariva digests, so a dry run's bundle
 # (which pins none) cannot be installed.
@@ -30,24 +33,28 @@ environments:
         timescaledb: true
         timescaledbTls: false
         podTls: false
+        networkPolicies: false
   demo:
     values:
       - valuesFile: values-k8s-demo.yaml
         timescaledb: true
         timescaledbTls: false
         podTls: false
+        networkPolicies: false
   prd:
     values:
       - valuesFile: values-k8s-prd.yaml
         timescaledb: true
         timescaledbTls: true
         podTls: true
+        networkPolicies: true
   localk8s:
     values:
       - valuesFile: values-localk8s.yaml
         timescaledb: true
         timescaledbTls: false
         podTls: false
+        networkPolicies: false
 
 helmDefaults:
   kubeContext: default
@@ -68,6 +75,9 @@ helmDefaults:
 {{- end }}
 {{- if and (eq .Environment.Name "prd") (not (.Values | get "podTls" false)) }}
 {{- fail "prd serves the pods over TLS: the hosts listen on HTTPS only and the ingress verifies them (state value podTls true; ARV-082b)" }}
+{{- end }}
+{{- if and (eq .Environment.Name "prd") (not (.Values | get "networkPolicies" false)) }}
+{{- fail "prd isolates every pod: default deny and the firewall matrix's flows only (state value networkPolicies true; ARV-085)" }}
 {{- end }}
 
 releases:
@@ -114,5 +124,10 @@ releases:
       {{- if .Values | get "podTls" false }}
       # set, so that no site file turns pod TLS off (ARV-082b)
       - name: podTls.enabled
+        value: true
+      {{- end }}
+      {{- if .Values | get "networkPolicies" false }}
+      # set, so that no site file turns the network policies off (ARV-085)
+      - name: networkPolicies.enabled
         value: true
       {{- end }}
