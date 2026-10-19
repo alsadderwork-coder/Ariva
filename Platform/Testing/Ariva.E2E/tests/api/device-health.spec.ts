@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { accounts, call, databaseAvailable, login, totpCode } from '../support/accounts';
+import { createAirport } from '../support/airports';
 import { hosts, kafkaAvailable } from '../support/hosts';
 
 // ARV-025: device health. A calibrated device that pushes a status is Online with its last report; the health overview
@@ -30,7 +31,9 @@ test.beforeAll(async () => {
 		return (json.id ?? json.profile?.id) as string;
 	};
 	expect((await call('POST', `${admin}/sites`, { token, data: { code: site, name: site } })).status()).toBe(201);
-	const airport = await create('airports', { iataCode: random(3), name: `E2E health ${site}`, timeZoneId: 'Asia/Dubai' });
+	const { id: airport } = await createAirport((iataCode) =>
+		call('POST', `${admin}/airports`, { token, data: { iataCode, name: `E2E health ${site}`, timeZoneId: 'Asia/Dubai' } })
+	);
 	const terminal = await create('terminals', { airportId: airport, code: 'T1', name: 'T1', siteCode: site });
 	const levelId = await create('levels', { terminalId: terminal, code: 'L0', name: 'L0', floorNumber: 0, widthMetres: 100, depthMetres: 50 });
 	const draft = await create('zone-profiles/drafts', { siteCode: site, name: 'Arrivals' });

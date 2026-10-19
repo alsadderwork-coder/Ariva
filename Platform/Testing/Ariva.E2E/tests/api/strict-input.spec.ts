@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { expect, test } from '@playwright/test';
 import { accounts, call, databaseAvailable, integrationSeedsFile, login, signIn, totpCode, unusedTotpCode, type CallResponse } from '../support/accounts';
+import { createAirport } from '../support/airports';
 import { expectNoLeak, expectProblemDetails } from '../support/api-assertions';
 import { hosts } from '../support/hosts';
 import { markupFragments, sqlInjectionPayloads, xssPayloads } from '../support/payloads';
@@ -69,7 +70,9 @@ test.beforeAll(async () => {
 
 	// A site of its own: a level, a published zone profile with one queue and a device in it.
 	expect((await call('POST', `${admin}/sites`, { token: stepped, data: { code: site, name: `E2E strict input ${site}` } })).status()).toBe(201);
-	const airport = await create('airports', { iataCode: random(3), name: `E2E strict input ${site}`, timeZoneId: 'Asia/Dubai' });
+	const { id: airport } = await createAirport((iataCode) =>
+		call('POST', `${admin}/airports`, { token: stepped, data: { iataCode, name: `E2E strict input ${site}`, timeZoneId: 'Asia/Dubai' } })
+	);
 	const terminal = await create('terminals', { airportId: airport, code: 'T1', name: 'T1', siteCode: site });
 	levelId = await create('levels', { terminalId: terminal, code: 'L0', ...level });
 	const draft = await create('zone-profiles/drafts', { siteCode: site, name: 'Arrivals' });

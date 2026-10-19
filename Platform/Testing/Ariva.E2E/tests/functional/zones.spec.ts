@@ -1,6 +1,6 @@
-import crypto from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
 import { accounts, call, claimsOf, developmentSigningKey, headerOf, signIn, signToken, totpCode } from '../support/accounts';
+import { createAirport } from '../support/airports';
 import { guardPage } from '../support/browser-guards';
 import { hosts } from '../support/hosts';
 import { xssPayloads } from '../support/payloads';
@@ -24,18 +24,18 @@ const hostileSvg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://
 <text x="5" y="80">Gate</text>
 <a xlink:href="javascript:alert(4)"><text x="5" y="90">click</text></a>
 </svg>`;
-const iata = Array.from(crypto.randomBytes(3), (b) => String.fromCharCode(65 + (b % 26))).join('');
 
 test.beforeAll(async () => {
 	// The site E2EZ gets an airport, a terminal and one 60 by 40 m level, unless an earlier run left them.
 	const admin = (await signIn(accounts().webAdmin)).accessToken;
 	const levels = await call('GET', `${api}/levels?siteCode=E2EZ`, { token: admin });
 	if (((await levels.json()).data as unknown[]).length > 0) return;
-	const airport = await call('POST', `${api}/airports`, { token: admin, data: { iataCode: iata, name: `E2E zones ${iata}`, timeZoneId: 'Asia/Amman' } });
-	expect(airport.status(), await airport.text()).toBe(201);
+	const airport = await createAirport((iata) =>
+		call('POST', `${api}/airports`, { token: admin, data: { iataCode: iata, name: `E2E zones ${iata}`, timeZoneId: 'Asia/Amman' } })
+	);
 	const terminal = await call('POST', `${api}/terminals`, {
 		token: admin,
-		data: { airportId: (await airport.json()).id, code: 'TZ', name: 'Zones terminal', siteCode: 'E2EZ' }
+		data: { airportId: airport.id, code: 'TZ', name: 'Zones terminal', siteCode: 'E2EZ' }
 	});
 	expect(terminal.status(), await terminal.text()).toBe(201);
 	const level = await call('POST', `${api}/levels`, {

@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { createHash } from 'node:crypto';
 import { accounts, call, databaseAvailable, login, signIn, totpCode } from '../support/accounts';
+import { createAirport } from '../support/airports';
 import { hosts } from '../support/hosts';
 
 // ARV-021: the device registry through the API. Registering a device and rotating its credential are critical
@@ -49,7 +50,9 @@ test.beforeAll(async () => {
 		return (json.id ?? json.profile?.id) as string;
 	};
 	expect((await call('POST', `${admin}/sites`, { token: withSecondFactor, data: { code: site, name: `E2E devices ${site}` } })).status()).toBe(201);
-	const airport = await create('airports', { iataCode: random(3), name: `E2E devices ${site}`, timeZoneId: 'Asia/Dubai' });
+	const { id: airport } = await createAirport((iataCode) =>
+		call('POST', `${admin}/airports`, { token: withSecondFactor, data: { iataCode, name: `E2E devices ${site}`, timeZoneId: 'Asia/Dubai' } })
+	);
 	const terminal = await create('terminals', { airportId: airport, code: 'T1', name: 'Terminal 1', siteCode: site });
 	levelId = await create('levels', { terminalId: terminal, code: 'L0', name: 'Arrivals', floorNumber: 0, widthMetres: 100, depthMetres: 50 });
 	const draft = await create('zone-profiles/drafts', { siteCode: site, name: 'Arrivals' });

@@ -1,5 +1,6 @@
 import { expect } from '@playwright/test';
 import { type Account, call, login, unusedTotpCode } from './accounts';
+import { createAirport } from './airports';
 import { hosts } from './hosts';
 
 // ARV-071: a site of its own for a load run (api/load.spec.ts) or for the screen watched under load
@@ -33,7 +34,9 @@ export async function provisionLoadSite(admin: Account, prefix: string, zone = '
 	};
 	const site = `${prefix}${randomLetters(4)}`;
 	expect((await call('POST', `${base}/sites`, { token, data: { code: site, name: site } })).status()).toBe(201);
-	const airport = (await create('airports', { iataCode: randomLetters(3), name: `E2E load ${site}`, timeZoneId: 'Asia/Dubai' })).id;
+	const { id: airport } = await createAirport((iataCode) =>
+		call('POST', `${base}/airports`, { token, data: { iataCode, name: `E2E load ${site}`, timeZoneId: 'Asia/Dubai' } })
+	);
 	const terminal = (await create('terminals', { airportId: airport, code: 'T1', name: 'T1', siteCode: site })).id;
 	const levelId = (await create('levels', { terminalId: terminal, code: 'L0', name: 'L0', floorNumber: 0, widthMetres: 100, depthMetres: 50 })).id;
 	const created = await create('zone-profiles/drafts', { siteCode: site, name: 'Arrivals' });

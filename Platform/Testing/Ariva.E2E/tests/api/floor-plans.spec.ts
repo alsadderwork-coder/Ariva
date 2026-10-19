@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { accounts, call, databaseAvailable, signIn } from '../support/accounts';
+import { createAirport } from '../support/airports';
 import { hosts } from '../support/hosts';
 
 // ARV-018: floor plans per level. PNG, JPEG and SVG only, typed by their bytes; SVG is sanitised (scripts, event
@@ -12,8 +13,6 @@ test.skip(!databaseAvailable, 'floor plans need the E2E database (ARIVA_E2E_SCHE
 test.describe.configure({ mode: 'serial' });
 
 const adminApi = `${hosts.main}/api/v1/admin`;
-const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-const iata = Array.from({ length: 3 }, () => letters[Math.floor(Math.random() * 26)]).join('');
 const png = Buffer.from(
 	'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFklEQVR4nGP8z8DwnwEJMDGgAQYGBgCkKAIFD1jZ6wAAAABJRU5ErkJggg==',
 	'base64'
@@ -47,7 +46,9 @@ test.beforeAll(async () => {
 		expect(response.status(), `${entity}: ${await response.text()}`).toBe(201);
 		return (await response.json()).id as string;
 	};
-	const airport = await create('airports', { iataCode: iata, name: `E2E plans ${iata}`, timeZoneId: 'Asia/Amman' });
+	const { id: airport } = await createAirport((iata) =>
+		call('POST', `${adminApi}/airports`, { token: admin, data: { iataCode: iata, name: `E2E plans ${iata}`, timeZoneId: 'Asia/Amman' } })
+	);
 	const terminal = await create('terminals', { airportId: airport, code: 'T1', name: 'Terminal 1', siteCode: 'E2E1' });
 	levelId = await create('levels', { terminalId: terminal, code: 'L0', name: 'Arrivals', floorNumber: 0, widthMetres: 100, depthMetres: 50 });
 	levelUrl = `${adminApi}/levels/${levelId}/floor-plan`;

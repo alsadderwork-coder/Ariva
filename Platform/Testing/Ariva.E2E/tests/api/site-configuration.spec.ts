@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 import pg from 'pg';
 import { accounts, call, databaseAvailable, login, signIn, unusedTotpCode, type Account } from '../support/accounts';
+import { createAirport } from '../support/airports';
 import { hosts } from '../support/hosts';
 
 // ARV-122a: a site's configuration exported as one bundle and imported into an empty site, through the API. Export and
@@ -36,9 +37,9 @@ const tail = random(4);
 const source = `CFA${tail}`;
 const target = `CFB${tail}`;
 const spare = `CFC${tail}`;
-const sourceIata = random(3);
-let targetIata = random(3);
-while (targetIata === sourceIata) targetIata = random(3);
+/** The source's and the target's airport codes, drawn when the airports are created (another code when one is taken). */
+let sourceIata = '';
+let targetIata = '';
 const configuration = (site: string) => `${admin}/sites/${site}/configuration`;
 const hostileTerminal = '<script>alert(1)</script>';
 const hostileDesk = "' OR '1'='1";
@@ -114,6 +115,10 @@ async function create(path: string, data: unknown): Promise<string> {
 	return (json.id ?? json.profile?.id) as string;
 }
 
+/** Creates one of the suite's airports under the code createAirport draws. */
+const postAirport = (iata: string) =>
+	call('POST', `${admin}/airports`, { token: stepped, data: { iataCode: iata, name: `E2E site configuration ${iata}`, timeZoneId: 'Asia/Dubai' } });
+
 async function publish(draft: string): Promise<any> {
 	const { geometryHash } = await (await call('GET', `${admin}/zone-profiles/${draft}/validation`, { token: stepped })).json();
 	const published = await call('POST', `${admin}/zone-profiles/${draft}/publish`, { token: stepped, data: { geometryHash } });
@@ -137,10 +142,10 @@ test.beforeAll(async () => {
 		const created = await call('POST', `${admin}/sites`, { token: stepped, data: { code: site, name: `E2E site configuration ${site}` } });
 		expect(created.status(), created.status() === 201 ? site : await created.text()).toBe(201);
 	}
-	for (const iata of [sourceIata, targetIata]) {
-		await create('airports', { iataCode: iata, name: `E2E site configuration ${iata}`, timeZoneId: 'Asia/Dubai' });
-		airports.push(iata);
-	}
+	sourceIata = (await createAirport(postAirport)).iataCode;
+	airports.push(sourceIata);
+	targetIata = (await createAirport(postAirport)).iataCode;
+	airports.push(targetIata);
 
 	const airportId = (await (await call('GET', `${admin}/airports?text=${sourceIata}&pageSize=500`, { token: stepped })).json()).data.find((a: any) => a.iataCode === sourceIata).id;
 	const terminal = await create('terminals', { airportId, code: 'T1', name: hostileTerminal, siteCode: source });
@@ -541,9 +546,7 @@ test('a round trip between two sites gives the same portable geometry hash once 
 test('a rule on open desks below recommendation owned by the border imports with its owner (ARV-181b2)', async () => {
 	// Into the spare site, at an airport of its own (the source's and the target's terminal codes are taken there), without the
 	// display (its code is live at the target now).
-	let iata = random(3);
-	while ([sourceIata, targetIata].includes(iata)) iata = random(3);
-	await create('airports', { iataCode: iata, name: `E2E site configuration ${iata}`, timeZoneId: 'Asia/Dubai' });
+	const { iataCode: iata } = await createAirport(postAirport);
 	airports.push(iata);
 	const bundle = desksBelow(rehashed(exported.bundle, 'displays', Buffer.from('[]')), {});
 	const imported = await call('POST', `${configuration(spare)}?airportCode=${iata}`, { token: stepped, data: bundle });

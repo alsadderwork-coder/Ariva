@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { accounts, call, claimsOf, developmentSigningKey, headerOf, login, signIn, signToken, unusedTotpCode, type Account } from '../support/accounts';
+import { createAirport } from '../support/airports';
 import { guardPage } from '../support/browser-guards';
 import { hosts, webUrl } from '../support/hosts';
 import { allowStatuses, databaseAvailable, fillSignIn, ownAddress, signInThroughUi } from '../support/web-auth';
@@ -27,7 +28,8 @@ const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const random = (n: number) => Array.from(crypto.randomBytes(n), (b) => letters[b % 26]).join('');
 const tail = random(4);
 const site = `CIW${tail}`;
-let iata = random(3);
+/** The airport's code, drawn when the airport is created (another code when one is taken). */
+let iata = '';
 const hostileModel = '<img src=x onerror=alert(1)>';
 const hostileZone = `<img src=x onerror=alert(2)> ${tail}`;
 /** Elements and attributes a successful injection would create. */
@@ -79,13 +81,11 @@ async function search(entity: string, token = stepped): Promise<any[]> {
 async function siteWithTopology(): Promise<void> {
 	const created = await call('POST', `${admin}/sites`, { token: stepped, data: { code: site, name: `E2E CSV import screens ${site}` } });
 	expect(created.status(), created.status() === 201 ? site : await created.text()).toBe(201);
-	let airportId = '';
-	for (let attempt = 0; attempt < 5 && !airportId; attempt++) {
-		const made = await call('POST', `${admin}/airports`, { token: stepped, data: { iataCode: iata, name: `E2E CSV import screens ${iata}`, timeZoneId: 'Asia/Dubai' } });
-		if (made.status() === 201) airportId = (await made.json()).id;
-		else iata = random(3);
-	}
-	expect(airportId.length > 0, 'an airport of its own').toBe(true);
+	const airport = await createAirport((code) =>
+		call('POST', `${admin}/airports`, { token: stepped, data: { iataCode: code, name: `E2E CSV import screens ${code}`, timeZoneId: 'Asia/Dubai' } })
+	);
+	const airportId = airport.id;
+	iata = airport.iataCode;
 	const terminal = await create('terminals', { airportId, code: 'T1', name: 'Terminal 1', siteCode: site });
 	const level = await create('levels', { terminalId: terminal, code: 'L0', name: 'Arrivals', floorNumber: 0, widthMetres: 100, depthMetres: 50 });
 	const immigration = await create('checkpoints', { levelId: level, code: 'IMM', name: 'Immigration', kind: 'Immigration' });

@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import pg from 'pg';
 import { accounts, call, type CallResponse, claimsOf, databaseAvailable, login, signIn, unusedTotpCode } from '../support/accounts';
+import { createAirport } from '../support/airports';
 import { expectApiSecurityHeaders, expectNoLeak } from '../support/api-assertions';
 import { hosts } from '../support/hosts';
 import { markupFragments, sqlInjectionPayloads, xssPayloads } from '../support/payloads';
@@ -73,9 +74,9 @@ async function ensureProfile(): Promise<Profile> {
 			expect(response.status(), `${entity}: ${await response.text()}`).toBe(201);
 			return (await response.json()).id as string;
 		};
-		const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-		const iata = Array.from({ length: 3 }, () => letters[Math.floor(Math.random() * 26)]).join('');
-		const airport = await create('airports', { iataCode: iata, name: `E2E validation ${iata}`, timeZoneId: 'Asia/Dubai' });
+		const { id: airport } = await createAirport((iata) =>
+			call('POST', `${admin}/airports`, { token: administrator, data: { iataCode: iata, name: `E2E validation ${iata}`, timeZoneId: 'Asia/Dubai' } })
+		);
 		const terminal = await create('terminals', { airportId: airport, code: 'T1', name: 'Terminal 1', siteCode: site });
 		const levelId = await create('levels', { terminalId: terminal, code: 'L0', name: 'Arrivals', floorNumber: 0, widthMetres: 100, depthMetres: 50 });
 

@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
-import { accounts, call, databaseAvailable, login, signIn, totpCode } from '../support/accounts';
+import { accounts, call, databaseAvailable, login, signIn, unusedTotpCode } from '../support/accounts';
+import { createAirport } from '../support/airports';
 import { hosts } from '../support/hosts';
 
 // ARV-022: devices authenticate on Ariva.Api.Ingest with their own credential and nothing else. Missing key 401, wrong
@@ -23,7 +24,7 @@ const asDevice = (url: string, credential: string, address?: string) => call('GE
 
 test.beforeAll(async () => {
 	const { userName, password, totpSecret } = accounts().deviceAuthAdmin;
-	withSecondFactor = (await (await login(userName, password, undefined, undefined, { code: totpCode(totpSecret!) })).json()).accessToken;
+	withSecondFactor = (await (await login(userName, password, undefined, undefined, { code: await unusedTotpCode(totpSecret!) })).json()).accessToken;
 	const create = async (path: string, data: unknown) => {
 		const response = await call('POST', `${admin}/${path}`, { token: withSecondFactor, data });
 		expect(response.status(), `${path}: ${await response.text()}`).toBe(201);
@@ -31,7 +32,9 @@ test.beforeAll(async () => {
 		return (json.id ?? json.profile?.id) as string;
 	};
 	expect((await call('POST', `${admin}/sites`, { token: withSecondFactor, data: { code: site, name: site } })).status()).toBe(201);
-	const airport = await create('airports', { iataCode: random(3), name: `E2E device auth ${site}`, timeZoneId: 'Asia/Dubai' });
+	const { id: airport } = await createAirport((iataCode) =>
+		call('POST', `${admin}/airports`, { token: withSecondFactor, data: { iataCode, name: `E2E device auth ${site}`, timeZoneId: 'Asia/Dubai' } })
+	);
 	const terminal = await create('terminals', { airportId: airport, code: 'T1', name: 'T1', siteCode: site });
 	const levelId = await create('levels', { terminalId: terminal, code: 'L0', name: 'L0', floorNumber: 0, widthMetres: 100, depthMetres: 50 });
 	const draft = await create('zone-profiles/drafts', { siteCode: site, name: 'Arrivals' });

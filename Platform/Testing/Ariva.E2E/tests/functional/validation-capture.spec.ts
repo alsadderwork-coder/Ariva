@@ -1,6 +1,7 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page, type Request, type Route, type TestInfo } from '@playwright/test';
 import { accounts, call, claimsOf, login, signIn, unusedTotpCode } from '../support/accounts';
+import { createAirport } from '../support/airports';
 import { guardPage, type PageGuards } from '../support/browser-guards';
 import { hosts } from '../support/hosts';
 import { xssPayloads } from '../support/payloads';
@@ -78,9 +79,9 @@ async function ensureProfile(): Promise<Profile> {
 			expect(response.status(), `${entity}: ${await response.text()}`).toBe(201);
 			return (await response.json()).id as string;
 		};
-		const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-		const iata = Array.from({ length: 3 }, () => letters[Math.floor(Math.random() * 26)]).join('');
-		const airport = await create('airports', { iataCode: iata, name: `E2E tablet ${iata}`, timeZoneId: 'Asia/Dubai' });
+		const { id: airport } = await createAirport((iata) =>
+			call('POST', `${admin}/airports`, { token: administrator, data: { iataCode: iata, name: `E2E tablet ${iata}`, timeZoneId: 'Asia/Dubai' } })
+		);
 		const terminal = await create('terminals', { airportId: airport, code: 'T1', name: 'Terminal 1', siteCode: site });
 		const levelId = await create('levels', { terminalId: terminal, code: 'L0', name: 'Arrivals', floorNumber: 0, widthMetres: 100, depthMetres: 50 });
 

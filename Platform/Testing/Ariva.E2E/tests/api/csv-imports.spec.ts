@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { accounts, call, databaseAvailable, login, signIn, unusedTotpCode, type Account } from '../support/accounts';
+import { createAirport } from '../support/airports';
 import { hosts } from '../support/hosts';
 
 // ARV-123a: CSV imports of devices and desk code mappings through the API, each a preview then a commit. The device
@@ -72,10 +73,10 @@ async function search(entity: string, code: string): Promise<any[]> {
 async function siteWithTopology(code: string): Promise<void> {
 	const created = await call('POST', `${admin}/sites`, { token: stepped, data: { code, name: `E2E CSV imports ${code}` } });
 	expect(created.status(), created.status() === 201 ? code : await created.text()).toBe(201);
-	let iata = random(3);
-	while (airports.includes(iata)) iata = random(3);
-	const airportId = await create('airports', { iataCode: iata, name: `E2E CSV imports ${iata}`, timeZoneId: 'Asia/Dubai' });
-	airports.push(iata);
+	const { id: airportId, iataCode } = await createAirport((iata) =>
+		call('POST', `${admin}/airports`, { token: stepped, data: { iataCode: iata, name: `E2E CSV imports ${iata}`, timeZoneId: 'Asia/Dubai' } })
+	);
+	airports.push(iataCode);
 	const terminal = await create('terminals', { airportId, code: 'T1', name: 'Terminal 1', siteCode: code });
 	const level = await create('levels', { terminalId: terminal, code: 'L0', name: 'Arrivals', floorNumber: 0, widthMetres: 100, depthMetres: 50 });
 	const immigration = await create('checkpoints', { levelId: level, code: 'IMM', name: 'Immigration', kind: 'Immigration' });

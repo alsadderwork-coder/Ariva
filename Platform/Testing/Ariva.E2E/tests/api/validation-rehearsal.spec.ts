@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { expect, test } from '@playwright/test';
 import pg from 'pg';
 import { accounts, call, databaseAvailable, login, signIn, unusedTotpCode } from '../support/accounts';
+import { createAirport } from '../support/airports';
 import { expectApiSecurityHeaders, expectNoLeak } from '../support/api-assertions';
 import { hosts } from '../support/hosts';
 import { markupFragments, sqlInjectionPayloads, xssPayloads } from '../support/payloads';
@@ -102,9 +103,9 @@ async function ensureScope(): Promise<Scope> {
 
 	let level = (await list('levels', `siteCode=${site}&pageSize=10`))[0];
 	if (!level) {
-		const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-		const iata = Array.from({ length: 3 }, () => letters[Math.floor(Math.random() * 26)]).join('');
-		const airport = await create('airports', { iataCode: iata, name: `E2E rehearsal ${iata}`, timeZoneId: 'Asia/Dubai' });
+		const airport = await createAirport((iata) =>
+			call('POST', `${admin}/airports`, { token: administrator, data: { iataCode: iata, name: `E2E rehearsal ${iata}`, timeZoneId: 'Asia/Dubai' } })
+		);
 		const terminal = await create('terminals', { airportId: airport.id, code: 'T1', name: 'Terminal 1', siteCode: site });
 		level = await create('levels', { terminalId: terminal.id, code: 'ARR', name: 'Arrivals', floorNumber: 0, widthMetres: 100, depthMetres: 50 });
 	}

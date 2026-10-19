@@ -1,10 +1,10 @@
-import crypto from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
 import { accounts, call, signIn } from '../support/accounts';
+import { createAirport } from '../support/airports';
 import { guardPage } from '../support/browser-guards';
 import { hosts } from '../support/hosts';
 import { xssPayloads } from '../support/payloads';
-import { databaseAvailable, signInThroughUi } from '../support/web-auth';
+import { allowStatuses, databaseAvailable, signInThroughUi } from '../support/web-auth';
 
 // ARV-052: the topology screen, airport to desk, on the admin API of ARV-014 and ARV-015. An administrator builds and
 // changes the tree; the operational roles browse their sites read only (a border supervisor without the desk code
@@ -14,10 +14,8 @@ test.skip(!databaseAvailable, 'the topology screen needs the E2E database (ARIVA
 // The payload test adds terminals to the airport the first test creates.
 test.describe.configure({ mode: 'serial' });
 
-/** A fresh IATA code for this run's airport (deployment-wide and unique). */
-const iata = Array.from(crypto.randomBytes(3), (b) => String.fromCharCode(65 + (b % 26))).join('');
-// Checkpoint codes are unique across a site (ARV-055): each run uses its own in the shared site E2E1.
-const checkpointCode = `I${iata}`;
+/** A fresh IATA code for this run's airport (deployment-wide and unique), drawn when the first test creates it. */
+let iata = '';
 
 function column(page: Page, entity: string) {
 	return page.getByTestId(`column-${entity}`);
@@ -50,13 +48,25 @@ test('an administrator builds an airport down to its desks, edits a desk, maps i
 	await page.getByLabel('Site').selectOption('E2E1');
 
 	await page.getByTestId('add-airport').click();
-	await page.getByLabel('IATA code').fill(iata);
-	await page.getByTestId('create-airport').getByLabel('Name', { exact: true }).fill(`E2E web ${iata}`);
-	// The zone is chosen from the IANA list (grouped by area, with the UTC offset), never typed.
-	const zone = page.getByTestId('create-airport').getByRole('combobox', { name: 'Time zone (IANA)' });
-	await expect(zone.locator('optgroup[label="Asia"] option[value="Asia/Amman"]')).toHaveCount(1);
-	await zone.selectOption('Asia/Amman');
-	await page.getByTestId('create-airport').getByRole('button', { name: 'Create' }).click();
+	// A code another suite holds answers 409: the screen says so and keeps the form open, and createAirport types another.
+	let clashes = 0;
+	({ iataCode: iata } = await createAirport(async (code) => {
+		await page.getByLabel('IATA code').fill(code);
+		await page.getByTestId('create-airport').getByLabel('Name', { exact: true }).fill(`E2E web ${code}`);
+		// The zone is chosen from the IANA list (grouped by area, with the UTC offset), never typed.
+		const zone = page.getByTestId('create-airport').getByRole('combobox', { name: 'Time zone (IANA)' });
+		await expect(zone.locator('optgroup[label="Asia"] option[value="Asia/Amman"]')).toHaveCount(1);
+		await zone.selectOption('Asia/Amman');
+		const answer = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname.endsWith('/api/v1/admin/airports'));
+		await page.getByTestId('create-airport').getByRole('button', { name: 'Create' }).click();
+		const response = await answer;
+		if (response.status() === 409) clashes++;
+		return response;
+	}));
+	// The browser reports each code refused that way as a failed load (status of 409).
+	if (clashes > 0) allowStatuses(guards, 409);
+	// Checkpoint codes are unique across a site (ARV-055): each run uses its own in the shared site E2E1.
+	const checkpointCode = `I${iata}`;
 	await column(page, 'airport')
 		.getByRole('button', { name: new RegExp(`^${iata}\\b`) })
 		.click();

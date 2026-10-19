@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { accounts, call, databaseAvailable, signIn } from '../support/accounts';
+import { createAirport } from '../support/airports';
 import { hosts } from '../support/hosts';
 
 // ARV-014: topology CRUD per entity (airport, terminal, level, checkpoint, desk) through the admin API, limited to the
@@ -10,10 +11,10 @@ test.skip(!databaseAvailable, 'topology needs the E2E database (ARIVA_E2E_SCHEMA
 test.describe.configure({ mode: 'serial' });
 
 const api = `${hosts.main}/api/v1/admin`;
-const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-const iata = Array.from({ length: 3 }, (_, i) => letters[Math.floor(Date.now() / 1000 / 26 ** i) % 26]).join('');
-// Checkpoint codes are unique across a site (ARV-055): each run uses its own in the shared site E2E1.
-const checkpointCode = `I${iata}`;
+// The airport's code, drawn at random and drawn again on a clash with another spec's (createAirport).
+let iata = '';
+// Checkpoint codes are unique across a site (ARV-055): each run uses its own in the shared site E2E1, made from the airport's.
+let checkpointCode = '';
 const ids: Record<string, string> = {};
 let admin: string;
 
@@ -29,7 +30,14 @@ async function create(entity: string, data: unknown): Promise<any> {
 }
 
 test('an administrator builds the tree: airport, terminals in two sites, level, checkpoint, desks', async () => {
-	ids.airport = (await create('airports', { iataCode: iata, name: `E2E ${iata}`, timeZoneId: 'Asia/Amman' })).id;
+	const airport = await createAirport(async (iataCode) => {
+		const response = await call('POST', `${api}/airports`, { token: admin, data: { iataCode, name: `E2E ${iataCode}`, timeZoneId: 'Asia/Amman' } });
+		if (response.status() === 201) expect(response.headers()['location']).toContain('/api/v1/admin/airports/');
+		return response;
+	});
+	ids.airport = airport.id;
+	iata = airport.iataCode;
+	checkpointCode = `I${iata}`;
 	const t1 = await create('terminals', { airportId: ids.airport, code: 'T1', name: 'Terminal 1', siteCode: 'E2E1' });
 	ids.t1 = t1.id;
 	expect(t1.siteCode).toBe('E2E1');

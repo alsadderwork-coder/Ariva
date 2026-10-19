@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { accounts, call, databaseAvailable, login, signIn, totpCode } from '../support/accounts';
+import { createAirport } from '../support/airports';
 import { hosts } from '../support/hosts';
 
 // ARV-017: the zone profile workflow through the API. A duty manager of E2E2 drafts, edits, validates and publishes
@@ -14,8 +15,6 @@ test.describe.configure({ mode: 'serial' });
 
 const admin = `${hosts.main}/api/v1/admin`;
 const api = `${admin}/zone-profiles`;
-const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-const iata = Array.from({ length: 3 }, () => letters[Math.floor(Math.random() * 26)]).join('');
 let passwordOnly: string;
 let withSecondFactor: string;
 let levelId: string;
@@ -29,7 +28,9 @@ test.beforeAll(async () => {
 		expect(response.status(), `${entity}: ${await response.text()}`).toBe(201);
 		return (await response.json()).id as string;
 	};
-	const airport = await create('airports', { iataCode: iata, name: `E2E zones ${iata}`, timeZoneId: 'Asia/Dubai' });
+	const { id: airport } = await createAirport((iata) =>
+		call('POST', `${admin}/airports`, { token: administrator, data: { iataCode: iata, name: `E2E zones ${iata}`, timeZoneId: 'Asia/Dubai' } })
+	);
 	const terminal = await create('terminals', { airportId: airport, code: 'T1', name: 'Terminal 1', siteCode: 'E2E2' });
 	levelId = await create('levels', { terminalId: terminal, code: 'L0', name: 'Arrivals', floorNumber: 0, widthMetres: 100, depthMetres: 50 });
 

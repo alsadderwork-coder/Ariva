@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { accounts, call, login, unusedTotpCode } from './accounts';
+import { createAirport } from './airports';
 import { hosts } from './hosts';
 
 // ARV-128: the local E2E stack, prepared the way an administrator prepares a deployed environment for the smoke suite
@@ -19,9 +20,6 @@ export const smokeStack =
 
 /** The ARIVA_SMOKE_* values global setup provides (the config sets the addresses and the account). */
 export const provisionedVariables = ['ARIVA_SMOKE_ZONE', 'ARIVA_SMOKE_DEVICE_KEY', 'ARIVA_SMOKE_DISPLAY_CODE', 'ARIVA_SMOKE_DISPLAY_KEY'] as const;
-
-const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-const randomLetters = (n: number) => Array.from({ length: n }, () => letters[crypto.randomInt(26)]).join('');
 
 export async function provisionSmokeSite(): Promise<void> {
 	const admin = accounts().smokeAdmin;
@@ -53,7 +51,9 @@ export async function provisionSmokeSite(): Promise<void> {
 			({ name: zone, levelId } = queue);
 		} else {
 			zone = 'Smoke Queue';
-			const airport = (await create('airports', { iataCode: randomLetters(3), name: `E2E smoke ${smokeSite}`, timeZoneId: 'Asia/Dubai' })).id;
+			const { id: airport } = await createAirport((iataCode) =>
+				call('POST', `${base}/airports`, { token, data: { iataCode, name: `E2E smoke ${smokeSite}`, timeZoneId: 'Asia/Dubai' } })
+			);
 			const terminal = (await create('terminals', { airportId: airport, code: 'T1', name: 'T1', siteCode: smokeSite })).id;
 			levelId = (await create('levels', { terminalId: terminal, code: 'L0', name: 'L0', floorNumber: 0, widthMetres: 100, depthMetres: 50 })).id;
 			const draftCreated = await create('zone-profiles/drafts', { siteCode: smokeSite, name: 'Smoke' });
