@@ -181,7 +181,7 @@ networkPolicies:
   otlp:
     to: []
     ports: [4317, 4318]
-  # Loki (Loki:Uri), when the hosts send logs there.
+  # Loki (Loki:Uri), when the hosts send logs there; required with logging.collector loki (ARV-091a).
   loki:
     to: []
     ports: [3100]
@@ -277,9 +277,55 @@ mqtt:
 
 # OpenTelemetry export (rendered by the ariva-platform.otelEnv helper). Empty endpoint: no OTLP export. k8s-prd sends
 # telemetry over TLS only: the chart refuses an endpoint there that does not start with https:// (ARV-082a, validate.yaml).
+# headersSecret (ARV-091a): for a collector that authenticates senders, the Kubernetes Secret (name) and its key (key) holding
+# OTEL_EXPORTER_OTLP_HEADERS, the headers every OTLP exporter sends (logs, traces and metrics): comma-separated key=value
+# pairs with percent-encoded values, for example Authorization=Bearer%20<token> for the Collector's bearertokenauth or
+# Authorization=Basic%20<base64 of user:password> for its basicauth (wiki 04). With a name, the five API hosts and the simulator (which exports to the same endpoint in dev
+# and demo) get it as OTEL_EXPORTER_OTLP_HEADERS (secretKeyRef, not optional), and the chart requires an https:// endpoint in
+# every environment; outside vm-local a host refuses the headers from a configuration file or with a plain endpoint. Empty name:
+# none. Never the headers themselves: otel takes endpoint, protocol and headersSecret only.
 otel:
   endpoint: ""
   protocol: grpc
+  headersSecret:
+    name: ""
+    key: headers
+
+# Log shipping and the log pseudonym key (ARV-091a; docs/security/log-inventory.md sections 1, 2 and 10.6). Nothing is set by
+# default, so dev, demo and localk8s render as before; k8s-prd requires both, and so does required true (below).
+# - collector: where the five API hosts send their logs, otlp or loki; empty declares none. In k8s-prd a host refuses to start
+#   without a collector over TLS, and the chart refuses a release without this value:
+#   - otlp: the OpenTelemetry collector at otel.endpoint (logs, traces and metrics; SigNoz, which the system alerts need). The
+#     chart requires otel.endpoint, an https:// URL, in every environment that sets otlp, and with networkPolicies on, the
+#     collector's peers (networkPolicies.otlp).
+#   - loki: the site's Loki, whose address is Loki:Uri in the appsettings secret (the chart cannot read it). The chart gives the
+#     five API hosts Loki__Enabled "true", so in k8s-prd a host refuses to start until that secret holds an https Loki:Uri; with
+#     networkPolicies on, the chart requires Loki's peers and port (networkPolicies.loki).
+# - pseudonymKeySecret: the Kubernetes Secret (name) and its key (key) that hold Logging:PseudonymKey, base64 of 32 or more
+#   random bytes (for example openssl rand -base64 32), with which every host hashes desk codes and track ids into the same
+#   pseudonyms on the same UTC day. With a name, the five API hosts get it as Logging__PseudonymKey (secretKeyRef, not
+#   optional: the pods wait for the Secret). Empty name: none, and each process draws a key of its own. Create the Secret in
+#   the release's namespace before the release; when the release can see the cluster, the chart refuses one that is missing,
+#   has no such key or holds a value that is not base64 of 32 or more bytes. One key per deployment (never the border's and the
+#   airport's alike), and never readable by those who read the logs. The key itself is never a value of this chart: there is
+#   no setting for it, and the chart test fails on a literal Logging__PseudonymKey.
+# - lokiCredentialsSecret: for a Loki (or a gateway in front of it) that authenticates senders, the Kubernetes Secret (name) and
+#   its keys (usernameKey, passwordKey) that hold the user name and password the hosts send with every batch (HTTP basic
+#   authentication, over https only). With a name, the five API hosts get them as Loki__Username and Loki__Password
+#   (secretKeyRef, not optional); outside vm-local a host refuses them from the appsettings files. Empty name: none. Never the
+#   values themselves.
+# - required: true makes the chart require collector and pseudonymKeySecret.name in any environment. The Helmfiles' prd release
+#   sets it (state value logShipping), so no values file can drop either there.
+logging:
+  collector: ""
+  pseudonymKeySecret:
+    name: ""
+    key: pseudonym-key
+  lokiCredentialsSecret:
+    name: ""
+    usernameKey: username
+    passwordKey: password
+  required: false
 
 # System monitoring (ARV-125b): SigNoz alert rules and dashboards rendered into the ConfigMaps ariva-monitoring-alerts and
 # ariva-monitoring-dashboards, which an operator imports into the site's SigNoz (v0.146.0; wiki/10 section 1). Nothing

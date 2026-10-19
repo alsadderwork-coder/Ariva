@@ -40,6 +40,13 @@
 // (hubRefusalFindings); the controller values keep ModSecurity off for the whole controller and write the access log without
 // the query string (ingress-nginx 1.15's default format otherwise); the release guards refuse a site annotation that turns the
 // audit log back on, writes a modsecurity, access_log or error_log directive, or routes /hubs without tokenInQuery.
+// ARV-091a (ASVS 5.0 V16.4.2, V16.4.3, CWE-532): with logging.pseudonymKeySecret (prd, required there by the chart and by both
+// Helmfiles through the state value logShipping) the five API hosts, and only they, get Logging__PseudonymKey from that Secret
+// (secretKeyRef, not optional, never a literal or a ConfigMap), and from logging.lokiCredentialsSecret Loki__Username and
+// Loki__Password alike; with logging.collector loki they get Loki__Enabled "true", and with otlp the https otel.endpoint
+// (logShippingFindings); dev, demo and localk8s render neither. The release guards refuse prd
+// without a collector or the Secret, otlp without an https endpoint, loki or otlp without their peers under the NetworkPolicies,
+// and any value that could hold the key itself; the Secret guard (lookup) is judged on stand-in secrets.
 //   node Platform/Cloud/Ariva.K8s/tests/chart-security.mjs              needs helm 3 on PATH (or HELM=path)
 //   node Platform/Cloud/Ariva.K8s/tests/chart-security.mjs --self-test  checks the rules against fixtures, no helm
 // Without helm the test is skipped locally and fails in CI (CI=true).
@@ -51,7 +58,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parse as parseYaml, parseAllDocuments, stringify } from 'yaml';
 import { checkManifests, controllerValuesFindings, DATABASE_TLS12_CIPHERS, databaseTlsFindings, forwardedHeadersFindings, HUB_PATHS, hubRefusalFindings, ingressHardeningFindings, INGRESS_HARDENING,
-	INGRESS_LOG_FORMAT, ingressPrivacyFindings, missingMonitoringRules, networkPolicyFindings, networkValues, POD_TLS, podTlsFindings, podTlsSecrets, serverCaSecrets, trustsMappedClients } from './checks.mjs';
+	INGRESS_LOG_FORMAT, ingressPrivacyFindings, logShippingFindings, API_HOSTS, missingMonitoringRules, networkPolicyFindings, networkValues, POD_TLS, podTlsFindings, podTlsSecrets, serverCaSecrets, trustsMappedClients } from './checks.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const chart = path.resolve(here, '..', 'Helm', 'Charts', 'platform');
@@ -508,6 +515,154 @@ function forwardedHeadersSelfTest() {
 	return { failures, count: FORWARDED_HEADERS_CASES.length };
 }
 
+/** ARV-091a: the log pseudonym key's Secret of the shipped production values, and a stand-in key (base64 of 32 bytes, not a real one). */
+const LOG_SECRET = { name: 'ariva-log-pseudonym-key', key: 'pseudonym-key' };
+const STAND_IN_KEY = Buffer.alloc(32, 7).toString('base64');
+
+/**
+ * ARV-091a: the five API host Deployments with the log pseudonym key (from secret, or none) and the Loki switch, and the
+ * simulator, the web pod, the migration job and a host ConfigMap without them, for the cases below.
+ */
+function logDocs({ secret = LOG_SECRET, loki = true, endpoint = '', lokiSecret, headersSecret } = {}) {
+	const headers = headersSecret ? [{ name: 'OTEL_EXPORTER_OTLP_HEADERS', valueFrom: { secretKeyRef: { name: headersSecret.name, key: headersSecret.key, optional: false } } }] : [];
+	const env = [{ name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: endpoint },
+		...(secret ? [{ name: 'Logging__PseudonymKey', valueFrom: { secretKeyRef: { name: secret.name, key: secret.key, optional: false } } }] : []),
+		...(loki ? [{ name: 'Loki__Enabled', value: 'true' }] : []),
+		...(lokiSecret ? [{ name: 'Loki__Username', valueFrom: { secretKeyRef: { name: lokiSecret.name, key: lokiSecret.usernameKey, optional: false } } },
+			{ name: 'Loki__Password', valueFrom: { secretKeyRef: { name: lokiSecret.name, key: lokiSecret.passwordKey, optional: false } } }] : []), ...headers];
+	const workload = (kind, name, image, variables) => ({ kind, metadata: { name }, spec: { template: { spec: { containers: [{ name: 'app', image, env: structuredClone(variables) }], volumes: [] } } } });
+	return [...API_HOSTS.map((host) => workload('Deployment', `${host}-deployment`, `r.example/ariva/${host}:1`, env)),
+		workload('Deployment', 'simulation-deployment', 'r.example/ariva/simulation:1', [{ name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: endpoint }, ...headers]),
+		workload('Deployment', 'web-deployment', 'r.example/ariva/web:1', []), workload('Job', 'database-migration', 'r.example/ariva/api-main:1', []),
+		{ kind: 'ConfigMap', metadata: { name: 'api-main-configmap' }, data: { DOTNET_ENVIRONMENT: 'k8s-prd' } }];
+}
+const workloadOf = (docs, name) => docs.find((doc) => doc.metadata.name === name);
+const containerOf = (docs, name) => workloadOf(docs, name).spec.template.spec.containers[0];
+const keyOf = (docs, name) => containerOf(docs, name).env.find((variable) => variable.name === 'Logging__PseudonymKey');
+const LOKI_PRD = { environment: 'k8s-prd', collector: 'loki', pseudonymKeySecret: LOG_SECRET };
+const OTLP_PRD = { environment: 'k8s-prd', collector: 'otlp', otelEndpoint: 'https://otel.example:4317', pseudonymKeySecret: LOG_SECRET };
+const LOG_REFS = `refers to the log pseudonym key's Secret ${LOG_SECRET.name}`;
+/** ARV-091a: a Secret of Loki's sender credentials, and production to Loki with it. */
+const LOKI_SECRET = { name: 'ariva-loki-credentials', usernameKey: 'username', passwordKey: 'password' };
+const LOKI_AUTH = { ...LOKI_PRD, lokiCredentialsSecret: LOKI_SECRET };
+const variableOf = (docs, workload, name) => containerOf(docs, workload).env.find((variable) => variable.name === name);
+/** ARV-091a: a Secret of the OTLP collector's sender headers, and production to the OTLP collector with it. */
+const HEADERS_SECRET = { name: 'ariva-otlp-headers', key: 'headers' };
+const OTLP_HEADERS = { ...OTLP_PRD, otelHeadersSecret: HEADERS_SECRET };
+const HEADERS_DOCS = { loki: false, endpoint: OTLP_PRD.otelEndpoint, headersSecret: HEADERS_SECRET };
+const HEADERS_REFS = "refers to the Secret of the OTLP collector's headers ariva-otlp-headers";
+
+/** ARV-091a: each change to the log shipping of a render and the findings it must give, no more: [label, options, docs, change, expected]. */
+const LOG_SHIPPING_CASES = [
+	['a host without the key', LOKI_PRD, {}, (docs) => { const env = containerOf(docs, 'api-stream-deployment').env; env.splice(env.indexOf(keyOf(docs, 'api-stream-deployment')), 1); },
+		['Deployment/api-stream-deployment container app: must get Logging__PseudonymKey once, from the Secret ariva-log-pseudonym-key (key pseudonym-key), not 0 times']],
+	['the key as a literal', LOKI_PRD, {}, (docs) => { Object.assign(keyOf(docs, 'api-main-deployment'), { value: STAND_IN_KEY, valueFrom: undefined }); },
+		['Deployment/api-main-deployment container app: Logging__PseudonymKey must come from the Secret ariva-log-pseudonym-key (secretKeyRef), never a literal value']],
+	['the key twice, once as a literal', LOKI_PRD, {}, (docs) => containerOf(docs, 'api-ingest-deployment').env.push({ name: 'Logging__PseudonymKey', value: STAND_IN_KEY }),
+		['Deployment/api-ingest-deployment container app: must get Logging__PseudonymKey once, from the Secret ariva-log-pseudonym-key (key pseudonym-key), not 2 times']],
+	['the key from another Secret', LOKI_PRD, {}, (docs) => { keyOf(docs, 'api-cronz-deployment').valueFrom.secretKeyRef.name = 'ariva-kafka'; },
+		['Deployment/api-cronz-deployment container app: Logging__PseudonymKey comes from ariva-kafka (key pseudonym-key), not ariva-log-pseudonym-key (key pseudonym-key)']],
+	['another key of the Secret', LOKI_PRD, {}, (docs) => { keyOf(docs, 'api-integration-deployment').valueFrom.secretKeyRef.key = 'password'; },
+		['Deployment/api-integration-deployment container app: Logging__PseudonymKey comes from ariva-log-pseudonym-key (key password)']],
+	['the key optional', LOKI_PRD, {}, (docs) => { keyOf(docs, 'api-main-deployment').valueFrom.secretKeyRef.optional = true; }, ['Deployment/api-main-deployment container app: Logging__PseudonymKey must not be optional']],
+	['the key in lower case on the simulator', LOKI_PRD, {}, (docs) => containerOf(docs, 'simulation-deployment').env.push({ name: 'logging__pseudonymkey', valueFrom: { secretKeyRef: { ...LOG_SECRET } } }),
+		['Deployment/simulation-deployment container app: gets logging__pseudonymkey; only the five API hosts get the log pseudonym key', `Deployment/simulation-deployment: ${LOG_REFS} (app env logging__pseudonymkey)`]],
+	['the key in the migration job', LOKI_PRD, {}, (docs) => containerOf(docs, 'database-migration').env.push({ name: 'Logging__PseudonymKey', valueFrom: { secretKeyRef: { ...LOG_SECRET } } }),
+		['Job/database-migration container app: gets Logging__PseudonymKey; only the five API hosts', `Job/database-migration: ${LOG_REFS} (app env Logging__PseudonymKey)`]],
+	['the key in a ConfigMap', LOKI_PRD, {}, (docs) => { workloadOf(docs, 'api-main-configmap').data.Logging__PseudonymKey = STAND_IN_KEY; },
+		['ConfigMap/api-main-configmap: Logging__PseudonymKey names the log pseudonym key']],
+	['the Secret mounted by the web pod', LOKI_PRD, {}, (docs) => workloadOf(docs, 'web-deployment').spec.template.spec.volumes.push({ name: 'log-key', secret: { secretName: LOG_SECRET.name } }),
+		[`Deployment/web-deployment: ${LOG_REFS} (volume log-key)`]],
+	['the Secret as a job\'s envFrom', LOKI_PRD, {}, (docs) => { containerOf(docs, 'database-migration').envFrom = [{ secretRef: { name: LOG_SECRET.name } }]; }, [`Job/database-migration: ${LOG_REFS} (app envFrom)`]],
+	['the Secret under another variable of a host', LOKI_PRD, {}, (docs) => containerOf(docs, 'api-main-deployment').env.push({ name: 'Signing__Key', valueFrom: { secretKeyRef: { ...LOG_SECRET } } }),
+		[`Deployment/api-main-deployment: ${LOG_REFS} (app env Signing__Key)`]],
+	['the Secret rendered by the chart', LOKI_PRD, {}, (docs) => docs.push({ kind: 'Secret', metadata: { name: LOG_SECRET.name }, data: { 'pseudonym-key': Buffer.from(STAND_IN_KEY).toString('base64') } }),
+		['Secret/ariva-log-pseudonym-key: the chart renders the log pseudonym key\'s Secret']],
+	['production without the key\'s Secret', { ...LOKI_PRD, pseudonymKeySecret: undefined }, { secret: null }, () => {}, ["k8s-prd renders without the log pseudonym key's Secret"]],
+	['production without a collector', { ...LOKI_PRD, collector: '' }, { loki: false }, () => {}, ['k8s-prd renders without a log collector']],
+	['a release with logging.required and neither', { environment: 'k8s-dev', required: true }, { secret: null, loki: false }, () => {},
+		['logging.required renders without a log collector', "logging.required renders without the log pseudonym key's Secret"]],
+	['Loki without its switch on a host', LOKI_PRD, {}, (docs) => { const env = containerOf(docs, 'api-cronz-deployment').env; env.splice(env.findIndex((variable) => variable.name === 'Loki__Enabled'), 1); },
+		['Deployment/api-cronz-deployment container app: must set Loki__Enabled "true" with logging.collector loki']],
+	['the Loki switch without Loki', OTLP_PRD, { endpoint: OTLP_PRD.otelEndpoint }, () => {}, API_HOSTS.map((host) => `Deployment/${host}-deployment container app: sets Loki__Enabled true without logging.collector loki`)],
+	['the Loki switch on the simulator', LOKI_PRD, {}, (docs) => containerOf(docs, 'simulation-deployment').env.push({ name: 'LOKI__ENABLED', value: 'true' }),
+		['Deployment/simulation-deployment container app: sets LOKI__ENABLED; only the five API hosts send their logs to Loki']],
+	['the OTLP collector over plain HTTP', { ...OTLP_PRD, otelEndpoint: 'http://otel.example:4317' }, { loki: false, endpoint: 'http://otel.example:4317' }, () => {},
+		['logging.collector otlp exports to http://otel.example:4317, not an https:// otel.endpoint']],
+	['the OTLP collector not reaching a host', OTLP_PRD, { loki: false, endpoint: OTLP_PRD.otelEndpoint }, (docs) => { containerOf(docs, 'api-ingest-deployment').env[0].value = ''; },
+		['Deployment/api-ingest-deployment container app: exports to no endpoint, not otel.endpoint https://otel.example:4317']],
+	['a key where no Secret is named', { environment: 'k8s-dev' }, { loki: false }, () => {}, API_HOSTS.map((host) => `Deployment/${host}-deployment container app: gets Logging__PseudonymKey although logging.pseudonymKeySecret names no Secret`)],
+	['a host missing', LOKI_PRD, {}, (docs) => docs.splice(docs.indexOf(workloadOf(docs, 'api-stream-deployment')), 1), ['the render holds no Deployment/api-stream-deployment']],
+	// Loki's sender credentials: from their Secret on the five API hosts, never a literal, never optional, nowhere else.
+	['a host without Loki\'s password', LOKI_AUTH, { lokiSecret: LOKI_SECRET }, (docs) => { const env = containerOf(docs, 'api-cronz-deployment').env; env.splice(env.indexOf(variableOf(docs, 'api-cronz-deployment', 'Loki__Password')), 1); },
+		['Deployment/api-cronz-deployment container app: must get Loki__Password once, from the Secret ariva-loki-credentials (key password), not 0 times']],
+	['Loki\'s password as a literal', LOKI_AUTH, { lokiSecret: LOKI_SECRET }, (docs) => { Object.assign(variableOf(docs, 'api-main-deployment', 'Loki__Password'), { value: 'stand-in', valueFrom: undefined }); },
+		['Deployment/api-main-deployment container app: Loki__Password must come from the Secret ariva-loki-credentials (secretKeyRef), never a literal value']],
+	['Loki\'s user name from another key', LOKI_AUTH, { lokiSecret: LOKI_SECRET }, (docs) => { variableOf(docs, 'api-ingest-deployment', 'Loki__Username').valueFrom.secretKeyRef.key = 'password'; },
+		['Deployment/api-ingest-deployment container app: Loki__Username comes from ariva-loki-credentials (key password), not ariva-loki-credentials (key username)']],
+	['Loki\'s credentials optional', LOKI_AUTH, { lokiSecret: LOKI_SECRET }, (docs) => { variableOf(docs, 'api-stream-deployment', 'Loki__Username').valueFrom.secretKeyRef.optional = true; },
+		['Deployment/api-stream-deployment container app: Loki__Username must not be optional: the host waits for its Secret rather than send to Loki without them']],
+	['Loki\'s password on the simulator', LOKI_AUTH, { lokiSecret: LOKI_SECRET }, (docs) => containerOf(docs, 'simulation-deployment').env.push({ name: 'Loki__Password', valueFrom: { secretKeyRef: { name: LOKI_SECRET.name, key: 'password' } } }),
+		["Deployment/simulation-deployment container app: gets Loki__Password; only the five API hosts get Loki's credentials",
+			"Deployment/simulation-deployment: refers to the Secret of Loki's credentials ariva-loki-credentials (app env Loki__Password)"]],
+	['Loki\'s credentials in a ConfigMap', LOKI_AUTH, { lokiSecret: LOKI_SECRET }, (docs) => { workloadOf(docs, 'api-main-configmap').data.Loki__Password = 'stand-in'; },
+		["ConfigMap/api-main-configmap: Loki__Password is one of Loki's credentials"]],
+	['Loki\'s credentials where no Secret is named', LOKI_PRD, { lokiSecret: LOKI_SECRET }, () => {},
+		API_HOSTS.flatMap((host) => ['Username', 'Password'].map((part) => `Deployment/${host}-deployment container app: gets Loki__${part} although logging.lokiCredentialsSecret names no Secret`))],
+	['the Secret of Loki\'s credentials rendered by the chart', LOKI_AUTH, { lokiSecret: LOKI_SECRET }, (docs) => docs.push({ kind: 'Secret', metadata: { name: LOKI_SECRET.name }, stringData: { username: 'u', password: 'p' } }),
+		["Secret/ariva-loki-credentials: the chart renders the Secret of Loki's credentials"]],
+	// The OTLP collector's sender headers: from their Secret on the five API hosts and the simulator, over https, nowhere else.
+	['a host without the collector\'s headers', OTLP_HEADERS, HEADERS_DOCS, (docs) => { const env = containerOf(docs, 'api-integration-deployment').env; env.splice(env.indexOf(variableOf(docs, 'api-integration-deployment', 'OTEL_EXPORTER_OTLP_HEADERS')), 1); },
+		['Deployment/api-integration-deployment container app: must get OTEL_EXPORTER_OTLP_HEADERS once, from the Secret ariva-otlp-headers (key headers), not 0 times']],
+	['the simulator without the collector\'s headers', OTLP_HEADERS, HEADERS_DOCS, (docs) => { containerOf(docs, 'simulation-deployment').env.splice(1, 1); },
+		['Deployment/simulation-deployment container app: must get OTEL_EXPORTER_OTLP_HEADERS once, from the Secret ariva-otlp-headers (key headers), not 0 times']],
+	['the collector\'s headers as a literal', OTLP_HEADERS, HEADERS_DOCS, (docs) => { Object.assign(variableOf(docs, 'api-main-deployment', 'OTEL_EXPORTER_OTLP_HEADERS'), { value: 'x-api-key=stand-in', valueFrom: undefined }); },
+		['Deployment/api-main-deployment container app: OTEL_EXPORTER_OTLP_HEADERS must come from the Secret ariva-otlp-headers (secretKeyRef), never a literal value']],
+	['the collector\'s headers optional', OTLP_HEADERS, HEADERS_DOCS, (docs) => { variableOf(docs, 'simulation-deployment', 'OTEL_EXPORTER_OTLP_HEADERS').valueFrom.secretKeyRef.optional = true; },
+		['Deployment/simulation-deployment container app: OTEL_EXPORTER_OTLP_HEADERS must not be optional: the host waits for its Secret rather than export to the collector without them']],
+	['the collector\'s headers from another key', OTLP_HEADERS, HEADERS_DOCS, (docs) => { variableOf(docs, 'api-stream-deployment', 'OTEL_EXPORTER_OTLP_HEADERS').valueFrom.secretKeyRef.key = 'token'; },
+		['Deployment/api-stream-deployment container app: OTEL_EXPORTER_OTLP_HEADERS comes from ariva-otlp-headers (key token), not ariva-otlp-headers (key headers)']],
+	['the collector\'s headers in the migration job', OTLP_HEADERS, HEADERS_DOCS, (docs) => containerOf(docs, 'database-migration').env.push({ name: 'otel_exporter_otlp_headers', valueFrom: { secretKeyRef: { ...HEADERS_SECRET } } }),
+		["Job/database-migration container app: gets otel_exporter_otlp_headers; only the five API hosts and the simulator get the OTLP collector's sender headers",
+			`Job/database-migration: ${HEADERS_REFS} (app env otel_exporter_otlp_headers); only the five API hosts and the simulator read it, as OTEL_EXPORTER_OTLP_HEADERS`]],
+	['the collector\'s headers mounted by the web pod', OTLP_HEADERS, HEADERS_DOCS, (docs) => workloadOf(docs, 'web-deployment').spec.template.spec.volumes.push({ name: 'otlp', projected: { sources: [{ secret: { name: HEADERS_SECRET.name } }] } }),
+		[`Deployment/web-deployment: ${HEADERS_REFS} (volume otlp)`]],
+	['the collector\'s headers in a ConfigMap', OTLP_HEADERS, HEADERS_DOCS, (docs) => { workloadOf(docs, 'api-main-configmap').data.OTEL_EXPORTER_OTLP_HEADERS = 'x-api-key=stand-in'; },
+		["ConfigMap/api-main-configmap: OTEL_EXPORTER_OTLP_HEADERS carries the OTLP collector's sender headers"]],
+	['the collector\'s headers where no Secret is named', OTLP_PRD, HEADERS_DOCS, () => {},
+		[...API_HOSTS, 'simulation'].map((host) => `Deployment/${host}-deployment container app: gets OTEL_EXPORTER_OTLP_HEADERS although otel.headersSecret names no Secret`)],
+	['the collector\'s headers over plain HTTP', { ...OTLP_HEADERS, collector: 'loki', otelEndpoint: 'http://otel.example:4318' }, { ...HEADERS_DOCS, loki: true, endpoint: 'http://otel.example:4318' }, () => {},
+		["otel.headersSecret sends the collector's headers to http://otel.example:4318, not an https:// otel.endpoint"]]
+];
+
+/**
+ * ARV-091a: the log shipping rules: the good renders clean (production to Loki and to the OTLP collector, a site's Secret and
+ * key, dev with neither), each change giving exactly its findings; and checkManifests refuses a literal Logging__PseudonymKey, in
+ * any case, as the credential it is.
+ */
+function logShippingSelfTest() {
+	const failures = [];
+	const site = { name: 'site-log-key', key: 'master' };
+	const clean = [...logShippingFindings(logDocs(), LOKI_PRD), ...logShippingFindings(logDocs({ loki: false, endpoint: OTLP_PRD.otelEndpoint }), OTLP_PRD),
+		...logShippingFindings(logDocs({ secret: site }), { ...LOKI_PRD, pseudonymKeySecret: site }), ...logShippingFindings(logDocs({ secret: null, loki: false }), { environment: 'k8s-dev' }),
+		...logShippingFindings(logDocs({ lokiSecret: LOKI_SECRET }), LOKI_AUTH), ...logShippingFindings(logDocs(HEADERS_DOCS), OTLP_HEADERS),
+		// One Secret for the key and Loki's credentials alike is allowed: each variable from its own key.
+		...logShippingFindings(logDocs({ lokiSecret: { ...LOKI_SECRET, name: LOG_SECRET.name } }), { ...LOKI_PRD, lokiCredentialsSecret: { ...LOKI_SECRET, name: LOG_SECRET.name } })];
+	if (clean.length) failures.push(`the good log shipping renders produced findings:\n   ${clean.join('\n   ')}`);
+	for (const [label, options, build, change, expected] of LOG_SHIPPING_CASES) {
+		const docs = logDocs(build);
+		change(docs);
+		const found = logShippingFindings(docs, options);
+		if (!exactly(found, expected)) failures.push(`log shipping case ${label} must give exactly ${expected.join(' | ')}; gave ${found.length ? found.join(' | ') : 'nothing'}`);
+	}
+	for (const name of ['Logging__PseudonymKey', 'logging__pseudonymkey', 'Loki__Password', 'OTEL_EXPORTER_OTLP_HEADERS']) {
+		const docs = logDocs();
+		containerOf(docs, 'api-main-deployment').env.push({ name, value: STAND_IN_KEY });
+		if (!checkManifests(docs, { environment: 'k8s-prd' }).some((finding) => finding.includes(`api-main-deployment container app: ${name} carries a literal value`))) failures.push(`checkManifests does not refuse a literal ${name}`);
+	}
+	return { failures, count: LOG_SHIPPING_CASES.length + 4 };
+}
+
 function selfTest() {
 	const good = checkManifests(parse(fs.readFileSync(path.join(here, 'fixtures', 'good.yaml'), 'utf8')), { environment: 'k8s-prd' });
 	const bad = checkManifests(parse(fs.readFileSync(path.join(here, 'fixtures', 'bad.yaml'), 'utf8')), { environment: 'k8s-prd' });
@@ -558,7 +713,8 @@ function selfTest() {
 	const privacy = ingressPrivacySelfTest();
 	const proxies = forwardedHeadersSelfTest();
 	const hubs = hubRefusalSelfTest();
-	const others = [...tls.failures, ...podTls.failures, ...webImage, ...hardening.failures, ...controller.failures, ...network.failures, ...privacy.failures, ...proxies.failures, ...hubs.failures];
+	const logs = logShippingSelfTest();
+	const others = [...tls.failures, ...podTls.failures, ...webImage, ...hardening.failures, ...controller.failures, ...network.failures, ...privacy.failures, ...proxies.failures, ...hubs.failures, ...logs.failures];
 	if (good.length || missing.length || others.length) {
 		console.error('chart-security self-test FAILED');
 		if (good.length) console.error('  good fixture produced findings:\n   ' + good.join('\n   '));
@@ -569,7 +725,7 @@ function selfTest() {
 	console.log(`chart-security self-test: ${expected.length} rules fire on the bad fixture, ${tls.count} TimescaleDB TLS rules on the TLS fixtures, ${podTls.count} pod TLS rules ` +
 		`on the pod TLS fixtures, ${hardening.count} ingress hardening rules and ${privacy.count} private probe and source range rules on theirs (each bad case trips exactly its rule), ` +
 		`${hubs.count} live hub refusal cases on the chart's server-snippet (each tripping exactly its rule), ` +
-		`${network.count} network policy cases and ${proxies.count} trusted proxy cases each giving exactly their findings; the good fixtures are clean; the web image takes ` +
+		`${network.count} network policy cases, ${proxies.count} trusted proxy cases and ${logs.count} log shipping cases each giving exactly their findings; the good fixtures are clean; the web image takes ` +
 		`its listener from ${POD_TLS.webListen}; the shipped controller values (Helm/ingress-nginx-values.yaml) hold every rule, their access log format is ingress-nginx 1.15's ` +
 		`without the query string, ${controller.count} changes each trip theirs and ${controller.accepted} accepted changes trip none.`);
 }
@@ -655,6 +811,30 @@ function describeNetwork(text, values) {
 	return `${policies ? `${policies} NetworkPolicies (default deny and the firewall matrix's flows)` : 'no NetworkPolicies'}, ` +
 		`${networks.length ? `trusted proxies ${networks.join(', ')}` : "the appsettings' trusted proxies"}, /health refused on every Ingress, ` +
 		`/hubs refused on the ${otherHosts.size} hosts without the live hub and its other spellings on the ${hubHosts.size} with it`;
+}
+
+/**
+ * ARV-091a: the log shipping values of a release (values.yaml under its files), as logShippingFindings takes them; required when
+ * the release sets logging.required (the Helmfiles' prd).
+ */
+function logShippingOptions(values, environment, required = false) {
+	const logging = values.logging ?? {};
+	const secret = logging.pseudonymKeySecret ?? {};
+	const loki = logging.lokiCredentialsSecret ?? {};
+	return { environment, collector: String(logging.collector ?? ''), otelEndpoint: String(values.otel?.endpoint ?? ''),
+		pseudonymKeySecret: secret.name ? { name: String(secret.name), key: String(secret.key || 'pseudonym-key') } : undefined,
+		lokiCredentialsSecret: loki.name ? { name: String(loki.name), usernameKey: String(loki.usernameKey || 'username'), passwordKey: String(loki.passwordKey || 'password') } : undefined,
+		otelHeadersSecret: values.otel?.headersSecret?.name ? { name: String(values.otel.headersSecret.name), key: String(values.otel.headersSecret.key || 'headers') } : undefined,
+		required: required || logging.required === true };
+}
+
+/** ARV-091a: how a render ships its logs, for the PASS lines. */
+function describeLogShipping(values) {
+	const { collector, otelEndpoint, pseudonymKeySecret, lokiCredentialsSecret, otelHeadersSecret } = logShippingOptions(values, '');
+	const where = { otlp: `logs to the OTLP collector ${otelEndpoint}`, loki: 'logs to Loki (Loki__Enabled on the five API hosts)' }[collector] ?? 'no log collector declared';
+	return `${where}${lokiCredentialsSecret ? ` with its credentials from ${lokiCredentialsSecret.name}` : ''}, ` +
+		`${otelHeadersSecret ? `the OTLP collector's headers from ${otelHeadersSecret.name} (key ${otelHeadersSecret.key}), ` : ''}` +
+		`${pseudonymKeySecret ? `the log pseudonym key from ${pseudonymKeySecret.name} (key ${pseudonymKeySecret.key}) in the five API hosts only` : 'no log pseudonym key (one per process)'}`;
 }
 
 /** ARV-111a: the migration job of a render carries every retention period of its values, as the job reads them. */
@@ -791,6 +971,8 @@ for (const env of environments) {
 	// ARV-085: the NetworkPolicies (production only, by default), the private probes, the Cronz source range, the trusted proxies.
 	const values = mergedValues([env.file]);
 	findings.push(...networkFindings(result.stdout, values, env.environment));
+	// ARV-091a: the log pseudonym key and the collector, as the values give them (production only, by default).
+	findings.push(...logShippingFindings(parseAsKubernetes(result.stdout), logShippingOptions(values, env.environment)));
 	const workloads = docs.filter((doc) => doc?.kind === 'Deployment').length;
 	const ingresses = docs.filter((doc) => doc?.kind === 'Ingress').length;
 	const monitoring = (name) => Object.keys(docs.find((doc) => doc?.kind === 'ConfigMap' && doc.metadata?.name === name)?.data ?? {}).length;
@@ -802,6 +984,7 @@ for (const env of environments) {
 			'database and Redis CAs in the five API hosts and the two jobs only, ' +
 			(podTls ? 'every pod, Service and Ingress over TLS with the cluster CA, ' : 'plain HTTP to the pods, ') +
 			`HSTS, nosniff and frame-ancestors on every Ingress's responses, the ModSecurity audit log off on every Ingress, plain HTTP ${describeModes(docs)}, ${describeNetwork(result.stdout, values)}, ` +
+			`${describeLogShipping(values)}, ` +
 			`retention periods ${Object.values(retentionValues(env.file)).join('/')} days in the migration job, ` +
 			`${monitoring('ariva-monitoring-alerts')} alert rules and ${monitoring('ariva-monitoring-dashboards')} dashboards`);
 	}
@@ -1111,7 +1294,47 @@ for (const [label, file, sets, message, annotation] of [
 		{ ingresses: [ingressEntry('api-main', 'api-main-service', 'api-main-test', { paths: ['/status(/|$)(.*)'], annotations: { 'nginx.ingress.kubernetes.io/rewrite-target': '/health/$2' } })] }],
 	['a site use-regex', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/use-regex is refused', 'use-regex: "true"'],
 	['a configuration-snippet that rewrites to the probe', 'values-k8s-dev.yaml', [], 'configuration-snippet writes a rewrite directive', 'configuration-snippet: "rewrite ^/status$ /health/readiness break;"'],
-	['a server-snippet that rewrites after a comment', 'values-k8s-prd.yaml', [PRD], 'server-snippet writes a rewrite directive', 'server-snippet: "# site\\nrewrite ^/status$ /health/readiness last;"']
+	['a server-snippet that rewrites after a comment', 'values-k8s-prd.yaml', [PRD], 'server-snippet writes a rewrite directive', 'server-snippet: "# site\\nrewrite ^/status$ /health/readiness last;"'],
+	// ARV-091a: production ships the hosts' logs to a collector over TLS and takes the log pseudonym key from a Secret; otlp
+	// needs an https endpoint and loki its peers under the NetworkPolicies; no value can hold the key itself, and each case is
+	// refused for its own reason.
+	['production without the log pseudonym key Secret', 'values-k8s-prd.yaml', [PRD, 'logging.pseudonymKeySecret.name='], 'k8s-prd needs logging.pseudonymKeySecret.name'],
+	['production without the log pseudonym key values', 'values-k8s-prd.yaml', [PRD, 'logging.pseudonymKeySecret=null'], 'k8s-prd needs logging.pseudonymKeySecret.name'],
+	['production without a log collector', 'values-k8s-prd.yaml', [PRD, 'logging.collector='], "k8s-prd ships the hosts' logs to a collector over TLS"],
+	['production without the logging values', 'values-k8s-prd.yaml', [PRD, 'logging=null'], "k8s-prd ships the hosts' logs to a collector over TLS"],
+	['production logging to the OTLP collector without an endpoint', 'values-k8s-prd.yaml', [PRD, 'logging.collector=otlp'], 'logging.collector otlp needs otel.endpoint, an https:// URL'],
+	['production logging to the OTLP collector over plain HTTP', 'values-k8s-prd.yaml', [PRD, 'logging.collector=otlp', 'otel.endpoint=http://otel.example:4317'], 'otel.endpoint must be an https:// URL'],
+	['dev logging to the OTLP collector over plain HTTP', 'values-k8s-dev.yaml', ['logging.collector=otlp', 'otel.endpoint=http://otel.example:4317'], 'logging.collector otlp needs otel.endpoint, an https:// URL'],
+	['production logging to an OTLP collector the policies drop', 'values-k8s-prd.yaml', [PRD, 'logging.collector=otlp', 'otel.endpoint=https://otel.example:4317'], 'otel.endpoint is set but networkPolicies.otlp.to is empty'],
+	['production logging to Loki without its peers', 'values-k8s-prd.yaml', [PRD], 'logging.collector loki needs networkPolicies.loki.to', { networkPolicies: { loki: { to: [] } } }],
+	['dev logging to Loki under the network policies without its peers', 'values-k8s-dev.yaml', ['logging.collector=loki', 'networkPolicies.enabled=true'], 'logging.collector loki needs networkPolicies.loki.to'],
+	['a literal log pseudonym key', 'values-k8s-dev.yaml', [`logging.pseudonymKey=${STAND_IN_KEY}`], 'logging.pseudonymKey is not a setting'],
+	['a literal log pseudonym key beside its Secret in production', 'values-k8s-prd.yaml', [PRD, `logging.pseudonymKeySecret.value=${STAND_IN_KEY}`], 'logging.pseudonymKeySecret.value is not a setting'],
+	['a literal log pseudonym key as the Secret\'s key', 'values-k8s-prd.yaml', [PRD], 'logging.pseudonymKeySecret.key must be a key of a Kubernetes Secret', { logging: { pseudonymKeySecret: { key: STAND_IN_KEY } } }],
+	['a literal log pseudonym key without padding as the Secret\'s key', 'values-k8s-dev.yaml', [], 'logging.pseudonymKeySecret.key names the Secret\'s key',
+		{ logging: { pseudonymKeySecret: { name: 'ariva-log-pseudonym-key', key: Buffer.alloc(33, 7).toString('base64') } } }],
+	['a literal log pseudonym key as the Secret\'s name', 'values-k8s-dev.yaml', [], 'logging.pseudonymKeySecret.name must be a Kubernetes secret name', { logging: { pseudonymKeySecret: { name: STAND_IN_KEY } } }],
+	['a log collector other than otlp or loki', 'values-k8s-dev.yaml', ['logging.collector=syslog'], 'logging.collector must be otlp or loki'],
+	['a log pseudonym key Secret name that is not a Kubernetes name', 'values-k8s-dev.yaml', ['logging.pseudonymKeySecret.name=Log_Key'], 'logging.pseudonymKeySecret.name must be a Kubernetes secret name'],
+	['logging that is not a map', 'values-k8s-dev.yaml', ['logging=plain'], 'logging must be a map'],
+	['a logging.required that is not true or false', 'values-k8s-dev.yaml', ['logging.required=yes'], 'logging.required must be true or false'],
+	['logging.required without a collector outside production', 'values-k8s-dev.yaml', ['logging.required=true', 'logging.pseudonymKeySecret.name=ariva-log-pseudonym-key'], "a release with logging.required ships the hosts' logs"],
+	['logging.required without the key Secret outside production', 'values-k8s-dev.yaml', ['logging.required=true', 'logging.collector=loki'], 'a release with logging.required needs logging.pseudonymKeySecret.name'],
+	['a literal Loki password', 'values-k8s-prd.yaml', [PRD, 'logging.lokiCredentialsSecret.password=stand-in'], 'logging.lokiCredentialsSecret.password is not a setting'],
+	['Loki credentials as values', 'values-k8s-dev.yaml', [], 'logging.loki is not a setting', { logging: { loki: { username: 'ariva', password: 'stand-in' } } }],
+	['a Loki credentials Secret name that is not a Kubernetes name', 'values-k8s-dev.yaml', ['logging.lokiCredentialsSecret.name=Loki_Credentials'], 'logging.lokiCredentialsSecret.name must be a Kubernetes secret name'],
+	['a Loki password key that is not a Secret key', 'values-k8s-dev.yaml', ['logging.lokiCredentialsSecret.passwordKey=pass word'], 'logging.lokiCredentialsSecret.passwordKey must be a key of a Kubernetes Secret'],
+	['Loki credentials that are not a map', 'values-k8s-dev.yaml', ['logging.lokiCredentialsSecret=ariva-loki-credentials'], 'logging.lokiCredentialsSecret must be a map'],
+	// ARV-091a: the OTLP collector's sender headers come from a Secret, over https only, never as a value.
+	['the collector\'s headers as a value', 'values-k8s-prd.yaml', [PRD, 'otel.headers=x-api-key'], 'otel.headers is not a setting'],
+	['the collector\'s headers as a value of their Secret', 'values-k8s-dev.yaml', [], 'otel.headersSecret.value is not a setting', { otel: { endpoint: 'https://otel.example:4317', headersSecret: { name: 'ariva-otlp-headers', value: 'x-api-key=stand-in' } } }],
+	['the collector\'s headers without an endpoint', 'values-k8s-dev.yaml', ['otel.headersSecret.name=ariva-otlp-headers'], 'otel.headersSecret needs otel.endpoint, an https:// URL'],
+	['the collector\'s headers over plain HTTP in dev', 'values-k8s-dev.yaml', ['otel.headersSecret.name=ariva-otlp-headers', 'otel.endpoint=http://otel.example:4318'], 'otel.headersSecret needs otel.endpoint to be an https:// URL'],
+	['the collector\'s headers over plain HTTP in production', 'values-k8s-prd.yaml', [PRD, 'otel.headersSecret.name=ariva-otlp-headers', 'otel.endpoint=http://otel.example:4318'], 'otel.headersSecret needs otel.endpoint to be an https:// URL'],
+	['a headers Secret name that is not a Kubernetes name', 'values-k8s-dev.yaml', ['otel.headersSecret.name=OTLP_Headers', 'otel.endpoint=https://otel.example:4317'], 'otel.headersSecret.name must be a Kubernetes secret name'],
+	['a headers key that is not a Secret key', 'values-k8s-dev.yaml', ['otel.headersSecret.key=x-api-key=1'], 'otel.headersSecret.key must be a key of a Kubernetes Secret'],
+	['headers Secret values that are not a map', 'values-k8s-dev.yaml', ['otel.headersSecret=ariva-otlp-headers'], 'otel.headersSecret must be a map'],
+	['otel values that are not a map', 'values-k8s-dev.yaml', ['otel=plain'], 'otel must be a map']
 ]) {
 	const result = render(file, sets, '', annotation ? [typeof annotation === 'string' ? ingressValues(annotation) : valuesFile(annotation)] : []);
 	if (result.status === 0) {
@@ -1456,6 +1679,113 @@ for (const [label, file, sets, message, annotation] of [
 	}
 }
 
+// ARV-091a: log shipping on real renders. Production as shipped sends the logs to Loki (Loki__Enabled on the five API hosts, its
+// placeholder peers opened) with the log pseudonym key from ariva-log-pseudonym-key; production with the OTLP collector and a
+// site's Secret and key; dev opting in to Loki with the key; dev as shipped with neither. Each holds every rule.
+{
+	const findings = [];
+	const counts = [];
+	const site = { name: 'site-log-key', key: 'master' };
+	for (const [label, file, sets, extra, environment, policy] of [
+		['production as shipped', 'values-k8s-prd.yaml', [PRD], [], 'k8s-prd', 'ariva-loki-egress'],
+		['production logging to the OTLP collector with a site Secret and key', 'values-k8s-prd.yaml', [PRD],
+			[{ otel: { endpoint: 'https://otel.example:4317' }, logging: { collector: 'otlp', pseudonymKeySecret: site }, networkPolicies: { otlp: { to: [{ ipBlock: { cidr: '10.60.0.0/24' } }] } } }], 'k8s-prd', 'ariva-otlp-egress'],
+		['production logging to Loki with its credentials', 'values-k8s-prd.yaml', [PRD], [{ logging: { lokiCredentialsSecret: { name: 'site-loki-credentials', passwordKey: 'token' } } }], 'k8s-prd', 'ariva-loki-egress'],
+		['production exporting to an OTLP collector that authenticates senders', 'values-k8s-prd.yaml', [PRD],
+			[{ otel: { endpoint: 'https://otel.example:4317', headersSecret: { name: 'site-otlp-headers', key: 'x-api-key' } }, logging: { collector: 'otlp' }, networkPolicies: { otlp: { to: [{ ipBlock: { cidr: '10.60.0.0/24' } }] } } }], 'k8s-prd', 'ariva-otlp-egress'],
+		['dev with the simulator exporting to an OTLP collector that authenticates senders', 'values-k8s-dev.yaml', [], [{ otel: { endpoint: 'https://otel.example:4317', headersSecret: { name: 'site-otlp-headers' } } }], 'k8s-dev', ''],
+		['dev logging to Loki with the key', 'values-k8s-dev.yaml', [], [{ logging: { collector: 'loki', pseudonymKeySecret: { name: LOG_SECRET.name } } }], 'k8s-dev', ''],
+		['dev as shipped', 'values-k8s-dev.yaml', [], [], 'k8s-dev', '']
+	]) {
+		const result = render(file, sets, '', extra.map((values) => valuesFile(values)));
+		if (result.status !== 0) {
+			findings.push(`${label}: template failed\n${result.stderr}`);
+			continue;
+		}
+		const values = mergedValues([file, ...extra]);
+		const docs = parseAsKubernetes(result.stdout);
+		const found = [...checkManifests(parse(result.stdout), { environment }), ...networkFindings(result.stdout, values, environment), ...logShippingFindings(docs, logShippingOptions(values, environment))];
+		if (policy && !docs.some((doc) => doc?.kind === 'NetworkPolicy' && doc.metadata?.name === policy)) found.push(`the collector's NetworkPolicy ${policy} is not rendered`);
+		findings.push(...found.map((finding) => `${label}: ${finding}`));
+		counts.push(`${label}: ${describeLogShipping(values)}`);
+	}
+	if (findings.length) {
+		failed = true;
+		console.error(`FAIL log shipping:\n  ${findings.join('\n  ')}`);
+	} else {
+		console.log(`PASS log shipping: ${counts.join('; ')}; nothing reaches another workload, a ConfigMap or a Secret of the chart`);
+	}
+}
+
+// ARV-091a: the log pseudonym key's Secret guard. validate.yaml fails on ariva-platform.pseudonymKeyRefusal of the lookups of the
+// Secret and of the namespace's kube-root-ca.crt ConfigMap (which says the release sees the cluster). helm template has no
+// cluster, so both lookups return nothing and the guard passes, as on a first install into a new namespace. As for the cluster CA:
+// the wiring is read from validate.yaml, and the helper is rendered in a copy of the chart against stand-in secrets shaped as the
+// API returns them (data base64), the hosts' rule for the value (LogProtection.From) included; no message may hold a value.
+{
+	const findings = [];
+	const validate = fs.readFileSync(path.join(chart, 'templates', 'validate.yaml'), 'utf8');
+	if (!/\{\{- if \$keySecretName \}\}\n\{\{- \$reachable := lookup "v1" "ConfigMap" \.Release\.Namespace "kube-root-ca\.crt" \}\}\n\{\{- \$keyRefusal := include "ariva-platform\.pseudonymKeyRefusal" \(dict "secret" \(lookup "v1" "Secret" \.Release\.Namespace \$keySecretName\) "name" \$keySecretName "key" \$keySecretKey "reachable" \(not \(empty \$reachable\)\)\) \}\}\n\{\{- if \$keyRefusal \}\}\n\{\{- fail \$keyRefusal \}\}/.test(validate)) {
+		findings.push('validate.yaml does not fail on ariva-platform.pseudonymKeyRefusal of the lookups of logging.pseudonymKeySecret and kube-root-ca.crt in the release namespace');
+	}
+	const b64 = (text) => Buffer.from(text).toString('base64');
+	const keyText = (bytes, fill = 7) => Buffer.alloc(bytes, fill).toString('base64');
+	const wrapped = keyText(64, 9).replace(/(.{64})/g, '$1\n') + '\n';
+	const missing = "which the release's namespace does not hold";
+	const noKey = 'has no key pseudonym-key';
+	const malformed = 'no base64 of 32 or more random bytes';
+	const secret = (data, type = 'Opaque') => ({ type, data });
+	const cases = {
+		'offline': [{ secret: {}, reachable: false }, ''],
+		'missing': [{ secret: {}, reachable: true }, missing],
+		'no-data': [{ secret: { type: 'Opaque' }, reachable: true }, noKey],
+		'other-key': [{ secret: secret({ password: b64(keyText(32)) }), reachable: true }, noKey],
+		'tls-secret': [{ secret: secret({ 'tls.crt': b64('x'), 'tls.key': b64('y') }, 'kubernetes.io/tls'), reachable: true }, noKey],
+		'empty': [{ secret: secret({ 'pseudonym-key': '' }), reachable: true }, malformed],
+		'blank': [{ secret: secret({ 'pseudonym-key': b64(' \n') }), reachable: true }, malformed],
+		'not-base64': [{ secret: secret({ 'pseudonym-key': b64('not a key at all, but long enough to be one') }), reachable: true }, malformed],
+		'base64url': [{ secret: secret({ 'pseudonym-key': b64(keyText(32, 0xfb).replaceAll('+', '-').replaceAll('/', '_')) }), reachable: true }, malformed],
+		'unpadded': [{ secret: secret({ 'pseudonym-key': b64(keyText(32).replace(/=+$/, '')) }), reachable: true }, malformed],
+		'short': [{ secret: secret({ 'pseudonym-key': b64(keyText(31)) }), reachable: true }, malformed],
+		'raw-bytes': [{ secret: secret({ 'pseudonym-key': Buffer.alloc(32, 0xfb).toString('base64') }), reachable: true }, malformed],
+		'data-not-base64': [{ secret: secret({ 'pseudonym-key': '%%%' }), reachable: true }, malformed],
+		'exact': [{ secret: secret({ 'pseudonym-key': b64(keyText(32)) }), reachable: true }, ''],
+		'with-newline': [{ secret: secret({ 'pseudonym-key': b64(`${keyText(32)}\n`) }), reachable: true }, ''],
+		'wrapped': [{ secret: secret({ 'pseudonym-key': b64(wrapped) }), reachable: true }, ''],
+		'site-key': [{ secret: secret({ master: b64(keyText(48)) }), reachable: true, key: 'master' }, ''],
+		'site-key-missing': [{ secret: secret({ 'pseudonym-key': b64(keyText(48)) }), reachable: true, key: 'master' }, 'has no key master']
+	};
+	const copy = fs.mkdtempSync(path.join(os.tmpdir(), 'ariva-chart-log-key-'));
+	try {
+		fs.cpSync(chart, path.join(copy, 'platform'), { recursive: true });
+		fs.writeFileSync(path.join(copy, 'platform', 'templates', 'zz-log-key-refusal-test.yaml'), 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: log-key-refusal-test\ndata:\n' +
+			'{{- range $name, $case := .Values.logKeyCases }}\n  {{ $name | quote }}: {{ include "ariva-platform.pseudonymKeyRefusal" (dict "secret" $case.secret "name" "ariva-log-pseudonym-key" "key" ($case.key | default "pseudonym-key") "reachable" $case.reachable) | quote }}\n{{- end }}\n');
+		fs.writeFileSync(path.join(copy, 'cases.json'), JSON.stringify({ logKeyCases: Object.fromEntries(Object.entries(cases).map(([name, [input]]) => [name, input])) }));
+		const result = spawnSync(helm, ['template', 'ariva-platform', path.join(copy, 'platform'), '-f', path.join(chart, 'values-k8s-prd.yaml'), '-f', path.join(copy, 'cases.json'),
+			'--set', PRD, '--show-only', 'templates/zz-log-key-refusal-test.yaml'], { encoding: 'utf8', shell: false });
+		if (result.status !== 0) findings.push(`the log key refusal cases: template failed\n${result.stderr}`);
+		else {
+			const judged = parse(result.stdout)[0]?.data ?? {};
+			const values = [keyText(32), keyText(31), keyText(48), keyText(64, 9).slice(0, 40), keyText(32, 0xfb)];
+			for (const [name, [, expected]] of Object.entries(cases)) {
+				const message = judged[name] ?? '(not rendered)';
+				if (expected ? !message.includes(expected) : message !== '') findings.push(`log key Secret ${name}: judged "${message}", expected ${expected ? `"${expected}"` : 'no refusal'}`);
+				if (values.some((value) => message.includes(value.slice(0, 16)))) findings.push(`log key Secret ${name}: the refusal repeats the value`);
+			}
+		}
+	} finally {
+		fs.rmSync(copy, { recursive: true, force: true });
+	}
+	if (findings.length) {
+		failed = true;
+		console.error(`FAIL log pseudonym key Secret guard:\n  ${findings.join('\n  ')}`);
+	} else {
+		console.log(`PASS log pseudonym key Secret guard: validate.yaml fails on the lookups of logging.pseudonymKeySecret and kube-root-ca.crt; ${Object.keys(cases).length} stand-in secrets judged ` +
+			'(a reachable namespace without the Secret, a Secret without the key, an empty, blank, non-base64, base64url, unpadded, raw or 31-byte value refused; 32 bytes, a trailing newline, ' +
+			"openssl's wrapped lines and a site's own key pass; nothing seen offline passes, as under helm template); no refusal repeats a value");
+	}
+}
+
 // ARV-125b: the AMAN feed rule renders where it is turned on (border deployments), channels reach every threshold, and
 // monitoring off renders no monitoring object.
 {
@@ -1541,12 +1871,14 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 		// ARV-085: the NetworkPolicies in prd only (state value networkPolicies, the release sets them on), beside the database's own.
 		const values = mergedValues([{ dev: 'values-k8s-dev.yaml', demo: 'values-k8s-demo.yaml', localk8s: 'values-localk8s.yaml', prd: 'values-k8s-prd.yaml' }[environment]]);
 		findings.push(...networkFindings(result.stdout, values, contextEnvironment, { enabled: tls }));
+		// ARV-091a: the log pseudonym key and the collector, required in prd by the release (state value logShipping).
+		findings.push(...logShippingFindings(parseAsKubernetes(result.stdout), logShippingOptions(values, contextEnvironment, tls)));
 		if (findings.length) {
 			failed = true;
 			console.error(`FAIL helmfile -e ${environment}:\n  ${findings.join('\n  ')}`);
 		} else {
 			console.log(`PASS helmfile -e ${environment}: ${docs.length} objects, database and topics job included, TimescaleDB ${tls ? 'with TLS' : 'without TLS'}, ` +
-				`${tls ? 'the pods over TLS' : 'plain HTTP to the pods'}, the Ingresses' headers held and plain HTTP ${describeModes(docs)}, ${describeNetwork(result.stdout, values)}`);
+				`${tls ? 'the pods over TLS' : 'plain HTTP to the pods'}, the Ingresses' headers held and plain HTTP ${describeModes(docs)}, ${describeNetwork(result.stdout, values)}, ${describeLogShipping(values)}`);
 		}
 	}
 	// ARV-082a: prd refuses TimescaleDB without TLS.
@@ -1568,6 +1900,22 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 			console.error(`FAIL release guard: helmfile -e prd with networkPolicies false must fail\n${attempt.stderr}${overridden.stderr}`);
 		} else {
 			console.log('PASS release guard: helmfile -e prd with networkPolicies false is refused, and so is the chart under it');
+		}
+	}
+	// ARV-091a: prd refuses to render without log shipping, in the Helmfile and, under it, in the chart; the release's
+	// logging.required holds in any environment that sets the state value.
+	{
+		const attempt = template('prd', ['--state-values-set', 'buildNumber=main-20261001.1', '--state-values-set', 'logShipping=false']);
+		const noCollector = template('prd', ['--state-values-set', 'buildNumber=main-20261001.1', '--set', 'logging.collector=']);
+		const noKey = template('prd', ['--state-values-set', 'buildNumber=main-20261001.1', '--set', 'logging.pseudonymKeySecret.name=']);
+		const dev = template('dev', ['--state-values-set', 'logShipping=true']);
+		const refused = (result, message) => result.status !== 0 && result.stderr.includes(message);
+		if (!refused(attempt, "prd ships the hosts' logs to a collector over TLS") || !refused(noCollector, "k8s-prd ships the hosts' logs to a collector over TLS") ||
+			!refused(noKey, 'k8s-prd needs logging.pseudonymKeySecret.name') || !refused(dev, "a release with logging.required ships the hosts' logs")) {
+			failed = true;
+			console.error(`FAIL release guard: helmfile -e prd with logShipping false, without a collector or without the key's Secret, and -e dev with logShipping true must each fail for its own reason\n${attempt.stderr}${noCollector.stderr}${noKey.stderr}${dev.stderr}`);
+		} else {
+			console.log("PASS release guard: helmfile -e prd with logShipping false is refused, and so is the chart under it without a collector or without the key's Secret, and -e dev with logShipping true and neither");
 		}
 	}
 	// ARV-082b: prd refuses the pods without TLS.
@@ -1681,13 +2029,18 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 			// ARV-085: and the pods without their NetworkPolicies.
 			const withoutPolicies = offline('prd', ['--state-values-set', `mirror=${mirror}`, '--state-values-set', 'networkPolicies=false']);
 			if (withoutPolicies.status === 0 || !withoutPolicies.stderr.includes('prd isolates every pod')) findings.push('-e prd with networkPolicies false rendered');
+			// ARV-091a: and without log shipping.
+			const withoutLogs = offline('prd', ['--state-values-set', `mirror=${mirror}`, '--state-values-set', 'logShipping=false']);
+			if (withoutLogs.status === 0 || !withoutLogs.stderr.includes("prd ships the hosts' logs")) findings.push('-e prd with logShipping false rendered');
 			const site = path.join(staged, 'site.yaml');
 			// ARV-082a: production sends telemetry over TLS only, so the site's endpoint is https.
 			// ARV-082b: a site file that names the web pod's certificate and tries to turn pod TLS off.
 			fs.writeFileSync(site, `otel:\n  endpoint: "https://otel.offline-site.local:4317"\nimageRepository: other.example/ariva\nimageDigests:\n  api-main: "${digestOf('planted')}"\nbuildNumber: planted\n` +
 				'podTls:\n  enabled: false\n  secretNames:\n    web: site-web-tls\n' +
 				// ARV-085: the collector's peers with its endpoint, and an attempt to turn the NetworkPolicies off.
-				'networkPolicies:\n  enabled: false\n  otlp:\n    to:\n      - ipBlock:\n          cidr: 10.60.0.0/24\n');
+				'networkPolicies:\n  enabled: false\n  otlp:\n    to:\n      - ipBlock:\n          cidr: 10.60.0.0/24\n' +
+				// ARV-091a: the site's collector (the OTLP one above) and the key's Secret, and an attempt to drop the requirement.
+				'logging:\n  collector: otlp\n  required: false\n  pseudonymKeySecret:\n    name: site-log-pseudonym-key\n');
 			const database = path.join(staged, 'database.yaml');
 			// ARV-082a: a site file that tries to turn the database's TLS off in prd.
 			fs.writeFileSync(database, `persistence:\n  size: 77Gi\nimage:\n  tag: planted\n  digest: "${digestOf('planted')}"\ntls:\n  enabled: false\n`);
@@ -1702,6 +2055,9 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 				// ARV-085: the NetworkPolicies stay on whatever the site file says, the collector's peers its own.
 				findings.push(...networkFindings(withSite.stdout, mergedValues(['values-k8s-prd.yaml', site, { podTls: { enabled: true } }]), 'k8s-prd', { enabled: true }).map((finding) => `-e prd with site values: ${finding}`));
 				if (!parseAsKubernetes(withSite.stdout).some((doc) => doc?.kind === 'NetworkPolicy' && doc.metadata?.name === 'ariva-otlp-egress')) findings.push('a site values file did not open its collector');
+				// ARV-091a: the site's collector and Secret reach the five API hosts, required whatever the site file says.
+				findings.push(...logShippingFindings(parseAsKubernetes(withSite.stdout), logShippingOptions(mergedValues(['values-k8s-prd.yaml', site]), 'k8s-prd', true)).map((finding) => `-e prd with site values: ${finding}`));
+				if (!withSite.stdout.includes('name: "site-log-pseudonym-key"')) findings.push("a site values file did not name the log pseudonym key's Secret");
 				const podTlsSite = podTlsRender(withSite.stdout, { secretNames: { ...POD_TLS_SECRETS, web: 'site-web-tls' } });
 				if (podTlsSite.length) findings.push(`a site values file turned pod TLS off in prd or did not name the web certificate:\n    ${podTlsSite.join('\n    ')}`);
 				if (/other\.example|planted/.test(withSite.stdout) || withSite.stdout.includes(digestOf('planted').slice(7)) || !withSite.stdout.includes(`${mirror}/ariva/api-main:v1.2.0-57@${digestOf('api-main')}`)) {
@@ -1729,7 +2085,7 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 			failed = true;
 			console.error(`FAIL offline bundle Helmfile:\n  ${findings.join('\n  ')}`);
 		} else {
-			console.log('PASS offline bundle Helmfile: the same objects as helmfile-k8s in every environment (the NetworkPolicies included), the Ingresses\' headers and plain HTTP held, every image from the mirror by digest, no render without a mirror or with a dry run\'s unpinned images, site values reach their release without moving an image or turning the database TLS, pod TLS or the NetworkPolicies off in prd (but name the certificates and the collector), prd refused without either TLS or the NetworkPolicies');
+			console.log('PASS offline bundle Helmfile: the same objects as helmfile-k8s in every environment (the NetworkPolicies included), the Ingresses\' headers and plain HTTP held, every image from the mirror by digest, no render without a mirror or with a dry run\'s unpinned images, site values reach their release without moving an image or turning the database TLS, pod TLS, the NetworkPolicies or log shipping off in prd (but name the certificates, the collector and the log key\'s Secret), prd refused without either TLS, the NetworkPolicies or log shipping');
 		}
 	}
 }

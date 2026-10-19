@@ -57,6 +57,31 @@ ingressController:
 # networks (networkPolicies.mqttSensors.from).
 networkPolicies:
   enabled: true
+  # Loki, the log collector below (ARV-091a): required with logging.collector loki. 192.0.2.0/24 is a documentation network
+  # (RFC 5737) that holds no Loki, so no log reaches Loki until the site gives its Loki's peers and port (TLS) here at
+  # deployment; the go-live record checks that the hosts' lines arrive (wiki 13, checklist item 15).
+  loki:
+    to:
+      - ipBlock:
+          cidr: 192.0.2.0/24
+    ports: [3100]
+
+# Log shipping and the log pseudonym key (ARV-091a; values.yaml). Required in production: the chart refuses a release without a
+# collector or without the key's Secret, and a host refuses to start without a collector over TLS or with the key from a file.
+# - collector loki: the hosts get Loki__Enabled "true" from the chart, and Loki's https address is Loki:Uri in
+#   base-appsettings-secret; a host refuses to start until it is there. A site that sends its logs to the OpenTelemetry
+#   collector instead (SigNoz, which the system alerts need) sets collector otlp with an https otel.endpoint and the collector's
+#   peers in networkPolicies.otlp. Record the choice, its access and its retention in the go-live record. A Loki that
+#   authenticates senders takes its user name and password from a Secret the site creates (lokiCredentialsSecret, values.yaml).
+# - pseudonymKeySecret: the site creates this Secret in the release's namespace before the release, with the key pseudonym-key
+#   holding base64 of 32 or more random bytes (for example openssl rand -base64 32), one per deployment (never the border's and
+#   the airport's alike), and never gives it to those who read the logs: with it, a day's pseudonym of any desk code can be
+#   recomputed. Only the five API pods read it. A site may rename the Secret or its key here.
+logging:
+  collector: loki
+  pseudonymKeySecret:
+    name: ariva-log-pseudonym-key
+    key: pseudonym-key
 
 # Validation reader login (ARV-104g1; values.yaml): required in production, so the pilot's ground-truth proof always has its
 # reader; create the secret (keys username and password) before the release (wiki/04, section 6.2).

@@ -70,6 +70,8 @@ public static class ServiceDefaultsExtensions
         ArgumentNullException.ThrowIfNull(options);
 
         OtlpSettings.EnsureProductionTransport(configuration);
+        // ARV-091a: a collector's sender credential in the OTLP headers comes from the environment and goes over https only.
+        OtlpSettings.EnsureHeadersAreProtected(configuration, options.Environment ?? configuration["Application:Environment"]);
         var otlp = OtlpSettings.From(configuration);
         if (!otlp.Enabled)
             return services;
@@ -86,7 +88,7 @@ public static class ServiceDefaultsExtensions
                 foreach (var source in options.ActivitySources)
                     tracing.AddSource(source);
                 options.ConfigureTracing?.Invoke(tracing);
-                tracing.AddOtlpExporter(exporter => Target(exporter, otlp));
+                tracing.AddOtlpExporter(exporter => Target(exporter, otlp, OtlpSettings.TracesPath));
             })
             .WithMetrics(metrics =>
             {
@@ -96,7 +98,7 @@ public static class ServiceDefaultsExtensions
                     .AddRuntimeInstrumentation();
                 foreach (var meter in options.Meters)
                     metrics.AddMeter(meter);
-                metrics.AddOtlpExporter(exporter => Target(exporter, otlp));
+                metrics.AddOtlpExporter(exporter => Target(exporter, otlp, OtlpSettings.MetricsPath));
             });
 
         return services;
@@ -127,7 +129,7 @@ public static class ServiceDefaultsExtensions
         {
             log.IncludeFormattedMessage = true;
             log.SetResourceBuilder(Describe(ResourceBuilder.CreateDefault(), options));
-            log.AddOtlpExporter(exporter => Target(exporter, otlp));
+            log.AddOtlpExporter(exporter => Target(exporter, otlp, OtlpSettings.LogsPath));
         });
     }
 
@@ -139,9 +141,14 @@ public static class ServiceDefaultsExtensions
                 autoGenerateServiceInstanceId: false)
             .AddAttributes([new KeyValuePair<string, object>("deployment.environment", options.Environment ?? "unknown")]);
 
-    private static void Target(OtlpExporterOptions exporter, OtlpSettings otlp)
+    /// <summary>
+    /// ARV-091a: an endpoint set in code is used by the exporter exactly as given, so over http/protobuf it names the signal's
+    /// path (before, every signal was posted to the base address, a path an OTLP collector does not serve); over gRPC it is the
+    /// endpoint as configured (<see cref="OtlpSettings.EndpointFor"/>).
+    /// </summary>
+    private static void Target(OtlpExporterOptions exporter, OtlpSettings otlp, string signalPath)
     {
-        exporter.Endpoint = otlp.Endpoint;
+        exporter.Endpoint = otlp.EndpointFor(signalPath);
         exporter.Protocol = otlp.UseHttp ? OtlpExportProtocol.HttpProtobuf : OtlpExportProtocol.Grpc;
     }
 

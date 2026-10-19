@@ -19,6 +19,10 @@
 # pod denies all traffic but the firewall matrix's flows. On in prd, which refuses to render with it off; the release sets
 # networkPolicies.enabled, so no values file turns it off there. Off elsewhere. The peers (kube-dns, the database, Kafka, Redis,
 # the collector, the relay, the outbound endpoints) come from the platform values file (Charts/platform/values.yaml).
+# logShipping: the platform release requires log shipping (ARV-091a; Charts/platform logging): a log collector over TLS
+# (logging.collector otlp or loki) and the log pseudonym key from a Secret (logging.pseudonymKeySecret). On in prd, which refuses
+# to render with it off; the release sets logging.required, so no values file drops either there. Off elsewhere. The collector
+# and the Secret's name come from the platform values file; create the Secret in the namespace first.
 environments:
   dev:
     values:
@@ -27,6 +31,7 @@ environments:
         timescaledbTls: false
         podTls: false
         networkPolicies: false
+        logShipping: false
   demo:
     values:
       - valuesFile: values-k8s-demo.yaml
@@ -34,6 +39,7 @@ environments:
         timescaledbTls: false
         podTls: false
         networkPolicies: false
+        logShipping: false
   prd:
     values:
       - valuesFile: values-k8s-prd.yaml
@@ -41,6 +47,7 @@ environments:
         timescaledbTls: true
         podTls: true
         networkPolicies: true
+        logShipping: true
   localk8s:
     values:
       - valuesFile: values-localk8s.yaml
@@ -48,6 +55,7 @@ environments:
         timescaledbTls: false
         podTls: false
         networkPolicies: false
+        logShipping: false
 
 helmDefaults:
   kubeContext: default
@@ -61,6 +69,9 @@ helmDefaults:
 {{- end }}
 {{- if and (eq .Environment.Name "prd") (not (.Values | get "networkPolicies" false)) }}
 {{- fail "prd isolates every pod: default deny and the firewall matrix's flows only (state value networkPolicies true; ARV-085)" }}
+{{- end }}
+{{- if and (eq .Environment.Name "prd") (not (.Values | get "logShipping" false)) }}
+{{- fail "prd ships the hosts' logs to a collector over TLS, with the log pseudonym key from a Secret (state value logShipping true; ARV-091a)" }}
 {{- end }}
 
 releases:
@@ -91,7 +102,7 @@ releases:
     {{- end }}
     values:
       - ./Charts/platform/{{ .Values.valuesFile }}
-    {{- if or (.Values | get "buildNumber" "") (.Values | get "podTls" false) (.Values | get "networkPolicies" false) }}
+    {{- if or (.Values | get "buildNumber" "") (.Values | get "podTls" false) (.Values | get "networkPolicies" false) (.Values | get "logShipping" false) }}
     set:
       {{- if .Values | get "buildNumber" "" }}
       - name: buildNumber
@@ -105,6 +116,11 @@ releases:
       {{- if .Values | get "networkPolicies" false }}
       # set, so that no values file turns the network policies off (ARV-085)
       - name: networkPolicies.enabled
+        value: true
+      {{- end }}
+      {{- if .Values | get "logShipping" false }}
+      # set, so that no values file drops the log collector or the log pseudonym key's Secret (ARV-091a)
+      - name: logging.required
         value: true
       {{- end }}
     {{- end }}

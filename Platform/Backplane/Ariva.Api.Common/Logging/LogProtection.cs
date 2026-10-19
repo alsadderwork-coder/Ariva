@@ -23,10 +23,11 @@ public enum LogProtectionLevel
 
 /// <summary>
 /// The log protection levels (ARV-091, ASVS 5.0 V16.2.5; CWE-532), applied by <see cref="RedactionEnricher"/> to every event
-/// before any sink sees it, by property name (compared ignoring case, '-' and '_'), also inside destructured objects,
+/// before any sink sees it, by property name (compared ignoring case, '-', '_' and ':'), also inside destructured objects,
 /// dictionaries (their string keys too) and arrays:
 /// <list type="bullet">
-/// <item><b>Omit</b>: credentials and keys (<see cref="RedactionEnricher.SensitiveNames"/>), as before.</item>
+/// <item><b>Omit</b>: credentials and keys (<see cref="RedactionEnricher.SensitiveNames"/>, and longer names ending in
+/// <see cref="RedactionEnricher.SensitiveSuffixes"/>, ARV-091a).</item>
 /// <item><b>Hash</b>: sensor track ids and desk codes (<see cref="HashedNames"/>, and names ending as they do), which are
 /// pseudonymous or border-only data: HMAC-SHA256 under the day's key, truncated to <see cref="HashLength"/> hex characters
 /// after <see cref="HashMarker"/>, so lines about the same desk or track correlate within a UTC day and never across days.</item>
@@ -40,8 +41,9 @@ public enum LogProtectionLevel
 /// and their restarts. Whoever holds the
 /// master key can recompute a day's pseudonym of a known desk code, so it is a secret: outside vm-local it must come from the
 /// environment (a Kubernetes Secret), and a host refuses it from a configuration file. A key that is set but malformed stops the
-/// host. Exception messages are not rewritten (Serilog hands sinks the exception object): code must not put these values in
-/// exception messages either.
+/// host, and so does a k8s-prd host without one (ARV-091a), so a deployment's pods and their restarts agree on a day's
+/// pseudonyms. Exception messages are not rewritten (Serilog hands sinks the exception object): code must not put these values
+/// in exception messages either.
 /// </summary>
 public sealed partial class LogProtection
 {
@@ -119,21 +121,29 @@ public sealed partial class LogProtection
 
     /// <summary>
     /// Protection keyed by <see cref="KeySetting"/>, or by a random key of this process's own when the setting is empty. The
-    /// setting is optional; one that is set must be base64 of at least <see cref="MinimumKeyBytes"/> bytes and, outside
-    /// vm-local, must not come from a configuration file (appsettings): it is a secret, given by the environment.
+    /// setting is optional outside k8s-prd; one that is set must be base64 of at least <see cref="MinimumKeyBytes"/> bytes and,
+    /// outside vm-local, must not come from a configuration file (appsettings): it is a secret, given by the environment. In
+    /// k8s-prd it is required (ARV-091a): with a key of each process's own, the same desk code or track id would get another
+    /// pseudonym in every pod and after every restart, and the lines of one day would no longer correlate.
     /// </summary>
     /// <param name="configuration">The host's configuration.</param>
     /// <param name="environment">The host's own environment name.</param>
     /// <returns>The protection.</returns>
-    /// <exception cref="InvalidOperationException">The key is set but is not base64, is too short, or comes from a file outside vm-local.</exception>
+    /// <exception cref="InvalidOperationException">The key is not set in k8s-prd, or is set but is not base64, is too short, or
+    /// comes from a file outside vm-local. The message names the setting, never its value.</exception>
     public static LogProtection From(IConfiguration configuration, string environment = null)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         var text = configuration[KeySetting];
         if (string.IsNullOrWhiteSpace(text))
-            return new LogProtection();
+        {
+            return ArivaLogging.IsProduction(configuration, environment)
+                ? throw new InvalidOperationException(
+                    $"{KeySetting} is not set: in k8s-prd every host hashes desk codes and track ids with the deployment's key, from the environment (Logging__PseudonymKey from a Kubernetes Secret), so a day's pseudonyms agree across pods and restarts.")
+                : new LogProtection();
+        }
 
-        if (environment != Hosting.ArivaEnvironment.VmLocal && FromAFile(configuration))
+        if (environment != Hosting.ArivaEnvironment.VmLocal && ComesFromAFile(configuration, KeySetting))
             throw new InvalidOperationException($"{KeySetting} comes from a configuration file; outside vm-local it is a secret, set from a Kubernetes Secret in the environment.");
         var key = new byte[text.Length];
         if (!Convert.TryFromBase64String(text.Trim(), key, out var written) || written < MinimumKeyBytes)
@@ -141,7 +151,10 @@ public sealed partial class LogProtection
         return new LogProtection(key[..written]);
     }
 
-    /// <summary>The level a property, member or dictionary key of this name gets.</summary>
+    /// <summary>
+    /// The level a property, member or dictionary key of this name gets. Case is ignored, and so are '-', '_' and ':' (ARV-091a:
+    /// a configuration key such as Loki:Password, or its environment form Loki__Password, matches as LokiPassword).
+    /// </summary>
     /// <param name="name">The name as logged.</param>
     /// <returns>The level; <see cref="LogProtectionLevel.None"/> for any other name.</returns>
     public static LogProtectionLevel LevelOf(string name)
@@ -149,8 +162,9 @@ public sealed partial class LogProtection
         if (string.IsNullOrEmpty(name))
             return LogProtectionLevel.None;
 
-        var normalized = name.Replace("-", string.Empty, StringComparison.Ordinal).Replace("_", string.Empty, StringComparison.Ordinal);
-        if (RedactionEnricher.SensitiveNames.Contains(normalized))
+        var normalized = name.Replace("-", string.Empty, StringComparison.Ordinal).Replace("_", string.Empty, StringComparison.Ordinal)
+            .Replace(":", string.Empty, StringComparison.Ordinal);
+        if (RedactionEnricher.SensitiveNames.Contains(normalized) || EndsWithAny(normalized, RedactionEnricher.SensitiveSuffixes))
             return LogProtectionLevel.Omit;
         if (HashedNames.Contains(normalized) || EndsWithAny(normalized, HashedSuffixes))
             return LogProtectionLevel.Hash;
@@ -202,7 +216,7 @@ public sealed partial class LogProtection
         return string.Equals(result, text, StringComparison.Ordinal) ? text : result;
     }
 
-    private static bool EndsWithAny(string name, string[] suffixes)
+    private static bool EndsWithAny(string name, IReadOnlyList<string> suffixes)
     {
         foreach (var suffix in suffixes)
         {
@@ -224,10 +238,14 @@ public sealed partial class LogProtection
         return key;
     }
 
-    /// <summary>Whether the provider that gives the key, the last that holds it, reads a file (JSON, XML or INI).</summary>
-    private static bool FromAFile(IConfiguration configuration) =>
-        configuration is IConfigurationRoot root &&
-        root.Providers.Reverse().FirstOrDefault(provider => provider.TryGet(KeySetting, out _)) is FileConfigurationProvider;
+    /// <summary>
+    /// Whether the provider that gives the setting, the last that holds it, reads a file (JSON, XML or INI): the pseudonym key
+    /// here, the Loki sender credentials in <see cref="ArivaLogging"/> (ARV-091a).
+    /// </summary>
+    /// <param name="configuration">The host's configuration.</param>
+    /// <param name="key">The setting.</param>
+    /// <returns>True when a configuration file gives the value.</returns>
+    internal static bool ComesFromAFile(IConfiguration configuration, string key) => Ariva.ServiceDefaults.ConfigurationOrigin.IsFromAFile(configuration, key);
 
     /// <summary>
     /// An email address in free text (CWE-1333): a run of local part characters, the literal <c>@</c>, then dot-separated

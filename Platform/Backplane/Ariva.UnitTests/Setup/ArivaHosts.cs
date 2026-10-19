@@ -45,6 +45,16 @@ public static class ArivaHosts
     /// <summary>The ingress controller's pod network a host started here in k8s-prd trusts for forwarded headers (ARV-085).</summary>
     public const string ProductionPodNetwork = "10.244.0.0/16";
 
+    /// <summary>
+    /// The collector a host started here in k8s-prd ships its logs to (ARV-091a): an https address on loopback port 9 (discard),
+    /// a privileged port that the tests never bind (their listeners take free ports) and a test machine does not serve, so every
+    /// batch is refused at once and no line leaves the machine. .NET never sends loopback through a proxy.
+    /// </summary>
+    public const string ProductionCollector = "https://127.0.0.1:9";
+
+    /// <summary>The log pseudonym key a host started here in k8s-prd hashes with (ARV-091a): base64 of the bytes 1 to 32, the tests' own.</summary>
+    public const string ProductionPseudonymKey = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=";
+
     #endregion
 
     #region Theory data
@@ -209,6 +219,12 @@ internal sealed class ArivaWebApplicationFactory<TEntryPoint>(string environment
             // k8s-prd trusts forwarded headers from the ingress controller's pod network only, which the chart passes from a Helm
             // value (ARV-085), and a host refuses to start without one: a pod network of the test's own stands in.
             builder.UseSetting($"{Ariva.Api.Common.Settings.ForwardedHeadersSettings.SectionName}:KnownNetworks:0", ArivaHosts.ProductionPodNetwork);
+            // k8s-prd ships its logs over TLS to a collector and hashes with the deployment's pseudonym key from the environment
+            // (ARV-091a), and a host refuses to start without either: a Loki nothing answers on, and a key of the tests' own, as
+            // the chart's Loki__Enabled and Logging__PseudonymKey would give them. A test of these guards sets them otherwise.
+            builder.UseSetting(Ariva.Api.Common.Logging.ArivaLogging.LokiEnabledSetting, "true");
+            builder.UseSetting(Ariva.Api.Common.Logging.ArivaLogging.LokiUriSetting, ArivaHosts.ProductionCollector);
+            builder.UseSetting(Ariva.Api.Common.Logging.LogProtection.KeySetting, ArivaHosts.ProductionPseudonymKey);
         }
         // Nor a database readiness check, which would answer 503 here: the probes' authorization is what these hosts
         // test; the check itself is covered by ServiceDefaultsTests (ARV-066).

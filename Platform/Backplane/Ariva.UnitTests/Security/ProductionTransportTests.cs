@@ -275,19 +275,27 @@ public sealed class ProductionTransportTests : IDisposable
     [Theory]
     [InlineData("k8s-prd", "true", "http://loki:3100", null, true, "*Loki:Uri must be https*")]
     [InlineData("k8s-prd", "true", "https://loki:3100", null, false, null)]
-    [InlineData("k8s-prd", "false", "http://loki:3100", null, false, null)]
+    // ARV-091a: a Loki that is off ships nothing, and k8s-prd needs a collector.
+    [InlineData("k8s-prd", "false", "http://loki:3100", null, true, "No log collector in k8s-prd*")]
     [InlineData("k8s-dev", "true", "http://loki:3100", null, false, null)]
     [InlineData("k8s-prd", "false", "", "http://collector:4317", true, "*OTEL_EXPORTER_OTLP_ENDPOINT must be https*")]
     [InlineData("k8s-prd", "false", "", "https://collector:4317", false, null)]
     public void ArivaLogging_Should_RefusePlainLogShipping_When_InProduction(string environment, string loki, string lokiUri, string variable, bool refused,
         string message)
     {
-        var values = new Dictionary<string, string> { ["Loki:Enabled"] = loki, ["Loki:Uri"] = lokiUri, ["OTEL_EXPORTER_OTLP_ENDPOINT"] = variable };
+        var values = new Dictionary<string, string>
+        {
+            ["Loki:Enabled"] = loki,
+            ["Loki:Uri"] = lokiUri,
+            ["OTEL_EXPORTER_OTLP_ENDPOINT"] = variable,
+            // ARV-091a: k8s-prd also needs the deployment's pseudonym key.
+            [Ariva.Api.Common.Logging.LogProtection.KeySetting] = ArivaHosts.ProductionPseudonymKey
+        };
         if (variable is not null)
             values["Otlp:Endpoint"] = "https://collector:4317";
         var configuration = Configuration(environment, values);
 
-        var configure = () => Ariva.Api.Common.Logging.ArivaLogging.Configure(new Serilog.LoggerConfiguration(), configuration, environment);
+        var configure = () => Ariva.Api.Common.Logging.ArivaLogging.Configure(new Serilog.LoggerConfiguration(), configuration, environment).CreateLogger().Dispose();
 
         if (refused)
             configure.Should().Throw<InvalidOperationException>().WithMessage(message, "the sink reads the variable after Ariva's own setting");

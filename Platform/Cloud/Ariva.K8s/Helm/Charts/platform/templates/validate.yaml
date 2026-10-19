@@ -16,6 +16,9 @@ Release guards. Renders nothing; fails the render when a rule is broken.
   Kubernetes secret names.
 - Production sends telemetry over TLS only (ARV-082a): in k8s-prd a set otel.endpoint starts with https:// (empty turns
   OTLP export off).
+- The collector's sender headers (ARV-091a): otel is a map of endpoint, protocol and headersSecret (name and key) only, so the
+  headers (OTEL_EXPORTER_OTLP_HEADERS) can never be a value; with headersSecret named, otel.endpoint is an https:// URL in
+  every environment.
 - Pod TLS (ARV-082b, values podTls): enabled is true or false, and true in k8s-prd, where the hosts listen on HTTPS only;
   caSecretName and every secretNames entry are Kubernetes secret names, and secretNames names only the services that serve
   TLS. With it on, the simulator (plain HTTP both ways) is off, every Ingress routes to a service that serves TLS, no
@@ -75,6 +78,19 @@ Release guards. Renders nothing; fails the render when a rule is broken.
     routes /hubs (in any case) or a path under it has tokenInQuery: the live hub's URL carries the access token, and the
     chart's server-snippet answers /hubs 404 on every host without such an Ingress. On that Ingress enable-access-log and
     enable-opentelemetry are the chart's ("false"), so no site annotation turns them on.
+- Log shipping and the log pseudonym key (ARV-091a, ASVS 5.0 V16.4.2, V16.4.3, CWE-532; values logging):
+  - logging is a map of collector, pseudonymKeySecret (name and key), lokiCredentialsSecret (name, usernameKey and passwordKey)
+    and required, nothing else, so neither the key nor Loki's credentials can ever be a value; collector is otlp, loki or empty;
+    each Secret's name is a Kubernetes secret name and its keys Secret keys; the pseudonym key's Secret key is one that is
+    not 43 or more characters of base64's alphabet (the key itself, put there by mistake, would land in every manifest). No
+    message repeats a logging value.
+  - k8s-prd, and any release with logging.required true (the Helmfiles' prd), needs a collector and the Secret's name.
+  - otlp needs otel.endpoint, an https:// URL, in every environment (with networkPolicies on, its peers: the ARV-085 rule above);
+    loki with networkPolicies on needs networkPolicies.loki peers (the hosts check Loki:Uri themselves, from the appsettings
+    secret).
+  - when the release can see the cluster (lookup finds the namespace's kube-root-ca.crt ConfigMap), the Secret exists, holds
+    the key, and its value is base64 of 32 or more bytes (ariva-platform.pseudonymKeyRefusal); helm template, or a namespace
+    that does not exist yet, sees nothing and passes.
 */ -}}
 {{- if and (eq .Values.environment "k8s-prd") (or (empty .Values.buildNumber) (eq (toString .Values.buildNumber) "trunk")) }}
 {{- fail "k8s-prd needs an explicit buildNumber (for example --set buildNumber=main-20261001.3); trunk and empty are not allowed" }}
@@ -113,7 +129,38 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- fail (printf "%s must be a Kubernetes secret name (a secret with the key ca.crt; ARV-082a)" $key) }}
 {{- end }}
 {{- end }}
+{{- $otel := .Values.otel | default dict }}
+{{- if not (kindIs "map" $otel) }}
+{{- fail "otel must be a map: endpoint, protocol and headersSecret (ARV-082a, ARV-091a)" }}
+{{- end }}
+{{- range $key, $_ := $otel }}
+{{- if not (has $key (list "endpoint" "protocol" "headersSecret")) }}
+{{- fail (printf "otel.%s is not a setting (endpoint, protocol, headersSecret; ARV-091a): the chart names the Secret that holds the collector's sender headers, never the headers themselves" $key) }}
+{{- end }}
+{{- end }}
+{{- $otelHeaders := $otel.headersSecret | default dict }}
+{{- if not (kindIs "map" $otelHeaders) }}
+{{- fail "otel.headersSecret must be a map: name and key, the Kubernetes Secret that holds OTEL_EXPORTER_OTLP_HEADERS (ARV-091a)" }}
+{{- end }}
+{{- range $key, $_ := $otelHeaders }}
+{{- if not (has $key (list "name" "key")) }}
+{{- fail (printf "otel.headersSecret.%s is not a setting (name, key; ARV-091a): the chart names the Secret that holds the collector's sender headers, never the headers themselves" $key) }}
+{{- end }}
+{{- end }}
+{{- if and $otelHeaders.name (not (regexMatch "^[a-z0-9]([-a-z0-9]{0,251}[a-z0-9])?$" (toString $otelHeaders.name))) }}
+{{- fail "otel.headersSecret.name must be a Kubernetes secret name, the Secret that holds OTEL_EXPORTER_OTLP_HEADERS (ARV-091a)" }}
+{{- end }}
+{{- if not (regexMatch "^[-._a-zA-Z0-9]{1,253}$" (toString ($otelHeaders.key | default "headers"))) }}
+{{- fail "otel.headersSecret.key must be a key of a Kubernetes Secret: letters, digits, dot, dash and underscore (ARV-091a)" }}
+{{- end }}
 {{- $otelEndpoint := toString ((.Values.otel | default dict).endpoint | default "") }}
+{{- if and $otelHeaders.name (not (regexMatch "^(?i)https://[^\\s]+$" $otelEndpoint)) }}
+{{- if eq $otelEndpoint "" }}
+{{- fail "otel.headersSecret needs otel.endpoint, an https:// URL: without one no exporter runs and the headers would be idle (ARV-091a)" }}
+{{- else }}
+{{- fail "otel.headersSecret needs otel.endpoint to be an https:// URL: the collector's sender headers cross the network encrypted only (ARV-091a)" }}
+{{- end }}
+{{- end }}
 {{- if and (eq .Values.environment "k8s-prd") (ne $otelEndpoint "") (not (regexMatch "^(?i)https://[^\\s]+$" $otelEndpoint)) }}
 {{- fail "k8s-prd sends telemetry over TLS only: otel.endpoint must be an https:// URL (or stay empty to turn OTLP export off; ARV-082a)" }}
 {{- end }}
@@ -361,6 +408,80 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- if not (has (toString $ingress.serviceName) $chartServices) }}
 {{- fail (printf "ingresses %s: routes to %s, which is not a service of the chart; with networkPolicies.enabled the controller reaches the chart's pods only (ARV-085)" (toString $ingress.name) (toString $ingress.serviceName)) }}
 {{- end }}
+{{- end }}
+{{- end }}
+{{- $logging := .Values.logging | default dict }}
+{{- if not (kindIs "map" $logging) }}
+{{- fail "logging must be a map: collector, pseudonymKeySecret, lokiCredentialsSecret and required (ARV-091a)" }}
+{{- end }}
+{{- range $key, $_ := $logging }}
+{{- if not (has $key (list "collector" "pseudonymKeySecret" "lokiCredentialsSecret" "required")) }}
+{{- fail (printf "logging.%s is not a setting (collector, pseudonymKeySecret, lokiCredentialsSecret, required; ARV-091a): the chart names the Secrets that hold the log pseudonym key and Loki's credentials, never their values" $key) }}
+{{- end }}
+{{- end }}
+{{- $lokiSecret := $logging.lokiCredentialsSecret | default dict }}
+{{- if not (kindIs "map" $lokiSecret) }}
+{{- fail "logging.lokiCredentialsSecret must be a map: name, usernameKey and passwordKey, the Kubernetes Secret that holds Loki's sender credentials (ARV-091a)" }}
+{{- end }}
+{{- range $key, $_ := $lokiSecret }}
+{{- if not (has $key (list "name" "usernameKey" "passwordKey")) }}
+{{- fail (printf "logging.lokiCredentialsSecret.%s is not a setting (name, usernameKey, passwordKey; ARV-091a): the chart names the Secret that holds Loki's credentials, never the credentials themselves" $key) }}
+{{- end }}
+{{- end }}
+{{- if and $lokiSecret.name (not (regexMatch "^[a-z0-9]([-a-z0-9]{0,251}[a-z0-9])?$" (toString $lokiSecret.name))) }}
+{{- fail "logging.lokiCredentialsSecret.name must be a Kubernetes secret name, the Secret that holds Loki's sender credentials (ARV-091a)" }}
+{{- end }}
+{{- range $key := list "usernameKey" "passwordKey" }}
+{{- if not (regexMatch "^[-._a-zA-Z0-9]{1,253}$" (toString (index $lokiSecret $key | default "x"))) }}
+{{- fail (printf "logging.lokiCredentialsSecret.%s must be a key of a Kubernetes Secret: letters, digits, dot, dash and underscore (ARV-091a)" $key) }}
+{{- end }}
+{{- end }}
+{{- if and (hasKey $logging "required") (not (kindIs "bool" $logging.required)) }}
+{{- fail "logging.required must be true or false (ARV-091a)" }}
+{{- end }}
+{{- $logRequired := or $prd (and (kindIs "bool" $logging.required) $logging.required) }}
+{{- $logWhere := ternary "k8s-prd" "a release with logging.required" $prd }}
+{{- $collector := toString ($logging.collector | default "") }}
+{{- if not (has $collector (list "" "otlp" "loki")) }}
+{{- fail "logging.collector must be otlp or loki, or empty where no collector is required (ARV-091a)" }}
+{{- end }}
+{{- $keySecret := $logging.pseudonymKeySecret | default dict }}
+{{- if not (kindIs "map" $keySecret) }}
+{{- fail "logging.pseudonymKeySecret must be a map: name and key, the Kubernetes Secret that holds the log pseudonym key (ARV-091a)" }}
+{{- end }}
+{{- range $key, $_ := $keySecret }}
+{{- if not (has $key (list "name" "key")) }}
+{{- fail (printf "logging.pseudonymKeySecret.%s is not a setting (name, key; ARV-091a): the chart names the Secret that holds the log pseudonym key, never the key itself" $key) }}
+{{- end }}
+{{- end }}
+{{- $keySecretName := toString ($keySecret.name | default "") }}
+{{- $keySecretKey := toString ($keySecret.key | default "pseudonym-key") }}
+{{- if and $keySecretName (not (regexMatch "^[a-z0-9]([-a-z0-9]{0,251}[a-z0-9])?$" $keySecretName)) }}
+{{- fail "logging.pseudonymKeySecret.name must be a Kubernetes secret name, the Secret that holds the log pseudonym key (ARV-091a)" }}
+{{- end }}
+{{- if not (regexMatch "^[-._a-zA-Z0-9]{1,253}$" $keySecretKey) }}
+{{- fail "logging.pseudonymKeySecret.key must be a key of a Kubernetes Secret: letters, digits, dot, dash and underscore (ARV-091a)" }}
+{{- end }}
+{{- if regexMatch "^[A-Za-z0-9_-]{43,}$" $keySecretKey }}
+{{- fail "logging.pseudonymKeySecret.key names the Secret's key (for example pseudonym-key), not the log pseudonym key itself: 43 or more characters of base64's alphabet look like the key, which belongs in the Secret only (ARV-091a)" }}
+{{- end }}
+{{- if and $logRequired (eq $collector "") }}
+{{- fail (printf "%s ships the hosts' logs to a collector over TLS: set logging.collector to otlp (an https otel.endpoint) or loki (an https Loki:Uri in the appsettings secret); a host refuses to start without one (ARV-091a)" $logWhere) }}
+{{- end }}
+{{- if and $logRequired (eq $keySecretName "") }}
+{{- fail (printf "%s needs logging.pseudonymKeySecret.name, the Secret that holds the log pseudonym key (Logging:PseudonymKey, base64 of 32 or more random bytes), so every host hashes desk codes and track ids under one key (ARV-091a)" $logWhere) }}
+{{- end }}
+{{- if and (eq $collector "otlp") (not (regexMatch "^(?i)https://[^\\s]+$" $otelEndpoint)) }}
+{{- fail "logging.collector otlp needs otel.endpoint, an https:// URL: the hosts' logs cross the network encrypted (ARV-091a)" }}
+{{- end }}
+{{- if and (eq $collector "loki") $np.enabled (empty $np.loki.to) }}
+{{- fail "logging.collector loki needs networkPolicies.loki.to, Loki's peers: with networkPolicies.enabled the hosts' logs could not leave the pods otherwise (ARV-091a)" }}
+{{- end }}
+{{- if $keySecretName }}
+{{- $reachable := lookup "v1" "ConfigMap" .Release.Namespace "kube-root-ca.crt" }}
+{{- $keyRefusal := include "ariva-platform.pseudonymKeyRefusal" (dict "secret" (lookup "v1" "Secret" .Release.Namespace $keySecretName) "name" $keySecretName "key" $keySecretKey "reachable" (not (empty $reachable))) }}
+{{- if $keyRefusal }}
+{{- fail $keyRefusal }}
 {{- end }}
 {{- end }}
 {{- range $ingress := (.Values.ingresses | default list) }}

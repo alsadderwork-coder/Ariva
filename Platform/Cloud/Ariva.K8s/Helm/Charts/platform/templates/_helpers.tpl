@@ -24,14 +24,27 @@ app.kubernetes.io/version: {{ .Values.releaseVersion | quote }}
 {{- end }}
 
 {{/*
-OpenTelemetry environment variables shared by the .NET hosts. The service name comes from
-Application:Name in appsettings; these add the export target and the resource attributes.
+OpenTelemetry environment variables shared by the .NET hosts (the five API hosts and the simulator). The service name comes
+from Application:Name in appsettings; these add the export target and the resource attributes, and with otel.headersSecret
+(ARV-091a) the collector's sender headers, OTEL_EXPORTER_OTLP_HEADERS, from that Secret only (secretKeyRef, not optional);
+validate.yaml then requires an https:// endpoint. The chart test fails if another workload gets them.
 */}}
 {{- define "ariva-platform.otelEnv" -}}
+{{- $headers := (.Values.otel | default dict).headersSecret -}}
+{{- if not (kindIs "map" $headers) }}{{ $headers = dict }}{{ end -}}
 - name: OTEL_EXPORTER_OTLP_ENDPOINT
   value: {{ .Values.otel.endpoint | default "" | quote }}
 - name: OTEL_EXPORTER_OTLP_PROTOCOL
   value: {{ .Values.otel.protocol | default "grpc" | quote }}
+{{- if $headers.name }}
+# The collector's sender headers (ARV-091a): from their Secret only, over https only
+- name: OTEL_EXPORTER_OTLP_HEADERS
+  valueFrom:
+    secretKeyRef:
+      name: {{ toString $headers.name | quote }}
+      key: {{ toString ($headers.key | default "headers") | quote }}
+      optional: false
+{{- end }}
 - name: OTEL_RESOURCE_ATTRIBUTES
   value: {{ printf "service.namespace=ariva,deployment.environment=%s,k8s.cluster.name=%s,service.version=%s" .Values.environment .Values.clusterName .Values.releaseVersion | quote }}
 - name: K8S_NODE_NAME
@@ -246,6 +259,93 @@ test fails if another workload gets them. optional follows validationReader.opti
       name: {{ .Values.validationReader.secretName | quote }}
       key: password
       optional: {{ .Values.validationReader.optional }}
+{{- end }}
+
+{{/*
+Log shipping and the log pseudonym key of the five API hosts (ARV-091a; values logging), and nothing when neither is set:
+- Logging__PseudonymKey from the Secret logging.pseudonymKeySecret names (its key, pseudonym-key by default), as a secretKeyRef
+  that is not optional: a host waits for the Secret rather than start with a key of its own. The key itself is never a value.
+- with logging.collector loki, Loki__Enabled "true": Loki:Uri comes from the appsettings secret, which the chart cannot read, so
+  a k8s-prd host refuses to start until that secret gives an https Loki:Uri. With otlp, otelEnv's OTEL_EXPORTER_OTLP_ENDPOINT
+  is the collector (validate.yaml requires it https).
+- with logging.lokiCredentialsSecret, Loki__Username and Loki__Password from that Secret (secretKeyRef, not optional), for a
+  Loki that authenticates senders: outside vm-local a host refuses them from a file, and sends them over https only.
+Only the five API hosts get them (not the simulator, the web pod or the jobs, whose one-shot commands log before the host's
+logger exists); the chart test fails if another workload does.
+Usage: {{- with include "ariva-platform.loggingEnv" . | trim }}{{ . | nindent 12 }}{{ end }}
+*/}}
+{{- define "ariva-platform.loggingEnv" -}}
+{{- $logging := .Values.logging -}}
+{{- if not (kindIs "map" $logging) }}{{ $logging = dict }}{{ end -}}
+{{- $secret := $logging.pseudonymKeySecret -}}
+{{- if not (kindIs "map" $secret) }}{{ $secret = dict }}{{ end -}}
+{{- if $secret.name }}
+# The log pseudonym key (ARV-091a): Logging:PseudonymKey from its Secret only, never optional
+- name: Logging__PseudonymKey
+  valueFrom:
+    secretKeyRef:
+      name: {{ toString $secret.name | quote }}
+      key: {{ toString ($secret.key | default "pseudonym-key") | quote }}
+      optional: false
+{{- end }}
+{{- if eq (toString ($logging.collector | default "")) "loki" }}
+# The logs go to Loki (logging.collector loki, ARV-091a): Loki:Uri comes from the appsettings secret, https in k8s-prd
+- name: Loki__Enabled
+  value: "true"
+{{- end }}
+{{- $loki := $logging.lokiCredentialsSecret -}}
+{{- if not (kindIs "map" $loki) }}{{ $loki = dict }}{{ end -}}
+{{- if $loki.name }}
+# Loki's sender credentials (ARV-091a): HTTP basic authentication over https, from their Secret only, never optional
+- name: Loki__Username
+  valueFrom:
+    secretKeyRef:
+      name: {{ toString $loki.name | quote }}
+      key: {{ toString ($loki.usernameKey | default "username") | quote }}
+      optional: false
+- name: Loki__Password
+  valueFrom:
+    secretKeyRef:
+      name: {{ toString $loki.name | quote }}
+      key: {{ toString ($loki.passwordKey | default "password") | quote }}
+      optional: false
+{{- end }}
+{{- end }}
+
+{{/*
+Why the Secret logging.pseudonymKeySecret names would stop the API hosts (ARV-091a), or empty when it is fine: given a dict of
+secret (the Secret as lookup returns it; an empty map when there is none to judge), name, key (the Secret's key) and reachable
+(true when the release sees the cluster: lookup found the ConfigMap kube-root-ca.crt, which Kubernetes puts in every
+namespace). Rendering offline (helm template) or into a namespace that does not exist yet sees neither, and the guard then
+passes: the pods wait for the Secret. A reachable namespace without the Secret is refused, as are a Secret without the key and
+a value the hosts would refuse (LogProtection.From): standard base64 with its padding (space, tab, CR and LF ignored, as .NET
+does) of 32 or more bytes. No message ever holds the value. validate.yaml calls this with the lookups; chart-security.mjs
+renders it with stand-in secrets, as helm template cannot run lookup.
+Usage: {{ include "ariva-platform.pseudonymKeyRefusal" (dict "secret" (lookup "v1" "Secret" .Release.Namespace "ariva-log-pseudonym-key") "name" "ariva-log-pseudonym-key" "key" "pseudonym-key" "reachable" true) }}
+*/}}
+{{- define "ariva-platform.pseudonymKeyRefusal" -}}
+{{- $secret := .secret -}}
+{{- if not (kindIs "map" $secret) }}{{ $secret = dict }}{{ end -}}
+{{- if not $secret -}}
+{{- if .reachable -}}
+logging.pseudonymKeySecret names the Secret {{ .name }}, which the release's namespace does not hold: create it before the release with the key {{ .key }}, base64 of 32 or more random bytes, or the API pods wait for it (ARV-091a)
+{{- end -}}
+{{- else -}}
+{{- $data := $secret.data -}}
+{{- if not (kindIs "map" $data) }}{{ $data = dict }}{{ end -}}
+{{- if not (hasKey $data .key) -}}
+logging.pseudonymKeySecret: the Secret {{ .name }} has no key {{ .key }}; put the log pseudonym key there (base64 of 32 or more random bytes) or name its key in logging.pseudonymKeySecret.key (ARV-091a)
+{{- else -}}
+{{- $text := regexReplaceAll "[ \\t\\r\\n]" (toString (index $data .key) | b64dec) "" -}}
+{{- $bytes := 0 -}}
+{{- if and (regexMatch "^[A-Za-z0-9+/]*={0,2}$" $text) (eq (int (mod (len $text) 4)) 0) -}}
+{{- $bytes = sub (mul (div (len $text) 4) 3) (sub (len $text) (len (trimSuffix "=" (trimSuffix "=" $text)))) -}}
+{{- end -}}
+{{- if lt (int $bytes) 32 -}}
+logging.pseudonymKeySecret: the Secret {{ .name }} holds under its key {{ .key }} no base64 of 32 or more random bytes, and the API hosts refuse to start on it (Logging:PseudonymKey); write a new key there, for example from openssl rand -base64 32 (ARV-091a)
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- end }}
 
 {{/*

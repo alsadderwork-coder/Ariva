@@ -31,14 +31,28 @@ public sealed partial class RedactionEnricher(LogProtection protection, Security
     /// <summary>The hosting scope's property that holds the request path.</summary>
     public const string RequestPathProperty = "RequestPath";
 
-    /// <summary>Names compared without case; '-' and '_' are ignored, so X-TOTP-Code matches XTotpCode.</summary>
+    /// <summary>
+    /// Names compared without case; '-', '_' and ':' are ignored, so X-TOTP-Code matches XTotpCode, and a setting matches in
+    /// each of its shapes: Loki:Password, Loki__Password and LokiPassword alike (ARV-091a).
+    /// </summary>
     public static readonly IReadOnlySet<string> SensitiveNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
         "Authorization", "ProxyAuthorization", "Cookie", "SetCookie", "XTotpCode", "TotpCode", "Otp",
         "AccessToken", "RefreshToken", "IdToken", "Token", "BearerToken", "ApiKey", "XApiKey",
         "Password", "NewPassword", "CurrentPassword", "Secret", "ClientSecret", "RecoveryCode", "XArivaCsrf", "XArivaDeviceKey", "DeviceKey", "XArivaDisplayKey", "DisplayKey", "Credential",
-        "PseudonymKey"
+        "PseudonymKey",
+        // ARV-091a: the log shipping secrets as settings (a configuration dump, an environment listing).
+        "LoggingPseudonymKey", "LokiPassword",
+        "OtelExporterOtlpHeaders", "OtelExporterOtlpTracesHeaders", "OtelExporterOtlpMetricsHeaders", "OtelExporterOtlpLogsHeaders"
     };
+
+    /// <summary>
+    /// ARV-091a: any longer name ending in one of these is omitted too (ResetPassword, Loki:Password, KafkaSaslPassword,
+    /// ClientSecret, Otlp:Headers, OTEL_EXPORTER_OTLP_TRACES_HEADERS). A name that only holds one elsewhere keeps its level
+    /// (PasswordPolicy, SecretName, HeadersCount). The bare name Headers is not omitted whole: a header dictionary logged under
+    /// it keeps its harmless values, and each credential header in it (Authorization, Cookie and the others) is omitted by key.
+    /// </summary>
+    public static readonly IReadOnlyList<string> SensitiveSuffixes = ["Password", "Secret", "Headers"];
 
     /// <summary>Put between a protected dictionary key and its collision index, when two keys protect alike.</summary>
     public const string CollisionMarker = "~";

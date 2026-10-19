@@ -86,6 +86,55 @@ public sealed class RedactionEnricherTests
         rendered.Should().Contain("application/json", "values with harmless names are kept");
     }
 
+    /// <summary>
+    /// ARV-091a: a configuration or environment dump (keys as configuration writes them, with ':' or '__') loses every log
+    /// shipping secret and every value whose key ends in Password, Secret or Headers, and keeps the harmless settings,
+    /// including those that only hold such a word elsewhere in their name.
+    /// </summary>
+    [Fact]
+    public void Enrich_Should_OmitTheShippingSecrets_When_AConfigurationDumpIsLogged()
+    {
+        var (logger, sink) = CreateLogger();
+        var settings = new Dictionary<string, string>
+        {
+            ["OTEL_EXPORTER_OTLP_HEADERS"] = "Authorization=Basic%20canary-headers",
+            ["OTEL_EXPORTER_OTLP_TRACES_HEADERS"] = "x-key=canary-traces",
+            ["OTEL_EXPORTER_OTLP_METRICS_HEADERS"] = "x-key=canary-metrics",
+            ["OTEL_EXPORTER_OTLP_LOGS_HEADERS"] = "x-key=canary-logs",
+            ["Loki:Password"] = "canary-loki-colon",
+            ["Loki__Password"] = "canary-loki-underscores",
+            ["Logging:PseudonymKey"] = "canary-key-colon",
+            ["Logging__PseudonymKey"] = "canary-key-underscores",
+            ["Kafka:SaslPassword"] = "canary-kafka",
+            ["Auth:WebhookSecret"] = "canary-webhook",
+            ["Loki:Uri"] = "https://loki.example:3100",
+            ["Security:PasswordPolicy"] = "kept-policy",
+            ["Kubernetes:SecretName"] = "kept-secret-name",
+            ["Otlp:HeadersCount"] = "kept-count"
+        };
+
+        logger.Information("Settings {@Settings}", settings);
+
+        var rendered = Rendered(sink.Events[0]);
+        rendered.Should().NotContain("canary", "every shipping secret, in every shape, is omitted");
+        rendered.Should().Contain("https://loki.example:3100").And.Contain("kept-policy").And.Contain("kept-secret-name").And.Contain("kept-count");
+    }
+
+    [Theory]
+    [InlineData("OTEL_EXPORTER_OTLP_HEADERS")]
+    [InlineData("Loki__Password")]
+    [InlineData("Logging:PseudonymKey")]
+    [InlineData("SmtpPassword")]
+    public void Enrich_Should_RedactValue_When_APropertyIsNamedLikeAShippingSecret(string name)
+    {
+        var (logger, sink) = CreateLogger();
+
+        logger.ForContext(name, "canary-property-value").Information("event");
+
+        sink.Events[0].Properties[name].ToString().Should().Be("\"[REDACTED]\"");
+        Rendered(sink.Events[0]).Should().NotContain("canary-property-value");
+    }
+
     [Theory]
     [MemberData(nameof(TextCases))]
     public void RedactText_Should_MaskCredentials_When_TheyAppearInsideText(string input, string expected)

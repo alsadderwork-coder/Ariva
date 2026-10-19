@@ -101,8 +101,12 @@ export function startupAllowance(probe) {
 	return Number(probe.initialDelaySeconds ?? 0) + Number(probe.periodSeconds ?? 10) * (Number(probe.failureThreshold ?? 3) - 1);
 }
 
-/** Environment variable names that hold credentials: their values come from secrets, never from the manifest (CWE-798). */
-const SECRET_ENV = /(PASSWORD|PASSWD|SECRET|TOKEN|PRIVATE_?KEY|API_?KEY)/i;
+/**
+ * Environment variable names that hold credentials: their values come from secrets, never from the manifest (CWE-798). The log
+ * pseudonym key (Logging__PseudonymKey, ARV-091a) is one: whoever holds it can recompute a day's pseudonym of every desk code; so
+ * are the OTLP collector's sender headers (OTEL_EXPORTER_OTLP_HEADERS, ARV-091a), which carry its key.
+ */
+const SECRET_ENV = /(PASSWORD|PASSWD|SECRET|TOKEN|PRIVATE_?KEY|API_?KEY|PSEUDONYM_?KEY|OTLP_?\w*HEADERS)/i;
 
 /**
  * ARV-104g1 (CWE-269): the validation reader login, the only login that reads the shadow nowcast, reaches api-main (the
@@ -1826,5 +1830,141 @@ export function forwardedHeadersFindings(docs, { environment, podNetworks = [] }
 			}
 		}
 	}
+	return findings;
+}
+
+/** ARV-091a: the five API hosts, which alone get the log pseudonym key, the Loki switch and Loki's credentials. */
+export const API_HOSTS = ['api-main', 'api-ingest', 'api-stream', 'api-cronz', 'api-integration'];
+const LOKI_ENV = /^Loki__Enabled$/i;
+
+/**
+ * ARV-091a: the variables the five API hosts take from a Secret the values name: the log pseudonym key (pseudonymKeySecret) and
+ * Loki's sender credentials (lokiCredentialsSecret), each with the value that names it, what it is and why it is never optional.
+ */
+function secretVariables({ pseudonymKeySecret, lokiCredentialsSecret, otelHeadersSecret }) {
+	const pseudonym = pseudonymKeySecret?.name ? { name: String(pseudonymKeySecret.name), key: String(pseudonymKeySecret.key || 'pseudonym-key') } : undefined;
+	const loki = lokiCredentialsSecret?.name ? String(lokiCredentialsSecret.name) : '';
+	return [
+		{ variable: 'Logging__PseudonymKey', value: 'logging.pseudonymKeySecret', what: 'the log pseudonym key', secretLabel: "the log pseudonym key's Secret", secret: pseudonym,
+			optional: 'the host waits for its Secret rather than start with a key of its own' },
+		...['Username', 'Password'].map((part) => ({ variable: `Loki__${part}`, value: 'logging.lokiCredentialsSecret', what: "Loki's credentials", secretLabel: "the Secret of Loki's credentials",
+			secret: loki ? { name: loki, key: String(lokiCredentialsSecret[`${part.toLowerCase()}Key`] || part.toLowerCase()) } : undefined,
+			optional: 'the host waits for its Secret rather than send to Loki without them' })),
+		// The simulator exports to the same collector in dev and demo, so it gets the headers too.
+		{ variable: 'OTEL_EXPORTER_OTLP_HEADERS', value: 'otel.headersSecret', what: "the OTLP collector's sender headers", secretLabel: "the Secret of the OTLP collector's headers",
+			secret: otelHeadersSecret?.name ? { name: String(otelHeadersSecret.name), key: String(otelHeadersSecret.key || 'headers') } : undefined, simulator: true,
+			optional: 'the host waits for its Secret rather than export to the collector without them' }
+	].map((entry) => ({ ...entry, pattern: new RegExp(`^${entry.variable}$`, 'i') }));
+}
+
+/**
+ * ARV-091a (ASVS 5.0 V16.4.2, V16.4.3; CWE-532, CWE-798): log shipping and the log pseudonym key of a render, against its values:
+ * collector (otlp, loki or empty), otelEndpoint, pseudonymKeySecret ({ name, key }, or nothing), lokiCredentialsSecret ({ name,
+ * usernameKey, passwordKey }, or nothing) and required.
+ * - k8s-prd, or required: a collector and the key's Secret; otlp exports to an https:// otel.endpoint.
+ * - Each of the five API host Deployments: with a Secret named, its .NET container gets each of the Secret's variables
+ *   (Logging__PseudonymKey; Loki__Username and Loki__Password) once, from that Secret and key (secretKeyRef, not optional, never
+ *   a literal); without, none. With loki, Loki__Enabled "true" (so a k8s-prd host refuses to start without an https Loki:Uri);
+ *   otherwise no Loki__Enabled. With otlp, OTEL_EXPORTER_OTLP_ENDPOINT is otel.endpoint. Variable names compare ignoring case,
+ *   as .NET's configuration reads them.
+ * - No other workload gets these variables or refers to their Secrets (env, envFrom, volumes); no ConfigMap names them (a data
+ *   key, or a value naming PseudonymKey: envFrom would make it a variable); the chart renders neither Secret.
+ */
+export function logShippingFindings(docs, { environment, collector = '', otelEndpoint = '', pseudonymKeySecret, lokiCredentialsSecret, otelHeadersSecret, required = false }) {
+	const findings = [];
+	const where = environment === 'k8s-prd' ? 'k8s-prd' : 'logging.required';
+	const needed = environment === 'k8s-prd' || required === true;
+	const variables = secretVariables({ pseudonymKeySecret, lokiCredentialsSecret, otelHeadersSecret });
+	const secrets = [...new Map(variables.filter((entry) => entry.secret).map((entry) => [entry.secret.name, entry.secretLabel])).entries()];
+	if (needed && !['otlp', 'loki'].includes(collector)) findings.push(`${where} renders without a log collector (logging.collector otlp or loki)`);
+	if (needed && !variables[0].secret) findings.push(`${where} renders without the log pseudonym key's Secret (logging.pseudonymKeySecret.name)`);
+	if (collector === 'otlp' && !/^https:\/\/\S+$/i.test(otelEndpoint)) findings.push(`logging.collector otlp exports to ${otelEndpoint || 'no endpoint'}, not an https:// otel.endpoint`);
+	if (otelHeadersSecret?.name && !/^https:\/\/\S+$/i.test(otelEndpoint)) findings.push(`otel.headersSecret sends the collector's headers to ${otelEndpoint || 'no endpoint'}, not an https:// otel.endpoint`);
+	const hosts = new Set();
+	for (const doc of docs) {
+		if (!doc || typeof doc !== 'object') continue;
+		const id = `${doc.kind}/${doc.metadata?.name ?? '?'}`;
+		if (doc.kind === 'ConfigMap') {
+			for (const [key, value] of Object.entries(doc.data ?? {})) {
+				if (/pseudonym/i.test(key) || /PseudonymKey/i.test(String(value))) findings.push(`${id}: ${key} names the log pseudonym key; it reaches the hosts from its Secret only (secretKeyRef), never from a ConfigMap`);
+				else if (/^Loki__(Username|Password)$/i.test(key)) findings.push(`${id}: ${key} is one of Loki's credentials; they reach the hosts from their Secret only (secretKeyRef), never from a ConfigMap`);
+				else if (/^OTEL_EXPORTER_OTLP_HEADERS$/i.test(key)) findings.push(`${id}: ${key} carries the OTLP collector's sender headers; they reach the pods from their Secret only (secretKeyRef), never from a ConfigMap`);
+			}
+			continue;
+		}
+		if (doc.kind === 'Secret') {
+			const keys = Object.keys({ ...(doc.data ?? {}), ...(doc.stringData ?? {}) });
+			const named = secrets.find(([name]) => doc.metadata?.name === name);
+			if (named || keys.some((key) => /pseudonym/i.test(key))) findings.push(`${id}: the chart renders ${named ? named[1] : "the log pseudonym key's Secret"}; the site creates it and the chart only names it`);
+			continue;
+		}
+		if (!WORKLOADS.has(doc.kind)) continue;
+		const pod = podSpecOf(doc) ?? {};
+		const name = doc.metadata?.name ?? '';
+		const apiHost = doc.kind === 'Deployment' && API_HOSTS.some((host) => name === `${host}-deployment`);
+		if (apiHost) hosts.add(name);
+		const containers = [...(pod.initContainers ?? []), ...(pod.containers ?? [])];
+		const references = new Map(secrets.map(([secretName]) => [secretName, []]));
+		for (const container of containers) {
+			const cid = `${id} container ${container.name}`;
+			const env = container.env ?? [];
+			const flags = env.filter((variable) => LOKI_ENV.test(variable.name ?? ''));
+			const main = apiHost && DOTNET_IMAGES.has(imageName(container.image ?? ''));
+			const simulator = doc.kind === 'Deployment' && name === 'simulation-deployment' && imageName(container.image ?? '') === 'simulation';
+			const belongs = (entry) => main || (entry.simulator === true && simulator);
+			// A Secret's variable in its own place (its container, under the expected name) is not a stray reference.
+			const expected = (variable) => variables.some((entry) => belongs(entry) && entry.secret?.name === variable.valueFrom?.secretKeyRef?.name && entry.pattern.test(variable.name ?? ''));
+			for (const variable of env) {
+				const secretName = variable.valueFrom?.secretKeyRef?.name;
+				if (references.has(secretName) && !expected(variable)) references.get(secretName).push(`${container.name} env ${variable.name}`);
+			}
+			for (const source of container.envFrom ?? []) if (references.has(source.secretRef?.name)) references.get(source.secretRef.name).push(`${container.name} envFrom`);
+			for (const entry of variables.filter((candidate) => !belongs(candidate))) {
+				const given = env.filter((variable) => entry.pattern.test(variable.name ?? ''));
+				if (given.length) findings.push(`${cid}: gets ${given.map((variable) => variable.name).join(', ')}; only the five API hosts${entry.simulator ? ' and the simulator' : ''} get ${entry.what}`);
+			}
+			if (!main && flags.length) findings.push(`${cid}: sets ${flags.map((variable) => variable.name).join(', ')}; only the five API hosts send their logs to Loki`);
+			for (const entry of variables.filter(belongs)) {
+				const given = env.filter((variable) => entry.pattern.test(variable.name ?? ''));
+				if (!entry.secret) {
+					if (given.length) findings.push(`${cid}: gets ${entry.variable} although ${entry.value} names no Secret`);
+					continue;
+				}
+				if (given.length !== 1) {
+					findings.push(`${cid}: must get ${entry.variable} once, from the Secret ${entry.secret.name} (key ${entry.secret.key}), not ${given.length} times`);
+					continue;
+				}
+				const ref = given[0].valueFrom?.secretKeyRef;
+				if (given[0].value !== undefined || !ref) findings.push(`${cid}: ${entry.variable} must come from the Secret ${entry.secret.name} (secretKeyRef), never a literal value`);
+				else {
+					if (ref.name !== entry.secret.name || ref.key !== entry.secret.key) findings.push(`${cid}: ${entry.variable} comes from ${ref.name} (key ${ref.key}), not ${entry.secret.name} (key ${entry.secret.key})`);
+					if (ref.optional === true) findings.push(`${cid}: ${entry.variable} must not be optional: ${entry.optional}`);
+				}
+			}
+			if (!main) continue;
+			const last = flags.at(-1);
+			const loki = last ? (last.valueFrom ? null : last.value) : envValueOf(container, docs, 'Loki__Enabled');
+			if (collector === 'loki' && loki !== 'true') findings.push(`${cid}: must set Loki__Enabled "true" with logging.collector loki, so the host refuses to start without an https Loki:Uri`);
+			if (collector !== 'loki' && loki !== undefined) findings.push(`${cid}: sets Loki__Enabled ${loki ?? '(not a literal)'} without logging.collector loki`);
+			if (collector === 'otlp') {
+				const endpoint = envValueOf(container, docs, 'OTEL_EXPORTER_OTLP_ENDPOINT');
+				if (endpoint !== otelEndpoint) findings.push(`${cid}: exports to ${endpoint === null ? '(not a literal)' : endpoint || 'no endpoint'}, not otel.endpoint ${otelEndpoint || '(empty)'}`);
+			}
+		}
+		for (const volume of pod.volumes ?? []) {
+			for (const secretName of [volume.secret?.secretName, ...(volume.projected?.sources ?? []).map((source) => source.secret?.name)]) {
+				if (references.has(secretName)) references.get(secretName).push(`volume ${volume.name}`);
+			}
+		}
+		for (const [secretName, found] of references) {
+			if (!found.length) continue;
+			const label = secrets.find(([candidate]) => candidate === secretName)[1];
+			const readers = variables.filter((entry) => entry.secret?.name === secretName);
+			const names = readers.map((entry) => entry.variable).join(' and ');
+			findings.push(`${id}: refers to ${label} ${secretName} (${found.join(', ')}); only the five API hosts${readers.every((entry) => entry.simulator) ? ' and the simulator' : ''} read it, as ${names}`);
+		}
+	}
+	const missing = API_HOSTS.filter((host) => !hosts.has(`${host}-deployment`));
+	if (missing.length) findings.push(`the render holds no ${missing.map((host) => `Deployment/${host}-deployment`).join(', ')}`);
 	return findings;
 }

@@ -118,6 +118,10 @@ spec:
             # The ingress controller's pod network, the only trusted proxies (ARV-085): Security:ForwardedHeaders:KnownNetworks
             {{- include "ariva-platform.forwardedHeadersEnv" . | nindent 12 }}
             {{- end }}
+            {{- with include "ariva-platform.loggingEnv" . | trim }}
+            # Log shipping and the log pseudonym key (ARV-091a; values logging)
+            {{- . | nindent 12 }}
+            {{- end }}
             # Kafka SASL password (ARV-020); optional, absent where Kafka is plaintext
             - name: Kafka__SaslPassword
               valueFrom:

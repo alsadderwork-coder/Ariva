@@ -11,7 +11,7 @@
 # State values:
 #   mirror          required: the site's registry mirror the bundle's images were copied to, host[:port][/path] in lower
 #                   case; Ariva's images under <mirror>/ariva, TimescaleDB under <mirror>/timescale/timescaledb-ha.
-#   siteValues      the site's values file for the platform release (domain, ingresses, clusterName, otel, image credentials)
+#   siteValues      the site's values file for the platform release (domain, ingresses, clusterName, otel, logging, image credentials)
 #   databaseValues  the site's values file for the TimescaleDB release (storage, resources)
 #   timescaledb     false where PostgreSQL with TimescaleDB is provided another way, as in helmfile-k8s.yaml.gotmpl
 #   timescaledbTls  TimescaleDB with TLS (ARV-082a), as in helmfile-k8s.yaml.gotmpl: true in prd, which refuses it off; a
@@ -22,6 +22,9 @@
 #   networkPolicies the NetworkPolicies (ARV-085), as in helmfile-k8s.yaml.gotmpl: true in prd, which refuses it off; a site
 #                   file cannot turn them off there (the release sets networkPolicies.enabled) but gives the peers
 #                   (networkPolicies.*, ingressController) and ingressController.podNetworks
+#   logShipping     log shipping (ARV-091a), as in helmfile-k8s.yaml.gotmpl: true in prd, which refuses it off; a site file
+#                   cannot drop the collector or the log pseudonym key's Secret there (the release sets logging.required) but
+#                   chooses them (logging.collector, logging.pseudonymKeySecret); create the Secret first
 # The image repository, tags and digests come from the bundle and win over a site file: the pods pull exactly the images the
 # bundle's verification checked. It refuses to render unless images.yaml pins all seven Ariva digests, so a dry run's bundle
 # (which pins none) cannot be installed.
@@ -34,6 +37,7 @@ environments:
         timescaledbTls: false
         podTls: false
         networkPolicies: false
+        logShipping: false
   demo:
     values:
       - valuesFile: values-k8s-demo.yaml
@@ -41,6 +45,7 @@ environments:
         timescaledbTls: false
         podTls: false
         networkPolicies: false
+        logShipping: false
   prd:
     values:
       - valuesFile: values-k8s-prd.yaml
@@ -48,6 +53,7 @@ environments:
         timescaledbTls: true
         podTls: true
         networkPolicies: true
+        logShipping: true
   localk8s:
     values:
       - valuesFile: values-localk8s.yaml
@@ -55,6 +61,7 @@ environments:
         timescaledbTls: false
         podTls: false
         networkPolicies: false
+        logShipping: false
 
 helmDefaults:
   kubeContext: default
@@ -78,6 +85,9 @@ helmDefaults:
 {{- end }}
 {{- if and (eq .Environment.Name "prd") (not (.Values | get "networkPolicies" false)) }}
 {{- fail "prd isolates every pod: default deny and the firewall matrix's flows only (state value networkPolicies true; ARV-085)" }}
+{{- end }}
+{{- if and (eq .Environment.Name "prd") (not (.Values | get "logShipping" false)) }}
+{{- fail "prd ships the hosts' logs to a collector over TLS, with the log pseudonym key from a Secret (state value logShipping true; ARV-091a)" }}
 {{- end }}
 
 releases:
@@ -129,5 +139,10 @@ releases:
       {{- if .Values | get "networkPolicies" false }}
       # set, so that no site file turns the network policies off (ARV-085)
       - name: networkPolicies.enabled
+        value: true
+      {{- end }}
+      {{- if .Values | get "logShipping" false }}
+      # set, so that no site file drops the log collector or the log pseudonym key's Secret (ARV-091a)
+      - name: logging.required
         value: true
       {{- end }}

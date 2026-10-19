@@ -375,7 +375,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 111,
-      "passes": false,
+      "passes": true,
       "notes": "Split from ARV-091 on 2026-10-19.",
       "dependsOn": [
         "ARV-091"
@@ -398,6 +398,26 @@
       "notes": "Split from ARV-091 on 2026-10-19 (login freeze: the owner asked for no sign-in, login, password, TOTP or authentication changes for now). Start only when the owner lifts the freeze. Since ARV-091 the session_expired 401, the pending account 403 and the per-client integration 429 write the generic SecurityEvent.RequestRefused (9129) from outside the frozen code; ARV-091b gives sign-in, logout and refresh their own events. The generic 9129 lines already appear for sign-in failures, the refresh 401 (routine when the web app loads without a session) and the CSRF 403 on refresh; ARV-091b replaces them with specific events (user or unknown, address, amr) and says how to tell routine refresh 401s from attacks.",
       "dependsOn": [
         "ARV-091"
+      ]
+    },
+    {
+      "id": "ARV-200",
+      "title": "[ASVS] Site CA trust for the log and telemetry collectors",
+      "description": "Found in ARV-091a: the hosts verify Loki and the OTLP collector against the image built-in public CAs only (the database and Redis have their own CA files since ARV-082a), so a collector whose certificate comes from the site PKI cannot be reached: the host starts (nothing connects to the collector at start) but its logs and telemetry never arrive. ASVS 5.0: V12.3.1, V12.3.2, V12.3.4, V16.4.3. Effort S.",
+      "acceptanceCriteria": [
+        "A k8s-prd host verifies Loki and the OTLP collector against a CA the site supplies (a mounted PEM file per destination, or one site bundle added to the public roots, never replacing them for the outbound integrations), with tests that a collector signed by that CA connects and one signed by another CA does not",
+        "The chart mounts the CA from a Secret or ConfigMap with a guard, and the go-live record names the CA each collector chains to",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 111,
+      "passes": false,
+      "notes": "Filed 2026-10-19 from the ARV-091a docs review. Relates to the owner question on ARV-083b (Kafka CA: internal always or public allowed); answer both together.",
+      "dependsOn": [
+        "ARV-091a"
       ]
     },
     {
