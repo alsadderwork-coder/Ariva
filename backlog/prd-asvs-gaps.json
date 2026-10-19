@@ -422,12 +422,11 @@
     },
     {
       "id": "ARV-092",
-      "title": "[ASVS] Upload safety",
-      "description": "Floor plans and SSIM files are not scanned for malware, downloads carry no server filename, the file policy is not written down, and nginx sends no charset. ASVS 5.0: V5.4.3, V5.4.1, V5.1.1, V4.1.1. Effort M.",
+      "title": "[ASVS] Upload safety: download headers and the file handling guide",
+      "description": "Downloads carry no server filename, nginx and SVG plans send no charset, and the file policy is not written down per upload. ASVS 5.0: V5.4.1, V5.1.1, V4.1.1. Effort S (split 2026-10-19, see notes).",
       "acceptanceCriteria": [
-        "Uploads are scanned (ClamAV clamd service or sidecar) before they are stored or imported; a detection is refused and audited",
-        "Floor plan downloads send Content-Disposition inline with a server-generated filename; SVG plans and text responses carry charset=utf-8",
-        "The security guide has a file handling section per upload: types, extensions, sizes, unpacked limits, how files are served, what happens on a malicious file",
+        "Floor plan downloads send Content-Disposition inline with a server-generated filename; SVG plans and text responses (nginx included) carry charset=utf-8",
+        "The security guide has a file handling section per upload (floor plans, SSIM, CSV imports, site configuration bundles, advertisement images and videos): types, extensions, sizes, unpacked limits, how files are stored and served, what happens on a malicious file (with ARV-092b and ARV-092c as the scanning stories)",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "node scripts/security/scan.mjs passes with 0 errors",
         "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
@@ -436,9 +435,49 @@
       ],
       "priority": 112,
       "passes": false,
-      "notes": "",
+      "notes": "Split 2026-10-19 (Effort M, with a new service): ARV-092 keeps the download headers and the file handling guide; ARV-092b scans every upload in the hosts before it is stored or imported (ClamAV clamd over TCP, detections refused and audited, a dev and test clamd); ARV-092c runs ClamAV in the chart (clamd with signature updates or a mirror for sites without internet, pinned image, network policies, pod security).",
       "dependsOn": [
         "ARV-074"
+      ]
+    },
+    {
+      "id": "ARV-092b",
+      "title": "[ASVS] Upload safety: malware scanning in the hosts",
+      "description": "Split from ARV-092. Floor plans, SSIM files, CSV imports, site configuration bundles and advertisement images and videos are stored or imported without a malware scan. ASVS 5.0: V5.4.3. Effort M.",
+      "acceptanceCriteria": [
+        "Every upload is scanned (ClamAV clamd INSTREAM over TCP, with limits that cover the largest upload) before it is stored or imported; a detection is refused with a fixed message and audited (who, what kind of upload, the signature name, never the file); a scanner that cannot answer refuses the upload outside vm-local (fail closed), with tests including the EICAR test file on every upload endpoint",
+        "docker-compose, the Aspire AppHost and the E2E run start a clamd so the scan path runs in every test",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 112,
+      "passes": false,
+      "notes": "Split from ARV-092 on 2026-10-19. Default chosen: fail closed outside vm-local (no upload while the scanner is down); the owner can ask for another behaviour.",
+      "dependsOn": [
+        "ARV-092"
+      ]
+    },
+    {
+      "id": "ARV-092c",
+      "title": "[ASVS] Upload safety: ClamAV in the chart",
+      "description": "Split from ARV-092. The chart runs no scanner. ASVS 5.0: V5.4.3. Effort M.",
+      "acceptanceCriteria": [
+        "The chart runs clamd (pinned by digest, non-root, read-only root with writable signature storage, resource limits) as a Service the upload hosts reach under a NetworkPolicy, required in k8s-prd",
+        "Signatures stay current: freshclam to the public mirrors where the site allows it, or a site mirror or mounted signature set for sites without internet, with a staleness alarm and the go-live record",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 112,
+      "passes": false,
+      "notes": "Split from ARV-092 on 2026-10-19. Needs the owner or site to choose how signatures arrive at sites without internet.",
+      "dependsOn": [
+        "ARV-092b"
       ]
     },
     {
