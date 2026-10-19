@@ -172,7 +172,7 @@ internal static class SimulationSecurity
                 headers.XContentTypeOptions = "nosniff";
                 headers.XFrameOptions = "DENY";
                 headers["Referrer-Policy"] = "no-referrer";
-                headers.ContentSecurityPolicy = "default-src 'none'; frame-ancestors 'none'";
+                headers.ContentSecurityPolicy = "default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'";
                 headers.Remove(HeaderNames.Server);
                 if (context.Request.Headers.ContainsKey(HeaderNames.Authorization))
                 {

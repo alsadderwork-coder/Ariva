@@ -206,6 +206,10 @@ test('the dashboard page is served under a policy of its own and its API only wi
 	expect(policy).toMatch(/^default-src 'none'; script-src 'self' 'sha256-/);
 	expect(policy).toContain("frame-ancestors 'none'");
 	expect(policy).not.toContain('unsafe-eval');
+	// ARV-093 (ASVS 5.0 V3.4.3): no base URL may be set, and the page carries none of TickerQ's.
+	expect(policy).toContain("base-uri 'none'");
+	expect(policy).toContain("object-src 'none'");
+	expect(await response.text()).not.toMatch(/<base\b/i);
 	for (const path of ['/api/options', '/api/ticker-functions', '/api/ticker-host/status']) expect((await fetch(`${dashboard}${path}`)).status, path).toBe(401);
 	expect((await fetch(`${dashboard}/api/ticker-host/stop`, { method: 'POST' })).status, 'nobody stops the scheduler without the key').toBe(401);
 });

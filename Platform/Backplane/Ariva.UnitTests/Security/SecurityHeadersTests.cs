@@ -29,7 +29,7 @@ public sealed class SecurityHeadersTests
         ["X-Content-Type-Options"] = "nosniff",
         ["X-Frame-Options"] = "DENY",
         ["Referrer-Policy"] = "no-referrer",
-        ["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
+        ["Content-Security-Policy"] = "default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'"
     };
 
     #endregion
@@ -94,8 +94,14 @@ public sealed class SecurityHeadersTests
     }
 
     [Theory]
-    [InlineData("default-src 'none'; style-src 'unsafe-inline'; sandbox; frame-ancestors 'none'", true)]
+    [InlineData("default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; sandbox; frame-ancestors 'none'", true)]
+    [InlineData("default-src 'none'; base-uri 'none'; sandbox; frame-ancestors 'none'", true)]
     [InlineData("default-src 'none'; sandbox", false)]
+    [InlineData("default-src 'none'; sandbox; frame-ancestors 'none'", false)]
+    [InlineData("default-src 'none'; base-uri 'self'; frame-ancestors 'none'", false)]
+    [InlineData("default-src 'none'; base-uri 'none' https://cdn.example; frame-ancestors 'none'", false)]
+    [InlineData("default-src 'none' https://cdn.example; base-uri 'none'; frame-ancestors 'none'", false)]
+    [InlineData("default-src 'none';base-uri 'none';frame-ancestors 'none'", true)]
     [InlineData("default-src *; frame-ancestors 'none'", false)]
     [InlineData("script-src 'unsafe-inline'", false)]
     public async Task Get_Should_KeepOnlyALockedDownEndpointPolicy_When_EndpointSetsItsOwn(string policy, bool kept)
@@ -116,7 +122,7 @@ public sealed class SecurityHeadersTests
 
         using var response = await client.GetAsync("/image", TestContext.Current.CancellationToken);
 
-        response.Header("Content-Security-Policy").Should().Be(kept ? policy : "default-src 'none'; frame-ancestors 'none'");
+        response.Header("Content-Security-Policy").Should().Be(kept ? policy : SecurityHeadersMiddleware.ContentSecurityPolicy);
         response.Header("X-Content-Type-Options").Should().Be("nosniff");
     }
 

@@ -36,7 +36,7 @@ public sealed class AdvertisingMediaController(ISvcAdvertisingMedia media) : Con
     /// For the image itself: no script, no fetches, no framing, a sandbox so a browser that opens it directly treats it as an
     /// opaque origin, and readable by this origin only (CWE-79).
     /// </summary>
-    internal const string ContentPolicy = "default-src 'none'; sandbox; frame-ancestors 'none'";
+    internal const string ContentPolicy = "default-src 'none'; base-uri 'none'; sandbox; frame-ancestors 'none'";
 
     /// <summary>An item's file name: <c>advertisement-{item id}.{png|jpg|webp|mp4|webm}</c> (ARV-092).</summary>
     internal const string FileNamePrefix = "advertisement";

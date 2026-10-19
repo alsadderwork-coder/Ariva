@@ -20,7 +20,7 @@ export const apiSecurityHeaders: Readonly<Record<string, string>> = {
 	'x-content-type-options': 'nosniff',
 	'x-frame-options': 'DENY',
 	'referrer-policy': 'no-referrer',
-	'content-security-policy': "default-src 'none'; frame-ancestors 'none'"
+	'content-security-policy': "default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'"
 };
 
 /** Asserts the API security headers are present and the Server header is absent. */

@@ -17,7 +17,7 @@ const requiredDirectives = [
 	"media-src 'self' blob:;",
 	"connect-src 'self'",
 	"object-src 'none'",
-	"base-uri 'self'",
+	"base-uri 'none'",
 	"form-action 'self'",
 	"frame-ancestors 'none'"
 ];

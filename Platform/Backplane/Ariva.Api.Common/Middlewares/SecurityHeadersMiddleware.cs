@@ -6,10 +6,12 @@ namespace Ariva.Api.Common.Middlewares;
 /// <summary>
 /// Adds the API security headers to every response, including error and challenge responses, just before the
 /// response starts: <c>X-Content-Type-Options: nosniff</c>, <c>X-Frame-Options: DENY</c>,
-/// <c>Referrer-Policy: no-referrer</c> and <c>Content-Security-Policy: default-src 'none'; frame-ancestors 'none'</c>
-/// (CWE-79: JSON can never be sniffed or rendered as a page). An endpoint that serves content other than JSON (a
-/// floor plan image, ARV-018) may set a policy of its own; it is kept only when it still starts from
-/// <c>default-src 'none'</c>, so no endpoint can loosen the baseline by accident. Responses to requests that carry credentials get
+/// <c>Referrer-Policy: no-referrer</c> and <c>Content-Security-Policy: default-src 'none'; base-uri 'none'; object-src 'none';
+/// frame-ancestors 'none'</c> (CWE-79: JSON can never be sniffed or rendered as a page; base-uri does not fall back to
+/// default-src, so it is named, and object-src is named for ASVS 5.0 V3.4.3, ARV-093). An endpoint that serves content other
+/// than JSON (a floor plan image, ARV-018) may set a policy of its own; it is kept only when it still starts from
+/// <c>default-src 'none'</c> and names <c>base-uri 'none'</c> and <c>frame-ancestors 'none'</c>, so no endpoint can loosen the
+/// baseline by accident. Responses to requests that carry credentials get
 /// <c>Cache-Control: no-store</c>. The <c>Server</c> header is removed here and switched off in Kestrel. A text answer that
 /// names no charset gets <c>charset=utf-8</c> (ARV-092, <see cref="WithUtf8Charset"/>).
 /// </summary>
@@ -19,7 +21,7 @@ public sealed class SecurityHeadersMiddleware(RequestDelegate next)
     #region Constants
 
     /// <summary>Content security policy for API responses. An API that later serves HTML (OpenAPI UI) sets its own.</summary>
-    public const string ContentSecurityPolicy = "default-src 'none'; frame-ancestors 'none'";
+    public const string ContentSecurityPolicy = "default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'";
 
     private const string ReferrerPolicyHeader = "Referrer-Policy";
 
@@ -103,8 +105,23 @@ public sealed class SecurityHeadersMiddleware(RequestDelegate next)
         return type.ToString();
     }
 
-    private static bool IsLockedDown(string policy) =>
-        !string.IsNullOrEmpty(policy) && policy.StartsWith("default-src 'none'", StringComparison.Ordinal) && policy.Contains("frame-ancestors 'none'", StringComparison.Ordinal);
+    /// <summary>
+    /// True when an endpoint's own policy is at least as strict as the baseline's start: its first directive is exactly
+    /// <c>default-src 'none'</c> and it holds <c>base-uri 'none'</c> and <c>frame-ancestors 'none'</c> as whole directives (a
+    /// directive that lists a source beside <c>'none'</c> ignores the <c>'none'</c>, so it is not one of these).
+    /// </summary>
+    private static bool IsLockedDown(string policy)
+    {
+        if (string.IsNullOrEmpty(policy))
+        {
+            return false;
+        }
+
+        var directives = policy.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        return directives.Length > 0 && directives[0] == "default-src 'none'"
+               && directives.Contains("base-uri 'none'", StringComparer.Ordinal)
+               && directives.Contains("frame-ancestors 'none'", StringComparer.Ordinal);
+    }
 
     private static bool CarriesCredentials(HttpContext context) =>
         context.User?.Identity?.IsAuthenticated == true

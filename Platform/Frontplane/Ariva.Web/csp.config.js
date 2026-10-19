@@ -111,7 +111,8 @@ export function cspDirectives(env = loadArivaEnv()) {
 		'font-src': ['self'],
 		'connect-src': ['self', .../** @type {any[]} */ (apiOrigins(env))],
 		'object-src': ['none'],
-		'base-uri': ['self'],
+		// The app sets no <base> element, so none may be set (ASVS 5.0 V3.4.3, ARV-093).
+		'base-uri': ['none'],
 		'form-action': ['self'],
 		'frame-ancestors': ['none']
 	};

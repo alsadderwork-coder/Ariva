@@ -31,9 +31,9 @@ public sealed class StoredFileDownloadTests
 {
     #region Fields
 
-    private const string PlanPolicy = "default-src 'none'; style-src 'unsafe-inline'; sandbox; frame-ancestors 'none'";
+    private const string PlanPolicy = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; sandbox; frame-ancestors 'none'";
 
-    private const string MediaPolicy = "default-src 'none'; sandbox; frame-ancestors 'none'";
+    private const string MediaPolicy = "default-src 'none'; base-uri 'none'; sandbox; frame-ancestors 'none'";
 
     private static readonly Guid LevelId = Guid.Parse("0199a000-0000-7000-8000-0000000000b1");
 

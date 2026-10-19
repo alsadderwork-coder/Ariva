@@ -494,8 +494,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 113,
-      "passes": false,
-      "notes": "Split on 2026-10-19: ARV-093 keeps the content security policies and the cookie prefix record; ARV-093a (sign-out) and ARV-093b (display player key) wait for the owner to lift the login freeze.",
+      "passes": true,
+      "notes": "Split on 2026-10-19: ARV-093 keeps the content security policies and the cookie prefix record; ARV-093a (sign-out) and ARV-093b (display player key) wait for the owner to lift the login freeze. Passed 2026-10-19: base-uri none (with object-src none) in the SPA, nginx fallback, Cronz page (TickerQ base element removed) and API baseline policies, endpoint policies kept only on whole directives; ADR-0026 implementation notes record the __Secure- cookie prefixes, the cookie tossing they leave open and the go-live compensating control (wiki 13 item 22); V3.4.3 Met, V3.3.3 Partly (affinity cookies, ARV-137; __Host-ariva_rt after the login freeze). Story gate PASS, security review PASS (round 2).",
       "dependsOn": [
         "ARV-074"
       ]

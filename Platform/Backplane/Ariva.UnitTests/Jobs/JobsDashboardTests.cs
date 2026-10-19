@@ -128,6 +128,12 @@ public sealed class JobsDashboardTests
         var policy = string.Join(";", page.Headers.GetValues("Content-Security-Policy"));
         policy.Should().StartWith("default-src 'none'").And.Contain("frame-ancestors 'none'").And.Contain("script-src 'self' 'sha256-")
             .And.NotContain("unsafe-eval").And.NotContain("script-src 'self' 'unsafe-inline'");
+        // ARV-093 (ASVS 5.0 V3.4.3): no base URL may be set, and the one TickerQ writes into the page is taken out first.
+        policy.Should().Contain("base-uri 'none'").And.Contain("object-src 'none'").And.NotContain("base-uri 'self'");
+        html.Should().NotMatchRegex("(?i)<base\\b", "the page carries no <base> element the policy would refuse");
+        html.Should().Contain("href=\"/tickerq/arcenox-logo.svg\"", "the icon resolves under the dashboard from any route")
+            .And.NotContain("href=\"./", "no relative link is left to resolve against the route");
+        page.Content.Headers.ContentLength.Should().Be(Encoding.UTF8.GetByteCount(html), "the length is the length of the page as sent");
         var inline = Regex.Matches(html, "<script>(.*?)</script>", RegexOptions.Singleline);
         inline.Should().HaveCountGreaterThanOrEqualTo(2, "the page's preload script and TickerQ's configuration script");
         foreach (System.Text.RegularExpressions.Match script in inline)

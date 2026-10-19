@@ -88,13 +88,17 @@ public static class JobsDashboard
 /// operator key, and never in a URL. The hub also refuses another origin. Paths are compared ignoring case, as ASP.NET routes them. The page is served under a content
 /// security policy that allows exactly its two inline scripts: TickerQ's own preload script (hashed from the package at
 /// startup) and the configuration script it writes, when that names this base path; anything else on the page is refused.
+/// The policy sets <c>base-uri 'none'</c> (ASVS 5.0 V3.4.3, ARV-093), so the <c>&lt;base href&gt;</c> element TickerQ writes into
+/// the page is taken out before it is sent: the browser would refuse it anyway, and the app needs it for nothing (it loads its
+/// scripts and styles from <c>window.__dynamic_base__</c> and routes under the base path its configuration names); the page's
+/// one relative link, its icon, is made absolute under the base path.
 /// </summary>
 public sealed partial class JobsDashboardGuard
 {
     /// <summary>The page's policy before the script hashes; it keeps the API baseline's start so no layer loosens it.</summary>
     private const string PagePolicy =
         "default-src 'none'; script-src 'self' {0}; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; " +
-        "connect-src 'self'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'";
+        "connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
     private const string Hub = "/ticker-notification-hub";
 
@@ -269,8 +273,12 @@ public sealed partial class JobsDashboardGuard
         buffer.Position = 0;
         if (context.Response.ContentType?.StartsWith("text/html", StringComparison.OrdinalIgnoreCase) == true)
         {
+            // Without the base element a relative link would resolve against the route the browser is on, so the page's icon
+            // (its one relative link, ./arcenox-logo.svg) is pointed at the dashboard's root, where the guard serves it.
+            var page = BaseElement().Replace(Encoding.UTF8.GetString(buffer.ToArray()), string.Empty)
+                .Replace("href=\"./", $"href=\"{_basePath}/", StringComparison.Ordinal);
             var allowed = new List<string>();
-            foreach (Match script in InlineScript().Matches(Encoding.UTF8.GetString(buffer.ToArray())))
+            foreach (Match script in InlineScript().Matches(page))
             {
                 var hash = Hash(script.Groups[1].Value);
                 if (hash == PreloadScriptHash.Value || IsConfigScript(script.Groups[1].Value, _basePath))
@@ -281,7 +289,10 @@ public sealed partial class JobsDashboardGuard
 
             context.Response.Headers.ContentSecurityPolicy = string.Format(CultureInfo.InvariantCulture, PagePolicy, string.Join(' ', allowed.Distinct(StringComparer.Ordinal)));
             context.Response.Headers.CacheControl = "no-store";
-            context.Response.ContentLength = buffer.Length;
+            var body = Encoding.UTF8.GetBytes(page);
+            context.Response.ContentLength = body.Length;
+            await original.WriteAsync(body, context.RequestAborted);
+            return;
         }
 
         await buffer.CopyToAsync(original, context.RequestAborted);
@@ -311,6 +322,10 @@ public sealed partial class JobsDashboardGuard
 
     [GeneratedRegex("<script>(.*?)</script>", RegexOptions.Singleline | RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 1000)]
     private static partial Regex InlineScript();
+
+    /// <summary>TickerQ's <c>&lt;base href&gt;</c> element; linear in the page's length (NonBacktracking), so no timeout.</summary>
+    [GeneratedRegex(@"<base\b[^>]*>", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking, Timeout.Infinite)]
+    private static partial Regex BaseElement();
 
     [GeneratedRegex(@"^\s*\(function\(\) \{\s*try \{\s*// Expose config\s*window\.TickerQConfig = (?<json>\{[^<>]*\});\s*// Derive dynamic base for vite-plugin-dynamic-base\s*window\.__dynamic_base__ = window\.TickerQConfig\.basePath;\s*\} catch \(e\) \{ console\.error\('Runtime config injection failed:', e\); \}\s*\}\)\(\);\s*$",
         RegexOptions.Singleline | RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 1000)]

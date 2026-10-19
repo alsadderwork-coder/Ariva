@@ -27,7 +27,7 @@ public sealed class FloorPlansController(ISvcFloorPlans plans) : ControllerBase
     /// For the image: no script, no fetches, no framing; inline styles only so a sanitised SVG still renders, and a
     /// sandbox so a browser that opens it directly treats it as an opaque origin (CWE-79).
     /// </summary>
-    internal const string ContentPolicy = "default-src 'none'; style-src 'unsafe-inline'; sandbox; frame-ancestors 'none'";
+    internal const string ContentPolicy = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; sandbox; frame-ancestors 'none'";
 
     /// <summary>The image's file name: <c>floor-plan-{level id}.{png|jpg|svg}</c> (ARV-092).</summary>
     internal const string FileNamePrefix = "floor-plan";

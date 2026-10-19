@@ -593,6 +593,23 @@
       "passes": false,
       "notes": "Filed 2026-10-19 from the ARV-092 docs review.",
       "dependsOn": []
+    },
+    {
+      "id": "ARV-204",
+      "title": "[E17] Ingress answers name object-src and base-uri in their policy",
+      "description": "Found in the ARV-093 security review: the ingress adds Content-Security-Policy frame-ancestors none to every answer (templates/_helpers.tpl, server and configuration snippets), so its own answers (421, 403, 404 refusals, 413, 502 to 504, the redirect body) carry no object-src or base-uri. They are static nginx bodies with no script, so nothing can use the gap; ASVS 5.0 V3.4.3 asks for both on every policy all the same.",
+      "acceptanceCriteria": [
+        "The ingress policy adds object-src none and base-uri none to frame-ancestors none in both snippets (it adds to the pods own policies, which already name both), held by a chart-security.mjs rule with a bad fixture case, and checked by scripts/ops/tls-check.mjs on the ingress 413",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence (the V3.4.3 row loses its ingress residual)",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 300,
+      "passes": false,
+      "notes": "Filed 2026-10-19 from the ARV-093 security review (Low; Phase 3 by the owner rule for Low findings).",
+      "dependsOn": []
     }
   ]
 }
