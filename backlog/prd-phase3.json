@@ -748,6 +748,24 @@
       "passes": false,
       "notes": "Filed 2026-10-19 from the ARV-094 security review (Low).",
       "dependsOn": []
+    },
+    {
+      "id": "ARV-213",
+      "title": "[E18] Handler organisations inside an airport site",
+      "description": "Found in ARV-095 (wiki 13 section 4, field authorization section 5): the product overview plans handler tenants that see only their own desks, contracts and alerts, but inside a site every role sees the site's zones: a handler station manager reads every queue zone's live snapshot and overflow bands, border lane queues included, all topology and zone profiles, every alert rule that is not border-only with its escalation contact, and alerts by role rather than organisation. Today the site is the tenant boundary (ISiteScope).",
+      "acceptanceCriteria": [
+        "The owner decides whether handler tenancy is built, or the site stays the tenant boundary and handler station manager accounts are granted only where every handler may see the others",
+        "If built: users belong to an organisation; desks, contracts, alert rules and alerts carry it; every read and write of a handler role is limited to its organisation (the live hub's zone snapshots and the overflow bands read included), with tests per path",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 300,
+      "passes": false,
+      "notes": "Filed 2026-10-19 from the ARV-095 documents; owner decision first (roadmap v1).",
+      "dependsOn": []
     }
   ]
 }

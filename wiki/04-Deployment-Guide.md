@@ -55,7 +55,7 @@ Rules: every deployment is in-country; the airport side never gets a route into 
 | Kafka | KRaft mode | Dedicated or AMAN's |
 | Redis | Any supported version (To confirm) | Dedicated or AMAN's |
 | Observability | An OTLP endpoint (SigNoz) or Loki, over https; in production one of them receives the hosts' logs, or the hosts do not start (ARV-091a). For the system alerts (ARV-125b) SigNoz v0.146.0 or a version that accepts its rule and dashboard schemas, with its Kubernetes collectors (kubelet volume metrics) and cert-manager's metrics scraped | Set `otel.endpoint`, and `logging.collector` with its settings (section 5); import the alert rules and dashboards (wiki 10 section 1.1) |
-| Identity | Bundled Keycloak or the customer's OIDC provider (Phase 1) | Which one per site: To confirm |
+| Identity | None: Ariva's own local accounts with TOTP (ADR-0026). A customer's OIDC provider is ARV-134a (held by the login freeze); no Keycloak or OIDC provider is used today | When ARV-134a is built, which provider per site: To confirm |
 | Mail relay | SMTP relay reachable from Integration and Cronz | For alert email and the scheduled reports (MVP) |
 | Licence | Signed, offline-verifiable licence file per deployment | Basic in the MVP, complete in v1. Loading mechanism: To confirm |
 

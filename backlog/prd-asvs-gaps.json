@@ -217,7 +217,7 @@
     {
       "id": "ARV-086",
       "title": "[ASVS] Session management completeness",
-      "description": "No per-account session limit, no credential rotation on step-up, no way for a user or an administrator to list or end sessions, and unattended tabs keep refreshing. ASVS 5.0: V7.1.2, V7.2.4, V7.3.1, V7.4.3, V7.4.5, V7.5.2. Effort L.",
+      "description": "No per-account session limit, no credential rotation on step-up, no way for a user or an administrator to list or end sessions, and unattended tabs keep refreshing, so an open tab never idles out, a deviation from NIST SP 800-63B for every role that the documentation cannot justify (wiki 13 section 3, found in ARV-095). ASVS 5.0: V7.1.1, V7.1.2, V7.2.4, V7.3.1, V7.4.3, V7.4.5, V7.5.2. Effort L.",
       "acceptanceCriteria": [
         "A configurable session limit per account with a documented behaviour at the limit",
         "Step-up rotates the refresh token and starts a new session generation; earlier access tokens are refused",
@@ -575,10 +575,34 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 115,
-      "passes": false,
-      "notes": "ARV-120 (2026-10-11): until handler isolation exists, a handler station manager reads every queue zone of its sites, border lane queues included, through two paths: the live hub's zone snapshots (JoinZone) and the overflow bands read (GET api/v1/sites/{siteCode}/overflow-bands, LiveQueue.View), which gives the same zones as the hub and nothing new. The handler isolation must cover both paths (V8.4.1).",
+      "passes": true,
+      "notes": "ARV-120 (2026-10-11): until handler isolation exists, a handler station manager reads every queue zone of its sites, border lane queues included, through two paths: the live hub's zone snapshots (JoinZone) and the overflow bands read (GET api/v1/sites/{siteCode}/overflow-bands, LiveQueue.View), which gives the same zones as the hub and nothing new. The handler isolation must cover both paths (V8.4.1). Passed 2026-10-19: wiki 13 sections 3, 4 and 9, wiki 11 sections 3 and 13, docs/security/field-authorization.md (kept complete by FieldAuthorizationTests) and costly-operations.md; V6.4.4, V8.1.2, V8.4.1, V2.1.2, V15.1.1, V15.1.3 Met; V6.1.1, V6.1.3, V6.3.1 open in ARV-095a (login freeze), V7.1.1 in ARV-086, handler tenancy ARV-213 (owner decision). Story gate PASS, security review PASS (round 3).",
       "dependsOn": [
         "ARV-074"
+      ]
+    },
+    {
+      "id": "ARV-095a",
+      "title": "[ASVS] Brute force and lockout hardening",
+      "description": "Found in ARV-095 (wiki 13 section 3, what waits for the login freeze): a right password without a code answers mfa_required and counts nothing, so credential stuffing learns which passwords are right; the per-account lock counts failures from any address with no window and can be used to keep known accounts locked; failures are not capped over time; a lock writes no audit entry or metric; unlock needs no step-up; the address limits are per process, IPv6 by full address, and sign-in shares one budget with refresh; open sessions survive a lock while /api/auth/me refuses it; an administrator can unlock their own account with a held session and guess step-up codes again. ASVS 5.0: V6.1.1, V6.3.1. Effort M.",
+      "acceptanceCriteria": [
+        "A right password without a valid code answers and counts like any failure",
+        "The lock cannot be used to deny service to a known user (failures per account and source, or a delay that grows, instead of a hard lock), and consecutive failures are capped over time as NIST SP 800-63B section 5.2.2 asks",
+        "Every lock and unlock writes an audit entry and a metric; unlock is a critical action with step-up",
+        "Unlock refuses the caller's own account and needs step-up, with a test of the step-up, lock and self-unlock loop",
+        "Sign-in limits are shared across replicas (the Redis backplane), count IPv6 by /64 and give refresh its own budget",
+        "A lock applies the same way everywhere: open sessions and /api/auth/me treat a locked account alike, with tests",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 115,
+      "passes": false,
+      "notes": "Split from ARV-095 on 2026-10-19 (login freeze: the owner asked for no sign-in, login, password, TOTP or authentication changes for now). Start only when the owner lifts the freeze. Related: ARV-086 (idle by user activity), ARV-088 (temporary password expiry, the TOTP window), ARV-091b (sign-in events).",
+      "dependsOn": [
+        "ARV-095"
       ]
     },
     {

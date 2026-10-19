@@ -290,7 +290,7 @@ The deployment is the hard tenancy boundary: one per authority per airport, alwa
 |---|---|---|
 | Country | Data never leaves the country; national views receive aggregates only | Deployment topology (also avoids Tanzania's cross-border permit, per D5 citing D1) |
 | Authority | Border and airport deployments are separate | Network separation and a one-way feed |
-| Organisation within a deployment | A handler sees only its own desks, contracts and alerts; the airport sees all airport-side data plus border aggregates | Tenant and site keys on every row; NHibernate filters in the application (D5 said EF Core global filters; changed by ADR-0017); PostgreSQL row-level security on contract, SLA and alert tables as a second line |
+| Organisation within a deployment | Target: a handler sees only its own desks, contracts and alerts; the airport sees all airport-side data plus border aggregates. As built (2026-10-19): the site is the tenant boundary (`ISiteScope`), with no organisation below it (ARV-213) | Target: tenant and site keys on every row; NHibernate filters in the application (D5 said EF Core global filters; changed by ADR-0017); PostgreSQL row-level security on contract, SLA and alert tables as a second line. As built: site keys and the site scope only; no row-level security policy exists |
 | Site | Terminals within an airport | Site key and per-site configuration (thresholds, languages, contracts) |
 
 Modules are licensed with a signed, offline-verifiable licence file per deployment, so Border and Airport Operations can be sold separately and air-gapped sites still validate.
