@@ -247,3 +247,113 @@ test fails if another workload gets them. optional follows validationReader.opti
       key: password
       optional: {{ .Values.validationReader.optional }}
 {{- end }}
+
+{{/*
+Ingress transport and headers (ARV-084). Plain HTTP for an ingress (values ingresses[].plainHttp): refuse (the default) or
+redirect. Anything else is refused by validate.yaml; the template treats it as refuse. Usage:
+{{ include "ariva-platform.ingressPlainHttp" $ingress }}
+*/}}
+{{- define "ariva-platform.ingressPlainHttp" -}}
+{{- if eq (toString (.plainHttp | default "refuse")) "redirect" }}redirect{{ else }}refuse{{ end -}}
+{{- end }}
+
+{{/*
+The chart's server-snippet for an ingress (ARV-084), given its host. ingress-nginx renders it in the host's server block
+(templates/nginx.tmpl, template SERVER), so it covers every response of the host, the ingress's own included: the 421 below,
+the HTTPS redirect, ModSecurity's 403, 413, 502, 503 and 504. Every Ingress of a host renders the same text, as
+ingress-nginx applies one server-snippet per host.
+- HSTS over HTTPS only (RFC 6797 section 7.2), one year with includeSubDomains, no preload. more_set_headers (headers-more,
+  which ingress-nginx builds in) applies to every status code, is inherited by every location of the server on top of their
+  own, and replaces a value set before it: the controller's own HSTS, which a Lua header filter sets in each location from
+  its ConfigMap (lua_ingress.header), runs first and is replaced, so the host sends one HSTS header, this one, whatever
+  the controller's hsts-max-age. $ariva_hsts is set before the 421 so that response carries it too; over plain HTTP it
+  stays empty, which removes the header.
+- nosniff with more_set_headers, so a pod's own nosniff is replaced by the same value instead of repeated.
+- Content-Security-Policy frame-ancestors 'none' with add_header always (always: on 4xx and 5xx too). add_header adds to a
+  pod's own policy instead of replacing it (both are enforced; the pods already forbid framing), and the configuration-snippet
+  repeats it in every location, as nginx drops a server's add_header in a location that has one of its own.
+Usage: {{ include "ariva-platform.ingressServerSnippet" "api-main-ariva.example.com" }}
+*/}}
+{{- define "ariva-platform.ingressServerSnippet" -}}
+set $ariva_hsts "";
+if ($scheme = https) {
+  set $ariva_hsts "max-age=31536000; includeSubDomains";
+}
+more_set_headers "Strict-Transport-Security: $ariva_hsts";
+more_set_headers "X-Content-Type-Options: nosniff";
+add_header Content-Security-Policy "frame-ancestors 'none'" always;
+if ($host != "{{ . }}") {
+  return 421;
+}
+{{ end }}
+
+{{/*
+The chart's configuration-snippet for an ingress (ARV-084), rendered by ingress-nginx in each of its locations: the
+frame-ancestors policy again (see ingressServerSnippet), and with plainHttp refuse a 403 for any request over plain HTTP
+(ASVS 5.0 V4.1.2: machine endpoints never redirect, so a client that sends credentials in clear is told, not silently
+redirected). It runs in the rewrite phase, before ingress-nginx's own redirect (rewrite_by_lua, at the end of that phase),
+and only in this Ingress's locations, so an ACME HTTP-01 solver Ingress on the same host keeps plain HTTP. The live hub
+logs only critical errors (ARV-035, tokenInQuery). Usage: {{ include "ariva-platform.ingressConfigurationSnippet" $ingress }}
+*/}}
+{{- define "ariva-platform.ingressConfigurationSnippet" -}}
+add_header Content-Security-Policy "frame-ancestors 'none'" always;
+{{- if eq (include "ariva-platform.ingressPlainHttp" .) "refuse" }}
+if ($scheme = http) {
+  return 403;
+}
+{{- end }}
+{{- if .tokenInQuery }}
+error_log /dev/stderr crit;
+{{- end }}
+{{ end }}
+
+{{/*
+The annotations the chart sets on an ingress (ARV-084, with ARV-035 and ARV-082b), as YAML. ingresses.yaml renders them and
+appends a site's server-snippet, configuration-snippet and modsecurity-snippet to the chart's own; validate.yaml refuses a
+site annotation for any other key here. Usage: {{ include "ariva-platform.ingressChartAnnotations" (list $ $ingress) | fromYaml }}
+- plain HTTP: refuse sets ssl-redirect and force-ssl-redirect false (the configuration-snippet answers 403), redirect sets
+  both true (308 to HTTPS); ariva.dalil.tech/plain-http records the mode for scripts/ops/tls-check.mjs (ingress-nginx
+  ignores it).
+- the affinity cookie: Secure, SameSite=Strict, Path=/ (ASVS 5.0 V3.3.1, V3.3.2).
+- ssl-prefer-server-ciphers false: the client's order among the controller's suites, as the Mozilla intermediate
+  configuration says (guidelines 6.0, server_preferred_order false); ingress-nginx writes ssl_prefer_server_ciphers on at the
+  http level whenever ssl-ciphers is set and has no ConfigMap key for it, so the host's server block turns it off.
+- ModSecurity with the upload rule; its message is in escaped quotes because ingress-nginx wraps the snippet in
+  modsecurity_rules '...', where a bare quote ends the string and nginx refuses the whole configuration.
+*/}}
+{{- define "ariva-platform.ingressChartAnnotations" -}}
+{{- $root := index . 0 -}}
+{{- $ingress := index . 1 -}}
+{{- $host := printf "%s.%s" $ingress.subdomain $root.Values.domain -}}
+{{- $plain := include "ariva-platform.ingressPlainHttp" $ingress -}}
+{{- $redirect := ternary "true" "false" (eq $plain "redirect") -}}
+{{- $a := dict -}}
+{{- $_ := set $a "ariva.dalil.tech/plain-http" $plain -}}
+{{- $_ := set $a "nginx.ingress.kubernetes.io/ssl-redirect" $redirect -}}
+{{- $_ := set $a "nginx.ingress.kubernetes.io/force-ssl-redirect" $redirect -}}
+{{- $_ := set $a "nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers" "false" -}}
+{{- $_ := set $a "nginx.ingress.kubernetes.io/affinity" "cookie" -}}
+{{- $_ := set $a "nginx.ingress.kubernetes.io/session-cookie-name" (printf "ariva-%s" $ingress.name) -}}
+{{- $_ := set $a "nginx.ingress.kubernetes.io/session-cookie-secure" "true" -}}
+{{- $_ := set $a "nginx.ingress.kubernetes.io/session-cookie-samesite" "Strict" -}}
+{{- $_ := set $a "nginx.ingress.kubernetes.io/session-cookie-path" "/" -}}
+{{- $_ := set $a "nginx.ingress.kubernetes.io/server-snippet" (include "ariva-platform.ingressServerSnippet" $host) -}}
+{{- $_ := set $a "nginx.ingress.kubernetes.io/configuration-snippet" (include "ariva-platform.ingressConfigurationSnippet" $ingress) -}}
+{{- $_ := set $a "nginx.ingress.kubernetes.io/enable-modsecurity" "true" -}}
+{{- $modsecurity := "SecRuleEngine On\nSecRule FILES \"@rx \\.(exe|dll|bat|cmd|com|msi|sh|ps1|php|jsp|asp|aspx)$\" \"id:100001,phase:2,deny,status:403,log,msg:\\'Dangerous file upload blocked\\'\"\n" -}}
+{{- if $ingress.tokenInQuery -}}
+{{- $modsecurity = printf "%sSecAuditEngine Off\n" $modsecurity -}}
+{{- $_ := set $a "nginx.ingress.kubernetes.io/enable-access-log" "false" -}}
+{{- end -}}
+{{- $_ := set $a "nginx.ingress.kubernetes.io/modsecurity-snippet" $modsecurity -}}
+{{- if include "ariva-platform.podTls" $root -}}
+{{- $_ := set $a "nginx.ingress.kubernetes.io/backend-protocol" "HTTPS" -}}
+{{- $_ := set $a "nginx.ingress.kubernetes.io/proxy-ssl-secret" (printf "%s/%s" $root.Release.Namespace ($root.Values.podTls.caSecretName | default "ariva-cluster-ca")) -}}
+{{- $_ := set $a "nginx.ingress.kubernetes.io/proxy-ssl-verify" "on" -}}
+{{- $_ := set $a "nginx.ingress.kubernetes.io/proxy-ssl-verify-depth" "2" -}}
+{{- $_ := set $a "nginx.ingress.kubernetes.io/proxy-ssl-name" (printf "%s.%s.svc" $ingress.serviceName $root.Release.Namespace) -}}
+{{- $_ := set $a "nginx.ingress.kubernetes.io/proxy-ssl-server-name" "on" -}}
+{{- $_ := set $a "nginx.ingress.kubernetes.io/proxy-ssl-protocols" "TLSv1.2 TLSv1.3" -}}
+{{- end -}}
+{{- toYaml $a -}}
+{{- end }}

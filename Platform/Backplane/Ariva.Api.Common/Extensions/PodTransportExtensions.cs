@@ -57,8 +57,9 @@ public static class PodTransportExtensions
     private const string EndpointDefaultsProtocolsKey = "Kestrel:EndpointDefaults:SslProtocols";
 
     /// <summary>
-    /// The names of the versions a pod may offer, which configured values are checked against by name: the code makes no protocol
-    /// choice of its own (CA5398), the settings file does.
+    /// The names of the versions a pod may offer, which configured values are checked against by name: for the endpoints the
+    /// settings declare, the code makes no protocol choice of its own (CA5398), the settings file does. A listener declared in code
+    /// takes the same names (<see cref="Protocols"/>).
     /// </summary>
     private static readonly string[] ModernNames = ["Tls12", "Tls13"];
 
@@ -67,9 +68,16 @@ public static class PodTransportExtensions
     #region Properties
 
     /// <summary>
+    /// TLS 1.2 and 1.3 as one value, for a TLS listener Ariva declares in code rather than in Kestrel:Endpoints (Ingest's MQTT
+    /// listener, ARV-084; ASVS V12.1.1): parsed from the names the configured endpoints are checked against, so the pods and the
+    /// listener offer the same versions. Pinned on purpose, not left to the operating system: a newer version needs a change here.
+    /// </summary>
+    public static SslProtocols Protocols { get; } = Enum.Parse<SslProtocols>(string.Join(", ", ModernNames));
+
+    /// <summary>
     /// The suites the pod's https endpoints offer on Linux: TLS 1.3's three, and for TLS 1.2 ECDHE (forward secrecy) with an AEAD
     /// cipher, for ECDSA and RSA certificates alike. No CBC suite, no static RSA key exchange and no finite field DHE, matching
-    /// the database's ssl_ciphers ECDHE+AESGCM:ECDHE+CHACHA20 (ARV-082a).
+    /// the database's ssl_ciphers ECDHE+AESGCM:ECDHE+CHACHA20 (ARV-082a). Ingest's MQTT listener offers the same (ARV-084).
     /// </summary>
     public static IReadOnlyList<TlsCipherSuite> CipherSuites { get; } =
     [

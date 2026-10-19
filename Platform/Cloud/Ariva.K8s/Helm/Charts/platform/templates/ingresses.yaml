@@ -1,64 +1,53 @@
-{{- range .Values.ingresses }}
+{{- /*
+One Ingress per entry of ingresses (values.yaml). The chart's annotations come from ariva-platform.ingressChartAnnotations
+(_helpers.tpl): plain HTTP refused or redirected (plainHttp, ARV-084), the response headers of every host (HSTS, nosniff,
+frame-ancestors 'none', on the ingress's own responses too), the affinity cookie Secure with SameSite=Strict, ModSecurity,
+the live hub's logging (ARV-035) and, with pod TLS (ARV-082b), HTTPS to the pods verified against the cluster CA under the
+backend Service's name. A site's own annotations are added after them: its server-snippet, configuration-snippet and
+modsecurity-snippet are appended to the chart's (validate.yaml refuses one that would undo them), and any other key the
+chart sets is refused by validate.yaml, so no Ingress carries a key twice.
+*/ -}}
+{{- $snippets := list "nginx.ingress.kubernetes.io/server-snippet" "nginx.ingress.kubernetes.io/configuration-snippet" "nginx.ingress.kubernetes.io/modsecurity-snippet" }}
+{{- range $ingress := .Values.ingresses }}
+{{- $chart := include "ariva-platform.ingressChartAnnotations" (list $ $ingress) | fromYaml }}
+{{- $annotations := deepCopy $chart }}
+{{- range $key, $value := ($ingress.annotations | default dict) }}
+{{- if has $key $snippets }}
+{{- $_ := set $annotations $key (printf "%s%s" (index $chart $key | default "") (toString $value)) }}
+{{- else if not (hasKey $chart $key) }}
+{{- $_ := set $annotations $key (toString $value) }}
+{{- end }}
+{{- end }}
 ---
-#Ingress: {{ .comment }}
+#Ingress: {{ $ingress.comment }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: {{ .name }}-ingress
+  name: {{ $ingress.name }}-ingress
   labels:
     {{- include "ariva-platform.labels" $ | nindent 4 }}
+  # Pod TLS (ARV-082b), when on: HTTPS to the pods, whose certificate must chain to the cluster CA in podTls.caSecretName and
+  # name the backend Service as the pods see it; TLS 1.2 or 1.3; up to two intermediate CAs below the cluster CA (the depth
+  # counts intermediates only). ingress-nginx verifies, and applies these protocols, only when that secret holds ca.crt
+  # (validate.yaml refuses one without it, or with a tls.key, when it can see the secret); it denies the location with 503
+  # when it cannot read the secret at all.
+  # The live hub (tokenInQuery): its WebSocket carries the access token as access_token in its URL (ARV-035, CWE-598), so no
+  # access log, no ModSecurity audit log and only critical errors, and no log line ever holds the request line with the token.
   annotations:
-    nginx.ingress.kubernetes.io/affinity: "cookie"
-    nginx.ingress.kubernetes.io/session-cookie-name: "ariva-{{ .name }}"
-    nginx.ingress.kubernetes.io/server-snippet: |
-      if ($host != "{{ .subdomain }}.{{ $.Values.domain }}") {
-        return 421;
-      }
-    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
-    nginx.ingress.kubernetes.io/enable-modsecurity: "true"
-    nginx.ingress.kubernetes.io/modsecurity-snippet: |
-      SecRuleEngine On
-      SecRule FILES "@rx \.(exe|dll|bat|cmd|com|msi|sh|ps1|php|jsp|asp|aspx)$" "id:100001,phase:2,deny,status:403,log,msg:'Dangerous file upload blocked'"
-      {{- if .tokenInQuery }}
-      SecAuditEngine Off
-      {{- end }}
-    {{- if .tokenInQuery }}
-    # The SignalR WebSocket carries the access token as access_token in its URL (ARV-035, CWE-598): no access log, no
-    # ModSecurity audit log and only critical errors here, so no log line ever holds the request line with the token.
-    nginx.ingress.kubernetes.io/enable-access-log: "false"
-    nginx.ingress.kubernetes.io/configuration-snippet: |
-      error_log /dev/stderr crit;
-    {{- end }}
-    {{- if include "ariva-platform.podTls" $ }}
-    # Pod TLS (ARV-082b): HTTPS to the pods, whose certificate must chain to the cluster CA in podTls.caSecretName and name
-    # the backend Service as the pods see it; TLS 1.2 or 1.3; up to two intermediate CAs below the cluster CA (the depth
-    # counts intermediates only). ingress-nginx verifies, and applies these protocols, only when that secret holds ca.crt
-    # (validate.yaml refuses one without it, or with a tls.key, when it can see the secret); it denies the location with
-    # 503 when it cannot read the secret at all.
-    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
-    nginx.ingress.kubernetes.io/proxy-ssl-secret: {{ printf "%s/%s" $.Release.Namespace ($.Values.podTls.caSecretName | default "ariva-cluster-ca") | quote }}
-    nginx.ingress.kubernetes.io/proxy-ssl-verify: "on"
-    nginx.ingress.kubernetes.io/proxy-ssl-verify-depth: "2"
-    nginx.ingress.kubernetes.io/proxy-ssl-name: {{ printf "%s.%s.svc" .serviceName $.Release.Namespace | quote }}
-    nginx.ingress.kubernetes.io/proxy-ssl-server-name: "on"
-    nginx.ingress.kubernetes.io/proxy-ssl-protocols: "TLSv1.2 TLSv1.3"
-    {{- end }}
-    {{- range $key, $value := .annotations }}
-    {{ $key }}: {{ $value | quote }}
-    {{- end }}
+    {{- toYaml $annotations | nindent 4 }}
 spec:
   ingressClassName: nginx
   # TLS on every host (Platform/Cloud/CLAUDE.md); the certificate secret is per environment or per ingress.
   tls:
     - hosts:
-        - "{{ .subdomain }}.{{ $.Values.domain }}"
-      secretName: {{ .tlsSecretName | default $.Values.tlsSecretName | required "tlsSecretName must be set in the environment values" }}
+        - "{{ $ingress.subdomain }}.{{ $.Values.domain }}"
+      secretName: {{ $ingress.tlsSecretName | default $.Values.tlsSecretName | required "tlsSecretName must be set in the environment values" }}
   rules:
-    - host: "{{ .subdomain }}.{{ $.Values.domain }}"
+    - host: "{{ $ingress.subdomain }}.{{ $.Values.domain }}"
       http:
         paths:
-          {{- $service := .serviceName }}
-          {{- range (.paths | default (list "/")) }}
+          {{- $service := $ingress.serviceName }}
+          {{- range ($ingress.paths | default (list "/")) }}
           - path: {{ . }}
             pathType: Prefix
             backend:

@@ -20,7 +20,7 @@
 //                go-live, never in a story gate (docs/harness/test-cadence.md)
 //   zap          dynamic security scan (ARV-063): OWASP ZAP in its pinned image against the E2E stack (Docker and the E2E
 //                database environment; about 10 minutes); reports in Platform/Testing/Ariva.E2E/zap-reports
-//   security     scanner self-test + full scan + ops tooling self-test (ARV-126) + dependency audits
+//   security     scanner self-test + full scan + ops tooling self-tests (ARV-126, the TLS check of ARV-084) + dependency audits
 //   docs         text rules on Markdown (no em dashes, no double hyphens in prose)
 //   backend      build + unit + security
 //   mutation     Stryker.NET on the pure engines (ARV-069; one to three hours, mostly the queue engine; report in .verify/stryker);
@@ -408,6 +408,9 @@ const steps = {
     // (its behaviour is proven by BackupRestoreTests in the integration suite). Without bash on the machine the second is skipped.
     run('ops tooling self-test (backup and restore wrapper)', 'node', ['scripts/ops/ariva-ops.mjs', '--self-test']);
     run('ops database script syntax', 'bash', ['-n', 'scripts/ops/ariva-db.sh'], ROOT, { optional: true });
+    // ARV-084: the release gate's TLS check (protocols, suites, certificate, HSTS, the ingress's own responses, plain HTTP),
+    // proven against throwaway local servers.
+    run('TLS check self-test (release gate)', 'node', ['scripts/ops/tls-check.mjs', '--self-test']);
     run('base images pinned', 'node', ['scripts/base-images.mjs', '--check']);
     // ARV-184: the check every host image build runs on its publish output (runtime packs at the runtime-deps version, Pkcs and
     // SignalR assemblies at or above the fixed file version); base-images --check holds each Dockerfile to it.

@@ -29,6 +29,16 @@ Release guards. Renders nothing; fails the render when a rule is broken.
   namespace holds ca.crt and no tls.key (ariva-platform.podTlsCaRefusal); without ca.crt ingress-nginx would proxy to the
   pods unverified, and silently. lookup sees nothing when rendering offline (helm template) or before the secret exists,
   and the guard then passes: create the secret before the release, whose render against the cluster then judges it.
+- Ingress transport and headers (ARV-084): every ingresses entry's plainHttp is refuse or redirect (empty: refuse); the
+  Ingresses of one host share it; in k8s-prd an Ingress to api-main-service, api-ingest-service or api-integration-service
+  on a host that does not serve web-service refuses (the machine hosts never redirect, ASVS 5.0 V4.1.2). A site annotation
+  sets no key the chart sets (ariva-platform.ingressChartAnnotations) but the three snippets, which the chart appends to its
+  own; the Ingresses of one host carry the same site server-snippet (ingress-nginx applies one per host); a site's
+  modsecurity-snippet sets no SecRuleEngine or SecAuditEngine (the chart's). No annotation sets from-to-www-redirect (it makes
+  ingress-nginx generate a server of its own for www.<host>, which carries none of the chart's headers and needs a
+  certificate for a host the chart's tls section does not list) or custom-headers (a ConfigMap the chart cannot read, whose
+  more_set_headers would replace the chart's), and no annotation value names Strict-Transport-Security,
+  X-Content-Type-Options, Content-Security-Policy or more_clear_headers, so no site setting replaces or removes the headers.
 */ -}}
 {{- if and (eq .Values.environment "k8s-prd") (or (empty .Values.buildNumber) (eq (toString .Values.buildNumber) "trunk")) }}
 {{- fail "k8s-prd needs an explicit buildNumber (for example --set buildNumber=main-20261001.3); trunk and empty are not allowed" }}
@@ -122,6 +132,53 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- end }}
 {{- end }}
 {{- end }}
+{{- end }}
+{{- $chartSnippets := list "nginx.ingress.kubernetes.io/server-snippet" "nginx.ingress.kubernetes.io/configuration-snippet" "nginx.ingress.kubernetes.io/modsecurity-snippet" }}
+{{- $machineServices := list "api-main-service" "api-ingest-service" "api-integration-service" }}
+{{- $webHosts := list }}
+{{- range $ingress := (.Values.ingresses | default list) }}
+{{- if eq (toString $ingress.serviceName) "web-service" }}{{ $webHosts = append $webHosts (toString $ingress.subdomain) }}{{ end }}
+{{- end }}
+{{- $hostModes := dict }}
+{{- $hostServerSnippets := dict }}
+{{- range $ingress := (.Values.ingresses | default list) }}
+{{- $name := toString $ingress.name }}
+{{- $host := toString $ingress.subdomain }}
+{{- $mode := toString ($ingress.plainHttp | default "refuse") }}
+{{- if not (has $mode (list "refuse" "redirect")) }}
+{{- fail (printf "ingresses %s: plainHttp must be refuse or redirect, not %s (ARV-084)" $name $mode) }}
+{{- end }}
+{{- if and (eq $.Values.environment "k8s-prd") (eq $mode "redirect") (has (toString $ingress.serviceName) $machineServices) (not (has $host $webHosts)) }}
+{{- fail (printf "ingresses %s: k8s-prd refuses plain HTTP on the machine hosts (api-main, api-ingest, api-integration): set plainHttp refuse, so a client sending credentials in clear is answered 403 instead of being redirected (ARV-084, ASVS 5.0 V4.1.2)" $name) }}
+{{- end }}
+{{- if and (hasKey $hostModes $host) (ne (index $hostModes $host) $mode) }}
+{{- fail (printf "ingresses %s: the Ingresses of host %s must share one plainHttp (%s and %s; ARV-084)" $name $host (index $hostModes $host) $mode) }}
+{{- end }}
+{{- $_ := set $hostModes $host $mode }}
+{{- $chart := include "ariva-platform.ingressChartAnnotations" (list $ $ingress) | fromYaml }}
+{{- $siteServerSnippet := "" }}
+{{- range $key, $value := ($ingress.annotations | default dict) }}
+{{- if and (hasKey $chart $key) (not (has $key $chartSnippets)) }}
+{{- fail (printf "ingresses %s: %s is set by the chart (ARV-084); remove it from the ingress's annotations (plain HTTP is the entry's plainHttp)" $name $key) }}
+{{- end }}
+{{- if eq $key "nginx.ingress.kubernetes.io/from-to-www-redirect" }}
+{{- fail (printf "ingresses %s: from-to-www-redirect makes ingress-nginx generate a server of its own for www.<host>, which carries none of the chart's headers (HSTS, nosniff, frame-ancestors) and needs a certificate the chart's tls section does not list; add www.<host> as an entry of its own instead (ARV-084)" $name) }}
+{{- end }}
+{{- if eq $key "nginx.ingress.kubernetes.io/custom-headers" }}
+{{- fail (printf "ingresses %s: custom-headers names a ConfigMap the chart cannot read, whose headers would replace the chart's; write headers in a snippet (ARV-084)" $name) }}
+{{- end }}
+{{- if regexMatch "(?i)strict-transport-security|x-content-type-options|content-security-policy|more_clear_headers" (toString $value) }}
+{{- fail (printf "ingresses %s: %s names Strict-Transport-Security, X-Content-Type-Options, Content-Security-Policy or more_clear_headers; the chart sets those headers on every response and no annotation replaces or removes them (ARV-084)" $name $key) }}
+{{- end }}
+{{- if and (eq $key "nginx.ingress.kubernetes.io/modsecurity-snippet") (regexMatch "(?i)Sec(Rule|Audit)Engine" (toString $value)) }}
+{{- fail (printf "ingresses %s: the modsecurity-snippet sets SecRuleEngine or SecAuditEngine, which the chart sets (ARV-084, ARV-035)" $name) }}
+{{- end }}
+{{- if eq $key "nginx.ingress.kubernetes.io/server-snippet" }}{{ $siteServerSnippet = toString $value }}{{ end }}
+{{- end }}
+{{- if and (hasKey $hostServerSnippets $host) (ne (index $hostServerSnippets $host) $siteServerSnippet) }}
+{{- fail (printf "ingresses %s: the Ingresses of host %s carry different server-snippet annotations; ingress-nginx applies one server-snippet per host, so give them all the same (ARV-084)" $name $host) }}
+{{- end }}
+{{- $_ := set $hostServerSnippets $host $siteServerSnippet }}
 {{- end }}
 {{- $retention := (.Values.migration | default dict).retention | default dict }}
 {{- $retentionBounds := dict "rawSensingDays" (list 7 3650) "deskZoneReadingDays" (list 2 90) "laneStaffingDays" (list 90 3650) "alertEmailDays" (list 30 3650) "integrationCallDays" (list 30 3650) "reportDeliveryDays" (list 30 3650) "advertisingPlayDays" (list 30 3650) }}

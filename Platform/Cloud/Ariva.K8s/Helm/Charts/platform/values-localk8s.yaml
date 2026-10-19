@@ -72,8 +72,9 @@ ingresses:
     comment: Ariva Web Ingress
     subdomain: ariva
     serviceName: web-service
+    # Plain HTTP redirected to HTTPS (ARV-084): the web app, opened in a browser. The machine hosts refuse it (the default).
+    plainHttp: redirect
     annotations:
-      nginx.ingress.kubernetes.io/from-to-www-redirect: "true"
       nginx.ingress.kubernetes.io/proxy-body-size: "5m"
       nginx.ingress.kubernetes.io/rewrite-target: /
 
@@ -83,6 +84,8 @@ ingresses:
     comment: Ariva API on the web host (/api to Ariva.Api.Main)
     subdomain: ariva
     serviceName: api-main-service
+    # Plain HTTP redirected to HTTPS (ARV-084): the web host, opened in a browser. The machine hosts refuse it (the default).
+    plainHttp: redirect
     paths:
       - /api
     annotations:
@@ -96,6 +99,8 @@ ingresses:
     comment: Ariva live hub on the web host (/hubs to Ariva.Api.Main)
     subdomain: ariva
     serviceName: api-main-service
+    # Plain HTTP redirected to HTTPS (ARV-084): the web host, opened in a browser. The machine hosts refuse it (the default).
+    plainHttp: redirect
     tokenInQuery: true
     paths:
       - /hubs

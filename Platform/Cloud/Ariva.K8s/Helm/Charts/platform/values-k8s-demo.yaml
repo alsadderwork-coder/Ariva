@@ -74,6 +74,8 @@ ingresses:
     comment: Ariva API Cronz Ingress (TickerQ dashboard)
     subdomain: api-cronz-demo-ariva
     serviceName: api-cronz-service
+    # Plain HTTP redirected to HTTPS (ARV-084): the TickerQ dashboard, opened in a browser. The machine hosts refuse it (the default).
+    plainHttp: redirect
     annotations:
       # Limit the dashboard to the administration network (wiki 04): set the customer's CIDRs, for example
       # nginx.ingress.kubernetes.io/whitelist-source-range: "10.10.0.0/24"
@@ -118,8 +120,9 @@ ingresses:
     comment: Ariva Web Ingress
     subdomain: demo-ariva
     serviceName: web-service
+    # Plain HTTP redirected to HTTPS (ARV-084): the web app, opened in a browser. The machine hosts refuse it (the default).
+    plainHttp: redirect
     annotations:
-      nginx.ingress.kubernetes.io/from-to-www-redirect: "true"
       nginx.ingress.kubernetes.io/proxy-body-size: "5m"
       nginx.ingress.kubernetes.io/rewrite-target: /
 
@@ -129,6 +132,8 @@ ingresses:
     comment: Ariva API on the web host (/api to Ariva.Api.Main)
     subdomain: demo-ariva
     serviceName: api-main-service
+    # Plain HTTP redirected to HTTPS (ARV-084): the web host, opened in a browser. The machine hosts refuse it (the default).
+    plainHttp: redirect
     paths:
       - /api
     annotations:
@@ -142,6 +147,8 @@ ingresses:
     comment: Ariva live hub on the web host (/hubs to Ariva.Api.Main)
     subdomain: demo-ariva
     serviceName: api-main-service
+    # Plain HTTP redirected to HTTPS (ARV-084): the web host, opened in a browser. The machine hosts refuse it (the default).
+    plainHttp: redirect
     tokenInQuery: true
     paths:
       - /hubs

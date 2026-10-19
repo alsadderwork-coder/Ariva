@@ -1,0 +1,50 @@
+# ingress-nginx controller values for a site that runs Ariva (ARV-084). The site's to apply, with its own release of the
+# ingress-nginx Helm chart (kubernetes/ingress-nginx; written against chart 4.15.1, controller 1.15); Ariva's pipelines and
+# tooling never install, upgrade or change the controller. Merge these keys into the site's controller values, for example
+# as one more values file of the site's release. chart-security.mjs checks every key below (controllerValuesFindings in
+# tests/checks.mjs), and scripts/ops/tls-check.mjs checks the result on the live hosts in the release gate.
+#
+# The controller is shared: these settings reach every Ingress it serves. The two snippet settings let anyone who may create
+# an Ingress for it write nginx configuration; where other teams create Ingresses, give Ariva a controller of its own.
+controller:
+  # The Ariva chart's Ingresses carry server-snippet, configuration-snippet and modsecurity-snippet annotations (the response
+  # headers, the 421 for other hosts, the plain HTTP refusal, the upload rule); without this the controller drops them. The
+  # chart writes allow-snippet-annotations "true" into the controller's ConfigMap from this value: never also under config,
+  # where the key would appear twice.
+  allowSnippetAnnotations: true
+  # Keep the admission webhook on (the chart's default): it tests the configuration of every Ingress before it is admitted,
+  # so an Ingress that would break nginx is refused instead of stopping the controller's reloads.
+  config:
+    # Snippet annotations are Critical in ingress-nginx's annotation risk model (1.12 and later); at High, the default, the
+    # controller refuses them.
+    annotations-risk-level: "Critical"
+    # TLS 1.2 and 1.3 only (ASVS 5.0 V12.1.1). The protocols and suites are the controller's: ingress-nginx writes them at the
+    # http level, and nginx keeps them for every host it selects by SNI, so no Ingress annotation can set them per host.
+    ssl-protocols: "TLSv1.2 TLSv1.3"
+    # The Mozilla intermediate TLS 1.2 suites (Server Side TLS guidelines 6.0, ssl-config.mozilla.org; ASVS 5.0 V12.1.2):
+    # ECDHE key exchange with AES-128-GCM, AES-256-GCM or ChaCha20-Poly1305, for ECDSA and for RSA certificates, in Mozilla's
+    # order, and nothing else (no CBC, no static RSA key exchange, no DHE, which ingress-nginx's default list carries). TLS 1.3
+    # keeps OpenSSL's suites, all AEAD and Mozilla's set (TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384,
+    # TLS_CHACHA20_POLY1305_SHA256).
+    ssl-ciphers: "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305"
+    # ssl-prefer-server-ciphers has no ConfigMap key: ingress-nginx writes ssl_prefer_server_ciphers on at the http level
+    # whenever ssl-ciphers is set. Mozilla's intermediate configuration leaves the order to the client (server_preferred_order
+    # false), every suite above being strong; the Ariva chart's Ingresses set the annotation ssl-prefer-server-ciphers "false",
+    # which turns it off in each Ariva host's server block (an option nginx does apply per host).
+    # No session tickets (Mozilla intermediate; the controller's default, kept explicit).
+    ssl-session-tickets: "false"
+    # HSTS (ASVS 5.0 V3.4.1): one year with includeSubDomains, no preload. The controller sends its own HSTS from a Lua header
+    # filter in each location, over HTTPS. The Ariva chart sets this same value itself on every response of its hosts (its
+    # server-snippet, with more_set_headers, which replaces the controller's), so these keys are not what Ariva's hosts rely
+    # on: they keep the controller's own value at a year as well (controllers before 1.15 default to six months, 15724800).
+    hsts: "true"
+    hsts-max-age: "31536000"
+    hsts-include-subdomains: "true"
+    hsts-preload: "false"
+    # TLS ends at this controller, so X-Forwarded-* headers from clients are not trusted (the Ariva hosts trust only the
+    # controller's pod network, Security:ForwardedHeaders). Put an L4 load balancer that keeps the client address in front, or
+    # use PROXY protocol, never an L7 proxy that ends TLS before the controller.
+    use-forwarded-headers: "false"
+    # ModSecurity: the Ariva chart enables it on its own Ingresses (enable-modsecurity and modsecurity-snippet); the controller
+    # loads the module whenever a location enables it, so it stays off for everyone else here.
+    enable-modsecurity: "false"

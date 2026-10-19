@@ -1,7 +1,8 @@
 using System.Globalization;
 using System.Net;
-using System.Security.Authentication;
+using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
+using Ariva.Api.Common.Extensions;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
 using MQTTnet.AspNetCore;
@@ -38,8 +39,9 @@ public static class MqttExtensions
     }
 
     /// <summary>
-    /// Adds the MQTT listener to Kestrel when enabled: TLS (the operating system's versions) with the configured certificate (client
-    /// certificates are optional and checked against a device's pin, not a CA), the packet size limit, then MQTTnet.
+    /// Adds the MQTT listener to Kestrel when enabled: TLS 1.2 and 1.3 only, with the pods' cipher suites on Linux (<see cref="TlsOptions"/>,
+    /// ARV-084) and the configured certificate (client certificates are optional and checked against a device's pin, not a CA),
+    /// the packet size limit, then MQTTnet.
     /// Declaring a listener in code replaces the URLs Kestrel would otherwise bind, so the HTTP endpoints are declared
     /// here too (<see cref="HttpEndpoints"/>): none when Kestrel:Endpoints declares the host's endpoints (k8s-prd's https
     /// endpoint, ARV-082b), which Kestrel binds beside this listener; else the configured URLs, else HTTP ports, else
@@ -100,18 +102,7 @@ public static class MqttExtensions
                     }
                 });
                 if (certificate is not null)
-                {
-                    listen.UseHttps(new HttpsConnectionAdapterOptions
-                    {
-                        ServerCertificate = certificate,
-                        // The operating system's protocol choice (TLS 1.2 and 1.3 on the container images), not a pinned list (CA5398).
-                        SslProtocols = SslProtocols.None,
-                        ClientCertificateMode = ClientCertificateMode.AllowCertificate,
-                        // A device's certificate is pinned by its SHA-256 (ARV-022), not chained to a CA.
-                        ClientCertificateValidation = (_, _, _) => true,
-                        HandshakeTimeout = TimeSpan.FromSeconds(settings.ConnectTimeoutSeconds)
-                    });
-                }
+                    listen.UseHttps(TlsOptions(certificate, TimeSpan.FromSeconds(settings.ConnectTimeoutSeconds)));
 
                 listen.UseMqttPacketLimit(limits);
                 listen.UseMqtt();
@@ -120,6 +111,39 @@ public static class MqttExtensions
             foreach (var endpoint in HttpEndpoints(context.Configuration))
                 kestrel.Listen(endpoint);
         });
+    }
+
+    /// <summary>
+    /// The listener's TLS in every environment that uses it (ARV-084; CWE-319, CWE-327; ASVS V12.1.1, V12.1.2): TLS 1.2 and 1.3 only,
+    /// the versions the pods offer (<see cref="PodTransportExtensions.Protocols"/>), whatever the operating system would allow; and on
+    /// Linux the pods' suites (<see cref="PodTransportExtensions.CipherSuites"/>): TLS 1.3's three and, for TLS 1.2, ECDHE with AES-GCM
+    /// or ChaCha20-Poly1305, so no CBC suite and no static RSA key exchange. Client certificates stay optional and are checked against
+    /// a device's pin, not a CA. Not used in vm-local without TLS (<see cref="MqttSettings.RequireTls"/>).
+    /// </summary>
+    /// <param name="certificate">The server certificate with its private key.</param>
+    /// <param name="handshakeTimeout">The time a client has to finish the handshake.</param>
+    /// <returns>The options for Kestrel's UseHttps on the MQTT listener.</returns>
+    public static HttpsConnectionAdapterOptions TlsOptions(X509Certificate2 certificate, TimeSpan handshakeTimeout)
+    {
+        ArgumentNullException.ThrowIfNull(certificate);
+        // The options are given whole, so Kestrel's https defaults (the pods' policy in k8s-prd) do not reach this listener: it sets its own.
+        var options = new HttpsConnectionAdapterOptions
+        {
+            ServerCertificate = certificate,
+            SslProtocols = PodTransportExtensions.Protocols,
+            ClientCertificateMode = ClientCertificateMode.AllowCertificate,
+            // A device's certificate is pinned by its SHA-256 (ARV-022), not chained to a CA.
+            ClientCertificateValidation = (_, _, _) => true,
+            HandshakeTimeout = handshakeTimeout
+        };
+        if (OperatingSystem.IsLinux())
+        {
+            // CipherSuitesPolicy is a Linux feature of SslStream (the images run on Linux); one policy for every handshake.
+            var policy = new CipherSuitesPolicy(PodTransportExtensions.CipherSuites);
+            options.OnAuthenticate = (_, authentication) => authentication.CipherSuitesPolicy = policy;
+        }
+
+        return options;
     }
 
     /// <summary>The HTTP endpoints the host would have bound without the MQTT listener.</summary>

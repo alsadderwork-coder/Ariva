@@ -146,6 +146,19 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-084: ingress transport and header hardening (2026-10-19)
+
+Changed: every host at the ingress sends HSTS of a year with includeSubDomains over HTTPS, nosniff and `frame-ancestors 'none'` on every response, the ingress's own included; the machine hosts (api-main, api-ingest, api-integration) answer plain HTTP with 403 instead of a redirect, while the web host and the Cronz dashboard keep the redirect (`plainHttp` in each `ingresses` entry); the affinity cookies are Secure, SameSite=Strict, Path=/; Ingest's MQTT listener takes TLS 1.2 and 1.3 only, with ECDHE and AEAD suites on Linux; the web app's sidebar cookie is now `__Host-sidebar_state`, so the sidebar opens expanded once after the upgrade. No database script, endpoint or permission changes.
+
+Upgrade steps:
+
+1. Before the upgrade, apply Ariva's controller values (`Platform/Cloud/Ariva.K8s/Helm/ingress-nginx-values.yaml`) to the site's ingress-nginx (wiki 04 section 2): snippets allowed at the Critical risk level, TLS 1.2 and 1.3 with the Mozilla intermediate suites. Where other teams create Ingresses on that controller, give Ariva a controller of its own. TLS must end at the controller (a layer 4 load balancer in front at most).
+2. Remove `nginx.ingress.kubernetes.io/from-to-www-redirect` from the site's values files: the chart now refuses it, with `custom-headers`, any annotation that names `Strict-Transport-Security`, `X-Content-Type-Options`, `Content-Security-Policy` or `more_clear_headers`, a site annotation that sets a key the chart sets (`ssl-redirect`, `force-ssl-redirect`, the `session-cookie-*` keys and the others in wiki 04 section 5), and a site `modsecurity-snippet` that sets `SecRuleEngine` or `SecAuditEngine`. A site that wants `www.<host>` adds it as an `ingresses` entry of its own, with a certificate that names it.
+3. Check that every sensor, gateway and integration calls the machine hosts with `https://` URLs and supports TLS 1.2 with ECDHE and AES-GCM or ChaCha20-Poly1305, or TLS 1.3: after the upgrade an `http://` call answers 403, and a client that offers only TLS 1.0, 1.1 or CBC suites cannot connect (to the ingress or to MQTT).
+4. After the upgrade, run the TLS check against every host (wiki 10 section 4.14) and keep its output with the release evidence.
+
+Fixed: the ModSecurity upload rule's message quote broke every Ariva Ingress at a controller that applied it (ingress-nginx wraps the snippet in `modsecurity_rules '...'`).
+
 ### ARV-191: the arrival wave reaches arrivals queues only (2026-10-16)
 
 Fixed: the predicted nowcast's arrival-wave projection linked a queue zone to a lane through the desks its service zones stand at, of any checkpoint. Border desks of every kind carry lane categories, so a departures queue standing at lane-coded emigration desks shared the lane with the arrivals queue (dividing the arrivals queue's share, so its breach was under-predicted) and was judged on the arrivals wave itself. A queue zone now takes a lane only through desks of an Immigration checkpoint on its own level (formulas F14, predicted breach). No database script, endpoint or permission changes, and no upgrade step.

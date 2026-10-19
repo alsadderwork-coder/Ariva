@@ -56,6 +56,8 @@ jobs:
         run: node scripts/base-images.mjs --check
       - name: Published runtime check self-test (the check every host image build runs, ARV-184)
         run: node scripts/published-runtime.mjs --self-test
+      - name: TLS check self-test (the release gate's check of the hosts against throwaway local servers, ARV-084)
+        run: node scripts/ops/tls-check.mjs --self-test
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: v3.19.0 # same Helm as the release pipeline

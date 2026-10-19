@@ -14,7 +14,10 @@ public sealed class MqttSettings
     /// <summary>The TCP port of the MQTT listener (8883, MQTT over TLS, by default).</summary>
     public int Port { get; set; } = 8883;
 
-    /// <summary>TLS on the listener; can be turned off only in the vm-local environment.</summary>
+    /// <summary>
+    /// TLS on the listener, TLS 1.2 and 1.3 only (ARV-084, <see cref="MqttExtensions.TlsOptions"/>); can be turned off only in the
+    /// vm-local environment.
+    /// </summary>
     public bool RequireTls { get; set; } = true;
 
     /// <summary>The server certificate and its private key, PEM files (a mounted Kubernetes TLS secret).</summary>

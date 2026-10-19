@@ -22,6 +22,13 @@
 // tls.key, nginx's listener a ConfigMap of TLS listeners), every Service serves 443 to https and every Ingress proxies HTTPS
 // and verifies the pods against the cluster CA under the backend's in-cluster name; dev, demo and localk8s stay plain; the web
 // image's default.conf takes its listener from listen.d and the image ships the plain one.
+// ARV-084: every Ingress of every render (dev, demo, localk8s, prd, the Helmfile environments and the offline bundle's) sends
+// HSTS of a year with includeSubDomains over HTTPS only, nosniff and frame-ancestors 'none' on every response, its own
+// included (ingressHardeningFindings); the machine hosts refuse plain HTTP in prd and the browser hosts redirect; the affinity
+// cookie is Secure, SameSite=Strict, Path=/; ssl-prefer-server-ciphers is false; the release guards refuse a machine host that
+// redirects in prd, a plainHttp other than refuse or redirect, a host whose Ingresses disagree, a site annotation that sets a
+// key of the chart's, from-to-www-redirect, custom-headers or names the headers; the controller values the site applies
+// (Helm/ingress-nginx-values.yaml) hold TLS 1.2 and 1.3, Mozilla's intermediate suites, HSTS and the snippet settings.
 //   node Platform/Cloud/Ariva.K8s/tests/chart-security.mjs              needs helm 3 on PATH (or HELM=path)
 //   node Platform/Cloud/Ariva.K8s/tests/chart-security.mjs --self-test  checks the rules against fixtures, no helm
 // Without helm the test is skipped locally and fails in CI (CI=true).
@@ -31,8 +38,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { parseAllDocuments } from 'yaml';
-import { checkManifests, DATABASE_TLS12_CIPHERS, databaseTlsFindings, missingMonitoringRules, POD_TLS, podTlsFindings, podTlsSecrets, serverCaSecrets } from './checks.mjs';
+import { parse as parseYaml, parseAllDocuments, stringify } from 'yaml';
+import { checkManifests, controllerValuesFindings, DATABASE_TLS12_CIPHERS, databaseTlsFindings, ingressHardeningFindings, INGRESS_HARDENING, missingMonitoringRules, POD_TLS,
+	podTlsFindings, podTlsSecrets, serverCaSecrets } from './checks.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const chart = path.resolve(here, '..', 'Helm', 'Charts', 'platform');
@@ -148,6 +156,80 @@ function webImageListenFindings() {
 	return findings;
 }
 
+/** ARV-084: each case of the bad ingress hardening fixture (the Ingress's name) and the one rule it must trip. */
+const INGRESS_HARDENING_CASES = [
+	['hsts-missing', 'sends no Strict-Transport-Security (more_set_headers'], ['hsts-add-header', 'sets Strict-Transport-Security with add_header'],
+	['hsts-twice', 'sets Strict-Transport-Security more than once'], ['hsts-short', 'max-age 15724800 is under a year'],
+	['hsts-no-subdomains', 'without includeSubDomains'], ['hsts-preload', 'with preload'],
+	['hsts-plain', 'sends Strict-Transport-Security over plain HTTP'], ['hsts-after-421', 'answers 421 for other hosts before it sets Strict-Transport-Security'],
+	['hsts-never-https', 'sends no Strict-Transport-Security over HTTPS'], ['nosniff-missing', 'sends no X-Content-Type-Options: nosniff'],
+	['nosniff-add-header', 'sends no X-Content-Type-Options: nosniff with more_set_headers'], ['csp-server-missing', "server-snippet adds no Content-Security-Policy frame-ancestors 'none'"],
+	['csp-server-no-always', 'server-snippet adds Content-Security-Policy without always'], ['csp-server-no-frame', "server-snippet adds a Content-Security-Policy without frame-ancestors 'none'"],
+	['csp-server-replace', "replaces the pods' Content-Security-Policy"], ['csp-location-missing', "configuration-snippet adds no Content-Security-Policy frame-ancestors 'none'"],
+	['csp-location-no-always', 'configuration-snippet adds Content-Security-Policy without always'], ['plain-mode-missing', 'neither refuse nor redirect'],
+	['refuse-ssl-redirect', 'refuses plain HTTP but ssl-redirect is true'], ['refuse-force-ssl-redirect', 'refuses plain HTTP but force-ssl-redirect is true'],
+	['refuse-no-answer', 'refuses plain HTTP without answering it'], ['refuse-redirects', 'answers plain HTTP with 301, not an error'],
+	['redirect-not-forced', 'redirects plain HTTP but ssl-redirect and force-ssl-redirect are not both "true"'], ['redirect-refuses', 'redirects plain HTTP but its configuration-snippet refuses it'],
+	['prd-machine-redirect', 'k8s-prd redirects plain HTTP on a machine host'], ['cookie-not-secure', 'the affinity cookie is not Secure'],
+	['cookie-lax', 'the affinity cookie is not SameSite=Strict'], ['cookie-path', "the affinity cookie's path is /api, not /"],
+	['prefer-server-ciphers', 'ssl-prefer-server-ciphers is true, not "false"'], ['www-redirect', 'from-to-www-redirect generates a www server'],
+	['custom-headers', 'custom-headers can replace the chart\'s headers'], ['clear-headers', 'clears response headers (more_clear_headers)'],
+	['header-elsewhere', "auth-snippet names one of the chart's response headers"], ['location-hsts', 'configuration-snippet sets Strict-Transport-Security or X-Content-Type-Options in the location'],
+	['host-modes-disagree', 'Ingresses that disagree on plain HTTP (refuse and redirect)'], ['host-snippets-differ', 'Ingresses with different server-snippets']
+];
+
+/** ARV-084: the ingress hardening rules against their fixtures (k8s-prd): the good one clean, each bad case tripping exactly its rule. */
+function ingressHardeningSelfTest() {
+	const failures = [];
+	const good = ingressHardeningFindings(parseAsKubernetes(fixture('ingress-hardening-good.yaml')), { environment: 'k8s-prd' });
+	if (good.length) failures.push(`the good ingress hardening fixture produced findings:\n   ${good.join('\n   ')}`);
+	const findings = ingressHardeningFindings(parseAsKubernetes(fixture('ingress-hardening-bad.yaml')), { environment: 'k8s-prd' });
+	const caseOf = (finding) => /^Ingress\/([^\s:]+)/.exec(finding)?.[1];
+	for (const [name, rule] of INGRESS_HARDENING_CASES) {
+		const own = findings.filter((finding) => caseOf(finding) === name);
+		if (own.length !== 1 || !own[0].includes(rule)) failures.push(`ingress hardening case ${name} must trip "${rule}" alone, tripped ${own.length ? own.join(' | ') : 'nothing'}`);
+	}
+	const stray = findings.filter((finding) => !INGRESS_HARDENING_CASES.some(([name]) => caseOf(finding) === name));
+	if (stray.length) failures.push(`ingress hardening findings outside the cases (the base objects must be clean):\n   ${stray.join('\n   ')}`);
+	// The machine host rule is production's: the same redirect is allowed in dev.
+	const dev = ingressHardeningFindings(parseAsKubernetes(fixture('ingress-hardening-bad.yaml')), { environment: 'k8s-dev' });
+	if (dev.some((finding) => finding.startsWith('Ingress/prd-machine-redirect'))) failures.push('the machine host redirect is refused outside k8s-prd');
+	return { failures, count: INGRESS_HARDENING_CASES.length + 1 };
+}
+
+/** ARV-084: the controller values the site applies, and one change per rule of controllerValuesFindings, each tripping it alone. */
+const CONTROLLER_VALUES = path.resolve(here, '..', 'Helm', 'ingress-nginx-values.yaml');
+const CONTROLLER_CASES = [
+	['snippets not allowed', (v) => { v.controller.allowSnippetAnnotations = false; }, 'allowSnippetAnnotations must be true'],
+	['allow-snippet-annotations twice', (v) => { v.controller.config['allow-snippet-annotations'] = 'true'; }, 'must not set allow-snippet-annotations'],
+	['the High risk level', (v) => { v.controller.config['annotations-risk-level'] = 'High'; }, 'annotations-risk-level is High, not Critical'],
+	['TLS 1.1', (v) => { v.controller.config['ssl-protocols'] = 'TLSv1.1 TLSv1.2 TLSv1.3'; }, 'ssl-protocols is TLSv1.1 TLSv1.2 TLSv1.3'],
+	['TLS 1.2 only', (v) => { v.controller.config['ssl-protocols'] = 'TLSv1.2'; }, 'ssl-protocols is TLSv1.2, not'],
+	['a CBC suite', (v) => { v.controller.config['ssl-ciphers'] += ':ECDHE-RSA-AES128-SHA256'; }, 'ssl-ciphers is not the Mozilla intermediate'],
+	["ingress-nginx's default suites", (v) => { v.controller.config['ssl-ciphers'] = `${INGRESS_HARDENING.mozillaIntermediateTls12.join(':')}:DHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256`; }, 'ssl-ciphers is not the Mozilla intermediate'],
+	['session tickets', (v) => { v.controller.config['ssl-session-tickets'] = 'true'; }, 'ssl-session-tickets is true'],
+	['HSTS off', (v) => { v.controller.config.hsts = 'false'; }, 'hsts is false, not "true"'],
+	['six months of HSTS', (v) => { v.controller.config['hsts-max-age'] = '15724800'; }, 'hsts-max-age is 15724800, under a year'],
+	['HSTS without subdomains', (v) => { v.controller.config['hsts-include-subdomains'] = 'false'; }, 'hsts-include-subdomains is false'],
+	['HSTS preload', (v) => { v.controller.config['hsts-preload'] = 'true'; }, 'hsts-preload is true'],
+	['forwarded headers trusted', (v) => { v.controller.config['use-forwarded-headers'] = 'true'; }, 'use-forwarded-headers is true'],
+	['a value that is not a string', (v) => { v.controller.config['enable-modsecurity'] = false; }, 'enable-modsecurity must be a string']
+];
+
+function controllerValuesSelfTest() {
+	const failures = [];
+	const text = fs.readFileSync(CONTROLLER_VALUES, 'utf8');
+	const shipped = controllerValuesFindings(parseYaml(text));
+	if (shipped.length) failures.push(`Helm/ingress-nginx-values.yaml:\n   ${shipped.join('\n   ')}`);
+	for (const [label, change, rule] of CONTROLLER_CASES) {
+		const values = parseYaml(text);
+		change(values);
+		const found = controllerValuesFindings(values);
+		if (found.length !== 1 || !found[0].includes(rule)) failures.push(`controller values with ${label} must trip "${rule}" alone, tripped ${found.length ? found.join(' | ') : 'nothing'}`);
+	}
+	return { failures, count: CONTROLLER_CASES.length };
+}
+
 function selfTest() {
 	const good = checkManifests(parse(fs.readFileSync(path.join(here, 'fixtures', 'good.yaml'), 'utf8')), { environment: 'k8s-prd' });
 	const bad = checkManifests(parse(fs.readFileSync(path.join(here, 'fixtures', 'bad.yaml'), 'utf8')), { environment: 'k8s-prd' });
@@ -184,15 +266,18 @@ function selfTest() {
 	const tls = databaseTlsSelfTest();
 	const podTls = podTlsSelfTest();
 	const webImage = webImageListenFindings();
-	if (good.length || missing.length || tls.failures.length || podTls.failures.length || webImage.length) {
+	const hardening = ingressHardeningSelfTest();
+	const controller = controllerValuesSelfTest();
+	if (good.length || missing.length || tls.failures.length || podTls.failures.length || webImage.length || hardening.failures.length || controller.failures.length) {
 		console.error('chart-security self-test FAILED');
 		if (good.length) console.error('  good fixture produced findings:\n   ' + good.join('\n   '));
 		if (missing.length) console.error('  rules that did not fire on the bad fixture: ' + missing.join(', '));
-		for (const failure of [...tls.failures, ...podTls.failures, ...webImage]) console.error(`  ${failure}`);
+		for (const failure of [...tls.failures, ...podTls.failures, ...webImage, ...hardening.failures, ...controller.failures]) console.error(`  ${failure}`);
 		process.exit(1);
 	}
-	console.log(`chart-security self-test: ${expected.length} rules fire on the bad fixture, ${tls.count} TimescaleDB TLS rules on the TLS fixtures and ${podTls.count} pod TLS rules ` +
-		`on the pod TLS fixtures (each bad case trips exactly its rule); the good fixtures are clean; the web image takes its listener from ${POD_TLS.webListen}.`);
+	console.log(`chart-security self-test: ${expected.length} rules fire on the bad fixture, ${tls.count} TimescaleDB TLS rules on the TLS fixtures, ${podTls.count} pod TLS rules ` +
+		`on the pod TLS fixtures and ${hardening.count} ingress hardening rules on theirs (each bad case trips exactly its rule); the good fixtures are clean; the web image takes ` +
+		`its listener from ${POD_TLS.webListen}; the shipped controller values (Helm/ingress-nginx-values.yaml) hold every rule and ${controller.count} changes each trip theirs.`);
 }
 
 function helmAvailable() {
@@ -309,6 +394,24 @@ if (!helmAvailable()) {
 }
 console.log(execFileSync(helm, ['version', '--short'], { encoding: 'utf8' }).trim());
 
+/** ARV-084: the plain HTTP mode of each Ingress of a render, by name. */
+const modesOf = (docs) => Object.fromEntries(docs.filter((doc) => doc?.kind === 'Ingress').map((doc) => [doc.metadata?.name, doc.metadata?.annotations?.[INGRESS_HARDENING.plainHttpAnnotation]]));
+
+/**
+ * ARV-084: the browser Ingresses (the web app, its /api and /hubs, the Cronz dashboard) redirect plain HTTP and every other
+ * one refuses it, in every environment file the chart ships.
+ */
+function plainHttpModes(docs, file) {
+	const redirecting = new Set(['web-ingress', 'web-api-ingress', 'web-hubs-ingress', 'api-cronz-ingress']);
+	return Object.entries(modesOf(docs)).filter(([name, mode]) => mode !== (redirecting.has(name) ? 'redirect' : 'refuse'))
+		.map(([name, mode]) => `${file}: Ingress/${name} ${mode === 'redirect' ? 'redirects' : 'refuses'} plain HTTP; the browser hosts (web, Cronz) redirect and the others refuse`);
+}
+
+const describeModes = (docs) => {
+	const modes = Object.values(modesOf(docs));
+	return `refused on ${modes.filter((mode) => mode === 'refuse').length} and redirected on ${modes.filter((mode) => mode === 'redirect').length} Ingresses`;
+};
+
 const environments = [
 	{ file: 'values-k8s-dev.yaml', environment: 'k8s-dev', sets: [] },
 	{ file: 'values-k8s-demo.yaml', environment: 'k8s-demo', sets: [] },
@@ -339,6 +442,8 @@ for (const env of environments) {
 	// ARV-082b: production serves every pod over TLS (values-k8s-prd.yaml); the other environments stay plain.
 	const podTls = env.environment === 'k8s-prd';
 	findings.push(...(podTls ? podTlsRender(result.stdout) : podTlsFindings(parseAsKubernetes(result.stdout), { tls: false })));
+	// ARV-084: every Ingress's headers, plain HTTP and cookie; and the modes this environment's values give each host.
+	findings.push(...ingressHardeningFindings(parseAsKubernetes(result.stdout), { environment: env.environment }), ...plainHttpModes(docs, env.file));
 	const workloads = docs.filter((doc) => doc?.kind === 'Deployment').length;
 	const ingresses = docs.filter((doc) => doc?.kind === 'Ingress').length;
 	const monitoring = (name) => Object.keys(docs.find((doc) => doc?.kind === 'ConfigMap' && doc.metadata?.name === name)?.data ?? {}).length;
@@ -349,6 +454,7 @@ for (const env of environments) {
 		console.log(`PASS ${env.file}: ${workloads} deployments, ${ingresses} ingresses, validation reader login in api-main and the migration job only, ` +
 			'database and Redis CAs in the five API hosts and the two jobs only, ' +
 			(podTls ? 'every pod, Service and Ingress over TLS with the cluster CA, ' : 'plain HTTP to the pods, ') +
+			`HSTS, nosniff and frame-ancestors on every Ingress's responses, plain HTTP ${describeModes(docs)}, ` +
 			`retention periods ${Object.values(retentionValues(env.file)).join('/')} days in the migration job, ` +
 			`${monitoring('ariva-monitoring-alerts')} alert rules and ${monitoring('ariva-monitoring-dashboards')} dashboards`);
 	}
@@ -427,6 +533,17 @@ function ingressValues(annotation) {
 	return file;
 }
 
+/** ARV-084: a values file of the given values (for example a list of ingresses), in the same folder. */
+function valuesFile(values) {
+	const text = stringify(values);
+	const file = path.join(scratch, `values-${createHash('sha256').update(text).digest('hex').slice(0, 12)}.yaml`);
+	fs.writeFileSync(file, text);
+	return file;
+}
+
+/** ARV-084: an ingresses entry for the guards and the site cases below. */
+const ingressEntry = (name, serviceName, subdomain, more = {}) => ({ name, comment: 'test', subdomain, serviceName, ...more });
+
 for (const [label, file, sets, message, annotation] of [
 	['production without a build number', 'values-k8s-prd.yaml', []],
 	['production with trunk', 'values-k8s-prd.yaml', ['buildNumber=trunk']],
@@ -491,9 +608,42 @@ for (const [label, file, sets, message, annotation] of [
 	['a server-snippet that proxies around the TLS backend under pod TLS', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], 'server-snippet writes a proxy_ssl, grpc_ssl, _pass or _by_lua directive itself', 'server-snippet: "location /plain { proxy_pass http://api-main-service:80; }"'],
 	['a location-snippet that trusts the system store under pod TLS', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], 'location-snippet writes a proxy_ssl, grpc_ssl, _pass or _by_lua directive itself', 'location-snippet: "Proxy_SSL_Trusted_Certificate /etc/ssl/certs/ca-certificates.crt;"'],
 	['a configuration-snippet that passes to the pod through gRPC under pod TLS', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], 'configuration-snippet writes a proxy_ssl, grpc_ssl, _pass or _by_lua directive itself', 'configuration-snippet: "grpc_pass grpc://api-main-service:80;"'],
-	['a server-snippet with a Lua block under pod TLS', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], 'server-snippet writes a proxy_ssl, grpc_ssl, _pass or _by_lua directive itself', 'server-snippet: "access_by_lua_block { ngx.exit(200) }"']
+	['a server-snippet with a Lua block under pod TLS', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], 'server-snippet writes a proxy_ssl, grpc_ssl, _pass or _by_lua directive itself', 'server-snippet: "access_by_lua_block { ngx.exit(200) }"'],
+	// ARV-084: the machine hosts refuse plain HTTP in production; plainHttp is refuse or redirect and one per host; a site
+	// annotation sets no key of the chart's, no www redirect, no custom headers, nothing that names or clears the headers,
+	// no rule or audit engine, and one server-snippet per host.
+	['production with the ingest host redirecting plain HTTP', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], 'k8s-prd refuses plain HTTP on the machine hosts',
+		{ ingresses: [ingressEntry('api-ingest', 'api-ingest-service', 'api-ingest-test', { plainHttp: 'redirect' })] }],
+	['production with the integration feeds redirecting plain HTTP', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], 'k8s-prd refuses plain HTTP on the machine hosts',
+		{ ingresses: [ingressEntry('api-integration', 'api-integration-service', 'api-integration-test', { plainHttp: 'redirect' }),
+			ingressEntry('api-integration-feeds', 'api-integration-service', 'api-integration-test', { plainHttp: 'redirect', paths: ['/api/v1/integration/'] })] }],
+	['production with the main API host redirecting plain HTTP', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], 'k8s-prd refuses plain HTTP on the machine hosts',
+		{ ingresses: [ingressEntry('api-main', 'api-main-service', 'api-main-test', { plainHttp: 'redirect' })] }],
+	['a plainHttp other than refuse or redirect', 'values-k8s-dev.yaml', [], 'plainHttp must be refuse or redirect, not allow',
+		{ ingresses: [ingressEntry('api-main', 'api-main-service', 'api-main-test', { plainHttp: 'allow' })] }],
+	['the Ingresses of one host on different plainHttp', 'values-k8s-dev.yaml', [], 'the Ingresses of host web-test must share one plainHttp',
+		{ ingresses: [ingressEntry('web', 'web-service', 'web-test', { plainHttp: 'redirect' }), ingressEntry('web-api', 'api-main-service', 'web-test', { paths: ['/api'] })] }],
+	['a site annotation that turns the HTTPS redirect back on', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], 'nginx.ingress.kubernetes.io/ssl-redirect is set by the chart (ARV-084)', 'ssl-redirect: "true"'],
+	['a site annotation that forces the HTTPS redirect', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/force-ssl-redirect is set by the chart (ARV-084)', 'force-ssl-redirect: "true"'],
+	['a site annotation that sends the affinity cookie cross site', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/session-cookie-samesite is set by the chart (ARV-084)', 'session-cookie-samesite: "None"'],
+	['a site annotation that drops Secure from the affinity cookie', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/session-cookie-secure is set by the chart (ARV-084)', 'session-cookie-secure: "false"'],
+	["a site annotation that prefers the server's cipher order", 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers is set by the chart (ARV-084)', 'ssl-prefer-server-ciphers: "true"'],
+	['a site annotation that marks a machine host as redirecting', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], 'ariva.dalil.tech/plain-http is set by the chart (ARV-084)',
+		{ ingresses: [ingressEntry('api-main', 'api-main-service', 'api-main-test', { annotations: { 'ariva.dalil.tech/plain-http': 'redirect' } })] }],
+	['the www redirect', 'values-k8s-dev.yaml', [], 'from-to-www-redirect makes ingress-nginx generate a server of its own', 'from-to-www-redirect: "true"'],
+	['custom headers from a ConfigMap', 'values-k8s-dev.yaml', [], 'custom-headers names a ConfigMap the chart cannot read', 'custom-headers: "ariva/site-headers"'],
+	['a configuration-snippet that shortens HSTS', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], 'configuration-snippet names Strict-Transport-Security, X-Content-Type-Options, Content-Security-Policy or more_clear_headers',
+		'configuration-snippet: "more_set_headers \\"Strict-Transport-Security: max-age=0\\";"'],
+	['a server-snippet that clears nosniff', 'values-k8s-dev.yaml', [], 'server-snippet names Strict-Transport-Security, X-Content-Type-Options, Content-Security-Policy or more_clear_headers',
+		'server-snippet: "more_clear_headers X-Content-Type-Options;"'],
+	['a configuration-snippet that adds a policy of its own', 'values-k8s-dev.yaml', [], 'configuration-snippet names Strict-Transport-Security, X-Content-Type-Options, Content-Security-Policy or more_clear_headers',
+		'configuration-snippet: "add_header Content-Security-Policy \\"frame-ancestors *\\" always;"'],
+	['a modsecurity-snippet that turns the rule engine off', 'values-k8s-dev.yaml', [], 'the modsecurity-snippet sets SecRuleEngine or SecAuditEngine', 'modsecurity-snippet: "SecRuleEngine Off"'],
+	['the Ingresses of one host with different server-snippets', 'values-k8s-dev.yaml', [], 'the Ingresses of host api-integration-test carry different server-snippet annotations',
+		{ ingresses: [ingressEntry('api-integration', 'api-integration-service', 'api-integration-test', { annotations: { 'nginx.ingress.kubernetes.io/server-snippet': 'client_header_timeout 30s;' } }),
+			ingressEntry('api-integration-feeds', 'api-integration-service', 'api-integration-test', { paths: ['/api/v1/integration/'] })] }]
 ]) {
-	const result = render(file, sets, '', annotation ? [ingressValues(annotation)] : []);
+	const result = render(file, sets, '', annotation ? [typeof annotation === 'string' ? ingressValues(annotation) : valuesFile(annotation)] : []);
 	if (result.status === 0) {
 		failed = true;
 		console.error(`FAIL release guard: rendering ${label} must fail but succeeded`);
@@ -556,6 +706,46 @@ for (const [label, file, sets, message, annotation] of [
 		console.error(`FAIL pod TLS with site values:\n  ${findings.join('\n  ')}`);
 	} else {
 		console.log('PASS pod TLS with site values: a site namespace, cluster CA and certificate names reach every pod, Service and Ingress; a retry list with error and timeout renders; dev renders TLS without the simulator, with a site snippet that writes no proxy_ssl or proxy_pass');
+	}
+}
+
+// ARV-084: a site's own snippets follow the chart's, on every Ingress of a host alike, and the rules still hold; a machine
+// host may redirect outside production (the rule is production's); the chart's snippets are exactly the text the throwaway
+// nginx runs proved (the chart's own server-snippet starts every merged one).
+{
+	const findings = [];
+	const siteServer = 'client_header_timeout 30s;\n';
+	const siteLocation = 'more_set_headers "X-Ariva-Site: 1";\n';
+	const site = render('values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], '', [valuesFile({ ingresses: [
+		ingressEntry('api-integration', 'api-integration-service', 'api-integration-test', { annotations: { 'nginx.ingress.kubernetes.io/server-snippet': siteServer, 'nginx.ingress.kubernetes.io/configuration-snippet': siteLocation } }),
+		ingressEntry('api-integration-feeds', 'api-integration-service', 'api-integration-test', { paths: ['/api/v1/integration/'], annotations: { 'nginx.ingress.kubernetes.io/server-snippet': siteServer } })
+	] })]);
+	if (site.status !== 0) findings.push(`site snippets: template failed\n${site.stderr}`);
+	else {
+		const docs = parseAsKubernetes(site.stdout);
+		findings.push(...checkManifests(parse(site.stdout), { environment: 'k8s-prd' }), ...ingressHardeningFindings(docs, { environment: 'k8s-prd' }));
+		const chartServer = 'set $ariva_hsts "";\nif ($scheme = https) {\n  set $ariva_hsts "max-age=31536000; includeSubDomains";\n}\nmore_set_headers "Strict-Transport-Security: $ariva_hsts";\n' +
+			'more_set_headers "X-Content-Type-Options: nosniff";\nadd_header Content-Security-Policy "frame-ancestors \'none\'" always;\nif ($host != "api-integration-test.dalilhub.tech") {\n  return 421;\n}\n';
+		const chartLocation = 'add_header Content-Security-Policy "frame-ancestors \'none\'" always;\nif ($scheme = http) {\n  return 403;\n}\n';
+		for (const ingress of docs.filter((doc) => doc?.kind === 'Ingress')) {
+			const annotations = ingress.metadata.annotations;
+			if (annotations['nginx.ingress.kubernetes.io/server-snippet'] !== chartServer + siteServer) findings.push(`Ingress/${ingress.metadata.name}: the server-snippet is not the chart's followed by the site's`);
+			const expectedLocation = chartLocation + (ingress.metadata.name === 'api-integration-ingress' ? siteLocation : '');
+			if (annotations['nginx.ingress.kubernetes.io/configuration-snippet'] !== expectedLocation) findings.push(`Ingress/${ingress.metadata.name}: the configuration-snippet is not the chart's followed by the site's`);
+		}
+	}
+	const dev = render('values-k8s-dev.yaml', [], '', [valuesFile({ ingresses: [ingressEntry('api-ingest', 'api-ingest-service', 'api-ingest-test', { plainHttp: 'redirect' })] })]);
+	if (dev.status !== 0) findings.push(`dev with a machine host that redirects: template failed\n${dev.stderr}`);
+	else {
+		const docs = parseAsKubernetes(dev.stdout);
+		findings.push(...ingressHardeningFindings(docs, { environment: 'k8s-dev' }));
+		if (modesOf(docs)['api-ingest-ingress'] !== 'redirect') findings.push('dev with a machine host that redirects: the Ingress does not redirect');
+	}
+	if (findings.length) {
+		failed = true;
+		console.error(`FAIL ingress site snippets and modes:\n  ${findings.join('\n  ')}`);
+	} else {
+		console.log('PASS ingress site snippets and modes: a site\'s server-snippet and configuration-snippet follow the chart\'s on every Ingress of a host and the rules still hold; a machine host may redirect outside production');
 	}
 }
 
@@ -693,12 +883,14 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 		findings.push(...databaseTlsFindings(parseAsKubernetes(result.stdout), { tls }), ...serverCaReach(docs));
 		// ARV-082b: the pods over TLS in prd only (state value podTls), with the chart's default secrets.
 		findings.push(...(tls ? podTlsRender(result.stdout) : podTlsFindings(parseAsKubernetes(result.stdout), { tls: false })));
+		// ARV-084: the Ingresses' headers, plain HTTP and cookie, as the release applies them.
+		findings.push(...ingressHardeningFindings(parseAsKubernetes(result.stdout), { environment: contextEnvironment }));
 		if (findings.length) {
 			failed = true;
 			console.error(`FAIL helmfile -e ${environment}:\n  ${findings.join('\n  ')}`);
 		} else {
 			console.log(`PASS helmfile -e ${environment}: ${docs.length} objects, database and topics job included, TimescaleDB ${tls ? 'with TLS' : 'without TLS'}, ` +
-				`${tls ? 'the pods over TLS' : 'plain HTTP to the pods'}`);
+				`${tls ? 'the pods over TLS' : 'plain HTTP to the pods'}, the Ingresses' headers held and plain HTTP ${describeModes(docs)}`);
 		}
 	}
 	// ARV-082a: prd refuses TimescaleDB without TLS.
@@ -792,6 +984,9 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 					findings.push(`-e ${environment}: template failed\n${fromBundle.stderr}${fromRepository.stderr}`);
 					continue;
 				}
+				// ARV-084: the bundle's Ingresses as the site installs them.
+				const bundleEnvironment = { prd: 'k8s-prd', demo: 'k8s-demo' }[environment] ?? 'k8s-dev';
+				findings.push(...ingressHardeningFindings(parseAsKubernetes(fromBundle.stdout), { environment: bundleEnvironment }).map((finding) => `-e ${environment}: ${finding}`));
 				const a = objects(fromBundle.stdout);
 				const b = objects(fromRepository.stdout);
 				const differing = [...new Set([...a.keys(), ...b.keys()])].filter((key) => a.get(key) !== b.get(key));
@@ -831,6 +1026,7 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 				if (!withSite.stdout.includes('77Gi')) findings.push('databaseValues did not reach the TimescaleDB release');
 				const tlsFindings = databaseTlsFindings(parseAsKubernetes(withSite.stdout), { tls: true });
 				if (tlsFindings.length) findings.push(`a site databaseValues file turned the TimescaleDB TLS off in prd:\n    ${tlsFindings.join('\n    ')}`);
+				findings.push(...ingressHardeningFindings(parseAsKubernetes(withSite.stdout), { environment: 'k8s-prd' }).map((finding) => `-e prd with site values: ${finding}`));
 				const podTlsSite = podTlsRender(withSite.stdout, { secretNames: { ...POD_TLS_SECRETS, web: 'site-web-tls' } });
 				if (podTlsSite.length) findings.push(`a site values file turned pod TLS off in prd or did not name the web certificate:\n    ${podTlsSite.join('\n    ')}`);
 				if (/other\.example|planted/.test(withSite.stdout) || withSite.stdout.includes(digestOf('planted').slice(7)) || !withSite.stdout.includes(`${mirror}/ariva/api-main:v1.2.0-57@${digestOf('api-main')}`)) {
@@ -858,7 +1054,7 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 			failed = true;
 			console.error(`FAIL offline bundle Helmfile:\n  ${findings.join('\n  ')}`);
 		} else {
-			console.log('PASS offline bundle Helmfile: the same objects as helmfile-k8s in every environment, every image from the mirror by digest, no render without a mirror or with a dry run\'s unpinned images, site values reach their release without moving an image or turning the database TLS or pod TLS off in prd (but name the certificates), prd refused without either TLS');
+			console.log('PASS offline bundle Helmfile: the same objects as helmfile-k8s in every environment, the Ingresses\' headers and plain HTTP held, every image from the mirror by digest, no render without a mirror or with a dry run\'s unpinned images, site values reach their release without moving an image or turning the database TLS or pod TLS off in prd (but name the certificates), prd refused without either TLS');
 		}
 	}
 }

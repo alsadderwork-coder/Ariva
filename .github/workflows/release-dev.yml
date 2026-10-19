@@ -20,6 +20,13 @@
 # reachable from GitHub, default ubuntu-24.04) and ARIVA_DEV_NAMESPACE (default ariva-k8s-dev).
 # The one-time secrets (ariva-dataprotection, ariva-token-*, ariva-integration-token-*, ariva-tls) are created by hand
 # once (wiki/04, section 6.2); the run checks they exist. Steps: wiki/04, section 6.6.
+# After the release, a TLS check reads the hosts back (ARV-084, scripts/ops/tls-check.mjs; it deploys and changes nothing): for
+# every host of the release's Ingresses, TLS 1.2 and 1.3 only, TLS 1.2 suites ECDHE with AEAD only (the controller values in
+# Platform/Cloud/Ariva.K8s/Helm/ingress-nginx-values.yaml), a certificate that verifies for the host, HSTS of a year with
+# includeSubDomains on a page and on the ingress's own 413, and plain HTTP refused on the machine hosts and redirected on the
+# web host and the Cronz dashboard. A finding fails the run after the release, for the site to fix its controller or
+# certificates. Optional variable ARIVA_DEV_TLS_CA_PEM: the CA certificate (PEM, not a secret) the hosts' certificates chain
+# to, when it is not in the runner's store; the check then trusts that CA only.
 name: release-dev
 
 on:
@@ -219,6 +226,23 @@ jobs:
             --set releaseVersion="$BUILD" \
             --set imageCredentials.password= \
             "${digests[@]}"
+      # ARV-084: read only. Lists the Ingresses the release left (each names its plain HTTP mode) and checks their hosts from
+      # outside: TLS handshakes, GET /, a POST that announces a body over every limit and sends none (the ingress answers 413
+      # before any pod sees it) and a plain HTTP GET /.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - name: TLS check of the released hosts (ARV-084)
+        env:
+          TLS_CA_PEM: ${{ vars.ARIVA_DEV_TLS_CA_PEM }}
+        run: |
+          kubectl get ingress -n "$NAMESPACE" -o json > "$RUNNER_TEMP/ingresses.json"
+          ca=()
+          if [ -n "$TLS_CA_PEM" ]; then
+            printf '%s\n' "$TLS_CA_PEM" > "$RUNNER_TEMP/tls-ca.pem"
+            ca=(--ca "$RUNNER_TEMP/tls-ca.pem")
+          fi
+          node scripts/ops/tls-check.mjs --ingresses "$RUNNER_TEMP/ingresses.json" "${ca[@]}" --summary "$GITHUB_STEP_SUMMARY"
       - name: Pods and their security context (the ARV-002 evidence)
         if: always() && steps.cluster.outcome == 'success'
         run: |

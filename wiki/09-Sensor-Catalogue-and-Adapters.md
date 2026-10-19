@@ -50,8 +50,8 @@ LiDAR hardware behind the platforms (Ouster OS0, OS1, OSDome and the Velodyne li
 
 | Transport | Direction | Controls |
 |---|---|---|
-| HTTPS push (webhook) | Device to Ariva.Api.Ingest | Per-device credential (bearer key or Basic), TLS, IP allowlist, 256 KB body limit |
-| MQTT(S) | Device to the broker inside Ingest (port 8883) | TLS, device code and credential as user name and password, optional pinned client certificate, publish only to `ariva/v1/devices/<code>/<dialect>`, no subscriptions |
+| HTTPS push (webhook) | Device to Ariva.Api.Ingest | Per-device credential (bearer key or Basic), TLS 1.2 or 1.3 with the ingress's suites (ECDHE with AES-GCM or ChaCha20-Poly1305 in TLS 1.2), IP allowlist, 256 KB body limit. Plain HTTP is answered 403, never redirected (ARV-084): configure the device with an `https://` URL |
+| MQTT(S) | Device to the broker inside Ingest (port 8883) | TLS 1.2 or 1.3 with the same TLS 1.2 suites (ARV-084), device code and credential as user name and password, optional pinned client certificate, publish only to `ariva/v1/devices/<code>/<dialect>`, no subscriptions |
 | REST pull | Ingest polls the device or controller | Only registered device addresses (SSRF control); `If-Modified-Since` or cursor |
 | WebSocket stream | Perception platform to an Ingest client | JSON or protobuf frames; reconnect with backoff |
 | TCP or UDP stream | Device to listener | Length-prefixed frames, bounds-checked parsing, source address allowlist |

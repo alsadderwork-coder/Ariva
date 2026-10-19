@@ -1,9 +1,13 @@
 using System.Buffers;
 using System.Net;
+using System.Net.Security;
 using System.Net.Sockets;
+using System.Runtime.Versioning;
+using System.Security.Authentication;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using Ariva.Api.Common.Extensions;
 using Ariva.Api.Common.Settings;
 using Ariva.Api.Ingest.Mqtt;
 using Ariva.Core.Domain.Contracts;
@@ -15,6 +19,7 @@ using Ariva.Infra.Sensing;
 using Ariva.Infra.Sensing.Declarative;
 using FluentAssertions;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Server.Kestrel.Https;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -33,7 +38,8 @@ namespace Ariva.UnitTests.Sensing;
 /// ARV-024, the MQTT transport: the packet size limit reads fixed headers as bytes arrive; the topic ACL takes only a
 /// device's own topic; settings refuse clear text outside vm-local; the broker authenticates like an HTTPS push, only
 /// for MQTT devices, with the device code as client id, rechecks the credential on every message, limits the rate and
-/// closes on a storage failure; and end to end over TLS on loopback with the MQTTnet client.
+/// closes on a storage failure; and end to end over TLS on loopback with the MQTTnet client. ARV-084: the listener offers TLS 1.2
+/// and 1.3 only and, on Linux, the pods' suites (no CBC), while devices keep connecting and authenticating as before.
 /// </summary>
 public sealed class MqttTransportTests
 {
@@ -484,12 +490,25 @@ public sealed class MqttTransportTests
         (await connect.Should().ThrowAsync<SocketException>()).Which.SocketErrorCode.Should().Be(SocketError.ConnectionRefused, "nothing listens in plain");
     }
 
-    private static MqttClientOptions Client(int port, string user, string password, string clientId = "", MqttProtocolVersion version = MqttProtocolVersion.V500, bool tls = true)
+    /// <param name="protocol">The one TLS version the client offers, by name (CA5398); null for the platform's choice.</param>
+    /// <param name="suites">The only suites the client offers (Linux); null for the platform's.</param>
+    private static MqttClientOptions Client(int port, string user, string password, string clientId = "", MqttProtocolVersion version = MqttProtocolVersion.V500, bool tls = true,
+        string protocol = null, CipherSuitesPolicy suites = null)
     {
         var options = new MqttClientOptionsBuilder().WithTcpServer("127.0.0.1", port).WithCredentials(user, password).WithClientId(clientId)
             .WithProtocolVersion(version).WithTimeout(TimeSpan.FromSeconds(5)).WithCleanSession();
         if (tls)
-            options.WithTlsOptions(o => o.UseTls().WithCertificateValidationHandler(_ => true));
+        {
+            options.WithTlsOptions(o =>
+            {
+                o.UseTls().WithCertificateValidationHandler(_ => true);
+                if (protocol is not null)
+                    o.WithSslProtocols(Enum.Parse<SslProtocols>(protocol));
+                if (suites is not null)
+                    o.WithCipherSuitesPolicy(suites);
+            });
+        }
+
         return options.Build();
     }
 
@@ -649,6 +668,212 @@ public sealed class MqttTransportTests
         for (var i = 0; i < 50 && !condition(); i++)
             await Task.Delay(100, ct);
     }
+
+    #endregion
+
+    #region TLS versions and suites (ARV-084)
+
+    [Fact]
+    public void TlsOptions_Should_OfferTls12And13AndThePodsSuitesOnly_When_TheListenerUsesTls()
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using var certificate = new CertificateRequest("CN=localhost", key, HashAlgorithmName.SHA256).CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+
+        var options = MqttExtensions.TlsOptions(certificate, TimeSpan.FromSeconds(7));
+        var handshake = new SslServerAuthenticationOptions();
+        options.OnAuthenticate?.Invoke(null, handshake);
+
+        // By name (CA5398): pinned, where SslProtocols.None left the choice to the operating system before ARV-084.
+        options.SslProtocols.ToString().Should().Be("Tls12, Tls13");
+        options.SslProtocols.Should().Be(PodTransportExtensions.Protocols, "the versions the pods offer");
+        if (OperatingSystem.IsLinux())
+            handshake.CipherSuitesPolicy.AllowedCipherSuites.ToList().Should().Equal(PodTransportExtensions.CipherSuites, "the pods' suites, from the same list");
+        else
+            handshake.CipherSuitesPolicy.Should().BeNull("CipherSuitesPolicy is a Linux feature of SslStream");
+        // As before (ARV-022): a client certificate is optional and checked against the device's pin, not chained to a CA.
+        options.ServerCertificate.Should().BeSameAs(certificate);
+        options.ClientCertificateMode.Should().Be(ClientCertificateMode.AllowCertificate);
+        options.ClientCertificateValidation(certificate, null, SslPolicyErrors.RemoteCertificateChainErrors).Should().BeTrue();
+        options.HandshakeTimeout.Should().Be(TimeSpan.FromSeconds(7));
+    }
+
+    [Fact]
+    public async Task Listener_Should_RefuseTls11_When_AClientOffersNothingNewer()
+    {
+        Assert.SkipUnless(OperatingSystem.IsLinux(), "The alert is OpenSSL's; the images run on Linux.");
+        Gateway.Find = Gateway.Default;
+        var (app, _, port) = await StartAsync();
+        await using var _ = app;
+        var ct = TestContext.Current.CancellationToken;
+
+        // The platform's own TLS client will not offer TLS 1.1 at all (OpenSSL's security level), so its hello is written on the wire.
+        var tls11 = await FirstRecordAsync(port, ClientHello(Tls11, TlsCipherSuite.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+            TlsCipherSuite.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA, TlsCipherSuite.TLS_RSA_WITH_AES_128_CBC_SHA), ct);
+        // The probe's control: the same hello at TLS 1.2 with an AEAD suite is answered with a ServerHello.
+        var tls12 = await FirstRecordAsync(port, ClientHello(Tls12, TlsCipherSuite.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256), ct);
+
+        Answer(tls11).Should().Be("fatal protocol_version alert", "the listener does not speak TLS 1.1");
+        Answer(tls12).Should().Be("TLS 1.2 ServerHello");
+    }
+
+    [Fact]
+    [SupportedOSPlatform("linux")]
+    public async Task Listener_Should_RefuseTls12_When_TheClientOffersOnlyACbcSuite()
+    {
+        Assert.SkipUnless(OperatingSystem.IsLinux(), "CipherSuitesPolicy is a Linux feature of SslStream; the images run on Linux.");
+        Gateway.Find = Gateway.Default;
+        var (app, sink, port) = await StartAsync();
+        await using var _ = app;
+        var ct = TestContext.Current.CancellationToken;
+        var cbc = new CipherSuitesPolicy([TlsCipherSuite.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256]);
+        using var client = new MqttClientFactory().CreateMqttClient();
+
+        var accepted = await WithPlatformDefaultsAsync(cbc, ct);
+        var handshake = async () => await HandshakeAsync(port, "Tls12", cbc, ct);
+        var device = async () => await client.ConnectAsync(Client(port, "L-24", Lidar.Credential, protocol: "Tls12", suites: cbc), ct);
+
+        // The control: the platform's defaults take this client, so the refusals below are the listener's policy.
+        accepted.Should().Be(("Tls12", "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256"));
+        await handshake.Should().ThrowAsync<AuthenticationException>("CBC is not an AEAD cipher");
+        await device.Should().ThrowAsync<MQTTnet.Exceptions.MqttCommunicationException>("the device never gets to send CONNECT");
+        sink.Published.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("Tls12", "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256")]
+    [InlineData("Tls13", null)]
+    public async Task Broker_Should_AuthenticateADevice_When_ItSpeaksTls12WithEcdheAesGcmOrTls13(string protocol, string suite)
+    {
+        Assert.SkipWhen(suite is not null && !OperatingSystem.IsLinux(), "CipherSuitesPolicy is a Linux feature of SslStream; the images run on Linux.");
+        Gateway.Find = Gateway.Default;
+        var (app, sink, port) = await StartAsync();
+        await using var _ = app;
+        var ct = TestContext.Current.CancellationToken;
+        var suites = Only(suite);
+        using var client = new MqttClientFactory().CreateMqttClient();
+
+        var negotiated = await HandshakeAsync(port, protocol, suites, ct);
+        var connected = await client.ConnectAsync(Client(port, "L-24", Lidar.Credential, protocol: protocol, suites: suites), ct);
+        var published = await client.PublishAsync(new MqttApplicationMessageBuilder().WithTopic("ariva/v1/devices/L-24/canonical").WithPayload(Push())
+            .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtLeastOnce).Build(), ct);
+
+        negotiated.Protocol.Should().Be(protocol);
+        if (suite is not null)
+            negotiated.Suite.Should().Be(suite);
+        PodTransportExtensions.CipherSuites.Select(s => s.ToString()).Should().Contain(negotiated.Suite, "every suite the listener agrees to is on the pods' list");
+        connected.ResultCode.Should().Be(MqttClientConnectResultCode.Success, "the device authenticates as before");
+        connected.AssignedClientIdentifier.Should().Be("L-24");
+        published.ReasonCode.Should().Be(MqttClientPublishReasonCode.Success);
+        sink.Published.OfType<Ariva.Core.Sensing.IntervalCountBatch>().Should().ContainSingle().Which.DeviceCode.Should().Be("L-24");
+    }
+
+    /// <summary>One suite by name, on Linux; null elsewhere or for none (the platform's suites).</summary>
+    private static CipherSuitesPolicy Only(string suite) =>
+        OperatingSystem.IsLinux() && suite is not null ? new CipherSuitesPolicy([Enum.Parse<TlsCipherSuite>(suite)]) : null;
+
+    /// <summary>A TLS handshake with the listener's own certificate offering one version, by name, and the given suites; returns what was negotiated.</summary>
+    private static async Task<(string Protocol, string Suite)> HandshakeAsync(int port, string protocol, CipherSuitesPolicy suites, CancellationToken ct)
+    {
+        using var tcp = new TcpClient();
+        await tcp.ConnectAsync(IPAddress.Loopback, port, ct);
+        await using var tls = new SslStream(tcp.GetStream());
+        await tls.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+        {
+            TargetHost = "localhost",
+            EnabledSslProtocols = Enum.Parse<SslProtocols>(protocol),
+            CipherSuitesPolicy = suites,
+            RemoteCertificateValidationCallback = (_, certificate, _, _) => certificate?.Subject == "CN=localhost"
+        }, ct);
+        return (tls.SslProtocol.ToString(), tls.NegotiatedCipherSuite.ToString());
+    }
+
+    /// <summary>
+    /// The control for a refusal: a TLS server on the platform's defaults, with a certificate of the listener's key type (ECDSA
+    /// P-256); returns what a TLS 1.2 client offering <paramref name="suites"/> negotiates with it.
+    /// </summary>
+    [SupportedOSPlatform("linux")]
+    private static async Task<(string Protocol, string Suite)> WithPlatformDefaultsAsync(CipherSuitesPolicy suites, CancellationToken ct)
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using var created = new CertificateRequest("CN=localhost", key, HashAlgorithmName.SHA256).CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+        using var certificate = X509CertificateLoader.LoadPkcs12(created.Export(X509ContentType.Pkcs12), null);
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var server = Task.Run(async () =>
+        {
+            using var accepted = await listener.AcceptTcpClientAsync(ct);
+            await using var tls = new SslStream(accepted.GetStream());
+            await tls.AuthenticateAsServerAsync(new SslServerAuthenticationOptions { ServerCertificate = certificate }, ct);
+        }, ct);
+
+        var negotiated = await HandshakeAsync(((IPEndPoint)listener.LocalEndpoint).Port, "Tls12", suites, ct);
+        await server;
+        return negotiated;
+    }
+
+    private const ushort Tls11 = 0x0302;
+    private const ushort Tls12 = 0x0303;
+
+    /// <summary>
+    /// A ClientHello written byte by byte (RFC 5246 section 7.4.1.2, with the curves and point formats of RFC 8422) offering at most
+    /// <paramref name="version"/> and the given suites. Without a supported_versions extension a server cannot choose TLS 1.3.
+    /// </summary>
+    private static byte[] ClientHello(ushort version, params TlsCipherSuite[] suites)
+    {
+        static byte[] Short(int value) => [(byte)(value >> 8), (byte)value];
+        var hello = new List<byte>(Short(version));
+        hello.AddRange(RandomNumberGenerator.GetBytes(32));
+        hello.Add(0); // no session id
+        hello.AddRange(Short(suites.Length * 2));
+        foreach (var suite in suites)
+            hello.AddRange(Short((ushort)suite));
+        hello.AddRange([1, 0]); // the null compression method only
+        // supported_groups (x25519, secp256r1) and ec_point_formats (uncompressed); from TLS 1.2 also signature_algorithms (ecdsa_secp256r1_sha256).
+        List<byte> extensions = [0x00, 0x0A, 0, 6, 0, 4, 0, 0x1D, 0, 0x17, 0x00, 0x0B, 0, 2, 1, 0];
+        if (version >= Tls12)
+            extensions.AddRange([0x00, 0x0D, 0, 4, 0, 2, 0x04, 0x03]);
+        hello.AddRange(Short(extensions.Count));
+        hello.AddRange(extensions);
+        // A handshake record (TLS 1.0 on the record layer, as clients send it) holding one client_hello message.
+        List<byte> record = [0x16, 0x03, 0x01, .. Short(hello.Count + 4), 0x01, 0, .. Short(hello.Count)];
+        record.AddRange(hello);
+        return [.. record];
+    }
+
+    /// <summary>Sends a ClientHello and reads the start of the first record the server answers with: a whole alert, or a ServerHello's header and version.</summary>
+    private static async Task<byte[]> FirstRecordAsync(int port, byte[] hello, CancellationToken ct)
+    {
+        using var tcp = new TcpClient();
+        await tcp.ConnectAsync(IPAddress.Loopback, port, ct);
+        var stream = tcp.GetStream();
+        await stream.WriteAsync(hello, ct);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(5));
+        var reply = new byte[11];
+        var read = 0;
+        try
+        {
+            int count;
+            while (read < reply.Length && (count = await stream.ReadAsync(reply.AsMemory(read), timeout.Token)) > 0)
+                read += count;
+        }
+        catch (IOException)
+        {
+            // A reset after the alert: what was read is the answer.
+        }
+
+        return reply[..read];
+    }
+
+    private static string Answer(byte[] record) => record switch
+    {
+        [] => "closed without a record",
+        [0x15, _, _, 0, 2, 2, 70] => "fatal protocol_version alert",
+        [0x15, _, _, 0, 2, 2, 40] => "fatal handshake_failure alert",
+        [0x16, _, _, _, _, 2, _, _, _, 3, 3, ..] => "TLS 1.2 ServerHello",
+        [0x16, _, _, _, _, 2, _, _, _, 3, 2, ..] => "TLS 1.1 ServerHello",
+        _ => Convert.ToHexString(record)
+    };
 
     #endregion
 }

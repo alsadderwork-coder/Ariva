@@ -10,12 +10,14 @@
 
 	let { children }: { children: Snippet } = $props();
 
-	// Same cookie as Aman.Web's SidebarProvider, so the preference survives reloads.
-	const SIDEBAR_COOKIE = 'sidebar:state';
+	// The sidebar's open state survives reloads in a cookie, as Aman.Web's SidebarProvider keeps it, but under a __Host- name
+	// and Secure (ARV-084, ASVS V3.3.1): only this origin over https (or localhost) can set or read it, never a sibling
+	// subdomain. A preference only, never sent anywhere that reads it.
+	const SIDEBAR_COOKIE = '__Host-sidebar_state';
 	const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
 
 	function readSidebarCookie(): boolean {
-		const match = document.cookie.match(/(?:^|;\s*)sidebar:state=([^;]*)/);
+		const match = document.cookie.match(/(?:^|;\s*)__Host-sidebar_state=([^;]*)/);
 		return match ? match[1] === 'true' : true;
 	}
 
@@ -25,7 +27,7 @@
 	function toggleSidebar(): void {
 		if (window.matchMedia('(min-width: 768px)').matches) {
 			sidebarOpen = !sidebarOpen;
-			document.cookie = `${SIDEBAR_COOKIE}=${sidebarOpen}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}; SameSite=Strict`;
+			document.cookie = `${SIDEBAR_COOKIE}=${sidebarOpen}; Path=/; Max-Age=${SIDEBAR_COOKIE_MAX_AGE}; Secure; SameSite=Strict`;
 		} else {
 			mobileOpen = !mobileOpen;
 		}

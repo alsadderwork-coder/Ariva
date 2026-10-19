@@ -1004,3 +1004,284 @@ export function checkManifests(docs, { environment }) {
 	}
 	return findings;
 }
+
+/**
+ * ARV-084: the response headers, plain HTTP and cookies of every Ingress, and the controller values the site applies.
+ * HSTS is one year with includeSubDomains, no preload (ASVS 5.0 V3.4.1); the TLS 1.2 suites are Mozilla's intermediate list
+ * (Server Side TLS guidelines 6.0), the ECDHE and AEAD policy of every Ariva TLS server (TLS12_CIPHERS) spelled out.
+ */
+export const INGRESS_HARDENING = {
+	hstsMaxAge: 31536000,
+	mozillaIntermediateTls12: [
+		'ECDHE-ECDSA-AES128-GCM-SHA256', 'ECDHE-RSA-AES128-GCM-SHA256', 'ECDHE-ECDSA-AES256-GCM-SHA384',
+		'ECDHE-RSA-AES256-GCM-SHA384', 'ECDHE-ECDSA-CHACHA20-POLY1305', 'ECDHE-RSA-CHACHA20-POLY1305'
+	],
+	plainHttpAnnotation: 'ariva.dalil.tech/plain-http',
+	/** The services behind the machine hosts, which refuse plain HTTP in k8s-prd unless the host also serves the web app. */
+	machineServices: ['api-main-service', 'api-ingest-service', 'api-integration-service'],
+	webService: 'web-service'
+};
+
+/**
+ * An nginx snippet as a tree of statements ({ name, args, block }), as nginx's own reader splits it: words and quoted strings
+ * (quotes removed, escapes \" \' \\ resolved, nothing else) separated by blanks; ";" ends a statement, "{" opens its block and
+ * "}" closes it; "#" starts a comment outside quotes; a ")" right after a closing quote is a word of its own. Throws on an
+ * unbalanced block or an unterminated string.
+ */
+export function nginxTree(text) {
+	const tokens = [];
+	const source = String(text ?? '');
+	let i = 0;
+	while (i < source.length) {
+		const ch = source[i];
+		if (/\s/.test(ch)) { i += 1; continue; }
+		if (ch === '#') { while (i < source.length && source[i] !== '\n') i += 1; continue; }
+		if (ch === ';' || ch === '{' || ch === '}') { tokens.push({ punct: ch }); i += 1; continue; }
+		if (ch === '"' || ch === "'") {
+			let value = '';
+			i += 1;
+			while (i < source.length && source[i] !== ch) {
+				if (source[i] === '\\' && ['"', "'", '\\'].includes(source[i + 1])) { value += source[i + 1]; i += 2; continue; }
+				value += source[i];
+				i += 1;
+			}
+			if (i >= source.length) throw new Error('unterminated string');
+			i += 1;
+			tokens.push({ word: value, quoted: true });
+			if (source[i] === ')') { tokens.push({ word: ')' }); i += 1; }
+			continue;
+		}
+		let word = '';
+		while (i < source.length && !/[\s;{}]/.test(source[i]) && !(word === '' && (source[i] === '"' || source[i] === "'"))) { word += source[i]; i += 1; }
+		tokens.push({ word });
+	}
+	let position = 0;
+	const readBlock = (nested) => {
+		const statements = [];
+		let words = [];
+		while (position < tokens.length) {
+			const token = tokens[position++];
+			if (token.punct === ';') { if (words.length) statements.push({ name: words[0].word, args: words.slice(1) }); words = []; continue; }
+			if (token.punct === '{') { const block = readBlock(true); statements.push({ name: words[0]?.word ?? '', args: words.slice(1), block }); words = []; continue; }
+			if (token.punct === '}') { if (!nested || words.length) throw new Error('unbalanced }'); return statements; }
+			words.push(token);
+		}
+		if (nested || words.length) throw new Error('unterminated statement or block');
+		return statements;
+	};
+	return readBlock(false);
+}
+
+/** The condition of an nginx if statement as words, without its parentheses: if ($scheme = https) gives [$scheme, =, https]. */
+function ifCondition(statement) {
+	const words = statement.args.map((arg) => arg.word).filter((word) => word !== ')');
+	if (words.length) {
+		words[0] = words[0].replace(/^\(/, '');
+		words[words.length - 1] = words[words.length - 1].replace(/\)$/, '');
+	}
+	return words;
+}
+
+/** A header directive of a snippet tree (top level only): { kind: more_set_headers or add_header, value, always }. */
+function headerDirectives(tree, header) {
+	const found = [];
+	const name = header.toLowerCase();
+	for (const statement of tree) {
+		if (statement.block) continue;
+		if (statement.name === 'more_set_headers') {
+			for (const arg of statement.args.filter((candidate) => !candidate.word.startsWith('-'))) {
+				const match = /^([^:]+):\s*(.*)$/.exec(arg.word);
+				if (match && match[1].trim().toLowerCase() === name) found.push({ kind: 'more_set_headers', value: match[2].trim() });
+			}
+		}
+		if (statement.name === 'add_header' && statement.args[0]?.word.toLowerCase() === name) {
+			found.push({ kind: 'add_header', value: statement.args[1]?.word ?? '', always: statement.args.slice(2).some((arg) => arg.word === 'always') });
+		}
+	}
+	return found;
+}
+
+/**
+ * The value a server-level header directive takes on one path through the server's rewrite statements: the set and if
+ * statements of the snippet run in order for the given scheme, and the host either is the server's or is not (the 421 path);
+ * a return ends the path. Unknown conditions are not taken. Returns { value, returned }.
+ */
+function serverValueOnPath(tree, value, { scheme, otherHost }) {
+	const variables = {};
+	let returned;
+	const run = (statements) => {
+		for (const statement of statements) {
+			if (returned !== undefined) return;
+			if (statement.name === 'set' && !statement.block) variables[statement.args[0]?.word] = statement.args[1]?.word ?? '';
+			else if (statement.name === 'return' && !statement.block) returned = statement.args[0]?.word ?? '';
+			else if (statement.name === 'if' && statement.block) {
+				const [left, operator, right] = ifCondition(statement);
+				let taken = false;
+				if (left === '$scheme' && operator === '=') taken = right === scheme;
+				else if (left === '$scheme' && operator === '!=') taken = right !== scheme;
+				else if (left === '$https' && ifCondition(statement).length === 1) taken = scheme === 'https';
+				else if (left === '$host' && operator === '!=') taken = otherHost;
+				else if (left === '$host' && operator === '=') taken = !otherHost;
+				if (taken) run(statement.block);
+			}
+		}
+	};
+	run(tree);
+	const resolved = String(value).replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g, (_, name) => variables[`$${name}`] ?? '');
+	return { value: resolved, returned };
+}
+
+/** Findings for an HSTS value: one year at least, includeSubDomains, no preload. */
+function hstsValueFindings(value, where) {
+	const findings = [];
+	const parts = String(value).split(';').map((part) => part.trim()).filter(Boolean);
+	const maxAge = parts.map((part) => /^max-age\s*=\s*"?(\d+)"?$/i.exec(part)).find(Boolean);
+	if (!maxAge) findings.push(`${where}: Strict-Transport-Security has no max-age (${value})`);
+	else if (Number(maxAge[1]) < INGRESS_HARDENING.hstsMaxAge) findings.push(`${where}: Strict-Transport-Security max-age ${maxAge[1]} is under a year (${INGRESS_HARDENING.hstsMaxAge})`);
+	if (!parts.some((part) => /^includesubdomains$/i.test(part))) findings.push(`${where}: Strict-Transport-Security without includeSubDomains`);
+	if (parts.some((part) => /^preload$/i.test(part))) findings.push(`${where}: Strict-Transport-Security with preload (the story keeps hosts off the preload list)`);
+	return findings;
+}
+
+const NGINX = 'nginx.ingress.kubernetes.io/';
+const FRAME_ANCESTORS = /(^|;)\s*frame-ancestors\s+'none'\s*(;|$)/;
+
+/**
+ * ARV-084: findings for the Ingresses of a render (docs parsed as Kubernetes reads them). For every Ingress:
+ * - its server-snippet (one per host: every Ingress of a host carries the same) sets HSTS with more_set_headers, so it applies
+ *   to every status and replaces the controller's own: over HTTPS max-age of a year at least with includeSubDomains and no
+ *   preload, on the 421 for other hosts as well (set before it), and nothing over plain HTTP; nosniff with more_set_headers;
+ *   Content-Security-Policy with frame-ancestors 'none' through add_header always (it adds to the pods' own policy);
+ * - its configuration-snippet repeats that add_header (nginx drops the server's in a location with an add_header of its own);
+ * - plain HTTP per ariva.dalil.tech/plain-http: refuse has ssl-redirect and force-ssl-redirect "false" and a 4xx for
+ *   if ($scheme = http) in the configuration-snippet; redirect has both "true" and no refusal; the Ingresses of a host agree;
+ *   in k8s-prd an Ingress to a machine service on a host without the web app refuses;
+ * - an affinity cookie is Secure, SameSite=Strict, Path=/; ssl-prefer-server-ciphers "false"; no from-to-www-redirect, no
+ *   custom-headers, no more_clear_headers, and no other annotation names the three headers.
+ */
+export function ingressHardeningFindings(docs, { environment }) {
+	const findings = [];
+	const ingresses = docs.filter((doc) => doc?.kind === 'Ingress');
+	const hostsOf = (ingress) => [...new Set((ingress.spec?.rules ?? []).map((rule) => rule.host).filter(Boolean))];
+	const servicesOf = (ingress) => [...new Set((ingress.spec?.rules ?? []).flatMap((rule) => (rule.http?.paths ?? []).map((entry) => entry.backend?.service?.name)).filter(Boolean))];
+	const webHosts = new Set(ingresses.filter((ingress) => servicesOf(ingress).includes(INGRESS_HARDENING.webService)).flatMap(hostsOf));
+	const modes = new Map();
+	const serverSnippets = new Map();
+	for (const ingress of ingresses) {
+		const id = `Ingress/${ingress.metadata?.name}`;
+		const annotations = ingress.metadata?.annotations ?? {};
+		const get = (name) => annotations[`${NGINX}${name}`];
+		const parse = (name) => {
+			try {
+				return nginxTree(get(name) ?? '');
+			} catch (error) {
+				findings.push(`${id}: ${name} is not valid nginx (${error.message})`);
+				return [];
+			}
+		};
+		const server = parse('server-snippet');
+		const location = parse('configuration-snippet');
+
+		// HSTS: one more_set_headers at the server level, a year with includeSubDomains over HTTPS on every path, none over HTTP.
+		const hsts = headerDirectives(server, 'Strict-Transport-Security');
+		const hstsSet = hsts.filter((directive) => directive.kind === 'more_set_headers');
+		if (hsts.some((directive) => directive.kind === 'add_header')) findings.push(`${id}: server-snippet sets Strict-Transport-Security with add_header, which comes after the controller's own HSTS (two headers, the controller's first); use more_set_headers`);
+		else if (hstsSet.length === 0) findings.push(`${id}: server-snippet sends no Strict-Transport-Security (more_set_headers at the server level)`);
+		else if (hstsSet.length > 1) findings.push(`${id}: server-snippet sets Strict-Transport-Security more than once`);
+		else {
+			const https = serverValueOnPath(server, hstsSet[0].value, { scheme: 'https', otherHost: false });
+			const misdirected = serverValueOnPath(server, hstsSet[0].value, { scheme: 'https', otherHost: true });
+			const plain = serverValueOnPath(server, hstsSet[0].value, { scheme: 'http', otherHost: false });
+			if (!https.value) findings.push(`${id}: server-snippet sends no Strict-Transport-Security over HTTPS`);
+			else findings.push(...hstsValueFindings(https.value, `${id}: server-snippet`));
+			if (https.value && !misdirected.value) findings.push(`${id}: server-snippet answers ${misdirected.returned ?? 'the 421'} for other hosts before it sets Strict-Transport-Security`);
+			if (plain.value) findings.push(`${id}: server-snippet sends Strict-Transport-Security over plain HTTP (RFC 6797 section 7.2: only over HTTPS)`);
+		}
+
+		// nosniff: one more_set_headers at the server level (it replaces the pods' own instead of repeating it).
+		const nosniff = headerDirectives(server, 'X-Content-Type-Options');
+		if (!nosniff.some((directive) => directive.kind === 'more_set_headers' && directive.value.toLowerCase() === 'nosniff')) {
+			findings.push(`${id}: server-snippet sends no X-Content-Type-Options: nosniff with more_set_headers (every status, one header)`);
+		}
+
+		// frame-ancestors 'none': add_header always at the server level and again in the location.
+		for (const [tree, where, why] of [[server, 'server-snippet', 'the server level (the 421 and every location without an add_header)'],
+			[location, 'configuration-snippet', 'the location (an add_header there drops the server\'s)']]) {
+			const policies = headerDirectives(tree, 'Content-Security-Policy');
+			if (policies.some((directive) => directive.kind === 'more_set_headers')) findings.push(`${id}: ${where} replaces the pods' Content-Security-Policy with more_set_headers; add frame-ancestors with add_header always`);
+			const added = policies.filter((directive) => directive.kind === 'add_header');
+			if (added.length === 0) findings.push(`${id}: ${where} adds no Content-Security-Policy frame-ancestors 'none' at ${why}`);
+			else if (!added.some((directive) => FRAME_ANCESTORS.test(directive.value))) findings.push(`${id}: ${where} adds a Content-Security-Policy without frame-ancestors 'none'`);
+			else if (!added.some((directive) => FRAME_ANCESTORS.test(directive.value) && directive.always)) findings.push(`${id}: ${where} adds Content-Security-Policy without always, so 4xx and 5xx responses lack it`);
+		}
+
+		// Plain HTTP.
+		const mode = annotations[INGRESS_HARDENING.plainHttpAnnotation];
+		const refusal = location.filter((statement) => statement.name === 'if' && statement.block && ifCondition(statement).join(' ') === '$scheme = http')
+			.flatMap((statement) => statement.block.filter((inner) => inner.name === 'return').map((inner) => Number(inner.args[0]?.word)));
+		if (!['refuse', 'redirect'].includes(mode)) findings.push(`${id}: ${INGRESS_HARDENING.plainHttpAnnotation} is ${mode ?? 'unset'}, neither refuse nor redirect`);
+		else if (mode === 'refuse') {
+			if (get('ssl-redirect') !== 'false') findings.push(`${id}: refuses plain HTTP but ssl-redirect is ${get('ssl-redirect') ?? 'unset (the controller redirects)'}, not "false"`);
+			if (get('force-ssl-redirect') !== 'false') findings.push(`${id}: refuses plain HTTP but force-ssl-redirect is ${get('force-ssl-redirect') ?? 'unset'}, not "false"`);
+			if (refusal.length === 0) findings.push(`${id}: refuses plain HTTP without answering it (configuration-snippet: if ($scheme = http) { return 403; })`);
+			else if (refusal.some((code) => !(code >= 400 && code < 500))) findings.push(`${id}: answers plain HTTP with ${refusal.join(', ')}, not an error (4xx): a machine host never redirects`);
+		} else {
+			if (get('ssl-redirect') !== 'true' || get('force-ssl-redirect') !== 'true') findings.push(`${id}: redirects plain HTTP but ssl-redirect and force-ssl-redirect are not both "true"`);
+			if (refusal.length) findings.push(`${id}: redirects plain HTTP but its configuration-snippet refuses it`);
+		}
+		const machine = servicesOf(ingress).some((service) => INGRESS_HARDENING.machineServices.includes(service)) && !hostsOf(ingress).some((host) => webHosts.has(host));
+		if (environment === 'k8s-prd' && machine && mode === 'redirect') findings.push(`${id}: k8s-prd redirects plain HTTP on a machine host; it must refuse it (ASVS 5.0 V4.1.2)`);
+		for (const host of hostsOf(ingress)) {
+			if (modes.has(host) && modes.get(host) !== mode) findings.push(`${id}: host ${host} has Ingresses that disagree on plain HTTP (${modes.get(host)} and ${mode})`);
+			if (!modes.has(host)) modes.set(host, mode);
+			if (serverSnippets.has(host) && serverSnippets.get(host) !== (get('server-snippet') ?? '')) findings.push(`${id}: host ${host} has Ingresses with different server-snippets; ingress-nginx applies one per host`);
+			if (!serverSnippets.has(host)) serverSnippets.set(host, get('server-snippet') ?? '');
+		}
+
+		// The affinity cookie, the cipher order and the annotations that would get around the headers.
+		if (get('affinity') === 'cookie') {
+			if (get('session-cookie-secure') !== 'true') findings.push(`${id}: the affinity cookie is not Secure (session-cookie-secure "true")`);
+			if (get('session-cookie-samesite') !== 'Strict') findings.push(`${id}: the affinity cookie is not SameSite=Strict (session-cookie-samesite), but ${get('session-cookie-samesite') ?? 'unset'}`);
+			if (get('session-cookie-path') !== '/') findings.push(`${id}: the affinity cookie's path is ${get('session-cookie-path') ?? 'the location\'s'}, not / (session-cookie-path)`);
+		}
+		if (get('ssl-prefer-server-ciphers') !== 'false') findings.push(`${id}: ssl-prefer-server-ciphers is ${get('ssl-prefer-server-ciphers') ?? 'unset (the controller\'s on)'}, not "false" (Mozilla intermediate: the client's order)`);
+		if (get('from-to-www-redirect') === 'true') findings.push(`${id}: from-to-www-redirect generates a www server that carries none of the chart's headers`);
+		if (get('custom-headers') !== undefined) findings.push(`${id}: custom-headers can replace the chart's headers from a ConfigMap the chart cannot read`);
+		for (const [key, value] of Object.entries(annotations)) {
+			if (/more_clear_headers/i.test(String(value))) findings.push(`${id}: ${key} clears response headers (more_clear_headers)`);
+			else if (![`${NGINX}server-snippet`, `${NGINX}configuration-snippet`].includes(key) && /strict-transport-security|x-content-type-options|content-security-policy/i.test(String(value))) {
+				findings.push(`${id}: ${key} names one of the chart's response headers`);
+			}
+		}
+		if (headerDirectives(location, 'Strict-Transport-Security').length || headerDirectives(location, 'X-Content-Type-Options').length) {
+			findings.push(`${id}: configuration-snippet sets Strict-Transport-Security or X-Content-Type-Options in the location, over the server's`);
+		}
+	}
+	return findings;
+}
+
+/**
+ * ARV-084: findings for the ingress-nginx controller values the site applies (Helm/ingress-nginx-values.yaml, parsed): snippet
+ * annotations allowed from the chart value only, at the Critical risk level; TLS 1.2 and 1.3; Mozilla's intermediate TLS 1.2
+ * suites exactly; no session tickets; HSTS of a year with includeSubDomains and no preload; X-Forwarded-* not trusted; every
+ * ConfigMap value a string.
+ */
+export function controllerValuesFindings(values) {
+	const findings = [];
+	const controller = values?.controller ?? {};
+	const config = controller.config ?? {};
+	if (controller.allowSnippetAnnotations !== true) findings.push('controller.allowSnippetAnnotations must be true: the chart\'s Ingresses carry snippet annotations');
+	if (Object.hasOwn(config, 'allow-snippet-annotations')) findings.push('controller.config must not set allow-snippet-annotations: the ingress-nginx chart writes it from controller.allowSnippetAnnotations, so the key would appear twice');
+	if (config['annotations-risk-level'] !== 'Critical') findings.push(`controller.config annotations-risk-level is ${config['annotations-risk-level'] ?? 'unset (High)'}, not Critical: the controller would refuse the chart's snippets`);
+	const protocols = String(config['ssl-protocols'] ?? '').split(/\s+/).filter(Boolean);
+	if (protocols.length !== 2 || !protocols.includes('TLSv1.2') || !protocols.includes('TLSv1.3')) findings.push(`controller.config ssl-protocols is ${config['ssl-protocols'] ?? 'unset'}, not TLSv1.2 TLSv1.3`);
+	if (config['ssl-ciphers'] !== INGRESS_HARDENING.mozillaIntermediateTls12.join(':')) findings.push(`controller.config ssl-ciphers is not the Mozilla intermediate TLS 1.2 list (${INGRESS_HARDENING.mozillaIntermediateTls12.join(':')})`);
+	if (config['ssl-session-tickets'] !== 'false') findings.push(`controller.config ssl-session-tickets is ${config['ssl-session-tickets'] ?? 'unset'}, not "false"`);
+	if (config.hsts !== 'true') findings.push(`controller.config hsts is ${config.hsts ?? 'unset'}, not "true"`);
+	if (!(Number(config['hsts-max-age']) >= INGRESS_HARDENING.hstsMaxAge)) findings.push(`controller.config hsts-max-age is ${config['hsts-max-age'] ?? 'unset'}, under a year (${INGRESS_HARDENING.hstsMaxAge})`);
+	if (config['hsts-include-subdomains'] !== 'true') findings.push(`controller.config hsts-include-subdomains is ${config['hsts-include-subdomains'] ?? 'unset'}, not "true"`);
+	if (config['hsts-preload'] !== 'false') findings.push(`controller.config hsts-preload is ${config['hsts-preload'] ?? 'unset'}, not "false"`);
+	if (config['use-forwarded-headers'] !== 'false') findings.push(`controller.config use-forwarded-headers is ${config['use-forwarded-headers'] ?? 'unset'}, not "false": TLS ends at the controller`);
+	for (const [key, value] of Object.entries(config)) if (typeof value !== 'string') findings.push(`controller.config ${key} must be a string (a ConfigMap value), not ${typeof value} ${value}`);
+	return findings;
+}

@@ -1,0 +1,1803 @@
+# ARV-084: one Ingress per case, each breaking one ingress hardening rule (its name is the case) (tests/chart-security.mjs, ingressHardeningSelfTest; generated, then kept as written).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hsts-missing
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-hsts-missing
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "hsts-missing.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - hsts-missing.example.test
+      secretName: ariva-tls
+  rules:
+    - host: hsts-missing.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hsts-add-header
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-hsts-add-header
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "hsts-add-header.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - hsts-add-header.example.test
+      secretName: ariva-tls
+  rules:
+    - host: hsts-add-header.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hsts-twice
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-hsts-twice
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "hsts-twice.example.test") {
+        return 421;
+      }
+      more_set_headers "Strict-Transport-Security: max-age=31536000; includeSubDomains";
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - hsts-twice.example.test
+      secretName: ariva-tls
+  rules:
+    - host: hsts-twice.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hsts-short
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-hsts-short
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=15724800; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "hsts-short.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - hsts-short.example.test
+      secretName: ariva-tls
+  rules:
+    - host: hsts-short.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hsts-no-subdomains
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-hsts-no-subdomains
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "hsts-no-subdomains.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - hsts-no-subdomains.example.test
+      secretName: ariva-tls
+  rules:
+    - host: hsts-no-subdomains.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hsts-preload
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-hsts-preload
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains; preload";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "hsts-preload.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - hsts-preload.example.test
+      secretName: ariva-tls
+  rules:
+    - host: hsts-preload.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hsts-plain
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-hsts-plain
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      more_set_headers "Strict-Transport-Security: max-age=31536000; includeSubDomains";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "hsts-plain.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - hsts-plain.example.test
+      secretName: ariva-tls
+  rules:
+    - host: hsts-plain.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hsts-after-421
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-hsts-after-421
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      if ($host != "hsts-after-421.example.test") {
+        return 421;
+      }
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - hsts-after-421.example.test
+      secretName: ariva-tls
+  rules:
+    - host: hsts-after-421.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hsts-never-https
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-hsts-never-https
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = ftp) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "hsts-never-https.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - hsts-never-https.example.test
+      secretName: ariva-tls
+  rules:
+    - host: hsts-never-https.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nosniff-missing
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-nosniff-missing
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "nosniff-missing.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - nosniff-missing.example.test
+      secretName: ariva-tls
+  rules:
+    - host: nosniff-missing.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nosniff-add-header
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-nosniff-add-header
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      add_header X-Content-Type-Options "nosniff" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "nosniff-add-header.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - nosniff-add-header.example.test
+      secretName: ariva-tls
+  rules:
+    - host: nosniff-add-header.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: csp-server-missing
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-csp-server-missing
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      if ($host != "csp-server-missing.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - csp-server-missing.example.test
+      secretName: ariva-tls
+  rules:
+    - host: csp-server-missing.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: csp-server-no-always
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-csp-server-no-always
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'";
+      if ($host != "csp-server-no-always.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - csp-server-no-always.example.test
+      secretName: ariva-tls
+  rules:
+    - host: csp-server-no-always.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: csp-server-no-frame
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-csp-server-no-frame
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "default-src 'self'" always;
+      if ($host != "csp-server-no-frame.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - csp-server-no-frame.example.test
+      secretName: ariva-tls
+  rules:
+    - host: csp-server-no-frame.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: csp-server-replace
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-csp-server-replace
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "csp-server-replace.example.test") {
+        return 421;
+      }
+      more_set_headers "Content-Security-Policy: frame-ancestors 'none'";
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - csp-server-replace.example.test
+      secretName: ariva-tls
+  rules:
+    - host: csp-server-replace.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: csp-location-missing
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-csp-location-missing
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "csp-location-missing.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - csp-location-missing.example.test
+      secretName: ariva-tls
+  rules:
+    - host: csp-location-missing.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: csp-location-no-always
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-csp-location-no-always
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "csp-location-no-always.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'";
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - csp-location-no-always.example.test
+      secretName: ariva-tls
+  rules:
+    - host: csp-location-no-always.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: plain-mode-missing
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-plain-mode-missing
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "plain-mode-missing.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - plain-mode-missing.example.test
+      secretName: ariva-tls
+  rules:
+    - host: plain-mode-missing.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: refuse-ssl-redirect
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-refuse-ssl-redirect
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "refuse-ssl-redirect.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - refuse-ssl-redirect.example.test
+      secretName: ariva-tls
+  rules:
+    - host: refuse-ssl-redirect.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: refuse-force-ssl-redirect
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-refuse-force-ssl-redirect
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "refuse-force-ssl-redirect.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - refuse-force-ssl-redirect.example.test
+      secretName: ariva-tls
+  rules:
+    - host: refuse-force-ssl-redirect.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: refuse-no-answer
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-refuse-no-answer
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "refuse-no-answer.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - refuse-no-answer.example.test
+      secretName: ariva-tls
+  rules:
+    - host: refuse-no-answer.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: refuse-redirects
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-refuse-redirects
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "refuse-redirects.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 301 https://$host$request_uri;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - refuse-redirects.example.test
+      secretName: ariva-tls
+  rules:
+    - host: refuse-redirects.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: redirect-not-forced
+  annotations:
+    ariva.dalil.tech/plain-http: redirect
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-redirect-not-forced
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "redirect-not-forced.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - redirect-not-forced.example.test
+      secretName: ariva-tls
+  rules:
+    - host: redirect-not-forced.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-cronz-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: redirect-refuses
+  annotations:
+    ariva.dalil.tech/plain-http: redirect
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-redirect-refuses
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "redirect-refuses.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - redirect-refuses.example.test
+      secretName: ariva-tls
+  rules:
+    - host: redirect-refuses.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-cronz-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: prd-machine-redirect
+  annotations:
+    ariva.dalil.tech/plain-http: redirect
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-prd-machine-redirect
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "prd-machine-redirect.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - prd-machine-redirect.example.test
+      secretName: ariva-tls
+  rules:
+    - host: prd-machine-redirect.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cookie-not-secure
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-cookie-not-secure
+    nginx.ingress.kubernetes.io/session-cookie-secure: "false"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "cookie-not-secure.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - cookie-not-secure.example.test
+      secretName: ariva-tls
+  rules:
+    - host: cookie-not-secure.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cookie-lax
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-cookie-lax
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Lax
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "cookie-lax.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - cookie-lax.example.test
+      secretName: ariva-tls
+  rules:
+    - host: cookie-lax.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cookie-path
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-cookie-path
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /api
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "cookie-path.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - cookie-path.example.test
+      secretName: ariva-tls
+  rules:
+    - host: cookie-path.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: prefer-server-ciphers
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "true"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-prefer-server-ciphers
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "prefer-server-ciphers.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - prefer-server-ciphers.example.test
+      secretName: ariva-tls
+  rules:
+    - host: prefer-server-ciphers.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: www-redirect
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-www-redirect
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "www-redirect.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+    nginx.ingress.kubernetes.io/from-to-www-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - www-redirect.example.test
+      secretName: ariva-tls
+  rules:
+    - host: www-redirect.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: custom-headers
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-custom-headers
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "custom-headers.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+    nginx.ingress.kubernetes.io/custom-headers: ariva/site-headers
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - custom-headers.example.test
+      secretName: ariva-tls
+  rules:
+    - host: custom-headers.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: clear-headers
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-clear-headers
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "clear-headers.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+      more_clear_headers "Strict-Transport-Security";
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - clear-headers.example.test
+      secretName: ariva-tls
+  rules:
+    - host: clear-headers.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: header-elsewhere
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-header-elsewhere
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "header-elsewhere.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+    nginx.ingress.kubernetes.io/auth-snippet: proxy_set_header Content-Security-Policy "none";
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - header-elsewhere.example.test
+      secretName: ariva-tls
+  rules:
+    - host: header-elsewhere.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: location-hsts
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-location-hsts
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "location-hsts.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+      more_set_headers "Strict-Transport-Security: max-age=0";
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - location-hsts.example.test
+      secretName: ariva-tls
+  rules:
+    - host: location-hsts.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: host-modes-a
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-host-modes-a
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "host-modes.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - host-modes.example.test
+      secretName: ariva-tls
+  rules:
+    - host: host-modes.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: host-modes-disagree
+  annotations:
+    ariva.dalil.tech/plain-http: redirect
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-host-modes-disagree
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "host-modes.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - host-modes.example.test
+      secretName: ariva-tls
+  rules:
+    - host: host-modes.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-cronz-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: host-snippets-a
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-host-snippets-a
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "host-snippets.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - host-snippets.example.test
+      secretName: ariva-tls
+  rules:
+    - host: host-snippets.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: host-snippets-differ
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-host-snippets-differ
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "host-snippets.example.test") {
+        return 421;
+      }
+      client_header_timeout 30s;
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - host-snippets.example.test
+      secretName: ariva-tls
+  rules:
+    - host: host-snippets.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443

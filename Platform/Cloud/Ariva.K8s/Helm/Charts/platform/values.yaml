@@ -224,5 +224,19 @@ imageCredentials:
   username: ""
   password: ""
 
-# Ingress definitions (see templates/ingresses.yaml); environment files provide the list.
+# Ingress definitions (see templates/ingresses.yaml); environment files provide the list. Each entry: name, comment,
+# subdomain (the host is <subdomain>.<domain>), serviceName, paths (default /), tlsSecretName (default tlsSecretName),
+# tokenInQuery (the live hub, ARV-035), annotations (the site's own) and plainHttp (ARV-084):
+# - plainHttp: refuse (the default) answers 403 to any request over plain HTTP and never redirects (ASVS 5.0 V4.1.2), for the
+#   machine hosts (api-main, api-ingest, api-integration); redirect sends a browser to HTTPS (308), for the web host and the
+#   Cronz dashboard. The Ingresses of one host share one mode, and in k8s-prd an Ingress to api-main-service,
+#   api-ingest-service or api-integration-service on a host without the web app refuses (validate.yaml).
+# Every Ingress gets, from the chart: HSTS max-age=31536000; includeSubDomains over HTTPS (no preload), nosniff and
+# Content-Security-Policy frame-ancestors 'none' on every response, the ingress's own (421, the redirect, 403, 413, 502,
+# 503, 504) included; the affinity cookie Secure, SameSite=Strict, Path=/; ssl-prefer-server-ciphers false (Mozilla
+# intermediate). The controller's TLS (protocols, suites, its own HSTS and snippet settings) is the site's:
+# Platform/Cloud/Ariva.K8s/Helm/ingress-nginx-values.yaml. A site's server-snippet, configuration-snippet and
+# modsecurity-snippet are appended to the chart's; no annotation may set a key the chart sets, from-to-www-redirect (its
+# server carries none of these headers), custom-headers, or name Strict-Transport-Security, X-Content-Type-Options,
+# Content-Security-Policy or more_clear_headers (validate.yaml).
 ingresses: []
