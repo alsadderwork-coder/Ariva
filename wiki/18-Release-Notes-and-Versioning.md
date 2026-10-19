@@ -146,6 +146,25 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-092: download names, charset and the file handling guide (2026-10-19)
+
+Changed in the hosts:
+- Stored uploads go back under a name the server builds, never the uploaded one (`Ariva.Api.Common/Security/StoredFileHeaders.cs`): floor plan content (`GET api/v1/admin/levels/{levelId}/floor-plan/content`) sends `Content-Disposition: inline; filename="floor-plan-{levelId}.{png, jpg or svg}"`, and advertisement content, in the library preview (`GET api/v1/admin/sites/{siteCode}/advertising/media/{id}/content`) and the display player's fetch (`GET api/v1/display/advertising/{id}`), `inline; filename="advertisement-{id}.{png, jpg, webp, mp4 or webm}"`, where both sent `inline` without a name before. The extension is that of the type read at upload. The types, content security policies, `nosniff`, the floor plan's `ETag` and the advertisements' cache and resource policy headers are unchanged.
+- SVG floor plans go out as `image/svg+xml; charset=utf-8`.
+- Every text answer of the five API hosts names its encoding: a `text/*`, `application/xml`, `application/javascript` or `+xml` answer without a charset gets `charset=utf-8` (`SecurityHeadersMiddleware`), which reaches the framework's plain-text status pages and the TickerQ dashboard's page and files. JSON, binary answers and answers that already name a charset are unchanged.
+
+Changed in the web image:
+- nginx names UTF-8 on the app's page, `/healthz`, scripts, styles, JSON and SVG files (`charset utf-8` and `charset_types` in `static/nginx/default.conf`; the web build fails without them).
+- Fixed: the image served its own nginx configuration at `GET /nginx/default.conf`, because it copied the build's `nginx` folder into the web root. The Dockerfile now removes that folder from the web root, and the path gets the app's fallback page. The file holds the listener, the content security policy and the security headers, no credential.
+
+New page: [File handling](13a-File-Handling.md), every upload with who may send it, its types and limits, what Ariva does to it, where it is stored, how it is served, its rate limit and audit, and what happens to a malicious file (ASVS V5.1.1). Malware scanning stays open (ARV-092b, ARV-092c).
+
+Not changed: the daily report CSV download (already an attachment under a server-built name, `text/csv; charset=utf-8`), the imports' JSON answers, and the site configuration export, a JSON answer without `Content-Disposition`. No database script, endpoint or permission changes.
+
+Upgrade steps: none. A browser that saves a floor plan or an advertisement now proposes the server's name.
+
+Rollback notes: rolling the images back restores the nameless `inline` answers and the charset-less text answers, and the web image serves its configuration at `/nginx/default.conf` again.
+
 ### ARV-091a: production log shipping over TLS to a collector (2026-10-19)
 
 Changed in the hosts (every Backplane host; [log inventory](../docs/security/log-inventory.md) sections 2.1 and 2.2):

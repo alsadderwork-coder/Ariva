@@ -42,6 +42,7 @@ Both modules run on the same core (measurement, queue engine, alerting, displays
 | [11 Administration guide](11-Administration-Guide.md) | Users, roles, TOTP, integration clients, devices, profiles, rules, displays, audit, retention |
 | [12 User guide](12-User-Guide.md) | Screens per role and common tasks |
 | [13 Security guide](13-Security-Guide.md) | Controls, authentication, authorisation, secrets, hardening, security gates |
+| [13a File handling](13a-File-Handling.md) | Every upload: who may send it, types, limits, what is done to it, storage, serving, audit, malicious files |
 | [14 Privacy and data protection](14-Privacy-and-Data-Protection.md) | Anonymity by design, retention, DPIA outline, signage, laws in scope |
 | [15 KPI and SLA definitions](15-KPI-and-SLA-Definitions.md) | Every KPI, how it is computed, provisional and final, exclusions, evidence packs |
 | [16 Testing strategy](16-Testing-Strategy.md) | Test layers and how to run them |

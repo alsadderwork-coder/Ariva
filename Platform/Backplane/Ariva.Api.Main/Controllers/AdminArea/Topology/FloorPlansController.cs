@@ -12,8 +12,8 @@ namespace Ariva.Api.Main.Controllers.AdminArea.Topology;
 
 /// <summary>
 /// The floor plan of a level (ARV-018): upload (multipart, field "file", at most 20 MB, PNG, JPEG or SVG sniffed from
-/// the bytes, SVG sanitised), metadata, the image itself with a locked-down content security policy, calibration
-/// (scale and origin) and delete. Site-scoped through the level.
+/// the bytes, SVG sanitised), metadata, the image itself with a locked-down content security policy (inline, under a name
+/// the server makes, ARV-092), calibration (scale and origin) and delete. Site-scoped through the level.
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/levels/{levelId:guid}/floor-plan")]
@@ -29,13 +29,20 @@ public sealed class FloorPlansController(ISvcFloorPlans plans) : ControllerBase
     /// </summary>
     internal const string ContentPolicy = "default-src 'none'; style-src 'unsafe-inline'; sandbox; frame-ancestors 'none'";
 
+    /// <summary>The image's file name: <c>floor-plan-{level id}.{png|jpg|svg}</c> (ARV-092).</summary>
+    internal const string FileNamePrefix = "floor-plan";
+
     [HttpGet]
     [Permission(nameof(Global.Defaults.Permissions.ViewFloorPlan))]
     [ProducesResponseType<FloorPlanViewModel>(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> Get(Guid levelId, CancellationToken ct) => TopologyAnswers.Ok(this, await plans.GetAsync(levelId, ct));
 
-    /// <summary>The image. SVG is served sanitised and under a sandboxing content security policy, never as a page.</summary>
+    /// <summary>
+    /// The image. SVG is served sanitised, as <c>image/svg+xml; charset=utf-8</c> and under a sandboxing content security
+    /// policy, never as a page. Content-Disposition is <c>inline</c> with a name made from the level and the type read from
+    /// the bytes at upload, never the name the uploader sent (ARV-092, ASVS 5.0 V5.4.1).
+    /// </summary>
     [HttpGet("content")]
     [Permission(nameof(Global.Defaults.Permissions.ViewFloorPlan))]
     [ProducesResponseType(StatusCodes.Status200OK)]
@@ -48,8 +55,9 @@ public sealed class FloorPlansController(ISvcFloorPlans plans) : ControllerBase
 
         Response.Headers.ContentSecurityPolicy = ContentPolicy;
         Response.Headers.XContentTypeOptions = "nosniff";
-        Response.Headers.ContentDisposition = "inline";
-        return File(result.Data.Content, result.Data.ContentType, entityTag: new Microsoft.Net.Http.Headers.EntityTagHeaderValue($"\"{result.Data.Sha256}\""), lastModified: null);
+        Response.Headers.ContentDisposition = StoredFileHeaders.InlineDisposition(FileNamePrefix, levelId, result.Data.ContentType);
+        return File(result.Data.Content, StoredFileHeaders.ContentType(result.Data.ContentType),
+            entityTag: new Microsoft.Net.Http.Headers.EntityTagHeaderValue($"\"{result.Data.Sha256}\""), lastModified: null);
     }
 
     /// <summary>Uploads or replaces the plan. Form fields: file, metresPerPixel, originX, originY.</summary>

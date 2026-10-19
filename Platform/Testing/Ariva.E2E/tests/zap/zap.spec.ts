@@ -123,7 +123,9 @@ test('baseline scans of every host and the web app', () => {
 	spawnSync('docker', ['rm', '-f', nginxName], { stdio: 'ignore' });
 	execFileSync('docker', [
 		'run', '-d', '--rm', '--name', nginxName, '--network', 'host', '--read-only', '--tmpfs', '/var/cache/nginx', '--tmpfs', '/var/run', '--tmpfs', '/tmp',
-		'-v', `${webBuild}:/usr/share/nginx/html/web:ro`, '-v', `${path.join(webBuild, 'nginx', 'default.conf')}:/etc/nginx/conf.d/default.conf:ro`,
+		// An empty nginx/ over the build's, as the image removes it from the web root (ARV-092).
+		'-v', `${webBuild}:/usr/share/nginx/html/web:ro`, '--tmpfs', '/usr/share/nginx/html/web/nginx:ro',
+		'-v', `${path.join(webBuild, 'nginx', 'default.conf')}:/etc/nginx/conf.d/default.conf:ro`,
 		// The image's plain listener on 3000 (ARV-082b), which default.conf includes.
 		'-v', `${path.join(webBuild, 'nginx', 'listen.d')}:/etc/nginx/listen.d:ro`, nginxImage
 	], { stdio: 'ignore' });

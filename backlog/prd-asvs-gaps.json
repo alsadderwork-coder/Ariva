@@ -434,8 +434,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 112,
-      "passes": false,
-      "notes": "Split 2026-10-19 (Effort M, with a new service): ARV-092 keeps the download headers and the file handling guide; ARV-092b scans every upload in the hosts before it is stored or imported (ClamAV clamd over TCP, detections refused and audited, a dev and test clamd); ARV-092c runs ClamAV in the chart (clamd with signature updates or a mirror for sites without internet, pinned image, network policies, pod security).",
+      "passes": true,
+      "notes": "Split 2026-10-19 (Effort M, with a new service): ARV-092 keeps the download headers and the file handling guide; ARV-092b scans every upload in the hosts before it is stored or imported (ClamAV clamd over TCP, detections refused and audited, a dev and test clamd); ARV-092c runs ClamAV in the chart (clamd with signature updates or a mirror for sites without internet, pinned image, network policies, pod security). Passed 2026-10-19: stored files go back inline under server-built names (StoredFileHeaders), every text answer of the hosts and the web pod names UTF-8, the web image no longer serves its nginx configuration, and the file handling guide is wiki/13a; V5.1.1, V5.4.1 and V4.1.1 Met; V5.4.3 waits for ARV-092b and ARV-092c (released together). Story gate PASS, security review PASS (round 2).",
       "dependsOn": [
         "ARV-074"
       ]
@@ -455,7 +455,7 @@
       ],
       "priority": 112,
       "passes": false,
-      "notes": "Split from ARV-092 on 2026-10-19. Default chosen: fail closed outside vm-local (no upload while the scanner is down); the owner can ask for another behaviour.",
+      "notes": "Split from ARV-092 on 2026-10-19. Default chosen: fail closed outside vm-local (no upload while the scanner is down); the owner can ask for another behaviour. Release together with ARV-092c: ARV-092b refuses uploads outside vm-local while no scanner answers, and only ARV-092c gives the chart a clamd, so a k8s-prd release with ARV-092b alone refuses every upload unless the site runs its own clamd.",
       "dependsOn": [
         "ARV-092"
       ]
@@ -475,7 +475,7 @@
       ],
       "priority": 112,
       "passes": false,
-      "notes": "Split from ARV-092 on 2026-10-19. Needs the owner or site to choose how signatures arrive at sites without internet.",
+      "notes": "Split from ARV-092 on 2026-10-19. Needs the owner or site to choose how signatures arrive at sites without internet. Release together with ARV-092b: ARV-092b refuses uploads outside vm-local while no scanner answers, and only ARV-092c gives the chart a clamd, so a k8s-prd release with ARV-092b alone refuses every upload unless the site runs its own clamd.",
       "dependsOn": [
         "ARV-092b"
       ]

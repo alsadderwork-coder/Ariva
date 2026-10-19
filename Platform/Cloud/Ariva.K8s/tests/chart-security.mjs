@@ -168,10 +168,39 @@ function webImageListenFindings() {
 	}
 	const plain = directives('static/nginx/listen.d/plain.conf');
 	if (plain.join(' ') !== 'listen 3000;') findings.push(`static/nginx/listen.d/plain.conf must hold "listen 3000;" only, not ${plain.join(' ')}`);
-	if (!/^COPY --from=builder \/app\/build\/nginx\/listen\.d\/plain\.conf \/etc\/nginx\/listen\.d\/plain\.conf\s*$/m.test(fs.readFileSync(path.join(web, 'Dockerfile'), 'utf8'))) {
+	const dockerfile = fs.readFileSync(path.join(web, 'Dockerfile'), 'utf8');
+	if (!/^COPY --from=builder \/app\/build\/nginx\/listen\.d\/plain\.conf \/etc\/nginx\/listen\.d\/plain\.conf\s*$/m.test(dockerfile)) {
 		findings.push(`the web Dockerfile must copy build/nginx/listen.d/plain.conf to ${POD_TLS.webListen}/plain.conf`);
 	}
+	findings.push(...webRootConfigFindings(dockerfile));
 	return findings;
+}
+
+/**
+ * ARV-092: the build output holds nginx/ (the server configuration the Dockerfile copies to /etc/nginx), so the image must
+ * remove it from the web root after copying the build there; otherwise GET /nginx/default.conf serves the configuration.
+ */
+function webRootConfigFindings(dockerfile) {
+	// The last copy of the build counts: a second copy after the removal would bring nginx/ back.
+	const copies = [...dockerfile.matchAll(/^COPY --from=builder \/app\/build \/usr\/share\/nginx\/html\/web\s*$/gm)];
+	const copy = copies.length ? copies[copies.length - 1].index : -1;
+	const remove = dockerfile.search(/^RUN rm -r \/usr\/share\/nginx\/html\/web\/nginx(\s|\\|$)/m);
+	if (copy < 0) return ['the web Dockerfile must copy the build to /usr/share/nginx/html/web'];
+	if (remove < copy) return ['the web Dockerfile must remove /usr/share/nginx/html/web/nginx after copying the build there (it would serve the nginx configuration)'];
+	return [];
+}
+
+/** ARV-092: the web root rule fires on a Dockerfile that keeps the configuration in the web root or removes it too early. */
+function webRootConfigSelfTest() {
+	const copy = 'COPY --from=builder /app/build /usr/share/nginx/html/web\n';
+	const remove = 'RUN rm -r /usr/share/nginx/html/web/nginx \\\n    && adduser -S nonroot\n';
+	const failures = [];
+	if (webRootConfigFindings(copy + remove).length) failures.push('web root rule fires on a Dockerfile that removes nginx/ after the copy');
+	if (!webRootConfigFindings(copy).length) failures.push('web root rule did not fire when nginx/ is never removed');
+	if (!webRootConfigFindings(remove + copy).length) failures.push('web root rule did not fire when nginx/ is removed before the copy');
+	if (!webRootConfigFindings(copy + remove + copy).length) failures.push('web root rule did not fire when the build is copied again after the removal');
+	if (!webRootConfigFindings(copy + remove.replace('/nginx ', '/nginx-old ')).length) failures.push('web root rule did not fire when another folder is removed');
+	return { failures, count: 5 };
 }
 
 /** ARV-084: each case of the bad ingress hardening fixture (the Ingress's name) and the one rule it must trip. */
@@ -707,6 +736,7 @@ function selfTest() {
 	const tls = databaseTlsSelfTest();
 	const podTls = podTlsSelfTest();
 	const webImage = webImageListenFindings();
+	const webRoot = webRootConfigSelfTest();
 	const hardening = ingressHardeningSelfTest();
 	const controller = controllerValuesSelfTest();
 	const network = networkPolicySelfTest();
@@ -714,7 +744,7 @@ function selfTest() {
 	const proxies = forwardedHeadersSelfTest();
 	const hubs = hubRefusalSelfTest();
 	const logs = logShippingSelfTest();
-	const others = [...tls.failures, ...podTls.failures, ...webImage, ...hardening.failures, ...controller.failures, ...network.failures, ...privacy.failures, ...proxies.failures, ...hubs.failures, ...logs.failures];
+	const others = [...tls.failures, ...podTls.failures, ...webImage, ...webRoot.failures, ...hardening.failures, ...controller.failures, ...network.failures, ...privacy.failures, ...proxies.failures, ...hubs.failures, ...logs.failures];
 	if (good.length || missing.length || others.length) {
 		console.error('chart-security self-test FAILED');
 		if (good.length) console.error('  good fixture produced findings:\n   ' + good.join('\n   '));
@@ -726,7 +756,7 @@ function selfTest() {
 		`on the pod TLS fixtures, ${hardening.count} ingress hardening rules and ${privacy.count} private probe and source range rules on theirs (each bad case trips exactly its rule), ` +
 		`${hubs.count} live hub refusal cases on the chart's server-snippet (each tripping exactly its rule), ` +
 		`${network.count} network policy cases, ${proxies.count} trusted proxy cases and ${logs.count} log shipping cases each giving exactly their findings; the good fixtures are clean; the web image takes ` +
-		`its listener from ${POD_TLS.webListen}; the shipped controller values (Helm/ingress-nginx-values.yaml) hold every rule, their access log format is ingress-nginx 1.15's ` +
+		`its listener from ${POD_TLS.webListen} and keeps no nginx configuration in its web root (${webRoot.count} cases); the shipped controller values (Helm/ingress-nginx-values.yaml) hold every rule, their access log format is ingress-nginx 1.15's ` +
 		`without the query string, ${controller.count} changes each trip theirs and ${controller.accepted} accepted changes trip none.`);
 }
 

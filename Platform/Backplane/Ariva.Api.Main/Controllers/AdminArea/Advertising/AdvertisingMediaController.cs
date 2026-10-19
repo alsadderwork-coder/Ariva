@@ -38,6 +38,9 @@ public sealed class AdvertisingMediaController(ISvcAdvertisingMedia media) : Con
     /// </summary>
     internal const string ContentPolicy = "default-src 'none'; sandbox; frame-ancestors 'none'";
 
+    /// <summary>An item's file name: <c>advertisement-{item id}.{png|jpg|webp|mp4|webm}</c> (ARV-092).</summary>
+    internal const string FileNamePrefix = "advertisement";
+
     [HttpGet]
     [Permission(nameof(Global.Defaults.Permissions.ViewAdvertising), nameof(Global.Defaults.Permissions.ManageAdvertising))]
     [ProducesResponseType<IReadOnlyList<AdvertisingMediaViewModel>>(StatusCodes.Status200OK)]
@@ -61,7 +64,7 @@ public sealed class AdvertisingMediaController(ISvcAdvertisingMedia media) : Con
     public async Task<IActionResult> Content(string siteCode, Guid id, CancellationToken ct)
     {
         var result = await media.OpenAsync(siteCode, id, ct);
-        return result.HasErrors ? TopologyAnswers.Ok(this, result) : MediaFile(this, result.Data);
+        return result.HasErrors ? TopologyAnswers.Ok(this, result) : MediaFile(this, id, result.Data);
     }
 
     /// <summary>Uploads an image or a video as a draft. Form fields: file, advertiser, campaign, startsOn and endsOn ("yyyy-MM-dd", the site's local days).</summary>
@@ -134,17 +137,18 @@ public sealed class AdvertisingMediaController(ISvcAdvertisingMedia media) : Con
     public async Task<IActionResult> Retire(string siteCode, Guid id, CancellationToken ct) => TopologyAnswers.Ok(this, await media.RetireAsync(siteCode, id, ct));
 
     /// <summary>
-    /// An item's stored image with the headers both the preview and the display fetch send: its own type (read from its
-    /// bytes at upload), never sniffed, sandboxed, readable by this origin only, and kept by no cache.
+    /// An item's stored image or video with the headers both the preview and the display fetch send: its own type (read from
+    /// its bytes at upload), never sniffed, sandboxed, readable by this origin only, kept by no cache, and shown in place
+    /// under a name made from the item's id and that type, never the name the uploader sent (ARV-092, ASVS 5.0 V5.4.1).
     /// </summary>
-    internal static IActionResult MediaFile(ControllerBase controller, AdvertisingMediaContent content)
+    internal static IActionResult MediaFile(ControllerBase controller, Guid id, AdvertisingMediaContent content)
     {
         var headers = controller.Response.Headers;
         headers.ContentSecurityPolicy = ContentPolicy;
         headers.XContentTypeOptions = "nosniff";
-        headers.ContentDisposition = "inline";
+        headers.ContentDisposition = StoredFileHeaders.InlineDisposition(FileNamePrefix, id, content.ContentType);
         headers.CacheControl = "private, no-store";
         headers["Cross-Origin-Resource-Policy"] = "same-origin";
-        return controller.File(content.Content, content.ContentType);
+        return controller.File(content.Content, StoredFileHeaders.ContentType(content.ContentType));
     }
 }

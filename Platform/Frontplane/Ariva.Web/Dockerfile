@@ -25,7 +25,10 @@ COPY --from=builder /app/build/nginx/default.conf /etc/nginx/conf.d
 COPY --from=builder /app/build/nginx/listen.d/plain.conf /etc/nginx/listen.d/plain.conf
 COPY --from=builder /app/build /usr/share/nginx/html/web
 
-RUN addgroup -S -g 10001 nonroot \
+# The nginx configuration is copied above from build/nginx, so the web root must not serve it too (ARV-092: before this,
+# GET /nginx/default.conf answered 200 with the server's configuration).
+RUN rm -r /usr/share/nginx/html/web/nginx \
+    && addgroup -S -g 10001 nonroot \
     && adduser -S -D -H -u 10001 -G nonroot nonroot \
     && chown -R nonroot:nonroot /usr/share/nginx/html/web \
     && chown -R nonroot:nonroot /var/cache/nginx \

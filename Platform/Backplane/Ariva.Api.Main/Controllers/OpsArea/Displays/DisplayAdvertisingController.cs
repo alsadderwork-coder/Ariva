@@ -32,6 +32,6 @@ public sealed class DisplayAdvertisingController(ISvcAdvertisingMedia media) : C
         var result = await media.OpenForDisplayAsync(display, prefix, id, ct);
         return result.HasErrors
             ? Problem(statusCode: StatusCodes.Status404NotFound, title: "Not found")
-            : AdvertisingMediaController.MediaFile(this, result.Data);
+            : AdvertisingMediaController.MediaFile(this, id, result.Data);
     }
 }

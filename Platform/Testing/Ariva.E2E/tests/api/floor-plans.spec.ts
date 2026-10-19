@@ -5,7 +5,8 @@ import { hosts } from '../support/hosts';
 // ARV-018: floor plans per level. PNG, JPEG and SVG only, typed by their bytes; SVG is sanitised (scripts, event
 // attributes, foreignObject and external references removed) and served under a sandboxing CSP; 20 MB limit (413);
 // file names with a path are refused (CWE-22), and longer than 200 code points too (ARV-153); the stored name is always
-// generated. The seed binds e2e.border to E2E1 and e2e.terminal to E2E2.
+// generated, and the image goes out inline under a name the server makes from the level, never the uploaded one, an SVG
+// with charset=utf-8 (ARV-092). The seed binds e2e.border to E2E1 and e2e.terminal to E2E2.
 
 test.skip(!databaseAvailable, 'floor plans need the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true)');
 test.describe.configure({ mode: 'serial' });
@@ -27,6 +28,7 @@ const hostileSvg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://
 </svg>`;
 
 let admin: string;
+let levelId: string;
 let levelUrl: string;
 
 function upload(content: Buffer | string, fileName: string, type: string, scale = '0.05'): FormData {
@@ -47,8 +49,8 @@ test.beforeAll(async () => {
 	};
 	const airport = await create('airports', { iataCode: iata, name: `E2E plans ${iata}`, timeZoneId: 'Asia/Amman' });
 	const terminal = await create('terminals', { airportId: airport, code: 'T1', name: 'Terminal 1', siteCode: 'E2E1' });
-	const level = await create('levels', { terminalId: terminal, code: 'L0', name: 'Arrivals', floorNumber: 0, widthMetres: 100, depthMetres: 50 });
-	levelUrl = `${adminApi}/levels/${level}/floor-plan`;
+	levelId = await create('levels', { terminalId: terminal, code: 'L0', name: 'Arrivals', floorNumber: 0, widthMetres: 100, depthMetres: 50 });
+	levelUrl = `${adminApi}/levels/${levelId}/floor-plan`;
 });
 
 test('a PNG is stored under a generated name and served with a sandboxing policy', async () => {
@@ -62,6 +64,8 @@ test('a PNG is stored under a generated name and served with a sandboxing policy
 	const content = await call('GET', `${levelUrl}/content`, { token: admin });
 	expect(content.status()).toBe(200);
 	expect(content.headers()['content-type']).toBe('image/png');
+	expect(content.headers()['content-disposition'], 'inline, under a name the server made').toBe(`inline; filename="floor-plan-${levelId}.png"`);
+	expect(content.headers()['content-disposition'], 'never the uploaded name').not.toContain('hall');
 	expect(content.headers()['content-security-policy']).toContain('sandbox');
 	expect(content.headers()['content-security-policy']).toContain("default-src 'none'");
 	expect(content.headers()['x-content-type-options']).toBe('nosniff');
@@ -72,7 +76,13 @@ test('an SVG with script is neutralised and replaces the previous plan', async (
 	expect(created.status(), await created.text()).toBe(201);
 	expect((await created.json()).contentType).toBe('image/svg+xml');
 
-	const body = await (await call('GET', `${levelUrl}/content`, { token: admin })).text();
+	const content = await call('GET', `${levelUrl}/content`, { token: admin });
+	expect(content.status()).toBe(200);
+	expect(content.headers()['content-type'], 'SVG is text: its charset is named').toBe('image/svg+xml; charset=utf-8');
+	expect(content.headers()['content-disposition']).toBe(`inline; filename="floor-plan-${levelId}.svg"`);
+	expect(content.headers()['content-security-policy']).toContain('sandbox');
+	expect(content.headers()['x-content-type-options']).toBe('nosniff');
+	const body = await content.text();
 	for (const removed of ['<script', 'onload', 'onclick', 'foreignObject', 'attacker.example', 'javascript:', 'alert(']) {
 		expect(body, `${removed} is removed`).not.toContain(removed);
 	}

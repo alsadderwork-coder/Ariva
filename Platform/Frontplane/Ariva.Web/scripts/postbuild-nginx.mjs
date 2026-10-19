@@ -3,7 +3,8 @@
 // hash, changes with every build. nginx must send that hash in script-src, so this step hashes every inline
 // script in build/index.html, checks that SvelteKit's own meta policy carries the same hashes, and replaces the
 // fail-closed Content-Security-Policy line of the copied nginx config with the policy from csp.config.js.
-// It also checks that the route announcer style allowed by hash in csp.config.js is still the one SvelteKit renders.
+// It also checks that the route announcer style allowed by hash in csp.config.js is still the one SvelteKit renders,
+// and that the nginx config still names the charset of its text answers (ARV-092).
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -77,6 +78,25 @@ const policy = serializeCsp(cspDirectives(), hashes);
 const nginx = fs.readFileSync(nginxPath, 'utf8');
 if (!cspLine.test(nginx))
 	fail('no "add_header Content-Security-Policy ... always;" line in build/nginx/default.conf.');
+
+// ARV-092 (ASVS V4.1.1): index.html, /healthz and the other text files name their encoding. nginx adds the charset to
+// text/html by itself and to the types charset_types lists; an image built without these lines would send none.
+const charsetTypes = [
+	'text/plain',
+	'text/css',
+	'text/javascript',
+	'application/javascript',
+	'application/json',
+	'image/svg+xml'
+];
+const directives = nginx.split('\n').map((line) => line.replace(/#.*$/, '').trim());
+if (!directives.includes('charset utf-8;'))
+	fail('no "charset utf-8;" in build/nginx/default.conf.');
+const typesLine = directives.find((line) => /^charset_types\s/.test(line)) ?? '';
+const listed = typesLine.replace(/^charset_types\s+|;$/g, '').split(/\s+/);
+const unlisted = charsetTypes.filter((type) => !listed.includes(type));
+if (unlisted.length > 0)
+	fail(`charset_types in build/nginx/default.conf does not list ${unlisted.join(', ')}.`);
 fs.writeFileSync(
 	nginxPath,
 	nginx.replace(cspLine, `add_header Content-Security-Policy "${policy}" always;`)

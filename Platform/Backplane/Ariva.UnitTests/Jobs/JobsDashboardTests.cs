@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using Ariva.Api.Cronz.Jobs;
 using Ariva.UnitTests.Setup;
 using FluentAssertions;
@@ -127,18 +128,37 @@ public sealed class JobsDashboardTests
         var policy = string.Join(";", page.Headers.GetValues("Content-Security-Policy"));
         policy.Should().StartWith("default-src 'none'").And.Contain("frame-ancestors 'none'").And.Contain("script-src 'self' 'sha256-")
             .And.NotContain("unsafe-eval").And.NotContain("script-src 'self' 'unsafe-inline'");
-        var inline = System.Text.RegularExpressions.Regex.Matches(html, "<script>(.*?)</script>", System.Text.RegularExpressions.RegexOptions.Singleline);
+        var inline = Regex.Matches(html, "<script>(.*?)</script>", RegexOptions.Singleline);
         inline.Should().HaveCountGreaterThanOrEqualTo(2, "the page's preload script and TickerQ's configuration script");
         foreach (System.Text.RegularExpressions.Match script in inline)
             policy.Should().Contain($"'sha256-{Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(script.Groups[1].Value)))}'");
         page.Headers.GetValues("X-Frame-Options").Should().Equal("DENY");
-        System.Text.RegularExpressions.Regex.Matches(policy, "'sha256-").Count.Should().Be(2, "exactly the preload and the configuration script");
+        Regex.Matches(policy, "'sha256-").Count.Should().Be(2, "exactly the preload and the configuration script");
 
         // The browser app's own routes get the same page, never another handler.
         using var route = await client.SendAsync(Get("/tickerq/Cron-Tickers"), TestContext.Current.CancellationToken);
         route.StatusCode.Should().Be(HttpStatusCode.OK);
         route.Content.Headers.ContentType!.MediaType.Should().Be("text/html");
         string.Join(";", route.Headers.GetValues("Content-Security-Policy")).Should().Be(policy);
+    }
+
+    [Fact]
+    public async Task PageAndFiles_Should_NameUtf8_When_Served()
+    {
+        // ARV-092 (ASVS 5.0 V4.1.1): TickerQ writes its page and files without a charset; the security headers add it.
+        await using var host = Cronz();
+        using var client = host.CreateClient();
+        var ct = TestContext.Current.CancellationToken;
+        using var page = await client.SendAsync(Get("/tickerq/"), ct);
+        var html = await page.Content.ReadAsStringAsync(ct);
+        // The page's preload script names its application relative to the base path: "src":"/assets/index-....js".
+        var script = Regex.Match(html, "\"src\":\"/(assets/[^\"]+\\.js)\"", RegexOptions.None, TimeSpan.FromSeconds(1));
+
+        page.Content.Headers.ContentType?.ToString().Should().Be("text/html; charset=utf-8");
+        script.Success.Should().BeTrue("the page loads its application from its own assets");
+        using var file = await client.SendAsync(Get("/tickerq/" + script.Groups[1].Value), ct);
+        file.StatusCode.Should().Be(HttpStatusCode.OK);
+        file.Content.Headers.ContentType?.ToString().Should().Be("text/javascript; charset=utf-8");
     }
 
     [Theory]

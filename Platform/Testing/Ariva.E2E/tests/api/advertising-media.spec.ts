@@ -19,6 +19,7 @@ import { sqlInjectionPayloads, xssPayloads } from '../support/payloads';
 // their length; markup in free space is zeroed, and data after the end, polyglots, other codecs, fragmented, live, truncated,
 // too long (over 30 seconds) and too large (over 20 MB, the installation's defaults) videos are refused. An approved video
 // plays on a display like an image.
+// ARV-092: every item goes out inline under a name the server makes from its id and stored type, never the uploaded name.
 
 test.skip(!databaseAvailable, 'needs the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true)');
 test.describe.configure({ mode: 'serial' });
@@ -267,6 +268,7 @@ test('an image is typed by its bytes, written anew without what it carried, and 
 	expect(bytes.toString('latin1')).not.toContain('<script');
 	expect(crypto.createHash('sha256').update(bytes).digest('hex')).toBe(item.sha256);
 	expect(content.headers.get('content-type')).toBe('image/png');
+	expect(content.headers.get('content-disposition'), 'a server name, never summer.png').toBe(`inline; filename="advertisement-${item.id}.png"`);
 	expect(content.headers.get('content-security-policy')).toContain('sandbox');
 	expect(content.headers.get('content-security-policy')).toContain("default-src 'none'");
 	expect(content.headers.get('x-content-type-options')).toBe('nosniff');
@@ -350,6 +352,7 @@ test('a video is typed by its container, kept without its metadata and with its 
 		const content = await fetch(`${mediaUrl(site, item.id)}/content`, { headers: { Authorization: `Bearer ${videoMaker}` } });
 		expect(content.status).toBe(200);
 		expect(content.headers.get('content-type')).toBe(type);
+		expect(content.headers.get('content-disposition'), name).toBe(`inline; filename="advertisement-${item.id}.${type.split('/')[1]}"`);
 		expect(content.headers.get('content-security-policy')).toContain('sandbox');
 		expect(content.headers.get('x-content-type-options')).toBe('nosniff');
 		const bytes = Buffer.from(await content.arrayBuffer());
@@ -380,6 +383,7 @@ test('a video is typed by its container, kept without its metadata and with its 
 	const shown = await fetchAsDisplay(video.id, displays.advertising);
 	expect(shown.status).toBe(200);
 	expect(shown.headers.get('content-type')).toBe('video/webm');
+	expect(shown.headers.get('content-disposition'), 'the display fetch too').toBe(`inline; filename="advertisement-${video.id}.webm"`);
 	expect(shown.headers.get('content-security-policy')).toContain('sandbox');
 	expect(shown.headers.get('cache-control')).toContain('no-store');
 	expect((await fetchAsDisplay(video.id, displays.instructions)).status, 'a display set to instructions').toBe(404);

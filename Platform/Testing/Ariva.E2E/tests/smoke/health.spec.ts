@@ -150,8 +150,17 @@ smoke(target.local ? webTitle : `${webTitle}, and keeps its health probes off th
 	expect(headers['content-security-policy'], 'Content-Security-Policy').toContain("frame-ancestors 'none'");
 	expect(headers['content-security-policy']).not.toContain("'unsafe-inline'");
 	expect(headers['x-content-type-options']).toBe('nosniff');
+	// ARV-092 (ASVS V4.1.1): the web image's nginx names the page's charset. The local stack serves the web app with
+	// `vite preview`, which sends text/html alone, so only a deployed run (the image behind the ingress) checks it.
+	if (!target.local) expect(headers['content-type'], 'Content-Type').toMatch(/^text\/html;\s*charset=utf-8$/i);
 	await expect(page.getByTestId('login-form')).toBeVisible();
 	await guards.expectClean();
+	if (target.local) return;
 	// The sign-in page above is the web pod's own answer behind the ingress.
-	if (!target.local) await expectProbesNotRouted('the web host', target.base);
+	await expectProbesNotRouted('the web host', target.base);
+	// ARV-092 (ASVS V13.4.1): the image keeps no copy of its nginx configuration in the web root, so the path gets the app's
+	// page. Deployed runs only: `vite preview` serves the whole build folder, the configuration included.
+	const config = await send('GET', `${target.base}/nginx/default.conf`, { headers: { Accept: 'text/html' } });
+	expect(config.headers['content-type'] ?? '', 'GET /nginx/default.conf').toMatch(/^text\/html/i);
+	expect(config.text, 'GET /nginx/default.conf').not.toMatch(/server_tokens|listen\.d/);
 });

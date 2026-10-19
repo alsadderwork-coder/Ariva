@@ -545,6 +545,54 @@
       "dependsOn": [
         "ARV-084"
       ]
+    },
+    {
+      "id": "ARV-201",
+      "title": "[E5] Floor plan rasters stored without their metadata",
+      "description": "Found in ARV-092 (wiki/13a-File-Handling.md): PNG and JPEG floor plans are stored byte for byte, so EXIF and text chunks (author, software, GPS, comments) are kept, on upload and on bundle import; only SVG plans are rebuilt. Re-encode raster plans (as the advertisement images are, SkiaSharp) or strip their metadata, keeping the pixel size the calibration depends on.",
+      "acceptanceCriteria": [
+        "A PNG or JPEG plan with EXIF, XMP and text chunks is stored and served without them, by upload and by site configuration bundle import, with the pixel size and calibration unchanged; tests on each path",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 300,
+      "passes": false,
+      "notes": "Filed 2026-10-19 from the ARV-092 docs review.",
+      "dependsOn": []
+    },
+    {
+      "id": "ARV-202",
+      "title": "[E19] Retired advertisement files removable, and the preview serves live items only",
+      "description": "Found in ARV-092: a retired advertisement keeps its file in storage and the library preview still serves it, because OpenAsync does not filter on status; no endpoint removes the file. Decide with the owner: serve retired items to their site managers only, and remove the file after a retention period or on request (with the audit trail kept).",
+      "acceptanceCriteria": [
+        "The library preview and the display endpoint serve a retired item only as the owner decides (tested), and a retired item file can be removed by the job or the endpoint the owner chooses, audited",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 300,
+      "passes": false,
+      "notes": "Filed 2026-10-19 from the ARV-092 docs review. Needs the owner decision on retention of retired advertisement files.",
+      "dependsOn": []
+    },
+    {
+      "id": "ARV-203",
+      "title": "[E17] Refused uploads audited",
+      "description": "Found in ARV-092: a file refused with 400 or 413 writes no security event, and refused floor plan and advertisement uploads, SSIM previews and SSIM imports refused before the token matches are not audited, so repeated attempts to upload a crafted file leave little trace.",
+      "acceptanceCriteria": [
+        "Every refused upload writes one audit entry or security event (who, which upload, the fixed reason, never the file or its name), throttled like the ARV-091 events, with a test per upload",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 300,
+      "passes": false,
+      "notes": "Filed 2026-10-19 from the ARV-092 docs review.",
+      "dependsOn": []
     }
   ]
 }
