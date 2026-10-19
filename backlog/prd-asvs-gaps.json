@@ -294,10 +294,29 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 109,
-      "passes": false,
-      "notes": "",
+      "passes": true,
+      "notes": "Split 2026-10-19: the authentication endpoints (Main Auth controller: sign-in, password change, TOTP confirmation, step-up, recovery codes; Integration AuthController: the client credentials and TOTP token exchange) keep the lenient JSON and query parsing until the login freeze lifts (owner, in force since 2026-10-14: no sign-in, login, password, TOTP or authentication changes for now); ARV-089a takes them. Criterion 2: besides Map and SvelteMap, objects keyed by server data are built with Object.fromEntries or spreads (own properties, never the __proto__ setter; they still inherit Object.prototype on reads, recorded in asvs-l2 V15.3.6). Outside the freeze on purpose: the admin password and TOTP resets (Users) and the integration client secret and TOTP rotation (IntegrationClients) take no body, so the only change for them is that a repeated query parameter answers 400.",
       "dependsOn": [
         "ARV-074"
+      ]
+    },
+    {
+      "id": "ARV-089a",
+      "title": "[ASVS] Strict input parsing on the authentication endpoints",
+      "description": "ARV-089 leaves the authentication endpoints (Main Auth controller, Integration AuthController) on the lenient JSON and query parsing because of the login freeze. ASVS 5.0: V2.2.1, V15.3.5, V15.3.7. Effort XS.",
+      "acceptanceCriteria": [
+        "The strict JSON and repeated query parameter refusal of ARV-089 apply to the Main Auth controller and the Integration AuthController (their exemption removed), with a 400 test per endpoint and the web sign-in, password change and MFA flows still passing",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 109,
+      "passes": false,
+      "notes": "Split from ARV-089 on 2026-10-19 (login freeze: the owner asked for no sign-in, login, password, TOTP or authentication changes for now). Start only when the owner lifts the freeze.",
+      "dependsOn": [
+        "ARV-089"
       ]
     },
     {

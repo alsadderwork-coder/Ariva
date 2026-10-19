@@ -165,7 +165,10 @@
 							values: { language: $_(`displays.languages.${language}`) }
 						})}
 						<input
-							bind:value={words[language].title}
+							bind:value={
+								() => words[language].title,
+								(title) => (words = { ...words, [language]: { ...words[language], title } })
+							}
 							maxlength={slides.limits.title}
 							dir={rtl.has(language) ? 'rtl' : 'ltr'}
 							lang={language}
@@ -177,7 +180,10 @@
 							values: { language: $_(`displays.languages.${language}`) }
 						})}
 						<input
-							bind:value={words[language].body}
+							bind:value={
+								() => words[language].body,
+								(body) => (words = { ...words, [language]: { ...words[language], body } })
+							}
 							maxlength={slides.limits.body}
 							dir={rtl.has(language) ? 'rtl' : 'ltr'}
 							lang={language}

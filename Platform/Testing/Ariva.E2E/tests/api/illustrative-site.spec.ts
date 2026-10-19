@@ -6,9 +6,10 @@ import { markupFragments, sqlInjectionPayloads, xssPayloads } from '../support/p
 
 // ARV-139a: the illustrative AUH Terminal A arrivals site (AUH-TA), seeded beside the fictional DMO in vm-local. The
 // sites API says which site is "Illustrative, not surveyed"; the flag is set by the seed alone (CWE-269): no body of the
-// admin API can set it on a new site or set or clear it on an existing one, whatever the member is called. Another
-// site's caller gets 404 without data, an anonymous one 401, a role without the permission 403; a display of AUH-TA tells
-// its player to show the note, a display of DMO does not. The seed's published geometry and plan are readable as usual.
+// admin API can set it on a new site or set or clear it on an existing one, whatever the member is called (since ARV-089
+// a body with the member is refused with 400). Another site's caller gets 404 without data, an anonymous one 401, a role
+// without the permission 403; a display of AUH-TA tells its player to show the note, a display of DMO does not. The seed's
+// published geometry and plan are readable as usual.
 
 test.skip(!databaseAvailable, 'the seeds need the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true)');
 
@@ -56,34 +57,50 @@ test('the sites API flags AUH-TA illustrative and DMO not', async () => {
 test('the admin API cannot set the flag on a new site', async () => {
 	const admin = await signIn(accounts().SystemAdministrator);
 	const code = `IL-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
-	const body: Record<string, unknown> = { code, name: `Illustrative probe ${xssPayloads[1]}` };
-	for (const member of flagMembers) body[member] = true;
+	const name = `Illustrative probe ${xssPayloads[1]}`;
 
-	const created = await call('POST', adminSites, { token: admin.accessToken, data: body });
+	// ARV-089: the request model has no such member, so a body naming one is refused (400) and creates nothing, whatever
+	// the spelling; the answer names no member sent.
+	for (const member of flagMembers) {
+		const refused = await call('POST', adminSites, { token: admin.accessToken, data: { code, name, [member]: true } });
+		expect(refused.status(), member).toBe(400);
+		expect(await refused.text(), member).not.toContain(member);
+	}
+	expect((await call('GET', `${sites}/${code}`, { token: admin.accessToken })).status(), 'no site was created').toBe(404);
 
+	const created = await call('POST', adminSites, { token: admin.accessToken, data: { code, name } });
 	expect(created.status(), await created.text()).toBe(201);
 	expect(((await created.json()) as SiteView).illustrative).toBe(false);
 	expect(((await (await call('GET', `${sites}/${code}`, { token: admin.accessToken })).json()) as SiteView).illustrative).toBe(false);
 
-	// A rename (the columns the runtime role may update) with the flag beside it changes the name only.
-	const renamed = await call('PUT', `${adminSites}/${code}`, { token: admin.accessToken, data: { name: 'Renamed probe', ...Object.fromEntries(flagMembers.map((m) => [m, true])) } });
+	// A rename (the columns the runtime role may update) with the flag beside it is refused and changes nothing; the name
+	// alone changes the name only.
+	for (const member of flagMembers) {
+		const refused = await call('PUT', `${adminSites}/${code}`, { token: admin.accessToken, data: { name: 'Renamed probe', [member]: true } });
+		expect(refused.status(), member).toBe(400);
+	}
+	expect(((await (await call('GET', `${sites}/${code}`, { token: admin.accessToken })).json()) as SiteView).name, 'a refused rename changes nothing').toBe(name);
+	const renamed = await call('PUT', `${adminSites}/${code}`, { token: admin.accessToken, data: { name: 'Renamed probe' } });
 	expect(renamed.status(), await renamed.text()).toBe(200);
 	expect((await renamed.json()) as SiteView).toMatchObject({ name: 'Renamed probe', illustrative: false });
 	// The name is text: the probe comes back as the characters sent, never as markup the API rendered.
-	expect(((await created.json()) as SiteView).name).toBe(`Illustrative probe ${xssPayloads[1]}`);
+	expect(((await created.json()) as SiteView).name).toBe(name);
 });
 
 test('the admin API cannot clear the flag of AUH-TA', async () => {
 	const admin = await signIn(accounts().SystemAdministrator);
 	const auh = await seeded(admin.accessToken);
 
+	// ARV-089: a member the request model does not have is refused (400), whatever its spelling and value.
 	for (const value of [false, null, 0, 'false', '']) {
-		const body: Record<string, unknown> = { name: auh.name };
-		for (const member of flagMembers) body[member] = value;
-		const response = await call('PUT', `${adminSites}/AUH-TA`, { token: admin.accessToken, data: body });
-		expect(response.status(), JSON.stringify(value)).toBe(200);
-		expect(((await response.json()) as SiteView).illustrative, JSON.stringify(value)).toBe(true);
+		for (const member of flagMembers) {
+			const response = await call('PUT', `${adminSites}/AUH-TA`, { token: admin.accessToken, data: { name: auh.name, [member]: value } });
+			expect(response.status(), `${member} ${JSON.stringify(value)}`).toBe(400);
+		}
 	}
+	const renamed = await call('PUT', `${adminSites}/AUH-TA`, { token: admin.accessToken, data: { name: auh.name } });
+	expect(renamed.status(), await renamed.text()).toBe(200);
+	expect(((await renamed.json()) as SiteView).illustrative, 'the name alone leaves the flag').toBe(true);
 	expect((await seeded(admin.accessToken)).illustrative).toBe(true);
 });
 
@@ -119,10 +136,10 @@ test('attack payloads in the site code answer 4xx without markup or data', async
 		for (const fragment of markupFragments) expect(text, payload).not.toContain(fragment);
 		expect(text, payload).not.toContain('illustrative');
 	}
-	// A flag of the wrong type in a body is ignored or refused, never a 5xx and never applied.
+	// A flag of the wrong type in a body is refused (an unknown member, ARV-089), never a 5xx and never applied.
 	for (const value of [{ nested: true }, [true], 'true'.repeat(1000), 1e308]) {
 		const response = await call('PUT', `${adminSites}/AUH-TA`, { token: admin.accessToken, data: { name: (await seeded(admin.accessToken)).name, illustrative: value } });
-		expect(response.status(), JSON.stringify(value).slice(0, 40)).toBeLessThan(500);
+		expect(response.status(), JSON.stringify(value).slice(0, 40)).toBe(400);
 	}
 	expect((await seeded(admin.accessToken)).illustrative).toBe(true);
 });

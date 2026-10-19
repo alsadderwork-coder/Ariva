@@ -192,7 +192,7 @@ test('an administrator cannot change its own account on the screen, and the API 
 	const token = (await signIn(accounts().webAdmin)).accessToken;
 	const self = claimsOf(token).sub as string;
 	expect((await call('POST', `${usersUrl}/${self}/disable`, { token })).status(), 'own account disabled').toBe(400);
-	// Fields the profile does not have are ignored, not applied (mass assignment).
+	// Fields the profile does not have are refused, never applied (mass assignment; ARV-089: an unknown member is a 400).
 	const before = await (await call('GET', `${usersUrl}/${self}`, { token })).json();
 	const updated = await call('PUT', `${usersUrl}/${self}`, {
 		token,
@@ -205,8 +205,9 @@ test('an administrator cannot change its own account on the screen, and the API 
 			sites: ['E2E1']
 		}
 	});
-	expect(updated.status()).toBe(200);
-	const after = await updated.json();
+	expect(updated.status()).toBe(400);
+	expect(await updated.text(), 'the answer names no member sent').not.toContain('isDisabled');
+	const after = await (await call('GET', `${usersUrl}/${self}`, { token })).json();
 	expect([after.roles, after.allSites, after.isDisabled, after.sites]).toEqual([before.roles, before.allSites, before.isDisabled, before.sites]);
 	// A name that would read as more audit fields is one quoted value; control characters are refused.
 	expect((await call('PUT', `${usersUrl}/${self}`, { token, data: { displayName: 'Admin\nroles=x' } })).status(), 'a line break in a name').toBe(400);

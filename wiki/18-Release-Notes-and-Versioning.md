@@ -146,6 +146,17 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-089: strict input parsing (2026-10-19)
+
+Changed: Ariva.Api.Main, Ariva.Api.Ingest and Ariva.Api.Integration read request JSON strictly and refuse a repeated query parameter. A client that sent a member the request does not define, a member twice (also when the two differ only in case), a number as a string (`"5"` for `5`) or the same query parameter more than once now gets 400, where the member used to be ignored, one of the values taken or the string read as a number. A body refusal is the usual problem with `errors.body` "The input was not valid."; a repeated query parameter answers the detail "A query parameter appears more than once."; neither repeats what was sent. Member names still match in any case, answers are unchanged, and authentication and permissions are checked first (401 and 403 as before). Not changed: the sign-in and the other `api/auth` endpoints of Ariva.Api.Main and the integration token exchange keep their earlier parsing until ARV-089a (the owner's login freeze); file uploads, the live hub, the health probes and the simulator. Integration batches, sensor pushes and site configuration bundles were already strict. Ariva.Web now compiles with strict TypeScript and the security gate refuses prototype pollution in it (SEC-131, SEC-132); nothing changes on screen. No database script, endpoint or permission changes.
+
+Upgrade steps:
+
+1. Before the upgrade, check every script or tool that calls the APIs directly (operator scripts, monitoring checks, reporting tools, sensor gateways, integrations): it sends only the members the endpoint documents, each once, numbers as JSON numbers, and each query parameter once.
+2. After the upgrade, a 400 with one of the two texts above points to such a call: fix the caller.
+
+Rollback notes: rolling the chart back alone restores the earlier parsing (there is no script to undo).
+
 ### ARV-085: network policies, trusted proxies and private probes (2026-10-19)
 
 Changed: in k8s-prd every Ariva pod is isolated by NetworkPolicies, a default deny and exactly the firewall matrix's flows (wiki 05 section Network policies), on in `values-k8s-prd.yaml` and refused off there by the chart and by the prd environment of both Helmfiles (state value `networkPolicies`); the API hosts trust `X-Forwarded-For` only from the ingress controller's pod network, the new Helm value `ingressController.podNetworks` (the private ranges are gone from `appsettings.base.k8s-prd.json`), and a k8s-prd host refuses to start without a narrow network there; every Ingress, in every environment, answers `/health`, `/healthz` and anything under them 404; the Cronz Ingress needs `sourceRanges` in k8s-prd. Dev, demo and localk8s render no NetworkPolicy and keep their trusted ranges. No database script, endpoint or permission changes.

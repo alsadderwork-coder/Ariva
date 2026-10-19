@@ -36,9 +36,8 @@
 	function set(which: 0 | 1, axis: 'x' | 'y', value: number): void {
 		if (!Number.isFinite(value)) return;
 		const limit = axis === 'x' ? width : depth;
-		const next: [Point, Point] = [{ ...ends[0] }, { ...ends[1] }];
-		next[which] = { ...next[which], [axis]: round(Math.min(Math.max(value, 0), limit)) };
-		onEnds(next);
+		const moved: Point = { ...ends[which], [axis]: round(Math.min(Math.max(value, 0), limit)) };
+		onEnds(which === 0 ? [moved, { ...ends[1] }] : [{ ...ends[0] }, moved]);
 	}
 </script>
 

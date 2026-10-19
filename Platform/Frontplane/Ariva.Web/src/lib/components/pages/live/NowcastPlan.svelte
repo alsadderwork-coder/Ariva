@@ -9,7 +9,8 @@
 		width: number;
 		depth: number;
 		zones: { key: string; name: string; points: Point[] }[];
-		snapshots: Record<string, ZoneSnapshot>;
+		/** The latest snapshot of each zone, by zone key. */
+		snapshots: ReadonlyMap<string, ZoneSnapshot>;
 		selected: string | null;
 		plan?: { url: string; x: number; y: number; width: number; height: number } | null;
 		now: number;
@@ -57,7 +58,7 @@
 		/>
 	{/if}
 	{#each zones as zone (zone.key)}
-		{@const snapshot = snapshots[zone.key]}
+		{@const snapshot = snapshots.get(zone.key)}
 		{@const status = waitStatus(snapshot, now)}
 		{@const middle = centre(zone.points)}
 		<g data-testid="plan-zone" data-zone={zone.name} data-status={status}>

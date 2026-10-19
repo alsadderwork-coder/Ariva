@@ -10,11 +10,12 @@ using Microsoft.Extensions.DependencyInjection;
 namespace Ariva.UnitTests.Security;
 
 /// <summary>
-/// Fixture: an MVC controller that <see cref="ErrorHandlingTests"/> mounts (<see cref="Mount"/>) in a host whose own endpoints
-/// bind no typed route or query value and no JSON body through MVC (Ingest reads its pushes itself; Integration binds one
-/// anonymous body), so the shared <c>AddAppControllers</c> settings are proven on every host: a route or query value that does
-/// not bind and a JSON body that does not parse answer 400 without repeating what was sent (ARV-104b, CWE-501). Never mounted
-/// outside that test; it holds a permission like any action.
+/// Fixture: an MVC controller that <see cref="ErrorHandlingTests"/> and <see cref="StrictInputTests"/> mount (<see cref="Mount"/>)
+/// in a host whose own endpoints bind no typed route or query value and no JSON body through MVC (Ingest reads its pushes
+/// itself; Integration binds one anonymous body), so the shared <c>AddAppControllers</c> settings are proven on every host: a
+/// route or query value that does not bind, a JSON body that does not parse or is not strict JSON (ARV-089) and a repeated
+/// query parameter answer 400 without repeating what was sent (ARV-104b, CWE-501). Never mounted outside those tests; it holds
+/// a permission like any action.
 /// </summary>
 [ApiController]
 [Route("fixture/binding")]
@@ -51,5 +52,5 @@ public sealed class BindingProbeController : ControllerBase
     #endregion
 }
 
-/// <summary>Fixture: the probe's body.</summary>
-public sealed record BindingProbeRequest(Guid? Id, [property: MaxLength(16)] string Name);
+/// <summary>Fixture: the probe's body, with a number for the strict number handling (ARV-089); MVC validates a record's constructor parameters.</summary>
+public sealed record BindingProbeRequest(Guid? Id, [MaxLength(16)] string Name, int? Count = null);

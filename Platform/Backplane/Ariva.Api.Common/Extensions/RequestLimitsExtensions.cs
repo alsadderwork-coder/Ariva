@@ -1,3 +1,4 @@
+using Ariva.Api.Common.Filters;
 using Ariva.Api.Common.Settings;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
@@ -8,7 +9,8 @@ using Microsoft.Extensions.Options;
 namespace Ariva.Api.Common.Extensions;
 
 /// <summary>
-/// Input size limits for Kestrel, forms and JSON (CWE-120), read from <c>Security:Limits</c>.
+/// Input size limits for Kestrel, forms and JSON (CWE-120), read from <c>Security:Limits</c>, and strict JSON reading
+/// (ARV-089).
 /// </summary>
 public static class RequestLimitsExtensions
 {
@@ -18,8 +20,9 @@ public static class RequestLimitsExtensions
     /// Applies <see cref="RequestLimitsSettings"/> to Kestrel (body, request line, headers, header timeout and no
     /// <c>Server</c> header; every host runs on Kestrel in a Linux container), form parsing and the System.Text.Json
     /// options used by controllers and minimal APIs (<c>MaxDepth</c>). The options are bound lazily, so configuration
-    /// added by tests or by later configuration sources is honoured. Rejecting unknown JSON properties
-    /// (<c>JsonUnmappedMemberHandling.Disallow</c>) is a later story, together with the request models.
+    /// added by tests or by later configuration sources is honoured. The same JSON options read strictly (ARV-089,
+    /// <see cref="StrictJson"/>): an unknown member (<c>JsonUnmappedMemberHandling.Disallow</c>), a duplicate property and a
+    /// number sent as a string are refused, which a controller answers with its 400 without paths or values.
     /// </summary>
     /// <param name="services">The host's service collection.</param>
     /// <param name="configuration">The host's layered configuration.</param>
@@ -62,11 +65,19 @@ public static class RequestLimitsExtensions
 
         services
             .AddOptions<Microsoft.AspNetCore.Http.Json.JsonOptions>()
-            .Configure<IOptions<RequestLimitsSettings>>((json, settings) => json.SerializerOptions.MaxDepth = settings.Value.MaxJsonDepth);
+            .Configure<IOptions<RequestLimitsSettings>>((json, settings) =>
+            {
+                json.SerializerOptions.MaxDepth = settings.Value.MaxJsonDepth;
+                StrictJson.Apply(json.SerializerOptions);
+            });
 
         services
             .AddOptions<Microsoft.AspNetCore.Mvc.JsonOptions>()
-            .Configure<IOptions<RequestLimitsSettings>>((json, settings) => json.JsonSerializerOptions.MaxDepth = settings.Value.MaxJsonDepth);
+            .Configure<IOptions<RequestLimitsSettings>>((json, settings) =>
+            {
+                json.JsonSerializerOptions.MaxDepth = settings.Value.MaxJsonDepth;
+                StrictJson.Apply(json.JsonSerializerOptions);
+            });
 
         return services;
     }

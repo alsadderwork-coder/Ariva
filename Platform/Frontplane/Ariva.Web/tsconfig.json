@@ -11,8 +11,8 @@
 		"strict": true,
 		"moduleResolution": "bundler",
 		"allowArbitraryExtensions": true,
-		"strictNullChecks": false,
-		"noImplicitAny": false
+		"strictNullChecks": true,
+		"noImplicitAny": true
 	}
 	// Path aliases are handled by https://kit.svelte.dev/docs/configuration#alias
 	//

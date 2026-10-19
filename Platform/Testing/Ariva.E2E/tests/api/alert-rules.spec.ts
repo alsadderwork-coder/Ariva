@@ -112,15 +112,9 @@ test('typed values only: numbers for enums, misfit comparators, unknown zones an
 		['name with a bidirectional override', { name: 'Rule \u202Eevil' }],
 		['an expression field', { expression: 'queue > 10', name: 'E2E expression' }]
 	] as const) {
+		// An expression field is an unknown member, refused like every other (ARV-089): the rule is the typed fields and
+		// nothing evaluates an extra one (CWE-94).
 		const response = await call('POST', api, { token: administrator, data: rule(overrides) });
-		if (why === 'an expression field' && response.status() !== 400) {
-			// Refused, or ignored as an unknown member: the rule is the typed fields, nothing evaluates the extra one (CWE-94).
-			expect(response.status(), `${why}: ${await response.text()}`).toBe(201);
-			const view = await response.json();
-			expect(view).not.toHaveProperty('expression');
-			await call('DELETE', `${api}/${view.id}`, { token: administrator });
-			continue;
-		}
 		expect(response.status(), `${why}: ${await response.text()}`).toBe(400);
 		expectNoLeak(await response.text(), why);
 	}

@@ -140,7 +140,7 @@
 	}
 
 	function set(entity: EntityName, items: { id: string }[], total: number): void {
-		totals[entity] = total;
+		totals = { ...totals, [entity]: total };
 		if (entity === 'airport') airports = items as Airport[];
 		else if (entity === 'terminal') terminals = items as Terminal[];
 		else if (entity === 'level') levels = items as Level[];
@@ -150,12 +150,12 @@
 
 	/** Selects an item and clears and reloads everything below it. */
 	async function select(entity: EntityName, id: string | null): Promise<void> {
-		selection[entity] = id;
+		selection = { ...selection, [entity]: id };
 		focus = id ? entity : null;
 		adding = null;
 		const below = order.slice(order.indexOf(entity) + 1);
 		for (const child of below) {
-			selection[child] = null;
+			selection = { ...selection, [child]: null };
 			set(child, [], 0);
 		}
 		if (id && below.length) await load(below[0]);

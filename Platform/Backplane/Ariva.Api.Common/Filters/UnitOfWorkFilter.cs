@@ -38,11 +38,12 @@ public static class ControllerExtensions
 
     /// <summary>
     /// MVC controllers with the Ariva filters: no NUL character in any input (ARV-063, <see cref="NulCharacterFilter"/>
-    /// and <see cref="NulRejectingStringConverter"/>), the unit of work, and 400 answers that never repeat what a caller sent:
-    /// model binding messages without the attempted value (<see cref="WithoutAttemptedValues"/>), JSON reader messages
-    /// replaced by a fixed text (<c>AllowInputFormatterExceptionMessages</c> false: System.Text.Json's message quotes the path,
-    /// and a path holds the caller's member names) and JSON paths replaced by <see cref="BodyErrorKey"/>
-    /// (<see cref="WithoutBodyPaths"/>).
+    /// and <see cref="NulRejectingStringConverter"/>), no query parameter sent twice (ARV-089, <see cref="RepeatedQueryFilter"/>;
+    /// the JSON itself is read strictly through <see cref="StrictJson"/>, set with the request limits), the unit of work, and
+    /// 400 answers that never repeat what a caller sent: model binding messages without the attempted value
+    /// (<see cref="WithoutAttemptedValues"/>), JSON reader messages replaced by a fixed text
+    /// (<c>AllowInputFormatterExceptionMessages</c> false: System.Text.Json's message quotes the path, and a path holds the
+    /// caller's member names) and JSON paths replaced by <see cref="BodyErrorKey"/> (<see cref="WithoutBodyPaths"/>).
     /// </summary>
     public static IMvcBuilder AddAppControllers(this IServiceCollection services)
     {
@@ -50,6 +51,7 @@ public static class ControllerExtensions
         return services
             .AddControllers(options =>
             {
+                options.Filters.Add(new RepeatedQueryFilter());
                 options.Filters.Add<NulCharacterFilter>();
                 options.Filters.Add<UnitOfWorkFilter>();
                 WithoutAttemptedValues(options.ModelBindingMessageProvider);

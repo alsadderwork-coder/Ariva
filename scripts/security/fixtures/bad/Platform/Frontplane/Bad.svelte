@@ -7,3 +7,5 @@
 </script>
 
 <div>{@html userInput}</div>
+<input bind:value={notes[alert.id]} />
+<input bind:value={words[language].title} />

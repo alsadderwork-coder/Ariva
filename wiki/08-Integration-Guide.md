@@ -69,6 +69,8 @@ Rate limits and lockout on `/api/v1/auth`: 5 attempts per minute per client, 20 
 
 Formats (ARV-042): the client id is `ic_` and 26 lower-case letters or digits 2 to 7; the secret is `ics_` and 43 base64url characters. Any change an administrator makes to the client (scopes, sites, networks, the per-request policy, a new secret or seed, disabling it) stops the tokens it already holds; exchange again. Each call is also checked against the client's allowed networks.
 
+Parsing: the token exchange still reads its body as before ARV-089 (the owner's login freeze): a member it does not know is ignored, a member sent twice is read as before and a repeated query parameter is not refused. Target procedure, not built yet: ARV-089a makes the exchange as strict as the other endpoints (section 5), so send exactly the three members above, each once, and no query string.
+
 Connectivity check: `GET /api/v1/integration/sites/{siteCode}/flights/check` (scope `flights:write`) and `GET /api/v1/integration/sites/{siteCode}/immigration/check` (scope `immigration:write`) answer 200 with your client id, scopes and sites when your token holds that scope for that site, 403 when it does not and 401 without a valid token (or without a fresh `X-TOTP-Code` when your policy needs one). They change nothing; use them to test your set-up.
 
 ### C# (Otp.NET)
@@ -173,6 +175,7 @@ curl -sS -X POST "$BASE/api/v1/integration/sites/DMO/flights/events" \
 | JSON nesting depth, batches | 8 |
 | Unknown or repeated members | Rejected (400); member names are exact camelCase |
 | Comments, trailing commas, numbers as strings | Rejected (400) |
+| A query parameter sent more than once | Rejected (400 with the detail `A query parameter appears more than once.`, which names no parameter) on every endpoint except the token exchange (ARV-089; section 4); send each parameter once |
 | Timestamps | UTC, ISO 8601 ending in `Z` (for example `2026-10-01T14:21:00Z`); a time with an offset is refused |
 
 Authorisation is by scope (`[IntegrationScope("flights:write")]` on each endpoint) and by site binding: a client bound to `DMO` cannot write `BEY`. Every call is audited with client, scope, endpoint, site, result and the payload's SHA-256.
@@ -639,7 +642,7 @@ What this means for the system Ariva calls (ARV-045):
 |---|---|---|
 | 200 | Batch processed; check `refused` and each item's `errors` | Fix and resend the refused items as a new batch with a new `Idempotency-Key` |
 | 200 with `Idempotent-Replayed: true` | A retry of a batch already processed | Nothing to do; the answer is the original one |
-| 400 | Not a batch: malformed JSON, unknown or repeated member, wrong type, JSON deeper than 8 levels, no or more than 500 items, a bad or missing `Idempotency-Key`, a `messageTimeUtc` out of range; malformed AIDX | Fix the payload; do not retry unchanged |
+| 400 | Not a batch: malformed JSON, unknown or repeated member, wrong type, JSON deeper than 8 levels, no or more than 500 items, a bad or missing `Idempotency-Key`, a `messageTimeUtc` out of range; malformed AIDX; on any endpoint but the token exchange, a query parameter sent more than once | Fix the payload; do not retry unchanged |
 | 415 | Not `application/json` | Send JSON |
 | 422 | The `Idempotency-Key` was used in the last 24 hours for another request | Use a new key for new data |
 | 429 | Too many batches from your client in a minute, or too many batches arriving at once | Wait (`Retry-After` when given), then retry with the same `Idempotency-Key`; nothing was applied |
@@ -677,7 +680,7 @@ The reference scenario is the seeded day at the fictional Demo International Air
 | 6 | All timestamps in UTC; event times are when things happened, not when sent | Payload review |
 | 7 | Flight identity changes (diversion, renumbering, codeshare) handled; out-of-order delivery tested | Replay of a recorded day |
 | 8 | Expected update cadence agreed and met, so the stale-feed alarm is meaningful | Agreement record |
-| 9 | No unknown fields; no personal, document or officer data in any payload | Payload review, data-boundary check |
+| 9 | No unknown or repeated fields and no query parameter sent twice; no personal, document or officer data in any payload | Payload review, data-boundary check |
 | 10 | Site codes and desk, gate and counter codes match the site's configuration | Mapping table |
 | 11 | Errors handled per section 12; backoff on 5xx; no retry on 4xx | Fault-injection test |
 | 12 | Client clock on NTP | Configuration evidence |

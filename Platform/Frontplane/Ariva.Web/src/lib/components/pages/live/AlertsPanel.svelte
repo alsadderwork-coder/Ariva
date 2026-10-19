@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { BellRing } from '@lucide/svelte';
+	import { SvelteMap } from 'svelte/reactivity';
 	import { _ } from 'svelte-i18n';
 	import { toast } from 'svelte-sonner';
 	import StatusBadge, { type StatusTone } from '$lib/components/shared/StatusBadge.svelte';
@@ -15,7 +16,8 @@
 
 	let { alerts, onChanged }: Props = $props();
 
-	let notes = $state<Record<string, string>>({});
+	/** The note typed for each alert, by alert id. */
+	const notes = new SvelteMap<string, string>();
 	let busy = $state<string | null>(null);
 
 	const severityTone: Record<string, StatusTone> = {
@@ -34,7 +36,7 @@
 	async function acknowledge(alert: Alert): Promise<void> {
 		if (busy) return;
 		busy = alert.id;
-		const result = await operations.acknowledge(alert.id, (notes[alert.id] ?? '').trim());
+		const result = await operations.acknowledge(alert.id, (notes.get(alert.id) ?? '').trim());
 		busy = null;
 		if (result.hasErrors) {
 			toast.error(
@@ -116,7 +118,7 @@
 							<label class="flex min-w-0 flex-1 flex-col gap-1 text-xs font-medium">
 								{$_('liveOperations.alerts.note')}
 								<input
-									bind:value={notes[alert.id]}
+									bind:value={() => notes.get(alert.id) ?? '', (note) => notes.set(alert.id, note)}
 									maxlength="500"
 									class="h-8 rounded-md border border-input bg-background px-2 text-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
 								/>

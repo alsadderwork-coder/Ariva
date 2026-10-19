@@ -285,7 +285,10 @@
 							values: { language: $_(`displays.languages.${language}`) }
 						})}
 						<input
-							bind:value={entry.labels[language]}
+							bind:value={
+								() => entry.labels[language] ?? '',
+								(label) => (entry.labels = { ...entry.labels, [language]: label })
+							}
 							required
 							maxlength={displays.limits.label}
 							dir={language === 'ar' ? 'rtl' : 'ltr'}
@@ -326,7 +329,10 @@
 					values: { language: $_(`displays.languages.${language}`) }
 				})}
 				<input
-					bind:value={fallback[language]}
+					bind:value={
+						() => fallback[language] ?? '',
+						(message) => (fallback = { ...fallback, [language]: message })
+					}
 					required
 					maxlength={displays.limits.message}
 					dir={language === 'ar' ? 'rtl' : 'ltr'}

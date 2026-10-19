@@ -27,6 +27,20 @@ const at = (time: string) => `${day}T${time}:00Z`;
 const fromLocal = `${day}T02:50`;
 const toLocal = `${day}T03:40`;
 
+/** The members of a rule request (AlertRuleRequest). */
+const requestMembers = [
+	'siteCode', 'name', 'zones', 'metric', 'comparator', 'threshold', 'minQueueLength', 'clearThreshold', 'sustainMinutes', 'clearAfterMinutes',
+	'severity', 'ownerRole', 'escalateAfterMinutes', 'escalateToRole', 'escalationContact', 'notifyByEmail', 'enabled', 'leadMinutes'
+] as const;
+
+/**
+ * A stored rule as a rule request: its request members only. ARV-089: a body member the request model does not have (the
+ * view's id, code or audit fields) is refused with 400, so a rule read back is sent as the screen sends it.
+ */
+function asRequest(rule: Record<string, unknown>): Record<string, unknown> {
+	return Object.fromEntries(requestMembers.filter((member) => member in rule).map((member) => [member, rule[member]]));
+}
+
 function database(): pg.Client {
 	return new pg.Client({
 		host: process.env.Database__Host || 'localhost',
@@ -202,7 +216,7 @@ test('a supervisor creates a rule, previews its first fire time, and the saved r
 	});
 	const again = await call('POST', `${api}/backtest`, {
 		token,
-		data: { rule: saved, fromUtc: at('02:50'), toUtc: at('03:40') }
+		data: { rule: asRequest(saved), fromUtc: at('02:50'), toUtc: at('03:40') }
 	});
 	expect(again.status(), await again.text()).toBe(200);
 	expect(Date.parse((await again.json()).firstRaisedUtc)).toBe(Date.parse(previewed));
@@ -298,12 +312,12 @@ test('a supervisor creates a track completion rule on a queue zone, previews it 
 	expect(found.status(), 'the saved rule is listed by its metric').toBe(200);
 	const saved = (await found.json()).data.find((r: { name: string }) => r.name === name);
 	expect(saved).toMatchObject({ metric: 'TrackCompletion', comparator: 'LessThan', threshold: 90, zones: ['SEC-S'], sustainMinutes: 1, minQueueLength: null });
-	const again = await call('POST', `${api}/backtest`, { token, data: { rule: saved, fromUtc: at('04:50'), toUtc: at('06:10') } });
+	const again = await call('POST', `${api}/backtest`, { token, data: { rule: asRequest(saved), fromUtc: at('04:50'), toUtc: at('06:10') } });
 	expect(again.status(), again.status() === 200 ? 'the saved rule backtested' : await again.text()).toBe(200);
 	expect(Date.parse((await again.json()).firstRaisedUtc)).toBe(Date.parse(previewed));
 
 	// An overflow zone sent anyway is refused by the server, whatever the form shows.
-	const band = await call('POST', api, { token, data: { ...saved, name: `E2E band ${run}`, zones: ['SEC-N', 'SEC-OV'] } });
+	const band = await call('POST', api, { token, data: { ...asRequest(saved), name: `E2E band ${run}`, zones: ['SEC-N', 'SEC-OV'] } });
 	expect(band.status(), 'a health check on an overflow band').toBe(400);
 	await guards.expectClean();
 });
@@ -375,7 +389,7 @@ test('a handler station manager reads the rules only; the server refuses a chang
 		(
 			await call('PUT', `${api}/${first.id}`, {
 				token,
-				data: { ...first, enabled: !first.enabled }
+				data: { ...asRequest(first), enabled: !first.enabled }
 			})
 		).status()
 	).toBe(403);
@@ -383,7 +397,7 @@ test('a handler station manager reads the rules only; the server refuses a chang
 		(
 			await call('POST', `${api}/backtest`, {
 				token,
-				data: { rule: first, fromUtc: at('02:50'), toUtc: at('03:40') }
+				data: { rule: asRequest(first), fromUtc: at('02:50'), toUtc: at('03:40') }
 			})
 		).status()
 	).toBe(403);
@@ -528,7 +542,7 @@ test.describe('open desks below recommendation (ARV-181b2)', () => {
 			(r: { name: string }) => r.name === name
 		);
 		expect(saved).toMatchObject({ metric: 'DesksBelowPlan', comparator: 'GreaterOrEqual', threshold: 2, zones: ['A-CIT'], ownerRole: 'BorderShiftSupervisor', escalateToRole: null });
-		const again = await call('POST', `${api}/backtest`, { token, data: { rule: saved, fromUtc: desksFrom, toUtc: desksTo } });
+		const again = await call('POST', `${api}/backtest`, { token, data: { rule: asRequest(saved), fromUtc: desksFrom, toUtc: desksTo } });
 		expect(again.status(), again.status() === 200 ? 'the saved rule backtested' : await again.text()).toBe(200);
 		expect(Date.parse((await again.json()).firstRaisedUtc)).toBe(Date.parse(previewed));
 

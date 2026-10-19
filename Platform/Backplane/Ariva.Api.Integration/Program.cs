@@ -70,7 +70,10 @@ builder.Services.AddArivaFlights(builder.Configuration);
 // ES256 access tokens from Ariva.Api.Main with permissions from stored grants (ARV-010a), input limits, rate limiting,
 // ProblemDetails errors, trusted forwarded headers and the CORS allow-list.
 builder.Services.AddAppSecurityBaseline(builder.Configuration, builder.Environment.EnvironmentName);
-builder.Services.AddAppControllers();
+// Controller input is read strictly (ARV-089). TEMPORARY: the login freeze keeps the token exchange (POST /api/v1/auth) on
+// the lenient parsing it had before; ARV-089a removes this exemption.
+builder.Services.AddAppControllers()
+    .WithLenientInput<Ariva.Api.Integration.Controllers.AuthController>();
 // OpenAPI document for the dynamic scan (ARV-063): only with OpenApi:Enabled, administrators only, refused in k8s-prd.
 builder.Services.AddArivaOpenApi(builder.Configuration, builder.Environment.EnvironmentName);
 

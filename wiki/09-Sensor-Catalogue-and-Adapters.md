@@ -59,7 +59,7 @@ LiDAR hardware behind the platforms (Ouster OS0, OS1, OSDome and the Velodyne li
 | ONVIF Profile M metadata | Camera analytics events | For IP cameras with counting or occupancy analytics |
 | Canonical push | Sensor gateway to the Integration API (`sensing:write`) | For sites that aggregate sensors behind their own gateway |
 
-Every payload is untrusted: schema validated, size limited, timestamps checked against the device clock offset, ids namespaced by device.
+Every payload is untrusted: schema validated, size limited, timestamps checked against the device clock offset, ids namespaced by device. A query parameter sent more than once to a device endpoint of Ariva.Api.Ingest answers 400, after the device credential is checked (ARV-089).
 
 MQTT (ARV-024): when enabled, Ariva.Api.Ingest takes MQTT 3.1.1 and 5 over TLS on port 8883. A device registered on the `Mqtt` transport (and only such a device; it then cannot use the HTTPS push endpoints) connects with its code as user name (and client id) and its credential as password, without a will message, and publishes its data to `ariva/v1/devices/<code>/canonical`, `.../xovis` or `.../declarative`; the data goes through the same checks as an HTTPS push. Publishing anywhere else closes the connection, nothing can be subscribed to, and rotating or retiring the credential closes a live connection at its next message. Details: `../docs/architecture/sensor-adapters.md`, section "MQTT transport".
 

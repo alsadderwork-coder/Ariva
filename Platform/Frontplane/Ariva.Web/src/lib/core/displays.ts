@@ -208,18 +208,21 @@ export async function instructions(): Promise<Record<string, Instructions> | nul
 		if (!response.ok) return null;
 		const body = (await response.json()) as unknown;
 		if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
-		// Only the board's own languages are read, so no other key (such as __proto__) is ever assigned.
-		const result: Record<string, Instructions> = {};
-		for (const [language, value] of Object.entries(body as Record<string, unknown>)) {
-			if (!(boardLanguages as readonly string[]).includes(language)) continue;
-			const entry = value as { title?: unknown; steps?: unknown };
-			if (
-				typeof entry?.title === 'string' &&
-				Array.isArray(entry.steps) &&
-				entry.steps.every((step) => typeof step === 'string')
+		// Only the board's own languages are read, and the result is built with Object.fromEntries (own properties only), so
+		// no other key (such as __proto__) ever reaches it.
+		const result: Record<string, Instructions> = Object.fromEntries(
+			Object.entries(body as Record<string, unknown>).flatMap(
+				([language, value]): [string, Instructions][] => {
+					if (!(boardLanguages as readonly string[]).includes(language)) return [];
+					const entry = value as { title?: unknown; steps?: unknown };
+					return typeof entry?.title === 'string' &&
+						Array.isArray(entry.steps) &&
+						entry.steps.every((step) => typeof step === 'string')
+						? [[language, { title: entry.title, steps: entry.steps as string[] }]]
+						: [];
+				}
 			)
-				result[language] = { title: entry.title, steps: entry.steps as string[] };
-		}
+		);
 		// Nothing usable is a failure to load, so the region shows its quiet empty panel.
 		return Object.keys(result).length > 0 ? result : null;
 	} catch {

@@ -356,7 +356,10 @@ export function accounts() {
 		// profile, the test device and the display in global setup (critical: a second factor).
 		smoke: account('e2e.smoke', ['HandlerStationManager'], false, true, ['E2SM']),
 		smokeConfig: account('e2e.smokecfg', ['HandlerStationManager'], false, true, ['E2SM']),
-		smokeAdmin: account('e2e.smokeadmin', ['SystemAdministrator'], false, true, ['*'])
+		smokeAdmin: account('e2e.smokeadmin', ['SystemAdministrator'], false, true, ['*']),
+		// ARV-089: the strict input suite (api/strict-input.spec.ts) builds a site of its own and registers a device and an
+		// integration client there (both critical: a second factor); its own account, since a TOTP code counts once per account.
+		strictInputAdmin: account('e2e.strictadmin', ['SystemAdministrator'], false, true, ['*'])
 	} as const;
 }
 

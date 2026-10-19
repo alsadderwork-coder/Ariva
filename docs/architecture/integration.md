@@ -82,6 +82,8 @@ The immigration contracts are the same records AMAN publishes on Kafka (`Ariva.B
 
 Every Integration API path names the site (`/api/v1/integration/sites/{siteCode}/...`), which must be one of the client's bound sites; the site never comes from the body. The paths of the endpoints not yet built follow the same pattern when their stories land.
 
+A query parameter sent more than once answers 400 with a fixed detail that names no parameter, on every Integration API endpoint, after the token and scope checks and before the body is bound (ARV-089, `Ariva.Api.Common/Filters/RepeatedQueryFilter.cs`). The token exchange `POST /api/v1/auth` keeps its earlier parsing (unknown members skipped, a member sent twice read as before, a repeated query parameter not refused) until ARV-089a lifts the login freeze's exemption (`Filters/LenientInput.cs`).
+
 Responses follow Ariva's API convention, not AMAN's `Result<T>` envelope: the data on success and RFC 9457 problem details on failure. A batch answers 200 with `{ received, applied, unchanged, refused, items: [{ index, flightKey, applied, errors, warnings }] }`, also when some or all items were refused.
 
 ### AIDX 22.1 inbound (ARV-044)

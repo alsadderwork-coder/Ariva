@@ -96,7 +96,7 @@ export class DeskLog {
 		const minute = this.target;
 		const row = this.states[deskId];
 		if (!row || minute < this.firstOpen || minute > this.current) return;
-		row[minute] = state;
+		row.splice(minute, 1, state);
 	}
 
 	/** Chooses the minute taps go to: an earlier minute of the bin that is still open, or null for now. */

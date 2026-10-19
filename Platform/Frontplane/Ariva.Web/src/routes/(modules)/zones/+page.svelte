@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { Plus, Timer, Upload } from '@lucide/svelte';
 	import { onDestroy, onMount } from 'svelte';
+	import { SvelteMap } from 'svelte/reactivity';
 	import { _ } from 'svelte-i18n';
 	import { toast } from 'svelte-sonner';
 	import AddShapeForm from '$lib/components/pages/zones/AddShapeForm.svelte';
@@ -33,9 +34,9 @@
 	let selected = $state<Selected>(null);
 	let adding = $state<'zone' | 'line' | null>(null);
 	let uploading = $state(false);
-	/** Unsaved shapes: zone corners and line ends moved on the plan or typed in the table. */
-	let zoneEdits = $state<Record<string, Point[]>>({});
-	let lineEdits = $state<Record<string, [Point, Point]>>({});
+	/** Unsaved shapes: zone corners and line ends moved on the plan or typed in the table, by zone or line id. */
+	const zoneEdits = new SvelteMap<string, Point[]>();
+	const lineEdits = new SvelteMap<string, [Point, Point]>();
 	let zoneName = $state('');
 	let zoneLane = $state('');
 	/** The selected zone's physical capacity as typed (ARV-114a); empty for none. */
@@ -57,12 +58,12 @@
 	);
 
 	function pointsOf(zone: Zone): Point[] {
-		return zoneEdits[zone.id] ?? zones.parsePolygon(zone.polygon) ?? [];
+		return zoneEdits.get(zone.id) ?? zones.parsePolygon(zone.polygon) ?? [];
 	}
 
 	function endsOf(line: Line): [Point, Point] {
 		return (
-			lineEdits[line.id] ?? [
+			lineEdits.get(line.id) ?? [
 				{ x: line.startX, y: line.startY },
 				{ x: line.endX, y: line.endY }
 			]
@@ -110,8 +111,8 @@
 
 	async function loadProfile(id: string): Promise<void> {
 		profileId = id;
-		zoneEdits = {};
-		lineEdits = {};
+		zoneEdits.clear();
+		lineEdits.clear();
 		select(null);
 		if (!id) {
 			profile = null;
@@ -207,7 +208,7 @@
 			physicalCapacity
 		});
 		if (result.hasErrors || !result.data) return failed(result.errorMessages[0] ?? '');
-		delete zoneEdits[id];
+		zoneEdits.delete(id);
 		replaceZone(result.data);
 		revision++;
 		toast.success($_('zones.saved', { values: { name: result.data.name } }));
@@ -228,7 +229,7 @@
 			endX: b.x,
 			endY: b.y
 		});
-		delete lineEdits[id];
+		lineEdits.delete(id);
 		if (added.hasErrors || !added.data) {
 			// Put the line back where it was, so a refused move loses nothing.
 			const restored = await zones.addLine(profile.profile.id, {
@@ -446,13 +447,17 @@
 				onSelect={select}
 				onMoveVertex={(zoneId, index, point) => {
 					const zone = profile?.zones.find((z) => z.id === zoneId);
-					if (zone) zoneEdits[zoneId] = pointsOf(zone).map((p, i) => (i === index ? point : p));
+					if (zone)
+						zoneEdits.set(
+							zoneId,
+							pointsOf(zone).map((p, i) => (i === index ? point : p))
+						);
 				}}
 				onMoveLineEnd={(lineId, end, point) => {
 					const line = profile?.lines.find((l) => l.id === lineId);
 					if (line) {
 						const [a, b] = endsOf(line);
-						lineEdits[lineId] = end === 'start' ? [point, b] : [a, point];
+						lineEdits.set(lineId, end === 'start' ? [point, b] : [a, point]);
 					}
 				}}
 				onCommit={commit}
@@ -487,7 +492,7 @@
 								null}
 							deskCode={desks.find((d) => d.id === selectedZone.deskId)?.code ?? null}
 							{editable}
-							dirty={!!zoneEdits[selectedZone.id] ||
+							dirty={zoneEdits.has(selectedZone.id) ||
 								zoneName.trim() !== selectedZone.name ||
 								zoneLane !== (selectedZone.laneCategory ?? '') ||
 								String(zoneCapacity ?? '') !== String(selectedZone.physicalCapacity ?? '')}
@@ -496,10 +501,12 @@
 							bind:name={zoneName}
 							bind:lane={zoneLane}
 							bind:capacity={zoneCapacity}
-							onPoints={(points) => (zoneEdits[selectedZone.id] = points)}
+							onPoints={(points) => {
+								zoneEdits.set(selectedZone.id, points);
+							}}
 							onSave={() => saveZone(selectedZone.id)}
 							onRevert={() => {
-								delete zoneEdits[selectedZone.id];
+								zoneEdits.delete(selectedZone.id);
 								zoneName = selectedZone.name;
 								zoneLane = selectedZone.laneCategory ?? '';
 								zoneCapacity = selectedZone.physicalCapacity ?? '';
@@ -516,12 +523,16 @@
 							ends={endsOf(selectedLine)}
 							zoneName={profile.zones.find((z) => z.id === selectedLine.zoneId)?.name ?? null}
 							{editable}
-							dirty={!!lineEdits[selectedLine.id]}
+							dirty={lineEdits.has(selectedLine.id)}
 							width={level.widthMetres}
 							depth={level.depthMetres}
-							onEnds={(ends) => (lineEdits[selectedLine.id] = ends)}
+							onEnds={(ends) => {
+								lineEdits.set(selectedLine.id, ends);
+							}}
 							onSave={() => saveLine(selectedLine.id)}
-							onRevert={() => delete lineEdits[selectedLine.id]}
+							onRevert={() => {
+								lineEdits.delete(selectedLine.id);
+							}}
 							onDelete={() => deleteLine(selectedLine)}
 						/>
 					{/key}
@@ -599,7 +610,7 @@
 				<PublishPanel
 					profileId={profile.profile.id}
 					canPublish={auth.can('ZoneProfile.Publish')}
-					unsaved={Object.keys(zoneEdits).length + Object.keys(lineEdits).length > 0}
+					unsaved={zoneEdits.size + lineEdits.size > 0}
 					{revision}
 					onPublished={(id) => loadHistory(id)}
 				/>

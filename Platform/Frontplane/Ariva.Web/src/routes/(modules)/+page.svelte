@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { Activity, BellRing, Clock, Radio, Users } from '@lucide/svelte';
 	import { onDestroy, onMount } from 'svelte';
+	import { SvelteMap } from 'svelte/reactivity';
 	import { _, locale } from 'svelte-i18n';
 	import AlertsPanel from '$lib/components/pages/live/AlertsPanel.svelte';
 	import ArrivalStrip from '$lib/components/pages/live/ArrivalStrip.svelte';
@@ -50,8 +51,10 @@
 	let levels = $state<Level[]>([]);
 	let levelId = $state('');
 	let queueZones = $state<QueueZone[]>([]);
-	let snapshots = $state<Record<string, ZoneSnapshot>>({});
-	let history = $state<Record<string, { minute: number; wait: number | null }[]>>({});
+	/** The latest snapshot of each queue zone, by zone key. */
+	const snapshots = new SvelteMap<string, ZoneSnapshot>();
+	/** The last hour of each queue zone's waits, by zone key, for the wait chart. */
+	const history = new SvelteMap<string, { minute: number; wait: number | null }[]>();
 	let selectedKey = $state<string | null>(null);
 	let alerts = $state<Alert[]>([]);
 	let desks = $state<DeskStates | null>(null);
@@ -80,7 +83,7 @@
 	const levelZones = $derived(queueZones.filter((z) => z.levelId === levelId));
 	const fresh = $derived(
 		queueZones
-			.map((z) => snapshots[z.key])
+			.map((z) => snapshots.get(z.key))
 			.filter((s): s is ZoneSnapshot => !!s && !isStale(s, now))
 	);
 	const waiting = $derived(fresh.reduce((sum, s) => sum + s.queueLength, 0));
@@ -89,13 +92,16 @@
 
 	function receive(snapshot: ZoneSnapshot): void {
 		if (!queueZones.some((z) => z.key === snapshot.zoneKey)) return;
-		snapshots[snapshot.zoneKey] = snapshot;
+		snapshots.set(snapshot.zoneKey, snapshot);
 		const minute = Date.parse(snapshot.minuteUtc);
-		const series = history[snapshot.zoneKey] ?? [];
+		const series = history.get(snapshot.zoneKey) ?? [];
 		if (Number.isFinite(minute) && !series.some((p) => p.minute === minute)) {
-			history[snapshot.zoneKey] = [...series, { minute, wait: snapshot.nowcastMinutes }]
-				.sort((a, b) => a.minute - b.minute)
-				.slice(-60);
+			history.set(
+				snapshot.zoneKey,
+				[...series, { minute, wait: snapshot.nowcastMinutes }]
+					.sort((a, b) => a.minute - b.minute)
+					.slice(-60)
+			);
 		}
 	}
 
@@ -172,8 +178,8 @@
 		const sitePlans = await zonesApi.floorPlans(site);
 		if (!current()) return;
 		plans = sitePlans;
-		snapshots = {};
-		history = {};
+		snapshots.clear();
+		history.clear();
 		overflow = {};
 		overflowRefusedNow = false;
 		selectedKey = null;
@@ -194,9 +200,12 @@
 				levelId: z.levelId,
 				points: zonesApi.parsePolygon(z.polygon) ?? []
 			}));
-		const counts = new Map<string, number>();
-		for (const zone of queueZones) counts.set(zone.levelId, (counts.get(zone.levelId) ?? 0) + 1);
-		levelId = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? levels[0]?.id ?? '';
+		// The level with the most queue zones (the first of them on a tie).
+		const count = (id: string) => queueZones.filter((z) => z.levelId === id).length;
+		levelId =
+			[...new Set(queueZones.map((z) => z.levelId))].sort((a, b) => count(b) - count(a))[0] ??
+			levels[0]?.id ??
+			'';
 		selectedKey = queueZones[0]?.key ?? null;
 		await Promise.all([
 			live.watch(
@@ -415,7 +424,7 @@
 						</thead>
 						<tbody>
 							{#each queueZones as zone (zone.key)}
-								{@const snapshot = snapshots[zone.key]}
+								{@const snapshot = snapshots.get(zone.key)}
 								{@const status = waitStatus(snapshot, now)}
 								{@const stale = !!snapshot && isStale(snapshot, now)}
 								<tr
@@ -497,7 +506,7 @@
 
 			{#if selected}
 				<section class="rounded-xl border bg-card p-4">
-					<WaitChart zone={selected.name} points={history[selected.key] ?? []} />
+					<WaitChart zone={selected.name} points={history.get(selected.key) ?? []} />
 				</section>
 				<!-- ARV-120: the selected zone's health checks, for DataQuality.View holders only (the server checks it too). -->
 				{#if auth.can('DataQuality.View')}

@@ -75,9 +75,10 @@ export function loadArivaEnv(mode = 'production') {
  * @returns {string[]}
  */
 export function apiOrigins(env) {
+	/** @type {Set<string>} */
 	const origins = new Set();
-	for (const key of Object.keys(API_DEFAULTS)) {
-		const value = env[key] || API_DEFAULTS[key];
+	for (const [key, fallback] of Object.entries(API_DEFAULTS)) {
+		const value = env[key] || fallback;
 		if (!value) continue;
 		const url = new URL(value);
 		origins.add(url.origin);
@@ -129,7 +130,9 @@ export function serializeCsp(directives, scriptSources = []) {
 
 	return Object.entries(directives)
 		.map(([name, sources]) => {
-			const all = name === 'script-src' ? [...(sources ?? []), ...scriptSources] : (sources ?? []);
+			/** @type {unknown[]} */
+			const listed = sources ?? [];
+			const all = name === 'script-src' ? [...listed, ...scriptSources] : listed;
 			return [name, ...all.map((source) => quote(String(source)))].join(' ');
 		})
 		.join('; ');

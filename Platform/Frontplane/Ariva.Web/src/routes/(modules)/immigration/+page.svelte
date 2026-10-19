@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { ExternalLink, Radio, ScanLine } from '@lucide/svelte';
 	import { onDestroy, onMount } from 'svelte';
+	import { SvelteMap } from 'svelte/reactivity';
 	import { _, locale } from 'svelte-i18n';
 	import StaffingPanel from '$lib/components/pages/immigration/StaffingPanel.svelte';
 	import DataQualityPanel from '$lib/components/pages/live/DataQualityPanel.svelte';
@@ -39,7 +40,8 @@
 	let view = $state<Immigration | null>(null);
 	let problem = $state('');
 	let hallKind = $state<'Immigration' | 'Emigration'>('Immigration');
-	let snapshots = $state<Record<string, ZoneSnapshot>>({});
+	/** The latest snapshot of each watched lane queue, by zone key. */
+	const snapshots = new SvelteMap<string, ZoneSnapshot>();
 	/** The queue zones with overflow bands, by zone name (ARV-120). */
 	let overflow = $state<Record<string, OverflowZone>>({});
 	let overflowFresh = $state(6);
@@ -53,7 +55,7 @@
 	let watched = new Set<string>();
 	const live = new LiveConnection(
 		(snapshot) => {
-			if (watched.has(snapshot.zoneKey)) snapshots[snapshot.zoneKey] = snapshot;
+			if (watched.has(snapshot.zoneKey)) snapshots.set(snapshot.zoneKey, snapshot);
 		},
 		() => undefined
 	);
@@ -120,7 +122,7 @@
 	function laneWait(code: string): { snapshot: ZoneSnapshot | undefined; tone: StatusTone } {
 		const fresh = (hall?.queues ?? [])
 			.filter((q) => q.lane === code)
-			.map((q) => snapshots[q.zoneKey])
+			.map((q) => snapshots.get(q.zoneKey))
 			.filter((s): s is ZoneSnapshot => !!s)
 			.sort((a, b) => (b.nowcastMinutes ?? -1) - (a.nowcastMinutes ?? -1));
 		const snapshot = fresh[0];
@@ -133,29 +135,33 @@
 			: $_('immigration.seconds', { values: { value: numberFormat.format(value) } });
 	}
 
-	/** Reads the site's halls; false when another site was chosen meanwhile (its own load then owns the screen). */
-	async function load(): Promise<boolean> {
+	/**
+	 * Reads the site's halls and returns them; null when the read failed, or when another site was chosen meanwhile (its
+	 * own load then owns the screen).
+	 */
+	async function load(): Promise<Immigration | null> {
 		const site = siteCode;
-		if (!site) return false;
+		if (!site) return null;
 		const result = await operations.immigration(site);
-		if (destroyed || site !== siteCode) return false;
+		if (destroyed || site !== siteCode) return null;
 		if (result.hasErrors || !result.data) {
 			problem = result.errorMessages.join(' ');
-			return true;
+			return null;
 		}
 		problem = '';
 		view = result.data;
-		return true;
+		return result.data;
 	}
 
 	async function loadSite(): Promise<void> {
 		view = null;
-		snapshots = {};
+		snapshots.clear();
 		overflow = {};
 		overflowRefusedNow = false;
 		void loadOverflow();
-		if (!(await load()) || !view) return;
-		watched = new Set(view.halls.flatMap((h) => h.queues.map((q) => q.zoneKey)));
+		const loaded = await load();
+		if (!loaded) return;
+		watched = new Set(loaded.halls.flatMap((h) => h.queues.map((q) => q.zoneKey)));
 		await live.watch([...watched], null);
 	}
 

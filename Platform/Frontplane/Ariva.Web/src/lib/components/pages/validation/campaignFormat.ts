@@ -158,7 +158,8 @@ export function spread(
 		for (const target of [row, total]) {
 			if (run.abandoned) target.abandoned++;
 			else {
-				target.ranges[waitRange(run)]++;
+				const range = waitRange(run);
+				target.ranges.splice(range, 1, target.ranges[range] + 1);
 				target.timed++;
 			}
 		}

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { BellRing, ChevronDown, ChevronRight, Cpu, Gauge, Timer } from '@lucide/svelte';
+	import { SvelteSet } from 'svelte/reactivity';
 	import { _, locale } from 'svelte-i18n';
 	import { knownLabels, labelOf, nearMinutes, overMinutes } from '$lib/components/pages/live/waits';
 	import MetricCard from '$lib/components/shared/MetricCard.svelte';
@@ -10,7 +11,13 @@
 	let { report }: { report: DailyReport } = $props();
 
 	const lanesKnown = ['CIT', 'RES', 'VIS', 'CRW', 'EG'];
-	let open = $state<Record<string, boolean>>({});
+	/** The lanes whose hours table is open, by zone. */
+	const open = new SvelteSet<string>();
+
+	function toggle(zone: string): void {
+		if (open.has(zone)) open.delete(zone);
+		else open.add(zone);
+	}
 
 	const isArabic = $derived($locale?.startsWith('ar') ?? false);
 	const numbers = $derived(
@@ -156,12 +163,12 @@
 									<button
 										type="button"
 										data-testid="toggle-hours"
-										aria-expanded={!!open[lane.zone]}
+										aria-expanded={open.has(lane.zone)}
 										aria-controls="hours-{lane.zone}"
-										onclick={() => (open[lane.zone] = !open[lane.zone])}
+										onclick={() => toggle(lane.zone)}
 										class="inline-flex items-center gap-1.5 rounded-md text-start font-medium hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
 									>
-										{#if open[lane.zone]}
+										{#if open.has(lane.zone)}
 											<ChevronDown class="size-4 shrink-0" aria-hidden="true" />
 										{:else}
 											<ChevronRight class="size-4 shrink-0 rtl:rotate-180" aria-hidden="true" />
@@ -208,7 +215,7 @@
 									</div>
 								</td>
 							</tr>
-							{#if open[lane.zone]}
+							{#if open.has(lane.zone)}
 								<tr class="bg-muted/30" id="hours-{lane.zone}">
 									<td colspan="8" class="px-4 py-3">
 										<table class="w-full text-xs" data-testid="lane-hours">

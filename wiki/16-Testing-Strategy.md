@@ -113,7 +113,7 @@ Field validation is not a software test but uses the same metrics (F18): count a
 |---|---|
 | Edit-time scan (agent hook) | Automatic on each agent edit |
 | .NET security analyzers as errors | Every build |
-| Repository scan (39 rules, 14 CWEs), with self-test | `node scripts/verify.mjs security` |
+| Repository scan (44 rules, 14 CWEs), with self-test | `node scripts/verify.mjs security` |
 | Architecture and security reflection tests | `node scripts/verify.mjs unit` |
 | Behaviour tests with attack payloads | `node scripts/verify.mjs e2e` |
 | Dependency audits (NuGet, npm) | `node scripts/verify.mjs security` (needs registry access) |

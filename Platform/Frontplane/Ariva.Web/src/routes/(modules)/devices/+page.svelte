@@ -58,11 +58,15 @@
 	const level = $derived(levels.find((l) => l.id === levelId) ?? null);
 	const selected = $derived(list.find((d) => d.id === selectedId) ?? null);
 	const healthOf = $derived(new Map((overview?.devices ?? []).map((h) => [h.id, h])));
+	/** The queue zone names of each level, by level id (built with Object.fromEntries: own properties only). */
 	const queueZones = $derived.by(() => {
-		const byLevel: Record<string, string[]> = {};
-		for (const zone of profileZones.filter((z) => z.kind === 'Queue'))
-			(byLevel[zone.levelId] ??= []).push(zone.name);
-		return byLevel;
+		const queues = profileZones.filter((z) => z.kind === 'Queue');
+		return Object.fromEntries(
+			[...new Set(queues.map((z) => z.levelId))].map((id) => [
+				id,
+				queues.filter((z) => z.levelId === id).map((z) => z.name)
+			])
+		);
 	});
 	const planZones = $derived(
 		profileZones

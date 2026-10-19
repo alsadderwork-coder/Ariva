@@ -170,6 +170,21 @@ const RULES = [
   { id: 'SEC-130', cwe: ['CWE-94'], langs: ['cs', 'js', 'svelte'], severity: 'error',
     re: /[\u200B-\u200F\u202A-\u202E\u2066-\u2069]/,
     msg: 'Invisible or bidirectional control character in source (Trojan Source): code can read differently from how it runs. Write it as an escape (\\u202E) in a string literal.' },
+  // ARV-089 (ASVS V15.3.6): prototype pollution in the web app. A key that comes from data (a zone key, an id, a language)
+  // written with obj[key] = value reaches the __proto__ setter when the key is "__proto__"; Map, Object.fromEntries,
+  // object literals and spreads define own properties and never do. Allowed: a string or number literal key, or a choice
+  // between two string literals. Object.assign copies with the same setter, so it is refused too. A write through a computed
+  // read (obj[key].name = value, obj[key][0] = value) is refused as well: with the key "__proto__" it writes Object.prototype.
+  // Not seen by the line pattern: spaces before the bracket or around ++ and -- (Prettier removes them), a key split over
+  // lines, destructuring targets ([a[i], a[j]] = ..., ({ x: obj[k] } = src)), for (obj[k] of ...), and a bind whose first
+  // key is a literal (bind:value={rows[0][k]}) or whose key holds brackets (bind:value={notes[a[b]]}). It also flags a
+  // TypeScript indexed access type (let t: T[K] = x) and an array element write by index (list[i].done = true).
+  { id: 'SEC-131', cwe: ['CWE-1321', 'CWE-94'], langs: ['js', 'svelte'], severity: 'error', paths: [/Platform[\\/]Frontplane[\\/]/],
+    re: /__proto__|\bObject\.assign\s*\(|\bObject\.setPrototypeOf\s*\(|\bReflect\.set\s*\(/,
+    msg: 'Prototype pollution: __proto__, Object.assign, Object.setPrototypeOf or Reflect.set in the web app. Build objects with literals, spreads or Object.fromEntries, or use a Map.' },
+  { id: 'SEC-132', cwe: ['CWE-1321', 'CWE-94'], langs: ['js', 'svelte'], severity: 'error', paths: [/Platform[\\/]Frontplane[\\/]/],
+    re: /[\w$)\]]\[(?!\s*(?:'[^'\n]*'|"[^"\n]*"|`[^`$\n]*`|\d+)\s*\])(?!\s*[\w$.!()]+\s*\?\s*(?:'[^'\n]*'|"[^"\n]*")\s*:\s*(?:'[^'\n]*'|"[^"\n]*")\s*\])(?:[^[\]\n]|\[[^[\]\n]*\])+\](?:\s*(?:=(?![=>])|\?\?=|\|\|=|&&=|\*\*=|<<=|>>>?=|[-+*/%&|^]=)|\+\+|--)|(?:\+\+|--)[\w$.]+\[(?!\s*(?:'[^'\n]*'|"[^"\n]*"|`[^`$\n]*`|\d+)\s*\])[^\]\n]+\]|[\w$)\]]\[(?!\s*(?:'[^'\n]*'|"[^"\n]*"|`[^`$\n]*`|\d+)\s*\])(?!\s*[\w$.!()]+\s*\?\s*(?:'[^'\n]*'|"[^"\n]*")\s*:\s*(?:'[^'\n]*'|"[^"\n]*")\s*\])(?:[^[\]\n]|\[[^[\]\n]*\])+\](?:\[[^\]\n]+\]|\.[\w$]+)+\s*(?:(?:=(?![=>])|\?\?=|\|\|=|&&=|\*\*=|<<=|>>>?=|[-+*/%&|^]=)|\+\+|--)|\bbind:[\w-]+=\{\s*[\w$.]+\[(?!\s*(?:'[^'\n]*'|"[^"\n]*"|`[^`$\n]*`|\d+)\s*\])[^\]\n]+\](?:(?:\[[^\]\n]+\]|\.[\w$]+)+)?\s*\}/,
+    msg: 'Prototype pollution: a write with a computed key (obj[key] = value, obj[key]++, obj[key].name = value, obj[key][0] = value or bind:value={obj[key]} and bind:value={obj[key].name}) in the web app. Use a Map (SvelteMap for reactive state, with a function binding), Object.fromEntries or a spread with the key ({ ...obj, [key]: value }).' },
 
   { id: 'SEC-121', cwe: ['CWE-863', 'CWE-306'], langs: ['yaml', 'docker', 'json', 'env'], severity: 'error',
     re: /(ASPNETCORE|DOTNET)_FORWARDEDHEADERS_ENABLED\s*[=:]\s*["']?true|"ForwardedHeaders_Enabled"\s*:\s*(true|"true")/i,

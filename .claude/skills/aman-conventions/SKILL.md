@@ -43,6 +43,7 @@ Rich methods only (`profile.Publish(publishedBy, now)`), never property assignme
 
 ## View models and inputs
 `*CompactViewModel`, `*DetailsViewModel`, `*WithRelationsViewModel`; `Create*Request`, `Update*Request`; `Criteria*` for search.
+Controller and minimal API JSON is strict on every host (ARV-089, `Ariva.Api.Common/Filters/StrictJson.cs`): an unknown member, a member sent twice and a number sent as a string answer 400, so a request model must list every member a client sends (names still match ignoring case); a query parameter sent twice answers 400 unless the action binds it as a collection (`RepeatedQueryFilter`). Never relax either for a new endpoint; the auth controllers' exemption (`WithLenientInput`) ends with ARV-089a.
 
 ## Caching and logging
 FusionCache with Redis backplane and tags per entity. Serilog structured logging with named properties; never log tokens, secrets, TOTP codes or `access_token` query strings.

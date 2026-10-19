@@ -6,3 +6,6 @@
 </script>
 
 <div>{userInput}</div>
+<input bind:value={() => notes.get(alertId) ?? '', (note) => notes.set(alertId, note)} />
+<input bind:value={form['name'].first} />
+<input bind:value={form['name']} />
