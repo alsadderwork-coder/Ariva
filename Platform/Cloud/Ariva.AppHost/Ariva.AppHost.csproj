@@ -19,6 +19,8 @@
         <PackageReference Include="Aspire.Hosting.Kafka" />
         <PackageReference Include="Aspire.Hosting.Redis" />
         <PackageReference Include="Aspire.Hosting.JavaScript" />
+        <PackageReference Include="Confluent.Kafka" />
+        <PackageReference Include="Npgsql" VersionOverride="8.0.9" />
     </ItemGroup>
 
     <ItemGroup>
