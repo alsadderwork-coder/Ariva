@@ -1,0 +1,2 @@
+[*.cs]
+dotnet_diagnostic.CA3006.severity = none# ARV-157 fixture © a note

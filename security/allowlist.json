@@ -92,5 +92,65 @@
     "proposedBy": "Claude (ARV-029, 2026-10-03)",
     "approvedBy": "PENDING: Ahmad Al-Sadder",
     "date": "2026-10-03"
+  },
+  {
+    "rule": "SEC-130",
+    "path": "Platform/Backplane/Ariva.Infra/Timescale/Scripts/0020_alert_rule.sql",
+    "contains": "AND name !~ '[[:cntrl:]\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb]'),",
+    "line": "AND name !~ '[[:cntrl:]\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb]'),",
+    "reason": "Immutable migration script (scripts are never edited once merged; checksums.lock and SqlScriptTests hold them): the raw bidirectional, zero-width and other invisible characters sit inside the regular expression character class of a CHECK constraint that refuses them in alert_rule.name, so they are the guard, not hidden code. New SQL writes such characters as escapes (U&'\\202E' or E'\\u202E'). Scoped to exactly this line (line, written here with JSON escapes): anything added to it fires again. Found by ARV-157 when SEC-130 began to read SQL.",
+    "proposedBy": "Claude (ARV-157, 2026-10-20)",
+    "approvedBy": "PENDING: Ahmad",
+    "date": "2026-10-20"
+  },
+  {
+    "rule": "SEC-130",
+    "path": "Platform/Backplane/Ariva.Infra/Timescale/Scripts/0020_alert_rule.sql",
+    "contains": "AND scope_zones !~ '[\\u0001-\\u0009\\u000B-\\u001F\\u007F-\\u009F\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb]'",
+    "line": "AND scope_zones !~ '[\\u0001-\\u0009\\u000B-\\u001F\\u007F-\\u009F\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb]'",
+    "reason": "Immutable migration script (scripts are never edited once merged; checksums.lock and SqlScriptTests hold them): the raw bidirectional, zero-width and other invisible characters sit inside the regular expression character class of a CHECK constraint that refuses them in alert_rule.scope_zones, so they are the guard, not hidden code. New SQL writes such characters as escapes (U&'\\202E' or E'\\u202E'). Scoped to exactly this line (line, written here with JSON escapes): anything added to it fires again. Found by ARV-157 when SEC-130 began to read SQL.",
+    "proposedBy": "Claude (ARV-157, 2026-10-20)",
+    "approvedBy": "PENDING: Ahmad",
+    "date": "2026-10-20"
+  },
+  {
+    "rule": "SEC-130",
+    "path": "Platform/Backplane/Ariva.Infra/Timescale/Scripts/0020_alert_rule.sql",
+    "contains": "AND escalation_contact !~ '[[:cntrl:]\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb]'),",
+    "line": "AND escalation_contact !~ '[[:cntrl:]\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb]'),",
+    "reason": "Immutable migration script (scripts are never edited once merged; checksums.lock and SqlScriptTests hold them): the raw bidirectional, zero-width and other invisible characters sit inside the regular expression character class of a CHECK constraint that refuses them in alert_rule.escalation_contact, so they are the guard, not hidden code. New SQL writes such characters as escapes (U&'\\202E' or E'\\u202E'). Scoped to exactly this line (line, written here with JSON escapes): anything added to it fires again. Found by ARV-157 when SEC-130 began to read SQL.",
+    "proposedBy": "Claude (ARV-157, 2026-10-20)",
+    "approvedBy": "PENDING: Ahmad",
+    "date": "2026-10-20"
+  },
+  {
+    "rule": "SEC-130",
+    "path": "Platform/Backplane/Ariva.Infra/Timescale/Scripts/0022_alert_lifecycle.sql",
+    "contains": "CHECK (acknowledged_note !~ '[\\u0000-\\u0009\\u000B\\u000C\\u000E-\\u001F\\u007F\u202a-\u202e\u2066-\u2069]'",
+    "line": "CHECK (acknowledged_note !~ '[\\u0000-\\u0009\\u000B\\u000C\\u000E-\\u001F\\u007F\u202a-\u202e\u2066-\u2069]'",
+    "reason": "Immutable migration script (scripts are never edited once merged; checksums.lock and SqlScriptTests hold them): the raw bidirectional control characters sit inside the regular expression character class of a CHECK constraint that refuses them in alert.acknowledged_note, so they are the guard, not hidden code. New SQL writes such characters as escapes (U&'\\202E' or E'\\u202E'). Scoped to exactly this line (line, written here with JSON escapes): anything added to it fires again. Found by ARV-157 when SEC-130 began to read SQL.",
+    "proposedBy": "Claude (ARV-157, 2026-10-20)",
+    "approvedBy": "PENDING: Ahmad",
+    "date": "2026-10-20"
+  },
+  {
+    "rule": "SEC-130",
+    "path": "Platform/Backplane/Ariva.Infra/Timescale/Scripts/0022_alert_lifecycle.sql",
+    "contains": "AND escalated_note !~ '[\\u0000-\\u0009\\u000B\\u000C\\u000E-\\u001F\\u007F\u202a-\u202e\u2066-\u2069]'",
+    "line": "AND escalated_note !~ '[\\u0000-\\u0009\\u000B\\u000C\\u000E-\\u001F\\u007F\u202a-\u202e\u2066-\u2069]'",
+    "reason": "Immutable migration script (scripts are never edited once merged; checksums.lock and SqlScriptTests hold them): the raw bidirectional control characters sit inside the regular expression character class of a CHECK constraint that refuses them in alert.escalated_note, so they are the guard, not hidden code. New SQL writes such characters as escapes (U&'\\202E' or E'\\u202E'). Scoped to exactly this line (line, written here with JSON escapes): anything added to it fires again. Found by ARV-157 when SEC-130 began to read SQL.",
+    "proposedBy": "Claude (ARV-157, 2026-10-20)",
+    "approvedBy": "PENDING: Ahmad",
+    "date": "2026-10-20"
+  },
+  {
+    "rule": "SEC-130",
+    "path": "Platform/Backplane/Ariva.Infra/Timescale/Scripts/0022_alert_lifecycle.sql",
+    "contains": "AND resolution_note !~ '[\\u0000-\\u0009\\u000B\\u000C\\u000E-\\u001F\\u007F\u202a-\u202e\u2066-\u2069]');",
+    "line": "AND resolution_note !~ '[\\u0000-\\u0009\\u000B\\u000C\\u000E-\\u001F\\u007F\u202a-\u202e\u2066-\u2069]');",
+    "reason": "Immutable migration script (scripts are never edited once merged; checksums.lock and SqlScriptTests hold them): the raw bidirectional control characters sit inside the regular expression character class of a CHECK constraint that refuses them in alert.resolution_note, so they are the guard, not hidden code. New SQL writes such characters as escapes (U&'\\202E' or E'\\u202E'). Scoped to exactly this line (line, written here with JSON escapes): anything added to it fires again. Found by ARV-157 when SEC-130 began to read SQL.",
+    "proposedBy": "Claude (ARV-157, 2026-10-20)",
+    "approvedBy": "PENDING: Ahmad",
+    "date": "2026-10-20"
   }
 ]

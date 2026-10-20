@@ -1,0 +1,4 @@
+<Project>
+  <!-- ARV-157 fixture -->
+  <Target Name="T"><Csc CodePage="1252" Sources="a.cs" /></Target>
+</Project>

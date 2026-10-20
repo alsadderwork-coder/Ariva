@@ -1,0 +1,2 @@
+# ARV-157 fixture: 650012 only starts like 65001
+-p:CodePage=650012

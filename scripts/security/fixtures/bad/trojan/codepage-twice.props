@@ -1,0 +1,7 @@
+<Project>
+  <!-- ARV-157 fixture: MSBuild keeps the last value -->
+  <PropertyGroup>
+    <CodePage>65001</CodePage>
+    <CodePage>1252</CodePage>
+  </PropertyGroup>
+</Project>

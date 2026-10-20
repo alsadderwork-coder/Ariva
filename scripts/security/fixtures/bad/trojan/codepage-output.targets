@@ -1,0 +1,6 @@
+<Project>
+  <!-- ARV-157 fixture -->
+  <Target Name="SetIt" BeforeTargets="CoreCompile">
+    <CreateProperty Value="932"><Output TaskParameter="Value" PropertyName="CodePage" /></CreateProperty>
+  </Target>
+</Project>

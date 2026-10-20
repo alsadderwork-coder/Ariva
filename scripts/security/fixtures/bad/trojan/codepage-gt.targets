@@ -1,0 +1,6 @@
+<Project>
+  <!-- ARV-157 fixture -->
+  <PropertyGroup>
+    <CodePage Condition="'$(X)' != '>65001 '">932</CodePage>
+  </PropertyGroup>
+</Project>

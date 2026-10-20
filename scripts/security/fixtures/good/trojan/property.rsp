@@ -1,0 +1,2 @@
+-p:CodePage=65001;Foo=1
+-p:Configuration=Release

@@ -1,0 +1,3 @@
+#!/bin/sh
+# ARV-157 fixture named .gz, not gzip ÿ
+echo ok

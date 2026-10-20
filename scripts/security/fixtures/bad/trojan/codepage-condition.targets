@@ -1,0 +1,6 @@
+<Project>
+  <!-- ARV-157 fixture -->
+  <PropertyGroup>
+    <CodePage Condition="'$(CodePage)' == ''">1252</CodePage>
+  </PropertyGroup>
+</Project>

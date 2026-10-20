@@ -48,7 +48,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
       - name: Scanner self-test (every rule fires on the bad fixtures)
         run: node scripts/security/scan.mjs --self-test
-      - name: Repository scan (14 CWEs, 40 rules)
+      - name: Repository scan (14 CWEs, 44 rules)
         run: node scripts/security/scan.mjs
       - name: Docs writing rules
         run: node scripts/verify.mjs docs

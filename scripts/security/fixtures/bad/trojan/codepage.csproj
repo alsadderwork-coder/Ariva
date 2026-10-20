@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- ARV-157 fixture -->
+  <PropertyGroup>
+    <CodePage>1252</CodePage>
+  </PropertyGroup>
+</Project>

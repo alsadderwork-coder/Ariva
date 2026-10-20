@@ -9,8 +9,8 @@ Snapshot of 2026-10-20, branch `story/mvp-phase1`. The backlog files in `backlog
 | Phase 0 (`prd-phase0.json`) | 78 of 79 | ARV-002: its last criterion is a dev cluster release by a person, deferred by the owner to ARV-137 |
 | Phase 1, the MVP (`prd-phase1.json`) | 69 of 82 | 13, almost all waiting for site answers or the owner |
 | Phase 2, displays and advertising (`prd-phase2.json`) | 8 of 8 | none |
-| ASVS gaps (`prd-asvs-gaps.json`) | 17 of 36 | 19 |
-| Phase 3, deferred hardening (`prd-phase3.json`) | 0 of 43 | 43, built after the pilot go-live gate unless pulled forward |
+| ASVS gaps (`prd-asvs-gaps.json`) | 18 of 36 | 18 |
+| Phase 3, deferred hardening (`prd-phase3.json`) | 0 of 44 | 44, built after the pilot go-live gate unless pulled forward |
 | Azure DevOps move (`prd-azure-move.json`) | 0 of 9 | 9, new; see [azure-devops-move.md](azure-devops-move.md) |
 
 ASVS 5.0 Level 2 (`docs/security/asvs-l2.md`): 157 of the 203 requirements that apply are met (77 percent), 42 partly, 4 gaps.
@@ -19,7 +19,6 @@ ASVS 5.0 Level 2 (`docs/security/asvs-l2.md`): 157 of the 203 requirements that 
 
 | Story | What it does | Notes |
 |---|---|---|
-| ARV-157 | Trojan Source check covers every text file | Small |
 | ARV-200 | Site CA trust for the log and telemetry collectors | Related to the Kafka CA question of ARV-083b, but buildable on its own |
 | ARV-092b | Malware scanning of uploads in the hosts | Built with a Proposed default for an upload while the scanner is down (refused or accepted); the owner confirms |
 | ARV-092c | ClamAV in the chart | Built with the Proposed signature delivery; air-gapped sites are the owner's choice |
@@ -79,4 +78,4 @@ The owner froze every change to sign-in, passwords, TOTP, sessions and authentic
 
 ## 6. Phase 3 (after the pilot)
 
-43 stories in `backlog/prd-phase3.json`: low-severity findings of the security reviews, test determinism and harness work, and small product refinements. Examples: ARV-175 (dead letters), ARV-154 (site import lock), ARV-163 (linear regular expressions), ARV-182 and ARV-183 (scheduled backups, restore hardening), ARV-209 (secrets in the release tooling, which matters for the Azure release), ARV-214 (supply chain residuals of CI and test tooling), ARV-224 (the test report secret check's remaining gaps). The owner can pull any of them forward.
+44 stories in `backlog/prd-phase3.json`: low-severity findings of the security reviews, test determinism and harness work, and small product refinements. Examples: ARV-175 (dead letters), ARV-154 (site import lock), ARV-163 (linear regular expressions), ARV-182 and ARV-183 (scheduled backups, restore hardening), ARV-209 (secrets in the release tooling, which matters for the Azure release), ARV-214 (supply chain residuals of CI and test tooling), ARV-224 (the test report secret check's remaining gaps), ARV-225 (the Trojan Source check's remaining gaps and two harness hooks for the owner). The owner can pull any of them forward.
