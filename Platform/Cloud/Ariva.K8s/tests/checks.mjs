@@ -1968,3 +1968,107 @@ export function logShippingFindings(docs, { environment, collector = '', otelEnd
 	if (missing.length) findings.push(`the render holds no ${missing.map((host) => `Deployment/${host}-deployment`).join(', ')}`);
 	return findings;
 }
+
+/**
+ * ARV-200 (ASVS 5.0 V12.3.1, V12.3.2, V16.4.3): the collectors' CAs, for a log or telemetry collector whose certificate chains to
+ * the site PKI. otel.caSecretName names the OTLP collector's (the five API hosts and the simulator export to it) and
+ * logging.lokiCaSecretName Loki's (the five API hosts alone send it logs). Each is a volume of the Secret projecting ca.crt
+ * only, mounted read-only and whole where the variable points, which the host then trusts alone for that collector.
+ */
+export const COLLECTOR_CAS = [
+	{ volume: 'otlp-ca', label: "the OTLP collector's CA", value: 'otel.caSecretName', path: '/app/secrets/otlp-ca', variable: 'Otlp__RootCertificate', simulator: true },
+	{ volume: 'loki-ca', label: "Loki's CA", value: 'logging.lokiCaSecretName', path: '/app/secrets/loki-ca', variable: 'Loki__RootCertificate', simulator: false }
+].map((entry) => ({ ...entry, file: `${entry.path}/ca.crt`, pattern: new RegExp(`^${entry.variable}$`, 'i') }));
+
+/**
+ * ARV-200: the collectors' CAs of a render, against the values that name their Secrets (otlpCaSecretName, lokiCaSecretName;
+ * empty for none). Read the manifests as Kubernetes does (YAML 1.1), for the file modes.
+ * - With a name, each of the five API host Deployments, and for the OTLP collector the simulator when it is rendered, has one
+ *   volume of that Secret (otlp-ca or loki-ca) projecting ca.crt only, not optional (the pods wait for the Secret: a host given
+ *   the variable refuses to start without the file), with a mode that lets no one write or execute; its .NET container mounts it
+ *   once, read-only and whole, at /app/secrets/otlp-ca or /app/secrets/loki-ca, and gets the variable (Otlp__RootCertificate,
+ *   Loki__RootCertificate) once, the literal path of the mounted ca.crt. Names compare ignoring case, as .NET reads them.
+ * - Without a name, none of them; and never in another workload (the web pod, the jobs, the simulator for Loki), nor the
+ *   variable in a ConfigMap (envFrom would make it one); the chart never renders the Secret.
+ */
+export function collectorCaFindings(docs, { otlpCaSecretName = '', lokiCaSecretName = '' } = {}) {
+	const findings = [];
+	const names = { 'otlp-ca': String(otlpCaSecretName || ''), 'loki-ca': String(lokiCaSecretName || '') };
+	const hosts = new Set();
+	const who = (ca) => `only the five API hosts${ca.simulator ? ' and the simulator' : ''}`;
+	const mounted = (mounts) => mounts.map((mount) => `${mount.name} at ${mount.mountPath}`).join(', ');
+	for (const doc of docs) {
+		if (!doc || typeof doc !== 'object') continue;
+		const id = `${doc.kind}/${doc.metadata?.name ?? '?'}`;
+		if (doc.kind === 'ConfigMap') {
+			for (const key of Object.keys(doc.data ?? {})) {
+				const ca = COLLECTOR_CAS.find((entry) => entry.pattern.test(key));
+				if (ca) findings.push(`${id}: ${key} points a host at ${ca.label}; the chart sets it only in the env of the workloads that mount it`);
+			}
+			continue;
+		}
+		if (doc.kind === 'Secret') {
+			for (const ca of COLLECTOR_CAS) {
+				if (names[ca.volume] && doc.metadata?.name === names[ca.volume]) findings.push(`${id}: the chart renders ${ca.label}'s Secret; the site creates it from its PKI and the chart only names it`);
+			}
+			continue;
+		}
+		if (!WORKLOADS.has(doc.kind)) continue;
+		const pod = podSpecOf(doc) ?? {};
+		const name = doc.metadata?.name ?? '';
+		const apiHost = doc.kind === 'Deployment' && API_HOSTS.some((host) => name === `${host}-deployment`);
+		const simulator = doc.kind === 'Deployment' && name === 'simulation-deployment';
+		if (apiHost) hosts.add(name);
+		const containers = [...(pod.initContainers ?? []), ...(pod.containers ?? [])];
+		for (const ca of COLLECTOR_CAS) {
+			const secretName = names[ca.volume];
+			const belongs = apiHost || (ca.simulator && simulator);
+			const volumes = (pod.volumes ?? []).filter((volume) => volume.name === ca.volume);
+			const why = belongs ? ` although ${ca.value} names no Secret` : `; ${who(ca)} read ${ca.label}`;
+			const main = (container) => belongs && DOTNET_IMAGES.has(imageName(container.image ?? '')) && (apiHost || imageName(container.image ?? '') === 'simulation');
+			if (!belongs || !secretName) {
+				if (volumes.length) findings.push(`${id}: has the volume ${ca.volume}${why}`);
+				for (const container of containers) {
+					const cid = `${id} container ${container.name}`;
+					const mounts = (container.volumeMounts ?? []).filter((mount) => mount.name === ca.volume || mount.mountPath === ca.path);
+					if (mounts.length) findings.push(`${cid}: mounts ${mounted(mounts)}${why}`);
+					const given = (container.env ?? []).filter((variable) => ca.pattern.test(variable.name ?? ''));
+					if (given.length) findings.push(`${cid}: sets ${given.map((variable) => variable.name).join(', ')}${why}`);
+				}
+				continue;
+			}
+			if (volumes.length !== 1) findings.push(`${id}: needs one volume ${ca.volume}, ${ca.label} from the Secret ${secretName}, not ${volumes.length}`);
+			else {
+				const secret = volumes[0].secret;
+				const items = secret?.items ?? [];
+				const mode = secret?.defaultMode;
+				if (!secret?.secretName) findings.push(`${id}: the volume ${ca.volume} must come from the Secret ${secretName} (${ca.value})`);
+				else {
+					if (secret.secretName !== secretName) findings.push(`${id}: the volume ${ca.volume} comes from ${secret.secretName}, not ${ca.value} ${secretName}`);
+					if (items.length !== 1 || items[0].key !== 'ca.crt' || items[0].path !== 'ca.crt') findings.push(`${id}: the volume ${ca.volume} must project only ca.crt (items), so a Secret that also holds a private key never brings it`);
+					if (secret.optional === true) findings.push(`${id}: the volume ${ca.volume} must not be optional: the pods wait for the Secret, as a host given ${ca.variable} refuses to start without the file`);
+					if (!Number.isInteger(mode) || (mode & 0o333) !== 0) findings.push(`${id}: the volume ${ca.volume} must let no one write or execute ${ca.label} (defaultMode 0444), not ${mode === undefined ? 'the default 0644' : `0${Number(mode).toString(8)}`}`);
+				}
+			}
+			for (const container of containers) {
+				const cid = `${id} container ${container.name}`;
+				const mounts = (container.volumeMounts ?? []).filter((mount) => mount.name === ca.volume || mount.mountPath === ca.path);
+				const given = (container.env ?? []).filter((variable) => ca.pattern.test(variable.name ?? ''));
+				if (!main(container)) {
+					if (mounts.length) findings.push(`${cid}: mounts ${mounted(mounts)}; only the host's own container reads ${ca.label}`);
+					if (given.length) findings.push(`${cid}: sets ${given.map((variable) => variable.name).join(', ')}; only the host's own container reads ${ca.label}`);
+					continue;
+				}
+				if (mounts.length !== 1) findings.push(`${cid}: must mount ${ca.label} once at ${ca.path} (volume ${ca.volume}), as ${ca.value} names ${secretName}, not ${mounts.length} times`);
+				else if (mounts[0].name !== ca.volume || mounts[0].mountPath !== ca.path || mounts[0].readOnly !== true || mounts[0].subPath || mounts[0].subPathExpr) {
+					findings.push(`${cid}: must mount the volume ${ca.volume} read-only and whole (no subPath) at ${ca.path}`);
+				}
+				if (given.length !== 1) findings.push(`${cid}: must set ${ca.variable} once, to ${ca.file}, not ${given.length} times`);
+				else if (given[0].valueFrom || given[0].value !== ca.file) findings.push(`${cid}: ${ca.variable} must be ${ca.file}, the file the volume ${ca.volume} mounts, not ${given[0].valueFrom ? '(not a literal)' : given[0].value}`);
+			}
+		}
+	}
+	const missing = API_HOSTS.filter((host) => !hosts.has(`${host}-deployment`));
+	if (missing.length) findings.push(`the render holds no ${missing.map((host) => `Deployment/${host}-deployment`).join(', ')}`);
+	return findings;
+}

@@ -38,6 +38,9 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 64Mi
+        {{- with include "ariva-platform.collectorCaVolumes" (list . "simulation") | trim }}
+        {{- . | nindent 8 }}
+        {{- end }}
         - name: simulation-appsettings-base-volume
           secret:
             secretName: base-appsettings-secret
@@ -64,6 +67,9 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- with include "ariva-platform.collectorCaMounts" (list . "simulation") | trim }}
+            {{- . | nindent 12 }}
+            {{- end }}
             - name: simulation-appsettings-base-volume
               mountPath: /app/appsettings.base.{{ .Values.environment }}.json
               subPath: appsettings.base.{{ .Values.environment }}.json

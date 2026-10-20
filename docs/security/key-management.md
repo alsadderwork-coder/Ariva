@@ -116,7 +116,7 @@ stateDiagram-v2
 | K23 hub ticket key | One api-cronz process; each ticket 30 minutes |
 | K24 log pseudonym key | Proposed: 1 year (a new key only breaks the link between pseudonyms written before and after it) |
 | K25 log day keys, K26 archive day keys | One UTC day; K26 deleted by the first archive write after its three days (section 4.10) |
-| K27 to K33 certificates and CAs | The issuer's; for pod certificates the wiki 04 example is 90 days, renewed 30 days before the end |
+| K27 to K33 and K47 certificates and CAs | The issuer's; for pod certificates the wiki 04 example is 90 days, renewed 30 days before the end |
 | K34 to K40 service credentials | Proposed: 1 year, and when an administrator who knew one leaves |
 | K41 backup identity, K42 backup signing keys | Proposed: 2 years; a retired backup identity is kept, sealed, while backups made under it are kept |
 | K43 release signing | One signing run |
@@ -254,11 +254,11 @@ Algorithms, sizes and code are in the inventory rows named in each section.
 - **Compromise**: rotate; read the refused dashboard requests in the log (event 9601) and the job runs; the dashboard answers only the management network in its `sourceRanges` (wiki 13 section 6a). ARV-087 would replace the key by user sign-in with a second factor.
 - **Destruction**: remove the old key from the password manager and from the browsers that kept it in local storage.
 
-### 4.12 TLS certificates and CAs (K27 to K33)
+### 4.12 TLS certificates and CAs (K27 to K33, K47)
 
 - **Owner**: the key owner; issued by the site's PKI or a public CA. **Custody**: the custodians and the issuers; each in its Secret (inventory rows).
 - **Cryptoperiod**: the issuer's; the wiki 04 example for pod certificates is 90 days, renewed 30 days before the end.
-- **Rotation**: wiki 04 section 6.2 and wiki 10 section 4.9. The API hosts take a renewed pod certificate without a restart; the web pods, the MQTT listener (a rollout) and a replaced database, Redis or Kafka CA (a restart of the hosts) do not. When the cluster CA is replaced, keep both CA certificates in `ariva-cluster-ca` until every pod serves a new certificate, then run wiki 13 checklist item 17 again. After an ingress certificate changes, run the TLS check.
+- **Rotation**: wiki 04 section 6.2 and wiki 10 section 4.9. The API hosts take a renewed pod certificate without a restart; the web pods, the MQTT listener (a rollout) and a replaced database, Redis, Kafka or collector CA (a restart of the hosts) do not; for a collector CA (K47), keep both CAs in its `ca.crt` until the collector serves the new certificate. When the cluster CA is replaced, keep both CA certificates in `ariva-cluster-ca` until every pod serves a new certificate, then run wiki 13 checklist item 17 again. After an ingress certificate changes, run the TLS check.
 - **Compromise**: have the issuer revoke the certificate and issue a new one with a new key; replace the Secret; restart where the host does not reload. A compromised CA: a new CA, every certificate it issued reissued, the old CA removed from every trust Secret.
 - **Destruction**: the old key leaves its Secret with the renewal (cert-manager's `rotationPolicy: Always` makes a new key each time); delete any copy.
 
@@ -319,7 +319,7 @@ Every To confirm and Proposed item of this page and of the inventory's section 5
 16. Whether api-ingest and api-stream need the Data Protection certificate (inventory section 5, item 17).
 17. Whether the Azure DevOps release should write `dalilacr-secret` itself, as the GitHub release does (inventory section 5, item 19).
 18. Whether the runtime database login should be set from a SCRAM verifier, as the validation reader is (inventory section 5, item 21).
-19. Outbound TLS versions and suites; `Kafka:SslCaLocation` required in k8s-prd; the collectors on the site's PKI (ARV-200) (inventory section 5, items 14 to 16).
+19. Outbound TLS versions and suites; `Kafka:SslCaLocation` required in k8s-prd (inventory section 5, items 14 and 15; item 16, the collectors on the site's PKI, was closed by ARV-200).
 20. The repository settings that release signing rests on: the `v*` tag ruleset and the protection of `main` (TC-54, wiki 04 section 6.5).
 21. Proposed: the compromise check for release signing against the transparency log (section 4.15).
 22. Who keeps the etcd backups and node disks where deleted Secrets may remain (section 3.8, rule 5).

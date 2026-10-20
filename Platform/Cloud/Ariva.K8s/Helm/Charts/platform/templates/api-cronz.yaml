@@ -48,6 +48,9 @@ spec:
             optional: true
             defaultMode: 0444
         {{- include "ariva-platform.serverCaVolumes" . | nindent 8 }}
+        {{- with include "ariva-platform.collectorCaVolumes" (list . "api-cronz") | trim }}
+        {{- . | nindent 8 }}
+        {{- end }}
         {{- if include "ariva-platform.podTls" . }}
         {{- include "ariva-platform.podTlsVolume" (list . "api-cronz") | nindent 8 }}
         {{- end }}
@@ -95,6 +98,9 @@ spec:
               mountPath: /app/secrets/kafka-ca
               readOnly: true
             {{- include "ariva-platform.serverCaMounts" . | nindent 12 }}
+            {{- with include "ariva-platform.collectorCaMounts" (list . "api-cronz") | trim }}
+            {{- . | nindent 12 }}
+            {{- end }}
             {{- if include "ariva-platform.podTls" . }}
             {{- include "ariva-platform.podTlsMount" . | nindent 12 }}
             {{- end }}

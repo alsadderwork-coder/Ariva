@@ -1,3 +1,4 @@
+using System.Net.Http;
 using System.Reflection;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
@@ -5,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Http.Resilience;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using OpenTelemetry;
 using OpenTelemetry.Exporter;
 using OpenTelemetry.Logs;
@@ -45,6 +47,9 @@ public sealed class ArivaServiceDefaultsOptions
 /// </summary>
 public static class ServiceDefaultsExtensions
 {
+    /// <summary>The largest answer the exporters' pinned client buffers: a collector answers an export with a few bytes.</summary>
+    private const int CollectorAnswerBytes = 1024 * 1024;
+
     public static TBuilder AddArivaServiceDefaults<TBuilder>(this TBuilder builder, Action<ArivaServiceDefaultsOptions> configure = null)
         where TBuilder : IHostApplicationBuilder
     {
@@ -72,9 +77,21 @@ public static class ServiceDefaultsExtensions
         OtlpSettings.EnsureProductionTransport(configuration);
         // ARV-091a: a collector's sender credential in the OTLP headers comes from the environment and goes over https only.
         OtlpSettings.EnsureHeadersAreProtected(configuration, options.Environment ?? configuration["Application:Environment"]);
+        // ARV-200: the collector's CA is Ariva's setting, never OpenTelemetry's own variables, which the log sink would not read.
+        CollectorTrust.EnsureNoLibraryCertificates(configuration, options.Environment ?? configuration["Application:Environment"]);
         var otlp = OtlpSettings.From(configuration);
         if (!otlp.Enabled)
             return services;
+        // ARV-200: a collector whose certificate comes from the site PKI: the exporters' client trusts that CA alone. The
+        // exporters take a factory client of their own over http/protobuf only and build one over gRPC, so their options
+        // name the pinned client for both protocols, under every options name (a null name configures them all).
+        if (CollectorTrust.RootsFrom(configuration, CollectorTrust.OtlpSetting) is { } roots)
+        {
+            CollectorTrust.EnsureHttps(otlp, configuration);
+            CollectorTrust.Pin(services, roots, [CollectorTrust.OtlpExporterClient]);
+            services.AddTransient<IConfigureOptions<OtlpExporterOptions>>(provider => new ConfigureNamedOptions<OtlpExporterOptions, IHttpClientFactory>(
+                null, provider.GetRequiredService<IHttpClientFactory>(), (exporter, clients) => exporter.HttpClientFactory = () => ExporterClient(clients, exporter)));
+        }
 
         services
             .AddOpenTelemetry()
@@ -118,6 +135,18 @@ public static class ServiceDefaultsExtensions
         options.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(120);
         // At least twice the attempt timeout, as the pipeline's validation requires.
         options.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(120);
+    }
+
+    /// <summary>
+    /// The exporters' pinned client, bounded as OpenTelemetry bounds its own: the client's timeout is the export's deadline
+    /// (<see cref="OtlpExporterOptions.TimeoutMilliseconds"/>, OTEL_EXPORTER_OTLP_TIMEOUT), and a collector's answer is small.
+    /// </summary>
+    private static HttpClient ExporterClient(IHttpClientFactory clients, OtlpExporterOptions exporter)
+    {
+        var client = clients.CreateClient(CollectorTrust.OtlpExporterClient);
+        client.Timeout = TimeSpan.FromMilliseconds(exporter.TimeoutMilliseconds);
+        client.MaxResponseContentBufferSize = CollectorAnswerBytes;
+        return client;
     }
 
     private static void AddArivaOpenTelemetryLogs(this ILoggingBuilder logging, IConfiguration configuration, ArivaServiceDefaultsOptions options)

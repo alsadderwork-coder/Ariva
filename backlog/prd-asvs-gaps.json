@@ -414,10 +414,31 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 111,
-      "passes": false,
+      "passes": true,
       "notes": "Filed 2026-10-19 from the ARV-091a docs review. Relates to the owner question on ARV-083b (Kafka CA: internal always or public allowed); answer both together.",
       "dependsOn": [
         "ARV-091a"
+      ]
+    },
+    {
+      "id": "ARV-226",
+      "title": "[ASVS] No certificate downloads while a chain is built: Redis, and the collectors without a site CA",
+      "description": "Found in the ARV-200 security review (M1, follow-up): the Redis connection's own chain check (RedisSettings.IsIssuedByPinnedCa in Platform/Backplane/Ariva.Infra/Caching/RedisConnection.cs) builds an X509Chain against the pinned CA without DisableCertificateDownloads, and the TLS handshake StackExchange.Redis runs before that callback builds a chain with the platform's default policy, which may download too. A party that can answer on Redis's address (a spoofed name, an on-path host) can present a leaf without its intermediate whose authority information access URL names an internal address, and the host fetches it during the handshake, before the peer is authenticated (CWE-918). The ARV-200 second review found the same for the collectors when no site CA is set: the Loki sink's own client and OpenTelemetry's default exporter clients use the platform's default chain policy, which on Linux fetches the issuer address a certificate names. Kafka and PostgreSQL to be checked the same way. ASVS 5.0: V12.3.2, V12.3.4. Effort S.",
+      "acceptanceCriteria": [
+        "The Redis chain check and the handshake's own chain build download no certificate (DisableCertificateDownloads, through the client's SslClientAuthenticationOptions where StackExchange.Redis takes them, or a recorded reason where it cannot), with a test that a leaf whose intermediate is left out and whose issuer address is a loopback listener is refused and that the listener receives nothing, and a control that a chain allowed to download does fetch it",
+        "Without a site CA, Loki and the OTLP collector are still reached through clients that download no certificate (the public roots, with DisableCertificateDownloads), with the same test",
+        "PostgreSQL (Npgsql) and Kafka (librdkafka) are checked for the same behaviour and fixed or recorded with their evidence in docs/security/crypto-inventory.md (A15)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 111,
+      "passes": false,
+      "notes": "Filed by ARV-200 on 2026-10-20 from its security reviews (round 1 M1 follow-up; round 2 L4, the collectors without a site CA). Medium, so before the pilot by the owner's rule. The collectors' clients (ARV-200) and the outbound transport already disable downloads.",
+      "dependsOn": [
+        "ARV-200"
       ]
     },
     {

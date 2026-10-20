@@ -1,10 +1,13 @@
+using System.Net.Http;
 using Ariva.Api.Common.Hosting;
 using Ariva.ServiceDefaults;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Serilog;
 using Serilog.Events;
 using Serilog.Formatting.Json;
 using Serilog.Sinks.Grafana.Loki;
+using Serilog.Sinks.Grafana.Loki.HttpClients;
 
 namespace Ariva.Api.Common.Logging;
 
@@ -67,8 +70,13 @@ public static class ArivaLogging
     /// <param name="configuration">The host's configuration.</param>
     /// <param name="environment">The host's own environment name.</param>
     /// <param name="metrics">The security metrics, where the redaction enricher counts a property it had to replace; none in tests.</param>
+    /// <param name="services">
+    /// The host's services, for the collector clients <see cref="AddCollectorClients"/> registered (ARV-200); needed only when a
+    /// collector's CA file is set.
+    /// </param>
     /// <returns>The same configuration.</returns>
-    public static LoggerConfiguration Configure(LoggerConfiguration logger, IConfiguration configuration, string environment, SecurityEventMetrics metrics = null)
+    public static LoggerConfiguration Configure(LoggerConfiguration logger, IConfiguration configuration, string environment, SecurityEventMetrics metrics = null,
+        IServiceProvider services = null)
     {
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(configuration);
@@ -88,6 +96,14 @@ public static class ArivaLogging
         var protection = LogProtection.From(configuration, environment);
         var lokiUri = LokiUri(configuration);
         var lokiCredentials = lokiUri is null ? null : LokiCredentialsFrom(configuration, environment, lokiUri);
+        // ARV-200: a collector whose certificate comes from the site PKI is reached through its pinned client.
+        var lokiClient = lokiUri is not null && CollectorTrust.RootsFrom(configuration, CollectorTrust.LokiSetting) is not null
+            ? PinnedLokiClient(lokiUri, services)
+            : null;
+        var otlp = OtlpSettings.From(configuration);
+        var otlpHandler = otlp.Enabled && CollectorTrust.RootsFrom(configuration, CollectorTrust.OtlpSetting) is not null
+            ? PinnedOtlpHandler(otlp, configuration, services)
+            : null;
 
         ReadLevels(logger, configuration);
         logger
@@ -115,16 +131,18 @@ public static class ArivaLogging
                     new LokiLabel { Key = "log_type", Value = "application" }
                 ],
                 propertiesAsLabels: ["level"],
-                credentials: lokiCredentials);
+                credentials: lokiCredentials,
+                httpClient: lokiClient);
         }
 
-        var otlp = OtlpSettings.From(configuration);
         if (otlp.Enabled)
         {
             logger.WriteTo.OpenTelemetry(
                 options =>
                 {
                     options.Endpoint = otlp.Endpoint.ToString();
+                    if (otlpHandler is not null)
+                        options.HttpMessageHandler = otlpHandler;
                     options.Protocol = otlp.UseHttp
                         ? Serilog.Sinks.OpenTelemetry.OtlpProtocol.HttpProtobuf
                         : Serilog.Sinks.OpenTelemetry.OtlpProtocol.Grpc;
@@ -172,6 +190,42 @@ public static class ArivaLogging
     internal static bool IsProduction(IConfiguration configuration, string environment) =>
         string.Equals(environment, ArivaEnvironment.K8sPrd, StringComparison.Ordinal) ||
         string.Equals(configuration["Application:Environment"], ArivaEnvironment.K8sPrd, StringComparison.Ordinal);
+
+    /// <summary>
+    /// ARV-200: the log sinks' pinned clients for a collector whose CA file is set (<see cref="CollectorClients"/>), registered for
+    /// the logger and disposed by the host after it. A CA file that cannot serve stops the host here, before any sink exists.
+    /// </summary>
+    /// <param name="services">The host's services.</param>
+    /// <param name="configuration">The host's configuration.</param>
+    public static void AddCollectorClients(IServiceCollection services, IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configuration);
+        // Through a factory, so the host owns it. The logger resolves it while it is built, so it is made before the logger and,
+        // as the host disposes in the reverse order of creation, disposed after it: the logger's last batch still goes out.
+        if (CollectorClients.From(configuration) is { } clients)
+            services.AddSingleton(_ => clients);
+    }
+
+    /// <summary>The Loki sink's pinned client (ARV-200), over https only.</summary>
+    private static LokiHttpClient PinnedLokiClient(Uri lokiUri, IServiceProvider services)
+    {
+        CollectorTrust.EnsureHttps(lokiUri);
+        return new LokiHttpClient(PinnedClients(services, CollectorTrust.LokiClient, CollectorTrust.LokiSetting).CreateClient(CollectorTrust.LokiClient));
+    }
+
+    /// <summary>The OTLP sink's pinned handler (ARV-200), over https only.</summary>
+    private static HttpMessageHandler PinnedOtlpHandler(OtlpSettings otlp, IConfiguration configuration, IServiceProvider services)
+    {
+        CollectorTrust.EnsureHttps(otlp, configuration);
+        return PinnedClients(services, CollectorTrust.OtlpLogsClient, CollectorTrust.OtlpSetting).CreateHandler(CollectorTrust.OtlpLogsClient);
+    }
+
+    /// <summary>The host's pinned collector clients, which must hold <paramref name="client"/>: a client of any other origin keeps the public roots.</summary>
+    private static CollectorClients PinnedClients(IServiceProvider services, string client, string setting) =>
+        services?.GetService<CollectorClients>() is { } clients && clients.IsPinned(client)
+            ? clients
+            : throw new InvalidOperationException($"{setting} is set, but the logger was built without the host's pinned collector clients (AddCollectorClients).");
 
     /// <summary>Loki's address when the Loki sink is on, otherwise null.</summary>
     private static Uri LokiUri(IConfiguration configuration) =>

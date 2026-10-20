@@ -91,6 +91,16 @@ Release guards. Renders nothing; fails the render when a rule is broken.
   - when the release can see the cluster (lookup finds the namespace's kube-root-ca.crt ConfigMap), the Secret exists, holds
     the key, and its value is base64 of 32 or more bytes (ariva-platform.pseudonymKeyRefusal); helm template, or a namespace
     that does not exist yet, sees nothing and passes.
+- The collectors' CAs (ARV-200; values otel.caSecretName and logging.lokiCaSecretName, for a collector whose certificate
+  chains to the site PKI):
+  - each a Kubernetes secret name; otel.caSecretName needs otel.endpoint, an https:// URL, and logging.lokiCaSecretName needs
+    logging.collector loki: a collector's CA is checked over TLS only (the hosts refuse to start with it over plain HTTP), and
+    each is read by its collector's clients alone;
+  - when the release can see the cluster (the same kube-root-ca.crt lookup), the Secret exists and holds ca.crt and nothing
+    else, so no private key or keystore in any form (a collector's own cert-manager Certificate Secret among them) sits in
+    Ariva's namespace, and its ca.crt holds a PEM certificate and no private key, the file the hosts would otherwise refuse to
+    start on (ariva-platform.collectorCaRefusal); helm template, or a namespace that does not exist yet, sees nothing and
+    passes: the pods wait for the Secret.
 */ -}}
 {{- if and (eq .Values.environment "k8s-prd") (or (empty .Values.buildNumber) (eq (toString .Values.buildNumber) "trunk")) }}
 {{- fail "k8s-prd needs an explicit buildNumber (for example --set buildNumber=main-20261001.3); trunk and empty are not allowed" }}
@@ -131,11 +141,11 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- end }}
 {{- $otel := .Values.otel | default dict }}
 {{- if not (kindIs "map" $otel) }}
-{{- fail "otel must be a map: endpoint, protocol and headersSecret (ARV-082a, ARV-091a)" }}
+{{- fail "otel must be a map: endpoint, protocol, headersSecret and caSecretName (ARV-082a, ARV-091a, ARV-200)" }}
 {{- end }}
 {{- range $key, $_ := $otel }}
-{{- if not (has $key (list "endpoint" "protocol" "headersSecret")) }}
-{{- fail (printf "otel.%s is not a setting (endpoint, protocol, headersSecret; ARV-091a): the chart names the Secret that holds the collector's sender headers, never the headers themselves" $key) }}
+{{- if not (has $key (list "endpoint" "protocol" "headersSecret" "caSecretName")) }}
+{{- fail (printf "otel.%s is not a setting (endpoint, protocol, headersSecret, caSecretName; ARV-091a, ARV-200): the chart names the Secrets that hold the collector's sender headers and its CA, never the headers themselves" $key) }}
 {{- end }}
 {{- end }}
 {{- $otelHeaders := $otel.headersSecret | default dict }}
@@ -159,6 +169,17 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- fail "otel.headersSecret needs otel.endpoint, an https:// URL: without one no exporter runs and the headers would be idle (ARV-091a)" }}
 {{- else }}
 {{- fail "otel.headersSecret needs otel.endpoint to be an https:// URL: the collector's sender headers cross the network encrypted only (ARV-091a)" }}
+{{- end }}
+{{- end }}
+{{- $otelCaSecretName := toString ($otel.caSecretName | default "") }}
+{{- if and $otelCaSecretName (not (regexMatch "^[a-z0-9]([-a-z0-9]{0,251}[a-z0-9])?$" $otelCaSecretName)) }}
+{{- fail "otel.caSecretName must be a Kubernetes secret name, the Secret whose key ca.crt is the CA the OTLP collector's certificate chains to (ARV-200)" }}
+{{- end }}
+{{- if and $otelCaSecretName (not (regexMatch "^(?i)https://[^\\s]+$" $otelEndpoint)) }}
+{{- if eq $otelEndpoint "" }}
+{{- fail "otel.caSecretName needs otel.endpoint, an https:// URL: without one no exporter runs and the collector's CA would be idle (ARV-200)" }}
+{{- else }}
+{{- fail "otel.caSecretName needs otel.endpoint to be an https:// URL: a collector's CA is checked over TLS only, and the hosts refuse to start with it over plain HTTP (ARV-200)" }}
 {{- end }}
 {{- end }}
 {{- if and (eq .Values.environment "k8s-prd") (ne $otelEndpoint "") (not (regexMatch "^(?i)https://[^\\s]+$" $otelEndpoint)) }}
@@ -412,11 +433,11 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- end }}
 {{- $logging := .Values.logging | default dict }}
 {{- if not (kindIs "map" $logging) }}
-{{- fail "logging must be a map: collector, pseudonymKeySecret, lokiCredentialsSecret and required (ARV-091a)" }}
+{{- fail "logging must be a map: collector, pseudonymKeySecret, lokiCredentialsSecret, lokiCaSecretName and required (ARV-091a, ARV-200)" }}
 {{- end }}
 {{- range $key, $_ := $logging }}
-{{- if not (has $key (list "collector" "pseudonymKeySecret" "lokiCredentialsSecret" "required")) }}
-{{- fail (printf "logging.%s is not a setting (collector, pseudonymKeySecret, lokiCredentialsSecret, required; ARV-091a): the chart names the Secrets that hold the log pseudonym key and Loki's credentials, never their values" $key) }}
+{{- if not (has $key (list "collector" "pseudonymKeySecret" "lokiCredentialsSecret" "lokiCaSecretName" "required")) }}
+{{- fail (printf "logging.%s is not a setting (collector, pseudonymKeySecret, lokiCredentialsSecret, lokiCaSecretName, required; ARV-091a, ARV-200): the chart names the Secrets that hold the log pseudonym key, Loki's credentials and Loki's CA, never their values" $key) }}
 {{- end }}
 {{- end }}
 {{- $lokiSecret := $logging.lokiCredentialsSecret | default dict }}
@@ -477,11 +498,27 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- if and (eq $collector "loki") $np.enabled (empty $np.loki.to) }}
 {{- fail "logging.collector loki needs networkPolicies.loki.to, Loki's peers: with networkPolicies.enabled the hosts' logs could not leave the pods otherwise (ARV-091a)" }}
 {{- end }}
+{{- $lokiCaSecretName := toString ($logging.lokiCaSecretName | default "") }}
+{{- if and $lokiCaSecretName (not (regexMatch "^[a-z0-9]([-a-z0-9]{0,251}[a-z0-9])?$" $lokiCaSecretName)) }}
+{{- fail "logging.lokiCaSecretName must be a Kubernetes secret name, the Secret whose key ca.crt is the CA Loki's certificate chains to (ARV-200)" }}
+{{- end }}
+{{- if and $lokiCaSecretName (ne $collector "loki") }}
+{{- fail "logging.lokiCaSecretName needs logging.collector loki: only the hosts' Loki sink reads Loki's CA, which would otherwise be idle (ARV-200)" }}
+{{- end }}
 {{- if $keySecretName }}
 {{- $reachable := lookup "v1" "ConfigMap" .Release.Namespace "kube-root-ca.crt" }}
 {{- $keyRefusal := include "ariva-platform.pseudonymKeyRefusal" (dict "secret" (lookup "v1" "Secret" .Release.Namespace $keySecretName) "name" $keySecretName "key" $keySecretKey "reachable" (not (empty $reachable))) }}
 {{- if $keyRefusal }}
 {{- fail $keyRefusal }}
+{{- end }}
+{{- end }}
+{{- range $ca := list (dict "value" "otel.caSecretName" "name" $otelCaSecretName "collector" "the OTLP collector") (dict "value" "logging.lokiCaSecretName" "name" $lokiCaSecretName "collector" "Loki") }}
+{{- if $ca.name }}
+{{- $caReachable := lookup "v1" "ConfigMap" $.Release.Namespace "kube-root-ca.crt" }}
+{{- $collectorCaRefusal := include "ariva-platform.collectorCaRefusal" (dict "secret" (lookup "v1" "Secret" $.Release.Namespace $ca.name) "name" $ca.name "value" $ca.value "collector" $ca.collector "reachable" (not (empty $caReachable))) }}
+{{- if $collectorCaRefusal }}
+{{- fail $collectorCaRefusal }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- range $ingress := (.Values.ingresses | default list) }}

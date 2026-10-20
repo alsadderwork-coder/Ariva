@@ -27,7 +27,9 @@ app.kubernetes.io/version: {{ .Values.releaseVersion | quote }}
 OpenTelemetry environment variables shared by the .NET hosts (the five API hosts and the simulator). The service name comes
 from Application:Name in appsettings; these add the export target and the resource attributes, and with otel.headersSecret
 (ARV-091a) the collector's sender headers, OTEL_EXPORTER_OTLP_HEADERS, from that Secret only (secretKeyRef, not optional);
-validate.yaml then requires an https:// endpoint. The chart test fails if another workload gets them.
+validate.yaml then requires an https:// endpoint. With otel.caSecretName (ARV-200), Otlp__RootCertificate, the file of the
+otlp-ca volume (collectorCaVolumes), which the exporters and Serilog's OTLP sink then trust alone for the collector;
+validate.yaml then requires an https:// endpoint too. The chart test fails if another workload gets them.
 */}}
 {{- define "ariva-platform.otelEnv" -}}
 {{- $headers := (.Values.otel | default dict).headersSecret -}}
@@ -44,6 +46,11 @@ validate.yaml then requires an https:// endpoint. The chart test fails if anothe
       name: {{ toString $headers.name | quote }}
       key: {{ toString ($headers.key | default "headers") | quote }}
       optional: false
+{{- end }}
+{{- if include "ariva-platform.otlpCaSecretName" . }}
+# The OTLP collector's CA (ARV-200): the otlp-ca volume's file, the only CA the exporters then trust for it, over https only
+- name: Otlp__RootCertificate
+  value: "/app/secrets/otlp-ca/ca.crt"
 {{- end }}
 - name: OTEL_RESOURCE_ATTRIBUTES
   value: {{ printf "service.namespace=ariva,deployment.environment=%s,k8s.cluster.name=%s,service.version=%s" .Values.environment .Values.clusterName .Values.releaseVersion | quote }}
@@ -126,6 +133,118 @@ Usage: {{- include "ariva-platform.serverCaVolumes" . | nindent 8 }} and {{- inc
 - name: redis-ca
   mountPath: /app/secrets/redis-ca
   readOnly: true
+{{- end }}
+
+{{/*
+The collectors' CA secret names (ARV-200): otel.caSecretName and logging.lokiCaSecretName, or empty when unset (or when otel or
+logging is not a map, which validate.yaml refuses). Usage: {{- if include "ariva-platform.otlpCaSecretName" . }}
+*/}}
+{{- define "ariva-platform.otlpCaSecretName" -}}
+{{- if kindIs "map" .Values.otel }}{{ toString (.Values.otel.caSecretName | default "") }}{{ end -}}
+{{- end }}
+
+{{- define "ariva-platform.lokiCaSecretName" -}}
+{{- if kindIs "map" .Values.logging }}{{ toString (.Values.logging.lokiCaSecretName | default "") }}{{ end -}}
+{{- end }}
+
+{{/*
+The collectors' CAs (ARV-200; values otel.caSecretName and logging.lokiCaSecretName): for a log or telemetry collector whose
+certificate chains to the site PKI, the Secret in the release's namespace whose key ca.crt is that CA (or a bundle of the
+site's CAs). otlp-ca for the OTLP collector, in the five API hosts and the simulator (both export to it), and loki-ca for Loki,
+in the five API hosts only (the simulator sends no logs to Loki); nothing in the web pod or the jobs. Only ca.crt is projected
+(items), so a Secret that also holds a private key never brings it into a pod; mode 0444, mounted read-only and whole (no
+subPath) at /app/secrets/otlp-ca and /app/secrets/loki-ca, where otelEnv's Otlp__RootCertificate and loggingEnv's
+Loki__RootCertificate point. Not optional: a host given the variable refuses to start without the file, so the pods wait for
+the Secret instead. Nothing when the value is empty. The chart test requires each mount, read-only, in exactly these
+workloads, with its variable, and neither anywhere else.
+Usage: {{- with include "ariva-platform.collectorCaVolumes" (list . "api-main") | trim }}{{ . | nindent 8 }}{{ end }} and
+{{- with include "ariva-platform.collectorCaMounts" (list . "api-main") | trim }}{{ . | nindent 12 }}{{ end }}; the second
+argument is the workload's service (api-main, api-ingest, api-stream, api-cronz, api-integration or simulation).
+*/}}
+{{- define "ariva-platform.collectorCaVolumes" -}}
+{{- $root := index . 0 -}}
+{{- $service := index . 1 -}}
+{{- $otlp := include "ariva-platform.otlpCaSecretName" $root -}}
+{{- $loki := "" -}}
+{{- if has $service (list "api-main" "api-ingest" "api-stream" "api-cronz" "api-integration") }}{{ $loki = include "ariva-platform.lokiCaSecretName" $root }}{{ end -}}
+{{- if $otlp }}
+# The OTLP collector's CA (ARV-200): ca.crt of otel.caSecretName only, read-only; the pods wait for the Secret
+- name: otlp-ca
+  secret:
+    secretName: {{ $otlp | quote }}
+    optional: false
+    defaultMode: 0444
+    items:
+      - key: ca.crt
+        path: ca.crt
+{{- end }}
+{{- if $loki }}
+# Loki's CA (ARV-200): ca.crt of logging.lokiCaSecretName only, read-only; the pods wait for the Secret
+- name: loki-ca
+  secret:
+    secretName: {{ $loki | quote }}
+    optional: false
+    defaultMode: 0444
+    items:
+      - key: ca.crt
+        path: ca.crt
+{{- end }}
+{{- end }}
+
+{{- define "ariva-platform.collectorCaMounts" -}}
+{{- $root := index . 0 -}}
+{{- $service := index . 1 -}}
+{{- $loki := "" -}}
+{{- if has $service (list "api-main" "api-ingest" "api-stream" "api-cronz" "api-integration") }}{{ $loki = include "ariva-platform.lokiCaSecretName" $root }}{{ end -}}
+{{- if include "ariva-platform.otlpCaSecretName" $root }}
+- name: otlp-ca
+  mountPath: /app/secrets/otlp-ca
+  readOnly: true
+{{- end }}
+{{- if $loki }}
+- name: loki-ca
+  mountPath: /app/secrets/loki-ca
+  readOnly: true
+{{- end }}
+{{- end }}
+
+{{/*
+Why the Secret a collector's CA value names would stop the hosts or leave their pods waiting (ARV-200), or empty when it is
+fine: given a dict of secret (the Secret as lookup returns it; an empty map when there is none to judge), name, value
+(otel.caSecretName or logging.lokiCaSecretName), collector (whose CA it is, for the message) and reachable (true when the
+release sees the cluster: lookup found the namespace's kube-root-ca.crt ConfigMap, as for the log pseudonym key). Rendering
+offline (helm template) or into a namespace that does not exist yet sees neither, and the guard then passes: the pods wait
+for the Secret. A reachable namespace without the Secret is refused, as is a Secret whose ca.crt holds a private key (the
+hosts refuse a file with PRIVATE KEY anywhere in it: a key pair put there by mistake), one that holds any key but ca.crt
+(the Secret holds ca.crt and nothing else: the pods mount ca.crt alone, and no private key or keystore in any form, PEM, DER
+or PKCS#12, such as the collector's own cert-manager Certificate Secret, then sits in Ariva's namespace), and one whose ca.crt
+holds no PEM certificate (no ca.crt, or one empty, not base64 or not PEM). Each refusal is a fixed message naming the value,
+the Secret and, when they are Kubernetes key names, its other keys; none holds a value of the Secret. validate.yaml calls
+this with the lookups; chart-security.mjs renders it with stand-in secrets, as helm template cannot run lookup.
+Usage: {{ include "ariva-platform.collectorCaRefusal" (dict "secret" (lookup "v1" "Secret" .Release.Namespace "site-otlp-ca") "name" "site-otlp-ca" "value" "otel.caSecretName" "collector" "the OTLP collector" "reachable" true) }}
+*/}}
+{{- define "ariva-platform.collectorCaRefusal" -}}
+{{- $secret := .secret -}}
+{{- if not (kindIs "map" $secret) }}{{ $secret = dict }}{{ end -}}
+{{- if not $secret -}}
+{{- if .reachable -}}
+{{ .value }} names the Secret {{ .name }}, which the release's namespace does not hold: create it before the release with the key ca.crt, the PEM CA {{ .collector }}'s certificate chains to, or the pods wait for it (ARV-200)
+{{- end -}}
+{{- else -}}
+{{- $data := $secret.data -}}
+{{- if not (kindIs "map" $data) }}{{ $data = dict }}{{ end -}}
+{{- $pem := toString (index $data "ca.crt" | default "") | b64dec -}}
+{{- $others := list -}}
+{{- $named := true -}}
+{{- range $key, $_ := $data }}{{ if ne $key "ca.crt" }}{{ $others = append $others $key }}{{ if not (regexMatch "^[-._a-zA-Z0-9]{1,253}$" $key) }}{{ $named = false }}{{ end }}{{ end }}{{ end -}}
+{{- if contains "PRIVATE KEY" $pem -}}
+{{ .value }}: the Secret {{ .name }} holds a private key under ca.crt, and the hosts refuse to start on it; keep only the certificates of the CA {{ .collector }}'s certificate chains to there (ARV-200)
+{{- else if $others -}}
+{{ .value }}: the Secret {{ .name }} holds keys other than ca.crt{{ if $named }} ({{ join ", " $others }}){{ end }}; a collector's CA Secret holds ca.crt and nothing else, so no private key or keystore, such as the collector's own cert-manager Certificate Secret, sits in Ariva's namespace: create a Secret with ca.crt only (ARV-200)
+{{- else if not (contains "-----BEGIN CERTIFICATE-----" $pem) -}}
+{{ .value }}: the Secret {{ .name }} holds no PEM certificate under ca.crt, and the hosts refuse to start on it; put the CA {{ .collector }}'s certificate chains to there, as PEM (ARV-200)
+{{- end -}}
+{{- end -}}
 {{- end }}
 
 {{/*
@@ -270,6 +389,8 @@ Log shipping and the log pseudonym key of the five API hosts (ARV-091a; values l
   is the collector (validate.yaml requires it https).
 - with logging.lokiCredentialsSecret, Loki__Username and Loki__Password from that Secret (secretKeyRef, not optional), for a
   Loki that authenticates senders: outside vm-local a host refuses them from a file, and sends them over https only.
+- with logging.lokiCaSecretName (ARV-200), Loki__RootCertificate, the file of the loki-ca volume (collectorCaVolumes): the Loki
+  sink then trusts that CA alone, and a host refuses to start with it unless Loki:Uri is https (validate.yaml requires loki).
 Only the five API hosts get them (not the simulator, the web pod or the jobs, whose one-shot commands log before the host's
 logger exists); the chart test fails if another workload does.
 Usage: {{- with include "ariva-platform.loggingEnv" . | trim }}{{ . | nindent 12 }}{{ end }}
@@ -292,6 +413,11 @@ Usage: {{- with include "ariva-platform.loggingEnv" . | trim }}{{ . | nindent 12
 # The logs go to Loki (logging.collector loki, ARV-091a): Loki:Uri comes from the appsettings secret, https in k8s-prd
 - name: Loki__Enabled
   value: "true"
+{{- end }}
+{{- if include "ariva-platform.lokiCaSecretName" . }}
+# Loki's CA (ARV-200): the loki-ca volume's file, the only CA the Loki sink then trusts; Loki:Uri must be https with it
+- name: Loki__RootCertificate
+  value: "/app/secrets/loki-ca/ca.crt"
 {{- end }}
 {{- $loki := $logging.lokiCredentialsSecret -}}
 {{- if not (kindIs "map" $loki) }}{{ $loki = dict }}{{ end -}}

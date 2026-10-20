@@ -9,7 +9,7 @@ Snapshot of 2026-10-20, branch `story/mvp-phase1`. The backlog files in `backlog
 | Phase 0 (`prd-phase0.json`) | 78 of 79 | ARV-002: its last criterion is a dev cluster release by a person, deferred by the owner to ARV-137 |
 | Phase 1, the MVP (`prd-phase1.json`) | 69 of 82 | 13, almost all waiting for site answers or the owner |
 | Phase 2, displays and advertising (`prd-phase2.json`) | 8 of 8 | none |
-| ASVS gaps (`prd-asvs-gaps.json`) | 18 of 36 | 18 |
+| ASVS gaps (`prd-asvs-gaps.json`) | 19 of 37 | 18 |
 | Phase 3, deferred hardening (`prd-phase3.json`) | 0 of 44 | 44, built after the pilot go-live gate unless pulled forward |
 | Azure DevOps move (`prd-azure-move.json`) | 0 of 9 | 9, new; see [azure-devops-move.md](azure-devops-move.md) |
 
@@ -19,7 +19,7 @@ ASVS 5.0 Level 2 (`docs/security/asvs-l2.md`): 157 of the 203 requirements that 
 
 | Story | What it does | Notes |
 |---|---|---|
-| ARV-200 | Site CA trust for the log and telemetry collectors | Related to the Kafka CA question of ARV-083b, but buildable on its own |
+| ARV-226 | No certificate downloads while a chain is built: Redis, and the collectors without a site CA | Found in ARV-200; Medium, so before the pilot |
 | ARV-092b | Malware scanning of uploads in the hosts | Built with a Proposed default for an upload while the scanner is down (refused or accepted); the owner confirms |
 | ARV-092c | ClamAV in the chart | Built with the Proposed signature delivery; air-gapped sites are the owner's choice |
 | ARV-096b | Remaining availability bounds (report rows, search counts, run timeouts, hub connections, slow bodies, forms sent to actions that bind none) | The sign-in endpoints' part waits for the login freeze |

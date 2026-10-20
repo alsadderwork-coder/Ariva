@@ -19,8 +19,9 @@ public static class LoggingExtensions
         ArgumentNullException.ThrowIfNull(builder);
 
         builder.Logging.ClearProviders();
+        ArivaLogging.AddCollectorClients(builder.Services, builder.Configuration);
         builder.Services.AddSerilog((services, logger) =>
-            ArivaLogging.Configure(logger, builder.Configuration, builder.Environment.EnvironmentName, services.GetService<SecurityEventMetrics>()),
+            ArivaLogging.Configure(logger, builder.Configuration, builder.Environment.EnvironmentName, services.GetService<SecurityEventMetrics>(), services),
             preserveStaticLogger: true);
         return builder;
     }

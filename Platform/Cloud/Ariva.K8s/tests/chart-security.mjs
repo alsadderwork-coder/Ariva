@@ -47,6 +47,13 @@
 // (logShippingFindings); dev, demo and localk8s render neither. The release guards refuse prd
 // without a collector or the Secret, otlp without an https endpoint, loki or otlp without their peers under the NetworkPolicies,
 // and any value that could hold the key itself; the Secret guard (lookup) is judged on stand-in secrets.
+// ARV-200 (ASVS 5.0 V12.3.1, V12.3.2, V16.4.3): with otel.caSecretName the five API hosts and the simulator, and with
+// logging.lokiCaSecretName the five API hosts, and only they, mount that Secret's ca.crt alone (read-only and whole, mode 0444,
+// not optional) at /app/secrets/otlp-ca or /app/secrets/loki-ca and get Otlp__RootCertificate or Loki__RootCertificate, the
+// mounted file (collectorCaFindings); nothing when the values are empty, never in the web pod or the jobs. The release guards
+// refuse a name that is not a Kubernetes name, the OTLP collector's CA without an https otel.endpoint and Loki's without
+// logging.collector loki; the Secret guard (lookup: the Secret exists and holds ca.crt and nothing else, a PEM certificate
+// without a private key) is judged on stand-in secrets.
 //   node Platform/Cloud/Ariva.K8s/tests/chart-security.mjs              needs helm 3 on PATH (or HELM=path)
 //   node Platform/Cloud/Ariva.K8s/tests/chart-security.mjs --self-test  checks the rules against fixtures, no helm
 // Without helm the test is skipped locally and fails in CI (CI=true).
@@ -57,7 +64,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parse as parseYaml, parseAllDocuments, stringify } from 'yaml';
-import { checkManifests, controllerValuesFindings, DATABASE_TLS12_CIPHERS, databaseTlsFindings, forwardedHeadersFindings, HUB_PATHS, hubRefusalFindings, ingressHardeningFindings, INGRESS_HARDENING,
+import { checkManifests, COLLECTOR_CAS, collectorCaFindings, controllerValuesFindings, DATABASE_TLS12_CIPHERS, databaseTlsFindings, forwardedHeadersFindings, HUB_PATHS, hubRefusalFindings, ingressHardeningFindings, INGRESS_HARDENING,
 	INGRESS_LOG_FORMAT, ingressPrivacyFindings, logShippingFindings, API_HOSTS, missingMonitoringRules, networkPolicyFindings, networkValues, POD_TLS, podTlsFindings, podTlsSecrets, serverCaSecrets, trustsMappedClients } from './checks.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -692,6 +699,120 @@ function logShippingSelfTest() {
 	return { failures, count: LOG_SHIPPING_CASES.length + 4 };
 }
 
+/** ARV-200: the collectors' CA Secrets of the cases below (a site's names) and the options naming both. */
+const OTLP_CA = 'site-otlp-ca';
+const LOKI_CA = 'site-loki-ca';
+const BOTH_CAS = { otlpCaSecretName: OTLP_CA, lokiCaSecretName: LOKI_CA };
+
+/**
+ * ARV-200: the five API host Deployments with the collectors' CAs named (otlp, loki: a Secret name, or empty), the simulator with
+ * the OTLP collector's, and the web pod, the two jobs and a host ConfigMap without either, as the chart renders them.
+ */
+function collectorCaDocs({ otlp = OTLP_CA, loki = LOKI_CA, simulator = true } = {}) {
+	const cas = (withLoki) => COLLECTOR_CAS.filter((ca) => (ca.volume === 'otlp-ca' ? otlp : withLoki && loki));
+	const nameOf = (ca) => (ca.volume === 'otlp-ca' ? otlp : loki);
+	const workload = (kind, name, image, list) => ({ kind, metadata: { name }, spec: { template: { spec: {
+		volumes: [{ name: 'tmp', emptyDir: {} }, ...list.map((ca) => ({ name: ca.volume, secret: { secretName: nameOf(ca), optional: false, defaultMode: 0o444, items: [{ key: 'ca.crt', path: 'ca.crt' }] } }))],
+		containers: [{ name: 'app', image, volumeMounts: [{ name: 'tmp', mountPath: '/tmp' }, ...list.map((ca) => ({ name: ca.volume, mountPath: ca.path, readOnly: true }))],
+			env: [{ name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: 'https://otel.example:4317' }, ...list.map((ca) => ({ name: ca.variable, value: ca.file }))] }] } } } });
+	return [...API_HOSTS.map((host) => workload('Deployment', `${host}-deployment`, `r.example/ariva/${host}:1`, cas(true))),
+		...(simulator ? [workload('Deployment', 'simulation-deployment', 'r.example/ariva/simulation:1', cas(false))] : []),
+		workload('Deployment', 'web-deployment', 'r.example/ariva/web:1', []), workload('Job', 'database-migration', 'r.example/ariva/api-main:1', []),
+		workload('Job', 'kafka-topics', 'r.example/ariva/api-main:1', []), { kind: 'ConfigMap', metadata: { name: 'api-main-configmap' }, data: { DOTNET_ENVIRONMENT: 'k8s-dev' } }];
+}
+const podOf = (docs, name) => workloadOf(docs, name).spec.template.spec;
+const caVolumeOf = (docs, name, volume) => podOf(docs, name).volumes.find((entry) => entry.name === volume);
+const caMountOf = (docs, name, volume) => containerOf(docs, name).volumeMounts.find((entry) => entry.name === volume);
+const caVariableOf = (docs, name, variable) => containerOf(docs, name).env.find((entry) => entry.name === variable);
+/** ARV-200: a workload given a collector's CA as the chart gives it to an API host (volume, mount and variable). */
+function giveCa(docs, name, volume, secretName) {
+	const ca = COLLECTOR_CAS.find((entry) => entry.volume === volume);
+	podOf(docs, name).volumes.push({ name: volume, secret: { secretName, optional: false, defaultMode: 0o444, items: [{ key: 'ca.crt', path: 'ca.crt' }] } });
+	containerOf(docs, name).volumeMounts.push({ name: volume, mountPath: ca.path, readOnly: true });
+	containerOf(docs, name).env.push({ name: ca.variable, value: ca.file });
+}
+
+/** ARV-200: each change to the collectors' CAs of a render and the findings it must give, no more: [label, options, docs, change, expected]. */
+const COLLECTOR_CA_CASES = [
+	['a host without the OTLP collector\'s CA mount', BOTH_CAS, {}, (docs) => { const mounts = containerOf(docs, 'api-stream-deployment').volumeMounts; mounts.splice(mounts.indexOf(caMountOf(docs, 'api-stream-deployment', 'otlp-ca')), 1); },
+		["Deployment/api-stream-deployment container app: must mount the OTLP collector's CA once at /app/secrets/otlp-ca (volume otlp-ca), as otel.caSecretName names site-otlp-ca, not 0 times"]],
+	['Loki\'s CA mounted writable', BOTH_CAS, {}, (docs) => { caMountOf(docs, 'api-main-deployment', 'loki-ca').readOnly = false; },
+		['Deployment/api-main-deployment container app: must mount the volume loki-ca read-only and whole (no subPath) at /app/secrets/loki-ca']],
+	['the OTLP collector\'s CA mounted as a subPath', BOTH_CAS, {}, (docs) => { Object.assign(caMountOf(docs, 'api-ingest-deployment', 'otlp-ca'), { mountPath: '/app/secrets/otlp-ca/ca.crt', subPath: 'ca.crt' }); },
+		["Deployment/api-ingest-deployment container app: must mount the volume otlp-ca read-only and whole (no subPath) at /app/secrets/otlp-ca"]],
+	['the OTLP collector\'s CA mounted twice', BOTH_CAS, {}, (docs) => containerOf(docs, 'api-cronz-deployment').volumeMounts.push({ name: 'otlp-ca', mountPath: '/etc/ssl/otlp', readOnly: true }),
+		["Deployment/api-cronz-deployment container app: must mount the OTLP collector's CA once at /app/secrets/otlp-ca (volume otlp-ca), as otel.caSecretName names site-otlp-ca, not 2 times"]],
+	['Loki\'s CA volume optional', BOTH_CAS, {}, (docs) => { caVolumeOf(docs, 'api-cronz-deployment', 'loki-ca').secret.optional = true; },
+		['Deployment/api-cronz-deployment: the volume loki-ca must not be optional: the pods wait for the Secret, as a host given Loki__RootCertificate refuses to start without the file']],
+	['the whole Secret projected', BOTH_CAS, {}, (docs) => { delete caVolumeOf(docs, 'api-integration-deployment', 'otlp-ca').secret.items; },
+		['Deployment/api-integration-deployment: the volume otlp-ca must project only ca.crt (items), so a Secret that also holds a private key never brings it']],
+	['a private key projected beside ca.crt', BOTH_CAS, {}, (docs) => caVolumeOf(docs, 'api-main-deployment', 'loki-ca').secret.items.push({ key: 'tls.key', path: 'tls.key' }),
+		['Deployment/api-main-deployment: the volume loki-ca must project only ca.crt (items), so a Secret that also holds a private key never brings it']],
+	['the CA from another Secret', BOTH_CAS, {}, (docs) => { caVolumeOf(docs, 'api-stream-deployment', 'otlp-ca').secret.secretName = 'ariva-database-ca'; },
+		['Deployment/api-stream-deployment: the volume otlp-ca comes from ariva-database-ca, not otel.caSecretName site-otlp-ca']],
+	['the CA writable by its owner', BOTH_CAS, {}, (docs) => { caVolumeOf(docs, 'api-ingest-deployment', 'loki-ca').secret.defaultMode = 0o644; },
+		["Deployment/api-ingest-deployment: the volume loki-ca must let no one write or execute Loki's CA (defaultMode 0444), not 0644"]],
+	['the CA with the default mode', BOTH_CAS, {}, (docs) => { delete caVolumeOf(docs, 'simulation-deployment', 'otlp-ca').secret.defaultMode; },
+		["Deployment/simulation-deployment: the volume otlp-ca must let no one write or execute the OTLP collector's CA (defaultMode 0444), not the default 0644"]],
+	['a host without its OTLP volume', BOTH_CAS, {}, (docs) => { const volumes = podOf(docs, 'api-main-deployment').volumes; volumes.splice(volumes.indexOf(caVolumeOf(docs, 'api-main-deployment', 'otlp-ca')), 1); },
+		["Deployment/api-main-deployment: needs one volume otlp-ca, the OTLP collector's CA from the Secret site-otlp-ca, not 0"]],
+	['the simulator without the OTLP collector\'s CA variable', BOTH_CAS, {}, (docs) => { const env = containerOf(docs, 'simulation-deployment').env; env.splice(env.indexOf(caVariableOf(docs, 'simulation-deployment', 'Otlp__RootCertificate')), 1); },
+		['Deployment/simulation-deployment container app: must set Otlp__RootCertificate once, to /app/secrets/otlp-ca/ca.crt, not 0 times']],
+	['the variable twice, once in lower case', BOTH_CAS, {}, (docs) => containerOf(docs, 'api-stream-deployment').env.push({ name: 'loki__rootcertificate', value: '/etc/ssl/certs/ca-certificates.crt' }),
+		['Deployment/api-stream-deployment container app: must set Loki__RootCertificate once, to /app/secrets/loki-ca/ca.crt, not 2 times']],
+	['the variable pointing at another file', BOTH_CAS, {}, (docs) => { caVariableOf(docs, 'api-main-deployment', 'Loki__RootCertificate').value = '/app/secrets/loki-ca/tls.crt'; },
+		['Deployment/api-main-deployment container app: Loki__RootCertificate must be /app/secrets/loki-ca/ca.crt, the file the volume loki-ca mounts, not /app/secrets/loki-ca/tls.crt']],
+	['the variable from a Secret', BOTH_CAS, {}, (docs) => { Object.assign(caVariableOf(docs, 'api-integration-deployment', 'Otlp__RootCertificate'), { value: undefined, valueFrom: { secretKeyRef: { name: OTLP_CA, key: 'path' } } }); },
+		['Deployment/api-integration-deployment container app: Otlp__RootCertificate must be /app/secrets/otlp-ca/ca.crt, the file the volume otlp-ca mounts, not (not a literal)']],
+	['Loki\'s CA on the simulator', BOTH_CAS, {}, (docs) => giveCa(docs, 'simulation-deployment', 'loki-ca', LOKI_CA),
+		["Deployment/simulation-deployment: has the volume loki-ca; only the five API hosts read Loki's CA", "Deployment/simulation-deployment container app: mounts loki-ca at /app/secrets/loki-ca; only the five API hosts read Loki's CA",
+			"Deployment/simulation-deployment container app: sets Loki__RootCertificate; only the five API hosts read Loki's CA"]],
+	['the OTLP collector\'s CA in the migration job', BOTH_CAS, {}, (docs) => giveCa(docs, 'database-migration', 'otlp-ca', OTLP_CA),
+		["Job/database-migration: has the volume otlp-ca; only the five API hosts and the simulator read the OTLP collector's CA",
+			"Job/database-migration container app: mounts otlp-ca at /app/secrets/otlp-ca; only the five API hosts and the simulator read the OTLP collector's CA",
+			"Job/database-migration container app: sets Otlp__RootCertificate; only the five API hosts and the simulator read the OTLP collector's CA"]],
+	['Loki\'s CA path in the topics job', BOTH_CAS, {}, (docs) => containerOf(docs, 'kafka-topics').volumeMounts.push({ name: 'site-ca', mountPath: '/app/secrets/loki-ca', readOnly: true }),
+		["Job/kafka-topics container app: mounts site-ca at /app/secrets/loki-ca; only the five API hosts read Loki's CA"]],
+	['the OTLP collector\'s CA variable in the web pod', BOTH_CAS, {}, (docs) => containerOf(docs, 'web-deployment').env = [{ name: 'OTLP__ROOTCERTIFICATE', value: '/app/secrets/otlp-ca/ca.crt' }],
+		["Deployment/web-deployment container app: sets OTLP__ROOTCERTIFICATE; only the five API hosts and the simulator read the OTLP collector's CA"]],
+	['a sidecar mounting the CA', BOTH_CAS, {}, (docs) => podOf(docs, 'api-main-deployment').containers.push({ name: 'shipper', image: 'r.example/shipper@sha256:' + '0'.repeat(64), volumeMounts: [{ name: 'loki-ca', mountPath: '/ca', readOnly: true }], env: [] }),
+		["Deployment/api-main-deployment container shipper: mounts loki-ca at /ca; only the host's own container reads Loki's CA"]],
+	['the variable in a ConfigMap', BOTH_CAS, {}, (docs) => { workloadOf(docs, 'api-main-configmap').data.Otlp__RootCertificate = '/app/secrets/otlp-ca/ca.crt'; },
+		["ConfigMap/api-main-configmap: Otlp__RootCertificate points a host at the OTLP collector's CA; the chart sets it only in the env of the workloads that mount it"]],
+	['the Secret rendered by the chart', BOTH_CAS, {}, (docs) => docs.push({ kind: 'Secret', metadata: { name: LOKI_CA }, data: { 'ca.crt': Buffer.from('stand-in').toString('base64') } }),
+		["Secret/site-loki-ca: the chart renders Loki's CA's Secret; the site creates it from its PKI and the chart only names it"]],
+	['the CAs where no Secret is named', {}, {}, () => {},
+		[...API_HOSTS.map((host) => `Deployment/${host}-deployment`), 'Deployment/simulation-deployment'].flatMap((id) => COLLECTOR_CAS.filter((ca) => ca.simulator || id !== 'Deployment/simulation-deployment').flatMap((ca) => [
+			`${id}: has the volume ${ca.volume} although ${ca.value} names no Secret`, `${id} container app: mounts ${ca.volume} at ${ca.path} although ${ca.value} names no Secret`,
+			`${id} container app: sets ${ca.variable} although ${ca.value} names no Secret`]))],
+	['Loki\'s CA where only the OTLP collector\'s is named', { otlpCaSecretName: OTLP_CA }, {}, () => {},
+		API_HOSTS.flatMap((host) => [`Deployment/${host}-deployment: has the volume loki-ca although logging.lokiCaSecretName names no Secret`,
+			`Deployment/${host}-deployment container app: mounts loki-ca at /app/secrets/loki-ca although logging.lokiCaSecretName names no Secret`,
+			`Deployment/${host}-deployment container app: sets Loki__RootCertificate although logging.lokiCaSecretName names no Secret`])],
+	['a host missing', BOTH_CAS, {}, (docs) => docs.splice(docs.indexOf(workloadOf(docs, 'api-cronz-deployment')), 1), ['the render holds no Deployment/api-cronz-deployment']]
+];
+
+/**
+ * ARV-200: the collectors' CA rules: the good renders clean (both CAs, each alone, neither, production without the simulator),
+ * each change giving exactly its findings.
+ */
+function collectorCaSelfTest() {
+	const failures = [];
+	const clean = [...collectorCaFindings(collectorCaDocs(), BOTH_CAS), ...collectorCaFindings(collectorCaDocs({ loki: '' }), { otlpCaSecretName: OTLP_CA }),
+		...collectorCaFindings(collectorCaDocs({ otlp: '' }), { lokiCaSecretName: LOKI_CA }), ...collectorCaFindings(collectorCaDocs({ otlp: '', loki: '' }), {}),
+		...collectorCaFindings(collectorCaDocs({ simulator: false }), BOTH_CAS),
+		// One site CA for both collectors, in one Secret, is allowed: each volume of its own.
+		...collectorCaFindings(collectorCaDocs({ otlp: 'site-ca', loki: 'site-ca' }), { otlpCaSecretName: 'site-ca', lokiCaSecretName: 'site-ca' })];
+	if (clean.length) failures.push(`the good collector CA renders produced findings:\n   ${clean.join('\n   ')}`);
+	for (const [label, options, build, change, expected] of COLLECTOR_CA_CASES) {
+		const docs = collectorCaDocs(build);
+		change(docs);
+		const found = collectorCaFindings(docs, options);
+		if (!exactly(found, expected)) failures.push(`collector CA case ${label} must give exactly ${expected.join(' | ')}; gave ${found.length ? found.join(' | ') : 'nothing'}`);
+	}
+	return { failures, count: COLLECTOR_CA_CASES.length };
+}
+
 function selfTest() {
 	const good = checkManifests(parse(fs.readFileSync(path.join(here, 'fixtures', 'good.yaml'), 'utf8')), { environment: 'k8s-prd' });
 	const bad = checkManifests(parse(fs.readFileSync(path.join(here, 'fixtures', 'bad.yaml'), 'utf8')), { environment: 'k8s-prd' });
@@ -744,7 +865,9 @@ function selfTest() {
 	const proxies = forwardedHeadersSelfTest();
 	const hubs = hubRefusalSelfTest();
 	const logs = logShippingSelfTest();
-	const others = [...tls.failures, ...podTls.failures, ...webImage, ...webRoot.failures, ...hardening.failures, ...controller.failures, ...network.failures, ...privacy.failures, ...proxies.failures, ...hubs.failures, ...logs.failures];
+	const collectorCas = collectorCaSelfTest();
+	const others = [...tls.failures, ...podTls.failures, ...webImage, ...webRoot.failures, ...hardening.failures, ...controller.failures, ...network.failures, ...privacy.failures, ...proxies.failures, ...hubs.failures, ...logs.failures,
+		...collectorCas.failures];
 	if (good.length || missing.length || others.length) {
 		console.error('chart-security self-test FAILED');
 		if (good.length) console.error('  good fixture produced findings:\n   ' + good.join('\n   '));
@@ -755,7 +878,7 @@ function selfTest() {
 	console.log(`chart-security self-test: ${expected.length} rules fire on the bad fixture, ${tls.count} TimescaleDB TLS rules on the TLS fixtures, ${podTls.count} pod TLS rules ` +
 		`on the pod TLS fixtures, ${hardening.count} ingress hardening rules and ${privacy.count} private probe and source range rules on theirs (each bad case trips exactly its rule), ` +
 		`${hubs.count} live hub refusal cases on the chart's server-snippet (each tripping exactly its rule), ` +
-		`${network.count} network policy cases, ${proxies.count} trusted proxy cases and ${logs.count} log shipping cases each giving exactly their findings; the good fixtures are clean; the web image takes ` +
+		`${network.count} network policy cases, ${proxies.count} trusted proxy cases, ${logs.count} log shipping cases and ${collectorCas.count} collector CA cases each giving exactly their findings; the good fixtures are clean; the web image takes ` +
 		`its listener from ${POD_TLS.webListen} and keeps no nginx configuration in its web root (${webRoot.count} cases); the shipped controller values (Helm/ingress-nginx-values.yaml) hold every rule, their access log format is ingress-nginx 1.15's ` +
 		`without the query string, ${controller.count} changes each trip theirs and ${controller.accepted} accepted changes trip none.`);
 }
@@ -856,6 +979,24 @@ function logShippingOptions(values, environment, required = false) {
 		lokiCredentialsSecret: loki.name ? { name: String(loki.name), usernameKey: String(loki.usernameKey || 'username'), passwordKey: String(loki.passwordKey || 'password') } : undefined,
 		otelHeadersSecret: values.otel?.headersSecret?.name ? { name: String(values.otel.headersSecret.name), key: String(values.otel.headersSecret.key || 'headers') } : undefined,
 		required: required || logging.required === true };
+}
+
+/** ARV-200: the collectors' CA Secrets a release's values name (values.yaml under its files), as collectorCaFindings takes them. */
+function collectorCaOptions(values) {
+	return { otlpCaSecretName: String(values.otel?.caSecretName ?? ''), lokiCaSecretName: String(values.logging?.lokiCaSecretName ?? '') };
+}
+
+/** ARV-200: the workloads that mount each collector's CA in a render, by volume (otlp-ca, loki-ca). */
+function collectorCaReach(docs) {
+	return Object.fromEntries(COLLECTOR_CAS.map((ca) => [ca.volume, docs.filter((doc) => (doc?.spec?.template?.spec?.volumes ?? []).some((volume) => volume.name === ca.volume))
+		.map((doc) => `${doc.kind}/${doc.metadata?.name}`).sort()]));
+}
+
+/** ARV-200: which collectors' CAs a render trusts, for the PASS lines. */
+function describeCollectorCas(values) {
+	const { otlpCaSecretName, lokiCaSecretName } = collectorCaOptions(values);
+	const one = (name, what, where) => (name ? `${what} against ${name} in ${where}` : `${what} against the image's public roots`);
+	return `${one(otlpCaSecretName, 'the OTLP collector verified', 'the five API hosts and the simulator')}, ${one(lokiCaSecretName, 'Loki verified', 'the five API hosts')}`;
 }
 
 /** ARV-091a: how a render ships its logs, for the PASS lines. */
@@ -1003,6 +1144,8 @@ for (const env of environments) {
 	findings.push(...networkFindings(result.stdout, values, env.environment));
 	// ARV-091a: the log pseudonym key and the collector, as the values give them (production only, by default).
 	findings.push(...logShippingFindings(parseAsKubernetes(result.stdout), logShippingOptions(values, env.environment)));
+	// ARV-200: the collectors' CAs as the values name them (none in the shipped files: the image's public roots).
+	findings.push(...collectorCaFindings(parseAsKubernetes(result.stdout), collectorCaOptions(values)));
 	const workloads = docs.filter((doc) => doc?.kind === 'Deployment').length;
 	const ingresses = docs.filter((doc) => doc?.kind === 'Ingress').length;
 	const monitoring = (name) => Object.keys(docs.find((doc) => doc?.kind === 'ConfigMap' && doc.metadata?.name === name)?.data ?? {}).length;
@@ -1014,7 +1157,7 @@ for (const env of environments) {
 			'database and Redis CAs in the five API hosts and the two jobs only, ' +
 			(podTls ? 'every pod, Service and Ingress over TLS with the cluster CA, ' : 'plain HTTP to the pods, ') +
 			`HSTS, nosniff and frame-ancestors on every Ingress's responses, the ModSecurity audit log off on every Ingress, plain HTTP ${describeModes(docs)}, ${describeNetwork(result.stdout, values)}, ` +
-			`${describeLogShipping(values)}, ` +
+			`${describeLogShipping(values)}, ${describeCollectorCas(values)}, ` +
 			`retention periods ${Object.values(retentionValues(env.file)).join('/')} days in the migration job, ` +
 			`${monitoring('ariva-monitoring-alerts')} alert rules and ${monitoring('ariva-monitoring-dashboards')} dashboards`);
 	}
@@ -1364,7 +1507,20 @@ for (const [label, file, sets, message, annotation] of [
 	['a headers Secret name that is not a Kubernetes name', 'values-k8s-dev.yaml', ['otel.headersSecret.name=OTLP_Headers', 'otel.endpoint=https://otel.example:4317'], 'otel.headersSecret.name must be a Kubernetes secret name'],
 	['a headers key that is not a Secret key', 'values-k8s-dev.yaml', ['otel.headersSecret.key=x-api-key=1'], 'otel.headersSecret.key must be a key of a Kubernetes Secret'],
 	['headers Secret values that are not a map', 'values-k8s-dev.yaml', ['otel.headersSecret=ariva-otlp-headers'], 'otel.headersSecret must be a map'],
-	['otel values that are not a map', 'values-k8s-dev.yaml', ['otel=plain'], 'otel must be a map']
+	['otel values that are not a map', 'values-k8s-dev.yaml', ['otel=plain'], 'otel must be a map'],
+	// ARV-200: the collectors' CA Secrets are Kubernetes names, the OTLP collector's over https only, Loki's with the logs going to
+	// Loki; the CA itself is never a value.
+	['an OTLP collector CA Secret name that is not a Kubernetes name', 'values-k8s-dev.yaml', ['otel.endpoint=https://otel.example:4317', 'otel.caSecretName=Site_OTLP_CA'], 'otel.caSecretName must be a Kubernetes secret name'],
+	['an OTLP collector CA Secret that is a map', 'values-k8s-dev.yaml', [], 'otel.caSecretName must be a Kubernetes secret name', { otel: { endpoint: 'https://otel.example:4317', caSecretName: { name: 'site-otlp-ca' } } }],
+	['the OTLP collector\'s CA without an endpoint', 'values-k8s-dev.yaml', ['otel.caSecretName=site-otlp-ca'], 'otel.caSecretName needs otel.endpoint, an https:// URL'],
+	['the OTLP collector\'s CA over plain HTTP in dev', 'values-k8s-dev.yaml', ['otel.caSecretName=site-otlp-ca', 'otel.endpoint=http://otel.example:4318'], 'otel.caSecretName needs otel.endpoint to be an https:// URL'],
+	['the OTLP collector\'s CA with an endpoint without a scheme', 'values-k8s-demo.yaml', ['otel.caSecretName=site-otlp-ca', 'otel.endpoint=otel.example:4317'], 'otel.caSecretName needs otel.endpoint to be an https:// URL'],
+	['the OTLP collector\'s CA as a value', 'values-k8s-dev.yaml', [], 'otel.ca is not a setting', { otel: { endpoint: 'https://otel.example:4317', ca: '-----BEGIN CERTIFICATE-----' } }],
+	['a Loki CA Secret name that is not a Kubernetes name', 'values-k8s-dev.yaml', ['logging.collector=loki', 'logging.lokiCaSecretName=Site_Loki_CA'], 'logging.lokiCaSecretName must be a Kubernetes secret name'],
+	['Loki\'s CA without logging to Loki', 'values-k8s-dev.yaml', ['logging.lokiCaSecretName=site-loki-ca'], 'logging.lokiCaSecretName needs logging.collector loki'],
+	['Loki\'s CA in production logging to the OTLP collector', 'values-k8s-prd.yaml', [PRD, 'logging.collector=otlp', 'otel.endpoint=https://otel.example:4317', 'logging.lokiCaSecretName=site-loki-ca'],
+		'logging.lokiCaSecretName needs logging.collector loki', { networkPolicies: { otlp: { to: [{ ipBlock: { cidr: '10.60.0.0/24' } }] } } }],
+	['Loki\'s CA as a value', 'values-k8s-dev.yaml', [], 'logging.lokiCa is not a setting', { logging: { collector: 'loki', lokiCa: '-----BEGIN CERTIFICATE-----' } }]
 ]) {
 	const result = render(file, sets, '', annotation ? [typeof annotation === 'string' ? ingressValues(annotation) : valuesFile(annotation)] : []);
 	if (result.status === 0) {
@@ -1734,7 +1890,8 @@ for (const [label, file, sets, message, annotation] of [
 		}
 		const values = mergedValues([file, ...extra]);
 		const docs = parseAsKubernetes(result.stdout);
-		const found = [...checkManifests(parse(result.stdout), { environment }), ...networkFindings(result.stdout, values, environment), ...logShippingFindings(docs, logShippingOptions(values, environment))];
+		const found = [...checkManifests(parse(result.stdout), { environment }), ...networkFindings(result.stdout, values, environment), ...logShippingFindings(docs, logShippingOptions(values, environment)),
+			...collectorCaFindings(docs, collectorCaOptions(values))];
 		if (policy && !docs.some((doc) => doc?.kind === 'NetworkPolicy' && doc.metadata?.name === policy)) found.push(`the collector's NetworkPolicy ${policy} is not rendered`);
 		findings.push(...found.map((finding) => `${label}: ${finding}`));
 		counts.push(`${label}: ${describeLogShipping(values)}`);
@@ -1813,6 +1970,136 @@ for (const [label, file, sets, message, annotation] of [
 		console.log(`PASS log pseudonym key Secret guard: validate.yaml fails on the lookups of logging.pseudonymKeySecret and kube-root-ca.crt; ${Object.keys(cases).length} stand-in secrets judged ` +
 			'(a reachable namespace without the Secret, a Secret without the key, an empty, blank, non-base64, base64url, unpadded, raw or 31-byte value refused; 32 bytes, a trailing newline, ' +
 			"openssl's wrapped lines and a site's own key pass; nothing seen offline passes, as under helm template); no refusal repeats a value");
+	}
+}
+
+// ARV-200: the collectors' CAs on real renders. dev with both (the simulator gets the OTLP collector's alone), dev with each
+// alone (the OTLP collector over http/protobuf), production with both (no simulator there), and production with one site CA
+// for both collectors. Each holds every rule, and the CAs reach exactly their workloads; the shipped files (above) mount neither.
+{
+	const findings = [];
+	const counts = [];
+	const otlpPeers = { networkPolicies: { otlp: { to: [{ ipBlock: { cidr: '10.60.0.0/24' } }] } } };
+	const apiHosts = API_HOSTS.map((host) => `Deployment/${host}-deployment`);
+	for (const [label, file, sets, extra, environment, reach] of [
+		['dev with both collectors\' CAs', 'values-k8s-dev.yaml', [], [{ otel: { endpoint: 'https://otel.example:4317', caSecretName: OTLP_CA }, logging: { collector: 'loki', lokiCaSecretName: LOKI_CA } }], 'k8s-dev',
+			{ 'otlp-ca': [...apiHosts, 'Deployment/simulation-deployment'], 'loki-ca': apiHosts }],
+		['dev with the OTLP collector\'s CA alone, over http/protobuf', 'values-k8s-dev.yaml', [], [{ otel: { endpoint: 'https://otel.example:4318', protocol: 'http/protobuf', caSecretName: OTLP_CA } }], 'k8s-dev',
+			{ 'otlp-ca': [...apiHosts, 'Deployment/simulation-deployment'], 'loki-ca': [] }],
+		['demo with Loki\'s CA alone', 'values-k8s-demo.yaml', [], [{ logging: { collector: 'loki', lokiCaSecretName: LOKI_CA } }], 'k8s-demo', { 'otlp-ca': [], 'loki-ca': apiHosts }],
+		['production with both collectors\' CAs', 'values-k8s-prd.yaml', [PRD], [{ otel: { endpoint: 'https://otel.example:4317', caSecretName: OTLP_CA }, logging: { lokiCaSecretName: LOKI_CA }, ...otlpPeers }], 'k8s-prd',
+			{ 'otlp-ca': apiHosts, 'loki-ca': apiHosts }],
+		['production with one site CA for both collectors', 'values-k8s-prd.yaml', [PRD], [{ otel: { endpoint: 'https://otel.example:4317', caSecretName: 'site-ca' }, logging: { lokiCaSecretName: 'site-ca' }, ...otlpPeers }], 'k8s-prd',
+			{ 'otlp-ca': apiHosts, 'loki-ca': apiHosts }]
+	]) {
+		const result = render(file, sets, '', extra.map((values) => valuesFile(values)));
+		if (result.status !== 0) {
+			findings.push(`${label}: template failed\n${result.stderr}`);
+			continue;
+		}
+		const values = mergedValues([file, ...extra]);
+		const docs = parseAsKubernetes(result.stdout);
+		const found = [...checkManifests(parse(result.stdout), { environment }), ...networkFindings(result.stdout, values, environment), ...logShippingFindings(docs, logShippingOptions(values, environment)),
+			...collectorCaFindings(docs, collectorCaOptions(values)), ...serverCaReach(docs)];
+		const reached = collectorCaReach(docs);
+		for (const [volume, expected] of Object.entries(reach)) {
+			if (JSON.stringify(reached[volume]) !== JSON.stringify([...expected].sort())) found.push(`${volume} reaches ${reached[volume].join(', ') || 'no workload'}, not ${expected.join(', ') || 'none'}`);
+		}
+		findings.push(...found.map((finding) => `${label}: ${finding}`));
+		counts.push(`${label}: ${describeCollectorCas(values)}`);
+	}
+	if (findings.length) {
+		failed = true;
+		console.error(`FAIL collectors' CAs:\n  ${findings.join('\n  ')}`);
+	} else {
+		console.log(`PASS collectors' CAs: ${counts.join('; ')}; each CA's ca.crt alone, read-only, mode 0444, not optional, with its variable in exactly those workloads, never in the web pod or the jobs`);
+	}
+}
+
+// ARV-200: the collectors' CA Secret guard. validate.yaml fails on ariva-platform.collectorCaRefusal of the lookups of each named
+// Secret and of the namespace's kube-root-ca.crt ConfigMap (which says the release sees the cluster). helm template has no
+// cluster, so both lookups return nothing and the guard passes, as on a first install into a new namespace (the pods then wait
+// for the Secret). As for the cluster CA and the log key: the wiring is read from validate.yaml, and the helper is rendered in a
+// copy of the chart against stand-in secrets shaped as the API returns them (data base64); no message may hold the file.
+{
+	const findings = [];
+	const validate = fs.readFileSync(path.join(chart, 'templates', 'validate.yaml'), 'utf8');
+	if (!validate.includes('{{- $otelCaSecretName := toString ($otel.caSecretName | default "") }}\n') || !validate.includes('{{- $lokiCaSecretName := toString ($logging.lokiCaSecretName | default "") }}\n')) {
+		findings.push('validate.yaml does not read otel.caSecretName and logging.lokiCaSecretName into the names the guard judges');
+	}
+	if (!/\{\{- range \$ca := list \(dict "value" "otel\.caSecretName" "name" \$otelCaSecretName "collector" "the OTLP collector"\) \(dict "value" "logging\.lokiCaSecretName" "name" \$lokiCaSecretName "collector" "Loki"\) \}\}\n\{\{- if \$ca\.name \}\}\n\{\{- \$caReachable := lookup "v1" "ConfigMap" \$\.Release\.Namespace "kube-root-ca\.crt" \}\}\n\{\{- \$collectorCaRefusal := include "ariva-platform\.collectorCaRefusal" \(dict "secret" \(lookup "v1" "Secret" \$\.Release\.Namespace \$ca\.name\) "name" \$ca\.name "value" \$ca\.value "collector" \$ca\.collector "reachable" \(not \(empty \$caReachable\)\)\) \}\}\n\{\{- if \$collectorCaRefusal \}\}\n\{\{- fail \$collectorCaRefusal \}\}/.test(validate)) {
+		findings.push('validate.yaml does not fail on ariva-platform.collectorCaRefusal of the lookups of otel.caSecretName, logging.lokiCaSecretName and kube-root-ca.crt in the release namespace');
+	}
+	const b64 = (text) => Buffer.from(text).toString('base64');
+	const certificate = (body) => `-----BEGIN CERTIFICATE-----\n${body}\n-----END CERTIFICATE-----\n`;
+	const pem = certificate('MIIBstandinCA');
+	const key = (kind) => `-----BEGIN ${kind}-----\nMIIEstandinKEY\n-----END ${kind}-----\n`;
+	const missing = "which the release's namespace does not hold";
+	const noPem = 'holds no PEM certificate under ca.crt';
+	const privateKey = 'holds a private key under ca.crt';
+	const others = (keys) => `holds keys other than ca.crt${keys ? ` (${keys})` : ''}; a collector\'s CA Secret holds ca.crt and nothing else`;
+	const der = (bytes) => Buffer.from(bytes).toString('base64');
+	const secret = (data, type = 'Opaque') => ({ type, data });
+	const loki = { name: LOKI_CA, value: 'logging.lokiCaSecretName', collector: 'Loki' };
+	const cases = {
+		'offline': [{ secret: {}, reachable: false }, ''],
+		'missing': [{ secret: {}, reachable: true }, `otel.caSecretName names the Secret ${OTLP_CA}, ${missing}`],
+		'missing-loki': [{ ...loki, secret: {}, reachable: true }, `logging.lokiCaSecretName names the Secret ${LOKI_CA}, ${missing}: create it before the release with the key ca.crt, the PEM CA Loki's certificate chains to`],
+		'ca-only': [{ secret: secret({ 'ca.crt': b64(pem) }), reachable: true }, ''],
+		'bundle': [{ secret: secret({ 'ca.crt': b64(pem + certificate('MIIBstandinSECOND')) }), reachable: true }, ''],
+		// The Secret holds ca.crt and nothing else: a certificate, a DER key, a keystore or any other data beside it is refused.
+		'ca-and-certificate': [{ secret: secret({ 'ca.crt': b64(pem), 'tls.crt': b64(pem) }), reachable: true }, `otel.caSecretName: the Secret ${OTLP_CA} ${others('tls.crt')}`],
+		'ca-and-der-key': [{ secret: secret({ 'ca.crt': b64(pem), 'ca.key': der([0x30, 0x82, 0x04, 0xa4, 0x02, 0x01, 0x00, 0x02, 0x82, 0x01, 0x01]) }), reachable: true }, others('ca.key')],
+		'ca-and-keystore': [{ ...loki, secret: secret({ 'ca.crt': b64(pem), 'keystore.p12': der([0x30, 0x82, 0x0a, 0x1d, 0x02, 0x01, 0x03, 0x30, 0x82, 0x09, 0xe3]) }), reachable: true }, `logging.lokiCaSecretName: the Secret ${LOKI_CA} ${others('keystore.p12')}`],
+		'ca-and-other-data': [{ secret: secret({ 'ca.crt': b64(pem), notes: '%%%' }), reachable: true }, others('notes')],
+		// The collector's own cert-manager Certificate Secret: ca.crt with the collector's tls.crt and tls.key.
+		'cert-manager': [{ secret: secret({ 'ca.crt': b64(pem), 'tls.crt': b64(pem), 'tls.key': b64(key('PRIVATE KEY')) }, 'kubernetes.io/tls'), reachable: true }, others('tls.crt, tls.key')],
+		'tls-key-empty': [{ secret: secret({ 'ca.crt': b64(pem), 'tls.key': '' }), reachable: true }, others('tls.key')],
+		'other-key-no-ca': [{ secret: secret({ 'key.pem': b64(key('PRIVATE KEY')) }), reachable: true }, others('key.pem')],
+		// A key that is not a Kubernetes key name (the API refuses one; a stand-in here) is not named.
+		'unnamed-key': [{ secret: secret({ 'ca.crt': b64(pem), 'a key': b64('stand-in') }), reachable: true }, others('')],
+		'no-data': [{ secret: { type: 'Opaque' }, reachable: true }, noPem],
+		'empty-ca': [{ secret: secret({ 'ca.crt': '' }), reachable: true }, noPem],
+		'blank-ca': [{ secret: secret({ 'ca.crt': b64(' \n') }), reachable: true }, noPem],
+		'ca-not-pem': [{ secret: secret({ 'ca.crt': b64('MIIBstandinDER') }), reachable: true }, noPem],
+		'ca-not-base64': [{ secret: secret({ 'ca.crt': '%%%' }), reachable: true }, noPem],
+		'loki-not-pem': [{ ...loki, secret: secret({ 'ca.crt': b64('not a certificate') }), reachable: true }, `logging.lokiCaSecretName: the Secret ${LOKI_CA} ${noPem}`],
+		'ca-with-key': [{ secret: secret({ 'ca.crt': b64(pem + key('PRIVATE KEY')) }), reachable: true }, privateKey],
+		'ca-with-key-and-tls-key': [{ secret: secret({ 'ca.crt': b64(pem + key('PRIVATE KEY')), 'tls.key': b64(key('PRIVATE KEY')) }), reachable: true }, privateKey],
+		'ca-with-rsa-key': [{ secret: secret({ 'ca.crt': b64(pem + key('RSA PRIVATE KEY')) }), reachable: true }, privateKey],
+		'ca-with-ec-key': [{ ...loki, secret: secret({ 'ca.crt': b64(key('EC PRIVATE KEY') + pem) }), reachable: true }, `logging.lokiCaSecretName: the Secret ${LOKI_CA} ${privateKey}`],
+		'ca-with-encrypted-key': [{ secret: secret({ 'ca.crt': b64(pem + key('ENCRYPTED PRIVATE KEY')) }), reachable: true }, privateKey],
+		'key-only': [{ secret: secret({ 'ca.crt': b64(key('PRIVATE KEY')) }), reachable: true }, privateKey]
+	};
+	const copy = fs.mkdtempSync(path.join(os.tmpdir(), 'ariva-chart-collector-ca-'));
+	try {
+		fs.cpSync(chart, path.join(copy, 'platform'), { recursive: true });
+		fs.writeFileSync(path.join(copy, 'platform', 'templates', 'zz-collector-ca-refusal-test.yaml'), 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: collector-ca-refusal-test\ndata:\n' +
+			'{{- range $name, $case := .Values.collectorCaCases }}\n  {{ $name | quote }}: {{ include "ariva-platform.collectorCaRefusal" (dict "secret" $case.secret "name" ($case.name | default "site-otlp-ca") ' +
+			'"value" ($case.value | default "otel.caSecretName") "collector" ($case.collector | default "the OTLP collector") "reachable" $case.reachable) | quote }}\n{{- end }}\n');
+		fs.writeFileSync(path.join(copy, 'cases.json'), JSON.stringify({ collectorCaCases: Object.fromEntries(Object.entries(cases).map(([name, [input]]) => [name, input])) }));
+		const result = spawnSync(helm, ['template', 'ariva-platform', path.join(copy, 'platform'), '-f', path.join(chart, 'values-k8s-prd.yaml'), '-f', path.join(copy, 'cases.json'),
+			'--set', PRD, '--show-only', 'templates/zz-collector-ca-refusal-test.yaml'], { encoding: 'utf8', shell: false });
+		if (result.status !== 0) findings.push(`the collector CA refusal cases: template failed\n${result.stderr}`);
+		else {
+			const judged = parse(result.stdout)[0]?.data ?? {};
+			for (const [name, [, expected]] of Object.entries(cases)) {
+				const message = judged[name] ?? '(not rendered)';
+				if (expected ? !message.includes(expected) : message !== '') findings.push(`collector CA Secret ${name}: judged "${message}", expected ${expected ? `"${expected}"` : 'no refusal'}`);
+				if (/standin|stand-in|BEGIN|%%%/.test(message)) findings.push(`collector CA Secret ${name}: the refusal repeats a value of the Secret`);
+			}
+		}
+	} finally {
+		fs.rmSync(copy, { recursive: true, force: true });
+	}
+	if (findings.length) {
+		failed = true;
+		console.error(`FAIL collectors' CA Secret guard:\n  ${findings.join('\n  ')}`);
+	} else {
+		console.log(`PASS collectors' CA Secret guard: validate.yaml fails on the lookups of otel.caSecretName, logging.lokiCaSecretName and kube-root-ca.crt; ${Object.keys(cases).length} stand-in secrets judged ` +
+			'(a reachable namespace without the Secret, no ca.crt, an empty, blank, non-PEM or non-base64 ca.crt, a ca.crt holding a private key of any kind, and any key beside ca.crt ' +
+			"(a certificate, a DER key, a PKCS#12 keystore, the collector's cert-manager Secret, other data) refused, a key that is not a Kubernetes key name left unnamed; " +
+			"a CA and a bundle alone pass; nothing seen offline passes, as under helm template); no refusal repeats the Secret's values");
 	}
 }
 
