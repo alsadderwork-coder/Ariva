@@ -17,6 +17,8 @@ namespace Ariva.Api.Main.Controllers.AdminArea.Topology;
 /// the bytes, SVG sanitised), metadata, the image itself with a locked-down content security policy (inline, under a name
 /// the server makes, ARV-092), calibration (scale and origin) and delete. Site-scoped through the level. The upload arrives
 /// steadily or ends (<see cref="SteadyUploadAttribute"/>, ARV-096: 408 when too slow, 413 past 20 MB, 400 for a form cut short).
+/// Every file is scanned for malware before it is read (ARV-092b): 400 for a detection, 503 with Retry-After while no
+/// scanner answers.
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/levels/{levelId:guid}/floor-plan")]
@@ -77,6 +79,7 @@ public sealed class FloorPlansController(ISvcFloorPlans plans) : ControllerBase
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status408RequestTimeout)]
     [ProducesResponseType(StatusCodes.Status413PayloadTooLarge)]
+    [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
     public async Task<IActionResult> Upload(Guid levelId, IFormFile file, [FromForm] double metresPerPixel, [FromForm] double originX, [FromForm] double originY, CancellationToken ct)
     {
         if (file is null)

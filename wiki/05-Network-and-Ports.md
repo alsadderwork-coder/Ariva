@@ -125,6 +125,7 @@ Examples from the formula tests: offsets 620, 610 and 630 ms are stable and corr
 | Services to PostgreSQL | k8s-prd: TLS 1.2 or later, verified against the internal CA in `Database:RootCertificate` (ARV-082a); the TimescaleDB chart serves TLS from `timescaledb-tls` (its TLS 1.2 suites ECDHE with AES-GCM or ChaCha20-Poly1305 only) and accepts TCP connections over TLS only. Plain in dev and demo | As built |
 | Services to Redis | k8s-prd: `ssl=true`, verified against the internal CA in `Redis:CaCertificatePath` (ARV-082a); the site's Redis must serve TLS. Plain in dev and demo | As built; the Redis server's TLS is the site's (Ariva ships no Redis) |
 | Services to the OTLP collector | k8s-prd: https only (the chart and every host refuse a plain endpoint, ARV-082a) | As built |
+| api-main to the malware scanner (clamd) | Plain TCP (clamd has no TLS; ARV-092b): k8s-prd takes a loopback `MalwareScan:Host` only, so uploads never cross the network to it in clear. docker-compose, the AppHost and CI run clamd on the machine | ARV-092c: clamd beside api-main in its pod, or a TLS proxy there to one clamd Service |
 | Outbound integrations | HTTPS only (HTTP only for allowlisted lab hosts); optional client certificate and pinned CA per endpoint | As specified |
 | Border to airport feed | Not built | HTTPS with mutual TLS (Proposed) |
 

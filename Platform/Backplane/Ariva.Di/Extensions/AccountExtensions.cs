@@ -71,6 +71,8 @@ public static class AccountExtensions
         services.TryAddScoped<Ariva.Core.Services.Topology.ISvcTopology, Ariva.Infra.Services.Topology.SvcTopology>();
         services.TryAddScoped<Ariva.Core.Services.Topology.ISvcDeskCodeMappings, Ariva.Infra.Services.Topology.SvcDeskCodeMappings>();
         services.TryAddSingleton<Ariva.Core.Services.Storage.IFileStorage, Ariva.Infra.Storage.LocalDiskFileStorage>();
+        // Every upload below is scanned for malware before it is parsed, stored or imported (ARV-092b).
+        services.AddArivaUploadScanning(configuration);
         services.TryAddScoped<Ariva.Core.Services.Topology.ISvcFloorPlans, Ariva.Infra.Services.Topology.SvcFloorPlans>();
         services.TryAddScoped<Ariva.Core.Services.Topology.ISvcZoneProfiles, Ariva.Infra.Services.Topology.SvcZoneProfiles>();
         // Site configuration export and import (ARV-122a): Ariva.Api.Main only, like the rest of the administration.

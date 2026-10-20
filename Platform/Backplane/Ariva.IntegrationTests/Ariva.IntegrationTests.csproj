@@ -90,6 +90,9 @@
     <ItemGroup>
         <Compile Include="..\Ariva.UnitTests\Replay\ReferenceReplay.cs" Link="Replay\ReferenceReplay.cs" />
         <Compile Include="..\Ariva.UnitTests\Setup\RepositoryPaths.cs" Link="Replay\RepositoryPaths.cs" />
+        <!-- ARV-092b: the EICAR test file built at run time and the fake clamd, for the upload services' scan tests. -->
+        <Compile Include="..\Ariva.UnitTests\Setup\Eicar.cs" Link="Setup\Eicar.cs" />
+        <Compile Include="..\Ariva.UnitTests\Setup\FakeClamd.cs" Link="Setup\FakeClamd.cs" />
     </ItemGroup>
 
 </Project>

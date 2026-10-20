@@ -17,9 +17,9 @@ namespace Ariva.Infra.Services.Displays;
 /// The advertisement library (ARV-142a, videos ARV-142b). Every call names a site of the caller (another answers like a
 /// site that does not exist) and every item is looked up by its id and that site together, so another site's item answers
 /// 404 (CWE-863, IDOR). An upload is read to at most the larger of 10 MB and the video size set for the installation
-/// (<see cref="AdvertisingVideoSettings"/>); a video's container is checked and stripped of its metadata in place
-/// (<see cref="AdvertisingVideos"/>) and its length held to the setting, any other file is an image decoded and written
-/// anew (<see cref="AdvertisingImages"/>). The file is stored under a generated key and recorded as a draft, each person's
+/// (<see cref="AdvertisingVideoSettings"/>) and scanned for malware (ARV-092b, <see cref="UploadScreening"/>); a video's
+/// container is checked and stripped of its metadata in place (<see cref="AdvertisingVideos"/>) and its length held to the
+/// setting, any other file is an image decoded and written anew (<see cref="AdvertisingImages"/>). The file is stored under a generated key and recorded as a draft, each person's
 /// attempts counted first (<see cref="AdvertisingUploadWindow"/>);
 /// changing, approving and retiring lock the item's row first, and an approval names the review token of what its approver
 /// was shown, so it never lands on details changed after the approver read them (security review). The display fetch serves
@@ -35,7 +35,8 @@ internal sealed class SvcAdvertisingMedia(
     ReportReader sites,
     AdvertisingPolicyGuard advertising,
     AdvertisingUploadWindow uploads,
-    IOptions<AdvertisingVideoSettings> videoSettings)
+    IOptions<AdvertisingVideoSettings> videoSettings,
+    UploadScreening screening)
     : SvcBase(unitOfWork, currentUser, timeProvider), ISvcAdvertisingMedia
 {
     private const string Target = "AdvertisingMedia";
@@ -89,6 +90,10 @@ internal sealed class SvcAdvertisingMedia(
         var bytes = await UploadReader.ReadAtMostAsync(upload.Content, largest, ct, upload.Length);
         if (bytes is null)
             return Result.Error<AdvertisingMediaViewModel>(AdvertisingMediaErrors.TooLargeFor(largest));
+        // Scanned as uploaded, before the video is checked and stripped in place or the image decoded (ARV-092b).
+        var screened = await screening.ScreenAsync(UploadKind.AdvertisingMedia, bytes, ct);
+        if (screened.HasErrors)
+            return Result.Error<AdvertisingMediaViewModel>(screened.ErrorMessages);
         var (stored, refusal) = await StoredFileAsync(bytes, videos, ct);
         if (refusal is not null)
             return Result.Error<AdvertisingMediaViewModel>(refusal);

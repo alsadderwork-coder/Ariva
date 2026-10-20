@@ -1,3 +1,4 @@
+using Ariva.Api.Main.Controllers.AdminArea.Uploads;
 using Ariva.Core.Services.Imports;
 using Ariva.Core.Services.Topology;
 using Microsoft.AspNetCore.Mvc;
@@ -6,7 +7,8 @@ namespace Ariva.Api.Main.Controllers.AdminArea.Imports;
 
 /// <summary>
 /// The answers of the CSV import endpoints (ARV-123a): 404 without a detail, 413 for a file over 1 MB, 409 for a commit
-/// that is not its preview's, 400 with the service's fixed text otherwise; nothing from the request is echoed.
+/// that is not its preview's, the malware scan's refusals (<see cref="UploadScanAnswers"/>, ARV-092b: 400, or 503 with
+/// Retry-After), 400 with the service's fixed text otherwise; nothing from the request is echoed.
 /// </summary>
 internal static class CsvImportAnswers
 {
@@ -37,6 +39,8 @@ internal static class CsvImportAnswers
         var first = result.ErrorMessages.FirstOrDefault() ?? TopologyErrors.NotFound;
         if (first == TopologyErrors.NotFound)
             return controller.Problem(statusCode: StatusCodes.Status404NotFound, title: "Not found");
+        if (UploadScanAnswers.Refusal(controller, first) is { } scan)
+            return scan;
         var (status, title) = first switch
         {
             CsvImportErrors.NotThePreview => (StatusCodes.Status409Conflict, "Conflict"),

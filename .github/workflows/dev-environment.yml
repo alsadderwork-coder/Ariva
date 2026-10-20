@@ -1,10 +1,10 @@
 # Starts the local development stack exactly as a developer would and proves it works (ARV-003):
-# health checks, TimescaleDB, the read-only role, Kafka, Redis authentication and smtp4dev.
+# health checks, TimescaleDB, the read-only role, Kafka, Redis authentication, smtp4dev and clamd (ARV-092b).
 name: dev-environment
 
 on:
   pull_request:
-    paths: ['docker-compose.dev.yml', '.env.example', 'deploy/local/**', 'scripts/dev-*.mjs']
+    paths: ['docker-compose.dev.yml', '.env.example', 'deploy/local/**', 'scripts/dev-*.mjs', 'Platform/Cloud/clamav/**']
   schedule:
     - cron: '23 4 * * 3' # Wednesdays; catches image tags that disappear upstream
   workflow_dispatch:

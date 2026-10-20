@@ -21,7 +21,8 @@ namespace Ariva.Infra.Services.Topology;
 /// Site configuration export and import (ARV-122a). A site outside the caller's sites answers like one that does not
 /// exist (CWE-863). An export reads the site in one repeatable-read snapshot, refuses a site it cannot carry whole (never
 /// cutting it short) and audits the bundle hash and the counts. An import trusts nothing in the bundle (CWE-501): the
-/// manifest, every part's rules, the entities' rules and the ARV-018 floor plan checks run before anything is kept; it
+/// manifest, a malware scan of every decoded part (ARV-092b, <see cref="UploadScreening"/>), every part's rules, the
+/// entities' rules and the ARV-018 floor plan checks run before anything is kept; it
 /// locks the site row, imports into an empty site only, creates every record with a new id in one transaction (all or
 /// nothing), and audits the bundle hash, the counts and the outcome, a refusal in a transaction of its own. Neither
 /// audit entry holds a part's content. ARV-122b: devices, alert rules and displays travel without any credential,
@@ -40,6 +41,7 @@ internal sealed class SvcSiteConfiguration(
     IFusionCache cache,
     ISvcDevices devices,
     CallerRoles callerRoles,
+    UploadScreening screening,
     ILogger<SvcSiteConfiguration> logger) : SvcBase(unitOfWork, currentUser, timeProvider), ISvcSiteConfiguration
 {
     private const string Target = "SiteConfiguration";
@@ -201,6 +203,13 @@ internal sealed class SvcSiteConfiguration(
             return await RefuseImportAsync(siteCode, opened.ErrorMessages.First(), null);
         var bundle = opened.Data;
         attempt.Bundle = bundle;
+        // ARV-092b: every decoded part, the floor plan files and the JSON parts, scanned before anything reads, plans or keeps
+        // it, under one deadline for the whole bundle.
+        var screened = await screening.ScreenAllAsync(Ariva.Core.Domain.Enums.UploadKind.SiteConfiguration,
+            bundle.Parts.OrderBy(p => p.Key, StringComparer.Ordinal).Select(p => p.Value), ct);
+        if (screened.HasErrors)
+            return await RefuseImportAsync(siteCode, screened.ErrorMessages.First(), bundle);
+
         var content = SiteConfigurationParts.Read(bundle);
         if (content.HasErrors)
             return await RefuseImportAsync(siteCode, content.ErrorMessages.First(), bundle);

@@ -349,6 +349,8 @@ jobs:
       ARIVA_E2E_SCHEMA_UPDATE: 'true'
       ARIVA_E2E_REDIS_URL: redis://localhost:6380
       ARIVA_E2E_KAFKA_BOOTSTRAP: localhost:19092
+      # ARV-092b: the clamd started below; Ariva.Api.Main streams every upload of the suite to it.
+      ARIVA_E2E_CLAMD: 127.0.0.1:3310
       Database__Host: localhost
       Database__Port: '5433'
       Database__Name: postgres
@@ -366,6 +368,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # ARV-092b: Ariva.Api.Main streams every upload to clamd before it stores it, so every upload of the suite goes through
+      # the scan. A step, not a service: services start before the checkout and cannot mount the repository's clamd.conf
+      # (Ariva's limits, read-only). Offline (the image's signature snapshot, no freshclam), on loopback only; it holds about
+      # 1 GiB and answers PING about 20 seconds after it starts, so it loads while the dependencies install.
+      - name: Start clamd (malware scan of uploads)
+        run: docker run -d --name ariva-e2e-clamd -p 127.0.0.1:3310:3310 -e CLAMAV_NO_FRESHCLAMD=true -v "$GITHUB_WORKSPACE/Platform/Cloud/clamav/clamd.conf:/etc/clamav/clamd.conf:ro" clamav/clamav:1.4.3@sha256:75fb5fd95fcbe1d7e6d240c369c1572b686ee2c95949d1042b5148de8eddebb4
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: '10.0.x'
@@ -377,6 +385,15 @@ jobs:
           npm ci --prefix ../../Frontplane/Ariva.Web
           npm ci
           npx playwright install --with-deps chromium
+      - name: Wait for clamd to answer PING
+        run: |
+          for attempt in $(seq 1 60); do
+            if [ "$(echo PING | nc -w 3 127.0.0.1 3310 2>/dev/null)" = "PONG" ]; then echo "clamd answers PONG"; exit 0; fi
+            sleep 3
+          done
+          echo "::error::clamd did not answer PING with PONG on 127.0.0.1:3310 within three minutes; its last log lines follow."
+          docker logs --tail 40 ariva-e2e-clamd
+          exit 1
       # ARV-152: the job's account seed (playwright.config.ts keeps a seed it is given), so the artifact checks below can derive
       # the run's E2E account passwords and TOTP seeds and look for them, and the run's other secrets derived from it (simulator,
       # mock AMAN, ACRIS and Cronz keys, the validation reader's password), which playwright.config.ts keeps when given; it

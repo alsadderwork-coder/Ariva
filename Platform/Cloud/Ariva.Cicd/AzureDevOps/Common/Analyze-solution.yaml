@@ -137,6 +137,15 @@ jobs:
           echo "PostgreSQL did not start"; exit 1
         displayName: 'E2E: start PostgreSQL'
 
+      # ARV-092b: Ariva.Api.Main streams every upload to clamd before it stores it, as in ci.yml: the same pinned image with
+      # the repository's clamd.conf (Ariva's limits) read-only, offline (no freshclam), on loopback only. It holds about 1 GiB
+      # and answers PING about 20 seconds after it starts.
+      - script: |
+          docker run -d --name ariva-e2e-clamd -p 127.0.0.1:3310:3310 -e CLAMAV_NO_FRESHCLAMD=true -v "$(Build.SourcesDirectory)/Platform/Cloud/clamav/clamd.conf:/etc/clamav/clamd.conf:ro" clamav/clamav:1.4.3@sha256:75fb5fd95fcbe1d7e6d240c369c1572b686ee2c95949d1042b5148de8eddebb4
+          for attempt in $(seq 1 60); do [ "$(echo PING | nc -w 3 127.0.0.1 3310 2>/dev/null)" = "PONG" ] && exit 0; sleep 3; done
+          echo "clamd did not answer PING with PONG on 127.0.0.1:3310 within three minutes"; docker logs --tail 40 ariva-e2e-clamd; exit 1
+        displayName: 'E2E: start clamd'
+
       # ARV-152: the run's account seed as a secret variable (playwright.config.ts keeps a seed it is given), so the artifact
       # check below can derive the run's E2E account passwords and TOTP seeds and look for them. The run's other secrets
       # (simulator, mock AMAN, ACRIS and Cronz keys, the validation reader's password) are derived from it too and set as
@@ -160,6 +169,7 @@ jobs:
           ARIVA_E2E_ACCOUNT_SEED: $(E2E_ACCOUNT_SEED)
           ARIVA_E2E_CONFIGURATION: $(BuildConfiguration)
           ARIVA_E2E_SCHEMA_UPDATE: 'true'
+          ARIVA_E2E_CLAMD: 127.0.0.1:3310
           Database__Host: localhost
           Database__Port: '5433'
           Database__Name: postgres

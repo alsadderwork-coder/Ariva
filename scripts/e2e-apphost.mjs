@@ -34,7 +34,8 @@ const ports = {
 	kafka: port('ARIVA_APPHOST_E2E_KAFKA_PORT', 29092),
 	redis: port('ARIVA_APPHOST_E2E_REDIS_PORT', 26379),
 	smtp: port('ARIVA_APPHOST_E2E_SMTP_PORT', 22525),
-	smtpUi: port('ARIVA_APPHOST_E2E_SMTP_UI_PORT', 25080)
+	smtpUi: port('ARIVA_APPHOST_E2E_SMTP_UI_PORT', 25080),
+	clamd: port('ARIVA_APPHOST_E2E_CLAMD_PORT', 23310)
 };
 const secret = () => randomBytes(24).toString('base64url');
 const base32 = (bytes) => {
@@ -77,6 +78,8 @@ const run = {
 	ARIVA_E2E_SCHEMA_UPDATE: 'true',
 	ARIVA_E2E_KAFKA_BOOTSTRAP: `localhost:${ports.kafka}`,
 	ARIVA_E2E_REDIS_URL: `redis://:${passwords.redis}@localhost:${ports.redis}`,
+	// ARV-092b: the AppHost's clamd, which api-main streams every upload to (MalwareScan__Host and MalwareScan__Port).
+	ARIVA_E2E_CLAMD: `localhost:${ports.clamd}`,
 	Database__Host: 'localhost',
 	Database__Port: String(ports.database),
 	Database__Name: 'ariva',
@@ -121,7 +124,8 @@ try {
 			`--AppHost:KafkaPort=${ports.kafka}`,
 			`--AppHost:RedisPort=${ports.redis}`,
 			`--AppHost:SmtpPort=${ports.smtp}`,
-			`--AppHost:SmtpUiPort=${ports.smtpUi}`
+			`--AppHost:SmtpUiPort=${ports.smtpUi}`,
+			`--AppHost:ClamdPort=${ports.clamd}`
 		],
 		{
 			cwd: path.dirname(APPHOST),

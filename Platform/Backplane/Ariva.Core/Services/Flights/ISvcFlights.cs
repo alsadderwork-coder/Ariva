@@ -70,8 +70,13 @@ public interface ISvcFlightSchedules : ISvcScoped
     /// <summary>Whether the site exists (checked before the upload is read, so an unknown site answers 404 like one the caller does not hold).</summary>
     Task<bool> SiteExistsAsync(string siteCode, CancellationToken ct = default);
 
+    /// <summary>
+    /// What the file would do at the site. <paramref name="file"/> must be able to seek (the buffered form file): it is scanned
+    /// for malware, then read again from the same position (ARV-092b); another stream throws <see cref="ArgumentException"/>.
+    /// </summary>
     Task<Result<SsimPreviewViewModel>> PreviewAsync(string siteCode, Stream file, int horizonDays, CancellationToken ct = default);
 
+    /// <summary>Imports exactly what was previewed; <paramref name="file"/> as for <see cref="PreviewAsync"/>.</summary>
     Task<Result<SsimImportViewModel>> ImportAsync(string siteCode, Stream file, int horizonDays, string previewToken, CancellationToken ct = default);
 }
 

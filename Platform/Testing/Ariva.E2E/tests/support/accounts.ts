@@ -359,7 +359,11 @@ export function accounts() {
 		smokeAdmin: account('e2e.smokeadmin', ['SystemAdministrator'], false, true, ['*']),
 		// ARV-089: the strict input suite (api/strict-input.spec.ts) builds a site of its own and registers a device and an
 		// integration client there (both critical: a second factor); its own account, since a TOTP code counts once per account.
-		strictInputAdmin: account('e2e.strictadmin', ['SystemAdministrator'], false, true, ['*'])
+		strictInputAdmin: account('e2e.strictadmin', ['SystemAdministrator'], false, true, ['*']),
+		// ARV-092b: the malware scan suite (api/upload-scanning.spec.ts) builds sites of its own and sends the EICAR test file to
+		// every upload endpoint; the device import, the site configuration export and import and the advertising policy are
+		// critical (a second factor), so it has its own account, since a TOTP code counts once per account.
+		uploadScanAdmin: account('e2e.uploadscan', ['SystemAdministrator'], false, true, ['*'])
 	} as const;
 }
 

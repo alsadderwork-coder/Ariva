@@ -1,3 +1,4 @@
+using Ariva.Core.Domain.Enums;
 using Ariva.Core.Domain.InputModels;
 using Ariva.Core.Domain.ViewModels;
 using Ariva.Core.Security;
@@ -7,6 +8,7 @@ using Ariva.Core.Services.Topology;
 using Ariva.Infra.Imports;
 using Ariva.Infra.Services.Administration;
 using Ariva.Infra.Services.Foundation;
+using Ariva.Infra.Storage;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.DependencyInjection;
 using NHibernate.Linq;
@@ -14,13 +16,14 @@ using NHibernate.Linq;
 namespace Ariva.Infra.Services.Sensing;
 
 /// <summary>
-/// The device import (ARV-123a). The file is hashed (at most 1 MB), then read as a stream (<see cref="CsvImportReader"/>)
+/// The device import (ARV-123a). The file is hashed (at most 1 MB), scanned for malware at preview and again at commit
+/// (ARV-092b, <see cref="UploadScreening"/>), then read as a stream (<see cref="CsvImportReader"/>)
 /// and each row checked: the generic cell rules, codes and kinds by their exact names (<see cref="DeviceImportRows"/>),
 /// the level by its terminal and level code among the site's live levels, and then the registration path itself
 /// (<see cref="ISvcDevices.RegisterAsync"/>, unchanged: the mapping catalog, the supported transports, the queue zone on
 /// the device's level within its footprint's reach, the code free at the site). The preview runs that registration as a
-/// dry run under the site lock and rolls it back; a file without a refused row gets a token. The commit checks the token
-/// against the file's hash before it parses anything, checks every row again and registers them all in one transaction:
+/// dry run under the site lock and rolls it back; a file without a refused row gets a token. The commit scans the file again,
+/// then checks the token against the file's hash before it parses anything, checks every row again and registers them all in one transaction:
 /// any refusal keeps nothing. Every outcome once the service runs past the site check is audited (counts and hash only); a
 /// preview's and a refusal's entry in a transaction of its own. Not audited: the controller's refusals before the service
 /// (no file, a file over 1 MB, a token of the wrong shape) and a cancelled request.
@@ -34,6 +37,7 @@ internal sealed class SvcDeviceImports(
     AuditTrail audit,
     IServiceScopeFactory scopes,
     IDataProtectionProvider dataProtection,
+    UploadScreening screening,
     ILogger<SvcDeviceImports> logger) : SvcBase(unitOfWork, currentUser, timeProvider), ISvcDeviceImports
 {
     private const string Target = "DeviceImport";
@@ -61,6 +65,8 @@ internal sealed class SvcDeviceImports(
             sha = await HashAsync(openFile, ct);
             if (sha is null)
                 return await RefusePreviewAsync(siteCode, null, CsvImportErrors.FileTooLarge);
+            if (await ScreenAsync(openFile, ct) is { } malware)
+                return await RefusePreviewAsync(siteCode, sha, malware);
             var (planned, table, error) = await ReadAsync(siteCode, openFile, ct);
             if (error is not null)
                 return await RefusePreviewAsync(siteCode, sha, error);
@@ -125,7 +131,11 @@ internal sealed class SvcDeviceImports(
             sha = await HashAsync(openFile, ct);
             if (sha is null)
                 return await RefuseCommitAsync(siteCode, null, CsvImportErrors.FileTooLarge);
-            // The token first: a file, site or user other than the preview's costs nothing more than its hash.
+            // Scanned again, as the file is sent again (ARV-092b): a signature added since the preview still refuses it.
+            if (await ScreenAsync(openFile, ct) is { } malware)
+                return await RefuseCommitAsync(siteCode, sha, malware);
+            // The token before anything parses the file: a file, site or user other than the preview's costs nothing more than
+            // its hash and its scan (the scan comes first, so a detection is refused and audited whatever the token).
             if (!_tokens.Matches(previewToken, sha, siteCode, CurrentUser.Id, UtcNow))
                 return await RefuseCommitAsync(siteCode, sha, CsvImportErrors.NotThePreview);
             var (planned, table, error) = await ReadAsync(siteCode, openFile, ct);
@@ -190,6 +200,17 @@ internal sealed class SvcDeviceImports(
     {
         await using var file = openFile();
         return await CsvImportReader.Sha256Async(file, ct);
+    }
+
+    /// <summary>
+    /// The malware scan's refusal of the file (ARV-092b), or null: the bytes just hashed (at most 1 MB), each opening of the
+    /// buffered upload giving the same bytes, before anything parses them.
+    /// </summary>
+    private async Task<string> ScreenAsync(Func<Stream> openFile, CancellationToken ct)
+    {
+        await using var file = openFile();
+        var screened = await screening.ScreenAsync(UploadKind.DeviceImport, file, ct);
+        return screened.HasErrors ? screened.ErrorMessages.First() : null;
     }
 
     /// <summary>The rows with their registration requests, the table (with every refused cell so far), or the file's refusal.</summary>

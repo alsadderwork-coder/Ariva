@@ -1,7 +1,7 @@
 // Dev container for GitHub Codespaces and cloud agent sessions (ARV-076): the .NET 10 SDK, Node 22, Playwright Chromium,
 // uv, and the Docker CLI with Compose, in an image built only from images pinned by digest (Dockerfile). The Docker
 // engine is the host's, reached through its socket (docker-outside-of-docker), for Testcontainers and the Compose
-// services (TimescaleDB, Kafka, Redis, smtp4dev from docker-compose.dev.yml), which start with the container. The host
+// services (TimescaleDB, Kafka, Redis, smtp4dev, clamd from docker-compose.dev.yml), which start with the container. The host
 // network keeps their 127.0.0.1 ports, and Testcontainers' mapped ports, reachable as localhost.
 // See docs/harness/README.md, "Dev container".
 {

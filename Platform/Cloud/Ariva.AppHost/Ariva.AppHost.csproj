@@ -1,6 +1,6 @@
 <Project Sdk="Aspire.AppHost.Sdk/13.6.0">
 
-    <!-- Ariva.AppHost (ARV-066): one F5 starts TimescaleDB, Kafka, Redis, smtp4dev, the five API hosts, the simulator and
+    <!-- Ariva.AppHost (ARV-066): one F5 starts TimescaleDB, Kafka, Redis, smtp4dev, ClamAV, the five API hosts, the simulator and
          the web dev server, with the Aspire dashboard for resources, logs, traces and metrics. Local development and test
          only: no image or chart references it. docker-compose.dev.yml stays for CI and machines without it. -->
 

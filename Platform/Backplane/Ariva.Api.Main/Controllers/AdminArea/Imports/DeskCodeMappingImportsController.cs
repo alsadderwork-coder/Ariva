@@ -17,6 +17,8 @@ namespace Ariva.Api.Main.Controllers.AdminArea.Imports;
 /// minutes) creates every mapping or none. The single mapping endpoint's permission; not a critical action, like that
 /// endpoint (an owner question in docs/product/decisions.md). Site-scoped; one upload at a time per host, with the transfer
 /// request timeout, arriving steadily or ended (408 when too slow: <see cref="SteadyUploadAttribute"/>, ARV-096); never cached.
+/// The file is scanned for malware at preview and again at commit (ARV-092b): 400 for a detection, 503 with Retry-After
+/// while no scanner answers.
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/sites/{siteCode}/desk-code-mapping-imports")]
@@ -35,6 +37,7 @@ public sealed class DeskCodeMappingImportsController(ISvcDeskCodeMappingImports 
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status408RequestTimeout)]
     [ProducesResponseType(StatusCodes.Status413PayloadTooLarge)]
+    [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
     public async Task<IActionResult> Preview(string siteCode, IFormFile file, CancellationToken ct)
     {
         CsvImportAnswers.NoStore(this);
@@ -56,6 +59,7 @@ public sealed class DeskCodeMappingImportsController(ISvcDeskCodeMappingImports 
     [ProducesResponseType(StatusCodes.Status408RequestTimeout)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     [ProducesResponseType(StatusCodes.Status413PayloadTooLarge)]
+    [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
     public async Task<IActionResult> Commit(string siteCode, IFormFile file, [FromForm] string previewToken, CancellationToken ct)
     {
         CsvImportAnswers.NoStore(this);

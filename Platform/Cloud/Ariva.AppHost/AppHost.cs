@@ -1,9 +1,10 @@
 using Aspire.Hosting.ApplicationModel;
 using Ariva.AppHost;
+using Microsoft.Extensions.DependencyInjection;
 
 // Ariva.AppHost (ARV-066): the local orchestration of the whole system, mirroring docker-compose.dev.yml plus the hosts.
 // Every host runs in vm-local, as `dotnet run` would, with its dependencies passed as the configuration parts it already
-// reads (Database:*, Kafka:*, Redis:*, Email:*): no host learns anything Aspire-specific beyond OTEL_EXPORTER_OTLP_*.
+// reads (Database:*, Kafka:*, Redis:*, Email:*, MalwareScan:*): no host learns anything Aspire-specific beyond OTEL_EXPORTER_OTLP_*.
 
 var builder = DistributedApplication.CreateBuilder(args);
 var settings = AppHostSettings.From(builder.Configuration);
@@ -70,6 +71,19 @@ var smtp = builder.AddContainer("smtp4dev", "rnwood/smtp4dev", "3.15.0")
     .WithHttpEndpoint(port: settings.SmtpUiPort, targetPort: 80, name: "http")
     .WithEndpoint(port: settings.SmtpPort, targetPort: 25, name: "smtp", scheme: "tcp");
 
+// ARV-092b: api-main streams every upload to clamd before it stores it. Offline (the image's signature snapshot, no
+// freshclam: no mirror traffic, the same verdicts in every run), with Ariva's limits (Platform/Cloud/clamav/clamd.conf,
+// read-only). clamd holds its signatures in memory (about 1 GiB) and answers PING about 20 seconds after it starts.
+var clamav = builder.AddContainer("clamav", "clamav/clamav", "1.4.3")
+    .WithImageRegistry("docker.io")
+    .WithImageSHA256("75fb5fd95fcbe1d7e6d240c369c1572b686ee2c95949d1042b5148de8eddebb4")
+    .WithEnvironment("CLAMAV_NO_FRESHCLAMD", "true")
+    .WithBindMount(Path.Combine(repository, "Platform", "Cloud", "clamav", "clamd.conf"), "/etc/clamav/clamd.conf", isReadOnly: true)
+    .WithEndpoint(port: settings.ClamdPort, targetPort: 3310, name: "clamd", scheme: "tcp")
+    .WithHealthCheck(ClamdPing.HealthCheckKey);
+var scanner = clamav.GetEndpoint("clamd");
+builder.Services.AddHealthChecks().AddAsyncCheck(ClamdPing.HealthCheckKey, cancellationToken => ClamdPing.CheckAsync(scanner.Host, scanner.Port, cancellationToken), timeout: TimeSpan.FromSeconds(5));
+
 #endregion
 
 #region Hosts
@@ -80,7 +94,8 @@ var mail = smtp.GetEndpoint("smtp");
 
 // validationService: the host of the validation service (api-main), the only one given the validation reader login (ARV-104g1);
 // it migrates first and creates the login (script 0049). The other hosts never see it.
-IResourceBuilder<ProjectResource> Host<TProject>(string name, bool validationService = false) where TProject : IProjectMetadata, new()
+// uploads: the host that takes uploads (api-main), the only one given the malware scanner (ARV-092b).
+IResourceBuilder<ProjectResource> Host<TProject>(string name, bool validationService = false, bool uploads = false) where TProject : IProjectMetadata, new()
 {
     var host = Ariva(builder.AddProject<TProject>(name))
         .WithEnvironment("Database__Host", ReferenceExpression.Create($"{database.Property(EndpointProperty.Host)}"))
@@ -109,6 +124,12 @@ IResourceBuilder<ProjectResource> Host<TProject>(string name, bool validationSer
     {
         host.WithEnvironment("Database__ValidationReader__Username", "ariva_validation")
             .WithEnvironment("Database__ValidationReader__Password", validationReaderPassword);
+    }
+
+    if (uploads)
+    {
+        host.WithEnvironment("MalwareScan__Host", ReferenceExpression.Create($"{scanner.Property(EndpointProperty.Host)}"))
+            .WithEnvironment("MalwareScan__Port", ReferenceExpression.Create($"{scanner.Property(EndpointProperty.Port)}"));
     }
 
     Overrides(host, name);
@@ -150,7 +171,7 @@ IResourceBuilder<T> Overrides<T>(IResourceBuilder<T> resource, string name) wher
 }
 
 // Main migrates the schema at startup in vm-local; the others start once it is ready, so only one host migrates.
-var main = Host<Projects.Ariva_Api_Main>("api-main", validationService: true).WaitFor(timescale).WaitFor(kafka).WaitFor(redis).WaitFor(smtp);
+var main = Host<Projects.Ariva_Api_Main>("api-main", validationService: true, uploads: true).WaitFor(timescale).WaitFor(kafka).WaitFor(redis).WaitFor(smtp).WaitFor(clamav);
 var ingest = Host<Projects.Ariva_Api_Ingest>("api-ingest").WaitFor(main);
 if (settings.Stream)
     Host<Projects.Ariva_Api_Stream>("api-stream").WaitFor(main);

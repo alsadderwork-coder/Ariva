@@ -188,12 +188,29 @@ test('the E2E suites refuse to load against a non-local target, naming the targe
 		[{ ARIVA_E2E_MAIN_URL: 'https://api-main.ariva-smoke.invalid' }, 'main'],
 		[{ ARIVA_E2E_WEB_URL: 'http://10.20.30.40:51011' }, 'web'],
 		[{ ARIVA_E2E_REDIS_URL: `redis://:${password}@redis.ariva-smoke.invalid:6379` }, 'redis'],
-		[{ ARIVA_E2E_KAFKA_BOOTSTRAP: 'localhost:19092,kafka.ariva-smoke.invalid:9092' }, 'kafka']
+		[{ ARIVA_E2E_KAFKA_BOOTSTRAP: 'localhost:19092,kafka.ariva-smoke.invalid:9092' }, 'kafka'],
+		// ARV-092b: the malware scanner api-main streams the run's uploads to.
+		[{ ARIVA_E2E_CLAMD: 'clamd.ariva-smoke.invalid:3310' }, 'clamd']
 	] as [Record<string, string>, string][]) {
 		// --list loads the config without starting a host.
 		const outcome = run('playwright.config.ts', extra, ['--list']);
 		expect(outcome.status, outcome.output).not.toBe(0);
 		expect(outcome.output).toContain(`they run only against this machine; refused for ${name}`);
 		expect(outcome.output).not.toContain(password);
+	}
+});
+
+test('the E2E suites refuse to load in CI without the run\'s clamd, or with a clamd that is not host:port', async () => {
+	// ARV-092b: every upload in the run goes through the malware scan, so a CI run never starts the hosts without it.
+	test.setTimeout(180_000);
+	const ci = { CI: 'true', ARIVA_E2E_SCHEMA_UPDATE: 'true', ARIVA_E2E_KAFKA_BOOTSTRAP: 'localhost:9' };
+	for (const [extra, message] of [
+		[{ ...ci, ARIVA_E2E_CLAMD: '' }, 'CI runs need ARIVA_E2E_CLAMD'],
+		[{ ARIVA_E2E_CLAMD: 'localhost' }, 'ARIVA_E2E_CLAMD must be host:port']
+	] as [Record<string, string>, string][]) {
+		// --list loads the config without starting a host.
+		const outcome = run('playwright.config.ts', extra, ['--list']);
+		expect(outcome.status, outcome.output).not.toBe(0);
+		expect(outcome.output).toContain(message);
 	}
 });

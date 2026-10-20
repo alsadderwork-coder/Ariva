@@ -66,9 +66,10 @@ const remoteTargets = nonLocalTargets(
 		smtp4dev: smtp4dev.url,
 		redis: process.env.ARIVA_E2E_REDIS_URL,
 		kafka: process.env.ARIVA_E2E_KAFKA_BOOTSTRAP,
+		clamd: process.env.ARIVA_E2E_CLAMD,
 		database: databaseAvailable ? process.env.Database__Host : undefined
 	},
-	{ kafka: 'bootstrap', database: 'host' }
+	{ kafka: 'bootstrap', clamd: 'bootstrap', database: 'host' }
 );
 if (remoteTargets.length > 0) {
 	throw new Error(
@@ -86,6 +87,11 @@ if (isCi && !databaseAvailable) {
 // Sensor pushes are accepted only once they are in Kafka; CI starts one (ci.yml), so its absence there is an error.
 if (isCi && !process.env.ARIVA_E2E_KAFKA_BOOTSTRAP) {
 	throw new Error('CI runs need ARIVA_E2E_KAFKA_BOOTSTRAP (see README.md)');
+}
+
+// Every upload is scanned by clamd before it is stored (ARV-092b); CI starts one (ci.yml), so its absence there is an error.
+if (isCi && !process.env.ARIVA_E2E_CLAMD) {
+	throw new Error('CI runs need ARIVA_E2E_CLAMD (see README.md)');
 }
 
 // One random seed per run for the E2E account passwords (tests/support/accounts.ts). Set in the runner process before
@@ -239,6 +245,17 @@ function kafkaEnvironment(): Record<string, string> {
 	};
 }
 
+// ARV-092b: Ariva.Api.Main streams every upload to clamd before it stores it. ARIVA_E2E_CLAMD (host:port of the run's clamd)
+// points it there, so every upload a test makes goes through the scan; without it a local run takes the clamd of
+// appsettings.local.json (npm run dev:up). Required in CI, refused when not on this machine (above).
+function malwareScanEnvironment(): Record<string, string> {
+	const target = process.env.ARIVA_E2E_CLAMD;
+	if (!target) return {};
+	const parts = /^(.+):(\d{1,5})$/.exec(target);
+	if (!parts) throw new Error('ARIVA_E2E_CLAMD must be host:port (see README.md)');
+	return { MalwareScan__Host: parts[1].replace(/^\[(.*)\]$/, '$1'), MalwareScan__Port: parts[2] };
+}
+
 // Alert emails (ARV-040): every host writes them; Ariva.Api.Integration, the only host given the relay, sends them every
 // second to the run's smtp4dev (the pinned local tool, .config/dotnet-tools.json, started below on loopback in clear
 // text, which only vm-local and k8s-dev accept). The hourly limit per address is raised: the suites send many alert
@@ -267,6 +284,7 @@ const hostServers = {
 		...(databaseAvailable ? developmentUserEnvironment() : {}),
 		...(databaseAvailable ? validationReaderEnvironment() : {}),
 		...redisEnvironment(),
+		...malwareScanEnvironment(),
 		...outboundLabEnvironment(),
 		// ARV-064: Main records device heartbeats from ariva.device.health.v1, so the demo's devices stay Online.
 		...(livePipeline ? kafkaEnvironment() : {}),

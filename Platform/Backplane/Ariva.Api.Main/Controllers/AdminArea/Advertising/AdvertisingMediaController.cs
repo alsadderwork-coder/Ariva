@@ -18,7 +18,8 @@ namespace Ariva.Api.Main.Controllers.AdminArea.Advertising;
 /// never the person who uploaded or last changed the item. Every action acts only while the site's advertising policy
 /// allows advertising (<see cref="AdvertisingAllowedAttribute"/>: 403 while it is off, 404 alike for a site outside the
 /// caller's sites and one that does not exist); an item of another site answers 404 under this site's route. Every change is
-/// audited.
+/// audited. An upload is scanned for malware before it is decoded or stored (ARV-092b): 400 for a detection, 503 with
+/// Retry-After while no scanner answers.
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/sites/{siteCode}/advertising/media")]
@@ -83,6 +84,7 @@ public sealed class AdvertisingMediaController(ISvcAdvertisingMedia media) : Con
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     [ProducesResponseType(StatusCodes.Status413PayloadTooLarge)]
+    [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
     [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
     public async Task<IActionResult> Upload(string siteCode, IFormFile file, [FromForm, MaxLength(AdvertisingMedia.MaxNameLength)] string advertiser,
         [FromForm, MaxLength(AdvertisingMedia.MaxNameLength)] string campaign, [FromForm] DateOnly startsOn, [FromForm] DateOnly endsOn, CancellationToken ct)

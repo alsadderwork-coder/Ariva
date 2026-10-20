@@ -1,3 +1,4 @@
+using Ariva.Api.Main.Controllers.AdminArea.Uploads;
 using Ariva.Core.Services.Topology;
 using Microsoft.AspNetCore.Mvc;
 
@@ -6,7 +7,9 @@ namespace Ariva.Api.Main.Controllers.AdminArea.Topology;
 /// <summary>
 /// Maps topology and device results: 404 not found, 409 duplicate, in use, not a draft or a retired device, 403 deployment-wide
 /// and border-only alert rules (ARV-181b2, <see cref="Ariva.Core.Services.Alerting.AlertRuleErrors.BorderOnly"/>) and an
-/// approval by the person who uploaded or last changed an advertisement (ARV-142a), 400 otherwise. When there are several errors (a draft's publishing problems) all of them go in <c>problems</c>.
+/// approval by the person who uploaded or last changed an advertisement (ARV-142a), the malware scan's refusals of an upload
+/// (<see cref="UploadScanAnswers"/>, ARV-092b: 400, or 503 with Retry-After), 400 otherwise. When there are several errors (a
+/// draft's publishing problems) all of them go in <c>problems</c>.
 /// </summary>
 internal static class TopologyAnswers
 {
@@ -22,6 +25,8 @@ internal static class TopologyAnswers
     private static ObjectResult Problem(ControllerBase controller, IEnumerable<string> errors)
     {
         var first = errors?.FirstOrDefault() ?? TopologyErrors.NotFound;
+        if (UploadScanAnswers.Refusal(controller, first) is { } scan)
+            return scan;
         var (status, title) = first switch
         {
             TopologyErrors.NotFound => (StatusCodes.Status404NotFound, "Not found"),

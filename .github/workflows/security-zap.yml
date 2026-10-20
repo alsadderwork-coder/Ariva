@@ -1,6 +1,6 @@
 # Dynamic security scan (ARV-063, layer 7 of wiki/13-Security-Guide.md): OWASP ZAP, pinned by digest, against the real
 # hosts. Weekly and on demand, not on every pull request: the active scan takes up to an hour and leaves junk records.
-#   ephemeral: the E2E stack in this runner (PostgreSQL, Kafka, Redis, the hosts, the web app under its production nginx
+#   ephemeral: the E2E stack in this runner (PostgreSQL, Kafka, Redis, clamd, the hosts, the web app under its production nginx
 #              configuration); API scans of each host's OpenAPI document signed in as a system administrator, baseline
 #              scans of every host and the web app (Platform/Testing/Ariva.E2E/tests/zap).
 #   dev:       a baseline scan (spider and passive rules only, no attack) of the dev deployment, when the repository
@@ -88,6 +88,8 @@ jobs:
       ARIVA_E2E_SCHEMA_UPDATE: 'true'
       ARIVA_E2E_REDIS_URL: redis://localhost:6380
       ARIVA_E2E_KAFKA_BOOTSTRAP: localhost:19092
+      # ARV-092b: the clamd started below, as in ci.yml's e2e job.
+      ARIVA_E2E_CLAMD: 127.0.0.1:3310
       Database__Host: localhost
       Database__Port: '5433'
       Database__Name: postgres
@@ -103,6 +105,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # ARV-092b: Ariva.Api.Main scans every upload with clamd, as in ci.yml's e2e job (a step, since a service cannot mount the
+      # repository's clamd.conf); it loads while the dependencies install.
+      - name: Start clamd (malware scan of uploads)
+        run: docker run -d --name ariva-zap-clamd -p 127.0.0.1:3310:3310 -e CLAMAV_NO_FRESHCLAMD=true -v "$GITHUB_WORKSPACE/Platform/Cloud/clamav/clamd.conf:/etc/clamav/clamd.conf:ro" clamav/clamav:1.4.3@sha256:75fb5fd95fcbe1d7e6d240c369c1572b686ee2c95949d1042b5148de8eddebb4
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: '10.0.x'
@@ -113,6 +119,15 @@ jobs:
         run: |
           npm ci --prefix ../../Frontplane/Ariva.Web
           npm ci
+      - name: Wait for clamd to answer PING
+        run: |
+          for attempt in $(seq 1 60); do
+            if [ "$(echo PING | nc -w 3 127.0.0.1 3310 2>/dev/null)" = "PONG" ]; then echo "clamd answers PONG"; exit 0; fi
+            sleep 3
+          done
+          echo "::error::clamd did not answer PING with PONG on 127.0.0.1:3310 within three minutes; its last log lines follow."
+          docker logs --tail 40 ariva-zap-clamd
+          exit 1
       # ARV-152: the job's account seed (playwright.config.ts keeps a seed it is given), so the artifact check below can derive
       # the scan account's password and the run's other secrets (given to the run from the seed) and look for them; the seed
       # and every value derived from it are masked in this public log.

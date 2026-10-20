@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using Aspire.Hosting;
@@ -7,6 +9,7 @@ using Ariva.AppHost;
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 
 namespace Ariva.UnitTests.Hosting;
 
@@ -17,6 +20,8 @@ namespace Ariva.UnitTests.Hosting;
 /// ARV-139c: the development-only site is off for api-main in every run and cannot be turned on by the host variables file
 /// or the AppHost's own Seed settings; only the AppHost's switch turns it on, with the separate database volume and the
 /// demo accounts' sign-in variables only, and never together with the E2E or scripted-demo settings.
+/// ARV-092b: the pinned, offline ClamAV container with Ariva's clamd.conf read-only, ready only once clamd answers PONG, and
+/// api-main, the only host that takes uploads, the only one given it.
 /// </summary>
 public sealed class AppHostModelTests
 {
@@ -83,6 +88,73 @@ public sealed class AppHostModelTests
         main["Database__ValidationReader__Password"].Should().Be("validation-reader-password-for-tests");
         foreach (var project in projects.Where(p => p.Name != "api-main"))
             (await VariablesAsync(project)).Keys.Should().NotContain(k => k.StartsWith("Database__ValidationReader__", StringComparison.Ordinal), project.Name);
+
+        // ARV-092b: api-main takes the uploads, so it alone is given the malware scanner, and starts once clamd answers.
+        main["MalwareScan__Host"].Should().NotBeNullOrWhiteSpace();
+        main["MalwareScan__Port"].Should().NotBeNullOrWhiteSpace();
+        projects.Single(p => p.Name == "api-main").Annotations.OfType<WaitAnnotation>().Should().Contain(w => w.Resource.Name == "clamav");
+        foreach (var project in projects.Where(p => p.Name != "api-main"))
+            (await VariablesAsync(project)).Keys.Should().NotContain(k => k.StartsWith("MalwareScan__", StringComparison.Ordinal), project.Name);
+    }
+
+    [Fact]
+    public async Task Clamav_Should_RunThePinnedImage_Offline_WithTheRepositorysConfReadOnly()
+    {
+        await using var app = await BuildAsync();
+        var clamav = Resources(app).OfType<ContainerResource>().Single(r => r.Name == "clamav");
+        var image = clamav.Annotations.OfType<ContainerImageAnnotation>().Single();
+
+        $"{image.Registry}/{image.Image}@sha256:{image.SHA256}".Should().Be(
+            "docker.io/clamav/clamav@sha256:75fb5fd95fcbe1d7e6d240c369c1572b686ee2c95949d1042b5148de8eddebb4",
+            "the digest of docker-compose.dev.yml, CI and the integration tests (scripts/base-images.mjs)");
+        (await VariablesAsync(clamav))["CLAMAV_NO_FRESHCLAMD"].Should().Be("true", "no mirror traffic, the same verdicts in every run");
+        var conf = clamav.Annotations.OfType<ContainerMountAnnotation>().Should().ContainSingle(m => m.Target == "/etc/clamav/clamd.conf").Which;
+        conf.Type.Should().Be(ContainerMountType.BindMount);
+        conf.IsReadOnly.Should().BeTrue("Ariva's limits, which the container cannot change");
+        conf.Source.Should().EndWith(Path.Combine("Platform", "Cloud", "clamav", "clamd.conf"));
+        File.Exists(conf.Source).Should().BeTrue(conf.Source);
+        var endpoint = clamav.Annotations.OfType<EndpointAnnotation>().Single(e => e.Name == "clamd");
+        endpoint.TargetPort.Should().Be(3310);
+        endpoint.Port.Should().Be(13310, "docker-compose.dev.yml's port");
+        clamav.Annotations.OfType<HealthCheckAnnotation>().Select(h => h.Key).Should().Contain(ClamdPing.HealthCheckKey, "api-main waits until clamd answers, not until the container runs");
+    }
+
+    [Theory]
+    [InlineData("PONG\0", HealthStatus.Healthy)]
+    [InlineData("UNKNOWN COMMAND\0", HealthStatus.Unhealthy)]
+    [InlineData("", HealthStatus.Unhealthy)]
+    public async Task ClamdPing_Should_BeHealthy_OnlyWhenClamdAnswersPong(string answer, HealthStatus expected)
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var server = Task.Run(async () =>
+        {
+            using var client = await listener.AcceptTcpClientAsync(TestContext.Current.CancellationToken);
+            var stream = client.GetStream();
+            var request = new byte[6];
+            await stream.ReadExactlyAsync(request, TestContext.Current.CancellationToken);
+            Encoding.ASCII.GetString(request).Should().Be("zPING\0");
+            await stream.WriteAsync(Encoding.ASCII.GetBytes(answer), TestContext.Current.CancellationToken);
+        }, TestContext.Current.CancellationToken);
+
+        var result = await ClamdPing.CheckAsync("127.0.0.1", ((IPEndPoint)listener.LocalEndpoint).Port, TestContext.Current.CancellationToken);
+        await server;
+
+        result.Status.Should().Be(expected);
+    }
+
+    [Fact]
+    public async Task ClamdPing_Should_BeUnhealthy_When_NothingListens()
+    {
+        int port;
+        using (var listener = new TcpListener(IPAddress.Loopback, 0))
+        {
+            listener.Start();
+            port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            listener.Stop();
+        }
+
+        (await ClamdPing.CheckAsync("127.0.0.1", port, TestContext.Current.CancellationToken)).Status.Should().Be(HealthStatus.Unhealthy);
     }
 
     [Fact]
@@ -116,11 +188,14 @@ public sealed class AppHostModelTests
     [Fact]
     public async Task E2eSwitches_Should_DropStream_AndKeepNoData()
     {
-        await using var app = await BuildAsync("--AppHost:Stream=false", "--AppHost:Persistent=false", "--AppHost:DatabaseVolume=");
+        await using var app = await BuildAsync("--AppHost:Stream=false", "--AppHost:Persistent=false", "--AppHost:DatabaseVolume=", "--AppHost:ClamdPort=23310");
         Resources(app).Select(r => r.Name).Should().NotContain("api-stream").And.NotContain("web");
         var timescale = Resources(app).OfType<ContainerResource>().Single(r => r.Name == "timescaledb");
         timescale.Annotations.OfType<ContainerMountAnnotation>().Should().NotContain(m => m.Target == "/home/postgres/pgdata");
         timescale.Annotations.OfType<ContainerLifetimeAnnotation>().Single().Lifetime.Should().Be(ContainerLifetime.Session);
+        // ARV-092b: scripts/e2e-apphost.mjs runs its clamd apart from the development stack's.
+        Resources(app).OfType<ContainerResource>().Single(r => r.Name == "clamav").Annotations.OfType<EndpointAnnotation>().Single(e => e.Name == "clamd")
+            .Port.Should().Be(23310);
     }
 
     [Fact]

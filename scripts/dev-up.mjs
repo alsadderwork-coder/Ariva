@@ -2,7 +2,8 @@
 //   1. creates .env from .env.example on first run, replacing every "generate" value with a random password;
 //   2. writes Platform/Backplane/Ariva.Api.Common/appsettings.local.json so the hosts in vm-local reach them
 //      (git-ignored, docker-ignored, copied only when it exists);
-//   3. runs docker compose up --wait, which returns once every health check passes.
+//   3. runs docker compose up --wait, which returns once every health check passes (clamd's once it answers PONG, about
+//      20 seconds after it starts).
 // Usage: node scripts/dev-up.mjs [--no-wait]
 import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -73,7 +74,9 @@ const settings = {
 		Enabled: true,
 		FromAddress: 'no-reply@ariva.local',
 		Smtp: { Host: 'localhost', Port: Number(env.ARIVA_SMTP_PORT || 2525), Security: 'None', AllowInsecure: true }
-	}
+	},
+	// ARV-092b: Ariva.Api.Main streams every upload to the compose clamd before it stores it.
+	MalwareScan: { Host: 'localhost', Port: Number(env.ARIVA_CLAMD_PORT || 13310) }
 };
 fs.writeFileSync(LOCAL_SETTINGS, JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 });
 console.log(`dev-up: wrote ${path.relative(ROOT, LOCAL_SETTINGS)} (git-ignored).`);

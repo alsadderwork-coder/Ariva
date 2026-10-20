@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using Ariva.Core.Domain.Enums;
 using Ariva.Core.Domain.InputModels;
 using Ariva.Core.Domain.ViewModels;
 using Ariva.Core.Security;
@@ -15,8 +16,9 @@ namespace Ariva.Infra.Services.Topology;
 
 /// <summary>
 /// Floor plans (ARV-018). The level must be live and inside the caller's sites (404 otherwise). An upload is read to at
-/// most 20 MB, inspected by its bytes, sanitised when SVG, stored under a generated key and recorded; the previous plan
-/// of the level is soft deleted and its file removed after commit. Changes are audited.
+/// most 20 MB, scanned for malware (ARV-092b, <see cref="UploadScreening"/>), inspected by its bytes, sanitised when SVG,
+/// stored under a generated key and recorded; the previous plan of the level is soft deleted and its file removed after
+/// commit. Changes are audited.
 /// </summary>
 internal sealed class SvcFloorPlans(
     IUnitOfWork unitOfWork,
@@ -24,7 +26,8 @@ internal sealed class SvcFloorPlans(
     TimeProvider timeProvider,
     ISiteScope siteScope,
     IFileStorage storage,
-    AuditTrail audit) : SvcBase(unitOfWork, currentUser, timeProvider), ISvcFloorPlans
+    AuditTrail audit,
+    UploadScreening screening) : SvcBase(unitOfWork, currentUser, timeProvider), ISvcFloorPlans
 {
     public async Task<Result<FloorPlanViewModel>> GetAsync(Guid levelId, CancellationToken ct = default)
     {
@@ -68,6 +71,10 @@ internal sealed class SvcFloorPlans(
         var bytes = await UploadReader.ReadAtMostAsync(upload.Content, FloorPlan.MaxBytes, ct);
         if (bytes is null)
             return Result.Error<FloorPlanViewModel>(TopologyErrors.TooLarge);
+        // The bytes read are the bytes scanned, inspected and stored: nothing reads the file before the scan.
+        var screened = await screening.ScreenAsync(UploadKind.FloorPlan, bytes, ct);
+        if (screened.HasErrors)
+            return Result.Error<FloorPlanViewModel>(screened.ErrorMessages);
         var file = FloorPlanFiles.Inspect(bytes);
         if (file is null)
             return Result.Error<FloorPlanViewModel>(TopologyErrors.UnsupportedFile);

@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
 using Ariva.Core.Domain.Entities;
+using Ariva.Core.Domain.Enums;
 using Ariva.Core.Domain.ViewModels;
 using Ariva.Core.Flights;
 using Ariva.Core.Services.Flights;
@@ -9,6 +10,7 @@ using Ariva.Infra.Flights.Aidx;
 using Ariva.Infra.Flights.Ssim;
 using Ariva.Infra.Services.Administration;
 using Ariva.Infra.Services.Foundation;
+using Ariva.Infra.Storage;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -17,7 +19,8 @@ using NHibernate.Linq;
 namespace Ariva.Infra.Services.Flights;
 
 /// <summary>
-/// SSIM imports (ARV-046). The file is read as a stream (<see cref="SsimReader"/>), expanded for the site's airports
+/// SSIM imports (ARV-046). The file is scanned for malware first, at preview and again at import (ARV-092b,
+/// <see cref="UploadScreening"/>), then read as a stream (<see cref="SsimReader"/>), expanded for the site's airports
 /// within the horizon, and either summarised (preview, with a token that binds the file's SHA-256, the site, the horizon,
 /// the window and the user for two hours) or, when the token matches, applied through
 /// <see cref="ISvcFlightIntake.ApplyScheduleLegsAsync"/> as the fallback feed <c>ssim</c>: it creates legs and updates only
@@ -27,7 +30,7 @@ namespace Ariva.Infra.Services.Flights;
 /// own transaction whatever happens, with the counts and the outcome (completed, or failed after N units).
 /// </summary>
 internal sealed class SvcFlightSchedules(IUnitOfWork unitOfWork, ICurrentUser currentUser, TimeProvider timeProvider, IServiceScopeFactory scopes,
-    IDataProtectionProvider dataProtection, ILogger<SvcFlightSchedules> logger)
+    IDataProtectionProvider dataProtection, UploadScreening screening, ILogger<SvcFlightSchedules> logger)
     : SvcBase(unitOfWork, currentUser, timeProvider), ISvcFlightSchedules
 {
     public const string Feed = "ssim";
@@ -42,6 +45,7 @@ internal sealed class SvcFlightSchedules(IUnitOfWork unitOfWork, ICurrentUser cu
 
     public async Task<Result<SsimPreviewViewModel>> PreviewAsync(string siteCode, Stream file, int horizonDays, CancellationToken ct = default)
     {
+        RequireSeekable(file);
         var (schedule, error) = await ReadAsync(siteCode, file, horizonDays, ct);
         if (error is not null)
             return Result.Error<SsimPreviewViewModel>(error);
@@ -55,6 +59,7 @@ internal sealed class SvcFlightSchedules(IUnitOfWork unitOfWork, ICurrentUser cu
 
     public async Task<Result<SsimImportViewModel>> ImportAsync(string siteCode, Stream file, int horizonDays, string previewToken, CancellationToken ct = default)
     {
+        RequireSeekable(file);
         var (schedule, error) = await ReadAsync(siteCode, file, horizonDays, ct);
         if (error is not null)
             return Result.Error<SsimImportViewModel>(error);
@@ -162,7 +167,8 @@ internal sealed class SvcFlightSchedules(IUnitOfWork unitOfWork, ICurrentUser cu
 
     private async Task<(SsimSchedule Schedule, string Error)> ReadAsync(string siteCode, Stream file, int horizonDays, CancellationToken ct)
     {
-        ArgumentNullException.ThrowIfNull(file);
+        if (await ScreenAsync(file, ct) is { } refusal)
+            return (null, refusal);
         var rows = await ExecuteSqlAsync<CodeRow>("""
             SELECT DISTINCT a.iata_code AS "Iata", a.icao_code AS "Icao"
               FROM airport a JOIN terminal t ON t.airport_id = a.id
@@ -172,6 +178,35 @@ internal sealed class SvcFlightSchedules(IUnitOfWork unitOfWork, ICurrentUser cu
         if (airports.Count == 0)
             return (null, "The site has no airport (a terminal of the site under an airport); SSIM legs are placed by airport.");
         return await SsimReader.ReadAsync(file, airports, UtcNow, horizonDays, ct);
+    }
+
+    /// <summary>
+    /// The file must be a stream that can seek, as the buffered form file is (<c>IFormFile.OpenReadStream</c>, the one caller):
+    /// the malware scan reads it to its end and the reader then reads the same bytes again from where the scan began
+    /// (ARV-092b). Any other stream is a caller's error, refused before anything is read.
+    /// </summary>
+    internal static void RequireSeekable(Stream file)
+    {
+        ArgumentNullException.ThrowIfNull(file);
+        if (!file.CanSeek)
+            throw new ArgumentException("An SSIM file is read twice (the malware scan, then the reader): pass a stream that can seek, such as the form file's.", nameof(file));
+    }
+
+    /// <summary>
+    /// The malware scan (ARV-092b) of exactly the bytes the reader then reads: at most 20 MB from the stream's position (a
+    /// longer file is refused without a scan, as the reader would refuse it), scanned, then rewound to where the scan began.
+    /// The refusal, or null.
+    /// </summary>
+    private async Task<string> ScreenAsync(Stream file, CancellationToken ct)
+    {
+        var start = file.Position;
+        if (file.Length - start > SsimReader.MaxBytes)
+            return SsimReader.TooLarge;
+        var screened = await screening.ScreenAsync(UploadKind.FlightSchedule, file, ct);
+        if (screened.HasErrors)
+            return screened.ErrorMessages.First();
+        file.Position = start;
+        return null;
     }
 
     private sealed class CodeRow

@@ -71,11 +71,16 @@ public static class FlightExtensions
         return services;
     }
 
-    /// <summary>SSIM schedule imports (ARV-046, Ariva.Api.Main): the flight intake without the freshness sweep, and the import service.</summary>
+    /// <summary>
+    /// SSIM schedule imports (ARV-046, Ariva.Api.Main): the flight intake without the freshness sweep, the malware scan of
+    /// uploads (ARV-092b) and the import service.
+    /// </summary>
     public static IServiceCollection AddArivaFlightSchedules(this IServiceCollection services, IConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(services);
         services.AddArivaFlights(configuration, watchFeeds: false);
+        // Every SSIM file is scanned for malware before it is read (ARV-092b).
+        services.AddArivaUploadScanning(configuration);
         services.TryAddScoped<Ariva.Infra.Services.Administration.AuditTrail>();
         services.TryAddScoped<ISvcFlightSchedules, Ariva.Infra.Services.Flights.SvcFlightSchedules>();
         return services;

@@ -1,3 +1,4 @@
+using Ariva.Core.Domain.Enums;
 using Ariva.Core.Domain.InputModels;
 using Ariva.Core.Domain.ViewModels;
 using Ariva.Core.Security;
@@ -6,6 +7,7 @@ using Ariva.Core.Services.Topology;
 using Ariva.Infra.Imports;
 using Ariva.Infra.Services.Administration;
 using Ariva.Infra.Services.Foundation;
+using Ariva.Infra.Storage;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.DependencyInjection;
 using NHibernate.Linq;
@@ -13,11 +15,11 @@ using NHibernate.Linq;
 namespace Ariva.Infra.Services.Topology;
 
 /// <summary>
-/// The desk code mapping import (ARV-123a), as the device import: the file hashed, read as a stream and checked
-/// (<see cref="MappingImportRows"/>), each desk found by its checkpoint and desk code among the site's live desks, then the
+/// The desk code mapping import (ARV-123a), as the device import: the file hashed, scanned for malware (ARV-092b), read as a
+/// stream and checked (<see cref="MappingImportRows"/>), each desk found by its checkpoint and desk code among the site's live desks, then the
 /// mapping service itself (<see cref="ISvcDeskCodeMappings.CreateAsync"/>, unchanged: the code unique per system at the
 /// site, one mapping per system and desk, the system fitting the desk's kind). The preview is a dry run rolled back; the
-/// commit checks the token against the file's hash first, every row again, and creates every mapping in one transaction
+/// commit scans the file again, then checks the token against the file's hash before it parses anything, every row again, and creates every mapping in one transaction
 /// under the site lock, or none. Audited as the device import; not a critical action, like the single mapping endpoint.
 /// </summary>
 internal sealed class SvcDeskCodeMappingImports(
@@ -29,6 +31,7 @@ internal sealed class SvcDeskCodeMappingImports(
     AuditTrail audit,
     IServiceScopeFactory scopes,
     IDataProtectionProvider dataProtection,
+    UploadScreening screening,
     ILogger<SvcDeskCodeMappingImports> logger) : SvcBase(unitOfWork, currentUser, timeProvider), ISvcDeskCodeMappingImports
 {
     private const string Target = "DeskCodeMappingImport";
@@ -54,6 +57,8 @@ internal sealed class SvcDeskCodeMappingImports(
             sha = await HashAsync(openFile, ct);
             if (sha is null)
                 return await RefusePreviewAsync(siteCode, null, CsvImportErrors.FileTooLarge);
+            if (await ScreenAsync(openFile, ct) is { } malware)
+                return await RefusePreviewAsync(siteCode, sha, malware);
             var (planned, table, error) = await ReadAsync(siteCode, openFile, ct);
             if (error is not null)
                 return await RefusePreviewAsync(siteCode, sha, error);
@@ -117,6 +122,10 @@ internal sealed class SvcDeskCodeMappingImports(
             sha = await HashAsync(openFile, ct);
             if (sha is null)
                 return await RefuseCommitAsync(siteCode, null, CsvImportErrors.FileTooLarge);
+            // Scanned again, as the file is sent again (ARV-092b): a signature added since the preview still refuses it.
+            if (await ScreenAsync(openFile, ct) is { } malware)
+                return await RefuseCommitAsync(siteCode, sha, malware);
+            // The token before anything parses the file, after the scan, as the device import.
             if (!_tokens.Matches(previewToken, sha, siteCode, CurrentUser.Id, UtcNow))
                 return await RefuseCommitAsync(siteCode, sha, CsvImportErrors.NotThePreview);
             var (planned, table, error) = await ReadAsync(siteCode, openFile, ct);
@@ -177,6 +186,17 @@ internal sealed class SvcDeskCodeMappingImports(
     {
         await using var file = openFile();
         return await CsvImportReader.Sha256Async(file, ct);
+    }
+
+    /// <summary>
+    /// The malware scan's refusal of the file (ARV-092b), or null: the bytes just hashed (at most 1 MB), each opening of the
+    /// buffered upload giving the same bytes, before anything parses them.
+    /// </summary>
+    private async Task<string> ScreenAsync(Func<Stream> openFile, CancellationToken ct)
+    {
+        await using var file = openFile();
+        var screened = await screening.ScreenAsync(UploadKind.DeskCodeMappingImport, file, ct);
+        return screened.HasErrors ? screened.ErrorMessages.First() : null;
     }
 
     private async Task<(IReadOnlyList<(MappingImportRow Row, CreateDeskCodeMappingRequest Request)> Planned, CsvTable Table, string Error)> ReadAsync(string siteCode,

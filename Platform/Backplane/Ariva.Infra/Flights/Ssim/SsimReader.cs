@@ -40,6 +40,9 @@ public sealed record SsimSchedule(
 public static class SsimReader
 {
     public const int MaxBytes = 20 * 1024 * 1024;
+
+    /// <summary>The refusal of a file over <see cref="MaxBytes"/>.</summary>
+    public const string TooLarge = "An SSIM file is at most 20 MB.";
     public const int MaxLines = 200_000;
     public const int MaxLineLength = 200;
     public const int MaxLegs = 100_000;
@@ -134,7 +137,7 @@ public static class SsimReader
         {
             bytes += read;
             if (bytes > MaxBytes)
-                return (null, "An SSIM file is at most 20 MB.");
+                return (null, TooLarge);
             hash.AppendData(buffer, 0, read);
             for (var i = 0; i < read; i++)
             {

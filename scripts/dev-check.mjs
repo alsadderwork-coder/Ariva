@@ -1,7 +1,8 @@
 // Proves the local dependencies work as the stories expect (ARV-003). Run after scripts/dev-up.mjs:
 //   node scripts/dev-check.mjs
 // Checks: TimescaleDB extension available; the read-only role can read but not write; Kafka answers on the internal
-// listener; Redis refuses unauthenticated commands and accepts the password; smtp4dev listens on both ports.
+// listener; Redis refuses unauthenticated commands and accepts the password; smtp4dev listens on both ports; clamd answers
+// PING, finds the EICAR test string and passes clean content (ARV-092b).
 // Commands run with argument arrays and no shell (CWE-78); passwords come from .env.
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -61,5 +62,29 @@ const listens = (port) =>
 	});
 expect('smtp4dev SMTP port answers', await listens(env.ARIVA_SMTP_PORT || 2525));
 expect('smtp4dev web UI port answers', await listens(env.ARIVA_SMTP_UI_PORT || 5080));
+
+// ARV-092b: clamd answers as Ariva.Api.Main asks (clamd's z commands, NUL-terminated; INSTREAM sends 4-byte big-endian
+// length chunks and a zero length). The EICAR test string is put together here from two parts, so no file holds it whole.
+const clamd = (send) =>
+	new Promise((resolve) => {
+		const chunks = [];
+		const socket = net.connect({ host: '127.0.0.1', port: Number(env.ARIVA_CLAMD_PORT || 13310) }, () => socket.write(send));
+		socket.on('data', (chunk) => chunks.push(chunk));
+		socket.on('close', () => resolve(Buffer.concat(chunks).toString('utf8').replace(/\0+$/, '')));
+		socket.on('error', (error) => resolve(`error: ${error.message}`));
+		socket.setTimeout(30000, () => socket.destroy());
+	});
+const instream = (content) => {
+	const length = Buffer.alloc(4);
+	length.writeUInt32BE(content.length);
+	return Buffer.concat([Buffer.from('zINSTREAM\0'), length, content, Buffer.alloc(4)]);
+};
+const eicar = Buffer.from(['X5O!P%@AP[4\\PZX54(P^)7CC)7}$', 'EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*'].join(''));
+let answer = await clamd(Buffer.from('zPING\0'));
+expect('clamd answers PING', answer === 'PONG', answer);
+answer = await clamd(instream(eicar));
+expect('clamd finds the EICAR test string', /FOUND$/.test(answer), answer);
+answer = await clamd(instream(Buffer.from('Ariva dev-check clean content\n')));
+expect('clamd passes clean content', answer === 'stream: OK', answer);
 
 process.exit(failed ? 1 : 0);

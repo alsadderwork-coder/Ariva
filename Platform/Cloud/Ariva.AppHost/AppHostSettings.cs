@@ -18,6 +18,7 @@ public sealed partial class AppHostSettings
     public int RedisPort { get; init; } = 16379;
     public int SmtpPort { get; init; } = 2525;
     public int SmtpUiPort { get; init; } = 5080;
+    public int ClamdPort { get; init; } = 13310;
 
     /// <summary>Start the SvelteKit dev server (needs npm ci in Ariva.Web first).</summary>
     public bool Web { get; init; } = true;

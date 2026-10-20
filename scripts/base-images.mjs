@@ -61,6 +61,9 @@ const OUTSIDE_LINES = {
 	'confluentinc/confluent-local': { patterns: [/^8\.\d+\.\d+$/], hubName: 'confluentinc/confluent-local' },
 	'rnwood/smtp4dev': { patterns: [/^3\.\d+\.\d+$/], hubName: 'rnwood/smtp4dev', tool: 'rnwood.smtp4dev' },
 	'semgrep/semgrep': { patterns: [/^1\.\d+\.\d+$/], hubName: 'semgrep/semgrep' },
+	// The malware scan's clamd (ARV-092b): compose, the AppHost, the E2E steps of ci.yml, security-zap.yml and Azure DevOps,
+	// and the integration tests, all on one digest.
+	'clamav/clamav': { patterns: [/^1\.\d+\.\d+$/], hubName: 'clamav/clamav' },
 	'ghcr.io/zaproxy/zaproxy': { patterns: [/^$/], ghcrName: 'zaproxy/zaproxy', resolveTag: 'stable' },
 	// The integration tests' broker and fault proxy (INTEGRATION_IMAGES); their TimescaleDB and Redis are the lines above.
 	'confluentinc/cp-kafka': { patterns: [/^7\.\d+\.\d+$/], hubName: 'confluentinc/cp-kafka' },
@@ -85,7 +88,8 @@ const INTEGRATION_IMAGES = [
 	[path.join(INTEGRATION_TESTS, 'Setup', 'PostgresFixture.cs'), ['Image']],
 	[path.join(INTEGRATION_TESTS, 'Setup', 'KafkaContainers.cs'), ['Image']],
 	[path.join(INTEGRATION_TESTS, 'Caching', 'FusionCacheBackplaneTests.cs'), ['Image']],
-	[path.join(INTEGRATION_TESTS, 'Faults', 'FaultsFixture.cs'), ['ToxiproxyImage']]
+	[path.join(INTEGRATION_TESTS, 'Faults', 'FaultsFixture.cs'), ['ToxiproxyImage']],
+	[path.join(INTEGRATION_TESTS, 'Setup', 'ClamdFixture.cs'), ['Image']]
 ];
 
 /**

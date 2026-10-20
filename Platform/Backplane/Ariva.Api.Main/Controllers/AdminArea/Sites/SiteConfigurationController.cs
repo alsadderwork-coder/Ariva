@@ -2,6 +2,7 @@ using System.ComponentModel.DataAnnotations;
 using Ariva.Api.Common.Extensions;
 using Ariva.Api.Common.Filters;
 using Ariva.Api.Common.Security;
+using Ariva.Api.Main.Controllers.AdminArea.Uploads;
 using Ariva.Core;
 using Ariva.Core.Domain.InputModels;
 using Ariva.Core.Domain.ViewModels;
@@ -22,6 +23,8 @@ namespace Ariva.Api.Main.Controllers.AdminArea.Sites;
 /// body is at most 20 MB (the file-import class, 413 beyond) and runs one at a time per host with the other uploads, under
 /// their request timeout (the <c>transfer</c> policy, ARV-096); it is read whole with the request's token before model binding and
 /// must arrive steadily (408 when too slow: <see cref="SteadyUploadAttribute"/>). Every refusal is a fixed text; answers are never cached.
+/// Every decoded part of a bundle is scanned for malware before it is read (ARV-092b): 400 for a detection, 503 with
+/// Retry-After while no scanner answers.
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/sites/{siteCode}/configuration")]
@@ -60,6 +63,7 @@ public sealed class SiteConfigurationController(ISvcSiteConfiguration configurat
     [ProducesResponseType(StatusCodes.Status408RequestTimeout)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     [ProducesResponseType(StatusCodes.Status413PayloadTooLarge)]
+    [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
     public async Task<IActionResult> Import(string siteCode, [FromBody] ImportSiteConfigurationRequest request, [FromQuery, MaxLength(3)] string airportCode,
         CancellationToken ct)
     {
@@ -68,7 +72,10 @@ public sealed class SiteConfigurationController(ISvcSiteConfiguration configurat
             view => Created($"/api/v1/admin/sites/{siteCode}/configuration", view));
     }
 
-    /// <summary>404 without a detail; 409, 413 and 400 with the service's fixed text, and nothing else from the request.</summary>
+    /// <summary>
+    /// 404 without a detail; 409, 413 and 400 with the service's fixed text, the malware scan's refusals as every upload's
+    /// (<see cref="UploadScanAnswers"/>, ARV-092b), and nothing else from the request.
+    /// </summary>
     private IActionResult Answer<T>(Fluentx.Result<T> result, Func<T, IActionResult> ok)
     {
         if (!result.HasErrors)
@@ -76,6 +83,8 @@ public sealed class SiteConfigurationController(ISvcSiteConfiguration configurat
         var first = result.ErrorMessages.FirstOrDefault() ?? TopologyErrors.NotFound;
         if (first == TopologyErrors.NotFound)
             return Problem(statusCode: StatusCodes.Status404NotFound, title: "Not found");
+        if (UploadScanAnswers.Refusal(this, first) is { } scan)
+            return scan;
         var (status, title) = first switch
         {
             _ when SiteConfigurationErrors.Conflicts.Contains(first) => (StatusCodes.Status409Conflict, "Conflict"),

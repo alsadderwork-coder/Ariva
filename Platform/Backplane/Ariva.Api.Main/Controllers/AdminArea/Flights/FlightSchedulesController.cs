@@ -1,6 +1,7 @@
 using Ariva.Api.Common.Extensions;
 using Ariva.Api.Common.Filters;
 using Ariva.Api.Common.Security;
+using Ariva.Api.Main.Controllers.AdminArea.Uploads;
 using Ariva.Core;
 using Ariva.Core.Domain.ViewModels;
 using Ariva.Core.Services.Flights;
@@ -18,6 +19,8 @@ namespace Ariva.Api.Main.Controllers.AdminArea.Flights;
 /// preview). The site's airports place each leg; a schedule creates legs and never changes one a live feed has reported.
 /// One upload at a time per host (the upload policy), with the transfer request timeout, arriving steadily or ended (408 when
 /// too slow, 413 past the limit, 400 for a form cut short: <see cref="SteadyUploadAttribute"/>, ARV-096). Site-scoped.
+/// Every file is scanned for malware before it is read (ARV-092b): 400 for a detection, 503 with Retry-After while no
+/// scanner answers.
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/sites/{siteCode}/flight-schedules")]
@@ -44,6 +47,7 @@ public sealed class FlightSchedulesController(ISvcFlightSchedules schedules) : C
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status408RequestTimeout)]
     [ProducesResponseType(StatusCodes.Status413PayloadTooLarge)]
+    [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
     public async Task<IActionResult> Preview(string siteCode, IFormFile file, [FromForm] int? horizonDays, CancellationToken ct)
     {
         if (await RefuseAsync(siteCode, file, ct) is { } refused)
@@ -62,6 +66,7 @@ public sealed class FlightSchedulesController(ISvcFlightSchedules schedules) : C
     [ProducesResponseType(StatusCodes.Status408RequestTimeout)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     [ProducesResponseType(StatusCodes.Status413PayloadTooLarge)]
+    [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
     public async Task<IActionResult> Import(string siteCode, IFormFile file, [FromForm] int? horizonDays, [FromForm] string previewToken, CancellationToken ct)
     {
         if (await RefuseAsync(siteCode, file, ct) is { } refused)
@@ -89,6 +94,8 @@ public sealed class FlightSchedulesController(ISvcFlightSchedules schedules) : C
         if (!result.HasErrors)
             return Ok(result.Data);
         var first = result.ErrorMessages.First();
+        if (UploadScanAnswers.Refusal(this, first) is { } scan)
+            return scan;
         return first switch
         {
             FlightScheduleErrors.NotThePreview => Problem(statusCode: StatusCodes.Status409Conflict, title: "Conflict", detail: first),

@@ -2,7 +2,8 @@
 #   node scripts/dev-up.mjs     creates .env with random passwords on first run, writes appsettings.local.json,
 #                               starts these services and waits for their health checks
 #   node scripts/dev-down.mjs   stops them (add --volumes to delete the data)
-# Ports bind to 127.0.0.1 only and default away from AMAN's local ports (5432, 9092, 6379) so both stacks can run.
+# Ports bind to 127.0.0.1 only and default away from AMAN's local ports (5432, 9092, 6379) so both stacks can run, and
+# ClamAV's away from a system clamd's (3310).
 # Images are pinned by tag and digest (ARV-096). scripts/base-images.mjs --check holds each pin to the same digest wherever
 # else it is pinned (CI's services, the AppHost, Azure DevOps) and TimescaleDB to the chart's tag and digest; the base-images
 # workflow (--resolve) proposes new digests for every copy at once.
@@ -82,6 +83,26 @@ services:
       test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/80'"] # bash built-in; the image has no curl
       interval: 10s
       timeout: 5s
+      retries: 30
+
+  # Malware scan of uploads (ARV-092b): Ariva.Api.Main streams each upload to clamd (MalwareScan:Host, MalwareScan:Port)
+  # before it stores it. Offline: the image's signature snapshot and no freshclam, so no mirror traffic and the same verdicts
+  # in every run. Ariva's limits come from Platform/Cloud/clamav/clamd.conf, mounted read-only.
+  # Memory: clamd holds its signatures in memory, about 1 GiB once loaded (about 20 seconds after it starts); give Docker
+  # Desktop's or Rancher Desktop's VM room for it.
+  clamav:
+    image: clamav/clamav:1.4.3@sha256:75fb5fd95fcbe1d7e6d240c369c1572b686ee2c95949d1042b5148de8eddebb4
+    environment:
+      CLAMAV_NO_FRESHCLAMD: "true"
+    ports:
+      - "127.0.0.1:${ARIVA_CLAMD_PORT:-13310}:3310"
+    volumes:
+      - ./Platform/Cloud/clamav/clamd.conf:/etc/clamav/clamd.conf:ro
+    healthcheck:
+      test: ["CMD", "clamdcheck.sh"] # the image's own: PING on 3310, healthy on PONG
+      interval: 5s
+      timeout: 5s
+      start_period: 60s
       retries: 30
 
 volumes:

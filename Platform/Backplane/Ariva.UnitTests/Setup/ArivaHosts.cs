@@ -266,6 +266,11 @@ internal sealed class ArivaWebApplicationFactory<TEntryPoint>(string environment
             builder.UseSetting(Ariva.Api.Common.Logging.ArivaLogging.LokiEnabledSetting, "true");
             builder.UseSetting(Ariva.Api.Common.Logging.ArivaLogging.LokiUriSetting, ArivaHosts.ProductionCollector);
             builder.UseSetting(Ariva.Api.Common.Logging.LogProtection.KeySetting, ArivaHosts.ProductionPseudonymKey);
+            // k8s-prd scans every upload (ARV-092b) and Ariva.Api.Main refuses to start without a scanner on a loopback IP address:
+            // the loopback discard port, which nothing here answers (an upload would be refused 503). The chart sets no
+            // MalwareScan__Host until ARV-092c gives it a clamd.
+            builder.UseSetting("MalwareScan:Host", "127.0.0.1");
+            builder.UseSetting("MalwareScan:Port", "9");
         }
         // Nor a database readiness check, which would answer 503 here: the probes' authorization is what these hosts
         // test; the check itself is covered by ServiceDefaultsTests (ARV-066).
