@@ -17,29 +17,30 @@ EXPOSE 8080
 FROM mcr.microsoft.com/dotnet/sdk:10.0.402@sha256:0d99ebf1ccad15037b5c98c9fe8979d6b8dbac23812feae2277a0b277b5c5ffa AS build
 WORKDIR /src
 
-# Copy Directory.Packages.props for Central Package Management
-COPY ["Directory.Packages.props", "./"]
-COPY ["Directory.Build.props", "./"]
+# Package sources (nuget.org only, with package source mapping), Central Package Management and the shared build settings
+COPY ["nuget.config", "Directory.Packages.props", "Directory.Build.props", "./"]
 
-# Copy all project files for restore
-COPY ["Platform/Simulation/Ariva.Simulation.Api/Ariva.Simulation.Api.csproj", "Platform/Simulation/Ariva.Simulation.Api/"]
-COPY ["Platform/Business/Ariva.Business.Contracts/Ariva.Business.Contracts.csproj", "Platform/Business/Ariva.Business.Contracts/"]
-COPY ["Platform/Backplane/Ariva.ServiceDefaults/Ariva.ServiceDefaults.csproj", "Platform/Backplane/Ariva.ServiceDefaults/"]
+# Every project of the simulator's closure with its lock file (ARV-096). The restore runs in locked mode: a package or
+# version the lock files do not name, or a package whose content differs from its recorded hash, fails the build.
+# scripts/base-images.mjs checks that this list is the whole closure and that each lock file records linux-x64.
+COPY ["Platform/Simulation/Ariva.Simulation.Api/Ariva.Simulation.Api.csproj", "Platform/Simulation/Ariva.Simulation.Api/packages.lock.json", "Platform/Simulation/Ariva.Simulation.Api/"]
+COPY ["Platform/Business/Ariva.Business.Contracts/Ariva.Business.Contracts.csproj", "Platform/Business/Ariva.Business.Contracts/packages.lock.json", "Platform/Business/Ariva.Business.Contracts/"]
+COPY ["Platform/Backplane/Ariva.ServiceDefaults/Ariva.ServiceDefaults.csproj", "Platform/Backplane/Ariva.ServiceDefaults/packages.lock.json", "Platform/Backplane/Ariva.ServiceDefaults/"]
 
-# Restore packages with caching
+# Restore packages with caching, held to the lock files
 RUN --mount=type=cache,id=nuget,sharing=locked,target=/root/.nuget/packages \
-    dotnet restore "Platform/Simulation/Ariva.Simulation.Api/Ariva.Simulation.Api.csproj" -r linux-x64
+    dotnet restore "Platform/Simulation/Ariva.Simulation.Api/Ariva.Simulation.Api.csproj" -r linux-x64 --locked-mode
 
 # Copy all source code including shared files
 COPY Platform Platform
 COPY GlobalSuppressions.cs GlobalSuppressions.cs
 
-# Build and publish
+# Build and publish; the restore that publish runs is held to the lock files as well
 FROM build AS publish
 WORKDIR /src/Platform/Simulation/Ariva.Simulation.Api
 
 RUN --mount=type=cache,id=nuget,sharing=locked,target=/root/.nuget/packages \
-    dotnet publish "Ariva.Simulation.Api.csproj" -r linux-x64 -c Release -o /app/publish -p:PublishTrimmed=false -p:PublishReadyToRun=false --self-contained true
+    dotnet publish "Ariva.Simulation.Api.csproj" -r linux-x64 -c Release -o /app/publish -p:PublishTrimmed=false -p:PublishReadyToRun=false --self-contained true -p:RestoreLockedMode=true
 
 # ARV-184 (CWE-1395): check what ships, not what was asked for. Fails the build unless both runtime packs in the publish
 # output are the runtime-deps version (10.0.13 or later) and System.Security.Cryptography.Pkcs.dll and the SignalR

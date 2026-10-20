@@ -104,7 +104,11 @@ public sealed class AppHostModelTests
         var timescale = Resources(app).OfType<ContainerResource>().Single(r => r.Name == "timescaledb");
         var image = timescale.Annotations.OfType<ContainerImageAnnotation>().Single();
 
-        $"{image.Image}:{image.Tag}".Should().Be("timescale/timescaledb-ha:pg17-ts2.30", "the image of docker-compose.dev.yml and the integration tests");
+        // ARV-096: pinned by the chart's digest, which Aspire runs as image@sha256 (setting the digest clears the tag).
+        $"{image.Registry}/{image.Image}@sha256:{image.SHA256}".Should().Be(
+            "docker.io/timescale/timescaledb-ha@sha256:2fcc39a5d4c8a65f58691ef92c7819df5773db72397b2dd8493f114659b519c2",
+            "the image and digest of the chart, docker-compose.dev.yml and the integration tests");
+        image.Tag.Should().BeNull("Aspire runs the digest, not the tag");
         timescale.Annotations.OfType<ContainerMountAnnotation>().Should().Contain(m => m.Source == "ariva-apphost-timescaledb" && m.Target == "/home/postgres/pgdata");
         timescale.Annotations.OfType<ContainerLifetimeAnnotation>().Single().Lifetime.Should().Be(ContainerLifetime.Persistent);
     }

@@ -10,7 +10,11 @@ namespace Ariva.IntegrationTests.Caching;
 /// <summary>Redis container for the cache tests; Redis 8 like docker-compose.dev.yml.</summary>
 public sealed class RedisFixture : IAsyncLifetime
 {
-    public const string Image = "redis:8.2-alpine";
+    /// <summary>
+    /// The Redis image of the suite (the fault tests' too), by tag and digest: docker-compose.dev.yml's and CI's, one digest
+    /// everywhere (ARV-096, scripts/base-images.mjs).
+    /// </summary>
+    public const string Image = "redis:8.2-alpine@sha256:b51665e66f00759be7c3152ad5ac3c66fb2f619c13ef62dea7cc1f9914524635";
 
     private RedisContainer _container;
 

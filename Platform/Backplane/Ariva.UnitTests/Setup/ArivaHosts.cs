@@ -1,5 +1,8 @@
+using System.Net;
 using Ariva.Api.Common.Hosting;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
@@ -89,6 +92,31 @@ public static class ArivaHosts
             _ => throw new ArgumentOutOfRangeException(nameof(name), name, "Unknown Ariva host.")
         };
 
+    /// <summary>
+    /// As <see cref="Create"/>, but on a real Kestrel bound to a free loopback port instead of the in-memory TestServer, for what
+    /// only Kestrel does: the minimum request body data rate, which TestServer has no feature for (ARV-096). The host starts on
+    /// first use; <see cref="Address"/> then gives where it listens. Only Ariva.Api.Main is offered: no other test needs one.
+    /// </summary>
+    /// <param name="configure">Extra web host configuration, for example test services or settings.</param>
+    /// <param name="environment">The Ariva environment, vm-local by default.</param>
+    /// <returns>The host; dispose it at the end of the test.</returns>
+    public static IArivaHost CreateMainOnKestrel(Action<IWebHostBuilder> configure = null, string environment = ArivaEnvironment.VmLocal) =>
+        new ArivaHost<Ariva.Api.Main._IAssemblyMark>(Main, environment, builder =>
+        {
+            configure?.Invoke(builder);
+            builder.ConfigureKestrel(kestrel => kestrel.Listen(IPAddress.Loopback, 0));
+        }, kestrel: true);
+
+    /// <summary>Where a host made by <see cref="CreateMainOnKestrel"/> listens (it starts the host).</summary>
+    /// <param name="host">The host.</param>
+    /// <returns>The http address on loopback.</returns>
+    public static Uri Address(IArivaHost host)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+        var addresses = host.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>();
+        return new Uri(addresses?.Addresses.FirstOrDefault() ?? throw new InvalidOperationException("The host listens nowhere: was it made with CreateMainOnKestrel?"));
+    }
+
     #endregion
 
     #region Helpers
@@ -130,12 +158,25 @@ public interface IArivaHost : IAsyncDisposable
 /// <param name="name">The host name.</param>
 /// <param name="environment">The Ariva environment passed to the host as <c>--environment</c>.</param>
 /// <param name="configure">Extra web host configuration.</param>
-internal sealed class ArivaHost<TEntryPoint>(string name, string environment, Action<IWebHostBuilder> configure) : IArivaHost
+/// <param name="kestrel">True for a real Kestrel (the configuration then says where it listens), false for TestServer.</param>
+internal sealed class ArivaHost<TEntryPoint>(string name, string environment, Action<IWebHostBuilder> configure, bool kestrel = false) : IArivaHost
     where TEntryPoint : class
 {
     #region Fields
 
-    private readonly ArivaWebApplicationFactory<TEntryPoint> _factory = new(environment, configure);
+    private readonly ArivaWebApplicationFactory<TEntryPoint> _factory = Factory(environment, configure, kestrel);
+
+    #endregion
+
+    #region Helpers
+
+    private static ArivaWebApplicationFactory<TEntryPoint> Factory(string environment, Action<IWebHostBuilder> configure, bool kestrel)
+    {
+        var factory = new ArivaWebApplicationFactory<TEntryPoint>(environment, configure);
+        if (kestrel)
+            factory.UseKestrel();
+        return factory;
+    }
 
     #endregion
 
@@ -278,8 +319,9 @@ internal sealed class ArivaWebApplicationFactory<TEntryPoint>(string environment
     /// fails (a host refusing its configuration) disposes those services in <c>RunAsync</c>; on a loaded machine that came
     /// first, and the test saw "Cannot access a disposed object. Object name: 'IServiceProvider'" instead of the start's own
     /// exception. Here the factory's start subscribes first (it returns at its first wait), then the gate opens, so a failed
-    /// start always surfaces as its own exception. The factory never uses Kestrel, so the base method's Kestrel port step has
-    /// nothing to do.
+    /// start always surfaces as its own exception. The base method's Kestrel port step has nothing to do: a host on TestServer
+    /// binds no port, and one on Kestrel (<see cref="ArivaHosts.CreateMainOnKestrel"/>) names its own loopback endpoint in its
+    /// configuration.
     /// </summary>
     protected override IHost CreateHost(IHostBuilder builder)
     {

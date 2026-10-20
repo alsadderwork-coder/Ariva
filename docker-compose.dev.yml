@@ -3,11 +3,14 @@
 #                               starts these services and waits for their health checks
 #   node scripts/dev-down.mjs   stops them (add --volumes to delete the data)
 # Ports bind to 127.0.0.1 only and default away from AMAN's local ports (5432, 9092, 6379) so both stacks can run.
+# Images are pinned by tag and digest (ARV-096). scripts/base-images.mjs --check holds each pin to the same digest wherever
+# else it is pinned (CI's services, the AppHost, Azure DevOps) and TimescaleDB to the chart's tag and digest; the base-images
+# workflow (--resolve) proposes new digests for every copy at once.
 name: ariva-dev
 
 services:
   timescaledb:
-    image: timescale/timescaledb-ha:pg17-ts2.30
+    image: timescale/timescaledb-ha:pg17-ts2.30@sha256:2fcc39a5d4c8a65f58691ef92c7819df5773db72397b2dd8493f114659b519c2
     environment:
       POSTGRES_DB: ariva
       POSTGRES_USER: ariva
@@ -26,7 +29,7 @@ services:
       retries: 30
 
   kafka:
-    image: apache/kafka:4.1.0
+    image: apache/kafka:4.1.0@sha256:bff074a5d0051dbc0bbbcd25b045bb1fe84833ec0d3c7c965d1797dd289ec88f
     hostname: kafka
     environment:
       KAFKA_NODE_ID: 1
@@ -56,7 +59,7 @@ services:
       retries: 30
 
   redis:
-    image: redis:8.2-alpine
+    image: redis:8.2-alpine@sha256:b51665e66f00759be7c3152ad5ac3c66fb2f619c13ef62dea7cc1f9914524635
     command: ["redis-server", "--requirepass", "${ARIVA_REDIS_PASSWORD:?run node scripts/dev-up.mjs to create .env}", "--appendonly", "yes"]
     environment:
       REDISCLI_AUTH: ${ARIVA_REDIS_PASSWORD}
@@ -71,7 +74,7 @@ services:
       retries: 30
 
   smtp4dev:
-    image: rnwood/smtp4dev:3.15.0 # the same version as the E2E local tool (.config/dotnet-tools.json)
+    image: rnwood/smtp4dev:3.15.0@sha256:25c434c1900a9c5b61e17ead0a774d9e81b80554d05cf64719d69e5ea8c66537 # the same version as the E2E local tool (.config/dotnet-tools.json)
     ports:
       - "127.0.0.1:${ARIVA_SMTP_PORT:-2525}:25"
       - "127.0.0.1:${ARIVA_SMTP_UI_PORT:-5080}:80"

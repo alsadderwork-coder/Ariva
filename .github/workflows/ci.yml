@@ -71,10 +71,12 @@ jobs:
         run: |
           node scripts/offline/verify.mjs --self-test
           node scripts/offline/bundle.mjs --self-test
+      # The chart tests' own npm tree (the YAML parser) is audited after its install, like the web and E2E trees (ARV-096).
       - name: Chart security (pod security context, read-only root, TLS, release guards, Helmfile environments, offline bundle Helmfile)
         working-directory: Platform/Cloud/Ariva.K8s/tests
         run: |
           npm ci
+          npm audit --audit-level=high
           node chart-security.mjs
       - name: Security report
         if: always()
@@ -121,8 +123,10 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: '10.0.x'
-      - name: Restore
-        run: dotnet restore Ariva.slnx 2>&1 | tee restore.log
+      # ARV-096: locked mode, as every CI restore is (Directory.Build.props, CI=true): a package graph that differs from the
+      # committed packages.lock.json files, or a package whose content differs from its recorded hash, fails here.
+      - name: Restore (locked to packages.lock.json, sources from nuget.config)
+        run: dotnet restore Ariva.slnx --locked-mode 2>&1 | tee restore.log
       - name: Build (security analyzers as errors)
         run: dotnet build Ariva.slnx -c Release --no-restore 2>&1 | tee build.log
       - name: Unit, architecture and security tests
@@ -234,8 +238,15 @@ jobs:
       - run: npm run check
       - run: npm run lint
       - run: npm run build
-      - name: npm audit (fails on high or critical)
-        run: npm audit --audit-level=high --omit=dev
+      # ARV-096: every dependency is audited, the dev dependencies included (they build what ships and run in CI), as
+      # scripts/verify.mjs does. High and critical fail; moderate and low are listed (their time frames: ARV-096a).
+      - name: npm audit, web, dev dependencies included (fails on high or critical)
+        run: npm audit --audit-level=high
+      # Ariva.E2E's tree (Playwright, the test clients) runs in the e2e job with the hosts' secrets; audited here, from its
+      # lock file alone (npm audit needs no install), so a finding fails before the long job starts.
+      - name: npm audit, E2E (fails on high or critical)
+        working-directory: Platform/Testing/Ariva.E2E
+        run: npm audit --audit-level=high
       # ARV-127: the offline install bundle's dry run on every pull request: packaged charts, Helmfile, values and this web
       # build with their checksum manifest. No image is pulled and nothing is signed or pushed (a real bundle comes from the
       # offline-bundle workflow). The dry run is verified, and a copy with one altered chart archive must fail.
@@ -278,7 +289,7 @@ jobs:
     # accounts. Same image as the integration tests and the dev environment. The password only lives for this job.
     services:
       postgres:
-        image: timescale/timescaledb-ha:pg17-ts2.30
+        image: timescale/timescaledb-ha:pg17-ts2.30@sha256:2fcc39a5d4c8a65f58691ef92c7819df5773db72397b2dd8493f114659b519c2
         env:
           POSTGRES_PASSWORD: e2e-${{ github.run_id }}-${{ github.run_attempt }}
         ports:
@@ -290,7 +301,7 @@ jobs:
           --health-retries 20
       # The live hub (ARV-035) reads Stream's snapshots from Redis; the suite publishes one as Stream would.
       redis:
-        image: redis:8.2-alpine
+        image: redis:8.2-alpine@sha256:b51665e66f00759be7c3152ad5ac3c66fb2f619c13ef62dea7cc1f9914524635
         ports:
           - 6380:6379
         options: >-
@@ -300,7 +311,7 @@ jobs:
           --health-retries 20
       # Ingest answers a sensor push 202 only once its events are in Kafka (ARV-023); one KRaft broker, the dev image.
       kafka:
-        image: apache/kafka:4.1.0
+        image: apache/kafka:4.1.0@sha256:bff074a5d0051dbc0bbbcd25b045bb1fe84833ec0d3c7c965d1797dd289ec88f
         env:
           KAFKA_NODE_ID: 1
           KAFKA_PROCESS_ROLES: broker,controller

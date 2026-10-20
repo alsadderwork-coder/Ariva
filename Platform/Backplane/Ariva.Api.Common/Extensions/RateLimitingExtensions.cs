@@ -69,7 +69,14 @@ public static class RateLimitingExtensions
     /// </summary>
     public const string ValidationResultsPolicy = "validation-results";
 
-    /// <summary>The Retry-After of a 429 from a concurrency policy, whose lease names no time (uploads, batches, backtests, validation results).</summary>
+    /// <summary>
+    /// Named policy for the on-demand daily report and its CSV files (ARV-096): a concurrency limit per host process, applied before
+    /// authentication. Each request reads a site's local day of minutes, so only a few build at once and a few more wait for a turn
+    /// (oldest first); the rest get 429 with Retry-After (CWE-400, CWE-770). The request timeout policy of the same name bounds each.
+    /// </summary>
+    public const string ReportsPolicy = "reports";
+
+    /// <summary>The Retry-After of a 429 from a concurrency policy, whose lease names no time (uploads, batches, backtests, validation results, reports).</summary>
     public const int ConcurrencyRetryAfterSeconds = 10;
 
     private const string UnknownClient = "unknown";
@@ -97,7 +104,7 @@ public static class RateLimitingExtensions
             .Bind(configuration.GetSection(RateLimitingSettings.SectionName))
             .Validate(settings => settings.Global.IsValid && settings.Auth.IsValid && settings.Device.IsValid && settings.DisplayPlays.IsValid && settings.IntegrationAuth.IsValid &&
                                 settings.IntegrationBatch.IsValid && settings.IntegrationAidx.IsValid && settings.IntegrationClient.IsValid &&
-                                settings.ValidationResults.IsValid,
+                                settings.ValidationResults.IsValid && settings.Reports.IsValid,
                 $"{RateLimitingSettings.SectionName} limits need a positive PermitLimit and WindowSeconds and a QueueLimit of zero or more.")
             .ValidateOnStart();
 
@@ -150,6 +157,13 @@ public static class RateLimitingExtensions
                     {
                         PermitLimit = limits.ValidationResults.PermitLimit,
                         QueueLimit = limits.ValidationResults.QueueLimit,
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst
+                    })));
+                options.AddPolicy(ReportsPolicy, Logged(ReportsPolicy, HostKind, _ =>
+                    RateLimitPartition.GetConcurrencyLimiter(ReportsPolicy, _ => new ConcurrencyLimiterOptions
+                    {
+                        PermitLimit = limits.Reports.PermitLimit,
+                        QueueLimit = limits.Reports.QueueLimit,
                         QueueProcessingOrder = QueueProcessingOrder.OldestFirst
                     })));
                 options.AddPolicy(BacktestPolicy, Logged(BacktestPolicy, HostKind, _ =>

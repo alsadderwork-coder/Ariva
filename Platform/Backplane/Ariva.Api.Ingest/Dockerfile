@@ -17,33 +17,36 @@ EXPOSE 8080
 FROM mcr.microsoft.com/dotnet/sdk:10.0.402@sha256:0d99ebf1ccad15037b5c98c9fe8979d6b8dbac23812feae2277a0b277b5c5ffa AS build
 WORKDIR /src
 
-# Copy Directory.Packages.props for Central Package Management
-COPY ["Directory.Packages.props", "./"]
-COPY ["Directory.Build.props", "./"]
+# Package sources (nuget.org only, with package source mapping), Central Package Management and the shared build settings
+COPY ["nuget.config", "Directory.Packages.props", "Directory.Build.props", "./"]
 
-# Copy all project files for restore
-COPY ["Platform/Backplane/Ariva.Api.Ingest/Ariva.Api.Ingest.csproj", "Platform/Backplane/Ariva.Api.Ingest/"]
-COPY ["Platform/Backplane/Ariva.Api.Common/Ariva.Api.Common.csproj", "Platform/Backplane/Ariva.Api.Common/"]
-COPY ["Platform/Backplane/Ariva.ServiceDefaults/Ariva.ServiceDefaults.csproj", "Platform/Backplane/Ariva.ServiceDefaults/"]
-COPY ["Platform/Backplane/Ariva.Di/Ariva.Di.csproj", "Platform/Backplane/Ariva.Di/"]
-COPY ["Platform/Backplane/Ariva.Infra/Ariva.Infra.csproj", "Platform/Backplane/Ariva.Infra/"]
-COPY ["Platform/Backplane/Ariva.Core/Ariva.Core.csproj", "Platform/Backplane/Ariva.Core/"]
-COPY ["Platform/Backplane/Ariva.Utilities/Ariva.Utilities.csproj", "Platform/Backplane/Ariva.Utilities/"]
+# Every project of the host's closure with its lock file (ARV-096). The restore runs in locked mode: a package or version
+# the lock files do not name, or a package whose content differs from its recorded hash, fails the build.
+# scripts/base-images.mjs checks that this list is the whole closure and that each lock file records linux-x64.
+COPY ["Platform/Backplane/Ariva.Api.Ingest/Ariva.Api.Ingest.csproj", "Platform/Backplane/Ariva.Api.Ingest/packages.lock.json", "Platform/Backplane/Ariva.Api.Ingest/"]
+COPY ["Platform/Backplane/Ariva.Api.Common/Ariva.Api.Common.csproj", "Platform/Backplane/Ariva.Api.Common/packages.lock.json", "Platform/Backplane/Ariva.Api.Common/"]
+COPY ["Platform/Backplane/Ariva.ServiceDefaults/Ariva.ServiceDefaults.csproj", "Platform/Backplane/Ariva.ServiceDefaults/packages.lock.json", "Platform/Backplane/Ariva.ServiceDefaults/"]
+COPY ["Platform/Backplane/Ariva.Di/Ariva.Di.csproj", "Platform/Backplane/Ariva.Di/packages.lock.json", "Platform/Backplane/Ariva.Di/"]
+COPY ["Platform/Backplane/Ariva.Infra/Ariva.Infra.csproj", "Platform/Backplane/Ariva.Infra/packages.lock.json", "Platform/Backplane/Ariva.Infra/"]
+COPY ["Platform/Backplane/Ariva.Core/Ariva.Core.csproj", "Platform/Backplane/Ariva.Core/packages.lock.json", "Platform/Backplane/Ariva.Core/"]
+COPY ["Platform/Backplane/Ariva.Utilities/Ariva.Utilities.csproj", "Platform/Backplane/Ariva.Utilities/packages.lock.json", "Platform/Backplane/Ariva.Utilities/"]
+COPY ["Platform/Backplane/Ariva.Resources/Ariva.Resources.csproj", "Platform/Backplane/Ariva.Resources/packages.lock.json", "Platform/Backplane/Ariva.Resources/"]
+COPY ["Platform/Business/Ariva.Business.Contracts/Ariva.Business.Contracts.csproj", "Platform/Business/Ariva.Business.Contracts/packages.lock.json", "Platform/Business/Ariva.Business.Contracts/"]
 
-# Restore packages with caching
+# Restore packages with caching, held to the lock files
 RUN --mount=type=cache,id=nuget,sharing=locked,target=/root/.nuget/packages \
-    dotnet restore "Platform/Backplane/Ariva.Api.Ingest/Ariva.Api.Ingest.csproj" -r linux-x64
+    dotnet restore "Platform/Backplane/Ariva.Api.Ingest/Ariva.Api.Ingest.csproj" -r linux-x64 --locked-mode
 
 # Copy all source code including shared files
 COPY Platform Platform
 COPY GlobalSuppressions.cs GlobalSuppressions.cs
 
-# Build and publish
+# Build and publish; the restore that publish runs is held to the lock files as well
 FROM build AS publish
 WORKDIR /src/Platform/Backplane/Ariva.Api.Ingest
 
 RUN --mount=type=cache,id=nuget,sharing=locked,target=/root/.nuget/packages \
-    dotnet publish "Ariva.Api.Ingest.csproj" -r linux-x64 -c Release -o /app/publish -p:PublishTrimmed=false -p:PublishReadyToRun=false --self-contained true
+    dotnet publish "Ariva.Api.Ingest.csproj" -r linux-x64 -c Release -o /app/publish -p:PublishTrimmed=false -p:PublishReadyToRun=false --self-contained true -p:RestoreLockedMode=true
 
 # ARV-184 (CWE-1395): check what ships, not what was asked for. Fails the build unless both runtime packs in the publish
 # output are the runtime-deps version (10.0.13 or later) and System.Security.Cryptography.Pkcs.dll and the SignalR

@@ -10,8 +10,9 @@
 # High availability (streaming replication, failover) is not part of this chart: use a PostgreSQL operator
 # with a TimescaleDB image, or the customer's managed PostgreSQL, and turn this release off in the Helmfile.
 
-# Pinned by tag and digest (scripts/base-images.mjs keeps docker-compose.dev.yml on the same tag). Change both
-# together; the chart refuses an image without a digest.
+# Pinned by tag and digest. scripts/base-images.mjs holds docker-compose.dev.yml, CI's service containers, the Azure
+# DevOps E2E database, the AppHost and the integration tests (PostgresFixture.Image) to this tag and digest (ARV-096);
+# its --resolve moves every copy together. The chart refuses an image without a digest.
 image:
   repository: timescale/timescaledb-ha
   tag: pg17-ts2.30

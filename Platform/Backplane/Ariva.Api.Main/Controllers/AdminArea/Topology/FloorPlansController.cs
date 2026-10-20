@@ -1,10 +1,12 @@
 using Ariva.Api.Common.Extensions;
+using Ariva.Api.Common.Filters;
 using Ariva.Api.Common.Security;
 using Ariva.Core;
 using Ariva.Core.Domain.Entities;
 using Ariva.Core.Domain.InputModels;
 using Ariva.Core.Domain.ViewModels;
 using Ariva.Core.Services.Topology;
+using Microsoft.AspNetCore.Http.Timeouts;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 
@@ -13,7 +15,8 @@ namespace Ariva.Api.Main.Controllers.AdminArea.Topology;
 /// <summary>
 /// The floor plan of a level (ARV-018): upload (multipart, field "file", at most 20 MB, PNG, JPEG or SVG sniffed from
 /// the bytes, SVG sanitised), metadata, the image itself with a locked-down content security policy (inline, under a name
-/// the server makes, ARV-092), calibration (scale and origin) and delete. Site-scoped through the level.
+/// the server makes, ARV-092), calibration (scale and origin) and delete. Site-scoped through the level. The upload arrives
+/// steadily or ends (<see cref="SteadyUploadAttribute"/>, ARV-096: 408 when too slow, 413 past 20 MB, 400 for a form cut short).
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/levels/{levelId:guid}/floor-plan")]
@@ -45,6 +48,7 @@ public sealed class FloorPlansController(ISvcFloorPlans plans) : ControllerBase
     /// </summary>
     [HttpGet("content")]
     [Permission(nameof(Global.Defaults.Permissions.ViewFloorPlan))]
+    [RequestTimeout(RequestTimeoutsExtensions.TransferPolicy)]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> Content(Guid levelId, CancellationToken ct)
@@ -64,11 +68,14 @@ public sealed class FloorPlansController(ISvcFloorPlans plans) : ControllerBase
     [HttpPost]
     [Permission(nameof(Global.Defaults.Permissions.CreateFloorPlan))]
     [EnableRateLimiting(RateLimitingExtensions.UploadPolicy)]
+    [RequestTimeout(RequestTimeoutsExtensions.TransferPolicy)]
     [RequestSizeLimit(MaxRequestBytes)]
     [RequestFormLimits(MultipartBodyLengthLimit = MaxRequestBytes)]
+    [SteadyUpload(TooLarge = TopologyErrors.TooLarge)]
     [ProducesResponseType<FloorPlanViewModel>(StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status408RequestTimeout)]
     [ProducesResponseType(StatusCodes.Status413PayloadTooLarge)]
     public async Task<IActionResult> Upload(Guid levelId, IFormFile file, [FromForm] double metresPerPixel, [FromForm] double originX, [FromForm] double originY, CancellationToken ct)
     {

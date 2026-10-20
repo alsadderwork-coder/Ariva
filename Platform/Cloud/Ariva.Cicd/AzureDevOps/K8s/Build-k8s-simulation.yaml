@@ -8,6 +8,10 @@ trigger:
     include:
     - Platform/Business/Ariva.Business.Contracts
     - Platform/Simulation/Ariva.Simulation.Api
+    - Platform/Backplane/Ariva.ServiceDefaults
+    - nuget.config
+    - Directory.Build.props
+    - Directory.Packages.props
 
 
   batch: True

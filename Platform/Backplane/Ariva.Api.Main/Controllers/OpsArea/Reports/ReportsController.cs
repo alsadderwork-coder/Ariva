@@ -1,27 +1,37 @@
 using System.Globalization;
 using System.Text;
+using Ariva.Api.Common.Extensions;
 using Ariva.Api.Common.Security;
 using Ariva.Core;
 using Ariva.Core.Reports;
 using Ariva.Core.Services.Reports;
+using Microsoft.AspNetCore.Http.Timeouts;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace Ariva.Api.Main.Controllers.OpsArea.Reports;
 
 /// <summary>
 /// The daily report of a site (ARV-060): lane peaks, P50 and P90 per local hour, the day's alerts the caller's roles see
-/// and device uptime, as JSON or as CSV (one file per section; cells that a spreadsheet would run are neutralised).
+/// and device uptime, as JSON or as CSV (one file per section; cells that a spreadsheet would run are neutralised). Each request
+/// reads a site's local day of minutes, so a few are built at once per host and a few more wait for a turn (the <c>reports</c>
+/// concurrency policy, 429 beyond), and each has the <c>reports</c> request timeout (503 with Retry-After; the reads take the
+/// request's token, so the database stops with it): ARV-096, CWE-400.
 /// </summary>
 [ApiController]
 [Route("api/v1/sites/{siteCode}/reports")]
 [SiteScoped]
+[EnableRateLimiting(RateLimitingExtensions.ReportsPolicy)]
 public sealed class ReportsController(ISvcReports reports) : ControllerBase
 {
     [HttpGet("daily")]
     [Permission(nameof(Global.Defaults.Permissions.ViewReport))]
+    [RequestTimeout(RequestTimeoutsExtensions.ReportsPolicy)]
     [ProducesResponseType<DailyReport>(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
+    [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
     public async Task<IActionResult> Daily(string siteCode, [FromQuery] string date, CancellationToken ct)
     {
         var result = await reports.DailyAsync(siteCode, TryDate(date, out var day) ? day : null, ct);
@@ -31,10 +41,13 @@ public sealed class ReportsController(ISvcReports reports) : ControllerBase
     /// <summary>One section of the daily report as a CSV file: hours (default), alerts or devices.</summary>
     [HttpGet("daily.csv")]
     [Permission(nameof(Global.Defaults.Permissions.ViewReport))]
+    [RequestTimeout(RequestTimeoutsExtensions.ReportsPolicy)]
     [Produces("text/csv")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
+    [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
     public async Task<IActionResult> DailyCsv(string siteCode, [FromQuery] string date, [FromQuery] string section, CancellationToken ct)
     {
         // The site and the date are checked first (an unknown site answers 404 whatever else is asked), then the section.

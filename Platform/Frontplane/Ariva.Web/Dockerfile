@@ -1,10 +1,12 @@
 FROM node:22.23.3-alpine3.24@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 AS builder
 WORKDIR /app
 ENV NODE_OPTIONS=--max-old-space-size=4096
-COPY ./Platform/Frontplane/Ariva.Web/package*.json .
+# The packages exactly as package-lock.json names them, integrity included (ARV-096): npm ci fails when the lock file and
+# package.json disagree instead of rewriting the lock file, so the image ships the tree CI audited.
+COPY ./Platform/Frontplane/Ariva.Web/package.json ./Platform/Frontplane/Ariva.Web/package-lock.json ./
 RUN --mount=type=cache,id=npm,target=/root/.npm \
     npm set cache /root/.npm && \
-    npm install --force
+    npm ci
 
 COPY ./Platform/Frontplane/Ariva.Web .
 RUN --mount=type=cache,id=npm,target=/root/.npm \

@@ -621,7 +621,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 116,
-      "passes": false,
+      "passes": true,
       "notes": "Split on 2026-10-19: ARV-096 keeps the package source mapping and lock files, the image check, the dev dependency audit, the MessagePack fix and the request timeouts and concurrency policy; ARV-096a enforces the remediation time frames in CI, which wait for the owner to approve the frames (wiki 13 section 9, Proposed) and need each finding's age from its advisory.",
       "dependsOn": [
         "ARV-074"
@@ -644,6 +644,35 @@
       "priority": 116,
       "passes": false,
       "notes": "Split from ARV-096 on 2026-10-19. Needs the owner to approve the frames (wiki 13 section 9) before they fail a build; until then the step can run in report-only mode.",
+      "dependsOn": [
+        "ARV-096"
+      ]
+    },
+    {
+      "id": "ARV-096b",
+      "title": "[ASVS] Remaining availability bounds: report rows, search counts, run timeouts, hub connections",
+      "description": "Filed by ARV-096 on 2026-10-19. ARV-096 gave the on-demand reports a concurrency policy and a request timeout and every Ariva.Api.Main endpoint a default request timeout; docs/security/costly-operations.md section 15 still lists costly operations without a bound: the daily report reads a site's day of queue minutes, outages and devices with no row bound, the audit and alert searches count their whole filtered set with no required date range, the hosts set no database command timeout of their own and the runtime login no statement_timeout, no TickerQ job or background loop has a run timeout, no Kafka rider handler has a per-message timeout, the live hub has no total connection cap per replica, and Ariva.Api.Ingest, Integration, Stream and Cronz set no request timeout. The ARV-096 security review added (section 15 items 12 and 13): slow bodies outside the uploads hold their requests, and the backtest's and recompute's permits; HTTP/2 has no per-request minimum rate; and MVC's form value providers read a form sent to any action with a parameter, without the token, into the pod's /tmp, the anonymous sign-in, refresh and Integration token exchange included. ASVS 5.0: V15.2.2. Effort M.",
+      "acceptanceCriteria": [
+        "The daily report read is bounded in rows (queue minutes, outages, devices) and refused with a fixed answer beyond, and a report at the zone bound is measured (time and peak memory) and recorded in costly-operations.md",
+        "The audit entry and alert searches bound their count (a required date range, or a capped count reported as such), with tests at the bound",
+        "The hosts set an explicit database command timeout (a setting with bounds, refused at start when out of them) and the runtime login a statement_timeout through a versioned script, with an integration test that a slower statement is cancelled",
+        "Every TickerQ job and background loop (alert evaluation, heartbeat sweep, idempotency sweep, AMAN and ACRIS polls, secret re-protection) has a run timeout, and every Kafka rider handler a per-message timeout, each tested",
+        "The live hub has a total connection cap per replica (a setting, 429 or a refused negotiate beyond), or the owner's recorded decision not to have one",
+        "Ariva.Api.Ingest, Integration and Stream get a default request timeout (Cronz with the TickerQ dashboard exempt), or the reason each does not is recorded in costly-operations.md section 15",
+        "The per-host concurrency policies applied before authentication (upload, backtest, validation results, reports) no longer let requests without a session or bearer token take their slots or queue (an unlimited partition for them, since they end 401 at once, or a per-caller limit after authentication), with a test",
+        "The backtest at its bound (a day of 64 zones) is measured against the default request timeout (120 s) and given its own policy if it comes near it",
+        "A global filter on every host's MVC endpoints, registered with an order that holds (an instance with IOrderedFilter, before model binding), answers 415 with a fixed text to a form sent to an action that binds no form field or file, reading nothing (MVC's form value providers read such a form today, without the request's token, file parts over 64 KB in /tmp); the sign-in endpoints and the Integration token exchange join once the owner lifts the login freeze (ARV-089a); tests tell a read form from an unread one (a form of 1,025 fields or with no closing boundary answers 415, not 400), and an inventory test holds every action that binds a form under the upload policy with SteadyUploadAttribute or AdvertisingUploadLimitAttribute",
+        "NulCharacterFilter is registered with the order its summary claims (before every other action filter), so a NUL in an otherwise invalid upload is logged as a NUL character, with a host test of a NUL in a form field and in a file name of an upload",
+        "Every endpoint under a concurrency policy that binds a body (the alert rule backtest, the validation results recompute, the Integration batches and AIDX) reads it steadily with the request's token as the uploads do (SteadyUploadAttribute), or the server sets a minimum body data rate of its own (KestrelServerOptions.Limits.MinRequestBodyDataRate, which also covers HTTP/2) or the pods serve HTTP/1.1 only; SteadyUploadTests' inventory widens to every concurrency policy",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 116,
+      "passes": false,
+      "notes": "Filed by ARV-096 on 2026-10-19 from costly-operations.md section 15 (items 1 to 9 as left open by ARV-096). The statement_timeout on the runtime login touches the per-host logins of ARV-083a; do the two together if ARV-083a is unblocked first. The concurrency and backtest criteria come from the ARV-096 security review (L1, L8). The slow body criterion comes from the second ARV-096 security review (M1, L1); the form criteria from its third and fourth (a form sent to an action that binds none is read by MVC's value providers; an attempt in ARV-096 to stop NulCharacterFilter reading it did not close it and was reverted).",
       "dependsOn": [
         "ARV-096"
       ]

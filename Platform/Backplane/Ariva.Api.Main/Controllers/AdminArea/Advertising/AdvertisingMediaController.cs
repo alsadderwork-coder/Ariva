@@ -5,6 +5,7 @@ using Ariva.Api.Main.Controllers.AdminArea.Topology;
 using Ariva.Core;
 using Ariva.Core.Domain.Entities;
 using Ariva.Core.Services.Displays;
+using Microsoft.AspNetCore.Http.Timeouts;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 
@@ -58,6 +59,7 @@ public sealed class AdvertisingMediaController(ISvcAdvertisingMedia media) : Con
     /// <summary>The stored image (as written anew) or video (as checked), for the library's preview; never cached, never framed.</summary>
     [HttpGet("{id:guid}/content")]
     [Permission(nameof(Global.Defaults.Permissions.ViewAdvertising), nameof(Global.Defaults.Permissions.ManageAdvertising))]
+    [RequestTimeout(RequestTimeoutsExtensions.TransferPolicy)]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -71,6 +73,7 @@ public sealed class AdvertisingMediaController(ISvcAdvertisingMedia media) : Con
     [HttpPost]
     [Permission(nameof(Global.Defaults.Permissions.ManageAdvertising))]
     [EnableRateLimiting(RateLimitingExtensions.UploadPolicy)]
+    [RequestTimeout(RequestTimeoutsExtensions.TransferPolicy)]
     [RequestSizeLimit(MaxRequestBytes)]
     [AdvertisingUploadLimit]
     [RequestFormLimits(MultipartBodyLengthLimit = MaxRequestBytes, ValueLengthLimit = 1024, ValueCountLimit = 16)]

@@ -2,6 +2,7 @@ using System.Globalization;
 using Apizr;
 using Apizr.Logging;
 using Ariva.Infra.Timescale;
+using Ariva.IntegrationTests.Caching;
 using Ariva.IntegrationTests.Setup;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Networks;
@@ -25,7 +26,20 @@ namespace Ariva.IntegrationTests.Faults;
 /// </summary>
 public sealed class FaultsFixture : IAsyncLifetime
 {
-    public const string ToxiproxyImage = "ghcr.io/shopify/toxiproxy:2.12.0";
+    /// <summary>Toxiproxy by tag and digest (ARV-096; scripts/base-images.mjs checks the pin and proposes new digests).</summary>
+    public const string ToxiproxyImage = "ghcr.io/shopify/toxiproxy:2.12.0@sha256:9378ed52a28bc50edc1350f936f518f31fa95f0d15917d6eb40b8e376d1a214e";
+
+    /// <summary>
+    /// With this variable set to true the fixture takes <see cref="ToxiproxyImage"/> by its tag alone. Only for machines that
+    /// cannot pull ghcr.io's blobs and run a local build of the same release instead (the cloud agent sessions: built from the
+    /// Go module <c>github.com/Shopify/toxiproxy/v2@v2.12.0</c>, checked against the Go checksum database, backlog/progress.md
+    /// 2026-10-06), which has no registry digest. Developer machines leave it unset and pull the pinned digest; in a pipeline
+    /// (<c>GITHUB_ACTIONS</c> true, as GitHub Actions sets it, or <c>TF_BUILD</c> True, as Azure DevOps sets it) the fixture refuses it
+    /// with an <see cref="InvalidOperationException"/> before starting anything, so CI never runs Toxiproxy off its digest. The
+    /// generic <c>CI</c> variable is not the test: local tooling sets it too (the agent sessions' gate does, for Playwright)
+    /// (<see cref="ImageToStart"/>).
+    /// </summary>
+    public const string TagOnlyVariable = "ARIVA_TOXIPROXY_TAG_ONLY";
     private const int ApiPort = 8474;
     private const int PostgresProxyPort = 8666;
     private const int RedisProxyPort = 8667;
@@ -61,12 +75,32 @@ public sealed class FaultsFixture : IAsyncLifetime
     /// <summary>Kafka over the container's own listener, not the proxy, for reading the broker's view while the proxy is down.</summary>
     public string KafkaDirectBootstrap => _kafka.GetBootstrapAddress();
 
+    /// <summary>
+    /// The Toxiproxy image to start: <see cref="ToxiproxyImage"/> by its digest, or by its tag alone when <see cref="TagOnlyVariable"/>
+    /// is true on a machine that is not a pipeline run.
+    /// </summary>
+    /// <param name="variable">Reads an environment variable by name (<see cref="Environment.GetEnvironmentVariable(string)"/>).</param>
+    /// <returns>The image reference.</returns>
+    /// <exception cref="InvalidOperationException">The variable is true in a pipeline (<c>GITHUB_ACTIONS</c> or <c>TF_BUILD</c> true, in any case).</exception>
+    public static string ImageToStart(Func<string, string> variable)
+    {
+        ArgumentNullException.ThrowIfNull(variable);
+        if (variable(TagOnlyVariable) != "true")
+            return ToxiproxyImage;
+        if (string.Equals(variable("GITHUB_ACTIONS"), "true", StringComparison.OrdinalIgnoreCase) || string.Equals(variable("TF_BUILD"), "true", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException(
+                $"{TagOnlyVariable} is set in a pipeline (GITHUB_ACTIONS or TF_BUILD is true), where Toxiproxy is pulled by its pinned digest only. Unset {TagOnlyVariable} in the pipeline.");
+        return ToxiproxyImage[..ToxiproxyImage.IndexOf('@', StringComparison.Ordinal)];
+    }
+
     public async ValueTask InitializeAsync()
     {
+        // First, so a refused image leaves nothing started.
+        var image = ImageToStart(Environment.GetEnvironmentVariable);
         _network = new NetworkBuilder().WithName("ariva-faults-" + Guid.NewGuid().ToString("N")[..8]).Build();
         await _network.CreateAsync();
 
-        _toxiproxy = new ToxiproxyBuilder(ToxiproxyImage)
+        _toxiproxy = new ToxiproxyBuilder(image)
             .WithNetwork(_network)
             .WithNetworkAliases("toxiproxy")
             .WithPortBinding(ApiPort, true)
@@ -92,7 +126,7 @@ public sealed class FaultsFixture : IAsyncLifetime
             .WithNetwork(_network)
             .WithNetworkAliases("postgres")
             .Build();
-        _redis = new RedisBuilder().WithImage("redis:8.2-alpine").WithNetwork(_network).WithNetworkAliases("redis").Build();
+        _redis = new RedisBuilder().WithImage(RedisFixture.Image).WithNetwork(_network).WithNetworkAliases("redis").Build();
         _kafka = KafkaContainers.Builder()
             .WithNetwork(_network)
             .WithNetworkAliases("kafka")

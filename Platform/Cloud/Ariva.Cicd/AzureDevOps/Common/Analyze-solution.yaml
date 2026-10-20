@@ -20,8 +20,11 @@ jobs:
     timeoutInMinutes: 60
     pool:
       name: Default
+      # Linux on x64 (ARV-096): Ariva.AppHost and Ariva.UnitTests keep one lock file per build platform and only
+      # packages.linux-x64.lock.json is committed, so a locked restore on another architecture would find no lock file.
       demands:
         - Agent.OS -equals Linux
+        - Agent.OSArchitecture -equals X64
     steps:
       - checkout: self
         clean: true
@@ -50,11 +53,17 @@ jobs:
           version: '10.x'
           includePreviewVersions: false
 
+      # ARV-096: the repository's nuget.config (nuget.org only, with package source mapping) and locked mode, as in ci.yml.
+      # Directory.Build.props turns locked mode on for every restore and build on an agent (TF_BUILD); a package graph that
+      # differs from the committed packages.lock.json files, or a package whose content differs from its recorded hash, fails.
       - task: DotNetCoreCLI@2
-        displayName: 'Dotnet Restore'
+        displayName: 'Dotnet Restore (locked)'
         inputs:
           command: 'restore'
           projects: 'Ariva.slnx'
+          feedsToUse: 'config'
+          nugetConfigPath: 'nuget.config'
+          restoreArguments: '--locked-mode'
 
       - task: DotNetCoreCLI@2
         displayName: 'Dotnet Build'
@@ -91,10 +100,19 @@ jobs:
         displayName: 'Web: npm run build'
         workingDirectory: Platform/Frontplane/Ariva.Web
 
+      # ARV-096: dependencies audited, dev dependencies included, failing on high or critical (as ci.yml).
+      - script: npm audit --audit-level=high
+        displayName: 'Web: npm audit (dev dependencies included)'
+        workingDirectory: Platform/Frontplane/Ariva.Web
+
       # 5. API end-to-end and Playwright functional tests. playwright.config.ts starts Ariva.Api.Main,
       #    Ariva.Api.Integration, Ariva.Api.Ingest, Ariva.Simulation.Api and the web preview server itself.
       - script: npm ci
         displayName: 'E2E: npm ci'
+        workingDirectory: Platform/Testing/Ariva.E2E
+
+      - script: npm audit --audit-level=high
+        displayName: 'E2E: npm audit'
         workingDirectory: Platform/Testing/Ariva.E2E
 
       - script: npx playwright install --with-deps chromium
@@ -102,9 +120,10 @@ jobs:
         workingDirectory: Platform/Testing/Ariva.E2E
 
       # Sign-in (ARV-010a) needs PostgreSQL: the hosts migrate it at startup and Ariva.Api.Main seeds the E2E accounts.
-      # Same image as ci.yml; the password is per run and dies with the container.
+      # Same image as ci.yml, pinned by the chart's tag and digest (scripts/base-images.mjs keeps every copy equal); the
+      # password is per run and dies with the container.
       - script: |
-          docker run -d --name ariva-e2e-db -p 5433:5432 -e POSTGRES_PASSWORD="e2e-$(Build.BuildId)" timescale/timescaledb-ha:pg17-ts2.30
+          docker run -d --name ariva-e2e-db -p 5433:5432 -e POSTGRES_PASSWORD="e2e-$(Build.BuildId)" timescale/timescaledb-ha:pg17-ts2.30@sha256:2fcc39a5d4c8a65f58691ef92c7819df5773db72397b2dd8493f114659b519c2
           for attempt in $(seq 1 60); do docker exec ariva-e2e-db pg_isready -U postgres && exit 0; sleep 2; done
           echo "PostgreSQL did not start"; exit 1
         displayName: 'E2E: start PostgreSQL'

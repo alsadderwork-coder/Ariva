@@ -423,8 +423,10 @@ const steps = {
     if (!fs.existsSync(path.join(CHART_TESTS, 'node_modules'))) run('chart tests npm ci', 'npm', ['ci'], CHART_TESTS);
     run('chart security (pod security context, read-only root, TLS, release guards)', 'node', ['chart-security.mjs'], CHART_TESTS);
     nugetAudit();
+    // ARV-096: the three npm trees CI installs from a lock file, dev dependencies included, failing on high or critical as ci.yml does.
     if (fs.existsSync(path.join(WEB, 'package-lock.json'))) run('npm audit (web)', 'npm', ['audit', '--audit-level=high'], WEB, { optional: true });
     if (fs.existsSync(path.join(E2E, 'package-lock.json'))) run('npm audit (e2e)', 'npm', ['audit', '--audit-level=high'], E2E, { optional: true });
+    if (fs.existsSync(path.join(CHART_TESTS, 'package-lock.json'))) run('npm audit (chart tests)', 'npm', ['audit', '--audit-level=high'], CHART_TESTS, { optional: true });
   },
   docs: () => docsCheck(),
   // Scope and thresholds in Platform/Backplane/Ariva.UnitTests/stryker-config.json; exits non-zero below the break threshold.

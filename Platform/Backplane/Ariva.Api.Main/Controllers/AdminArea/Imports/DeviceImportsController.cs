@@ -1,8 +1,10 @@
 using Ariva.Api.Common.Extensions;
+using Ariva.Api.Common.Filters;
 using Ariva.Api.Common.Security;
 using Ariva.Core;
 using Ariva.Core.Domain.ViewModels;
 using Ariva.Core.Services.Imports;
+using Microsoft.AspNetCore.Http.Timeouts;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 
@@ -14,12 +16,15 @@ namespace Ariva.Api.Main.Controllers.AdminArea.Imports;
 /// form field "previewToken", by the same user at the same site within 15 minutes) registers every device in
 /// Commissioning or none, and answers each new credential once. Both need the registration's permission and, since
 /// registering devices is a critical action (CreateDevice), a second factor in the last 15 minutes. Site-scoped; one
-/// upload at a time per host (the upload policy); never cached.
+/// upload at a time per host (the upload policy), with the transfer request timeout, arriving steadily or ended (408 when too
+/// slow: <see cref="SteadyUploadAttribute"/>, ARV-096); never cached.
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/sites/{siteCode}/device-imports")]
 [SiteScoped]
 [EnableRateLimiting(RateLimitingExtensions.UploadPolicy)]
+[RequestTimeout(RequestTimeoutsExtensions.TransferPolicy)]
+[SteadyUpload(TooLarge = CsvImportErrors.FileTooLarge)]
 public sealed class DeviceImportsController(ISvcDeviceImports imports) : ControllerBase
 {
     [HttpPost("preview")]
@@ -30,6 +35,7 @@ public sealed class DeviceImportsController(ISvcDeviceImports imports) : Control
     [ProducesResponseType<DeviceImportPreviewViewModel>(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status408RequestTimeout)]
     [ProducesResponseType(StatusCodes.Status413PayloadTooLarge)]
     public async Task<IActionResult> Preview(string siteCode, IFormFile file, CancellationToken ct)
     {
@@ -50,6 +56,7 @@ public sealed class DeviceImportsController(ISvcDeviceImports imports) : Control
     [ProducesResponseType<DeviceImportCommitViewModel>(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status408RequestTimeout)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     [ProducesResponseType(StatusCodes.Status413PayloadTooLarge)]
     public async Task<IActionResult> Commit(string siteCode, IFormFile file, [FromForm] string previewToken, CancellationToken ct)

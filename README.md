@@ -82,6 +82,8 @@ dotnet build Ariva.slnx
 dotnet test Platform/Backplane/Ariva.UnitTests/Ariva.UnitTests.csproj
 ```
 
+Packages come from nuget.org only (`nuget.config`) and are locked in each project's `packages.lock.json`: commit the lock files a package change moves, since CI restores in locked mode (wiki 04, section 13).
+
 Run a host from its folder, for example:
 
 ```

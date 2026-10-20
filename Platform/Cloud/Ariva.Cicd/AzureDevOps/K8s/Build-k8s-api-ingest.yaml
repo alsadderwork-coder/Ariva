@@ -12,6 +12,12 @@ trigger:
     - Platform/Backplane/Ariva.Utilities
     - Platform/Backplane/Ariva.Api.Common
     - Platform/Backplane/Ariva.Api.Ingest
+    - Platform/Backplane/Ariva.Resources
+    - Platform/Backplane/Ariva.ServiceDefaults
+    - Platform/Business/Ariva.Business.Contracts
+    - nuget.config
+    - Directory.Build.props
+    - Directory.Packages.props
 
 
   batch: True

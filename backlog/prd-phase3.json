@@ -766,6 +766,30 @@
       "passes": false,
       "notes": "Filed 2026-10-19 from the ARV-095 documents; owner decision first (roadmap v1).",
       "dependsOn": []
+    },
+    {
+      "id": "ARV-214",
+      "title": "[E17] Supply chain residuals of CI and test tooling",
+      "description": "Found in the ARV-096 review (Low): what ships is locked (NuGet lock files with locked restores, npm ci from package-lock.json, images by digest), but some tooling still floats or is checked by version only. The AsyncAPI CLI runs through npx at a pinned version with no lock file and no audit (ci.yml docs job); Testcontainers starts its Ryuk container (Docker socket mounted) by tag; the local tools (.config/dotnet-tools.json, Stryker manifest), the Aspire AppHost SDK and CI's .NET SDK (setup-dotnet 10.0.x, no global.json) are pinned by version or not at all; the runtime packs a self-contained publish downloads are not recorded in the lock files (fixed by the digest-pinned SDK, checked by version in published-runtime.mjs and by NuGet package signatures).",
+      "acceptanceCriteria": [
+        "The AsyncAPI CLI is installed from a committed lock file (a small package.json under scripts/) with npm ci and audited like the other npm trees",
+        "The integration job pins Testcontainers' Ryuk image by tag and digest (TESTCONTAINERS_RYUK_CONTAINER_IMAGE), and scripts/base-images.mjs checks it",
+        "A global.json pins the SDK feature band CI uses, or the decision not to is recorded with its reason; the local tool manifests and the Aspire SDK version are listed in wiki 13 section 9 with how they are verified",
+        "The runtime pack residual is recorded in wiki 04 section 13 and asvs-l2 V15.1.2 with what holds it (the SDK digest, published-runtime.mjs, package signatures)",
+        "scripts/base-images.mjs reads every command form of a Dockerfile RUN line: exec form (RUN [\"npm\", \"install\"], RUN [\"dotnet\", \"restore\", ...]), a tool named by path (/usr/local/bin/npm), env and VAR=value prefixes, and the npm verb after options such as --prefix, with self-test cases for each",
+        "The fault tests' Toxiproxy tag-only path (ARIVA_TOXIPROXY_TAG_ONLY, for sessions that cannot pull ghcr.io's blobs, refused where GITHUB_ACTIONS or TF_BUILD is true) is either removed, with the sessions given a pullable mirror of the pinned digest, or recorded as an accepted residual in asvs-l2 V15.1.2",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 301,
+      "passes": false,
+      "notes": "Filed by ARV-096 on 2026-10-20 from its security review (L2, L3, L4, L5) and its third review (L2: Dockerfile command forms); Low findings go to Phase 3 by the owner's rule.",
+      "dependsOn": [
+        "ARV-096"
+      ]
     }
   ]
 }

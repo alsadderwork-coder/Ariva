@@ -25,6 +25,14 @@
 **/values.dev.yaml
 **/.angular
 **/dist
+# Local run output and settings never go to the image builder (ARV-096): the E2E hosts' logs (lowercase, which **/Logs
+# does not match on Linux), test reports, the verify reports and the local demo's accounts. A CI checkout has none of them.
+.demo
+.verify
+Platform/Testing/Ariva.E2E/logs
+**/playwright-report*
+**/test-results*
+**/zap-reports
 
 LICENSE
 README.md

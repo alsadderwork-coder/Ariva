@@ -40,7 +40,7 @@ jobs:
     # The same services and settings as the e2e job of ci.yml; the passwords live for this job only.
     services:
       postgres:
-        image: timescale/timescaledb-ha:pg17-ts2.30
+        image: timescale/timescaledb-ha:pg17-ts2.30@sha256:2fcc39a5d4c8a65f58691ef92c7819df5773db72397b2dd8493f114659b519c2
         env:
           POSTGRES_PASSWORD: zap-${{ github.run_id }}-${{ github.run_attempt }}
         ports:
@@ -51,7 +51,7 @@ jobs:
           --health-timeout 5s
           --health-retries 20
       redis:
-        image: redis:8.2-alpine
+        image: redis:8.2-alpine@sha256:b51665e66f00759be7c3152ad5ac3c66fb2f619c13ef62dea7cc1f9914524635
         ports:
           - 6380:6379
         options: >-
@@ -60,7 +60,7 @@ jobs:
           --health-timeout 5s
           --health-retries 20
       kafka:
-        image: apache/kafka:4.1.0
+        image: apache/kafka:4.1.0@sha256:bff074a5d0051dbc0bbbcd25b045bb1fe84833ec0d3c7c965d1797dd289ec88f
         env:
           KAFKA_NODE_ID: 1
           KAFKA_PROCESS_ROLES: broker,controller

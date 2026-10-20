@@ -67,8 +67,11 @@ spec:
         {{- if include "ariva-platform.podTls" . }}
         {{- include "ariva-platform.podTlsVolume" (list . "api-main") | nindent 8 }}
         {{- end }}
-        # Writable scratch space; the root filesystem is read-only (CWE-269). 128Mi: multipart uploads over 64 KB are
-        # buffered here (one 20 MB floor plan at a time, ARV-018)
+        # Writable scratch space; the root filesystem is read-only (CWE-269). 128Mi: the upload in progress is buffered here
+        # (the upload policy takes one per host, 20 MB by default, an advertisement video up to Advertising:Videos:MaxMegabytes,
+        # at most 100, so raise sizeLimit with it; parts over 64 KB of a form, over 30 KB of the site
+        # configuration bundle; ARV-018, ARV-096), and so is any form of at most 1 MB sent to another action, which MVC reads
+        # whatever the action binds (docs/security/costly-operations.md section 15 item 13, ARV-096b)
         - name: tmp
           emptyDir:
             sizeLimit: 128Mi

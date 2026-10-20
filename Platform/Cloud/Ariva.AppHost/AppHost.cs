@@ -32,10 +32,15 @@ var simulatorKey = builder.AddParameter("simulation-operator-key", Password(), s
 
 #region Containers (as docker-compose.dev.yml)
 
+// ARV-096: each image is pinned by tag and digest, and scripts/base-images.mjs holds every copy of a pin (compose, CI, the
+// AppHost, the integration tests) to one digest. Aspire runs image@sha256 once a digest is set and drops the tag, so the tag
+// stays here for the reader and the check; TimescaleDB's digest is the chart's (Charts/timescaledb/values.yaml).
+
 // The migration login owns the schema (ARV-006); the hosts create the DML-only runtime login at startup in vm-local.
 var timescale = builder.AddPostgres("timescaledb", builder.AddParameter("database-owner", "ariva"), ownerPassword, settings.DatabasePort)
     .WithImageRegistry("docker.io")
     .WithImage("timescale/timescaledb-ha", "pg17-ts2.30")
+    .WithImageSHA256("2fcc39a5d4c8a65f58691ef92c7819df5773db72397b2dd8493f114659b519c2")
     .WithEnvironment("POSTGRES_DB", "ariva")
     .WithEnvironment("TIMESCALEDB_TELEMETRY", "off")
     .WithEnvironment("ARIVA_READONLY_PASSWORD", readonlyPassword)
@@ -50,12 +55,18 @@ if (!string.IsNullOrWhiteSpace(settings.DatabaseVolumeForRun))
     timescale.WithVolume(settings.DatabaseVolumeForRun, "/home/postgres/pgdata");
 }
 
-var kafka = builder.AddKafka("kafka", settings.KafkaPort);
+// Aspire 13.6's own images for Kafka and Redis, named here so that they are pinned rather than taken from the package.
+var kafka = builder.AddKafka("kafka", settings.KafkaPort)
+    .WithImage("confluentinc/confluent-local", "8.2.0")
+    .WithImageSHA256("11b351dc22765780047a07b02d1f19a820bbdd3fae2cfe7ba4ef0d0a26b52248");
 
-var redis = builder.AddRedis("redis", settings.RedisPort, redisPassword);
+var redis = builder.AddRedis("redis", settings.RedisPort, redisPassword)
+    .WithImage("library/redis", "8.6")
+    .WithImageSHA256("192fab3335680aa420049026a18dc6baa30a69406cd29af35145bca0523d781a");
 
 var smtp = builder.AddContainer("smtp4dev", "rnwood/smtp4dev", "3.15.0")
     .WithImageRegistry("docker.io")
+    .WithImageSHA256("25c434c1900a9c5b61e17ead0a774d9e81b80554d05cf64719d69e5ea8c66537")
     .WithHttpEndpoint(port: settings.SmtpUiPort, targetPort: 80, name: "http")
     .WithEndpoint(port: settings.SmtpPort, targetPort: 25, name: "smtp", scheme: "tcp");
 

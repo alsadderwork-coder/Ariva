@@ -118,6 +118,9 @@ builder.Services.AddArivaTokenIssuing(builder.Configuration, builder.Environment
 // Validation results (ARV-104g2 service, ARV-104g endpoints): settings, the host-wide single-flight of computations, the
 // site-scoped service, the background freeze of closed campaigns and the results' request timeout policy.
 builder.Services.AddArivaValidationResults(builder.Configuration);
+// Request timeouts (ARV-096): a default for every endpoint without its own policy, and the reports and transfer policies;
+// Main only (Ariva.Api.Common/Settings/RequestTimeoutsSettings.cs says why the other hosts set none).
+builder.Services.AddAppRequestTimeouts(builder.Configuration);
 
 // Integration clients (ARV-042): administrators register the systems that call the Integration API.
 builder.Services.AddArivaIntegrationClients();
@@ -176,7 +179,8 @@ app.UseSessionValidation();
 app.UsePendingScope();
 // AMAN: UseSessionContext
 app.UseAuthorization();
-// Request timeouts after routing and authorization: only endpoints with a policy ([RequestTimeout], the validation results) get one.
+// Request timeouts after routing and authorization (ARV-096): every endpoint gets the default policy unless it names its own
+// ([RequestTimeout]: the reports, the file transfers, the validation results) or is exempt (the live hub, below).
 app.UseRequestTimeouts();
 
 #endregion
@@ -186,8 +190,10 @@ app.UseRequestTimeouts();
 app.MapArivaHealthChecks();
 app.MapControllers();
 app.MapArivaOpenApi(app.Configuration);
-// The hub's [Permission] and RequireAuthorization both apply, so the hub stays closed even without its attribute.
-app.MapHub<Ariva.Api.Main.Hubs.LiveHub>(Ariva.Api.Main.Hubs.LiveHub.Path, Ariva.Api.Main.Hubs.LiveHub.Configure).RequireAuthorization();
+// The hub's [Permission] and RequireAuthorization both apply, so the hub stays closed even without its attribute. Its
+// connections last as long as a screen is open, so the default request timeout would cut them: exempt (ARV-096).
+app.MapHub<Ariva.Api.Main.Hubs.LiveHub>(Ariva.Api.Main.Hubs.LiveHub.Path, Ariva.Api.Main.Hubs.LiveHub.Configure).RequireAuthorization()
+    .DisableRequestTimeout();
 
 // AMAN: MapOpenApi, MapScalarApiReference. Controllers live in Controllers/AdminArea/<Entity>/Controller.cs
 // and Controllers/OpsArea/<Entity>/Controller.cs; hubs are mapped here with MapHub and RequireAuthorization.

@@ -2,6 +2,7 @@ using Ariva.Api.Common.Extensions;
 using Ariva.Api.Common.Security;
 using Ariva.Api.Main.Controllers.AdminArea.Advertising;
 using Ariva.Core.Services.Displays;
+using Microsoft.AspNetCore.Http.Timeouts;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 
@@ -21,6 +22,7 @@ public sealed class DisplayAdvertisingController(ISvcAdvertisingMedia media) : C
 {
     [HttpGet("{id:guid}")]
     [DisplayAuthenticated]
+    [RequestTimeout(RequestTimeoutsExtensions.TransferPolicy)]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]

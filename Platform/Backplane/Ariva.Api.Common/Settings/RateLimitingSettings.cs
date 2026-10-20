@@ -58,6 +58,13 @@ public sealed class RateLimitingSettings
     /// many may wait for a turn; the rest get 429. Default 4 at once and 8 waiting.
     /// </summary>
     public ConcurrencySettings ValidationResults { get; set; } = new() { PermitLimit = 4, QueueLimit = 8 };
+
+    /// <summary>
+    /// The <c>reports</c> policy (ARV-096): on-demand daily reports and their CSV files built at once per host process (each reads a
+    /// site's local day of minutes, up to 720,000 rows at the zone bound), and how many may wait for a turn; the rest get 429.
+    /// Default 2 at once and 4 waiting.
+    /// </summary>
+    public ConcurrencySettings Reports { get; set; } = new() { PermitLimit = 2, QueueLimit = 4 };
 }
 
 /// <summary>A concurrency limiter: <see cref="PermitLimit"/> requests at once and <see cref="QueueLimit"/> waiting.</summary>

@@ -1,9 +1,11 @@
 using Ariva.Api.Common.Extensions;
+using Ariva.Api.Common.Filters;
 using Ariva.Api.Common.Security;
 using Ariva.Core;
 using Ariva.Core.Domain.ViewModels;
 using Ariva.Core.Services.Flights;
 using Ariva.Infra.Flights.Ssim;
+using Microsoft.AspNetCore.Http.Timeouts;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 
@@ -14,18 +16,24 @@ namespace Ariva.Api.Main.Controllers.AdminArea.Flights;
 /// "file", at most 20 MB, form field "horizonDays", 1 to 200, default 60), then import exactly what was previewed (the
 /// same file and horizon at the same site, by the same user, within two hours: form field "previewToken", from the
 /// preview). The site's airports place each leg; a schedule creates legs and never changes one a live feed has reported.
-/// One upload at a time per host (the upload policy). Site-scoped.
+/// One upload at a time per host (the upload policy), with the transfer request timeout, arriving steadily or ended (408 when
+/// too slow, 413 past the limit, 400 for a form cut short: <see cref="SteadyUploadAttribute"/>, ARV-096). Site-scoped.
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/sites/{siteCode}/flight-schedules")]
 [SiteScoped]
 [EnableRateLimiting(RateLimitingExtensions.UploadPolicy)]
+[RequestTimeout(RequestTimeoutsExtensions.TransferPolicy)]
+[SteadyUpload(TooLarge = SsimTooLarge)]
 public sealed class FlightSchedulesController(ISvcFlightSchedules schedules) : ControllerBase
 {
     /// <summary>The body may carry the 20 MB file plus the multipart framing and the form fields.</summary>
     private const long MaxRequestBytes = SsimReader.MaxBytes + (64 * 1024);
 
     private const int MaxTokenLength = 2048;
+
+    /// <summary>The refusal of a file over 20 MB, by the action or, for a body that grows past the limit, the steady upload.</summary>
+    internal const string SsimTooLarge = "An SSIM file is at most 20 MB.";
 
     [HttpPost("preview")]
     [Permission(nameof(Global.Defaults.Permissions.CreateFlightSchedule))]
@@ -34,6 +42,7 @@ public sealed class FlightSchedulesController(ISvcFlightSchedules schedules) : C
     [ProducesResponseType<SsimPreviewViewModel>(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status408RequestTimeout)]
     [ProducesResponseType(StatusCodes.Status413PayloadTooLarge)]
     public async Task<IActionResult> Preview(string siteCode, IFormFile file, [FromForm] int? horizonDays, CancellationToken ct)
     {
@@ -50,6 +59,7 @@ public sealed class FlightSchedulesController(ISvcFlightSchedules schedules) : C
     [ProducesResponseType<SsimImportViewModel>(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status408RequestTimeout)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     [ProducesResponseType(StatusCodes.Status413PayloadTooLarge)]
     public async Task<IActionResult> Import(string siteCode, IFormFile file, [FromForm] int? horizonDays, [FromForm] string previewToken, CancellationToken ct)
@@ -70,7 +80,7 @@ public sealed class FlightSchedulesController(ISvcFlightSchedules schedules) : C
         if (file is null || file.Length == 0)
             return Problem(statusCode: StatusCodes.Status400BadRequest, title: "Not valid", detail: "An SSIM file is required in the form field \"file\".");
         return file.Length > SsimReader.MaxBytes
-            ? Problem(statusCode: StatusCodes.Status413PayloadTooLarge, title: "Too large", detail: "An SSIM file is at most 20 MB.")
+            ? Problem(statusCode: StatusCodes.Status413PayloadTooLarge, title: "Too large", detail: SsimTooLarge)
             : null;
     }
 

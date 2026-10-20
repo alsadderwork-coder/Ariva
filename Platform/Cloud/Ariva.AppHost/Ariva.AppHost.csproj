@@ -12,6 +12,11 @@
         <!-- ASPIRE010: without the Aspire CLI bundle the SDK references the dashboard and orchestrator packages, so a plain
              dotnet run (or F5) works on a machine with only the .NET SDK. The CLI stays optional (aspire run, aspire mcp). -->
         <NoWarn>$(NoWarn);ASPIRE010</NoWarn>
+        <!-- ARV-096: one lock file per build platform. The Aspire SDK above references the dashboard and orchestrator packages
+             of the machine that builds (Aspire.Dashboard.Sdk.linux-x64 on Linux, .win-x64 on Windows), so a single lock file
+             cannot hold everywhere. packages.linux-x64.lock.json is CI's (locked mode) and is committed; another platform
+             writes its own file on its first restore, which may be committed beside it. Ariva.UnitTests does the same. -->
+        <NuGetLockFilePath>packages.$(NETCoreSdkPortableRuntimeIdentifier).lock.json</NuGetLockFilePath>
     </PropertyGroup>
 
     <ItemGroup>
@@ -19,6 +24,8 @@
         <PackageReference Include="Aspire.Hosting.Kafka" />
         <PackageReference Include="Aspire.Hosting.Redis" />
         <PackageReference Include="Aspire.Hosting.JavaScript" />
+        <!-- Lifts StreamJsonRpc's MessagePack 2.5.302 (GHSA-qhrr-8q5h-9q3h) to the patched version in Directory.Packages.props (ARV-096) -->
+        <PackageReference Include="MessagePack" />
     </ItemGroup>
 
     <ItemGroup>

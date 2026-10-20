@@ -1,12 +1,13 @@
-# Resolves the newest patch tag and digest of every base image line and proposes pinned FROM lines (ARV-002).
-# Run it by hand (Actions, base-images, Run workflow) or let it run on pull requests that touch a Dockerfile; the
-# pinned lines appear in the job summary and as a patch artifact. ci.yml enforces the pins with --check.
+# Resolves the newest patch tag and digest of every base image line and proposes pinned FROM lines (ARV-002), and the
+# current digest of every image run outside the chart (ARV-096: compose, the AppHost, the CI service and job containers,
+# the Azure DevOps E2E database, ZAP). Run it by hand (Actions, base-images, Run workflow) or let it run on pull requests
+# that touch a pin; the pinned lines appear in the job summary and as a patch artifact. ci.yml enforces the pins with --check.
 name: base-images
 
 on:
   workflow_dispatch:
   pull_request:
-    paths: ['**/Dockerfile', 'scripts/base-images.mjs']
+    paths: ['**/Dockerfile', 'scripts/base-images.mjs', 'docker-compose.dev.yml', 'Platform/Cloud/Ariva.AppHost/AppHost.cs']
 
 permissions:
   contents: read

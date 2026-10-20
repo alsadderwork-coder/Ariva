@@ -25,6 +25,26 @@
         <!-- CWE-120: no unsafe code anywhere; scripts/security/scan.mjs also fails the build gate on the unsafe keyword -->
         <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
     </PropertyGroup>
+    <!-- ARV-096 (ASVS 5.0 V15.1.2, supply chain): every project records its resolved package graph in packages.lock.json,
+         committed with the change that moves it (dotnet restore Ariva.slnx updates them; add force-evaluate to re-resolve).
+         CI restores in locked mode: GitHub Actions sets CI=true and GITHUB_ACTIONS=true (which a step cannot override) and Azure
+         Pipelines TF_BUILD=True, and a restore whose graph
+         differs from the lock file fails (NU1004) instead of taking whatever the source serves. The image builds pass
+         locked mode themselves (each Dockerfile). Sources and their mapping: nuget.config. -->
+    <PropertyGroup Label="Lock files">
+        <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+        <RestoreLockedMode Condition="'$(CI)' == 'true' Or '$(GITHUB_ACTIONS)' == 'true' Or '$(TF_BUILD)' == 'True'">true</RestoreLockedMode>
+    </PropertyGroup>
+    <!-- The images restore and publish for linux-x64 (dotnet restore -r linux-x64 in every host Dockerfile), and a locked
+         restore for a runtime needs that runtime's graph in the lock file of every project the image builds. So the projects
+         the images ship record linux-x64 beside the portable graph: everything under Platform/Backplane except the test
+         projects, plus the AMAN feed contracts (Ariva.Core references them) and the simulator. A rule here rather than a line in
+         each project file, so that a new project in an image's closure gets it without anyone remembering;
+         scripts/base-images.mjs fails when a Dockerfile's closure has a lock file without the linux-x64 graph. Not the test
+         projects, the load harness or Ariva.AppHost: no image ships them. -->
+    <PropertyGroup Label="Image runtime" Condition="('$(MSBuildProjectDirectory.Replace(`\`, `/`).Contains(`/Platform/Backplane/`))' == 'true' And '$(MSBuildProjectName.EndsWith(`Tests`))' != 'true') Or '$(MSBuildProjectName)' == 'Ariva.Business.Contracts' Or '$(MSBuildProjectName)' == 'Ariva.Simulation.Api'">
+        <RuntimeIdentifiers>linux-x64</RuntimeIdentifiers>
+    </PropertyGroup>
     <ItemGroup Label="Local development settings" Condition="('$(MSBuildProjectName.StartsWith(`Ariva.Api.`))' == 'true' And '$(MSBuildProjectName)' != 'Ariva.Api.Common') Or '$(MSBuildProjectName)' == 'Ariva.Simulation.Api'">
         <!-- Written by scripts/dev-up.mjs (ARV-003); copied only when it exists, so builds elsewhere never see it -->
         <Content Include="$(MSBuildThisFileDirectory)Platform/Backplane/Ariva.Api.Common/appsettings.local.json" Condition="Exists('$(MSBuildThisFileDirectory)Platform/Backplane/Ariva.Api.Common/appsettings.local.json')">

@@ -53,7 +53,13 @@
     <PackageVersion Include="Humanizer.Core" Version="3.0.1" />
     <PackageVersion Include="MailKit" Version="4.18.1" />
     <PackageVersion Include="Mapster" Version="7.4.0" />
-    <PackageVersion Include="MessagePack" Version="3.1.7" />
+    <!-- MessagePack 2.5.302 (GHSA-qhrr-8q5h-9q3h, Moderate) came in transitively through Aspire.Hosting 13.6.0 and StreamJsonRpc,
+         in Ariva.AppHost and Ariva.UnitTests (through Aspire.Hosting.Testing): development and test only, no image ships it.
+         2.5.307 is the newest patch of the 2.5 line StreamJsonRpc is built against; nuget.org lists no advisory for it (the
+         first clean 2.5 release is 2.5.303, registration data read 19 October 2026). Both projects reference it directly
+         (ARV-096). Ariva.Api.Main resolves 2.5.303 or later through the SignalR MessagePack protocol. This entry replaces
+         3.1.7 (curated from AMAN, itself under the same advisory), which no project referenced. -->
+    <PackageVersion Include="MessagePack" Version="2.5.307" />
     <PackageVersion Include="Polly" Version="8.6.5" />
     <PackageVersion Include="PuppeteerSharp" Version="20.2.5" />
     <!-- IANA to Windows zone mapping carried in the library: the hosts run with invariant globalization (no ICU) -->
