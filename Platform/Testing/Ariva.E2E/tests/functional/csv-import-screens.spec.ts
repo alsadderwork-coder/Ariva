@@ -160,6 +160,8 @@ async function openMappingImport(page: Page, desk = 'D01', navigate = true): Pro
 }
 
 async function expectAccessible(page: Page): Promise<void> {
+	// Measure once every CSS colour transition has ended (a theme or language switch starts them; see validation-capture.spec.ts).
+	await page.waitForFunction(() => document.getAnimations().every((a) => !(a instanceof CSSTransition) || a.playState !== 'running'));
 	const results = await new AxeBuilder({ page }).include('[data-testid="csv-import-dialog"]').withTags(tags).analyze();
 	const summary = results.violations.map((v) => `${v.id} (${v.impact}): ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`);
 	expect(summary, 'axe violations in the import dialog').toEqual([]);

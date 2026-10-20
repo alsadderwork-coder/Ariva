@@ -48,6 +48,8 @@ async function open(page: Page, path: string, ready?: string): Promise<void> {
 const tags = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'];
 
 async function expectNoViolations(page: Page): Promise<void> {
+	// Measure once every CSS colour transition has ended (a theme or language switch starts them; see validation-capture.spec.ts).
+	await page.waitForFunction(() => document.getAnimations().every((a) => !(a instanceof CSSTransition) || a.playState !== 'running'));
 	const results = await new AxeBuilder({ page }).withTags(tags).analyze();
 	const summary = results.violations.map(
 		(violation) => `${violation.id} (${violation.impact}): ${violation.nodes.map((node) => node.target.join(' ')).join(', ')}`

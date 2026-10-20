@@ -525,6 +525,8 @@ test.describe('open desks below recommendation (ARV-181b2)', () => {
 		const previewed = (await summary.getAttribute('data-first'))!;
 		expect(Date.parse(previewed)).toBe(Date.parse(at('04:09')));
 
+		// Measure once every CSS colour transition has ended (a theme or language switch starts them; see validation-capture.spec.ts).
+		await page.waitForFunction(() => document.getAnimations().every((a) => !(a instanceof CSSTransition) || a.playState !== 'running'));
 		const axe = await new AxeBuilder({ page }).include('[data-testid="rule-form"]').withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']).analyze();
 		expect(axe.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`), 'axe violations in the form').toEqual([]);
 
@@ -705,6 +707,8 @@ test.describe('predicted nowcast is border data (ARV-187)', () => {
 		await expect(form.getByTestId('backtest-summary')).toBeVisible();
 		await expect(form.getByTestId('backtest-problem')).toHaveCount(0);
 
+		// Measure once every CSS colour transition has ended (a theme or language switch starts them; see validation-capture.spec.ts).
+		await page.waitForFunction(() => document.getAnimations().every((a) => !(a instanceof CSSTransition) || a.playState !== 'running'));
 		const axe = await new AxeBuilder({ page }).include('[data-testid="rule-form"]').withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']).analyze();
 		expect(axe.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`), 'axe violations in the form').toEqual([]);
 

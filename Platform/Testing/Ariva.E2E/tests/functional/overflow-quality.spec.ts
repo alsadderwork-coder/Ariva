@@ -211,6 +211,8 @@ async function expectNothingInjected(page: Page): Promise<void> {
 const css = (value: string) => value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 /** WCAG 2.2 AA (axe, as accessibility.spec.ts) with the new panels filled: markers, badges and alarms on screen. */
 async function expectAccessible(page: Page): Promise<void> {
+	// Measure once every CSS colour transition has ended (a theme or language switch starts them; see validation-capture.spec.ts).
+	await page.waitForFunction(() => document.getAnimations().every((a) => !(a instanceof CSSTransition) || a.playState !== 'running'));
 	const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']).analyze();
 	expect(results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`), 'axe violations').toEqual([]);
 }

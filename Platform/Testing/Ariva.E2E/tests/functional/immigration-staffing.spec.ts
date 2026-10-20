@@ -133,6 +133,8 @@ async function openImmigration(page: Page): Promise<void> {
 }
 
 async function expectAccessible(page: Page): Promise<void> {
+	// Measure once every CSS colour transition has ended (a theme or language switch starts them; see validation-capture.spec.ts).
+	await page.waitForFunction(() => document.getAnimations().every((a) => !(a instanceof CSSTransition) || a.playState !== 'running'));
 	const results = await new AxeBuilder({ page }).include('[data-testid="staffing"]').withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']).analyze();
 	expect(results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`), 'axe violations in the panel').toEqual([]);
 }
