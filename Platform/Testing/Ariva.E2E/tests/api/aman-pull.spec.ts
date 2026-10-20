@@ -3,6 +3,7 @@ import pg from 'pg';
 import { accounts, call, databaseAvailable, login, totpCode } from '../support/accounts';
 import { expectNoLeak } from '../support/api-assertions';
 import { hosts } from '../support/hosts';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-050: Ariva pulls AMAN's feed from AMAN's Integration API where AMAN's Kafka is not shared. An administrator
 // registers an AmanFeed outbound endpoint for DMO with TOTP client credentials (the mock AMAN of the simulator); the
@@ -72,7 +73,7 @@ const endpoint = (code: string, clientSecret: string, more: Record<string, unkno
 test.beforeAll(async () => {
 	const { userName, password, totpSecret } = accounts().amanPullAdmin;
 	const signedIn = await login(userName, password, undefined, undefined, { code: totpCode(totpSecret!) });
-	expect(signedIn.status(), await signedIn.text()).toBe(200);
+	await expectStatus(signedIn, 200);
 	admin = (await signedIn.json()).accessToken;
 });
 
@@ -94,15 +95,15 @@ test('an AMAN pull is registered only with TOTP client credentials below a feed 
 
 test('the Integration host pulls every contract from the mock AMAN with a token and a TOTP code per call', async () => {
 	const created = await call('POST', endpoints, { token: admin, data: endpoint(`ap-${run}`, secret) });
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	const id = (await created.json()).id as string;
 	expect(await created.text()).not.toContain(secret);
 	const wrong = await call('POST', endpoints, { token: admin, data: endpoint(`ap-${run}-w`, 'not-the-secret-of-this-client') });
-	expect(wrong.status(), await wrong.text()).toBe(201);
+	await expectStatus(wrong, 201);
 
 	// The AMAN emulator fills the mock's feed when it plays a minute.
 	const played = await call('POST', `${feeds}/play`, { headers: operator, data: { minute: 1110 } });
-	expect(played.status(), await played.text()).toBe(200);
+	await expectStatus(played, 200);
 
 	const pulled = await until(
 		() =>

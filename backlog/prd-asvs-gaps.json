@@ -729,7 +729,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 117,
-      "passes": false,
+      "passes": true,
       "notes": "Size S to M. From the ARV-104j security review (required fixes R1 and R2 done in ARV-104j; recommendations 4, 6, 7 and 9 here). Found on 2026-10-12 (the ARV-123b story gate and its security review, a zip-aware scan of the HTML report): full device credentials in 9 report files, response bodies used as step titles, from api/device-auth, api/device-health, api/device-push, api/devices, api/illustrative-site, api/load, api/sensor-emulator, functional/displays and functional/illustrative-site; none from the CSV import specs. Also: every functional spec writes its account's per-run password and its TOTP codes into the report, because `fillSignIn` (tests/support/web-auth.ts) uses `locator.fill`, whose step title carries the value; set those fields so the step title holds no value (for example `locator.evaluate` setting the value and dispatching `input`), and make the report scan (passwords, TOTP codes, ard[kp]_) part of the log-scan gate for every E2E run. Also (ARV-153 review): tests/api/floor-plans.spec.ts lines 56, 72 and 123 pass a response body as the expect message whatever the status (no credential in them today).",
       "dependsOn": [
         "ARV-104j"

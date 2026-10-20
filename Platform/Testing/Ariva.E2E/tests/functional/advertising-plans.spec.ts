@@ -6,6 +6,7 @@ import { hosts } from '../support/hosts';
 import { provisionLoadSite, secondFactorSignIn } from '../support/load-site';
 import { xssPayloads } from '../support/payloads';
 import { databaseAvailable, signInThroughUi } from '../support/web-auth';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-143a: the Advertising screen, at sites of this spec's own. A duty manager builds a playlist from the site's library (an
 // approved image; a draft shows as not playing today) and its instruction slides, orders it and gives each item its seconds
@@ -80,16 +81,16 @@ async function upload(campaign: string): Promise<string> {
 	body.append('startsOn', localDay(-1));
 	body.append('endsOn', localDay(30));
 	const response = await call('POST', `${plan(site)}/media`, { token: manager, form: body });
-	expect(response.status(), await response.text()).toBe(201);
+	await expectStatus(response, 201);
 	return (await response.json()).id;
 }
 
 /** Approves the image as a second person with a second factor, naming it as it is shown (its review token). */
 async function approve(id: string): Promise<void> {
 	const shown = await call('GET', `${plan(site)}/media/${id}`, { token: admin });
-	expect(shown.status(), await shown.text()).toBe(200);
+	await expectStatus(shown, 200);
 	const approved = await call('POST', `${plan(site)}/media/${id}/approve`, { token: admin, data: { reviewed: (await shown.json()).reviewToken } });
-	expect(approved.status(), await approved.text()).toBe(200);
+	await expectStatus(approved, 200);
 }
 
 async function openAdvertising(page: Page, siteCode: string): Promise<void> {
@@ -131,7 +132,7 @@ test.beforeAll(async () => {
 			reviewedProfileId: publishedProfileId
 		}
 	});
-	expect(allowed.status(), await allowed.text()).toBe(200);
+	await expectStatus(allowed, 200);
 
 	manager = (await signIn(accounts().planWebManager)).accessToken;
 	approvedImage = await upload('Winter sun');
@@ -142,13 +143,13 @@ test.beforeAll(async () => {
 		token: admin,
 		data: { siteCode: site, scope: 'Site', targets: [], icon: 'Passport', durationSeconds: 8, pinned: false, texts: { en: { title: slideTitle, body: null } } }
 	});
-	expect(slideMade.status(), await slideMade.text()).toBe(201);
+	await expectStatus(slideMade, 201);
 	slide = (await slideMade.json()).id;
 
 	// Creating a display issues its credential: the administrator's token carries a fresh second factor.
 	display = `AP-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
 	const made = await call('POST', `${admins}/displays`, { token: admin, data: displayRequest() });
-	expect(made.status(), await made.text()).toBe(201);
+	await expectStatus(made, 201);
 	displayId = (await made.json()).display.id;
 
 	// The playlist the display's own schedule plays (test 2): the slide alone.
@@ -156,7 +157,7 @@ test.beforeAll(async () => {
 		token: manager,
 		data: { name: peakName, items: [{ kind: 'Slide', id: slide, seconds: 10 }] }
 	});
-	expect(peakMade.status(), await peakMade.text()).toBe(201);
+	await expectStatus(peakMade, 201);
 	peak = (await peakMade.json()).id;
 });
 
@@ -355,7 +356,7 @@ test('the screen mirrors in Arabic: headings, days and a timeline that runs from
 
 test('a display set to show instructions says so on the timeline: it plays no advertising whatever the schedules say', async ({ page }) => {
 	const changed = await call('PUT', `${admins}/displays/${displayId}`, { token: manager, data: displayRequest({ secondRegion: 'Instructions' }) });
-	expect(changed.status(), await changed.text()).toBe(200);
+	await expectStatus(changed, 200);
 	const guards = await guardPage(page);
 	await signInThroughUi(page, accounts().planWebManager);
 	await openAdvertising(page, site);

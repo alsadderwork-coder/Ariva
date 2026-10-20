@@ -4,7 +4,7 @@ import { accounts, call, claimsOf, developmentSigningKey, headerOf, login, signI
 import { guardPage } from '../support/browser-guards';
 import { hosts } from '../support/hosts';
 import { xssPayloads } from '../support/payloads';
-import { allowStatuses, databaseAvailable, earlyInStep, fillSignIn, ownAddress, signInThroughUi } from '../support/web-auth';
+import { allowStatuses, databaseAvailable, earlyInStep, fillSecret, fillSignIn, ownAddress, signInThroughUi } from '../support/web-auth';
 
 // ARV-059: Users and access. An administrator creates an account through the screen after a step-up (the temporary
 // password is shown once), gives it the demo airport, grants and revokes roles, resets its password and authenticator,
@@ -84,7 +84,7 @@ test('an administrator creates an account after a step-up, gives it a site and r
 	// Creating an account is a critical action: the second factor is 20 minutes old, so a fresh code is asked.
 	const dialog = page.getByTestId('step-up-dialog');
 	await expect(dialog).toBeVisible();
-	await page.locator('#step-up-code').fill(totpCode(accounts().webUsers.totpSecret!));
+	await fillSecret(page.locator('#step-up-code'), totpCode(accounts().webUsers.totpSecret!));
 	await dialog.getByRole('button', { name: 'Confirm' }).click();
 	const reveal = page.getByTestId('credential-reveal');
 	await expect(reveal).toContainText('Temporary password');

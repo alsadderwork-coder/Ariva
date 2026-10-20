@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { accounts, call, claimsOf, databaseAvailable, login, signIn, totpCode } from '../support/accounts';
 import { hosts } from '../support/hosts';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-011: user, role and audit administration. Creating users, resets and role changes are critical actions, so the
 // administrator signs in with its TOTP code (e2e.secadmin). Escalation attempts (self-grant, a non-administrator
@@ -106,12 +107,12 @@ test('an account whose only role is the validation observer is never given every
 	const role = (method: 'PUT' | 'DELETE', id: string, code: string) => call(method, `${usersUrl}/${id}/roles/${code}`, { token: admin });
 
 	const everywhere = await call('POST', usersUrl, { token: admin, data: { userName: `e2e.obs.all.${stamp}`, roles: ['ValidationObserver'], allSites: true } });
-	expect(everywhere.status(), await everywhere.text()).toBe(400);
+	await expectStatus(everywhere, 400);
 	expect((await everywhere.json()).detail).toContain('never every site');
 	expect((await (await call('GET', `${usersUrl}?text=e2e.obs.all.${stamp}`, { token: admin })).json()).totalCount, 'nothing created').toBe(0);
 
 	const created = await call('POST', usersUrl, { token: admin, data: { userName: `e2e.obs.${stamp}`, roles: ['ValidationObserver'], siteCodes: ['E2E1'] } });
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	const observer = (await created.json()).user.id as string;
 	expect((await sites(observer, true)).status(), 'every site for the observer alone').toBe(400);
 	expect((await (await call('GET', `${usersUrl}/${observer}`, { token: admin })).json())).toMatchObject({ allSites: false, sites: ['E2E1'] });
@@ -127,7 +128,7 @@ test('an account whose only role is the validation observer is never given every
 
 	// An all-sites account without roles is not made an observer alone.
 	const later = await call('POST', usersUrl, { token: admin, data: { userName: `e2e.obs.later.${stamp}`, allSites: true } });
-	expect(later.status(), await later.text()).toBe(201);
+	await expectStatus(later, 201);
 	const laterId = (await later.json()).user.id as string;
 	expect((await role('PUT', laterId, 'ValidationObserver')).status()).toBe(400);
 	expect((await (await call('GET', `${usersUrl}/${laterId}`, { token: admin })).json()).roles).toEqual([]);

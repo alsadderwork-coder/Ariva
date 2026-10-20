@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { accounts, call, databaseAvailable, signIn } from '../support/accounts';
 import { createAirport } from '../support/airports';
 import { hosts } from '../support/hosts';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-014: topology CRUD per entity (airport, terminal, level, checkpoint, desk) through the admin API, limited to the
 // caller's sites (another site's records answer 404 without data), with injection and markup payloads refused by
@@ -24,7 +25,7 @@ test.beforeAll(async () => {
 
 async function create(entity: string, data: unknown): Promise<any> {
 	const response = await call('POST', `${api}/${entity}`, { token: admin, data });
-	expect(response.status(), `${entity}: ${await response.text()}`).toBe(201);
+	await expectStatus(response, 201, entity);
 	expect(response.headers()['location']).toContain(`/api/v1/admin/${entity}/`);
 	return response.json();
 }
@@ -73,7 +74,7 @@ test('every entity reads, updates and soft deletes', async () => {
 	] as const) {
 		expect((await call('GET', `${api}/${entity}/${id}`, { token: admin })).status(), `${entity} get`).toBe(200);
 		const updated = await call('PUT', `${api}/${entity}/${id}`, { token: admin, data: update });
-		expect(updated.status(), `${entity} update: ${await updated.text()}`).toBe(200);
+		await expectStatus(updated, 200, `${entity} update`);
 		expect((await updated.json()).name).toBe(update.name);
 		const search = await call('GET', `${api}/${entity}?text=${encodeURIComponent(update.name.split(' ')[0])}`, { token: admin });
 		expect(search.status(), `${entity} search`).toBe(200);

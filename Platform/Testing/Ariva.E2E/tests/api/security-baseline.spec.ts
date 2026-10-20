@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { call } from '../support/accounts';
 import { expectApiSecurityHeaders, expectNoLeak, expectProblemDetails } from '../support/api-assertions';
 import { apiHosts, foreignOrigin, hosts, probes, systemInfoPath, webOrigin } from '../support/hosts';
 import { markupFragments, sqlInjectionPayloads, xssPayloads } from '../support/payloads';
@@ -35,8 +36,11 @@ test.describe('default deny (CWE-862, CWE-306)', () => {
 		await expectProblemDetails(response, 401);
 	});
 
-	test('system info returns 401 with a token in the access_token query string', async ({ request }) => {
-		const response = await request.get(`${systemInfo}?access_token=eyJhbGciOiJIUzI1NiJ9.e30.c2lnbmF0dXJl`);
+	test('system info returns 401 with a token in the access_token query string', async () => {
+		// ARV-152 (CWE-532): through Node's fetch (call), so no report step keeps the query; the made-up token is joined from
+		// its parts, so no source line (the report keeps a step's lines as its snippet) holds a token's shape.
+		const madeUp = ['eyJhbGciOiJIUzI1NiJ9', 'e30', 'c2lnbmF0dXJl'].join('.');
+		const response = await call('GET', `${systemInfo}?access_token=${madeUp}`);
 
 		await expectProblemDetails(response, 401);
 		expect(response.headers()['cache-control']).toBe('no-store');

@@ -7,7 +7,8 @@ import { guardPage } from '../support/browser-guards';
 import { hosts } from '../support/hosts';
 import { xssPayloads } from '../support/payloads';
 import { plantDesksShortCase, staffingDatabase } from '../support/staffing';
-import { allowStatuses, databaseAvailable, earlyInStep, fillSignIn, ownAddress, signInThroughUi } from '../support/web-auth';
+import { allowStatuses, databaseAvailable, earlyInStep, fillSecret, fillSignIn, ownAddress, signInThroughUi } from '../support/web-auth';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-056: the alert rules screen on the rule API (ARV-037) and its backtest (ARV-038). A border shift supervisor
 // creates a rule at the demo airport, previews when it would have fired on stored minutes, and the saved rule's backtest
@@ -218,7 +219,7 @@ test('a supervisor creates a rule, previews its first fire time, and the saved r
 		token,
 		data: { rule: asRequest(saved), fromUtc: at('02:50'), toUtc: at('03:40') }
 	});
-	expect(again.status(), await again.text()).toBe(200);
+	await expectStatus(again, 200);
 	expect(Date.parse((await again.json()).firstRaisedUtc)).toBe(Date.parse(previewed));
 
 	// Disable and enable again.
@@ -251,7 +252,7 @@ test('a supervisor creates a rule, previews its first fire time, and the saved r
 	await row.getByTestId('confirm-delete-rule').click();
 	const dialog = page.getByTestId('step-up-dialog');
 	await expect(dialog).toBeVisible();
-	await page.locator('#step-up-code').fill(totpCode(accounts().webRules.totpSecret!));
+	await fillSecret(page.locator('#step-up-code'), totpCode(accounts().webRules.totpSecret!));
 	await dialog.getByRole('button', { name: 'Confirm' }).click();
 	await expect(page.getByText(`Rule ${code} deleted.`)).toBeVisible();
 	await expect(page.getByTestId('rule-row').filter({ hasText: ruleName })).toHaveCount(0);
@@ -313,7 +314,7 @@ test('a supervisor creates a track completion rule on a queue zone, previews it 
 	const saved = (await found.json()).data.find((r: { name: string }) => r.name === name);
 	expect(saved).toMatchObject({ metric: 'TrackCompletion', comparator: 'LessThan', threshold: 90, zones: ['SEC-S'], sustainMinutes: 1, minQueueLength: null });
 	const again = await call('POST', `${api}/backtest`, { token, data: { rule: asRequest(saved), fromUtc: at('04:50'), toUtc: at('06:10') } });
-	expect(again.status(), again.status() === 200 ? 'the saved rule backtested' : await again.text()).toBe(200);
+	await expectStatus(again, 200, 'the saved rule backtested');
 	expect(Date.parse((await again.json()).firstRaisedUtc)).toBe(Date.parse(previewed));
 
 	// An overflow zone sent anyway is refused by the server, whatever the form shows.
@@ -344,7 +345,7 @@ test('rule names are shown as text: script payloads run nothing (CWE-79)', async
 				enabled: false
 			}
 		});
-		expect(response.status(), await response.text()).toBe(201);
+		await expectStatus(response, 201);
 	}
 	await signInThroughUi(page, accounts().webBorder);
 	await openRules(page);
@@ -543,7 +544,7 @@ test.describe('open desks below recommendation (ARV-181b2)', () => {
 		);
 		expect(saved).toMatchObject({ metric: 'DesksBelowPlan', comparator: 'GreaterOrEqual', threshold: 2, zones: ['A-CIT'], ownerRole: 'BorderShiftSupervisor', escalateToRole: null });
 		const again = await call('POST', `${api}/backtest`, { token, data: { rule: asRequest(saved), fromUtc: desksFrom, toUtc: desksTo } });
-		expect(again.status(), again.status() === 200 ? 'the saved rule backtested' : await again.text()).toBe(200);
+		await expectStatus(again, 200, 'the saved rule backtested');
 		expect(Date.parse((await again.json()).firstRaisedUtc)).toBe(Date.parse(previewed));
 
 		// Editing starts on the border choices; Arabic mirrors the form and translates the hint.
@@ -583,7 +584,7 @@ test.describe('open desks below recommendation (ARV-181b2)', () => {
 		const borderToken = (await signIn(accounts().webBorder)).accessToken;
 		const hiddenName = `${xssPayloads[1]} desks ${run}`;
 		const hidden = await call('POST', api, { token: borderToken, data: borderRule(hiddenName) });
-		expect(hidden.status(), await hidden.text()).toBe(201);
+		await expectStatus(hidden, 201);
 
 		await signInThroughUi(page, accounts().web);
 		await openRules(page);
@@ -752,7 +753,7 @@ test.describe('predicted nowcast is border data (ARV-187)', () => {
 					? { enabled: true, escalateAfterMinutes: 10, escalateToRole: 'BorderShiftSupervisor' }
 					: { enabled: key === 'owner' };
 			const response = await call('POST', api, { token: borderToken, data: predictedRule(legacy[key], overrides) });
-			expect(response.status(), await response.text()).toBe(201);
+			await expectStatus(response, 201);
 			legacyIds[key] = (await response.json()).id;
 		}
 		await makeLegacy(legacyIds.owner!, 'owner');
@@ -802,7 +803,7 @@ test.describe('predicted nowcast is border data (ARV-187)', () => {
 		const borderToken = (await signIn(accounts().webBorder)).accessToken;
 		const hiddenName = `${xssPayloads[5]} predicted ${run}`;
 		const hidden = await call('POST', api, { token: borderToken, data: predictedRule(hiddenName) });
-		expect(hidden.status(), await hidden.text()).toBe(201);
+		await expectStatus(hidden, 201);
 
 		await signInThroughUi(page, accounts().web);
 		await openRules(page);

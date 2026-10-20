@@ -5,7 +5,8 @@ import { accounts, call, claimsOf, developmentSigningKey, headerOf, login, signI
 import { createAirport } from '../support/airports';
 import { guardPage } from '../support/browser-guards';
 import { hosts, webUrl } from '../support/hosts';
-import { allowStatuses, databaseAvailable, fillSignIn, ownAddress, signInThroughUi } from '../support/web-auth';
+import { allowStatuses, databaseAvailable, fillSecret, fillSignIn, ownAddress, signInThroughUi } from '../support/web-auth';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-123b: the CSV import screens on the API of ARV-123a. On the devices screen a holder of Device.Create imports the
 // as-built pack's device list: choose a file (type and size checked before anything is sent), check it (a preview, which
@@ -63,7 +64,7 @@ async function secondFactor(entry: Account): Promise<string> {
 
 async function create(path: string, data: unknown): Promise<string> {
 	const response = await call('POST', `${admin}/${path}`, { token: stepped, data });
-	expect(response.status(), response.status() === 201 ? path : await response.text()).toBe(201);
+	await expectStatus(response, 201, path);
 	const json = await response.json();
 	return (json.id ?? json.profile?.id) as string;
 }
@@ -80,7 +81,7 @@ async function search(entity: string, token = stepped): Promise<any[]> {
  */
 async function siteWithTopology(): Promise<void> {
 	const created = await call('POST', `${admin}/sites`, { token: stepped, data: { code: site, name: `E2E CSV import screens ${site}` } });
-	expect(created.status(), created.status() === 201 ? site : await created.text()).toBe(201);
+	await expectStatus(created, 201, site);
 	const airport = await createAirport((code) =>
 		call('POST', `${admin}/airports`, { token: stepped, data: { iataCode: code, name: `E2E CSV import screens ${code}`, timeZoneId: 'Asia/Dubai' } })
 	);
@@ -104,7 +105,7 @@ async function siteWithTopology(): Promise<void> {
 	}
 	const { geometryHash } = await (await call('GET', `${admin}/zone-profiles/${draft}/validation`, { token: stepped })).json();
 	const published = await call('POST', `${admin}/zone-profiles/${draft}/publish`, { token: stepped, data: { geometryHash } });
-	expect(published.status(), published.status() === 200 ? 'publish' : await published.text()).toBe(200);
+	await expectStatus(published, 200, 'publish');
 }
 
 /** Signs in with the second factor 20 minutes old, so the device import asks for a fresh code (as devices.spec.ts). */
@@ -205,7 +206,7 @@ test('an administrator imports devices after a step-up; the credentials are show
 	// for a fresh code over the import dialog, and the preview is sent again once it is given.
 	const stepUp = page.getByTestId('step-up-dialog');
 	await expect(stepUp).toBeVisible();
-	await page.locator('#step-up-code').fill(await unusedTotpCode(account().totpSecret!));
+	await fillSecret(page.locator('#step-up-code'), await unusedTotpCode(account().totpSecret!));
 	const previewed = page.waitForResponse((response) => response.url().includes('/device-imports/preview') && response.status() === 200);
 	await stepUp.getByRole('button', { name: 'Confirm' }).click();
 	await expect(stepUp).toBeHidden();

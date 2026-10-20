@@ -1,6 +1,7 @@
 import { expect } from '@playwright/test';
 import { call } from './accounts';
 import { hosts } from './hosts';
+import { expectStatus } from './expect-status';
 
 // The demo airport's (DMO) sensors as the scripted demo (ARV-064, tests/demo) and the validation rehearsal against the live
 // pipeline (ARV-104j, tests/rehearsal) register them: each through the admin API, as an installer would, never in the database.
@@ -79,7 +80,7 @@ export async function prepareDmoSensors(token: string, plan: readonly DmoSensor[
 			id = found.id;
 			const rotated = await call('POST', `${admin}/devices/${id}/credential`, { token });
 			// The answer carries the device credential: it goes into the message (a step title even when it passes) only on failure.
-			expect(rotated.status(), rotated.status() === 200 ? `${device.sensor} credential rotated` : await rotated.text()).toBe(200);
+			await expectStatus(rotated, 200, `${device.sensor} credential rotated`);
 			credential = (await rotated.json()).credential;
 		} else {
 			const { x, y } = centre(device.zone);
@@ -90,7 +91,7 @@ export async function prepareDmoSensors(token: string, plan: readonly DmoSensor[
 					placement: { levelId: levelId(device.level), x, y, mountingHeightMetres: 5, orientationDegrees: 0, queueZoneName: device.zone }
 				}
 			});
-			expect(registered.status(), registered.status() === 201 ? `${device.sensor} registered` : await registered.text()).toBe(201);
+			await expectStatus(registered, 201, `${device.sensor} registered`);
 			const body = await registered.json();
 			id = body.device.id;
 			credential = body.credential;
@@ -102,7 +103,7 @@ export async function prepareDmoSensors(token: string, plan: readonly DmoSensor[
 				token,
 				data: { method: 'ManualCountTally', sampleSize: 200, countingAccuracyPercent: 97, waitTimeErrorMinutes: 0.3 }
 			});
-			expect(calibrated.status(), await calibrated.text()).toBe(201);
+			await expectStatus(calibrated, 201);
 		}
 		credentials.push({ sensor: device.sensor, dialect: device.dialect, credential });
 	}

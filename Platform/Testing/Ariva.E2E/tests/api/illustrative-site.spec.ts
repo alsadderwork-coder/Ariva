@@ -3,6 +3,7 @@ import { expect, test } from '@playwright/test';
 import { accounts, call, databaseAvailable, login, signIn, totpCode } from '../support/accounts';
 import { hosts } from '../support/hosts';
 import { markupFragments, sqlInjectionPayloads, xssPayloads } from '../support/payloads';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-139a: the illustrative AUH Terminal A arrivals site (AUH-TA), seeded beside the fictional DMO in vm-local. The
 // sites API says which site is "Illustrative, not surveyed"; the flag is set by the seed alone (CWE-269): no body of the
@@ -69,7 +70,7 @@ test('the admin API cannot set the flag on a new site', async () => {
 	expect((await call('GET', `${sites}/${code}`, { token: admin.accessToken })).status(), 'no site was created').toBe(404);
 
 	const created = await call('POST', adminSites, { token: admin.accessToken, data: { code, name } });
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	expect(((await created.json()) as SiteView).illustrative).toBe(false);
 	expect(((await (await call('GET', `${sites}/${code}`, { token: admin.accessToken })).json()) as SiteView).illustrative).toBe(false);
 
@@ -81,7 +82,7 @@ test('the admin API cannot set the flag on a new site', async () => {
 	}
 	expect(((await (await call('GET', `${sites}/${code}`, { token: admin.accessToken })).json()) as SiteView).name, 'a refused rename changes nothing').toBe(name);
 	const renamed = await call('PUT', `${adminSites}/${code}`, { token: admin.accessToken, data: { name: 'Renamed probe' } });
-	expect(renamed.status(), await renamed.text()).toBe(200);
+	await expectStatus(renamed, 200);
 	expect((await renamed.json()) as SiteView).toMatchObject({ name: 'Renamed probe', illustrative: false });
 	// The name is text: the probe comes back as the characters sent, never as markup the API rendered.
 	expect(((await created.json()) as SiteView).name).toBe(name);
@@ -99,7 +100,7 @@ test('the admin API cannot clear the flag of AUH-TA', async () => {
 		}
 	}
 	const renamed = await call('PUT', `${adminSites}/AUH-TA`, { token: admin.accessToken, data: { name: auh.name } });
-	expect(renamed.status(), await renamed.text()).toBe(200);
+	await expectStatus(renamed, 200);
 	expect(((await renamed.json()) as SiteView).illustrative, 'the name alone leaves the flag').toBe(true);
 	expect((await seeded(admin.accessToken)).illustrative).toBe(true);
 });
@@ -198,7 +199,7 @@ test("an AUH-TA display tells its player to show the note; a DMO display does no
 					staleSeconds: 150, entries: [{ zone, labels: { en: 'Visitors', ar: 'الزوار' } }], fallback: { en: 'Please follow the signs', ar: 'يرجى اتباع اللوحات' }, enabled: true
 				}
 			});
-			expect(response.status(), await response.text()).toBe(201);
+			await expectStatus(response, 201);
 			const issued = await response.json();
 			created.push({ id: issued.display.id, code, credential: issued.credential });
 		}

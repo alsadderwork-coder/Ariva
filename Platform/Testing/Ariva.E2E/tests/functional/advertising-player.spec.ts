@@ -8,6 +8,7 @@ import { provisionLoadSite, secondFactorSignIn } from '../support/load-site';
 import { videoFixture } from '../support/media';
 import { xssPayloads } from '../support/payloads';
 import { allowStatuses, databaseAvailable, signInThroughUi } from '../support/web-auth';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-143b: a split display set to advertising plays its scheduled playlist in its second region, at a site of this spec's own.
 // A duty manager uploads two images, a video and a draft image; the administrator approves all but the draft as the second
@@ -92,21 +93,21 @@ async function upload(content: Buffer, fileName: string, type: string, campaign:
 	body.append('startsOn', localDay(-1));
 	body.append('endsOn', localDay(30));
 	const response = await call('POST', `${plan(site)}/media`, { token: manager, form: body });
-	expect(response.status(), await response.text()).toBe(201);
+	await expectStatus(response, 201);
 	return (await response.json()).id;
 }
 
 /** Approves an item as a second person with a second factor, naming it as it is shown (its review token). */
 async function approve(id: string): Promise<void> {
 	const shown = await call('GET', `${plan(site)}/media/${id}`, { token: admin });
-	expect(shown.status(), await shown.text()).toBe(200);
+	await expectStatus(shown, 200);
 	const approved = await call('POST', `${plan(site)}/media/${id}/approve`, { token: admin, data: { reviewed: (await shown.json()).reviewToken } });
-	expect(approved.status(), await approved.text()).toBe(200);
+	await expectStatus(approved, 200);
 }
 
 async function playlist(name: string, items: { kind: string; id: string; seconds: number; weight?: number }[]): Promise<string> {
 	const made = await call('POST', `${plan(site)}/playlists`, { token: manager, data: { name, items } });
-	expect(made.status(), await made.text()).toBe(201);
+	await expectStatus(made, 201);
 	return (await made.json()).id;
 }
 
@@ -117,20 +118,20 @@ function scheduled(playlistId: string) {
 /** The board as the player gets it, with the display's credential. */
 async function boardNow(): Promise<Record<string, any>> {
 	const response = await call('GET', `${hosts.main}/api/v1/display/board?code=${display}`, { headers: { 'X-Ariva-Display-Key': credential } });
-	expect(response.status(), await response.text()).toBe(200);
+	await expectStatus(response, 200);
 	return response.json();
 }
 
 /** Schedules the playlist on the display all day and waits until its board carries it. */
 async function plays(playlistId: string): Promise<void> {
 	const changed = await call('PUT', `${plan(site)}/schedules/${schedule}`, { token: manager, data: scheduled(playlistId) });
-	expect(changed.status(), await changed.text()).toBe(200);
+	await expectStatus(changed, 200);
 	await expect.poll(async () => (await boardNow()).advertising?.playlistId ?? null, { timeout: 20_000 }).toBe(playlistId);
 }
 
 async function changeDisplay(changes: Record<string, unknown>): Promise<void> {
 	const response = await call('PUT', `${admins}/displays/${displayId}`, { token: manager, data: displayRequest(changes) });
-	expect(response.status(), await response.text()).toBe(200);
+	await expectStatus(response, 200);
 }
 
 function snapshot(nowcastMinutes: number | null, ageSeconds = 0) {
@@ -394,7 +395,7 @@ test.beforeAll(async () => {
 		token: admin,
 		data: { allowed: true, excludedZones: [], reason: 'Airport operator letter AO-WEB-143b, commercial team', reviewedProfileId: publishedProfileId }
 	});
-	expect(allowed.status(), await allowed.text()).toBe(200);
+	await expectStatus(allowed, 200);
 
 	// Four uploads a run (each person may attempt 30 in 10 minutes, and a retry repeats them).
 	manager = (await signIn(accounts().playerManager)).accessToken;
@@ -407,7 +408,7 @@ test.beforeAll(async () => {
 	// Creating a display issues its credential: the administrator's token carries a fresh second factor.
 	display = `PY-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
 	const made = await call('POST', `${admins}/displays`, { token: admin, data: displayRequest() });
-	expect(made.status(), await made.text()).toBe(201);
+	await expectStatus(made, 201);
 	const created = await made.json();
 	displayId = created.display.id;
 	credential = created.credential;
@@ -424,7 +425,7 @@ test.beforeAll(async () => {
 			texts: { ar: { title: 'جهّز بطاقة صعود الطائرة', body: null }, en: { title: slideTitle, body: xssPayloads[0] } }
 		}
 	});
-	expect(slideMade.status(), await slideMade.text()).toBe(201);
+	await expectStatus(slideMade, 201);
 	slide = (await slideMade.json()).id;
 
 	first = await playlist(`First ${crypto.randomBytes(2).toString('hex')}`, [
@@ -442,7 +443,7 @@ test.beforeAll(async () => {
 		{ kind: 'Media', id: imageA, seconds: 5 }
 	]);
 	const scheduleMade = await call('POST', `${plan(site)}/schedules`, { token: manager, data: scheduled(first) });
-	expect(scheduleMade.status(), await scheduleMade.text()).toBe(201);
+	await expectStatus(scheduleMade, 201);
 	schedule = (await scheduleMade.json()).id;
 	await plant(7);
 });
@@ -749,7 +750,7 @@ test("proof of play: the plays shown go in one batch, started by the server's cl
 		// One batch at the turn, with the display's credential in its header only.
 		const response = await posted;
 		const request = response.request();
-		expect(response.status(), await response.text()).toBe(200);
+		await expectStatus(response, 200);
 		const url = new URL(request.url());
 		expect([...url.searchParams.keys()]).toEqual(['code']);
 		expect(url.searchParams.get('code')).toBe(display);
@@ -820,7 +821,7 @@ test("proof of play: the plays shown go in one batch, started by the server's cl
 
 		// The same batch again counts once: the server already has every play.
 		const again = await call('POST', `${hosts.main}/api/v1/display/plays?code=${display}`, { headers: { 'X-Ariva-Display-Key': credential }, data: sent });
-		expect(again.status(), await again.text()).toBe(200);
+		await expectStatus(again, 200);
 		expect(await again.json()).toEqual({ accepted: 0, duplicates: queued, refused: 0 });
 		await expect(page.locator(injected)).toHaveCount(0);
 		await guards.expectClean();
@@ -1071,7 +1072,7 @@ test('advertising turned off: the next board shows instructions, the cached byte
 			token,
 			data: { allowed: false, excludedZones: [], reason: 'Airport operator letter AO-WEB-143b, advertising paused', reviewedProfileId: publishedProfileId }
 		});
-		expect(off.status(), await off.text()).toBe(200);
+		await expectStatus(off, 200);
 
 		// Within one board: instructions, and the cache let go.
 		await expect(page.getByTestId('board-second-region')).toHaveAttribute('data-second-region', 'Instructions', { timeout: 15_000 });

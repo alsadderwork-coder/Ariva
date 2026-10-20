@@ -7,7 +7,8 @@ import { guardPage } from '../support/browser-guards';
 import { hosts } from '../support/hosts';
 import { xssPayloads } from '../support/payloads';
 import { homeHeading } from '../support/shell';
-import { allowStatuses, databaseAvailable, earlyInStep, fillSignIn, ownAddress, signInThroughUi } from '../support/web-auth';
+import { allowStatuses, databaseAvailable, earlyInStep, fillSecret, fillSignIn, ownAddress, signInThroughUi } from '../support/web-auth';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-104h: the validation campaign screens (/validation, wiki 12 "Validation campaigns", wiki 07 section 8). A border shift
 // supervisor plans a campaign on the screen (queue zones, lines, local days, placeholder targets and border desks), starts it,
@@ -94,7 +95,7 @@ async function ensureProfile(): Promise<Profile> {
 		for (const old of history.filter((p: any) => p.status === 'Draft')) await call('DELETE', `${api}/${old.id}`, { token: administrator });
 		const create = async (entity: string, data: unknown) => {
 			const response = await call('POST', `${admin}/${entity}`, { token: administrator, data });
-			expect(response.status(), `${entity}: ${await response.text()}`).toBe(201);
+			await expectStatus(response, 201, entity);
 			return (await response.json()).id as string;
 		};
 		const { id: airport } = await createAirport((iata) =>
@@ -104,16 +105,16 @@ async function ensureProfile(): Promise<Profile> {
 		const levelId = await create('levels', { terminalId: terminal, code: 'L0', name: 'Arrivals', floorNumber: 0, widthMetres: 100, depthMetres: 50 });
 
 		const draft = await call('POST', `${api}/drafts`, { token: supervisor, data: { siteCode: site, name: 'Campaign hall' } });
-		expect(draft.status(), await draft.text()).toBe(201);
+		await expectStatus(draft, 201);
 		const id = (await draft.json()).profile.id as string;
 		const zone = async (data: Record<string, unknown>) => {
 			const response = await call('POST', `${api}/${id}/zones`, { token: supervisor, data: { levelId, ...data } });
-			expect(response.status(), await response.text()).toBe(201);
+			await expectStatus(response, 201);
 			return (await response.json()).id as string;
 		};
 		const line = async (data: Record<string, unknown>) => {
 			const response = await call('POST', `${api}/${id}/lines`, { token: supervisor, data: { levelId, ...data } });
-			expect(response.status(), await response.text()).toBe(201);
+			await expectStatus(response, 201);
 		};
 		const queueA = await zone({ name: 'Q-A', kind: 'Queue', polygon: '10 10,34 10,34 22,10 22' });
 		const queueB = await zone({ name: zoneXss, kind: 'Queue', polygon: '50 10,74 10,74 22,50 22' });
@@ -122,9 +123,9 @@ async function ensureProfile(): Promise<Profile> {
 		await line({ name: lineXss, role: 'Entry', startX: 50, startY: 12, endX: 50, endY: 16, zoneId: queueB });
 		await line({ name: 'Exit B', role: 'Exit', startX: 70, startY: 22, endX: 74, endY: 22, zoneId: queueB });
 		const review = await (await call('GET', `${api}/${id}/validation`, { token: supervisor })).json();
-		expect(review.publishable, JSON.stringify(review)).toBe(true);
+		expect(review, 'the profile is publishable').toEqual(expect.objectContaining({ publishable: true }));
 		const publish = await call('POST', `${api}/${id}/publish`, { token: supervisor, data: { geometryHash: review.geometryHash } });
-		expect(publish.status(), await publish.text()).toBe(200);
+		await expectStatus(publish, 200);
 		published = await publish.json();
 	}
 	const view = await (await call('GET', `${api}/${published.id}`, { token: supervisor })).json();
@@ -145,13 +146,13 @@ async function ensureProfile(): Promise<Profile> {
 async function ensureDesks(): Promise<Record<string, string>> {
 	const list = async (entity: string, query: string) => {
 		const response = await call('GET', `${admin}/${entity}?${query}`, { token: administrator });
-		expect(response.status(), `${entity}: ${await response.text()}`).toBe(200);
+		await expectStatus(response, 200, entity);
 		const body = await response.json();
 		return (body.data ?? body) as any[];
 	};
 	const create = async (entity: string, data: unknown) => {
 		const response = await call('POST', `${admin}/${entity}`, { token: administrator, data });
-		expect(response.status(), `${entity}: ${await response.text()}`).toBe(201);
+		await expectStatus(response, 201, entity);
 		return response.json();
 	};
 	const level = (await list('levels', `siteCode=${site}&pageSize=10`))[0];
@@ -177,10 +178,10 @@ async function runningCampaign(name: string): Promise<string> {
 			deskIds: [desks.WD01, desks.WD02]
 		}
 	});
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	const id = (await created.json()).id as string;
 	const started = await call('POST', `${campaignsUrl}/${id}/start`, { token: supervisor });
-	expect(started.status(), await started.text()).toBe(200);
+	await expectStatus(started, 200);
 	return id;
 }
 
@@ -192,14 +193,14 @@ async function groundTruth(id: string, reason: string): Promise<void> {
 	const counts: string[] = [];
 	for (const [k, crossingsIn] of [[3, 14], [2, 11]] as [number, number][]) {
 		const count = await call('POST', `${captureUrl}/${id}/counts`, { token: observer, data: { lineId: profile.entryA, binStartUtc: binStart(k), crossingsIn, crossingsOut: 2 } });
-		expect(count.status(), await count.text()).toBe(201);
+		await expectStatus(count, 201);
 		counts.push((await count.json()).id);
 	}
 	const corrected = await call('POST', `${captureUrl}/${id}/counts/${counts[1]}/corrections`, {
 		token: observer,
 		data: { crossingsIn: 12, crossingsOut: 2, reason }
 	});
-	expect(corrected.status(), await corrected.text()).toBe(201);
+	await expectStatus(corrected, 201);
 
 	const now = Date.now();
 	const at = (ago: number) => new Date(now - ago).toISOString();
@@ -214,14 +215,14 @@ async function groundTruth(id: string, reason: string): Promise<void> {
 		headers: { 'Idempotency-Key': crypto.randomUUID() },
 		data: { deviceClockUtc: new Date().toISOString(), runs }
 	});
-	expect(batch.status(), await batch.text()).toBe(201);
+	await expectStatus(batch, 201);
 
 	const logged = await call('POST', `${captureUrl}/${id}/desk-observations`, {
 		token: observer,
 		headers: { 'Idempotency-Key': crypto.randomUUID() },
 		data: { binStartUtc: binStart(1), desks: [{ deskId: desks.WD01, states: Array.from({ length: 15 }, () => 'Serving') }] }
 	});
-	expect(logged.status(), await logged.text()).toBe(201);
+	await expectStatus(logged, 201);
 }
 
 /** A campaign at the demo airport (DMO), planned by its border supervisor: another site's campaign for the E2EW accounts. */
@@ -235,7 +236,7 @@ async function otherSiteCampaign(): Promise<string> {
 		token: border,
 		data: { name: `Other site ${run}`, profileVersion: published.version, zoneIds: [zone.id], lineIds: [], days: [dubaiDay(Date.now())] }
 	});
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	return (await created.json()).id;
 }
 
@@ -417,7 +418,7 @@ test('closing a campaign asks for a fresh second factor: Escape keeps it running
 	await page.getByTestId('close-campaign').click();
 	await page.getByTestId('confirm-close-campaign').click();
 	await expect(dialog).toBeVisible();
-	await page.locator('#step-up-code').fill(await unusedTotpCode(accounts().webCampaignSupervisor.totpSecret!));
+	await fillSecret(page.locator('#step-up-code'), await unusedTotpCode(accounts().webCampaignSupervisor.totpSecret!));
 	await dialog.getByRole('button', { name: 'Confirm' }).click();
 	await expect(dialog).toBeHidden();
 	await expect(page.getByTestId('campaign-status')).toHaveText('Closed');
@@ -448,15 +449,15 @@ test('a closed campaign\'s results show each criterion, the tables, the proof an
 	const id = await runningCampaign(name);
 	await groundTruth(id, `Missed a family of four ${run}`);
 	const closed = await call('POST', `${campaignsUrl}/${id}/close`, { token: supervisor });
-	expect(closed.status(), await closed.text()).toBe(200);
+	await expectStatus(closed, 200);
 	const served = await call('GET', `${campaignsUrl}/${id}/results`, { token: supervisor });
-	expect(served.status(), await served.text()).toBe(200);
+	await expectStatus(served, 200);
 	const frozen = await served.json();
 	// A recomputation (the supervisor's second factor is fresh) adds revision 2 with a reason made of markup: free text that
 	// every Validation.View holder of the site reads.
 	const recomputeReason = `${xssPayloads[1]} ${xssPayloads[4]} desk logs re-entered ${run}`;
 	const recomputed = await call('POST', `${campaignsUrl}/${id}/results/revisions`, { token: supervisor, data: { reason: recomputeReason } });
-	expect(recomputed.status(), await recomputed.text()).toBe(201);
+	await expectStatus(recomputed, 201);
 	const second = await recomputed.json();
 	expect(second.revision).toMatchObject({ number: 2, revisions: 2, reason: recomputeReason });
 

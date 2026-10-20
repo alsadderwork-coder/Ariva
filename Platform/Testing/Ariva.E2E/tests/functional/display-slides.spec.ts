@@ -2,9 +2,10 @@ import crypto from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
 import { accounts, call, login, signIn, unusedTotpCode } from '../support/accounts';
 import { guardPage } from '../support/browser-guards';
-import { hosts } from '../support/hosts';
+import { hosts, webUrl } from '../support/hosts';
 import { xssPayloads } from '../support/payloads';
 import { databaseAvailable, signInThroughUi } from '../support/web-auth';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-141: instruction slides. A border supervisor of DMO manages them on the Display instructions screen (every text
 // field carries markup, shown as text in the list and the preview; Arabic previews right to left), orders, retires and
@@ -39,9 +40,11 @@ async function createDisplay(): Promise<{ id: string; path: string }> {
 			layout: 'Split', queueShare: 60, secondRegion: 'Instructions'
 		}
 	});
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	const body = await created.json();
-	return { id: body.display.id, path: `/display?code=${code}#key=${encodeURIComponent(body.credential)}` };
+	// Absolute (ARV-152): a navigation's step keeps a relative address whole, fragment and key included; an absolute one
+	// without its fragment.
+	return { id: body.display.id, path: `${webUrl}/display?code=${code}#key=${encodeURIComponent(body.credential)}` };
 }
 
 async function makeSlide(data: Record<string, unknown>): Promise<{ id: string; position: number }> {
@@ -49,7 +52,7 @@ async function makeSlide(data: Record<string, unknown>): Promise<{ id: string; p
 		token: border,
 		data: { siteCode: 'DMO', scope: 'Display', targets: [code], durationSeconds: 5, pinned: false, ...data }
 	});
-	expect(response.status(), await response.text()).toBe(201);
+	await expectStatus(response, 201);
 	const slide = await response.json();
 	made.push(slide.id);
 	return slide;
@@ -63,7 +66,7 @@ async function changeDisplay(changes: Record<string, unknown>): Promise<void> {
 		fallback: current.fallback, enabled: current.enabled, layout: current.layout, queueShare: current.queueShare, secondRegion: current.secondRegion, ...changes
 	};
 	const response = await call('PUT', `${displaysApi}/${display!.id}`, { token: border, data: request });
-	expect(response.status(), await response.text()).toBe(200);
+	await expectStatus(response, 200);
 }
 
 async function openSlides(page: Page): Promise<void> {

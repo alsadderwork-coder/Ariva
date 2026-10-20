@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { accounts, call, databaseAvailable, login, signIn, totpCode } from '../support/accounts';
 import { createAirport } from '../support/airports';
 import { hosts } from '../support/hosts';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-021: the device registry through the API. Registering a device and rotating its credential are critical
 // actions (401 insufficient_user_authentication without a second factor in the last 15 minutes, RFC 9470); the
@@ -45,7 +46,7 @@ test.beforeAll(async () => {
 
 	const create = async (path: string, data: unknown) => {
 		const response = await call('POST', `${admin}/${path}`, { token: withSecondFactor, data });
-		expect(response.status(), `${path}: ${await response.text()}`).toBe(201);
+		await expectStatus(response, 201, path);
 		const json = await response.json();
 		return (json.id ?? json.profile?.id) as string;
 	};
@@ -71,7 +72,7 @@ test('registering needs a recent second factor and returns the credential once',
 	expect((await call('POST', api, { token: handler, data: body('S-1') })).status(), 'handler').toBe(403);
 
 	const registered = await call('POST', api, { token: withSecondFactor, data: body('S-1') });
-	expect(registered.status(), await registered.text()).toBe(201);
+	await expectStatus(registered, 201);
 	expect(registered.headers()['cache-control']).toContain('no-store');
 	const json = await registered.json();
 	deviceId = json.device.id;

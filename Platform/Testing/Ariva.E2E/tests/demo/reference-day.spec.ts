@@ -3,6 +3,7 @@ import { accounts, call, databaseAvailable, login, totpCode } from '../support/a
 import { hosts, kafkaAvailable } from '../support/hosts';
 import { dmoSensors, prepareDmoSensors, type EmulatedSensor } from '../support/demo-sensors';
 import { signInThroughUi } from '../support/web-auth';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-064: the scripted demo. The simulator plays the reference day (seed 9303, the fictional Demo International Airport
 // DMO) from 17:40 in real time through the whole pipeline: its sensor emulator pushes to Ariva.Api.Ingest as devices
@@ -133,14 +134,14 @@ test.beforeAll(async () => {
 		const device = auhDevices.get(sensor);
 		expect(device, `the illustrative seed placed ${sensor}`).toBeDefined();
 		const issued = await call('POST', `${admin}/devices/${device!.id}/credential`, { token });
-		expect(issued.status(), await issued.text()).toBe(200);
+		await expectStatus(issued, 200);
 		const calibrations = await (await call('GET', `${admin}/devices/${device!.id}/calibrations`, { token })).json();
 		if (((calibrations.data ?? calibrations) as unknown[]).length === 0) {
 			const calibrated = await call('POST', `${admin}/devices/${device!.id}/calibrations`, {
 				token,
 				data: { method: 'ManualCountTally', sampleSize: 200, countingAccuracyPercent: 97, waitTimeErrorMinutes: 0.3 }
 			});
-			expect(calibrated.status(), await calibrated.text()).toBe(201);
+			await expectStatus(calibrated, 201);
 		}
 		credentials.push({ site: 'AUH-TA', sensor, dialect: 'Canonical', credential: (await issued.json()).credential } as (typeof credentials)[number]);
 	}
@@ -148,12 +149,12 @@ test.beforeAll(async () => {
 	if (((rules.data ?? rules) as unknown[]).length === 0) {
 		for (const rule of auhRules) {
 			const created = await call('POST', `${admin}/alert-rules`, { token, data: { siteCode: 'AUH-TA', ...rule } });
-			expect(created.status(), await created.text()).toBe(201);
+			await expectStatus(created, 201);
 		}
 	}
 
 	const loaded = await call('PUT', `${sensors}/devices`, { headers: operator, data: { devices: credentials } });
-	expect(loaded.status(), await loaded.text()).toBe(200);
+	await expectStatus(loaded, 200);
 	// Ingest keeps device records for a minute: let it see the calibrations before the first push.
 	await new Promise((resolve) => setTimeout(resolve, 65_000));
 
@@ -166,7 +167,7 @@ test.beforeAll(async () => {
 	const playFrom = start - ((((start - wall) % 15) + 15) % 15);
 
 	const started = await call('POST', `${sensors}/start`, { headers: operator, data: { minute: playFrom, speed: 1, untilMinute: end } });
-	expect(started.status(), await started.text()).toBe(200);
+	await expectStatus(started, 200);
 });
 
 test.afterAll(async () => {

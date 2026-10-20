@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { call } from '../support/accounts';
 import { hosts } from '../support/hosts';
 import { sqlInjectionPayloads, xssPayloads } from '../support/payloads';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-027, ARV-139b: the simulator's scenario endpoints, now per scenario site: the reference site DMO (seed 9303) and the
 // illustrative AUH Terminal A arrivals hall AUH-TA (seed 9304). Reading needs an operator key with the read scope,
@@ -16,7 +17,7 @@ const acrisKey = process.env.ARIVA_E2E_ACRIS_KEY ?? '';
 
 test('reading a site needs an operator key; the sites are DMO and AUH-TA', async () => {
 	expect((await call('GET', `${scenario}?site=AUH-TA`)).status()).toBe(401);
-	expect((await call('GET', `${scenario}/sites`, { headers: { Authorization: 'Bearer sim-guess-0000000000000000000000000' } })).status()).toBe(401);
+	expect((await call('GET', `${scenario}/sites`, { headers: { Authorization: `Bearer ${'sim-guess-'.padEnd(35, '0')}` } })).status()).toBe(401);
 
 	const sites = await call('GET', `${scenario}/sites`, { headers: operator });
 	expect(sites.status()).toBe(200);
@@ -85,7 +86,7 @@ test('the AUH-TA AODB serves its ACRIS flights only with the AODB key', async ()
 	expect((await call('GET', `${hosts.simulation}/aodb/sites/XYZ/acris/flights`, { headers: { 'X-Api-Key': acrisKey } })).status()).toBe(404);
 
 	const played = await call('POST', `${hosts.simulation}/api/v1/simulation/feeds/play`, { headers: operator, data: { minute: 1100 } });
-	expect(played.status(), await played.text()).toBe(200);
+	await expectStatus(played, 200);
 	const flights = (await (await call('GET', route, { headers: { 'X-Api-Key': acrisKey } })).json()) as {
 		arrivalAirport: string;
 		arrival: { terminal: string };

@@ -6,6 +6,7 @@ import { createAirport } from '../support/airports';
 import { expectApiSecurityHeaders, expectNoLeak } from '../support/api-assertions';
 import { hosts } from '../support/hosts';
 import { markupFragments, sqlInjectionPayloads, xssPayloads } from '../support/payloads';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-104i: the validation rehearsal. The simulator knows the reference evening's truth (seed 9303) and acts as validation
 // observers through Ariva.Api.Main's capture API, signed in as Validation observer accounts through the normal sign-in (the
@@ -91,13 +92,13 @@ function database(): pg.Client {
 async function ensureScope(): Promise<Scope> {
 	const list = async (entity: string, query: string) => {
 		const response = await call('GET', `${admin}/${entity}?${query}`, { token: administrator });
-		expect(response.status(), `${entity}: ${await response.text()}`).toBe(200);
+		await expectStatus(response, 200, entity);
 		const body = await response.json();
 		return (body.data ?? body) as any[];
 	};
 	const create = async (entity: string, data: unknown) => {
 		const response = await call('POST', `${admin}/${entity}`, { token: administrator, data });
-		expect(response.status(), `${entity}: ${await response.text()}`).toBe(201);
+		await expectStatus(response, 201, entity);
 		return response.json();
 	};
 
@@ -123,16 +124,16 @@ async function ensureScope(): Promise<Scope> {
 	if (!published) {
 		for (const old of history.filter((p: any) => p.status === 'Draft')) await call('DELETE', `${api}/${old.id}`, { token: administrator });
 		const draft = await call('POST', `${api}/drafts`, { token: manager, data: { siteCode: site, name: 'Rehearsal hall' } });
-		expect(draft.status(), await draft.text()).toBe(201);
+		await expectStatus(draft, 201);
 		const id = (await draft.json()).profile.id as string;
 		const zone = async (data: Record<string, unknown>) => {
 			const response = await call('POST', `${api}/${id}/zones`, { token: manager, data: { levelId: level.id, ...data } });
-			expect(response.status(), await response.text()).toBe(201);
+			await expectStatus(response, 201);
 			return (await response.json()).id as string;
 		};
 		const line = async (data: Record<string, unknown>) => {
 			const response = await call('POST', `${api}/${id}/lines`, { token: manager, data: { levelId: level.id, ...data } });
-			expect(response.status(), await response.text()).toBe(201);
+			await expectStatus(response, 201);
 		};
 		const visitors = await zone({ name: 'A-VIS', kind: 'Queue', polygon: '10 10,34 10,34 22,10 22' });
 		const residents = await zone({ name: 'A-RES', kind: 'Queue', polygon: '50 10,74 10,74 22,50 22' });
@@ -141,9 +142,9 @@ async function ensureScope(): Promise<Scope> {
 		await line({ name: 'A-RES entry', role: 'Entry', startX: 50, startY: 12, endX: 50, endY: 16, zoneId: residents });
 		await line({ name: 'A-RES exit', role: 'Exit', startX: 70, startY: 22, endX: 74, endY: 22, zoneId: residents });
 		const review = await (await call('GET', `${api}/${id}/validation`, { token: manager })).json();
-		expect(review.publishable, JSON.stringify(review)).toBe(true);
+		expect(review, 'the profile is publishable').toEqual(expect.objectContaining({ publishable: true }));
 		const publish = await call('POST', `${api}/${id}/publish`, { token: manager, data: { geometryHash: review.geometryHash } });
-		expect(publish.status(), await publish.text()).toBe(200);
+		await expectStatus(publish, 200);
 		published = await publish.json();
 	}
 
@@ -163,7 +164,7 @@ async function readTruth(): Promise<Truth> {
 		`${simulation}/truth?site=DMO&dayStartUtc=${dayStartUtc}&fromMinute=${planted.fromMinute}&toMinute=${planted.toMinute}&queues=A-VIS,A-RES`,
 		{ headers: reader }
 	);
-	expect(answer.status(), await answer.text()).toBe(200);
+	await expectStatus(answer, 200);
 	return answer.json();
 }
 
@@ -289,7 +290,7 @@ const observers = () =>
 
 async function useObservers(list: { userName: string; password: string; totpSecret: string | null }[]) {
 	const answer = await call('PUT', `${simulation}/observers`, { headers: operator, data: { observers: list } });
-	expect(answer.status(), await answer.text()).toBe(200);
+	await expectStatus(answer, 200);
 	const text = await answer.text();
 	for (const entry of list) for (const secret of [entry.userName, entry.password, entry.totpSecret]) if (secret) expect(text, 'no credential comes back').not.toContain(secret);
 }
@@ -309,10 +310,10 @@ async function runningCampaign(name: string, token = manager): Promise<string> {
 			deskIds: Object.values(scope.desks)
 		}
 	});
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	const id = (await created.json()).id as string;
 	const started = await call('POST', `${campaigns}/${id}/start`, { token });
-	expect(started.status(), await started.text()).toBe(200);
+	await expectStatus(started, 200);
 	return id;
 }
 
@@ -321,13 +322,13 @@ async function rehearse(body: Record<string, unknown>): Promise<any> {
 		headers: operator,
 		data: { siteCode: site, scenarioSite: 'DMO', scenarioSeed: 9303, dayStartUtc, ...evening, ...body }
 	});
-	expect(answer.status(), await answer.text()).toBe(200);
+	await expectStatus(answer, 200);
 	return answer.json();
 }
 
 async function results(id: string): Promise<any> {
 	const answer = await call('GET', `${campaigns}/${id}/results`, { token: manager });
-	expect(answer.status(), await answer.text()).toBe(200);
+	await expectStatus(answer, 200);
 	return answer.json();
 }
 
@@ -358,7 +359,7 @@ test('the control endpoints need the control scope, never echo a credential, and
 		['POST', '/rehearsals']
 	]) {
 		expect((await call(method, `${simulation}${path}`, { data: method === 'GET' ? undefined : {} })).status(), `${method} ${path}`).toBe(401);
-		expect((await call(method, `${simulation}${path}`, { headers: { Authorization: 'Bearer sim-guess-000000000000000000000000' }, data: method === 'GET' ? undefined : {} })).status()).toBe(401);
+		expect((await call(method, `${simulation}${path}`, { headers: { Authorization: `Bearer ${'sim-guess-'.padEnd(34, '0')}` }, data: method === 'GET' ? undefined : {} })).status()).toBe(401);
 	}
 	expect((await call('PUT', `${simulation}/observers`, { headers: reader, data: { observers: observers() } })).status()).toBe(403);
 	expect((await call('POST', `${simulation}/rehearsals`, { headers: reader, data: { siteCode: site, campaignId: crypto.randomUUID(), dayStartUtc, ...evening } })).status()).toBe(403);
@@ -456,7 +457,7 @@ test('with no injected error every criterion passes, and the bins under S-17 out
 
 	// Closed with the manager's second factor: frozen as revision 1, every criterion passes.
 	const closed = await call('POST', `${campaigns}/${id}/close`, { token: manager });
-	expect(closed.status(), await closed.text()).toBe(200);
+	await expectStatus(closed, 200);
 	const served = await results(id);
 	expect(served).toMatchObject({ status: 'Closed', revision: { number: 1 } });
 	expect(verdicts(served), JSON.stringify(served.criteria)).toEqual(Object.fromEntries(criteria.map((c) => [c, 'Pass'])));

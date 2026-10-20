@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
+import { call } from '../support/accounts';
 import { canary } from '../support/log-canary';
 import { apiHosts, type HostName } from '../support/hosts';
 
@@ -17,8 +18,10 @@ test.describe('credentials never reach the logs', () => {
 			};
 
 			const probe = await request.get(`${host.url}/health/readiness`, { headers });
-			const protectedRoute = await request.get(`${host.url}/api/does-not-exist?access_token=${canary.opaqueToken}`, { headers });
-			const hub = await request.get(`${host.url}/hubs/live?access_token=${canary.jwt}`);
+			// ARV-152 (CWE-532): a request context's call is a report step whose subtitle is the URL with its query, so the two
+			// probes that carry a token in the query go through Node's fetch (call), which records no step.
+			const protectedRoute = await call('GET', `${host.url}/api/does-not-exist?access_token=${canary.opaqueToken}`, { headers });
+			const hub = await call('GET', `${host.url}/hubs/live?access_token=${canary.jwt}`);
 			const board = await request.get(`${host.url}/api/v1/display/board?code=E2E-CANARY`, { headers: { 'X-Ariva-Display-Key': canary.displayKey } });
 			const login = await request.post(`${host.url}/api/auth/login`, {
 				headers: { Authorization: `Basic ${canary.basic}` },

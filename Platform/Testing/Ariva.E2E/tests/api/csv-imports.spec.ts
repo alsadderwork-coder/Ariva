@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { accounts, call, databaseAvailable, login, signIn, unusedTotpCode, type Account } from '../support/accounts';
 import { createAirport } from '../support/airports';
 import { hosts } from '../support/hosts';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-123a: CSV imports of devices and desk code mappings through the API, each a preview then a commit. The device
 // import needs CreateDevice and, both steps, a second factor in the last 15 minutes (registering devices is critical);
@@ -58,7 +59,7 @@ async function secondFactor(account: Account): Promise<string> {
 
 async function create(path: string, data: unknown): Promise<string> {
 	const response = await call('POST', `${admin}/${path}`, { token: stepped, data });
-	expect(response.status(), response.status() === 201 ? path : await response.text()).toBe(201);
+	await expectStatus(response, 201, path);
 	const json = await response.json();
 	return (json.id ?? json.profile?.id) as string;
 }
@@ -72,7 +73,7 @@ async function search(entity: string, code: string): Promise<any[]> {
 /** A site with one level, a published queue zone Snake A, an immigration checkpoint (desk D01, e-gate EG01) and a check-in counter. */
 async function siteWithTopology(code: string): Promise<void> {
 	const created = await call('POST', `${admin}/sites`, { token: stepped, data: { code, name: `E2E CSV imports ${code}` } });
-	expect(created.status(), created.status() === 201 ? code : await created.text()).toBe(201);
+	await expectStatus(created, 201, code);
 	const { id: airportId, iataCode } = await createAirport((iata) =>
 		call('POST', `${admin}/airports`, { token: stepped, data: { iataCode: iata, name: `E2E CSV imports ${iata}`, timeZoneId: 'Asia/Dubai' } })
 	);
@@ -90,7 +91,7 @@ async function siteWithTopology(code: string): Promise<void> {
 	await create(`zone-profiles/${draft}/lines`, { name: 'Exit A', role: 'Exit', levelId: level, startX: 30, startY: 22, endX: 34, endY: 22, zoneId: queue });
 	const { geometryHash } = await (await call('GET', `${admin}/zone-profiles/${draft}/validation`, { token: stepped })).json();
 	const published = await call('POST', `${admin}/zone-profiles/${draft}/publish`, { token: stepped, data: { geometryHash } });
-	expect(published.status(), published.status() === 200 ? 'publish' : await published.text()).toBe(200);
+	await expectStatus(published, 200, 'publish');
 }
 
 test.beforeAll(async () => {
@@ -143,7 +144,7 @@ test('each step needs its permission, the device import a recent second factor, 
 
 	// The mapping preview needs no second factor, like the single mapping endpoint.
 	const mappingPreview = await call('POST', `${mappings(site)}/preview`, { token: passwordOnly, form: form('externalSystem,externalCode,checkpoint,desk\nAman,E2E-01,IMM,D01\n') });
-	expect(mappingPreview.status(), mappingPreview.status() === 200 ? 'mapping preview' : await mappingPreview.text()).toBe(200);
+	await expectStatus(mappingPreview, 200, 'mapping preview');
 });
 
 test('a malformed or oversized file is refused with a fixed text that echoes nothing', async () => {
@@ -159,7 +160,7 @@ test('a malformed or oversized file is refused with a fixed text that echoes not
 	for (const [what, body, status] of cases) {
 		const refused = await call('POST', `${devices(site)}/preview`, { token: stepped, form: body });
 		const text = await refused.text();
-		expect(refused.status(), refused.status() === status ? what : text).toBe(status);
+		await expectStatus(refused, status, what);
 		for (const fragment of echoes) expect(text, `${what}: nothing echoed`).not.toContain(fragment);
 	}
 
@@ -180,7 +181,7 @@ test('formula-prefixed, malformed and hostile cells are answered by row and colu
 		form: form(csv(row('S-01', hostileModel), row('S-02', formula), row('S-03').replace(',20,', ',+20,'), row('S-04').replace(',20,', ',-5,'), 'S-05,"bad"quote,x', row('S-06', '@SUM(A1)'), row('S-07', 'x', 90)))
 	});
 	const text = await response.text();
-	expect(response.status(), response.status() === 200 ? 'preview' : text).toBe(200);
+	await expectStatus(response, 200, 'preview');
 	expect(response.headers()['content-type']).toContain('application/json');
 	expect(response.headers()['x-content-type-options']).toBe('nosniff');
 	const preview = JSON.parse(text);
@@ -204,7 +205,7 @@ test('formula-prefixed, malformed and hostile cells are answered by row and colu
 test('a token works only for the file, site and user of its preview', async () => {
 	const file = csv(row('S-11'), row('S-12', 'PC2SE', 22));
 	const previewed = await call('POST', `${devices(site)}/preview`, { token: stepped, form: form(file) });
-	expect(previewed.status(), previewed.status() === 200 ? 'preview' : await previewed.text()).toBe(200);
+	await expectStatus(previewed, 200, 'preview');
 	const { previewToken } = await previewed.json();
 	expect(typeof previewToken).toBe('string');
 
@@ -215,7 +216,7 @@ test('a token works only for the file, site and user of its preview', async () =
 		['a mapping commit', `${mappings(site)}/commit`, stepped, form(file, previewToken)]
 	] as const) {
 		const refused = await call('POST', url, { token, form: body });
-		expect(refused.status(), refused.status() === 409 ? what : await refused.text()).toBe(409);
+		await expectStatus(refused, 409, what);
 	}
 	const shaped = await call('POST', `${devices(site)}/commit`, { token: stepped, form: form(file, '<script>') });
 	expect(shaped.status(), 'a token of another shape').toBe(400);
@@ -226,11 +227,11 @@ test('a token works only for the file, site and user of its preview', async () =
 test('a commit registers the devices in Commissioning and returns each credential once', async () => {
 	const file = csv(row('S-21', hostileModel), row('S-22', 'PC2SE', 22));
 	const previewed = await call('POST', `${devices(site)}/preview`, { token: stepped, form: form(file) });
-	expect(previewed.status(), previewed.status() === 200 ? 'preview' : await previewed.text()).toBe(200);
+	await expectStatus(previewed, 200, 'preview');
 	const { previewToken } = await previewed.json();
 
 	const committed = await call('POST', `${devices(site)}/commit`, { token: stepped, form: form(file, previewToken) });
-	expect(committed.status(), committed.status() === 200 ? 'commit' : await committed.text()).toBe(200);
+	await expectStatus(committed, 200, 'commit');
 	expect(committed.headers()['cache-control']).toContain('no-store');
 	const answer = await committed.json();
 	expect(answer.devices).toBe(2);
@@ -258,12 +259,12 @@ test('a commit registers the devices in Commissioning and returns each credentia
 test('the mapping import creates every mapping of its preview, and none of a file with a refused row', async () => {
 	const file = 'externalSystem,externalCode,checkpoint,desk\r\nAman,E2E-01,IMM,D01\r\nAman,E2E-EG1,IMM,EG01\r\nAodb,E2E/C01,CHK,C01\r\n';
 	const previewed = await call('POST', `${mappings(site)}/preview`, { token: passwordOnly, form: form(file) });
-	expect(previewed.status(), previewed.status() === 200 ? 'preview' : await previewed.text()).toBe(200);
+	await expectStatus(previewed, 200, 'preview');
 	const preview = await previewed.json();
 	expect(preview.errors).toEqual([]);
 
 	const committed = await call('POST', `${mappings(site)}/commit`, { token: passwordOnly, form: form(file, preview.previewToken) });
-	expect(committed.status(), committed.status() === 200 ? 'commit' : await committed.text()).toBe(200);
+	await expectStatus(committed, 200, 'commit');
 	expect((await committed.json()).mappings).toBe(3);
 	expect((await search('desk-code-mappings', site)).map((m: any) => m.externalCode).sort()).toEqual(['E2E-01', 'E2E-EG1', 'E2E/C01']);
 
@@ -272,7 +273,7 @@ test('the mapping import creates every mapping of its preview, and none of a fil
 		form: form('externalSystem,externalCode,checkpoint,desk\nAman,E2E-01,IMM,D01\nAman,E2E-02,CHK,C01\nAman,"-1+1",IMM,D01\n')
 	});
 	const text = await refused.text();
-	expect(refused.status(), refused.status() === 200 ? 'preview' : text).toBe(200);
+	await expectStatus(refused, 200, 'preview');
 	const answer = JSON.parse(text);
 	expect(answer.previewToken).toBeNull();
 	expect(answer.errors.map((e: any) => [e.row, e.column])).toEqual([

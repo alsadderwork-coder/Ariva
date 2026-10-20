@@ -5,6 +5,7 @@ import pg from 'pg';
 import { accounts, call, databaseAvailable, login, signIn, totpCode } from '../support/accounts';
 import { expectNoLeak, expectProblemDetails } from '../support/api-assertions';
 import { hosts } from '../support/hosts';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-045: outbound endpoints and the ACRIS connector. An administrator with a recent second factor registers the
 // systems Ariva calls; the secret is never shown again. Registration refuses plain HTTP outside the lab, the metadata
@@ -58,7 +59,7 @@ const register = (body: Record<string, unknown>, token = admin) => call('POST', 
 test.beforeAll(async () => {
 	const { userName, password, totpSecret } = accounts().outboundAdmin;
 	const signedIn = await login(userName, password, undefined, undefined, { code: totpCode(totpSecret!) });
-	expect(signedIn.status(), await signedIn.text()).toBe(200);
+	await expectStatus(signedIn, 200);
 	admin = (await signedIn.json()).accessToken;
 
 	// The stand-in AODB: ACRIS flights for DMO behind an API key, and a redirect towards the metadata service.
@@ -91,7 +92,7 @@ test.afterAll(async () => {
 
 test('an administrator registers an endpoint with a second factor; the secret is never shown and unsafe connections are refused', async () => {
 	const created = await register({ code: code('generic'), name: 'E2E generic', purpose: 'Generic', siteCodes: ['DMO'], connection: connection(), secret: { apiKey: `key-${run}` } });
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	const text = await created.text();
 	expect(text).not.toContain(`key-${run}`);
 	expect(await created.json()).toMatchObject({ baseUrl: 'https://aodb.example.test/api/', authKind: 'ApiKeyHeader', headerName: 'X-Api-Key', status: 'Active' });
@@ -106,7 +107,7 @@ test('an administrator registers an endpoint with a second factor; the secret is
 	await expectProblemDetails(withoutSecret, 400);
 	expect(await withoutSecret.text()).toContain('needs the secret again');
 	const withSecret = await call('PUT', `${api}/${id}`, { token: admin, data: { name: 'E2E moved', siteCodes: ['DMO'], connection: moved, secret: { apiKey: `new-key-${run}` } } });
-	expect(withSecret.status(), await withSecret.text()).toBe(200);
+	await expectStatus(withSecret, 200);
 
 	const passwordOnly = (await signIn(accounts().SystemAdministrator)).accessToken;
 	expect((await register({ code: code('nomfa'), name: 'x', purpose: 'Generic', siteCodes: ['DMO'], connection: connection(), secret: { apiKey: 'k-12345678' } }, passwordOnly)).status(),
@@ -138,19 +139,19 @@ test('the ACRIS pull applies the site\'s flights with the endpoint\'s key, and r
 		code: code('acris'), name: 'E2E ACRIS', purpose: 'AcrisFlights', siteCodes: ['DMO'],
 		connection: connection({ ...lab, pullPath: '/acris/flights' }), secret: { apiKey: `key-${run}` }
 	});
-	expect(good.status(), await good.text()).toBe(201);
+	await expectStatus(good, 201);
 	const moved = await register({
 		code: code('moved'), name: 'E2E moved', purpose: 'AcrisFlights', siteCodes: ['DMO'],
 		connection: connection({ ...lab, pullPath: '/acris/moved' }), secret: { apiKey: `key-${run}` }
 	});
-	expect(moved.status(), await moved.text()).toBe(201);
+	await expectStatus(moved, 201);
 	// A host name that resolves to loopback, for an endpoint whose networks do not include it: refused at connection time.
 	const outside = await register({
 		code: code('outside'), name: 'E2E outside', purpose: 'AcrisFlights', siteCodes: ['DMO'],
 		connection: connection({ baseUrl: `https://localhost:${port}/`, allowedNetworks: ['10.0.0.0/8'], pullPath: '/acris/flights', pollSeconds: 30 }),
 		secret: { apiKey: `key-${run}` }
 	});
-	expect(outside.status(), await outside.text()).toBe(201);
+	await expectStatus(outside, 201);
 
 	type Row = { code: string; last_status: string | null; consecutive_failures: number };
 	let rows: Row[] = [];

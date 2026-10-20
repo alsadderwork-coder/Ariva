@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { accounts, call, login, unusedTotpCode } from './accounts';
 import { createAirport } from './airports';
 import { hosts } from './hosts';
+import { redactSecrets } from '../../scripts/secret-shapes.mjs';
 
 // ARV-128: the local E2E stack, prepared the way an administrator prepares a deployed environment for the smoke suite
 // (wiki 04 section 8): the smoke site E2SM (created by the account seed: the smoke accounts hold it) gets a published
@@ -34,7 +35,7 @@ export async function provisionSmokeSite(): Promise<void> {
 	};
 	const create = async (resource: string, data: unknown) => {
 		const response = await call('POST', `${base}/${resource}`, { token, data });
-		if (response.status() !== 201 && response.status() !== 200) throw new Error(`smoke provisioning: POST ${resource} answered ${response.status()}: ${(await response.text()).slice(0, 300)}`);
+		if (response.status() !== 201 && response.status() !== 200) throw new Error(`smoke provisioning: POST ${resource} answered ${response.status()}: ${redactSecrets(await response.text()).slice(0, 300)}`);
 		return response.json();
 	};
 

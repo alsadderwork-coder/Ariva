@@ -52,6 +52,15 @@ jobs:
         run: node scripts/security/scan.mjs
       - name: Docs writing rules
         run: node scripts/verify.mjs docs
+      # ARV-152 (CWE-532): Playwright keeps an expect's message as the step title even when it passes, so no spec may pass an
+      # answer's body as one (tests/support/expect-status.ts adds it only on a wrong status); the artifact check the e2e job runs
+      # before any upload is proven first (every kind found in a plain file, the report's embedded zip and a trace zip).
+      - name: E2E expect messages hold no answer body (self-test, then every spec)
+        run: |
+          node Platform/Testing/Ariva.E2E/scripts/expect-messages.mjs --self-test
+          node Platform/Testing/Ariva.E2E/scripts/expect-messages.mjs
+      - name: E2E artifact secret check self-test
+        run: node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs --self-test
       - name: Base images pinned by version and digest
         run: node scripts/base-images.mjs --check
       - name: Published runtime check self-test (the check every host image build runs, ARV-184)
@@ -366,6 +375,18 @@ jobs:
           npm ci --prefix ../../Frontplane/Ariva.Web
           npm ci
           npx playwright install --with-deps chromium
+      # ARV-152: the job's account seed (playwright.config.ts keeps a seed it is given), so the artifact checks below can derive
+      # the run's E2E account passwords and TOTP seeds and look for them, and the run's other secrets derived from it (simulator,
+      # mock AMAN, ACRIS and Cronz keys, the validation reader's password), which playwright.config.ts keeps when given; it
+      # lives only for this job. The seed and every value derived from it are masked first, so a failing assertion that prints
+      # one shows *** in this public log.
+      - name: Account seed for the run
+        run: |
+          seed="$(node -e "process.stdout.write(require('node:crypto').randomBytes(24).toString('base64url'))")"
+          echo "::add-mask::$seed"
+          ARIVA_E2E_ACCOUNT_SEED="$seed" node scripts/artifact-secrets.mjs --mask github
+          echo "ARIVA_E2E_ACCOUNT_SEED=$seed" >> "$GITHUB_ENV"
+          ARIVA_E2E_ACCOUNT_SEED="$seed" node scripts/artifact-secrets.mjs --env github >> "$GITHUB_ENV"
       # The hosts listen on 51001 to 51020 and 51011, inside Linux's ephemeral port range (32768 to 60999): an outgoing
       # connection made while the hosts start can take one of them and fail the run (address already in use). Reserve them.
       - name: Reserve the hosts' ports from the ephemeral range
@@ -383,8 +404,14 @@ jobs:
       - name: Stop the visual browser
         if: always()
         run: node scripts/visual-browser.mjs stop
+      # ARV-152 (CWE-532): before anything is uploaded, no credential in the run's report, output or log; a finding fails the
+      # job and nothing is uploaded (scripts/artifact-secrets.mjs names the file and the kind, never the value).
+      - name: No secret in the visual artifacts
+        id: visual_artifacts
+        if: ${{ !cancelled() && (steps.visual.outcome == 'success' || steps.visual.outcome == 'failure') }}
+        run: node scripts/artifact-secrets.mjs --require-seed playwright-report test-results-visual visual.log
       - name: Visual differences (expected, actual and diff images)
-        if: always() && steps.visual.outcome == 'failure'
+        if: always() && steps.visual.outcome == 'failure' && steps.visual_artifacts.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: visual-diffs
@@ -398,10 +425,18 @@ jobs:
           path: Platform/Testing/Ariva.E2E/tests/visual/__screenshots__
           retention-days: 14
       - name: Run the suite (Playwright starts the hosts and the web preview)
+        id: suite
         if: ${{ !cancelled() && (steps.visual.outcome == 'success' || steps.visual.outcome == 'failure') }}
         run: npx playwright test 2>&1 | tee e2e.log
+      # ARV-152 (CWE-532): after every run, passed or failed, and before the comment and the upload below: the report (with its
+      # embedded zip), the test output (traces, error contexts, attachments), the smoke configuration's own folders, the run's
+      # log and the hosts' logs (the comment quotes their errors).
+      - name: No secret in the test artifacts
+        id: artifacts
+        if: ${{ !cancelled() && (steps.suite.outcome == 'success' || steps.suite.outcome == 'failure') }}
+        run: node scripts/artifact-secrets.mjs --require-seed playwright-report test-results playwright-report-smoke test-results-smoke test-results-smoke-runs e2e.log logs
       - name: Report failures on the pull request
-        if: failure() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        if: failure() && steps.artifacts.outcome == 'success' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
@@ -419,17 +454,28 @@ jobs:
               echo '```'; echo '#### Last lines'; echo '```'
               grep -v '^\s*$' e2e.log | tail -n 15 | cut -c1-300; echo '```'
             fi
-            for log in logs/*/*.log; do
-              [ -f "$log" ] || continue
-              if grep -qE '"@l":"(Error|Fatal)"|"Level":"(Error|Fatal)"' "$log"; then
-                echo "#### ${log##*/}: errors"; echo '```'
-                grep -E '"@l":"(Error|Fatal)"|"Level":"(Error|Fatal)"' "$log" | head -8 | cut -c1-600; echo '```'
-              fi
+            # The hosts' error lines only when every run's own log scan passed (global-teardown.ts prints this line then); the
+            # artifact check above read the same logs. A failed scan means a host log may hold a credential: nothing is quoted.
+            scanned=yes
+            for run in e2e.log visual.log; do
+              [ -f "$run" ] || continue
+              grep -qE '^log scan: [0-9]+ host logs, [0-9]+ lines, no credentials' "$run" || scanned=no
             done
+            if [ "$scanned" = yes ]; then
+              for log in logs/*/*.log; do
+                [ -f "$log" ] || continue
+                if grep -qE '"@l":"(Error|Fatal)"|"Level":"(Error|Fatal)"' "$log"; then
+                  echo "#### ${log##*/}: errors"; echo '```'
+                  grep -E '"@l":"(Error|Fatal)"|"Level":"(Error|Fatal)"' "$log" | head -8 | cut -c1-600; echo '```'
+                fi
+              done
+            else
+              echo '#### Host logs: not quoted (a log scan did not pass; see the job log)'
+            fi
           } > failure.md
           gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file failure.md
       - name: Playwright report
-        if: failure()
+        if: failure() && steps.artifacts.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: playwright-report

@@ -4,6 +4,7 @@ import { accounts, call, databaseAvailable, signIn } from '../support/accounts';
 import { hosts } from '../support/hosts';
 import { provisionLoadSite, randomLetters, secondFactorSignIn } from '../support/load-site';
 import { markupFragments, sqlInjectionPayloads, xssPayloads } from '../support/payloads';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-143a: advertising playlists and schedules at sites of their own (fresh codes each run, so no other spec shares them).
 // A playlist names advertisements of the site's library and active instruction slides of the site, each once, with a slot of
@@ -62,7 +63,7 @@ async function allow(code: string) {
 		token: admin,
 		data: { allowed: true, excludedZones: [], reason: 'Airport operator letter AO-E2E-143a, commercial team', reviewedProfileId: publishedProfileId }
 	});
-	expect(changed.status(), await changed.text()).toBe(200);
+	await expectStatus(changed, 200);
 }
 
 async function uploadImage(at: string): Promise<string> {
@@ -77,7 +78,7 @@ async function uploadImage(at: string): Promise<string> {
 	body.append('startsOn', today);
 	body.append('endsOn', until.toISOString().slice(0, 10));
 	const response = await call('POST', `${plan(at)}/media`, { token: manager, form: body });
-	expect(response.status(), await response.text()).toBe(201);
+	await expectStatus(response, 201);
 	return (await response.json()).id;
 }
 
@@ -127,13 +128,13 @@ test.beforeAll(async () => {
 			secondRegion: 'Advertising'
 		}
 	});
-	expect(made.status(), await made.text()).toBe(201);
+	await expectStatus(made, 201);
 
 	const slideMade = await call('POST', `${hosts.main}/api/v1/admin/display-slides`, {
 		token: admin,
 		data: { siteCode: site, scope: 'Site', targets: [], icon: 'Passport', durationSeconds: 8, pinned: false, texts: { en: { title: 'Have your passport ready', body: null } } }
 	});
-	expect(slideMade.status(), await slideMade.text()).toBe(201);
+	await expectStatus(slideMade, 201);
 	slide = (await slideMade.json()).id;
 	image = await uploadImage(site);
 	otherImage = await uploadImage(other);
@@ -147,7 +148,7 @@ test('a playlist keeps its items in order with their slots, and markup in its na
 			{ kind: 'Slide', id: slide, seconds: 8 }
 		])
 	});
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	expect(created.headers()['content-type']).toContain('application/json');
 	const body = await created.json();
 	expect(body).toMatchObject({ siteCode: site, name: xssPayloads[1], status: 'Active', totalSeconds: 20 });
@@ -159,15 +160,15 @@ test('a playlist keeps its items in order with their slots, and markup in its na
 	morning = body;
 
 	const renamed = await call('PUT', playlistsUrl(site, body.id), { token: manager, data: playlist('Morning bank', [{ kind: 'Slide', id: slide, seconds: 10 }, { kind: 'Media', id: image, seconds: 15 }]) });
-	expect(renamed.status(), await renamed.text()).toBe(200);
+	await expectStatus(renamed, 200);
 	expect(await renamed.json()).toMatchObject({ name: 'Morning bank', totalSeconds: 25, items: [{ kind: 'Slide' }, { kind: 'Media', weight: 1 }] });
 	expect((await (await call('GET', playlistsUrl(site), { token: manager })).json()).map((p: { id: string }) => p.id)).toContain(body.id);
 
 	const second = await call('POST', playlistsUrl(site), { token: manager, data: playlist('Peak bank', [{ kind: 'Media', id: image, seconds: 20 }]) });
-	expect(second.status(), await second.text()).toBe(201);
+	await expectStatus(second, 201);
 	peak = await second.json();
 	const elsewhereList = await call('POST', playlistsUrl(other), { token: manager, data: playlist('Theirs', [{ kind: 'Media', id: otherImage, seconds: 10 }]) });
-	expect(elsewhereList.status(), await elsewhereList.text()).toBe(201);
+	await expectStatus(elsewhereList, 201);
 	theirs = await elsewhereList.json();
 });
 
@@ -209,14 +210,14 @@ test('items outside the rules, and attack payloads in the body, are refused with
 
 test('a schedule keeps its days in the week order and its local window; one outside the rules is refused', async () => {
 	const created = await call('POST', schedulesUrl(site), { token: manager, data: scheduled({ scope: 'Zone', targets: [zone], days: ['Friday', 'Monday'], opens: '22:00', closes: '02:00' }) });
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	const body = await created.json();
 	expect(body).toMatchObject({ siteCode: site, playlistId: morning.id, playlistName: 'Morning bank', playlistActive: true, scope: 'Zone', targets: [zone], days: ['Monday', 'Friday'], opens: '22:00', closes: '02:00', status: 'Active' });
 	expect(created.headers()['location']).toContain(`/advertising/schedules/${body.id}`);
 	schedule = body;
 
 	const changed = await call('PUT', schedulesUrl(site, body.id), { token: manager, data: scheduled() });
-	expect(changed.status(), await changed.text()).toBe(200);
+	await expectStatus(changed, 200);
 	expect(await changed.json()).toMatchObject({ scope: 'Site', targets: [], days: week, opens: '06:00', closes: '22:00' });
 	expect((await (await call('POST', `${schedulesUrl(site, body.id)}/retire`, { token: manager })).json()).status).toBe('Retired');
 	expect((await (await call('POST', `${schedulesUrl(site, body.id)}/retire`, { token: manager })).json()).status, 'retiring twice is harmless').toBe('Retired');
@@ -262,10 +263,10 @@ test('a schedule keeps its days in the week order and its local window; one outs
 
 test("the timeline resolves the display's week in the site's local time; a retired playlist stops its schedules applying", async () => {
 	const own = await call('POST', schedulesUrl(site), { token: manager, data: scheduled({ playlistId: peak.id, scope: 'Display', targets: [display], opens: '09:00', closes: '10:00' }) });
-	expect(own.status(), await own.text()).toBe(201);
+	await expectStatus(own, 201);
 
 	const response = await call('GET', timelineUrl(site, display), { token: manager });
-	expect(response.status(), await response.text()).toBe(200);
+	await expectStatus(response, 200);
 	const timeline = await response.json();
 	expect(timeline).toMatchObject({ siteCode: site, displayCode: display, timeZone: 'Asia/Dubai', secondRegion: 'Advertising' });
 	expect(new Date(timeline.toUtc).getTime() - new Date(timeline.fromUtc).getTime(), 'one week').toBe(7 * 24 * 3600 * 1000);

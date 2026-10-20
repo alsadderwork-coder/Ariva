@@ -23,13 +23,27 @@ export const apiSecurityHeaders: Readonly<Record<string, string>> = {
 	'content-security-policy': "default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'"
 };
 
+/**
+ * The answer's URL without its query or fragment, for messages: an expect's message is a step title in the report even when
+ * it passes, and a query may carry a token (the access_token probes; ARV-152, CWE-532).
+ */
+export function whereOf(response: Pick<ResponseLike, 'url'>): string {
+	const url = response.url();
+	try {
+		const parsed = new URL(url);
+		return `${parsed.origin}${parsed.pathname}`;
+	} catch {
+		return url.split(/[?#]/)[0];
+	}
+}
+
 /** Asserts the API security headers are present and the Server header is absent. */
 export function expectApiSecurityHeaders(response: ResponseLike): void {
 	const headers = response.headers();
 	for (const [name, value] of Object.entries(apiSecurityHeaders)) {
-		expect(headers[name], `${name} on ${response.url()}`).toBe(value);
+		expect(headers[name], `${name} on ${whereOf(response)}`).toBe(value);
 	}
-	expect(headers['server'], `Server header on ${response.url()}`).toBeUndefined();
+	expect(headers['server'], `Server header on ${whereOf(response)}`).toBeUndefined();
 }
 
 /** Asserts the body leaks no stack trace, source path or framework name. */
@@ -47,12 +61,12 @@ export async function expectProblemDetails(
 	response: ResponseLike,
 	status: number
 ): Promise<Record<string, unknown>> {
-	expect(response.status(), `status of ${response.url()}`).toBe(status);
+	expect(response.status(), `status of ${whereOf(response)}`).toBe(status);
 	expect(response.headers()['content-type']).toContain('application/problem+json');
 	expectApiSecurityHeaders(response);
 
 	const text = await response.text();
-	expectNoLeak(text, `${status} body of ${response.url()}`);
+	expectNoLeak(text, `${status} body of ${whereOf(response)}`);
 
 	const problem = JSON.parse(text) as Record<string, unknown>;
 	expect(problem.status).toBe(status);

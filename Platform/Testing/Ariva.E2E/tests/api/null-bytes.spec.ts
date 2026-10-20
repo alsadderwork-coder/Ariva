@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { accounts, call, databaseAvailable, signIn } from '../support/accounts';
 import { hosts } from '../support/hosts';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-063: the dynamic scan sent a NUL byte (%00) as siteCode and four endpoints answered 500, because the value reached
 // PostgreSQL, which refuses NUL in text. Every controller now answers 400 for a NUL in the query string, a route value,
@@ -27,14 +28,14 @@ for (const route of ['/api/v1/admin/users?text=%00', '/api/v1/admin/airports?tex
 	test(`${route} answers 400, not 500`, async () => {
 		const response = await call('GET', `${hosts.main}${route}`, { token: admin });
 
-		expect(response.status(), await response.text()).toBe(400);
+		await expectStatus(response, 400);
 	});
 }
 
 test('a NUL byte in an airport name is refused before the insert', async () => {
 	const response = await call('POST', `${hosts.main}/api/v1/admin/airports`, { token: admin, data: { iataCode: 'NUL', name: 'Null\u0000port', timeZoneId: 'Asia/Dubai' } });
 
-	expect(response.status(), await response.text()).toBe(400);
+	await expectStatus(response, 400);
 	expect(await response.text()).toContain('NUL character');
 });
 
@@ -64,9 +65,9 @@ test('a NUL byte in a JSON string is refused, not passed to the database', async
 	const runId = Date.now().toString(36);
 	// The same rule without the NUL byte is accepted, so the refusal below is the byte's alone.
 	const clean = await call('POST', `${hosts.main}/api/v1/admin/alert-rules`, { token: admin, data: rule(`E2E nul control ${runId}`) });
-	expect(clean.status(), await clean.text()).toBe(201);
+	await expectStatus(clean, 201);
 
 	const response = await call('POST', `${hosts.main}/api/v1/admin/alert-rules`, { token: admin, data: rule(`E2E nul \u0000 byte ${runId}`) });
 
-	expect(response.status(), await response.text()).toBe(400);
+	await expectStatus(response, 400);
 });

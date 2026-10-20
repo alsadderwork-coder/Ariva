@@ -4,7 +4,8 @@ import { accounts, call, claimsOf, developmentSigningKey, headerOf, signIn, sign
 import { guardPage } from '../support/browser-guards';
 import { hosts } from '../support/hosts';
 import { xssPayloads } from '../support/payloads';
-import { allowStatuses, databaseAvailable, earlyInStep, fillSignIn, ownAddress, signInThroughUi } from '../support/web-auth';
+import { allowStatuses, databaseAvailable, earlyInStep, fillSecret, fillSignIn, ownAddress, signInThroughUi } from '../support/web-auth';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-145: the advertising policy panel of the Passenger displays screen. A system administrator allows advertising at a
 // site of this spec's own (created here, without zones, so no other spec's displays or boards depend on it) after a fresh
@@ -56,7 +57,7 @@ async function emptyLibrary(page: Page): Promise<void> {
 test.beforeAll(async () => {
 	const admin = (await signIn(accounts().webAdmin)).accessToken;
 	const created = await call('POST', `${hosts.main}/api/v1/admin/sites`, { token: admin, data: { code: site, name: 'E2E advertising screen' } });
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 });
 
 test('a system administrator allows advertising with a reason after a second factor; the reason shows as text', async ({ page }) => {
@@ -83,7 +84,7 @@ test('a system administrator allows advertising with a reason after a second fac
 	// The second factor is 20 minutes old, so a fresh code is asked before the change is sent again.
 	const dialog = page.getByTestId('step-up-dialog');
 	await expect(dialog).toBeVisible();
-	await page.locator('#step-up-code').fill(await unusedTotpCode(account.totpSecret!));
+	await fillSecret(page.locator('#step-up-code'), await unusedTotpCode(account.totpSecret!));
 	await dialog.getByRole('button', { name: 'Confirm' }).click();
 	await expect(panel).toHaveAttribute('data-allowed', 'true');
 	await expect(panel).toContainText('Advertising allowed');

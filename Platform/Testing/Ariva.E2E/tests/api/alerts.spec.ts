@@ -5,6 +5,7 @@ import { createClient } from 'redis';
 import { accounts, call, databaseAvailable, signIn } from '../support/accounts';
 import { expectNoLeak } from '../support/api-assertions';
 import { hosts } from '../support/hosts';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-039: the alert lifecycle through the API and the live hub. The demo airport's rules R-001 (owner border shift
 // supervisor, escalation to a named contact), R-003 (no owner) and R-004 (owner handler station manager, escalation
@@ -102,12 +103,12 @@ test('each role sees only the alerts it is responsible for, in its own sites', a
 
 test('the owner acknowledges, escalates and resolves with a note; out-of-order actions answer 409', async () => {
 	const ack = await call('POST', `${api}/${ids.r001}/acknowledge`, { token: border, data: { note: 'Opening two desks' } });
-	expect(ack.status(), await ack.text()).toBe(200);
+	await expectStatus(ack, 200);
 	expect(await ack.json()).toMatchObject({ state: 'Acknowledged', acknowledgedBy: 'e2e.dmoborder', acknowledgedNote: 'Opening two desks', escalationDueUtc: null });
 	expect((await call('POST', `${api}/${ids.r001}/acknowledge`, { token: border, data: {} })).status(), 'acknowledged once').toBe(409);
 
 	const escalated = await call('POST', `${api}/${ids.r001}/escalate`, { token: border, data: { note: 'Need the duty officer' } });
-	expect(escalated.status(), await escalated.text()).toBe(200);
+	await expectStatus(escalated, 200);
 	expect(await escalated.json()).toMatchObject({ state: 'Escalated', escalationContact: 'Border operations duty officer' });
 
 	for (const [why, note] of [
@@ -122,7 +123,7 @@ test('the owner acknowledges, escalates and resolves with a note; out-of-order a
 		expectNoLeak(await refused.text(), why);
 	}
 	const resolved = await call('POST', `${api}/${ids.r001}/resolve`, { token: border, data: { note: '<script>alert(1)</script> desks 9 to 12 open' } });
-	expect(resolved.status(), await resolved.text()).toBe(200);
+	await expectStatus(resolved, 200);
 	expect(await resolved.json()).toMatchObject({ state: 'Resolved', resolution: 'Manual', resolutionNote: '<script>alert(1)</script> desks 9 to 12 open' });
 	expect(resolved.headers()['content-type']).toContain('application/json');
 	for (const action of ['acknowledge', 'escalate', 'resolve'])
@@ -134,7 +135,7 @@ test('an escalation hands the alert to the escalation role, who takes it on', as
 	const seen = await call('GET', `${api}/${ids.r004}`, { token: terminal });
 	expect(seen.status(), 'the terminal duty manager sees it once escalated').toBe(200);
 	const ack = await call('POST', `${api}/${ids.r004}/acknowledge`, { token: terminal, data: { note: 'Taking over' } });
-	expect(ack.status(), await ack.text()).toBe(200);
+	await expectStatus(ack, 200);
 	expect((await call('POST', `${api}/${ids.r004}/resolve`, { token: terminal, data: { note: 'Counters reopened' } })).status()).toBe(200);
 });
 

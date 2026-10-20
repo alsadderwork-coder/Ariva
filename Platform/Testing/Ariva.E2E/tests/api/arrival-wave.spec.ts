@@ -3,6 +3,7 @@ import { expect, test } from '@playwright/test';
 import { accounts, call, databaseAvailable, integrationSeedsFile, login, totpCode } from '../support/accounts';
 import { expectNoLeak } from '../support/api-assertions';
 import { hosts } from '../support/hosts';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-047: the arrival-wave projection of a site (formulas.md F14). An AODB client sends arriving legs and an
 // immigration client sends AMAN's lane demand for one of them through the Integration API; a border shift supervisor
@@ -48,14 +49,14 @@ async function client(name: string, kind: string, scopes: string[]) {
 		token: admin,
 		data: { name, kind, scopes, siteCodes: ['DMO'], allowedNetworks: ['10.0.0.0/8'], requireTotpPerRequest: false }
 	});
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	const credentials: Credentials = await created.json();
 	fs.appendFileSync(integrationSeedsFile, credentials.totpSecret + '\n' + credentials.clientSecret + '\n');
 	const exchanged = await call('POST', `${hosts.integration}/api/v1/auth`, {
 		data: { clientId: credentials.client.clientId, clientSecret: credentials.clientSecret, totpCode: totpCode(credentials.totpSecret) },
 		address: inside()
 	});
-	expect(exchanged.status(), await exchanged.text()).toBe(200);
+	await expectStatus(exchanged, 200);
 	return (await exchanged.json()).accessToken as string;
 }
 
@@ -81,14 +82,14 @@ const arrival = (n: number, more: Record<string, unknown>) => ({
 async function signIn(name: keyof ReturnType<typeof accounts>) {
 	const { userName, password } = accounts()[name];
 	const signedIn = await login(userName, password);
-	expect(signedIn.status(), await signedIn.text()).toBe(200);
+	await expectStatus(signedIn, 200);
 	return (await signedIn.json()).accessToken as string;
 }
 
 test.beforeAll(async () => {
 	const { userName, password, totpSecret } = accounts().arrivalWaveAdmin;
 	const signedIn = await login(userName, password, undefined, undefined, { code: totpCode(totpSecret!) });
-	expect(signedIn.status(), await signedIn.text()).toBe(200);
+	await expectStatus(signedIn, 200);
 	admin = (await signedIn.json()).accessToken;
 
 	const aodb = await client(`E2E arrival wave AODB ${run}`, 'Aodb', ['flights:write']);
@@ -106,7 +107,7 @@ test.beforeAll(async () => {
 		},
 		`aw-${run}-legs`
 	);
-	expect(legs.status(), await legs.text()).toBe(200);
+	await expectStatus(legs, 200);
 	expect(await legs.json()).toMatchObject({ applied: 4, refused: 0 });
 
 	const immigration = await client(`E2E arrival wave AMAN ${run}`, 'Immigration', ['immigration:write']);
@@ -129,14 +130,14 @@ test.beforeAll(async () => {
 		},
 		`aw-${run}-demand`
 	);
-	expect(demand.status(), await demand.text()).toBe(200);
+	await expectStatus(demand, 200);
 	expect(await demand.json()).toMatchObject({ applied: 1, refused: 0 });
 });
 
 test('a border shift supervisor of the site sees the flights landing soon with their lane split and the hall curve', async () => {
 	const token = await signIn('dmoBorder');
 	const answer = await call('GET', wave(), { token });
-	expect(answer.status(), await answer.text()).toBe(200);
+	await expectStatus(answer, 200);
 	const projection: Wave = await answer.json();
 	expect(projection).toMatchObject({ siteCode: 'DMO', windowMinutes: 30, rejectLane: 'VIS' });
 	// ARV-049: the e-gate reject rate (F12), measured from AMAN or the reference, for the lane split's readers.

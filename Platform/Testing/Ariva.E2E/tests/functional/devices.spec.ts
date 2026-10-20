@@ -4,7 +4,7 @@ import { accounts, call, claimsOf, developmentSigningKey, headerOf, signIn, sign
 import { guardPage } from '../support/browser-guards';
 import { hosts, webUrl } from '../support/hosts';
 import { xssPayloads } from '../support/payloads';
-import { allowStatuses, databaseAvailable, earlyInStep, fillSignIn, ownAddress, signInThroughUi } from '../support/web-auth';
+import { allowStatuses, databaseAvailable, earlyInStep, fillSecret, fillSignIn, ownAddress, signInThroughUi } from '../support/web-auth';
 
 // ARV-054: the devices screen on the registry, calibration and health API (ARV-021 to ARV-025). A terminal duty manager
 // registers a sensor at the demo airport after a step-up; its credential is shown once with a copy action, works at the
@@ -78,7 +78,7 @@ test('a duty manager registers a sensor after a step-up; the credential is shown
 	// Registering is critical: the second factor is 20 minutes old, so the dialog asks for a fresh code.
 	const dialog = page.getByTestId('step-up-dialog');
 	await expect(dialog).toBeVisible();
-	await page.locator('#step-up-code').fill(totpCode(accounts().webDevices.totpSecret!));
+	await fillSecret(page.locator('#step-up-code'), totpCode(accounts().webDevices.totpSecret!));
 	await dialog.getByRole('button', { name: 'Confirm' }).click();
 
 	const reveal = page.getByTestId('credential-reveal');

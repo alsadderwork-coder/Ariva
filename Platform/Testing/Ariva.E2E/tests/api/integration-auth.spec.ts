@@ -4,6 +4,7 @@ import pg from 'pg';
 import { accounts, call, databaseAvailable, integrationSeedsFile, login, signIn, totpCode } from '../support/accounts';
 import { expectNoLeak } from '../support/api-assertions';
 import { hosts } from '../support/hosts';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-042: integration clients. An administrator with a recent second factor registers clients (secret and TOTP seed
 // shown once) bound to DMO and to the 10.0.0.0/8 network the suite forwards from. A client exchanges its client id,
@@ -41,7 +42,7 @@ async function register(name: string, overrides: Record<string, unknown> = {}): 
 		token: admin,
 		data: { name, kind: 'Aodb', scopes: ['flights:write'], siteCodes: ['DMO'], allowedNetworks: ['10.0.0.0/8'], ...overrides }
 	});
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	expect(created.headers()['cache-control']).toContain('no-store');
 	const credentials: Credentials = await created.json();
 	// The log scan (global-teardown.ts) looks for every seed shown in the run; secrets it finds by their ics_ shape.
@@ -54,7 +55,7 @@ const exchange = (clientId: string, clientSecret: string, totpCode: string, addr
 
 async function tokenOf(c: Credentials, offset = 0): Promise<string> {
 	const answer = await exchange(c.client.clientId, c.clientSecret, totpCode(c.totpSecret, offset));
-	expect(answer.status(), await answer.text()).toBe(200);
+	await expectStatus(answer, 200);
 	const body = await answer.json();
 	expect(Object.keys(body).sort()).toEqual(['accessToken', 'expiresAt', 'sessionId']);
 	return body.accessToken;
@@ -63,7 +64,7 @@ async function tokenOf(c: Credentials, offset = 0): Promise<string> {
 test.beforeAll(async () => {
 	const { userName, password, totpSecret } = accounts().integrationAdmin;
 	const signedIn = await login(userName, password, undefined, undefined, { code: totpCode(totpSecret!) });
-	expect(signedIn.status(), await signedIn.text()).toBe(200);
+	await expectStatus(signedIn, 200);
 	admin = (await signedIn.json()).accessToken;
 });
 
@@ -125,7 +126,7 @@ test('a token reaches only its scopes and sites, and neither kind of token works
 	const c = await register('E2E AODB scope');
 	const token = await tokenOf(c);
 	const caller = await call('GET', check('DMO'), { token, address: inside() });
-	expect(caller.status(), await caller.text()).toBe(200);
+	await expectStatus(caller, 200);
 	expect(await caller.json()).toMatchObject({ clientId: c.client.clientId, scopes: ['flights:write'], siteCodes: ['DMO'] });
 
 	expect((await call('GET', check('DMO', 'immigration'), { token, address: inside() })).status(), 'a scope it does not hold').toBe(403);
@@ -157,7 +158,7 @@ test('a client whose policy needs a code on every call gets 401 without one', as
 	expect((await call('GET', check('DMO', 'immigration'), { token, address: inside() })).status()).toBe(401);
 	expect((await call('GET', check('DMO', 'immigration'), { token, address: inside(), headers: { 'X-TOTP-Code': '12345' } })).status()).toBe(401);
 	const ok = await call('GET', check('DMO', 'immigration'), { token, address: inside(), headers: { 'X-TOTP-Code': totpCode(c.totpSecret) } });
-	expect(ok.status(), await ok.text()).toBe(200);
+	await expectStatus(ok, 200);
 	expect(await ok.json()).toMatchObject({ requireTotpPerRequest: true });
 });
 
@@ -173,7 +174,7 @@ test('ten failures lock the exchange until an administrator unlocks it; disablin
 	expect((await call('GET', check('DMO'), { token: before, address: inside() })).status(), 'a token held before the lock').toBe(200);
 
 	const unlocked = await call('POST', `${adminApi}/${c.client.id}/unlock`, { token: admin });
-	expect(unlocked.status(), await unlocked.text()).toBe(200);
+	await expectStatus(unlocked, 200);
 	const token = await tokenOf(c);
 	expect((await call('GET', check('DMO'), { token, address: inside() })).status()).toBe(200);
 

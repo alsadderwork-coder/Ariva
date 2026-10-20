@@ -1,4 +1,4 @@
-import { expect, type Page } from '@playwright/test';
+import { expect, type Locator, type Page } from '@playwright/test';
 import { accounts, clientAddress, databaseAvailable, totpCode, type Account } from './accounts';
 import type { PageGuards } from './browser-guards';
 import { homeHeading } from './shell';
@@ -19,15 +19,36 @@ export async function ownAddress(page: Page): Promise<string> {
 	return address;
 }
 
+/**
+ * ARV-152 (CWE-532): types a password, a TOTP code, a recovery code or a key into a field without putting it in the report.
+ * A `fill` step's title is `Fill "<value>"` and the HTML report keeps every step title, passed or not; here the value is set
+ * in the page instead (the input's own value setter, then the `input` and `change` events Svelte 5's bindings listen to),
+ * once the field is visible and editable as `fill` would wait for, so the step's title is "Evaluate". A trace still records
+ * the value as the call's argument: traces are kept only for a failed test and never in CI (playwright.config.ts).
+ */
+export async function fillSecret(field: Locator, value: string): Promise<void> {
+	await expect(field).toBeVisible();
+	await expect(field).toBeEditable();
+	await field.evaluate((element, text) => {
+		const input = element as HTMLInputElement;
+		input.focus();
+		const setValue = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), 'value')?.set;
+		if (setValue) setValue.call(input, text);
+		else input.value = text;
+		input.dispatchEvent(new Event('input', { bubbles: true }));
+		input.dispatchEvent(new Event('change', { bubbles: true }));
+	}, value);
+}
+
 /** Fills the sign-in form; with a TOTP account the code field appears after the first answer (401 mfa_required). */
 export async function fillSignIn(page: Page, account: Account, code?: string): Promise<void> {
 	await page.getByLabel('Username').fill(account.userName);
-	await page.getByLabel('Password', { exact: true }).fill(account.password);
+	await fillSecret(page.getByLabel('Password', { exact: true }), account.password);
 	await page.getByRole('button', { name: 'Sign in' }).click();
 	if (account.totpSecret) {
 		const field = page.getByLabel('Authenticator code');
 		await expect(field).toBeVisible();
-		await field.fill(code ?? totpCode(account.totpSecret));
+		await fillSecret(field, code ?? totpCode(account.totpSecret));
 		await page.getByRole('button', { name: 'Sign in' }).click();
 	}
 }

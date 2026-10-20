@@ -3,6 +3,7 @@ import { expect, test } from '@playwright/test';
 import pg from 'pg';
 import { accounts, call, databaseAvailable, integrationSeedsFile, login, totpCode } from '../support/accounts';
 import { hosts } from '../support/hosts';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-029: the AODB, AMAN and immigration emulators of Ariva.Simulation.Api. The emulated AODB, given an integration
 // client an administrator registered for DMO (flights:write), pushes a demo minute's schedule to Ariva's AIDX endpoint
@@ -41,7 +42,7 @@ async function query<T = Record<string, unknown>>(sql: string, values: unknown[]
 test.beforeAll(async () => {
 	const { userName, password, totpSecret } = accounts().emulatorFeedAdmin;
 	const signedIn = await login(userName, password, undefined, undefined, { code: totpCode(totpSecret!) });
-	expect(signedIn.status(), await signedIn.text()).toBe(200);
+	await expectStatus(signedIn, 200);
 	admin = (await signedIn.json()).accessToken;
 });
 
@@ -71,7 +72,7 @@ test('the emulated AODB pushes the demo schedule to Ariva as AIDX with its own c
 			allowedNetworks: ['127.0.0.0/8', '::1/128', '10.0.0.0/8']
 		}
 	});
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	const credentials = await created.json();
 	// The seed and the secret are scanned for in the host logs at teardown.
 	fs.appendFileSync(integrationSeedsFile, credentials.totpSecret + '\n' + credentials.clientSecret + '\n');
@@ -80,11 +81,11 @@ test('the emulated AODB pushes the demo schedule to Ariva as AIDX with its own c
 		headers: operator,
 		data: { aodb: { clientId: credentials.client.clientId, clientSecret: credentials.clientSecret, totpSecret: credentials.totpSecret, perRequestTotp: false } }
 	});
-	expect(loaded.status(), await loaded.text()).toBe(200);
+	await expectStatus(loaded, 200);
 	expect(await loaded.text()).not.toContain(credentials.clientSecret);
 
 	const played = await call('POST', `${feeds}/play`, { headers: operator, data: { minute: 1110 } });
-	expect(played.status(), await played.text()).toBe(200);
+	await expectStatus(played, 200);
 	const aodb = (await played.json()).aodb;
 	expect(aodb, JSON.stringify(aodb)).toMatchObject({ aidxConfigured: true, failures: 0, lastStatus: 200 });
 	expect(aodb.legsPushed).toBeGreaterThan(50);
@@ -112,7 +113,7 @@ test('the AUH-TA AODB pushes the AUH-TA arrivals to Ariva as AIDX with its own c
 			allowedNetworks: ['127.0.0.0/8', '::1/128', '10.0.0.0/8']
 		}
 	});
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	const credentials = await created.json();
 	fs.appendFileSync(integrationSeedsFile, credentials.totpSecret + '\n' + credentials.clientSecret + '\n');
 	const client = { clientId: credentials.client.clientId, clientSecret: credentials.clientSecret, totpSecret: credentials.totpSecret, perRequestTotp: false };
@@ -124,11 +125,11 @@ test('the AUH-TA AODB pushes the AUH-TA arrivals to Ariva as AIDX with its own c
 	expect((await call('PUT', `${feeds}/clients`, { headers: operator, data: { aodbSites: { DMO: client } } })).status()).toBe(400);
 
 	const loaded = await call('PUT', `${feeds}/clients`, { headers: operator, data: { aodbSites: { 'AUH-TA': client } } });
-	expect(loaded.status(), await loaded.text()).toBe(200);
+	await expectStatus(loaded, 200);
 	expect(await loaded.text()).not.toContain(credentials.clientSecret);
 
 	const played = await call('POST', `${feeds}/play`, { headers: operator, data: { minute: 1110 } });
-	expect(played.status(), await played.text()).toBe(200);
+	await expectStatus(played, 200);
 	const auh = ((await played.json()).aodbSites as { scenarioSite: string }[]).find((a) => a.scenarioSite === 'AUH-TA');
 	expect(auh, JSON.stringify(auh)).toMatchObject({ arivaSite: 'AUH-TA', airport: 'AUH', aidxConfigured: true, failures: 0, lastStatus: 200 });
 	expect((auh as unknown as { legsPushed: number }).legsPushed).toBeGreaterThan(20);
@@ -164,7 +165,7 @@ test('the mock AMAN exchanges a TOTP code once and serves its feed to a current 
 	// A step that was not used yet: the next one, still within the window.
 	const code = totpCode(amanSeed, 1);
 	const issued = await auth(code);
-	expect(issued.status(), await issued.text()).toBe(200);
+	await expectStatus(issued, 200);
 	const replay = await auth(code);
 	expect(replay.status(), 'the same step twice').toBe(401);
 	const token = (await issued.json()).accessToken as string;
@@ -176,7 +177,7 @@ test('the mock AMAN exchanges a TOTP code once and serves its feed to a current 
 		token,
 		headers: { 'X-TOTP-Code': totpCode(amanSeed) }
 	});
-	expect(page.status(), await page.text()).toBe(200);
+	await expectStatus(page, 200);
 	const envelope = await page.json();
 	expect(envelope.hasErrors).toBe(false);
 	expect(envelope.data.items.length).toBe(10);

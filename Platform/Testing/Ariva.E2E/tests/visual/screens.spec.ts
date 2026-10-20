@@ -2,9 +2,10 @@ import { expect, type Locator, type Page, test } from '@playwright/test';
 import pg from 'pg';
 import { createClient } from 'redis';
 import { accounts, call, login, totpCode } from '../support/accounts';
-import { hosts } from '../support/hosts';
+import { hosts, webUrl } from '../support/hosts';
 import { apiTime, routedAnswer, routedLane, staffingRoute, type RoutedAnswer, type RoutedInterval, type RoutedLane } from '../support/staffing';
 import { databaseAvailable, signInThroughUi } from '../support/web-auth';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-075: visual regression baselines for the key screens (live operations, immigration, the displays screen and a
 // passenger display, and since ARV-104h a validation campaign) in English and Arabic, light and dark, so an unintended change
@@ -151,10 +152,12 @@ async function createDisplay(shape: DisplayLayout = {}): Promise<string> {
 			layout: shape.layout ?? 'Full', queueShare: shape.queueShare ?? 60, secondRegion: 'Instructions'
 		}
 	});
-	expect(created.status(), created.status() === 201 ? 'the display is created' : await created.text()).toBe(201);
+	await expectStatus(created, 201, 'the display is created');
 	const display = await created.json();
 	planted.displays.push({ id: display.display.id, token });
-	return `/display?code=${code}#key=${encodeURIComponent(display.credential)}`;
+	// Absolute (ARV-152): a navigation's step keeps a relative address whole, fragment and key included; an absolute one
+	// without its fragment.
+	return `${webUrl}/display?code=${code}#key=${encodeURIComponent(display.credential)}`;
 }
 
 const campaignName = 'Arrivals hall A, pilot week 1';
@@ -185,7 +188,7 @@ async function plantCampaign(): Promise<string> {
 		token,
 		data: { name: campaignName, profileVersion: published.version, zoneIds, lineIds, days: [today], targetBinsPerLine: null, targetTracerRuns: null }
 	});
-	expect(created.status(), created.status() === 201 ? 'the campaign is planned' : await created.text()).toBe(201);
+	await expectStatus(created, 201, 'the campaign is planned');
 	return (await created.json()).id;
 }
 

@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { accounts, call, databaseAvailable, login, totpCode } from '../support/accounts';
 import { createAirport } from '../support/airports';
 import { hosts, kafkaAvailable } from '../support/hosts';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-025: device health. A calibrated device that pushes a status is Online with its last report; the health overview
 // lists the site's devices and queue zones with the heartbeat timeout; one device's health; another site's caller sees
@@ -26,7 +27,7 @@ test.beforeAll(async () => {
 	token = await tokenOf(accounts().deviceHealthAdmin);
 	const create = async (path: string, data: unknown) => {
 		const response = await call('POST', `${admin}/${path}`, { token, data });
-		expect(response.status(), `${path}: ${await response.text()}`).toBe(201);
+		await expectStatus(response, 201, path);
 		const json = await response.json();
 		return (json.id ?? json.profile?.id) as string;
 	};
@@ -42,7 +43,7 @@ test.beforeAll(async () => {
 	await create(`zone-profiles/${draft}/lines`, { name: 'Exit A', role: 'Exit', levelId, startX: 30, startY: 22, endX: 34, endY: 22, zoneId });
 	const { geometryHash } = await (await call('GET', `${admin}/zone-profiles/${draft}/validation`, { token })).json();
 	const published = await call('POST', `${admin}/zone-profiles/${draft}/publish`, { token, data: { geometryHash } });
-	expect(published.status(), await published.text()).toBe(200);
+	await expectStatus(published, 200);
 	const registered = await call('POST', `${admin}/devices`, {
 		token,
 		data: {
@@ -50,7 +51,7 @@ test.beforeAll(async () => {
 			placement: { levelId, x: 20, y: 16, mountingHeightMetres: 5, orientationDegrees: 0, queueZoneName: 'Snake A' }
 		}
 	});
-	expect(registered.status(), await registered.text()).toBe(201);
+	await expectStatus(registered, 201);
 	const body = await registered.json();
 	deviceId = body.device.id;
 	key = body.credential;
@@ -58,7 +59,7 @@ test.beforeAll(async () => {
 		token,
 		data: { method: 'ManualCountTally', sampleSize: 200, countingAccuracyPercent: 97, waitTimeErrorMinutes: 0.3 }
 	});
-	expect(calibrated.status(), await calibrated.text()).toBe(201);
+	await expectStatus(calibrated, 201);
 });
 
 test('the health overview lists the site\'s devices and zones', async () => {
@@ -68,7 +69,7 @@ test('the health overview lists the site\'s devices and zones', async () => {
 		headers: { 'X-Ariva-Device-Key': key, 'Content-Type': 'application/json' },
 		raw: JSON.stringify({ sentUtc: now, status: { online: true, temperatureCelsius: 40, frameRate: 12, timeUtc: now } })
 	});
-	expect(pushed.status(), await pushed.text()).toBe(202);
+	await expectStatus(pushed, 202);
 
 	const overview = await call('GET', `${admin}/devices/health?siteCode=${site}`, { token });
 	expect(overview.status()).toBe(200);

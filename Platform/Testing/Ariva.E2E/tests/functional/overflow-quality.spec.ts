@@ -6,6 +6,7 @@ import { accounts, call, signIn } from '../support/accounts';
 import { guardPage } from '../support/browser-guards';
 import { hosts } from '../support/hosts';
 import { allowStatuses, databaseAvailable, signInThroughUi } from '../support/web-auth';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-120: the overflow marker per queue on the live and immigration screens, the data-quality panel per zone (conservation
 // residual, track completion, occupancy range) for DataQuality.View holders only, and the health-check alarms per zone on
@@ -117,7 +118,7 @@ async function createRule(token: string, values: Record<string, unknown>): Promi
 			...values
 		}
 	});
-	expect(created.status(), created.status() === 201 ? `rule ${values.metric} created` : await created.text()).toBe(201);
+	await expectStatus(created, 201, `rule ${values.metric} created`);
 	const rule = await created.json();
 	return { id: rule.id, code: rule.code };
 }

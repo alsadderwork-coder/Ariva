@@ -17,7 +17,7 @@ import { guardPage } from '../support/browser-guards';
 import { hosts, webUrl } from '../support/hosts';
 import { domMarkers, xssPayloads } from '../support/payloads';
 import { homeHeading } from '../support/shell';
-import { allowStatuses, databaseAvailable, earlyInStep, fillSignIn, ownAddress, signInThroughUi } from '../support/web-auth';
+import { allowStatuses, databaseAvailable, earlyInStep, fillSecret, fillSignIn, ownAddress, signInThroughUi } from '../support/web-auth';
 
 // ARV-051 (ADR-0026): sign-in on Ariva.Web. The access token lives in memory only; a reload or a new tab takes one from
 // the refresh cookie; tabs share sign-out; the first sign-in changes the temporary password and enrols TOTP; a critical
@@ -135,12 +135,12 @@ test.describe('signing in', () => {
 
 		const { userName, password, totpSecret } = accounts().webTotp;
 		await page.getByLabel('اسم المستخدم').fill(userName);
-		await page.getByLabel('كلمة المرور', { exact: true }).fill(password);
+		await fillSecret(page.getByLabel('كلمة المرور', { exact: true }), password);
 		await page.getByRole('button', { name: 'تسجيل الدخول' }).click();
 		const code = page.getByLabel('رمز تطبيق المصادقة');
 		await expect(code).toBeVisible();
 		await expect(code).toBeFocused();
-		await code.fill(totpCode(totpSecret!));
+		await fillSecret(code, totpCode(totpSecret!));
 		await page.getByRole('button', { name: 'تسجيل الدخول' }).click();
 
 		await expect(page.getByRole('heading', { level: 1 })).toHaveText(homeHeading.ar);
@@ -280,7 +280,7 @@ test.describe('the session', () => {
 		expect((await call('POST', logoutUrl, { token: accessToken })).status()).toBe(204);
 		expect(await refusedWithin(accessToken, `${hosts.main}/api/auth/me`)).toBeGreaterThanOrEqual(0);
 
-		await page.locator('#account-code').fill(totpCode(totpSecret!));
+		await fillSecret(page.locator('#account-code'), totpCode(totpSecret!));
 		await page.getByRole('button', { name: 'Generate new recovery codes' }).click();
 
 		await expect(page).toHaveURL(`${webUrl}/login?next=%2Faccount`);
@@ -306,9 +306,9 @@ test.describe('first sign-in', () => {
 		await expect(steps.locator('[aria-current="step"]')).toContainText('New password');
 
 		// A different repeat is refused before anything is sent; then the server's own rule (no product name).
-		await page.getByLabel('Temporary password').fill(account.password);
-		await page.getByLabel('New password', { exact: true }).fill(webFirstPassword());
-		await page.getByLabel('Repeat the new password').fill(`${webFirstPassword()}x`);
+		await fillSecret(page.getByLabel('Temporary password'), account.password);
+		await fillSecret(page.getByLabel('New password', { exact: true }), webFirstPassword());
+		await fillSecret(page.getByLabel('Repeat the new password'), `${webFirstPassword()}x`);
 		await page.getByRole('button', { name: 'Change the password' }).click();
 		await expect(page.getByTestId('setup-error')).toHaveText('The two new passwords differ.');
 		await page.getByLabel('New password', { exact: true }).fill('ariva-station-2026');
@@ -316,8 +316,8 @@ test.describe('first sign-in', () => {
 		await page.getByRole('button', { name: 'Change the password' }).click();
 		await expect(page.getByTestId('setup-error')).toContainText('product name');
 
-		await page.getByLabel('New password', { exact: true }).fill(webFirstPassword());
-		await page.getByLabel('Repeat the new password').fill(webFirstPassword());
+		await fillSecret(page.getByLabel('New password', { exact: true }), webFirstPassword());
+		await fillSecret(page.getByLabel('Repeat the new password'), webFirstPassword());
 		await page.getByRole('button', { name: 'Change the password' }).click();
 
 		await expect(steps.locator('[aria-current="step"]')).toContainText('Authenticator');
@@ -329,7 +329,7 @@ test.describe('first sign-in', () => {
 		expect(secret).toMatch(/^[A-Z2-7]{16,}$/);
 		fs.appendFileSync(integrationSeedsFile, secret + '\n');
 
-		await page.getByLabel('Code from the app').fill(totpCode(secret));
+		await fillSecret(page.getByLabel('Code from the app'), totpCode(secret));
 		await page.getByRole('button', { name: 'Confirm the code' }).click();
 
 		await expect(steps.locator('[aria-current="step"]')).toContainText('Recovery codes');
@@ -387,18 +387,18 @@ test.describe('step-up', () => {
 		await page.getByRole('link', { name: 'Account security' }).click();
 
 		// The code in the form is the later step: the step-up code is used first (each step counts once).
-		await page.locator('#account-code').fill(totpCode(account.totpSecret!, 1));
+		await fillSecret(page.locator('#account-code'), totpCode(account.totpSecret!, 1));
 		await page.getByRole('button', { name: 'Generate new recovery codes' }).click();
 
 		const dialog = page.getByTestId('step-up-dialog');
 		await expect(dialog).toBeVisible();
 		await expect(dialog.getByRole('heading', { name: 'Confirm it is you' })).toBeVisible();
 		await expect(page.locator('#step-up-code')).toBeFocused();
-		await page.locator('#step-up-code').fill('000000');
+		await fillSecret(page.locator('#step-up-code'), '000000');
 		await dialog.getByRole('button', { name: 'Confirm' }).click();
 		await expect(dialog.getByRole('alert')).toHaveText('The code was not accepted.');
 
-		await page.locator('#step-up-code').fill(totpCode(account.totpSecret!));
+		await fillSecret(page.locator('#step-up-code'), totpCode(account.totpSecret!));
 		await dialog.getByRole('button', { name: 'Confirm' }).click();
 
 		await expect(dialog).toBeHidden();
@@ -424,7 +424,7 @@ test.describe('step-up', () => {
 		await fillSignIn(page, account, totpCode(account.totpSecret!, -1));
 		await expect(page.getByRole('heading', { level: 1 })).toHaveText(homeHeading.en);
 		await page.getByRole('link', { name: 'Account security' }).click();
-		await page.locator('#account-code').fill('123456');
+		await fillSecret(page.locator('#account-code'), '123456');
 		await page.getByRole('button', { name: 'Generate new recovery codes' }).click();
 
 		await expect(page.getByTestId('step-up-dialog')).toBeVisible();

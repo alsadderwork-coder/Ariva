@@ -2,6 +2,7 @@ import { expect } from '@playwright/test';
 import { type Account, call, login, unusedTotpCode } from './accounts';
 import { createAirport } from './airports';
 import { hosts } from './hosts';
+import { expectStatus } from './expect-status';
 
 // ARV-071: a site of its own for a load run (api/load.spec.ts) or for the screen watched under load
 // (functional/live-under-load.spec.ts): an airport, a terminal, a level and a published zone profile with one queue zone
@@ -29,7 +30,7 @@ export async function provisionLoadSite(admin: Account, prefix: string, zone = '
 	const token: string = signedIn ?? (await secondFactorSignIn(admin));
 	const create = async (resource: string, data: unknown) => {
 		const response = await call('POST', `${base}/${resource}`, { token, data });
-		expect(response.status(), `${resource}: ${await response.text()}`).toBe(201);
+		await expectStatus(response, 201, resource);
 		return response.json();
 	};
 	const site = `${prefix}${randomLetters(4)}`;

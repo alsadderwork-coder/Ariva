@@ -4,6 +4,7 @@ import { createClient } from 'redis';
 import { accounts, call, databaseAvailable, signIn } from '../support/accounts';
 import { hosts } from '../support/hosts';
 import { sqlInjectionPayloads, xssPayloads } from '../support/payloads';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-118: the availability ledger per operating minute (formulas F18, Proposed). The site operating calendar is kept
 // through api/v1/admin/sites/{siteCode}/calendar (read with the site's view permission, changed with its edit permission,
@@ -71,14 +72,14 @@ test.describe('site operating calendar', () => {
 
 	test('an administrator of the site records hours, an exception and a maintenance window before they take effect', async () => {
 		const read = await call('GET', calendar(), { token: siteAdmin });
-		expect(read.status(), await read.text()).toBe(200);
+		await expectStatus(read, 200);
 		expect(await read.json()).toMatchObject({ siteCode: 'E2E3', timeZoneId: 'UTC' });
 
 		const week = await call('PUT', `${calendar()}/weeks`, {
 			token: siteAdmin,
 			data: { effectiveFrom: ahead(offset), hours: [{ day: 'Friday', opens: '18:00', closes: '02:00' }, { day: 'Monday', opens: '06:00', closes: '22:00' }] }
 		});
-		expect(week.status(), await week.text()).toBe(200);
+		await expectStatus(week, 200);
 		const weeks = (await week.json()).weeks as { id: string; effectiveFrom: string; hours: unknown[] }[];
 		const set = weeks.find((w) => w.effectiveFrom === ahead(offset));
 		expect(set?.hours).toEqual([
@@ -93,7 +94,7 @@ test.describe('site operating calendar', () => {
 			token: siteAdmin,
 			data: { date: ahead(offset + 1), closed: true, hours: [], reason: xssPayloads[0] }
 		});
-		expect(exception.status(), await exception.text()).toBe(200);
+		await expectStatus(exception, 200);
 		expect(exception.headers()['content-type']).toContain('application/json');
 		expect(exception.headers()['x-content-type-options']).toBe('nosniff');
 		const added = ((await exception.json()).exceptions as { id: string; date: string; reason: string; closed: boolean }[]).find((e) => e.date === ahead(offset + 1));
@@ -111,7 +112,7 @@ test.describe('site operating calendar', () => {
 			token: siteAdmin,
 			data: { startsUtc: `${ahead(offset)}T01:00:00Z`, endsUtc: `${ahead(offset)}T02:30:00Z`, reason: sqlInjectionPayloads[2] }
 		});
-		expect(window.status(), await window.text()).toBe(200);
+		await expectStatus(window, 200);
 		const planned = ((await window.json()).maintenanceWindows as { id: string; startsUtc: string; reason: string }[]).find(
 			(w) => w.startsUtc === `${ahead(offset)}T01:00:00Z`
 		);
@@ -185,7 +186,7 @@ test.describe('site operating calendar', () => {
 		expect(ids.map((entry) => entry.kind).sort(), 'the first test planted one of each').toEqual(['exceptions', 'maintenance-windows', 'weeks']);
 		for (const { kind, id } of ids) {
 			const answer = await call('DELETE', `${calendar()}/${kind}/${id}`, { token: siteAdmin });
-			expect(answer.status(), `${kind} ${await answer.text()}`).toBe(200);
+			await expectStatus(answer, 200, kind);
 			const view = await answer.json();
 			const listed = (view[kind === 'maintenance-windows' ? 'maintenanceWindows' : kind] as { id: string }[]).map((entry) => entry.id);
 			expect(listed, kind).not.toContain(id);
@@ -313,7 +314,7 @@ test.describe('availability per day, week and range', () => {
 
 	test('available operating minutes over operating minutes, per local day, Monday-to-Sunday week and range', async () => {
 		const answer = await call('GET', availability() + range('2025-12-30', '2026-01-05'), { token: border });
-		expect(answer.status(), await answer.text()).toBe(200);
+		await expectStatus(answer, 200);
 		const view = await answer.json();
 		expect(view).toMatchObject({ siteCode: 'DMO', timeZoneId: 'Asia/Dubai', from: '2025-12-30', to: '2026-01-05', pilotTarget: 0.99 });
 		expect(view.days).toHaveLength(7);

@@ -5,6 +5,7 @@ import { createAirport } from '../support/airports';
 import { expectNoLeak, expectProblemDetails } from '../support/api-assertions';
 import { hosts } from '../support/hosts';
 import { markupFragments, sqlInjectionPayloads, xssPayloads } from '../support/payloads';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-089 (ASVS 5.0 V2.2.1, V15.3.5, V15.3.7): request input is read strictly. A JSON body with a member its request model
 // does not have, a member sent twice (also in another case) or a number sent as a string is refused with the controller's
@@ -63,7 +64,7 @@ test.beforeAll(async () => {
 	stepped = (await signedIn.json()).accessToken;
 	const create = async (path: string, data: unknown) => {
 		const response = await call('POST', `${admin}/${path}`, { token: stepped, data });
-		expect(response.status(), `${path}: ${await response.text()}`).toBe(201);
+		await expectStatus(response, 201, path);
 		const body = await response.json();
 		return (body.id ?? body.profile?.id) as string;
 	};
@@ -89,7 +90,7 @@ test.beforeAll(async () => {
 		}
 	});
 	// The answer carries the device credential: it goes into the message only on failure.
-	expect(registered.status(), registered.status() === 201 ? 'device registered' : await registered.text()).toBe(201);
+	await expectStatus(registered, 201, 'device registered');
 	deviceKey = (await registered.json()).credential;
 
 	// An integration client of the site. Its token exchange carries a member the request does not have (the login freeze:
@@ -98,7 +99,7 @@ test.beforeAll(async () => {
 		token: stepped,
 		data: { name: `E2E strict input ${site}`, kind: 'Aodb', scopes: ['flights:write'], siteCodes: [site], allowedNetworks: ['10.0.0.0/8'] }
 	});
-	expect(created.status(), created.status() === 201 ? 'client registered' : await created.text()).toBe(201);
+	await expectStatus(created, 201, 'client registered');
 	client = await created.json();
 	fs.appendFileSync(integrationSeedsFile, client.totpSecret + '\n');
 	const exchanged = await call('POST', `${hosts.integration}/api/v1/auth`, {
@@ -153,7 +154,7 @@ test.describe('Ariva.Api.Main JSON bodies', () => {
 
 	test('a strict body is taken, and the answer writes numbers as numbers', async () => {
 		const response = await call('PUT', levelUrl(), { token: stepped, data: { ...level, widthMetres: 120.5 } });
-		expect(response.status(), await response.text()).toBe(200);
+		await expectStatus(response, 200);
 		const saved = await response.json();
 		expect(saved).toMatchObject({ name: level.name, floorNumber: 0, widthMetres: 120.5, depthMetres: 50 });
 		expect(typeof saved.widthMetres).toBe('number');
@@ -175,7 +176,7 @@ test.describe('repeated query parameters', () => {
 			await expectRefusedQuery(response, why, [...sent]);
 		}
 		const once = await call('GET', `${admin}/levels?siteCode=${site}&text=Arrivals&pageSize=50`, { token: stepped });
-		expect(once.status(), await once.text()).toBe(200);
+		await expectStatus(once, 200);
 		expect((await once.json()).data.map((l: { id: string }) => l.id)).toContain(levelId);
 	});
 
@@ -258,7 +259,7 @@ test.describe('the login freeze (TEMPORARY until ARV-089a)', () => {
 			data: { clientId: client.client.clientId, clientSecret: client.clientSecret, totpCode: totpCode(client.totpSecret, 1) },
 			address: inside()
 		});
-		expect(repeated.status(), await repeated.text()).toBe(200);
+		await expectStatus(repeated, 200);
 		expect((await repeated.json()).accessToken, 'a token').toBeTruthy();
 	});
 });

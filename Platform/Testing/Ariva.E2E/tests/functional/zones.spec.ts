@@ -4,7 +4,8 @@ import { createAirport } from '../support/airports';
 import { guardPage } from '../support/browser-guards';
 import { hosts } from '../support/hosts';
 import { xssPayloads } from '../support/payloads';
-import { allowStatuses, databaseAvailable, earlyInStep, fillSignIn, ownAddress, signInThroughUi } from '../support/web-auth';
+import { allowStatuses, databaseAvailable, earlyInStep, fillSecret, fillSignIn, ownAddress, signInThroughUi } from '../support/web-auth';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-053: the zones screen on the zone profile API (ARV-017) and floor plans (ARV-018). A terminal duty manager at a
 // site of its own starts a draft, draws a queue zone by dragging its corners and through the vertex table, adds its
@@ -37,12 +38,12 @@ test.beforeAll(async () => {
 		token: admin,
 		data: { airportId: airport.id, code: 'TZ', name: 'Zones terminal', siteCode: 'E2EZ' }
 	});
-	expect(terminal.status(), await terminal.text()).toBe(201);
+	await expectStatus(terminal, 201);
 	const level = await call('POST', `${api}/levels`, {
 		token: admin,
 		data: { terminalId: (await terminal.json()).id, code: 'LZ', name: 'Zones hall', floorNumber: 0, widthMetres: 60, depthMetres: 40 }
 	});
-	expect(level.status(), await level.text()).toBe(201);
+	await expectStatus(level, 201);
 });
 
 /** Signs in with the second factor 20 minutes old, as after a long shift, so publishing asks for a fresh code. */
@@ -158,7 +159,7 @@ test('a duty manager draws a queue zone and its lines, checks the draft and publ
 	// The second factor is 20 minutes old: the step-up dialog asks for a fresh code, then the publish goes through.
 	const dialog = page.getByTestId('step-up-dialog');
 	await expect(dialog).toBeVisible();
-	await page.locator('#step-up-code').fill(totpCode(accounts().webZones.totpSecret!));
+	await fillSecret(page.locator('#step-up-code'), totpCode(accounts().webZones.totpSecret!));
 	await dialog.getByRole('button', { name: 'Confirm' }).click();
 	await expect(page.getByText(/Version \d+ is live\./)).toBeVisible();
 	await expect(page.getByLabel('Version')).toContainText('Published');

@@ -6,6 +6,7 @@ import { hosts } from '../support/hosts';
 import { provisionLoadSite, randomLetters, secondFactorSignIn } from '../support/load-site';
 import { box, lasting, live, renamed, videoFixture, withCodec } from '../support/media';
 import { sqlInjectionPayloads, xssPayloads } from '../support/payloads';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-142a: the advertisement library of sites of its own (fresh codes each run, so no other spec shares them). Images are
 // typed by their bytes and written anew (metadata, comments and anything after the image's end are gone), stored under
@@ -93,7 +94,7 @@ async function upload(token: string, content: Buffer | string, fileName: string,
 
 async function uploaded(token: string, content: Buffer = png, details: Details = {}, at = site): Promise<{ id: string; status: string }> {
 	const response = await upload(token, content, 'ad.png', 'image/png', details, at);
-	expect(response.status(), await response.text()).toBe(201);
+	await expectStatus(response, 201);
 	return response.json();
 }
 
@@ -119,7 +120,7 @@ async function allow(code: string) {
 			reviewedProfileId: publishedProfileId
 		}
 	});
-	expect(changed.status(), await changed.text()).toBe(200);
+	await expectStatus(changed, 200);
 }
 
 /**
@@ -232,7 +233,7 @@ test.beforeAll(async () => {
 				secondRegion
 			}
 		});
-		expect(made.status(), await made.text()).toBe(201);
+		await expectStatus(made, 201);
 		const issued = await made.json();
 		displays[secondRegion === 'Advertising' ? 'advertising' : 'instructions'] = { id: issued.display.id, code, credential: issued.credential };
 	}
@@ -241,7 +242,7 @@ test.beforeAll(async () => {
 test('an image is typed by its bytes, written anew without what it carried, and kept as a draft under a generated name', async () => {
 	// A PNG with a page after its end, declared as HTML: stored as the PNG it is, without the page.
 	const created = await upload(manager, Buffer.concat([png, Buffer.from(markup)]), 'summer.png', 'text/html');
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	const item = await created.json();
 	expect(item).toMatchObject({
 		siteCode: site,
@@ -277,12 +278,12 @@ test('an image is typed by its bytes, written anew without what it carried, and 
 
 	// A JPEG with markup in a comment, and a WebP: each kept in its own type, the comment gone.
 	const fromJpeg = await upload(manager, withComment(jpeg, markup), 'winter.jpg', 'image/jpeg');
-	expect(fromJpeg.status(), await fromJpeg.text()).toBe(201);
+	await expectStatus(fromJpeg, 201);
 	const stored = await fetch(`${mediaUrl(site, (await fromJpeg.json()).id)}/content`, { headers: { Authorization: `Bearer ${manager}` } });
 	expect(stored.headers.get('content-type')).toBe('image/jpeg');
 	expect(Buffer.from(await stored.arrayBuffer()).toString('latin1')).not.toContain('<script');
 	const fromWebp = await upload(manager, webp, 'spring.webp', 'image/webp');
-	expect(fromWebp.status(), await fromWebp.text()).toBe(201);
+	await expectStatus(fromWebp, 201);
 	expect((await fromWebp.json()).contentType).toBe('image/webp');
 });
 
@@ -339,7 +340,7 @@ test('a video is typed by its container, kept without its metadata and with its 
 		const original = videoFixture(name);
 		// Declared as something else: the container decides.
 		const created = await upload(videoMaker, original, name, 'application/octet-stream');
-		expect(created.status(), await created.text()).toBe(201);
+		await expectStatus(created, 201);
 		const item = await created.json();
 		expect(item, name).toMatchObject({
 			contentType: type,
@@ -368,17 +369,17 @@ test('a video is typed by its container, kept without its metadata and with its 
 		'spot.mp4',
 		'video/mp4'
 	);
-	expect(hidden.status(), await hidden.text()).toBe(201);
+	await expectStatus(hidden, 201);
 	const zeroed = await fetch(`${mediaUrl(site, (await hidden.json()).id)}/content`, { headers: { Authorization: `Bearer ${videoMaker}` } });
 	expect(Buffer.from(await zeroed.arrayBuffer()).toString('latin1')).not.toContain('<script');
 
 	// Approved by a second person with a second factor, a video plays on the display like an image.
 	const spot = await upload(videoMaker, videoFixture('av1.webm'), 'spot.webm', 'video/webm');
-	expect(spot.status(), await spot.text()).toBe(201);
+	await expectStatus(spot, 201);
 	const video = await spot.json();
 	expect((await fetchAsDisplay(video.id, displays.advertising)).status, 'a draft').toBe(404);
 	const approved = await approve(site, video.id, approver);
-	expect(approved.status(), await approved.text()).toBe(200);
+	await expectStatus(approved, 200);
 	expect((await approved.json()).status).toBe('Approved');
 	const shown = await fetchAsDisplay(video.id, displays.advertising);
 	expect(shown.status).toBe(200);
@@ -429,13 +430,13 @@ test('video upload attacks are refused without an echo: data after the end, poly
 		expect(streamed.sent, 'the server closed the connection near 20 MB').toBeLessThan(40 * 1024 * 1024);
 		streamed = await streamUpload(videoAttacker, 60 * 1024 * 1024);
 	}
-	expect(streamed.status, streamed.body).toBe(413);
+	await expectStatus(streamed, 413);
 	expect(streamed.body).toContain('The file is larger than 20 MB.');
 	expect(streamed.sent, 'the server stopped reading near 20 MB, not at the 100 MB ceiling').toBeLessThan(40 * 1024 * 1024);
 	expect((await (await call('GET', mediaUrl(site), { token: videoAttacker })).json()).length, 'nothing is stored').toBe(before);
 	// Declared larger than the installation takes, a body is refused before its form is read (the endpoint's ceiling is 100 MB).
 	const declared = await streamUpload(videoAttacker, 25 * 1024 * 1024, true);
-	expect(declared.status, declared.body).toBe(413);
+	await expectStatus(declared, 413);
 	expect(declared.body).toContain('The file is larger than 20 MB.');
 	expect(declared.sent, 'answered before any of the body was asked for').toBe(0);
 });
@@ -457,7 +458,7 @@ test('details are bounded plain text: markup is kept as text, control and invisi
 	}
 	// A file name made of markup is kept as text (it holds no path) and returned as JSON text.
 	const named = await upload(prober, png, '<img src=x onerror=alert(1)>.png', 'image/png');
-	expect(named.status(), await named.text()).toBe(201);
+	await expectStatus(named, 201);
 	expect(named.headers()['content-type']).toContain('application/json');
 	expect((await named.json()).originalFileName).toBe('<img src=x onerror=alert(1)>.png');
 
@@ -497,7 +498,7 @@ test('approval needs a second person with a second factor; a change sends an app
 			endsOn: day(700)
 		}
 	});
-	expect(widened.status(), await widened.text()).toBe(200);
+	await expectStatus(widened, 200);
 	const stale = await call('POST', `${mediaUrl(site, item.id)}/approve`, {
 		token: approver,
 		data: { reviewed: shown }
@@ -515,7 +516,7 @@ test('approval needs a second person with a second factor; a change sends an app
 	).toBe(400);
 
 	const approved = await approve(site, item.id, approver);
-	expect(approved.status(), await approved.text()).toBe(200);
+	await expectStatus(approved, 200);
 	expect(await approved.json()).toMatchObject({
 		status: 'Approved',
 		approvedBy: accounts().mediaApprover.userName,
@@ -534,7 +535,7 @@ test('approval needs a second person with a second factor; a change sends an app
 			endsOn: day(60)
 		}
 	});
-	expect(changed.status(), await changed.text()).toBe(200);
+	await expectStatus(changed, 200);
 	expect(await changed.json()).toMatchObject({
 		status: 'Draft',
 		approvedBy: null,
@@ -659,7 +660,7 @@ test('a retired item never plays again and is not changed; turning advertising o
 	const retired = await call('POST', `${mediaUrl(site, item.id)}/retire`, {
 		token: manager
 	});
-	expect(retired.status(), await retired.text()).toBe(200);
+	await expectStatus(retired, 200);
 	expect(await retired.json()).toMatchObject({
 		status: 'Retired',
 		playable: false
@@ -699,7 +700,7 @@ test('a retired item never plays again and is not changed; turning advertising o
 			reviewedProfileId: null
 		}
 	});
-	expect(turnedOff.status(), await turnedOff.text()).toBe(200);
+	await expectStatus(turnedOff, 200);
 	expect((await call('GET', mediaUrl(site), { token: manager })).status(), 'the library while advertising is off').toBe(403);
 	expect((await fetchAsDisplay(playing.id, displays.advertising)).status, 'an approved item while advertising is off').toBe(404);
 });

@@ -4,6 +4,7 @@ import pg from 'pg';
 import { accounts, call, databaseAvailable, integrationSeedsFile, login, totpCode } from '../support/accounts';
 import { expectNoLeak, expectProblemDetails } from '../support/api-assertions';
 import { hosts } from '../support/hosts';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-043: the Integration API for any AODB. A client with flights:write and allocations:write for DMO sends flight
 // legs, flight events and counter allocations in batches of 1 to 500 items and at most 1 MB, each with an
@@ -53,14 +54,14 @@ async function client(name: string, scopes: string[]): Promise<{ credentials: Cr
 		token: admin,
 		data: { name, kind: 'Aodb', scopes, siteCodes: ['DMO'], allowedNetworks: ['10.0.0.0/8'] }
 	});
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	const credentials: Credentials = await created.json();
 	fs.appendFileSync(integrationSeedsFile, credentials.totpSecret + '\n');
 	const exchanged = await call('POST', `${hosts.integration}/api/v1/auth`, {
 		data: { clientId: credentials.client.clientId, clientSecret: credentials.clientSecret, totpCode: totpCode(credentials.totpSecret) },
 		address: inside()
 	});
-	expect(exchanged.status(), await exchanged.text()).toBe(200);
+	await expectStatus(exchanged, 200);
 	return { credentials, token: (await exchanged.json()).accessToken };
 }
 
@@ -86,7 +87,7 @@ const leg = (n: number, direction = 'Arrival', more: Record<string, unknown> = {
 test.beforeAll(async () => {
 	const { userName, password, totpSecret } = accounts().feedAdmin;
 	const signedIn = await login(userName, password, undefined, undefined, { code: totpCode(totpSecret!) });
-	expect(signedIn.status(), await signedIn.text()).toBe(200);
+	await expectStatus(signedIn, 200);
 	admin = (await signedIn.json()).accessToken;
 	aodb = await client('E2E AODB flights', ['flights:write', 'allocations:write']);
 	flightsOnly = await client('E2E AODB flights only', ['flights:write']);
@@ -95,7 +96,7 @@ test.beforeAll(async () => {
 test('a batch of legs is applied item by item, and a retry with its key gets the same answer without applying it again', async () => {
 	const body = { messageTimeUtc: at(-1), items: [leg(1), leg(2, 'Departure'), leg(3)] };
 	const first = await send('flights/batch', body, key(1));
-	expect(first.status(), await first.text()).toBe(200);
+	await expectStatus(first, 200);
 	expect(first.headers()['idempotent-replayed']).toBeUndefined();
 	const answer = await first.json();
 	expect(answer).toMatchObject({ received: 3, applied: 3, unchanged: 0, refused: 0 });
@@ -111,7 +112,7 @@ test('a batch of legs is applied item by item, and a retry with its key gets the
 
 	// Keys are per client: another client's batch under the same key is its own, never the first client's answer.
 	const other = await send('flights/batch', body, key(1), flightsOnly.token);
-	expect(other.status(), await other.text()).toBe(200);
+	await expectStatus(other, 200);
 	expect(other.headers()['idempotent-replayed']).toBeUndefined();
 	expect(await other.json(), 'applied as its own feed: nothing newer than what it sent itself').toMatchObject({ received: 3, refused: 0 });
 
@@ -148,7 +149,7 @@ test('events and counter allocations reach known legs; allocations need their ow
 			{ flightKey: `E2E-${run}-20`, eventType: 'landed', timeUtc: at(1) }
 		]
 	}, key(21));
-	expect(events.status(), await events.text()).toBe(200);
+	await expectStatus(events, 200);
 	const eventAnswer = await events.json();
 	expect(eventAnswer).toMatchObject({ received: 3, applied: 1, refused: 2 });
 	expect(eventAnswer.items[1].errors.length, 'an unknown leg').toBeGreaterThan(0);
@@ -156,7 +157,7 @@ test('events and counter allocations reach known legs; allocations need their ow
 
 	const allocation = { items: [{ flightKey: `E2E-${run}-21`, checkpointCode: 'CI', counterCodes: ['Z99', 'Z98'], openUtc: at(30), closeUtc: at(150) }] };
 	const allocated = await send('allocations/batch', allocation, key(22));
-	expect(allocated.status(), await allocated.text()).toBe(200);
+	await expectStatus(allocated, 200);
 	const allocationAnswer = await allocated.json();
 	expect(allocationAnswer.items[0].errors).toEqual([]);
 	expect(allocationAnswer.items[0].warnings.length, 'unmapped counters are kept apart and reported').toBeGreaterThan(0);
@@ -188,7 +189,7 @@ test('malformed, oversized and unknown-member bodies are refused as a whole with
 	for (const [why, sending, status] of cases) {
 		const answer = await sending();
 		const text = await answer.text();
-		expect(answer.status(), `${why}: ${text.slice(0, 300)}`).toBe(status);
+		await expectStatus(answer, status, why);
 		expect(answer.headers()['content-type'], why).toContain('application/problem+json');
 		expectNoLeak(text, why);
 		for (const echoed of ['adminOverride', "OR '1'='1", '<flights/>']) expect(text, why).not.toContain(echoed);
@@ -214,7 +215,7 @@ test('injection payloads in items are refused item by item and never reach the d
 	];
 	const answer = await send('flights/batch', { items: hostile }, key(50));
 	const text = await answer.text();
-	expect(answer.status(), text).toBe(200);
+	await expectStatus(answer, 200);
 	const body = JSON.parse(text);
 	expect(body).toMatchObject({ received: hostile.length, applied: 1, refused: hostile.length - 1 });
 	expect(body.items[hostile.length - 1]).toMatchObject({ applied: true, errors: [] });

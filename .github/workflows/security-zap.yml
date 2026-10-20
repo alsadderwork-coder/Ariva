@@ -113,19 +113,37 @@ jobs:
         run: |
           npm ci --prefix ../../Frontplane/Ariva.Web
           npm ci
+      # ARV-152: the job's account seed (playwright.config.ts keeps a seed it is given), so the artifact check below can derive
+      # the scan account's password and the run's other secrets (given to the run from the seed) and look for them; the seed
+      # and every value derived from it are masked in this public log.
+      - name: Account seed for the run
+        run: |
+          seed="$(node -e "process.stdout.write(require('node:crypto').randomBytes(24).toString('base64url'))")"
+          echo "::add-mask::$seed"
+          ARIVA_E2E_ACCOUNT_SEED="$seed" node scripts/artifact-secrets.mjs --mask github
+          echo "ARIVA_E2E_ACCOUNT_SEED=$seed" >> "$GITHUB_ENV"
+          ARIVA_E2E_ACCOUNT_SEED="$seed" node scripts/artifact-secrets.mjs --env github >> "$GITHUB_ENV"
       - name: Reserve the hosts' ports from the ephemeral range
         run: sudo sysctl -w net.ipv4.ip_local_reserved_ports=51000-51100,25251,5081,3000
       - name: Scan (Playwright starts the stack; tests/zap runs ZAP)
+        id: scan
         run: npx playwright test --project=zap 2>&1 | tee zap.log
+      # ARV-152 (CWE-532): the authenticated API scans carry the scan account's bearer token, so before the reports are uploaded
+      # nothing in them, in the run's log or in the Playwright report may hold a credential; a finding fails the job and
+      # nothing is uploaded (scripts/artifact-secrets.mjs names the file and the kind, never the value).
+      - name: No secret in the ZAP reports
+        id: artifacts
+        if: ${{ !cancelled() && (steps.scan.outcome == 'success' || steps.scan.outcome == 'failure') }}
+        run: node scripts/artifact-secrets.mjs --require-seed zap-reports zap.log playwright-report test-results
       - name: ZAP reports
-        if: always()
+        if: always() && steps.artifacts.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: zap-reports
           path: Platform/Testing/Ariva.E2E/zap-reports
           retention-days: 30
       - name: Findings in the job summary
-        if: always()
+        if: always() && steps.artifacts.outcome == 'success'
         run: |
           if [ -f zap-reports/summary.md ]; then cat zap-reports/summary.md >> "$GITHUB_STEP_SUMMARY"; fi
 

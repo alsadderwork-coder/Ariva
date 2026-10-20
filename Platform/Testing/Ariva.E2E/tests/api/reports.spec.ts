@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import pg from 'pg';
 import { accounts, call, databaseAvailable, signIn } from '../support/accounts';
 import { hosts, smtp4dev } from '../support/hosts';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-060: the daily report and its scheduled delivery. The suite plants yesterday's minutes of the demo airport's crew
 // lane (A-CRW) with their histograms and one alert whose rule name is a spreadsheet formula, as the Stream host and the
@@ -104,7 +105,7 @@ test.afterAll(async () => {
 
 test('the daily report merges the lane hour and answers per role and site', async () => {
 	const answer = await call('GET', `${reportsApi}/daily?date=${date}`, { token: border });
-	expect(answer.status(), await answer.text()).toBe(200);
+	await expectStatus(answer, 200);
 	const report = await answer.json();
 	expect(report.timeZoneId).toBe('Asia/Dubai');
 	const crew = report.lanes.find((l: { zone: string }) => l.zone === 'A-CRW');
@@ -163,7 +164,7 @@ test('a schedule sends each recipient its report once, through TickerQ in Cronz'
 		'an id that is not an allowed recipient'
 	).toBe(400);
 	const created = await call('POST', schedulesApi, { token: border, data: { siteCode: 'DMO', name: 'Night peaks', sendAt: '00:00', recipientIds: ids } });
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	scheduleId = (await created.json()).id;
 	expect((await call('POST', schedulesApi, { token: handler, data: { siteCode: 'DMO', name: 'x', sendAt: '00:00', recipientIds: ids } })).status()).toBe(403);
 	expect((await call('GET', `${schedulesApi}/${scheduleId}`, { token: elsewhere })).status(), "another site's schedule").toBe(404);

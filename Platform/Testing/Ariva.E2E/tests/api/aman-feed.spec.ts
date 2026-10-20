@@ -5,6 +5,7 @@ import pg from 'pg';
 import { accounts, call, databaseAvailable, integrationSeedsFile, login, totpCode } from '../support/accounts';
 import { expectNoLeak, expectProblemDetails } from '../support/api-assertions';
 import { hosts, kafkaAvailable } from '../support/hosts';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-048: the AMAN feed and immigration endpoints with the simulator's AMAN over both transports. Over Kafka, the AMAN
 // records of a demo minute reach Ariva.Api.Integration's consumers and are stored as the feed aman-kafka; over REST,
@@ -65,7 +66,7 @@ async function register(name: string, kind: string, scopes: string[], perRequest
 			requireTotpPerRequest: perRequestTotp
 		}
 	});
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	const credentials: Credentials = await created.json();
 	fs.appendFileSync(integrationSeedsFile, credentials.totpSecret + '\n' + credentials.clientSecret + '\n');
 	return credentials;
@@ -81,7 +82,7 @@ async function client(name: string, kind: string, scopes: string[], perRequestTo
 		},
 		address: inside()
 	});
-	expect(exchanged.status(), await exchanged.text()).toBe(200);
+	await expectStatus(exchanged, 200);
 	return { credentials, token: (await exchanged.json()).accessToken as string };
 }
 
@@ -118,7 +119,7 @@ test.beforeAll(async () => {
 	const signedIn = await login(userName, password, undefined, undefined, {
 		code: totpCode(totpSecret!)
 	});
-	expect(signedIn.status(), await signedIn.text()).toBe(200);
+	await expectStatus(signedIn, 200);
 	admin = (await signedIn.json()).accessToken;
 	aman = await client(`E2E AMAN ${run}`, 'Immigration', ['immigration:write'], true);
 	flightsOnly = await client(`E2E AODB only ${run}`, 'Aodb', ['flights:write'], false);
@@ -131,7 +132,7 @@ test('the AMAN emulator feeds Ariva over Kafka, codes resolved through the AMAN 
 		headers: operator,
 		data: { minute: 1100 }
 	});
-	expect(played.status(), await played.text()).toBe(200);
+	await expectStatus(played, 200);
 	const kafka = (await played.json()).aman.transports.find((t: { transport: string }) => t.transport === 'kafka');
 	expect(kafka, JSON.stringify(kafka)).toMatchObject({
 		configured: true,
@@ -179,11 +180,11 @@ test('AMAN and another immigration system feed Ariva over REST with their own cl
 			immigration: { clientId: other.client.clientId, clientSecret: other.clientSecret, totpSecret: other.totpSecret, perRequestTotp: false }
 		}
 	});
-	expect(loaded.status(), await loaded.text()).toBe(200);
+	await expectStatus(loaded, 200);
 
 	for (const minute of [1120, 1121]) {
 		const played = await call('POST', `${feeds}/play`, { headers: operator, data: { minute } });
-		expect(played.status(), await played.text()).toBe(200);
+		await expectStatus(played, 200);
 		const status = await played.json();
 		for (const system of [status.aman, status.immigration]) {
 			const rest = system.transports.find((t: { transport: string }) => t.transport === 'rest');
@@ -238,7 +239,7 @@ test('the immigration endpoints check every record and keep each once', async ()
 		]
 	};
 	const answer = await send('desk-interval-stats', body, `e2e-${run}-desks`);
-	expect(answer.status(), await answer.text()).toBe(200);
+	await expectStatus(answer, 200);
 	const result = await answer.json();
 	expect(result).toMatchObject({ received: 6, applied: 2, refused: 4 });
 	expect(result.items[1].errors[0]).toContain('intervalSeconds is 60');
@@ -319,6 +320,6 @@ test('the immigration endpoints refuse what is not the contract, a call without 
 	const site = await send('desk-sessions', { items: [session] }, `e2e-${run}-site`, { site: 'BEY' });
 	expect(site.status(), 'a site the client is not bound to').toBe(403);
 	const ok = await send('desk-sessions', { items: [session] }, `e2e-${run}-session`);
-	expect(ok.status(), await ok.text()).toBe(200);
+	await expectStatus(ok, 200);
 	expect((await ok.json()).applied).toBe(1);
 });

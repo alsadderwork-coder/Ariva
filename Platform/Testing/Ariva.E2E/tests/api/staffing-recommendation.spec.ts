@@ -4,6 +4,7 @@ import { accounts, call, databaseAvailable, signIn } from '../support/accounts';
 import { hosts } from '../support/hosts';
 import { markupFragments, sqlInjectionPayloads, xssPayloads } from '../support/payloads';
 import { staffingDatabase as database, staffingPlan as plan } from '../support/staffing';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-181a: GET api/v1/sites/{siteCode}/staffing-recommendation (ArrivalWaveLanes.View: border data, site-scoped) answers
 // the indicative staffing recommendation (formulas F16 pilot version) that Ariva.Api.Cronz computes once a minute into
@@ -125,7 +126,7 @@ const reasons = ['None', 'NoQueueLength', 'NoThroughput', 'FlightWithoutPassenge
 
 test('each arrivals-hall lane with its 13 intervals, the owner’s preview for the planted visitors lane', async () => {
 	const answer = await call('GET', api(), { token: border });
-	expect(answer.status(), answer.status() === 200 ? 'the border shift supervisor reads it' : await answer.text()).toBe(200);
+	await expectStatus(answer, 200, 'the border shift supervisor reads it');
 	const view = await answer.json();
 	expect(view).toMatchObject({ siteCode: 'DMO', intervalMinutes: 15, indicative: true });
 	expect(Object.keys(view).sort()).toEqual(['asOfUtc', 'indicative', 'intervalMinutes', 'lanes', 'siteCode']);

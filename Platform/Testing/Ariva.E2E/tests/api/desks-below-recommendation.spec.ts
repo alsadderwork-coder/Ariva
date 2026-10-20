@@ -6,6 +6,7 @@ import { expectNoLeak } from '../support/api-assertions';
 import { hosts } from '../support/hosts';
 import { markupFragments, sqlInjectionPayloads, xssPayloads } from '../support/payloads';
 import { staffingDatabase as database } from '../support/staffing';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-181b2: the DesksBelowPlan alert, "Open desks below recommendation" (formulas F16): per lane minute, the recommendation
 // of the current interval (interval 0 of lane_staffing) minus the desks open now, at least 0. Border data on every channel:
@@ -82,7 +83,7 @@ async function stepped(account: Account): Promise<string> {
 
 async function create(data: unknown, token = border): Promise<{ id: string; code: string }> {
 	const answer = await call('POST', rulesApi, { token, data });
-	expect(answer.status(), answer.status() === 201 ? 'create' : await answer.text()).toBe(201);
+	await expectStatus(answer, 201, 'create');
 	const body = await answer.json();
 	created.push(body.id);
 	return body;
@@ -168,14 +169,14 @@ test('a border shift supervisor creates, reads, changes, backtests and deletes a
 	const read = await call('GET', `${rulesApi}/${desks.id}`, { token: border });
 	expect(read.status()).toBe(200);
 	const changed = await call('PUT', `${rulesApi}/${desks.id}`, { token: border, data: rule({ clearThreshold: 1, escalateAfterMinutes: 10, escalateToRole: 'BorderShiftSupervisor' }) });
-	expect(changed.status(), await changed.text()).toBe(200);
+	await expectStatus(changed, 200);
 	expect(await changed.json()).toMatchObject({ clearThreshold: 1, escalateToRole: 'BorderShiftSupervisor' });
 
 	// Held at 06:05, 06:07 and 06:09 (no row at 06:06, a degraded open count at 06:08), raised at 06:09 with 3 desks short;
 	// cleared at 06:14 and 06:15 (the gap at 06:10, the unknown open count at 06:11 and 06:13's 2 short are not clear minutes);
 	// the rows without arrivals at 06:17 to 06:19 fail the read-back check and never raise again.
 	const backtest = await call('POST', `${rulesApi}/backtest`, { token: border, data: { rule: rule(), fromUtc: iso(at(0)), toUtc: iso(at(21)) } });
-	expect(backtest.status(), await backtest.text()).toBe(200);
+	await expectStatus(backtest, 200);
 	const found = await backtest.json();
 	expect(found).toMatchObject({ count: 1, firstRaisedUtc: iso(at(9)), truncated: false, targets: 1, targetsWithData: 1 });
 	expect(found.alerts).toEqual([
@@ -205,7 +206,7 @@ test('the rule belongs to a border role, fires above and watches queue zones; an
 	] as const) {
 		const refused = await call('POST', rulesApi, { token, data });
 		const text = await refused.text();
-		expect(refused.status(), `${why}: ${text}`).toBe(400);
+		await expectStatus(refused, 400, why);
 		expect(JSON.parse(text).detail, why).toBe(detail);
 		expectNoLeak(text, why);
 	}
@@ -219,7 +220,7 @@ test('other roles are refused 403 on create, change and backtest, and never find
 	const forbidden = async (method: string, url: string, token: string, data?: unknown) => {
 		const answer = await call(method, url, { token, data });
 		const text = await answer.text();
-		expect(answer.status(), `${method} ${url}: ${text}`).toBe(403);
+		await expectStatus(answer, 403, `${method} ${url}`);
 		return text;
 	};
 
@@ -338,7 +339,7 @@ test('alerts on the metric reach border roles only: the alerts API, the live hub
 			await redis.publish(`${instance}live:alerts`, JSON.stringify(notice));
 			await redis.publish(`${instance}live:alerts`, JSON.stringify(control));
 			const acknowledged = await call('POST', `${alertsApi}/${ids.hub}/acknowledge`, { token: border, data: { note: 'Opening two desks' } });
-			expect(acknowledged.status(), await acknowledged.text()).toBe(200);
+			await expectStatus(acknowledged, 200);
 
 			await expect.poll(() => received.border.map((n) => n.alertId), { timeout: 10_000 }).toEqual(expect.arrayContaining([notice.alertId, control.alertId, ids.hub]));
 			await expect.poll(() => received.terminal.map((n) => n.alertId), { timeout: 10_000 }).toContain(control.alertId);

@@ -3,6 +3,7 @@ import { expect, test } from '@playwright/test';
 import { accounts, call, databaseAvailable, login, signIn, unusedTotpCode, type Account } from '../support/accounts';
 import { hosts } from '../support/hosts';
 import { markupFragments, sqlInjectionPayloads, xssPayloads } from '../support/payloads';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-145: a site's advertising policy through the API, at the illustrative site AUH-TA (no other spec sets advertising
 // there or relies on it being off; functional/advertising-policy.spec.ts uses DMO's screen, not its policy). Advertising is
@@ -73,7 +74,7 @@ test.afterAll(async () => {
 
 test('advertising is off until allowed: a display cannot be set to advertising, and a duty manager can see why', async () => {
 	const read = await call('GET', policyUrl(), { token: manager });
-	expect(read.status(), await read.text()).toBe(200);
+	await expectStatus(read, 200);
 	expect(await read.json()).toMatchObject({ siteCode: site, allowed: false, excludedZones: [] });
 
 	const refused = await call('POST', displaysApi, { token: stepped, data: displayRequest('A-VIS', 'Advertising', newCode()) });
@@ -83,7 +84,7 @@ test('advertising is off until allowed: a display cannot be set to advertising, 
 	const code = newCode();
 	const request = displayRequest('A-VIS', 'Instructions', code);
 	const made = await call('POST', displaysApi, { token: stepped, data: request });
-	expect(made.status(), await made.text()).toBe(201);
+	await expectStatus(made, 201);
 	const issued = await made.json();
 	created.push(issued.display.id);
 	display = { id: issued.display.id, code, credential: issued.credential, request };
@@ -100,7 +101,7 @@ test('only a system administrator with a recent second factor changes it, with a
 	expect((await change(body, manager)).status(), 'a duty manager sees it and never changes it').toBe(403);
 
 	const allowed = await change(body);
-	expect(allowed.status(), await allowed.text()).toBe(200);
+	await expectStatus(allowed, 200);
 	const saved = await allowed.json();
 	expect(saved).toMatchObject({ siteCode: site, allowed: true, excludedZones: ['A-CIT'], reason, unpublishedZones: [], profileChanged: false });
 	expect(saved.publishedProfileVersion, 'the seed published a profile').toBeGreaterThan(0);
@@ -161,7 +162,7 @@ test('changes outside the rules are refused without an echo, and leave the polic
 test('a display shows advertising only where every zone it shows is allowed, and its board falls back on the next refresh', async () => {
 	test.skip(!display, 'needs the display of the first test');
 	const advertising = await call('PUT', `${displaysApi}/${display.id}`, { token: manager, data: { ...display.request, secondRegion: 'Advertising' } });
-	expect(advertising.status(), await advertising.text()).toBe(200);
+	await expectStatus(advertising, 200);
 	expect((await advertising.json()).secondRegion).toBe('Advertising');
 	expect(await boardRegion()).toBe('Advertising');
 

@@ -4,6 +4,7 @@ import { accounts, call, databaseAvailable, signIn } from '../support/accounts';
 import { hosts } from '../support/hosts';
 import { provisionLoadSite, secondFactorSignIn } from '../support/load-site';
 import { sqlInjectionPayloads, xssPayloads } from '../support/payloads';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-143b: the board carries the playlist a display plays, at sites of this spec's own (fresh codes each run). Only while
 // the site's advertising policy allows it for the display (read on every board), only the display's own site's plan, only
@@ -53,7 +54,7 @@ async function allow(code: string, allowed = true) {
 		token: adminToken,
 		data: { allowed, excludedZones: [], reason: `Airport operator letter AO-E2E-143b, ${allowed ? 'on' : 'off'}`, reviewedProfileId: publishedProfileId }
 	});
-	expect(changed.status(), await changed.text()).toBe(200);
+	await expectStatus(changed, 200);
 }
 
 async function upload(at: string, approve: boolean): Promise<string> {
@@ -64,12 +65,12 @@ async function upload(at: string, approve: boolean): Promise<string> {
 	body.append('startsOn', day(-1));
 	body.append('endsOn', day(30));
 	const created = await call('POST', `${plan(at)}/media`, { token: manager, form: body });
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	const id = (await created.json()).id;
 	if (approve) {
 		const { reviewToken } = await (await call('GET', `${plan(at)}/media/${id}`, { token: approver })).json();
 		const approved = await call('POST', `${plan(at)}/media/${id}/approve`, { token: approver, data: { reviewed: reviewToken } });
-		expect(approved.status(), await approved.text()).toBe(200);
+		await expectStatus(approved, 200);
 	}
 	return id;
 }
@@ -95,14 +96,14 @@ async function display(at: string, options: { secondRegion?: string; layout?: st
 		advertisingPauseMinutes: options.pause ?? null
 	};
 	const made = await call('POST', `${admin()}/displays`, { token: adminToken, data: request });
-	expect(made.status(), await made.text()).toBe(201);
+	await expectStatus(made, 201);
 	const issued = await made.json();
 	return { id: issued.display.id, code, credential: issued.credential, request };
 }
 
 async function board(of: Player) {
 	const response = await call('GET', `${hosts.main}/api/v1/display/board?code=${of.code}`, { headers: { 'X-Ariva-Display-Key': of.credential } });
-	expect(response.status(), await response.text()).toBe(200);
+	await expectStatus(response, 200);
 	return response.json();
 }
 
@@ -115,7 +116,7 @@ async function scheduleAll(at: string, playlist: string) {
 		token: manager,
 		data: { playlistId: playlist, scope: 'Site', targets: [], days: week, opens: '00:00', closes: '24:00' }
 	});
-	expect(made.status(), await made.text()).toBe(201);
+	await expectStatus(made, 201);
 }
 
 test.beforeAll(async () => {
@@ -142,11 +143,11 @@ test.beforeAll(async () => {
 			]
 		}
 	});
-	expect(made.status(), await made.text()).toBe(201);
+	await expectStatus(made, 201);
 	playlistId = (await made.json()).id;
 	await scheduleAll(site, playlistId);
 	const theirs = await call('POST', `${plan(other)}/playlists`, { token: manager, data: { name: 'Theirs', items: [{ kind: 'Media', id: media.theirs, seconds: 9 }] } });
-	expect(theirs.status(), await theirs.text()).toBe(201);
+	await expectStatus(theirs, 201);
 	await scheduleAll(other, (await theirs.json()).id);
 
 	player = await display(site, { pause: 20 });
@@ -231,7 +232,7 @@ test('the wait rule is 1 to 240 minutes or none, and the board carries what was 
 		[30, 30]
 	] as const) {
 		const saved = await call('PUT', url, { token: manager, data: { ...player.request, advertisingPauseMinutes: minutes } });
-		expect(saved.status(), await saved.text()).toBe(200);
+		await expectStatus(saved, 200);
 		expect((await saved.json()).advertisingPauseMinutes).toBe(expected);
 		expect((await board(player)).advertising.pauseMinutes).toBe(expected);
 	}

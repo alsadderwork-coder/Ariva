@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { accounts, call, databaseAvailable, signIn } from '../support/accounts';
 import { createAirport } from '../support/airports';
 import { hosts } from '../support/hosts';
+import { expectStatus, expectStatusIn } from '../support/expect-status';
 
 // ARV-018: floor plans per level. PNG, JPEG and SVG only, typed by their bytes; SVG is sanitised (scripts, event
 // attributes, foreignObject and external references removed) and served under a sandboxing CSP; 20 MB limit (413);
@@ -43,7 +44,7 @@ test.beforeAll(async () => {
 	admin = (await signIn(accounts().SystemAdministrator)).accessToken;
 	const create = async (entity: string, data: unknown) => {
 		const response = await call('POST', `${adminApi}/${entity}`, { token: admin, data });
-		expect(response.status(), `${entity}: ${await response.text()}`).toBe(201);
+		await expectStatus(response, 201, entity);
 		return (await response.json()).id as string;
 	};
 	const { id: airport } = await createAirport((iata) =>
@@ -56,7 +57,7 @@ test.beforeAll(async () => {
 
 test('a PNG is stored under a generated name and served with a sandboxing policy', async () => {
 	const created = await call('POST', levelUrl, { token: admin, form: upload(png, 'hall.png', 'image/png') });
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	const plan = await created.json();
 	expect(plan.contentType).toBe('image/png');
 	expect(plan.widthPixels).toBe(2);
@@ -74,7 +75,7 @@ test('a PNG is stored under a generated name and served with a sandboxing policy
 
 test('an SVG with script is neutralised and replaces the previous plan', async () => {
 	const created = await call('POST', levelUrl, { token: admin, form: upload(hostileSvg, 'hall.svg', 'image/svg+xml') });
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	expect((await created.json()).contentType).toBe('image/svg+xml');
 
 	const content = await call('GET', `${levelUrl}/content`, { token: admin });
@@ -119,7 +120,7 @@ test('a name of one letter and 300 combining marks answers 201 or 400, never 500
 	const response = await call('POST', levelUrl, { token: admin, form: upload(png, `a${'\u0301'.repeat(300)}.png`, 'image/png') });
 	const status = response.status();
 	const text = await response.text();
-	expect([201, 400], status === 201 || status === 400 ? 'combining marks' : text).toContain(status);
+	await expectStatusIn(response, [201, 400], 'combining marks');
 	const after = await (await call('GET', levelUrl, { token: admin })).json();
 	if (status === 400) {
 		expect(after.id, 'nothing is stored on a refusal').toBe(before.id);
@@ -131,7 +132,7 @@ test('a name of one letter and 300 combining marks answers 201 or 400, never 500
 
 test('calibration, site scoping and delete', async () => {
 	const calibrated = await call('PUT', `${levelUrl}/calibration`, { token: admin, data: { metresPerPixel: 0.02, originX: 5, originY: 7 } });
-	expect(calibrated.status(), await calibrated.text()).toBe(200);
+	await expectStatus(calibrated, 200);
 	expect((await calibrated.json()).metresPerPixel).toBe(0.02);
 	expect((await call('PUT', `${levelUrl}/calibration`, { token: admin, data: { metresPerPixel: 0, originX: 0, originY: 0 } })).status(), 'zero scale').toBe(400);
 

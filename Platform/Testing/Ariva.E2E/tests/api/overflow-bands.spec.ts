@@ -3,6 +3,7 @@ import pg from 'pg';
 import { accounts, call, databaseAvailable, signIn } from '../support/accounts';
 import { hosts } from '../support/hosts';
 import { markupFragments, sqlInjectionPayloads, xssPayloads } from '../support/payloads';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-120: GET api/v1/sites/{siteCode}/overflow-bands (LiveQueue.View, site-scoped) answers, for each queue zone of the site's
 // published profile that has overflow bands, each band's latest minute with a reading in overflow_minute within the last
@@ -117,7 +118,7 @@ type Zone = { zone: string; state: string; bands: Band[] };
 
 test('each queue zone with bands, with each band’s latest reading of the last 6 minutes and the zone’s state', async () => {
 	const answer = await call('GET', api(), { token: border });
-	expect(answer.status(), answer.status() === 200 ? 'the border shift supervisor reads the bands' : await answer.text()).toBe(200);
+	await expectStatus(answer, 200, 'the border shift supervisor reads the bands');
 	const view = await answer.json();
 	expect(view).toMatchObject({ siteCode: 'DMO', freshMinutes: 6 });
 	expect(Math.abs(Date.parse(view.asOfUtc) - Date.now()), 'answered on Ariva’s clock, now').toBeLessThan(60_000);
@@ -164,7 +165,7 @@ test('LiveQueue.View and the site decide who reads it', async () => {
 		['an administrator', admin]
 	] as const) {
 		const answer = await call('GET', url, { token });
-		expect(answer.status(), answer.status() === 200 ? who : await answer.text()).toBe(200);
+		await expectStatus(answer, 200, who);
 		expect((await answer.json()).zones, `${who} reads the same zones`).toEqual(reference.zones);
 	}
 	expect((await call('GET', url, { token: observer })).status(), 'a validation observer has no live view').toBe(403);

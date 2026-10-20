@@ -4,6 +4,7 @@ import { accounts, call, databaseAvailable, signIn } from '../support/accounts';
 import { hosts } from '../support/hosts';
 import { provisionLoadSite, secondFactorSignIn } from '../support/load-site';
 import { markupFragments, sqlInjectionPayloads, xssPayloads } from '../support/payloads';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-144: proof of play through the API, at sites of this spec's own (fresh codes each run). A display reports its plays in
 // batches of 1 to 100 with its own credential only; the server takes a play only when it names an advertisement of the
@@ -49,7 +50,7 @@ async function allow(code: string) {
 		token: adminToken,
 		data: { allowed: true, excludedZones: [], reason: 'Airport operator letter AO-E2E-144, commercial team', reviewedProfileId: publishedProfileId }
 	});
-	expect(changed.status(), await changed.text()).toBe(200);
+	await expectStatus(changed, 200);
 }
 
 async function approved(at: string): Promise<string> {
@@ -60,7 +61,7 @@ async function approved(at: string): Promise<string> {
 	body.append('startsOn', day(-1));
 	body.append('endsOn', day(30));
 	const created = await call('POST', `${plan(at)}/media`, { token: manager, form: body });
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	const id = (await created.json()).id;
 	const { reviewToken } = await (await call('GET', `${plan(at)}/media/${id}`, { token: approver })).json();
 	expect((await call('POST', `${plan(at)}/media/${id}/approve`, { token: approver, data: { reviewed: reviewToken } })).status()).toBe(200);
@@ -89,18 +90,18 @@ async function display(at: string, secondRegion: 'Advertising' | 'Instructions' 
 			secondRegion
 		}
 	});
-	expect(made.status(), await made.text()).toBe(201);
+	await expectStatus(made, 201);
 	return { code, credential: (await made.json()).credential };
 }
 
 async function schedule(at: string, name: string, item: string, target: string) {
 	const playlist = await call('POST', `${plan(at)}/playlists`, { token: manager, data: { name, items: [{ kind: 'Media', id: item, seconds: 10 }] } });
-	expect(playlist.status(), await playlist.text()).toBe(201);
+	await expectStatus(playlist, 201);
 	const made = await call('POST', `${plan(at)}/schedules`, {
 		token: manager,
 		data: { playlistId: (await playlist.json()).id, scope: 'Display', targets: [target], days: week, opens: '00:00', closes: '24:00' }
 	});
-	expect(made.status(), await made.text()).toBe(201);
+	await expectStatus(made, 201);
 }
 
 /** A display of the site with the scheduled advertisement on its own playlist, all day every day. */
@@ -142,7 +143,7 @@ test('a display reports the plays of its scheduled advertisement; a batch sent a
 	const player = await scheduledPlayer('Played bank');
 	const plays = [play(media.scheduled, 90), play(media.scheduled, 75, 4_000, false), play(media.scheduled, 60)];
 	const first = await send(player, { plays });
-	expect(first.status(), await first.text()).toBe(200);
+	await expectStatus(first, 200);
 	expect(first.headers()['cache-control']).toContain('no-store');
 	expect(await first.json()).toEqual({ accepted: 3, duplicates: 0, refused: 0 });
 
@@ -170,7 +171,7 @@ test('forged plays are refused, the honest ones in the same batch taken', async 
 			play(media.scheduled, 20, 999, false)
 		]
 	});
-	expect(response.status(), await response.text()).toBe(200);
+	await expectStatus(response, 200);
 	expect(
 		await response.json(),
 		'one honest play; a never scheduled, a neighbour display, another site, a future, an old, a too long, an unfinished, a local time, an unknown advertisement, the last instant, one inside the honest play and one under a second refused'
@@ -187,7 +188,7 @@ test('forged plays are refused, the honest ones in the same batch taken', async 
 	const instructions = await display(site, 'Instructions');
 	await schedule(site, 'Instructions bank', media.scheduled, instructions.code);
 	const shown = await send(instructions, { plays: [play(media.scheduled, 30)] });
-	expect(shown.status(), await shown.text()).toBe(200);
+	await expectStatus(shown, 200);
 	expect(await shown.json(), 'a display set to instructions').toEqual({ accepted: 0, duplicates: 0, refused: 1 });
 });
 

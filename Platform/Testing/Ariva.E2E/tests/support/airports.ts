@@ -1,4 +1,5 @@
 import type { APIResponse } from '@playwright/test';
+import { redactSecrets } from '../../scripts/secret-shapes.mjs';
 
 const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
@@ -18,7 +19,7 @@ export async function createAirport(post: (iataCode: string) => Promise<Pick<API
 		const iataCode = randomIata();
 		const response = await post(iataCode);
 		if (response.status() === 201) return { id: (await response.json()).id as string, iataCode };
-		if (response.status() !== 409) throw new Error(`airports: ${response.status()} ${await response.text()}`);
+		if (response.status() !== 409) throw new Error(`airports: ${response.status()} ${redactSecrets(await response.text())}`);
 	}
 	throw new Error(`airports: ${attempts} random codes in a row were taken`);
 }

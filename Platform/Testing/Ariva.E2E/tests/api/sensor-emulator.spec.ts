@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { accounts, call, databaseAvailable, login, totpCode } from '../support/accounts';
 import { hosts, kafkaAvailable } from '../support/hosts';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-028: the sensor emulator plays a 10-minute accelerated run (18:15 to 18:25 at speed 60) of the reference day to
 // Ingest as devices registered for the DMO demo airport (canonical and Xovis), and Ingest accepts exactly the events the
@@ -58,7 +59,7 @@ test.beforeAll(async () => {
 				placement: { levelId: levelId(device.level), x, y, mountingHeightMetres: 5, orientationDegrees: 0, queueZoneName: device.zone }
 			}
 		});
-		expect(registered.status(), await registered.text()).toBe(201);
+		await expectStatus(registered, 201);
 		const body = await registered.json();
 		registeredIds.push(body.device.id);
 		credentials.push({ sensor: device.sensor, dialect: device.dialect, credential: body.credential });
@@ -83,11 +84,11 @@ test('a 10-minute accelerated run reaches Ingest event for event', async () => {
 	test.skip(!kafkaAvailable, 'an accepted push needs Kafka (ARIVA_E2E_KAFKA_BOOTSTRAP)');
 	test.setTimeout(90_000);
 	const loaded = await call('PUT', `${sensors}/devices`, { headers: operator, data: { devices: credentials } });
-	expect(loaded.status(), await loaded.text()).toBe(200);
+	await expectStatus(loaded, 200);
 	expect(await loaded.text()).not.toContain('ardk_');
 
 	const started = await call('POST', `${sensors}/start`, { headers: operator, data: { minute: 1095, speed: 60, untilMinute: 1105 } });
-	expect(started.status(), await started.text()).toBe(200);
+	await expectStatus(started, 200);
 
 	let status = await (await call('GET', sensors, { headers: operator })).json();
 	for (let i = 0; i < 60 && status.running; i++) {
@@ -125,14 +126,14 @@ test('the seeded AUH-TA sensors play the AUH-TA evening once issued a credential
 		expect(device, sensor).toBeDefined();
 		seededIds.push(device!.id);
 		const issued = await call('POST', `${admin}/devices/${device!.id}/credential`, { token: adminToken });
-		expect(issued.status(), await issued.text()).toBe(200);
+		await expectStatus(issued, 200);
 		const calibrations = await (await call('GET', `${admin}/devices/${device!.id}/calibrations`, { token: adminToken })).json();
 		if (((calibrations.data ?? calibrations) as unknown[]).length === 0) {
 			const calibrated = await call('POST', `${admin}/devices/${device!.id}/calibrations`, {
 				token: adminToken,
 				data: { method: 'ManualCountTally', sampleSize: 200, countingAccuracyPercent: 97, waitTimeErrorMinutes: 0.3 }
 			});
-			expect(calibrated.status(), await calibrated.text()).toBe(201);
+			await expectStatus(calibrated, 201);
 		}
 		auhCredentials.push({ site: 'AUH-TA', sensor, dialect: 'Canonical', credential: (await issued.json()).credential });
 	}
@@ -144,10 +145,10 @@ test('the seeded AUH-TA sensors play the AUH-TA evening once issued a credential
 	expect(crossed.status()).toBe(400);
 
 	const loaded = await call('PUT', `${sensors}/devices`, { headers: operator, data: { devices: auhCredentials } });
-	expect(loaded.status(), await loaded.text()).toBe(200);
+	await expectStatus(loaded, 200);
 	expect(await loaded.text()).not.toContain('ardk_');
 	const started = await call('POST', `${sensors}/start`, { headers: operator, data: { minute: 1100, speed: 60, untilMinute: 1110 } });
-	expect(started.status(), await started.text()).toBe(200);
+	await expectStatus(started, 200);
 
 	let status = await (await call('GET', sensors, { headers: operator })).json();
 	for (let i = 0; i < 60 && status.running; i++) {

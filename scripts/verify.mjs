@@ -7,7 +7,10 @@
 //   unit         build + Ariva.UnitTests (architecture, security and domain tests)
 //   integration  Ariva.IntegrationTests (needs Docker for Testcontainers)
 //   web          Ariva.Web: npm ci, svelte-check, lint, build
-//   e2e          Platform/Testing/Ariva.E2E: API end-to-end and Playwright functional tests
+//   e2e          Platform/Testing/Ariva.E2E: API end-to-end and Playwright functional tests; --specs <file,...> runs only those.
+//                After every Playwright run (e2e, visual, demo, rehearsal, zap, and those of story and checkpoint) the report,
+//                the test output and their zips are checked for secrets (ARV-152, Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs)
+//   artifacts    that artifact check alone, on the report and the test output a run left behind
 //   visual       visual regression baselines (ARV-075) in the pinned Playwright image (Docker); --update regenerates them;
 //                run it before e2e on a fresh database (the demo seed)
 //   demo         the scripted demo (ARV-064): the reference evening in real time (about two hours) through the whole
@@ -21,6 +24,7 @@
 //   zap          dynamic security scan (ARV-063): OWASP ZAP in its pinned image against the E2E stack (Docker and the E2E
 //                database environment; about 10 minutes); reports in Platform/Testing/Ariva.E2E/zap-reports
 //   security     scanner self-test + full scan + ops tooling self-tests (ARV-126, the TLS check of ARV-084) + dependency audits
+//                + the E2E expect message check (no answer body as a message, ARV-152) and the artifact check's self-test
 //   docs         text rules on Markdown (no em dashes, no double hyphens in prose)
 //   backend      build + unit + security
 //   mutation     Stryker.NET on the pure engines (ARV-069; one to three hours, mostly the queue engine; report in .verify/stryker);
@@ -38,12 +42,13 @@
 // --plan prints what story or checkpoint would run without running it.
 // Writes .verify/last.json with per-step results.
 
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import zlib from 'node:zlib';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { checkArtifacts, derivedVariables } from '../Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const WEB = path.join(ROOT, 'Platform', 'Frontplane', 'Ariva.Web');
@@ -101,49 +106,40 @@ function nugetAudit() {
   results.push({ name, ok: skipped || (r.status === 0 && !severe), skipped, seconds: Math.round((Date.now() - started) / 1000), exit: r.status });
 }
 
-// ARV-104j review (CWE-532): the live-pipeline scopes register DMO's sensors, whose answers carry device credentials; none
-// may reach the Playwright report or the test output (an expect's message is a step title even when it passes). Runs after
-// the run, since the HTML reporter writes after global teardown; counts the files, never prints a value.
-function artifactCredentialCheck() {
-  const credential = /(?<![A-Za-z0-9_-])ard[kp]_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/;
-  // The HTML report embeds its data as a base64 zip, and traces are zips: read their entries (central directory, stored
-  // or deflated) so a credential inside them is found too.
-  const zipEntries = buf => {
-    const texts = [];
-    let end = buf.length - 22;
-    while (end >= 0 && buf.readUInt32LE(end) !== 0x06054b50) end--;
-    if (end < 0) return texts;
-    let at = buf.readUInt32LE(end + 16);
-    for (let i = buf.readUInt16LE(end + 10); i > 0 && buf.readUInt32LE(at) === 0x02014b50; i--) {
-      const method = buf.readUInt16LE(at + 10), size = buf.readUInt32LE(at + 20), local = buf.readUInt32LE(at + 42);
-      const start = local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28);
-      const data = buf.subarray(start, start + size);
-      try { texts.push((method === 8 ? zlib.inflateRawSync(data) : data).toString('latin1')); } catch { texts.push(''); }
-      at += 46 + buf.readUInt16LE(at + 28) + buf.readUInt16LE(at + 30) + buf.readUInt16LE(at + 32);
-    }
-    return texts;
-  };
-  const holds = buf => {
-    const text = buf.toString('latin1');
-    if (credential.test(text)) return true;
-    const embedded = [...text.matchAll(/data:application\/zip;base64,([A-Za-z0-9+/=]+)/g)].map(m => Buffer.from(m[1], 'base64'));
-    if (buf.readUInt32LE(0) === 0x04034b50) embedded.push(buf);
-    // A zip that cannot be read is a finding too: what it holds cannot be shown to be clean.
-    return embedded.some(zip => { try { return zipEntries(zip).some(entry => credential.test(entry)); } catch { return true; } });
-  };
-  const holding = [];
-  const walk = d => {
-    if (!fs.existsSync(d)) return;
-    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
-      const p = path.join(d, e.name);
-      if (e.isDirectory()) walk(p);
-      else if (e.isFile() && fs.statSync(p).size >= 4 && holds(fs.readFileSync(p))) holding.push(path.relative(ROOT, p));
-    }
-  };
-  for (const folder of ['playwright-report', 'test-results']) walk(path.join(E2E, folder));
-  holding.forEach(f => console.log(`CREDENTIAL in ${f}`));
-  results.push({ name: 'no device credential in the test artifacts', ok: holding.length === 0, findings: holding.length });
-  return holding.length === 0;
+// ARV-104j review and ARV-152 (CWE-532): no credential in the Playwright report, the test output or a trace. Every Playwright
+// run this script starts goes through playwright(): it gets an account seed of its own unless the caller set one (so the
+// run's E2E account passwords can be looked for afterwards), and once it has ended (the HTML reporter writes after global
+// teardown) its artifacts are scanned by Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs: device and display
+// credentials, integration client secrets, JWTs, TOTP seeds and codes, recovery codes, temporary passwords, the run's account
+// passwords and secret variables, in plain files, the report's embedded zip and trace zips. Only files and kinds are printed.
+const CALLER_SEED = process.env.ARIVA_E2E_ACCOUNT_SEED;
+// The run's other secrets (simulator, mock AMAN, ACRIS and Cronz keys, the validation reader's password) are derived from the
+// run's seed and given to Playwright, which keeps a value it is given, so the check can look for them too; a caller's own
+// value wins.
+const CALLER_VARIABLES = new Set(Object.keys(derivedVariables('x')).filter(name => process.env[name] !== undefined));
+function artifactCheck(folders, started) {
+  // The smoke configuration's own report and output, when a spec of this run (smoke-config.spec.ts) wrote them.
+  const smoke = ['playwright-report-smoke', 'test-results-smoke', 'test-results-smoke-runs'].map(f => path.join(E2E, f))
+    .filter(f => fs.existsSync(f) && fs.statSync(f).mtimeMs >= started);
+  const paths = [...folders.map(f => path.join(E2E, f)), ...smoke];
+  process.stdout.write(`\n=== no secret in the test artifacts: ${paths.map(p => path.relative(ROOT, p)).join(', ')}\n`);
+  if (PLAN) { results.push({ name: 'no secret in the test artifacts', ok: true, planned: true }); return true; }
+  const ok = checkArtifacts(paths, { requireSeed: true });
+  results.push({ name: 'no secret in the test artifacts (report, output, traces)', ok });
+  return ok;
+}
+function playwright(name, playwrightArgs, folders = ['playwright-report', 'test-results']) {
+  const started = Date.now();
+  process.env.ARIVA_E2E_ACCOUNT_SEED = CALLER_SEED || crypto.randomBytes(24).toString('base64url');
+  const derived = Object.entries(derivedVariables(process.env.ARIVA_E2E_ACCOUNT_SEED)).filter(([variable]) => !CALLER_VARIABLES.has(variable));
+  for (const [variable, value] of derived) process.env[variable] = value;
+  try {
+    run(name, 'npx', ['playwright', 'test', ...playwrightArgs], E2E);
+  } finally {
+    artifactCheck(folders, started);
+    if (CALLER_SEED === undefined) delete process.env.ARIVA_E2E_ACCOUNT_SEED;
+    for (const [variable] of derived) delete process.env[variable];
+  }
 }
 
 function docsCheck() {
@@ -204,6 +200,17 @@ const SPEC = /^tests\/(api|functional|smoke)\/[a-z0-9-]+\.spec\.ts$/;
 const TEST_FILTER = /^[A-Za-z0-9_.~=!|&]{1,400}$/;
 const GIT_REF = /^[A-Za-z0-9_./^~-]{1,100}$/;
 const SHA = /^[0-9a-f]{7,40}$/;
+
+// The e2e scope's own --specs (the story gate passes its specs itself): fixed shapes of files that exist, or null after a refusal.
+function scopeSpecs() {
+  const specs = (flag('--specs') ?? '').split(',').map(s => s.trim()).filter(Boolean);
+  const refused = specs.filter(s => !SPEC.test(s) || !fs.existsSync(path.join(E2E, s)));
+  if (refused.length) {
+    results.push({ name: `e2e --specs refused (${refused.map(s => s.slice(0, 80)).join('; ')}); specs are tests/api|functional|smoke/<name>.spec.ts files that exist`, ok: false });
+    return null;
+  }
+  return specs;
+}
 
 function changedFiles(base) {
   const tracked = git(['diff', '--name-only', base]).split('\n');
@@ -343,23 +350,26 @@ const steps = {
     run('web lint', 'npm', ['run', 'lint'], WEB);
     run('web build', 'npm', ['run', 'build'], WEB);
   },
-  e2e: (specs = []) => {
+  // `node scripts/verify.mjs e2e --specs <file,...>` runs only those specs (tests/api|functional|smoke/<name>.spec.ts).
+  e2e: (specs = scope === 'e2e' ? scopeSpecs() : []) => {
     if (!fs.existsSync(E2E)) { results.push({ name: 'e2e', ok: false, note: 'Platform/Testing/Ariva.E2E missing' }); return; }
+    if (specs === null) return;
     // The functional suite builds and previews Ariva.Web, so its dependencies are needed too.
     if (!fs.existsSync(path.join(WEB, 'node_modules'))) run('web npm ci', 'npm', ['ci'], WEB);
     if (!fs.existsSync(path.join(E2E, 'node_modules'))) run('e2e npm ci', 'npm', ['ci'], E2E);
-    if (specs.length) run(`e2e tests (${specs.length} spec files)`, 'npx', ['playwright', 'test', ...specs], E2E);
-    else run('e2e tests (API and functional)', 'npx', ['playwright', 'test'], E2E);
+    if (specs.length) playwright(`e2e tests (${specs.length} spec files)`, specs);
+    else playwright('e2e tests (API and functional)', []);
   },
   // ARV-075: renders only in the Playwright image pinned in scripts/visual-browser.mjs (needs Docker), never a local browser.
   visual: () => {
     if (!fs.existsSync(path.join(WEB, 'node_modules'))) run('web npm ci', 'npm', ['ci'], WEB);
     if (!fs.existsSync(path.join(E2E, 'node_modules'))) run('e2e npm ci', 'npm', ['ci'], E2E);
-    if (PLAN) { run('visual regression (pinned image)', 'npx', ['playwright', 'test', '--project=visual']); return; }
+    if (PLAN) { playwright('visual regression (pinned image)', ['--project=visual'], ['playwright-report', 'test-results-visual']); return; }
     const endpoint = execFileSync('node', ['scripts/visual-browser.mjs', 'start'], { cwd: E2E, encoding: 'utf8' }).trim();
     process.env.ARIVA_E2E_VISUAL_WS = endpoint;
     try {
-      run('visual regression (pinned image)', 'npx', ['playwright', 'test', '--project=visual', '--output=test-results-visual', ...(args.includes('--update') ? ['--update-snapshots'] : [])], E2E);
+      playwright('visual regression (pinned image)', ['--project=visual', '--output=test-results-visual', ...(args.includes('--update') ? ['--update-snapshots'] : [])],
+        ['playwright-report', 'test-results-visual']);
     } finally {
       execFileSync('node', ['scripts/visual-browser.mjs', 'stop'], { cwd: E2E });
       delete process.env.ARIVA_E2E_VISUAL_WS;
@@ -371,11 +381,10 @@ const steps = {
     if (!fs.existsSync(path.join(E2E, 'node_modules'))) run('e2e npm ci', 'npm', ['ci'], E2E);
     process.env.ARIVA_E2E_DEMO = '1';
     try {
-      run('scripted demo (reference evening)', 'npx', ['playwright', 'test', '--project=demo'], E2E);
+      playwright('scripted demo (reference evening)', ['--project=demo']);
     } finally {
       delete process.env.ARIVA_E2E_DEMO;
     }
-    artifactCredentialCheck();
   },
   // ARV-104j: the validation rehearsal against the live pipeline, alone and in real time; its record is rehearsal-record.json in
   // the test's output folder (test-results), attached to the report.
@@ -384,11 +393,10 @@ const steps = {
     if (!fs.existsSync(path.join(E2E, 'node_modules'))) run('e2e npm ci', 'npm', ['ci'], E2E);
     process.env.ARIVA_E2E_REHEARSAL = '1';
     try {
-      run('validation rehearsal (live pipeline)', 'npx', ['playwright', 'test', '--project=rehearsal'], E2E);
+      playwright('validation rehearsal (live pipeline)', ['--project=rehearsal']);
     } finally {
       delete process.env.ARIVA_E2E_REHEARSAL;
     }
-    artifactCredentialCheck();
   },
   // ARV-063: ZAP API and baseline scans; the run fails on an untriaged High risk finding (security/zap-triage.json).
   zap: () => {
@@ -396,7 +404,7 @@ const steps = {
     if (!fs.existsSync(path.join(E2E, 'node_modules'))) run('e2e npm ci', 'npm', ['ci'], E2E);
     process.env.ARIVA_E2E_ZAP = '1';
     try {
-      run('dynamic security scan (OWASP ZAP)', 'npx', ['playwright', 'test', '--project=zap'], E2E);
+      playwright('dynamic security scan (OWASP ZAP)', ['--project=zap'], ['playwright-report', 'test-results', 'zap-reports']);
     } finally {
       delete process.env.ARIVA_E2E_ZAP;
     }
@@ -404,6 +412,11 @@ const steps = {
   security: () => {
     run('security scanner self-test', 'node', ['scripts/security/scan.mjs', '--self-test']);
     run('security scan', 'node', ['scripts/security/scan.mjs']);
+    // ARV-152 (CWE-532): no spec passes an answer's body as an expect message (Playwright keeps it as the step title even when
+    // the assertion passes), and the artifact check every Playwright run ends with finds every kind of secret it looks for.
+    run('E2E expect message check self-test', 'node', ['Platform/Testing/Ariva.E2E/scripts/expect-messages.mjs', '--self-test']);
+    run('E2E expect messages hold no answer body', 'node', ['Platform/Testing/Ariva.E2E/scripts/expect-messages.mjs']);
+    run('E2E artifact secret check self-test', 'node', ['Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs', '--self-test']);
     // ARV-126: the backup and restore tooling. The wrapper's validation and argument arrays; the database script's syntax
     // (its behaviour is proven by BackupRestoreTests in the integration suite). Without bash on the machine the second is skipped.
     run('ops tooling self-test (backup and restore wrapper)', 'node', ['scripts/ops/ariva-ops.mjs', '--self-test']);
@@ -429,6 +442,11 @@ const steps = {
     if (fs.existsSync(path.join(CHART_TESTS, 'package-lock.json'))) run('npm audit (chart tests)', 'npm', ['audit', '--audit-level=high'], CHART_TESTS, { optional: true });
   },
   docs: () => docsCheck(),
+  // ARV-152: the artifact check on its own, over the report and the test output a run left (no seed: shapes and variables only).
+  artifacts: () => {
+    process.stdout.write(`\n=== no secret in the test artifacts\n`);
+    results.push({ name: 'no secret in the test artifacts (report, output, traces)', ok: checkArtifacts(['playwright-report', 'test-results'].map(f => path.join(E2E, f))) });
+  },
   // Scope and thresholds in Platform/Backplane/Ariva.UnitTests/stryker-config.json; exits non-zero below the break threshold.
   // Stryker replaces Ariva.Core.dll in the unit tests' output while it runs, so it runs in its own worktree of the commit
   // (default HEAD; uncommitted changes are not mutated), never in this checkout, under its own lock (one mutation run per

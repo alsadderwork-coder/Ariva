@@ -1,7 +1,8 @@
 # Pull request validation for Ariva. Attach it to trunk as a build validation branch policy
 # (Azure Repos runs PR validation through branch policies, not a YAML pr trigger).
 # Order: security gate, .NET build, unit and integration tests, web checks, API end-to-end and Playwright
-# functional tests; the security report and the Playwright HTML report are published even when a step fails.
+# functional tests; the security report and the Playwright HTML report are published even when a step fails (the report only
+# when it holds no secret, ARV-152).
 name: $(date:yyyyMMdd)$(rev:rr)
 
 trigger: none
@@ -41,6 +42,14 @@ jobs:
 
       - script: node scripts/security/scan.mjs
         displayName: 'Security: scan (writes .verify/security-report.md)'
+
+      # ARV-152 (CWE-532): no E2E spec passes an answer's body as an expect message (Playwright keeps it as the step title
+      # even when the assertion passes), and the artifact check run before the report is published is proven first.
+      - script: |
+          node Platform/Testing/Ariva.E2E/scripts/expect-messages.mjs --self-test
+          node Platform/Testing/Ariva.E2E/scripts/expect-messages.mjs
+          node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs --self-test
+        displayName: 'Security: E2E expect messages and artifact secret check self-test'
 
       # The check every host image build runs on its publish output (ARV-184): proven here before the images trust it.
       - script: node scripts/published-runtime.mjs --self-test
@@ -128,11 +137,27 @@ jobs:
           echo "PostgreSQL did not start"; exit 1
         displayName: 'E2E: start PostgreSQL'
 
+      # ARV-152: the run's account seed as a secret variable (playwright.config.ts keeps a seed it is given), so the artifact
+      # check below can derive the run's E2E account passwords and TOTP seeds and look for them. The run's other secrets
+      # (simulator, mock AMAN, ACRIS and Cronz keys, the validation reader's password) are derived from it too and set as
+      # variables the later steps receive (playwright.config.ts keeps a value it is given). Every value derived from the seed
+      # is registered as a secret first (task.setsecret), so a failing assertion that prints one is masked in the log.
+      # Stop at the first failure: Azure's script step runs on after a failing command, and the derived values must never be
+      # set (--env) unless they were registered as secrets first (--mask).
+      - script: |
+          set -euo pipefail
+          seed="$(node -e "process.stdout.write(require('node:crypto').randomBytes(24).toString('base64url'))")"
+          echo "##vso[task.setvariable variable=E2E_ACCOUNT_SEED;issecret=true]$seed"
+          ARIVA_E2E_ACCOUNT_SEED="$seed" node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs --mask azure
+          ARIVA_E2E_ACCOUNT_SEED="$seed" node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs --env azure
+        displayName: 'E2E: account seed for the run (secret variable)'
+
       - script: npx playwright test
         displayName: 'E2E: API and functional tests'
         workingDirectory: Platform/Testing/Ariva.E2E
         env:
           CI: 'true'
+          ARIVA_E2E_ACCOUNT_SEED: $(E2E_ACCOUNT_SEED)
           ARIVA_E2E_CONFIGURATION: $(BuildConfiguration)
           ARIVA_E2E_SCHEMA_UPDATE: 'true'
           Database__Host: localhost
@@ -143,7 +168,22 @@ jobs:
           Database__Username: ariva_app
           Database__Password: e2e-runtime-login-$(Build.BuildId)
 
-      # 6. Reports, published whatever the outcome.
+      # ARV-152 (CWE-532): no credential in the Playwright report (with its embedded zip) or the test output (traces, error
+      # contexts, attachments), whatever the outcome; only when it finds none is the report published below. A finding fails
+      # the run and names the file and the kind, never the value.
+      # The result is this step's own output variable (e2eArtifacts.clean), which no queue-time variable can preset; an
+      # unexpanded $(E2E_ACCOUNT_SEED) (the seed step did not run) counts as no seed, so --require-seed fails on it.
+      - script: node scripts/artifact-secrets.mjs --require-seed playwright-report test-results && echo "##vso[task.setvariable variable=clean;isOutput=true]true"
+        name: e2eArtifacts
+        displayName: 'E2E: no secret in the report or the test output'
+        condition: always()
+        workingDirectory: Platform/Testing/Ariva.E2E
+        env:
+          ARIVA_E2E_ACCOUNT_SEED: $(E2E_ACCOUNT_SEED)
+          Database__Migration__Password: e2e-$(Build.BuildId)
+          Database__Password: e2e-runtime-login-$(Build.BuildId)
+
+      # 6. Reports, published whatever the outcome (the Playwright report only once the check above found no secret in it).
       - task: PublishPipelineArtifact@1
         displayName: 'Publish security report'
         condition: always()
@@ -154,7 +194,7 @@ jobs:
 
       - task: PublishPipelineArtifact@1
         displayName: 'Publish Playwright report'
-        condition: always()
+        condition: and(always(), eq(variables['e2eArtifacts.clean'], 'true'))
         inputs:
           targetPath: 'Platform/Testing/Ariva.E2E/playwright-report'
           artifact: 'playwright-report'

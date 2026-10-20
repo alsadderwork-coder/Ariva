@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { accounts, call, databaseAvailable, login, signIn, unusedTotpCode } from '../support/accounts';
 import { createAirport } from '../support/airports';
 import { hosts } from '../support/hosts';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-022: devices authenticate on Ariva.Api.Ingest with their own credential and nothing else. Missing key 401, wrong
 // key 401, a user token on a device endpoint 401, a device key on a user endpoint 401, another device's zone 403; the
@@ -27,7 +28,7 @@ test.beforeAll(async () => {
 	withSecondFactor = (await (await login(userName, password, undefined, undefined, { code: await unusedTotpCode(totpSecret!) })).json()).accessToken;
 	const create = async (path: string, data: unknown) => {
 		const response = await call('POST', `${admin}/${path}`, { token: withSecondFactor, data });
-		expect(response.status(), `${path}: ${await response.text()}`).toBe(201);
+		await expectStatus(response, 201, path);
 		const json = await response.json();
 		return (json.id ?? json.profile?.id) as string;
 	};
@@ -52,7 +53,7 @@ test.beforeAll(async () => {
 			placement: { levelId, x: 20, y: 16, mountingHeightMetres: 5, orientationDegrees: 0, queueZoneName: 'Snake A' }
 		}
 	});
-	expect(registered.status(), await registered.text()).toBe(201);
+	await expectStatus(registered, 201);
 	({ credential: key, device: { id: deviceId } } = await registered.json());
 });
 

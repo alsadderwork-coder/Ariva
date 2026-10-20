@@ -5,7 +5,8 @@ import { accounts, call, claimsOf, developmentSigningKey, headerOf, signIn, sign
 import { guardPage } from '../support/browser-guards';
 import { hosts, webUrl } from '../support/hosts';
 import { xssPayloads } from '../support/payloads';
-import { allowStatuses, databaseAvailable, earlyInStep, fillSignIn, ownAddress, signInThroughUi } from '../support/web-auth';
+import { allowStatuses, databaseAvailable, earlyInStep, fillSecret, fillSignIn, ownAddress, signInThroughUi } from '../support/web-auth';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-058: passenger displays. A terminal duty manager sets up a board for the demo airport's departure immigration
 // queues (D-CIT, D-VIS) in Arabic, English, Portuguese and Swahili after a step-up; the player's address with its
@@ -121,7 +122,7 @@ test('a duty manager sets up a four-language board after a step-up; the player a
 	// Creating a display issues its player's credential: the second factor is 20 minutes old, so a fresh code is asked.
 	const dialog = page.getByTestId('step-up-dialog');
 	await expect(dialog).toBeVisible();
-	await page.locator('#step-up-code').fill(totpCode(accounts().webDisplays.totpSecret!));
+	await fillSecret(page.locator('#step-up-code'), totpCode(accounts().webDisplays.totpSecret!));
 	await dialog.getByRole('button', { name: 'Confirm' }).click();
 	const reveal = page.getByTestId('credential-reveal');
 	await expect(reveal).toBeVisible();
@@ -234,7 +235,8 @@ test('only the display credential opens a board: users, other codes and wrong ke
 	const { page, close } = await player(browser);
 	try {
 		const guards = await guardPage(page);
-		await page.goto(`/display?code=${code}#key=${encodeURIComponent(wrong)}`);
+		// Absolute, so the step leaves the fragment and the near-credential out (ARV-152).
+		await page.goto(`${webUrl}/display?code=${code}#key=${encodeURIComponent(wrong)}`);
 		await expect(page.getByTestId('board')).toHaveAttribute('data-state', 'refused');
 		await expect(page.getByTestId('board-refused').first()).toContainText('This display is not set up');
 		allowStatuses(guards, 401);
@@ -278,7 +280,7 @@ async function displayRequest(token: string, changes: Record<string, unknown> = 
 async function change(token: string, changes: Record<string, unknown>): Promise<void> {
 	const { id, request } = await displayRequest(token, changes);
 	const response = await call('PUT', `${api}/${id}`, { token, data: request });
-	expect(response.status(), await response.text()).toBe(200);
+	await expectStatus(response, 200);
 }
 
 /** The smallest text in a region, in CSS pixels, over the elements the selector finds. */

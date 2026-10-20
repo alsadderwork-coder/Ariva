@@ -3,6 +3,7 @@ import pg from 'pg';
 import { accounts, call, databaseAvailable, signIn } from '../support/accounts';
 import { expectNoLeak } from '../support/api-assertions';
 import { hosts, smtp4dev } from '../support/hosts';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-040: alert emails through the API, sent by Ariva.Api.Integration to the run's smtp4dev. An administrator gives the DMO
 // border shift supervisor and terminal duty manager their addresses (an address that is not one plain address is
@@ -47,7 +48,7 @@ let ruleCode: string, ruleId: string, alertId: string;
 
 async function userId(userName: string): Promise<string> {
 	const found = await call('GET', `${usersApi}?text=${userName}&pageSize=10`, { token: admin });
-	expect(found.status(), await found.text()).toBe(200);
+	await expectStatus(found, 200);
 	const user = ((await found.json()).data as any[]).find((u) => u.userName === userName);
 	expect(user, `${userName} exists`).toBeTruthy();
 	return user.id;
@@ -99,7 +100,7 @@ test('an address that is not one plain address is refused; a plain one is kept',
 		[accounts().dmoBorder.userName, borderAddress]
 	]) {
 		const kept = await call('PUT', `${usersApi}/${await userId(userName)}`, { token: admin, data: { displayName: userName, email: `  ${email} ` } });
-		expect(kept.status(), await kept.text()).toBe(200);
+		await expectStatus(kept, 200);
 		expect(await kept.json()).toMatchObject({ email });
 	}
 });
@@ -127,7 +128,7 @@ test('escalating an alert of a rule that notifies by email sends the escalation 
 			enabled: true
 		}
 	});
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	({ id: ruleId, code: ruleCode } = await created.json());
 
 	const db = database();
@@ -147,7 +148,7 @@ test('escalating an alert of a rule that notifies by email sends the escalation 
 	}
 
 	const escalated = await call('POST', `${alertsApi}/${alertId}/escalate`, { token: border, data: { note: 'Need the duty manager' } });
-	expect(escalated.status(), await escalated.text()).toBe(200);
+	await expectStatus(escalated, 200);
 
 	// Integration's sender runs every second in this run.
 	await expect
@@ -212,7 +213,7 @@ test('an open desks below recommendation alert escalated to an airport-side role
 			enabled: true
 		}
 	});
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	const { id, code } = await created.json();
 	desksRuleId = id;
 
@@ -232,7 +233,7 @@ test('an open desks below recommendation alert escalated to an airport-side role
 
 		expect((await call('POST', `${alertsApi}/${desksAlertId}/escalate`, { token: terminal, data: {} })).status(), 'the duty manager never finds it').toBe(404);
 		const escalated = await call('POST', `${alertsApi}/${desksAlertId}/escalate`, { token: border, data: { note: 'Need more desks' } });
-		expect(escalated.status(), await escalated.text()).toBe(200);
+		await expectStatus(escalated, 200);
 		expect(await escalated.json()).toMatchObject({ state: 'Escalated', escalateToRole: 'TerminalDutyManager' });
 		// The emails of a change are written in its transaction: none for this one.
 		expect((await db.query(`SELECT count(*)::int AS n FROM email_message WHERE alert_id = $1`, [desksAlertId])).rows[0].n).toBe(0);
@@ -273,7 +274,7 @@ test('a pending email to the duty manager about a predicted nowcast alert is nev
 			leadMinutes: 30
 		}
 	});
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	const { id, code } = await created.json();
 	predictedRuleId = id;
 

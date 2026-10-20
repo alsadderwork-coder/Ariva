@@ -790,6 +790,26 @@
       "dependsOn": [
         "ARV-096"
       ]
+    },
+    {
+      "id": "ARV-224",
+      "title": "[E17] Test report secret check: unresolved addresses, request options and server-issued values in the CI log",
+      "description": "Found in the ARV-152 security review (round 3, recommendations): Platform/Testing/Ariva.E2E/scripts/expect-messages.mjs passes an address it cannot resolve (a function parameter such as open(page, path), a second-step alias, or a name that only looks absolute such as ${playerBase}), and does not inspect a request's params: option or waitForURL; CI masks only values derived from the run's seed, so a failing assertion that prints a server-issued credential (displays.spec.ts not.toContain(credential), not.toHaveURL(/#key=/) in displays and advertising-player) shows it in the live GitHub Actions log before the artifact check fails the job.",
+      "acceptanceCriteria": [
+        "expect-messages.mjs resolves ${name} through its binding when one exists and flags an address whose chain of bindings does not end in a literal or an origin (with an exception for loops over literal lists), and inspects params: options and waitForURL, with self-test samples for each",
+        "Assertions that would print a server-issued credential on failure (displays.spec.ts, advertising-player.spec.ts) check a boolean or a redacted value instead, and the check flags a secret-holding value passed to a matcher whose failure message prints it",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 301,
+      "passes": false,
+      "notes": "Filed by ARV-152 on 2026-10-20 from its third security review (recommendations 5, 6 and 9); Low by the owner's rule.",
+      "dependsOn": [
+        "ARV-152"
+      ]
     }
   ]
 }

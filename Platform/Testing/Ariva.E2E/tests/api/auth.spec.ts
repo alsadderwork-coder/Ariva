@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { expect, test } from '@playwright/test';
 import {
 	accounts,
+	call,
 	type CallResponse,
 	changedPassword,
 	changePasswordUrl,
@@ -86,10 +87,11 @@ test.describe('sign-in', () => {
 		expect(await failureOf(malformedUser)).toEqual(await failureOf(wrongPassword));
 	});
 
-	test('a token in the access_token query string is ignored', async ({ request }) => {
+	test('a token in the access_token query string is ignored', async () => {
 		const token = await signIn(accounts().SystemAdministrator);
 
-		const response = await request.get(`${systemInfo}?access_token=${token.accessToken}`);
+		// Through Node's fetch (call): a request context's call is a report step whose subtitle holds the query (ARV-152).
+		const response = await call('GET', `${systemInfo}?access_token=${token.accessToken}`);
 
 		await expectProblemDetails(response, 401);
 	});

@@ -2,8 +2,9 @@ import crypto from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
 import { accounts, call, login, signIn, totpCode } from '../support/accounts';
 import { guardPage } from '../support/browser-guards';
-import { hosts } from '../support/hosts';
+import { hosts, webUrl } from '../support/hosts';
 import { databaseAvailable, signInThroughUi } from '../support/web-auth';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-139a: the illustrative AUH Terminal A arrivals site (AUH-TA). Every screen that works on a site shows the
 // persistent "Illustrative, not surveyed" banner while AUH-TA is chosen, in English and in Arabic, and none while the
@@ -105,7 +106,7 @@ test('the passenger display of an AUH-TA board shows the note in English and Ara
 					fallback: { en: 'Please follow the signs', ar: 'يرجى اتباع اللوحات' }, enabled: true
 				}
 			});
-			expect(response.status(), await response.text()).toBe(201);
+			await expectStatus(response, 201);
 			const issued = await response.json();
 			created.push(issued.display.id);
 
@@ -113,7 +114,8 @@ test('the passenger display of an AUH-TA board shows the note in English and Ara
 			try {
 				const player = await context.newPage();
 				const guards = await guardPage(player);
-				await player.goto(`/display?code=${code}#key=${encodeURIComponent(issued.credential)}`);
+				// Absolute, so the step leaves the fragment and its key out (ARV-152).
+				await player.goto(`${webUrl}/display?code=${code}#key=${encodeURIComponent(issued.credential)}`);
 				await expect(player.getByTestId('board-entry')).toHaveCount(1);
 				const note = player.getByTestId('board-illustrative-text');
 				if (illustrative) {

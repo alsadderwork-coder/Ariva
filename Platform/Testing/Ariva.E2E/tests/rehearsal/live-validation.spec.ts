@@ -5,6 +5,7 @@ import pg from 'pg';
 import { accounts, call, claimsOf, databaseAvailable, login, unusedTotpCode, type Account } from '../support/accounts';
 import { dmoSensors, prepareDmoSensors } from '../support/demo-sensors';
 import { hosts, kafkaAvailable } from '../support/hosts';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-104j: the validation rehearsal against the live pipeline. ARV-104i's E2E rehearsal plants a perfect pipeline's stored
 // results, so the criteria that measure Ariva's own engines pass there by construction. Here Ariva measures for itself: the
@@ -14,8 +15,8 @@ import { hosts, kafkaAvailable } from '../support/hosts';
 // observer accounts of DMO from the run's account seed, the first with its authenticator) capture the window's counts, tracer
 // runs and desk states through the capture API, as for ARV-104i; the campaigns are closed with the manager's second factor
 // and their results frozen. The test writes nothing to the database: devices, campaigns and closes go through Ariva's API,
-// the ground truth through the observers' capture calls; it only reads (in a read-only transaction) the outages Stream
-// recorded and the availability ledger's unavailable minutes, for the record.
+// the ground truth through the observers' capture calls; it only reads (in a read-only transaction, with the hosts' runtime
+// login) the outages Stream recorded and the availability ledger's unavailable minutes, for the record.
 //
 // The three outcomes of the story, from Ariva's own measurements: with no injected error every criterion meets its target;
 // a 6 percent count error on `A-VIS entry` fails count accuracy for that line only; the bins under S-17's outage (18:20 to
@@ -102,6 +103,40 @@ async function signInWithSecondFactor(account: Account): Promise<string> {
 	return (await signedIn.json()).accessToken as string;
 }
 
+/**
+ * ARV-152 (CWE-863): the two observer accounts as the admin users API shows them: the Validation observer role and nothing
+ * else, and DMO as their only site. The simulator is handed accounts that can capture at DMO and do nothing more. Returns
+ * their user ids.
+ */
+async function expectObserversOnlyCapture(administrator: string): Promise<string[]> {
+	const ids: string[] = [];
+	for (const account of [accounts().liveObserver1, accounts().liveObserver2]) {
+		const found = await call('GET', `${admin}/users?text=${encodeURIComponent(account.userName)}&pageSize=10`, { token: administrator });
+		await expectStatus(found, 200, `${account.userName} looked up`);
+		const user = ((await found.json()).data as any[]).find((u) => u.userName === account.userName);
+		expect(user, `${account.userName} exists`).toBeTruthy();
+		expect({ roles: user.roles, allSites: user.allSites, sites: user.sites }, `${account.userName}: Validation observer only, at DMO only`).toEqual({
+			roles: ['ValidationObserver'],
+			allSites: false,
+			sites: [site]
+		});
+		ids.push(user.id as string);
+	}
+	return ids;
+}
+
+/**
+ * Every current count of a campaign, read on one page (at most 500; the longest window has 128: four lines, 16 bins, two
+ * observers), and the page must hold the total: no later page can hide a third counter.
+ */
+async function countsOf(manager: string, id: string): Promise<any[]> {
+	const answer = await call('GET', `${campaigns}/${id}/counts?pageSize=500`, { token: manager });
+	await expectStatus(answer, 200, "the campaign's counts");
+	const listed = await answer.json();
+	expect(listed.data.length, 'every count of the campaign on one page').toBe(listed.totalCount);
+	return listed.data;
+}
+
 async function sensorStatus(): Promise<any> {
 	const answer = await call('GET', sensors, { headers: operator });
 	expect(answer.status()).toBe(200);
@@ -124,7 +159,7 @@ async function waitUntilPlayed(lastMinute: number, minutes: number): Promise<voi
 async function readScope(token: string): Promise<Scope> {
 	const list = async (path: string) => {
 		const answer = await call('GET', `${admin}/${path}`, { token });
-		expect(answer.status(), `${path}: ${await answer.text()}`).toBe(200);
+		await expectStatus(answer, 200, path);
 		const body = await answer.json();
 		return (body.data ?? body) as any[];
 	};
@@ -147,7 +182,7 @@ async function readTruth(window: Window): Promise<Truth> {
 	const answer = await call('GET', `${validation}/truth?site=${site}&dayStartUtc=${window.clockDayStartUtc}&fromMinute=${start - 1}&toMinute=${end + 1}&queues=${zones.join(',')}`, {
 		headers: reader
 	});
-	expect(answer.status(), await answer.text()).toBe(200);
+	await expectStatus(answer, 200);
 	return answer.json();
 }
 
@@ -202,10 +237,10 @@ async function runningCampaign(manager: string, scope: Scope, name: string, days
 			deskIds: Object.values(scope.desks)
 		}
 	});
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	const id = (await created.json()).id as string;
 	const started = await call('POST', `${campaigns}/${id}/start`, { token: manager });
-	expect(started.status(), await started.text()).toBe(200);
+	await expectStatus(started, 200);
 	return id;
 }
 
@@ -214,7 +249,7 @@ async function rehearse(window: Window, body: Record<string, unknown>): Promise<
 		headers: operator,
 		data: { siteCode: site, scenarioSite: site, scenarioSeed: 9303, dayStartUtc: window.clockDayStartUtc, fromMinute: window.fromMinute, toMinute: window.toMinute, ...body }
 	});
-	expect(answer.status(), await answer.text()).toBe(200);
+	await expectStatus(answer, 200);
 	return answer.json();
 }
 
@@ -222,13 +257,13 @@ async function rehearse(window: Window, body: Record<string, unknown>): Promise<
 async function closeAndFreeze(id: string): Promise<any> {
 	const manager = await signInWithSecondFactor(accounts().liveRehearsalManager);
 	const closed = await call('POST', `${campaigns}/${id}/close`, { token: manager });
-	expect(closed.status(), await closed.text()).toBe(200);
+	await expectStatus(closed, 200);
 	let served: any;
 	await expect
 		.poll(
 			async () => {
 				const answer = await call('GET', `${campaigns}/${id}/results`, { token: manager });
-				expect(answer.status(), await answer.text()).toBe(200);
+				await expectStatus(answer, 200);
 				served = await answer.json();
 				return served.revision?.number ?? 0;
 			},
@@ -238,15 +273,56 @@ async function closeAndFreeze(id: string): Promise<any> {
 	return served;
 }
 
-/** Reads, in a read-only transaction, what Stream and Cronz recorded for DMO over the play: the device outages and the minutes not available. */
-async function readPipelineRecords(fromMs: number, toMs: number) {
-	const db = new pg.Client({
+/** The four tables the record reads; the runtime role may select from each of them. */
+const pipelineTables = ['zone_outage', 'availability_minute', 'queue_bin', 'queue_minute'] as const;
+
+/**
+ * ARV-152 (CWE-269): the record is read with the hosts' runtime login (Database__Username and Database__Password, a member of
+ * ariva_runtime only), never the migration login that owns the schema. ariva_runtime may select from every table the
+ * migration login creates (script 0001's default privileges), and no script takes SELECT on zone_outage (0019),
+ * availability_minute (0042), queue_bin or queue_minute (0018) back from it (they revoke only deletes, truncates and, for
+ * some, updates), so the runtime login reads all four.
+ */
+function runtimeLogin(): pg.ClientConfig {
+	const user = process.env.Database__Username ?? '';
+	const password = process.env.Database__Password ?? '';
+	expect(user.length > 0 && password.length > 0, 'the record is read with the runtime login: Database__Username and Database__Password are set').toBe(true);
+	expect(user, 'the runtime login, never the migration login').not.toBe(process.env.Database__Migration__Username || 'postgres');
+	return {
 		host: process.env.Database__Host || 'localhost',
 		port: Number(process.env.Database__Port || 5432),
 		database: process.env.Database__Name || 'postgres',
-		user: process.env.Database__Migration__Username || 'postgres',
-		password: process.env.Database__Migration__Password
-	});
+		user,
+		password
+	};
+}
+
+/** Before the evening plays: the runtime login connects and may read each table the record reads, in a read-only transaction. */
+async function expectRuntimeLoginReads(): Promise<void> {
+	const db = new pg.Client(runtimeLogin());
+	await db.connect();
+	try {
+		await db.query('BEGIN READ ONLY');
+		// A plain login: no superuser, no row level security bypass, no role creation (CWE-269).
+		const attributes = await db.query('SELECT rolsuper, rolbypassrls, rolcreaterole FROM pg_roles WHERE rolname = current_user');
+		expect(attributes.rows[0], 'the runtime login is neither a superuser nor bypasses row level security nor creates roles').toEqual({
+			rolsuper: false,
+			rolbypassrls: false,
+			rolcreaterole: false
+		});
+		for (const table of pipelineTables) {
+			const allowed = await db.query('SELECT has_table_privilege(current_user, $1, \'SELECT\') AS allowed', [table]);
+			expect(allowed.rows[0].allowed, `the runtime login may select from ${table}`).toBe(true);
+		}
+		await db.query('COMMIT');
+	} finally {
+		await db.end();
+	}
+}
+
+/** Reads, in a read-only transaction with the runtime login, what Stream and Cronz recorded for DMO over the play: the device outages and the minutes not available. */
+async function readPipelineRecords(fromMs: number, toMs: number) {
+	const db = new pg.Client(runtimeLogin());
 	await db.connect();
 	try {
 		await db.query('BEGIN READ ONLY');
@@ -363,11 +439,15 @@ test('the reference evening through the live pipeline: every criterion from Ariv
 		record.commit = null;
 	}
 
-	// 1. The sensors: every DMO sensor registered and calibrated through the admin API, loaded into the sensor emulator.
+	// 0. Before two hours of play: the runtime login reads the record's tables, and the observers can only capture at DMO.
+	await expectRuntimeLoginReads();
 	const administrator = await signInWithSecondFactor(accounts().demoAdmin);
+	await expectObserversOnlyCapture(administrator);
+
+	// 1. The sensors: every DMO sensor registered and calibrated through the admin API, loaded into the sensor emulator.
 	const devices = await prepareDmoSensors(administrator, dmoSensors);
 	const loaded = await call('PUT', `${sensors}/devices`, { headers: operator, data: { devices } });
-	expect(loaded.status(), await loaded.text()).toBe(200);
+	await expectStatus(loaded, 200);
 	const scope = await readScope(administrator);
 	// Ingest keeps device records for a minute: let it see the calibrations before the first push.
 	await new Promise((resolve) => setTimeout(resolve, 65_000));
@@ -380,7 +460,7 @@ test('the reference evening through the live pipeline: every criterion from Ariv
 	while (preRoll < warmUp) preRoll += 15;
 	const playFrom = start - preRoll;
 	const started = await call('POST', `${sensors}/start`, { headers: operator, data: { minute: playFrom, speed: 1, untilMinute: end + hold } });
-	expect(started.status(), await started.text()).toBe(200);
+	await expectStatus(started, 200);
 	record.play = { from: clock(playFrom), until: clock(end + hold), startedUtc: new Date().toISOString(), warmUpMinutes: preRoll };
 
 	// 3. Wait until the evening has played the window and the tail.
@@ -439,7 +519,9 @@ test('the reference evening through the live pipeline: every criterion from Ariv
 		scenarioOutages: truth.outages
 	};
 
-	// 5. The observers: Ariva accounts from the run's seed, never the account that plans, starts or closes the campaigns.
+	// 5. The observers: Ariva accounts from the run's seed, never the account that plans, starts or closes the campaigns. Read
+	// again through the admin users API right before the simulator gets them (a fresh sign-in: the first token has expired).
+	const observerIds = await expectObserversOnlyCapture(await signInWithSecondFactor(accounts().demoAdmin));
 	const observers = [accounts().liveObserver1, accounts().liveObserver2].map((a) => ({ userName: a.userName, password: a.password, totpSecret: a.totpSecret ?? null }));
 	const put = await call('PUT', `${validation}/observers`, { headers: operator, data: { observers } });
 	expect(put.status(), 'the observers are given to the simulator').toBe(200);
@@ -454,13 +536,14 @@ test('the reference evening through the live pipeline: every criterion from Ariv
 	// 6. No injected error.
 	const exact = await runningCampaign(manager, scope, `Live rehearsal ${day} ${clock(start)} no error`, days, targetBinsPerLine);
 	const exactReport = await rehearse(window, { campaignId: exact });
-	const exactCounts = await (await call('GET', `${campaigns}/${exact}/counts?pageSize=100`, { token: manager })).json();
+	const exactCounts = await countsOf(manager, exact);
 	const exactServed = await closeAndFreeze(exact);
 	record.campaigns.push({ name: 'no injected error', campaignId: exact, errors: null, report: reportRecord(exactReport), results: resultsRecord(exactServed) });
 
 	// 7. A 6 percent count error on one line.
 	const skewed = await runningCampaign(manager, scope, `Live rehearsal ${day} ${clock(start)} 6 percent`, days, targetBinsPerLine);
 	const skewedReport = await rehearse(window, { campaignId: skewed, countErrorPercent: 6, countErrorLines: ['A-VIS entry'], seed: 9303 });
+	const skewedCounts = await countsOf(manager, skewed);
 	const skewedServed = await closeAndFreeze(skewed);
 	record.campaigns.push({ name: '6 percent count error on A-VIS entry', campaignId: skewed, errors: { countErrorPercent: 6, countErrorLines: ['A-VIS entry'] }, report: reportRecord(skewedReport), results: resultsRecord(skewedServed) });
 
@@ -488,10 +571,13 @@ test('the reference evening through the live pipeline: every criterion from Ariv
 		expect.soft(report.deskMinutes, `${name}: eight desks, every minute of the window`).toBe(deskCodes.length * (end - start));
 		expect.soft(report.refusals, name).toEqual([]);
 	}
-	// The ground truth is independent: two observers, neither the account that planned, started and closed the campaign.
-	const observerIds = new Set<string>(exactCounts.data.map((c: any) => c.observerId));
-	expect.soft(observerIds.size, 'two observers counted').toBe(2);
-	expect.soft(observerIds.has(managerId), 'the campaign manager never captures').toBe(false);
+	// The ground truth is independent on both campaigns: the two observer accounts counted, never the account that planned,
+	// started and closed the campaign.
+	for (const [name, counts] of [['no injected error', exactCounts], ['6 percent', skewedCounts]] as const) {
+		const counted = new Set<string>(counts.map((c: any) => c.observerId));
+		expect.soft([...counted].sort(), `${name}: the two observer accounts counted`).toEqual([...observerIds].sort());
+		expect.soft(counted.has(managerId), `${name}: the campaign manager never captures`).toBe(false);
+	}
 
 	// No injected error: every criterion meets its target from Ariva's own measurements, frozen at the close.
 	expect.soft(exactServed, 'frozen at the close').toMatchObject({ status: 'Closed', revision: { number: 1 } });

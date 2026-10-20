@@ -5,6 +5,7 @@ import { createAirport } from '../support/airports';
 import { expectApiSecurityHeaders, expectNoLeak } from '../support/api-assertions';
 import { hosts } from '../support/hosts';
 import { markupFragments, sqlInjectionPayloads, xssPayloads } from '../support/payloads';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-104a: validation campaigns and manual count capture (formulas F18, wiki 07 section 8). Campaigns of a site live under
 // api/v1/sites/{siteCode}/validation/campaigns (Validation.View to read, Validation.Manage to plan and start; closing is a
@@ -71,7 +72,7 @@ async function ensureProfile(): Promise<Profile> {
 		for (const old of history.filter((p: any) => p.status === 'Draft')) await call('DELETE', `${api}/${old.id}`, { token: administrator });
 		const create = async (entity: string, data: unknown) => {
 			const response = await call('POST', `${admin}/${entity}`, { token: administrator, data });
-			expect(response.status(), `${entity}: ${await response.text()}`).toBe(201);
+			await expectStatus(response, 201, entity);
 			return (await response.json()).id as string;
 		};
 		const { id: airport } = await createAirport((iata) =>
@@ -81,16 +82,16 @@ async function ensureProfile(): Promise<Profile> {
 		const levelId = await create('levels', { terminalId: terminal, code: 'L0', name: 'Arrivals', floorNumber: 0, widthMetres: 100, depthMetres: 50 });
 
 		const draft = await call('POST', `${api}/drafts`, { token: manager, data: { siteCode: site, name: 'Validation hall' } });
-		expect(draft.status(), await draft.text()).toBe(201);
+		await expectStatus(draft, 201);
 		const id = (await draft.json()).profile.id as string;
 		const zone = async (data: Record<string, unknown>) => {
 			const response = await call('POST', `${api}/${id}/zones`, { token: manager, data: { levelId, ...data } });
-			expect(response.status(), await response.text()).toBe(201);
+			await expectStatus(response, 201);
 			return (await response.json()).id as string;
 		};
 		const line = async (data: Record<string, unknown>) => {
 			const response = await call('POST', `${api}/${id}/lines`, { token: manager, data: { levelId, ...data } });
-			expect(response.status(), await response.text()).toBe(201);
+			await expectStatus(response, 201);
 		};
 		const queueA = await zone({ name: 'Q-A', kind: 'Queue', polygon: '10 10,34 10,34 22,10 22' });
 		const band = await zone({ name: 'Q-A band', kind: 'Overflow', polygon: '10 4,34 4,34 10,10 10', queueZoneId: queueA });
@@ -101,9 +102,9 @@ async function ensureProfile(): Promise<Profile> {
 		await line({ name: 'Entry B', role: 'Entry', startX: 50, startY: 12, endX: 50, endY: 16, zoneId: queueB });
 		await line({ name: 'Exit B', role: 'Exit', startX: 70, startY: 22, endX: 74, endY: 22, zoneId: queueB });
 		const review = await (await call('GET', `${api}/${id}/validation`, { token: manager })).json();
-		expect(review.publishable, JSON.stringify(review)).toBe(true);
+		expect(review, 'the profile is publishable').toEqual(expect.objectContaining({ publishable: true }));
 		const publish = await call('POST', `${api}/${id}/publish`, { token: manager, data: { geometryHash: review.geometryHash } });
-		expect(publish.status(), await publish.text()).toBe(200);
+		await expectStatus(publish, 200);
 		published = await publish.json();
 	}
 
@@ -125,13 +126,13 @@ async function ensureProfile(): Promise<Profile> {
 async function ensureDesks(): Promise<Desks> {
 	const list = async (entity: string, query: string) => {
 		const response = await call('GET', `${admin}/${entity}?${query}`, { token: administrator });
-		expect(response.status(), `${entity}: ${await response.text()}`).toBe(200);
+		await expectStatus(response, 200, entity);
 		const body = await response.json();
 		return (body.data ?? body) as any[];
 	};
 	const create = async (entity: string, data: unknown) => {
 		const response = await call('POST', `${admin}/${entity}`, { token: administrator, data });
-		expect(response.status(), `${entity}: ${await response.text()}`).toBe(201);
+		await expectStatus(response, 201, entity);
 		return response.json();
 	};
 	const checkpoints = await list('checkpoints', `siteCode=${site}&pageSize=100`);
@@ -165,7 +166,7 @@ function campaignRequest(name: string): Record<string, unknown> {
 
 async function plan(name: string, token = lead): Promise<any> {
 	const created = await call('POST', campaigns(), { token, data: campaignRequest(name) });
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	return created.json();
 }
 
@@ -208,7 +209,7 @@ test('a campaign is planned, started, counted, corrected and closed with a secon
 	expect((await (await call('GET', capture(), { token: observer })).json()).map((c: any) => c.id)).not.toContain(id);
 
 	const started = await call('POST', `${campaigns()}/${id}/start`, { token: lead });
-	expect(started.status(), await started.text()).toBe(200);
+	await expectStatus(started, 200);
 	expect((await started.json()).status).toBe('Running');
 	expect((await call('POST', `${campaigns()}/${id}/start`, { token: lead })).status(), 'start twice').toBe(409);
 
@@ -220,7 +221,7 @@ test('a campaign is planned, started, counted, corrected and closed with a secon
 	// One count per line, bin and observer; a second observer may count the same line and bin.
 	const count = { lineId: profile.entryA, binStartUtc: binStart(1), crossingsIn: 42, crossingsOut: 3 };
 	const first = await call('POST', `${capture()}/${id}/counts`, { token: observer, data: count });
-	expect(first.status(), await first.text()).toBe(201);
+	await expectStatus(first, 201);
 	const recorded = await first.json();
 	expect(recorded).toMatchObject({ campaignId: id, lineName: 'Entry A', revision: 1, current: true, crossingsIn: 42, crossingsOut: 3, reason: null });
 	expect((await call('POST', `${capture()}/${id}/counts`, { token: observer, data: { ...count, crossingsIn: 50 } })).status(), 'the same line and bin again').toBe(409);
@@ -232,7 +233,7 @@ test('a campaign is planned, started, counted, corrected and closed with a secon
 	const keyed = { lineId: profile.exitA, binStartUtc: binStart(2), crossingsIn: 7, crossingsOut: 1 };
 	const key = `e2e-${Date.now()}`;
 	const sent = await call('POST', `${capture()}/${id}/counts`, { token: observer, data: keyed, headers: { 'Idempotency-Key': key } });
-	expect(sent.status(), await sent.text()).toBe(201);
+	await expectStatus(sent, 201);
 	const resent = await call('POST', `${capture()}/${id}/counts`, { token: observer, data: keyed, headers: { 'Idempotency-Key': key } });
 	expect(resent.status(), 'the stored answer').toBe(200);
 	expect((await resent.json()).id).toBe((await sent.json()).id);
@@ -241,7 +242,7 @@ test('a campaign is planned, started, counted, corrected and closed with a secon
 	// A correction is the next revision with a reason; only the latest, and only one's own.
 	const correct = (countId: string, token: string, data: Record<string, unknown>) => call('POST', `${capture()}/${id}/counts/${countId}/corrections`, { token, data });
 	const corrected = await correct(recorded.id, observer, { crossingsIn: 44, crossingsOut: 3, reason: 'Two missed at the start' });
-	expect(corrected.status(), await corrected.text()).toBe(201);
+	await expectStatus(corrected, 201);
 	const revision = await corrected.json();
 	expect(revision).toMatchObject({ revision: 2, crossingsIn: 44, reason: 'Two missed at the start', correctsId: recorded.id, current: true });
 	expect((await correct(recorded.id, observer, { crossingsIn: 45, crossingsOut: 3, reason: 'Again' })).status(), 'not the latest').toBe(409);
@@ -265,7 +266,7 @@ test('a campaign is planned, started, counted, corrected and closed with a secon
 	expect((await withoutSecondFactor.json()).error).toBe('mfa_required');
 	expect((await call('POST', `${campaigns()}/${id}/close`, { token: observer })).status()).toBe(403);
 	const closed = await call('POST', `${campaigns()}/${id}/close`, { token: manager });
-	expect(closed.status(), await closed.text()).toBe(200);
+	await expectStatus(closed, 200);
 	expect((await closed.json()).status).toBe('Closed');
 
 	// Nothing is captured or corrected after the close (409), and it cannot be closed or started again.
@@ -332,10 +333,10 @@ test('an Idempotency-Key belongs to the observer who sent it, for counts and cor
 	const entry = { lineId: profile.entryA, binStartUtc: binStart(1), crossingsIn: 5, crossingsOut: 0 };
 
 	const firstExit = await send(observer, exit, exitKey);
-	expect(firstExit.status(), await firstExit.text()).toBe(201);
+	await expectStatus(firstExit, 201);
 	const firstExitCount = await firstExit.json();
 	const firstEntry = await send(observer, entry, entryKey);
-	expect(firstEntry.status(), await firstEntry.text()).toBe(201);
+	await expectStatus(firstEntry, 201);
 	const firstEntryCount = await firstEntry.json();
 
 	const sameBody = await send(observer2, exit, exitKey);
@@ -363,7 +364,7 @@ test('an Idempotency-Key belongs to the observer who sent it, for counts and cor
 	const fixKey2 = `e2e-fix2-${stamp}`;
 	const recount = { crossingsIn: 8, crossingsOut: 1, reason: 'Recount' };
 	const firstFix = await correct(observer, firstExitCount.id, recount, fixKey);
-	expect(firstFix.status(), await firstFix.text()).toBe(201);
+	await expectStatus(firstFix, 201);
 	const firstFixCount = await firstFix.json();
 	expect((await correct(observer, firstEntryCount.id, { crossingsIn: 6, crossingsOut: 0, reason: 'Missed one' }, fixKey2)).status()).toBe(201);
 
@@ -413,7 +414,7 @@ test('another site answers 404, through its own route and the campaign site', as
 	const id = campaign.id as string;
 	expect((await call('POST', `${campaigns()}/${id}/start`, { token: lead })).status()).toBe(200);
 	const count = await call('POST', `${capture()}/${id}/counts`, { token: observer, data: { lineId: profile.entryA, binStartUtc: binStart(1), crossingsIn: 9, crossingsOut: 0 } });
-	expect(count.status(), await count.text()).toBe(201);
+	await expectStatus(count, 201);
 	const countId = (await count.json()).id as string;
 
 	for (const code of [site, 'E2E1']) {
@@ -504,10 +505,10 @@ test('SQL injection and markup are refused with 400 or stored as inert text, nev
 	}
 
 	const first = await call('POST', `${capture()}/${id}/counts`, { token: observer, data: base });
-	expect(first.status(), await first.text()).toBe(201);
+	await expectStatus(first, 201);
 	const reason = `${xssPayloads[1]} ${sqlInjectionPayloads[3]}`;
 	const corrected = await call('POST', `${capture()}/${id}/counts/${(await first.json()).id}/corrections`, { token: observer, data: { crossingsIn: 2, crossingsOut: 0, reason } });
-	expect(corrected.status(), await corrected.text()).toBe(201);
+	await expectStatus(corrected, 201);
 	expect(corrected.headers()['content-type']).toContain('application/json');
 	expectApiSecurityHeaders(corrected);
 	expect((await corrected.json()).reason).toBe(reason);
@@ -558,7 +559,7 @@ function deskCampaignRequest(name: string): Record<string, unknown> {
 /** A running campaign with desks, planned by the border manager and started by the lead. */
 async function runningWithDesks(name: string): Promise<string> {
 	const created = await call('POST', campaigns(), { token: manager, data: deskCampaignRequest(name) });
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	const id = (await created.json()).id as string;
 	expect((await call('POST', `${campaigns()}/${id}/start`, { token: lead })).status()).toBe(200);
 	return id;
@@ -616,7 +617,7 @@ test('tracer runs are corrected by the device clock offset, resent batches retur
 		{ code: 'T-08', joinedAgo: 15 * minute, exitedAgo: 9 * minute, abandoned: true }
 	]);
 	const sent = await sendRuns(id, observer, batch, key);
-	expect(sent.status(), await sent.text()).toBe(201);
+	await expectStatus(sent, 201);
 	const stored = await sent.json();
 	expect(Math.abs(stored.clockOffsetMs - 90_000), 'offset within a few seconds of 90 s').toBeLessThan(5_000);
 	const t07 = stored.runs.find((r: any) => r.tracerCode === 'T-07');
@@ -633,7 +634,7 @@ test('tracer runs are corrected by the device clock offset, resent batches retur
 	expect((await sendRuns(id, observer, batch, `${key}-again`)).status(), 'the same runs in another batch').toBe(409);
 	// A key belongs to the observer who sent it: another observer's identical key is its own batch.
 	const second = await sendRuns(id, observer2, batch, key);
-	expect(second.status(), await second.text()).toBe(201);
+	await expectStatus(second, 201);
 	expect((await second.json()).observerId).toBe(claimsOf(observer2).sub);
 
 	// Out of range (400, the value never repeated): a device more than 5 minutes off, a join on a day not planned, an exit
@@ -688,7 +689,7 @@ test('desk states are logged in 15-minute batches, corrected as revisions, and r
 	const states = ['Serving', 'Idle', 'Paused', 'Closed'];
 	const batch = deskBatch(1, [desks.vd01, desks.vd02, desks.vd03, desks.vd04].map((deskId, d) => [deskId, Array.from({ length: 15 }, (_, m) => [m, states[(d + m) % 4]] as [number, string])]));
 	const sent = await sendDesks(id, observer, batch, key);
-	expect(sent.status(), await sent.text()).toBe(201);
+	await expectStatus(sent, 201);
 	const stored = await sent.json();
 	expect(stored.observations).toHaveLength(60);
 	expect(stored.observations[0]).toMatchObject({ deskCode: 'VD01', checkpoint: 'VIMM', minuteUtc: binStart(1), state: 'Serving', revision: 1, current: true });
@@ -717,7 +718,7 @@ test('desk states are logged in 15-minute batches, corrected as revisions, and r
 	const correct = (observationId: string, token: string, data: unknown, correctionKey?: string) =>
 		call('POST', `${capture()}/${id}/desk-observations/${observationId}/corrections`, { token, data, headers: correctionKey ? { 'Idempotency-Key': correctionKey } : undefined });
 	const corrected = await correct(first.id, observer, { state: 'Idle', reason: 'Tapped the wrong row' }, `${key}-fix`);
-	expect(corrected.status(), await corrected.text()).toBe(201);
+	await expectStatus(corrected, 201);
 	const revision = await corrected.json();
 	expect(revision).toMatchObject({ revision: 2, state: 'Idle', correctsId: first.id, batchId: null, current: true });
 	expect((await correct(first.id, observer, { state: 'Idle', reason: 'Tapped the wrong row' }, `${key}-fix`)).status(), 'resent').toBe(200);
@@ -810,10 +811,10 @@ test('an account with an airport role and the observer role sees no desk and get
 
 	const stamp = Date.now();
 	const logged = await sendDesks(id, observer, deskBatch(1, [[desks.vd01, [[0, 'Serving']]]]), `e2e-pure-${stamp}`);
-	expect(logged.status(), await logged.text()).toBe(201);
+	await expectStatus(logged, 201);
 	const correction = `${capture()}/${id}/desk-observations/${(await logged.json()).observations[0].id}/corrections`;
 	const corrected = await call('POST', correction, { token: observer, data: { state: 'Idle', reason: 'Tapped the wrong row' } });
-	expect(corrected.status(), await corrected.text()).toBe(201);
+	await expectStatus(corrected, 201);
 	const ownRead = await call('GET', `${capture()}/${id}/desk-observations?currentOnly=false`, { token: observer });
 	expect(ownRead.status()).toBe(200);
 	expect((await ownRead.json()).totalCount).toBe(2);
@@ -893,13 +894,13 @@ test('attack payloads in tracer and desk batches are refused with 400 or kept as
 		expect((await call('GET', `${campaigns()}/${id}/desk-observations?${query}`, { token: manager })).status(), query).toBe(400);
 	}
 	const logged = await sendDesks(id, observer, deskBatch(1, [[desks.vd02, [[0, 'Idle']]]]), `e2e-inert-${Date.now()}`);
-	expect(logged.status(), await logged.text()).toBe(201);
+	await expectStatus(logged, 201);
 	const reason = `${xssPayloads[1]} ${sqlInjectionPayloads[3]}`;
 	const corrected = await call('POST', `${capture()}/${id}/desk-observations/${(await logged.json()).observations[0].id}/corrections`, {
 		token: observer,
 		data: { state: 'Serving', reason }
 	});
-	expect(corrected.status(), await corrected.text()).toBe(201);
+	await expectStatus(corrected, 201);
 	expect(corrected.headers()['content-type']).toContain('application/json');
 	expectApiSecurityHeaders(corrected);
 	expect((await corrected.json()).reason).toBe(reason);
@@ -940,14 +941,14 @@ async function managerWithSecondFactor(): Promise<string> {
 async function campaignWithGroundTruth(name: string): Promise<string> {
 	const id = await runningWithDesks(name);
 	const count = await call('POST', `${capture()}/${id}/counts`, { token: observer, data: { lineId: profile.entryA, binStartUtc: binStart(1), crossingsIn: 12, crossingsOut: 1 } });
-	expect(count.status(), await count.text()).toBe(201);
+	await expectStatus(count, 201);
 	for (const [token, code, joinedAgo] of [[observer, 'T-21', 20], [observer2, 'T-22', 18]] as [string, string, number][]) {
 		const runs = await sendRuns(id, token, tracerBatch(0, [{ code, joinedAgo: joinedAgo * minute, exitedAgo: 6 * minute }]), `e2e-results-${code}-${Date.now()}`);
-		expect(runs.status(), await runs.text()).toBe(201);
+		await expectStatus(runs, 201);
 	}
 	const states = Array.from({ length: 15 }, (_, m) => [m, 'Serving'] as [number, string]);
 	const logged = await sendDesks(id, observer, deskBatch(1, [[desks.vd01, states]]), `e2e-results-desks-${Date.now()}`);
-	expect(logged.status(), await logged.text()).toBe(201);
+	await expectStatus(logged, 201);
 	return id;
 }
 
@@ -956,7 +957,7 @@ test('campaign results are served per role while running, frozen at the close as
 
 	// Running: computed when asked, not frozen; the duty manager (airport side) gets no desk-state result and no desk key.
 	const live = await call('GET', results(id), { token: lead });
-	expect(live.status(), await live.text()).toBe(200);
+	await expectStatus(live, 200);
 	expect(live.headers()['content-type']).toContain('application/json');
 	expectApiSecurityHeaders(live);
 	const running = await live.json();
@@ -970,7 +971,7 @@ test('campaign results are served per role while running, frozen at the close as
 	// Closed: frozen as revision 1, its hash a SHA-256 in lowercase hexadecimal; the border manager sees the desk section.
 	expect((await call('POST', `${campaigns()}/${id}/close`, { token: manager })).status()).toBe(200);
 	const first = await call('GET', results(id), { token: manager });
-	expect(first.status(), await first.text()).toBe(200);
+	await expectStatus(first, 200);
 	const frozen = await first.json();
 	expect(frozen).toMatchObject({ status: 'Closed', revision: { number: 1, revisions: 1, reason: null }, audience: { desksIncluded: true, observers: 'All', proofIncluded: true } });
 	expect(frozen.revision.contentSha256).toMatch(/^[0-9a-f]{64}$/);
@@ -1018,7 +1019,7 @@ test('campaign results are served per role while running, frozen at the close as
 	expect(tooBig.status()).toBe(413);
 
 	const added = await recompute(strong, { reason: '  Desk logs re-entered from paper  ' });
-	expect(added.status(), await added.text()).toBe(201);
+	await expectStatus(added, 201);
 	expectApiSecurityHeaders(added);
 	const second = await added.json();
 	expect(second.revision).toMatchObject({ number: 2, revisions: 2, reason: 'Desk logs re-entered from paper' });
@@ -1063,7 +1064,7 @@ test('a desk without a staff or service zone is judged open or not open from the
 	const states: (string | null)[] = Array.from({ length: 15 }, () => null);
 	for (const at of observed) states[(at - bin) / minute] = 'Serving';
 	const logged = await sendDesks(id, observer, { binStartUtc: iso(bin).replace('.000Z', 'Z'), desks: [{ deskId: desks.vd01, states }] }, `e2e-levels-${Date.now()}`);
-	expect(logged.status(), await logged.text()).toBe(201);
+	await expectStatus(logged, 201);
 
 	// Ariva's stored minutes for them: Idle all minute (open, as the observer's Serving is, but not the same state).
 	const db = new pg.Client({
@@ -1085,11 +1086,11 @@ test('a desk without a staff or service zone is judged open or not open from the
 		);
 
 		const served = await call('GET', results(id), { token: manager });
-		expect(served.status(), await served.text()).toBe(200);
+		await expectStatus(served, 200);
 		const body = await served.json();
 		const vd01 = body.desks.desks.find((d: any) => d.deskCode === 'VD01');
 		const n = observed.length;
-		expect(vd01, JSON.stringify(body.desks)).toMatchObject({
+		expect(vd01, 'VD01 among the desk results').toMatchObject({
 			level: 'Throughput',
 			judged: n,
 			judgedAtThroughput: n,
@@ -1120,14 +1121,14 @@ test('a desk without a staff or service zone is judged open or not open from the
 test('campaign results answer 404 across sites, refuse attack payloads and keep markup inert', async () => {
 	const name = `${xssPayloads[0]} Results ${Date.now()}`;
 	const created = await call('POST', campaigns(), { token: lead, data: campaignRequest(name) });
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	const id = (await created.json()).id as string;
 	expect((await call('POST', `${campaigns()}/${id}/start`, { token: lead })).status()).toBe(200);
 	expect((await call('POST', `${campaigns()}/${id}/close`, { token: manager })).status()).toBe(200);
 
 	// Markup in the campaign's name is a JSON string value: escaped in the body, the same text once parsed.
 	const served = await call('GET', results(id), { token: lead });
-	expect(served.status(), await served.text()).toBe(200);
+	await expectStatus(served, 200);
 	expect(served.headers()['content-type']).toContain('application/json');
 	expectApiSecurityHeaders(served);
 	const body = await served.text();
@@ -1155,7 +1156,7 @@ test('campaign results answer 404 across sites, refuse attack payloads and keep 
 	// A recomputation's reason with markup and SQL is kept as inert text; JSON too deep, or not JSON, is refused.
 	const reason = `${xssPayloads[1]} ${sqlInjectionPayloads[2]}`;
 	const recomputed = await call('POST', results(id, site, '/revisions'), { token: strong, data: { reason } });
-	expect(recomputed.status(), await recomputed.text()).toBe(201);
+	await expectStatus(recomputed, 201);
 	expect(recomputed.headers()['content-type']).toContain('application/json');
 	expectApiSecurityHeaders(recomputed);
 	for (const fragment of markupFragments) expect(await recomputed.text()).not.toContain(fragment);

@@ -3,6 +3,7 @@ import pg from 'pg';
 import { accounts, call, databaseAvailable, login, signIn, totpCode } from '../support/accounts';
 import { expectNoLeak } from '../support/api-assertions';
 import { hosts } from '../support/hosts';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-037: alert rules through the API. The demo seed's R-001 to R-005 are on DMO; an administrator creates, edits and
 // deletes a rule there (codes go on from the seed's, enums travel by their exact names, deletes are soft, need a second
@@ -45,13 +46,13 @@ const number = (code: string) => Number(code.slice(2));
 test.beforeAll(async () => {
 	const { userName, password, totpSecret } = accounts().alertAdmin;
 	const signedIn = await login(userName, password, undefined, undefined, { code: totpCode(totpSecret!) });
-	expect(signedIn.status(), await signedIn.text()).toBe(200);
+	await expectStatus(signedIn, 200);
 	administrator = (await signedIn.json()).accessToken;
 });
 
 test('the demo seed gives DMO the prototype rules R-001 to R-005', async () => {
 	const page = await call('GET', `${api}?siteCode=DMO&pageSize=500`, { token: administrator });
-	expect(page.status(), await page.text()).toBe(200);
+	await expectStatus(page, 200);
 	const body = await page.json();
 	const seeded = body.data.filter((r: any) => /^R-00[1-5]$/.test(r.code));
 	// Another run may have deleted some; a fresh database has all five.
@@ -62,7 +63,7 @@ test('the demo seed gives DMO the prototype rules R-001 to R-005', async () => {
 
 test('an administrator creates, edits and deletes a rule; the code is never given again', async () => {
 	const created = await call('POST', api, { token: administrator, data: rule() });
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	const view = await created.json();
 	ruleId = view.id;
 	ruleCode = view.code;
@@ -72,7 +73,7 @@ test('an administrator creates, edits and deletes a rule; the code is never give
 	expect(created.headers()['location']).toContain(`/api/v1/admin/alert-rules/${ruleId}`);
 
 	const updated = await call('PUT', `${api}/${ruleId}`, { token: administrator, data: rule({ threshold: 25, enabled: false }) });
-	expect(updated.status(), await updated.text()).toBe(200);
+	await expectStatus(updated, 200);
 	expect(await updated.json()).toMatchObject({ code: ruleCode, threshold: 25, enabled: false });
 	expect((await call('PUT', `${api}/${ruleId}`, { token: administrator, data: rule({ siteCode: 'E2E1' }) })).status(), 'a rule stays in its site').toBe(400);
 
@@ -86,7 +87,7 @@ test('an administrator creates, edits and deletes a rule; the code is never give
 	expect((await call('DELETE', `${api}/${ruleId}`, { token: administrator })).status(), 'deleted twice').toBe(404);
 
 	const next = await call('POST', api, { token: administrator, data: rule({ name: 'E2E after the delete' }) });
-	expect(next.status(), await next.text()).toBe(201);
+	await expectStatus(next, 201);
 	const nextView = await next.json();
 	expect(number(nextView.code)).toBeGreaterThan(number(ruleCode));
 	await call('DELETE', `${api}/${nextView.id}`, { token: administrator });
@@ -115,7 +116,7 @@ test('typed values only: numbers for enums, misfit comparators, unknown zones an
 		// An expression field is an unknown member, refused like every other (ARV-089): the rule is the typed fields and
 		// nothing evaluates an extra one (CWE-94).
 		const response = await call('POST', api, { token: administrator, data: rule(overrides) });
-		expect(response.status(), `${why}: ${await response.text()}`).toBe(400);
+		await expectStatus(response, 400, why);
 		expectNoLeak(await response.text(), why);
 	}
 });
@@ -123,7 +124,7 @@ test('typed values only: numbers for enums, misfit comparators, unknown zones an
 test('hostile names are stored and returned as plain text', async () => {
 	for (const name of ['<script>alert(1)</script>', "'; DROP TABLE alert_rule; --", '{{7*7}} ${7*7}', '=cmd|\' /C calc\'!A0', 'قاعدة الانتظار']) {
 		const created = await call('POST', api, { token: administrator, data: rule({ name }) });
-		expect(created.status(), `${name}: ${await created.text()}`).toBe(201);
+		await expectStatus(created, 201, name);
 		const view = await created.json();
 		expect(view.name).toBe(name);
 		expect(created.headers()['content-type']).toContain('application/json');
@@ -176,7 +177,7 @@ test('a backtest returns the count and first fire time, within bounds, for creat
 	const fromUtc = new Date(now - 3 * 3600_000).toISOString();
 	const toUtc = new Date(now - 60_000).toISOString();
 	const ok = await call('POST', `${api}/backtest`, { token: administrator, data: { rule: rule(), fromUtc, toUtc } });
-	expect(ok.status(), await ok.text()).toBe(200);
+	await expectStatus(ok, 200);
 	const result = await ok.json();
 	expect(result).toMatchObject({ targets: 2, truncated: false });
 	expect(result.count).toBeGreaterThanOrEqual(0);
@@ -189,7 +190,7 @@ test('a backtest returns the count and first fire time, within bounds, for creat
 		token: administrator,
 		data: { rule: rule({ metric: 'PredictedNowcast', leadMinutes: 30, minQueueLength: null, escalateAfterMinutes: null, escalateToRole: null }), fromUtc, toUtc }
 	});
-	expect(predicted.status(), await predicted.text()).toBe(200);
+	await expectStatus(predicted, 200);
 	expect((await predicted.json()).targetsWithData, 'no arrival-wave projection before ARV-047').toBe(0);
 
 	for (const [why, data] of [
@@ -202,7 +203,7 @@ test('a backtest returns the count and first fire time, within bounds, for creat
 		['no rule', { fromUtc, toUtc }]
 	] as const) {
 		const refused = await call('POST', `${api}/backtest`, { token: administrator, data });
-		expect(refused.status(), `${why}: ${await refused.text()}`).toBe(400);
+		await expectStatus(refused, 400, why);
 	}
 
 	const border = (await signIn(accounts().BorderShiftSupervisor)).accessToken;
@@ -304,19 +305,19 @@ test.describe('health-check metrics (ARV-114b)', () => {
 			['OccupancyOutOfRange', 'GreaterThan', 0, 2]
 		] as const) {
 			const created = await call('POST', api, { token: administrator, data: healthRule({ name: `E2E ${metric}`, metric, comparator, threshold }) });
-			expect(created.status(), created.status() === 201 ? `${metric} created` : await created.text()).toBe(201);
+			await expectStatus(created, 201, `${metric} created`);
 			const view = await created.json();
 			try {
 				expect(view).toMatchObject({ metric, comparator, threshold, zones: ['SEC-N'], minQueueLength: null, leadMinutes: null });
 				const read = await call('GET', `${api}/${view.id}`, { token: administrator });
-				expect(read.status(), read.status() === 200 ? `${metric} read back` : await read.text()).toBe(200);
+				await expectStatus(read, 200, `${metric} read back`);
 				expect((await read.json()).metric, 'the metric travels by its exact name').toBe(metric);
 
 				const backtest = await call('POST', `${api}/backtest`, {
 					token: administrator,
 					data: { rule: healthRule({ metric, comparator, threshold }), fromUtc: morning('05:00'), toUtc: morning('06:00') }
 				});
-				expect(backtest.status(), backtest.status() === 200 ? `${metric} backtested` : await backtest.text()).toBe(200);
+				await expectStatus(backtest, 200, `${metric} backtested`);
 				const result = await backtest.json();
 				expect(result, `${metric}: one alert while the 05:15 bin governs`).toMatchObject({ count: 1, targets: 1, targetsWithData: 1, truncated: false });
 				expect(Date.parse(result.firstRaisedUtc)).toBe(Date.parse(morning('05:29')));
@@ -354,20 +355,20 @@ test.describe('health-check metrics (ARV-114b)', () => {
 		] as const) {
 			const response = await call('POST', api, { token: administrator, data: healthRule(overrides) });
 			const body = await response.text();
-			expect(response.status(), response.status() === 400 ? `${why}: refused` : body).toBe(400);
+			await expectStatus(response, 400, `${why}: refused`);
 			expectNoLeak(body, why);
 			if (why.includes('overflow zone')) expect(body.includes('queue zones only'), `${why}: refused for the zone kind`).toBe(true);
 			const backtest = await call('POST', `${api}/backtest`, {
 				token: administrator,
 				data: { rule: healthRule(overrides), fromUtc: morning('05:00'), toUtc: morning('06:00') }
 			});
-			expect(backtest.status(), backtest.status() === 400 ? `${why}: no backtest` : await backtest.text()).toBe(400);
+			await expectStatus(backtest, 400, `${why}: no backtest`);
 		}
 	});
 
 	test('every rule endpoint keeps its permission for a health-check rule (CWE-862): anonymous, handlers and other sites are refused', async () => {
 		const created = await call('POST', api, { token: administrator, data: healthRule({ name: 'E2E health authorization' }) });
-		expect(created.status(), created.status() === 201 ? 'created' : await created.text()).toBe(201);
+		await expectStatus(created, 201, 'created');
 		const id = (await created.json()).id;
 		try {
 			const range = { fromUtc: morning('05:00'), toUtc: morning('06:00') };
@@ -408,12 +409,12 @@ test.describe('health-check metrics (ARV-114b)', () => {
 				data: healthRule({ siteCode: 'E2E1', escalateAfterMinutes: null, escalateToRole: null, escalationContact: null })
 			});
 			const ownSiteBody = await ownSite.text();
-			expect(ownSite.status(), ownSite.status() === 400 ? 'SEC-N at E2E1' : ownSiteBody).toBe(400);
+			await expectStatus(ownSite, 400, 'SEC-N at E2E1');
 			expect(ownSiteBody.includes('Every zone in scope must be a zone of the site'), 'refused for the zone').toBe(true);
 			// An edit cannot slip an overflow band into a health rule either.
 			const band = await call('PUT', `${api}/${id}`, { token: administrator, data: healthRule({ zones: ['SEC-N', 'SEC-OV'] }) });
 			const bandBody = await band.text();
-			expect(band.status(), band.status() === 400 ? 'SEC-OV added by an edit' : bandBody).toBe(400);
+			await expectStatus(band, 400, 'SEC-OV added by an edit');
 			expect(bandBody.includes('queue zones only'), 'refused for the zone kind').toBe(true);
 			expect((await (await call('GET', `${api}/${id}`, { token: administrator })).json()).zones, 'the rule keeps its zones').toEqual(['SEC-N']);
 			expect((await call('GET', `${api}/${id}`, { token: administrator })).status(), 'still there').toBe(200);
@@ -427,7 +428,7 @@ test.describe('health-check metrics (ARV-114b)', () => {
 			token: administrator,
 			data: healthRule({ name: 'E2E health search', metric: 'OccupancyOutOfRange', comparator: 'GreaterThan', threshold: 0 })
 		});
-		expect(created.status(), created.status() === 201 ? 'created' : await created.text()).toBe(201);
+		await expectStatus(created, 201, 'created');
 		const id = (await created.json()).id;
 		try {
 			const found = await call('GET', `${api}?siteCode=DMO&metric=OccupancyOutOfRange&pageSize=500`, { token: administrator });

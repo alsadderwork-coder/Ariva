@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
 import { accounts, signIn } from '../support/accounts';
 import { hosts } from '../support/hosts';
+import { redactSecrets } from '../../scripts/secret-shapes.mjs';
 import { loadTriage, readAlerts, summary, untriagedHigh, type ZapAlert } from '../../scripts/zap-findings.mjs';
 
 /**
@@ -73,7 +74,8 @@ function runZap(script: string, args: string[], token?: string): number {
 			['run', '--rm', '--network', 'host', '--env-file', envFile, '-v', `${work}:/zap/wrk:rw`, zapImage, script, ...args, '--hook', '/zap/wrk/hooks.py', '-I'],
 			{ encoding: 'utf8', timeout: (activeScanMinutes + 15) * 60_000, maxBuffer: 64 * 1024 * 1024 }
 		);
-		fs.writeFileSync(path.join(reports, `${args[args.indexOf('-J') + 1].replace('.json', '')}.log`), `${result.stdout}\n${result.stderr}`);
+		// ARV-152 (CWE-532): the reports are uploaded, so what ZAP printed is kept with any credential shape redacted.
+		fs.writeFileSync(path.join(reports, `${args[args.indexOf('-J') + 1].replace('.json', '')}.log`), redactSecrets(`${result.stdout}\n${result.stderr}`));
 		return result.status ?? -1;
 	} finally {
 		fs.rmSync(secrets, { recursive: true, force: true });
@@ -85,7 +87,9 @@ function collect(scan: string): ZapAlert[] {
 	expect(fs.existsSync(file), `${scan}: ZAP wrote no report`).toBe(true);
 	for (const extension of ['json', 'html']) {
 		const source = path.join(work, `${scan}.${extension}`);
-		if (fs.existsSync(source)) fs.copyFileSync(source, path.join(reports, `${scan}.${extension}`));
+		// ARV-152 (CWE-532): the copies that are uploaded hold no credential shape (the API scans send the scan account's token);
+		// the alerts are read from ZAP's own file.
+		if (fs.existsSync(source)) fs.writeFileSync(path.join(reports, `${scan}.${extension}`), redactSecrets(fs.readFileSync(source, 'utf8')));
 	}
 	return readAlerts(file, scan);
 }

@@ -4,6 +4,7 @@ import pg from 'pg';
 import { accounts, call, databaseAvailable, integrationSeedsFile, login, totpCode } from '../support/accounts';
 import { expectNoLeak, expectProblemDetails } from '../support/api-assertions';
 import { hosts } from '../support/hosts';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-044: AIDX 22.1 inbound. An AODB client with flights:write for DMO pushes IATA_AIDX_FlightLegNotifRQ messages
 // (the role the ARV-029 emulator will play); legs arriving at or leaving DMO are applied as the client's own feed and
@@ -48,14 +49,14 @@ async function client(name: string, scopes: string[]) {
 		token: admin,
 		data: { name, kind: 'Aodb', scopes, siteCodes: ['DMO'], allowedNetworks: ['10.0.0.0/8'] }
 	});
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	const credentials: Credentials = await created.json();
 	fs.appendFileSync(integrationSeedsFile, credentials.totpSecret + '\n');
 	const exchanged = await call('POST', `${hosts.integration}/api/v1/auth`, {
 		data: { clientId: credentials.client.clientId, clientSecret: credentials.clientSecret, totpCode: totpCode(credentials.totpSecret) },
 		address: inside()
 	});
-	expect(exchanged.status(), await exchanged.text()).toBe(200);
+	await expectStatus(exchanged, 200);
 	return { credentials, token: (await exchanged.json()).accessToken as string };
 }
 
@@ -92,7 +93,7 @@ const push = (xml: string, options: { key?: string; token?: string; type?: strin
 test.beforeAll(async () => {
 	const { userName, password, totpSecret } = accounts().aidxAdmin;
 	const signedIn = await login(userName, password, undefined, undefined, { code: totpCode(totpSecret!) });
-	expect(signedIn.status(), await signedIn.text()).toBe(200);
+	await expectStatus(signedIn, 200);
 	admin = (await signedIn.json()).accessToken;
 	aodb = await client('E2E AODB AIDX', ['flights:write']);
 	allocationsOnly = await client('E2E AODB allocations', ['allocations:write']);
@@ -102,7 +103,7 @@ test("the site's legs of a message are applied and acknowledged; a leg that does
 	const xml = message(leg(run, 'AMM', 'DMO') + leg(run + 1, 'AMM', 'CAI') + leg(run + 2, 'DMO', 'CAI'));
 	const answer = await push(xml, { key: `E2E-AIDX-${run}-1` });
 	const text = await answer.text();
-	expect(answer.status(), text).toBe(200);
+	await expectStatus(answer, 200);
 	expect(answer.headers()['content-type']).toContain('application/xml');
 	expect(text).toContain('IATA_AIDX_FlightLegRS');
 	expect(text).toContain('<Success');
@@ -142,7 +143,7 @@ test('a later message moves a leg on: actual touchdown and on-block, and a cance
 		) + leg(run + 2, 'DMO', 'CAI').replace('<LegData>', '<LegData><OperationalStatus CodeContext="2005">DX</OperationalStatus>')
 	);
 	const answer = await push(update);
-	expect(answer.status(), await answer.text()).toBe(200);
+	await expectStatus(answer, 200);
 	const rows = await query<{ flight_key: string; status: string; on_block: boolean }>(
 		`SELECT flight_key, status, on_block_utc IS NOT NULL AS on_block FROM flight_leg WHERE flight_key IN ($1, $2) ORDER BY flight_key`,
 		[`RJ${run}-${day}-A`, `RJ${run + 2}-${day}-D`]
@@ -178,7 +179,7 @@ test('XXE, entity expansion, external DTDs, profile breaks, deep nesting, oversi
 	for (const [why, sending, status] of cases) {
 		const answer = await sending();
 		const text = await answer.text();
-		expect(answer.status(), `${why}: ${text.slice(0, 300)}`).toBe(status);
+		await expectStatus(answer, status, why);
 		expect(answer.headers()['content-type'], why).toContain('application/problem+json');
 		expectNoLeak(text, why);
 		for (const echoed of ['passwd', '169.254', "OR '1'='1", '<script>', 'meta-data']) expect(text, why).not.toContain(echoed);

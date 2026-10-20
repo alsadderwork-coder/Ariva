@@ -7,6 +7,7 @@ import { hosts } from '../support/hosts';
 import { xssPayloads } from '../support/payloads';
 import { homeHeading } from '../support/shell';
 import { allowStatuses, databaseAvailable, fillSignIn, signInThroughUi } from '../support/web-auth';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-104c: the observer tablet (/validation/capture, wiki 07 section 8). A Validation observer chooses a running campaign
 // and a line, taps In and Out, and each 15-minute bin is sent once it has ended with a random Idempotency-Key that is kept
@@ -76,7 +77,7 @@ async function ensureProfile(): Promise<Profile> {
 		for (const old of history.filter((p: any) => p.status === 'Draft')) await call('DELETE', `${api}/${old.id}`, { token: administrator });
 		const create = async (entity: string, data: unknown) => {
 			const response = await call('POST', `${admin}/${entity}`, { token: administrator, data });
-			expect(response.status(), `${entity}: ${await response.text()}`).toBe(201);
+			await expectStatus(response, 201, entity);
 			return (await response.json()).id as string;
 		};
 		const { id: airport } = await createAirport((iata) =>
@@ -86,16 +87,16 @@ async function ensureProfile(): Promise<Profile> {
 		const levelId = await create('levels', { terminalId: terminal, code: 'L0', name: 'Arrivals', floorNumber: 0, widthMetres: 100, depthMetres: 50 });
 
 		const draft = await call('POST', `${api}/drafts`, { token: manager, data: { siteCode: site, name: 'Tablet hall' } });
-		expect(draft.status(), await draft.text()).toBe(201);
+		await expectStatus(draft, 201);
 		const id = (await draft.json()).profile.id as string;
 		const zone = async (data: Record<string, unknown>) => {
 			const response = await call('POST', `${api}/${id}/zones`, { token: manager, data: { levelId, ...data } });
-			expect(response.status(), await response.text()).toBe(201);
+			await expectStatus(response, 201);
 			return (await response.json()).id as string;
 		};
 		const line = async (data: Record<string, unknown>) => {
 			const response = await call('POST', `${api}/${id}/lines`, { token: manager, data: { levelId, ...data } });
-			expect(response.status(), await response.text()).toBe(201);
+			await expectStatus(response, 201);
 		};
 		const queueA = await zone({ name: 'Q-A', kind: 'Queue', polygon: '10 10,34 10,34 22,10 22' });
 		const queueB = await zone({ name: zoneXss, kind: 'Queue', polygon: '50 10,74 10,74 22,50 22' });
@@ -104,9 +105,9 @@ async function ensureProfile(): Promise<Profile> {
 		await line({ name: lineXss, role: 'Entry', startX: 50, startY: 12, endX: 50, endY: 16, zoneId: queueB });
 		await line({ name: 'Exit B', role: 'Exit', startX: 70, startY: 22, endX: 74, endY: 22, zoneId: queueB });
 		const review = await (await call('GET', `${api}/${id}/validation`, { token: manager })).json();
-		expect(review.publishable, JSON.stringify(review)).toBe(true);
+		expect(review, 'the profile is publishable').toEqual(expect.objectContaining({ publishable: true }));
 		const publish = await call('POST', `${api}/${id}/publish`, { token: manager, data: { geometryHash: review.geometryHash } });
-		expect(publish.status(), await publish.text()).toBe(200);
+		await expectStatus(publish, 200);
 		published = await publish.json();
 	}
 	const view = await (await call('GET', `${api}/${published.id}`, { token: manager })).json();
@@ -134,10 +135,10 @@ async function runningCampaign(name: string, token = lead): Promise<string> {
 			days: [dubaiDay(Date.now() - 86_400_000), dubaiDay(Date.now())]
 		}
 	});
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	const id = (await created.json()).id as string;
 	const started = await call('POST', `${campaignsUrl}/${id}/start`, { token });
-	expect(started.status(), await started.text()).toBe(200);
+	await expectStatus(started, 200);
 	return id;
 }
 
@@ -165,13 +166,13 @@ const isoMinute = (at: number) => new Date(at).toISOString().replace('.000Z', 'Z
 async function ensureDesks(): Promise<Record<string, string>> {
 	const list = async (entity: string, query: string) => {
 		const response = await call('GET', `${admin}/${entity}?${query}`, { token: administrator });
-		expect(response.status(), `${entity}: ${await response.text()}`).toBe(200);
+		await expectStatus(response, 200, entity);
 		const body = await response.json();
 		return (body.data ?? body) as any[];
 	};
 	const create = async (entity: string, data: unknown) => {
 		const response = await call('POST', `${admin}/${entity}`, { token: administrator, data });
-		expect(response.status(), `${entity}: ${await response.text()}`).toBe(201);
+		await expectStatus(response, 201, entity);
 		return response.json();
 	};
 	const level = (await list('levels', `siteCode=${site}&pageSize=10`))[0];
@@ -197,10 +198,10 @@ async function deskCampaign(name: string): Promise<string> {
 			deskIds: deskCodes.map((code) => desks[code])
 		}
 	});
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	const id = (await created.json()).id as string;
 	const started = await call('POST', `${campaignsUrl}/${id}/start`, { token: lead });
-	expect(started.status(), await started.text()).toBe(200);
+	await expectStatus(started, 200);
 	return id;
 }
 
@@ -504,7 +505,7 @@ test('a correction whose answer is lost is frozen and sent again as it is; a key
 		token: observer,
 		data: { lineId: profile.entryA, binStartUtc: binUtc, crossingsIn: 5, crossingsOut: 2 }
 	});
-	expect(created.status(), await created.text()).toBe(201);
+	await expectStatus(created, 201);
 	const revisions = async () =>
 		((await (await call('GET', `${captureUrl}/${campaign}/counts?currentOnly=false&pageSize=100`, { token: observer })).json()).data as any[])
 			.map((c) => [c.revision, c.crossingsIn, c.reason])
@@ -1023,7 +1024,7 @@ test('a desk correction whose answer is lost is frozen and sent again as it is; 
 		headers: { 'Idempotency-Key': `e2e-desk-${Date.now()}` },
 		data: { binStartUtc: isoMinute(bin), desks: [{ deskId: desks.OD01, states: ['Serving', 'Serving', 'Idle', ...Array.from({ length: 12 }, () => null)] }] }
 	});
-	expect(logged.status(), await logged.text()).toBe(201);
+	await expectStatus(logged, 201);
 	const revisions = async () =>
 		((await (await call('GET', `${captureUrl}/${campaign}/desk-observations?currentOnly=false&pageSize=500`, { token: observer })).json()).data as any[])
 			.filter((o) => o.minuteUtc === isoMinute(bin + minute))

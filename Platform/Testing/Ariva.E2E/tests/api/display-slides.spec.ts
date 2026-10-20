@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { accounts, call, databaseAvailable, signIn } from '../support/accounts';
 import { hosts } from '../support/hosts';
 import { markupFragments, sqlInjectionPayloads, xssPayloads } from '../support/payloads';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-141: instruction slides through the API. An administrator of site E2E3 only (no other spec writes slides there, so
 // its order is this spec's) creates, changes, orders, retires and restores slides; every text field carries markup that
@@ -48,7 +49,7 @@ test('markup in every text field comes back unchanged as JSON text, never interp
 		sw: { title: 'Pasipoti', body: '<b>bold</b> & "quoted"' }
 	};
 	const response = await call('POST', api, { token: e2e3, data: slide({ texts, icon: 'Passport', durationSeconds: 12, pinned: true }) });
-	expect(response.status(), await response.text()).toBe(201);
+	await expectStatus(response, 201);
 	expect(response.headers()['content-type']).toContain('application/json');
 	const body = await response.json();
 	created.push({ id: body.id, token: () => e2e3 });
@@ -123,14 +124,14 @@ test('a slide is changed, ordered, retired and restored; the order lists every s
 	expect(second.position).toBe(first.position + 1);
 
 	const changed = await call('PUT', `${api}/${second.id}`, { token: e2e3, data: slide({ icon: 'Baggage', texts: { pt: { title: 'Bagagem', body: null } } }) });
-	expect(changed.status(), await changed.text()).toBe(200);
+	await expectStatus(changed, 200);
 	expect(await changed.json()).toMatchObject({ icon: 'Baggage', texts: { pt: { title: 'Bagagem', body: null } }, position: second.position });
 	expect((await call('PUT', `${api}/${second.id}`, { token: e2e3, data: slide({}, 'DMO') })).status(), 'a slide stays in its site').toBe(400);
 
 	const all: string[] = (await (await call('GET', `${api}?siteCode=E2E3`, { token: e2e3 })).json()).map((s: { id: string }) => s.id);
 	const reversed = [...all].reverse();
 	const ordered = await call('PUT', `${api}/order?siteCode=E2E3`, { token: e2e3, data: { ids: reversed } });
-	expect(ordered.status(), await ordered.text()).toBe(200);
+	await expectStatus(ordered, 200);
 	expect((await ordered.json()).map((s: { id: string; position: number }) => [s.id, s.position])).toEqual(reversed.map((id, i) => [id, i + 1]));
 	for (const ids of [reversed.slice(1), [...reversed.slice(1), reversed[1]], [...reversed.slice(1), '0199a000-0000-7000-8000-00000000a1a1'], ['not-an-id']]) {
 		expect((await call('PUT', `${api}/order?siteCode=E2E3`, { token: e2e3, data: { ids } })).status(), JSON.stringify(ids)).toBe(400);
@@ -146,7 +147,7 @@ test('a slide is changed, ordered, retired and restored; the order lists every s
 
 test("another site's slide answers like one that does not exist; roles without the permission get 403", async () => {
 	const own = await call('POST', api, { token: dmo, data: slide({ scope: 'Zone', targets: ['A-CIT', 'A-RES'], icon: 'EGate', texts: { en: { title: 'Scoped to DMO', body: null } } }, 'DMO') });
-	expect(own.status(), await own.text()).toBe(201);
+	await expectStatus(own, 201);
 	const id = (await own.json()).id;
 	created.push({ id, token: () => dmo });
 

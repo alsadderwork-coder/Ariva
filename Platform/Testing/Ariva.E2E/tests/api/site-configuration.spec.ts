@@ -4,6 +4,7 @@ import pg from 'pg';
 import { accounts, call, databaseAvailable, login, signIn, unusedTotpCode, type Account } from '../support/accounts';
 import { createAirport } from '../support/airports';
 import { hosts } from '../support/hosts';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-122a: a site's configuration exported as one bundle and imported into an empty site, through the API. Export and
 // import are critical actions (SiteConfiguration.Transfer, system administrators, a second factor in the last 15
@@ -110,7 +111,7 @@ async function secondFactor(account: Account): Promise<string> {
 
 async function create(path: string, data: unknown): Promise<string> {
 	const response = await call('POST', `${admin}/${path}`, { token: stepped, data });
-	expect(response.status(), response.status() === 201 ? path : await response.text()).toBe(201);
+	await expectStatus(response, 201, path);
 	const json = await response.json();
 	return (json.id ?? json.profile?.id) as string;
 }
@@ -122,7 +123,7 @@ const postAirport = (iata: string) =>
 async function publish(draft: string): Promise<any> {
 	const { geometryHash } = await (await call('GET', `${admin}/zone-profiles/${draft}/validation`, { token: stepped })).json();
 	const published = await call('POST', `${admin}/zone-profiles/${draft}/publish`, { token: stepped, data: { geometryHash } });
-	expect(published.status(), published.status() === 200 ? 'publish' : await published.text()).toBe(200);
+	await expectStatus(published, 200, 'publish');
 	return published.json();
 }
 
@@ -140,7 +141,7 @@ test.beforeAll(async () => {
 
 	for (const site of [source, target, spare]) {
 		const created = await call('POST', `${admin}/sites`, { token: stepped, data: { code: site, name: `E2E site configuration ${site}` } });
-		expect(created.status(), created.status() === 201 ? site : await created.text()).toBe(201);
+		await expectStatus(created, 201, site);
 	}
 	sourceIata = (await createAirport(postAirport)).iataCode;
 	airports.push(sourceIata);
@@ -174,7 +175,7 @@ test.beforeAll(async () => {
 	form.append('originX', '0');
 	form.append('originY', '0');
 	const plan = await call('POST', `${admin}/levels/${arrivals}/floor-plan`, { token: stepped, form });
-	expect(plan.status(), plan.status() === 201 ? 'floor plan' : await plan.text()).toBe(201);
+	await expectStatus(plan, 201, 'floor plan');
 
 	// ARV-122b: a device (its credential kept only to show it never travels), two alert rules (one with an escalation
 	// contact) and a display.
@@ -185,12 +186,12 @@ test.beforeAll(async () => {
 			placement: { levelId: arrivals, x: 20, y: 16, mountingHeightMetres: 5, orientationDegrees: 0, queueZoneName: 'Snake A' }
 		}
 	});
-	expect(device.status(), device.status() === 201 ? 'device' : await device.text()).toBe(201);
+	await expectStatus(device, 201, 'device');
 	const registered = await device.json();
 	sourceCredential = registered.credential;
 	// Source networks: withheld from the bundle (only the fact that there were some travels).
 	const access = await call('PUT', `${admin}/devices/${registered.device.id}/access`, { token: stepped, data: { allowedSources: ['10.20.0.0/24'], clientCertificateSha256: '' } });
-	expect(access.status(), access.status() === 200 ? 'device access' : await access.text()).toBe(200);
+	await expectStatus(access, 200, 'device access');
 	const rule = {
 		siteCode: source, name: hostileRule, zones: ['Snake A'], metric: 'Nowcast', comparator: 'GreaterThan', threshold: 20, minQueueLength: null, clearThreshold: null,
 		sustainMinutes: 5, clearAfterMinutes: 5, severity: 'Warning', ownerRole: 'BorderShiftSupervisor', escalateAfterMinutes: 15, escalateToRole: null,
@@ -209,7 +210,7 @@ test.beforeAll(async () => {
 			fallback: { en: 'Ask a member of staff', ar: '\u0627\u0633\u0623\u0644' }, enabled: true
 		}
 	});
-	expect(display.status(), display.status() === 201 ? 'display' : await display.text()).toBe(201);
+	await expectStatus(display, 201, 'display');
 });
 
 /** The live displays of a site (the display search answers a list). */
@@ -266,10 +267,10 @@ test('only an administrator with a recent second factor reaches either action, a
 
 test('the export carries the published profile with both hashes, every part in the manifest and no secret', async () => {
 	const response = await call('GET', configuration(source), { token: stepped });
-	expect(response.status(), response.status() === 200 ? 'export' : await response.text()).toBe(200);
+	await expectStatus(response, 200, 'export');
 	expect(response.headers()['cache-control']).toContain('no-store');
 	const text = await response.text();
-	for (const secret of ['ardk_', 'ardp_']) expect(text.includes(secret), `no ${secret.slice(0, 4)} credential in an export`).toBe(false);
+	for (const prefix of ['ardk_', 'ardp_']) expect(text.includes(prefix), `no ${prefix.slice(0, 4)} credential in an export`).toBe(false);
 	for (const fragment of echoes) expect(text, 'markup and SQL travel only inside base64 parts').not.toContain(fragment);
 	exported = JSON.parse(text);
 
@@ -326,7 +327,7 @@ test('a terminal name an older release stored with an override refuses the expor
 	expect((await rename(planted)).rowCount, 'the source terminal').toBe(1);
 	try {
 		const refused = await call('GET', configuration(source), { token: stepped });
-		expect(refused.status(), refused.status() === 409 ? 'export refused' : await refused.text()).toBe(409);
+		await expectStatus(refused, 409, 'export refused');
 		const body = await refused.text();
 		expect(body.includes(fixed), 'the fixed text').toBe(true);
 		expect(body.includes(planted) || body.includes('\u202E'), 'the name is not repeated').toBe(false);
@@ -334,7 +335,7 @@ test('a terminal name an older release stored with an override refuses the expor
 		await rename(hostileTerminal);
 	}
 	const again = await call('GET', configuration(source), { token: stepped });
-	expect(again.status(), again.status() === 200 ? 'export again' : await again.text()).toBe(200);
+	await expectStatus(again, 200, 'export again');
 });
 
 test('a predicted nowcast rule an older release left with an airport-side owner refuses the export with a fixed text (ARV-187)', async () => {
@@ -359,7 +360,7 @@ test('a predicted nowcast rule an older release left with an airport-side owner 
 	expect((await legacy()).rowCount, 'the source rule').toBe(1);
 	try {
 		const refused = await call('GET', configuration(source), { token: stepped });
-		expect(refused.status(), refused.status() === 409 ? 'export refused' : await refused.text()).toBe(409);
+		await expectStatus(refused, 409, 'export refused');
 		const body = await refused.text();
 		expect(body.includes(fixed), 'the fixed text').toBe(true);
 		for (const fragment of [...echoes, 'R-001']) expect(body, 'no rule is named').not.toContain(fragment);
@@ -367,7 +368,7 @@ test('a predicted nowcast rule an older release left with an airport-side owner 
 		expect((await restore()).rowCount).toBe(1);
 	}
 	const again = await call('GET', configuration(source), { token: stepped });
-	expect(again.status(), again.status() === 200 ? 'export again' : await again.text()).toBe(200);
+	await expectStatus(again, 200, 'export again');
 });
 
 test('a tampered bundle is refused with a fixed text and writes nothing', async () => {
@@ -416,7 +417,7 @@ test('a tampered bundle is refused with a fixed text and writes nothing', async 
 	for (const [what, body, status] of cases) {
 		const refused = await call('POST', `${configuration(target)}?airportCode=${targetIata}`, { token: stepped, data: body });
 		const text = await refused.text();
-		expect(refused.status(), refused.status() === status ? what : text).toBe(status);
+		await expectStatus(refused, status, what);
 		for (const fragment of [...echoes, target]) expect(text, `${what}: nothing echoed`).not.toContain(fragment);
 	}
 
@@ -431,33 +432,33 @@ test('an oversized body answers 413 and a deeply nested one 400', async () => {
 	const headers = { 'Content-Type': 'application/json' };
 	const oversized = `{"formatVersion":1,"sourceSite":"${source}","parts":{"topology":"${'A'.repeat(21 * 1024 * 1024)}"}}`;
 	const tooLarge = await call('POST', configuration(spare), { token: stepped, raw: oversized, headers });
-	expect(tooLarge.status(), tooLarge.status() === 413 ? 'body over 20 MB' : await tooLarge.text()).toBe(413);
+	await expectStatus(tooLarge, 413, 'body over 20 MB');
 
 	const bigPart = rehashed(exported.bundle, 'deskCodeMappings', Buffer.alloc(9 * 1024 * 1024, 0x20));
 	const partTooLarge = await call('POST', configuration(spare), { token: stepped, data: bigPart });
-	expect(partTooLarge.status(), partTooLarge.status() === 413 ? 'a configuration part over 8 MB' : await partTooLarge.text()).toBe(413);
+	await expectStatus(partTooLarge, 413, 'a configuration part over 8 MB');
 
 	const deep = `{"formatVersion":1,"manifest":${'{"a":'.repeat(40)}1${'}'.repeat(40)}}`;
 	const nested = await call('POST', configuration(spare), { token: stepped, raw: deep, headers });
-	expect(nested.status(), nested.status() === 400 ? 'body 41 levels deep' : await nested.text()).toBe(400);
+	await expectStatus(nested, 400, 'body 41 levels deep');
 
 	const deepPart = rehashed(exported.bundle, 'deskCodeMappings', Buffer.from(`${'['.repeat(40)}${']'.repeat(40)}`));
 	const nestedPart = await call('POST', configuration(spare), { token: stepped, data: deepPart });
-	expect(nestedPart.status(), nestedPart.status() === 400 ? 'a part 40 levels deep' : await nestedPart.text()).toBe(400);
+	await expectStatus(nestedPart, 400, 'a part 40 levels deep');
 });
 
 test('the airport is checked as an IATA code that exists and is never created', async () => {
 	for (const airportCode of ['zz', '<b>X</b>', 'ABCD']) {
 		const refused = await call('POST', `${configuration(spare)}?airportCode=${encodeURIComponent(airportCode)}`, { token: stepped, data: exported.bundle });
 		const text = await refused.text();
-		expect(refused.status(), refused.status() === 400 ? airportCode : text).toBe(400);
+		await expectStatus(refused, 400, airportCode);
 		expect(text).not.toContain('<b>');
 	}
 	let unknown = random(3);
 	while (unknown === sourceIata || unknown === targetIata) unknown = random(3);
 	const missing = await call('POST', `${configuration(spare)}?airportCode=${unknown}`, { token: stepped, data: exported.bundle });
 	const text = await missing.text();
-	expect(missing.status(), missing.status() === 400 ? 'unknown airport' : text).toBe(400);
+	await expectStatus(missing, 400, 'unknown airport');
 	expect(text).not.toContain(unknown);
 	const airportsNow = await (await call('GET', `${admin}/airports?text=${unknown}&pageSize=500`, { token: stepped })).json();
 	expect(airportsNow.data.filter((a: any) => a.iataCode === unknown), 'no airport is created').toHaveLength(0);
@@ -466,7 +467,7 @@ test('the airport is checked as an IATA code that exists and is never created', 
 test('a display code a live display holds answers 409 and writes nothing', async () => {
 	const refused = await call('POST', `${configuration(target)}?airportCode=${targetIata}`, { token: stepped, data: exported.bundle });
 	const text = await refused.text();
-	expect(refused.status(), refused.status() === 409 ? 'display code taken' : text).toBe(409);
+	await expectStatus(refused, 409, 'display code taken');
 	expect(text, 'the fixed text names no code').not.toContain(displayCode);
 	for (const fragment of echoes) expect(text).not.toContain(fragment);
 	const still = await (await call('GET', configuration(target), { token: stepped })).json();
@@ -475,13 +476,13 @@ test('a display code a live display holds answers 409 and writes nothing', async
 	// Display codes are unique among the deployment's live displays: the source's display goes before its copy arrives.
 	for (const display of await displaysOf(source)) {
 		const deleted = await call('DELETE', `${admin}/displays/${display.id}`, { token: stepped });
-		expect(deleted.status(), deleted.status() === 204 ? 'delete display' : await deleted.text()).toBe(204);
+		await expectStatus(deleted, 204, 'delete display');
 	}
 });
 
 test('a round trip between two sites gives the same portable geometry hash once the draft is published', async () => {
 	const imported = await call('POST', `${configuration(target)}?airportCode=${targetIata}`, { token: stepped, data: exported.bundle });
-	expect(imported.status(), imported.status() === 201 ? 'import' : await imported.text()).toBe(201);
+	await expectStatus(imported, 201, 'import');
 	expect(imported.headers()['cache-control']).toContain('no-store');
 	const answer = await imported.json();
 	expect(answer.bundleSha256, 'the operator compares the two hashes out of band').toBe(exported.bundleSha256);
@@ -536,7 +537,7 @@ test('a round trip between two sites gives the same portable geometry hash once 
 
 	const published = await publish(answer.draftProfileId);
 	const again = await call('GET', configuration(target), { token: stepped });
-	expect(again.status(), again.status() === 200 ? 'export of the copy' : await again.text()).toBe(200);
+	await expectStatus(again, 200, 'export of the copy');
 	const copy = await again.json();
 	expect(copy.portableGeometryHash, 'the same portable geometry hash').toBe(exported.portableGeometryHash);
 	expect(published.geometryHash, 'F22 v1 names levels and desks by their new ids').not.toBe(exported.geometryHash);
@@ -550,7 +551,7 @@ test('a rule on open desks below recommendation owned by the border imports with
 	airports.push(iata);
 	const bundle = desksBelow(rehashed(exported.bundle, 'displays', Buffer.from('[]')), {});
 	const imported = await call('POST', `${configuration(spare)}?airportCode=${iata}`, { token: stepped, data: bundle });
-	expect(imported.status(), imported.status() === 201 ? 'import' : await imported.text()).toBe(201);
+	await expectStatus(imported, 201, 'import');
 	expect((await imported.json()).counts.alertRules).toBe(2);
 	const rules = await call('GET', `${admin}/alert-rules?siteCode=${spare}&pageSize=500`, { token: stepped });
 	const desks = ((await rules.json()).data as any[]).find((r) => r.code === 'R-001');
@@ -561,7 +562,7 @@ test('an import into a site that is not empty answers 409', async () => {
 	for (const site of [source, target]) {
 		const refused = await call('POST', `${configuration(site)}?airportCode=${targetIata}`, { token: stepped, data: exported.bundle });
 		const text = await refused.text();
-		expect(refused.status(), refused.status() === 409 ? site : text).toBe(409);
+		await expectStatus(refused, 409, site);
 		for (const fragment of echoes) expect(text).not.toContain(fragment);
 	}
 });

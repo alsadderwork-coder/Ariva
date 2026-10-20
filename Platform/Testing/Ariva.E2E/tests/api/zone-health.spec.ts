@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import pg from 'pg';
 import { accounts, call, databaseAvailable, signIn } from '../support/accounts';
 import { hosts } from '../support/hosts';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-114a: the continuous health checks of F18 per queue zone and bin, served by GET api/v1/sites/{siteCode}/zone-health
 // (DataQuality.View, site-scoped). Ariva.Api.Stream writes zone_health_bin with every bin result; it does not run in the
@@ -127,7 +128,7 @@ const view = (r: Row) => ({
 
 test('the reference evening reads back per bin, the latest revision of each', async () => {
 	const answer = await call('GET', api() + query('A-VIS'), { token: border });
-	expect(answer.status(), await answer.text()).toBe(200);
+	await expectStatus(answer, 200);
 	const health = await answer.json();
 	expect(health).toMatchObject({ siteCode: 'DMO', zone: 'A-VIS', fromUtc: evening.from, toUtc: evening.to, truncated: false });
 	expect(health.bins).toEqual([view(golden[0]), view({ ...golden[1], revision: 2 }), view(golden[2])]);

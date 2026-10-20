@@ -6,6 +6,7 @@ import { provisionLoadSite, secondFactorSignIn } from '../support/load-site';
 import { videoFixture } from '../support/media';
 import { xssPayloads } from '../support/payloads';
 import { allowStatuses, databaseAvailable, signInThroughUi } from '../support/web-auth';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-142a: the advertisement library on the Passenger displays screen, at a site of this spec's own whose policy allows
 // advertising. A duty manager uploads an image with an advertiser, a campaign and a file name carrying markup (all shown as
@@ -50,7 +51,7 @@ test.beforeAll(async () => {
 			reviewedProfileId: publishedProfileId
 		}
 	});
-	expect(allowed.status(), await allowed.text()).toBe(200);
+	await expectStatus(allowed, 200);
 });
 
 test('a duty manager uploads an image as a draft; the markup in its details shows as text and the uploader is not offered approval', async ({ page }) => {

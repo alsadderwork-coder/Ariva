@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { accounts, call, databaseAvailable, login, totpCode } from '../support/accounts';
 import { createAirport } from '../support/airports';
 import { hosts, kafkaAvailable } from '../support/hosts';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-023: sensor pushes on Ariva.Api.Ingest for the device's own zone and dialect: 202 with the counts; the unknown
 // line refused; another zone 403; another dialect 400; not JSON 415; over 256 KB 413; a Xovis firmware 5 logics push
@@ -28,7 +29,7 @@ test.beforeAll(async () => {
 	const token = (await (await login(userName, password, undefined, undefined, { code: totpCode(totpSecret!) })).json()).accessToken;
 	const create = async (path: string, data: unknown) => {
 		const response = await call('POST', `${admin}/${path}`, { token, data });
-		expect(response.status(), `${path}: ${await response.text()}`).toBe(201);
+		await expectStatus(response, 201, path);
 		const json = await response.json();
 		return (json.id ?? json.profile?.id) as string;
 	};
@@ -54,7 +55,7 @@ test.beforeAll(async () => {
 				placement: { levelId, x: 20, y: 16, mountingHeightMetres: 5, orientationDegrees: 0, queueZoneName: 'Snake A' }
 			}
 		});
-		expect(registered.status(), await registered.text()).toBe(201);
+		await expectStatus(registered, 201);
 		keys[dialect] = (await registered.json()).credential;
 	}
 });
@@ -73,7 +74,7 @@ test('a canonical push is accepted for the own zone and refused elsewhere', asyn
 		]
 	});
 	const accepted = await push('events', keys.Canonical, body);
-	expect(accepted.status(), await accepted.text()).toBe(202);
+	await expectStatus(accepted, 202);
 	const outcome = await accepted.json();
 	expect(outcome.accepted).toBe(2);
 	expect(outcome.rejected).toBe(1);
@@ -99,7 +100,7 @@ test('a Xovis firmware 5 logics push becomes an interval count and an occupancy'
 		}
 	});
 	const accepted = await push('xovis', keys.Xovis, body);
-	expect(accepted.status(), await accepted.text()).toBe(202);
+	await expectStatus(accepted, 202);
 	expect((await accepted.json()).accepted).toBe(2);
 });
 
@@ -112,7 +113,7 @@ test('an Ouster occupations message is read through the declarative mapping', as
 		]
 	});
 	const accepted = await push('declarative', keys.Declarative, body);
-	expect(accepted.status(), await accepted.text()).toBe(202);
+	await expectStatus(accepted, 202);
 	const outcome = await accepted.json();
 	expect(outcome.accepted).toBe(1);
 	expect(outcome.rejected).toBe(1);

@@ -377,7 +377,10 @@ export default defineConfig({
 		...(smokeStack ? [['./tests/smoke/support/artifact-reporter.ts', { folders: [path.join(here, 'playwright-report')] }] as [string, object]] : [])
 	],
 	use: {
-		trace: 'retain-on-failure'
+		// ARV-152 (CWE-532): a trace records every request header and body and every typed value (the sign-ins' tokens, device
+		// credentials, passwords), so CI keeps none: the artifact check before the upload would refuse every report of a failed
+		// run. The report keeps the errors and each failed page's error context; a local run keeps a failed test's trace.
+		trace: isCi ? 'off' : 'retain-on-failure'
 	},
 	// Visual baselines (ARV-075): one PNG per screen and variant, no platform suffix, since only the pinned image renders them.
 	snapshotPathTemplate: '{testDir}/__screenshots__/{testFilePath}/{arg}{ext}',

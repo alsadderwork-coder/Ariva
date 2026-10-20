@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { guardPage } from '../support/browser-guards';
 import { hosts } from '../support/hosts';
-import { allowStatuses } from '../support/web-auth';
+import { allowStatuses, fillSecret } from '../support/web-auth';
 
 // ARV-060: the TickerQ dashboard of Ariva.Api.Cronz loads under its own content security policy (its two inline scripts by
 // hash, nothing else inline or evaluated, nothing framed), asks for its key before it shows any job, and with the run's key
@@ -24,7 +24,7 @@ test('the jobs dashboard loads under its own policy, asks for the key and works 
 		sockets.push(entry);
 		socket.on('close', () => (entry.closed = true));
 	});
-	await page.getByRole('textbox', { name: /Access Key/ }).fill(process.env.ARIVA_E2E_CRONZ_KEY!);
+	await fillSecret(page.getByRole('textbox', { name: /Access Key/ }), process.env.ARIVA_E2E_CRONZ_KEY!);
 	await page.getByRole('button', { name: 'Set Access Key' }).click();
 	await expect(page.getByRole('heading', { name: 'Host Authentication' })).toHaveCount(0, { timeout: 15_000 });
 	await expect(page.getByText('WebSocket Connected')).toBeVisible({ timeout: 15_000 });

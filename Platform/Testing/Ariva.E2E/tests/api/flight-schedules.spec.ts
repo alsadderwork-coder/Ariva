@@ -3,6 +3,7 @@ import pg from 'pg';
 import { accounts, call, databaseAvailable, signIn } from '../support/accounts';
 import { expectNoLeak, expectProblemDetails } from '../support/api-assertions';
 import { hosts } from '../support/hosts';
+import { expectStatus } from '../support/expect-status';
 
 // ARV-046: SSIM schedule files. An administrator previews what a file holds for DMO (legs arriving at or leaving its
 // airport, expanded per operating date within the horizon, with the lines Ariva could not read), then imports exactly
@@ -78,7 +79,7 @@ test.beforeAll(async () => {
 test('a file is previewed, then exactly that file is imported as the ssim feed', async () => {
 	const content = file(leg(number, 'DOH', 'DMO'), leg(number + 1, 'DMO', 'DOH', '1 3 5'), leg(number + 2, 'DOH', 'KWI'));
 	const preview = await upload('preview', content, { horizonDays: '7' });
-	expect(preview.status(), await preview.text()).toBe(200);
+	await expectStatus(preview, 200);
 	const summary = await preview.json();
 	expect(summary).toMatchObject({ legRecords: 3, legRecordsOfSite: 2, arrivals: 9, errorCount: 0 });
 	expect(summary.sha256).toMatch(/^[0-9a-f]{64}$/);
@@ -94,7 +95,7 @@ test('a file is previewed, then exactly that file is imported as the ssim feed',
 	expect(await query(`SELECT 1 FROM flight_leg WHERE flight_key LIKE $1`, [`QR${number}-%`]), 'a refused import changes nothing').toHaveLength(0);
 
 	const imported = await upload('import', content, { horizonDays: '7', ...token });
-	expect(imported.status(), await imported.text()).toBe(200);
+	await expectStatus(imported, 200);
 	expect(await imported.json()).toMatchObject({ sha256: summary.sha256, refused: 0 });
 	const rows = await query<{ n: string }>(
 		`SELECT count(*) AS n FROM flight_leg WHERE site_code = 'DMO' AND feed = 'ssim' AND schedule_feed = 'ssim' AND schedule_fallback AND flight_key LIKE $1`,
@@ -111,7 +112,7 @@ test('malformed lines are reported by number without echoing them; hostile and o
 		file(leg(number + 4, 'DOH', 'DMO'), hostile, 'x'.repeat(300), '3 <script>alert(1)</script>' + String.fromCharCode(7), badAirline),
 		{ horizonDays: '3' }
 	);
-	expect(report.status(), await report.text()).toBe(200);
+	await expectStatus(report, 200);
 	const text = await report.text();
 	const body = JSON.parse(text);
 	expect(body.errorCount).toBe(4);
