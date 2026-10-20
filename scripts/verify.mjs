@@ -128,7 +128,40 @@ function artifactCheck(folders, started) {
   results.push({ name: 'no secret in the test artifacts (report, output, traces)', ok });
   return ok;
 }
+// The hosts of a Playwright run listen on fixed ports (Platform/Testing/Ariva.E2E/tests/support/hosts.ts), and a host of the run
+// before can still be stopping when the next one starts: on 2026-10-20 the checkpoint's E2E run met the visual run's Ingest on
+// 51002 ("address already in use") five seconds after it ended. So a run first waits, at most a minute, until each port can be
+// bound again, and fails at once with the ports named when one stays taken (a host left running, or another program).
+const E2E_HOST_PORTS = [51001, 51002, 51003, 51004, 51005, 51011, 51020];
+
+function hostPortsFree(name, seconds = 60) {
+  if (PLAN) return true;
+  const probe = `const net = require('node:net');
+const ports = ${JSON.stringify(E2E_HOST_PORTS)};
+const until = Date.now() + ${seconds * 1000};
+const taken = port => new Promise(done => {
+  const server = net.createServer();
+  server.once('error', () => done(true));
+  server.listen(port, '127.0.0.1', () => server.close(() => done(false)));
+});
+(async () => {
+  for (;;) {
+    const busy = [];
+    for (const port of ports) if (await taken(port)) busy.push(port);
+    if (busy.length === 0) process.exit(0);
+    if (Date.now() > until) { process.stdout.write(busy.join(', ')); process.exit(1); }
+    await new Promise(next => setTimeout(next, 1000));
+  }
+})();`;
+  const r = spawnSync(process.execPath, ['-e', probe], { encoding: 'utf8' });
+  if (r.status === 0) return true;
+  console.log(`${name}: the E2E host ports ${(r.stdout || '').trim()} are still taken after ${seconds} s (a host of an earlier run, or another program)`);
+  results.push({ name, ok: false, seconds, exit: r.status });
+  return false;
+}
+
 function playwright(name, playwrightArgs, folders = ['playwright-report', 'test-results']) {
+  if (!hostPortsFree(name)) return;
   const started = Date.now();
   process.env.ARIVA_E2E_ACCOUNT_SEED = CALLER_SEED || crypto.randomBytes(24).toString('base64url');
   const derived = Object.entries(derivedVariables(process.env.ARIVA_E2E_ACCOUNT_SEED)).filter(([variable]) => !CALLER_VARIABLES.has(variable));
