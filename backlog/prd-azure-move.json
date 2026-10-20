@@ -1,0 +1,178 @@
+{
+  "name": "Ariva: delivery from Azure DevOps",
+  "branchName": "story/azure-devops",
+  "description": "The move of Ariva's delivery to Azure DevOps and Dalil's Azure (owner request 2026-10-20; the plan is docs/plan/azure-devops-move.md). Today GitHub Actions is the gate and the dev release, and the Azure DevOps pipelines in Platform/Cloud/Ariva.Cicd/AzureDevOps exist but have never run: the pull request pipeline would fail as written, the image builds are unscanned and unsigned, and the release deploys a mutable tag without approval or signature checks. These stories bring the Azure pipelines to the GitHub ones' level, then cut over. Option A (GitHub stays the code's home, Azure Pipelines delivers) or Option B (Azure Repos becomes the home) is the owner's first decision; the stories say where they differ. Agents never run releases or change clusters; the steps in Azure DevOps and Azure are the owner's.",
+  "userStories": [
+    {
+      "id": "ARV-215",
+      "title": "[E0] Azure DevOps project and repository setup",
+      "description": "Owner steps in Azure DevOps, with the agent writing the checklist: the project, the connection to the code (Option A: the Azure Pipelines GitHub app on alsadderwork-coder/Ariva; Option B: Azure Repos import with every branch and the full history), and for Option B the branch policies on main that replace the GitHub ruleset and CODEOWNERS.",
+      "acceptanceCriteria": [
+        "The owner records decision 1 of docs/plan/azure-devops-move.md (Option A or B) in docs/product/decisions.md and an ADR-0016 amendment (Proposed until accepted)",
+        "docs/harness/azure-devops.md lists every setting the owner makes, step by step: the project, the code connection, and for Option B the import, the default branch, the build validation policy (Analyze-solution), reviewers, path-based required reviewers mirroring .github/CODEOWNERS, the merge type limited to rebase and fast-forward, force push and delete denied on main and v* tags",
+        "The owner confirms each step done; the story passes on that record (agents cannot change Azure DevOps settings)",
+        "node scripts/verify.mjs quick passes, and node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": "Owner-run. Size S for the agent (the checklist), hours for the owner.",
+      "dependsOn": []
+    },
+    {
+      "id": "ARV-216",
+      "title": "[E0] Agent pool, service connections, variable group and environment",
+      "description": "Everything the YAML pipelines expect from Azure DevOps: pool Default with a Linux x64 agent, the Dalil Container Registry service connection, cluster access, the ariva variable group with its secrets (linked to Key Vault if decision 6 says so), the pipelines registered under their exact names, and the k8s-dev environment with the owner as approver.",
+      "acceptanceCriteria": [
+        "docs/harness/azure-devops.md lists the agent requirements (Linux x64, Docker, .NET 10 SDK, Node 22, sudo for the release, or Microsoft-hosted ubuntu-24.04 with the YAML changed to match), the service connection (name exactly Dalil Container Registry, Docker Registry type for dalil.azurecr.io, workload identity federation where allowed), every secret of the ariva variable group by name with the GitHub k8s-dev secret it mirrors, the eleven pipelines with their YAML paths (Build-k8s-all under exactly that name) and the k8s-dev environment with its approval",
+        "scripts/base-images.mjs or a new check holds the pipelines' pool demands and the documented secret names to the YAML (a renamed secret or pipeline fails the check), self-tested",
+        "The owner confirms the setup; the story passes on that record",
+        "node scripts/verify.mjs quick passes, and node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": "Owner-run for the Azure side. Decision 6 (the secret store) decides whether the variable group is linked to Azure Key Vault; ARV-083c is the store itself.",
+      "dependsOn": [
+        "ARV-215"
+      ]
+    },
+    {
+      "id": "ARV-217",
+      "title": "[E17] Azure pull request gate at the GitHub gate's level",
+      "description": "Common/Analyze-solution.yaml would fail as written: it starts only PostgreSQL while the E2E configuration needs Kafka and Redis in CI, and it lacks the docs rules, the base image check, chart security with Helm and Helmfile, the offline bundle self-tests and dry run, the TLS check self-test, the vulnerable package list, the AsyncAPI validation and the test-count check that ci.yml runs. Its header still says trunk.",
+      "acceptanceCriteria": [
+        "Analyze-solution.yaml runs every check ci.yml runs (or names each one it leaves out and why), with Kafka and Redis beside PostgreSQL pinned by the same digests, the same artifact secret check before anything is published, and main instead of trunk",
+        "A check (in scripts/base-images.mjs or its own script, self-tested) compares the two gates' step lists and fails when ci.yml gains a check the Azure gate lacks",
+        "A run on Azure DevOps passes on the branch (run by the owner; its result recorded in backlog/progress.md)",
+        "node scripts/verify.mjs quick passes, and node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": "Size M.",
+      "dependsOn": [
+        "ARV-216"
+      ]
+    },
+    {
+      "id": "ARV-218",
+      "title": "[E0] Azure image builds scanned, signed and with SBOMs",
+      "description": "The Build-k8s-<service> pipelines build and push to dalil.azurecr.io/ariva without a scan, a signature or an SBOM, and their path filters miss files the Dockerfiles copy (scripts/published-runtime.mjs, GlobalSuppressions.cs).",
+      "acceptanceCriteria": [
+        "Every image build has complete path filters (checked against each Dockerfile's COPY lines by scripts/base-images.mjs), a Trivy image scan that fails on high or critical findings with a fix, a CycloneDX SBOM, a signature and a signed SBOM attestation by the key of decision 2 (cosign with an Azure Key Vault key, or the documented alternative), and a digest table artifact as images.yml makes",
+        "wiki/04-Deployment-Guide.md section 6.5 gives the verification command for the Azure-signed images and the admission policy example for them",
+        "A build on Azure DevOps produces a signed image whose signature and SBOM verify (run by the owner; recorded in backlog/progress.md)",
+        "node scripts/verify.mjs quick passes, and node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": "Size M. Needs decision 2 (the signing key) first.",
+      "dependsOn": [
+        "ARV-217"
+      ]
+    },
+    {
+      "id": "ARV-219",
+      "title": "[E0] Azure dev release at the GitHub release's level",
+      "description": "Release-ariva-k8s-dev.yaml installs an unpinned kubectl and unchecked Helm, Helmfile and helm-diff, writes appsettings from variables with echo, passes the registry password as a Helm value, deploys the mutable tag main with no signature check and has no approval. release-dev.yml does all of that properly and is the model.",
+      "acceptanceCriteria": [
+        "The release runs as a deployment job on the k8s-dev environment (the owner's approval), from main only",
+        "Every tool is pinned by version and checksum as in release-dev.yml, and scripts/base-images.mjs holds the Azure release's tool versions to the GitHub ones",
+        "Every image's signature is verified and its digest passed as imageDigests, the pull secret is made out of band (ARV-209's first criterion), the one-time secrets are checked, and the TLS check and the pod evidence run after the release",
+        "The cluster is reached through a Kubernetes service connection scoped to the namespace, or the reason it stays a kubeconfig secret is recorded",
+        "The one-time switch between the GitHub and Azure releases (the dalilacr-secret delete) is in wiki 04 with both directions",
+        "node scripts/verify.mjs quick passes, and node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": "Size M. Agents never run the release; the first run is ARV-223.",
+      "dependsOn": [
+        "ARV-218"
+      ]
+    },
+    {
+      "id": "ARV-220",
+      "title": "[E17] Scheduled scans and dependency updates on Azure DevOps",
+      "description": "For Option B (or by choice): the GitHub-only workflows and services that have no Azure equivalent yet: the Trivy filesystem scan, Semgrep, the SBOM job, ZAP, mutation, the dev environment smoke, the base image proposals, Dependabot and CodeQL.",
+      "acceptanceCriteria": [
+        "Each scheduled GitHub workflow has an Azure DevOps pipeline with the same schedule and the same failure rule, or a recorded decision to drop it",
+        "Dependency updates come from Renovate or the Dependabot task, covering NuGet (lock files regenerated), npm (Ariva.Web, Ariva.E2E, the chart tests) and the Dockerfiles",
+        "The code scanning decision (GitHub Advanced Security for Azure DevOps, or Semgrep and Trivy only) is recorded in docs/product/decisions.md",
+        "node scripts/verify.mjs quick passes, and node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": "Size M. Not needed for Option A while GitHub keeps running these.",
+      "dependsOn": [
+        "ARV-217"
+      ]
+    },
+    {
+      "id": "ARV-221",
+      "title": "[E19] Offline bundle signed and verified without GitHub's OIDC identity",
+      "description": "scripts/offline/verify.mjs accepts only signatures by GitHub's OIDC issuer from this repository's workflows; with Option B, or with the Key Vault key of decision 2, the offline bundle needs a key-based identity.",
+      "acceptanceCriteria": [
+        "The offline bundle pipeline signs the manifest with the decision 2 key in a job that runs no build or package manager (the rule of ARV-127), and verify.mjs accepts that key's identity and refuses any other",
+        "Its self-tests cover the key identity (a good bundle, a bundle signed by another key, a tampered file) and a rehearsal with real cosign passes",
+        "Where the signed bundle is archived (Dalil's release store) is recorded in wiki 04 section 12",
+        "node scripts/verify.mjs quick passes, and node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": "Size M.",
+      "dependsOn": [
+        "ARV-218"
+      ]
+    },
+    {
+      "id": "ARV-222",
+      "title": "[E17] Docs and harness for Azure DevOps",
+      "description": "The documents and scripts that assume GitHub Actions or GHCR: ADR-0016, CLAUDE.md and Platform/Cloud/CLAUDE.md (by the owner's edit), wiki 04 sections 6 and 6.5 to 6.6, the harness README, chart-security.mjs (Helmfile required only under GITHUB_ACTIONS), scripts/offline/bundle.mjs (GITHUB_REPOSITORY and the GHCR default) and scripts/base-images.mjs (tool versions read from the GitHub workflows).",
+      "acceptanceCriteria": [
+        "Every script that detects CI recognises Azure Pipelines (TF_BUILD) as it does GitHub Actions, with a test",
+        "The docs describe the Azure path as built, and the GitHub path as kept or retired by decision 1; CLAUDE.md changes are proposed to the owner, not made by an agent",
+        "For Option B, the way agents work is written down: local Claude Code sessions on a clone of Azure Repos; cloud sessions attach GitHub repositories only",
+        "node scripts/verify.mjs quick passes, and node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": "Size S.",
+      "dependsOn": [
+        "ARV-219"
+      ]
+    },
+    {
+      "id": "ARV-223",
+      "title": "[E19] Cut-over and the first release from Azure DevOps",
+      "description": "Owner-run: the first build and dev release from Azure DevOps, the smoke run against dev (ARV-137, ARV-002's last criterion), and for Option B the switch of the code's home.",
+      "acceptanceCriteria": [
+        "Before the first Azure release the GitHub release's pull secret is deleted once (wiki 04), Build-k8s-all produces the seven signed images in dalil.azurecr.io/ariva, and the release with the owner's approval deploys them pinned by digest",
+        "The smoke suite passes against dev (ARV-137) and the TLS check passes on the live hosts; both are recorded in backlog/progress.md",
+        "Option B only: pushes to GitHub are frozen, a last sync is checked commit by commit, the team works on Azure Repos, and the GitHub repository is archived or kept as a read-only mirror by the owner's decision",
+        "node scripts/verify.mjs quick passes, and node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": "Owner-run. Releases and cluster changes are never done by agents. ARV-137 (the first dev release and smoke run) can be done here, from Azure, or earlier from GitHub.",
+      "dependsOn": [
+        "ARV-219"
+      ]
+    }
+  ]
+}
