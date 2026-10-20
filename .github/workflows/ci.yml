@@ -121,7 +121,9 @@ jobs:
   backend:
     name: Backend build and unit tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # 40: the job took 23 minutes when CommitRaceTests' stray test ran into its old 5 minute timeout, and that test may now
+    # take up to 10 minutes before it fails on its own assertion; a job timeout would lose the test's output.
+    timeout-minutes: 40
     permissions:
       contents: read
       pull-requests: write # failure summary as a PR comment (job logs are not readable with the repo token scope we use)

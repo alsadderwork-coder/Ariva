@@ -76,8 +76,10 @@ public sealed class CommitRaceTests(FaultsFixture faults) : IAsyncLifetime
     private static readonly TimeSpan DisposeBound = TimeSpan.FromSeconds(10);
 
     /// <summary>
-    /// The stray test tries the race at most this many times, each with its own host and consumer group. An attempt whose
-    /// consumer is not told takes about 15 s, the one that reaches the premise about 75 s, so eight fit the budget.
+    /// The stray test tries the race at most this many times, each with its own host and consumer group, and starts an
+    /// attempt only while <see cref="StrayBudget"/> still holds <see cref="AttemptBound"/>. An attempt whose consumer is not
+    /// told takes about 15 s; a told one about 98 s when its endpoint stays Ready, and up to about 115 s when it reaches the
+    /// premise.
     /// </summary>
     private const int StrayAttempts = 8;
 
@@ -85,17 +87,60 @@ public sealed class CommitRaceTests(FaultsFixture faults) : IAsyncLifetime
     private static readonly TimeSpan ToldBound = TimeSpan.FromSeconds(5);
 
     /// <summary>
-    /// A told consumer's endpoint is between restarts once its deferred commit fails, librdkafka's session timeout (45 s)
-    /// after the cut; 20 s of slack.
+    /// A told consumer's endpoint is between restarts once its deferred commit fails, librdkafka's session timeout after the
+    /// cut (<c>session.timeout.ms</c>, librdkafka's default of 45 s: Ariva does not set it). Locally that is 45.2 to 45.3 s
+    /// every time; in PR #67's CI on 33f86f2 four told attempts in a row were still Ready 65 s after the cut (the bound then),
+    /// so a slower runner gets 45 s of slack.
     /// </summary>
-    private static readonly TimeSpan PremiseBound = TimeSpan.FromSeconds(65);
+    private static readonly TimeSpan PremiseBound = TimeSpan.FromSeconds(90);
 
+    /// <summary>
+    /// The group is watched this long after the stop when the endpoint was between restarts: a stray consumer rejoins within
+    /// a few seconds (one second in the baseline).
+    /// </summary>
+    private static readonly TimeSpan StrayWatch = TimeSpan.FromSeconds(20);
+
+    /// <summary>The group is watched this long after an ordinary stop.</summary>
+    private static readonly TimeSpan OrdinaryWatch = TimeSpan.FromSeconds(3);
+
+    /// <summary>
+    /// The most one attempt of the stray test may need, which must be left of <see cref="StrayBudget"/> before it starts:
+    /// <see cref="PremiseBound"/>, the <see cref="StrayWatch"/> after a stop between restarts, and 25 s for the host's start,
+    /// the race, the stop and the dispose (about 5 s together in CI).
+    /// </summary>
+    private static readonly TimeSpan AttemptBound = PremiseBound + StrayWatch + TimeSpan.FromSeconds(25);
+
+    /// <summary>The health and stop tests' budget, within their 300 s timeout.</summary>
     private static readonly TimeSpan Budget = TimeSpan.FromSeconds(270);
+
+    /// <summary>
+    /// The stray test's budget: four told attempts whose endpoints stay Ready (about 98 s each with the 90 s
+    /// <see cref="PremiseBound"/>) and a fifth that reaches the premise (up to about 115 s) fit, since told consumers stayed
+    /// Ready past 65 s four times in a row in CI. Its [Fact] timeout is 40 s more, so the test ends on its own assertion with
+    /// the steps, never on the timeout.
+    /// </summary>
+    private static readonly TimeSpan StrayBudget = TimeSpan.FromSeconds(560);
+
+    /// <summary>
+    /// librdkafka's debug contexts for the stray test's hosts: the consumer group (coordinator, offset commits, rebalances)
+    /// and the consumer. Set through a <c>ClientConfig</c> in the host's container, which MassTransit's rider takes as its base
+    /// when <c>UsingKafka</c> is given none (MassTransit.Kafka 8.5.11, <c>KafkaRegistrationRiderFactory.CreateRider</c>), so no
+    /// Ariva setting changes and only the rider's consumers get it (Ariva's producer has its own configuration). The rider logs
+    /// librdkafka's lines as <c>MassTransit.ReceiveTransport</c> at Debug.
+    /// </summary>
+    private const string LibrdkafkaDebug = "cgrp,consumer";
+
+    /// <summary>The most host log lines one told attempt whose endpoint stayed Ready writes to the test output.</summary>
+    private const int HostLogLines = 40;
+
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     private readonly EventCatalog _catalog = new([typeof(OutageProbe).Assembly]);
     private readonly Stopwatch _clock = Stopwatch.StartNew();
     private readonly List<string> _steps = [];
+
+    /// <summary>The running test's budget for <see cref="WaitForAsync"/>: <see cref="Budget"/>, or <see cref="StrayBudget"/>.</summary>
+    private TimeSpan _budget = Budget;
 
     public ValueTask InitializeAsync() => ValueTask.CompletedTask;
 
@@ -108,7 +153,12 @@ public sealed class CommitRaceTests(FaultsFixture faults) : IAsyncLifetime
 
     private static string GroupOf(string purpose) => "ariva-race." + purpose;
 
-    private async Task<IHost> StartHostAsync(string purpose, ILoggerProvider log = null)
+    /// <summary>
+    /// Starts a host consuming the race's topic with its own group. With <paramref name="log"/> (the stray test), that
+    /// capture gets MassTransit's Debug lines, and the rider's consumers log librdkafka's <see cref="LibrdkafkaDebug"/>
+    /// contexts.
+    /// </summary>
+    private async Task<IHost> StartHostAsync(string purpose, StrayHostLog log = null)
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Configuration.AddInMemoryCollection(new Dictionary<string, string>
@@ -132,7 +182,13 @@ public sealed class CommitRaceTests(FaultsFixture faults) : IAsyncLifetime
         if (Environment.GetEnvironmentVariable("ARIVA_IT_LOG") is { Length: > 0 } file)
             builder.Logging.AddProvider(new Ariva.IntegrationTests.Streaming.FileLoggerProvider(file));
         if (log is not null)
+        {
             builder.Logging.AddProvider(log);
+            // Debug for this capture only: the host's other providers keep their levels.
+            builder.Logging.AddFilter<StrayHostLog>("MassTransit", LogLevel.Debug);
+            builder.Services.AddSingleton(new Confluent.Kafka.ClientConfig { Debug = LibrdkafkaDebug });
+        }
+
         builder.Services.AddScoped<ICurrentUser, TestCurrentUser>();
         builder.Services.AddArivaPersistence(builder.Configuration);
         builder.Services.AddArivaMessaging(builder.Configuration, messaging => messaging
@@ -293,51 +349,76 @@ public sealed class CommitRaceTests(FaultsFixture faults) : IAsyncLifetime
     /// group: an attempt whose consumer is not told within <see cref="ToldBound"/> of the cut ends there (the broker back,
     /// the host stopped, its group empty), and the first told one goes on to the stop with the endpoint between restarts.
     /// </para>
+    /// <para>
+    /// A told consumer's endpoint is not always between restarts soon either: in PR #67's CI on 33f86f2 (2026-10-20) four
+    /// told attempts in a row were still Ready 65 s after the cut, about 72 s each, and the test reached its 300 s timeout
+    /// before its own assertion. So a told attempt waits <see cref="PremiseBound"/> (90 s; the session timeout is
+    /// librdkafka's), an attempt starts only while the test's budget (<see cref="StrayBudget"/>) still holds the most it may
+    /// need (<see cref="AttemptBound"/>), and when the attempts or the budget run out the test fails on its assertion with
+    /// the steps. A told attempt whose endpoint stayed Ready writes its host's log about the consumer, the commit and the
+    /// endpoint to the test output (<see cref="WriteHostLog"/>), librdkafka's consumer group lines included.
+    /// </para>
     /// </summary>
-    [Fact(Timeout = 300_000)]
+    [Fact(Timeout = 600_000)]
     public async Task Host_Should_LeaveNoConsumerRunning_When_ItStopsWhileAnEndpointIsBetweenRestarts()
     {
-        for (var attempt = 1; ; attempt++)
+        _budget = StrayBudget;
+        var tried = 0;
+        var between = false;
+        while (!between && tried < StrayAttempts)
         {
-            if (await StrayAttemptAsync(attempt))
-                return;
-            attempt.Should().BeLessThan(StrayAttempts,
-                $"an attempt's endpoint is between restarts in one of {StrayAttempts} attempts (done: {string.Join(", ", _steps)})");
+            var left = _budget - _clock.Elapsed;
+            if (left < AttemptBound)
+            {
+                Done($"no attempt {tried + 1}: {left.TotalSeconds:F0} s of the budget left, less than an attempt may need ({AttemptBound.TotalSeconds:F0} s)");
+                break;
+            }
+
+            between = await StrayAttemptAsync(++tried);
         }
+
+        between.Should().BeTrue($"an attempt's endpoint is between restarts in one of {tried} attempts (done: {string.Join(", ", _steps)})");
     }
 
     /// <summary>
     /// One attempt of the stray test, with its own host and consumer group: the race; whether the consumer is told within
     /// <see cref="ToldBound"/> of the cut and its endpoint then between restarts within <see cref="PremiseBound"/>; the
-    /// broker back, the host stopped, and its group watched (20 s when the endpoint was between restarts, 3 s otherwise).
-    /// Returns whether the endpoint was between restarts when the host stopped.
+    /// broker back, the host stopped, and its group watched (<see cref="StrayWatch"/> when the endpoint was between restarts,
+    /// <see cref="OrdinaryWatch"/> otherwise). Returns whether the endpoint was between restarts when the host stopped.
     /// </summary>
     private async Task<bool> StrayAttemptAsync(int attempt)
     {
         var purpose = attempt == 1 ? "commit-race-stray" : $"commit-race-stray-{attempt}";
-        var told = new ConsumerErrorLog();
-        var host = await StartHostAsync(purpose, told);
+        var log = new StrayHostLog(_clock);
+        var host = await StartHostAsync(purpose, log);
         var stopped = false;
         var between = false;
+        var toldButReady = false;
+        var cutAt = TimeSpan.Zero;
         try
         {
             var key = "S" + attempt + "-" + Guid.NewGuid().ToString("N")[..8];
             var since = await RaceAsync(host, purpose, key);
+            cutAt = _clock.Elapsed - since.Elapsed;
             var bus = host.Services.GetRequiredService<IBusControl>();
-            if (!await WithinAsync(() => told.Count > 0, since, ToldBound))
+            if (!await WithinAsync(() => log.Told > 0, since, ToldBound))
                 Done($"attempt {attempt}: its consumer not told that every broker is down within {ToldBound.TotalSeconds:F0} s of the cut");
             else
             {
                 // The commit fails with the session (about 45 s after the cut), and the endpoint's consumer ends with it.
                 between = await WithinAsync(() => bus.CheckHealth().Status != BusHealthStatus.Healthy, since, PremiseBound);
+                toldButReady = !between;
                 Done(between
                     ? $"attempt {attempt}: its consumer told, the endpoint between restarts {since.Elapsed.TotalSeconds:F1} s after the cut"
                     : $"attempt {attempt}: its consumer told, the endpoint still Ready {since.Elapsed.TotalSeconds:F1} s after the cut");
             }
 
+            log.Note("the test restores the broker");
             await faults.RestoreAsync(Proxy);
             stopped = true;
+            log.Note("the test stops the host");
             await StopAsync(host, assert: false);
+            log.Note("the host stopped and disposed");
         }
         finally
         {
@@ -346,10 +427,11 @@ public sealed class CommitRaceTests(FaultsFixture faults) : IAsyncLifetime
                 await StopAsync(host, assert: false);
         }
 
-        // Nothing of the stopped host may join the group again. A stray consumer rejoins within a few seconds (one second in
-        // the baseline), so the group is watched for 20 seconds after the stop when the endpoint was between restarts; after
-        // an ordinary stop, for 3.
-        var watchFor = TimeSpan.FromSeconds(between ? 20 : 3);
+        if (toldButReady)
+            WriteHostLog(attempt, log, cutAt);
+
+        // Nothing of the stopped host may join the group again.
+        var watchFor = between ? StrayWatch : OrdinaryWatch;
         using var admin = new Confluent.Kafka.AdminClientBuilder(new Confluent.Kafka.AdminClientConfig { BootstrapServers = faults.KafkaDirectBootstrap }).Build();
         var describe = new Confluent.Kafka.Admin.DescribeConsumerGroupsOptions { RequestTimeout = TimeSpan.FromSeconds(10) };
         var watch = Stopwatch.StartNew();
@@ -377,6 +459,31 @@ public sealed class CommitRaceTests(FaultsFixture faults) : IAsyncLifetime
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Writes to the test output what the attempt's host logged about the consumer, the commit and the endpoint from the cut
+    /// to the end of its dispose, for a told attempt whose endpoint stayed Ready: lines alike merged, each with how often it
+    /// came and its first and last time from the cut, in the order they first came; at most <see cref="HostLogLines"/>
+    /// (<see cref="StrayHostLog.AboutTheConsumerSince"/> chooses).
+    /// </summary>
+    private static void WriteHostLog(int attempt, StrayHostLog log, TimeSpan cutAt)
+    {
+        var output = TestContext.Current.TestOutputHelper;
+        if (output is null)
+            return;
+        var (lines, about) = log.AboutTheConsumerSince(cutAt, HostLogLines);
+        output.WriteLine(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+            $"attempt {attempt}: its host's log about the consumer, the commit and the endpoint from the cut on, times from the cut ({lines.Count} of {about} such lines; lines alike merged, the latest text shown; {log.Seen} lines logged in all, {log.Dropped} not kept):"));
+        foreach (var line in lines)
+            output.WriteLine($"  {FromCut(line.First)} s x{line.Count} (last {FromCut(line.Last)} s) {line.Level} {line.Category}: {line.Text}");
+
+        // Signed tenths of a second from the cut, counted as a whole number so that a time just before the cut reads -0.0.
+        string FromCut(TimeSpan at)
+        {
+            var tenths = (long)Math.Round((at - cutAt).TotalSeconds * 10, MidpointRounding.AwayFromZero);
+            return string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{(at < cutAt ? '-' : '+')}{Math.Abs(tenths) / 10}.{Math.Abs(tenths) % 10}");
+        }
     }
 
     /// <summary>
@@ -466,8 +573,8 @@ public sealed class CommitRaceTests(FaultsFixture faults) : IAsyncLifetime
     {
         while (!await condition())
         {
-            if (_clock.Elapsed > Budget)
-                throw new TimeoutException($"{what}: not within the test's {Budget.TotalSeconds:F0} s (done: {string.Join(", ", _steps)})");
+            if (_clock.Elapsed > _budget)
+                throw new TimeoutException($"{what}: not within the test's {_budget.TotalSeconds:F0} s (done: {string.Join(", ", _steps)})");
             await Task.Delay(250, Ct);
         }
 
@@ -475,35 +582,173 @@ public sealed class CommitRaceTests(FaultsFixture faults) : IAsyncLifetime
     }
 
     /// <summary>
-    /// Counts MassTransit's log of a Kafka consumer's local or fatal error, which its error handler writes as it cancels the
-    /// consume loop (MassTransit.Kafka 8.5.11, <c>KafkaMessageConsumer.HandleKafkaError</c>: "Consumer [member] error
-    /// (code): reason on topic. IsFatal(...)", at Warning, or Error when fatal).
+    /// One stray attempt's capture of its host's log (each attempt has its own host and its own capture). It counts
+    /// MassTransit's log of a Kafka consumer's local or fatal error, which its error handler writes as it cancels the consume
+    /// loop (MassTransit.Kafka 8.5.11, <c>KafkaMessageConsumer.HandleKafkaError</c>: "Consumer [member] error (code): reason
+    /// on topic. IsFatal(...)", at Warning, or Error when fatal). It also keeps the MassTransit lines (librdkafka's among
+    /// them, from Debug) and the Ariva messaging lines (from Information) for <see cref="WriteHostLog"/>. Lines alike (the
+    /// same but for their numbers) are kept once with a count and their first and last time, since librdkafka repeats some
+    /// many times a second while a commit waits; at most <see cref="MaxKept"/> lines of at most <see cref="MaxText"/>
+    /// characters are kept (CWE-120), and a line that mentions a password is never kept (none does: librdkafka's
+    /// <c>conf</c> context, which lists settings, is not on).
     /// </summary>
-    private sealed class ConsumerErrorLog : ILoggerProvider, ILogger
+    private sealed class StrayHostLog(Stopwatch clock) : ILoggerProvider
     {
-        private int _count;
+        private const int MaxKept = 2_000;
+        private const int MaxText = 300;
 
-        public int Count => Volatile.Read(ref _count);
+        /// <summary>librdkafka's lines that are about the group, the commit or the consumer (its group and consumer contexts).</summary>
+        private static readonly string[] Words =
+            ["commit", "coordinator", "session", "assign", "revok", "lost", "rebalanc", "terminat", "heartbeat", "join", "leave", "close", "offset", "error", "fail"];
+
+        private readonly Lock _gate = new();
+        private readonly Dictionary<string, Entry> _alike = new(StringComparer.Ordinal);
+        private readonly List<Entry> _kept = [];
+        private int _told;
+        private long _seen;
+        private long _dropped;
+
+        /// <summary>How many times the consumer logged a local or fatal error (it was told that every broker is down).</summary>
+        public int Told => Volatile.Read(ref _told);
+
+        /// <summary>Lines logged to this capture in all.</summary>
+        public long Seen => Interlocked.Read(ref _seen);
+
+        /// <summary>Lines not kept because <see cref="MaxKept"/> different lines were kept already.</summary>
+        public long Dropped => Interlocked.Read(ref _dropped);
 
         public ILogger CreateLogger(string categoryName) =>
-            categoryName.StartsWith("MassTransit", StringComparison.Ordinal) ? this : Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
+            categoryName.StartsWith("MassTransit", StringComparison.Ordinal) || categoryName.StartsWith("Ariva.Infra.Messaging", StringComparison.Ordinal)
+                ? new CategoryLog(this, categoryName)
+                : Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
 
-        public IDisposable BeginScope<TState>(TState state) where TState : notnull => null;
+        /// <summary>A step of the test, kept among the host's lines so that their order shows.</summary>
+        public void Note(string step) => Keep(LogLevel.Information, "test", step);
 
-        public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Warning;
-
-        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception, Func<TState, Exception, string> formatter)
+        /// <summary>
+        /// The kept lines about the consumer, the commit or the endpoint that came at or after <paramref name="cutAt"/> (on
+        /// the test's clock), in the order they first came, and how many there were. When there are more than
+        /// <paramref name="most"/>: every line of MassTransit, Ariva and the test, then librdkafka's, those about the commit
+        /// first, then its failures, timeouts, revokes and lost partitions, then the five it repeated most (what it waited on),
+        /// then its rarest (its state changes).
+        /// </summary>
+        public (List<Line> Lines, int About) AboutTheConsumerSince(TimeSpan cutAt, int most)
         {
-            if (logLevel < LogLevel.Warning)
-                return;
-            var message = formatter(state, exception);
-            if (message.StartsWith("Consumer [", StringComparison.Ordinal) &&
-                (message.Contains("] error (Local_", StringComparison.Ordinal) || message.Contains("IsFatal(True)", StringComparison.Ordinal)))
-                Interlocked.Increment(ref _count);
+            List<Line> about;
+            lock (_gate)
+                about = [.. _kept.Select(entry => entry.Line).Where(line => line.Last >= cutAt && AboutTheConsumer(line))];
+            if (about.Count <= most)
+                return (about, about.Count);
+
+            var library = about.Where(FromLibrdkafka).ToList();
+            var ranked = about.Where(line => !FromLibrdkafka(line))
+                .Concat(library.Where(line => Mentions(line, "commit")))
+                .Concat(library.Where(line => Mentions(line, "fail", "error", "timed out", "timeout", "session", "revok", "lost")))
+                .Concat(library.OrderByDescending(line => line.Count).Take(5))
+                .Concat(library.OrderBy(line => line.Count).ThenBy(line => line.First));
+            var chosen = new HashSet<Line>();
+            foreach (var line in ranked)
+            {
+                if (chosen.Count >= most)
+                    break;
+                chosen.Add(line);
+            }
+
+            return ([.. about.Where(chosen.Contains)], about.Count);
         }
 
         public void Dispose()
         {
+        }
+
+        private static bool FromLibrdkafka(Line line) => line.Category == "MassTransit.ReceiveTransport";
+
+        private static bool Mentions(Line line, params string[] words) => words.Any(word => line.Text.Contains(word, StringComparison.OrdinalIgnoreCase));
+
+        private static bool AboutTheConsumer(Line line) =>
+            line.Category == "test" ||
+            (FromLibrdkafka(line)
+                ? Mentions(line, Words)
+                : line.Category.StartsWith("MassTransit", StringComparison.Ordinal)
+                    // Not the in-memory bus's own receive endpoint (loopback://localhost/vm_...).
+                    ? !line.Text.Contains("/vm_", StringComparison.Ordinal)
+                    : line.Category.EndsWith(".KafkaConsumerEndpoints", StringComparison.Ordinal) ||
+                      line.Category.EndsWith(".KafkaEndpointsLifetime", StringComparison.Ordinal) ||
+                      // The producer and the relay: their warnings and errors only, which show when they saw the outage.
+                      line.Level >= LogLevel.Warning);
+
+        private void Keep(LogLevel level, string category, string text)
+        {
+            Interlocked.Increment(ref _seen);
+            if (text.Contains("password", StringComparison.OrdinalIgnoreCase))
+                return;
+            if (text.Length > MaxText)
+                text = text[..MaxText];
+            var now = clock.Elapsed;
+            var shape = Shape(level, category, text);
+            lock (_gate)
+            {
+                if (_alike.TryGetValue(shape, out var entry))
+                    entry.Line = entry.Line with { Text = text, Last = now, Count = entry.Line.Count + 1 };
+                else if (_kept.Count < MaxKept)
+                {
+                    entry = new Entry { Line = new Line(level, category, text, now, now, 1) };
+                    _alike.Add(shape, entry);
+                    _kept.Add(entry);
+                }
+                else
+                    Interlocked.Increment(ref _dropped);
+            }
+        }
+
+        /// <summary>The line with each run of digits as one <c>#</c>, so that lines differing only in numbers are alike.</summary>
+        private static string Shape(LogLevel level, string category, string text)
+        {
+            var shape = new System.Text.StringBuilder(category.Length + text.Length + 16).Append(level).Append(' ').Append(category).Append(' ');
+            var digits = false;
+            foreach (var c in text)
+            {
+                if (!char.IsAsciiDigit(c))
+                    shape.Append(c);
+                else if (!digits)
+                    shape.Append('#');
+                digits = char.IsAsciiDigit(c);
+            }
+
+            return shape.ToString();
+        }
+
+        /// <summary>A kept line: the latest text of lines alike, how often they came, and the first and last time on the test's clock.</summary>
+        public sealed record Line(LogLevel Level, string Category, string Text, TimeSpan First, TimeSpan Last, int Count);
+
+        private sealed class Entry
+        {
+            public Line Line { get; set; }
+        }
+
+        private sealed class CategoryLog(StrayHostLog owner, string category) : ILogger
+        {
+            private readonly bool _massTransit = category.StartsWith("MassTransit", StringComparison.Ordinal);
+
+            public IDisposable BeginScope<TState>(TState state) where TState : notnull => null;
+
+            public bool IsEnabled(LogLevel logLevel) => logLevel != LogLevel.None && logLevel >= (_massTransit ? LogLevel.Debug : LogLevel.Information);
+
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception, Func<TState, Exception, string> formatter)
+            {
+                if (!IsEnabled(logLevel))
+                    return;
+                var message = formatter(state, exception) ?? string.Empty;
+                if (_massTransit && logLevel >= LogLevel.Warning && message.StartsWith("Consumer [", StringComparison.Ordinal) &&
+                    (message.Contains("] error (Local_", StringComparison.Ordinal) || message.Contains("IsFatal(True)", StringComparison.Ordinal)))
+                    Interlocked.Increment(ref owner._told);
+                var text = FirstLine(message);
+                if (exception is not null)
+                    text += " (" + exception.GetType().Name + ": " + FirstLine(exception.Message) + ")";
+                owner.Keep(logLevel, category, text);
+            }
+
+            private static string FirstLine(string text) => text.IndexOfAny(['\r', '\n']) is var end and >= 0 ? text[..end] : text;
         }
     }
 }
