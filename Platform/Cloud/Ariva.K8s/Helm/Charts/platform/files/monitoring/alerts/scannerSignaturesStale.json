@@ -1,0 +1,88 @@
+{
+  "alert": "Ariva malware scanner signatures stale (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "The malware scanner beside an api-main pod reports signatures older than the limit: uploads are still scanned, against old signatures (ARV-092c).",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "unit": "s",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "ariva.uploads.scanner.signature_age",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}'"
+            },
+            "groupBy": [
+              {
+                "name": "service.name",
+                "fieldContext": "resource",
+                "fieldDataType": "string"
+              }
+            ],
+            "legend": "{{service.name}}"
+          }
+        }
+      ]
+    },
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${scannerSignaturesStale.severity}",
+          "op": "above",
+          "matchType": "all_the_times",
+          "target": "${scannerSignaturesStale.maxAgeSeconds}",
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "${scannerSignaturesStale.minutes}m",
+      "frequency": "5m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [
+      "service.name"
+    ],
+    "renotify": {
+      "enabled": true,
+      "interval": "12h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "scannerSignaturesStale",
+    "environment": "${environment}",
+    "severity": "${scannerSignaturesStale.severity}"
+  },
+  "annotations": {
+    "summary": "Ariva malware scanner signatures stale on {{$service.name}}",
+    "description": "The oldest signatures of the scanners beside {{$service.name}} were built {{$value}} seconds ago, over ${scannerSignaturesStale.maxAgeHours} hours, for ${scannerSignaturesStale.minutes} minutes.",
+    "runbook": "wiki/10-Operations-Runbook.md#signatures-stale"
+  },
+  "disabled": false
+}

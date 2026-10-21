@@ -54,6 +54,17 @@
 // refuse a name that is not a Kubernetes name, the OTLP collector's CA without an https otel.endpoint and Loki's without
 // logging.collector loki; the Secret guard (lookup: the Secret exists and holds ca.crt and nothing else, a PEM certificate
 // without a private key) is judged on stand-in secrets.
+// ARV-092c (ASVS 5.0 V5.4.3, V12.3.1; CWE-269): with uploadScan on (every shipped environment; prd refuses it off in the chart and
+// in both Helmfiles) api-main's pod, and only it, runs clamd beside api-main on 127.0.0.1:3310 and api-main's container gets that
+// address; freshclam and an init container that copies the image's signatures with source public or mirror, neither with
+// mounted; every scanner container the pinned image by digest, as the image's clamav user, read-only root, no capability, its
+// own resources and exactly its own mounts (the signatures read-only in clamd), no Secret but the mirror's CA in freshclam, no
+// readiness or startup probe (a liveness probe only, after the load and longer than a reload); clamd.conf on the loopback with
+// the repository's limits; the HPA on api-main's own container
+// (uploadScanFindings). The release guards refuse prd without the scan or without a signature source, mirror without a URL or
+// with one that could carry a credential (never repeated in the message), mounted without a claim, and the NetworkPolicies on
+// without the mirror's peers; each rule is self-tested on a render's fixture, a writable root, a missing digest and the
+// address on another host among the mutations. prd renders carry a site's choice (tests/fixtures/upload-scan-site.yaml).
 //   node Platform/Cloud/Ariva.K8s/tests/chart-security.mjs              needs helm 3 on PATH (or HELM=path)
 //   node Platform/Cloud/Ariva.K8s/tests/chart-security.mjs --self-test  checks the rules against fixtures, no helm
 // Without helm the test is skipped locally and fails in CI (CI=true).
@@ -65,7 +76,8 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parse as parseYaml, parseAllDocuments, stringify } from 'yaml';
 import { checkManifests, COLLECTOR_CAS, collectorCaFindings, controllerValuesFindings, DATABASE_TLS12_CIPHERS, databaseTlsFindings, forwardedHeadersFindings, HUB_PATHS, hubRefusalFindings, ingressHardeningFindings, INGRESS_HARDENING,
-	INGRESS_LOG_FORMAT, ingressPrivacyFindings, logShippingFindings, API_HOSTS, missingMonitoringRules, networkPolicyFindings, networkValues, POD_TLS, podTlsFindings, podTlsSecrets, serverCaSecrets, trustsMappedClients } from './checks.mjs';
+	INGRESS_LOG_FORMAT, ingressPrivacyFindings, logShippingFindings, API_HOSTS, missingMonitoringRules, networkPolicyFindings, networkValues, POD_TLS, podTlsFindings, podTlsSecrets, serverCaSecrets, trustsMappedClients,
+	clamavDirectives, UPLOAD_SCAN, uploadScanFindings } from './checks.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const chart = path.resolve(here, '..', 'Helm', 'Charts', 'platform');
@@ -78,6 +90,16 @@ const parse = (text) => parseAllDocuments(text).map((doc) => doc.toJS()).filter(
 // As Kubernetes reads a manifest (YAML 1.1: a file mode such as 0440 is octal), for the checks that read file modes.
 const parseAsKubernetes = (text) => parseAllDocuments(text, { version: '1.1' }).map((doc) => doc.toJS()).filter(Boolean);
 const fixture = (name) => fs.readFileSync(path.join(here, 'fixtures', name), 'utf8');
+/**
+ * ARV-092c: a production site's signature source (its mirror with its CA, and the mirror's peers): k8s-prd has no default and
+ * the chart refuses a release without one, so every render of values-k8s-prd.yaml takes this file right after it (render,
+ * mergedValues, the Helmfile's prd), as a site's own values would; the guard cases clear it to prove the refusals.
+ */
+const PRD_SITE = path.join(here, 'fixtures', 'upload-scan-site.yaml');
+/** ARV-092c: the chart's ClamAV pin (values.yaml uploadScan.image): repository, tag and digest. */
+const CHART_SCANNER = parseYaml(fs.readFileSync(path.join(chart, 'values.yaml'), 'utf8')).uploadScan.image;
+/** ARV-092c: the repository's clamd.conf (ARV-092b), whose limits the chart's clamd.conf must keep. */
+const REPOSITORY_CLAMD = clamavDirectives(fs.readFileSync(path.resolve(here, '..', '..', 'clamav', 'clamd.conf'), 'utf8'));
 
 /** ARV-082a: rules of databaseTlsFindings that did not fire on the TLS fixtures, or a good fixture that produced findings. */
 function databaseTlsSelfTest() {
@@ -380,6 +402,11 @@ const NETWORK_POLICY_CASES = [
 		['ipBlock cidr: 0.0.0.0/0 is wider than /8', 'allow what the firewall matrix does not: in {"ipBlock":{"cidr":"0.0.0.0/0"}} TCP/8883',
 			'lack the firewall matrix\'s in {"ipBlock":{"cidr":"10.30.0.0/16"}} TCP/8883 | in {"ipBlock":{"cidr":"10.31.0.0/16"}} TCP/8883']],
 	['a job reaching Redis', (docs) => appsOf(docs, 'ariva-redis-egress').push('kafka-topics'), [`Job/kafka-topics: the policies allow what the firewall matrix does not: out ${REDIS} TCP/6379`]],
+	// ARV-092c: the signature mirror is api-main's alone (its freshclam sidecar), and api-main needs it with source mirror.
+	['the signature mirror open to api-ingest', (docs) => appsOf(docs, 'ariva-clamav-mirror-egress').push('api-ingest'),
+		['Deployment/api-ingest-deployment: the policies allow what the firewall matrix does not: out {"ipBlock":{"cidr":"10.70.0.0/24"}} TCP/443']],
+	['the signature mirror closed to api-main', (docs) => docs.splice(docs.indexOf(policy(docs, 'ariva-clamav-mirror-egress')), 1),
+		['Deployment/api-main-deployment: the policies lack the firewall matrix\'s out {"ipBlock":{"cidr":"10.70.0.0/24"}} TCP/443']],
 	['api-stream reachable from the controller', (docs) => {
 		const copy = structuredClone(policy(docs, 'api-main-from-ingress-controller'));
 		copy.metadata.name = 'api-stream-from-ingress-controller';
@@ -813,6 +840,129 @@ function collectorCaSelfTest() {
 	return { failures, count: COLLECTOR_CA_CASES.length };
 }
 
+/** ARV-092c: the scanner fixture (a render with the site's mirror over https and its CA) and the values it was rendered with. */
+const scanDocs = () => parseAsKubernetes(fixture('upload-scan-good.yaml'));
+const SCAN_OPTIONS = { enabled: true, source: 'mirror', mirrorUrl: 'https://clamav-mirror.site.example', mirrorCaSecretName: 'site-clamav-mirror-ca', claimName: '', checksPerDay: 12,
+	image: CHART_SCANNER, limits: REPOSITORY_CLAMD };
+const scanPod = (docs) => podOf(docs, UPLOAD_SCAN.deployment);
+const scanner = (docs, name) => [...(scanPod(docs).initContainers ?? []), ...scanPod(docs).containers].find((container) => container.name === name);
+const scanVolume = (docs, name) => scanPod(docs).volumes.find((volume) => volume.name === name);
+const scanConfig = (docs, file, from, to) => {
+	const map = docs.find((doc) => doc?.kind === 'ConfigMap' && doc.metadata?.name === UPLOAD_SCAN.configMap);
+	map.data[file] = from === null ? `${map.data[file]}${to}\n` : map.data[file].replace(from, to);
+};
+const MAIN = `Deployment/${UPLOAD_SCAN.deployment}`;
+const MAP = `ConfigMap/${UPLOAD_SCAN.configMap}`;
+
+/** ARV-092c: each change to the scanner fixture and the findings it must give, no more. */
+const UPLOAD_SCAN_CASES = [
+	['a writable root for clamd', (docs) => { scanner(docs, 'clamd').securityContext.readOnlyRootFilesystem = false; }, [`${MAIN} container clamd: readOnlyRootFilesystem must be true`]],
+	['clamd from its tag without the digest', (docs) => { scanner(docs, 'clamd').image = `clamav/clamav:${CHART_SCANNER.tag}`; }, [`${MAIN} container clamd: must run clamav/clamav:${CHART_SCANNER.tag}@sha256:`]],
+	['the init container from another image', (docs) => { scanner(docs, 'clamav-signatures').image = 'clamav/clamav:1.4.5@sha256:' + 'e'.repeat(64); },
+		[`${MAIN} container clamav-signatures: must run clamav/clamav:${CHART_SCANNER.tag}@sha256:`]],
+	['the scanner\'s address on another host', (docs) => { containerOf(docs, 'api-ingest-deployment').env.push({ name: 'MalwareScan__Host', value: UPLOAD_SCAN.host }); },
+		["Deployment/api-ingest-deployment container api-ingest-container: gets MalwareScan__Host; only api-main's own container is told the scanner's address"]],
+	['the scanner\'s address in the migration job', (docs) => { containerOf(docs, 'database-migration').env.push({ name: 'MalwareScan__Port', value: UPLOAD_SCAN.port }); },
+		['Job/database-migration container database-migration: gets MalwareScan__Port']],
+	['api-main pointed at a scanner off its loopback', (docs) => { docs.find((doc) => doc?.metadata?.name === 'api-main-configmap').data.MalwareScan__Host = 'clamav-service'; },
+		[`${MAIN} container api-main-container: must set MalwareScan__Host to 127.0.0.1, clamd on the pod's loopback, not clamav-service`]],
+	['api-main without the scanner\'s port', (docs) => { delete docs.find((doc) => doc?.metadata?.name === 'api-main-configmap').data.MalwareScan__Port; },
+		[`${MAIN} container api-main-container: must set MalwareScan__Port to 3310`]],
+	['clamd as root', (docs) => { scanner(docs, 'clamd').securityContext.runAsUser = 0; }, [`${MAIN} container clamd: must run as the image's clamav user`]],
+	['freshclam with a capability', (docs) => { scanner(docs, 'freshclam').securityContext.capabilities.add = ['NET_RAW']; }, [`${MAIN} container freshclam: must drop every capability and add none`]],
+	['freshclam that may escalate', (docs) => { scanner(docs, 'freshclam').securityContext.allowPrivilegeEscalation = true; }, [`${MAIN} container freshclam: allowPrivilegeEscalation must be false`]],
+	['a readiness probe on clamd', (docs) => { scanner(docs, 'clamd').readinessProbe = { exec: { command: UPLOAD_SCAN.ping } }; }, [`${MAIN} container clamd: has a readiness probe`]],
+	['clamd reading the token signing key', (docs) => { scanner(docs, 'clamd').volumeMounts.push({ name: 'token-signing', mountPath: '/app/secrets/token-signing', readOnly: true }); },
+		[`${MAIN} container clamd: must mount exactly`]],
+	['clamd writing its signatures', (docs) => { scanner(docs, 'clamd').volumeMounts.find((mount) => mount.name === 'clamav-signatures').readOnly = false; }, [`${MAIN} container clamd: must mount exactly`]],
+	['the mirror\'s CA in clamd', (docs) => { scanner(docs, 'clamd').volumeMounts.push({ name: 'clamav-mirror-ca', mountPath: UPLOAD_SCAN.mirrorCaPath, readOnly: true }); },
+		[`${MAIN} container clamd: must mount exactly`]],
+	['clamd given a Secret', (docs) => { scanner(docs, 'clamd').env = [{ name: 'Kafka__SaslPassword', valueFrom: { secretKeyRef: { name: 'ariva-kafka', key: 'password' } } }]; },
+		[`${MAIN} container clamd: sets Kafka__SaslPassword; the scanner's containers get no variable from a Secret or a field`]],
+	['clamd given the host\'s settings', (docs) => { scanner(docs, 'clamd').envFrom = [{ configMapRef: { name: 'api-main-configmap' } }]; },
+		[`${MAIN} container clamd: gets MalwareScan__Host, MalwareScan__Port`, `${MAIN} container clamd: has envFrom`]],
+	['freshclam trusting another CA file', (docs) => { scanner(docs, 'freshclam').env.push({ name: 'SSL_CERT_FILE', value: '/tmp/ca.crt' }); }, [`${MAIN} container freshclam: sets SSL_CERT_FILE`]],
+	['clamd in a time zone of its own', (docs) => { scanner(docs, 'clamd').env = [{ name: 'TZ', value: 'Asia/Dubai' }]; },
+		[`${MAIN} container clamd: sets TZ; clamd reports its signatures' build time in its local time, which Ariva.Api.Main reads as UTC`]],
+	['clamd reading the node\'s zone file', (docs) => { scanner(docs, 'clamd').volumeMounts.push({ name: 'clamav-config', mountPath: '/etc/localtime', readOnly: true }); },
+		[`${MAIN} container clamd: must mount exactly`]],
+	['freshclam without the mirror\'s CA', (docs) => { scanner(docs, 'freshclam').env = []; }, [`${MAIN} container freshclam: must set CURL_CA_BUNDLE to /etc/ariva/mirror-ca/ca.crt`]],
+	['a port on clamd', (docs) => { scanner(docs, 'clamd').ports = [{ containerPort: 3310 }]; }, [`${MAIN} container clamd: declares a port`]],
+	['clamd started through the image\'s init script', (docs) => { scanner(docs, 'clamd').command = ['/init']; }, [`${MAIN} container clamd: must run clamd --foreground --config-file=/etc/clamav/clamd.conf`]],
+	['clamd too small for its signatures', (docs) => { scanner(docs, 'clamd').resources.requests.memory = '512Mi'; }, [`${MAIN} container clamd: its memory request must hold the signatures clamd keeps loaded`]],
+	['clamd without limits', (docs) => { delete scanner(docs, 'clamd').resources.limits; }, [`${MAIN} container clamd: needs requests and limits of cpu and memory`]],
+	['freshclam limited below a whole download', (docs) => { scanner(docs, 'freshclam').resources.limits.memory = '96Mi'; }, [`${MAIN} container freshclam: its memory limit must hold a whole download`]],
+	['a startup probe on clamd', (docs) => { scanner(docs, 'clamd').startupProbe = { exec: { command: UPLOAD_SCAN.ping }, periodSeconds: 5, failureThreshold: 60 }; },
+		[`${MAIN} container clamd: has a startup probe; Kubernetes counts a container whose startup probe has not passed as not ready`]],
+	['clamd without a liveness probe', (docs) => { delete scanner(docs, 'clamd').livenessProbe; }, [`${MAIN} container clamd: needs a livenessProbe that runs clamdscan`]],
+	['a liveness probe before the signatures load', (docs) => { scanner(docs, 'clamd').livenessProbe.initialDelaySeconds = 10; }, [`${MAIN} container clamd: its livenessProbe must wait at least 60 s`]],
+	['a liveness probe that kills a reload', (docs) => { scanner(docs, 'clamd').livenessProbe.failureThreshold = 1; }, [`${MAIN} container clamd: its livenessProbe must tolerate more than 60 s without an answer`]],
+	['a liveness window of exactly 60 s', (docs) => { scanner(docs, 'clamd').livenessProbe.failureThreshold = 2; }, [`${MAIN} container clamd: its livenessProbe must tolerate more than 60 s without an answer`]],
+	['a liveness probe through a shell', (docs) => { scanner(docs, 'clamd').livenessProbe.exec.command = ['sh', '-c', 'clamdscan --ping 1']; }, [`${MAIN} container clamd: needs a livenessProbe that runs clamdscan`]],
+	['clamd before api-main', (docs) => { const pod = scanPod(docs); pod.containers.unshift(pod.containers.splice(1, 1)[0]); }, [`${MAIN}: api-main-container must be the pod's first container`]],
+	['the service account token in the pod', (docs) => { delete scanPod(docs).automountServiceAccountToken; }, [`${MAIN}: must set automountServiceAccountToken false`]],
+	['api-main reading the signatures', (docs) => { containerOf(docs, UPLOAD_SCAN.deployment).volumeMounts.push({ name: 'clamav-signatures', mountPath: '/signatures', readOnly: true }); },
+		[`${MAIN} container api-main-container: mounts the scanner's clamav-signatures`]],
+	['clamd\'s scratch space without a limit', (docs) => { delete scanVolume(docs, 'clamd-tmp').emptyDir.sizeLimit; }, [`${MAIN}: the volume clamd-tmp must be an emptyDir whose sizeLimit holds MaxQueue 4 times StreamMaxLength plus MaxThreads 2 times MaxScanSize (1220 MiB`]],
+	['the mirror\'s CA optional', (docs) => { scanVolume(docs, 'clamav-mirror-ca').secret.optional = true; }, [`${MAIN}: the volume clamav-mirror-ca must be the Secret site-clamav-mirror-ca`]],
+	['the mirror\'s CA with a private key', (docs) => { scanVolume(docs, 'clamav-mirror-ca').secret.items.push({ key: 'tls.key', path: 'tls.key' }); }, [`${MAIN}: the volume clamav-mirror-ca must be the Secret site-clamav-mirror-ca`]],
+	['the scanner\'s configuration writable', (docs) => { scanVolume(docs, 'clamav-config').configMap.defaultMode = 0o644; }, [`${MAIN}: the volume clamav-config must be the ConfigMap api-main-clamav-configmap, mode 0444`]],
+	['clamd in another host\'s pod', (docs) => { podOf(docs, 'api-ingest-deployment').containers.push(structuredClone(scanner(docs, 'clamd'))); },
+		[`Deployment/api-ingest-deployment container clamd: runs clamav/clamav:${CHART_SCANNER.tag}@sha256:`]],
+	['clamd listening on every address', (docs) => scanConfig(docs, 'clamd.conf', 'TCPAddr 127.0.0.1', 'TCPAddr 0.0.0.0'), [`${MAP}: clamd.conf must set TCPAddr 127.0.0.1 once`]],
+	['clamd on a second address too', (docs) => scanConfig(docs, 'clamd.conf', null, 'TCPAddr 10.0.0.9'), [`${MAP}: clamd.conf must set TCPAddr 127.0.0.1 once`]],
+	['clamd taking what it cannot scan whole as clean', (docs) => scanConfig(docs, 'clamd.conf', 'AlertExceedsMax yes', 'AlertExceedsMax no'),
+		[`${MAP}: clamd.conf must set AlertExceedsMax yes as Platform/Cloud/clamav/clamd.conf does`]],
+	['clamd cutting the largest upload short', (docs) => scanConfig(docs, 'clamd.conf', 'StreamMaxLength 105M', 'StreamMaxLength 25M'), [`${MAP}: clamd.conf must set StreamMaxLength 105M`]],
+	['clamd holding two signature sets through a reload', (docs) => scanConfig(docs, 'clamd.conf', 'ConcurrentDatabaseReload no', 'ConcurrentDatabaseReload yes'),
+		[`${MAP}: clamd.conf must set ConcurrentDatabaseReload no once`]],
+	['clamd never checking its signatures', (docs) => scanConfig(docs, 'clamd.conf', 'SelfCheck 600', 'SelfCheck 0'), [`${MAP}: clamd.conf must set SelfCheck once`]],
+	['clamd on a socket file', (docs) => scanConfig(docs, 'clamd.conf', null, 'LocalSocket /tmp/clamd.sock'), [`${MAP}: clamd.conf sets LocalSocket`]],
+	['freshclam loading every update to test it', (docs) => scanConfig(docs, 'freshclam.conf', 'TestDatabases no', 'TestDatabases yes'), [`${MAP}: freshclam.conf must set TestDatabases no once`]],
+	['freshclam from another mirror', (docs) => scanConfig(docs, 'freshclam.conf', 'PrivateMirror https://clamav-mirror.site.example', 'PrivateMirror https://elsewhere.example'),
+		[`${MAP}: freshclam.conf must set PrivateMirror https://clamav-mirror.site.example once`]],
+	['freshclam also asking the public mirrors', (docs) => scanConfig(docs, 'freshclam.conf', null, 'DatabaseMirror database.clamav.net'), [`${MAP}: freshclam.conf sets DatabaseMirror with source mirror`]],
+	['freshclam notifying clamd', (docs) => scanConfig(docs, 'freshclam.conf', null, 'NotifyClamd /etc/clamav/clamd.conf'), [`${MAP}: freshclam.conf sets NotifyClamd`]],
+	['freshclam rebuilding databases uncompressed', (docs) => scanConfig(docs, 'freshclam.conf', 'CompressLocalDatabase yes', 'CompressLocalDatabase no'),
+		[`${MAP}: freshclam.conf must set CompressLocalDatabase yes once`]],
+	['clamd loading unsigned files from its folder', (docs) => scanConfig(docs, 'clamd.conf', 'OfficialDatabaseOnly yes', 'OfficialDatabaseOnly no'),
+		[`${MAP}: clamd.conf must set OfficialDatabaseOnly yes once`, `${MAP}: clamd.conf must set OfficialDatabaseOnly yes as Platform/Cloud/clamav/clamd.conf does`]],
+	['clamd with its default ten threads', (docs) => scanConfig(docs, 'clamd.conf', 'MaxThreads 2\n', ''), [`${MAP}: clamd.conf must set MaxThreads 1 to 2`]],
+	['clamd with a queue shorter than its threads', (docs) => scanConfig(docs, 'clamd.conf', 'MaxQueue 4', 'MaxQueue 1'), [`${MAP}: clamd.conf must set MaxThreads 1 to 2`]],
+	['clamd queueing more uploads than its scratch space holds', (docs) => scanConfig(docs, 'clamd.conf', 'MaxQueue 4', 'MaxQueue 8'),
+		[`${MAIN}: the volume clamd-tmp must be an emptyDir whose sizeLimit holds MaxQueue 8 times StreamMaxLength plus MaxThreads 2 times MaxScanSize (1640 MiB`]],
+	['clamd\'s scratch space at 1Gi', (docs) => { scanVolume(docs, 'clamd-tmp').emptyDir.sizeLimit = '1Gi'; },
+		[`${MAIN}: the volume clamd-tmp must be an emptyDir whose sizeLimit holds MaxQueue 4 times StreamMaxLength plus MaxThreads 2 times MaxScanSize (1220 MiB`]],
+	['the signature volume too small for an update', (docs) => { scanVolume(docs, 'clamav-signatures').emptyDir.sizeLimit = '512Mi'; },
+		[`${MAIN}: the volume clamav-signatures must be an emptyDir whose sizeLimit is at least twice the most an update holds there (420 MiB`]],
+	['the HPA on the whole pod\'s memory', (docs) => {
+		const hpa = docs.find((doc) => doc?.kind === 'HorizontalPodAutoscaler');
+		hpa.spec.metrics[1] = { type: 'Resource', resource: { name: 'memory', target: { type: 'Utilization', averageUtilization: 70 } } };
+	}, [`HorizontalPodAutoscaler/${UPLOAD_SCAN.hpa}: must scale on api-main-container's own cpu and memory`]]
+];
+
+/** ARV-092c: the scanner rules against their fixture: the render clean, each change giving exactly its findings. */
+function uploadScanSelfTest() {
+	const failures = [];
+	const clean = uploadScanFindings(scanDocs(), SCAN_OPTIONS);
+	if (clean.length) failures.push(`the good scanner fixture produced findings:\n   ${clean.join('\n   ')}`);
+	for (const [label, change, expected] of UPLOAD_SCAN_CASES) {
+		const docs = scanDocs();
+		change(docs);
+		const found = uploadScanFindings(docs, SCAN_OPTIONS);
+		if (!exactly(found, expected)) failures.push(`scanner case ${label} must give exactly ${expected.join(' | ')}; gave ${found.length ? found.join(' | ') : 'nothing'}`);
+	}
+	// Below Kubernetes 1.27 the HPA keeps the pod's Resource metrics: the fixture's ContainerResource is a finding there, and the
+	// pod's metrics are none.
+	const below = uploadScanFindings(scanDocs(), { ...SCAN_OPTIONS, containerMetrics: false });
+	if (!exactly(below, [`HorizontalPodAutoscaler/${UPLOAD_SCAN.hpa}: below Kubernetes 1.27 must scale on the pod's Resource metrics`])) failures.push(`scanner case ContainerResource below 1.27 gave ${below.join(' | ') || 'nothing'}`);
+	const podMetrics = scanDocs();
+	podMetrics.find((doc) => doc?.kind === 'HorizontalPodAutoscaler').spec.metrics = [{ type: 'Resource', resource: { name: 'cpu', target: { type: 'Utilization', averageUtilization: 60 } } }];
+	const belowClean = uploadScanFindings(podMetrics, { ...SCAN_OPTIONS, containerMetrics: false });
+	if (belowClean.length) failures.push(`scanner case the pod's metrics below 1.27 gave ${belowClean.join(' | ')}`);
+	return { failures, count: UPLOAD_SCAN_CASES.length + 2 };
+}
+
 function selfTest() {
 	const good = checkManifests(parse(fs.readFileSync(path.join(here, 'fixtures', 'good.yaml'), 'utf8')), { environment: 'k8s-prd' });
 	const bad = checkManifests(parse(fs.readFileSync(path.join(here, 'fixtures', 'bad.yaml'), 'utf8')), { environment: 'k8s-prd' });
@@ -866,8 +1016,9 @@ function selfTest() {
 	const hubs = hubRefusalSelfTest();
 	const logs = logShippingSelfTest();
 	const collectorCas = collectorCaSelfTest();
+	const scanning = uploadScanSelfTest();
 	const others = [...tls.failures, ...podTls.failures, ...webImage, ...webRoot.failures, ...hardening.failures, ...controller.failures, ...network.failures, ...privacy.failures, ...proxies.failures, ...hubs.failures, ...logs.failures,
-		...collectorCas.failures];
+		...collectorCas.failures, ...scanning.failures];
 	if (good.length || missing.length || others.length) {
 		console.error('chart-security self-test FAILED');
 		if (good.length) console.error('  good fixture produced findings:\n   ' + good.join('\n   '));
@@ -878,7 +1029,7 @@ function selfTest() {
 	console.log(`chart-security self-test: ${expected.length} rules fire on the bad fixture, ${tls.count} TimescaleDB TLS rules on the TLS fixtures, ${podTls.count} pod TLS rules ` +
 		`on the pod TLS fixtures, ${hardening.count} ingress hardening rules and ${privacy.count} private probe and source range rules on theirs (each bad case trips exactly its rule), ` +
 		`${hubs.count} live hub refusal cases on the chart's server-snippet (each tripping exactly its rule), ` +
-		`${network.count} network policy cases, ${proxies.count} trusted proxy cases, ${logs.count} log shipping cases and ${collectorCas.count} collector CA cases each giving exactly their findings; the good fixtures are clean; the web image takes ` +
+		`${network.count} network policy cases, ${proxies.count} trusted proxy cases, ${logs.count} log shipping cases, ${collectorCas.count} collector CA cases and ${scanning.count} malware scanner cases each giving exactly their findings; the good fixtures are clean; the web image takes ` +
 		`its listener from ${POD_TLS.webListen} and keeps no nginx configuration in its web root (${webRoot.count} cases); the shipped controller values (Helm/ingress-nginx-values.yaml) hold every rule, their access log format is ingress-nginx 1.15's ` +
 		`without the query string, ${controller.count} changes each trip theirs and ${controller.accepted} accepted changes trip none.`);
 }
@@ -887,8 +1038,9 @@ function helmAvailable() {
 	return spawnSync(helm, ['version', '--short'], { encoding: 'utf8', shell: false }).status === 0;
 }
 
-function render(valuesFile, sets = [], namespace = '', extraFiles = []) {
-	const args = ['template', 'ariva-platform', chart, '-f', path.join(chart, valuesFile), ...extraFiles.flatMap((file) => ['-f', file]), '--set', 'imageCredentials.password='];
+function render(valuesFile, sets = [], namespace = '', extraFiles = [], helmArgs = []) {
+	const site = valuesFile === 'values-k8s-prd.yaml' ? ['-f', PRD_SITE] : [];
+	const args = ['template', 'ariva-platform', chart, '-f', path.join(chart, valuesFile), ...site, ...extraFiles.flatMap((file) => ['-f', file]), '--set', 'imageCredentials.password=', ...helmArgs];
 	if (namespace) args.push('--namespace', namespace);
 	for (const set of sets) args.push('--set', set);
 	return spawnSync(helm, args, { encoding: 'utf8', shell: false, maxBuffer: 32 * 1024 * 1024 });
@@ -921,7 +1073,7 @@ function retentionValues(valuesFile) {
  * or object (what a release sets); maps merge, a list or a value replaces, null removes the key. For the network rules, which
  * compare a render with its values.
  */
-function mergedValues(files) {
+function mergedValues(files, { prdSite = true } = {}) {
 	const merge = (base, over) => {
 		if (over === null) return undefined;
 		const map = (value) => value && typeof value === 'object' && !Array.isArray(value);
@@ -935,7 +1087,9 @@ function mergedValues(files) {
 		return out;
 	};
 	const read = (file) => (typeof file === 'object' ? file : parseYaml(fs.readFileSync(path.isAbsolute(file) ? file : path.join(chart, file), 'utf8')) ?? {});
-	return ['values.yaml', ...files].map(read).reduce((a, b) => merge(a, b), {});
+	// ARV-092c: a render of values-k8s-prd.yaml carries the site's signature source (PRD_SITE), unless the caller gives its own.
+	const listed = files.flatMap((file) => (prdSite && file === 'values-k8s-prd.yaml' ? [file, PRD_SITE] : [file]));
+	return ['values.yaml', ...listed].map(read).reduce((a, b) => merge(a, b), {});
 }
 
 /**
@@ -979,6 +1133,26 @@ function logShippingOptions(values, environment, required = false) {
 		lokiCredentialsSecret: loki.name ? { name: String(loki.name), usernameKey: String(loki.usernameKey || 'username'), passwordKey: String(loki.passwordKey || 'password') } : undefined,
 		otelHeadersSecret: values.otel?.headersSecret?.name ? { name: String(values.otel.headersSecret.name), key: String(values.otel.headersSecret.key || 'headers') } : undefined,
 		required: required || logging.required === true };
+}
+
+/**
+ * ARV-092c: the malware scan values of a release (values.yaml under its files), as uploadScanFindings takes them; image overrides
+ * the values' image (a release that sets another repository, such as the offline bundle's mirror).
+ */
+function uploadScanOptions(values, { image } = {}) {
+	const scan = values.uploadScan ?? {};
+	const signatures = scan.signatures ?? {};
+	return { enabled: scan.enabled === true, source: String(signatures.source ?? ''), mirrorUrl: String(signatures.mirrorUrl ?? ''),
+		mirrorCaSecretName: String(signatures.mirrorCaSecretName ?? ''), claimName: String(signatures.claimName ?? ''), checksPerDay: signatures.checksPerDay ?? 12,
+		image: { ...(scan.image ?? {}), ...(image ?? {}) }, limits: REPOSITORY_CLAMD };
+}
+
+/** ARV-092c: how a render scans uploads, for the PASS lines. */
+function describeUploadScan(values) {
+	const { enabled, source, mirrorUrl, mirrorCaSecretName, claimName } = uploadScanOptions(values);
+	if (!enabled) return 'no malware scanner';
+	const from = { public: 'freshclam from the ClamAV mirrors', mirror: `freshclam from ${mirrorUrl}${mirrorCaSecretName ? ` with the CA of ${mirrorCaSecretName}` : ''}`, mounted: `signatures mounted read-only from ${claimName}` }[source];
+	return `clamd beside api-main on ${UPLOAD_SCAN.host}:${UPLOAD_SCAN.port} only, ${from}`;
 }
 
 /** ARV-200: the collectors' CA Secrets a release's values name (values.yaml under its files), as collectorCaFindings takes them. */
@@ -1146,6 +1320,8 @@ for (const env of environments) {
 	findings.push(...logShippingFindings(parseAsKubernetes(result.stdout), logShippingOptions(values, env.environment)));
 	// ARV-200: the collectors' CAs as the values name them (none in the shipped files: the image's public roots).
 	findings.push(...collectorCaFindings(parseAsKubernetes(result.stdout), collectorCaOptions(values)));
+	// ARV-092c: the malware scanner beside api-main, as the values give it (prd: the site's mirror, PRD_SITE).
+	findings.push(...uploadScanFindings(parseAsKubernetes(result.stdout), uploadScanOptions(values)));
 	const workloads = docs.filter((doc) => doc?.kind === 'Deployment').length;
 	const ingresses = docs.filter((doc) => doc?.kind === 'Ingress').length;
 	const monitoring = (name) => Object.keys(docs.find((doc) => doc?.kind === 'ConfigMap' && doc.metadata?.name === name)?.data ?? {}).length;
@@ -1157,7 +1333,7 @@ for (const env of environments) {
 			'database and Redis CAs in the five API hosts and the two jobs only, ' +
 			(podTls ? 'every pod, Service and Ingress over TLS with the cluster CA, ' : 'plain HTTP to the pods, ') +
 			`HSTS, nosniff and frame-ancestors on every Ingress's responses, the ModSecurity audit log off on every Ingress, plain HTTP ${describeModes(docs)}, ${describeNetwork(result.stdout, values)}, ` +
-			`${describeLogShipping(values)}, ${describeCollectorCas(values)}, ` +
+			`${describeLogShipping(values)}, ${describeCollectorCas(values)}, ${describeUploadScan(values)}, ` +
 			`retention periods ${Object.values(retentionValues(env.file)).join('/')} days in the migration job, ` +
 			`${monitoring('ariva-monitoring-alerts')} alert rules and ${monitoring('ariva-monitoring-dashboards')} dashboards`);
 	}
@@ -1274,6 +1450,11 @@ for (const [label, file, sets, message, annotation] of [
 	// without its values, a claim that is not a name.
 	['a disk threshold above 99 percent', 'values-k8s-dev.yaml', ['monitoring.alerts.disk.usedPercent=150']],
 	['a critical certificate expiry not below the warning', 'values-k8s-dev.yaml', ['monitoring.alerts.certificateExpiry.criticalDays=40']],
+	// ARV-092c: the scanner's signature age limit stays within the hosts' MalwareScan:MaxSignatureAgeHours bounds, in whole hours.
+	['a signature age limit under 6 hours', 'values-k8s-dev.yaml', ['monitoring.alerts.scannerSignaturesStale.maxAgeHours=5'], 'monitoring.alerts.scannerSignaturesStale.maxAgeHours must be a whole number of hours from 6 to 168'],
+	['a signature age limit over a week', 'values-k8s-dev.yaml', ['monitoring.alerts.scannerSignaturesStale.maxAgeHours=169'], 'must be a whole number of hours from 6 to 168'],
+	['a signature age limit in part hours', 'values-k8s-dev.yaml', ['monitoring.alerts.scannerSignaturesStale.maxAgeHours=48.5'], 'must be a whole number of hours from 6 to 168'],
+	['the scanner rule without its values', 'values-k8s-dev.yaml', ['monitoring.alerts.scannerNotAnswering=null'], 'monitoring.alerts.scannerNotAnswering is missing'],
 	['a devices offline share above 1', 'values-k8s-dev.yaml', ['monitoring.alerts.devicesOffline.share=2']],
 	['a rule window of 0 minutes', 'values-k8s-dev.yaml', ['monitoring.alerts.hostDown.minutes=0']],
 	['a rule window that is not a whole number', 'values-k8s-dev.yaml', ['monitoring.alerts.streamConsumerLag.minutes=2.5']],
@@ -1722,7 +1903,8 @@ for (const [label, file, sets, message, annotation] of [
 	const full = path.join(here, 'fixtures', 'network-policy-values.yaml');
 	for (const [label, file, sets, extra, environment] of [
 		['production with every flow', 'values-k8s-prd.yaml', [PRD], [full], 'k8s-prd'],
-		['dev with the network policies and the simulator', 'values-k8s-dev.yaml', [], [valuesFile({ networkPolicies: { enabled: true } })], 'k8s-dev'],
+		// ARV-092c: dev's freshclam updates from the ClamAV mirrors, whose peers the policies then need.
+		['dev with the network policies and the simulator', 'values-k8s-dev.yaml', [], [valuesFile({ networkPolicies: { enabled: true, clamavMirror: { to: [{ ipBlock: { cidr: '104.16.0.0/13' } }] } } })], 'k8s-dev'],
 		['dev with trusted proxies', 'values-k8s-dev.yaml', [], [valuesFile({ ingressController: { podNetworks: ['10.42.0.0/16', 'fd00:42::/56'] } })], 'k8s-dev']
 	]) {
 		const result = render(file, sets, '', extra);
@@ -1735,10 +1917,10 @@ for (const [label, file, sets, message, annotation] of [
 		findings.push(...found.map((finding) => `${label}: ${finding}`));
 		counts.push(`${label}: ${describeNetwork(result.stdout, values)}`);
 		const policies = parseAsKubernetes(result.stdout).filter((doc) => doc?.kind === 'NetworkPolicy').map((doc) => doc.metadata.name);
-		if (label.startsWith('dev with the network') && !['simulation-network', 'ariva-hosts-from-simulation', 'api-integration-to-simulation'].every((name) => policies.includes(name))) {
+		if (label.startsWith('dev with the network') && !['simulation-network', 'ariva-hosts-from-simulation', 'api-integration-to-simulation', 'ariva-clamav-mirror-egress'].every((name) => policies.includes(name))) {
 			findings.push(`${label}: the simulator's policies are not rendered (${policies.join(', ')})`);
 		}
-		if (label.startsWith('production') && !['api-ingest-from-mqtt-sensors', 'ariva-smtp-egress', 'api-integration-outbound-egress', 'ariva-otlp-egress', 'ariva-loki-egress'].every((name) => policies.includes(name))) {
+		if (label.startsWith('production') && !['api-ingest-from-mqtt-sensors', 'ariva-smtp-egress', 'api-integration-outbound-egress', 'ariva-otlp-egress', 'ariva-loki-egress', 'ariva-clamav-mirror-egress'].every((name) => policies.includes(name))) {
 			findings.push(`${label}: a flow's policy is not rendered (${policies.join(', ')})`);
 		}
 	}
@@ -1786,7 +1968,7 @@ for (const [label, file, sets, message, annotation] of [
 		fs.writeFileSync(path.join(copy, 'platform', 'templates', 'zz-mapped-clients-test.yaml'), 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: mapped-clients-test\ndata:\n' +
 			'{{- range $index, $cidr := .Values.mappedCases }}\n  {{ printf "c%d" $index | quote }}: {{ include "ariva-platform.mappedClientsRefusal" $cidr | quote }}\n{{- end }}\n');
 		fs.writeFileSync(path.join(copy, 'cases.json'), JSON.stringify({ mappedCases: list }));
-		const result = spawnSync(helm, ['template', 'ariva-platform', path.join(copy, 'platform'), '-f', path.join(chart, 'values-k8s-prd.yaml'), '-f', path.join(copy, 'cases.json'),
+		const result = spawnSync(helm, ['template', 'ariva-platform', path.join(copy, 'platform'), '-f', path.join(chart, 'values-k8s-prd.yaml'), '-f', PRD_SITE, '-f', path.join(copy, 'cases.json'),
 			'--set', PRD, '--show-only', 'templates/zz-mapped-clients-test.yaml'], { encoding: 'utf8', shell: false, maxBuffer: 16 * 1024 * 1024 });
 		if (result.status !== 0) findings.push(`the mapped client cases: template failed\n${result.stderr}`);
 		else {
@@ -1843,7 +2025,7 @@ for (const [label, file, sets, message, annotation] of [
 		fs.writeFileSync(path.join(copy, 'platform', 'templates', 'zz-ca-refusal-test.yaml'), 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: ca-refusal-test\ndata:\n' +
 			'{{- range $name, $secret := .Values.caRefusalCases }}\n  {{ $name | quote }}: {{ include "ariva-platform.podTlsCaRefusal" $secret | quote }}\n{{- end }}\n');
 		fs.writeFileSync(path.join(copy, 'cases.json'), JSON.stringify({ caRefusalCases: Object.fromEntries(Object.entries(cases).map(([name, [secret]]) => [name, secret])) }));
-		const result = spawnSync(helm, ['template', 'ariva-platform', path.join(copy, 'platform'), '-f', path.join(chart, 'values-k8s-prd.yaml'), '-f', path.join(copy, 'cases.json'),
+		const result = spawnSync(helm, ['template', 'ariva-platform', path.join(copy, 'platform'), '-f', path.join(chart, 'values-k8s-prd.yaml'), '-f', PRD_SITE, '-f', path.join(copy, 'cases.json'),
 			'--set', 'buildNumber=main-20261001.1', '--show-only', 'templates/zz-ca-refusal-test.yaml'], { encoding: 'utf8', shell: false });
 		if (result.status !== 0) findings.push(`the CA refusal cases: template failed\n${result.stderr}`);
 		else {
@@ -1948,7 +2130,7 @@ for (const [label, file, sets, message, annotation] of [
 		fs.writeFileSync(path.join(copy, 'platform', 'templates', 'zz-log-key-refusal-test.yaml'), 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: log-key-refusal-test\ndata:\n' +
 			'{{- range $name, $case := .Values.logKeyCases }}\n  {{ $name | quote }}: {{ include "ariva-platform.pseudonymKeyRefusal" (dict "secret" $case.secret "name" "ariva-log-pseudonym-key" "key" ($case.key | default "pseudonym-key") "reachable" $case.reachable) | quote }}\n{{- end }}\n');
 		fs.writeFileSync(path.join(copy, 'cases.json'), JSON.stringify({ logKeyCases: Object.fromEntries(Object.entries(cases).map(([name, [input]]) => [name, input])) }));
-		const result = spawnSync(helm, ['template', 'ariva-platform', path.join(copy, 'platform'), '-f', path.join(chart, 'values-k8s-prd.yaml'), '-f', path.join(copy, 'cases.json'),
+		const result = spawnSync(helm, ['template', 'ariva-platform', path.join(copy, 'platform'), '-f', path.join(chart, 'values-k8s-prd.yaml'), '-f', PRD_SITE, '-f', path.join(copy, 'cases.json'),
 			'--set', PRD, '--show-only', 'templates/zz-log-key-refusal-test.yaml'], { encoding: 'utf8', shell: false });
 		if (result.status !== 0) findings.push(`the log key refusal cases: template failed\n${result.stderr}`);
 		else {
@@ -2078,7 +2260,7 @@ for (const [label, file, sets, message, annotation] of [
 			'{{- range $name, $case := .Values.collectorCaCases }}\n  {{ $name | quote }}: {{ include "ariva-platform.collectorCaRefusal" (dict "secret" $case.secret "name" ($case.name | default "site-otlp-ca") ' +
 			'"value" ($case.value | default "otel.caSecretName") "collector" ($case.collector | default "the OTLP collector") "reachable" $case.reachable) | quote }}\n{{- end }}\n');
 		fs.writeFileSync(path.join(copy, 'cases.json'), JSON.stringify({ collectorCaCases: Object.fromEntries(Object.entries(cases).map(([name, [input]]) => [name, input])) }));
-		const result = spawnSync(helm, ['template', 'ariva-platform', path.join(copy, 'platform'), '-f', path.join(chart, 'values-k8s-prd.yaml'), '-f', path.join(copy, 'cases.json'),
+		const result = spawnSync(helm, ['template', 'ariva-platform', path.join(copy, 'platform'), '-f', path.join(chart, 'values-k8s-prd.yaml'), '-f', PRD_SITE, '-f', path.join(copy, 'cases.json'),
 			'--set', PRD, '--show-only', 'templates/zz-collector-ca-refusal-test.yaml'], { encoding: 'utf8', shell: false });
 		if (result.status !== 0) findings.push(`the collector CA refusal cases: template failed\n${result.stderr}`);
 		else {
@@ -2149,6 +2331,127 @@ for (const [label, file, sets, message, annotation] of [
 	}
 }
 
+// ARV-092c (ASVS 5.0 V5.4.3, V12.3.1; CWE-269): the malware scanner beside api-main for each signature source, in dev and in
+// production with the NetworkPolicies (the mirror's egress for api-main only, nothing for mounted), and off; then every refusal
+// of the release guards for its own reason, none repeating a value that could be secret.
+{
+	const findings = [];
+	const counts = [];
+	const MIRROR_CA = ['uploadScan.signatures.source=mirror', 'uploadScan.signatures.mirrorUrl=https://clamav-mirror.site.local/clamav', 'uploadScan.signatures.mirrorCaSecretName=site-clamav-mirror-ca'];
+	const NO_SITE = ['uploadScan.signatures.source=', 'uploadScan.signatures.mirrorUrl=', 'uploadScan.signatures.mirrorCaSecretName='];
+	const peers = (cidr) => ({ networkPolicies: { clamavMirror: { to: [{ ipBlock: { cidr } }] } } });
+	for (const [label, file, sets, extra, environment, helmArgs = []] of [
+		['dev from the ClamAV mirrors (the default)', 'values-k8s-dev.yaml', [], [], 'k8s-dev'],
+		['dev from a site mirror over http', 'values-k8s-dev.yaml', ['uploadScan.signatures.source=mirror', 'uploadScan.signatures.mirrorUrl=http://10.80.0.5:8080/clamav', 'uploadScan.signatures.checksPerDay=24'], [], 'k8s-dev'],
+		['dev from a site mirror over https with its CA', 'values-k8s-dev.yaml', MIRROR_CA, [], 'k8s-dev'],
+		['dev with mounted signatures', 'values-k8s-dev.yaml', ['uploadScan.signatures.source=mounted', 'uploadScan.signatures.claimName=site-clamav-signatures'], [], 'k8s-dev'],
+		['dev without the scan', 'values-k8s-dev.yaml', ['uploadScan.enabled=false'], [], 'k8s-dev'],
+		// ARV-092c: api-main's HPA reads its own container from Kubernetes 1.27 and the pod's metrics below (the API server
+		// refuses a ContainerResource metric there); Helm's own default is newer.
+		['dev on Kubernetes 1.26', 'values-k8s-dev.yaml', [], [], 'k8s-dev', ['--kube-version', '1.26.0']],
+		['dev on Kubernetes 1.27', 'values-k8s-dev.yaml', [], [], 'k8s-dev', ['--kube-version', '1.27.0']],
+		['demo from the ClamAV mirrors', 'values-k8s-demo.yaml', [], [], 'k8s-demo'],
+		['production from the ClamAV mirrors', 'values-k8s-prd.yaml', [PRD, ...NO_SITE, 'uploadScan.signatures.source=public'], [valuesFile(peers('104.16.0.0/13'))], 'k8s-prd'],
+		['production with mounted signatures', 'values-k8s-prd.yaml', [PRD, ...NO_SITE, 'uploadScan.signatures.source=mounted', 'uploadScan.signatures.claimName=site-clamav-signatures'], [], 'k8s-prd']
+	]) {
+		const result = render(file, sets, '', extra, helmArgs);
+		if (result.status !== 0) {
+			findings.push(`${label}: template failed\n${result.stderr}`);
+			continue;
+		}
+		const containerMetrics = !(helmArgs.includes('--kube-version') && helmArgs[helmArgs.indexOf('--kube-version') + 1].startsWith('1.26'));
+		const setValues = {};
+		for (const set of sets.filter((entry) => entry.startsWith('uploadScan.'))) {
+			const [key, value] = set.split(/=(.*)/s);
+			const pathParts = key.split('.');
+			let node = setValues;
+			for (const part of pathParts.slice(0, -1)) node = node[part] ??= {};
+			node[pathParts.at(-1)] = value === 'false' ? false : /^\d+$/.test(value) ? Number(value) : value;
+		}
+		const values = mergedValues([file, ...extra, setValues]);
+		const docs = parseAsKubernetes(result.stdout);
+		const found = [...checkManifests(parse(result.stdout), { environment }), ...uploadScanFindings(docs, { ...uploadScanOptions(values), containerMetrics }), ...networkFindings(result.stdout, values, environment)];
+		const hpaTypes = [...new Set((docs.find((doc) => doc?.kind === 'HorizontalPodAutoscaler' && doc.metadata?.name === UPLOAD_SCAN.hpa)?.spec?.metrics ?? []).map((metric) => metric.type))].join(', ');
+		if (helmArgs.includes('--kube-version')) counts.push(`${label}: api-main's HPA on ${hpaTypes} metrics`);
+		const mirrorEgress = docs.find((doc) => doc?.kind === 'NetworkPolicy' && doc.metadata?.name === 'ariva-clamav-mirror-egress');
+		const source = uploadScanOptions(values).source;
+		if (environment === 'k8s-prd' && (source === 'mounted') !== !mirrorEgress) found.push(`the mirror's egress is ${mirrorEgress ? 'rendered' : 'missing'} with source ${source}`);
+		findings.push(...found.map((finding) => `${label}: ${finding}`));
+		counts.push(`${label}: ${describeUploadScan(values)}`);
+	}
+	if (findings.length) {
+		failed = true;
+		console.error(`FAIL malware scan beside api-main:\n  ${findings.join('\n  ')}`);
+	} else {
+		console.log(`PASS malware scan beside api-main: ${counts.join('; ')}; the scanner in api-main's pod only, pinned, as uid 100, read-only, ` +
+			"with its own mounts and resources, no readiness or startup probe (liveness only, after the load and longer than a reload), clamd.conf with the repository's limits " +
+			'and official databases only, MaxThreads and MaxQueue bounding clamd\'s /tmp and the signature volume sized for an update, ' +
+			"the HPA on api-main's own container from Kubernetes 1.27 (the pod's below)");
+	}
+	// The refusals: each for its own reason, and no message repeats a planted value (a mirror URL may carry a credential).
+	const PLANTED = 'Stand-In-Secret-7';
+	for (const [label, file, sets, message, extraValues] of [
+		['production without the scan', 'values-k8s-prd.yaml', [PRD, 'uploadScan.enabled=false'], 'k8s-prd scans every upload for malware before it is stored or imported: set uploadScan.enabled true'],
+		['a release with logging.required without the scan', 'values-k8s-dev.yaml', ['logging.required=true', 'logging.collector=loki', 'logging.pseudonymKeySecret.name=ariva-log-pseudonym-key', 'uploadScan.enabled=false'],
+			'a release with logging.required scans every upload for malware'],
+		['production without a signature source', 'values-k8s-prd.yaml', [PRD, ...NO_SITE], "k8s-prd chooses how clamd's signatures arrive"],
+		['production without the uploadScan values', 'values-k8s-prd.yaml', [PRD, 'uploadScan=null'], 'uploadScan must be a map'],
+		['a signature source that is not one of the three', 'values-k8s-dev.yaml', ['uploadScan.signatures.source=internet'], 'uploadScan.signatures.source must be public, mirror or mounted'],
+		['an empty signature source in dev', 'values-k8s-dev.yaml', ['uploadScan.signatures.source='], 'uploadScan.signatures.source must be public, mirror or mounted'],
+		['a site mirror without its URL', 'values-k8s-dev.yaml', ['uploadScan.signatures.source=mirror'], 'uploadScan.signatures.source mirror needs uploadScan.signatures.mirrorUrl'],
+		['a mirror URL with a credential', 'values-k8s-dev.yaml', ['uploadScan.signatures.source=mirror', `uploadScan.signatures.mirrorUrl=https://ariva:${PLANTED}@clamav-mirror.site.local`],
+			'uploadScan.signatures.mirrorUrl must be the http:// or https:// URL of the site\'s signature mirror'],
+		['a mirror URL with a token in its query', 'values-k8s-dev.yaml', ['uploadScan.signatures.source=mirror', `uploadScan.signatures.mirrorUrl=https://clamav-mirror.site.local/?token=${PLANTED}`],
+			'uploadScan.signatures.mirrorUrl must be the http:// or https:// URL'],
+		['a mirror URL that writes a second freshclam directive', 'values-k8s-dev.yaml', [], 'uploadScan.signatures.mirrorUrl must be the http:// or https:// URL',
+			{ uploadScan: { signatures: { source: 'mirror', mirrorUrl: `https://clamav-mirror.site.local\nDatabaseMirror ${PLANTED}.example` } } }],
+		['production\'s mirror over plain http', 'values-k8s-prd.yaml', [PRD, 'uploadScan.signatures.mirrorUrl=http://clamav-mirror.site.local', 'uploadScan.signatures.mirrorCaSecretName='],
+			'k8s-prd takes signature updates over TLS only: uploadScan.signatures.mirrorUrl must be an https:// URL'],
+		['a mirror over plain http with logging.required', 'values-k8s-dev.yaml', ['logging.required=true', 'logging.collector=loki', 'logging.pseudonymKeySecret.name=ariva-log-pseudonym-key',
+			'uploadScan.signatures.source=mirror', 'uploadScan.signatures.mirrorUrl=http://clamav-mirror.site.local'], 'a release with logging.required takes signature updates over TLS only'],
+		['a mirror URL over ftp', 'values-k8s-dev.yaml', ['uploadScan.signatures.source=mirror', 'uploadScan.signatures.mirrorUrl=ftp://clamav-mirror.site.local'], 'uploadScan.signatures.mirrorUrl must be the http:// or https:// URL'],
+		['a mirror URL with source public', 'values-k8s-dev.yaml', ['uploadScan.signatures.mirrorUrl=https://clamav-mirror.site.local'], 'uploadScan.signatures.mirrorUrl is read with source mirror only'],
+		['the mirror\'s CA with source public', 'values-k8s-dev.yaml', ['uploadScan.signatures.mirrorCaSecretName=site-clamav-mirror-ca'], 'uploadScan.signatures.mirrorCaSecretName is read with source mirror only'],
+		['the mirror\'s CA over http', 'values-k8s-dev.yaml', ['uploadScan.signatures.source=mirror', 'uploadScan.signatures.mirrorUrl=http://clamav-mirror.site.local', 'uploadScan.signatures.mirrorCaSecretName=site-clamav-mirror-ca'],
+			'uploadScan.signatures.mirrorCaSecretName needs an https:// mirrorUrl'],
+		['a mirror CA Secret name that is not a Kubernetes name', 'values-k8s-dev.yaml', [...MIRROR_CA.slice(0, 2), 'uploadScan.signatures.mirrorCaSecretName=Site_CA'], 'uploadScan.signatures.mirrorCaSecretName must be a Kubernetes secret name'],
+		['mounted signatures without their claim', 'values-k8s-dev.yaml', ['uploadScan.signatures.source=mounted'], 'uploadScan.signatures.source mounted needs uploadScan.signatures.claimName'],
+		['a claim with source public', 'values-k8s-dev.yaml', ['uploadScan.signatures.claimName=site-clamav-signatures'], 'uploadScan.signatures.claimName is read with source mounted only'],
+		['a claim name that is not a Kubernetes name', 'values-k8s-dev.yaml', ['uploadScan.signatures.source=mounted', 'uploadScan.signatures.claimName=Site_Signatures'], 'uploadScan.signatures.claimName must be a Kubernetes name'],
+		['production\'s mirror without its peers', 'values-k8s-prd.yaml', [PRD], 'uploadScan.signatures.source public or mirror needs networkPolicies.clamavMirror.to', { networkPolicies: { clamavMirror: { to: [] } } }],
+		['production from the ClamAV mirrors without their peers', 'values-k8s-prd.yaml', [PRD, ...NO_SITE, 'uploadScan.signatures.source=public'], 'needs networkPolicies.clamavMirror.to', { networkPolicies: { clamavMirror: { to: [] } } }],
+		['dev under the network policies without the mirrors\' peers', 'values-k8s-dev.yaml', ['networkPolicies.enabled=true'], 'uploadScan.signatures.source public or mirror needs networkPolicies.clamavMirror.to'],
+		['production\'s mirror open to every address', 'values-k8s-prd.yaml', [PRD], 'networkPolicies.clamavMirror.to[0].ipBlock: 0.0.0.0/0 is wider than /8', peers('0.0.0.0/0')],
+		['the mirror\'s egress on a port that is not one', 'values-k8s-dev.yaml', [], 'networkPolicies.clamavMirror.ports: 70000 is not a port', { networkPolicies: { clamavMirror: { ports: [70000] } } }],
+		['an unknown uploadScan setting', 'values-k8s-dev.yaml', ['uploadScan.mode=sidecar'], 'uploadScan.mode is not a setting'],
+		['uploadScan that is not a map', 'values-k8s-dev.yaml', ['uploadScan=on'], 'uploadScan must be a map'],
+		['an uploadScan.enabled that is not true or false', 'values-k8s-dev.yaml', ['uploadScan.enabled=yes'], 'uploadScan.enabled must be true or false'],
+		['the scanner image without a digest', 'values-k8s-dev.yaml', ['uploadScan.image.digest='], 'uploadScan.image.digest must be a sha256 digest'],
+		['the latest scanner image', 'values-k8s-dev.yaml', ['uploadScan.image.tag=latest'], 'uploadScan.image.tag must be an explicit ClamAV tag'],
+		['a scanner image with a pull policy of its own', 'values-k8s-dev.yaml', ['uploadScan.image.pullPolicy=Always'], 'uploadScan.image must be a map of repository, tag and digest'],
+		['a scanner repository that is not one', 'values-k8s-dev.yaml', ['uploadScan.image.repository=Clam AV'], 'uploadScan.image.repository must be an image repository'],
+		['no signature check at all', 'values-k8s-dev.yaml', ['uploadScan.signatures.checksPerDay=0'], 'uploadScan.signatures.checksPerDay must be a whole number from 1 to 24'],
+		['more than one signature check an hour', 'values-k8s-dev.yaml', ['uploadScan.signatures.checksPerDay=25'], 'uploadScan.signatures.checksPerDay must be a whole number from 1 to 24'],
+		['a signature setting that is not one', 'values-k8s-dev.yaml', [`uploadScan.signatures.password=${PLANTED}`], 'uploadScan.signatures.password is not a setting'],
+		['clamd without a memory limit', 'values-k8s-dev.yaml', [], 'uploadScan.clamd must be a map of resources', { uploadScan: { clamd: { resources: { limits: { memory: null } } } } }],
+		['freshclam without its resources', 'values-k8s-dev.yaml', ['uploadScan.freshclam=small'], 'uploadScan.freshclam must be a map of resources']
+	]) {
+		const result = render(file, sets, '', extraValues ? [valuesFile(extraValues)] : []);
+		if (result.status === 0) {
+			failed = true;
+			console.error(`FAIL release guard: rendering ${label} must fail but succeeded`);
+		} else if (!result.stderr.includes(message)) {
+			failed = true;
+			console.error(`FAIL release guard: rendering ${label} failed for another reason than "${message}"\n${result.stderr}`);
+		} else if (result.stderr.includes(PLANTED)) {
+			failed = true;
+			console.error(`FAIL release guard: rendering ${label} repeats a value of the release in its message`);
+		} else {
+			console.log(`PASS release guard: ${label} is refused`);
+		}
+	}
+}
+
 // ARV-062: the Helmfile the release pipelines apply renders for every environment, installs the database before the
 // platform, and refuses production without a build number. Needs Helmfile 1.x (HELMFILE or on PATH); required in GitHub
 // Actions, skipped elsewhere.
@@ -2162,8 +2465,9 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 } else {
 	// Helmfile calls "helm": put the Helm this test uses first on its PATH.
 	const env = helm.includes(path.sep) ? { ...process.env, PATH: `${path.dirname(path.resolve(helm))}${path.delimiter}${process.env.PATH}` } : process.env;
-	const template = (environment, sets = []) => spawnSync(helmfile, ['-f', helmfileState, '-e', environment, ...sets, 'template', '--skip-deps', '--set', 'imageCredentials.password='],
-		{ encoding: 'utf8', shell: false, env, maxBuffer: 64 * 1024 * 1024 });
+	// ARV-092c: prd takes the site's signature source (PRD_SITE), as a site's own values file would.
+	const template = (environment, sets = []) => spawnSync(helmfile, ['-f', helmfileState, '-e', environment, ...sets, 'template', '--skip-deps', '--set', 'imageCredentials.password=',
+		...(environment === 'prd' ? ['--values', PRD_SITE] : [])], { encoding: 'utf8', shell: false, env, maxBuffer: 64 * 1024 * 1024 });
 	for (const [environment, sets, contextEnvironment] of [
 		['dev', [], 'k8s-dev'], ['demo', [], 'k8s-demo'], ['localk8s', [], 'k8s-dev'], ['prd', ['--state-values-set', 'buildNumber=main-20261001.1'], 'k8s-prd']
 	]) {
@@ -2190,12 +2494,14 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 		findings.push(...networkFindings(result.stdout, values, contextEnvironment, { enabled: tls }));
 		// ARV-091a: the log pseudonym key and the collector, required in prd by the release (state value logShipping).
 		findings.push(...logShippingFindings(parseAsKubernetes(result.stdout), logShippingOptions(values, contextEnvironment, tls)));
+		// ARV-092c: the malware scanner beside api-main (prd: the site's mirror, PRD_SITE).
+		findings.push(...uploadScanFindings(parseAsKubernetes(result.stdout), uploadScanOptions(values)));
 		if (findings.length) {
 			failed = true;
 			console.error(`FAIL helmfile -e ${environment}:\n  ${findings.join('\n  ')}`);
 		} else {
 			console.log(`PASS helmfile -e ${environment}: ${docs.length} objects, database and topics job included, TimescaleDB ${tls ? 'with TLS' : 'without TLS'}, ` +
-				`${tls ? 'the pods over TLS' : 'plain HTTP to the pods'}, the Ingresses' headers held and plain HTTP ${describeModes(docs)}, ${describeNetwork(result.stdout, values)}, ${describeLogShipping(values)}`);
+				`${tls ? 'the pods over TLS' : 'plain HTTP to the pods'}, the Ingresses' headers held and plain HTTP ${describeModes(docs)}, ${describeNetwork(result.stdout, values)}, ${describeLogShipping(values)}, ${describeUploadScan(values)}`);
 		}
 	}
 	// ARV-082a: prd refuses TimescaleDB without TLS.
@@ -2235,6 +2541,22 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 			console.log("PASS release guard: helmfile -e prd with logShipping false is refused, and so is the chart under it without a collector or without the key's Secret, and -e dev with logShipping true and neither");
 		}
 	}
+	// ARV-092c: prd refuses to render without the malware scan, in the Helmfile and, under it, in the chart; and without the site's
+	// signature source, which no file of the repository gives it.
+	{
+		const attempt = template('prd', ['--state-values-set', 'buildNumber=main-20261001.1', '--state-values-set', 'uploadScan=false']);
+		const overridden = template('prd', ['--state-values-set', 'buildNumber=main-20261001.1', '--set', 'uploadScan.enabled=false']);
+		const noSource = template('prd', ['--state-values-set', 'buildNumber=main-20261001.1', '--set', 'uploadScan.signatures.source=', '--set', 'uploadScan.signatures.mirrorUrl=',
+			'--set', 'uploadScan.signatures.mirrorCaSecretName=']);
+		const refused = (result, message) => result.status !== 0 && result.stderr.includes(message);
+		if (!refused(attempt, 'prd scans every upload for malware with clamd beside api-main') || !refused(overridden, 'k8s-prd scans every upload for malware') ||
+			!refused(noSource, "k8s-prd chooses how clamd's signatures arrive")) {
+			failed = true;
+			console.error(`FAIL release guard: helmfile -e prd with uploadScan false, with the chart's scan off or without a signature source must each fail for its own reason\n${attempt.stderr}${overridden.stderr}${noSource.stderr}`);
+		} else {
+			console.log('PASS release guard: helmfile -e prd with uploadScan false is refused, and so is the chart under it with the scan off or without the site\'s signature source');
+		}
+	}
 	// ARV-082b: prd refuses the pods without TLS.
 	{
 		const attempt = template('prd', ['--state-values-set', 'buildNumber=main-20261001.1', '--state-values-set', 'podTls=false']);
@@ -2262,8 +2584,15 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 				const spec = doc?.spec?.template?.spec ?? doc?.spec?.jobTemplate?.spec?.template?.spec;
 				return spec ? [...(spec.initContainers ?? []), ...(spec.containers ?? [])].map((container) => ({ name: `${doc.kind}/${doc.metadata?.name}`, image: String(container.image) })) : [];
 			}).filter(({ name }) => !/timescaledb/.test(name));
-			if (images.length < 9) findings.push(`expected the platform's 9 workloads, found ${images.length} images`);
-			for (const { name, image } of images) {
+			// ARV-092c: the scanner beside api-main is the chart's pinned ClamAV image (init, clamd and freshclam), never an Ariva one.
+			const scannerImage = `${CHART_SCANNER.repository}:${CHART_SCANNER.tag}@${CHART_SCANNER.digest}`;
+			const scanners = images.filter(({ image }) => image.split('@')[0].split(':')[0].endsWith('/clamav') || image.startsWith('clamav/'));
+			if (scanners.length !== 3 || scanners.some(({ name, image }) => name !== 'Deployment/api-main-deployment' || image !== scannerImage)) {
+				findings.push(`the scanner's images are ${scanners.map(({ name, image }) => `${name} ${image}`).join(', ') || 'none'}, not ${scannerImage} three times in api-main's pod`);
+			}
+			const arivaImages = images.filter((entry) => !scanners.includes(entry));
+			if (arivaImages.length < 9) findings.push(`expected the platform's 9 workloads, found ${arivaImages.length} images`);
+			for (const { name, image } of arivaImages) {
 				const match = image.match(/^ghcr\.io\/example\/ariva\/([a-z-]+):main-41@(sha256:[0-9a-f]{64})$/);
 				if (!match) findings.push(`${name}: ${image} is not ${repository}/<service>:main-41@sha256:<digest>`);
 				else if (match[2] !== digestOf(match[1])) findings.push(`${name}: ${image} carries another service's digest`);
@@ -2281,7 +2610,7 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 			failed = true;
 			console.error(`FAIL helmfile -e dev as release-dev:\n  ${findings.join('\n  ')}`);
 		} else {
-			console.log('PASS helmfile -e dev as release-dev: every image from GHCR pinned by its digest, no chart-owned pull secret, bad digests refused');
+			console.log('PASS helmfile -e dev as release-dev: every Ariva image from GHCR pinned by its digest, the scanner beside api-main the chart\'s pinned ClamAV, no chart-owned pull secret, bad digests refused');
 		}
 	}
 	if (template('prd').status === 0) {
@@ -2303,12 +2632,13 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 		const findings = [];
 		try {
 			stageHelm(staged, { version: '1.2.0', build: 'v1.2.0-57', digests: Object.fromEntries(services.map((service) => [service, digestOf(service)])) });
-			const offline = (environment, sets = []) => spawnSync(helmfile, ['-f', path.join(staged, 'helm', 'helmfile.yaml.gotmpl'), '-e', environment, ...sets, 'template', '--skip-deps', '--set', 'imageCredentials.password='],
-				{ encoding: 'utf8', shell: false, env, maxBuffer: 64 * 1024 * 1024 });
+			const offline = (environment, sets = [], site = environment === 'prd') => spawnSync(helmfile, ['-f', path.join(staged, 'helm', 'helmfile.yaml.gotmpl'), '-e', environment, ...sets, 'template', '--skip-deps',
+				'--set', 'imageCredentials.password=', ...(site ? ['--values', PRD_SITE] : [])], { encoding: 'utf8', shell: false, env, maxBuffer: 64 * 1024 * 1024 });
 			// The chart gives every Deployment a random rollme annotation (AMAN pattern); everything else must be equal.
 			const objects = (text) => new Map(parse(text).map((doc) => [`${doc.kind}/${doc.metadata?.name}`, JSON.stringify(doc).replace(/"rollme":"[^"]*"/g, '"rollme":"*"')]));
 			const same = ['--state-values-set', 'buildNumber=v1.2.0-57', '--set', `imageRepository=${mirror}/ariva`, '--set', 'releaseVersion=1.2.0',
-				'--set', `image.repository=${mirror}/timescale/timescaledb-ha`, ...services.flatMap((service) => ['--set', `imageDigests.${service}=${digestOf(service)}`])];
+				'--set', `image.repository=${mirror}/timescale/timescaledb-ha`, '--set', `uploadScan.image.repository=${mirror}/clamav/clamav`,
+				...services.flatMap((service) => ['--set', `imageDigests.${service}=${digestOf(service)}`])];
 			for (const environment of ['dev', 'demo', 'localk8s', 'prd']) {
 				const fromBundle = offline(environment, ['--state-values-set', `mirror=${mirror}`]);
 				const fromRepository = template(environment, same);
@@ -2327,12 +2657,16 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 					const spec = doc?.spec?.template?.spec ?? doc?.spec?.jobTemplate?.spec?.template?.spec;
 					return spec ? [...(spec.initContainers ?? []), ...(spec.containers ?? [])].map((container) => String(container.image)) : [];
 				});
+				const mirroredScanner = `${mirror}/clamav/clamav:${CHART_SCANNER.tag}@${CHART_SCANNER.digest}`;
 				for (const image of images) {
 					const ariva = image.match(/^registry\.example\.local:5000\/site\/ariva\/([a-z-]+):v1\.2\.0-57@(sha256:[0-9a-f]{64})$/);
-					if (ariva ? ariva[2] !== digestOf(ariva[1]) : !/^registry\.example\.local:5000\/site\/timescale\/timescaledb-ha:[^@]+@sha256:[0-9a-f]{64}$/.test(image)) {
+					if (ariva ? ariva[2] !== digestOf(ariva[1]) : !/^registry\.example\.local:5000\/site\/timescale\/timescaledb-ha:[^@]+@sha256:[0-9a-f]{64}$/.test(image) && image !== mirroredScanner) {
 						findings.push(`-e ${environment}: ${image} is not a mirror image pinned by the bundle's or the chart's digest`);
 					}
 				}
+				// ARV-092c: the scanner from the mirror under the chart's tag and digest, as the site installs it.
+				const bundleValues = mergedValues([{ dev: 'values-k8s-dev.yaml', demo: 'values-k8s-demo.yaml', localk8s: 'values-localk8s.yaml', prd: 'values-k8s-prd.yaml' }[environment]]);
+				findings.push(...uploadScanFindings(parseAsKubernetes(fromBundle.stdout), uploadScanOptions(bundleValues, { image: { repository: `${mirror}/clamav/clamav` } })).map((finding) => `-e ${environment}: ${finding}`));
 			}
 			const unset = offline('prd');
 			if (unset.status === 0 || !unset.stderr.includes("set the state value mirror")) findings.push('-e prd without a mirror rendered');
@@ -2349,6 +2683,11 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 			// ARV-091a: and without log shipping.
 			const withoutLogs = offline('prd', ['--state-values-set', `mirror=${mirror}`, '--state-values-set', 'logShipping=false']);
 			if (withoutLogs.status === 0 || !withoutLogs.stderr.includes("prd ships the hosts' logs")) findings.push('-e prd with logShipping false rendered');
+			// ARV-092c: and without the malware scan, or without the site's signature source.
+			const withoutScan = offline('prd', ['--state-values-set', `mirror=${mirror}`, '--state-values-set', 'uploadScan=false']);
+			if (withoutScan.status === 0 || !withoutScan.stderr.includes('prd scans every upload for malware')) findings.push('-e prd with uploadScan false rendered');
+			const withoutSource = offline('prd', ['--state-values-set', `mirror=${mirror}`], false);
+			if (withoutSource.status === 0 || !withoutSource.stderr.includes("k8s-prd chooses how clamd's signatures arrive")) findings.push('-e prd without the site\'s signature source rendered');
 			const site = path.join(staged, 'site.yaml');
 			// ARV-082a: production sends telemetry over TLS only, so the site's endpoint is https.
 			// ARV-082b: a site file that names the web pod's certificate and tries to turn pod TLS off.
@@ -2357,11 +2696,14 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 				// ARV-085: the collector's peers with its endpoint, and an attempt to turn the NetworkPolicies off.
 				'networkPolicies:\n  enabled: false\n  otlp:\n    to:\n      - ipBlock:\n          cidr: 10.60.0.0/24\n' +
 				// ARV-091a: the site's collector (the OTLP one above) and the key's Secret, and an attempt to drop the requirement.
-				'logging:\n  collector: otlp\n  required: false\n  pseudonymKeySecret:\n    name: site-log-pseudonym-key\n');
+				'logging:\n  collector: otlp\n  required: false\n  pseudonymKeySecret:\n    name: site-log-pseudonym-key\n' +
+				// ARV-092c: the site's signatures (a claim it keeps current, as a site without internet may), an attempt to turn the
+				// scan off and another scanner image.
+				`uploadScan:\n  enabled: false\n  image:\n    repository: other.example/clamav\n    tag: planted\n    digest: "${digestOf('planted')}"\n  signatures:\n    source: mounted\n    claimName: site-clamav-signatures\n`);
 			const database = path.join(staged, 'database.yaml');
 			// ARV-082a: a site file that tries to turn the database's TLS off in prd.
 			fs.writeFileSync(database, `persistence:\n  size: 77Gi\nimage:\n  tag: planted\n  digest: "${digestOf('planted')}"\ntls:\n  enabled: false\n`);
-			const withSite = offline('prd', ['--state-values-set', `mirror=${mirror}`, '--state-values-set', `siteValues=${site}`, '--state-values-set', `databaseValues=${database}`]);
+			const withSite = offline('prd', ['--state-values-set', `mirror=${mirror}`, '--state-values-set', `siteValues=${site}`, '--state-values-set', `databaseValues=${database}`], false);
 			if (withSite.status !== 0) findings.push(`-e prd with site values: template failed\n${withSite.stderr}`);
 			else {
 				if (!withSite.stdout.includes('https://otel.offline-site.local:4317')) findings.push('siteValues did not reach the platform release');
@@ -2370,10 +2712,13 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 				if (tlsFindings.length) findings.push(`a site databaseValues file turned the TimescaleDB TLS off in prd:\n    ${tlsFindings.join('\n    ')}`);
 				findings.push(...ingressHardeningFindings(parseAsKubernetes(withSite.stdout), { environment: 'k8s-prd' }).map((finding) => `-e prd with site values: ${finding}`));
 				// ARV-085: the NetworkPolicies stay on whatever the site file says, the collector's peers its own.
-				findings.push(...networkFindings(withSite.stdout, mergedValues(['values-k8s-prd.yaml', site, { podTls: { enabled: true } }]), 'k8s-prd', { enabled: true }).map((finding) => `-e prd with site values: ${finding}`));
+				findings.push(...networkFindings(withSite.stdout, mergedValues(['values-k8s-prd.yaml', site, { podTls: { enabled: true }, uploadScan: { enabled: true } }], { prdSite: false }), 'k8s-prd', { enabled: true }).map((finding) => `-e prd with site values: ${finding}`));
+				// ARV-092c: the scan stays on whatever the site file says, the claim its own, the scanner the bundle's.
+				findings.push(...uploadScanFindings(parseAsKubernetes(withSite.stdout), uploadScanOptions(mergedValues(['values-k8s-prd.yaml', site, { uploadScan: { enabled: true } }], { prdSite: false }),
+					{ image: { repository: `${mirror}/clamav/clamav`, tag: CHART_SCANNER.tag, digest: CHART_SCANNER.digest } })).map((finding) => `-e prd with site values: ${finding}`));
 				if (!parseAsKubernetes(withSite.stdout).some((doc) => doc?.kind === 'NetworkPolicy' && doc.metadata?.name === 'ariva-otlp-egress')) findings.push('a site values file did not open its collector');
 				// ARV-091a: the site's collector and Secret reach the five API hosts, required whatever the site file says.
-				findings.push(...logShippingFindings(parseAsKubernetes(withSite.stdout), logShippingOptions(mergedValues(['values-k8s-prd.yaml', site]), 'k8s-prd', true)).map((finding) => `-e prd with site values: ${finding}`));
+				findings.push(...logShippingFindings(parseAsKubernetes(withSite.stdout), logShippingOptions(mergedValues(['values-k8s-prd.yaml', site], { prdSite: false }), 'k8s-prd', true)).map((finding) => `-e prd with site values: ${finding}`));
 				if (!withSite.stdout.includes('name: "site-log-pseudonym-key"')) findings.push("a site values file did not name the log pseudonym key's Secret");
 				const podTlsSite = podTlsRender(withSite.stdout, { secretNames: { ...POD_TLS_SECRETS, web: 'site-web-tls' } });
 				if (podTlsSite.length) findings.push(`a site values file turned pod TLS off in prd or did not name the web certificate:\n    ${podTlsSite.join('\n    ')}`);
@@ -2402,7 +2747,7 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 			failed = true;
 			console.error(`FAIL offline bundle Helmfile:\n  ${findings.join('\n  ')}`);
 		} else {
-			console.log('PASS offline bundle Helmfile: the same objects as helmfile-k8s in every environment (the NetworkPolicies included), the Ingresses\' headers and plain HTTP held, every image from the mirror by digest, no render without a mirror or with a dry run\'s unpinned images, site values reach their release without moving an image or turning the database TLS, pod TLS, the NetworkPolicies or log shipping off in prd (but name the certificates, the collector and the log key\'s Secret), prd refused without either TLS, the NetworkPolicies or log shipping');
+			console.log('PASS offline bundle Helmfile: the same objects as helmfile-k8s in every environment (the NetworkPolicies included), the Ingresses\' headers and plain HTTP held, every image from the mirror by digest (ClamAV under the chart\'s pin), no render without a mirror or with a dry run\'s unpinned images, site values reach their release without moving an image or turning the database TLS, pod TLS, the NetworkPolicies, log shipping or the malware scan off in prd (but name the certificates, the collector, the log key\'s Secret and the signature source), prd refused without either TLS, the NetworkPolicies, log shipping, the malware scan or a signature source');
 		}
 	}
 }

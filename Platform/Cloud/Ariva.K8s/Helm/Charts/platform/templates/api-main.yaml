@@ -25,6 +25,28 @@ data:
   # Demo International Airport (ARV-019); the API refuses this outside vm-local, k8s-dev and k8s-demo
   Seed__DemoTopology: "true"
   {{- end }}
+  {{- if include "ariva-platform.uploadScan" . }}
+  # The malware scan (ARV-092b, ARV-092c): clamd beside this host in its pod, on the loopback only, so no upload crosses the network
+  MalwareScan__Host: "127.0.0.1"
+  MalwareScan__Port: "3310"
+  {{- end }}
+{{- if include "ariva-platform.uploadScan" . }}
+---
+#ConfigMap: the scanner's configuration (ARV-092c), mounted read-only by clamd and freshclam
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-main-clamav-configmap
+  labels:
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+data:
+  clamd.conf: |
+    {{- include "ariva-platform.clamdConf" . | trim | nindent 4 }}
+  {{- if include "ariva-platform.freshclam" . }}
+  freshclam.conf: |
+    {{- include "ariva-platform.freshclamConf" . | trim | nindent 4 }}
+  {{- end }}
+{{- end }}
 ---
 #Deployment
 apiVersion: apps/v1
@@ -54,6 +76,9 @@ spec:
     spec:
       # ARV-165: the host stops within its 50 s shutdown timeout (the bus 35 s, a stop during retries needing up to 25 s), then disposes and exits
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds | default 60 }}
+      # No container of this pod calls the Kubernetes API, and the scanner's containers (ARV-092c) are third-party code: none
+      # gets the service account token
+      automountServiceAccountToken: false
       imagePullSecrets:
         - name: dalilacr-secret
       volumes:
@@ -103,6 +128,9 @@ spec:
         - name: api-main-appsettings-volume
           secret:
             secretName: api-main-appsettings-secret
+        {{- if include "ariva-platform.uploadScan" . }}
+        {{- include "ariva-platform.uploadScanVolumes" . | nindent 8 }}
+        {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -111,6 +139,10 @@ spec:
         fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
+      {{- if include "ariva-platform.freshclam" . }}
+      initContainers:
+        {{- include "ariva-platform.uploadScanInitContainers" . | nindent 8 }}
+      {{- end }}
       containers:
         - name: api-main-container
           image: {{ include "ariva-platform.image" (list . "api-main") }}
@@ -199,6 +231,9 @@ spec:
             periodSeconds: 15
             failureThreshold: 8
             timeoutSeconds: 5
+        {{- if include "ariva-platform.uploadScan" . }}
+        {{- include "ariva-platform.uploadScanContainers" . | nindent 8 }}
+        {{- end }}
 ---
 #HorizontalPodAutoscaler
 apiVersion: autoscaling/v2
@@ -215,6 +250,26 @@ spec:
   minReplicas: {{ .Values.apiMainHpaMin | default 1 }}
   maxReplicas: {{ .Values.apiMainHpaMax | default 1 }}
   metrics:
+    {{- if and (include "ariva-platform.uploadScan" .) (semverCompare ">=1.27-0" .Capabilities.KubeVersion.Version) }}
+    # api-main's own container only (ARV-092c): clamd holds its signatures resident (about 1 GiB) and uses a whole core for
+    # each reload, which would otherwise read as load and scale the host out (ContainerResource: beta and on by default from
+    # Kubernetes 1.27, GA in 1.30). Below 1.27 the API server drops the metric and refuses the HPA, so the chart then keeps
+    # the pod's Resource metrics, which count clamd's memory: api-main scales out sooner there
+    - type: ContainerResource
+      containerResource:
+        name: cpu
+        container: api-main-container
+        target:
+          type: Utilization
+          averageUtilization: 60
+    - type: ContainerResource
+      containerResource:
+        name: memory
+        container: api-main-container
+        target:
+          type: Utilization
+          averageUtilization: 70
+    {{- else }}
     - type: Resource
       resource:
         name: cpu
@@ -227,6 +282,7 @@ spec:
         target:
           type: Utilization
           averageUtilization: 70
+    {{- end }}
 ---
 #Service
 apiVersion: v1

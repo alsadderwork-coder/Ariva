@@ -1,0 +1,15 @@
+# ARV-092c: a production site's choice of signature source on top of values-k8s-prd.yaml, which every site makes before its
+# first release (wiki/04 section 6.7; the chart refuses k8s-prd without one): the site's mirror over https with the site's CA,
+# and the mirror's peers for the NetworkPolicies. tests/chart-security.mjs adds it after values-k8s-prd.yaml to every render of
+# that file (and to the values the render is judged against), and to the Helmfile's prd; the guard cases clear it to prove the
+# refusals.
+uploadScan:
+  signatures:
+    source: mirror
+    mirrorUrl: https://clamav-mirror.site.example
+    mirrorCaSecretName: site-clamav-mirror-ca
+networkPolicies:
+  clamavMirror:
+    to:
+      - ipBlock:
+          cidr: 10.70.0.0/24

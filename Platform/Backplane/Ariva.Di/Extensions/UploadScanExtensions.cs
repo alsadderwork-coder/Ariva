@@ -12,7 +12,9 @@ namespace Ariva.Di.Extensions;
 /// The malware scan of uploads (ARV-092b), Ariva.Api.Main only: registered with the upload services
 /// (<see cref="AccountExtensions.AddArivaTokenIssuing"/>, <see cref="FlightExtensions.AddArivaFlightSchedules"/>), once
 /// whichever comes first. The settings (<c>MalwareScan</c>) are checked when the host starts, their stream limit against
-/// the largest upload this installation takes; k8s-prd does not start without a scanner.
+/// the largest upload this installation takes; k8s-prd does not start without a scanner. With a scanner configured, the
+/// staleness alarm of its signatures runs beside it (<see cref="ScannerSignatureMonitor"/> and its gauges,
+/// <see cref="UploadScanMetrics"/>, ARV-092c); without one, the start notice says what that means for uploads.
 /// </summary>
 public static class UploadScanExtensions
 {
@@ -39,7 +41,13 @@ public static class UploadScanExtensions
         services.TryAddSingleton<IMalwareScanner, ClamdScanner>();
         services.TryAddScoped<UploadScreening>();
         if (!settings.Configured)
+        {
             services.AddHostedService<UploadScanStartNotice>();
+            return services;
+        }
+
+        services.TryAddSingleton<UploadScanMetrics>();
+        services.AddHostedService<ScannerSignatureMonitor>();
         return services;
     }
 }

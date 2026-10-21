@@ -170,7 +170,8 @@ export const isServerCaWorkload = (id) => /^Deployment\/api-[a-z]+-deployment$/.
 
 function serverCaFindings(id, pod) {
 	const findings = [];
-	for (const container of pod.containers ?? []) {
+	// The host's own container: a third-party container beside it (the malware scanner, ARV-092c) never needs the servers' CAs.
+	for (const container of (pod.containers ?? []).filter((candidate) => DOTNET_IMAGES.has(imageName(candidate.image ?? '')))) {
 		const cid = `${id} container ${container.name}`;
 		for (const { label, path: mountPath } of SERVER_CA_MOUNTS) {
 			const mount = (container.volumeMounts ?? []).find((candidate) => candidate.mountPath === mountPath);
@@ -1532,7 +1533,9 @@ function routedApps(docs) {
  * - out: DNS (53 UDP and TCP) for every pod but the web pod; the database for the API hosts and the migration job; Kafka for
  *   the API hosts, the topics job and the simulator; Redis for the API hosts; the OTLP collector for the API hosts and the
  *   simulator; Loki for the API hosts; the SMTP relay for api-integration and api-cronz (the scheduled reports); each outbound
- *   endpoint for api-integration; the simulator to the three hosts and api-integration to the simulator.
+ *   endpoint for api-integration; the simulator to the three hosts and api-integration to the simulator; with the malware scan
+ *   on and its signatures from the public mirrors or the site's (ARV-092c), the signature mirror for api-main, whose freshclam
+ *   sidecar updates them (clamd answers api-main on the pod's loopback, which no NetworkPolicy filters).
  */
 export function expectedNetworkFlows(values, docs) {
 	const pods = podsOf(docs);
@@ -1564,6 +1567,7 @@ export function expectedNetworkFlows(values, docs) {
 	add(NETWORK.apiHosts, 'out', np.loki?.to, tcp(np.loki?.ports));
 	add(['api-cronz', 'api-integration'], 'out', np.smtp?.to, tcp(np.smtp?.ports));
 	for (const endpoint of np.outbound ?? []) add(['api-integration'], 'out', endpoint?.to, tcp(endpoint?.ports));
+	if (values.uploadScan?.enabled && ['public', 'mirror'].includes(values.uploadScan.source)) add(['api-main'], 'out', np.clamavMirror?.to, tcp(np.clamavMirror?.ports ?? [443]));
 	return flows;
 }
 
@@ -1661,7 +1665,8 @@ export function networkValues(values) {
 		simulation: values?.simulationEnabled === true,
 		mqtt: values?.mqtt?.enabled ? { port: values.mqtt.port ?? 8883 } : null,
 		networkPolicies: values?.networkPolicies ?? {},
-		ingressController: values?.ingressController ?? {}
+		ingressController: values?.ingressController ?? {},
+		uploadScan: { enabled: values?.uploadScan?.enabled === true, source: String(values?.uploadScan?.signatures?.source ?? '') }
 	};
 }
 
@@ -2070,5 +2075,341 @@ export function collectorCaFindings(docs, { otlpCaSecretName = '', lokiCaSecretN
 	}
 	const missing = API_HOSTS.filter((host) => !hosts.has(`${host}-deployment`));
 	if (missing.length) findings.push(`the render holds no ${missing.map((host) => `Deployment/${host}-deployment`).join(', ')}`);
+	return findings;
+}
+
+/**
+ * ARV-092c (ASVS 5.0 V5.4.3, V12.3.1; CWE-269): the malware scanner beside Ariva.Api.Main. clamd speaks plain TCP, so it runs in
+ * the api-main pod on its loopback (127.0.0.1:3310) and api-main's container is told that address; freshclam keeps the
+ * signatures current where they come from the public mirrors or the site's; with a mounted set the site does.
+ * - host, port: what api-main's container gets (MalwareScan__Host, MalwareScan__Port; ARV-092b refuses another host in k8s-prd).
+ * - user, group: the image's clamav user and group, which own the signature files it ships.
+ * - clamdResidentMiB: clamd's memory once loaded, measured with the pinned image (1.4.6: 990 MiB in its cgroup, 952 MiB resident,
+ *   the same through a reload with ConcurrentDatabaseReload no); clamd's memory request holds it. freshclamMiB: a whole download
+ *   measured within 128 MiB (TestDatabases no), so freshclam's limit is at least that.
+ * - livenessDelaySeconds: the least delay before clamd's liveness probe starts, past the signature load (measured with 1.4.6: 18 s
+ *   on one core, 43 s on half a core); livenessSeconds: the time without an answer (periodSeconds times failureThreshold) its liveness
+ *   probe must exceed (a reload answers nothing for about 20 s). No startup probe: Kubernetes counts a container whose startup
+ *   probe has not passed as not ready, so a restarting clamd would take api-main out of its Service.
+ * - limits: the clamd.conf settings that must equal the repository's (Platform/Cloud/clamav/clamd.conf, ARV-092b), among them
+ *   OfficialDatabaseOnly yes (no unsigned signature or allowlist file in the folder is loaded).
+ * - signaturesMiB: the signature files of ClamAV 1.4.6, compressed (.cvd, and .cld with CompressLocalDatabase yes) and unpacked.
+ *   The emptyDir holds the compressed set, and at the worst moment of an update the current set, the unpacked copy of the
+ *   database being rebuilt and its new file at once (main: 85 + 226 + 85, with daily and bytecode); its size limit, which evicts
+ *   the whole pod when it is passed, is at least twice that, for the databases' growth.
+ * - clamd-tmp holds at most MaxQueue streams of StreamMaxLength (each queued item may hold a whole upload) and MaxThreads scans'
+ *   unpacked content of MaxScanSize; its size limit, which evicts the whole pod when it is passed, is at least that sum.
+ * - mounts: what each scanner container mounts, and nothing else (no Secret but the mirror's CA in freshclam).
+ */
+export const UPLOAD_SCAN = {
+	host: '127.0.0.1',
+	port: '3310',
+	user: 100,
+	group: 101,
+	configMap: 'api-main-clamav-configmap',
+	hostContainer: 'api-main-container',
+	deployment: 'api-main-deployment',
+	hpa: 'api-main-hpa',
+	ping: ['clamdscan', '--config-file=/etc/clamav/clamd.conf', '--ping', '1'],
+	commands: {
+		clamd: ['clamd', '--foreground', '--config-file=/etc/clamav/clamd.conf'],
+		freshclam: ['freshclam', '--daemon', '--foreground', '--stdout', '--config-file=/etc/clamav/freshclam.conf'],
+		'clamav-signatures': ['cp', '-p', '/var/lib/clamav/main.cvd', '/var/lib/clamav/daily.cvd', '/var/lib/clamav/bytecode.cvd', '/signatures/']
+	},
+	clamdResidentMiB: 990,
+	freshclamMiB: 128,
+	signaturesMiB: { compressed: { main: 85, daily: 23, bytecode: 1 }, unpacked: { main: 226, daily: 83, bytecode: 2 } },
+	maxThreads: 2,
+	livenessDelaySeconds: 60,
+	livenessSeconds: 60,
+	limits: ['StreamMaxLength', 'MaxFileSize', 'MaxScanSize', 'AlertExceedsMax', 'OfficialDatabaseOnly'],
+	mirrorCaPath: '/etc/ariva/mirror-ca',
+	volumes: ['clamav-config', 'clamav-signatures', 'clamd-tmp', 'freshclam-tmp', 'clamav-init-tmp', 'clamav-mirror-ca']
+};
+
+/** A Kubernetes memory or CPU quantity in its base unit (bytes, cores), or NaN when it is not one. */
+export function quantity(value) {
+	const match = /^([0-9]+(?:\.[0-9]+)?)(m|k|M|G|T|Ki|Mi|Gi|Ti)?$/.exec(String(value ?? ''));
+	if (!match) return Number.NaN;
+	const scale = { m: 1e-3, k: 1e3, M: 1e6, G: 1e9, T: 1e12, Ki: 2 ** 10, Mi: 2 ** 20, Gi: 2 ** 30, Ti: 2 ** 40 }[match[2]] ?? 1;
+	return Number(match[1]) * scale;
+}
+
+/** The directives of a clamd.conf or freshclam.conf text: name to the list of its values, comments and blank lines left out. */
+export function clamavDirectives(text) {
+	const directives = new Map();
+	for (const raw of String(text ?? '').split(/\r?\n/)) {
+		const line = raw.trim();
+		if (!line || line.startsWith('#')) continue;
+		const [name, ...rest] = line.split(/\s+/);
+		directives.set(name, [...(directives.get(name) ?? []), rest.join(' ')]);
+	}
+	return directives;
+}
+
+/** A clamd.conf size (a number of bytes, or with K or M: kibibytes, mebibytes, as clamd reads it), in bytes; NaN otherwise. */
+export function clamavSize(value) {
+	const match = /^([0-9]+)([KkMm]?)$/.exec(String(value ?? ''));
+	if (!match) return Number.NaN;
+	return Number(match[1]) * ({ k: 2 ** 10, m: 2 ** 20 }[match[2].toLowerCase()] ?? 1);
+}
+
+/**
+ * ARV-092c: the most the signature emptyDir holds, in MiB: the compressed set, plus, for the worst database, the unpacked copy an
+ * update rebuilds and its new compressed file beside the current one (UPLOAD_SCAN.signaturesMiB).
+ */
+export function signatureVolumeWorstMiB({ compressed, unpacked } = UPLOAD_SCAN.signaturesMiB) {
+	const set = Object.values(compressed).reduce((a, b) => a + b, 0);
+	return set + Math.max(...Object.keys(compressed).map((name) => unpacked[name] + compressed[name]));
+}
+
+/** The mounts each scanner container must have, exactly (name, path, read-only), for the source and the mirror's CA. */
+function scannerMounts(source, mirrorCa) {
+	return {
+		clamd: [['clamav-config', '/etc/clamav', true], ['clamav-signatures', '/var/lib/clamav', true], ['clamd-tmp', '/tmp', false]],
+		freshclam: [['clamav-config', '/etc/clamav', true], ['clamav-signatures', '/var/lib/clamav', false], ['freshclam-tmp', '/tmp', false],
+			...(source === 'mirror' && mirrorCa ? [['clamav-mirror-ca', UPLOAD_SCAN.mirrorCaPath, true]] : [])],
+		'clamav-signatures': [['clamav-signatures', '/signatures', false], ['clamav-init-tmp', '/tmp', false]]
+	};
+}
+
+/**
+ * ARV-092c: the malware scanner of a render, against its values: { enabled, source (public, mirror or mounted), mirrorUrl,
+ * mirrorCaSecretName, claimName, checksPerDay, image ({ repository, tag, digest }), limits (the repository clamd.conf's
+ * directives, clamavDirectives) }. Read the manifests as Kubernetes does (YAML 1.1), for the file modes.
+ * - On: api-main's pod runs api-main's own container first, then clamd and, with public or mirror, freshclam, after an init
+ *   container that copies the image's signatures; with mounted neither. Each runs the values' image by digest, as the image's
+ *   clamav user (100:101), non-root, with a read-only root, no privilege escalation, every capability dropped, RuntimeDefault
+ *   seccomp, its fixed command, requests and limits of cpu and memory (clamd's memory request holds the measured resident set,
+ *   freshclam's limit a whole download), exactly its own mounts (signatures read-only in clamd), no port, no readiness probe,
+ *   no envFrom and no variable from a Secret (freshclam's CURL_CA_BUNDLE only, with the mirror's CA; never TZ: clamd stays in the
+ *   image's UTC, as api-main reads its signatures' build time as UTC). clamd has a liveness probe only, which PINGs it through
+ *   clamdscan, starts after the signature load and outlasts a reload; no readiness or startup probe, so a clamd that runs but
+ *   does not answer only refuses that pod's uploads (one that cannot start at all leaves the pod NotReady). The pod gets no service account token;
+ *   the volumes are the ConfigMap (read-only), the signatures (an emptyDir, or the claim read-only), emptyDirs with a size
+ *   limit for each /tmp, and the mirror's CA (ca.crt only, 0444, not optional). api-main's container gets MalwareScan__Host
+ *   127.0.0.1 and MalwareScan__Port 3310, and mounts none of the scanner's volumes. The ConfigMap's clamd.conf listens on
+ *   127.0.0.1:3310 only (no LocalSocket), in the foreground, without concurrent reloads, checks its signatures (SelfCheck) and
+ *   has the repository's limits; freshclam.conf (public or mirror only) names its mirror, tests no database by loading it,
+ *   notifies no clamd and checks checksPerDay times a day. The HPA reads api-main's own container only.
+ * - Off: no scanner anywhere, no ConfigMap, no MalwareScan__Host from the chart.
+ * - Always: no other workload (another host, the web pod, the simulator, the jobs) runs a ClamAV image or gets MalwareScan__*.
+ */
+export function uploadScanFindings(docs, { enabled, source = '', mirrorUrl = '', mirrorCaSecretName = '', claimName = '', checksPerDay = 12, image = {}, limits, containerMetrics = true }) {
+	const findings = [];
+	const pinned = `${image.repository}:${image.tag}@${image.digest}`;
+	const freshclam = enabled && ['public', 'mirror'].includes(source);
+	const isScanner = (container) => imageName(container.image ?? '') === 'clamav';
+	const workloads = docs.filter((doc) => doc && WORKLOADS.has(doc.kind));
+	const configMaps = docs.filter((doc) => doc?.kind === 'ConfigMap');
+	const deployment = workloads.find((doc) => doc.kind === 'Deployment' && doc.metadata?.name === UPLOAD_SCAN.deployment);
+	const scanVariables = (container) => {
+		const names = (container.env ?? []).map((variable) => String(variable.name ?? '')).filter((name) => /^MalwareScan__/i.test(name));
+		for (const from of container.envFrom ?? []) {
+			const map = configMaps.find((doc) => doc.metadata?.name === from.configMapRef?.name);
+			names.push(...Object.keys(map?.data ?? {}).filter((key) => /^MalwareScan__/i.test(key)));
+		}
+		return names;
+	};
+	// Every workload but api-main's own container: no scanner image, no scanner address.
+	for (const doc of workloads) {
+		const id = `${doc.kind}/${doc.metadata?.name ?? '?'}`;
+		const pod = podSpecOf(doc) ?? {};
+		const main = doc === deployment;
+		for (const container of [...(pod.initContainers ?? []), ...(pod.containers ?? [])]) {
+			const cid = `${id} container ${container.name}`;
+			if (!main && isScanner(container)) findings.push(`${cid}: runs ${container.image}; only api-main's pod runs the scanner, on its loopback (ARV-092c)`);
+			const variables = scanVariables(container);
+			if (variables.length && !(main && container.name === UPLOAD_SCAN.hostContainer)) {
+				findings.push(`${cid}: gets ${[...new Set(variables)].join(', ')}; only api-main's own container is told the scanner's address`);
+			}
+		}
+	}
+	const scanMap = configMaps.find((doc) => doc.metadata?.name === UPLOAD_SCAN.configMap);
+	if (!deployment) return [...findings, `the render holds no Deployment/${UPLOAD_SCAN.deployment}`];
+	const id = `Deployment/${UPLOAD_SCAN.deployment}`;
+	const pod = podSpecOf(deployment) ?? {};
+	const containers = pod.containers ?? [];
+	const inits = pod.initContainers ?? [];
+	const host = containers.find((container) => container.name === UPLOAD_SCAN.hostContainer);
+	const scanners = [...inits, ...containers].filter(isScanner);
+	const volumes = new Map((pod.volumes ?? []).map((volume) => [volume.name, volume]));
+	if (!enabled) {
+		if (scanners.length) findings.push(`${id}: runs ${scanners.map((container) => container.name).join(', ')} although uploadScan is off`);
+		if (scanMap) findings.push(`ConfigMap/${UPLOAD_SCAN.configMap}: rendered although uploadScan is off`);
+		if (host && envValueOf(host, docs, 'MalwareScan__Host') !== undefined) findings.push(`${id} container ${UPLOAD_SCAN.hostContainer}: the chart sets MalwareScan__Host although uploadScan is off`);
+		for (const name of UPLOAD_SCAN.volumes) if (volumes.has(name)) findings.push(`${id}: has the volume ${name} although uploadScan is off`);
+		return findings;
+	}
+	// The pod: api-main's container first, then the scanner's; no service account token in a pod that runs third-party code.
+	if (containers[0]?.name !== UPLOAD_SCAN.hostContainer) findings.push(`${id}: ${UPLOAD_SCAN.hostContainer} must be the pod's first container (the scanner's run beside it)`);
+	if (pod.automountServiceAccountToken !== false) findings.push(`${id}: must set automountServiceAccountToken false: the scanner's containers never get the service account token`);
+	const expected = { clamd: 'containers', ...(freshclam ? { freshclam: 'containers', 'clamav-signatures': 'initContainers' } : {}) };
+	for (const [name, list] of Object.entries(expected)) {
+		const found = (list === 'containers' ? containers : inits).filter((container) => container.name === name);
+		if (found.length !== 1) findings.push(`${id}: needs one ${name} in ${list}, not ${found.length}`);
+	}
+	for (const container of scanners) {
+		const where = inits.includes(container) ? 'initContainers' : 'containers';
+		if (expected[container.name] !== where) findings.push(`${id} container ${container.name}: is not a scanner container of source ${source} (${Object.keys(expected).join(', ')})`);
+	}
+	if (host) {
+		for (const [name, value] of [['MalwareScan__Host', UPLOAD_SCAN.host], ['MalwareScan__Port', UPLOAD_SCAN.port]]) {
+			const given = envValueOf(host, docs, name);
+			if (given !== value) findings.push(`${id} container ${UPLOAD_SCAN.hostContainer}: must set ${name} to ${value}, clamd on the pod's loopback, not ${given === null ? '(not a literal)' : given ?? 'nothing'}`);
+		}
+		const mounted = (host.volumeMounts ?? []).filter((mount) => UPLOAD_SCAN.volumes.includes(mount.name));
+		if (mounted.length) findings.push(`${id} container ${UPLOAD_SCAN.hostContainer}: mounts the scanner's ${mounted.map((mount) => mount.name).join(', ')}`);
+	} else findings.push(`${id}: has no container ${UPLOAD_SCAN.hostContainer}`);
+	const mounts = scannerMounts(source, mirrorCaSecretName);
+	for (const container of scanners.filter((candidate) => expected[candidate.name])) {
+		const cid = `${id} container ${container.name}`;
+		const sc = container.securityContext ?? {};
+		if (container.image !== pinned) findings.push(`${cid}: must run ${pinned} (uploadScan.image, pinned by digest), not ${container.image}`);
+		if (sc.runAsNonRoot !== true || sc.runAsUser !== UPLOAD_SCAN.user || sc.runAsGroup !== UPLOAD_SCAN.group) {
+			findings.push(`${cid}: must run as the image's clamav user, runAsNonRoot true, runAsUser ${UPLOAD_SCAN.user} and runAsGroup ${UPLOAD_SCAN.group}`);
+		}
+		if (sc.readOnlyRootFilesystem !== true) findings.push(`${cid}: readOnlyRootFilesystem must be true`);
+		if (sc.allowPrivilegeEscalation !== false || sc.privileged === true) findings.push(`${cid}: allowPrivilegeEscalation must be false and the container never privileged`);
+		if (!(sc.capabilities?.drop ?? []).includes('ALL') || (sc.capabilities?.add ?? []).length) findings.push(`${cid}: must drop every capability and add none`);
+		if ((sc.seccompProfile?.type ?? pod.securityContext?.seccompProfile?.type) !== 'RuntimeDefault') findings.push(`${cid}: seccompProfile must be RuntimeDefault`);
+		if (JSON.stringify(container.command ?? []) !== JSON.stringify(UPLOAD_SCAN.commands[container.name]) || (container.args ?? []).length) {
+			findings.push(`${cid}: must run ${UPLOAD_SCAN.commands[container.name].join(' ')}, and nothing else`);
+		}
+		const resources = container.resources ?? {};
+		const amount = (part, kind) => quantity(resources[part]?.[kind]);
+		if (['requests', 'limits'].some((part) => ['cpu', 'memory'].some((kind) => Number.isNaN(amount(part, kind))))) {
+			findings.push(`${cid}: needs requests and limits of cpu and memory`);
+		} else if (amount('limits', 'memory') < amount('requests', 'memory') || amount('limits', 'cpu') < amount('requests', 'cpu')) {
+			findings.push(`${cid}: its limits must not be below its requests`);
+		}
+		if (container.name === 'clamd' && !(amount('requests', 'memory') >= UPLOAD_SCAN.clamdResidentMiB * 2 ** 20)) {
+			findings.push(`${cid}: its memory request must hold the signatures clamd keeps loaded (${UPLOAD_SCAN.clamdResidentMiB} MiB measured)`);
+		}
+		if (container.name === 'freshclam' && !(amount('limits', 'memory') >= UPLOAD_SCAN.freshclamMiB * 2 ** 20)) {
+			findings.push(`${cid}: its memory limit must hold a whole download (${UPLOAD_SCAN.freshclamMiB} MiB measured)`);
+		}
+		const wanted = mounts[container.name].map(([name, mountPath, readOnly]) => `${name}:${mountPath}:${readOnly}`).sort();
+		const given = (container.volumeMounts ?? []).map((mount) => `${mount.name}:${mount.mountPath}:${mount.readOnly === true}${mount.subPath ? ':subPath' : ''}`).sort();
+		if (JSON.stringify(given) !== JSON.stringify(wanted)) findings.push(`${cid}: must mount exactly ${wanted.join(', ')} (name:path:read-only), not ${given.join(', ') || 'nothing'}`);
+		if ((container.ports ?? []).length) findings.push(`${cid}: declares a port; clamd listens on the pod's loopback only, which no Service selects`);
+		if (container.readinessProbe) findings.push(`${cid}: has a readiness probe; a scanner that does not answer must not take api-main out of its Service (uploads fail closed by themselves)`);
+		if ((container.envFrom ?? []).length) findings.push(`${cid}: has envFrom; the scanner's containers get no host's settings`);
+		const allowedEnv = container.name === 'freshclam' && source === 'mirror' && mirrorCaSecretName ? { CURL_CA_BUNDLE: `${UPLOAD_SCAN.mirrorCaPath}/ca.crt` } : {};
+		for (const variable of container.env ?? []) {
+			if (/^TZ$/i.test(variable.name ?? '')) findings.push(`${cid}: sets ${variable.name}; clamd reports its signatures' build time in its local time, which Ariva.Api.Main reads as UTC, so the scanner keeps the image's UTC`);
+			else if (variable.valueFrom || allowedEnv[variable.name] !== variable.value) findings.push(`${cid}: sets ${variable.name}; the scanner's containers get no variable${variable.valueFrom ? ' from a Secret or a field' : ' but the mirror CA\'s CURL_CA_BUNDLE'}`);
+		}
+		for (const [name, value] of Object.entries(allowedEnv)) {
+			if ((container.env ?? []).filter((variable) => variable.name === name && variable.value === value).length !== 1) findings.push(`${cid}: must set ${name} to ${value}, the mirror's CA, once`);
+		}
+		if (container.name === 'clamd') {
+			if (container.startupProbe) findings.push(`${cid}: has a startup probe; Kubernetes counts a container whose startup probe has not passed as not ready, so a restarting clamd would take api-main out of its Service`);
+			const liveness = container.livenessProbe;
+			if (!liveness || JSON.stringify(liveness.exec?.command ?? []) !== JSON.stringify(UPLOAD_SCAN.ping)) findings.push(`${cid}: needs a livenessProbe that runs ${UPLOAD_SCAN.ping.join(' ')}`);
+			else {
+				if (!(Number(liveness.initialDelaySeconds ?? 0) >= UPLOAD_SCAN.livenessDelaySeconds)) {
+					findings.push(`${cid}: its livenessProbe must wait at least ${UPLOAD_SCAN.livenessDelaySeconds} s (initialDelaySeconds), past the signature load on a slow node`);
+				}
+				if (!(Number(liveness.periodSeconds ?? 10) * Number(liveness.failureThreshold ?? 3) > UPLOAD_SCAN.livenessSeconds)) {
+					findings.push(`${cid}: its livenessProbe must tolerate more than ${UPLOAD_SCAN.livenessSeconds} s without an answer (periodSeconds times failureThreshold), longer than a reload`);
+				}
+			}
+		} else {
+			for (const probe of ['startupProbe', 'livenessProbe']) if (container[probe]) findings.push(`${cid}: has a ${probe}; only clamd is probed`);
+		}
+	}
+	// The volumes the scanner reads.
+	const volumeFindings = (name, check, what) => {
+		const volume = volumes.get(name);
+		if (!volume) findings.push(`${id}: needs the volume ${name} (${what})`);
+		else if (!check(volume)) findings.push(`${id}: the volume ${name} must be ${what}`);
+	};
+	volumeFindings('clamav-config', (v) => v.configMap?.name === UPLOAD_SCAN.configMap && Number.isInteger(v.configMap.defaultMode) && (v.configMap.defaultMode & 0o333) === 0,
+		`the ConfigMap ${UPLOAD_SCAN.configMap}, mode 0444`);
+	if (source === 'mounted') {
+		volumeFindings('clamav-signatures', (v) => v.persistentVolumeClaim?.claimName === claimName && v.persistentVolumeClaim.readOnly === true, `the claim ${claimName} (uploadScan.signatures.claimName), read-only`);
+	} else {
+		const worst = signatureVolumeWorstMiB();
+		volumeFindings('clamav-signatures', (v) => v.emptyDir && quantity(v.emptyDir.sizeLimit) >= 2 * worst * 2 ** 20,
+			`an emptyDir whose sizeLimit is at least twice the most an update holds there (${worst} MiB; passing it evicts the whole pod)`);
+	}
+	// clamd's scratch space: every queued item may hold a whole stream, every running scan what an archive unpacks to.
+	const clamdConf = clamavDirectives(scanMap?.data?.['clamd.conf']);
+	const setting = (name) => (clamdConf.get(name) ?? [])[0];
+	const threads = Number(setting('MaxThreads'));
+	const queue = Number(setting('MaxQueue'));
+	const scratch = queue * clamavSize(setting('StreamMaxLength')) + threads * clamavSize(setting('MaxScanSize'));
+	if (!(Number.isInteger(threads) && threads >= 1 && threads <= UPLOAD_SCAN.maxThreads) || !(Number.isInteger(queue) && queue >= threads)) {
+		findings.push(`ConfigMap/${UPLOAD_SCAN.configMap}: clamd.conf must set MaxThreads 1 to ${UPLOAD_SCAN.maxThreads} (Ariva.Api.Main scans one upload at a time per pod) and MaxQueue at least MaxThreads, not ${setting('MaxThreads') ?? 'the default 10'} and ${setting('MaxQueue') ?? 'the default 100'}`);
+	} else {
+		volumeFindings('clamd-tmp', (v) => v.emptyDir && quantity(v.emptyDir.sizeLimit) >= scratch,
+			`an emptyDir whose sizeLimit holds MaxQueue ${queue} times StreamMaxLength plus MaxThreads ${threads} times MaxScanSize (${Math.round(scratch / 2 ** 20)} MiB; passing it evicts the whole pod)`);
+	}
+	for (const name of ['freshclam-tmp', 'clamav-init-tmp']) {
+		if (freshclam) volumeFindings(name, (v) => v.emptyDir && quantity(v.emptyDir.sizeLimit) > 0, 'an emptyDir with a sizeLimit');
+		else if (volumes.has(name)) findings.push(`${id}: has the volume ${name} without freshclam`);
+	}
+	if (source === 'mirror' && mirrorCaSecretName) {
+		volumeFindings('clamav-mirror-ca', (v) => {
+			const items = v.secret?.items ?? [];
+			return v.secret?.secretName === mirrorCaSecretName && v.secret.optional !== true && Number.isInteger(v.secret.defaultMode) && (v.secret.defaultMode & 0o333) === 0 &&
+				items.length === 1 && items[0].key === 'ca.crt' && items[0].path === 'ca.crt';
+		}, `the Secret ${mirrorCaSecretName} (uploadScan.signatures.mirrorCaSecretName), ca.crt only, 0444, not optional`);
+	} else if (volumes.has('clamav-mirror-ca')) findings.push(`${id}: has the volume clamav-mirror-ca without a mirror CA`);
+	// The configuration.
+	if (!scanMap) findings.push(`the render holds no ConfigMap/${UPLOAD_SCAN.configMap}`);
+	else {
+		const mid = `ConfigMap/${UPLOAD_SCAN.configMap}`;
+		const clamd = clamavDirectives(scanMap.data?.['clamd.conf']);
+		const one = (directives, name, value, file, why) => {
+			const values = directives.get(name) ?? [];
+			if (values.length !== 1 || values[0] !== value) findings.push(`${mid}: ${file} must set ${name} ${value} once (${why}), not ${values.join(', ') || 'nothing'}`);
+		};
+		one(clamd, 'TCPAddr', UPLOAD_SCAN.host, 'clamd.conf', "the pod's loopback only");
+		one(clamd, 'TCPSocket', UPLOAD_SCAN.port, 'clamd.conf', 'the port api-main is given');
+		one(clamd, 'Foreground', 'yes', 'clamd.conf', 'the container is clamd');
+		one(clamd, 'ConcurrentDatabaseReload', 'no', 'clamd.conf', 'a reload never holds two signature sets');
+		one(clamd, 'DatabaseDirectory', '/var/lib/clamav', 'clamd.conf', 'the signature volume');
+		one(clamd, 'TemporaryDirectory', '/tmp', 'clamd.conf', 'its emptyDir');
+		one(clamd, 'OfficialDatabaseOnly', 'yes', 'clamd.conf', 'no unsigned signature or allowlist file in the folder is loaded');
+		const selfCheck = Number((clamd.get('SelfCheck') ?? [])[0]);
+		if ((clamd.get('SelfCheck') ?? []).length !== 1 || !(selfCheck >= 60 && selfCheck <= 3600)) findings.push(`${mid}: clamd.conf must set SelfCheck once, 60 to 3600 seconds, so clamd reloads changed signatures`);
+		for (const name of ['LocalSocket', 'User', 'LogFile', 'PidFile']) if (clamd.has(name)) findings.push(`${mid}: clamd.conf sets ${name}; clamd here runs non-root on TCP only and writes nothing but its scans' files in /tmp`);
+		for (const name of UPLOAD_SCAN.limits) {
+			const want = limits?.get(name) ?? [];
+			if (JSON.stringify(clamd.get(name) ?? []) !== JSON.stringify(want)) findings.push(`${mid}: clamd.conf must set ${name} ${want.join(', ') || '(missing from the repository file)'} as Platform/Cloud/clamav/clamd.conf does, not ${(clamd.get(name) ?? []).join(', ') || 'nothing'}`);
+		}
+		const fresh = scanMap.data?.['freshclam.conf'];
+		if (!freshclam) {
+			if (fresh !== undefined) findings.push(`${mid}: holds freshclam.conf although the signatures are mounted`);
+		} else if (fresh === undefined) findings.push(`${mid}: needs freshclam.conf with source ${source}`);
+		else {
+			const directives = clamavDirectives(fresh);
+			one(directives, 'DatabaseDirectory', '/var/lib/clamav', 'freshclam.conf', 'the signature volume');
+			one(directives, 'TestDatabases', 'no', 'freshclam.conf', 'testing loads a whole second set, about 1 GiB');
+			one(directives, 'CompressLocalDatabase', 'yes', 'freshclam.conf', 'a database rebuilt from updates stays compressed, so an update fits the signature emptyDir');
+			one(directives, 'Checks', String(checksPerDay), 'freshclam.conf', 'uploadScan.signatures.checksPerDay');
+			if (directives.has('NotifyClamd')) findings.push(`${mid}: freshclam.conf sets NotifyClamd; clamd's SelfCheck reloads the signatures`);
+			if (source === 'public') {
+				one(directives, 'DatabaseMirror', 'database.clamav.net', 'freshclam.conf', 'the ClamAV mirrors');
+				if (directives.has('PrivateMirror')) findings.push(`${mid}: freshclam.conf sets PrivateMirror with source public`);
+			} else {
+				one(directives, 'PrivateMirror', mirrorUrl, 'freshclam.conf', 'uploadScan.signatures.mirrorUrl');
+				if (directives.has('DatabaseMirror')) findings.push(`${mid}: freshclam.conf sets DatabaseMirror with source mirror`);
+			}
+		}
+	}
+	// The HPA scales on api-main's own container: clamd's resident signatures and reloads are not api-main's load.
+	// Below Kubernetes 1.27 (containerMetrics false) the API server drops a ContainerResource metric and refuses the HPA, so the
+	// chart keeps the pod's Resource metrics there.
+	const hpa = docs.find((doc) => doc?.kind === 'HorizontalPodAutoscaler' && doc.metadata?.name === UPLOAD_SCAN.hpa);
+	const metrics = hpa?.spec?.metrics ?? [];
+	if (containerMetrics && (!metrics.length || metrics.some((metric) => metric.type !== 'ContainerResource' || metric.containerResource?.container !== UPLOAD_SCAN.hostContainer))) {
+		findings.push(`HorizontalPodAutoscaler/${UPLOAD_SCAN.hpa}: must scale on ${UPLOAD_SCAN.hostContainer}'s own cpu and memory (ContainerResource), not the whole pod's, which counts clamd's resident signatures`);
+	}
+	if (!containerMetrics && (!metrics.length || metrics.some((metric) => metric.type !== 'Resource'))) {
+		findings.push(`HorizontalPodAutoscaler/${UPLOAD_SCAN.hpa}: below Kubernetes 1.27 must scale on the pod's Resource metrics, as the API server refuses a ContainerResource metric there`);
+	}
 	return findings;
 }

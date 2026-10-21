@@ -47,8 +47,9 @@ const VISUAL_BROWSER = path.join(ROOT, 'Platform', 'Testing', 'Ariva.E2E', 'scri
  * ARV-096: the third-party images run outside the chart and the Dockerfiles, and the version line each follows. Names are
  * compared without docker.io/ and library/ (redis is docker.io/library/redis). Each pin carries a tag of its line and a digest;
  * an image and tag pinned in several places has one digest everywhere, so a bump moves every copy. TimescaleDB is the chart's
- * tag and digest (Charts/timescaledb/values.yaml) everywhere, the AppHost and the integration tests included, and smtp4dev the
- * version of the E2E local tool (.config/dotnet-tools.json).
+ * tag and digest (Charts/timescaledb/values.yaml) everywhere, the AppHost and the integration tests included; ClamAV is the
+ * platform chart's (Charts/platform/values.yaml uploadScan.image, ARV-092c: the scanner beside api-main) everywhere; and smtp4dev
+ * the version of the E2E local tool (.config/dotnet-tools.json).
  * The ZAP image is pinned by digest only (the scan's digest predates every current tag) and follows ZAP's stable tag when
  * resolved; tests/zap/zap.spec.ts holds the same digest (checked in check()).
  */
@@ -62,8 +63,8 @@ const OUTSIDE_LINES = {
 	'rnwood/smtp4dev': { patterns: [/^3\.\d+\.\d+$/], hubName: 'rnwood/smtp4dev', tool: 'rnwood.smtp4dev' },
 	'semgrep/semgrep': { patterns: [/^1\.\d+\.\d+$/], hubName: 'semgrep/semgrep' },
 	// The malware scan's clamd (ARV-092b): compose, the AppHost, the E2E steps of ci.yml, security-zap.yml and Azure DevOps,
-	// and the integration tests, all on one digest.
-	'clamav/clamav': { patterns: [/^1\.\d+\.\d+$/], hubName: 'clamav/clamav' },
+	// and the integration tests, all on the platform chart's tag and digest (ARV-092c: the chart runs it beside api-main).
+	'clamav/clamav': { patterns: [/^1\.\d+\.\d+$/], hubName: 'clamav/clamav', scannerChart: true },
 	'ghcr.io/zaproxy/zaproxy': { patterns: [/^$/], ghcrName: 'zaproxy/zaproxy', resolveTag: 'stable' },
 	// The integration tests' broker and fault proxy (INTEGRATION_IMAGES); their TimescaleDB and Redis are the lines above.
 	'confluentinc/cp-kafka': { patterns: [/^7\.\d+\.\d+$/], hubName: 'confluentinc/cp-kafka' },
@@ -192,10 +193,11 @@ export function outsideImagePins(file, text, kind, names = []) {
 }
 
 /**
- * Problems for the pins of every outside file. chart: { tag, digest } of the TimescaleDB chart; tools: the local tool
- * manifest's versions by package id; tagOnly: AppHost resources allowed on a tag (APPHOST_TAG_ONLY).
+ * Problems for the pins of every outside file. chart: { tag, digest } of the TimescaleDB chart; scanner: { tag, digest } of the
+ * platform chart's ClamAV (ARV-092c); tools: the local tool manifest's versions by package id; tagOnly: AppHost resources allowed
+ * on a tag (APPHOST_TAG_ONLY).
  */
-export function outsideImageProblems(pins, { chart, tools, tagOnly = {} }) {
+export function outsideImageProblems(pins, { chart, scanner, tools, tagOnly = {} }) {
 	const problems = [];
 	const digests = new Map();
 	for (const pin of pins) {
@@ -218,6 +220,10 @@ export function outsideImageProblems(pins, { chart, tools, tagOnly = {} }) {
 		if (line.chart && chart) {
 			if (pin.tag !== chart.tag) problems.push(`${pin.where}: ${pin.ref} must use the chart's tag ${chart.tag} (Charts/timescaledb/values.yaml)`);
 			if (pin.digest !== chart.digest && !allowed) problems.push(`${pin.where}: ${pin.ref} must use the chart's digest ${chart.digest}`);
+		}
+		if (line.scannerChart && scanner) {
+			if (pin.tag !== scanner.tag) problems.push(`${pin.where}: ${pin.ref} must use the chart's tag ${scanner.tag} (Charts/platform/values.yaml uploadScan.image)`);
+			if (pin.digest !== scanner.digest && !allowed) problems.push(`${pin.where}: ${pin.ref} must use the chart's digest ${scanner.digest} (Charts/platform/values.yaml uploadScan.image)`);
 		}
 		if (line.tool && tools?.[line.tool] !== undefined && pin.tag !== tools[line.tool]) problems.push(`${pin.where}: ${pin.ref} must be ${tools[line.tool]}, the version of the local tool ${line.tool} (.config/dotnet-tools.json)`);
 		if (pin.digest) {
@@ -260,8 +266,9 @@ function integrationSources(relative = INTEGRATION_TESTS, out = []) {
 function selfTestOutsideImages() {
 	const d = (c) => `sha256:${c.repeat(64)}`;
 	const chart = { tag: 'pg17-ts2.30', digest: d('a') };
+	const scanner = { tag: '1.4.3', digest: d('5') };
 	const tools = { 'rnwood.smtp4dev': '3.15.0' };
-	const compose = `services:\n  db:\n    image: timescale/timescaledb-ha:pg17-ts2.30@${d('a')}\n  redis:\n    image: redis:8.2-alpine@${d('b')} # comment\n  mail:\n    image: rnwood/smtp4dev:3.15.0@${d('c')}\n`;
+	const compose = `services:\n  db:\n    image: timescale/timescaledb-ha:pg17-ts2.30@${d('a')}\n  redis:\n    image: redis:8.2-alpine@${d('b')} # comment\n  mail:\n    image: rnwood/smtp4dev:3.15.0@${d('c')}\n  clamav:\n    image: clamav/clamav:1.4.3@${d('5')}\n`;
 	const workflow = `jobs:\n  build:\n    strategy:\n      matrix:\n        include:\n          - image: api-main\n    container:\n      image: semgrep/semgrep:1.178.0@${d('d')}\n    services:\n      redis:\n        image: redis:8.2-alpine@${d('b')}\n    env:\n      ZAP_IMAGE: ghcr.io/zaproxy/zaproxy@${d('e')}\n    steps:\n      - run: docker run --rm -v "$PWD/x:/y" "$ZAP_IMAGE" zap-baseline.py\n      - run: docker run -d --name db -p 5433:5432 -e P="x-$(id)" timescale/timescaledb-ha:pg17-ts2.30@${d('a')}\n`;
 	const apphost = `var db = builder.AddPostgres("timescaledb", p)\n    .WithImage("timescale/timescaledb-ha", "pg17-ts2.30")\n    .WithImageSHA256("${'a'.repeat(64)}");\nvar kafka = builder.AddKafka("kafka", 1)\n    .WithImage("confluentinc/confluent-local", "8.2.0")\n    .WithImageSHA256("${'f'.repeat(64)}");\nvar smtp = builder.AddContainer("smtp4dev", "rnwood/smtp4dev", "3.15.0")\n    .WithImageSHA256("${'c'.repeat(64)}");\nvar p = builder.AddParameter("x", "y");\nbuilder.AddProject<Projects.X>("x");\n`;
 	// The integration tests' constants (INTEGRATION_IMAGES): TimescaleDB on the chart's digest, Redis on compose's, two images of their own.
@@ -274,16 +281,16 @@ function selfTestOutsideImages() {
 	const good = [...outsideImagePins('compose', compose, 'yaml'), ...outsideImagePins('ci', workflow, 'yaml'), ...outsideImagePins('apphost', apphost, 'apphost'),
 		...csharp.flatMap(([file, text, kind, names]) => outsideImagePins(file, text, kind, names))];
 	const failures = [];
-	const goodProblems = outsideImageProblems(good, { chart, tools, tagOnly: APPHOST_TAG_ONLY });
+	const goodProblems = outsideImageProblems(good, { chart, scanner, tools, tagOnly: APPHOST_TAG_ONLY });
 	if (goodProblems.length) failures.push(`good: expected clean, got ${goodProblems.join('; ')}`);
-	if (good.length !== 14) failures.push(`good: expected 14 pins, got ${good.length} (${good.map((pin) => pin.ref).join(', ')})`);
+	if (good.length !== 15) failures.push(`good: expected 15 pins, got ${good.length} (${good.map((pin) => pin.ref).join(', ')})`);
 	for (const [file, text] of csharp) {
 		const literals = integrationImageLiterals(file, text);
 		if (literals.length) failures.push(`good: expected no image literal in ${file}, got ${literals.join('; ')}`);
 	}
 	const bad = (name, files, expected) => {
 		const pins = files.flatMap(([file, text, kind, names]) => outsideImagePins(file, text, kind, names));
-		const found = outsideImageProblems(pins, { chart, tools, tagOnly: APPHOST_TAG_ONLY }).join('\n');
+		const found = outsideImageProblems(pins, { chart, scanner, tools, tagOnly: APPHOST_TAG_ONLY }).join('\n');
 		for (const fragment of expected) if (!found.includes(fragment)) failures.push(`${name}: did not report "${fragment}" (got: ${found || 'nothing'})`);
 	};
 	bad('no digest in compose', [['compose', compose.replace(`redis:8.2-alpine@${d('b')}`, 'redis:8.2-alpine'), 'yaml']], ['redis:8.2-alpine must be pinned by digest']);
@@ -291,6 +298,11 @@ function selfTestOutsideImages() {
 	bad('two digests for one tag', [['compose', compose, 'yaml'], ['ci', workflow.replace(`redis:8.2-alpine@${d('b')}`, `redis:8.2-alpine@${d('9')}`), 'yaml']], ['redis:8.2-alpine is pinned to 2 digests']);
 	bad('an unknown image', [['ci', `jobs:\n  x:\n    container:\n      image: someone/tool:1.0@${d('1')}\n`, 'yaml']], ['someone/tool is not a known image line']);
 	bad('TimescaleDB off the chart', [['compose', compose.replace(`pg17-ts2.30@${d('a')}`, `pg17-ts2.31@${d('2')}`), 'yaml']], ["must use the chart's tag pg17-ts2.30", "must use the chart's digest"]);
+	// ARV-092c: every clamd outside the chart (compose, the AppHost, CI, the integration tests) runs the chart's ClamAV.
+	bad('ClamAV off the chart', [['compose', compose.replace(`clamav/clamav:1.4.3@${d('5')}`, `clamav/clamav:1.4.4@${d('6')}`), 'yaml']],
+		["clamav/clamav:1.4.4@sha256:6666666666666666666666666666666666666666666666666666666666666666 must use the chart's tag 1.4.3 (Charts/platform/values.yaml uploadScan.image)", "must use the chart's digest sha256:5555"]);
+	bad('ClamAV on the chart\'s tag with another digest', [['ci', `jobs:\n  e2e:\n    steps:\n      - run: docker run -d --name e2e-clamd clamav/clamav:1.4.3@${d('7')}\n`, 'yaml']],
+		["must use the chart's digest sha256:5555"]);
 	bad('docker run without a digest', [['ado', '      - script: |\n          docker run -d --name db -p 5433:5432 -e P="x" timescale/timescaledb-ha:pg17-ts2.30\n', 'yaml']], ['timescale/timescaledb-ha:pg17-ts2.30 must be pinned by digest']);
 	bad('smtp4dev off the local tool', [['compose', compose.replace('rnwood/smtp4dev:3.15.0', 'rnwood/smtp4dev:3.16.0'), 'yaml']], ['must be 3.15.0, the version of the local tool rnwood.smtp4dev']);
 	bad('AppHost integration on its default image', [['apphost', 'var redis = builder.AddRedis("redis", 1, password);\n', 'apphost']], ['redis runs its integration\'s default image']);
@@ -832,6 +844,16 @@ function check() {
 		}
 		if (!/^sha256:[0-9a-f]{64}$/.test(field('digest') ?? '')) problems.push('Charts/timescaledb/values.yaml: image.digest must be a sha256 digest');
 	}
+	// ARV-092c: the scanner beside api-main runs the ClamAV image docker-compose.dev.yml, the AppHost and CI run, pinned by digest
+	// (every other copy is held to the chart's tag and digest below).
+	const scanner = chartScanner();
+	if (scanner === null) problems.push('Charts/platform/values.yaml: no uploadScan.image block with repository, tag and digest');
+	else {
+		if (scanner.repository !== 'clamav/clamav' || !OUTSIDE_LINES['clamav/clamav'].patterns.some((pattern) => pattern.test(scanner.tag))) {
+			problems.push(`Charts/platform/values.yaml: uploadScan.image ${scanner.repository}:${scanner.tag} must be clamav/clamav on a tag of its line (${OUTSIDE_LINES['clamav/clamav'].patterns.join(' or ')})`);
+		}
+		if (!/^sha256:[0-9a-f]{64}$/.test(scanner.digest ?? '')) problems.push('Charts/platform/values.yaml: uploadScan.image.digest must be a sha256 digest');
+	}
 	// ARV-063: the dynamic scan's images. ZAP is pinned by digest in the scan and in its workflow, the same in both; the web
 	// app is scanned under the nginx image its Dockerfile builds on.
 	const zapSpec = path.join(ROOT, 'Platform', 'Testing', 'Ariva.E2E', 'tests', 'zap', 'zap.spec.ts');
@@ -848,7 +870,7 @@ function check() {
 	// ARV-096: the third-party images run outside the chart, pinned by tag and digest with one digest per tag (OUTSIDE_LINES), the
 	// integration tests' constants included (INTEGRATION_IMAGES), and no image named by a literal in the integration tests.
 	const pins = outsidePins();
-	for (const problem of outsideImageProblems(pins, { chart: chartDatabase(), tools: toolVersions(), tagOnly: APPHOST_TAG_ONLY })) problems.push(problem);
+	for (const problem of outsideImageProblems(pins, { chart: chartDatabase(), scanner: scanner ?? undefined, tools: toolVersions(), tagOnly: APPHOST_TAG_ONLY })) problems.push(problem);
 	for (const file of integrationSources()) {
 		for (const problem of integrationImageLiterals(file.split(path.sep).join('/'), fs.readFileSync(path.join(ROOT, file), 'utf8'))) problems.push(problem);
 	}
@@ -869,6 +891,22 @@ function chartDatabase() {
 	const values = fs.readFileSync(file, 'utf8');
 	const field = (name) => values.match(new RegExp(`^\\s+${name}:\\s*["']?([^\\s"']+)`, 'm'))?.[1];
 	return { tag: field('tag'), digest: field('digest') };
+}
+
+/** ARV-092c: the platform chart's ClamAV image (uploadScan.image): repository, tag and digest, the pin every other copy follows (null without it). */
+function chartScanner() {
+	const file = path.join(ROOT, 'Platform', 'Cloud', 'Ariva.K8s', 'Helm', 'Charts', 'platform', 'values.yaml');
+	if (!fs.existsSync(file)) return null;
+	const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
+	const start = lines.indexOf('uploadScan:');
+	if (start === -1) return null;
+	const end = lines.findIndex((line, index) => index > start && /^\S/.test(line));
+	const block = lines.slice(start + 1, end === -1 ? undefined : end);
+	const image = block.indexOf('  image:');
+	if (image === -1) return null;
+	const field = (offset, name) => block[image + offset]?.match(new RegExp(`^    ${name}:\\s*"?([^"\\s]+)"?\\s*$`))?.[1];
+	const found = { repository: field(1, 'repository'), tag: field(2, 'tag'), digest: field(3, 'digest') };
+	return Object.values(found).every(Boolean) ? found : null;
 }
 
 /** The versions of the local .NET tools (.config/dotnet-tools.json) by package id. */
@@ -916,8 +954,8 @@ async function tagsFor(image) {
  * ARV-096: the current digest of each image and tag pinned outside the chart, from Docker Hub's tags API (no pull, so no pull
  * rate limit) or the manifest of its tag on ghcr.io (Toxiproxy; ZAP's stable tag). With write, every copy of an old digest moves
  * to the new one: compose, the workflows, Azure DevOps, the AppHost, the integration tests' constants, the scan (zap.spec.ts)
- * and, for TimescaleDB, the chart, so the check keeps holding them to one digest. The tags themselves stay (they are the lines
- * the team chose).
+ * and, for TimescaleDB and ClamAV, the charts, so the check keeps holding them to one digest. The tags themselves stay (they are
+ * the lines the team chose).
  */
 async function resolveOutside(write) {
 	const pins = outsidePins();
@@ -951,7 +989,8 @@ async function resolveOutside(write) {
 		for (const old of group.digests) if (old !== digest) moves.push([old.slice('sha256:'.length), digest.slice('sha256:'.length)]);
 	}
 	if (!write || !moves.length) return;
-	const targets = [...outsideFiles().map(([file]) => file), path.join('Platform', 'Cloud', 'Ariva.K8s', 'Helm', 'Charts', 'timescaledb', 'values.yaml'), path.join('Platform', 'Testing', 'Ariva.E2E', 'tests', 'zap', 'zap.spec.ts')];
+	const targets = [...outsideFiles().map(([file]) => file), path.join('Platform', 'Cloud', 'Ariva.K8s', 'Helm', 'Charts', 'timescaledb', 'values.yaml'),
+		path.join('Platform', 'Cloud', 'Ariva.K8s', 'Helm', 'Charts', 'platform', 'values.yaml'), path.join('Platform', 'Testing', 'Ariva.E2E', 'tests', 'zap', 'zap.spec.ts')];
 	for (const file of targets.filter((target) => fs.existsSync(path.join(ROOT, target)))) {
 		const text = fs.readFileSync(path.join(ROOT, file), 'utf8');
 		const next = moves.reduce((current, [from, to]) => current.split(from).join(to), text);

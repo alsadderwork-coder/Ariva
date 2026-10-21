@@ -108,7 +108,7 @@ jobs:
       # ARV-092b: Ariva.Api.Main scans every upload with clamd, as in ci.yml's e2e job (a step, since a service cannot mount the
       # repository's clamd.conf); it loads while the dependencies install.
       - name: Start clamd (malware scan of uploads)
-        run: docker run -d --name ariva-zap-clamd -p 127.0.0.1:3310:3310 -e CLAMAV_NO_FRESHCLAMD=true -v "$GITHUB_WORKSPACE/Platform/Cloud/clamav/clamd.conf:/etc/clamav/clamd.conf:ro" clamav/clamav:1.4.3@sha256:75fb5fd95fcbe1d7e6d240c369c1572b686ee2c95949d1042b5148de8eddebb4
+        run: docker run -d --name ariva-zap-clamd -p 127.0.0.1:3310:3310 -e CLAMAV_NO_FRESHCLAMD=true -v "$GITHUB_WORKSPACE/Platform/Cloud/clamav/clamd.conf:/etc/clamav/clamd.conf:ro" clamav/clamav:1.4.6@sha256:3bba6dd5ac6663d55b80f86a3126e146612d93b593cc2617188d13f637d91260
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: '10.0.x'

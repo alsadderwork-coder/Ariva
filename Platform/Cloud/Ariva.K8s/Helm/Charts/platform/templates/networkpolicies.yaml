@@ -94,6 +94,10 @@ spec:
 {{- if $simulation }}{{ $kafkaClients = append $kafkaClients "simulation" }}{{ end }}
 {{- $telemetry := $apiHosts }}
 {{- if $simulation }}{{ $telemetry = append $telemetry "simulation" }}{{ end }}
+{{- /* ARV-092c: api-main's freshclam to the signature mirror, with source public or mirror only (mounted has no freshclam). */ -}}
+{{- $mirror := $np.clamavMirror | default dict }}
+{{- $mirrorPeers := list }}
+{{- if include "ariva-platform.freshclam" . }}{{ $mirrorPeers = $mirror.to | default list }}{{ end }}
 {{- range $egress := list
   (dict "name" "ariva-dns-egress" "comment" "DNS (kube-dns) for every pod that resolves names; the web pod resolves none" "apps" $resolvers "to" $np.dns.to "dns" true)
   (dict "name" "ariva-database-egress" "comment" "PostgreSQL for the API hosts and the migration job, firewall matrix row 17" "apps" (append $apiHosts "database-migration") "to" $np.database.to "ports" $np.database.ports)
@@ -101,7 +105,8 @@ spec:
   (dict "name" "ariva-redis-egress" "comment" "Redis for the API hosts, row 18" "apps" $apiHosts "to" $np.redis.to "ports" $np.redis.ports)
   (dict "name" "ariva-otlp-egress" "comment" "The OTLP collector for the API hosts and the simulator, row 19" "apps" $telemetry "to" $np.otlp.to "ports" $np.otlp.ports)
   (dict "name" "ariva-loki-egress" "comment" "Loki for the API hosts, Loki:Uri" "apps" $apiHosts "to" $np.loki.to "ports" $np.loki.ports)
-  (dict "name" "ariva-smtp-egress" "comment" "The SMTP relay for the alert email of api-integration and the scheduled reports of api-cronz, row 15" "apps" (list "api-cronz" "api-integration") "to" $np.smtp.to "ports" $np.smtp.ports) }}
+  (dict "name" "ariva-smtp-egress" "comment" "The SMTP relay for the alert email of api-integration and the scheduled reports of api-cronz, row 15" "apps" (list "api-cronz" "api-integration") "to" $np.smtp.to "ports" $np.smtp.ports)
+  (dict "name" "ariva-clamav-mirror-egress" "comment" "The signature mirror for the freshclam sidecar of api-main (ARV-092c), row 27" "apps" (list "api-main") "to" $mirrorPeers "ports" ($mirror.ports | default (list 443))) }}
 {{- if $egress.to }}
 ---
 #NetworkPolicy: {{ $egress.comment }} (ARV-085).

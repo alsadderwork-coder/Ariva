@@ -25,6 +25,78 @@ fileStorage:
   storageClassName: ""   # empty uses the cluster default storage class
   size: 2Gi
   accessMode: ReadWriteOnce
+
+# Malware scan of uploads (ARV-092c; wiki/04 section 6.7, wiki/13a section 4). Ariva.Api.Main scans every upload with clamd
+# before it stores or imports it (ARV-092b) and refuses uploads outside vm-local while no scanner answers. clamd speaks plain
+# TCP, so it runs beside api-main in each api-main pod, listening on 127.0.0.1:3310 only, and api-main gets MalwareScan__Host
+# 127.0.0.1 and MalwareScan__Port 3310: no upload crosses the network (ASVS 5.0 V12.3.1). Each api-main replica holds its own
+# copy of the signatures in memory, about 1 GiB (clamd's resources below); with ConcurrentDatabaseReload no a reload frees the
+# old set before it loads the new one, so the peak stays about 1 GiB.
+# - enabled: true in every environment; k8s-prd, and any release with logging.required (the Helmfiles' prd, which also set
+#   enabled), refuse false: a k8s-prd api-main does not start without a scanner on its pod's loopback.
+# - image: clamav/clamav, pinned by tag and digest, the image docker-compose.dev.yml, the AppHost and CI run (scripts/base-images.mjs
+#   holds them to one digest); the offline bundle's Helmfile points the repository at the site's mirror.
+# - signatures.source: how clamd's signatures arrive; values-k8s-prd.yaml leaves it empty and the chart refuses the release
+#   until the site chooses:
+#   - public: a freshclam sidecar updates them from the ClamAV mirrors (database.clamav.net over https; dev and demo). With
+#     networkPolicies on, networkPolicies.clamavMirror gives the mirrors' peers.
+#   - mirror: a freshclam sidecar updates them from the site's mirror, mirrorUrl (an https:// URL, no credentials; http:// is
+#     taken outside production only, as k8s-prd and logging.required encrypt every connection; freshclam's PrivateMirror). The
+#     mirror is trusted: whoever serves it decides what clamd knows. mirrorCaSecretName names a Secret whose key ca.crt is the
+#     CA the mirror's certificate chains to (https only), given to freshclam as CURL_CA_BUNDLE, which replaces the image's CA
+#     bundle file; libcurl would still read hashed CA files in /etc/ssl/certs, of which the pinned image has none (checked with
+#     1.4.6: a mirror signed by another CA is refused), so freshclam then trusts that CA alone; check again when the image
+#     changes. Empty: the image's public roots. With networkPolicies on, networkPolicies.clamavMirror gives the mirror's peers.
+#   - mounted: no freshclam; clamd reads the signatures from claimName, a PersistentVolumeClaim the site keeps current
+#     (ReadOnlyMany or ReadWriteMany, mounted read-only; main, daily and bytecode, .cvd or .cld, readable by uid 100, and nothing
+#     else: whoever can write the claim decides the verdicts, as an ignore list (.ign2) there is honoured even with
+#     OfficialDatabaseOnly yes, which refuses unsigned signature and allowlist files).
+#   With public and mirror, an init container first copies the image's own snapshot into the signature volume, so clamd answers
+#   about 20 seconds after it starts while freshclam catches up (the signature emptyDir, 1Gi, holds about 110 MiB, and about
+#   420 MiB at the worst moment of an update); clamd checks the files every 10 minutes (SelfCheck) and reloads
+#   them when they change. checksPerDay is how often freshclam asks (1 to 24; ClamAV asks for at most one check an hour).
+# - clamd, freshclam: each container's resources.
+# The scanner's containers are ordinary containers of the pod, not native sidecars: at a pod's stop clamd receives its SIGTERM
+# with api-main, so an upload caught in api-main's drain (up to 50 s, ARV-165) answers 503, fail closed, and is retried. clamd has
+# a liveness probe only and no readiness or startup probe, so a clamd that runs but is unwell (a reload, or a liveness restart
+# that succeeds) leaves api-main in its Service, and uploads answer 503 meanwhile. A clamd that cannot start (a damaged mounted
+# signature set, signatures that outgrow the memory limit at load) takes its pod out of the Service: Kubernetes counts a
+# container that is not running as not ready. Over the size limit of the signature emptyDir or clamd's /tmp (1536Mi: MaxQueue 4
+# streams of 105M and MaxThreads 2 scans of 400M), the kubelet evicts the whole api-main pod.
+# The other hosts, the web pod and the jobs run no scanner. Each api-main checks its scanner's signatures every 10 minutes
+# (security event 9133 past MalwareScan:MaxSignatureAgeHours) and exports their age; the monitoring rules scannerSignaturesStale
+# and scannerNotAnswering (below) alarm on it.
+uploadScan:
+  enabled: true
+  image:
+    repository: clamav/clamav
+    tag: "1.4.6"
+    digest: sha256:3bba6dd5ac6663d55b80f86a3126e146612d93b593cc2617188d13f637d91260
+  signatures:
+    source: public
+    mirrorUrl: ""
+    mirrorCaSecretName: ""
+    claimName: ""
+    checksPerDay: 12
+  # Measured with the pinned image (1.4.6, 3,628,169 signatures): 990 MiB once loaded (952 MiB resident), 18 s to load on one
+  # core (43 s on half a core), the same peak through a reload; a 100 MiB upload is written whole to its /tmp before the scan.
+  clamd:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 1200Mi
+      limits:
+        cpu: 1000m
+        memory: 1600Mi
+  # A whole download fits in 128Mi (TestDatabases no: freshclam checks each file's signature but does not load the set).
+  freshclam:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
 domain: dalilhub.tech
 # TLS certificate secret for every ingress host (created out of band, for example by cert-manager)
 tlsSecretName: ariva-tls
@@ -133,7 +205,8 @@ ingressController:
 #   for the API hosts, the topics job and the simulator (the AMAN feed emulator); Redis for the API hosts; the OTLP collector
 #   for the API hosts and the simulator; Loki for the API hosts; the SMTP relay for api-integration (alert email) and
 #   api-cronz (the scheduled reports, ARV-060); the outbound endpoints (AODB, immigration, AMAN's API, alert gateways) for
-#   api-integration only.
+#   api-integration only; the signature mirror for api-main's freshclam (ARV-092c, uploadScan.signatures.source public or
+#   mirror). clamd answers api-main on the pod's loopback, which no NetworkPolicy filters.
 # - the kubelet's probes need no rule: they come from the pod's own node, and a NetworkPolicy does not block a pod's resident
 #   node (Kubernetes lists it among what network policies cannot do). Where the CNI filters host traffic anyway (a host
 #   firewall), add a NetworkPolicy of the site's own for the nodes' addresses to the probe ports.
@@ -190,6 +263,13 @@ networkPolicies:
   smtp:
     to: []
     ports: [587, 465]
+  # The signature mirror of api-main's freshclam sidecar (ARV-092c; uploadScan.signatures.source public or mirror, required
+  # with it): the CIDRs the ClamAV mirrors (database.clamav.net) or the site's mirror resolve to, and its port (443 for https,
+  # 80 or the site's port for http). Nothing with source mounted. The rule is the api-main pod's: its other containers could
+  # reach these peers too.
+  clamavMirror:
+    to: []
+    ports: [443]
   # The outbound endpoints of api-integration (ARV-045, the OutboundEndpoint records): AODB, immigration, AMAN's API, the SMS
   # gateway and the operations centre's webhooks. One entry each, a name (a DNS label), its peers (the CIDRs the endpoint's
   # addresses resolve to) and its ports, for example
@@ -399,6 +479,12 @@ monitoring:
     consumedTopicMissing: { enabled: true, minutes: 5, severity: warning }
     # A consumer whose topic exists but whose connect keeps failing, for the whole window.
     consumerUnconnected: { enabled: true, minutes: 5, severity: warning }
+    # The malware scanner beside api-main (ARV-092c): the oldest signatures of its pods built more than maxAgeHours ago for the
+    # whole window (ariva.uploads.scanner.signature_age; keep maxAgeHours equal to the hosts' MalwareScan:MaxSignatureAgeHours,
+    # 48 by default, whose security event 9133 marks the same), and a scanner that has not answered its signature check (every
+    # 10 minutes, MalwareScan:SignatureCheckMinutes) for the whole window, when its pod refuses every upload.
+    scannerSignaturesStale: { enabled: true, minutes: 15, maxAgeHours: 48, severity: warning }
+    scannerNotAnswering: { enabled: true, minutes: 20, severity: critical }
 
 # Registry credentials for dalilacr-secret. Leave the password empty to skip rendering the secret
 # (for example when it is created out of band). The release pipeline passes these with set flags.

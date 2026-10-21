@@ -11,7 +11,11 @@ namespace Ariva.UnitTests.Setup;
 /// the length-prefixed chunks up to the zero-length end mark and records each session (the command, every chunk's
 /// length, the bytes and whether the end mark came), then answers as <see cref="Mode"/> says. <see cref="StreamMaxLength"/>
 /// plays clamd's own limit: past it the answer is clamd's size limit error, after the stream is read whole. Also answers
-/// <c>zPING</c> with <c>PONG</c>. Linked into Ariva.IntegrationTests for the upload services' tests.
+/// <c>zPING</c> with <c>PONG</c>, and <c>zVERSION</c> (ARV-092c) with <see cref="VersionReply"/> as <see cref="Mode"/> allows
+/// (<see cref="Behaviour.Silent"/>, <see cref="Behaviour.Reset"/>, <see cref="Behaviour.Overlong"/> and <see cref="Behaviour.Delay"/>
+/// as for a scan; any other mode answers), counted in <see cref="VersionQueries"/> and not in <see cref="Connections"/> or
+/// <see cref="Sessions"/>, so the signature check of a host never shows as a scan. Linked into Ariva.IntegrationTests for the
+/// upload services' tests.
 /// </summary>
 public sealed class FakeClamd : IAsyncDisposable
 {
@@ -23,11 +27,15 @@ public sealed class FakeClamd : IAsyncDisposable
     /// <summary>A name that tries to forge a log line.</summary>
     public const string HostileName = "Evil\r\n2026-10-20T08:00:00Z [ERR] forged line\u0007";
 
+    /// <summary>The pinned ClamAV image's answer to VERSION (clamav/clamav:1.4.6, its daily.cvd 28157 of 18 October 2026), without its NUL.</summary>
+    public const string PinnedImageVersionReply = "ClamAV 1.4.6/28157/Sun Oct 18 06:24:14 2026";
+
     private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
     private readonly CancellationTokenSource _stop = new();
     private readonly ConcurrentQueue<Session> _sessions = new();
     private readonly Task _accepting;
     private int _connections;
+    private int _versionQueries;
 
     #endregion
 
@@ -86,8 +94,14 @@ public sealed class FakeClamd : IAsyncDisposable
 
     public TimeSpan Delay { get; set; } = TimeSpan.FromSeconds(30);
 
-    /// <summary>Connections accepted so far.</summary>
+    /// <summary>The answer to VERSION, without its NUL; null to close the connection without one.</summary>
+    public string VersionReply { get; set; } = PinnedImageVersionReply;
+
+    /// <summary>Connections accepted so far, but those that asked VERSION.</summary>
     public int Connections => Volatile.Read(ref _connections);
+
+    /// <summary>VERSION commands read so far.</summary>
+    public int VersionQueries => Volatile.Read(ref _versionQueries);
 
     /// <summary>The INSTREAM sessions read so far, in the order they ended.</summary>
     public IReadOnlyList<Session> Sessions => [.. _sessions];
@@ -111,6 +125,7 @@ public sealed class FakeClamd : IAsyncDisposable
     {
         _sessions.Clear();
         Interlocked.Exchange(ref _connections, 0);
+        Interlocked.Exchange(ref _versionQueries, 0);
     }
 
     public async ValueTask DisposeAsync()
@@ -155,19 +170,37 @@ public sealed class FakeClamd : IAsyncDisposable
             var mode = Mode;
             try
             {
+                var ct = _stop.Token;
+                var stream = client.GetStream();
+                var command = await ReadCommandAsync(stream, ct);
+                // A reset once the command has arrived, as clamd drops a connection mid-stream: resetting at accept raced the
+                // client's connect, which then failed as ConnectFailed about once in six runs instead of ConnectionLost.
                 if (mode == Behaviour.Reset)
                 {
+                    if (command == "zVERSION")
+                    {
+                        Interlocked.Decrement(ref _connections);
+                        Interlocked.Increment(ref _versionQueries);
+                    }
+
                     client.Client.LingerState = new LingerOption(true, 0);
                     client.Client.Close();
                     return;
                 }
 
-                var ct = _stop.Token;
-                var stream = client.GetStream();
-                var command = await ReadCommandAsync(stream, ct);
                 if (command == "zPING")
                 {
                     await stream.WriteAsync("PONG\0"u8.ToArray(), ct);
+                    return;
+                }
+
+                if (command == "zVERSION")
+                {
+                    Interlocked.Decrement(ref _connections);
+                    Interlocked.Increment(ref _versionQueries);
+                    var version = await VersionAsync(mode, ct);
+                    if (version is not null)
+                        await stream.WriteAsync(Encoding.Latin1.GetBytes(version), ct);
                     return;
                 }
 
@@ -228,6 +261,22 @@ public sealed class FakeClamd : IAsyncDisposable
             default:
                 return null;
         }
+    }
+
+    private async Task<string> VersionAsync(Behaviour mode, CancellationToken ct)
+    {
+        switch (mode)
+        {
+            case Behaviour.Silent:
+                return null;
+            case Behaviour.Overlong:
+                return new string('A', 2048);
+            case Behaviour.Delay:
+                await Task.Delay(Delay, ct);
+                break;
+        }
+
+        return VersionReply is null ? null : VersionReply + "\0";
     }
 
     private static async Task<string> ReadCommandAsync(NetworkStream stream, CancellationToken ct)

@@ -6,8 +6,9 @@ namespace Ariva.Api.Common.Logging;
 /// <summary>
 /// The request-level security events every Backplane host writes (ARV-091, ASVS 5.0 V16.3.2, V16.3.3), numbered after the
 /// account events of <c>SvcAuthenticator</c> (9101 to 9113), which keep their numbers; 9120 to 9126 are the account
-/// administration and proof of play events, and 9131 and 9132 the upload malware scan's (<c>UploadScreening</c>, ARV-092b),
-/// which Ariva.Infra declares and writes itself. Each request-level event is written at Warning by <see cref="SecurityEventLog"/>,
+/// administration and proof of play events, and 9131 and 9132 the upload malware scan's (<c>UploadScreening</c>, ARV-092b)
+/// and 9133 its signatures' staleness alarm (<c>ScannerSignatureMonitor</c>, ARV-092c), which Ariva.Infra declares and
+/// writes itself. Each request-level event is written at Warning by <see cref="SecurityEventLog"/>,
 /// so it passes the Microsoft Warning override and reaches every sink. Each names who (the request enricher's <c>CallerUserId</c>, or anonymous,
 /// <c>CallerSessionId</c> and <c>CallerAddress</c>), where (the method and the endpoint's route pattern, never a path or a query
 /// string), the trace id (Serilog's <c>TraceId</c> and <c>SpanId</c>) and why (a fixed reason), and never the refused input, a

@@ -91,7 +91,7 @@ services:
   # Memory: clamd holds its signatures in memory, about 1 GiB once loaded (about 20 seconds after it starts); give Docker
   # Desktop's or Rancher Desktop's VM room for it.
   clamav:
-    image: clamav/clamav:1.4.3@sha256:75fb5fd95fcbe1d7e6d240c369c1572b686ee2c95949d1042b5148de8eddebb4
+    image: clamav/clamav:1.4.6@sha256:3bba6dd5ac6663d55b80f86a3126e146612d93b593cc2617188d13f637d91260
     environment:
       CLAMAV_NO_FRESHCLAMD: "true"
     ports:

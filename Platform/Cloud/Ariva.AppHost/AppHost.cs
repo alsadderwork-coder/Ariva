@@ -74,9 +74,9 @@ var smtp = builder.AddContainer("smtp4dev", "rnwood/smtp4dev", "3.15.0")
 // ARV-092b: api-main streams every upload to clamd before it stores it. Offline (the image's signature snapshot, no
 // freshclam: no mirror traffic, the same verdicts in every run), with Ariva's limits (Platform/Cloud/clamav/clamd.conf,
 // read-only). clamd holds its signatures in memory (about 1 GiB) and answers PING about 20 seconds after it starts.
-var clamav = builder.AddContainer("clamav", "clamav/clamav", "1.4.3")
+var clamav = builder.AddContainer("clamav", "clamav/clamav", "1.4.6")
     .WithImageRegistry("docker.io")
-    .WithImageSHA256("75fb5fd95fcbe1d7e6d240c369c1572b686ee2c95949d1042b5148de8eddebb4")
+    .WithImageSHA256("3bba6dd5ac6663d55b80f86a3126e146612d93b593cc2617188d13f637d91260")
     .WithEnvironment("CLAMAV_NO_FRESHCLAMD", "true")
     .WithBindMount(Path.Combine(repository, "Platform", "Cloud", "clamav", "clamd.conf"), "/etc/clamav/clamd.conf", isReadOnly: true)
     .WithEndpoint(port: settings.ClamdPort, targetPort: 3310, name: "clamd", scheme: "tcp")

@@ -23,6 +23,10 @@
 # (logging.collector otlp or loki) and the log pseudonym key from a Secret (logging.pseudonymKeySecret). On in prd, which refuses
 # to render with it off; the release sets logging.required, so no values file drops either there. Off elsewhere. The collector
 # and the Secret's name come from the platform values file; create the Secret in the namespace first.
+# uploadScan: the platform release scans every upload with clamd beside api-main (ARV-092c; Charts/platform uploadScan, on
+# by default in every values file). On in prd, which refuses to render with it off; the release sets uploadScan.enabled, so
+# no values file turns it off there. Off elsewhere means only that the release does not force it. In prd the site's values
+# choose the signature source (uploadScan.signatures.source, wiki/04 section 6.7), or the chart refuses the release.
 environments:
   dev:
     values:
@@ -32,6 +36,7 @@ environments:
         podTls: false
         networkPolicies: false
         logShipping: false
+        uploadScan: false
   demo:
     values:
       - valuesFile: values-k8s-demo.yaml
@@ -40,6 +45,7 @@ environments:
         podTls: false
         networkPolicies: false
         logShipping: false
+        uploadScan: false
   prd:
     values:
       - valuesFile: values-k8s-prd.yaml
@@ -48,6 +54,7 @@ environments:
         podTls: true
         networkPolicies: true
         logShipping: true
+        uploadScan: true
   localk8s:
     values:
       - valuesFile: values-localk8s.yaml
@@ -56,6 +63,7 @@ environments:
         podTls: false
         networkPolicies: false
         logShipping: false
+        uploadScan: false
 
 helmDefaults:
   kubeContext: default
@@ -72,6 +80,9 @@ helmDefaults:
 {{- end }}
 {{- if and (eq .Environment.Name "prd") (not (.Values | get "logShipping" false)) }}
 {{- fail "prd ships the hosts' logs to a collector over TLS, with the log pseudonym key from a Secret (state value logShipping true; ARV-091a)" }}
+{{- end }}
+{{- if and (eq .Environment.Name "prd") (not (.Values | get "uploadScan" false)) }}
+{{- fail "prd scans every upload for malware with clamd beside api-main (state value uploadScan true; ARV-092c)" }}
 {{- end }}
 
 releases:
@@ -102,7 +113,7 @@ releases:
     {{- end }}
     values:
       - ./Charts/platform/{{ .Values.valuesFile }}
-    {{- if or (.Values | get "buildNumber" "") (.Values | get "podTls" false) (.Values | get "networkPolicies" false) (.Values | get "logShipping" false) }}
+    {{- if or (.Values | get "buildNumber" "") (.Values | get "podTls" false) (.Values | get "networkPolicies" false) (.Values | get "logShipping" false) (.Values | get "uploadScan" false) }}
     set:
       {{- if .Values | get "buildNumber" "" }}
       - name: buildNumber
@@ -121,6 +132,11 @@ releases:
       {{- if .Values | get "logShipping" false }}
       # set, so that no values file drops the log collector or the log pseudonym key's Secret (ARV-091a)
       - name: logging.required
+        value: true
+      {{- end }}
+      {{- if .Values | get "uploadScan" false }}
+      # set, so that no values file turns the malware scan off (ARV-092c)
+      - name: uploadScan.enabled
         value: true
       {{- end }}
     {{- end }}

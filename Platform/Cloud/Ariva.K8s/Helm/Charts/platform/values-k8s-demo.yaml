@@ -30,6 +30,14 @@ fileStorage:
   size: 2Gi
   accessMode: ReadWriteOnce
 
+# Malware scan of uploads (ARV-092c; values.yaml uploadScan): clamd beside api-main in its pod, with a freshclam sidecar
+# that updates the signatures from the ClamAV mirrors (the cluster reaches the internet). Each api-main pod needs about 1.3Gi
+# more memory for it (clamd 1200Mi and freshclam 64Mi requested; wiki/04 section 3).
+uploadScan:
+  enabled: true
+  signatures:
+    source: public
+
 # Validation reader login (ARV-104g1; values.yaml): optional here, so a release without the secret still runs (the validation
 # results then show no shadow figures); create the secret (keys username and password) to give api-main the reader.
 validationReader:

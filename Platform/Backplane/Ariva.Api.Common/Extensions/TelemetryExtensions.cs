@@ -45,6 +45,8 @@ public static class TelemetryExtensions
         Ariva.Infra.Messaging.Outbox.OutboxMetrics.MeterName,
         // The queue stream worker's consumer lag (ARV-125a).
         Ariva.Infra.Streaming.StreamMetrics.MeterName,
+        // The malware scanner's signature age and whether it answers (ARV-092c), Ariva.Api.Main with a scanner only.
+        Ariva.Infra.Storage.UploadScanMetrics.MeterName,
         // Security events by kind and outcome, written or left out by the throttle (ARV-091).
         SecurityEventMetrics.MeterName
     ];

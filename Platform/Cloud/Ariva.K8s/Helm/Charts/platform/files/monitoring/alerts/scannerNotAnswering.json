@@ -1,0 +1,87 @@
+{
+  "alert": "Ariva malware scanner not answering (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "The malware scanner beside an api-main pod has not answered its signature check for the whole window: that pod refuses every upload (503, fail closed; ARV-092b, ARV-092c).",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "ariva.uploads.scanner.answered",
+                "timeAggregation": "min",
+                "spaceAggregation": "min"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}'"
+            },
+            "groupBy": [
+              {
+                "name": "service.name",
+                "fieldContext": "resource",
+                "fieldDataType": "string"
+              }
+            ],
+            "legend": "{{service.name}}"
+          }
+        }
+      ]
+    },
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${scannerNotAnswering.severity}",
+          "op": "below",
+          "matchType": "all_the_times",
+          "target": 1,
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "${scannerNotAnswering.minutes}m",
+      "frequency": "1m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [
+      "service.name"
+    ],
+    "renotify": {
+      "enabled": true,
+      "interval": "4h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "scannerNotAnswering",
+    "environment": "${environment}",
+    "severity": "${scannerNotAnswering.severity}"
+  },
+  "annotations": {
+    "summary": "Ariva malware scanner not answering on {{$service.name}}",
+    "description": "A scanner beside {{$service.name}} has not answered its signature check for ${scannerNotAnswering.minutes} minutes: its pod refuses every upload until it does.",
+    "runbook": "wiki/10-Operations-Runbook.md#scanner-not-answering"
+  },
+  "disabled": false
+}

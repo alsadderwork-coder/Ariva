@@ -10,6 +10,7 @@ using Ariva.Infra.Messaging.Outbox;
 using Ariva.Infra.Monitoring;
 using Ariva.Infra.Sensing;
 using Ariva.Infra.Services.Integration;
+using Ariva.Infra.Storage;
 using Ariva.Infra.Streaming;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
@@ -100,6 +101,8 @@ public sealed partial class MetricTagTests
         [typeof(OutboxMetrics)] = m => ((OutboxMetrics)m).Report(new OutboxBacklog(3, DateTime.UtcNow.AddMinutes(-1)), TimeSpan.FromMinutes(1)),
         [typeof(StreamMetrics)] = m => ((StreamMetrics)m).Report("ariva-stream.queue-engine",
             new Dictionary<string, long> { [KafkaTopics.DeviceZoneOccupancy] = 5 }, TimeSpan.FromMinutes(1)),
+        [typeof(UploadScanMetrics)] = m => ((UploadScanMetrics)m).Report(
+            new Ariva.Core.Services.Storage.MalwareSignatures("1.4.3", 27927, DateTime.UtcNow.AddHours(-3)), TimeSpan.FromMinutes(30)),
         [typeof(Ariva.Api.Common.Logging.SecurityEventMetrics)] = m =>
         {
             var security = (Ariva.Api.Common.Logging.SecurityEventMetrics)m;

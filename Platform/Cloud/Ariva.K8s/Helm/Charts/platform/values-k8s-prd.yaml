@@ -83,6 +83,20 @@ logging:
     name: ariva-log-pseudonym-key
     key: pseudonym-key
 
+# Malware scan of uploads (ARV-092c; values.yaml uploadScan, wiki/04 section 6.7): clamd beside every api-main replica, on its
+# pod's loopback, about 1.3Gi more memory per replica (clamd 1200Mi and freshclam 64Mi requested; wiki/04 section 3). Required
+# in production (the chart refuses uploadScan.enabled false, and the Helmfiles' prd release sets it). The site chooses how the
+# signatures arrive, in its own values, before the first release; the chart refuses the release until it does:
+# - public: freshclam from the ClamAV mirrors, with their peers in networkPolicies.clamavMirror (TCP 443);
+# - mirror: freshclam from the site's mirror (mirrorUrl, http:// or https://; mirrorCaSecretName for a site CA), with the
+#   mirror's peers in networkPolicies.clamavMirror;
+# - mounted: a claim the site keeps current (claimName), read-only; no freshclam and no egress.
+# Record the choice, and the signatures' version after the release, in the go-live record (wiki 13).
+uploadScan:
+  enabled: true
+  signatures:
+    source: ""
+
 # Validation reader login (ARV-104g1; values.yaml): required in production, so the pilot's ground-truth proof always has its
 # reader; create the secret (keys username and password) before the release (wiki/04, section 6.2).
 validationReader:

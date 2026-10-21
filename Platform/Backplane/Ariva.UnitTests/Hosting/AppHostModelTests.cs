@@ -105,7 +105,7 @@ public sealed class AppHostModelTests
         var image = clamav.Annotations.OfType<ContainerImageAnnotation>().Single();
 
         $"{image.Registry}/{image.Image}@sha256:{image.SHA256}".Should().Be(
-            "docker.io/clamav/clamav@sha256:75fb5fd95fcbe1d7e6d240c369c1572b686ee2c95949d1042b5148de8eddebb4",
+            "docker.io/clamav/clamav@sha256:3bba6dd5ac6663d55b80f86a3126e146612d93b593cc2617188d13f637d91260",
             "the digest of docker-compose.dev.yml, CI and the integration tests (scripts/base-images.mjs)");
         (await VariablesAsync(clamav))["CLAMAV_NO_FRESHCLAMD"].Should().Be("true", "no mirror traffic, the same verdicts in every run");
         var conf = clamav.Annotations.OfType<ContainerMountAnnotation>().Should().ContainSingle(m => m.Target == "/etc/clamav/clamd.conf").Which;

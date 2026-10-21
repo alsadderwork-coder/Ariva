@@ -1,0 +1,769 @@
+# ARV-092c: the malware scanner beside api-main as the chart renders it (values-k8s-dev.yaml with buildNumber main-20261001.1 and the
+# site's mirror over https with its CA: uploadScan.signatures.source mirror, mirrorUrl https://clamav-mirror.site.example,
+# mirrorCaSecretName site-clamav-mirror-ca), trimmed to api-main's objects, api-ingest's and the migration job, the objects
+# uploadScanFindings reads (tests/chart-security.mjs, uploadScanSelfTest; generated, then kept as written).
+---
+#ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-ingest-configmap
+  labels:
+    helm.sh/chart: ariva-platform-0.1.0
+    app.kubernetes.io/name: ariva-platform
+    app.kubernetes.io/part-of: ariva
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "v-0.0.0"
+data:
+  DOTNET_ENVIRONMENT: "k8s-dev"
+  RELEASE_VERSION: "v-0.0.0"
+  # ARV-165: the pod's grace period, so the host checks its 50 s shutdown timeout fits inside it
+  Hosting__GracePeriodSeconds: "60"
+  # ARV-176: the startup probe's allowance below, at its worst: the kubelet's ticks run from before the container starts, so
+  # the failureThreshold-th failure comes as early as initialDelaySeconds 10 + periodSeconds 15 x (failureThreshold 9 - 1);
+  # the host checks that its consumers' waits at start (topics 60 s, readiness 30 s) fit inside it; the render test checks the two agree
+  Hosting__StartupAllowanceSeconds: "130"
+---
+#ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-main-configmap
+  labels:
+    helm.sh/chart: ariva-platform-0.1.0
+    app.kubernetes.io/name: ariva-platform
+    app.kubernetes.io/part-of: ariva
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "v-0.0.0"
+data:
+  DOTNET_ENVIRONMENT: "k8s-dev"
+  RELEASE_VERSION: "v-0.0.0"
+  # ARV-165: the pod's grace period, so the host checks its 50 s shutdown timeout fits inside it
+  Hosting__GracePeriodSeconds: "60"
+  # ARV-176: the startup probe's allowance below, at its worst: the kubelet's ticks run from before the container starts, so
+  # the failureThreshold-th failure comes as early as initialDelaySeconds 10 + periodSeconds 15 x (failureThreshold 9 - 1);
+  # the host checks that its consumers' waits at start (topics 60 s, readiness 30 s) fit inside it; the render test checks the two agree
+  Hosting__StartupAllowanceSeconds: "130"
+  # Floor plans and other uploaded files (ARV-018), on the files volume below
+  Storage__LocalRoot: /app/data/files
+  # The kafka-topics Job creates the topics before each release (ARV-062), so this host never needs create rights
+  Kafka__ProvisionTopics: "false"
+  # The malware scan (ARV-092b, ARV-092c): clamd beside this host in its pod, on the loopback only, so no upload crosses the network
+  MalwareScan__Host: "127.0.0.1"
+  MalwareScan__Port: "3310"
+---
+#ConfigMap: the scanner's configuration (ARV-092c), mounted read-only by clamd and freshclam
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-main-clamav-configmap
+  labels:
+    helm.sh/chart: ariva-platform-0.1.0
+    app.kubernetes.io/name: ariva-platform
+    app.kubernetes.io/part-of: ariva
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "v-0.0.0"
+data:
+  clamd.conf: |
+    # clamd beside Ariva.Api.Main (ARV-092c), rendered by the chart: the pod's loopback only, the repository's limits.
+    DatabaseDirectory /var/lib/clamav
+    TemporaryDirectory /tmp
+    TCPAddr 127.0.0.1
+    TCPSocket 3310
+    Foreground yes
+    LogTime yes
+    SelfCheck 600
+    ConcurrentDatabaseReload no
+    OfficialDatabaseOnly yes
+    MaxThreads 2
+    MaxQueue 4
+    StreamMaxLength 105M
+    MaxFileSize 105M
+    MaxScanSize 400M
+    AlertExceedsMax yes
+  freshclam.conf: |
+    # freshclam beside clamd in the api-main pod (ARV-092c), rendered by the chart.
+    DatabaseDirectory /var/lib/clamav
+    Foreground yes
+    LogTime yes
+    Checks 12
+    TestDatabases no
+    CompressLocalDatabase yes
+    PrivateMirror https://clamav-mirror.site.example
+---
+#Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-ingest-deployment
+  labels:
+    app: api-ingest
+    helm.sh/chart: ariva-platform-0.1.0
+    app.kubernetes.io/name: ariva-platform
+    app.kubernetes.io/part-of: ariva
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "v-0.0.0"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-ingest
+  template:
+    metadata:
+      annotations:
+      labels:
+        app: api-ingest
+    spec:
+      # ARV-165: the host stops within its 50 s shutdown timeout (the bus 35 s, a stop during retries needing up to 25 s), then disposes and exits
+      terminationGracePeriodSeconds: 60
+      imagePullSecrets:
+        - name: dalilacr-secret
+      volumes:
+        # Kafka cluster CA (ARV-020): PEM ca.crt for SASL over TLS; optional, absent where Kafka is plaintext
+        - name: kafka-ca
+          secret:
+            secretName: ariva-kafka-ca
+            optional: true
+            defaultMode: 0444
+        # TimescaleDB server CA (ARV-082a): PEM ca.crt; k8s-prd hosts verify the database against it
+        - name: database-ca
+          secret:
+            secretName: ariva-database-ca
+            optional: true
+            defaultMode: 0444
+            items:
+              - key: ca.crt
+                path: ca.crt
+        # Redis server CA (ARV-082a): PEM ca.crt; k8s-prd hosts verify Redis against it
+        - name: redis-ca
+          secret:
+            secretName: ariva-redis-ca
+            optional: true
+            defaultMode: 0444
+            items:
+              - key: ca.crt
+                path: ca.crt
+        # Writable scratch space; the root filesystem is read-only (CWE-269)
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        # Data Protection key-protection certificate (ARV-008): kubernetes.io/tls secret, read-only
+        - name: dataprotection-certificate
+          secret:
+            secretName: ariva-dataprotection
+            defaultMode: 0400
+        # Access token public keys (ARV-010a): public.pem, and previous.pem during a key rotation; read-only
+        - name: token-public
+          secret:
+            secretName: ariva-token-public
+            defaultMode: 0444
+        - name: api-ingest-appsettings-base-volume
+          secret:
+            secretName: base-appsettings-secret
+        - name: api-ingest-appsettings-volume
+          secret:
+            secretName: api-ingest-appsettings-secret
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        # Group ownership of the secret volumes, so the app user can read the 0400 key files (as in api-main)
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api-ingest-container
+          image: "dalil.azurecr.io/ariva/api-ingest:main-20261001.1"
+          imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: kafka-ca
+              mountPath: /app/secrets/kafka-ca
+              readOnly: true
+            - name: database-ca
+              mountPath: /app/secrets/database-ca
+              readOnly: true
+            - name: redis-ca
+              mountPath: /app/secrets/redis-ca
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            - name: dataprotection-certificate
+              mountPath: /app/secrets/dataprotection
+              readOnly: true
+            - name: token-public
+              mountPath: /app/secrets/token-public
+              readOnly: true
+            - name: api-ingest-appsettings-base-volume
+              mountPath: /app/appsettings.base.k8s-dev.json
+              subPath: appsettings.base.k8s-dev.json
+            - name: api-ingest-appsettings-volume
+              mountPath: /app/appsettings.service.k8s-dev.json
+              subPath: appsettings.service.k8s-dev.json
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: ""
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "grpc"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.namespace=ariva,deployment.environment=k8s-dev,k8s.cluster.name=k8s-dev,service.version=v-0.0.0"
+            - name: K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: K8S_NAMESPACE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            # Kafka SASL password (ARV-020); optional, absent where Kafka is plaintext
+            - name: Kafka__SaslPassword
+              valueFrom:
+                secretKeyRef:
+                  name: ariva-kafka
+                  key: password
+                  optional: true
+          envFrom:
+            - configMapRef:
+                name: api-ingest-configmap
+          startupProbe:
+            httpGet: { path: /health/startup, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 9
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet: { path: /health/readiness, port: 8080 }
+            initialDelaySeconds: 2
+            periodSeconds: 15
+            failureThreshold: 4
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 1000Mi
+          livenessProbe:
+            httpGet: { path: /health/liveness, port: 8080 }
+            initialDelaySeconds: 2
+            periodSeconds: 15
+            failureThreshold: 8
+            timeoutSeconds: 5
+---
+#Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-main-deployment
+  labels:
+    app: api-main
+    helm.sh/chart: ariva-platform-0.1.0
+    app.kubernetes.io/name: ariva-platform
+    app.kubernetes.io/part-of: ariva
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "v-0.0.0"
+spec:
+  replicas: 1
+  # A ReadWriteOnce volume attaches to one node: stop the old pod before starting the new one, or a rollout to
+  # another node waits on the attach forever (ARV-018)
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: api-main
+  template:
+    metadata:
+      annotations:
+      labels:
+        app: api-main
+    spec:
+      # ARV-165: the host stops within its 50 s shutdown timeout (the bus 35 s, a stop during retries needing up to 25 s), then disposes and exits
+      terminationGracePeriodSeconds: 60
+      # No container of this pod calls the Kubernetes API, and the scanner's containers (ARV-092c) are third-party code: none
+      # gets the service account token
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: dalilacr-secret
+      volumes:
+        # Kafka cluster CA (ARV-020): PEM ca.crt for SASL over TLS; optional, absent where Kafka is plaintext
+        - name: kafka-ca
+          secret:
+            secretName: ariva-kafka-ca
+            optional: true
+            defaultMode: 0444
+        # TimescaleDB server CA (ARV-082a): PEM ca.crt; k8s-prd hosts verify the database against it
+        - name: database-ca
+          secret:
+            secretName: ariva-database-ca
+            optional: true
+            defaultMode: 0444
+            items:
+              - key: ca.crt
+                path: ca.crt
+        # Redis server CA (ARV-082a): PEM ca.crt; k8s-prd hosts verify Redis against it
+        - name: redis-ca
+          secret:
+            secretName: ariva-redis-ca
+            optional: true
+            defaultMode: 0444
+            items:
+              - key: ca.crt
+                path: ca.crt
+        # Writable scratch space; the root filesystem is read-only (CWE-269). 128Mi: the upload in progress is buffered here
+        # (the upload policy takes one per host, 20 MB by default, an advertisement video up to Advertising:Videos:MaxMegabytes,
+        # at most 100, so raise sizeLimit with it; parts over 64 KB of a form, over 30 KB of the site
+        # configuration bundle; ARV-018, ARV-096), and so is any form of at most 1 MB sent to another action, which MVC reads
+        # whatever the action binds (docs/security/costly-operations.md section 15 item 13, ARV-096b)
+        - name: tmp
+          emptyDir:
+            sizeLimit: 128Mi
+        # Data Protection key-protection certificate (ARV-008): kubernetes.io/tls secret, read-only
+        - name: dataprotection-certificate
+          secret:
+            secretName: ariva-dataprotection
+            defaultMode: 0400
+        # Access token public keys (ARV-010a): public.pem, and previous.pem during a key rotation; read-only
+        - name: token-public
+          secret:
+            secretName: ariva-token-public
+            defaultMode: 0444
+        # Access token signing key (ARV-010a): only Ariva.Api.Main signs tokens; no other pod mounts it
+        - name: token-signing
+          secret:
+            secretName: ariva-token-signing
+            defaultMode: 0400
+        # Uploaded files (ARV-018): floor plans, under generated names only
+        - name: files
+          persistentVolumeClaim:
+            claimName: ariva-files
+        - name: api-main-appsettings-base-volume
+          secret:
+            secretName: base-appsettings-secret
+        - name: api-main-appsettings-volume
+          secret:
+            secretName: api-main-appsettings-secret
+        # The scanner's configuration (ARV-092c): clamd.conf and freshclam.conf, read-only
+        - name: clamav-config
+          configMap:
+            name: api-main-clamav-configmap
+            defaultMode: 0444
+        # The signatures (ARV-092c): the image's snapshot, copied by the init container, then freshclam's updates: about 110 MiB, and
+        # about 420 MiB at the worst moment of an update (CompressLocalDatabase yes); over the limit the kubelet evicts the whole pod
+        - name: clamav-signatures
+          emptyDir:
+            sizeLimit: 1Gi
+        # clamd's scratch space: each queued upload whole and what a running scan unpacks, MaxQueue 4 times StreamMaxLength 105M plus
+        # MaxThreads 2 times MaxScanSize 400M (1220 MiB) at most; over the limit the kubelet evicts the whole api-main pod
+        - name: clamd-tmp
+          emptyDir:
+            sizeLimit: 1536Mi
+        - name: freshclam-tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: clamav-init-tmp
+          emptyDir:
+            sizeLimit: 16Mi
+        # The site mirror's CA (ARV-092c): ca.crt of uploadScan.signatures.mirrorCaSecretName only, read-only; freshclam trusts it alone
+        - name: clamav-mirror-ca
+          secret:
+            secretName: "site-clamav-mirror-ca"
+            optional: false
+            defaultMode: 0444
+            items:
+              - key: ca.crt
+                path: ca.crt
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        # Makes the files volume writable by the app user (block volumes; Azure Files takes uid and gid mount options)
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: clamav-signatures
+          image: "clamav/clamav:1.4.6@sha256:3bba6dd5ac6663d55b80f86a3126e146612d93b593cc2617188d13f637d91260"
+          imagePullPolicy: IfNotPresent
+          command: ["cp", "-p", "/var/lib/clamav/main.cvd", "/var/lib/clamav/daily.cvd", "/var/lib/clamav/bytecode.cvd", "/signatures/"]
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 100
+            runAsGroup: 101
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: clamav-signatures
+              mountPath: /signatures
+            - name: clamav-init-tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi
+      containers:
+        - name: api-main-container
+          image: "dalil.azurecr.io/ariva/api-main:main-20261001.1"
+          imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: kafka-ca
+              mountPath: /app/secrets/kafka-ca
+              readOnly: true
+            - name: database-ca
+              mountPath: /app/secrets/database-ca
+              readOnly: true
+            - name: redis-ca
+              mountPath: /app/secrets/redis-ca
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            - name: files
+              mountPath: /app/data/files
+            - name: dataprotection-certificate
+              mountPath: /app/secrets/dataprotection
+              readOnly: true
+            - name: token-public
+              mountPath: /app/secrets/token-public
+              readOnly: true
+            - name: token-signing
+              mountPath: /app/secrets/token-signing
+              readOnly: true
+            - name: api-main-appsettings-base-volume
+              mountPath: /app/appsettings.base.k8s-dev.json
+              subPath: appsettings.base.k8s-dev.json
+            - name: api-main-appsettings-volume
+              mountPath: /app/appsettings.service.k8s-dev.json
+              subPath: appsettings.service.k8s-dev.json
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: ""
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "grpc"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.namespace=ariva,deployment.environment=k8s-dev,k8s.cluster.name=k8s-dev,service.version=v-0.0.0"
+            - name: K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: K8S_NAMESPACE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            # Kafka SASL password (ARV-020); optional, absent where Kafka is plaintext
+            - name: Kafka__SaslPassword
+              valueFrom:
+                secretKeyRef:
+                  name: ariva-kafka
+                  key: password
+                  optional: true
+            # The validation reader login (ARV-104g1): only this host and the migration job get it
+            - name: Database__ValidationReader__Username
+              valueFrom:
+                secretKeyRef:
+                  name: "ariva-validation-reader"
+                  key: username
+                  optional: true
+            - name: Database__ValidationReader__Password
+              valueFrom:
+                secretKeyRef:
+                  name: "ariva-validation-reader"
+                  key: password
+                  optional: true
+          envFrom:
+            - configMapRef:
+                name: api-main-configmap
+          startupProbe:
+            httpGet: { path: /health/startup, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 9
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet: { path: /health/readiness, port: 8080 }
+            initialDelaySeconds: 2
+            periodSeconds: 15
+            failureThreshold: 4
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 250m
+              memory: 750Mi
+            limits:
+              cpu: 1000m
+              memory: 1000Mi
+          livenessProbe:
+            httpGet: { path: /health/liveness, port: 8080 }
+            initialDelaySeconds: 2
+            periodSeconds: 15
+            failureThreshold: 8
+            timeoutSeconds: 5
+        # clamd in the image's UTC, never a TZ of its own: Ariva.Api.Main reads its signatures' build time as UTC
+        - name: clamd
+          image: "clamav/clamav:1.4.6@sha256:3bba6dd5ac6663d55b80f86a3126e146612d93b593cc2617188d13f637d91260"
+          imagePullPolicy: IfNotPresent
+          command: ["clamd", "--foreground", "--config-file=/etc/clamav/clamd.conf"]
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 100
+            runAsGroup: 101
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: clamav-config
+              mountPath: /etc/clamav
+              readOnly: true
+            - name: clamav-signatures
+              mountPath: /var/lib/clamav
+              readOnly: true
+            - name: clamd-tmp
+              mountPath: /tmp
+          livenessProbe:
+            exec:
+              command: ["clamdscan","--config-file=/etc/clamav/clamd.conf","--ping","1"]
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          resources:
+            limits:
+              cpu: 1000m
+              memory: 1600Mi
+            requests:
+              cpu: 100m
+              memory: 1200Mi
+        - name: freshclam
+          image: "clamav/clamav:1.4.6@sha256:3bba6dd5ac6663d55b80f86a3126e146612d93b593cc2617188d13f637d91260"
+          imagePullPolicy: IfNotPresent
+          command: ["freshclam", "--daemon", "--foreground", "--stdout", "--config-file=/etc/clamav/freshclam.conf"]
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 100
+            runAsGroup: 101
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            # The site mirror's CA (ARV-092c): libcurl's CA file, the only CA freshclam trusts for the mirror
+            - name: CURL_CA_BUNDLE
+              value: /etc/ariva/mirror-ca/ca.crt
+          volumeMounts:
+            - name: clamav-config
+              mountPath: /etc/clamav
+              readOnly: true
+            - name: clamav-signatures
+              mountPath: /var/lib/clamav
+            - name: freshclam-tmp
+              mountPath: /tmp
+            - name: clamav-mirror-ca
+              mountPath: /etc/ariva/mirror-ca
+              readOnly: true
+          resources:
+            limits:
+              cpu: 500m
+              memory: 256Mi
+            requests:
+              cpu: 10m
+              memory: 64Mi
+---
+#HorizontalPodAutoscaler
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api-main-hpa
+  labels:
+    helm.sh/chart: ariva-platform-0.1.0
+    app.kubernetes.io/name: ariva-platform
+    app.kubernetes.io/part-of: ariva
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "v-0.0.0"
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api-main-deployment
+  minReplicas: 1
+  maxReplicas: 1
+  metrics:
+    # api-main's own container only (ARV-092c): clamd holds its signatures resident (about 1 GiB) and uses a whole core for
+    # each reload, which would otherwise read as load and scale the host out (ContainerResource: beta and on by default from
+    # Kubernetes 1.27, GA in 1.30). Below 1.27 the API server drops the metric and refuses the HPA, so the chart then keeps
+    # the pod's Resource metrics, which count clamd's memory: api-main scales out sooner there
+    - type: ContainerResource
+      containerResource:
+        name: cpu
+        container: api-main-container
+        target:
+          type: Utilization
+          averageUtilization: 60
+    - type: ContainerResource
+      containerResource:
+        name: memory
+        container: api-main-container
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+#Job: versioned schema migration (ARV-006). Runs the api-main image with --migrate, once per release, before the
+#upgraded pods start (pre-upgrade). On the very first install it runs after the release objects exist
+#(post-install), because the registry pull secret is part of the release; the hosts wait for it at startup
+#(Database:VerifySchemaOnStartup) and restart until the schema is in place.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: database-migration
+  labels:
+    app: database-migration
+    helm.sh/chart: ariva-platform-0.1.0
+    app.kubernetes.io/name: ariva-platform
+    app.kubernetes.io/part-of: ariva
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/version: "v-0.0.0"
+  annotations:
+    "helm.sh/hook": post-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: database-migration
+    spec:
+      restartPolicy: Never
+      imagePullSecrets:
+        - name: dalilacr-secret
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        # TimescaleDB server CA (ARV-082a): PEM ca.crt; k8s-prd hosts verify the database against it
+        - name: database-ca
+          secret:
+            secretName: ariva-database-ca
+            optional: true
+            defaultMode: 0444
+            items:
+              - key: ca.crt
+                path: ca.crt
+        # Redis server CA (ARV-082a): PEM ca.crt; k8s-prd hosts verify Redis against it
+        - name: redis-ca
+          secret:
+            secretName: ariva-redis-ca
+            optional: true
+            defaultMode: 0444
+            items:
+              - key: ca.crt
+                path: ca.crt
+        - name: appsettings-base-volume
+          secret:
+            secretName: base-appsettings-secret
+        - name: appsettings-volume
+          secret:
+            secretName: api-main-appsettings-secret
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: database-migration
+          image: "dalil.azurecr.io/ariva/api-main:main-20261001.1"
+          imagePullPolicy: Always
+          args: ["--migrate"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          env:
+            - name: DOTNET_ENVIRONMENT
+              value: "k8s-dev"
+            # The validation reader login (ARV-104g1): the job creates or updates it (script 0049)
+            - name: Database__ValidationReader__Username
+              valueFrom:
+                secretKeyRef:
+                  name: "ariva-validation-reader"
+                  key: username
+                  optional: true
+            - name: Database__ValidationReader__Password
+              valueFrom:
+                secretKeyRef:
+                  name: "ariva-validation-reader"
+                  key: password
+                  optional: true
+            # Retention periods in days (ARV-111a, values migration.retention, checked in validate.yaml): after the scripts the
+            # job sets the hypertables' TimescaleDB retention policies and the relational periods the Cronz retention job reads
+            - name: Database__Retention__RawSensingDays
+              value: "30"
+            - name: Database__Retention__DeskZoneReadingDays
+              value: "7"
+            - name: Database__Retention__LaneStaffingDays
+              value: "90"
+            - name: Database__Retention__AdvertisingPlayDays
+              value: "400"
+            - name: Database__Retention__AlertEmailDays
+              value: "180"
+            - name: Database__Retention__IntegrationCallDays
+              value: "400"
+            - name: Database__Retention__ReportDeliveryDays
+              value: "400"
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: database-ca
+              mountPath: /app/secrets/database-ca
+              readOnly: true
+            - name: redis-ca
+              mountPath: /app/secrets/redis-ca
+              readOnly: true
+            - name: appsettings-base-volume
+              mountPath: /app/appsettings.base.k8s-dev.json
+              subPath: appsettings.base.k8s-dev.json
+            - name: appsettings-volume
+              mountPath: /app/appsettings.service.k8s-dev.json
+              subPath: appsettings.service.k8s-dev.json
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

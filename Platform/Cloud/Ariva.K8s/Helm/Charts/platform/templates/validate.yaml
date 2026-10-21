@@ -9,7 +9,8 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 - The retention periods (ARV-111a, migration.retention) are whole numbers of days within their bounds (the same bounds as
   RetentionSettings in Ariva.Infra), and no other key is given.
 - The monitoring thresholds (ARV-125b) are in range: minutes 1 to 1440, a severity of warning or critical, usedPercent
-  1 to 99, share above 0 and at most 1, criticalDays below warningDays (both 1 to 365), records 0 or more, claims,
+  1 to 99, share above 0 and at most 1, criticalDays below warningDays (both 1 to 365), hours 6 to 168 (ARV-092c, the bounds of
+  the hosts' MalwareScan:MaxSignatureAgeHours), records 0 or more, claims,
   services and namespaces Kubernetes names, namespaceLabel namespace or exported_namespace, channels and the monitoring
   environment plain names; every rule source has its values and no values name an unknown rule.
 - The servers' CA secrets (ARV-082a, databaseCaSecretName and redisCaSecretName; empty means the default name) are
@@ -101,6 +102,21 @@ Release guards. Renders nothing; fails the render when a rule is broken.
     Ariva's namespace, and its ca.crt holds a PEM certificate and no private key, the file the hosts would otherwise refuse to
     start on (ariva-platform.collectorCaRefusal); helm template, or a namespace that does not exist yet, sees nothing and
     passes: the pods wait for the Secret.
+- The malware scan beside Ariva.Api.Main (ARV-092c, ASVS 5.0 V5.4.3, V12.3.1; values uploadScan), last, so every other guard
+  speaks first. No message repeats an uploadScan value (a mirror URL could carry a credential put there by mistake).
+  - uploadScan is a map of enabled, image, signatures, clamd and freshclam, nothing else; enabled is true or false, and true in
+    k8s-prd and in any release with logging.required (the Helmfiles' prd): a k8s-prd api-main does not start without a scanner
+    on its pod's loopback.
+  - With it on: image is a repository, a tag (not latest) and a sha256 digest; signatures is a map of source, mirrorUrl,
+    mirrorCaSecretName, claimName and checksPerDay; source is public, mirror or mounted, and k8s-prd has no default (the site
+    chooses); mirror needs mirrorUrl, an http:// or https:// URL with a host, an optional port and path and nothing else (no
+    credentials, query, space or quote: the URL is written into freshclam.conf), https:// only in k8s-prd and with
+    logging.required (every production connection encrypted, ASVS 5.0 V12.3.1), and mirrorCaSecretName, when given, a Kubernetes
+    secret name with an https:// URL; mounted needs claimName, a Kubernetes name; a value read by another source only is
+    refused; checksPerDay is a whole number from 1 to 24; clamd and freshclam give resources with requests and limits, each with
+    cpu and memory.
+  - With networkPolicies on and source public or mirror, networkPolicies.clamavMirror has peers: freshclam could not reach the
+    mirror otherwise. clamd itself needs no rule: api-main reaches it on the pod's loopback.
 */ -}}
 {{- if and (eq .Values.environment "k8s-prd") (or (empty .Values.buildNumber) (eq (toString .Values.buildNumber) "trunk")) }}
 {{- fail "k8s-prd needs an explicit buildNumber (for example --set buildNumber=main-20261001.3); trunk and empty are not allowed" }}
@@ -334,13 +350,13 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- if and $prd (not $np.enabled) }}
 {{- fail "k8s-prd isolates every pod: set networkPolicies.enabled true (ARV-085); the pods take connections from the ingress controller alone there" }}
 {{- end }}
-{{- $npKeys := list "enabled" "dns" "database" "kafka" "redis" "otlp" "loki" "smtp" "outbound" "mqttSensors" }}
+{{- $npKeys := list "enabled" "dns" "database" "kafka" "redis" "otlp" "loki" "smtp" "clamavMirror" "outbound" "mqttSensors" }}
 {{- range $key, $_ := $np }}
 {{- if not (has $key $npKeys) }}
 {{- fail (printf "networkPolicies.%s is not a setting (%s; ARV-085)" $key (join ", " $npKeys)) }}
 {{- end }}
 {{- end }}
-{{- range $name := list "dns" "database" "kafka" "redis" "otlp" "loki" "smtp" }}
+{{- range $name := list "dns" "database" "kafka" "redis" "otlp" "loki" "smtp" "clamavMirror" }}
 {{- $destination := index $np $name }}
 {{- $allowed := ternary (list "to") (list "to" "ports") (eq $name "dns") }}
 {{- if not (kindIs "map" $destination) }}
@@ -628,6 +644,9 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- if and (hasSuffix "Days" $field) (or (not $number) (lt (float64 $value) 1.0) (gt (float64 $value) 365.0) (ne (float64 $value) (float64 (int $value)))) }}
 {{- fail (printf "monitoring.alerts.%s.%s must be a whole number of days from 1 to 365" $key $field) }}
 {{- end }}
+{{- if and (hasSuffix "Hours" $field) (or (not $number) (lt (float64 $value) 6.0) (gt (float64 $value) 168.0) (ne (float64 $value) (float64 (int $value)))) }}
+{{- fail (printf "monitoring.alerts.%s.%s must be a whole number of hours from 6 to 168 (the bounds of the hosts' MalwareScan:MaxSignatureAgeHours)" $key $field) }}
+{{- end }}
 {{- if or (eq $field "claims") (eq $field "services") }}
 {{- if or (not (kindIs "slice" $value)) (eq (len $value) 0) }}
 {{- fail (printf "monitoring.alerts.%s.%s must be a list of one or more Kubernetes names" $key $field) }}
@@ -657,5 +676,108 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- fail (printf "monitoring.alerts.%s.criticalDays must be below warningDays" $key) }}
 {{- end }}
 {{- end }}
+{{- end }}
+{{- end }}
+{{- $scan := .Values.uploadScan }}
+{{- if not (kindIs "map" $scan) }}
+{{- fail "uploadScan must be a map: enabled, image, signatures, clamd and freshclam (ARV-092c)" }}
+{{- end }}
+{{- range $key, $_ := $scan }}
+{{- if not (has $key (list "enabled" "image" "signatures" "clamd" "freshclam")) }}
+{{- fail (printf "uploadScan.%s is not a setting (enabled, image, signatures, clamd, freshclam; ARV-092c)" $key) }}
+{{- end }}
+{{- end }}
+{{- if not (kindIs "bool" $scan.enabled) }}
+{{- fail "uploadScan.enabled must be true or false (ARV-092c)" }}
+{{- end }}
+{{- if and $logRequired (not $scan.enabled) }}
+{{- fail (printf "%s scans every upload for malware before it is stored or imported: set uploadScan.enabled true (ARV-092c); a k8s-prd api-main does not start without a scanner on its pod's loopback" $logWhere) }}
+{{- end }}
+{{- if $scan.enabled }}
+{{- $image := $scan.image }}
+{{- if or (not (kindIs "map" $image)) (without (keys ($image | default dict)) "repository" "tag" "digest") }}
+{{- fail "uploadScan.image must be a map of repository, tag and digest (ARV-092c)" }}
+{{- end }}
+{{- if not (regexMatch "^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?(:[0-9]{1,5})?(/[a-z0-9]([a-z0-9._-]{0,126}[a-z0-9])?){1,5}$" (toString ($image.repository | default ""))) }}
+{{- fail "uploadScan.image.repository must be an image repository, such as clamav/clamav or a mirror's registry/path/clamav/clamav (ARV-092c)" }}
+{{- end }}
+{{- if or (not (regexMatch "^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$" (toString ($image.tag | default "")))) (eq (toString $image.tag) "latest") }}
+{{- fail "uploadScan.image.tag must be an explicit ClamAV tag, not empty or latest (ARV-092c)" }}
+{{- end }}
+{{- if not (regexMatch "^sha256:[0-9a-f]{64}$" (toString ($image.digest | default ""))) }}
+{{- fail "uploadScan.image.digest must be a sha256 digest; the ClamAV image is pinned by tag and digest (ARV-092c)" }}
+{{- end }}
+{{- $signatures := $scan.signatures }}
+{{- if not (kindIs "map" $signatures) }}
+{{- fail "uploadScan.signatures must be a map: source, mirrorUrl, mirrorCaSecretName, claimName and checksPerDay (ARV-092c)" }}
+{{- end }}
+{{- range $key, $_ := $signatures }}
+{{- if not (has $key (list "source" "mirrorUrl" "mirrorCaSecretName" "claimName" "checksPerDay")) }}
+{{- fail (printf "uploadScan.signatures.%s is not a setting (source, mirrorUrl, mirrorCaSecretName, claimName, checksPerDay; ARV-092c)" $key) }}
+{{- end }}
+{{- end }}
+{{- $source := toString ($signatures.source | default "") }}
+{{- $mirrorUrl := toString ($signatures.mirrorUrl | default "") }}
+{{- $mirrorCa := toString ($signatures.mirrorCaSecretName | default "") }}
+{{- $claim := toString ($signatures.claimName | default "") }}
+{{- if and $prd (eq $source "") }}
+{{- fail "k8s-prd chooses how clamd's signatures arrive: set uploadScan.signatures.source to public (freshclam from the ClamAV mirrors), mirror (freshclam from the site's mirror, uploadScan.signatures.mirrorUrl) or mounted (a claim the site keeps current, uploadScan.signatures.claimName); wiki 04 section 6.7 (ARV-092c)" }}
+{{- end }}
+{{- if not (has $source (list "public" "mirror" "mounted")) }}
+{{- fail "uploadScan.signatures.source must be public, mirror or mounted (ARV-092c)" }}
+{{- end }}
+{{- if and (eq $source "mirror") (eq $mirrorUrl "") }}
+{{- fail "uploadScan.signatures.source mirror needs uploadScan.signatures.mirrorUrl, the http:// or https:// URL of the site's signature mirror (ARV-092c)" }}
+{{- end }}
+{{- if and $mirrorUrl (ne $source "mirror") }}
+{{- fail "uploadScan.signatures.mirrorUrl is read with source mirror only: clear it or set source mirror (ARV-092c)" }}
+{{- end }}
+{{- if and $mirrorUrl (not (regexMatch "^https?://([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*|\\[[0-9A-Fa-f:.]{2,45}\\])(:[0-9]{1,5})?(/[A-Za-z0-9._~%/-]*)?$" $mirrorUrl)) }}
+{{- fail "uploadScan.signatures.mirrorUrl must be the http:// or https:// URL of the site's signature mirror: a host name or IP address, an optional port and path, and nothing else (no credentials, query, spaces or quotes; ARV-092c)" }}
+{{- end }}
+{{- if and $mirrorUrl $logRequired (not (hasPrefix "https://" $mirrorUrl)) }}
+{{- fail (printf "%s takes signature updates over TLS only: uploadScan.signatures.mirrorUrl must be an https:// URL (ASVS 5.0 V12.3.1; ARV-092c)" $logWhere) }}
+{{- end }}
+{{- if and $mirrorCa (ne $source "mirror") }}
+{{- fail "uploadScan.signatures.mirrorCaSecretName is read with source mirror only (ARV-092c)" }}
+{{- end }}
+{{- if and $mirrorCa (not (regexMatch "^[a-z0-9]([-a-z0-9]{0,251}[a-z0-9])?$" $mirrorCa)) }}
+{{- fail "uploadScan.signatures.mirrorCaSecretName must be a Kubernetes secret name, the Secret whose key ca.crt is the CA the mirror's certificate chains to (ARV-092c)" }}
+{{- end }}
+{{- if and $mirrorCa (not (hasPrefix "https://" $mirrorUrl)) }}
+{{- fail "uploadScan.signatures.mirrorCaSecretName needs an https:// mirrorUrl: a CA is checked over TLS only (ARV-092c)" }}
+{{- end }}
+{{- if and (eq $source "mounted") (eq $claim "") }}
+{{- fail "uploadScan.signatures.source mounted needs uploadScan.signatures.claimName, the PersistentVolumeClaim that holds the signatures the site keeps current (ARV-092c)" }}
+{{- end }}
+{{- if and $claim (ne $source "mounted") }}
+{{- fail "uploadScan.signatures.claimName is read with source mounted only: clear it or set source mounted (ARV-092c)" }}
+{{- end }}
+{{- if and $claim (not (regexMatch "^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$" $claim)) }}
+{{- fail "uploadScan.signatures.claimName must be a Kubernetes name, the PersistentVolumeClaim of the signatures (ARV-092c)" }}
+{{- end }}
+{{- $checks := 12 }}
+{{- if hasKey $signatures "checksPerDay" }}{{ $checks = $signatures.checksPerDay }}{{ end }}
+{{- $checksNumber := or (kindIs "float64" $checks) (kindIs "int64" $checks) (kindIs "int" $checks) }}
+{{- if or (not $checksNumber) (lt (float64 $checks) 1.0) (gt (float64 $checks) 24.0) (ne (float64 $checks) (float64 (int $checks))) }}
+{{- fail "uploadScan.signatures.checksPerDay must be a whole number from 1 to 24: ClamAV asks for at most one check an hour (ARV-092c)" }}
+{{- end }}
+{{- range $container := list "clamd" "freshclam" }}
+{{- $settings := index $scan $container }}
+{{- $complete := false }}
+{{- if and (kindIs "map" $settings) (not (without (keys ($settings | default dict)) "resources")) (kindIs "map" $settings.resources) }}
+{{- $complete = true }}
+{{- range $part := list "requests" "limits" }}
+{{- $amounts := index $settings.resources $part }}
+{{- if not (kindIs "map" $amounts) }}{{ $complete = false }}
+{{- else if or (empty (toString ($amounts.cpu | default ""))) (empty (toString ($amounts.memory | default ""))) }}{{ $complete = false }}{{ end }}
+{{- end }}
+{{- end }}
+{{- if not $complete }}
+{{- fail (printf "uploadScan.%s must be a map of resources, with requests and limits each giving cpu and memory (ARV-092c)" $container) }}
+{{- end }}
+{{- end }}
+{{- if and $np.enabled (has $source (list "public" "mirror")) (empty (($np.clamavMirror | default dict).to | default list)) }}
+{{- fail "uploadScan.signatures.source public or mirror needs networkPolicies.clamavMirror.to, the signature mirror's peers: with networkPolicies.enabled freshclam could not reach it (ARV-092c)" }}
 {{- end }}
 {{- end }}

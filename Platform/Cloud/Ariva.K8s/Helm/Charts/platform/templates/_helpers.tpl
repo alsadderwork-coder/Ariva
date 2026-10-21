@@ -847,3 +847,280 @@ Usage: {{ include "ariva-platform.mappedClientsRefusal" "fd00:10::/48" }}
 {{- end -}}
 {{- end -}}
 {{- end }}
+
+{{/*
+The malware scan beside Ariva.Api.Main (ARV-092c; values uploadScan): "true" when uploadScan.enabled is true, empty otherwise
+(and when uploadScan is not a map, which validate.yaml refuses). Usage: {{- if include "ariva-platform.uploadScan" . }}
+*/}}
+{{- define "ariva-platform.uploadScan" -}}
+{{- if and (kindIs "map" .Values.uploadScan) (eq (toString .Values.uploadScan.enabled) "true") }}true{{ end -}}
+{{- end }}
+
+{{/*
+How clamd's signatures arrive (ARV-092c): uploadScan.signatures.source (public, mirror or mounted; validate.yaml refuses anything
+else), or empty. Usage: {{ include "ariva-platform.signatureSource" . }}
+*/}}
+{{- define "ariva-platform.signatureSource" -}}
+{{- $scan := .Values.uploadScan -}}
+{{- if and (kindIs "map" $scan) (kindIs "map" $scan.signatures) }}{{ toString ($scan.signatures.source | default "") }}{{ end -}}
+{{- end }}
+
+{{/*
+"true" when a freshclam sidecar keeps the signatures current (ARV-092c): the scan is on and its source is public or mirror.
+Usage: {{- if include "ariva-platform.freshclam" . }}
+*/}}
+{{- define "ariva-platform.freshclam" -}}
+{{- if and (include "ariva-platform.uploadScan" .) (has (include "ariva-platform.signatureSource" .) (list "public" "mirror")) }}true{{ end -}}
+{{- end }}
+
+{{/*
+The ClamAV image (ARV-092c): uploadScan.image repository:tag@digest, pinned by digest like every third-party image of the
+chart (validate.yaml refuses a tag without a digest). Usage: {{ include "ariva-platform.clamavImage" . }}
+*/}}
+{{- define "ariva-platform.clamavImage" -}}
+{{- $image := .Values.uploadScan.image -}}
+{{- if not (kindIs "map" $image) }}{{ $image = dict }}{{ end -}}
+{{- printf "%s:%s@%s" (toString $image.repository) (toString $image.tag) (toString $image.digest) | quote -}}
+{{- end }}
+
+{{/*
+The security context of the scanner's containers (ARV-092c, CWE-269): the image's own clamav user (uid 100, gid 101; the
+signature files it ships are that user's), never root, a read-only root, no privilege escalation, no capability, the runtime's
+seccomp profile. The pod's fsGroup 10001 makes the emptyDirs the containers share writable for all of them.
+*/}}
+{{- define "ariva-platform.clamavSecurityContext" -}}
+runAsNonRoot: true
+runAsUser: 100
+runAsGroup: 101
+allowPrivilegeEscalation: false
+capabilities:
+  drop: ["ALL"]
+readOnlyRootFilesystem: true
+seccompProfile:
+  type: RuntimeDefault
+{{- end }}
+
+{{/*
+clamd's configuration in the api-main pod (ARV-092c), the file of the ConfigMap api-main-clamav-configmap. clamd listens on the
+pod's loopback only (TCPAddr 127.0.0.1, TCPSocket 3310; no LocalSocket, no PidFile, so it writes nothing but its scans' files
+in /tmp), in the foreground, logging to stdout. ConcurrentDatabaseReload no: a reload frees the loaded signatures before it
+reads the new ones, so the container never holds two sets (about 1 GiB each); scans wait during the reload (about 20 s).
+SelfCheck: every 600 s clamd checks the signature files and reloads them when freshclam (or the site, for a mounted set) has
+changed them. The limits are the repository's (Platform/Cloud/clamav/clamd.conf, ARV-092b; the chart test holds them equal):
+the largest upload (100 MiB) is taken and scanned whole, and what clamd cannot scan whole is a detection. OfficialDatabaseOnly
+yes, as in the repository's file: clamd loads only the signatures ClamAV publishes (main, daily, bytecode), never an unsigned
+signature file someone put in the signature folder (.fp, .sfp, .ndb and the like, which could whitelist a threat); ignore
+lists (.ign2) still load, so the go-live record lists the folder (wiki 13 item 23). MaxThreads 2 and
+MaxQueue 4: Ariva.Api.Main sends one upload at a time per pod, but a scan it gave up on at its timeout keeps running in clamd
+(until MaxScanTime, 120 s); each queued item may hold a whole stream (StreamMaxLength) in /tmp and each running scan what an
+archive unpacks to (MaxScanSize), so MaxQueue times StreamMaxLength plus MaxThreads times MaxScanSize (1220 MiB) must fit in the
+clamd-tmp emptyDir, whose size limit evicts the whole pod (the chart test checks the arithmetic).
+*/}}
+{{- define "ariva-platform.clamdConf" -}}
+# clamd beside Ariva.Api.Main (ARV-092c), rendered by the chart: the pod's loopback only, the repository's limits.
+DatabaseDirectory /var/lib/clamav
+TemporaryDirectory /tmp
+TCPAddr 127.0.0.1
+TCPSocket 3310
+Foreground yes
+LogTime yes
+SelfCheck 600
+ConcurrentDatabaseReload no
+OfficialDatabaseOnly yes
+MaxThreads 2
+MaxQueue 4
+StreamMaxLength 105M
+MaxFileSize 105M
+MaxScanSize 400M
+AlertExceedsMax yes
+{{ end }}
+
+{{/*
+freshclam's configuration (ARV-092c), with source public or mirror: the ClamAV mirrors (DatabaseMirror database.clamav.net) or
+the site's mirror (PrivateMirror, which takes the URL as given and asks no DNS), checksPerDay checks a day, in the foreground,
+logging to stdout. TestDatabases no: freshclam still checks each file's digital signature, but does not load the whole set
+to test it (which would need another 1 GiB in this container); clamd loads it. No NotifyClamd: clamd's SelfCheck reloads.
+CompressLocalDatabase yes: a database freshclam builds from incremental updates (a .cld, with source public) stays compressed,
+as the .cvd files are: main is 84 MiB compressed and 225 MiB not, daily 22 and 82 MiB (ClamAV 1.4.6), so an update, which holds
+the current files, an unpacked copy and the new file at once, peaks at about 420 MiB instead of about 760 MiB in the signature
+emptyDir, whose size limit evicts the whole pod; loading compressed files took clamd about 1.5 s longer (19.7 s against 18.1 s).
+*/}}
+{{- define "ariva-platform.freshclamConf" -}}
+{{- $signatures := .Values.uploadScan.signatures -}}
+# freshclam beside clamd in the api-main pod (ARV-092c), rendered by the chart.
+DatabaseDirectory /var/lib/clamav
+Foreground yes
+LogTime yes
+Checks {{ int ($signatures.checksPerDay | default 12) }}
+TestDatabases no
+CompressLocalDatabase yes
+{{- if eq (toString $signatures.source) "mirror" }}
+PrivateMirror {{ toString $signatures.mirrorUrl }}
+{{- else }}
+DatabaseMirror database.clamav.net
+{{- end }}
+{{ end }}
+
+{{/*
+The scanner's volumes in the api-main pod (ARV-092c): its configuration (the ConfigMap, read-only), the signatures (an emptyDir
+that the init container fills and freshclam updates, or with source mounted the site's claim, read-only), clamd's /tmp (a
+100 MiB upload is written there whole before the scan, archives unpack there up to MaxScanSize, one upload at a time per
+api-main), and with freshclam its /tmp, the init container's and, for a mirror with a site CA, that CA (ca.crt only).
+Usage: {{- include "ariva-platform.uploadScanVolumes" . | nindent 8 }}, inside {{- if include "ariva-platform.uploadScan" . }}
+*/}}
+{{- define "ariva-platform.uploadScanVolumes" -}}
+{{- $signatures := .Values.uploadScan.signatures -}}
+# The scanner's configuration (ARV-092c): clamd.conf and freshclam.conf, read-only
+- name: clamav-config
+  configMap:
+    name: api-main-clamav-configmap
+    defaultMode: 0444
+{{- if eq (include "ariva-platform.signatureSource" .) "mounted" }}
+# The signatures (ARV-092c, source mounted): the site's claim, which it keeps current; read-only
+- name: clamav-signatures
+  persistentVolumeClaim:
+    claimName: {{ toString $signatures.claimName | quote }}
+    readOnly: true
+{{- else }}
+# The signatures (ARV-092c): the image's snapshot, copied by the init container, then freshclam's updates: about 110 MiB, and
+# about 420 MiB at the worst moment of an update (CompressLocalDatabase yes); over the limit the kubelet evicts the whole pod
+- name: clamav-signatures
+  emptyDir:
+    sizeLimit: 1Gi
+{{- end }}
+# clamd's scratch space: each queued upload whole and what a running scan unpacks, MaxQueue 4 times StreamMaxLength 105M plus
+# MaxThreads 2 times MaxScanSize 400M (1220 MiB) at most; over the limit the kubelet evicts the whole api-main pod
+- name: clamd-tmp
+  emptyDir:
+    sizeLimit: 1536Mi
+{{- if include "ariva-platform.freshclam" . }}
+- name: freshclam-tmp
+  emptyDir:
+    sizeLimit: 64Mi
+- name: clamav-init-tmp
+  emptyDir:
+    sizeLimit: 16Mi
+{{- if and (eq (include "ariva-platform.signatureSource" .) "mirror") $signatures.mirrorCaSecretName }}
+# The site mirror's CA (ARV-092c): ca.crt of uploadScan.signatures.mirrorCaSecretName only, read-only; freshclam's CA file (it
+# replaces the image's bundle; the pinned image has no hashed CA files that libcurl would also read)
+- name: clamav-mirror-ca
+  secret:
+    secretName: {{ toString $signatures.mirrorCaSecretName | quote }}
+    optional: false
+    defaultMode: 0444
+    items:
+      - key: ca.crt
+        path: ca.crt
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
+The init container that gives clamd its first signatures (ARV-092c, source public or mirror): the snapshot the pinned image
+ships (main.cvd, daily.cvd and bytecode.cvd), copied into the signature emptyDir, so clamd answers about 20 seconds after the
+pod starts while freshclam updates them. Nothing with source mounted.
+Usage: {{- include "ariva-platform.uploadScanInitContainers" . | nindent 8 }}, inside {{- if include "ariva-platform.freshclam" . }}
+*/}}
+{{- define "ariva-platform.uploadScanInitContainers" -}}
+- name: clamav-signatures
+  image: {{ include "ariva-platform.clamavImage" . }}
+  imagePullPolicy: IfNotPresent
+  command: ["cp", "-p", "/var/lib/clamav/main.cvd", "/var/lib/clamav/daily.cvd", "/var/lib/clamav/bytecode.cvd", "/signatures/"]
+  securityContext:
+    {{- include "ariva-platform.clamavSecurityContext" . | nindent 4 }}
+  volumeMounts:
+    - name: clamav-signatures
+      mountPath: /signatures
+    - name: clamav-init-tmp
+      mountPath: /tmp
+  resources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      cpu: 200m
+      memory: 64Mi
+{{- end }}
+
+{{/*
+The scanner's containers in the api-main pod (ARV-092c), after api-main's own:
+- clamd, on 127.0.0.1:3310 only, from the ConfigMap's clamd.conf, reading the signatures read-only. No readiness probe and no
+  startup probe: a clamd that runs but does not answer (a reload, a liveness restart that succeeds) must not take api-main
+  out of its Service, as api-main refuses uploads by itself then (503, fail closed) and the rest of the API keeps serving;
+  Kubernetes counts a container whose startup probe has not passed as not ready, so a startup probe would. A clamd that cannot
+  start at all (a damaged mounted signature set, signatures that outgrow the memory limit at load) still takes the pod out:
+  a container that is not running is not ready. A liveness probe only (clamdscan --ping, PING on 127.0.0.1:3310 through the
+  mounted clamd.conf, no shell): it starts after 60 s, past the signature load on a slow node (ClamAV 1.4.6: 18 s on one
+  core, 43 s on half a core), and restarts a clamd that has not answered for 90 s, longer than a reload, which answers
+  nothing for about 20 s.
+- freshclam (source public or mirror), as a daemon checking checksPerDay times a day, writing the signature volume; with a
+  site CA for the mirror, CURL_CA_BUNDLE names it: it replaces the image's CA bundle file, and the pinned image has no hashed
+  CA files that libcurl would also read, so freshclam then trusts that CA alone (checked with 1.4.6; check again with a new image).
+Neither gets an environment variable from a Secret, the service account token or any of api-main's volumes.
+Time zone: clamd stays in the image's UTC (TZ=Etc/UTC). It reports its signatures' build time (the VERSION reply) in its local
+time, which Ariva.Api.Main reads as UTC for the signature age and its staleness alarm (ARV-092c), so these containers never set
+TZ or mount a zone file (the chart test refuses both).
+Usage: {{- include "ariva-platform.uploadScanContainers" . | nindent 8 }}, inside {{- if include "ariva-platform.uploadScan" . }}
+*/}}
+{{- define "ariva-platform.uploadScanContainers" -}}
+{{- $scan := .Values.uploadScan -}}
+{{- $clamdResources := dict -}}
+{{- if kindIs "map" $scan.clamd }}{{ $clamdResources = $scan.clamd.resources }}{{ end -}}
+{{- $freshclamResources := dict -}}
+{{- if kindIs "map" $scan.freshclam }}{{ $freshclamResources = $scan.freshclam.resources }}{{ end -}}
+{{- $ping := list "clamdscan" "--config-file=/etc/clamav/clamd.conf" "--ping" "1" -}}
+# clamd in the image's UTC, never a TZ of its own: Ariva.Api.Main reads its signatures' build time as UTC
+- name: clamd
+  image: {{ include "ariva-platform.clamavImage" . }}
+  imagePullPolicy: IfNotPresent
+  command: ["clamd", "--foreground", "--config-file=/etc/clamav/clamd.conf"]
+  securityContext:
+    {{- include "ariva-platform.clamavSecurityContext" . | nindent 4 }}
+  volumeMounts:
+    - name: clamav-config
+      mountPath: /etc/clamav
+      readOnly: true
+    - name: clamav-signatures
+      mountPath: /var/lib/clamav
+      readOnly: true
+    - name: clamd-tmp
+      mountPath: /tmp
+  livenessProbe:
+    exec:
+      command: {{ toJson $ping }}
+    initialDelaySeconds: 60
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
+  resources:
+    {{- toYaml $clamdResources | nindent 4 }}
+{{- if include "ariva-platform.freshclam" . }}
+- name: freshclam
+  image: {{ include "ariva-platform.clamavImage" . }}
+  imagePullPolicy: IfNotPresent
+  command: ["freshclam", "--daemon", "--foreground", "--stdout", "--config-file=/etc/clamav/freshclam.conf"]
+  securityContext:
+    {{- include "ariva-platform.clamavSecurityContext" . | nindent 4 }}
+  {{- if and (eq (include "ariva-platform.signatureSource" .) "mirror") $scan.signatures.mirrorCaSecretName }}
+  env:
+    # The site mirror's CA (ARV-092c): libcurl's CA file, in place of the image's bundle (the image has no hashed CA files)
+    - name: CURL_CA_BUNDLE
+      value: /etc/ariva/mirror-ca/ca.crt
+  {{- end }}
+  volumeMounts:
+    - name: clamav-config
+      mountPath: /etc/clamav
+      readOnly: true
+    - name: clamav-signatures
+      mountPath: /var/lib/clamav
+    - name: freshclam-tmp
+      mountPath: /tmp
+    {{- if and (eq (include "ariva-platform.signatureSource" .) "mirror") $scan.signatures.mirrorCaSecretName }}
+    - name: clamav-mirror-ca
+      mountPath: /etc/ariva/mirror-ca
+      readOnly: true
+    {{- end }}
+  resources:
+    {{- toYaml $freshclamResources | nindent 4 }}
+{{- end }}
+{{- end }}

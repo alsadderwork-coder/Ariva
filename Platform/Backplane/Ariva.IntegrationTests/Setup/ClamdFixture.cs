@@ -19,7 +19,7 @@ public sealed class ClamdFixture : IAsyncLifetime
     #region Fields
 
     /// <summary>The ClamAV image by tag and digest (ARV-096; scripts/base-images.mjs holds one digest per image everywhere).</summary>
-    public const string Image = "clamav/clamav:1.4.3@sha256:75fb5fd95fcbe1d7e6d240c369c1572b686ee2c95949d1042b5148de8eddebb4";
+    public const string Image = "clamav/clamav:1.4.6@sha256:3bba6dd5ac6663d55b80f86a3126e146612d93b593cc2617188d13f637d91260";
 
     private const int ClamdPort = 3310;
 
@@ -37,6 +37,22 @@ public sealed class ClamdFixture : IAsyncLifetime
 
     /// <summary>Whether Ariva's own clamd settings were mounted over the image's.</summary>
     public bool ArivaSettings { get; private set; }
+
+    #endregion
+
+    #region Methods
+
+    /// <summary>
+    /// The text header of the image's daily signature database (<c>/var/lib/clamav/daily.cvd</c>, ARV-092c), as freshclam and
+    /// sigtool read it: <c>ClamAV-VDB:&lt;build time&gt;:&lt;version&gt;:...</c>, its first 128 bytes, read in the container.
+    /// </summary>
+    public async Task<string> DailyDatabaseHeaderAsync(CancellationToken ct)
+    {
+        var result = await _container.ExecAsync(["head", "-c", "128", "/var/lib/clamav/daily.cvd"], ct);
+        if (result.ExitCode != 0)
+            throw new InvalidOperationException($"daily.cvd could not be read in the clamd container (exit code {result.ExitCode}).");
+        return result.Stdout;
+    }
 
     #endregion
 

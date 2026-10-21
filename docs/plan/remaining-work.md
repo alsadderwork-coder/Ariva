@@ -9,18 +9,18 @@ Snapshot of 2026-10-20, branch `story/mvp-phase1`. The backlog files in `backlog
 | Phase 0 (`prd-phase0.json`) | 78 of 79 | ARV-002: its last criterion is a dev cluster release by a person, deferred by the owner to ARV-137 |
 | Phase 1, the MVP (`prd-phase1.json`) | 69 of 82 | 13, almost all waiting for site answers or the owner |
 | Phase 2, displays and advertising (`prd-phase2.json`) | 8 of 8 | none |
-| ASVS gaps (`prd-asvs-gaps.json`) | 20 of 37 | 17 |
+| ASVS gaps (`prd-asvs-gaps.json`) | 21 of 38 | 17 |
 | Phase 3, deferred hardening (`prd-phase3.json`) | 0 of 44 | 44, built after the pilot go-live gate unless pulled forward |
 | Azure DevOps move (`prd-azure-move.json`) | 0 of 9 | 9, new; see [azure-devops-move.md](azure-devops-move.md) |
 
-ASVS 5.0 Level 2 (`docs/security/asvs-l2.md`): 157 of the 203 requirements that apply are met (77 percent), 43 partly, 3 gaps.
+ASVS 5.0 Level 2 (`docs/security/asvs-l2.md`): 158 of the 203 requirements that apply are met (78 percent), 42 partly, 3 gaps.
 
 ## 1. Workable now, no decision needed
 
 | Story | What it does | Notes |
 |---|---|---|
 | ARV-226 | No certificate downloads while a chain is built: Redis, and the collectors without a site CA | Found in ARV-200; Medium, so before the pilot |
-| ARV-092c | ClamAV in the chart | Built with the Proposed signature delivery; air-gapped sites are the owner's choice. Released with ARV-092b, which a production Ariva.Api.Main needs a loopback scanner for |
+| ARV-227 | Third-party images: patch releases and known vulnerabilities noticed | Found in ARV-092c (the pinned ClamAV had fixed CVEs nobody noticed); before the pilot |
 | ARV-096b | Remaining availability bounds (report rows, search counts, run timeouts, hub connections, slow bodies, forms sent to actions that bind none) | The sign-in endpoints' part waits for the login freeze |
 | ARV-124 | Pilot-profile load test and 24-hour soak | Needs a quiet machine for 24 hours; its numbers answer TC-33 (node sizes) |
 

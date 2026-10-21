@@ -1,8 +1,9 @@
 # Ariva releases from an offline install bundle (ARV-127; wiki/04 section 12). scripts/offline/bundle.mjs copies this file
 # into the bundle as helm/helmfile.yaml.gotmpl, next to the packaged charts (charts/) and the values files (values/: the
 # environment values of the platform chart, the database chart's values, images.yaml with the bundle's build number, release
-# version and image digests, and timescaledb-image.yaml with the chart's TimescaleDB tag and digest). Same releases and
-# environments as helmfile-k8s.yaml.gotmpl; chart-security.mjs renders both from a staged bundle and requires the same objects.
+# version and image digests, timescaledb-image.yaml with the chart's TimescaleDB tag and digest, and clamav-image.yaml with the
+# platform chart's ClamAV tag and digest). Same releases and environments as helmfile-k8s.yaml.gotmpl; chart-security.mjs
+# renders both from a staged bundle and requires the same objects.
 # Install only a bundle that scripts/offline/verify.mjs passed without --dry-run (wiki/04 section 12.3).
 #
 #   helmfile -f helm/helmfile.yaml.gotmpl -e prd --state-values-set mirror=<registry>[/<path>] \
@@ -10,7 +11,8 @@
 #
 # State values:
 #   mirror          required: the site's registry mirror the bundle's images were copied to, host[:port][/path] in lower
-#                   case; Ariva's images under <mirror>/ariva, TimescaleDB under <mirror>/timescale/timescaledb-ha.
+#                   case; Ariva's images under <mirror>/ariva, TimescaleDB under <mirror>/timescale/timescaledb-ha, ClamAV
+#                   under <mirror>/clamav/clamav.
 #   siteValues      the site's values file for the platform release (domain, ingresses, clusterName, otel, logging, image credentials)
 #   databaseValues  the site's values file for the TimescaleDB release (storage, resources)
 #   timescaledb     false where PostgreSQL with TimescaleDB is provided another way, as in helmfile-k8s.yaml.gotmpl
@@ -25,6 +27,11 @@
 #   logShipping     log shipping (ARV-091a), as in helmfile-k8s.yaml.gotmpl: true in prd, which refuses it off; a site file
 #                   cannot drop the collector or the log pseudonym key's Secret there (the release sets logging.required) but
 #                   chooses them (logging.collector, logging.pseudonymKeySecret); create the Secret first
+#   uploadScan      the malware scan beside api-main (ARV-092c), as in helmfile-k8s.yaml.gotmpl: true in prd, which refuses it
+#                   off; a site file cannot turn it off there (the release sets uploadScan.enabled) but chooses how the
+#                   signatures arrive, which a site without internet sets to mirror or mounted (uploadScan.signatures,
+#                   wiki/04 sections 6.7 and 12.4); ClamAV's image comes from <mirror>/clamav/clamav under the chart's tag
+#                   and digest (values/clamav-image.yaml, listed last)
 # The image repository, tags and digests come from the bundle and win over a site file: the pods pull exactly the images the
 # bundle's verification checked. It refuses to render unless images.yaml pins all seven Ariva digests, so a dry run's bundle
 # (which pins none) cannot be installed.
@@ -38,6 +45,7 @@ environments:
         podTls: false
         networkPolicies: false
         logShipping: false
+        uploadScan: false
   demo:
     values:
       - valuesFile: values-k8s-demo.yaml
@@ -46,6 +54,7 @@ environments:
         podTls: false
         networkPolicies: false
         logShipping: false
+        uploadScan: false
   prd:
     values:
       - valuesFile: values-k8s-prd.yaml
@@ -54,6 +63,7 @@ environments:
         podTls: true
         networkPolicies: true
         logShipping: true
+        uploadScan: true
   localk8s:
     values:
       - valuesFile: values-localk8s.yaml
@@ -62,6 +72,7 @@ environments:
         podTls: false
         networkPolicies: false
         logShipping: false
+        uploadScan: false
 
 helmDefaults:
   kubeContext: default
@@ -88,6 +99,9 @@ helmDefaults:
 {{- end }}
 {{- if and (eq .Environment.Name "prd") (not (.Values | get "logShipping" false)) }}
 {{- fail "prd ships the hosts' logs to a collector over TLS, with the log pseudonym key from a Secret (state value logShipping true; ARV-091a)" }}
+{{- end }}
+{{- if and (eq .Environment.Name "prd") (not (.Values | get "uploadScan" false)) }}
+{{- fail "prd scans every upload for malware with clamd beside api-main (state value uploadScan true; ARV-092c)" }}
 {{- end }}
 
 releases:
@@ -128,9 +142,14 @@ releases:
       {{- end }}
       # last, so the bundle's release version, build number and digests win over the site's file
       - ./values/images.yaml
+      # and the ClamAV image's tag and digest, the chart's pin (ARV-092c)
+      - ./values/clamav-image.yaml
     set:
       - name: imageRepository
         value: {{ printf "%s/ariva" $mirror | quote }}
+      # the scanner beside api-main from the mirror too (ARV-092c), under the tag and digest of clamav-image.yaml
+      - name: uploadScan.image.repository
+        value: {{ printf "%s/clamav/clamav" $mirror | quote }}
       {{- if .Values | get "podTls" false }}
       # set, so that no site file turns pod TLS off (ARV-082b)
       - name: podTls.enabled
@@ -144,5 +163,10 @@ releases:
       {{- if .Values | get "logShipping" false }}
       # set, so that no site file drops the log collector or the log pseudonym key's Secret (ARV-091a)
       - name: logging.required
+        value: true
+      {{- end }}
+      {{- if .Values | get "uploadScan" false }}
+      # set, so that no site file turns the malware scan off (ARV-092c)
+      - name: uploadScan.enabled
         value: true
       {{- end }}

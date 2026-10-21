@@ -14,10 +14,12 @@
 //   helm/charts/ariva-platform.tgz    the platform chart, packaged (helm package)
 //   helm/charts/ariva-timescaledb.tgz the TimescaleDB chart, packaged
 //   helm/values/*.yaml                the platform chart's environment values and the database chart's values; images.yaml
-//                                     (release version, build number, the Ariva image digests) and timescaledb-image.yaml
-//                                     (the chart's TimescaleDB tag and digest), which the Helmfile lists after a site's file
+//                                     (release version, build number, the Ariva image digests), timescaledb-image.yaml
+//                                     (the chart's TimescaleDB tag and digest) and clamav-image.yaml (the platform chart's
+//                                     ClamAV tag and digest), which the Helmfile lists after a site's file
 //   images/<name>/                    each image as an OCI image layout under its tag, by digest, with its OCI referrers:
-//                                     the seven Ariva images with their cosign signature and SBOM attestation, and TimescaleDB
+//                                     the seven Ariva images with their cosign signature and SBOM attestation, TimescaleDB
+//                                     and ClamAV (the malware scan beside api-main, ARV-092c)
 //   sboms/<name>.cdx.json             each Ariva image's CycloneDX SBOM, taken from its verified attestation
 //   web/                              the web build: in a release, the files of the signed web image (where its Dockerfile
 //                                     copies the build); in a dry run, the build of the checkout (--web-build)
@@ -28,7 +30,8 @@
 // - An Ariva image is taken only once cosign verifies its tag is signed by this repository's images workflow, on a version
 //   tag or main, at the commit of this checkout; it is then copied by that digest, never by tag, and its SBOM is the one in
 //   its verified attestation. So the images, the charts and the web build are one commit.
-// - A third-party image (TimescaleDB) is copied by the digest its chart pins, so the bundle holds exactly what the chart runs.
+// - A third-party image (TimescaleDB, ClamAV) is copied by the digest its chart pins, so the bundle holds exactly what the
+//   chart runs.
 // - The web build of a release is copied out of the verified web image (docker create and cp; nothing in it runs), so no
 //   npm code runs to make a release bundle.
 // - Nothing is pushed or signed here, and no cluster is touched: the registries are only read.
@@ -44,8 +47,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import assert from 'node:assert/strict';
 import {
   ARIVA_IMAGES, DATABASE_IMAGE, DATABASE_IMAGE_VALUES, DEFAULT_REPOSITORY, IMAGES_VALUES, IMAGES_WORKFLOW, MANIFEST, PATTERNS, Refused,
-  SELF_TEST, SIGNATURE, TOOLS, UsageError, databaseImageValues, imagesValues, layoutProblems, pathAllowed, run, selfTestSign,
-  selfTestState, trustArgs, verifyBundle, walk, writeManifest
+  SCANNER_IMAGE, SCANNER_IMAGE_VALUES, SELF_TEST, SIGNATURE, TOOLS, UsageError, databaseImageValues, imagesValues, layoutProblems,
+  pathAllowed, run, scannerImageValues, selfTestSign, selfTestState, trustArgs, verifyBundle, walk, writeManifest
 } from './verify.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -102,28 +105,63 @@ export function chartInfo(folder) {
   return info;
 }
 
-/** The third-party images the charts run, each pinned by digest: today TimescaleDB, from Charts/timescaledb/values.yaml. */
-export function thirdPartyImages() {
-  const values = fs.readFileSync(path.join(HELM_FOLDER, 'Charts', 'timescaledb', 'values.yaml'), 'utf8');
-  const image = values.match(/^image:\r?\n {2}repository:\s*(\S+)\r?\n {2}tag:\s*(\S+)\r?\n {2}digest:\s*(\S+)\s*$/m);
-  if (!image) throw new Refused('Charts/timescaledb/values.yaml: no image block with repository, tag and digest');
-  const [, repository, tag, digest] = image;
+/** A third-party image pinned by a chart's values: its source registry path, the path under the site's mirror, tag and digest. */
+function pinnedImage(name, where, [repository, tag, digest]) {
   const firstSegment = repository.split('/')[0];
   const hosted = repository.includes('/') && (firstSegment.includes('.') || firstSegment.includes(':') || firstSegment === 'localhost');
   const mirrorPath = hosted ? repository.slice(firstSegment.length + 1) : repository.includes('/') ? repository : `library/${repository}`;
   const source = hosted ? repository : `docker.io/${mirrorPath}`;
   if (!PATTERNS.registry.test(source) || !PATTERNS.imagePath.test(mirrorPath) || !PATTERNS.tag.test(tag) || !PATTERNS.digest.test(digest)) {
-    throw new Refused('Charts/timescaledb/values.yaml: the image is not a plain repository, tag and sha256 digest');
+    throw new Refused(`${where}: the image is not a plain repository, tag and sha256 digest`);
   }
-  return [{ name: DATABASE_IMAGE, source, tag, digest, mirrorPath, signed: false }];
+  return { name, source, tag, digest, mirrorPath, signed: false };
 }
 
 /**
- * The helm folder of a bundle: the offline Helmfile, both charts packaged, the values files it names, images.yaml and
- * timescaledb-image.yaml. Also used by Platform/Cloud/Ariva.K8s/tests/chart-security.mjs, which renders it against
- * helmfile-k8s.yaml.gotmpl.
+ * The repository, tag and digest of the image block under the given top-level key of a chart's values (image: at the top
+ * when key is null), the lines exactly as the charts write them; quotes around a value are dropped.
  */
-export function stageHelm(out, { version, build, digests, database = thirdPartyImages().find((i) => i.name === DATABASE_IMAGE) }) {
+export function imageBlock(text, key) {
+  const lines = text.split(/\r?\n/);
+  let start = 0;
+  let indent = '';
+  if (key !== null) {
+    start = lines.findIndex((line) => line === `${key}:`);
+    if (start === -1) return null;
+    const block = lines.slice(start + 1).findIndex((line) => /^\S/.test(line));
+    const end = block === -1 ? lines.length : start + 1 + block;
+    const at = lines.slice(start + 1, end).findIndex((line) => line === '  image:');
+    if (at === -1) return null;
+    start = start + 1 + at;
+    indent = '  ';
+  } else {
+    start = lines.findIndex((line) => line === 'image:');
+    if (start === -1) return null;
+  }
+  const field = (offset, name) => lines[start + offset]?.match(new RegExp(`^${indent}  ${name}:\\s*"?([^"\\s]+)"?\\s*$`))?.[1];
+  const found = [field(1, 'repository'), field(2, 'tag'), field(3, 'digest')];
+  return found.every(Boolean) ? found : null;
+}
+
+/**
+ * The third-party images the charts run, each pinned by digest: TimescaleDB (Charts/timescaledb/values.yaml, image) and ClamAV
+ * (Charts/platform/values.yaml, uploadScan.image: the malware scan beside api-main, ARV-092c).
+ */
+export function thirdPartyImages() {
+  const database = imageBlock(fs.readFileSync(path.join(HELM_FOLDER, 'Charts', 'timescaledb', 'values.yaml'), 'utf8'), null);
+  if (!database) throw new Refused('Charts/timescaledb/values.yaml: no image block with repository, tag and digest');
+  const scanner = imageBlock(fs.readFileSync(path.join(HELM_FOLDER, 'Charts', 'platform', 'values.yaml'), 'utf8'), 'uploadScan');
+  if (!scanner) throw new Refused('Charts/platform/values.yaml: no uploadScan.image block with repository, tag and digest');
+  return [pinnedImage(DATABASE_IMAGE, 'Charts/timescaledb/values.yaml', database), pinnedImage(SCANNER_IMAGE, 'Charts/platform/values.yaml uploadScan.image', scanner)];
+}
+
+/**
+ * The helm folder of a bundle: the offline Helmfile, both charts packaged, the values files it names, images.yaml,
+ * timescaledb-image.yaml and clamav-image.yaml. Also used by Platform/Cloud/Ariva.K8s/tests/chart-security.mjs, which renders it
+ * against helmfile-k8s.yaml.gotmpl.
+ */
+export function stageHelm(out, { version, build, digests, database = thirdPartyImages().find((i) => i.name === DATABASE_IMAGE),
+  scanner = thirdPartyImages().find((i) => i.name === SCANNER_IMAGE) }) {
   const helm = path.join(out, 'helm');
   fs.mkdirSync(path.join(helm, 'charts'), { recursive: true });
   fs.mkdirSync(path.join(helm, 'values'), { recursive: true });
@@ -153,6 +191,7 @@ export function stageHelm(out, { version, build, digests, database = thirdPartyI
   }
   fs.writeFileSync(path.join(out, ...IMAGES_VALUES.split('/')), imagesValues({ version, build, digests }), { flag: 'wx' });
   fs.writeFileSync(path.join(out, ...DATABASE_IMAGE_VALUES.split('/')), databaseImageValues(database), { flag: 'wx' });
+  fs.writeFileSync(path.join(out, ...SCANNER_IMAGE_VALUES.split('/')), scannerImageValues(scanner), { flag: 'wx' });
   return charts;
 }
 
@@ -258,6 +297,8 @@ export function buildBundle(options) {
   const thirdParty = options.thirdParty ?? thirdPartyImages();
   const database = thirdParty.find((image) => image.name === DATABASE_IMAGE);
   if (!database) throw new Refused('no TimescaleDB image among the third-party images');
+  const scanner = thirdParty.find((image) => image.name === SCANNER_IMAGE);
+  if (!scanner) throw new Refused('no ClamAV image among the third-party images');
 
   fs.mkdirSync(out);
   const images = [];
@@ -285,7 +326,7 @@ export function buildBundle(options) {
     images.push(...thirdParty.map((image) => ({ ...image, layout: null, sbom: null })));
     webFiles = copyWeb(webBuild, path.join(out, 'web'));
   }
-  const charts = stageHelm(out, { version, build, digests, database });
+  const charts = stageHelm(out, { version, build, digests, database, scanner });
   const manifest = writeManifest(out, {
     version, build, commit, createdUtc: new Date().toISOString(), dryRun, source: { repository, registry }, charts, images,
     web: dryRun ? { from: 'build', digest: null } : { from: 'image', digest: digests.web }
@@ -354,13 +395,21 @@ async function selfTest() {
 
   // the third-party image is the one the chart pins, under the path the offline Helmfile points TimescaleDB at; the web
   // image's Dockerfile copies the build where a release takes it from
-  const [timescale] = thirdPartyImages();
+  const [timescale, clamav] = thirdPartyImages();
   ok(timescale.source === 'docker.io/timescale/timescaledb-ha' && PATTERNS.digest.test(timescale.digest), 'TimescaleDB from Docker Hub by digest');
   ok(fs.readFileSync(OFFLINE_HELMFILE, 'utf8').includes(`printf "%s/${timescale.mirrorPath}" $mirror`), 'the offline Helmfile takes TimescaleDB from <mirror>/timescale/timescaledb-ha');
+  // ARV-092c: the malware scanner beside api-main, pinned by the platform chart, from <mirror>/clamav/clamav under that pin.
+  ok(clamav.name === SCANNER_IMAGE && clamav.source === 'docker.io/clamav/clamav' && clamav.mirrorPath === 'clamav/clamav' && PATTERNS.digest.test(clamav.digest) && clamav.signed === false,
+    'ClamAV from Docker Hub by the digest the platform chart pins');
+  ok(fs.readFileSync(OFFLINE_HELMFILE, 'utf8').includes(`printf "%s/${clamav.mirrorPath}" $mirror`) && fs.readFileSync(OFFLINE_HELMFILE, 'utf8').includes('- ./values/clamav-image.yaml'),
+    'the offline Helmfile takes ClamAV from <mirror>/clamav/clamav and lists clamav-image.yaml');
+  ok(JSON.stringify(imageBlock('uploadScan:\n  enabled: true\n  image:\n    repository: clamav/clamav\n    tag: "1.4.3"\n    digest: sha256:abc\nother: 1\n', 'uploadScan')) === '["clamav/clamav","1.4.3","sha256:abc"]' &&
+    imageBlock('uploadScan:\n  enabled: true\nimage:\n  repository: x/y\n  tag: "1"\n  digest: sha256:abc\n', 'uploadScan') === null, 'the image block is read under its own key only');
   ok(new RegExp(`^COPY --from=builder /app/build ${WEB_IMAGE_PATH}\\s*$`, 'm').test(fs.readFileSync(WEB_DOCKERFILE, 'utf8')), `the web Dockerfile copies the build to ${WEB_IMAGE_PATH}`);
   ok(imagesValues({ version: '1.2.0', build: 'v1-1', digests: {} }).includes('imageDigests: {}'), 'a dry run pins no digest');
   refuses(() => imagesValues({ version: '1.2.0', build: 'v1-1', digests: { web: 'sha256:x"\ny: 1' } }), /plain values/, 'images.yaml refuses a value that could change its shape');
   refuses(() => databaseImageValues({ tag: 'pg17\nimage: x', digest: timescale.digest }), /plain values/, 'timescaledb-image.yaml refuses a value that could change its shape');
+  refuses(() => scannerImageValues({ tag: '1.4.3\nenabled: false', digest: clamav.digest }), /plain values/, 'clamav-image.yaml refuses a value that could change its shape');
 
   const helmFound = run('helm', ['version', '--short']).ok;
   if (!helmFound) {
@@ -398,10 +447,10 @@ async function selfTest() {
     // a dry run: charts, Helmfile, values and the checkout's web build; no image, no signature
     const dry = buildBundle(options('dry', { dryRun: true, version: '0.0.0-ci.1', build: 'ci-1', webBuild: web }));
     ok(verifyBundle(path.join(work, 'dry'), { dryRun: true }).ok, 'a dry run verifies with --dry-run');
-    ok(dry.images.filter((i) => i.signed).every((i) => i.digest === null && i.layout === null) && dry.images.some((i) => i.name === DATABASE_IMAGE && i.digest === timescale.digest),
-      'a dry run lists the images: Ariva\'s unresolved, TimescaleDB by its pinned digest');
+    ok(dry.images.filter((i) => i.signed).every((i) => i.digest === null && i.layout === null) && dry.images.some((i) => i.name === DATABASE_IMAGE && i.digest === timescale.digest) &&
+      dry.images.some((i) => i.name === SCANNER_IMAGE && i.digest === clamav.digest), 'a dry run lists the images: Ariva\'s unresolved, TimescaleDB and ClamAV by their pinned digests');
     for (const file of ['helm/helmfile.yaml.gotmpl', 'helm/charts/ariva-platform.tgz', 'helm/charts/ariva-timescaledb.tgz', 'helm/values/values-k8s-prd.yaml', 'helm/values/timescaledb.yaml',
-      IMAGES_VALUES, DATABASE_IMAGE_VALUES, 'web/index.html', 'web/_app/immutable/app.js', 'web/_app/immutable/-CWa0sji.js']) {
+      IMAGES_VALUES, DATABASE_IMAGE_VALUES, SCANNER_IMAGE_VALUES, 'web/index.html', 'web/_app/immutable/app.js', 'web/_app/immutable/-CWa0sji.js']) {
       ok(dry.files.some((f) => f.path === file), `the dry run carries ${file}`);
     }
     ok(dry.web.from === 'build' && !dry.files.some((f) => f.path.endsWith('.gitkeep')), 'the checkout\'s web build, without the .gitkeep placeholder');
@@ -414,23 +463,30 @@ async function selfTest() {
     const certificate = { repository: DEFAULT_REPOSITORY, ref: 'refs/tags/v1.2.0', sha: commit, trigger: 'push' };
     state.images = [
       ...ARIVA_IMAGES.map((name) => ({ name, source: `${registry}/${name}`, tag: 'v1.2.0-57', digest: fixtures.syntheticImage(name, true).digest, signed: true, certificate })),
-      { name: DATABASE_IMAGE, source: timescale.source, tag: timescale.tag, digest: timescale.digest, signed: false }
+      { name: DATABASE_IMAGE, source: timescale.source, tag: timescale.tag, digest: timescale.digest, signed: false },
+      { name: SCANNER_IMAGE, source: clamav.source, tag: clamav.tag, digest: clamav.digest, signed: false }
     ];
     for (const name of ARIVA_IMAGES) state.sboms[`${registry}/${name}`] = fixtures.syntheticSbom(name);
     save();
     // The stand-in registry cannot serve the real TimescaleDB digest the chart pins: the copy fails and stops the bundle.
     refuses(() => buildBundle(options('pinned')), /oras copy docker\.io\/timescale\/timescaledb-ha@sha256:/, 'a failed image copy stops the bundle');
-    // From here TimescaleDB stands in as a synthetic third-party image under the chart's repository and tag.
+    // From here TimescaleDB and ClamAV stand in as synthetic third-party images under their charts' repositories and tags.
     const synthetic = { ...timescale, digest: fixtures.syntheticImage(DATABASE_IMAGE, false).digest };
+    const syntheticScanner = { ...clamav, digest: fixtures.syntheticImage(SCANNER_IMAGE, false).digest };
     state.images.find((i) => i.name === DATABASE_IMAGE).digest = synthetic.digest;
+    state.images.find((i) => i.name === SCANNER_IMAGE).digest = syntheticScanner.digest;
     save();
-    const built = buildBundle(options('release', { thirdParty: [synthetic] }));
+    refuses(() => buildBundle(options('no-scanner', { thirdParty: [synthetic] })), /no ClamAV image among the third-party images/, 'a bundle without the scanner image is refused');
+    const thirdParty = [synthetic, syntheticScanner];
+    const built = buildBundle(options('release', { thirdParty }));
     ok(built.images.filter((i) => i.signed).every((i) => i.digest === state.images.find((s) => s.name === i.name).digest), 'each Ariva image is copied by its signed digest');
-    ok(built.images.find((i) => i.name === DATABASE_IMAGE).digest === synthetic.digest, 'the third-party image is copied by its pinned digest');
+    ok(built.images.find((i) => i.name === DATABASE_IMAGE).digest === synthetic.digest && built.images.find((i) => i.name === SCANNER_IMAGE).digest === syntheticScanner.digest,
+      'the third-party images are copied by their pinned digests');
     ok(built.web.from === 'image' && built.web.digest === built.images.find((i) => i.name === 'web').digest, 'the web build comes from the signed web image');
     ok(Object.entries(fixtures.WEB_IMAGE_FILES).every(([file, content]) => fs.readFileSync(path.join(work, 'release', 'web', ...file.split('/')), 'utf8') === content), 'the web files are the web image\'s');
     ok(fs.readFileSync(path.join(work, 'release', ...IMAGES_VALUES.split('/')), 'utf8').includes(`  api-main: "${built.images[0].digest}"`), 'images.yaml pins the digests');
     ok(fs.readFileSync(path.join(work, 'release', ...DATABASE_IMAGE_VALUES.split('/')), 'utf8').includes(`  digest: "${synthetic.digest}"`), 'timescaledb-image.yaml pins TimescaleDB');
+    ok(fs.readFileSync(path.join(work, 'release', ...SCANNER_IMAGE_VALUES.split('/')), 'utf8') === scannerImageValues(syntheticScanner), 'clamav-image.yaml pins ClamAV');
     selfTestSign(path.join(work, 'release'), state, { repository: DEFAULT_REPOSITORY, ref: 'refs/tags/v1.2.0', sha: commit, trigger: 'workflow_dispatch' });
     const verified = verifyBundle(path.join(work, 'release'), { version: '1.2.0' });
     ok(verified.ok, `the release bundle verifies (${verified.problems.join(' | ')})`);
@@ -440,20 +496,20 @@ async function selfTest() {
 
     // refusals: images built at another commit, an unsigned image, a link in the web image, an existing folder, a web
     // build without index.html or with a link
-    refuses(() => buildBundle(options('other-commit', { thirdParty: [synthetic], commit: 'b'.repeat(40) })), /api-main:v1\.2\.0-57 is not signed by .* at commit bbbbbbbbbbbb/,
+    refuses(() => buildBundle(options('other-commit', { thirdParty, commit: 'b'.repeat(40) })), /api-main:v1\.2\.0-57 is not signed by .* at commit bbbbbbbbbbbb/,
       'images built at another commit than the checkout are refused');
     state.webLink = true;
     save();
     let linkable = os.platform() !== 'win32';
-    if (linkable) refuses(() => buildBundle(options('web-link', { thirdParty: [synthetic] })), /the web build: .*not a regular file or folder/, 'a link in the web image\'s files is refused');
+    if (linkable) refuses(() => buildBundle(options('web-link', { thirdParty })), /the web build: .*not a regular file or folder/, 'a link in the web image\'s files is refused');
     state.webLink = false;
     state.webRootLink = linkable;
     save();
-    if (linkable) refuses(() => buildBundle(options('web-root-link', { thirdParty: [synthetic] })), /is not a folder \(a link is refused\)/, 'a link at the web image\'s path is refused');
+    if (linkable) refuses(() => buildBundle(options('web-root-link', { thirdParty })), /is not a folder \(a link is refused\)/, 'a link at the web image\'s path is refused');
     state.webRootLink = false;
     state.images.find((i) => i.name === 'api-cronz').signed = false;
     save();
-    refuses(() => buildBundle(options('unsigned', { thirdParty: [synthetic] })), /api-cronz:v1\.2\.0-57 is not signed by alsadderwork-coder\/Ariva's images workflow/, 'an unsigned image is refused');
+    refuses(() => buildBundle(options('unsigned', { thirdParty })), /api-cronz:v1\.2\.0-57 is not signed by alsadderwork-coder\/Ariva's images workflow/, 'an unsigned image is refused');
     refuses(() => buildBundle(options('dry', { dryRun: true, webBuild: web })), /exists: name a new folder/, 'an existing folder is refused');
     refuses(() => buildBundle(options('inside', { dryRun: true, webBuild: work, out: path.join(work, 'inside') })), /cannot be inside the web build/, 'an output inside the web build is refused');
     ok(!within(web, `${web}..x`) && within(web, path.join(web, 'x')), 'a sibling folder whose name starts with the web build\'s is not inside it');

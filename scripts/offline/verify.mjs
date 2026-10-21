@@ -23,15 +23,15 @@
 //    a second verification requires the signing run's commit to be the commit the manifest names.
 // 4. Every file the manifest names exists with its size and SHA-256, no other file is present, and SHA256SUMS says the
 //    same. Paths are relative, plain names only (no "..", no leading dot, no drive or root), and are only ever matched
-//    against what the folder walk found. The values files that decide what the pods pull (images.yaml and
-//    timescaledb-image.yaml) say exactly what the manifest says.
+//    against what the folder walk found. The values files that decide what the pods pull (images.yaml,
+//    timescaledb-image.yaml and clamav-image.yaml) say exactly what the manifest says.
 // 5. Each image's OCI layout: index.json names the image's digest under its tag, once; every blob the image needs is
 //    present; every blob hashes to its name; and an Ariva image's layout carries its signature and SBOM attestation
 //    (cosign 3 Sigstore bundles as OCI referrers), so the site's mirror receives them.
 // 6. Each Ariva image digest is signed by this repository's images workflow at the manifest's commit, on a version tag or
 //    main, and its CycloneDX attestation verifies, in the registry the manifest names; the SBOM in the bundle is the
-//    attested one. Third-party images (TimescaleDB) carry no Dalil signature: their digest is the one the chart pins,
-//    recorded in the signed manifest.
+//    attested one. Third-party images (TimescaleDB, and ClamAV for the malware scan beside api-main) carry no Dalil
+//    signature: their digest is the one the chart pins, recorded in the signed manifest.
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -47,6 +47,7 @@ export const SIGNATURE = 'manifest.json.sigstore.json';
 export const SUMS = 'SHA256SUMS';
 export const IMAGES_VALUES = 'helm/values/images.yaml';
 export const DATABASE_IMAGE_VALUES = 'helm/values/timescaledb-image.yaml';
+export const SCANNER_IMAGE_VALUES = 'helm/values/clamav-image.yaml';
 export const DEFAULT_REPOSITORY = 'alsadderwork-coder/Ariva';
 export const ISSUER = 'https://token.actions.githubusercontent.com';
 export const BUNDLE_WORKFLOW = 'offline-bundle.yml';
@@ -54,6 +55,8 @@ export const BUNDLE_TRIGGER = 'workflow_dispatch';
 export const IMAGES_WORKFLOW = 'images.yml';
 export const ARIVA_IMAGES = ['api-main', 'api-ingest', 'api-stream', 'api-cronz', 'api-integration', 'simulation', 'web'];
 export const DATABASE_IMAGE = 'timescaledb';
+// ARV-092c: the malware scanner beside api-main, pinned by the platform chart (uploadScan.image).
+export const SCANNER_IMAGE = 'clamav';
 
 const SIGSTORE_BUNDLE = 'application/vnd.dev.sigstore.bundle.v0.3+json';
 const SIGNATURE_PREDICATE = 'https://sigstore.dev/cosign/sign/v1';
@@ -254,6 +257,22 @@ export function databaseImageValues({ tag, digest }) {
   ].join('\n') + '\n';
 }
 
+/**
+ * helm/values/clamav-image.yaml (ARV-092c): the tag and digest the platform chart pins for ClamAV (uploadScan.image), listed
+ * last for the platform release so no site file can change them.
+ */
+export function scannerImageValues({ tag, digest }) {
+  return [
+    '# The ClamAV image of this bundle (ARV-092c), written by scripts/offline/bundle.mjs: the tag and digest the platform chart',
+    '# pins, listed after the site\'s siteValues so no site file can change them; the Helmfile\'s state value mirror sets',
+    '# uploadScan.image.repository.',
+    'uploadScan:',
+    '  image:',
+    `    tag: "${plain(tag)}"`,
+    `    digest: "${plain(digest)}"`
+  ].join('\n') + '\n';
+}
+
 /** Writes SHA256SUMS and manifest.json for a finished bundle folder; the release workflow then signs manifest.json. */
 export function writeManifest(root, head) {
   for (const name of [MANIFEST, SIGNATURE, SUMS]) {
@@ -297,7 +316,7 @@ export function manifestProblems(m, dryRun) {
     need(!listed.has(f.path), `${f.path} is listed twice`);
     listed.add(f.path);
   }
-  for (const file of [SUMS, IMAGES_VALUES, DATABASE_IMAGE_VALUES]) need(listed.has(file), `${file} is not listed`);
+  for (const file of [SUMS, IMAGES_VALUES, DATABASE_IMAGE_VALUES, SCANNER_IMAGE_VALUES]) need(listed.has(file), `${file} is not listed`);
 
   const charts = Array.isArray(m.charts) ? m.charts : [];
   need(charts.length > 0, 'charts lists no chart');
@@ -308,7 +327,7 @@ export function manifestProblems(m, dryRun) {
 
   const images = Array.isArray(m.images) ? m.images : [];
   const names = images.map((image) => image?.name);
-  for (const name of [...ARIVA_IMAGES, DATABASE_IMAGE]) need(names.filter((n) => n === name).length === 1, `images must list ${name} once`);
+  for (const name of [...ARIVA_IMAGES, DATABASE_IMAGE, SCANNER_IMAGE]) need(names.filter((n) => n === name).length === 1, `images must list ${name} once`);
   for (const image of images) {
     const label = `image ${JSON.stringify(image?.name ?? null)}`;
     if (!image || !text(image.name, PATTERNS.name)) {
@@ -543,6 +562,10 @@ export function verifyBundle(folder, { dryRun = false, repository = DEFAULT_REPO
   if (hashes.has(DATABASE_IMAGE_VALUES) && textOf(DATABASE_IMAGE_VALUES) !== databaseImageValues(database)) {
     problems.push(`${DATABASE_IMAGE_VALUES} does not pin the manifest's TimescaleDB tag and digest`);
   }
+  const scanner = manifest.images.find((i) => i.name === SCANNER_IMAGE);
+  if (hashes.has(SCANNER_IMAGE_VALUES) && textOf(SCANNER_IMAGE_VALUES) !== scannerImageValues(scanner)) {
+    problems.push(`${SCANNER_IMAGE_VALUES} does not pin the manifest's ClamAV tag and digest`);
+  }
   for (const [file, sha256] of hashes) {
     const blob = /^images\/[^/]+\/blobs\/sha256\/([0-9a-f]{64})$/.exec(file);
     if (blob && blob[1] !== sha256) problems.push(`${file} does not hash to its name (${sha256})`);
@@ -634,7 +657,8 @@ export function selfTestBundle(fixtures, root, state, options = {}) {
   write('web/index.html', '<!doctype html><title>Ariva</title>\n');
   write('web/_app/immutable/app.js', 'export {};\n');
   const timescale = { name: DATABASE_IMAGE, source: 'docker.io/timescale/timescaledb-ha', tag: 'pg17-ts2.30', mirrorPath: 'timescale/timescaledb-ha', signed: false };
-  const images = [...ARIVA_IMAGES.map((name) => ({ name, source: `${registry}/${name}`, tag: build, mirrorPath: `ariva/${name}`, signed: true })), timescale]
+  const clamav = { name: SCANNER_IMAGE, source: 'docker.io/clamav/clamav', tag: '1.4.6', mirrorPath: 'clamav/clamav', signed: false };
+  const images = [...ARIVA_IMAGES.map((name) => ({ name, source: `${registry}/${name}`, tag: build, mirrorPath: `ariva/${name}`, signed: true })), timescale, clamav]
     .map((image) => {
       const synthetic = fixtures.syntheticImage(image.name, image.signed);
       if (dryRun) return { ...image, digest: image.signed ? null : synthetic.digest, layout: null, sbom: null };
@@ -650,6 +674,7 @@ export function selfTestBundle(fixtures, root, state, options = {}) {
   const digests = Object.fromEntries(images.filter((i) => i.signed && i.digest).map((i) => [i.name, i.digest]));
   write(IMAGES_VALUES, imagesValues({ version, build, digests }));
   write(DATABASE_IMAGE_VALUES, databaseImageValues(images.find((i) => i.name === DATABASE_IMAGE)));
+  write(SCANNER_IMAGE_VALUES, scannerImageValues(images.find((i) => i.name === SCANNER_IMAGE)));
   state.images = images.map(({ name, source, tag, digest, signed }) => ({
     name, source, tag, digest, signed, certificate: { repository, ref: `refs/tags/v${version}`, sha: imagesCommit, trigger: 'push' }
   }));
@@ -871,6 +896,20 @@ function runSelfTest(fixtures, standIns) {
       fs.writeFileSync(join(root, DATABASE_IMAGE_VALUES), fs.readFileSync(join(root, DATABASE_IMAGE_VALUES), 'utf8').replace('pg17-ts2.30', 'pg17-other'));
       rewrite(root, state, (m) => relist(root, m, DATABASE_IMAGE_VALUES));
       failsWith(verify(root), /timescaledb-image\.yaml does not pin the manifest's TimescaleDB tag and digest/, 'timescaledb-image.yaml with another tag');
+    }
+    // ARV-092c: the scanner's tag and digest are the manifest's too, and the manifest lists the scanner
+    {
+      const { root, state } = fresh();
+      fs.writeFileSync(join(root, SCANNER_IMAGE_VALUES), fs.readFileSync(join(root, SCANNER_IMAGE_VALUES), 'utf8').replace(/digest: "sha256:[0-9a-f]{64}"/, `digest: "sha256:${'f'.repeat(64)}"`));
+      rewrite(root, state, (m) => relist(root, m, SCANNER_IMAGE_VALUES));
+      failsWith(verify(root), /clamav-image\.yaml does not pin the manifest's ClamAV tag and digest/, 'clamav-image.yaml with another digest');
+    }
+    {
+      const { root, state } = fresh();
+      rewrite(root, state, (m) => {
+        m.images = m.images.filter((i) => i.name !== SCANNER_IMAGE);
+      });
+      failsWith(verify(root), /images must list clamav once/, 'a manifest without the scanner image');
     }
     // layouts a buggy release could write, even signed: a missing attestation, another digest or a second tag, a lost layer
     {

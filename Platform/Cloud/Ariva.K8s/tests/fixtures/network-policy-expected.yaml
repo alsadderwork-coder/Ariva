@@ -59,6 +59,12 @@ networkPolicies:
     ports:
       - 587
       - 465
+  clamavMirror:
+    to:
+      - ipBlock:
+          cidr: 10.70.0.0/24
+    ports:
+      - 443
   outbound:
     - name: aodb
       to:
@@ -83,6 +89,9 @@ networkPolicies:
           cidr: 10.30.0.0/16
       - ipBlock:
           cidr: 10.31.0.0/16
+uploadScan:
+  enabled: true
+  source: mirror
 ingressController:
   namespaceSelector:
     matchLabels:

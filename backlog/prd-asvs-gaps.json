@@ -495,10 +495,31 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 112,
-      "passes": false,
+      "passes": true,
       "notes": "Split from ARV-092 on 2026-10-19. Needs the owner or site to choose how signatures arrive at sites without internet. Release together with ARV-092b: ARV-092b refuses uploads outside vm-local while no scanner answers, and only ARV-092c gives the chart a clamd, so a k8s-prd Ariva.Api.Main with ARV-092b alone does not start (it needs a scanner on its pod's loopback: a clamd or a TLS proxy beside it), and k8s-dev and k8s-demo refuse every upload. main cannot be released to k8s-prd until ARV-092c is done. ARV-092b (2026-10-20): clamd has no TLS, so a k8s-prd host takes a loopback MalwareScan:Host only; the chart's choice is a sidecar (about 1 GiB per Ariva.Api.Main replica, signatures loaded per pod) or a TLS proxy pair to one clamd Service.",
       "dependsOn": [
         "ARV-092b"
+      ]
+    },
+    {
+      "id": "ARV-227",
+      "title": "[ASVS] Third-party images: patch releases and known vulnerabilities noticed",
+      "description": "Found in the ARV-092c security review (H1): the pinned ClamAV 1.4.3 had memory-corruption CVEs fixed in 1.4.5 and 1.4.6 (PE unpackers, 7z, GPT parsers clamd runs on every upload), and nothing noticed: images.yml runs Trivy on Ariva's own images only, Dependabot watches Ariva's Dockerfiles and the dev container only, and scripts/base-images.mjs holds every copy of a pin to one digest but never looks for a newer patch release on the pinned line. The same holds for every third-party image Ariva pins outside its own Dockerfiles: clamav/clamav, timescale/timescaledb-ha, redis, apache/kafka, the integration tests' cp-kafka and toxiproxy, the AppHost's smtp4dev. ASVS 5.0: V15.1.1, V15.2.1. Effort S.",
+      "acceptanceCriteria": [
+        "A scheduled CI job (weekly at least) scans every third-party image Ariva pins (the chart's, docker-compose's, the AppHost's, CI's and the integration fixtures', read from scripts/base-images.mjs' lists) with Trivy, and fails or opens an issue on a High or Critical vulnerability with a fixed version, with the remediation time frames of docs/security (V15.1.1)",
+        "A newer patch release on each image's pinned line is reported (Dependabot for the files it can read, docker-compose and the Helm values if it supports them, or the scheduled job comparing the registry's tags), so a bump is proposed rather than discovered in a review",
+        "A bump moves every copy of a pin together (scripts/base-images.mjs already refuses copies that differ) and the docs say how (wiki 04 or the harness README)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 112,
+      "passes": false,
+      "notes": "Filed by ARV-092c on 2026-10-20 from its security review (H1, the third part of its fix). The bump to ClamAV 1.4.6 itself is in ARV-092c. High by its origin, so before the pilot.",
+      "dependsOn": [
+        "ARV-092c"
       ]
     },
     {

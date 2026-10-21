@@ -116,7 +116,7 @@ stateDiagram-v2
 | K23 hub ticket key | One api-cronz process; each ticket 30 minutes |
 | K24 log pseudonym key | Proposed: 1 year (a new key only breaks the link between pseudonyms written before and after it) |
 | K25 log day keys, K26 archive day keys | One UTC day; K26 deleted by the first archive write after its three days (section 4.10) |
-| K27 to K33 and K47 certificates and CAs | The issuer's; for pod certificates the wiki 04 example is 90 days, renewed 30 days before the end |
+| K27 to K33, K47 and K48 certificates and CAs | The issuer's; for pod certificates the wiki 04 example is 90 days, renewed 30 days before the end |
 | K34 to K40 service credentials | Proposed: 1 year, and when an administrator who knew one leaves |
 | K41 backup identity, K42 backup signing keys | Proposed: 2 years; a retired backup identity is kept, sealed, while backups made under it are kept |
 | K43 release signing | One signing run |
@@ -254,7 +254,7 @@ Algorithms, sizes and code are in the inventory rows named in each section.
 - **Compromise**: rotate; read the refused dashboard requests in the log (event 9601) and the job runs; the dashboard answers only the management network in its `sourceRanges` (wiki 13 section 6a). ARV-087 would replace the key by user sign-in with a second factor.
 - **Destruction**: remove the old key from the password manager and from the browsers that kept it in local storage.
 
-### 4.12 TLS certificates and CAs (K27 to K33, K47)
+### 4.12 TLS certificates and CAs (K27 to K33, K47, K48)
 
 - **Owner**: the key owner; issued by the site's PKI or a public CA. **Custody**: the custodians and the issuers; each in its Secret (inventory rows).
 - **Cryptoperiod**: the issuer's; the wiki 04 example for pod certificates is 90 days, renewed 30 days before the end.

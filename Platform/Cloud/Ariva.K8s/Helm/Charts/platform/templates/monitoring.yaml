@@ -6,7 +6,8 @@ chart holds no SigNoz address, key or notification secret, and creates nothing b
 The rule sources in files/monitoring/alerts/<key>.json carry tokens that the values of monitoring.alerts.<key> replace:
   "${key.field}"  (a whole JSON value, quoted in the source) becomes the value as JSON (a number, a string, a list);
   ${key.field}    (inside a string) becomes the value as text; a list becomes a SigNoz filter list such as ['a', 'b'];
-  derived tokens: ${key.seconds} is key.minutes times 60, ${key.<x>Seconds} is key.<x>Days times 86400, and
+  derived tokens: ${key.seconds} is key.minutes times 60, ${key.<x>Seconds} is key.<x>Days times 86400 (or key.<x>Hours
+                  times 3600), and
                   ${key.<list>Pattern} is a list joined with | for a PromQL matcher (the values are Kubernetes names);
   an empty namespaces list is the release's namespace;
   "${channels}"   becomes monitoring.channels (names of SigNoz notification channels);
@@ -64,6 +65,11 @@ data:
 {{- $derived := printf "%s.%sSeconds" $key (trimSuffix "Days" $field) }}
 {{- $text = replace (printf "\"${%s}\"" $derived) (toString (mul (int $value) 86400)) $text }}
 {{- $text = replace (printf "${%s}" $derived) (toString (mul (int $value) 86400)) $text }}
+{{- end }}
+{{- if hasSuffix "Hours" $field }}
+{{- $derived := printf "%s.%sSeconds" $key (trimSuffix "Hours" $field) }}
+{{- $text = replace (printf "\"${%s}\"" $derived) (toString (mul (int $value) 3600)) $text }}
+{{- $text = replace (printf "${%s}" $derived) (toString (mul (int $value) 3600)) $text }}
 {{- end }}
 {{- end }}
 {{- $text = replace "\"${channels}\"" (toJson $channels) $text }}

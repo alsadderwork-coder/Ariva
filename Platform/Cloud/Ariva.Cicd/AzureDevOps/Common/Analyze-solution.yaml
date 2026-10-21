@@ -141,7 +141,7 @@ jobs:
       # the repository's clamd.conf (Ariva's limits) read-only, offline (no freshclam), on loopback only. It holds about 1 GiB
       # and answers PING about 20 seconds after it starts.
       - script: |
-          docker run -d --name ariva-e2e-clamd -p 127.0.0.1:3310:3310 -e CLAMAV_NO_FRESHCLAMD=true -v "$(Build.SourcesDirectory)/Platform/Cloud/clamav/clamd.conf:/etc/clamav/clamd.conf:ro" clamav/clamav:1.4.3@sha256:75fb5fd95fcbe1d7e6d240c369c1572b686ee2c95949d1042b5148de8eddebb4
+          docker run -d --name ariva-e2e-clamd -p 127.0.0.1:3310:3310 -e CLAMAV_NO_FRESHCLAMD=true -v "$(Build.SourcesDirectory)/Platform/Cloud/clamav/clamd.conf:/etc/clamav/clamd.conf:ro" clamav/clamav:1.4.6@sha256:3bba6dd5ac6663d55b80f86a3126e146612d93b593cc2617188d13f637d91260
           for attempt in $(seq 1 60); do [ "$(echo PING | nc -w 3 127.0.0.1 3310 2>/dev/null)" = "PONG" ] && exit 0; sleep 3; done
           echo "clamd did not answer PING with PONG on 127.0.0.1:3310 within three minutes"; docker logs --tail 40 ariva-e2e-clamd; exit 1
         displayName: 'E2E: start clamd'
