@@ -62,6 +62,8 @@ builder.Services.RegisterArivaServices(builder.Configuration);
 // ES256 access tokens from Ariva.Api.Main with permissions from stored grants (ARV-010a), input limits, rate limiting,
 // ProblemDetails errors, trusted forwarded headers and the CORS allow-list.
 builder.Services.AddAppSecurityBaseline(builder.Configuration, builder.Environment.EnvironmentName);
+// Request timeouts (ARV-096b): the default for every endpoint (Ariva.Api.Common/Settings/RequestTimeoutsSettings.cs).
+builder.Services.AddAppRequestTimeouts(builder.Configuration);
 
 // Device endpoints (ARV-022): controllers with the unit of work filter, and client certificates forwarded by the
 // ingress for devices that pin one.
@@ -106,6 +108,8 @@ app.UseSessionValidation();
 app.UsePendingScope();
 // AMAN: UseSessionContext
 app.UseAuthorization();
+// Request timeouts (ARV-096b), after authorization, as on Ariva.Api.Main.
+app.UseRequestTimeouts();
 
 #endregion
 

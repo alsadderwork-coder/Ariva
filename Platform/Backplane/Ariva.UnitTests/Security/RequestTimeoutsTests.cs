@@ -25,8 +25,8 @@ namespace Ariva.UnitTests.Security;
 /// ARV-096 (CWE-400, ASVS 5.0 V15.2.2): the request timeouts of Ariva.Api.Main. Every endpoint without its own policy has the default
 /// (Proposed 120 s, 503 with Retry-After); the reports, the file transfers and the validation results name their own; the live hub
 /// alone is exempt, since its connections last as long as a screen is open; every endpoint of the <c>upload</c> concurrency policy
-/// has the <c>transfer</c> timeout; the settings are refused at start when out of bounds; and no other host sets a default (TickerQ's
-/// dashboard hub on Ariva.Api.Cronz would be cut by one).
+/// has the <c>transfer</c> timeout; and the settings are refused at start when out of bounds. The other hosts' defaults (ARV-096b):
+/// <see cref="HostRequestPathTests"/>.
 /// </summary>
 [Collection(HostCollection.Name)]
 public sealed class RequestTimeoutsTests
@@ -177,22 +177,6 @@ public sealed class RequestTimeoutsTests
         reports.Select(Action).Should().BeEquivalentTo(new[] { "Reports.Daily", "Reports.DailyCsv" });
         reports.Should().OnlyContain(e => e.Metadata.GetMetadata<RequestTimeoutAttribute>().PolicyName == RequestTimeoutsExtensions.ReportsPolicy);
         reports.Should().OnlyContain(e => e.Metadata.GetMetadata<EnableRateLimitingAttribute>().PolicyName == RateLimitingExtensions.ReportsPolicy);
-    }
-
-    [Theory]
-    [InlineData(ArivaHosts.Ingest)]
-    [InlineData(ArivaHosts.Stream)]
-    [InlineData(ArivaHosts.Cronz)]
-    [InlineData(ArivaHosts.Integration)]
-    public async Task Options_Should_HoldNoDefault_When_TheHostIsNotMain(string host)
-    {
-        // Ariva.Api.Main only: Cronz serves TickerQ's dashboard hub, and the others' long requests have their own limits.
-        await using var app = ArivaHosts.Create(host);
-
-        var options = app.Services.GetRequiredService<IOptions<RequestTimeoutOptions>>().Value;
-
-        options.DefaultPolicy.Should().BeNull();
-        options.Policies.Should().BeEmpty();
     }
 
     #endregion

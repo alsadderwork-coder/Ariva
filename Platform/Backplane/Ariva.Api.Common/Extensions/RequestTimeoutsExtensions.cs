@@ -1,7 +1,10 @@
 using System.Globalization;
 using Ariva.Api.Common.Settings;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Timeouts;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Controllers;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -9,11 +12,11 @@ using Microsoft.Extensions.Options;
 namespace Ariva.Api.Common.Extensions;
 
 /// <summary>
-/// Request timeouts for Ariva.Api.Main (ARV-096, CWE-400, ASVS 5.0 V15.2.2), read from <c>Security:RequestTimeouts</c>: a default
-/// policy for every endpoint without its own, and the named policies below. A timeout cancels <c>HttpContext.RequestAborted</c>
-/// (the action's <see cref="CancellationToken"/>); a request whose answer has not started then gets 503 with Retry-After. Run
-/// <c>UseRequestTimeouts</c> after routing; exempt an endpoint that is long by design with <c>DisableRequestTimeout</c> (the live hub).
-/// Only Ariva.Api.Main registers these (the other hosts: <see cref="RequestTimeoutsSettings"/>).
+/// Request timeouts (ARV-096 on Ariva.Api.Main, ARV-096b on every host; CWE-400, ASVS 5.0 V15.2.2), read from
+/// <c>Security:RequestTimeouts</c>: a default policy for every endpoint without its own, and the named policies below. A timeout
+/// cancels <c>HttpContext.RequestAborted</c> (the action's <see cref="CancellationToken"/>); a request whose answer has not started
+/// then gets 503 with Retry-After. Run <c>UseRequestTimeouts</c> after routing; exempt an endpoint that is long by design with
+/// <c>DisableRequestTimeout</c> (the live hub). <see cref="RequestTimeoutsSettings"/> says where each host runs it.
 /// </summary>
 public static class RequestTimeoutsExtensions
 {
@@ -66,6 +69,25 @@ public static class RequestTimeoutsExtensions
             });
 
         return services;
+    }
+
+    /// <summary>
+    /// Exempts every action of <typeparamref name="TController"/> from the request timeouts. TEMPORARY (ARV-096b): the login freeze
+    /// keeps the Integration token exchange as it was, with no timeout; ARV-089a removes this exemption.
+    /// </summary>
+    /// <typeparam name="TController">The controller whose actions keep no request timeout.</typeparam>
+    /// <param name="builder">The host's controller endpoints.</param>
+    /// <returns>The same builder, for chaining.</returns>
+    public static ControllerActionEndpointConventionBuilder WithoutRequestTimeout<TController>(this ControllerActionEndpointConventionBuilder builder)
+        where TController : ControllerBase
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        builder.Add(endpoint =>
+        {
+            if (endpoint.Metadata.OfType<ControllerActionDescriptor>().Any(action => action.ControllerTypeInfo.AsType() == typeof(TController)))
+                endpoint.Metadata.Add(new DisableRequestTimeoutAttribute());
+        });
+        return builder;
     }
 
     #endregion

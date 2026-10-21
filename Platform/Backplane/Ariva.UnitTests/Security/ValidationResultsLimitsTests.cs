@@ -41,6 +41,7 @@ public sealed class ValidationResultsLimitsTests
     {
         var request = new HttpRequestMessage(HttpMethod.Get, Path);
         request.Headers.Add(TestAuthenticationHandler.UserHeader, "validation-manager");
+        request.Headers.TryAddWithoutValidation("Authorization", TestAuthenticationHandler.Bearer);
         request.Headers.Add(TestAuthenticationHandler.RolesHeader, Ariva.Core.RoleCodes.BorderShiftSupervisor);
         return request;
     }

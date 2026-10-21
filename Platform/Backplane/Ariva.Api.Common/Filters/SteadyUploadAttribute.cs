@@ -99,12 +99,21 @@ public sealed class SteadyUploadAttribute : Attribute, IAsyncResourceFilter
     /// (throws) on HTTP/2 and HTTP/3. Call it before anything reads the body: Kestrel takes the rate when the read starts.
     /// </summary>
     /// <param name="http">The request's context.</param>
-    public static void RequireSteadyBody(HttpContext http)
+    public static void RequireSteadyBody(HttpContext http) => RequireRate(http, MinimumRate);
+
+    /// <summary>
+    /// Sets <paramref name="rate"/> as the request's minimum body rate, over HTTP/1.x only, as <see cref="RequireSteadyBody"/> does
+    /// (ARV-096b: the sensor pushes take their own rate this way, so a push over HTTP/2 is not refused for it).
+    /// </summary>
+    /// <param name="http">The request's context.</param>
+    /// <param name="rate">The minimum rate, after its grace period.</param>
+    public static void RequireRate(HttpContext http, MinDataRate rate)
     {
         ArgumentNullException.ThrowIfNull(http);
+        ArgumentNullException.ThrowIfNull(rate);
         if ((HttpProtocol.IsHttp11(http.Request.Protocol) || HttpProtocol.IsHttp10(http.Request.Protocol)) &&
-            http.Features.Get<IHttpMinRequestBodyDataRateFeature>() is { } rate)
-            rate.MinDataRate = MinimumRate;
+            http.Features.Get<IHttpMinRequestBodyDataRateFeature>() is { } feature)
+            feature.MinDataRate = rate;
     }
 
     /// <summary>

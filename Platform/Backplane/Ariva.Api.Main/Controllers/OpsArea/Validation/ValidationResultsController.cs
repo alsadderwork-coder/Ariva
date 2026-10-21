@@ -1,5 +1,6 @@
 using System.Text;
 using Ariva.Api.Common.Extensions;
+using Ariva.Api.Common.Filters;
 using Ariva.Api.Common.Security;
 using Ariva.Core;
 using Ariva.Core.Domain.Constants;
@@ -35,6 +36,9 @@ public sealed class ValidationResultsController(ISvcValidationResults results) :
     /// <summary>A recomputation's body: a reason of at most 500 characters, with room for JSON.</summary>
     public const long MaxRecomputeBodyBytes = 4 * 1024;
 
+    /// <summary>The answer to a recomputation's body over <see cref="MaxRecomputeBodyBytes"/> (413).</summary>
+    public const string RecomputeBodyTooLarge = "A recomputation's body is at most 4 KB: a reason of at most 500 characters.";
+
     /// <summary>
     /// The campaign's results as the caller may read them: the latest frozen revision (or <paramref name="revision"/>), a closed
     /// campaign not frozen yet frozen now, a campaign not closed computed now (not stored).
@@ -58,6 +62,7 @@ public sealed class ValidationResultsController(ISvcValidationResults results) :
     [Permission(nameof(Global.Defaults.Permissions.ManageValidation))]
     [RequiresRecentMfa]
     [RequestSizeLimit(MaxRecomputeBodyBytes)]
+    [SteadyUpload(TooLarge = RecomputeBodyTooLarge)]
     [ProducesResponseType<ValidationResultsViewModel>(StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]

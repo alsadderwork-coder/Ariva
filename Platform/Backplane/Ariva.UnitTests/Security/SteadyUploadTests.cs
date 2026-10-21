@@ -10,8 +10,10 @@ using Ariva.Api.Main.Controllers.AdminArea.Advertising;
 using Ariva.Core.Domain.InputModels;
 using Ariva.Core.Domain.ViewModels;
 using Ariva.Core.Security;
+using Ariva.Core.Services.Alerting;
 using Ariva.Core.Services.Imports;
 using Ariva.Core.Services.Topology;
+using Ariva.Core.Services.Validation;
 using Ariva.UnitTests.Setup;
 using FluentAssertions;
 using Microsoft.AspNetCore.Http;
@@ -86,7 +88,42 @@ public sealed class SteadyUploadTests
         steady.Should().NotBeEmpty();
         steady.Should().OnlyContain(e => e.Metadata.GetMetadata<SteadyUploadAttribute>().TooLarge != SteadyUploadAttribute.TooLargeByDefault,
             "a body past the limit answers 413 with the same text as the endpoint's own refusal of a file too large");
-        steady.Should().OnlyContain(e => e.Metadata.GetMetadata<EnableRateLimitingAttribute>().PolicyName == RateLimitingExtensions.UploadPolicy);
+        steady.Should().OnlyContain(e => RateLimitingExtensions.ConcurrencyPolicies.Contains(e.Metadata.GetMetadata<EnableRateLimitingAttribute>().PolicyName),
+            "the steady read is for a body that holds a permit of its host");
+    }
+
+    [Fact]
+    public async Task Endpoints_Should_ReadEveryBodySteadily_When_AConcurrencyPolicyHoldsThem()
+    {
+        // ARV-096b: every concurrency policy, not only the uploads': a body arriving slowly holds its permit, and MVC's JSON formatter
+        // reads without the request's token, so a request timeout alone would not end it.
+        await using var app = ArivaHosts.Create(ArivaHosts.Main);
+
+        var held = RouteEndpoints(app).Where(e => e.Metadata.GetMetadata<EnableRateLimitingAttribute>()?.PolicyName is { } policy &&
+                                                  RateLimitingExtensions.ConcurrencyPolicies.Contains(policy)).ToList();
+        var bodies = held.Where(e => e.Metadata.GetMetadata<ControllerActionDescriptor>().Parameters.Any(p => p.BindingInfo?.BindingSource is { } source &&
+                                         (source == BindingSource.Body || source == BindingSource.Form || source == BindingSource.FormFile))).ToList();
+
+        bodies.Select(Action).Should().Contain(["AlertRules.Backtest", "ValidationResults.Recompute"]);
+        bodies.Should().OnlyContain(e => e.Metadata.GetMetadata<SteadyUploadAttribute>() != null || e.Metadata.GetMetadata<AdvertisingUploadLimitAttribute>() != null);
+        held.Except(bodies).Where(e => e.Metadata.GetMetadata<SteadyUploadAttribute>() == null && e.Metadata.GetMetadata<AdvertisingUploadLimitAttribute>() == null)
+            .Should().OnlyContain(e => e.Metadata.GetMetadata<HttpMethodMetadata>().HttpMethods.SequenceEqual(new[] { "GET" }), "the others bind no body");
+    }
+
+    [Fact]
+    public async Task Endpoints_Should_HaveTheirBodiesReadSteadily_When_AConcurrencyPolicyHoldsThemOnIntegration()
+    {
+        // The Integration API's batches and AIDX messages bind no body through MVC: the call audit reads it first, under the rate
+        // UseSteadyIntegrationBodies sets for their policies (HostRequestPathTests).
+        await using var app = ArivaHosts.Create(ArivaHosts.Integration);
+
+        var held = RouteEndpoints(app).Where(e => e.Metadata.GetMetadata<EnableRateLimitingAttribute>()?.PolicyName is { } policy &&
+                                                  RateLimitingExtensions.ConcurrencyPolicies.Contains(policy)).ToList();
+
+        held.Should().NotBeEmpty();
+        held.Should().OnlyContain(e => SteadyIntegrationBodies.Policies.Contains(e.Metadata.GetMetadata<EnableRateLimitingAttribute>().PolicyName));
+        held.Should().OnlyContain(e => e.Metadata.GetMetadata<Ariva.Api.Common.Security.IntegrationScopeAttribute>() != null,
+            "the call audit reads the bodies of the scoped endpoints, after the rate is set");
     }
 
     [Fact]
@@ -336,6 +373,35 @@ public sealed class SteadyUploadTests
         configuration.VerifyNoOtherCalls();
     }
 
+    [Theory]
+    [InlineData("/api/v1/admin/alert-rules/backtest", 2_000_000, false, AlertRuleErrors.BacktestBodyTooLarge)]
+    [InlineData("/api/v1/sites/DMO/validation/campaigns/0199a000-0000-7000-8000-000000009611/results/revisions", 5_000, true,
+        Ariva.Api.Main.Controllers.OpsArea.Validation.ValidationResultsController.RecomputeBodyTooLarge)]
+    public async Task Json_Should_Answer413WithItsOwnText_When_ABodyUnderAConcurrencyPolicyDeclaresMoreThanItsLimit(string path, long length,
+        bool recentSecondFactor, string tooLarge)
+    {
+        // ARV-096b (security review L4): the backtest (the host's 1 MB) and the recompute (4 KB) refuse a declared length past their
+        // limit before reading it, with their own fixed text and nothing of the request.
+        var alertRules = new Mock<ISvcAlertRules>(MockBehavior.Strict);
+        var results = new Mock<ISvcValidationResults>(MockBehavior.Strict);
+        await using var app = KestrelMain(services =>
+        {
+            services.Replace(ServiceDescriptor.Scoped(_ => alertRules.Object));
+            services.Replace(ServiceDescriptor.Scoped(_ => results.Object));
+        });
+        var address = ArivaHosts.Address(app);
+
+        await using var exchange = await RawExchange.OpenAsync(address);
+        await exchange.SendAsync(Headers(path, "application/json", length, administrator: true, expectContinue: true, recentSecondFactor));
+        var answer = await exchange.ReadAnswerAsync(TimeSpan.FromSeconds(30));
+
+        answer.Should().StartWith("HTTP/1.1 413");
+        answer.Should().Contain("Content-Type: application/problem+json").And.Contain(tooLarge);
+        answer.Should().NotContain("100 Continue", "the body is refused before it is asked for").And.NotContain("Exception");
+        alertRules.VerifyNoOtherCalls();
+        results.VerifyNoOtherCalls();
+    }
+
     #endregion
 
     #region Helpers
@@ -357,6 +423,7 @@ public sealed class SteadyUploadTests
             .Append(CultureInfo.InvariantCulture, $"Content-Type: {contentType}\r\n")
             .Append(CultureInfo.InvariantCulture, $"Content-Length: {contentLength}\r\n")
             .Append(CultureInfo.InvariantCulture, $"{TestAuthenticationHandler.UserHeader}: steady-upload\r\n")
+            .Append(CultureInfo.InvariantCulture, $"Authorization: {TestAuthenticationHandler.Bearer}\r\n")
             .Append("Connection: close\r\n");
         if (administrator)
             text.Append(CultureInfo.InvariantCulture, $"{TestAuthenticationHandler.RolesHeader}: {Ariva.Core.RoleCodes.SystemAdministrator}\r\n");

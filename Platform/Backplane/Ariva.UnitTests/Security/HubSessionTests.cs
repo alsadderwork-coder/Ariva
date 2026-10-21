@@ -98,6 +98,82 @@ public sealed class HubSessionTests
         other.Aborted.Should().BeFalse("another session has its own allowance");
     }
 
+    [Fact]
+    public async Task OnConnected_Should_RefuseAndAbortWithHubFull_When_TheReplicaHoldsItsMostConnections()
+    {
+        // ARV-096b: every session together, on top of each session's own allowance.
+        var registry = new HubSessionRegistry(3);
+        var open = Enumerable.Range(0, 3).Select(_ => new FakeCaller(Guid.CreateVersion7())).ToList();
+        foreach (var caller in open)
+            await new SessionHubFilter(registry).OnConnectedAsync(new HubLifetimeContext(caller, _services, null), _ => Task.CompletedTask);
+        var extra = new FakeCaller(Guid.CreateVersion7());
+
+        var connect = () => new SessionHubFilter(registry).OnConnectedAsync(new HubLifetimeContext(extra, _services, null), _ => Task.CompletedTask);
+
+        registry.Full.Should().BeTrue();
+        await connect.Should().ThrowAsync<HubException>().WithMessage("hub_full");
+        extra.Aborted.Should().BeTrue();
+        registry.Count.Should().Be(3);
+
+        await new SessionHubFilter(registry).OnDisconnectedAsync(new HubLifetimeContext(open[0], _services, null), null, (_, _) => Task.CompletedTask);
+        var next = new FakeCaller(Guid.CreateVersion7());
+        await new SessionHubFilter(registry).OnConnectedAsync(new HubLifetimeContext(next, _services, null), _ => Task.CompletedTask);
+        next.Aborted.Should().BeFalse("a closed connection frees its place");
+        registry.Full.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task OnConnected_Should_GiveThePlaceBack_When_WhatRunsAfterTheAdmissionThrows()
+    {
+        // Security review of ARV-096b, L3: SignalR does not call OnDisconnectedAsync when OnConnectedAsync throws.
+        var registry = new HubSessionRegistry(1);
+        var caller = new FakeCaller(Guid.CreateVersion7());
+
+        var connect = () => new SessionHubFilter(registry).OnConnectedAsync(new HubLifetimeContext(caller, _services, null),
+            _ => throw new InvalidOperationException("the hub's own OnConnectedAsync failed"));
+
+        await connect.Should().ThrowAsync<InvalidOperationException>();
+        registry.Count.Should().Be(0, "the connection never opened");
+        registry.Full.Should().BeFalse();
+        await new SessionHubFilter(registry).OnConnectedAsync(new HubLifetimeContext(new FakeCaller(Guid.CreateVersion7()), _services, null), _ => Task.CompletedTask);
+        registry.Count.Should().Be(1, "its place went to the next connection");
+    }
+
+    [Fact]
+    public void Admit_Should_CountAConnectionWithoutASession_When_ItHoldsTheReplicasTotal()
+    {
+        var registry = new HubSessionRegistry(2);
+
+        registry.Admit(null, new FakeCaller(Guid.CreateVersion7())).Should().Be(HubAdmission.Admitted);
+        registry.Admit(null, new FakeCaller(Guid.CreateVersion7())).Should().Be(HubAdmission.Admitted, "a connection without a session has no allowance of its own");
+        registry.Admit(Guid.CreateVersion7(), new FakeCaller(Guid.CreateVersion7())).Should().Be(HubAdmission.ReplicaFull);
+        registry.Sessions().Should().BeEmpty("the sweeper checks sessions only");
+        registry.Count.Should().Be(2);
+    }
+
+    [Fact]
+    public void Admit_Should_NameTheSessionsLimit_When_TheReplicaHasRoomButTheSessionHasNone()
+    {
+        var registry = new HubSessionRegistry(100);
+        var sessionId = Guid.CreateVersion7();
+        for (var k = 0; k < HubSessionRegistry.MaxConnectionsPerSession; k++)
+            registry.Admit(sessionId, new FakeCaller(sessionId)).Should().Be(HubAdmission.Admitted);
+
+        registry.Admit(sessionId, new FakeCaller(sessionId)).Should().Be(HubAdmission.SessionFull);
+        registry.Full.Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(9, false)]
+    [InlineData(10, true)]
+    [InlineData(1000, true)]
+    [InlineData(20_000, true)]
+    [InlineData(20_001, false)]
+    public void HubSettings_Should_HoldTheTotalWithinItsBounds_When_ItIsRead(int maxConnections, bool valid)
+    {
+        new Ariva.Api.Common.Settings.HubSettings { MaxConnections = maxConnections }.IsValid.Should().Be(valid);
+    }
+
     private sealed class FakeCaller(Guid sessionId) : HubCallerContext
     {
         private readonly CancellationTokenSource _aborted = new();

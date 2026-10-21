@@ -46,6 +46,7 @@ public sealed class ReportsLimitsTests
     {
         var request = new HttpRequestMessage(HttpMethod.Get, path);
         request.Headers.Add(TestAuthenticationHandler.UserHeader, "report-reader");
+        request.Headers.TryAddWithoutValidation("Authorization", TestAuthenticationHandler.Bearer);
         request.Headers.Add(TestAuthenticationHandler.RolesHeader, Ariva.Core.RoleCodes.BorderShiftSupervisor);
         return request;
     }
@@ -116,6 +117,79 @@ public sealed class ReportsLimitsTests
         answer.Header("Retry-After").Should().Be(RequestTimeoutsSettings.RetryAfterSeconds.ToString(CultureInfo.InvariantCulture));
         reports.Cancelled.Should().BeTrue("the report's reads get the request's token, which the timeout cancels");
         reports.Release.TrySetResult();
+    }
+
+    [Fact]
+    public async Task Get_Should_Answer401WithoutWaiting_When_TheReportsPolicyIsSaturatedAndTheRequestSendsNoCredentials()
+    {
+        // ARV-096b: the policy runs before authentication, so a request without credentials took a slot or a place in the queue and
+        // was answered 401 only after it; now it is not counted, and is refused at authentication at once.
+        var reports = new HeldReports();
+        await using var app = MainHost(reports, ("Security:RateLimiting:Reports:PermitLimit", "1"), ("Security:RateLimiting:Reports:QueueLimit", "0"));
+        using var client = app.CreateClient();
+        var ct = TestContext.Current.CancellationToken;
+
+        using var holding = Request(Daily);
+        var first = client.SendAsync(holding, ct);
+        await reports.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+        var anonymous = Enumerable.Range(0, 5).Select(_ => client.GetAsync(Daily, ct)).ToList();
+        var answers = await Task.WhenAll(anonymous).WaitAsync(TimeSpan.FromSeconds(30), ct);
+        using var refusedRequest = Request(DailyCsv);
+        using var refused = await client.SendAsync(refusedRequest, ct);
+        reports.Release.TrySetResult();
+        using var answered = await first;
+
+        answers.Select(a => a.StatusCode).Should().AllBeEquivalentTo(HttpStatusCode.Unauthorized, "none waits for or takes the one slot");
+        refused.StatusCode.Should().Be(HttpStatusCode.TooManyRequests, "a signed in caller still meets the saturated policy");
+        answered.StatusCode.Should().Be(HttpStatusCode.OK);
+        reports.Calls.Should().Be(1);
+        foreach (var answer in answers)
+            answer.Dispose();
+    }
+
+    [Fact]
+    public async Task Get_Should_Answer429_When_ASignedInCallerAddsAnEmptySecondAuthorizationValue()
+    {
+        // Security review of ARV-096b, H1, on the real JWT scheme: authentication reads the header's values joined (empty ones
+        // dropped), so a valid token beside an empty second value still signs the caller in; the policy must count it the same way.
+        var reports = new HeldReports();
+        await using var app = ArivaHosts.Create(ArivaHosts.Main, configure: builder =>
+        {
+            builder.UseSetting("Security:RateLimiting:Reports:PermitLimit", "1");
+            builder.UseSetting("Security:RateLimiting:Reports:QueueLimit", "0");
+            builder.ConfigureTestServices(services =>
+            {
+                services.Replace(ServiceDescriptor.Singleton<ISessionValidator>(new FakeSessionValidator()));
+                services.Replace(ServiceDescriptor.Scoped<IPermissionResolver>(_ => new Grants(Ariva.Core.Global.Defaults.Permissions.ViewReport)));
+                services.Replace(ServiceDescriptor.Scoped<ISiteScope>(_ => new EverySiteScope()));
+                services.Replace(ServiceDescriptor.Scoped<ISvcReports>(_ => reports));
+            });
+        });
+        using var client = app.CreateClient();
+        var ct = TestContext.Current.CancellationToken;
+        var token = app.Services.GetRequiredService<Ariva.Infra.Security.AccessTokenIssuer>()
+            .Issue(Guid.CreateVersion7(), "report.reader", Guid.CreateVersion7(), Guid.CreateVersion7(), DateTime.UtcNow, ["pwd"], false);
+
+        using var holding = new HttpRequestMessage(HttpMethod.Get, Daily);
+        holding.Headers.TryAddWithoutValidation("Authorization", "Bearer " + token);
+        var first = client.SendAsync(holding, ct);
+        await reports.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+        using var doubled = new HttpRequestMessage(HttpMethod.Get, DailyCsv);
+        doubled.Headers.TryAddWithoutValidation("Authorization", new[] { "Bearer " + token, "" });
+        using var refused = await client.SendAsync(doubled, ct);
+        reports.Release.TrySetResult();
+        using var answered = await first;
+
+        answered.StatusCode.Should().Be(HttpStatusCode.OK, "the token signs the caller in");
+        refused.StatusCode.Should().Be(HttpStatusCode.TooManyRequests, "the same caller is counted whatever empty value it adds");
+        reports.Calls.Should().Be(1);
+    }
+
+    /// <summary>The stored grants of the signed-in caller.</summary>
+    private sealed class Grants(params Permission[] granted) : IPermissionResolver
+    {
+        public Task<IReadOnlySet<Permission>> GetPermissionsAsync(System.Security.Claims.ClaimsPrincipal user, CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlySet<Permission>>(new HashSet<Permission>(granted));
     }
 
     /// <summary>A report service that answers only when released; it notes its calls and whether its caller stopped waiting.</summary>

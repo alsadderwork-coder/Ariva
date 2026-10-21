@@ -1,12 +1,13 @@
 namespace Ariva.Api.Common.Settings;
 
 /// <summary>
-/// Request timeouts of Ariva.Api.Main (ARV-096, ASVS 5.0 V15.2.2), bound from <c>Security:RequestTimeouts</c> and refused at start
-/// when out of bounds. A request still running at its timeout has <c>HttpContext.RequestAborted</c> cancelled; an endpoint that
-/// passes that token to its reads ends there, and one whose answer has not started gets 503 with
-/// <c>Retry-After: </c><see cref="RetryAfterSeconds"/>. The values are Proposed (docs/product/decisions.md, ARV-096). The other hosts
-/// set no request timeout: their long requests are the integration batches and AIDX messages under their own concurrency policies,
-/// the sensor pushes under their data rate, and Ariva.Api.Cronz serves TickerQ's dashboard hub, which a default would cut.
+/// Request timeouts of every host (ARV-096 on Ariva.Api.Main, ARV-096b on the others; ASVS 5.0 V15.2.2), bound from
+/// <c>Security:RequestTimeouts</c> and refused at start when out of bounds. A request still running at its timeout has
+/// <c>HttpContext.RequestAborted</c> cancelled; an endpoint that passes that token to its reads ends there, and one whose answer has
+/// not started gets 503 with <c>Retry-After: </c><see cref="RetryAfterSeconds"/>. The values are Proposed (docs/product/decisions.md,
+/// ARV-096). Exempt: Ariva.Api.Main's live hub (long by design), Ariva.Api.Cronz's TickerQ dashboard and its hub (a branch of the
+/// pipeline before the timeouts, which a default would cut), and, while the login freeze lasts, Ariva.Api.Integration's token
+/// exchange. Ariva.Api.Integration runs the timeouts before its call audit, so a batch or an AIDX body read there ends at the default.
 /// </summary>
 public sealed class RequestTimeoutsSettings
 {
@@ -17,9 +18,9 @@ public sealed class RequestTimeoutsSettings
     public const int RetryAfterSeconds = 30;
 
     /// <summary>
-    /// Every endpoint of Ariva.Api.Main without its own policy (the default policy), in seconds. Default 120: the endpoints under
-    /// it read bounded sets and answer in seconds (docs/security/costly-operations.md). The live hub is exempt (its connections
-    /// are long by design).
+    /// Every endpoint without its own policy (the default policy), on every host, in seconds. Default 120: the endpoints under it
+    /// read bounded sets and answer in seconds (docs/security/costly-operations.md); a sensor push (256 KB at 1 KB a second at
+    /// least) and an Integration batch or AIDX message (at 32 KB a second, over HTTP/1.x) arrive well within it.
     /// </summary>
     public int DefaultSeconds { get; set; } = 120;
 

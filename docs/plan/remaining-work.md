@@ -9,8 +9,8 @@ Snapshot of 2026-10-20, branch `story/mvp-phase1`. The backlog files in `backlog
 | Phase 0 (`prd-phase0.json`) | 78 of 79 | ARV-002: its last criterion is a dev cluster release by a person, deferred by the owner to ARV-137 |
 | Phase 1, the MVP (`prd-phase1.json`) | 69 of 82 | 13, almost all waiting for site answers or the owner |
 | Phase 2, displays and advertising (`prd-phase2.json`) | 8 of 8 | none |
-| ASVS gaps (`prd-asvs-gaps.json`) | 21 of 41 | 20 (ARV-096b split in four on 2026-10-21) |
-| Phase 3, deferred hardening (`prd-phase3.json`) | 0 of 44 | 44, built after the pilot go-live gate unless pulled forward |
+| ASVS gaps (`prd-asvs-gaps.json`) | 22 of 41 | 19 (ARV-096b split in four on 2026-10-21; its request path part done) |
+| Phase 3, deferred hardening (`prd-phase3.json`) | 0 of 46 | 46, built after the pilot go-live gate unless pulled forward (ARV-228 and ARV-229 added by ARV-096b) |
 | Azure DevOps move (`prd-azure-move.json`) | 0 of 9 | 9, new; see [azure-devops-move.md](azure-devops-move.md) |
 
 ASVS 5.0 Level 2 (`docs/security/asvs-l2.md`): 158 of the 203 requirements that apply are met (78 percent), 42 partly, 3 gaps.
@@ -21,7 +21,6 @@ ASVS 5.0 Level 2 (`docs/security/asvs-l2.md`): 158 of the 203 requirements that 
 |---|---|---|
 | ARV-226 | No certificate downloads while a chain is built: Redis, and the collectors without a site CA | Found in ARV-200; Medium, so before the pilot |
 | ARV-227 | Third-party images: patch releases and known vulnerabilities noticed | Found in ARV-092c (the pinned ClamAV had fixed CVEs nobody noticed); before the pilot |
-| ARV-096b | Availability bounds on the request path (hub connections, request timeouts, slots before authentication, slow bodies) | Split from the original ARV-096b on 2026-10-21 |
 | ARV-096c | Forms sent to actions that bind none; NulCharacterFilter in its place | The sign-in endpoints' part waits for the login freeze |
 | ARV-096d | Data read bounds (report rows, search counts, database command and statement timeouts) | The statement_timeout touches ARV-083a's per-host logins |
 | ARV-096e | Run timeouts (jobs, background loops, Kafka handlers) | |

@@ -8,6 +8,7 @@ using Ariva.Infra.Security;
 using Ariva.UnitTests.Setup;
 using FluentAssertions;
 using Ariva.Api.Common.Hubs;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.AspNetCore.SignalR;
@@ -372,6 +373,75 @@ public sealed class LiveHubTests
                 ((int)socket.StatusCode).Should().NotBe(401).And.NotBe(403, "the connection request passes authorisation (then needs a WebSocket)");
             else
                 ((int)socket.StatusCode).Should().Be(403, "the connection request itself is refused without the grant");
+        }
+    }
+
+    [Fact]
+    public async Task Negotiate_Should_Answer429WithRetryAfter_When_TheReplicaHoldsItsMostConnections()
+    {
+        // ARV-096b: the replica's total (Security:Hubs:MaxConnections, here the least, 10), after authorization: an anonymous caller
+        // is still told 401, a holder of the grant 429 with Retry-After until a connection closes.
+        var ct = TestContext.Current.CancellationToken;
+        await using var app = ArivaHosts.Create(ArivaHosts.Main, configure: builder =>
+        {
+            builder.UseSetting("Security:Hubs:MaxConnections", "10");
+            builder.ConfigureTestServices(services =>
+            {
+                services.Replace(ServiceDescriptor.Singleton<ISessionValidator>(new FakeSessionValidator()));
+                services.Replace(ServiceDescriptor.Scoped<IPermissionResolver>(_ => new Grants(Live)));
+            });
+        });
+        using var client = app.CreateClient();
+        var token = Token(app.Services);
+        var registry = app.Services.GetRequiredService<HubSessionRegistry>();
+        var held = Enumerable.Range(0, 10).Select(_ => new HeldConnection()).ToList();
+        held.ForEach(connection => registry.Admit(null, connection).Should().Be(HubAdmission.Admitted));
+
+        using var anonymous = await client.PostAsync($"{LiveHub.Path}/negotiate?negotiateVersion=1", null, ct);
+        using var full = new HttpRequestMessage(HttpMethod.Post, $"{LiveHub.Path}/negotiate?negotiateVersion=1");
+        full.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+        using var refused = await client.SendAsync(full, ct);
+        registry.Remove(held[0].ConnectionId);
+        using var room = new HttpRequestMessage(HttpMethod.Post, $"{LiveHub.Path}/negotiate?negotiateVersion=1");
+        room.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+        using var admitted = await client.SendAsync(room, ct);
+
+        registry.MaxConnections.Should().Be(10, "the setting reaches the registry");
+        ((int)anonymous.StatusCode).Should().Be(401);
+        ((int)refused.StatusCode).Should().Be(429);
+        refused.Headers.RetryAfter.Should().NotBeNull();
+        ((int)admitted.StatusCode).Should().Be(200, "a closed connection frees its place");
+    }
+
+    [Theory]
+    [InlineData("9")]
+    [InlineData("20001")]
+    public async Task Main_Should_RefuseToStart_When_TheHubsTotalIsOutOfBounds(string maxConnections)
+    {
+        await using var app = ArivaHosts.Create(ArivaHosts.Main, configure: builder => builder.UseSetting("Security:Hubs:MaxConnections", maxConnections));
+
+        var start = () => app.CreateClient();
+
+        start.Should().Throw<OptionsValidationException>().WithMessage("*Security:Hubs:MaxConnections is 10 to 20,000*");
+    }
+
+    /// <summary>An open hub connection the test holds in the registry.</summary>
+    private sealed class HeldConnection : HubCallerContext
+    {
+        public override string ConnectionId { get; } = Guid.NewGuid().ToString("N");
+
+        public override string UserIdentifier => null;
+
+        public override ClaimsPrincipal User { get; } = new(new ClaimsIdentity());
+
+        public override IDictionary<object, object> Items { get; } = new Dictionary<object, object>();
+
+        public override IFeatureCollection Features { get; } = new FeatureCollection();
+
+        public override CancellationToken ConnectionAborted => CancellationToken.None;
+
+        public override void Abort()
+        {
         }
     }
 

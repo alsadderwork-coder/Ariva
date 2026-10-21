@@ -1,10 +1,17 @@
 using System.Collections.Concurrent;
+using System.Globalization;
+using Ariva.Api.Common.Extensions;
+using Ariva.Api.Common.Logging;
+using Ariva.Api.Common.Settings;
 using Ariva.Core.Security;
 using Ariva.Infra.Security;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace Ariva.Api.Common.Hubs;
 
@@ -12,34 +19,61 @@ namespace Ariva.Api.Common.Hubs;
 /// ARV-010b for SignalR (ADR-0026): a hub connection lives longer than the access token that opened it, so the session
 /// behind it is checked on connect, on every invocation, and by <see cref="HubSessionSweeper"/> every second (with the 4 second session cache, within 5 seconds);
 /// a connection whose session is revoked or expired is closed. Hubs (ARV-035) opt in with
-/// <c>services.AddSignalR().AddArivaHubSessions()</c>.
+/// <c>services.AddSignalR().AddArivaHubSessions()</c>. Since ARV-096b the registry counts every open connection of the replica, and holds
+/// them to <see cref="MaxConnections"/> in all (<see cref="HubSettings"/>) beside the most a session may hold.
 /// </summary>
 public sealed class HubSessionRegistry
 {
     /// <summary>Open hub connections one session may hold on one replica (a few dashboard tabs; CWE-400).</summary>
     public const int MaxConnectionsPerSession = 8;
 
-    private readonly ConcurrentDictionary<string, (Guid SessionId, HubCallerContext Context)> _connections = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, (Guid? SessionId, HubCallerContext Context)> _connections = new(StringComparer.Ordinal);
     private readonly Lock _adding = new();
+
+    /// <summary>A registry holding the replica to <see cref="HubSettings.DefaultMaxConnections"/>.</summary>
+    public HubSessionRegistry() : this(HubSettings.DefaultMaxConnections)
+    {
+    }
+
+    /// <summary>A registry holding the replica to <paramref name="maxConnections"/> open connections in all.</summary>
+    public HubSessionRegistry(int maxConnections)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxConnections, 1);
+        MaxConnections = maxConnections;
+    }
 
     public int Count => _connections.Count;
 
-    /// <summary>Tracks the connection; false (nothing tracked) when the session already holds the most it may.</summary>
-    public bool TryAdd(Guid sessionId, HubCallerContext context)
+    /// <summary>The most open connections the replica holds, every session together (ARV-096b).</summary>
+    public int MaxConnections { get; }
+
+    /// <summary>Whether the replica holds <see cref="MaxConnections"/> already, so a negotiate is answered 429.</summary>
+    public bool Full => _connections.Count >= MaxConnections;
+
+    /// <summary>Tracks the connection; false (nothing tracked) when the session or the replica already holds the most it may.</summary>
+    public bool TryAdd(Guid sessionId, HubCallerContext context) => Admit(sessionId, context) == HubAdmission.Admitted;
+
+    /// <summary>
+    /// Tracks the connection, of a session or (<paramref name="sessionId"/> null) of none, unless the replica holds
+    /// <see cref="MaxConnections"/> already or the session the most it may; nothing is tracked then.
+    /// </summary>
+    public HubAdmission Admit(Guid? sessionId, HubCallerContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
         lock (_adding)
         {
-            if (_connections.Values.Count(c => c.SessionId == sessionId) >= MaxConnectionsPerSession)
-                return false;
+            if (_connections.Count >= MaxConnections)
+                return HubAdmission.ReplicaFull;
+            if (sessionId is { } session && _connections.Values.Count(c => c.SessionId == session) >= MaxConnectionsPerSession)
+                return HubAdmission.SessionFull;
             _connections[context.ConnectionId] = (sessionId, context);
-            return true;
+            return HubAdmission.Admitted;
         }
     }
 
     public void Remove(string connectionId) => _connections.TryRemove(connectionId, out _);
 
-    public IReadOnlyCollection<Guid> Sessions() => _connections.Values.Select(c => c.SessionId).Distinct().ToList();
+    public IReadOnlyCollection<Guid> Sessions() => _connections.Values.Where(c => c.SessionId is not null).Select(c => c.SessionId.Value).Distinct().ToList();
 
     /// <summary>Closes every connection of the session; returns how many.</summary>
     public int Abort(Guid sessionId)
@@ -66,13 +100,24 @@ public sealed class SessionHubFilter(HubSessionRegistry registry) : IHubFilter
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(next);
 
-        if (await SessionOf(context.Context, context.ServiceProvider) is { } sessionId && !registry.TryAdd(sessionId, context.Context))
+        var admission = registry.Admit(await SessionOf(context.Context, context.ServiceProvider), context.Context);
+        if (admission != HubAdmission.Admitted)
         {
             context.Context.Abort();
-            throw new HubException("too_many_connections");
+            throw new HubException(admission == HubAdmission.ReplicaFull ? "hub_full" : "too_many_connections");
         }
 
-        await next(context);
+        try
+        {
+            await next(context);
+        }
+        catch
+        {
+            // SignalR does not call OnDisconnectedAsync when OnConnectedAsync throws, so the admitted connection gives its place back here
+            // (security review of ARV-096b, L3: a connection without a session is never swept, and the total is a hard limit).
+            registry.Remove(context.Context.ConnectionId);
+            throw;
+        }
     }
 
     public async ValueTask<object> InvokeMethodAsync(HubInvocationContext invocationContext, Func<HubInvocationContext, ValueTask<object>> next)
@@ -150,16 +195,60 @@ public sealed class HubSessionSweeper(HubSessionRegistry registry, IServiceScope
     }
 }
 
+/// <summary>Whether <see cref="HubSessionRegistry.Admit"/> tracked a connection, and if not, which limit it met.</summary>
+public enum HubAdmission
+{
+    Admitted,
+    SessionFull,
+    ReplicaFull
+}
+
 public static class HubSessionExtensions
 {
-    /// <summary>Session checks for every hub of the host: on connect, on each invocation and every second.</summary>
+    /// <summary>The rate limiting policy name a refused negotiate is logged under (ARV-096b).</summary>
+    public const string ConnectionsPolicy = "hub-connections";
+
+    /// <summary>
+    /// Session checks for every hub of the host: on connect, on each invocation and every second; and the replica's total
+    /// (<see cref="HubSettings"/>, refused at start when out of bounds).
+    /// </summary>
     public static ISignalRServerBuilder AddArivaHubSessions(this ISignalRServerBuilder builder)
     {
         ArgumentNullException.ThrowIfNull(builder);
-        builder.Services.AddSingleton<HubSessionRegistry>();
+        builder.Services
+            .AddOptions<HubSettings>()
+            .BindConfiguration(HubSettings.SectionName)
+            .Validate(settings => settings.IsValid,
+                $"{HubSettings.SectionName}:MaxConnections is {HubSettings.LeastMaxConnections} to {HubSettings.MostMaxConnections.ToString("N0", CultureInfo.InvariantCulture)}.")
+            .ValidateOnStart();
+        builder.Services.AddSingleton(services => new HubSessionRegistry(services.GetRequiredService<IOptions<HubSettings>>().Value.MaxConnections));
         builder.Services.AddSingleton<SessionHubFilter>();
         builder.Services.AddHostedService<HubSessionSweeper>();
         builder.Services.Configure<HubOptions>(options => options.AddFilter<SessionHubFilter>());
         return builder;
+    }
+
+    /// <summary>
+    /// ARV-096b: answers a negotiate for <paramref name="hubPath"/> 429 with Retry-After when the replica holds its most connections
+    /// (<see cref="HubSessionRegistry.Full"/>), with the rate limiting security event; the hub's own check at the handshake closes any
+    /// connection past the total, negotiated or not. Run it after authorization, so an anonymous caller still gets 401.
+    /// </summary>
+    public static IApplicationBuilder UseHubConnectionLimit(this IApplicationBuilder app, PathString hubPath)
+    {
+        ArgumentNullException.ThrowIfNull(app);
+        var negotiate = hubPath.Add("/negotiate");
+        return app.Use(async (context, next) =>
+        {
+            if (context.Request.Path.StartsWithSegments(negotiate, StringComparison.OrdinalIgnoreCase) &&
+                context.RequestServices.GetRequiredService<HubSessionRegistry>().Full)
+            {
+                context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+                context.Response.Headers.RetryAfter = RateLimitingExtensions.ConcurrencyRetryAfterSeconds.ToString(CultureInfo.InvariantCulture);
+                context.RequestServices.GetService<SecurityEventLog>()?.RateLimited(context, ConnectionsPolicy, _ => SecurityEvents.HostPartition);
+                return;
+            }
+
+            await next(context);
+        });
     }
 }

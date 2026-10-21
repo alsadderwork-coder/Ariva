@@ -12,6 +12,7 @@ using Ariva.Core.Integration;
 using Ariva.Core.Services.Flights;
 using Ariva.Core.Services.Integration;
 using Ariva.Infra.Flights.Aidx;
+using Microsoft.AspNetCore.Http.Timeouts;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 
@@ -40,6 +41,8 @@ public sealed partial class AidxController(ISvcAidxIntake aidx, ISvcIntegrationI
     [HttpPost("aodb/aidx")]
     [IntegrationScope(IntegrationScopes.FlightsWrite)]
     [RequestSizeLimit(IntegrationBatches.MaxAidxBytes)]
+    // ARV-096b: 5 MB at the slowest rate the host allows (32 KB a second) takes about 170 s, past the default request timeout.
+    [RequestTimeout(RequestTimeoutsExtensions.TransferPolicy)]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]

@@ -70,6 +70,8 @@ builder.Services.AddArivaFlights(builder.Configuration);
 // ES256 access tokens from Ariva.Api.Main with permissions from stored grants (ARV-010a), input limits, rate limiting,
 // ProblemDetails errors, trusted forwarded headers and the CORS allow-list.
 builder.Services.AddAppSecurityBaseline(builder.Configuration, builder.Environment.EnvironmentName);
+// Request timeouts (ARV-096b): the default for every endpoint (Ariva.Api.Common/Settings/RequestTimeoutsSettings.cs).
+builder.Services.AddAppRequestTimeouts(builder.Configuration);
 // Controller input is read strictly (ARV-089). TEMPORARY: the login freeze keeps the token exchange (POST /api/v1/auth) on
 // the lenient parsing it had before; ARV-089a removes this exemption.
 builder.Services.AddAppControllers()
@@ -105,6 +107,11 @@ app.UseAppRateLimiting();
 app.UseAuthentication();
 app.UseSessionValidation();
 app.UsePendingScope();
+// ARV-096b: a batch or an AIDX message holds its concurrency permit while the call audit below reads its body, so the body must
+// arrive steadily (over HTTP/1.x), and the request timeout runs before the audit, which reads with the request's token
+// (authentication and the session check above stay as they were, outside it).
+app.UseSteadyIntegrationBodies();
+app.UseRequestTimeouts();
 // Every Integration API call is recorded (client, scope, route, site, answer, payload SHA-256), refused ones too.
 app.UseIntegrationCallAudit();
 // AMAN: UseSessionContext
@@ -115,7 +122,9 @@ app.UseAuthorization();
 #region Endpoints
 
 app.MapArivaHealthChecks();
-app.MapControllers();
+// TEMPORARY: the login freeze keeps the token exchange (POST /api/v1/auth) with no request timeout; ARV-089a removes this exemption.
+app.MapControllers()
+    .WithoutRequestTimeout<Ariva.Api.Integration.Controllers.AuthController>();
 app.MapArivaOpenApi(app.Configuration);
 
 // AMAN: MapOpenApi, MapScalarApiReference. AODB push endpoints are mapped here.

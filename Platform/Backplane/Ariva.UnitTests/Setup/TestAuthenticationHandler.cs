@@ -37,6 +37,13 @@ public sealed class TestAuthenticationHandler(
     /// <summary>Optional request header with the auth_time in Unix seconds (step-up tests, ARV-010d).</summary>
     public const string AuthTimeHeader = "X-Test-Auth-Time";
 
+    /// <summary>
+    /// The Authorization header a test caller sends beside <see cref="UserHeader"/> when it must be counted as a signed in user
+    /// before authentication, as a real caller is by its token: the user concurrency policies (upload, backtest, validation results,
+    /// reports) give a request that sends no credentials no slot (ARV-096b). This scheme never reads it.
+    /// </summary>
+    public const string Bearer = "Bearer test-session";
+
     #endregion
 
     #region Registration

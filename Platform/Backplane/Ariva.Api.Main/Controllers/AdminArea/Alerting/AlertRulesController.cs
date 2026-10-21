@@ -1,4 +1,5 @@
 using Ariva.Api.Common.Extensions;
+using Ariva.Api.Common.Filters;
 using Ariva.Api.Common.Security;
 using Ariva.Api.Main.Controllers.AdminArea.Topology;
 using Ariva.Core;
@@ -51,6 +52,7 @@ public sealed class AlertRulesController(ISvcAlertRules rules) : ControllerBase
     [HttpPost("backtest")]
     [Permission(nameof(Global.Defaults.Permissions.CreateAlertRule))]
     [EnableRateLimiting(RateLimitingExtensions.BacktestPolicy)]
+    [SteadyUpload(TooLarge = AlertRuleErrors.BacktestBodyTooLarge)]
     [ProducesResponseType<AlertBacktestViewModel>(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> Backtest([FromBody] AlertBacktestRequest request, CancellationToken ct) =>

@@ -76,8 +76,24 @@ public static class RateLimitingExtensions
     /// </summary>
     public const string ReportsPolicy = "reports";
 
+    /// <summary>
+    /// The concurrency policies (ARV-096b): a request under one holds a permit of its host while it runs, so each body it binds is read
+    /// steadily (<c>SteadyUploadAttribute</c>, or <c>SteadyIntegrationBodies</c> for the Integration API's, which its call audit reads).
+    /// </summary>
+    public static IReadOnlySet<string> ConcurrencyPolicies { get; } = new HashSet<string>(StringComparer.Ordinal)
+    {
+        UploadPolicy, BacktestPolicy, ValidationResultsPolicy, ReportsPolicy, IntegrationBatchPolicy, IntegrationAidxPolicy
+    };
+
     /// <summary>The Retry-After of a 429 from a concurrency policy, whose lease names no time (uploads, batches, backtests, validation results, reports).</summary>
     public const int ConcurrencyRetryAfterSeconds = 10;
+
+    /// <summary>
+    /// ARV-096b: the partition of a request to a user's concurrency policy (<see cref="UploadPolicy"/>, <see cref="BacktestPolicy"/>,
+    /// <see cref="ValidationResultsPolicy"/>, <see cref="ReportsPolicy"/>) that sends no credentials at all: no limit. The policies run
+    /// before authentication, and such a request ends 401 there at once, so it must neither take a slot nor wait for one.
+    /// </summary>
+    public const string WithoutCredentialsPartition = "without-credentials";
 
     private const string UnknownClient = "unknown";
 
@@ -131,13 +147,7 @@ public static class RateLimitingExtensions
                 options.AddPolicy(DisplayPlaysPolicy, Logged(DisplayPlaysPolicy, DisplayKind, context =>
                     RateLimitPartition.GetFixedWindowLimiter(Ariva.Api.Common.Security.DisplayAuthentication.RateLimitPartition(context),
                         _ => ToLimiterOptions(limits.DisplayPlays))));
-                options.AddPolicy(UploadPolicy, Logged(UploadPolicy, HostKind, _ =>
-                    RateLimitPartition.GetConcurrencyLimiter(UploadPolicy, _ => new ConcurrencyLimiterOptions
-                    {
-                        PermitLimit = 1,
-                        QueueLimit = 2,
-                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst
-                    })));
+                options.AddPolicy(UploadPolicy, Logged(UploadPolicy, HostKind, context => SessionConcurrency(context, UploadPolicy, 1, 2)));
                 options.AddPolicy(IntegrationBatchPolicy, Logged(IntegrationBatchPolicy, HostKind, _ =>
                     RateLimitPartition.GetConcurrencyLimiter(IntegrationBatchPolicy, _ => new ConcurrencyLimiterOptions
                     {
@@ -152,27 +162,9 @@ public static class RateLimitingExtensions
                         QueueLimit = limits.IntegrationAidx.QueueLimit,
                         QueueProcessingOrder = QueueProcessingOrder.OldestFirst
                     })));
-                options.AddPolicy(ValidationResultsPolicy, Logged(ValidationResultsPolicy, HostKind, _ =>
-                    RateLimitPartition.GetConcurrencyLimiter(ValidationResultsPolicy, _ => new ConcurrencyLimiterOptions
-                    {
-                        PermitLimit = limits.ValidationResults.PermitLimit,
-                        QueueLimit = limits.ValidationResults.QueueLimit,
-                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst
-                    })));
-                options.AddPolicy(ReportsPolicy, Logged(ReportsPolicy, HostKind, _ =>
-                    RateLimitPartition.GetConcurrencyLimiter(ReportsPolicy, _ => new ConcurrencyLimiterOptions
-                    {
-                        PermitLimit = limits.Reports.PermitLimit,
-                        QueueLimit = limits.Reports.QueueLimit,
-                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst
-                    })));
-                options.AddPolicy(BacktestPolicy, Logged(BacktestPolicy, HostKind, _ =>
-                    RateLimitPartition.GetConcurrencyLimiter(BacktestPolicy, _ => new ConcurrencyLimiterOptions
-                    {
-                        PermitLimit = 2,
-                        QueueLimit = 2,
-                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst
-                    })));
+                options.AddPolicy(ValidationResultsPolicy, Logged(ValidationResultsPolicy, HostKind, context => SessionConcurrency(context, ValidationResultsPolicy, limits.ValidationResults.PermitLimit, limits.ValidationResults.QueueLimit)));
+                options.AddPolicy(ReportsPolicy, Logged(ReportsPolicy, HostKind, context => SessionConcurrency(context, ReportsPolicy, limits.Reports.PermitLimit, limits.Reports.QueueLimit)));
+                options.AddPolicy(BacktestPolicy, Logged(BacktestPolicy, HostKind, context => SessionConcurrency(context, BacktestPolicy, 2, 2)));
                 options.OnRejected = (context, _) => Rejected(context, SecurityEvents.GlobalPolicy, AddressKind);
             });
 
@@ -217,6 +209,34 @@ public static class RateLimitingExtensions
         context.HttpContext.RequestServices?.GetService<SecurityEventLog>()?.RateLimited(context.HttpContext, policy, partitionKind);
         return ValueTask.CompletedTask;
     }
+
+    /// <summary>
+    /// ARV-096b: whether a request sends any credentials, read as JWT authentication reads them: the Authorization header's values
+    /// joined (<c>Headers.Authorization.ToString()</c>, which drops empty ones). Only a request whose joined value is empty or white
+    /// space goes uncounted, and authentication refuses it 401 at once; any other (a user's token, a forged one, a device key, Basic)
+    /// is counted, for the moment its authentication takes at least. A bearer token is the only way an API call proves a user's session
+    /// (the refresh cookie goes to <c>/api/auth</c> only; the live hub's query token is not on these endpoints). Security review of
+    /// ARV-096b, H1: counting exactly one value let a signed-in caller add an empty second one and go uncounted.
+    /// </summary>
+    public static bool PresentsCredentials(HttpContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        return !string.IsNullOrWhiteSpace(context.Request.Headers.Authorization.ToString());
+    }
+
+    /// <summary>
+    /// ARV-096b: a user's concurrency policy, one partition per host process for the requests that send credentials
+    /// (<see cref="PresentsCredentials"/>), and none for the others (<see cref="WithoutCredentialsPartition"/>).
+    /// </summary>
+    public static RateLimitPartition<string> SessionConcurrency(HttpContext context, string policy, int permits, int queue) =>
+        PresentsCredentials(context)
+            ? RateLimitPartition.GetConcurrencyLimiter(policy, _ => new ConcurrencyLimiterOptions
+            {
+                PermitLimit = permits,
+                QueueLimit = queue,
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst
+            })
+            : RateLimitPartition.GetNoLimiter(WithoutCredentialsPartition);
 
     /// <summary>A named policy whose rejections are <see cref="Rejected"/>.</summary>
     private static LoggedPolicy Logged(string policy, Func<HttpContext, string> partitionKind, Func<HttpContext, RateLimitPartition<string>> partitioner) =>

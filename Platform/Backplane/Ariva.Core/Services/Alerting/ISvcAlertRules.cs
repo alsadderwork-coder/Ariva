@@ -46,6 +46,7 @@ public static class AlertRuleErrors
     public const string RoleNotHeld = "Only an administrator can give a rule to, escalate it to, or take it from a role the caller does not hold.";
     public const string BacktestRange = "A backtest covers 1 minute to 24 hours that have ended, in the last 90 days, in UTC (ending in Z).";
     public const string BacktestTooLarge = "The range holds more stored bins than one backtest reads: choose a shorter range or fewer zones.";
+    public const string BacktestBodyTooLarge = "The backtest request is larger than this host takes.";
     public const string TooManyRules = "A site has at most 500 alert rules, and its codes end at R-999999.";
 }
 

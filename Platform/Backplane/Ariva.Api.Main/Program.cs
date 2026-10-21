@@ -182,6 +182,8 @@ app.UseAuthorization();
 // Request timeouts after routing and authorization (ARV-096): every endpoint gets the default policy unless it names its own
 // ([RequestTimeout]: the reports, the file transfers, the validation results) or is exempt (the live hub, below).
 app.UseRequestTimeouts();
+// The live hub's total per replica (ARV-096b): a negotiate is answered 429 once the replica holds Security:Hubs:MaxConnections.
+app.UseHubConnectionLimit(Ariva.Api.Main.Hubs.LiveHub.Path);
 
 #endregion
 

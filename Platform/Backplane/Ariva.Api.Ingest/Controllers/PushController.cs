@@ -18,6 +18,9 @@ namespace Ariva.Api.Ingest.Controllers;
 [EnableRateLimiting(RateLimitingExtensions.DevicePolicy)]
 public sealed class PushController(SensingIngest ingest, TimeProvider timeProvider, ILogger<PushController> logger) : ControllerBase
 {
+    /// <summary>A push's minimum body rate over HTTP/1.x: 1 KB a second after a 5 second grace.</summary>
+    public static Microsoft.AspNetCore.Server.Kestrel.Core.MinDataRate PushRate { get; } = new(1024, TimeSpan.FromSeconds(5));
+
     [HttpPost("events")]
     [DeviceAuthenticated(ownZoneOnly: true)]
     [RequestSizeLimit(IngestSettings.MaxBodyBytes)]
@@ -62,9 +65,9 @@ public sealed class PushController(SensingIngest ingest, TimeProvider timeProvid
             return Problem(statusCode: StatusCodes.Status415UnsupportedMediaType, title: "Unsupported media type", detail: "A push is application/json.");
 
         // A body trickling in slower than 1 KB a second (after a 5 second grace) is cut off, so a slow sender cannot hold
-        // connections open for minutes (Kestrel's default is 240 bytes a second).
-        if (HttpContext.Features.Get<Microsoft.AspNetCore.Server.Kestrel.Core.Features.IHttpMinRequestBodyDataRateFeature>() is { } rate)
-            rate.MinDataRate = new Microsoft.AspNetCore.Server.Kestrel.Core.MinDataRate(1024, TimeSpan.FromSeconds(5));
+        // connections open for minutes (Kestrel's default is 240 bytes a second). Over HTTP/1.x only: Kestrel refuses a
+        // per-request rate on HTTP/2 and HTTP/3 (it threw, so such a push failed, ARV-096b); there the request timeout ends it.
+        Ariva.Api.Common.Filters.SteadyUploadAttribute.RequireRate(HttpContext, PushRate);
 
         byte[] body;
         try
