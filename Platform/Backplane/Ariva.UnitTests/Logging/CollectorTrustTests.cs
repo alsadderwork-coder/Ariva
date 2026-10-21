@@ -43,7 +43,7 @@ public sealed class CollectorTrustTests : IDisposable
     /// <summary>How long an untrusted collector is watched after the export: its handshake fails at once.</summary>
     private static TimeSpan Silence => TimeSpan.FromSeconds(2);
 
-    private readonly string _folder = Directory.CreateTempSubdirectory("ariva-collector-ca-").FullName;
+    private readonly DirectoryInfo _folder = Directory.CreateTempSubdirectory("ariva-collector-ca-");
 
     public static TheoryData<string, string> TraceProtocols => new()
     {
@@ -63,7 +63,7 @@ public sealed class CollectorTrustTests : IDisposable
         { "grpc", "POST /opentelemetry.proto.collector.logs.v1.LogsService/Export" }
     };
 
-    public void Dispose() => Directory.Delete(_folder, recursive: true);
+    public void Dispose() => _folder.Delete(recursive: true);
 
     #region The CA file
 
@@ -78,7 +78,7 @@ public sealed class CollectorTrustTests : IDisposable
     {
         using var first = TlsCollector.NewAuthority("Ariva test site CA 1");
         using var second = TlsCollector.NewAuthority("Ariva test site CA 2");
-        var path = Path.Combine(_folder, "bundle.crt");
+        var path = Path.Combine(_folder.FullName, "bundle.crt");
         File.WriteAllText(path, first.ExportCertificatePem() + "\n" + second.ExportCertificatePem() + "\n");
 
         var roots = CollectorTrust.RootsFrom(Configuration((CollectorTrust.LokiSetting, path)), CollectorTrust.LokiSetting);
@@ -95,7 +95,7 @@ public sealed class CollectorTrustTests : IDisposable
     [InlineData("too large")]
     public void RootsFrom_Should_StopTheHost_When_TheFileCannotServeAsTheCollectorsCa(string kind)
     {
-        var path = Path.Combine(_folder, "ca.crt");
+        var path = Path.Combine(_folder.FullName, "ca.crt");
         using var authority = TlsCollector.NewAuthority("Ariva test site CA");
         switch (kind)
         {
@@ -461,7 +461,7 @@ public sealed class CollectorTrustTests : IDisposable
     [Fact]
     public void AddCollectorClients_Should_StopTheHost_When_TheCaFileIsMissing()
     {
-        var configuration = Configuration((CollectorTrust.LokiSetting, Path.Combine(_folder, "absent.crt")));
+        var configuration = Configuration((CollectorTrust.LokiSetting, Path.Combine(_folder.FullName, "absent.crt")));
 
         var add = () => ArivaLogging.AddCollectorClients(new ServiceCollection(), configuration);
 

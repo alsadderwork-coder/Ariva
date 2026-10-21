@@ -133,10 +133,16 @@ public sealed class TlsCollector : IAsyncDisposable
         return ReceivedText(text);
     }
 
-    /// <summary>The CA's certificate as a PEM file in <paramref name="folder"/>, as the chart mounts ca.crt; returns its path.</summary>
-    public static string WritePem(X509Certificate2 authority, string folder, string name = "ca.crt")
+    /// <summary>
+    /// The CA's certificate as a PEM file in the test's own <paramref name="folder"/>, as the chart mounts ca.crt; returns its
+    /// path. <paramref name="name"/> is a file name only, never a path, so nothing is written outside that folder.
+    /// </summary>
+    public static string WritePem(X509Certificate2 authority, DirectoryInfo folder, string name = "ca.crt")
     {
-        var path = Path.Combine(folder, name);
+        var file = Path.GetFileName(name);
+        if (string.IsNullOrEmpty(file) || file != name)
+            throw new ArgumentException($"A file name, not a path: {name}", nameof(name));
+        var path = Path.Combine(folder.FullName, file);
         File.WriteAllText(path, authority.ExportCertificatePem());
         return path;
     }
