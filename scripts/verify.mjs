@@ -201,6 +201,46 @@ function docsCheck() {
   return bad.length === 0;
 }
 
+// Names Git for Windows refuses to check out (the owner works on Windows; ARV-157's nul.cs fixture broke a checkout there):
+// a reserved device name, with or without an extension, a character Windows does not allow in a name, a name ending in a dot
+// or a space, and two paths that differ only in case.
+const WINDOWS_RESERVED = /^(con|prn|aux|nul|conin\$|conout\$|com[0-9¹²³]|lpt[0-9¹²³])(?=$|[. :])/i;
+
+function windowsPathProblems(paths) {
+  const problems = [];
+  const seen = new Map();
+  for (const p of paths) {
+    for (const name of p.split('/')) {
+      if (WINDOWS_RESERVED.test(name)) problems.push(`${p}: ${name} is a reserved device name on Windows`);
+      else if (/[<>:"\\|?*\x00-\x1f]/.test(name)) problems.push(`${p}: ${name} holds a character Windows does not allow`);
+      else if (/[. ]$/.test(name)) problems.push(`${p}: ${name} ends in a dot or a space`);
+    }
+    const key = p.toLowerCase();
+    if (seen.has(key)) problems.push(`${p}: differs only in case from ${seen.get(key)}`);
+    else seen.set(key, p);
+  }
+  return problems;
+}
+
+function windowsPathsCheck() {
+  const name = 'every tracked path checks out on Windows';
+  // The check proves itself first: each bad name is refused alone, the case clash once, and the good names pass.
+  const bad = ['a/nul.cs', 'NUL', 'b/Com1.txt', 'lpt9', 'x/con.tar.gz', 'conin$', 'a:b', 'q?', 'tab\tname', 'dot.', 'space '];
+  const missed = bad.filter(p => windowsPathProblems([p]).length !== 1);
+  const good = ['nul-script', 'console.md', 'auxiliary/x.cs', 'com10', 'a/.gitignore', 'Dockerfile'];
+  const refused = good.filter(p => windowsPathProblems([p]).length !== 0);
+  if (missed.length || refused.length || windowsPathProblems(['Docs/a.md', 'docs/a.md']).length !== 1) {
+    console.log(`WINDOWS PATHS self-test failed: missed ${JSON.stringify(missed)}, refused ${JSON.stringify(refused)}`);
+    results.push({ name, ok: false });
+    return false;
+  }
+  // The index only (what a clone checks out, staged changes included): never the working tree's untracked files.
+  const problems = windowsPathProblems(git(['ls-files', '-z']).split('\0').filter(Boolean));
+  problems.forEach(p => console.log(`WINDOWS PATH ${p}`));
+  results.push({ name, ok: problems.length === 0, findings: problems.length });
+  return problems.length === 0;
+}
+
 // Test cadence (owner decision 2026-10-08, docs/harness/test-cadence.md). A story runs the scoped gate; the full suite runs
 // at a checkpoint every CHECKPOINT_EVERY stories, at each phase end and before go-live.
 const CHECKPOINT_FILE = path.join(ROOT, 'backlog', 'checkpoint.json');
@@ -366,7 +406,7 @@ function checkpointGate() {
 }
 
 const steps = {
-  quick: () => { run('security scan (changed files)', 'node', ['scripts/security/scan.mjs', '--changed']); run('root search guard self-test', 'node', ['.claude/hooks/root-search.test.mjs']); docsCheck(); },
+  quick: () => { run('security scan (changed files)', 'node', ['scripts/security/scan.mjs', '--changed']); run('root search guard self-test', 'node', ['.claude/hooks/root-search.test.mjs']); docsCheck(); windowsPathsCheck(); },
   build: () => run('dotnet build', 'dotnet', ['build', 'Ariva.slnx', '-c', 'Debug', ...(args.includes('--no-restore') ? ['--no-restore'] : [])]),
   unit: () => {
     steps.build();
@@ -474,7 +514,7 @@ const steps = {
     if (fs.existsSync(path.join(E2E, 'package-lock.json'))) run('npm audit (e2e)', 'npm', ['audit', '--audit-level=high'], E2E, { optional: true });
     if (fs.existsSync(path.join(CHART_TESTS, 'package-lock.json'))) run('npm audit (chart tests)', 'npm', ['audit', '--audit-level=high'], CHART_TESTS, { optional: true });
   },
-  docs: () => docsCheck(),
+  docs: () => { docsCheck(); windowsPathsCheck(); },
   // ARV-152: the artifact check on its own, over the report and the test output a run left (no seed: shapes and variables only).
   artifacts: () => {
     process.stdout.write(`\n=== no secret in the test artifacts\n`);
